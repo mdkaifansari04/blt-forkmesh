@@ -150,7 +150,7 @@ def test_landmarks_use_stable_positions_inside_the_world_and_office_campus():
     positions = {
         "fountain": (0, 0),
         "campfire": (0, 130),
-        "repositories": (35, 38),
+        "repositories": (130, 0),
         "office": (0, -215),
     }
     for landmark, (x, z) in positions.items():
@@ -190,7 +190,7 @@ def test_scene_builds_playable_landmarks_and_badged_avatars():
     assert "identity.browser" in SCENE
     assert "identity.os" in SCENE
     assert "identity.name" in SCENE
-    assert "world-shirt-account" in APP
+    assert "world-shirt-account" not in APP
     for status_icon in (
         "Guest: \"○\"",
         "Registered: \"✓\"",
@@ -263,9 +263,8 @@ def test_avatar_chest_activity_country_shirt_and_input_state_are_privacy_safe():
         'antenna.name = "mouse-activity-antenna"',
         "function syncAvatarActivity",
         "function animateAvatarActivity",
-        'avatar.userData.accountStatus === "Guest"',
-        "inactiveFor >= 12000",
-        'avatar.userData.accountStatus === "Guest"',
+        "Guests and members remain fully",
+        "opaque until they actually leave the World",
     ):
         assert contract in SCENE
     assert ".world-saved-views {" in CSS
@@ -366,7 +365,7 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
         "setAvatarFediverseProfile,",
         "queueMicrotask(() => onFediverseProfile(target))",
         '"FEDIVERSE · UNAVAILABLE"',
-        "const activityBorder =",
+        'activityRing.name = "avatar-activity-ring"',
         "new THREE.PlaneGeometry(0.88, 0.88)",
     ):
         assert contract in SCENE
@@ -707,7 +706,7 @@ def test_world_has_consent_aware_activity_events_and_media():
     assert "this.inactivePlayers" in APP
     assert "SPACE_CHANNELS" in DASHBOARD_CHAT
     assert "entry.channel === CHANNEL" in DASHBOARD_CHAT
-    assert "startRewardPolling" in APP
+    assert "startStatusBoardPolling" in APP
     assert "confirmed community reward event" in APP
     assert "60000" in APP
     assert "function updateNeighborhoodHomes" in SCENE
@@ -884,13 +883,17 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "if (this.mobileMovementActive) return;" in APP
     assert "this.mobileMovementActive = true;" in APP
     assert "this.mobileMovementActive = false;" in APP
-    assert "this.syncViewportHeight();" in APP
+    assert "this.coarsePointerViewport" in APP
+    assert "this.lastStableViewportWidth" in APP
+    assert "Math.abs(width - this.lastStableViewportWidth) < 2" in APP
+    assert "address-bar expansion and contraction" in APP
     assert "overscroll-behavior: none;" in CSS
     assert "position: fixed;" in CSS[
         CSS.index("body.world-active {"):
         CSS.index("}", CSS.index("body.world-active {"))
     ]
     assert 'this.addEventListener("touchmove", this.blockWorldPullToRefresh' in APP
+    assert "capture: true" in APP
     pull_guard = APP[
         APP.index("  blockWorldPullToRefresh ="):
         APP.index("\n  syncViewportHeight =", APP.index("  blockWorldPullToRefresh ="))
@@ -898,6 +901,12 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "event.preventDefault();" in pull_guard
     assert "[data-world-thumbstick]" in pull_guard
     assert "[data-world-canvas-wrap]" in pull_guard
+    assert "pendingTouchResize = true;" in SCENE
+    assert "externalTouchInteractionActive" in SCENE
+    assert "setTouchInteractionActive" in SCENE
+    assert "touchPointers.size > 0 || externalTouchInteractionActive" in SCENE
+    assert "this.world?.setTouchInteractionActive?.(true);" in APP
+    assert "this.world?.setTouchInteractionActive?.(false);" in APP
     mobile = CSS[CSS.index("@media (max-width: 720px)"):]
     assert ".world-right-rail {" in mobile
     assert "display: grid;" in mobile
@@ -919,7 +928,7 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         "saveCurrentWorldView()",
         "editSavedWorldView(id)",
         "restoreSavedWorldView(id)",
-        "this.officeController?.restoreSavedView?.(view)",
+        "officeController?.restoreSavedView?.(view)",
     ):
         assert contract in APP
     for contract in (
@@ -933,13 +942,15 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         assert contract in SCENE
 
 
-def test_world_navigation_uses_five_visible_quick_views_and_no_repo_shortcut():
+def test_world_navigation_uses_fixed_spatial_shortcuts_and_five_saved_views():
     template = APP.split("function worldTemplate(", 1)[1].split(
         "\nfunction ", 1
     )[0]
-    assert '(landmark) => landmark.id !== "repositories"' in template
+    assert 'new Set(["office", "campfire"])' in template
     assert 'data-expanded="true"' in template
-    assert "Quick views" in template
+    assert "Remember" in template
+    assert "Quick views" not in template
+    assert "Reward pool" not in template
     assert '<div class="world-saved-view-list" data-world-saved-view-list>' in template
     assert '.slice(0, SAVED_VIEWS_MAX)' in APP.split("renderSavedViews()", 1)[1]
 
@@ -1000,14 +1011,19 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     # replace the terminal, so both entrances are asserted here.
     assert "openWorldChat(" in APP
     assert "closeWorldChat()" in APP
-    assert "destination.origin !== location.origin" in APP
-    assert '["/dashboard/chat", "/dashboard/chat/"]' in APP
-    assert 'destination.searchParams.set("worldEmbed", "1")' in APP
     assert "data-world-chat-terminal" in APP
-    assert "data-world-chat-terminal-frame" in APP
+    assert "data-world-native-chat" in APP
+    assert "data-world-chat-terminal-frame" not in APP
+    assert 'data-world-default-repository="forkmesh/forkmesh"' in APP
+    assert 'id="fullChatAction"' in APP
+    assert 'id="fullChatAction" type="hidden" value="chat"' in APP
+    assert "Send to bot</option>" not in APP
+    assert '<span data-dashboard-chat-send-label>Chat</span>' in APP
+    assert 'title="Enter will send this task to the bot"' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
-    assert '"/dashboard/chat?worldEmbed=1"' in APP
+    chat_version = hashlib.sha256(DASHBOARD_CHAT.encode()).hexdigest()[:12]
+    assert f'script.src = "/dashboard-chat.js?v={chat_version}"' in APP
     assert "world-chat-terminal" in CSS
     assert "DEBUG owns the lower-left; chat owns the lower-right" in CSS
     diagnostics = CSS[
@@ -1054,16 +1070,10 @@ def test_mobile_world_chat_composer_stays_above_safe_area_and_terminal_bars():
     )
     open_chat = APP[
         APP.index("  openWorldChat("):
-        APP.index("\n  loadChatTerminalFrame()", APP.index("  openWorldChat("))
+        APP.index("\n  loadNativeWorldChat()", APP.index("  openWorldChat("))
     ]
-    assert (
-        'this.$("[data-world-chat-terminal]")?.removeAttribute("open")'
-        in open_chat
-    )
-    assert (
-        'this.$("[data-world-diagnostics]")?.removeAttribute("open")'
-        in open_chat
-    )
+    assert "this.openChatTerminal();" in open_chat
+    assert ".world-native-chat" in CSS
     assert "var(--forkmesh-chat-viewport-height, 100dvh)" in DASHBOARD_CHAT_VIEW
     assert "const layoutHeight = window.innerHeight" in DASHBOARD_CHAT_VIEW
     assert "window.frameElement?.getBoundingClientRect?.().height" in (
@@ -1355,7 +1365,6 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
         '"First person"',
     ):
         assert contract in sync
-
     scene_mode_start = SCENE.index(
         '  function setCameraMode(mode, reason = "request") {',
     )
@@ -1386,6 +1395,64 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
     assert "this.syncWorldCameraModeButton();" in reveal
     assert "setCameraMode," in SCENE
     assert "getCameraState:" in SCENE
+
+
+def test_top_toolbar_opens_dashboard_in_a_safe_new_tab():
+    assert 'class="world-top-link world-dashboard-link"' in APP
+    assert 'href="/dashboard"' in APP
+    assert 'target="_blank"' in APP
+    assert 'rel="noopener noreferrer"' in APP
+    assert 'aria-label="Open Dashboard in a new tab"' in APP
+    assert (
+        '.world-top-actions > .world-top-link[href="/dashboard"]'
+        not in CSS
+    )
+
+
+def test_admin_error_button_opens_a_sortable_in_world_error_table():
+    start = APP.index("  async openAdminErrors(")
+    method = APP[start:APP.index("\n  // Read the locked placement", start)]
+    assert 'detail.dataset.openLandmark = "admin-errors"' in method
+    assert "this.adminErrorsPanelHTML()" in method
+    assert "this.showDetailOverlay(" in method
+    assert "await this.refreshAdminErrorRows()" in method
+    assert "window.open(" not in method
+    assert 'data-world-activity-search="errors"' in APP
+    assert 'data-world-activity-filter="errors"' in APP
+    assert 'data-world-activity-sort="errors"' in APP
+
+
+def test_world_task_button_and_inactive_avatar_visibility_contracts():
+    assert "data-world-tasks-open" in APP
+    assert "data-world-task-count" in APP
+    assert 'this.selectSettingsTab("work")' in APP
+    assert "avatarOpacity" not in SCENE
+    assert "inactiveSince" not in SCENE
+    assert "never the visibility of the person" in SCENE
+
+
+def test_render_stalls_include_bounded_likely_component_attribution():
+    assert (
+        "Render stall detected; we think it was "
+        "${component}" in SCENE
+    )
+    assert "likelyCause: { component, codeArea }," in SCENE
+    assert 'component = "camera controls";' in SCENE
+    assert 'component = "Three.js renderer workload";' in SCENE
+    assert 'component = `office ${officeSceneMode} scene`;' in SCENE
+    assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
+    assert "const frameWorkStartedAt = performance.now();" in SCENE
+    assert "performance.now() - frameWorkStartedAt" in SCENE
+    assert "scheduleRenderStallWarning(frameWorkMs, refreshedShadowMap);" in SCENE
+    assert "scheduleRenderStallWarning(rawFrameMs);" not in SCENE
+    assert "renderer.shadowMap.autoUpdate = false;" in SCENE
+    assert "sun.shadow.mapSize.set(512, 512);" in SCENE
+    assert "nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;" in SCENE
+    assert "time + SHADOW_MAP_STALL_COOLDOWN_MS" in SCENE
+    assert 'component = "shadow map refresh";' in SCENE
+    assert "function canvasReadableImageURL(value)" in SCENE
+    assert "url.origin !== window.location.origin" in SCENE
+    assert "const key = canvasReadableImageURL(url);" in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():
@@ -2216,6 +2283,24 @@ def test_world_member_directory_seats_registered_users_from_roster():
     assert "this.memberDirectory.length" in APP
 
 
+def test_world_settings_moves_focus_before_hiding_the_panel():
+    assert (
+        'data-world-settings aria-labelledby="world-settings-title" '
+        'aria-hidden="true" inert'
+    ) in APP
+    toggle = APP.split("  toggleSettings(open) {", 1)[1].split(
+        "\n  selectSettingsTab(", 1
+    )[0]
+    assert "panel.inert = false;" in toggle
+    assert "panel.contains(active)" in toggle
+    assert "target?.focus?.();" in toggle
+    assert "active.blur();" in toggle
+    assert toggle.index("target?.focus?.();") < toggle.index(
+        'panel.setAttribute("aria-hidden", "true");'
+    )
+    assert "panel.inert = true;" in toggle
+
+
 def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     # adhoc #287: one bench per registered account rings the campfire. Away
     # members appear as seated figures facing the fire, members walking the
@@ -2237,11 +2322,10 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
     assert "noteDirectoryMembers" in APP
-    # The ring's arc carries the seats plus the walk-in gap (adhoc #430).
-    assert (
-        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
-        in SCENE
-    )
+    # Concentric rows hold 25 people each and preserve one aligned walk-in gap.
+    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
+    assert "const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);" in SCENE
+    assert "CAMPFIRE_ENTRANCE_WIDTH / radius" in SCENE
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
     # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
@@ -2397,13 +2481,19 @@ def test_world_lighting_supports_local_auto_day_night_and_brightness_controls():
         assert overlay in SCENE
 
 
-def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
+def test_world_right_rail_reveals_as_one_fixed_square_shortcut_column():
     assert "data-world-right-rail" in APP
     assert 'data-expanded="false"' in APP
     assert "setWorldRightRailExpanded(expanded)" in APP
     assert "rail.dataset.expanded = String(active)" in APP
+    assert "data-world-map-toggle" not in APP
+    assert 'map.classList.toggle("is-expanded"' not in APP
     assert ".world-right-rail[data-expanded=\"false\"]" in CSS
-    assert "width: 44px;" in CSS
+    fixed_rail = CSS.rsplit("/* Fixed launcher geometry.", 1)[1]
+    assert "width: 48px;" in fixed_rail
+    assert ".world-map-button," in fixed_rail
+    assert ".world-share-view-button," in fixed_rail
+    assert ".world-remember-view" in fixed_rail
     for token in (
         "--primer-canvas-default:",
         "--primer-canvas-subtle:",
@@ -2416,15 +2506,10 @@ def test_world_right_rail_is_compact_by_default_and_expands_as_one_control():
         "--primer-accent-subtle:",
     ):
         assert token in CSS
-    right_rail = CSS[
-        CSS.index(".world-right-rail {"):
-        CSS.index(".world-map-list {")
-    ]
-    assert "var(--primer-canvas-default)" in right_rail
-    assert "var(--primer-border-default)" in right_rail
-    assert "var(--primer-control-bg)" in right_rail
-    assert "var(--primer-control-hover)" in right_rail
-    assert "border-radius: 6px;" in right_rail
+    assert "var(--primer-border-default)" in fixed_rail
+    assert "var(--primer-control-bg)" in fixed_rail
+    assert "var(--primer-control-hover)" in fixed_rail
+    assert "border-radius: 6px;" in fixed_rail
     assert "aside:not(.world-right-rail)" in CSS
 
 
@@ -2504,14 +2589,18 @@ def test_approved_federated_instances_render_without_private_relay_material():
 
 
 def test_cloudflare_setup_deep_link_carries_no_cloudflare_secret():
-    exact = "forkmesh://control/cloudflare"
-    assert exact in QT_MAIN
-    assert "target == QLatin1String" in QT_MAIN
+    assert 'url.scheme() != QLatin1String("forkmesh")' in QT_MAIN
+    assert 'url.host() != QLatin1String("control")' in QT_MAIN
+    assert 'url.path() != QLatin1String("/cloudflare")' in QT_MAIN
+    assert "isCloudflareSetupLink" in QT_MAIN
+    assert "prohibited.match(item.first)" in QT_MAIN
     assert "openCloudflareSetupFromSystemLink" in QT_CONTROL
     assert "m_cloudflareTokenEdit->setFocus" in QT_CONTROL
+    assert 'query.queryItemValue(name, QUrl::FullyDecoded)' in QT_CONTROL
     assert "activationTarget.toUtf8()" in QT_SINGLE_INSTANCE
     assert '<h2 id="cloudflare">Cloudflare setup stays local</h2>' in QT_DOCS
-    assert "carries no token or other secret in its URL" in QT_DOCS
+    assert "bounded public topology only" in QT_DOCS
+    assert "token-, password-, key-, and" in QT_DOCS
     assert 'Exec="$BIN" %u' in LINUX_DESKTOP_INSTALLER
     assert "MimeType=x-scheme-handler/forkmesh;" in LINUX_DESKTOP_INSTALLER
     assert "Exec=forkmesh %u" in APPIMAGE_PACKAGER
@@ -2670,6 +2759,59 @@ def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
     assert APP.count("this.world?.exciteForkbot?.(") == 1
 
 
+def test_unified_chat_stream_does_not_duplicate_replayed_activity():
+    # adhoc #25: a fresh load opened on a stack of activity cards — the chat
+    # backlog the relay re-sends on connect, the first notification/event read,
+    # and any mirror doorbell that landed while the scene was booting. Those
+    # are all old news to someone who just arrived, so the stream only narrates
+    # what happens after the World is up.
+    assert "const ACTIVITY_JOIN_GRACE_MS = CHAT_BUBBLE_JOIN_GRACE_MS;" in APP
+    assert (
+        "this.activityNoticesEnabledAt = Date.now() + ACTIVITY_JOIN_GRACE_MS;"
+        in APP
+    )
+    assert (
+        "  activityNoticesSettled() {\n"
+        "    return Date.now() >= this.activityNoticesEnabledAt;\n"
+        "  }"
+    ) in APP
+    # Native chat already owns both message and system rows. The World accepts
+    # those signals for avatar/unread state without drawing a second overlay.
+    handler = APP[
+        APP.index("  handleWorldChatMessage = (event) => {"):
+        APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
+    ]
+    assert (
+        'if (data.type === "forkmesh:world-activity") return;' in handler
+    )
+    assert "this.activityNotice(" not in handler
+    # The first notification/event reads still seed the seen sets, so nothing
+    # already waiting at load is announced on a later poll either.
+    announce = APP[
+        APP.index("  announceWorldNotifications() {"):
+        APP.index("\n  }", APP.index("  announceWorldNotifications() {"))
+    ]
+    assert (
+        "globalEvents.forEach((item) => this.seenWorldEvents.add(item.id));"
+        in announce
+    )
+    assert (
+        "if (announcements.length && this.activityNoticesSettled()) {" in announce
+    )
+    # A mirror doorbell during the grace still arms the scene effect and the
+    # catalog refresh; only its narration is held back.
+    push = APP[
+        APP.index("  handleMirrorPush(message) {"):
+        APP.index("\n  }", APP.index("  handleMirrorPush(message) {"))
+    ]
+    assert "if (this.activityNoticesSettled()) {" in push
+    assert "this.world?.armMirrorPushEffect?.(" in push
+    # Notices a visitor causes by acting are never gated.
+    toast_start = APP.index("  toast(message, { priority = 0, lockMs = 0 } = {}) {")
+    toast = APP[toast_start:APP.index("\n  }", toast_start)]
+    assert "activityNoticesSettled" not in toast
+
+
 def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
     # adhoc #426: the docked CHAT bar showed only the newest line, so a visitor
     # walking around had no idea how much they had missed. It now carries an
@@ -2716,9 +2858,9 @@ def test_clicking_forkbot_opens_the_terminal_bar_with_a_mention_prefilled():
     assert "this.closeWorldChat();" in terminal
     assert "details.open = true;" in terminal
     assert '"forkmesh:chat-prefill"' in terminal
-    assert "frame.contentWindow?.postMessage(" in terminal
-    # The embedded /dashboard/chat page (used by both the terminal bar and the
-    # full overlay) listens for that message and fills + focuses its composer.
+    assert 'new MessageEvent("message"' in terminal
+    # The native controller listens for that message and fills + focuses its
+    # composer without a nested document.
     assert 'data.type !== "forkmesh:chat-prefill"' in DASHBOARD_CHAT
     assert "input.focus();" in DASHBOARD_CHAT
 

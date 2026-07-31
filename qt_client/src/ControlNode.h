@@ -125,6 +125,21 @@ struct HostDiskUsage {
     bool complete = false;         // the end sentinel arrived
 };
 
+// Capacity for one mounted filesystem in the host size-map navigator. These
+// records power the compact, clickable mount maps beside the folder browser.
+struct HostMountUsage {
+    QString path;                 // absolute mount point, e.g. "/" or "/data"
+    qint64 totalBytes = 0;
+    qint64 usedBytes = 0;
+    qint64 availableBytes = 0;
+};
+
+struct HostMountUsageList {
+    QList<HostMountUsage> mounts;
+    QString error;
+    bool complete = false;
+};
+
 // Collapse a browsed remote path to a canonical absolute POSIX path (no "."
 // or ".." components, no duplicate or trailing slashes). Returns an empty
 // string when the input is not usable as a remote path at all.
@@ -137,6 +152,11 @@ QString normalizeRemoteDiskPath(const QString &path);
 // remote shell or this parser as syntax.
 QString buildHostDiskUsageCommand(const QString &path,
                                   QString *error = nullptr);
+
+// Build and parse the read-only filesystem-capacity query shown as compact
+// mount maps on the right side of the host folder browser.
+QString buildHostMountUsageCommand();
+HostMountUsageList parseHostMountUsage(const QByteArray &output);
 
 // Parse the sentinel-framed listing produced by buildHostDiskUsageCommand().
 // Login banners and other noise around the sentinels are ignored, and entries
@@ -229,11 +249,22 @@ QString findCloudflareWorkerDirectory(
     const QString &sourceDir = QString(),
     const QString &applicationDir = QString());
 
+// Resolve the repository-pinned cloudflare_worker/deploy.sh that ships the site
+// and relay Worker to Cloudflare. It lives beside the Worker bundle above, so it
+// resolves from a source checkout or an installed resource tree alike.
+QString findSiteDeployScript(
+    const QString &sourceDir = QString(),
+    const QString &applicationDir = QString());
+
 // Resolve the direct-HTTPS components separately from the Worker bootstrap.
 QString findCloudflareTunnelBootstrapScript(
     const QString &sourceDir = QString(),
     const QString &applicationDir = QString());
 QString findMirrorGatewayScript(
+    const QString &sourceDir = QString(),
+    const QString &applicationDir = QString());
+// Resolve the MCP server that Settings -> MCP hands to external agents.
+QString findMcpServerScript(
     const QString &sourceDir = QString(),
     const QString &applicationDir = QString());
 // Resolve the non-shell installer for ForkMesh's exact SHA-256-pinned
@@ -381,13 +412,14 @@ QString validateVultrMirrorRequest(const QString &apiKey,
 bool vultrPlanHasIpv4(const QJsonObject &plan);
 
 // From GET /v2/plans: the cheapest plan that can actually run an encrypted
-// mirror (at least 1 GiB RAM, monthly_cost > 0, a location, and IPv4). Ties
+// mirror (at least 1 GiB RAM, monthly_cost > 0, a US location, and IPv4). Ties
 // break toward more RAM, then the lexicographically smallest id, so selection
 // is deterministic.
 QJsonObject cheapestVultrPlan(const QJsonArray &plans);
 
-// Deterministic region for a chosen plan: its lexicographically first
-// location. Empty when the plan has none.
+// Deterministic US region for a chosen plan: Newark/New Jersey first, Atlanta
+// second, then the remaining supported US locations. Empty means no US
+// location is available.
 QString vultrPlanRegion(const QJsonObject &plan);
 
 // From GET /v2/os: the newest x64 Debian image (highest version number in the
@@ -437,6 +469,31 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
 // either, so the provisioning flow switches to uploading this app's own binary
 // (adhoc #408).
 bool vultrInstallNeedsLocalBinary(const QString &installOutput);
+
+// --- Destroying a Vultr mirror (adhoc #24) ---------------------------------
+// The Hosts page's "Destroy" button deletes the VPS itself on the user's Vultr
+// account (billing stops), unlike Uninstall (wipes ForkMesh, keeps the server)
+// and Remove (forgets the host here only).
+
+// The Vultr instance id recorded for a saved host when this app provisioned it,
+// or empty when the host is not a Vultr instance we can address by id (another
+// provider, or a host added before the id was recorded — those are resolved by
+// address instead, see vultrInstanceIdForAddress).
+QString savedHostVultrInstanceId(const QJsonObject &host);
+
+// From GET /v2/instances: the id of the instance serving `address`, matched
+// against main_ip, v6_main_ip and the instance label/hostname so a saved host
+// stored under its DNS name still resolves. Empty when nothing matches, and
+// also empty when more than one instance matches — destroying the wrong server
+// is unrecoverable, so an ambiguous match must fail closed.
+QString vultrInstanceIdForAddress(const QJsonArray &instances,
+                                  const QString &address);
+
+// Empty string when the key and instance id are safe to send to DELETE
+// /v2/instances/{id}, otherwise a user-facing error. Same loose key shape as
+// validateVultrMirrorRequest; the id must look like the UUID Vultr issues.
+QString validateVultrDestroyRequest(const QString &apiKey,
+                                    const QString &instanceId);
 
 // --- Agent CLIs on a fresh mirror (adhoc #418) -----------------------------
 // A brand-new mirror can install the Claude Code and Codex CLIs, but until it

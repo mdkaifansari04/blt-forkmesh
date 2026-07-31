@@ -2,6 +2,7 @@
 
 import ast
 import asyncio
+import json
 from pathlib import Path
 import sqlite3
 
@@ -166,3 +167,52 @@ def test_retention_requires_boolean_true_and_budgets_before_d1_write():
         "chat_history_store")
     assert source.index("chat_history_store") < source.index(
         "_chat_direct_message_retained")
+
+
+def test_replayed_cipher_is_transport_marked_and_terminated():
+    tree = ast.parse(SOURCE, filename=str(ENTRY))
+    helper = next(
+        item for item in tree.body
+        if isinstance(item, ast.FunctionDef)
+        and item.name == "chat_history_replay_body"
+    )
+    module = ast.fix_missing_locations(
+        ast.Module(body=[helper], type_ignores=[]))
+    namespace = {"json": json}
+    exec(compile(module, str(ENTRY), "exec"), namespace)
+    mark = namespace["chat_history_replay_body"]
+
+    original = {
+        "kind": "cipher",
+        "v": 1,
+        "nonce": "n",
+        "tag": "t",
+        "body": "encrypted",
+        "persist": True,
+    }
+    replay = json.loads(mark(json.dumps(original)))
+    assert replay == {**original, "historyReplay": True}
+    assert mark('{"kind":"presence"}') == '{"kind":"presence"}'
+
+    room = next(
+        item for item in tree.body
+        if isinstance(item, ast.ClassDef) and item.name == "ForkMeshRoom"
+    )
+    fetch = next(
+        item for item in room.body
+        if isinstance(item, ast.AsyncFunctionDef) and item.name == "fetch"
+    )
+    source = ast.unparse(fetch)
+    assert "chat_history_replay_body(body)" in source
+    assert "'kind': 'forkmesh-history-end'" in source
+
+    socket_message = next(
+        item for item in room.body
+        if isinstance(item, ast.AsyncFunctionDef)
+        and item.name == "webSocketMessage"
+    )
+    source = ast.unparse(socket_message)
+    assert "envelope.get('kind') != 'cipher'" in source
+    assert "envelope.pop('historyReplay', None)" in source
+    assert source.index("envelope.pop('historyReplay', None)") < source.index(
+        "peer.send(message)")

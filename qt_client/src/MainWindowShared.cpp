@@ -798,7 +798,7 @@ QColor agentStatusColor(const QString &status)
 {
     if (status == AgentStatus::Success) return QColor("#3fb950");
     if (status == AgentStatus::Failed) return QColor("#f85149");
-    if (status == AgentStatus::Running) return QColor("#58a6ff");
+    if (status == AgentStatus::Running) return QColor(Theme::kRunning);
     if (status == AgentStatus::Queued) return QColor("#d29922");
     if (status == AgentStatus::Waiting) return QColor("#d29922");
     if (status == AgentStatus::Stopped) return QColor("#8b949e");
@@ -806,24 +806,40 @@ QColor agentStatusColor(const QString &status)
     return QColor("#8b949e");
 }
 
+// The tint agentStatusOcticon() paints a session's status glyph in. Split out so
+// the top-bar agent matrix can colour its squares to exactly the same palette —
+// two hard-coded copies would drift the moment a status changes colour.
+QColor agentStatusIconColor(const AgentSession &s)
+{
+    if (s.merged) return QColor("#a371f7");
+    if (s.status == AgentStatus::Running) return QColor(Theme::kRunning);
+    if (s.status == AgentStatus::Success) return QColor("#3fb950");
+    if (s.status == AgentStatus::Failed) return QColor("#f85149");
+    if (s.status == AgentStatus::Stopped) return QColor("#f85149");
+    if (s.status == AgentStatus::Waiting) return QColor("#e3742f");
+    if (s.status == AgentStatus::Queued) return QColor("#d29922");
+    return QColor("#8b949e"); // cleared / unknown
+}
+
 QIcon agentStatusOcticon(const AgentSession &s, int px)
 {
+    const QColor tint = agentStatusIconColor(s);
     if (s.merged)
-        return themedOcticon("git-merge", QColor("#a371f7"), px);
+        return themedOcticon("git-merge", tint, px);
     if (s.status == AgentStatus::Running)
-        return themedOcticon("sync", QColor("#3fb950"), px);
+        return themedOcticon("sync", tint, px);
     if (s.status == AgentStatus::Success)
-        return themedOcticon("check-circle", QColor("#3fb950"), px);
+        return themedOcticon("check-circle", tint, px);
     if (s.status == AgentStatus::Failed)
-        return themedOcticon("x", QColor("#f85149"), px);
+        return themedOcticon("x", tint, px);
     if (s.status == AgentStatus::Stopped)
-        return themedOcticon("stop", QColor("#f85149"), px);
+        return themedOcticon("stop", tint, px);
     if (s.status == AgentStatus::Waiting)
-        return themedOcticon("hand", QColor("#e3742f"), px);
+        return themedOcticon("hand", tint, px);
     if (s.status == AgentStatus::Queued)
-        return themedOcticon("history", QColor("#d29922"), px);
+        return themedOcticon("history", tint, px);
     // Cleared / unknown.
-    return themedOcticon("circle-slash", QColor("#8b949e"), px);
+    return themedOcticon("circle-slash", tint, px);
 }
 
 

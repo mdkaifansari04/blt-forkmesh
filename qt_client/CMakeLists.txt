@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.4 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.6 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -233,12 +233,17 @@ set(FORKMESH_APP_SOURCES
     src/StallWatchdog.cpp
     src/SystemStats.h
     src/SystemStats.cpp
+    src/LocalBackupStore.h
+    src/LocalBackupStore.cpp
+    src/McpConnector.h
+    src/McpConnector.cpp
     src/MainWindowInternal.h
     src/MainWindow.h
     src/MainWindow.cpp
     src/MainWindowShared.cpp
     src/MainWindowSetup.cpp
     src/MainWindowChat.cpp
+    src/MainWindowTasks.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
@@ -251,6 +256,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowShortcuts.cpp
     src/MainWindowSearch.cpp
     src/MainWindowSettings.cpp
+    src/MainWindowMcp.cpp
     src/MainWindowData.cpp
     src/MainWindowMessages.cpp
     src/MainWindowRepos.cpp
@@ -432,6 +438,9 @@ install(PROGRAMS
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/headless_mirror_refresh.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/hosted_repository_sync.py"
     "${CMAKE_CURRENT_SOURCE_DIR}/../tools/mirror_gateway.py"
+    # Settings -> MCP points external agents at this script, so an installed
+    # client has to ship it too, not just a source checkout.
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/forkmesh_mcp_server.py"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/tools")
 install(FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/wrangler.toml"
@@ -440,6 +449,9 @@ install(FILES
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/cloudflare_worker")
 install(PROGRAMS
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/pywrangler.sh"
+    # The control node's "Deploy to Cloudflare" button runs this script, so an
+    # installed client ships it beside the Worker bundle it deploys.
+    "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/deploy.sh"
     DESTINATION "${FORKMESH_RESOURCE_INSTALL_ROOT}/cloudflare_worker")
 install(DIRECTORY
     "${CMAKE_CURRENT_SOURCE_DIR}/../cloudflare_worker/src"
@@ -508,6 +520,10 @@ if(FORKMESH_BUILD_TESTS)
         src/ActionStore.cpp
         src/RepoSecurity.h
         src/RepoSecurity.cpp
+        src/LocalBackupStore.h
+        src/LocalBackupStore.cpp
+        src/McpConnector.h
+        src/McpConnector.cpp
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h

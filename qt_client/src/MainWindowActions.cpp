@@ -851,11 +851,11 @@ void MainWindow::queueWorkflowsForCommit(int repoIndex, const QString &owner,
         // A workflow dedicated to other nodes isn't ours to run: the node it
         // names sees the same push and picks it up there. Nothing is queued
         // here, so the run history stays on the node that actually executes it.
-        if (!wf.runsOnNode(actionNodeLabels())) {
+        if (!workflowRunsOnThisNode(repo, wf)) {
             logSystem(QString::fromUtf8(
                           "Actions: \xE2\x80\x9C%1\xE2\x80\x9D is dedicated to "
                           "%2 \xE2\x80\x94 this node (%3) is skipping it.")
-                          .arg(wf.name, workflowDedicationLabel(wf),
+                          .arg(wf.name, workflowDedicationLabel(repo, wf),
                                actionNodeLabels().join(QStringLiteral(", "))));
             continue;
         }
@@ -1026,9 +1026,59 @@ QStringList MainWindow::actionNodeLabels() const
             .toString());
 }
 
-QString MainWindow::workflowDedicationLabel(const ActionWorkflow &workflow) const
+QString MainWindow::workflowNodePin(const RepositoryRecord &repo,
+                                    const QString &path) const
 {
-    return workflow.runsOn.join(QStringLiteral(", "));
+    return ActionFile::pinnedNode(repo.workflowNodes, path);
+}
+
+QStringList
+MainWindow::workflowRunsOnLabels(const RepositoryRecord &repo,
+                                 const ActionWorkflow &workflow) const
+{
+    // The dropdown wins over the file: the owner picked this node here, on this
+    // machine, and that choice has to survive an upstream `runs-on:` edit.
+    const QString pin = workflowNodePin(repo, workflow.path);
+    if (!pin.isEmpty())
+        return QStringList{pin};
+    return workflow.runsOn;
+}
+
+bool MainWindow::workflowRunsOnThisNode(const RepositoryRecord &repo,
+                                        const ActionWorkflow &workflow) const
+{
+    ActionWorkflow probe; // only runsOn takes part in the match
+    probe.runsOn = workflowRunsOnLabels(repo, workflow);
+    return probe.runsOnNode(actionNodeLabels());
+}
+
+QString MainWindow::workflowDedicationLabel(const RepositoryRecord &repo,
+                                            const ActionWorkflow &workflow) const
+{
+    return workflowRunsOnLabels(repo, workflow).join(QStringLiteral(", "));
+}
+
+QStringList MainWindow::actionNodeCandidates() const
+{
+    QStringList out;
+    const auto add = [&out](const QString &raw) {
+        const QString node = raw.trimmed();
+        if (node.isEmpty() || out.contains(node, Qt::CaseInsensitive))
+            return;
+        out.append(node);
+    };
+    add(machineNodeName()); // this machine first: the common answer
+    for (const MemberInfo &node : m_homeRoster)
+        add(node.nodeName);
+    // Labels the repo's own workflows already name stay selectable even when no
+    // node in the roster answers to them (a Mac that's currently offline).
+    for (const ActionWorkflow &wf : m_repoWorkflows) {
+        for (const QString &label : wf.runsOn) {
+            if (label.compare(QLatin1String("any"), Qt::CaseInsensitive) != 0)
+                add(label);
+        }
+    }
+    return out;
 }
 
 void MainWindow::saveActionNodeLabels(const QString &labels)
@@ -1233,9 +1283,9 @@ void MainWindow::processActionQueue()
             continue;
         }
         // The dedication is re-checked immediately before execution, not just
-        // when the run was queued: this node's labels (or the workflow's
-        // `runs-on`) may have changed while the run sat in the queue.
-        if (!wf.runsOnNode(actionNodeLabels())) {
+        // when the run was queued: this node's labels, the "Run on" pin, or the
+        // workflow's `runs-on` may have changed while the run sat in the queue.
+        if (!workflowRunsOnThisNode(m_repositories.at(repoIndex), wf)) {
             run->status = ActionStatus::Skipped;
             m_actionStore->saveRun(*run);
             scheduleMirrorActionsSummary(0);
@@ -1243,7 +1293,8 @@ void MainWindow::processActionQueue()
                           "Actions: skipped \xE2\x80\x9C%1\xE2\x80\x9D for "
                           "%2/%3 \xE2\x80\x94 it is dedicated to %4.")
                           .arg(run->workflowName, run->owner, run->name,
-                               workflowDedicationLabel(wf)));
+                               workflowDedicationLabel(
+                                   m_repositories.at(repoIndex), wf)));
             continue;
         }
         // start() emits statusChanged synchronously (which reloads m_actionRuns),
@@ -1570,12 +1621,21 @@ void MainWindow::updateNotificationButton()
             const QString text =
                 pending > 99 ? QStringLiteral("99+") : QString::number(pending);
             m_notificationRailBadge->setText(text);
+            const int height = 14; // matches #chatUnreadBadge's 7px radius
             const int width =
-                qMax(15, m_notificationRailBadge->fontMetrics()
-                             .horizontalAdvance(text) + 10);
-            m_notificationRailBadge->resize(width, 15);
+                qMax(height, m_notificationRailBadge->fontMetrics()
+                                 .horizontalAdvance(text) + 8);
+            // Ride the bell's own top-right corner, the way every other rail
+            // item paints its count (ActivityRailButton), instead of the
+            // button's far right edge — a badge parked out there forced the
+            // rail to reserve a whole empty column for it (adhoc #19).
+            const int buttonWidth = m_notificationButton->width();
+            const int iconRight = (buttonWidth + kNotificationBellIconPx) / 2;
+            m_notificationRailBadge->resize(width, height);
             m_notificationRailBadge->move(
-                qMax(0, m_notificationButton->width() - width), 0);
+                qBound(0, iconRight - width + height / 2 + 2,
+                       qMax(0, buttonWidth - width)),
+                0);
             m_notificationRailBadge->show();
             m_notificationRailBadge->raise();
         } else {
@@ -2114,13 +2174,11 @@ void MainWindow::updateAgentsTabIndicator()
     }
     if (!m_agentsSpinTimer) {
         m_agentsSpinTimer = new QTimer(this);
-        connect(m_agentsSpinTimer, &QTimer::timeout, this, [this] {
-            m_agentsSpinFrame = (m_agentsSpinFrame + 1) % 10;
-            animateRunningAgentIcons(); // spin the running rows' Status glyph
-        });
+        connect(m_agentsSpinTimer, &QTimer::timeout, this,
+                &MainWindow::animateRunningAgentIcons); // spin running rows' glyph
     }
     if (!m_agentsSpinTimer->isActive())
-        m_agentsSpinTimer->start(120);
+        m_agentsSpinTimer->start(kAgentSpinTickMs);
 }
 
 // The mirror-activity dot strip (adhoc #197) and the current-release pill
@@ -2208,6 +2266,53 @@ MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
     return out;
 }
 
+void MainWindow::updateWorkflowListItem(QListWidgetItem *item,
+                                        const ActionWorkflow &wf,
+                                        const RepositoryRecord &repo)
+{
+    if (!item)
+        return;
+    QStringList triggers;
+    if (wf.triggersOnPush())
+        triggers << QStringLiteral("on: push");
+    if (wf.triggersOnRelease())
+        triggers << QStringLiteral("on: release");
+    if (wf.allowsManualRun())
+        triggers << QStringLiteral("manual");
+    // Dedicated workflows say where they run, and grey out here when that node
+    // isn't this one — this node will never queue them. The "Run on" dropdown
+    // pins a node the same way the file's `runs-on:` does.
+    const QStringList runsOn = workflowRunsOnLabels(repo, wf);
+    item->setText(wf.name);
+    item->setForeground(palette().color(QPalette::Active, QPalette::Text));
+    if (!runsOn.isEmpty()) {
+        const QString where = runsOn.join(QStringLiteral(", "));
+        triggers << QStringLiteral("runs-on: ") + where;
+        if (!workflowRunsOnThisNode(repo, wf)) {
+            item->setText(wf.name + QString::fromUtf8("  \xC2\xB7  ") + where);
+            item->setForeground(
+                palette().color(QPalette::Disabled, QPalette::Text));
+        }
+    }
+    // Valid workflows get a checkbox so the owner can switch each one off
+    // individually; unchecking skips it on push and hides its manual-run bar.
+    if (wf.valid) {
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(repo.disabledWorkflows.contains(wf.path)
+                                ? Qt::Unchecked
+                                : Qt::Checked);
+    }
+    item->setToolTip(
+        wf.valid ? wf.path +
+                       (triggers.isEmpty()
+                            ? QString()
+                            : QStringLiteral("  (") +
+                                  triggers.join(QStringLiteral(", ")) +
+                                  QStringLiteral(")")) +
+                       QStringLiteral("\nUntick to disable this workflow.")
+                 : wf.path + QStringLiteral("  — ") + wf.error);
+}
+
 void MainWindow::refreshRepoActions()
 {
     if (!m_actionWorkflowList)
@@ -2236,44 +2341,9 @@ void MainWindow::refreshRepoActions()
     const QList<ActionWorkflow> wfs = availableWorkflowsForRepo(repo);
     m_repoWorkflows = wfs; // cache so the manual-run bar can look workflows up
     for (const ActionWorkflow &wf : wfs) {
-        auto *item =
-            new QListWidgetItem(wf.name);
+        auto *item = new QListWidgetItem;
         item->setData(Qt::UserRole, wf.path);
-        QStringList triggers;
-        if (wf.triggersOnPush())
-            triggers << QStringLiteral("on: push");
-        if (wf.triggersOnRelease())
-            triggers << QStringLiteral("on: release");
-        if (wf.allowsManualRun())
-            triggers << QStringLiteral("manual");
-        // Dedicated workflows say where they run, and grey out here when that
-        // node isn't this one — this node will never queue them.
-        if (!wf.runsOn.isEmpty()) {
-            triggers << QStringLiteral("runs-on: ") +
-                            workflowDedicationLabel(wf);
-            if (!wf.runsOnNode(actionNodeLabels())) {
-                item->setText(wf.name + QString::fromUtf8("  \xC2\xB7  ") +
-                              workflowDedicationLabel(wf));
-                item->setForeground(palette().color(QPalette::Disabled,
-                                                    QPalette::Text));
-            }
-        }
-        // Valid workflows get a checkbox so the owner can switch each one off
-        // individually; unchecking skips it on push and hides its manual-run bar.
-        if (wf.valid) {
-            item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-            item->setCheckState(repo.disabledWorkflows.contains(wf.path)
-                                    ? Qt::Unchecked
-                                    : Qt::Checked);
-        }
-        item->setToolTip(wf.valid
-                             ? wf.path + (triggers.isEmpty()
-                                              ? QString()
-                                              : QStringLiteral("  (") +
-                                                    triggers.join(QStringLiteral(", ")) +
-                                                    QStringLiteral(")")) +
-                                   QStringLiteral("\nUntick to disable this workflow.")
-                             : wf.path + QStringLiteral("  — ") + wf.error);
+        updateWorkflowListItem(item, wf, repo);
         m_actionWorkflowList->addItem(item);
     }
     if (wfs.isEmpty()) {
@@ -2289,9 +2359,157 @@ void MainWindow::refreshRepoActions()
     refreshActionsTable();
     showLatestVisibleActionRun();
     updateManualRunBar();
+    refreshWorkflowNodeCombo();
     if (m_repoActionsTab)
         m_repoActionsTab->setText(QStringLiteral("Actions (%1)")
                                       .arg(formatCount(qMax(0, m_actionWorkflowList->count() - 1))));
+}
+
+void MainWindow::refreshWorkflowNodeCombo()
+{
+    if (!m_actionNodeCombo)
+        return;
+    QSignalBlocker block(m_actionNodeCombo);
+    m_actionNodeCombo->clear();
+    const bool haveRepo = m_repoDetailIndex >= 0 &&
+                          m_repoDetailIndex < m_repositories.size();
+    m_actionNodeCombo->setEnabled(haveRepo);
+    if (m_actionNodeLabel)
+        m_actionNodeLabel->setEnabled(haveRepo);
+    if (!haveRepo) {
+        m_actionNodeCombo->addItem(QStringLiteral("Any node"), QString());
+        return;
+    }
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+
+    // The dropdown edits whatever the list has selected: one workflow, or every
+    // workflow while "All workflows" is on top.
+    const ActionWorkflow *selected = nullptr;
+    for (const ActionWorkflow &wf : std::as_const(m_repoWorkflows)) {
+        if (wf.valid && wf.path == m_selectedWorkflowFilter) {
+            selected = &wf;
+            break;
+        }
+    }
+    if (m_actionNodeLabel) {
+        // Elide the workflow name: a QLabel refuses to shrink below its text, so
+        // "Attach desktop build to release" would push the whole pane wider.
+        const QString caption =
+            selected ? QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D on")
+                           .arg(QFontMetrics(m_actionNodeLabel->font())
+                                    .elidedText(selected->name, Qt::ElideRight,
+                                                140))
+                     : QStringLiteral("Run every workflow on");
+        m_actionNodeLabel->setText(caption);
+        m_actionNodeLabel->setToolTip(
+            selected ? QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D on")
+                           .arg(selected->name)
+                     : QString());
+    }
+
+    // The pin the dropdown should show: the selected workflow's, or the one all
+    // workflows agree on (a mixed repo falls back to "any", and picking a node
+    // there pins them all together).
+    QString pin;
+    if (selected) {
+        pin = workflowNodePin(repo, selected->path);
+    } else {
+        bool first = true;
+        for (const ActionWorkflow &wf : std::as_const(m_repoWorkflows)) {
+            if (!wf.valid)
+                continue;
+            const QString wfPin = workflowNodePin(repo, wf.path);
+            if (first) {
+                pin = wfPin;
+                first = false;
+            } else if (wfPin != pin) {
+                pin.clear();
+                break;
+            }
+        }
+    }
+
+    // "Any node" leaves the decision to the workflow file, so say what that
+    // means when the file itself declares a `runs-on:`.
+    const QStringList declared = selected ? selected->runsOn : QStringList();
+    m_actionNodeCombo->addItem(
+        declared.isEmpty()
+            ? QStringLiteral("Any node")
+            : QStringLiteral("Workflow default (%1)")
+                  .arg(declared.join(QStringLiteral(", "))),
+        QString());
+    const QString self = machineNodeName().trimmed();
+    for (const QString &node : actionNodeCandidates()) {
+        const bool isSelf = node.compare(self, Qt::CaseInsensitive) == 0;
+        m_actionNodeCombo->addItem(
+            isSelf ? QStringLiteral("%1 (this node)").arg(node) : node,
+            node.toLower());
+    }
+    // A node that has since left the roster still shows, so its pin is visible
+    // and clearable instead of silently reading as "Any node".
+    if (!pin.isEmpty() && m_actionNodeCombo->findData(pin) < 0)
+        m_actionNodeCombo->addItem(
+            QStringLiteral("%1 (offline)").arg(pin), pin);
+    m_actionNodeCombo->setCurrentIndex(
+        pin.isEmpty() ? 0 : qMax(0, m_actionNodeCombo->findData(pin)));
+    m_actionNodeCombo->setToolTip(QStringLiteral(
+        "Which node runs these actions. Picking a node here overrides the "
+        "workflow's own runs-on: line for this repo, and stops this node "
+        "queueing the workflow unless it is that node."));
+}
+
+void MainWindow::setWorkflowNode(const QString &node)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QString label = node.trimmed().toLower();
+    QStringList targets;
+    if (m_selectedWorkflowFilter.isEmpty()) {
+        for (const ActionWorkflow &wf : std::as_const(m_repoWorkflows))
+            if (wf.valid)
+                targets.append(wf.path);
+    } else {
+        targets.append(m_selectedWorkflowFilter);
+    }
+    if (targets.isEmpty())
+        return;
+
+    RepositoryRecord &repo = m_repositories[m_repoDetailIndex];
+    const QStringList encoded =
+        ActionFile::setPinnedNode(repo.workflowNodes, targets, label);
+    if (encoded == repo.workflowNodes)
+        return;
+    repo.workflowNodes = encoded;
+    saveRepositories();
+    logSystem(QStringLiteral("Actions: %1 now %2 for %3/%4.")
+                  .arg(m_selectedWorkflowFilter.isEmpty()
+                           ? QStringLiteral("every workflow")
+                           : m_selectedWorkflowFilter,
+                       label.isEmpty()
+                           ? QStringLiteral("runs wherever the workflow says")
+                           : QStringLiteral("runs on ") + label,
+                       repo.owner, repo.name));
+
+    // Re-decorate the list in place instead of rebuilding it: a rebuild would
+    // drop the selection the dropdown is editing.
+    if (m_actionWorkflowList) {
+        QSignalBlocker block(m_actionWorkflowList);
+        const RepositoryRecord &saved = m_repositories.at(m_repoDetailIndex);
+        for (int row = 0; row < m_actionWorkflowList->count(); ++row) {
+            QListWidgetItem *item = m_actionWorkflowList->item(row);
+            const QString path = item->data(Qt::UserRole).toString();
+            if (path.isEmpty())
+                continue;
+            for (const ActionWorkflow &wf : std::as_const(m_repoWorkflows)) {
+                if (wf.path != path)
+                    continue;
+                updateWorkflowListItem(item, wf, saved);
+                break;
+            }
+        }
+    }
+    updateManualRunBar();
+    refreshWorkflowNodeCombo();
 }
 
 void MainWindow::updateManualRunBar()
@@ -2306,28 +2524,28 @@ void MainWindow::updateManualRunBar()
             break;
         }
     }
-    const bool show =
-        wf && wf->allowsManualRun() && !isWorkflowDisabled(wf->path);
+    const bool haveRepo =
+        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size();
+    const bool show = haveRepo && wf && wf->allowsManualRun() &&
+                      !isWorkflowDisabled(wf->path);
     m_actionManualRunBar->setVisible(show);
     if (!show)
         return;
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     m_actionManualRunButton->setText(
         QString::fromUtf8("Run \xE2\x80\x9C%1\xE2\x80\x9D").arg(wf->name));
     // A workflow dedicated to another node can't start here, so say so on the
     // button instead of failing after the click.
-    const bool ours = wf->runsOnNode(actionNodeLabels());
+    const bool ours = workflowRunsOnThisNode(repo, *wf);
     m_actionManualRunButton->setEnabled(ours);
     m_actionManualRunButton->setToolTip(
         ours ? QString()
              : QString::fromUtf8("Dedicated to %1 \xE2\x80\x94 start this "
                                  "workflow from that node.")
-                   .arg(workflowDedicationLabel(*wf)));
+                   .arg(workflowDedicationLabel(repo, *wf)));
 
     // Populate the branch list from the repo's mirror, keeping the user's choice
     // (or defaulting to main) selected.
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-        return;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     QStringList branches;
     if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()) {
         QProcess refs;
@@ -2411,11 +2629,11 @@ void MainWindow::runSelectedWorkflowManually()
     }
     // Manual runs honour the dedication too: pushing "Run" here would otherwise
     // execute an iOS build or a Cloudflare deploy on the wrong machine.
-    if (!wf.runsOnNode(actionNodeLabels())) {
+    if (!workflowRunsOnThisNode(repo, wf)) {
         flashMessage(QString::fromUtf8(
                          "\xE2\x80\x9C%1\xE2\x80\x9D runs on %2 \xE2\x80\x94 "
                          "start it from that node.")
-                         .arg(wf.name, workflowDedicationLabel(wf)));
+                         .arg(wf.name, workflowDedicationLabel(repo, wf)));
         return;
     }
 
@@ -2701,12 +2919,13 @@ void MainWindow::rerunSelectedRun()
         return;
     const ActionWorkflow rerunWorkflow =
         ActionFile::parse(run.workflowPath, run.workflowContent);
-    if (!rerunWorkflow.runsOnNode(actionNodeLabels())) {
+    if (!workflowRunsOnThisNode(m_repositories.at(repoIndex), rerunWorkflow)) {
         flashMessage(QString::fromUtf8(
                          "\xE2\x80\x9C%1\xE2\x80\x9D runs on %2 \xE2\x80\x94 "
                          "rerun it from that node.")
                          .arg(run.workflowName,
-                              workflowDedicationLabel(rerunWorkflow)));
+                              workflowDedicationLabel(
+                                  m_repositories.at(repoIndex), rerunWorkflow)));
         return;
     }
     QString snapshotError;
@@ -2980,6 +3199,7 @@ QWidget *MainWindow::buildRepoActionsTab()
                 refreshActionsTable();
                 showLatestVisibleActionRun();
                 updateManualRunBar();
+                refreshWorkflowNodeCombo(); // the dropdown edits the selection
             });
     // Ticking/unticking a workflow's checkbox switches it on/off for this repo.
     // Refreshes block this signal, so it only fires on real user toggles.
@@ -3000,12 +3220,35 @@ QWidget *MainWindow::buildRepoActionsTab()
     connect(m_actionsEnabledCheck, &QCheckBox::toggled, this,
             [this](bool on) { setRepoActionsEnabled(on); });
 
+    // Where the actions run: pick a node here instead of hand-editing a
+    // `runs-on:` line into the YAML. The dropdown edits whichever workflow is
+    // selected below, or all of them while "All workflows" is selected.
+    m_actionNodeLabel = new QLabel("Run every workflow on");
+    m_actionNodeLabel->setObjectName("statusLine");
+    m_actionNodeCombo = new QComboBox;
+    m_actionNodeCombo->setObjectName("actionNodeCombo");
+    m_actionNodeCombo->setMinimumWidth(150);
+    m_actionNodeCombo->setSizeAdjustPolicy(
+        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    connect(m_actionNodeCombo, &QComboBox::currentIndexChanged, this,
+            [this](int index) {
+                if (index < 0 || !m_actionNodeCombo)
+                    return;
+                setWorkflowNode(m_actionNodeCombo->itemData(index).toString());
+            });
+    auto *nodeRow = new QHBoxLayout;
+    nodeRow->setContentsMargins(0, 0, 0, 0);
+    nodeRow->setSpacing(8);
+    nodeRow->addWidget(m_actionNodeLabel);
+    nodeRow->addWidget(m_actionNodeCombo, 1);
+
     auto *wfLayout = new QVBoxLayout(wfPane);
     wfLayout->setContentsMargins(16, 22, 8, 22);
     wfLayout->setSpacing(8);
     wfLayout->addWidget(wfHeading);
     wfLayout->addWidget(wfHint);
     wfLayout->addWidget(m_actionsEnabledCheck);
+    wfLayout->addLayout(nodeRow);
     wfLayout->addWidget(m_actionWorkflowList, 1);
 
     // Middle: the run list for the selected workflow (or all).
@@ -3328,6 +3571,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
     layout->addWidget(splitter, 1);
+    refreshWorkflowNodeCombo(); // never show the dropdown empty
     return page;
 }
 

@@ -228,9 +228,30 @@ def test_admin_error_log_has_grouped_24_hour_occurrence_analytics():
         'class="error-spark-bar"',
         "<th>24-hour frequency</th>",
         "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
-        "groups.setdefault(signature, [0] * 24)",
-        "group_hours[23 - int(age_hours)] += 1",
+        '"hours": [0] * 24',
+        'group["hours"][23 - int(age_hours)] += 1',
         'aria-labelledby="error-analytics-title"',
+    ):
+        assert contract in ENTRY_TEXT
+
+
+def test_admin_error_log_labels_sources_and_deletes_rows_or_groups():
+    for contract in (
+        "def _admin_error_source(method, path):",
+        'return "JavaScript" if is_javascript else "Worker"',
+        'class="error-source %s"',
+        "<th>Source</th>",
+        "<th>First seen</th><th>Last seen</th>",
+        '"firstSeen": ts',
+        '"lastSeen": ts',
+        'action="delete_error_row"',
+        'action="delete_error_group"',
+        "Delete group</button></form>",
+        'name="error_id"',
+        "DELETE FROM error_log WHERE rowid=?",
+        '"WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "',
+        '"AND path=? AND message=?"',
+        '"delete_error_row", "delete_error_group"',
     ):
         assert contract in ENTRY_TEXT
 
@@ -242,5 +263,43 @@ def test_admin_timestamps_show_exact_and_live_relative_time():
         "function updateAdminRelativeTimes()",
         "' ago'",
         "setInterval(updateAdminRelativeTimes,30000)",
+    ):
+        assert contract in ENTRY_TEXT
+
+
+def test_admin_error_log_names_the_related_user_per_row_and_group():
+    for contract in (
+        "async def _error_log_actor(env, request):",
+        "_account_session_record(env, request)",
+        '"ALTER TABLE error_log ADD COLUMN actor TEXT NOT NULL DEFAULT \'\'"',
+        "SELECT ts,status,method,path,message,actor FROM error_log ",
+        'group["actors"][actor] = group["actors"].get(actor, 0) + 1',
+        'group["anonymous"] += 1',
+        "def _admin_error_related_users(actors, anonymous=0):",
+        "def _admin_error_row_user_cell(actor):",
+        "<th>Related users</th>",
+        "<th>Related user</th>",
+    ):
+        assert contract in ENTRY_TEXT
+
+    schema_text = (
+        ENTRY_PATH.parent / "schema.py"
+    ).read_text(encoding="utf-8")
+    assert "actor TEXT NOT NULL DEFAULT ''" in schema_text
+
+
+def test_admin_error_log_copies_messages_and_files_bot_tasks():
+    for contract in (
+        "def _admin_error_copy_button(text):",
+        'class="error-copy" data-copy="%s"',
+        "navigator.clipboard.writeText(text)",
+        "document.execCommand('copy')",
+        'action="create_bot_task"',
+        "Send to task</button>",
+        "async def _admin_error_create_bot_task(env, form, requester):",
+        '"INSERT INTO organization_tasks "',
+        '"assignee": "agent"',
+        '"delete_error_group", "create_bot_task"',
+        "<th>Bot task</th>",
     ):
         assert contract in ENTRY_TEXT

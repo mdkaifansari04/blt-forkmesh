@@ -38,6 +38,26 @@ struct AgentSession {
     // CLI's permission prompts today (see agentModeSkipsPermissions).
     QString mode;
     bool createPr = false;
+    // "YOLO" (adhoc #12): merge this session's branch straight into the repo's
+    // default branch as soon as the run finishes successfully, with no review
+    // step. Captured from the quick-add bar's checkbox when the session starts.
+    bool yolo = false;
+    // Reasoning strength ("low"/"medium"/"high"/"xhigh"/"max") the run was
+    // launched with, snapshotted from kClaudeEffortSetting alongside the model
+    // and mode so the organization task records what this run actually used.
+    QString strength;
+    // Organization task mirror (adhoc #18): a prompt launched with the composer's
+    // "Task" toggle on also opens a task in the org, so work started on a desktop
+    // is visible to everyone else. orgTaskId is the id the relay assigned (empty
+    // when the task was declined, offline, or the toggle was off);
+    // startedByBot/finishedByBot are the "<provider>@<machine>" labels of the bot
+    // that launched the run and the one that reported it finished — finishedByBot
+    // stays empty until the completion has been reported, and doubles as the
+    // guard against reporting it twice.
+    bool orgTask = false;
+    QString orgTaskId;
+    QString startedByBot;
+    QString finishedByBot;
     int prNumber = 0;
     QString status = AgentStatus::Queued;
     QString branchName;

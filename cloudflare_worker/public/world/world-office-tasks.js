@@ -19,8 +19,8 @@ function text(value, limit = 160) {
     .slice(0, limit);
 }
 
-function escapeHTML(value) {
-  return text(value, 500)
+function escapeHTML(value, limit = 500) {
+  return text(value, limit)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -73,29 +73,120 @@ function timestampMs(value) {
   return Math.max(0, numeric > 0 && numeric < 10 ** 11 ? numeric * 1000 : numeric);
 }
 
+// Provenance a desktop stamps on a task it opened from a prompt: the bot that
+// launched the run, the bot that reported it finished, and the model,
+// permission mode, and reasoning strength it ran with.
+function normalizedAgentRun(agent) {
+  if (!agent || typeof agent !== "object") return null;
+  const run = {
+    provider: text(agent.provider, 40).toLowerCase(),
+    startedBy: text(agent.startedBy, 64).toLowerCase(),
+    finishedBy: text(agent.finishedBy, 64).toLowerCase(),
+    model: text(agent.model, 64),
+    mode: text(agent.mode, 40),
+    strength: text(agent.strength, 32).toLowerCase(),
+    sessionId: text(agent.sessionId, 64),
+  };
+  return Object.values(run).some(Boolean) ? run : null;
+}
+
+// The one-line "how this ran" summary shown under a bot-assigned task.
+function agentRunSummary(run) {
+  if (!run) return "";
+  return [
+    run.startedBy ? `started by ${run.startedBy}` : "",
+    run.finishedBy ? `finished by ${run.finishedBy}` : "",
+    run.model ? `model ${run.model}` : "",
+    run.mode ? `mode ${run.mode}` : "",
+    run.strength ? `strength ${run.strength}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function taskDateLabel(value) {
+  const timestamp = timestampMs(value);
+  if (!timestamp) return "—";
+  return new Date(timestamp).toLocaleString([], {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function taskAvatarHue(value) {
+  let hash = 0;
+  for (const character of String(value || "task")) {
+    hash = (Math.imul(hash, 31) + character.charCodeAt(0)) >>> 0;
+  }
+  return hash % 360;
+}
+
 function normalizedTask(task) {
   if (!task || typeof task !== "object") return null;
   const id = safeTaskId(task.id);
   const title = text(task.title);
   const assignee = text(task.assignee, 64).toLowerCase();
-  const assigneeKind = ["user", "unassigned", "claude", "codex"].includes(
-    task.assigneeKind,
-  )
-    ? task.assigneeKind
-    : "user";
+  // One general bot replaced the Claude/Codex choice; legacy rows still
+  // arrive with the old kind and are shown as the same bot.
+  const assigneeKind = ["agent", "claude", "codex"].includes(task.assigneeKind)
+    ? "agent"
+    : ["user", "unassigned"].includes(task.assigneeKind)
+      ? task.assigneeKind
+      : "user";
   const status = ["active", "done"].includes(task.status)
     ? task.status
     : "idle";
+  const kind = task.kind === "bid" ? "bid" : "task";
+  const bountyAmountSol =
+    kind === "bid" &&
+    /^(?:0|[1-9][0-9]{0,6})(?:\.[0-9]{1,9})?$/.test(
+      String(task.bountyRequest?.amountSol || ""),
+    )
+      ? String(task.bountyRequest.amountSol)
+      : "";
   if (!id || !title || (assigneeKind === "user" && !assignee)) return null;
+  if (kind === "bid" && !bountyAmountSol) return null;
   return {
     id,
+    kind,
     title,
+    details: text(task.details, 4000),
+    attachments: (Array.isArray(task.attachments) ? task.attachments : [])
+      .slice(0, 4)
+      .map((attachment) => ({
+        name: text(attachment?.name, 180),
+        mime: text(attachment?.mime, 100),
+        size: Math.max(0, Math.min(1024 * 1024, Number(attachment?.size) || 0)),
+        thumbnail:
+          /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(
+            String(attachment?.thumbnail || ""),
+          ) && String(attachment.thumbnail).length <= 10_000
+            ? String(attachment.thumbnail)
+            : "",
+      }))
+      .filter((attachment) => attachment.name && attachment.size),
+    completionNote: text(task.completionNote, 4000),
+    createdBy: text(task.createdBy, 64).toLowerCase(),
+    bountyRequest:
+      kind === "bid"
+        ? {
+            currency: "SOL",
+            amountSol: bountyAmountSol,
+            status: "requested",
+          }
+        : null,
     assignee,
     assigneeKind,
+    agentSessionId: safeTaskId(task.agentSessionId),
     department: text(task.department, 64).toLowerCase() || "general",
     team: text(task.team, 64).toLowerCase(),
     destination: text(task.destination, 32).toLowerCase() || "department",
+    priority: Math.max(1, Math.min(99, Number(task.priority) || 50)),
+    parentTaskId: safeTaskId(task.parentTaskId),
     repository: text(task.repository, 201),
+    agent: normalizedAgentRun(task.agent),
     qa:
       task.qa && typeof task.qa === "object"
         ? {
@@ -114,6 +205,7 @@ function normalizedTask(task) {
           },
     status,
     elapsedMs: Math.max(0, Number(task.elapsedMs) || 0),
+    createdAt: timestampMs(task.createdAt),
     startedAt: timestampMs(task.startedAt),
     updatedAt: timestampMs(task.updatedAt),
     nextCheckinAt: timestampMs(task.nextCheckinAt),
@@ -193,6 +285,7 @@ export function createWorldOfficeTasksController({
   postJSON,
   getSession = () => null,
   toast = () => {},
+  onQaVerdict = async () => false,
   random = Math.random,
 }) {
   const panel = root.querySelector("[data-world-office-task-panel]");
@@ -213,11 +306,43 @@ export function createWorldOfficeTasksController({
   const organizationList = root.querySelector(
     "[data-world-organization-task-list]",
   );
+  const organizationHeading = root.querySelector(
+    "[data-world-organization-task-heading]",
+  );
+  const taskCounts = Array.from(
+    root.querySelectorAll("[data-world-task-count]"),
+  );
   const workStatus = root.querySelector("[data-world-work-status]");
   const workTotal = root.querySelector("[data-world-work-total]");
   const workActive = root.querySelector("[data-world-work-active]");
   const workTracked = root.querySelector("[data-world-work-tracked]");
   const workIssueList = root.querySelector("[data-world-work-issue-list]");
+  const quickForm = root.querySelector("[data-world-work-task-form]");
+  const quickTitle = root.querySelector("[data-world-work-task-title]");
+  const quickAssignee = root.querySelector("[data-world-work-task-assignee]");
+  const quickDepartment = root.querySelector(
+    "[data-world-work-task-department]",
+  );
+  const quickRepository = root.querySelector(
+    "[data-world-work-task-repository]",
+  );
+  const quickPriority = root.querySelector("[data-world-work-task-priority]");
+  const quickPriorityWrap = root.querySelector(
+    "[data-world-work-task-priority-wrap]",
+  );
+  const quickSubmit = root.querySelector("[data-world-work-task-submit]");
+  const quickStatus = root.querySelector(
+    "[data-world-work-task-form-status]",
+  );
+  const taskSearch = root.querySelector("[data-world-task-search]");
+  const taskFilter = root.querySelector("[data-world-task-filter]");
+  const taskSort = root.querySelector("[data-world-task-sort]");
+  const taskSortDirection = root.querySelector(
+    "[data-world-task-sort-direction]",
+  );
+  const taskRefresh = root.querySelector("[data-world-task-refresh]");
+  const taskBatchSize = root.querySelector("[data-world-task-batch-size]");
+  const taskBatchSend = root.querySelector("[data-world-task-batch-send]");
   const checkinCopy = root.querySelector(
     "[data-world-office-task-checkin-copy]",
   );
@@ -234,18 +359,31 @@ export function createWorldOfficeTasksController({
   let recentIssues = [];
   let assignable = [];
   let marketingMembers = [];
+  let organizationMembers = [];
+  let departments = ["general"];
   let attendanceDays = [];
   let proofs = [];
   let initiatives = [];
+  const announcedAgentTaskIds = new Set();
+  let agentTasksInitialized = false;
   let syncedAt = performance.now();
   let serverNowAtSync = Date.now();
   let lastRefreshAt = 0;
   let refreshPromise = null;
+  // Monotonic read counter. Only the newest read may write the task list, so a
+  // slower reconciliation started before a delete can never resurrect the row
+  // a faster forced read already dropped.
+  let refreshSequence = 0;
   let pollTimer = 0;
   let tickTimer = 0;
   let checkinTimer = 0;
   let checkinTaskId = "";
   let physicalTickBucket = -1;
+  let workSearch = "";
+  let workFilter = "all";
+  let workSort = "priority";
+  let workSortAscending = true;
+  const avatarCache = new Map();
 
   function ownTasks() {
     return tasks.filter(
@@ -348,6 +486,23 @@ export function createWorldOfficeTasksController({
     selfWorkState(state, message);
   }
 
+  function announceAgentTasks() {
+    const activeAgentTasks = tasks.filter(
+      (task) => task.assigneeKind === "agent" && task.status !== "done",
+    );
+    const unseen = activeAgentTasks.filter(
+      (task) => !announcedAgentTaskIds.has(task.id),
+    );
+    activeAgentTasks.forEach((task) => announcedAgentTaskIds.add(task.id));
+    const announcements = agentTasksInitialized
+      ? unseen.slice().reverse()
+      : unseen.slice(0, 1);
+    agentTasksInitialized = true;
+    announcements.forEach((task) => {
+      world.showAgentTaskBubble?.(task.assigneeKind, task.title);
+    });
+  }
+
   function checkinLabel(value) {
     if (value === "blocked") return "Blocked";
     if (value === "needs_help") return "Needs help";
@@ -355,34 +510,604 @@ export function createWorldOfficeTasksController({
     return "";
   }
 
+  function taskAvatarHTML(task) {
+    if (task.assigneeKind === "agent") {
+      return '<span class="world-task-avatar" data-kind="agent" aria-label="Bot assignee">🤖</span>';
+    }
+    if (task.assigneeKind === "unassigned") {
+      return '<span class="world-task-avatar" data-kind="unassigned" aria-label="Unassigned">?</span>';
+    }
+    const name = task.assignee || "member";
+    return `<span
+      class="world-task-avatar"
+      data-kind="user"
+      data-world-task-avatar="${escapeHTML(name, 64)}"
+      style="--task-avatar-hue:${taskAvatarHue(name)}"
+      aria-label="@${escapeHTML(name, 64)} avatar"
+    >${escapeHTML(name.slice(0, 1).toUpperCase(), 1)}</span>`;
+  }
+
+  function taskBoardControlsHTML(
+    task,
+    { own, activeTask, doneTask, qaVerdict, canReturn },
+  ) {
+    const waiting = busyTaskId === task.id;
+    return `
+      <span class="world-office-task-controls world-task-row-controls" role="group" aria-label="Task actions">
+        ${
+          canManage || own || task.createdBy === actor
+            ? `<button
+                type="button"
+                data-world-office-task-action="follow-up"
+                data-world-office-task-id="${task.id}"
+                ${waiting ? "disabled" : ""}
+              >Follow-up</button>`
+            : ""
+        }
+        ${
+          own && !doneTask
+            ? `<button
+                type="button"
+                data-world-office-task-action="${activeTask ? "stop" : "start"}"
+                data-world-office-task-id="${task.id}"
+                aria-label="${activeTask ? "Stop" : "Start"} ${escapeHTML(task.title)}"
+                title="${activeTask ? "Stop timer" : "Start timer"}"
+                ${waiting ? "disabled" : ""}
+              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : activeTask ? "Stop" : "Start"}</button>`
+            : ""
+        }
+        ${
+          (own || canManage) && !doneTask
+            ? `<button
+                type="button"
+                class="world-task-done-button"
+                data-world-office-task-action="complete"
+                data-world-office-task-id="${task.id}"
+                aria-label="Mark ${escapeHTML(task.title)} done"
+                title="Mark done"
+                ${waiting ? "disabled" : ""}
+              >${waiting ? '<span class="world-task-button-spinner" aria-hidden="true"></span>' : "Done"}</button>`
+            : ""
+        }
+        ${
+          doneTask
+            ? `<span class="world-office-task-qa-actions" role="group" aria-label="QA verdict">
+                ${["pass", "fail", "unsure"]
+                  .map(
+                    (verdict) => `<button
+                      type="button"
+                      class="world-office-task-qa-${verdict}"
+                      data-world-office-task-action="qa-${verdict}"
+                      data-world-office-task-id="${task.id}"
+                      aria-pressed="${qaVerdict === verdict}"
+                      aria-label="QA ${verdict}"
+                      title="QA ${verdict}"
+                      ${waiting ? "disabled" : ""}
+                    >${verdict === "pass" ? "Pass" : verdict === "fail" ? "Fail" : "Unsure"}</button>`,
+                  )
+                  .join("")}
+              </span>`
+            : ""
+        }
+        ${
+          canReturn
+            ? `<button
+                type="button"
+                class="world-office-task-return"
+                data-world-office-task-action="return"
+                data-world-office-task-id="${task.id}"
+                aria-label="Return ${escapeHTML(task.title)} to tasks"
+                title="Return to tasks"
+                ${waiting ? "disabled" : ""}
+              >Return</button>`
+            : ""
+        }
+        ${
+          canManage
+            ? `<button
+                type="button"
+                class="world-office-task-delete"
+                data-world-office-task-action="delete"
+                data-world-office-task-id="${task.id}"
+                ${waiting ? "disabled" : ""}
+                aria-label="Delete ${escapeHTML(task.title)}"
+                title="Delete task"
+              >Delete</button>`
+            : ""
+        }
+      </span>`;
+  }
+
+  function taskSortHeaderHTML(label, sort, column) {
+    const active = workSort === sort;
+    return `<button
+      type="button"
+      class="${column}"
+      data-world-task-column-sort="${sort}"
+      aria-label="Sort by ${label}"
+      aria-pressed="${active}"
+    >${label}${active ? `<span aria-hidden="true">${workSortAscending ? "↑" : "↓"}</span>` : ""}</button>`;
+  }
+
+  function taskTableHeaderHTML() {
+    return `<div class="world-task-table-header" role="row">
+      ${taskSortHeaderHTML("Task", "title", "world-task-cell-title")}
+      ${taskSortHeaderHTML("Status", "status", "world-task-cell-status")}
+      ${taskSortHeaderHTML("P", "priority", "world-task-cell-priority")}
+      ${taskSortHeaderHTML("Owner", "assignee", "world-task-cell-owner")}
+      <span class="world-task-cell-agent" role="columnheader">Agent</span>
+      <span class="world-task-cell-model" role="columnheader">Model</span>
+      <span class="world-task-cell-speed" role="columnheader">Speed</span>
+      ${taskSortHeaderHTML("Routing", "department", "world-task-cell-route")}
+      ${taskSortHeaderHTML("Updated", "updated", "world-task-cell-updated")}
+      ${taskSortHeaderHTML("Time", "tracked", "world-task-cell-time")}
+      ${taskSortHeaderHTML("QA", "qa", "world-task-cell-qa")}
+      <span class="world-task-cell-actions" role="columnheader">Actions</span>
+    </div>`;
+  }
+
+  function taskBoardHTML(task) {
+    const own = task.assigneeKind === "user" && task.assignee === actor;
+    const activeTask = task.status === "active";
+    const doneTask = task.status === "done";
+    const botTask = task.assigneeKind === "agent";
+    const qaVerdict =
+      task.qa.status === "passed"
+        ? "pass"
+        : task.qa.status === "failed"
+          ? "fail"
+          : task.qa.reviewer
+            ? "unsure"
+            : "";
+    const canReturn =
+      botTask && !doneTask && (canManage || task.createdBy === actor);
+    const statusLabel = activeTask
+      ? "Running"
+      : doneTask
+        ? "Done"
+        : botTask && task.agentSessionId
+          ? "Queued"
+          : "Ready";
+    const statusIcon = activeTask
+      ? '<i class="world-task-inline-spinner" aria-hidden="true"></i>'
+      : doneTask
+        ? '<i class="world-task-status-icon" data-icon="done" aria-hidden="true">✓</i>'
+        : botTask && task.agentSessionId
+          ? '<i class="world-task-status-icon" data-icon="queued" aria-hidden="true">≡</i>'
+          : '<i class="world-task-status-icon" data-icon="ready" aria-hidden="true">◆</i>';
+    const assigneeLabel =
+      task.assigneeKind === "user"
+        ? `@${task.assignee}`
+        : task.assigneeKind === "agent"
+          ? "Bot"
+          : "Unassigned";
+    const checkinState = checkinLabel(task.lastCheckin?.state);
+    const qaLabel =
+      qaVerdict === "pass"
+        ? "Passed"
+        : qaVerdict === "fail"
+          ? "Failed"
+          : qaVerdict === "unsure"
+            ? "Unsure"
+            : doneTask || task.qa.requestedAt
+              ? "Ready"
+              : "—";
+    const routeLabel = [
+      task.department,
+      task.team,
+      task.repository,
+    ].filter(Boolean).join(" · ");
+    const agentLabel =
+      task.agent?.provider || task.agent?.startedBy || (botTask ? "Bot" : "—");
+    const modelLabel = task.agent?.model || "—";
+    const speedLabel = task.agent?.strength || task.agent?.mode || "—";
+    const metadata = [
+      ["Priority", `P${task.priority}`],
+      ["Status", statusLabel],
+      ["Assignee", assigneeLabel],
+      ["Created by", task.createdBy ? `@${task.createdBy}` : "—"],
+      ["Department", task.department],
+      ["Team", task.team || "—"],
+      ["Destination", task.destination],
+      ["Repository", task.repository || "—"],
+      ["Created", taskDateLabel(task.createdAt)],
+      ["Updated", taskDateLabel(task.updatedAt)],
+      ["Started", taskDateLabel(task.startedAt)],
+      ["Next check-in", taskDateLabel(task.nextCheckinAt)],
+      ["Last check-in", checkinState || "—"],
+      ["Check-in time", taskDateLabel(task.lastCheckin?.at)],
+      ["QA", task.qa.status || "unknown"],
+      ["QA reviewer", task.qa.reviewer ? `@${task.qa.reviewer}` : "—"],
+      ["QA requested", taskDateLabel(task.qa.requestedAt)],
+      ["QA reviewed", taskDateLabel(task.qa.reviewedAt)],
+      [
+        "Bounty",
+        task.bountyRequest
+          ? `${task.bountyRequest.amountSol} ${task.bountyRequest.currency} · ${task.bountyRequest.status}`
+          : "—",
+      ],
+      ["Agent session", task.agentSessionId || "—"],
+      ["Follows task", task.parentTaskId || "—"],
+      ["Agent provider", task.agent?.provider || "—"],
+      ["Agent model", task.agent?.model || "—"],
+      ["Agent mode", task.agent?.mode || "—"],
+      ["Agent strength", task.agent?.strength || "—"],
+      ["Run session", task.agent?.sessionId || "—"],
+      ["Started by", task.agent?.startedBy || "—"],
+      ["Finished by", task.agent?.finishedBy || "—"],
+      ["Task ID", task.id],
+    ];
+    return `
+      <details
+        class="world-office-task world-task-row${own ? " world-task-row--mine" : ""}"
+        data-kind="${task.kind}"
+        data-status="${task.status}"
+        data-priority="${task.priority}"
+        role="row"
+      >
+        <summary class="world-task-row-summary">
+          <span class="world-task-cell-title" role="cell" title="${escapeHTML(task.title, 500)} · ${escapeHTML(task.details || "No description", 1000)}">
+            ${taskAvatarHTML(task)}
+            ${task.attachments
+              .filter((attachment) => attachment.thumbnail)
+              .slice(0, 3)
+              .map(
+                (attachment) =>
+                  `<img class="world-task-attachment-thumbnail" src="${attachment.thumbnail}" alt="" title="${escapeHTML(attachment.name, 180)}" />`,
+              )
+              .join("")}
+            <strong>${escapeHTML(task.title)}</strong>
+            ${task.attachments.length ? `<i aria-label="${task.attachments.length} attachment(s)" title="${task.attachments.length} attachment(s)">📎</i>` : ""}
+          </span>
+          <span class="world-task-cell-status" role="cell" data-tone="${activeTask ? "active" : doneTask ? "done" : "ready"}">
+            ${statusIcon}${statusLabel}
+          </span>
+          <span class="world-task-cell-priority" role="cell">
+            ${
+              canManage && !doneTask && !activeTask
+                ? `<label class="world-task-inline-editor" title="Edit priority">
+                    <span class="world-visually-hidden">Priority for ${escapeHTML(task.title)}</span>
+                    P<input type="number" min="1" max="99" value="${task.priority}"
+                      data-world-task-priority="${task.id}" aria-label="Priority for ${escapeHTML(task.title)}" />
+                  </label>`
+                : `P${task.priority}`
+            }
+          </span>
+          <span class="world-task-cell-owner" role="cell" title="${escapeHTML(assigneeLabel)}">
+            ${
+              canManage && !doneTask && !activeTask
+                ? `<label class="world-task-inline-editor" title="Change assignee">
+                    <span class="world-visually-hidden">Assignee for ${escapeHTML(task.title)}</span>
+                    <select data-world-task-assignee="${task.id}" aria-label="Assignee for ${escapeHTML(task.title)}">
+                      <option value="agent" ${task.assigneeKind === "agent" ? "selected" : ""}>Bot</option>
+                      <option value="unassigned" ${task.assigneeKind === "unassigned" ? "selected" : ""}>Unassigned</option>
+                      ${organizationMembers.map((name) => `<option value="user:${escapeHTML(name)}" ${task.assigneeKind === "user" && task.assignee === name ? "selected" : ""}>@${escapeHTML(name)}</option>`).join("")}
+                    </select>
+                  </label>`
+                : escapeHTML(assigneeLabel)
+            }
+          </span>
+          <span class="world-task-cell-agent" role="cell" title="${escapeHTML(agentLabel)}">${escapeHTML(agentLabel)}</span>
+          <span class="world-task-cell-model" role="cell" title="${escapeHTML(modelLabel)}">${escapeHTML(modelLabel)}</span>
+          <span class="world-task-cell-speed" role="cell" title="${escapeHTML(speedLabel)}">${escapeHTML(speedLabel)}</span>
+          <span class="world-task-cell-route" role="cell" title="${escapeHTML(routeLabel || "—", 500)}">${escapeHTML(routeLabel || "—")}</span>
+          <time class="world-task-cell-updated" role="cell" datetime="${new Date(task.updatedAt || task.createdAt || 0).toISOString()}">${escapeHTML(taskDateLabel(task.updatedAt || task.createdAt))}</time>
+          <time
+            class="world-task-cell-time"
+            role="cell"
+            data-world-office-task-elapsed="${task.id}"
+            datetime="PT${Math.floor(currentElapsed(task) / 1000)}S"
+            title="Tracked time"
+          >${formatOfficeTaskElapsed(currentElapsed(task))}</time>
+          <span class="world-task-cell-qa" role="cell" data-verdict="${qaVerdict || (qaLabel === "Ready" ? "ready" : "")}">${qaLabel}</span>
+          <span class="world-task-cell-actions" role="cell">
+            ${taskBoardControlsHTML(task, {
+              own,
+              activeTask,
+              doneTask,
+              qaVerdict,
+              canReturn,
+            })}
+            <span class="world-task-detail-chevron" aria-hidden="true">›</span>
+          </span>
+        </summary>
+        <section class="world-task-chat-bubble">
+          <header class="world-task-row-heading">
+            ${taskAvatarHTML(task)}
+            <div class="world-task-row-title">
+              <strong>${escapeHTML(task.title)}</strong>
+              <div class="world-task-row-badges">
+              <span data-tone="priority">P${task.priority}</span>
+              <span data-tone="${activeTask ? "active" : doneTask ? "done" : "ready"}">
+                ${statusIcon}${statusLabel}
+              </span>
+              <span>${escapeHTML(assigneeLabel)}</span>
+              <span data-tone="department">${escapeHTML(task.department)}</span>
+              ${task.team ? `<span>${escapeHTML(task.team)}</span>` : ""}
+              ${task.kind === "bid" ? '<span data-tone="bid">SOL bid</span>' : ""}
+            </div>
+          </div>
+          </header>
+        ${
+          task.details
+            ? `<p class="world-task-row-description">${escapeHTML(task.details, 4000)}</p>`
+            : '<p class="world-task-row-description world-task-row-description--empty">No additional description.</p>'
+        }
+        <dl class="world-task-row-metadata">
+          ${metadata
+            .map(
+              ([label, value]) =>
+                `<div><dt>${escapeHTML(label)}</dt><dd title="${escapeHTML(value, 500)}">${escapeHTML(value, 500)}</dd></div>`,
+            )
+            .join("")}
+        </dl>
+        ${
+          task.attachments.length
+            ? `<ul class="world-office-task-attachments" aria-label="Task attachments">${task.attachments
+                .map(
+                  (attachment) =>
+                    `<li title="${escapeHTML(attachment.mime)} · ${attachment.size.toLocaleString()} bytes">📎 ${escapeHTML(attachment.name, 180)}</li>`,
+                )
+                .join("")}</ul>`
+            : ""
+        }
+        ${
+          agentRunSummary(task.agent)
+            ? `<p class="world-task-agent-run"><span aria-hidden="true">⚡</span>${escapeHTML(
+                agentRunSummary(task.agent),
+                300,
+              )}</p>`
+            : ""
+        }
+        ${
+          doneTask && task.completionNote
+            ? `<section class="world-office-task-completion">
+                <span>Completion report</span>
+                <p>${escapeHTML(task.completionNote, 4000)}</p>
+              </section>`
+            : ""
+        }
+        ${
+          (own || canManage) && !doneTask
+            ? `<details class="world-task-row-completion">
+                <summary>Add completion notes</summary>
+                <label class="world-office-task-completion-editor">
+                  <span>What was changed, decided, and verified?</span>
+                  <textarea
+                    maxlength="4000"
+                    rows="3"
+                    data-world-office-task-completion-note="${task.id}"
+                    placeholder="Summarize the completed work for QA…"
+                  >${escapeHTML(task.completionNote, 4000)}</textarea>
+                </label>
+              </details>`
+            : ""
+        }
+        </section>
+      </details>`;
+  }
+
+  function visibleWorkTasks() {
+    const query = workSearch.toLowerCase();
+    const statusRank = { active: 0, idle: 1, done: 2 };
+    const filtered = tasks.filter((task) => {
+      if (workFilter === "mine" && task.assignee !== actor) return false;
+      if (workFilter === "agent" && task.assigneeKind !== "agent") return false;
+      if (
+        workFilter === "queued" &&
+        !(
+          task.status === "idle" &&
+          task.assigneeKind === "agent" &&
+          task.agentSessionId
+        )
+      ) {
+        return false;
+      }
+      if (
+        ["active", "idle", "done"].includes(workFilter) &&
+        task.status !== workFilter
+      ) {
+        return false;
+      }
+      if (!query) return true;
+      return [
+        task.title,
+        task.details,
+        task.assignee,
+        task.createdBy,
+        task.department,
+        task.team,
+        task.destination,
+        task.repository,
+        task.agent?.provider,
+        task.agent?.model,
+        task.agent?.mode,
+        task.agent?.strength,
+        task.id,
+      ].some((value) => String(value || "").toLowerCase().includes(query));
+    });
+    const value = (task) => {
+      if (workSort === "status") return statusRank[task.status] ?? 9;
+      if (workSort === "updated") return task.updatedAt || task.createdAt || 0;
+      if (workSort === "assignee") {
+        return task.assigneeKind === "agent"
+          ? "bot"
+          : task.assignee || "zz-unassigned";
+      }
+      if (workSort === "department") return task.department;
+      if (workSort === "repository") return task.repository || "";
+      if (workSort === "tracked") return currentElapsed(task);
+      if (workSort === "qa") return task.qa.status || "unknown";
+      if (workSort === "title") return task.title.toLowerCase();
+      return task.priority;
+    };
+    return filtered.sort((left, right) => {
+      const leftValue = value(left);
+      const rightValue = value(right);
+      const compared =
+        typeof leftValue === "number" && typeof rightValue === "number"
+          ? leftValue - rightValue
+          : String(leftValue).localeCompare(String(rightValue));
+      return (workSortAscending ? 1 : -1) * (
+        compared || left.title.localeCompare(right.title)
+      );
+    });
+  }
+
+  function hydrateTaskAvatars() {
+    root.querySelectorAll("[data-world-task-avatar]").forEach((avatar) => {
+      const name = text(avatar.dataset.worldTaskAvatar, 64).toLowerCase();
+      if (!name || avatar.dataset.hydrated === "true") return;
+      let pending = avatarCache.get(name);
+      if (!pending) {
+        pending = fetchJSON(
+          `/api/accounts/${encodeURIComponent(name)}`,
+          { cache: "force-cache", timeout: 5000 },
+        )
+          .then((profile) => {
+            const png = String(profile?.avatarPng || "");
+            return (
+              profile?.exists === true &&
+              profile?.profilePrivate !== true &&
+              png.length <= 350_000 &&
+              /^[A-Za-z0-9+/=]+$/.test(png)
+            )
+              ? png
+              : "";
+          })
+          .catch(() => "");
+        avatarCache.set(name, pending);
+      }
+      void pending.then((png) => {
+        if (!png || !avatar.isConnected) return;
+        const image = document.createElement("img");
+        image.src = `data:image/png;base64,${png}`;
+        image.alt = "";
+        avatar.replaceChildren(image);
+        avatar.dataset.hydrated = "true";
+      });
+    });
+  }
+
   function taskHTML(task) {
     const own = task.assigneeKind === "user" && task.assignee === actor;
     const activeTask = task.status === "active";
     const doneTask = task.status === "done";
+    const qaReady = doneTask || task.qa.requestedAt > 0;
+    const qaVerdict =
+      task.qa.status === "passed"
+        ? "pass"
+        : task.qa.status === "failed"
+          ? "fail"
+          : task.qa.reviewer
+            ? "unsure"
+            : "";
+    const qaLabel =
+      qaVerdict === "pass"
+        ? "QA passed"
+        : qaVerdict === "fail"
+          ? "QA failed"
+          : qaVerdict === "unsure"
+            ? "QA unsure"
+            : qaReady
+              ? "Ready for QA"
+              : "";
     const checkinState = checkinLabel(task.lastCheckin?.state);
+    // A bot task waits on a node queue until it reports back. Its author, or
+    // an organization manager, can pull it back onto the task list.
+    const botTask = task.assigneeKind === "agent";
+    const canReturn =
+      botTask && !doneTask && (canManage || task.createdBy === actor);
+    const bid = task.kind === "bid";
+    const bidder = task.createdBy || task.assignee;
     return `
-      <li class="world-office-task" data-status="${doneTask ? "done" : activeTask ? "active" : "idle"}">
+      <li class="world-office-task" data-kind="${bid ? "bid" : "task"}" data-status="${doneTask ? "done" : activeTask ? "active" : "idle"}">
         <div class="world-office-task-copy">
-          <span class="world-office-task-state" aria-hidden="true"></span>
+          <span
+            class="world-office-task-state"
+            aria-hidden="true"
+            title="${activeTask ? "In progress" : doneTask ? "Done" : "Ready"}"
+          ></span>
           <div>
-            <strong>${escapeHTML(task.title)}</strong>
+            <strong>${
+              bid
+                ? '<span class="world-office-task-bid-badge">Bid</span>'
+                : ""
+            }${escapeHTML(task.title)}</strong>
+            <span class="world-office-task-priority">Global P${task.priority}</span>
+            ${
+              task.details
+                ? `<p class="world-office-task-details">${escapeHTML(
+                    task.details,
+                    1000,
+                  )}</p>`
+                : ""
+            }
+            ${
+              task.attachments.length
+                ? `<ul class="world-office-task-attachments" aria-label="Task attachments">${task.attachments
+                    .map(
+                      (attachment) =>
+                        `<li title="${escapeHTML(attachment.mime)}">📎 ${escapeHTML(
+                          attachment.name,
+                          180,
+                        )}</li>`,
+                    )
+                    .join("")}</ul>`
+                : ""
+            }
             <small>
               ${escapeHTML(
-                task.assigneeKind === "user"
-                  ? `@${task.assignee}`
-                  : task.assigneeKind === "unassigned"
-                    ? "Unassigned"
-                    : task.assigneeKind === "codex"
-                      ? "Codex"
-                      : "Claude",
+                bid
+                  ? `${task.bountyRequest.amountSol} SOL bounty requested · bidder @${bidder}`
+                  : task.assigneeKind === "user"
+                    ? `@${task.assignee}`
+                    : task.assigneeKind === "unassigned"
+                      ? "Unassigned"
+                      : "Bot",
               )}
               · ${escapeHTML(task.department)}
               ${task.team ? ` / ${escapeHTML(task.team)}` : ""}
-              ${task.destination === "qa" ? ` · QA: ${escapeHTML(task.qa.status)}` : ""}
+              ${botTask && task.agentSessionId ? " · queued on a node" : ""}
+              ${qaLabel ? ` · ${escapeHTML(qaLabel)}` : ""}
               ${task.qa.reviewer ? ` by @${escapeHTML(task.qa.reviewer)}` : ""}
               ${doneTask ? " · done" : ""}
               ${checkinState ? ` · last check-in: ${escapeHTML(checkinState)}` : ""}
             </small>
+            ${
+              agentRunSummary(task.agent)
+                ? `<small class="world-office-task-agent-run">${escapeHTML(
+                    agentRunSummary(task.agent),
+                    300,
+                  )}</small>`
+                : ""
+            }
+            ${
+              activeTask
+                ? '<span class="world-office-task-progress-label">In progress</span>'
+                : ""
+            }
+            ${
+              doneTask && task.completionNote
+                ? `<section class="world-office-task-completion">
+                    <span>What I did to complete this task</span>
+                    <p>${escapeHTML(task.completionNote, 4000)}</p>
+                  </section>`
+                : ""
+            }
+            ${
+              (own || canManage) && !doneTask
+                ? `<label class="world-office-task-completion-editor">
+                    <span>What I did to complete this task</span>
+                    <textarea
+                      maxlength="4000"
+                      rows="3"
+                      data-world-office-task-completion-note="${task.id}"
+                      placeholder="Summarize the changes, decisions, and verification completed…"
+                    >${escapeHTML(task.completionNote, 4000)}</textarea>
+                  </label>`
+                : ""
+            }
           </div>
         </div>
         <div class="world-office-task-controls">
@@ -408,6 +1133,35 @@ export function createWorldOfficeTasksController({
                   data-world-office-task-id="${task.id}"
                   ${busyTaskId === task.id ? "disabled" : ""}
                 >Done</button>`
+              : ""
+          }
+          ${
+            doneTask
+              ? `<span class="world-office-task-qa-actions" role="group" aria-label="QA verdict">
+                  ${["pass", "fail", "unsure"]
+                    .map(
+                      (verdict) => `<button
+                        type="button"
+                        class="world-office-task-qa-${verdict}"
+                        data-world-office-task-action="qa-${verdict}"
+                        data-world-office-task-id="${task.id}"
+                        aria-pressed="${qaVerdict === verdict}"
+                        ${busyTaskId === task.id ? "disabled" : ""}
+                      >${verdict[0].toUpperCase() + verdict.slice(1)}</button>`,
+                    )
+                    .join("")}
+                </span>`
+              : ""
+          }
+          ${
+            canReturn
+              ? `<button
+                  type="button"
+                  class="world-office-task-return"
+                  data-world-office-task-action="return"
+                  data-world-office-task-id="${task.id}"
+                  ${busyTaskId === task.id ? "disabled" : ""}
+                >Return to tasks</button>`
               : ""
           }
           ${
@@ -508,6 +1262,15 @@ export function createWorldOfficeTasksController({
 
   function renderWorkPane() {
     const own = updateWorkStats();
+    const visibleTasks = visibleWorkTasks();
+    taskCounts.forEach((taskCount) => {
+      taskCount.textContent = String(tasks.length);
+      taskCount.hidden = !authorized || tasks.length < 1;
+    });
+    if (organizationHeading) {
+      organizationHeading.textContent =
+        `Tasks · ${visibleTasks.length} of ${tasks.length}`;
+    }
     if (workList) {
       workList.innerHTML = loading
         ? `<li class="world-office-task-empty">Loading your assigned work\u2026</li>`
@@ -521,14 +1284,16 @@ export function createWorldOfficeTasksController({
     }
     if (organizationList) {
       organizationList.innerHTML = loading
-        ? `<li class="world-office-task-empty">Loading organization tasks…</li>`
-        : tasks.length
-          ? tasks.map(taskHTML).join("")
-          : `<li class="world-office-task-empty">${
-              authorized
-                ? "No organization tasks have been created yet."
-                : "Organization membership is required."
-            }</li>`;
+        ? `<div class="world-task-loading" role="status"><span class="world-task-loading-spinner" aria-hidden="true"></span><strong>Syncing organization tasks</strong><small>Reading private task state, timers, QA, and routing…</small></div>`
+        : visibleTasks.length
+          ? taskTableHeaderHTML() + visibleTasks.map(taskBoardHTML).join("")
+          : `<div class="world-office-task-empty">${
+              authorized && tasks.length
+                ? "No tasks match this search and filter."
+                : authorized
+                  ? "No organization tasks have been created yet."
+                  : "Organization membership is required."
+            }</div>`;
     }
     if (workStatus && !loading) {
       workStatus.textContent = own.length
@@ -542,6 +1307,96 @@ export function createWorldOfficeTasksController({
         ? recentIssues.map(issueHTML).join("")
         : `<li class="world-office-task-empty">No recent issue assignments.</li>`;
     }
+    renderQuickEntry();
+    if (taskSearch && taskSearch.value !== workSearch) {
+      taskSearch.value = workSearch;
+    }
+    if (taskFilter) taskFilter.value = workFilter;
+    root.querySelectorAll("[data-world-task-quick-filter]").forEach((button) => {
+      button.setAttribute(
+        "aria-pressed",
+        String(button.dataset.worldTaskQuickFilter === workFilter),
+      );
+    });
+    if (taskSort) taskSort.value = workSort;
+    if (taskSortDirection) {
+      taskSortDirection.value = workSortAscending ? "asc" : "desc";
+      taskSortDirection.textContent = workSortAscending ? "↑" : "↓";
+      taskSortDirection.setAttribute(
+        "aria-label",
+        workSortAscending ? "Sort ascending" : "Sort descending",
+      );
+    }
+    if (taskRefresh) {
+      taskRefresh.disabled = loading;
+      taskRefresh.classList.toggle("is-loading", loading);
+    }
+    if (taskBatchSize && !taskBatchSize.value) taskBatchSize.value = "10";
+    if (taskBatchSend) {
+      taskBatchSend.disabled =
+        loading ||
+        !canManage ||
+        !tasks.some(
+          (task) =>
+            task.status === "idle" &&
+            task.assigneeKind === "unassigned" &&
+            Boolean(task.repository),
+        );
+      taskBatchSend.hidden = !canManage;
+      if (taskBatchSize) taskBatchSize.closest("label").hidden = !canManage;
+    }
+    hydrateTaskAvatars();
+  }
+
+  function renderQuickEntry() {
+    if (!quickForm) return;
+    quickForm.hidden = !authorized;
+    if (!authorized) return;
+    const selectedAssignee = quickAssignee?.value || "self";
+    const assignees = [
+      { value: "self", label: actor ? `You (@${actor})` : "You" },
+      {
+        value: "agent",
+        label: "Bot",
+      },
+      { value: "unassigned", label: "Unassigned" },
+    ];
+    if (canManage) {
+      organizationMembers
+        .filter((name) => name && name !== actor)
+        .forEach((name) => {
+          assignees.push({ value: `user:${name}`, label: `@${name}` });
+        });
+    }
+    if (quickAssignee) {
+      quickAssignee.innerHTML = assignees
+        .map(
+          (item) =>
+            `<option value="${escapeHTML(item.value)}">${escapeHTML(item.label)}</option>`,
+        )
+        .join("");
+      quickAssignee.value = assignees.some(
+        (item) => item.value === selectedAssignee,
+      )
+        ? selectedAssignee
+        : "self";
+    }
+    const selectedDepartment = quickDepartment?.value || "general";
+    if (quickDepartment) {
+      quickDepartment.innerHTML = departments
+        .map(
+          (name) =>
+            `<option value="${escapeHTML(name)}">${escapeHTML(
+              name.replaceAll("-", " "),
+            )}</option>`,
+        )
+        .join("");
+      quickDepartment.value = departments.includes(selectedDepartment)
+        ? selectedDepartment
+        : "general";
+    }
+    if (quickPriorityWrap) quickPriorityWrap.hidden = !canManage;
+    if (quickSubmit) quickSubmit.disabled = loading;
   }
 
   function updateElapsedLabels() {
@@ -644,9 +1499,13 @@ export function createWorldOfficeTasksController({
     void refresh({ quiet: true }).finally(schedulePoll);
   }
 
-  async function refresh({ quiet = false } = {}) {
-    if (!monitoring || typeof fetchJSON !== "function") return false;
-    if (refreshPromise) return refreshPromise;
+  // `force` reconciles right after a confirmed mutation: it may not join a
+  // read that was already in flight before the change (that response predates
+  // the delete and would repaint the removed row), and it runs even while the
+  // low-frequency monitor is paused.
+  async function refresh({ quiet = false, force = false } = {}) {
+    if ((!monitoring && !force) || typeof fetchJSON !== "function") return false;
+    if (refreshPromise && !force) return refreshPromise;
     if (!getSession()?.sessionToken) {
       tasks = [];
       actor = "";
@@ -664,7 +1523,8 @@ export function createWorldOfficeTasksController({
       if (!officeActive) stopMonitoring();
       return false;
     }
-    refreshPromise = (async () => {
+    const sequence = ++refreshSequence;
+    const request = (async () => {
       loading = !quiet;
       if (!quiet) {
         physicalState("loading", "Syncing organization tasks");
@@ -675,15 +1535,29 @@ export function createWorldOfficeTasksController({
           fetchJSON(OFFICE_TASKS_PATH, {
             cache: "no-store",
             timeout: 8000,
+            dedupe: !force,
           }),
           fetchJSON(MARKETING_TASKS_PATH, {
             cache: "no-store",
             timeout: 8000,
+            dedupe: !force,
           }).catch(() => ({})),
         ]);
+        if (sequence !== refreshSequence) return false;
         actor = text(payload?.actor, 64).toLowerCase();
         canManage = payload?.canManage === true;
         authorized = payload?.authorized !== false;
+        organizationMembers = Array.isArray(payload?.members)
+          ? payload.members
+              .map((name) => text(name, 64).toLowerCase())
+              .filter(Boolean)
+              .slice(0, 1000)
+          : [];
+        departments = Array.isArray(payload?.departments)
+          ? payload.departments
+              .map((name) => text(name, 64).toLowerCase())
+              .filter(Boolean)
+          : ["general"];
         assignable = Array.isArray(marketingPayload?.members)
           ? marketingPayload.members
               .map((name) => text(name, 64).toLowerCase())
@@ -714,6 +1588,7 @@ export function createWorldOfficeTasksController({
         tasks = Array.isArray(payload?.tasks)
           ? payload.tasks.map(normalizedTask).filter(Boolean).slice(0, 100)
           : [];
+        announceAgentTasks();
         syncedAt = performance.now();
         serverNowAtSync = timestampMs(payload?.serverNow) || Date.now();
         lastRefreshAt = Date.now();
@@ -724,6 +1599,7 @@ export function createWorldOfficeTasksController({
         if (!keepMonitoring()) stopMonitoring();
         return true;
       } catch (_) {
+        if (sequence !== refreshSequence) return false;
         tasks = [];
         canManage = false;
         authorized = false;
@@ -732,6 +1608,8 @@ export function createWorldOfficeTasksController({
         attendanceDays = [];
         proofs = [];
         initiatives = [];
+        organizationMembers = [];
+        departments = ["general"];
         loading = false;
         render();
         setStatus(
@@ -742,20 +1620,35 @@ export function createWorldOfficeTasksController({
         if (!officeActive) stopMonitoring();
         return false;
       } finally {
-        refreshPromise = null;
+        if (refreshPromise === request) refreshPromise = null;
       }
     })();
-    return refreshPromise;
+    refreshPromise = request;
+    return request;
+  }
+
+  // Drop a task the server has confirmed is gone. The reconciling read below
+  // is authoritative, but it can be slow, superseded, or skipped entirely
+  // while the monitor is paused — the row must leave every list the moment the
+  // delete is acknowledged.
+  function dropTask(taskId) {
+    const id = safeTaskId(taskId);
+    if (!id) return false;
+    const before = tasks.length;
+    tasks = tasks.filter((task) => task.id !== id);
+    return tasks.length !== before;
   }
 
   async function mutate(path, body, taskId = "", options = {}) {
     if (typeof postJSON !== "function") return false;
+    const { removeOnSuccess = false, ...requestOptions } = options;
     busyTaskId = safeTaskId(taskId);
     render();
     let errorMessage = "";
     try {
-      await postJSON(path, body, { timeout: 10_000, ...options });
-      await refresh({ quiet: true });
+      await postJSON(path, body, { timeout: 10_000, ...requestOptions });
+      if (removeOnSuccess) dropTask(taskId);
+      await refresh({ quiet: true, force: true });
       return true;
     } catch (error) {
       errorMessage =
@@ -764,11 +1657,71 @@ export function createWorldOfficeTasksController({
     } finally {
       busyTaskId = "";
       render();
-      if (errorMessage) setStatus(errorMessage, "error");
+      if (errorMessage) {
+        // The Office panel's status line is not visible from the Local
+        // controls "Work" tab, where the organization list also lives, so a
+        // rejected change is announced instead of silently doing nothing.
+        setStatus(errorMessage, "error");
+        toast(errorMessage);
+      }
     }
   }
 
   async function onSubmit(event) {
+    if (event.target === quickForm) {
+      event.preventDefault();
+      const title = text(quickTitle?.value);
+      const assignment = text(quickAssignee?.value, 80).toLowerCase();
+      const department = text(
+        quickDepartment?.value || "general",
+        64,
+      ).toLowerCase();
+      const repository = text(quickRepository?.value, 201);
+      if (!title) return;
+      if (assignment === "agent" && !repository) {
+        if (quickStatus) {
+          quickStatus.textContent =
+            "Choose an owner/repository before assigning agent work.";
+        }
+        quickRepository?.focus();
+        return;
+      }
+      const body = {
+        title,
+        department,
+        destination: assignment === "agent" ? "agent" : "department",
+        assigneeKind:
+          assignment === "agent"
+            ? "agent"
+            : assignment === "unassigned"
+              ? "unassigned"
+              : "user",
+      };
+      if (assignment.startsWith("user:")) {
+        body.assignee = assignment.slice(5);
+      } else if (assignment === "self") {
+        body.assignee = actor;
+      }
+      if (repository) body.repository = repository;
+      if (canManage && quickPriority?.value) {
+        body.priority = Number(quickPriority.value);
+      }
+      if (quickStatus) quickStatus.textContent = "Creating task…";
+      const saved = await mutate(OFFICE_TASKS_PATH, body);
+      if (saved) {
+        quickForm.reset();
+        renderQuickEntry();
+        if (quickStatus) quickStatus.textContent = "Task created.";
+        toast(
+          assignment === "agent"
+            ? "Agent task created and queued for a linked desktop."
+            : "Organization task created.",
+        );
+      } else if (quickStatus) {
+        quickStatus.textContent = "Task could not be created.";
+      }
+      return;
+    }
     if (event.target === form) {
       event.preventDefault();
       const title = text(titleInput?.value);
@@ -789,6 +1742,84 @@ export function createWorldOfficeTasksController({
   }
 
   async function onClick(event) {
+    if (event.target.closest("[data-world-task-refresh]")) {
+      loading = true;
+      renderWorkPane();
+      void refresh({ quiet: false, force: true });
+      return;
+    }
+    const quickFilter = event.target.closest("[data-world-task-quick-filter]");
+    if (quickFilter) {
+      workFilter = [
+        "all",
+        "active",
+        "queued",
+        "idle",
+      ].includes(quickFilter.dataset.worldTaskQuickFilter)
+        ? quickFilter.dataset.worldTaskQuickFilter
+        : "all";
+      renderWorkPane();
+      return;
+    }
+    if (event.target.closest("[data-world-task-batch-send]")) {
+      if (!canManage || typeof postJSON !== "function") return;
+      const limit = Math.max(
+        1,
+        Math.min(50, Math.round(Number(taskBatchSize?.value) || 10)),
+      );
+      const candidates = visibleWorkTasks()
+        .filter(
+          (task) =>
+            task.status === "idle" &&
+            task.assigneeKind === "unassigned" &&
+            Boolean(task.repository),
+        )
+        .slice(0, limit);
+      if (!candidates.length) {
+        toast("No ready unassigned repository tasks match this view.");
+        return;
+      }
+      taskBatchSend.disabled = true;
+      let moved = 0;
+      try {
+        for (const task of candidates) {
+          await postJSON(
+            `${OFFICE_TASKS_PATH}/${encodeURIComponent(task.id)}`,
+            { assigneeKind: "agent" },
+            { method: "PATCH", timeout: 10_000 },
+          );
+          moved += 1;
+        }
+        await refresh({ quiet: true, force: true });
+      } catch (error) {
+        toast(
+          `${moved} task${moved === 1 ? "" : "s"} queued before the batch stopped: ${
+            text(error?.message, 120) || "request failed"
+          }.`,
+        );
+        await refresh({ quiet: true, force: true });
+        return;
+      }
+      toast(`${moved} task${moved === 1 ? "" : "s"} sent to the Bot queue.`);
+      return;
+    }
+    if (event.target.closest("[data-world-task-sort-direction]")) {
+      workSortAscending = !workSortAscending;
+      renderWorkPane();
+      return;
+    }
+    const columnSort = event.target.closest("[data-world-task-column-sort]");
+    if (columnSort) {
+      const nextSort = columnSort.dataset.worldTaskColumnSort;
+      if (workSort === nextSort) {
+        workSortAscending = !workSortAscending;
+      } else {
+        workSort = nextSort;
+        workSortAscending = true;
+      }
+      renderWorkPane();
+      return;
+    }
     if (event.target.closest("[data-world-office-task-close]")) {
       close();
       return;
@@ -822,24 +1853,69 @@ export function createWorldOfficeTasksController({
       "[data-world-office-task-action]",
     );
     if (!actionButton) return;
+    event.preventDefault();
+    event.stopPropagation();
     const action = actionButton.dataset.worldOfficeTaskAction;
     const id = safeTaskId(actionButton.dataset.worldOfficeTaskId);
-    if (!id || !["start", "stop", "complete", "delete"].includes(action)) {
-      return;
-    }
     if (
-      action === "delete" &&
-      !window.confirm("Delete this task and its private check-in history?")
+      !id ||
+      ![
+        "start", "stop", "complete", "delete", "return", "follow-up",
+        "qa-pass", "qa-fail", "qa-unsure",
+      ].includes(action)
     ) {
       return;
     }
+    if (action.startsWith("qa-")) {
+      const verdict = action.slice(3);
+      const task = tasks.find((item) => item.id === id);
+      if (!task || task.status !== "done") return;
+      busyTaskId = id;
+      render();
+      let saved = false;
+      try {
+        saved = await onQaVerdict({ task, verdict });
+        if (saved) await refresh({ quiet: true, force: true });
+      } finally {
+        busyTaskId = "";
+        render();
+      }
+      if (saved) toast(`QA verdict saved: ${verdict}.`);
+      return;
+    }
+    if (action === "follow-up") {
+      const parent = tasks.find((task) => task.id === id);
+      if (!parent) return;
+      const entered = window.prompt(`Follow-up to “${parent.title}”:`, "");
+      const title = text(entered, 160);
+      if (!title) return;
+      const saved = await mutate(
+        OFFICE_TASKS_PATH,
+        { title, parentTaskId: parent.id },
+        parent.id,
+      );
+      if (saved) toast("Follow-up task created with the same assignee.");
+      return;
+    }
+    const completionNote =
+      action === "complete"
+        ? text(
+            actionButton
+              .closest(".world-office-task")
+              ?.querySelector("[data-world-office-task-completion-note]")
+              ?.value,
+            4000,
+          )
+        : "";
     const saved = await mutate(
       action === "delete"
         ? `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`
         : `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
-      {},
+      action === "complete" ? { completionNote } : {},
       id,
-      action === "delete" ? { method: "DELETE" } : {},
+      action === "delete"
+        ? { method: "DELETE", removeOnSuccess: true }
+        : {},
     );
     if (saved) {
       toast(
@@ -848,8 +1924,78 @@ export function createWorldOfficeTasksController({
           : action === "stop"
             ? "Task timer stopped."
             : action === "complete"
-              ? "Task marked done."
-              : "Task deleted.",
+              ? "Task marked done and ready for QA."
+              : action === "return"
+                ? "Task returned to the task list."
+                : "Task deleted.",
+      );
+    }
+  }
+
+  function onWorkControl(event) {
+    if (event.target === taskSearch) {
+      workSearch = text(taskSearch.value, 160);
+      renderWorkPane();
+      taskSearch.focus();
+      return;
+    }
+    if (event.target === taskFilter) {
+      workFilter = [
+        "all",
+        "active",
+        "idle",
+        "done",
+        "mine",
+        "agent",
+        "queued",
+      ].includes(taskFilter.value)
+        ? taskFilter.value
+        : "all";
+      renderWorkPane();
+      return;
+    }
+    if (event.target === taskSort) {
+      workSort = [
+        "priority",
+        "status",
+        "updated",
+        "assignee",
+        "department",
+        "title",
+      ].includes(taskSort.value)
+        ? taskSort.value
+        : "priority";
+      workSortAscending = workSort !== "updated";
+      renderWorkPane();
+      return;
+    }
+    const priorityInput = event.target.closest("[data-world-task-priority]");
+    if (priorityInput && event.type === "change") {
+      const id = safeTaskId(priorityInput.dataset.worldTaskPriority);
+      const priority = Math.max(
+        1,
+        Math.min(99, Math.round(Number(priorityInput.value) || 50)),
+      );
+      void mutate(
+        `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`,
+        { priority },
+        id,
+        { method: "PATCH" },
+      );
+      return;
+    }
+    const assigneeSelect = event.target.closest("[data-world-task-assignee]");
+    if (assigneeSelect && event.type === "change") {
+      const id = safeTaskId(assigneeSelect.dataset.worldTaskAssignee);
+      const value = text(assigneeSelect.value, 80).toLowerCase();
+      const body = value.startsWith("user:")
+        ? { assigneeKind: "user", assignee: value.slice(5) }
+        : { assigneeKind: value };
+      void mutate(
+        `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`,
+        body,
+        id,
+        { method: "PATCH" },
       );
     }
   }
@@ -932,19 +2078,24 @@ export function createWorldOfficeTasksController({
       return false;
     }
     if (action === "delete" && !canManage) return false;
-    if (
-      action === "delete" &&
-      !window.confirm("Delete this task and its private check-in history?")
-    ) {
-      return false;
+    let completionNote = "";
+    if (action === "complete") {
+      const entered = window.prompt(
+        "What did you do to complete this task? This note will remain with the task for QA.",
+        task.completionNote || "",
+      );
+      if (entered === null) return false;
+      completionNote = text(entered, 4000);
     }
     const saved = await mutate(
       action === "delete"
         ? `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}`
         : `${OFFICE_TASKS_PATH}/${encodeURIComponent(id)}/${action}`,
-      {},
+      action === "complete" ? { completionNote } : {},
       id,
-      action === "delete" ? { method: "DELETE" } : {},
+      action === "delete"
+        ? { method: "DELETE", removeOnSuccess: true }
+        : {},
     );
     if (saved) {
       toast(
@@ -1024,6 +2175,19 @@ export function createWorldOfficeTasksController({
     return true;
   }
 
+  function refreshNow() {
+    if (!getSession()?.sessionToken) return Promise.resolve(false);
+    monitoring = true;
+    if (!tickTimer) {
+      tickTimer = window.setInterval(updateElapsedLabels, OFFICE_TASKS_TICK_MS);
+    }
+    // Callers use this immediately after creating or changing a task, so it
+    // must read fresh state rather than join a poll that started earlier.
+    const result = refresh({ quiet: tasks.length > 0, force: true });
+    schedulePoll();
+    return result;
+  }
+
   function setRecentIssues(items = []) {
     const seen = new Set();
     recentIssues = (Array.isArray(items) ? items : [])
@@ -1095,6 +2259,8 @@ export function createWorldOfficeTasksController({
     document.removeEventListener("visibilitychange", onVisibilityChange);
     root.removeEventListener("click", onClick);
     root.removeEventListener("submit", onSubmit);
+    root.removeEventListener("input", onWorkControl);
+    root.removeEventListener("change", onWorkControl);
     world.updateOfficeMarketingTasks?.({
       authorized: false,
       state: "locked",
@@ -1108,6 +2274,8 @@ export function createWorldOfficeTasksController({
   document.addEventListener("visibilitychange", onVisibilityChange);
   root.addEventListener("click", onClick);
   root.addEventListener("submit", onSubmit);
+  root.addEventListener("input", onWorkControl);
+  root.addEventListener("change", onWorkControl);
   physicalState("locked", "Enter Office to sync tasks");
 
   return {
@@ -1117,6 +2285,7 @@ export function createWorldOfficeTasksController({
     physicalAction,
     prime,
     refresh,
+    refreshNow,
     setActive,
     setPersonalView,
     setRecentIssues,

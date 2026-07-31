@@ -2,7 +2,7 @@
 // Keeps the current dashboard UI, but uses the same encrypted room protocol as
 // the production chat from forkmesh-today/cloudflare_worker/public/chat.js.
 
-(() => {
+function mountForkMeshDashboardChat() {
   const ROOM_NAME = "general";
   const PUBLIC_WORLD_GENERAL_ROOM = "world-general";
   let roomPassphrase = null;
@@ -76,6 +76,11 @@
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
   const CLAUDE_SENDER_ID = "claude";
   const CODEX_SENDER_ID = "codex";
+  // The task board addresses one general bot instead of naming a vendor.
+  const ORG_BOT_SENDER_ID = "agent";
+  // "codex"/"claude" survive only so a stored selection still routes to the
+  // general bot after the per-vendor options were removed.
+  const AGENT_ASSIGNEE_VALUES = ["agent", "codex", "claude"];
   const CLAUDE_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@claude\b/i;
   const CODEX_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@codex\b/i;
   // Mainnode base host for the room WebSocket. Defaults to the origin that
@@ -89,6 +94,7 @@
   const MAX_ATTACHMENT_NAME = 180;
   const MAX_ATTACHMENT_MIME = 100;
   const MAX_SIDE_MESSAGES = 3;
+  const REACTION_EMOJI = Object.freeze(["👍", "❤️", "😂", "🎉", "👀", "🚀"]);
   const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
 
   const fullLog = document.querySelector("#fullChatMessages");
@@ -96,6 +102,7 @@
   const fullInput = document.querySelector("#fullChatInput");
   const sideInput = document.querySelector("#sideChatInput");
   const fullSend = document.querySelector("#fullChatSend");
+  const fullTaskSend = document.querySelector("#fullChatTaskSend");
   const sideSend = document.querySelector("#sideChatSend");
   const fullChannel = document.querySelector("#fullChatChannel");
   const fullRepository = document.querySelector("#fullChatRepo");
@@ -114,8 +121,114 @@
   const fullComposerStatus = document.querySelector(
     "[data-dashboard-chat-composer-status]",
   );
+  const contextChannel = document.querySelector(
+    "[data-dashboard-chat-context-channel]",
+  );
+  const contextSource = document.querySelector(
+    "[data-dashboard-chat-context-source]",
+  );
+  const contextAction = document.querySelector(
+    "[data-dashboard-chat-context-action]",
+  );
+  const simpleWorldComposer = Boolean(
+    document.querySelector("[data-world-simple-composer]"),
+  );
+  const chatScrollRail = document.querySelector(
+    "[data-dashboard-chat-scroll-rail]",
+  );
 
-  if (!fullLog && !sideLog) return;
+  if (!fullLog && !sideLog) return false;
+  if (fullLog?.dataset.forkmeshChatMounted === "true") return true;
+  if (fullLog) fullLog.dataset.forkmeshChatMounted = "true";
+
+  let pendingWorldComposerPrefill = null;
+  const seenParentNotifications = new Set();
+
+  function fileFromWorldComposerAttachment(value) {
+    if (!value || typeof value !== "object") return null;
+    const dataUrl = String(value.dataUrl || "");
+    const match = dataUrl.match(
+      /^data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=]+)$/,
+    );
+    if (!match || dataUrl.length > 700_000) return null;
+    let bytes;
+    try {
+      const decoded = atob(match[2]);
+      bytes = new Uint8Array(decoded.length);
+      for (let index = 0; index < decoded.length; index += 1) {
+        bytes[index] = decoded.charCodeAt(index);
+      }
+    } catch (_) {
+      return null;
+    }
+    const suppliedName = safeAttachmentName(value.fileName || "world-screenshot.webp");
+    return new File([bytes], suppliedName, {
+      type: safeAttachmentMime(value.fileMime || match[1]),
+    });
+  }
+
+  async function taskAttachmentMetadata(file) {
+    const attachment = {
+      name: safeAttachmentName(file?.name),
+      mime: safeAttachmentMime(file?.type),
+      size: Math.max(0, Number(file?.size) || 0),
+    };
+    if (
+      !["image/png", "image/jpeg", "image/webp"].includes(attachment.mime) ||
+      !file ||
+      attachment.size > 1024 * 1024 ||
+      typeof createImageBitmap !== "function"
+    ) {
+      return attachment;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const side = 48;
+      const canvas = document.createElement("canvas");
+      canvas.width = side;
+      canvas.height = side;
+      const context = canvas.getContext("2d");
+      const scale = Math.max(side / bitmap.width, side / bitmap.height);
+      const width = bitmap.width * scale;
+      const height = bitmap.height * scale;
+      context.drawImage(
+        bitmap,
+        (side - width) / 2,
+        (side - height) / 2,
+        width,
+        height,
+      );
+      bitmap.close?.();
+      const thumbnail = canvas.toDataURL("image/webp", 0.72);
+      if (thumbnail.length <= 10_000) attachment.thumbnail = thumbnail;
+    } catch (_) {}
+    return attachment;
+  }
+
+  function applyWorldComposerPrefill() {
+    const data = pendingWorldComposerPrefill;
+    if (!data) return false;
+    const input = fullInput || sideInput;
+    const control = attachmentControls.find(
+      (candidate) => candidate.inputEl === input,
+    );
+    if (!input || (data.attachment && !control)) return false;
+    const altText = String(data.attachment?.altText || "").slice(0, 500);
+    input.value = String(data.text || altText || "");
+    const file = fileFromWorldComposerAttachment(data.attachment);
+    if (file && control) {
+      stageDashboardAttachments(control, [file]);
+      showAttachmentFeedback(
+        control,
+        "World screenshot attached. Choose a destination, then send.",
+      );
+    }
+    pendingWorldComposerPrefill = null;
+    input.focus();
+    const caret = input.value.length;
+    input.setSelectionRange?.(caret, caret);
+    return true;
+  }
 
   // The World's ForkBot avatar and CHAT bar ask this embed (parent frame,
   // same-origin) to drop starting text into the composer — e.g. "@forkbot "
@@ -123,14 +236,42 @@
   window.addEventListener("message", (event) => {
     if (event.origin !== location.origin) return;
     const data = event.data;
-    if (!data || data.type !== "forkmesh:chat-prefill") return;
-    const input = fullInput || sideInput;
-    if (!input) return;
-    input.value = String(data.text || "");
-    input.focus();
-    const caret = input.value.length;
-    input.setSelectionRange?.(caret, caret);
+    if (!data) return;
+    if (data.type === "forkmesh:chat-notification") {
+      const id = String(data.id || "").slice(0, 96);
+      if (id && seenParentNotifications.has(id)) return;
+      const text = String(data.text || "").replace(/\s+/g, " ").trim().slice(
+        0,
+        240,
+      );
+      if (text) {
+        if (id) seenParentNotifications.add(id);
+        appendSystem(text, false);
+      }
+      return;
+    }
+    if (data.type !== "forkmesh:chat-prefill") return;
+    pendingWorldComposerPrefill = {
+      text: String(data.text || "").slice(0, MAX_TEXT),
+      attachment:
+        data.attachment && typeof data.attachment === "object"
+          ? { ...data.attachment }
+          : null,
+    };
+    applyWorldComposerPrefill();
   });
+  if (window.parent !== window) {
+    window.parent.postMessage(
+      { type: "forkmesh:chat-ready" },
+      location.origin,
+    );
+  } else if (document.querySelector("[data-world-native-chat]")) {
+    window.dispatchEvent(
+      new CustomEvent("forkmesh:world-chat-native", {
+        detail: { type: "forkmesh:chat-ready" },
+      }),
+    );
+  }
 
   const enc = new TextEncoder();
   const dec = new TextDecoder();
@@ -183,6 +324,34 @@
   let orgAgentAccessLoaded = false;
   const seen = new Set();
   const rows = new Map();
+  const HISTORY_INITIAL_MESSAGES = 5;
+  const HISTORY_BATCH_MESSAGES = 5;
+  const historyRowIds = [];
+  let historyVisibleCount = HISTORY_INITIAL_MESSAGES;
+  let historyIndicator = null;
+  let revealingHistory = false;
+  let lastFullLogScrollTop = 0;
+  let historyTouchStartY = null;
+  let historyTouchRevealed = false;
+  let historyWheelLatched = false;
+  let historyWheelResetTimer = 0;
+  let historyReplayTimer = 0;
+  let historyReplayEnvelopes = [];
+  let inboundFrameQueue = Promise.resolve();
+  const DISCORD_REFRESH_MS = 60_000;
+  const DISCORD_REFRESH_JITTER_MS = 15_000;
+  const DISCORD_MAX_ORGANIZATIONS = 3;
+  const DISCORD_MAX_CHANNELS = 5;
+  const DISCORD_MAX_INITIAL_MESSAGES = 40;
+  let discordRefreshTimer = 0;
+  let discordRefreshRunning = false;
+  let discordInitialMessagesLoaded = false;
+  let discordSources = null;
+  let discordBackoffUntil = 0;
+  let discordBackoffAttempts = 0;
+  // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
+  // the full web/Qt protocol shape so reactions converge across every client.
+  const reactions = new Map();
   const sideEntries = [];
   const attachmentControls = [];
   const attachmentUrls = new Set();
@@ -199,6 +368,7 @@
     if (recentContext.length > RECENT_CONTEXT_MAX) recentContext.shift();
   }
   const mentionProfileCache = new Map();
+  const chatAvatarCache = new Map();
   let mentionCardEl = null;
   let activeMentionAnchor = null;
   let mentionHideTimer = null;
@@ -488,6 +658,215 @@
     return isUserLikeSession(session) ? session : null;
   }
 
+  function discordRequestHeaders() {
+    const headers = new Headers({ accept: "application/json" });
+    const token = String(userSession()?.sessionToken || "").trim();
+    if (token && token !== "cookie") {
+      headers.set("authorization", `Bearer ${token}`);
+    }
+    return headers;
+  }
+
+  async function discordJson(path) {
+    const response = await fetch(path, {
+      headers: discordRequestHeaders(),
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const error = new Error(`Discord source unavailable (${response.status})`);
+      error.status = response.status;
+      const retryHeader = String(response.headers.get("retry-after") || "");
+      const retrySeconds = Number(retryHeader);
+      const retryDate = Date.parse(retryHeader);
+      const requestedDelay = Number.isFinite(retrySeconds)
+        ? Math.max(0, retrySeconds * 1000)
+        : Number.isFinite(retryDate)
+          ? Math.max(0, retryDate - Date.now())
+          : 0;
+      // Some edge/provider 429 and 503 responses omit Retry-After. Waiting
+      // only for the ordinary one-minute poll in that case repeatedly fans
+      // out across every organization and extends the rate limit.
+      if (response.status === 429 || response.status === 503) {
+        discordBackoffAttempts = Math.min(6, discordBackoffAttempts + 1);
+      }
+      const fallbackDelay =
+        response.status === 429
+          ? Math.min(
+              30 * 60_000,
+              5 * 60_000 * (2 ** (discordBackoffAttempts - 1)),
+            )
+          : response.status === 503
+            ? Math.min(
+                10 * 60_000,
+                60_000 * (2 ** (discordBackoffAttempts - 1)),
+              )
+            : 0;
+      error.retryAfterMs = Math.min(
+        3_600_000,
+        Math.max(requestedDelay, fallbackDelay),
+      );
+      if (error.retryAfterMs) {
+        discordBackoffUntil = Math.max(
+          discordBackoffUntil,
+          Date.now() + error.retryAfterMs,
+        );
+      }
+      throw error;
+    }
+    return response.json();
+  }
+
+  async function discoverDiscordSources() {
+    if (Array.isArray(discordSources)) return discordSources;
+    const catalog = await discordJson("/api/orgs");
+    const organizations = (Array.isArray(catalog?.orgs) ? catalog.orgs : [])
+      .slice(0, DISCORD_MAX_ORGANIZATIONS);
+    const sources = [];
+    // Connector discovery is deliberately sequential. A rate-limit response
+    // from the first organization must prevent more doomed requests from being
+    // launched at the same provider in the same tick.
+    for (const record of organizations) {
+      const organization = String(record?.name || "").trim();
+      if (!organization) continue;
+      try {
+        const status = await discordJson(
+          `/api/orgs/${encodeURIComponent(organization)}/discord`,
+        );
+        if (!status?.configured || status?.state !== "configured") continue;
+        const channelIds = Array.isArray(status?.connector?.channelIds)
+          ? status.connector.channelIds
+          : [];
+        const channelNames = new Map(
+          (Array.isArray(status?.channels) ? status.channels : []).map((channel) => [
+            String(channel?.id || ""),
+            String(channel?.name || ""),
+          ]),
+        );
+        sources.push(
+          ...channelIds
+            .slice(0, DISCORD_MAX_CHANNELS)
+            .map((channelId) => ({
+              organization,
+              channelId: String(channelId || ""),
+              channelName: channelNames.get(String(channelId || "")) || "",
+            }))
+            .filter((source) => source.channelId),
+        );
+      } catch (error) {
+        if (error?.status === 429 || error?.status === 503) throw error;
+        // One unavailable optional connector must not hide healthy connectors
+        // belonging to the same account.
+      }
+    }
+    discordSources = sources;
+    return discordSources;
+  }
+
+  async function refreshDiscordMessages() {
+    if (
+      discordRefreshRunning ||
+      document.visibilityState === "hidden" ||
+      Date.now() < discordBackoffUntil ||
+      !userSession()
+    ) return;
+    discordRefreshRunning = true;
+    try {
+      const sources = await discoverDiscordSources();
+      const messages = [];
+      // Discord applies rate limits across related connector routes. Fetching
+      // every channel concurrently turns one provider-wide 429 into a burst
+      // of identical failures, so read channels serially and stop immediately
+      // when the connector asks us to cool down.
+      for (const source of sources) {
+        const path =
+          `/api/orgs/${encodeURIComponent(source.organization)}` +
+          `/discord/messages?channelId=${encodeURIComponent(source.channelId)}`;
+        try {
+          const payload = await discordJson(path);
+          const channelName = String(
+            payload?.channel?.name || source.channelName || source.channelId,
+          ).trim();
+          messages.push(
+            ...(Array.isArray(payload?.messages) ? payload.messages : []).map(
+              (message) => ({
+                ...message,
+                organization: source.organization,
+                channelName,
+              }),
+            ),
+          );
+        } catch (error) {
+          if (error?.status === 429 || error?.status === 503) throw error;
+          // A missing channel is isolated; continue with the remaining
+          // configured channels without putting the whole connector on ice.
+        }
+      }
+      const orderedMessages = messages
+        .filter((message) => message?.id && String(message?.content || "").trim())
+        .sort((left, right) =>
+          Date.parse(left?.createdAt || "") - Date.parse(right?.createdAt || ""));
+      const visibleMessages = discordInitialMessagesLoaded
+        ? orderedMessages
+        : orderedMessages.slice(-DISCORD_MAX_INITIAL_MESSAGES);
+      let appended = 0;
+      for (const message of visibleMessages) {
+        if (appendDiscordMessage(message)) appended += 1;
+      }
+      discordBackoffAttempts = 0;
+      discordInitialMessagesLoaded = true;
+      if (appended) {
+        console.info("[ForkMesh chat] Discord messages refreshed", {
+          sources: sources.length,
+          appended,
+        });
+      }
+    } catch (error) {
+      // Discord is optional. Keep the encrypted room usable and retry later.
+      console.info("[ForkMesh chat] Discord refresh deferred", {
+        reason: String(error?.message || "unavailable").slice(0, 160),
+      });
+      if (!Array.isArray(discordSources) || !discordSources.length) {
+        discordSources = null;
+      }
+    } finally {
+      discordRefreshRunning = false;
+    }
+  }
+
+  function stopDiscordMessageRefresh() {
+    if (!discordRefreshTimer) return;
+    clearTimeout(discordRefreshTimer);
+    discordRefreshTimer = 0;
+  }
+
+  function scheduleDiscordMessageRefresh() {
+    stopDiscordMessageRefresh();
+    if (document.visibilityState === "hidden" || !userSession()) return;
+    const backoff = Math.max(0, discordBackoffUntil - Date.now());
+    const jitter = Math.floor(Math.random() * DISCORD_REFRESH_JITTER_MS);
+    discordRefreshTimer = window.setTimeout(async () => {
+      discordRefreshTimer = 0;
+      await refreshDiscordMessages();
+      scheduleDiscordMessageRefresh();
+    }, Math.max(DISCORD_REFRESH_MS + jitter, backoff));
+  }
+
+  function startDiscordMessageRefresh() {
+    stopDiscordMessageRefresh();
+    if (document.visibilityState === "hidden" || !userSession()) return;
+    void refreshDiscordMessages();
+    scheduleDiscordMessageRefresh();
+  }
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      stopDiscordMessageRefresh();
+      return;
+    }
+    startDiscordMessageRefresh();
+  });
+
   function canJoinChat() {
     return PUBLIC_WORLD_GENERAL || Boolean(userSession());
   }
@@ -496,7 +875,9 @@
     const names = [sender, senderId].map((value) =>
       String(value || "").trim().toLowerCase());
     return names.some((name) =>
-      name === CLAUDE_SENDER_ID || name === CODEX_SENDER_ID);
+      name === CLAUDE_SENDER_ID ||
+      name === CODEX_SENDER_ID ||
+      name === ORG_BOT_SENDER_ID);
   }
 
   function chatAccountKind() {
@@ -995,8 +1376,65 @@
     });
   }
 
-  function avatarLetter(handle) {
-    return escapeHtml((handle || "?").slice(0, 1).toUpperCase());
+  function generatedChatFace(handle) {
+    const faces = ["🙂", "😄", "😊", "🤓", "🧐", "😎", "😁", "🤠"];
+    let hash = 2166136261;
+    for (const char of String(handle || "guest").toLowerCase()) {
+      hash ^= char.charCodeAt(0);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return faces[hash % faces.length];
+  }
+
+  function publicChatAvatar(handle) {
+    const name = String(handle || "").trim().toLowerCase();
+    const session = userSession();
+    if (
+      session?.nodeName?.toLowerCase() === name &&
+      String(session.avatarPng || "").length
+    ) {
+      return Promise.resolve(String(session.avatarPng));
+    }
+    if (!/^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(name)) {
+      return Promise.resolve("");
+    }
+    if (chatAvatarCache.has(name)) return chatAvatarCache.get(name);
+    const pending = fetch(`/api/accounts/${encodeURIComponent(name)}`, {
+      headers: { accept: "application/json" },
+    })
+      .then((response) => (response.ok ? response.json() : null))
+      .then((profile) => {
+        const avatar = String(profile?.avatarPng || "");
+        return (
+          profile?.exists === true &&
+          profile?.profilePrivate !== true &&
+          avatar.length <= 350_000 &&
+          /^[A-Za-z0-9+/=]+$/.test(avatar)
+        )
+          ? avatar
+          : "";
+      })
+      .catch(() => "");
+    chatAvatarCache.set(name, pending);
+    return pending;
+  }
+
+  function hydrateChatAvatar(avatar, handle) {
+    if (!avatar) return;
+    const name = String(handle || "guest").trim() || "guest";
+    avatar.textContent =
+      ["forkbot", "claude", "codex"].includes(name.toLowerCase())
+        ? "🤖"
+        : generatedChatFace(name);
+    avatar.setAttribute("aria-label", `${name} avatar`);
+    void publicChatAvatar(name).then((avatarPng) => {
+      if (!avatar.isConnected || !avatarPng) return;
+      const image = document.createElement("img");
+      image.src = `data:image/png;base64,${avatarPng}`;
+      image.alt = "";
+      image.className = "h-full w-full rounded-full object-cover";
+      avatar.replaceChildren(image);
+    });
   }
 
   function fmtChatTime(tsMs) {
@@ -1011,8 +1449,8 @@
     if (!imagePreviewDialog) {
       imagePreviewDialog = document.createElement("dialog");
       imagePreviewDialog.id = "dashboard-chat-image-preview-dialog";
-      imagePreviewDialog.className = "max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-background p-3 shadow-2xl";
-      imagePreviewDialog.innerHTML = '<button type="button" class="absolute right-0 top-0 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-xl leading-none text-foreground" aria-label="Close image preview">×</button><img class="max-h-[calc(100vh-1.5rem)] max-w-full object-contain" />';
+      imagePreviewDialog.className = "chat-image-preview-dialog max-h-[calc(100vh-1.5rem)] max-w-[calc(100vw-2rem)] rounded-xl border border-border bg-background p-3 shadow-2xl";
+      imagePreviewDialog.innerHTML = '<button type="button" class="absolute right-0 top-0 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border bg-background text-xl leading-none text-foreground" aria-label="Close image preview">×</button><img class="chat-image-preview-full max-h-[calc(100vh-1.5rem)] max-w-full object-contain" />';
       imagePreviewDialog.querySelector("button").addEventListener("click", () => imagePreviewDialog.close());
       imagePreviewDialog.addEventListener("click", (event) => {
         if (event.target === imagePreviewDialog) imagePreviewDialog.close();
@@ -1029,10 +1467,13 @@
     if (!attachment) return null;
     const objectUrl = attachmentObjectUrl(attachment);
     const wrapper = document.createElement("div");
-    wrapper.className = compact ? "mt-1 grid gap-1.5" : "mt-2 grid max-w-md gap-2";
+    wrapper.className = "chat-attachment-wrapper";
+    wrapper.className += compact
+      ? " chat-attachment-wrapper--compact mt-1 grid gap-1.5"
+      : " mt-2 grid max-w-md gap-2";
     if (attachment.fileMime.startsWith("image/")) {
       const preview = document.createElement("div");
-      preview.className = "relative w-fit max-w-full";
+      preview.className = "chat-attachment-preview relative w-fit max-w-full";
       const image = document.createElement("img");
       image.className = "chat-attachment-image";
       image.className += compact
@@ -1041,7 +1482,9 @@
       image.src = objectUrl;
       image.alt = attachment.fileName;
       image.loading = "lazy";
-      image.style.minWidth = compact ? "72px" : "96px";
+      image.style.minWidth = compact
+        ? "min(72px, 100%)"
+        : "min(96px, 100%)";
       image.style.minHeight = compact ? "54px" : "72px";
       image.tabIndex = 0;
       image.setAttribute("role", "button");
@@ -1058,7 +1501,7 @@
       download.download = attachment.fileName;
       download.setAttribute("aria-label", `Download ${attachment.fileName}`);
       download.title = `Download ${attachment.fileName}`;
-      download.className = "absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background/90 text-muted-foreground shadow-sm hover:text-foreground";
+      download.className = "chat-attachment-download absolute bottom-2 right-2 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border bg-background/90 text-muted-foreground shadow-sm hover:text-foreground";
       download.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 21h14"></path></svg>';
       preview.append(image, download);
       wrapper.append(preview);
@@ -1090,44 +1533,218 @@
     return wrapper;
   }
 
-  function appendFullMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
-    if (!fullLog) return;
+  function ensureHistoryIndicator() {
+    if (!fullLog) return null;
+    if (historyIndicator?.isConnected) return historyIndicator;
+    historyIndicator = document.createElement("button");
+    historyIndicator.type = "button";
+    historyIndicator.className = "chat-history-indicator";
+    historyIndicator.setAttribute("aria-live", "polite");
+    historyIndicator.addEventListener("click", () => revealOlderHistory());
+    if (simpleWorldComposer) fullLog.append(historyIndicator);
+    else fullLog.prepend(historyIndicator);
+    return historyIndicator;
+  }
+
+  function currentHistoryRows() {
+    const records = historyRowIds
+      .map((id) => rows.get(id))
+      .filter(Boolean);
+    return simpleWorldComposer
+      ? records.sort((left, right) => right.tsMs - left.tsMs)
+      : records;
+  }
+
+  function insertHistoryRow(record) {
+    if (!fullLog || !record?.el) return;
+    const index = historyRowIds.indexOf(record.id);
+    for (let offset = index + 1; offset < historyRowIds.length; offset += 1) {
+      const next = rows.get(historyRowIds[offset]);
+      if (next?.el?.isConnected) {
+        fullLog.insertBefore(record.el, next.el);
+        return;
+      }
+    }
+    const firstLive = fullLog.querySelector(
+      ".chat-message-row:not([data-chat-history])",
+    );
+    if (firstLive) fullLog.insertBefore(record.el, firstLive);
+    else fullLog.append(record.el);
+  }
+
+  function materializeFullMessage(record) {
+    if (!fullLog || !record || record.el?.isConnected) return record?.el || null;
     clearEmptyState();
-    const self = kind === "self";
     const row = document.createElement("div");
-    row.className = "flex items-start gap-3 group rounded-lg px-2 py-1 hover:bg-secondary/40 transition-colors mt-3";
+    row.className =
+      `chat-message-row chat-message-row--${record.self ? "self" : "peer"} ` +
+      "flex items-start gap-3 group px-2 py-1 transition-colors mt-3";
+    if (record.history) row.dataset.chatHistory = "";
     row.innerHTML = `
-      <span class="avatar flex h-7 w-7 shrink-0 items-center justify-center rounded-full border font-mono text-[11px] font-semibold ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}">${avatarLetter(who)}</span>
-      <div class="min-w-0 flex-1">
+      <span class="chat-message-avatar avatar flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-full border text-base ${record.self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}"></span>
+      <div class="chat-message-bubble min-w-0 flex-1">
         <div class="mb-0.5 flex items-baseline gap-2">
-          <span class="text-xs font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(who)}</span>
-          <span class="text-[10px] text-muted-foreground/50 font-mono">${escapeHtml(fmtChatTime(tsMs))}</span>
+          <span class="text-xs font-semibold ${record.self ? "text-primary" : "text-foreground"}">${escapeHtml(record.who)}</span>
+          <span class="text-[10px] text-muted-foreground/50 font-mono">${escapeHtml(fmtChatTime(record.tsMs))}</span>
         </div>
         <p class="text-sm text-muted-foreground leading-relaxed break-words"></p>
       </div>`;
+    const avatarEl = row.querySelector(".chat-message-avatar");
+    if (record.external && record.avatarUrl) {
+      const image = document.createElement("img");
+      image.src = record.avatarUrl;
+      image.alt = "";
+      image.referrerPolicy = "no-referrer";
+      image.className = "h-full w-full rounded-full object-cover";
+      avatarEl.replaceChildren(image);
+      avatarEl.setAttribute("aria-label", `${record.who} Discord avatar`);
+    } else if (record.external) {
+      avatarEl.textContent = "D";
+      avatarEl.setAttribute("aria-label", `${record.who} Discord avatar`);
+    } else {
+      hydrateChatAvatar(avatarEl, record.who);
+    }
+    if (record.sourceLabel) {
+      const source = document.createElement("span");
+      source.className =
+        "chat-message-source rounded-full border border-border px-1.5 py-0.5 " +
+        "text-[9px] font-semibold text-muted-foreground";
+      source.textContent = record.sourceLabel;
+      row.querySelector(".items-baseline")?.append(source);
+    }
     const textEl = row.querySelector("p");
     if (textEl) {
-      if (text) appendMentionText(textEl, text);
+      if (record.text) appendMentionText(textEl, record.text);
       else textEl.remove();
     }
     const content = row.querySelector(".min-w-0.flex-1");
-    const renderedAttachment = renderAttachment(attachment);
+    const renderedAttachment = renderAttachment(record.attachment);
     if (content && renderedAttachment) content.append(renderedAttachment);
-    fullLog.append(row);
-    fullLog.scrollTop = fullLog.scrollHeight;
-    if (!id) return;
+    const reactionsEl = document.createElement("div");
+    reactionsEl.className = "chat-reactions";
+    content?.append(reactionsEl);
+    record.el = row;
+    record.avatarEl = avatarEl;
+    record.textEl = textEl?.parentNode ? textEl : null;
+    record.contentEl = content;
+    record.reactionsEl = reactionsEl;
+    if (record.history && !simpleWorldComposer) {
+      insertHistoryRow(record);
+    } else if (simpleWorldComposer) {
+      const next = Array.from(fullLog.querySelectorAll(".chat-message-row"))
+        .find((candidate) =>
+          Number(candidate.dataset.chatTimestamp || 0) <= record.tsMs);
+      row.dataset.chatTimestamp = String(record.tsMs);
+      fullLog.insertBefore(row, next || historyIndicator || null);
+    } else {
+      fullLog.append(row);
+    }
+    if (record.id && !record.external) {
+      content?.append(buildMessageActions(record));
+      renderReactions(record.id);
+      if (record.editedAt) markEdited(record, record.editedAt);
+    }
+    return row;
+  }
+
+  function renderHistoryWindow({ preserveScroll = false } = {}) {
+    if (!fullLog) return;
+    const records = currentHistoryRows();
+    if (!records.length) {
+      historyIndicator?.remove();
+      historyIndicator = null;
+      ensureEmptyState();
+      syncChatScrollThumb();
+      return;
+    }
+    clearEmptyState();
+    const previousHeight = fullLog.scrollHeight;
+    const visibleCount = Math.min(historyVisibleCount, records.length);
+    const hiddenCount = Math.max(0, records.length - visibleCount);
+    ensureHistoryIndicator();
+    records.forEach((record, index) => {
+      const visible = simpleWorldComposer
+        ? index < visibleCount
+        : index >= hiddenCount;
+      if (visible) materializeFullMessage(record);
+      if (record.el) record.el.hidden = !visible;
+    });
+    const indicator = ensureHistoryIndicator();
+    indicator.dataset.complete = hiddenCount ? "false" : "true";
+    indicator.disabled = hiddenCount <= 0;
+    indicator.textContent = hiddenCount
+      ? `${simpleWorldComposer ? "↓" : "↑"} ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · ${simpleWorldComposer ? "open" : "scroll up"} to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
+      : "Beginning of conversation";
+    if (preserveScroll) {
+      fullLog.scrollTop += Math.max(0, fullLog.scrollHeight - previousHeight);
+    } else {
+      fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
+    }
+    lastFullLogScrollTop = fullLog.scrollTop;
+    syncChatScrollThumb();
+  }
+
+  function revealOlderHistory() {
+    if (revealingHistory || !fullLog) return;
+    const records = currentHistoryRows();
+    if (historyVisibleCount >= records.length) return;
+    revealingHistory = true;
+    historyVisibleCount = Math.min(
+      records.length,
+      historyVisibleCount + HISTORY_BATCH_MESSAGES,
+    );
+    renderHistoryWindow({ preserveScroll: true });
+    requestAnimationFrame(() => {
+      revealingHistory = false;
+    });
+  }
+
+  function hasHiddenHistory() {
+    return historyVisibleCount < currentHistoryRows().length;
+  }
+
+  function scheduleHistoryWheelReset() {
+    if (historyWheelResetTimer) clearTimeout(historyWheelResetTimer);
+    historyWheelResetTimer = window.setTimeout(() => {
+      historyWheelResetTimer = 0;
+      historyWheelLatched = false;
+    }, 180);
+  }
+
+  function appendFullMessage(
+    kind,
+    who,
+    text,
+    id,
+    senderId,
+    tsMs,
+    attachment = null,
+    deferHistory = false,
+    metadata = null,
+  ) {
+    if (!fullLog) return;
+    const self = kind === "self";
     const record = {
       id,
-      el: row,
+      el: null,
+      who,
+      tsMs: Number(tsMs) || Date.now(),
       senderId: senderId || "",
-      textEl,
-      contentEl: content,
       attachment,
       text: text || "",
       self,
+      history: Boolean(deferHistory),
+      external: Boolean(metadata?.external),
+      sourceLabel: String(metadata?.sourceLabel || ""),
+      avatarUrl: String(metadata?.avatarUrl || ""),
     };
-    rows.set(id, record);
-    if (self && senderId === selfId) row.append(buildMessageActions(record));
+    if (id) rows.set(id, record);
+    if (deferHistory && id) {
+      historyRowIds.push(id);
+      return;
+    }
+    materializeFullMessage(record);
+    fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
   }
 
   // ---- edit / delete own messages ----------------------------------------
@@ -1156,14 +1773,135 @@
     // dashboard shell stylesheet (Tailwind's group-hover variant is not in the
     // pre-built dashboard/tailwind.css, so the reveal is hand-written CSS).
     actions.className = "chat-message-actions ml-auto flex shrink-0 items-center gap-1";
-    if (record.text) {
-      actions.append(messageActionButton("Edit", () => beginMessageEdit(record)));
-    }
     actions.append(
-      messageActionButton("Delete", () => requestMessageDelete(record), { danger: true })
+      messageActionButton("☺", (event) =>
+        showReactionPicker(record, event.currentTarget), {
+        ariaLabel: "Add reaction",
+      }),
     );
+    if (record.self && record.senderId === selfId) {
+      if (record.text) {
+        actions.append(messageActionButton("Edit", () => beginMessageEdit(record)));
+      }
+      actions.append(
+        messageActionButton("Delete", () => requestMessageDelete(record), { danger: true })
+      );
+    }
     record.actionsEl = actions;
     return actions;
+  }
+
+  let activeReactionPicker = null;
+
+  function reactionKey(plain) {
+    return String(plain.reactorId || plain.senderId || "");
+  }
+
+  function applyReaction(plain) {
+    const target = String(plain.target || "");
+    const emoji = String(plain.emoji || "").slice(0, 8);
+    const reactor = reactionKey(plain);
+    if (!target || !emoji || !reactor) return;
+    const perMessage = reactions.get(target) || new Map();
+    reactions.set(target, perMessage);
+    const perEmoji = perMessage.get(emoji) || new Map();
+    perMessage.set(emoji, perEmoji);
+    if (plain.added) {
+      perEmoji.set(
+        reactor,
+        String(plain.reactorName || plain.sender || "peer").slice(0, MAX_NAME),
+      );
+    } else {
+      perEmoji.delete(reactor);
+    }
+    if (!perEmoji.size) perMessage.delete(emoji);
+    if (!perMessage.size) reactions.delete(target);
+    renderReactions(target);
+  }
+
+  function renderReactions(messageId) {
+    const record = rows.get(messageId);
+    if (!record?.reactionsEl) return;
+    record.reactionsEl.textContent = "";
+    const perMessage = reactions.get(messageId);
+    if (!perMessage) return;
+    for (const [emoji, reactors] of perMessage) {
+      if (!reactors.size) continue;
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className =
+        "chat-reaction-chip" + (reactors.has(selfId) ? " is-mine" : "");
+      chip.title = [...reactors.values()].join(", ");
+      chip.setAttribute(
+        "aria-label",
+        `${emoji} reaction from ${reactors.size} ${
+          reactors.size === 1 ? "person" : "people"
+        }`,
+      );
+      const face = document.createElement("span");
+      face.textContent = emoji;
+      const count = document.createElement("span");
+      count.className = "chat-reaction-count";
+      count.textContent = String(reactors.size);
+      chip.append(face, count);
+      chip.addEventListener("click", () => toggleReaction(messageId, emoji));
+      record.reactionsEl.append(chip);
+    }
+  }
+
+  function toggleReaction(messageId, emoji) {
+    if (!canJoinChat()) {
+      showUserOnlyState();
+      return;
+    }
+    const mine = Boolean(reactions.get(messageId)?.get(emoji)?.has(selfId));
+    const plain = makePlain("reaction", {
+      conversation: CHANNEL_LABEL,
+      target: messageId,
+      emoji,
+      reactorId: selfId,
+      reactorName: displayName(),
+      added: !mine,
+    });
+    seen.add(plain.id);
+    applyReaction(plain);
+    runWhenConnected(() => send(plain));
+  }
+
+  function closeReactionPicker({ restoreFocus = false } = {}) {
+    if (!activeReactionPicker) return;
+    const { element, trigger } = activeReactionPicker;
+    element.remove();
+    activeReactionPicker = null;
+    if (restoreFocus) trigger?.focus();
+  }
+
+  function showReactionPicker(record, trigger) {
+    if (!record?.id || !record.contentEl) return;
+    closeReactionPicker();
+    const picker = document.createElement("div");
+    picker.className = "chat-reaction-picker";
+    picker.setAttribute("role", "toolbar");
+    picker.setAttribute("aria-label", "Choose a reaction");
+    REACTION_EMOJI.forEach((emoji) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = emoji;
+      button.setAttribute("aria-label", `React with ${emoji}`);
+      button.addEventListener("click", () => {
+        toggleReaction(record.id, emoji);
+        closeReactionPicker();
+      });
+      picker.append(button);
+    });
+    picker.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      closeReactionPicker({ restoreFocus: true });
+    });
+    record.contentEl.append(picker);
+    activeReactionPicker = { element: picker, trigger };
+    picker.querySelector("button")?.focus();
   }
 
   // An "(edited)" marker so a rewritten message never silently replaces what
@@ -1312,7 +2050,7 @@
       const row = document.createElement("div");
       row.className = "flex items-start gap-2 px-1 py-1 rounded-md hover:bg-secondary/40 transition-colors mt-2";
       row.innerHTML = `
-        <span class="avatar flex h-6 w-6 shrink-0 items-center justify-center rounded-full border font-mono text-[10px] font-semibold ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}">${avatarLetter(message.who)}</span>
+        <span class="chat-message-avatar avatar flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-full border text-sm ${self ? "border-primary/40 bg-primary/10 text-primary" : "border-border bg-secondary text-foreground"}"></span>
         <div class="min-w-0 flex-1">
           <div class="flex items-baseline gap-1.5">
             <span class="text-[11px] font-semibold ${self ? "text-primary" : "text-foreground"}">${escapeHtml(message.who)}</span>
@@ -1320,6 +2058,13 @@
           </div>
           <p class="text-xs text-muted-foreground leading-relaxed break-words"></p>
         </div>`;
+      const avatar = row.querySelector(".chat-message-avatar");
+      if (message.external) {
+        avatar.textContent = "D";
+        avatar.setAttribute("aria-label", "Discord");
+      } else {
+        hydrateChatAvatar(row.querySelector(".chat-message-avatar"), message.who);
+      }
       const textEl = row.querySelector("p");
       if (textEl) {
         if (message.text) appendMentionText(textEl, message.text);
@@ -1336,7 +2081,17 @@
     bottom.scrollIntoView({ behavior: "smooth" });
   }
 
-  function appendSideMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+  function appendSideMessage(
+    kind,
+    who,
+    text,
+    id,
+    senderId,
+    tsMs,
+    attachment = null,
+    deferRender = false,
+    metadata = null,
+  ) {
     // Insert in timestamp order (append is the common case) so the newest
     // message is always the bottom row even when retained history replays
     // after live messages have already landed.
@@ -1348,33 +2103,114 @@
       senderId,
       tsMs: Number(tsMs) || Date.now(),
       attachment,
+      external: Boolean(metadata?.external),
+      sourceLabel: String(metadata?.sourceLabel || ""),
     };
     let index = sideEntries.length;
     while (index > 0 && Number(sideEntries[index - 1].tsMs) > entry.tsMs) index -= 1;
     sideEntries.splice(index, 0, entry);
-    renderSideMessages();
+    if (!deferRender) renderSideMessages();
   }
 
-  function appendMessage(kind, who, text, id, senderId, tsMs, attachment = null) {
+  function appendMessage(
+    kind,
+    who,
+    text,
+    id,
+    senderId,
+    tsMs,
+    attachment = null,
+    deferHistory = false,
+  ) {
     if (orgAgentIdentity(who, senderId) && !orgAgentEngineeringAccess) return;
-    appendFullMessage(kind, who, text, id, senderId, tsMs, attachment);
-    appendSideMessage(kind, who, text, id, senderId, tsMs, attachment);
+    const channelMetadata = {
+      sourceLabel: CHANNEL.startsWith("#") ? CHANNEL : `#${CHANNEL}`,
+    };
+    appendFullMessage(
+      kind,
+      who,
+      text,
+      id,
+      senderId,
+      tsMs,
+      attachment,
+      deferHistory,
+      channelMetadata,
+    );
+    appendSideMessage(
+      kind,
+      who,
+      text,
+      id,
+      senderId,
+      tsMs,
+      attachment,
+      deferHistory,
+      channelMetadata,
+    );
     rememberContext(who, text);
   }
 
-  function appendSystem(text) {
+  function appendDiscordMessage(message) {
+    const organization = String(message?.organization || "").trim();
+    const channelId = String(message?.channelId || "").trim();
+    const channelName = String(message?.channelName || message?.channelId || "")
+      .trim();
+    const providerId = String(message?.id || "").trim();
+    if (!organization || !channelId || !channelName || !providerId) return false;
+    const id = `discord:${organization}:${channelId}:${providerId}`;
+    if (rows.has(id)) return false;
+    const projectedName = String(message?.author?.name || "").trim();
+    const who = projectedName && !/^\d{5,}$/.test(projectedName)
+      ? projectedName
+      : "Discord member";
+    const text = String(message?.content || "").trim();
+    if (!text) return false;
+    const parsedTime = Date.parse(String(message?.createdAt || ""));
+    const tsMs = Number.isFinite(parsedTime) ? parsedTime : Date.now();
+    const metadata = {
+      external: true,
+      sourceLabel: `Discord · ${organization} · #${channelName}`,
+      avatarUrl: /^https:\/\/cdn\.discordapp\.com\/(?:avatars\/\d{17,20}\/[A-Za-z0-9_-]{2,128}\.(?:png|webp)(?:\?size=64)?|embed\/avatars\/[0-5]\.png)$/.test(
+        String(message?.author?.avatarUrl || ""),
+      )
+        ? String(message.author.avatarUrl)
+        : "",
+    };
+    appendFullMessage(
+      "peer", who, text, id, `discord:${providerId}`, tsMs, null, false, metadata,
+    );
+    appendSideMessage(
+      "peer", who, text, id, `discord:${providerId}`, tsMs, null, false, metadata,
+    );
+    // Provider text is display-only. It never enters ForkBot's prompt context
+    // unless a person explicitly quotes it into a ForkMesh message.
+    return true;
+  }
+
+  function appendSystem(text, emit = true) {
     if (fullLog) {
       clearEmptyState();
       const row = document.createElement("div");
-      row.className = "my-2 rounded-md border border-border bg-background px-3 py-2 text-xs text-muted-foreground";
+      row.className = "chat-system-bubble my-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground";
       row.textContent = text;
-      fullLog.append(row);
-      fullLog.scrollTop = fullLog.scrollHeight;
+      if (simpleWorldComposer) {
+        fullLog.prepend(row);
+        fullLog.scrollTop = 0;
+      } else {
+        fullLog.append(row);
+        fullLog.scrollTop = fullLog.scrollHeight;
+      }
     }
+    if (emit) emitWorldActivity(text, "status");
   }
 
-  function removeMessage(id) {
+  function removeMessage(id, { deferRender = false } = {}) {
     const rec = rows.get(id);
+    if (activeReactionPicker?.element && rec?.el?.contains(
+        activeReactionPicker.element)) {
+      closeReactionPicker();
+    }
     if (rec?.el?.parentNode) rec.el.parentNode.removeChild(rec.el);
     if (rec?.attachment) releaseAttachment(rec.attachment);
     rows.delete(id);
@@ -1383,7 +2219,15 @@
       releaseAttachment(sideEntries[idx].attachment);
     }
     if (idx >= 0) sideEntries.splice(idx, 1);
-    renderSideMessages();
+    const historyIndex = historyRowIds.indexOf(id);
+    if (historyIndex >= 0) historyRowIds.splice(historyIndex, 1);
+    reactions.delete(id);
+    if (!deferRender) {
+      renderSideMessages();
+      if (historyIndex >= 0) {
+        renderHistoryWindow({ preserveScroll: true });
+      }
+    }
   }
 
   function makePlain(type, extra) {
@@ -1414,8 +2258,26 @@
   // marked so the parent updates only its collapsed CHAT bar with the most
   // recent line — reconnects never resurrect old bubbles.
   const WORLD_EMBED_BUBBLES =
-    requestedParams.get("worldEmbed") === "1" && window.parent !== window;
+    requestedParams.get("worldEmbed") === "1" ||
+    Boolean(document.querySelector("[data-world-native-chat]"));
   const worldAttachmentPreviewCache = new WeakMap();
+
+  function emitWorldActivity(text, kind = "status") {
+    if (!WORLD_EMBED_BUBBLES) return;
+    const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 240);
+    if (!message) return;
+    try {
+      window.parent.postMessage(
+        {
+          type: "forkmesh:world-activity",
+          kind: String(kind || "status").slice(0, 24),
+          text: message,
+          ts: Date.now(),
+        },
+        location.origin,
+      );
+    } catch (_) {}
+  }
 
   function worldAttachmentPreview(attachment) {
     if (
@@ -1504,23 +2366,31 @@
         };
     const post = (attachmentPreview = "") => {
       try {
-        window.parent.postMessage(
-          { ...payload, attachmentPreview },
-          location.origin,
-        );
+        if (window.parent !== window) {
+          window.parent.postMessage(
+            { ...payload, attachmentPreview },
+            location.origin,
+          );
+        } else {
+          window.dispatchEvent(
+            new CustomEvent("forkmesh:world-chat-native", {
+              detail: { ...payload, attachmentPreview },
+            }),
+          );
+        }
       } catch (_) {}
     };
     post();
-    if (meta?.attachment) {
+    if (meta?.attachment && !history) {
       void worldAttachmentPreview(meta.attachment).then((preview) => {
         if (preview) post(preview);
       });
     }
   }
 
-  // Replayed entries can arrive out of order. Forward each bounded record so
-  // the physical World board can sort the recent backlog; the parent updates
-  // its collapsed CHAT label only when the timestamp is newer.
+  // Replayed entries can arrive out of order. Keep their newest surviving
+  // record for the physical World board; mutations are applied before this is
+  // emitted, so an edited/deleted latest line never leaks as stale activity.
   let newestHistoryTs = 0;
   function emitWorldChatHistory(entry) {
     if (!WORLD_EMBED_BUBBLES) return;
@@ -1533,6 +2403,27 @@
       true,
       entry,
     );
+  }
+
+  function emitNewestWorldChatHistory() {
+    const record = currentHistoryRows().reduce((newest, candidate) => {
+      if (!newest || Number(candidate.tsMs) >= Number(newest.tsMs)) {
+        return candidate;
+      }
+      return newest;
+    }, null);
+    if (!record) return;
+    const reactionCount = [...(reactions.get(record.id)?.values() || [])]
+      .reduce((count, reactors) => count + reactors.size, 0);
+    emitWorldChatHistory({
+      id: record.id,
+      sender: record.who,
+      senderId: record.senderId,
+      text: record.text,
+      ts: record.tsMs,
+      attachment: record.attachment,
+      reactionCount,
+    });
   }
 
   function allowedChatAccountKind(value) {
@@ -1570,22 +2461,20 @@
     if (entry.senderId !== selfId) {
       rememberMentionPerson(who, live ? Date.now() : Number(entry.ts) || 0);
     }
-    appendMessage(kind, who, text, entry.id, entry.senderId,
-                  Number(entry.ts) || Date.now(), attachment);
+    appendMessage(
+      kind,
+      who,
+      text,
+      entry.id,
+      entry.senderId,
+      Number(entry.ts) || Date.now(),
+      attachment,
+      !live,
+    );
     if (live) {
       newestHistoryTs = Math.max(newestHistoryTs, Number(entry.ts) || 0);
       emitWorldChatBubble(who, entry.senderId, text, false, {
         id: entry.id,
-        ts: entry.ts,
-        attachment,
-        reactionCount: entry.reactionCount,
-      });
-    } else {
-      emitWorldChatHistory({
-        id: entry.id,
-        sender: who,
-        senderId: entry.senderId,
-        text,
         ts: entry.ts,
         attachment,
         reactionCount: entry.reactionCount,
@@ -1619,7 +2508,13 @@
     }
   }
 
-  function handlePlain(plain) {
+  function finishHistoryReplay() {
+    renderHistoryWindow();
+    renderSideMessages();
+    emitNewestWorldChatHistory();
+  }
+
+  function handlePlain(plain, historyReplay = false) {
     const type = plain.type;
     // Mirror-mesh signals ride the same encrypted room as chat: a source node
     // broadcasts "mirror-update" the instant its repo advances from the source
@@ -1647,34 +2542,56 @@
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
     // "hello"/"presence" frames are the only sign of someone who is here but
     // has not typed yet; keep them in the mention list too.
-    if (plain.senderId !== selfId) rememberMentionPerson(sender, Date.now());
+    if (plain.senderId !== selfId) {
+      rememberMentionPerson(
+        sender,
+        historyReplay ? Number(plain.ts) || 0 : Date.now(),
+      );
+    }
     if (type === "chat") {
-      if (plain.channel === CHANNEL) renderChatEntry(plain, "peer", true);
+      if (plain.channel === CHANNEL) {
+        renderChatEntry(plain, "peer", !historyReplay);
+      }
     } else if (type === "history") {
-      for (const entry of plain.entries || []) {
+      const entries = Array.isArray(plain.entries) ? plain.entries : [];
+      for (const entry of entries) {
         if (
           entry &&
+          (!entry.type || entry.type === "chat") &&
           entry.channel === CHANNEL &&
           (entry.channel || entry.text || entry.fileName)
         ) {
           renderChatEntry(entry, "peer");
         }
       }
+      for (const entry of entries) {
+        if (entry?.type && entry.type !== "chat") {
+          handlePlain(entry, true);
+        }
+      }
+      if (!historyReplay) finishHistoryReplay();
+    } else if (type === "reaction") {
+      if (once(plain.id)) applyReaction(plain);
     } else if (type === "edit") {
       const rec = rows.get(plain.target);
-      if (rec && rec.senderId === plain.senderId && rec.textEl) {
+      if (rec && rec.senderId === plain.senderId) {
         rec.text = plain.text || "";
-        renderMessageText(rec.textEl, rec.text);
-        markEdited(rec, plain.editedAt || plain.ts);
+        rec.editedAt = plain.editedAt || plain.ts;
+        if (rec.textEl) {
+          renderMessageText(rec.textEl, rec.text);
+          markEdited(rec, rec.editedAt);
+        }
         const sideEntry = sideEntries.find((entry) => entry.id === plain.target);
         if (sideEntry) {
           sideEntry.text = plain.text || "";
-          renderSideMessages();
+          if (!historyReplay) renderSideMessages();
         }
       }
     } else if (type === "delete") {
       const rec = rows.get(plain.target);
-      if (rec && rec.senderId === plain.senderId) removeMessage(plain.target);
+      if (rec && rec.senderId === plain.senderId) {
+        removeMessage(plain.target, { deferRender: historyReplay });
+      }
     } else if (type === "admin-delete") {
       verifyAdminDelete(plain).then((ok) => {
         if (!ok) return;
@@ -1689,17 +2606,68 @@
     }
   }
 
-  async function onFrame(event) {
-    if (typeof event.data !== "string") return;
+  async function flushHistoryReplay() {
+    if (historyReplayTimer) {
+      clearTimeout(historyReplayTimer);
+      historyReplayTimer = 0;
+    }
+    const envelopes = historyReplayEnvelopes;
+    historyReplayEnvelopes = [];
+    if (!envelopes.length) {
+      finishHistoryReplay();
+      return;
+    }
+    const frames = await Promise.all(envelopes.map(decryptObject));
+    const decoded = frames.filter(Boolean);
+    // D1 ties frames stored in the same millisecond by opaque cipher hash, so
+    // an edit/delete can replay before its original chat. Register every chat
+    // record first, then apply mutations in the received order.
+    for (const plain of decoded) {
+      if (plain.type === "chat") handlePlain(plain, true);
+    }
+    for (const plain of decoded) {
+      if (plain.type !== "chat") handlePlain(plain, true);
+    }
+    finishHistoryReplay();
+  }
+
+  function scheduleHistoryReplayFallback() {
+    if (historyReplayTimer) clearTimeout(historyReplayTimer);
+    historyReplayTimer = window.setTimeout(() => {
+      historyReplayTimer = 0;
+      inboundFrameQueue = inboundFrameQueue
+        .then(() => flushHistoryReplay())
+        .catch(() => {});
+    }, 180);
+  }
+
+  async function processFrameData(data) {
+    if (typeof data !== "string") return;
     let envelope;
     try {
-      envelope = JSON.parse(event.data);
+      envelope = JSON.parse(data);
     } catch (_) {
+      return;
+    }
+    if (envelope?.kind === "forkmesh-history-end") {
+      await flushHistoryReplay();
+      return;
+    }
+    if (envelope?.historyReplay === true) {
+      historyReplayEnvelopes.push(envelope);
+      scheduleHistoryReplayFallback();
       return;
     }
     const plain = await decryptObject(envelope);
     if (!plain) return;
     handlePlain(plain);
+  }
+
+  async function onFrame(event) {
+    const data = event.data;
+    const queued = inboundFrameQueue.then(() => processFrameData(data));
+    inboundFrameQueue = queued.catch(() => {});
+    await queued;
   }
 
   // Durable message types the relay should retain (still encrypted) and replay
@@ -1929,14 +2897,11 @@
         ? "codex"
         : "";
     if (!provider) return false;
-    const session = userSession();
-    if (!session || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
-      appendSystem(
-        `Only Engineering team members can use @${provider === "codex" ? "codex" : "claude"}.`,
-      );
+    const botName = provider === "codex" ? CODEX_SENDER_ID : CLAUDE_SENDER_ID;
+    if (!userSession() || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
+      appendSystem(`Only Engineering team members can use @${botName}.`);
       return false;
     }
-    const botName = provider === "codex" ? CODEX_SENDER_ID : CLAUDE_SENDER_ID;
     const prompt = String(text || "")
       .replace(provider === "codex" ? CODEX_MENTION_RE : CLAUDE_MENTION_RE, " ")
       .trim();
@@ -1944,6 +2909,24 @@
       appendSystem(`Add a task after @${botName}.`);
       return false;
     }
+    return queueOrgAgent(provider, prompt, botName, selectedScope);
+  }
+
+  // One queue path for every bot request: the mention shortcuts pass a named
+  // provider, the task board passes "agent" and lets the Worker pick whichever
+  // runtime has an eligible mirror online.
+  async function queueOrgAgent(
+    provider,
+    prompt,
+    botName = ORG_BOT_SENDER_ID,
+    selectedScope = null,
+  ) {
+    const session = userSession();
+    if (!session || !orgAgentAccessLoaded || !orgAgentEngineeringAccess) {
+      appendSystem("Only Engineering team members can start an org bot.");
+      return false;
+    }
+    if (!prompt) return false;
     const scope = orgAgentScope(selectedScope);
     const taskKeyMatch = prompt.match(
       /\[(task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}\/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})\]/i,
@@ -2047,14 +3030,86 @@
     }
   }
 
-  function stageDashboardAttachments(control, files) {
+  function canvasBlob(canvas, type, quality) {
+    return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
+  }
+
+  async function fitDashboardImage(file) {
+    if (
+      file.size <= MAX_ATTACHMENT_BYTES ||
+      !String(file.type || "").startsWith("image/")
+    ) {
+      return file;
+    }
+    if (file.size > 24 * 1024 * 1024) return null;
+    let bitmap;
+    let objectUrl = "";
+    try {
+      if (typeof createImageBitmap === "function") {
+        bitmap = await createImageBitmap(file);
+      } else {
+        objectUrl = URL.createObjectURL(file);
+        bitmap = await new Promise((resolve, reject) => {
+          const image = new Image();
+          image.onload = () => resolve(image);
+          image.onerror = () => reject(new Error("image_decode_failed"));
+          image.src = objectUrl;
+        });
+      }
+      const sourceWidth = Math.max(
+        1,
+        Number(bitmap.width || bitmap.naturalWidth) || 1,
+      );
+      const sourceHeight = Math.max(
+        1,
+        Number(bitmap.height || bitmap.naturalHeight) || 1,
+      );
+      for (const edge of [1600, 1280, 1024, 800, 640, 480]) {
+        const scale = Math.min(1, edge / Math.max(sourceWidth, sourceHeight));
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.round(sourceWidth * scale));
+        canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+        const context = canvas.getContext("2d", { alpha: false });
+        if (!context) return null;
+        context.fillStyle = "#ffffff";
+        context.fillRect(0, 0, canvas.width, canvas.height);
+        context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+        for (const quality of [0.86, 0.76, 0.66, 0.54]) {
+          const blob = await canvasBlob(canvas, "image/webp", quality);
+          if (blob && blob.size <= MAX_ATTACHMENT_BYTES) {
+            const stem = safeAttachmentName(file.name)
+              .replace(/\.[^.]+$/, "")
+              .slice(0, 170) || "image";
+            return new File([blob], `${stem}.webp`, {
+              type: "image/webp",
+              lastModified: Date.now(),
+            });
+          }
+        }
+      }
+    } catch (_) {
+      return null;
+    } finally {
+      bitmap?.close?.();
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    }
+    return null;
+  }
+
+  async function stageDashboardAttachments(control, files) {
     if (!control) return;
     const candidates = Array.from(files || []).filter((file) => file instanceof File);
     const remaining = Math.max(0, 4 - control.draft.length);
     if (candidates.length > remaining) showAttachmentFeedback(control, "Share up to 4 files in a message.");
-    for (const file of candidates.slice(0, remaining)) {
-      if (file.size > MAX_ATTACHMENT_BYTES) {
-        showAttachmentFeedback(control, "Attachments must be 1 MiB or smaller.");
+    for (const source of candidates.slice(0, remaining)) {
+      const file = await fitDashboardImage(source);
+      if (!file || file.size > MAX_ATTACHMENT_BYTES) {
+        showAttachmentFeedback(
+          control,
+          String(source.type || "").startsWith("image/")
+            ? "That image could not be resized to fit the 1 MiB limit."
+            : "Attachments must be 1 MiB or smaller.",
+        );
         continue;
       }
       if (!file.size) {
@@ -2159,24 +3214,42 @@
     queue.dataset.dashboardChatAttachments = "";
     queue.setAttribute("aria-live", "polite");
     queue.setAttribute("aria-label", "Staged attachments");
-    const control = { button, input: fileInput, feedback, queue, draft: [] };
+    const control = {
+      button,
+      input: fileInput,
+      inputEl,
+      feedback,
+      queue,
+      draft: [],
+    };
     bar.parentElement?.insertBefore(queue, bar);
     const sendButton = inputEl === fullInput ? fullSend : sideSend;
-    bar.insertBefore(fileInput, sendButton || null);
-    bar.insertBefore(button, sendButton || null);
-    bar.append(feedback);
+    const quickSlot =
+      simpleWorldComposer && inputEl === fullInput
+        ? bar.querySelector("[data-world-quick-attachment]")
+        : null;
+    if (quickSlot) {
+      quickSlot.append(fileInput, button, feedback);
+    } else {
+      bar.insertBefore(fileInput, sendButton || null);
+      bar.insertBefore(button, sendButton || null);
+      bar.append(feedback);
+    }
     button.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", () => {
       const files = Array.from(fileInput.files || []);
       fileInput.value = "";
       if (files.length) {
         stageDashboardAttachments(control, files);
-        void sendDashboardDraft(control);
+        if (inputEl !== fullInput || String(fullAction?.value || "chat") === "chat") {
+          void sendDashboardDraft(control);
+        }
       }
     });
     control.button.disabled = !canJoinChat();
     control.input.disabled = !canJoinChat();
     attachmentControls.push(control);
+    applyWorldComposerPrefill();
     return control;
   }
 
@@ -2216,10 +3289,37 @@
           : "text-muted-foreground";
   }
 
+  function pulseWorldQuickComposer(action = "chat") {
+    const composer = fullInput?.closest("[data-dashboard-chat-composer]");
+    if (!composer) return;
+    composer.removeAttribute("data-just-sent");
+    composer.setAttribute("data-submitting", action);
+    window.setTimeout(() => {
+      composer.removeAttribute("data-submitting");
+      composer.setAttribute("data-just-sent", action);
+      window.setTimeout(
+        () => composer.removeAttribute("data-just-sent"),
+        720,
+      );
+    }, 180);
+  }
+
   function setFullComposerBusy(busy) {
+    const composer = fullInput?.closest("[data-dashboard-chat-composer]");
+    if (composer) {
+      composer.toggleAttribute("data-submitting", Boolean(busy));
+      if (!busy) {
+        composer.setAttribute("data-just-sent", fullAction?.value || "chat");
+        window.setTimeout(
+          () => composer.removeAttribute("data-just-sent"),
+          720,
+        );
+      }
+    }
     for (const control of [
       fullInput,
       fullSend,
+      fullTaskSend,
       fullChannel,
       fullRepository,
       fullAction,
@@ -2235,6 +3335,25 @@
   function syncFullComposerAction() {
     if (!fullAction || !fullInput) return;
     const action = fullAction.value;
+    if (simpleWorldComposer) {
+      if (fullSendLabel) fullSendLabel.textContent = "Chat";
+      if (fullComposerHint) {
+        fullComposerHint.textContent =
+          "Chat posts to #general · Task sends private work to the bot";
+      }
+      fullInput.placeholder = "Message #general…";
+      if (taskRouting) taskRouting.hidden = true;
+      fullSend?.setAttribute(
+        "aria-pressed",
+        String(fullAction.value === "chat"),
+      );
+      fullTaskSend?.setAttribute(
+        "aria-pressed",
+        String(fullAction.value !== "chat"),
+      );
+      syncChatContextBubbles();
+      return;
+    }
     const presentation = {
       chat: {
         label: "Send",
@@ -2251,18 +3370,15 @@
         hint: "First line is the title · route by department, team, destination, and assignee",
         placeholder: "Task title\\nAdd details or QA instructions…",
       },
-      codex: {
-        label: "Assign Codex",
+      agent: {
+        label: "Send to bot",
         hint: "Starts a secured Engineering task on an eligible mirror",
-        placeholder: "Describe the implementation task for Codex…",
-      },
-      "claude-code": {
-        label: "Assign Claude",
-        hint: "Starts a secured Engineering task on an eligible mirror",
-        placeholder: "Describe the implementation task for Claude…",
+        placeholder: "Describe what you want the bot to do…",
       },
     }[action] || {};
-    if (fullSendLabel) fullSendLabel.textContent = presentation.label || "Send";
+    if (fullSendLabel) {
+      fullSendLabel.textContent = presentation.label || "Send";
+    }
     if (fullComposerHint) fullComposerHint.textContent = presentation.hint || "";
     fullInput.placeholder = presentation.placeholder || "Write a message…";
     if (taskRouting) taskRouting.hidden = action !== "task";
@@ -2271,11 +3387,50 @@
       (
         action !== "task" ||
         String(taskDestination?.value || "") === "repository" ||
-        ["codex", "claude"].includes(String(taskAssignee?.value || ""))
+        AGENT_ASSIGNEE_VALUES.includes(String(taskAssignee?.value || ""))
       );
     fullRepository?.classList.toggle("ring-1", repositoryRelevant);
     fullRepository?.classList.toggle("ring-primary/50", repositoryRelevant);
+    syncChatContextBubbles();
     setComposerStatus("");
+  }
+
+  function selectedOptionLabel(select, fallback) {
+    return String(
+      select?.selectedOptions?.[0]?.textContent || fallback,
+    ).trim();
+  }
+
+  function syncChatContextBubbles() {
+    if (contextChannel) {
+      contextChannel.textContent = selectedOptionLabel(
+        fullChannel,
+        CHANNEL_LABEL || "# general",
+      );
+    }
+    if (contextSource) {
+      contextSource.textContent = selectedOptionLabel(
+        fullRepository,
+        "No repository",
+      );
+    }
+    if (contextAction) {
+      contextAction.textContent = selectedOptionLabel(fullAction, "Send to chat");
+    }
+  }
+
+  function syncChatScrollThumb() {
+    if (!fullLog || !chatScrollRail) return;
+    const available = Math.max(0, fullLog.scrollHeight - fullLog.clientHeight);
+    const progress = available > 0
+      ? Math.max(0, Math.min(1, fullLog.scrollTop / available))
+      : 1;
+    chatScrollRail.style.setProperty("--chat-scroll-progress", progress);
+    chatScrollRail.toggleAttribute("data-at-start", fullLog.scrollTop <= 1);
+    chatScrollRail.toggleAttribute(
+      "data-at-end",
+      available <= 1 || fullLog.scrollTop >= available - 1,
+    );
   }
 
   async function taskApiRequest(method, path, body = null) {
@@ -2308,6 +3463,10 @@
 
   async function loadTaskRouting() {
     if (!taskAssignee || !taskTeam) return;
+    // Task routing is account-scoped: a guest has no session token, so the
+    // request can only ever come back 401. Skip it rather than logging an
+    // unauthorized fetch (and flashing a status) on every public World load.
+    if (!userSession()) return;
     try {
       const payload = await taskApiRequest("GET", "/api/tasks");
       const selfName = String(payload?.actor || displayName()).toLowerCase();
@@ -2322,6 +3481,7 @@
         taskAssignee.append(option);
       }
       if (
+        !simpleWorldComposer &&
         selfName &&
         Array.from(taskAssignee.options).some(
           (option) => option.value === `user:${selfName}`,
@@ -2406,8 +3566,13 @@
         })
         .filter(Boolean)
         .sort((left, right) => left.label.localeCompare(right.label));
+      const requestedDefault = String(
+        document.querySelector("[data-world-native-chat]")
+          ?.dataset.worldDefaultRepository || "forkmesh/forkmesh",
+      );
       const previous =
-        sessionStorage.getItem("forkmesh.worldChat.repository") || "";
+        sessionStorage.getItem("forkmesh.worldChat.repository") ||
+        requestedDefault;
       for (const repository of repositories.slice(0, 250)) {
         const option = document.createElement("option");
         option.value = repository.value;
@@ -2420,12 +3585,13 @@
       if (repositories.some((repository) => repository.value === previous)) {
         fullRepository.value = previous;
       }
+      syncChatContextBubbles();
     } catch (_) {
       setComposerStatus("Repository catalog unavailable", "bad");
     }
   }
 
-  async function runFullComposerAction(inputEl) {
+  async function runFullComposerAction(inputEl, attachmentControl = null) {
     const action = String(fullAction?.value || "chat");
     const text = String(inputEl?.value || "").trim();
     if (!text) {
@@ -2439,7 +3605,7 @@
       action === "task" &&
       (
         String(taskDestination?.value || "") === "repository" ||
-        ["codex", "claude"].includes(taskAssigneeValue)
+        AGENT_ASSIGNEE_VALUES.includes(taskAssigneeValue)
       );
     if (!repository && (action !== "task" || taskNeedsRepository)) {
       setComposerStatus("Choose a repository for this action.", "bad");
@@ -2465,26 +3631,34 @@
         const title = String(lines.shift() || "").trim().slice(0, 160);
         const details = lines.join("\n").trim().slice(0, 4000);
         if (!title) throw new Error("Task title is required.");
-        const agentKind = ["codex", "claude"].includes(taskAssigneeValue)
-          ? taskAssigneeValue
-          : "";
+        const botTask = AGENT_ASSIGNEE_VALUES.includes(taskAssigneeValue);
         const userAssignee = taskAssigneeValue.startsWith("user:")
           ? taskAssigneeValue.slice(5)
           : "";
-        const destination = agentKind
+        const destination = botTask
           ? "agent"
           : String(taskDestination?.value || "department");
+        const taskAttachments = await Promise.all(
+          (attachmentControl?.draft || []).map(({ file }) =>
+            taskAttachmentMetadata(file),
+          ),
+        );
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
           details,
           department: String(taskDepartment?.value || "general"),
           team: String(taskTeam?.value || ""),
           destination,
-          assigneeKind: agentKind || (userAssignee ? "user" : "unassigned"),
+          assigneeKind: botTask
+            ? "agent"
+            : userAssignee
+              ? "user"
+              : "unassigned",
           assignee: userAssignee,
           repository: repository
             ? `${repository.logicalOwner}/${repository.logicalName}`
             : "",
+          attachments: taskAttachments,
           ...(destination === "qa"
             ? {
                 howToTest:
@@ -2494,15 +3668,18 @@
             : {}),
         });
         const task = created?.task || {};
-        if (agentKind) {
-          const mention = agentKind === "codex" ? "@codex" : "@claude";
-          const queued = await maybeAskOrgAgent(
-            `${mention} [task:${task.id}] ${title}\n\n${details}`.trim(),
+        if (botTask) {
+          // The task is already on the board; queueing it on a node is the
+          // follow-up, and a failure there leaves the task list authoritative.
+          const queued = await queueOrgAgent(
+            "agent",
+            `[task:${task.id}] ${title}\n\n${details}`.trim(),
+            ORG_BOT_SENDER_ID,
             repository,
           );
           if (!queued) {
             throw new Error(
-              "The task was saved, but the agent request was not accepted.",
+              "The task was saved to the task list, but no bot node accepted it yet.",
             );
           }
           const sessionId = String(queued?.session?.id || "");
@@ -2517,12 +3694,15 @@
             destination === "qa"
               ? "the QA board"
               : destination === "agent"
-                ? agentKind === "codex" ? "Codex" : "Claude"
+                ? "the bot queue"
                 : destination === "repository"
                   ? `${repository.owner}/${repository.name}`
                   : `${task.department || "general"}`
           }.`,
         );
+        if (taskAttachments.length) {
+          await sendDashboardDraft(attachmentControl);
+        }
         setComposerStatus("Organization task created.", "good");
       } else if (action === "issue") {
         const lines = text.split(/\r?\n/);
@@ -2538,7 +3718,27 @@
         appendSystem(`Issue “${title}” was signed and sent to ${repository.owner}/${repository.name}.`);
         setComposerStatus("Issue sent to the maintainer inbox.", "good");
       } else {
-        const mention = action === "codex" ? "@codex" : "@claude";
+        const lines = text.split(/\r?\n/);
+        const title = String(lines.shift() || "").trim().slice(0, 160);
+        const details = lines.join("\n").trim().slice(0, 4000);
+        const taskAttachments = await Promise.all(
+          (attachmentControl?.draft || []).map(({ file }) =>
+            taskAttachmentMetadata(file),
+          ),
+        );
+        const created = await taskApiRequest("POST", "/api/tasks", {
+          title,
+          details,
+          department: "engineering",
+          team: "",
+          destination: "agent",
+          assigneeKind: "agent",
+          assignee: "",
+          repository: `${repository.logicalOwner}/${repository.logicalName}`,
+          attachments: taskAttachments,
+        });
+        const task = created?.task || {};
+        const mention = "@bot";
         appendMessage(
           "self",
           displayName(),
@@ -2547,12 +3747,28 @@
           "",
           Date.now(),
         );
-        const queued = await maybeAskOrgAgent(
-          `${mention} ${text}`,
+        const queued = await queueOrgAgent(
+          "agent",
+          `[task:${task.id}] ${text}`,
+          ORG_BOT_SENDER_ID,
           repository,
         );
-        if (!queued) throw new Error("Agent request was not accepted.");
-        setComposerStatus("Agent request submitted.", "good");
+        if (!queued) {
+          throw new Error(
+            "The task is in the task list, but no bot node accepted it yet.",
+          );
+        }
+        const sessionId = String(queued?.session?.id || "");
+        if (sessionId) {
+          await taskApiRequest("PATCH", `/api/tasks/${task.id}`, {
+            agentSessionId: sessionId,
+          });
+        }
+        if (attachmentControl?.draft.length) {
+          await sendDashboardDraft(attachmentControl);
+        }
+        appendSystem(`Private task “${title}” was added to the bot queue.`);
+        setComposerStatus("Bot task created.", "good");
       }
       inputEl.value = "";
       inputEl.style.height = "";
@@ -2573,7 +3789,7 @@
       fullAction &&
       fullAction.value !== "chat"
     ) {
-      void runFullComposerAction(inputEl);
+      void runFullComposerAction(inputEl, attachmentControl);
       return;
     }
     if (!canJoinChat()) {
@@ -2622,7 +3838,16 @@
   function wireInput(inputEl, sendEl) {
     if (!inputEl || !sendEl) return;
     const attachmentControl = mountAttachmentControl(inputEl);
-    sendEl.addEventListener("click", () => sendFrom(inputEl, attachmentControl));
+    sendEl.addEventListener("click", () => {
+      if (simpleWorldComposer && inputEl === fullInput && fullAction) {
+        fullAction.value = "chat";
+        syncFullComposerAction();
+      }
+      if (simpleWorldComposer && inputEl === fullInput) {
+        pulseWorldQuickComposer("chat");
+      }
+      sendFrom(inputEl, attachmentControl);
+    });
     inputEl.addEventListener("paste", (event) => {
       const items = Array.from(event.clipboardData?.items || []);
       const item = items.find((candidate) =>
@@ -2630,8 +3855,15 @@
       const file = item ? item.getAsFile() : null;
       if (!file) return;
       event.preventDefault();
-      stageDashboardAttachments(attachmentControl, [file]);
-      void sendDashboardDraft(attachmentControl);
+      void stageDashboardAttachments(attachmentControl, [file]).then(() => {
+        if (
+          inputEl !== fullInput ||
+          String(fullAction?.value || "chat") === "chat"
+        ) {
+          return sendDashboardDraft(attachmentControl);
+        }
+        return null;
+      });
     });
     inputEl.addEventListener("keydown", (event) => {
       // While the mention list is open it owns Enter/Tab/arrows, so accepting a
@@ -2660,6 +3892,9 @@
       }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
+        if (simpleWorldComposer && inputEl === fullInput) {
+          pulseWorldQuickComposer(fullAction?.value || "chat");
+        }
         sendFrom(inputEl, attachmentControl);
       }
     });
@@ -2678,6 +3913,33 @@
       }
     });
     inputEl.addEventListener("blur", closeMentionSuggest);
+  }
+
+  function wireTaskSend() {
+    if (!fullTaskSend || !fullAction || !fullInput) return;
+    fullTaskSend.addEventListener("click", () => {
+      if (simpleWorldComposer) {
+        fullAction.value = "agent";
+        if (taskAssignee) taskAssignee.value = "agent";
+        syncFullComposerAction();
+        setComposerStatus("Dispatching task instantly…", "good");
+        const attachmentControl = attachmentControls.find(
+          (control) => control.inputEl === fullInput,
+        );
+        void runFullComposerAction(fullInput, attachmentControl);
+        return;
+      }
+      if (fullAction.value !== "task") {
+        fullAction.value = "task";
+        syncFullComposerAction();
+        setComposerStatus(
+          "Choose a team, then assign this task to a person or an agent.",
+        );
+        taskDepartment?.focus();
+        return;
+      }
+      void runFullComposerAction(fullInput);
+    });
   }
 
   function mountPrivateChannelsLink() {
@@ -2731,14 +3993,119 @@
           fullRepository.value,
         );
       } catch (_) {}
+      syncChatContextBubbles();
     });
     fullAction?.addEventListener("change", syncFullComposerAction);
     taskDestination?.addEventListener("change", syncFullComposerAction);
     taskAssignee?.addEventListener("change", syncFullComposerAction);
     syncFullComposerAction();
+    contextChannel?.addEventListener("click", () => fullChannel?.focus());
+    contextSource?.addEventListener("click", () => fullRepository?.focus());
+    contextAction?.addEventListener("click", () => fullAction?.focus());
+    document
+      .querySelectorAll("[data-dashboard-chat-scroll]")
+      .forEach((button) => {
+        button.addEventListener("click", () => {
+          if (!fullLog) return;
+          const direction = button.dataset.dashboardChatScroll;
+          if (
+            direction === "up" &&
+            fullLog.scrollTop <= 32 &&
+            hasHiddenHistory()
+          ) {
+            revealOlderHistory();
+            return;
+          }
+          fullLog.scrollTo({
+            top:
+              direction === "up"
+                ? Math.max(0, fullLog.scrollTop - fullLog.clientHeight * 0.8)
+                : fullLog.scrollHeight,
+            behavior: "smooth",
+          });
+        });
+      });
+    fullLog?.addEventListener("scroll", () => {
+      syncChatScrollThumb();
+      const currentTop = fullLog.scrollTop;
+      if (
+        hasHiddenHistory() &&
+        currentTop <= 32 &&
+        currentTop < lastFullLogScrollTop - 1 &&
+        !historyWheelLatched
+      ) {
+        historyWheelLatched = true;
+        scheduleHistoryWheelReset();
+        revealOlderHistory();
+      }
+      lastFullLogScrollTop = currentTop;
+    }, {
+      passive: true,
+    });
+    fullLog?.addEventListener("wheel", (event) => {
+      scheduleHistoryWheelReset();
+      if (event.deltaY > 0) historyWheelLatched = false;
+      if (
+        event.deltaY < 0 &&
+        hasHiddenHistory() &&
+        fullLog.scrollTop <= 32 &&
+        !historyWheelLatched
+      ) {
+        historyWheelLatched = true;
+        revealOlderHistory();
+      }
+    }, { passive: true });
+    fullLog?.addEventListener("touchstart", (event) => {
+      historyTouchRevealed = false;
+      historyTouchStartY =
+        fullLog.scrollTop <= 32
+          ? Number(event.touches?.[0]?.clientY)
+          : null;
+    }, { passive: true });
+    fullLog?.addEventListener("touchmove", (event) => {
+      const currentY = Number(event.touches?.[0]?.clientY);
+      if (
+        Number.isFinite(historyTouchStartY) &&
+        Number.isFinite(currentY) &&
+        currentY - historyTouchStartY >= 28 &&
+        !historyTouchRevealed &&
+        hasHiddenHistory()
+      ) {
+        historyTouchRevealed = true;
+        revealOlderHistory();
+      }
+    }, { passive: true });
+    fullLog?.addEventListener("touchend", () => {
+      historyTouchStartY = null;
+      historyTouchRevealed = false;
+    }, { passive: true });
+    if (fullLog && "ResizeObserver" in window) {
+      new ResizeObserver(syncChatScrollThumb).observe(fullLog);
+    }
+    syncChatScrollThumb();
+    document
+      .querySelectorAll("[data-dashboard-chat-emote]")
+      .forEach((button) => {
+        button.addEventListener("click", () => {
+          const emote = String(button.dataset.dashboardChatEmote || "");
+          if (window.parent !== window) {
+            window.parent.postMessage(
+              { type: "forkmesh:world-emote", emote },
+              location.origin,
+            );
+          } else {
+            window.dispatchEvent(
+              new CustomEvent("forkmesh:world-emote-native", {
+                detail: { emote },
+              }),
+            );
+          }
+        });
+      });
     void loadComposerRepositories();
     void loadTaskRouting();
     wireInput(fullInput, fullSend);
+    wireTaskSend();
     wireInput(sideInput, sideSend);
     // Connect right away so the room's message history (replayed by the relay
     // on WebSocket open) is visible without the visitor first focusing an input.
@@ -2746,7 +4113,14 @@
       setStatus("Not connected");
       connect();
     }
+    startDiscordMessageRefresh();
   }
 
   initChat();
-})();
+  return true;
+}
+
+window.ForkMeshDashboardChat = Object.freeze({
+  mount: mountForkMeshDashboardChat,
+});
+mountForkMeshDashboardChat();

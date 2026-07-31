@@ -23,7 +23,7 @@ def test_marketing_task_controller_is_wired_to_the_office_and_scene():
     world = source(WORLD)
     office = source(OFFICE)
     for contract in (
-        'from "./world-office-tasks.js"',
+        'import("./world-office-tasks.js")',
         "createWorldOfficeTasksController",
         "onOfficeTaskBoardSelect",
         "this.officeTasks",
@@ -47,6 +47,26 @@ def test_marketing_board_has_accessible_create_assign_and_timer_controls():
         'aria-live="polite"',
     ):
         assert contract in world
+
+
+def test_work_tab_has_a_compact_universal_task_creator_with_agent_routing():
+    world = source(WORLD)
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        "data-world-work-task-form",
+        "data-world-work-task-title",
+        "data-world-work-task-assignee",
+        "data-world-work-task-department",
+        "data-world-work-task-repository",
+        "data-world-work-task-priority",
+    ):
+        assert contract in world
+    assert 'label: "Bot"' in tasks
+    assert 'assignment === "agent" ? "agent"' in tasks
+    assert 'mutate(OFFICE_TASKS_PATH, body)' in tasks
+    assert "repository before assigning agent work" in tasks
+    assert ".world-work-quick-entry" in css
 
 
 def test_tasks_use_https_polling_and_server_clock_without_world_socket_data():
@@ -134,6 +154,124 @@ def test_task_access_is_session_gated_and_wall_payload_is_explicitly_authorized(
     assert "physicalState(\"locked\"" in tasks
 
 
+def test_top_nav_task_count_and_sortable_catalog_include_departments():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    assert "data-world-tasks-open" in world
+    assert "data-world-task-count" in world
+    assert "data-world-organization-task-heading" in world
+    assert "taskCount.textContent = String(tasks.length)" in tasks
+    assert "taskCount.hidden = !authorized || tasks.length < 1" in tasks
+    assert "function visibleWorkTasks()" in tasks
+    assert "data-world-task-avatar" in tasks
+    assert "data-tone=\"department\"" in tasks
+    assert "data-world-task-search" in world
+    assert "data-world-task-filter" in world
+    assert "data-world-task-sort" in world
+    assert "world-task-row-metadata" in tasks
+
+
+def test_organization_catalog_is_a_dense_sortable_table_with_row_bubbles():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    for contract in (
+        'class="world-task-table-header" role="row"',
+        "data-world-task-column-sort",
+        'class="world-task-row-summary"',
+        'class="world-task-chat-bubble"',
+        'role="table"',
+        '<option value="repository">Repository</option>',
+        '<option value="tracked">Tracked time</option>',
+        '<option value="qa">QA</option>',
+    ):
+        assert contract in tasks or contract in world
+    for column in (
+        "world-task-cell-title",
+        "world-task-cell-status",
+        "world-task-cell-priority",
+        "world-task-cell-owner",
+        "world-task-cell-agent",
+        "world-task-cell-model",
+        "world-task-cell-speed",
+        "world-task-cell-route",
+        "world-task-cell-updated",
+        "world-task-cell-time",
+        "world-task-cell-qa",
+        "world-task-cell-actions",
+    ):
+        assert column in tasks
+    for styled_column in (
+        "world-task-cell-title",
+        "world-task-cell-status",
+        "world-task-cell-priority",
+        "world-task-cell-owner",
+        "world-task-cell-route",
+        "world-task-cell-time",
+        "world-task-cell-qa",
+        "world-task-cell-actions",
+    ):
+        assert styled_column in css
+    assert "grid-template-columns:" in css
+    assert "min-height: 42px" in css
+
+
+def test_task_table_has_quick_filters_bot_batches_thumbnails_and_words():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    for marker in (
+        'data-world-task-quick-filter="active"',
+        'data-world-task-quick-filter="queued"',
+        'data-world-task-batch-size',
+        'value="10"',
+        "data-world-task-batch-send",
+    ):
+        assert marker in world
+    for marker in (
+        'task.agent?.provider',
+        'task.agent?.model',
+        'task.agent?.strength',
+        "world-task-attachment-thumbnail",
+        ">Follow-up</button>",
+        '"Start"',
+        '"Stop"',
+        '"Done"',
+        ">Delete</button>",
+    ):
+        assert marker in tasks
+    assert "min-width: 1580px" in css
+    assert ".world-task-attachment-thumbnail" in css
+
+
+def test_work_tab_expands_and_active_tasks_have_readable_spinner_status():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    assert "panel.dataset.activeTab = selected" in world
+    assert '.world-settings[data-active-tab="work"]' in css
+    assert "920px" in css
+    assert "world-office-task-progress-label" in tasks
+    assert "In progress" in tasks
+    assert "@keyframes world-office-task-spin" in css
+    assert "animation: world-office-task-spin 720ms linear infinite" in css
+    assert "white-space: normal" in css
+    assert "-webkit-line-clamp: 2" not in css
+
+
+def test_new_agent_tasks_show_one_bounded_world_bot_bubble():
+    tasks = source(TASKS)
+    scene = source(SCENE)
+    assert "const announcedAgentTaskIds = new Set()" in tasks
+    assert "function announceAgentTasks()" in tasks
+    assert 'task.assigneeKind === "agent"' in tasks
+    assert "world.showAgentTaskBubble?.(task.assigneeKind, task.title)" in tasks
+    assert "function showAgentTaskBubble(botId, title)" in scene
+    assert "if (!agentBotAccessAllowed) return false" in scene
+    assert "New organization task: ${taskTitle}" in scene
+    assert "showAgentTaskBubble," in scene
+
+
 def test_only_assignees_receive_start_stop_and_checkin_controls():
     tasks = source(TASKS)
     assert "task.assignee === actor" in tasks
@@ -187,11 +325,54 @@ def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete
     css = source(CSS)
     assert 'data-world-office-task-action="complete"' in tasks
     assert 'data-world-office-task-action="delete"' in tasks
-    assert '{ method: "DELETE" }' in tasks
-    assert 'window.confirm("Delete this task' in tasks
+    assert '{ method: "DELETE", removeOnSuccess: true }' in tasks
+    assert 'window.confirm("Delete this task' not in tasks
     assert ".world-office-task-manager select option" in css
     assert "background: #071713" in css
     assert '.world-office-task[data-status="done"]' in css
+
+
+def test_a_confirmed_delete_leaves_every_list_and_a_refusal_is_announced():
+    """A deleted row may never be repainted by a slower or skipped read."""
+    tasks = source(TASKS)
+    world = source(WORLD)
+    for contract in (
+        "function dropTask(taskId)",
+        "if (removeOnSuccess) dropTask(taskId);",
+        "await refresh({ quiet: true, force: true });",
+        # A read that started before the delete must not join it, and its
+        # older payload must not overwrite the newer list.
+        'if ((!monitoring && !force) || typeof fetchJSON !== "function")',
+        "if (refreshPromise && !force) return refreshPromise;",
+        "const sequence = ++refreshSequence;",
+        "if (sequence !== refreshSequence) return false;",
+        "dedupe: !force,",
+        # The Office status line is invisible from the Local controls Work
+        # tab, so a rejected change is also toasted.
+        "toast(errorMessage);",
+    ):
+        assert contract in tasks
+    # fetchJSON honors the dedupe opt-out the forced read relies on.
+    assert "dedupe = true," in world
+    assert "if (canDedupe && this.inflightRequests.has(requestKey))" in world
+
+
+def test_completed_tasks_are_ready_for_qa_with_three_verdict_controls():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    for contract in (
+        '"Ready for QA"',
+        'data-world-office-task-action="qa-${verdict}"',
+        '["pass", "fail", "unsure"]',
+        "onQaVerdict({ task, verdict })",
+        "Task marked done and ready for QA.",
+    ):
+        assert contract in tasks
+    assert "this.recordTaskQaVerdict(task, verdict)" in world
+    assert "async recordTaskQaVerdict(task, verdict)" in world
+    assert "this.recordQaVerdict(verdict)" in world
+    assert ".world-office-task-qa-actions" in css
 
 
 def test_marketing_members_can_add_private_proof_from_their_own_desk():
@@ -199,10 +380,10 @@ def test_marketing_members_can_add_private_proof_from_their_own_desk():
     scene = source(SCENE)
     for contract in (
         "function normalizedProof(proof)",
-        "proofs = Array.isArray(payload?.proofs)",
+        "proofs = Array.isArray(marketingPayload?.proofs)",
         'if (action === "proof")',
         "!marketingMembers.includes(actor) || member !== actor",
-        '`${OFFICE_TASKS_PATH}/proofs`',
+        '`${MARKETING_TASKS_PATH}/proofs`',
         '"Paste the public HTTPS social post link:"',
     ):
         assert contract in tasks
@@ -220,7 +401,7 @@ def test_private_marketing_initiatives_are_rendered_on_a_clickable_world_panel()
     scene = source(SCENE)
     for contract in (
         "function normalizedInitiative(initiative)",
-        "initiatives = Array.isArray(payload?.initiatives)",
+        "initiatives = Array.isArray(marketingPayload?.initiatives)",
         'if (action === "initiative")',
         "initiatives.some((item) => item.href === href)",
         'window.open(href, "_blank", "noopener,noreferrer")',
@@ -241,8 +422,66 @@ def test_task_text_is_bounded_and_html_escaped_before_rendering():
     assert "function escapeHTML" in tasks
     assert ".slice(0, limit)" in tasks
     assert "${escapeHTML(task.title)}" in tasks
-    assert "${escapeHTML(task.assignee)}" in tasks
+    assert "task.assigneeKind === \"user\"" in tasks
+    assert "`@${task.assignee}`" in tasks
+    assert "escapeHTML(" in tasks
     assert "safeTaskId" in tasks
+
+
+def test_task_rows_capture_and_retain_a_completion_work_note():
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        "completionNote: text(task.completionNote, 4000)",
+        "What I did to complete this task",
+        "data-world-office-task-completion-note",
+        'action === "complete" ? { completionNote } : {}',
+        "task.completionNote || \"\"",
+    ):
+        assert contract in tasks
+    for selector in (
+        ".world-office-task-completion",
+        ".world-office-task-completion-editor",
+        ".world-office-task-completion-editor textarea",
+    ):
+        assert selector in css
+
+
+def test_lobby_task_bounty_desk_creates_visible_non_custodial_bids():
+    world = source(WORLD)
+    scene = source(SCENE)
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        "async openLobbyTaskBidKiosk()",
+        'data-world-task-bid-form',
+        'kind: "bid"',
+        "bountyAmountSol: amountSol",
+        '"/api/tasks"',
+        "This is a compensation request only.",
+        "does not reserve, custody, or transfer SOL",
+        "this.officeTasks?.refreshNow?.()",
+    ):
+        assert contract in world
+    for contract in (
+        '"forkmesh-office-task-bid-kiosk"',
+        '"TASK BOUNTY DESK"',
+        '"office-task-bid-kiosk"',
+        "onLobbyTaskBidKioskSelect()",
+        '"REQUEST ONLY · NO FUNDS HELD"',
+        '{ key: "task:lobby-task-bounties"',
+    ):
+        assert contract in scene
+    for contract in (
+        'const kind = task.kind === "bid" ? "bid" : "task"',
+        'data-kind="${bid ? "bid" : "task"}"',
+        "SOL bounty requested · bidder @",
+        "world-office-task-bid-badge",
+        "function refreshNow()",
+    ):
+        assert contract in tasks
+    assert '.world-office-task[data-kind="bid"]' in css
+    assert ".world-office-task-bid-badge" in css
 
 
 def test_task_panel_is_overlayed_responsive_and_reduced_motion_safe():
@@ -273,3 +512,34 @@ def test_physical_board_displays_bounded_authorized_summaries_only():
     assert "officeMarketingRosterGroup" in scene
     assert "officeMarketingAttendanceTexture" in scene
     assert "officeReclaimedWoodTexture" in scene
+
+
+def test_one_general_bot_replaces_the_claude_and_codex_task_choice():
+    tasks = source(TASKS)
+    chat_view = (
+        ROOT / "public" / "dashboard" / "partials" / "views" / "chat.html"
+    ).read_text(encoding="utf-8")
+    chat = (ROOT / "public" / "dashboard-chat.js").read_text(encoding="utf-8")
+    assert '<option value="agent">Bot</option>' in chat_view
+    assert '<option value="codex">Codex</option>' not in chat_view
+    assert '<option value="claude">Claude</option>' not in chat_view
+    assert 'const ORG_BOT_SENDER_ID = "agent"' in chat
+    assert "queueOrgAgent(\n            \"agent\"," in chat
+    assert '"Bot",' in tasks
+    assert '"Codex"' not in tasks
+    assert '"Claude"' not in tasks
+
+
+def test_queued_bot_tasks_can_be_returned_to_the_task_list():
+    tasks = source(TASKS)
+    css = source(CSS)
+    for contract in (
+        'const botTask = task.assigneeKind === "agent"',
+        "canManage || task.createdBy === actor",
+        'data-world-office-task-action="return"',
+        '"start", "stop", "complete", "delete", "return",',
+        "Task returned to the task list.",
+        "queued on a node",
+    ):
+        assert contract in tasks
+    assert ".world-office-task-return" in css

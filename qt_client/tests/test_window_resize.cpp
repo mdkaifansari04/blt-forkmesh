@@ -417,6 +417,40 @@ int main(int argc, char *argv[])
 
     MainWindow window;
 
+    // Opening Chat from its unread badge should land directly on the unread
+    // conversation carrying the newest message, while preserving the already
+    // open conversation when that conversation itself is unread.
+    {
+        check(window.testMostRecentUnreadConversation(
+                  QStringLiteral("#general"),
+                  {QStringLiteral("#general"), QStringLiteral("#engineering"),
+                   QStringLiteral("#product")},
+                  {QStringLiteral("#engineering"), QStringLiteral("#product")},
+                  {{QStringLiteral("#engineering"), 100},
+                   {QStringLiteral("#product"), 200}}) ==
+                  QStringLiteral("#product"),
+              QStringLiteral("chat badge selects the newest unread channel"));
+
+        check(window.testMostRecentUnreadConversation(
+                  QStringLiteral("#general"),
+                  {QStringLiteral("#general"), QStringLiteral("#engineering")},
+                  {QStringLiteral("#general"), QStringLiteral("#engineering")},
+                  {{QStringLiteral("#general"), 300},
+                   {QStringLiteral("#engineering"), 200}})
+                  .isEmpty(),
+              QStringLiteral("chat badge preserves an already-open unread channel"));
+
+        check(window.testMostRecentUnreadConversation(
+                  QStringLiteral("#general"),
+                  {QStringLiteral("#general"), QStringLiteral("#engineering"),
+                   QStringLiteral("#product")},
+                  {QStringLiteral("#engineering"), QStringLiteral("#product")},
+                  {}) ==
+                  QStringLiteral("#engineering"),
+              QStringLiteral("chat badge uses sidebar order when unread history "
+                             "is not cached"));
+    }
+
     // Bottom status bar (adhoc #2): a strip exactly one text line tall carrying
     // the branch switcher, the repo's git identity and the location of the
     // running executable. The first two used to live in the repo Code overview,
@@ -438,6 +472,10 @@ int main(int argc, char *argv[])
             check(statusBar->findChild<QLabel *>(
                       QStringLiteral("footerGitIdentity")) != nullptr,
                   QStringLiteral("git identity sits in the status bar"));
+            // adhoc #55: the strip also names the commit the branch is on.
+            check(statusBar->findChild<QLabel *>(
+                      QStringLiteral("footerCommitInfo")) != nullptr,
+                  QStringLiteral("branch commit info sits in the status bar"));
             QLabel *appPath =
                 statusBar->findChild<QLabel *>(QStringLiteral("statusAppPath"));
             check(appPath && !appPath->text().isEmpty() &&
@@ -1154,6 +1192,27 @@ int main(int argc, char *argv[])
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
 
+    // adhoc #55: the status strip names the commit the open branch is on —
+    // short SHA, date, subject and author. The read is detached (it must not
+    // block the GUI thread), so pump the loop until it lands.
+    {
+        QLabel *commitInfo =
+            window.findChild<QLabel *>(QStringLiteral("footerCommitInfo"));
+        QElapsedTimer commitTimer;
+        commitTimer.start();
+        while (commitInfo && commitInfo->text().isEmpty() &&
+               commitTimer.elapsed() < 5000)
+            QApplication::processEvents(QEventLoop::AllEvents, 10);
+        const QString commitText = commitInfo ? commitInfo->text() : QString();
+        check(commitText.contains(QStringLiteral("init")) &&
+                  commitText.contains(QStringLiteral("t")) &&
+                  commitText.contains(QRegularExpression(
+                      QStringLiteral("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}"))),
+              QStringLiteral("status bar shows the open branch's commit "
+                             "(date, message, author): ") +
+                  commitText);
+    }
+
     // Repository detail is intentionally built on first navigation. Verify the
     // real PR and Agents controls only after taking that user-visible path,
     // keeping the startup performance contract intact.
@@ -1178,6 +1237,23 @@ int main(int argc, char *argv[])
     check(window.testAgentColumnsMovable(),
           QStringLiteral("agents list column headers are draggable/reorderable "
                          "after repository navigation"));
+    // adhoc #35: the list is down to id / title / Updated / Diff, and the title
+    // column is the one that flexes — so the columns always span the full list
+    // width with Updated and Diff sitting against its right edge, leaving the
+    // title everything in between rather than a fixed 320px slice.
+    const QString agentColumns = window.testAgentColumnLayout();
+    const QStringList agentColumnParts =
+        agentColumns.split(QLatin1Char('|'));
+    const QStringList agentSpan =
+        agentColumnParts.size() == 2 ? agentColumnParts.at(1).split(QLatin1Char('/'))
+                                     : QStringList();
+    check(agentColumnParts.value(0) == QStringLiteral("#,Issue,Updated,Diff") &&
+              agentSpan.size() == 2 &&
+              agentSpan.at(0).toInt() == agentSpan.at(1).toInt() &&
+              agentSpan.at(1).toInt() > 0,
+          QStringLiteral("agents list is #/Issue/Updated/Diff with the title column "
+                         "absorbing the spare width (adhoc #35, layout = %1)")
+              .arg(agentColumns));
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
     check(window.findChild<QLabel *>(
@@ -2204,9 +2280,12 @@ int main(int argc, char *argv[])
     // adhoc #442: UI stalls are their own log category, and the chip row always
     // offers a Stalls filter so a freeze can be pulled up on demand.
     {
-        window.testResetNetworkLog();
         window.testShowLogSection();
         QApplication::processEvents();
+        // Opening a deferred panel can itself trip the stall watchdog on a
+        // heavily loaded CI host. Reset after it is open so this assertion
+        // measures the empty-filter state, not test-machine startup latency.
+        window.testResetNetworkLog();
         check(window.testLogFilterChipLabels().contains(QStringLiteral("STALL")),
               QStringLiteral("the log filter row offers a Stalls chip before any "
                              "stall has been recorded"));

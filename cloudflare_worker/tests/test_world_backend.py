@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 WORLD_PATH = ROOT / "src" / "world.py"
+WORLD_INFRASTRUCTURE_PATH = ROOT / "src" / "world_infrastructure.py"
 WRANGLER = ROOT / "wrangler.toml"
 STATIC_ROUTES = ROOT / "src" / "static_routes.py"
 REDIRECTS = ROOT / "public" / "_redirects"
@@ -32,6 +33,12 @@ WORLD_ACCOUNT_TAKEOVER_CODE = 4009
 spec = importlib.util.spec_from_file_location("forkmesh_world_protocol", WORLD_PATH)
 world = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(world)
+infrastructure_spec = importlib.util.spec_from_file_location(
+    "forkmesh_world_infrastructure",
+    WORLD_INFRASTRUCTURE_PATH,
+)
+world_infrastructure = importlib.util.module_from_spec(infrastructure_spec)
+infrastructure_spec.loader.exec_module(world_infrastructure)
 
 
 def _top_level_node(name):
@@ -842,7 +849,18 @@ def test_home_grants_and_declines_are_targeted_text_free_consent_frames():
 
 def test_emotes_are_broadcast_as_a_tiny_fixed_vocabulary():
     sender = world.default_presence("peer_sender", 1000)
-    for emote in ("wave", "idea", "celebrate"):
+    for emote in (
+        "wave",
+        "idea",
+        "celebrate",
+        "jump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+    ):
         assert world.sanitize_interaction({
             "type": "interaction",
             "kind": "emote",
@@ -1395,10 +1413,7 @@ def test_world_system_capacity_is_bounded_content_free_and_identifier_safe():
     namespace = {
         "d1_all": d1_all,
         "d1_first": d1_first,
-        "WORLD_SYSTEM_CAPACITY_MAX_TABLES": 256,
-        "WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS": 9_007_199_254_740_991,
-        "WORLD_SYSTEM_CAPACITY_TABLE_RE": re.compile(
-            r"[A-Za-z_][A-Za-z0-9_]{0,127}"),
+        "_world_infrastructure_module": lambda: world_infrastructure,
     }
     node = _top_level_node("_world_system_capacity")
     module = ast.fix_missing_locations(ast.Module(body=[node], type_ignores=[]))
@@ -1460,6 +1475,15 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
                 "updatedAt": 50_000,
             }]
 
+        async def d1_storage(_env):
+            capacity_calls.append("storage")
+            return {
+                "bytes": 14_811_136,
+                "freeDatabaseLimitBytes": 500_000_000,
+                "paidDatabaseLimitBytes": 10_000_000_000,
+                "includedAccountStorageBytes": 5_000_000_000,
+            }
+
         def json_response(data, **kwargs):
             return {"data": data, **kwargs}
 
@@ -1476,6 +1500,7 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
             "_world_ticket_encode": lambda _env, _claim: "signed-ticket",
             "_world_system_capacity": system_capacity,
             "_world_durable_objects": durable_objects,
+            "_world_d1_storage": d1_storage,
             "new_world_peer_id": lambda: "a" * 32,
         }
         node = _top_level_node("world_ticket_handler")
@@ -1517,8 +1542,41 @@ def test_world_ticket_capacity_is_queried_and_returned_only_for_admins():
             "messages": 4,
             "updatedAt": 50_000,
         }],
+        "d1Storage": {
+            "bytes": 14_811_136,
+            "freeDatabaseLimitBytes": 500_000_000,
+            "paidDatabaseLimitBytes": 10_000_000_000,
+            "includedAccountStorageBytes": 5_000_000_000,
+        },
     }
-    assert admin_calls == [True, "durable"]
+    assert admin_calls == [True, "durable", "storage"]
+
+
+def test_world_d1_storage_reports_provider_size_and_documented_limits():
+    calls = []
+
+    class Statement:
+        async def run(self):
+            calls.append("run")
+            return SimpleNamespace(
+                meta=SimpleNamespace(size_after=14_811_136)
+            )
+
+    class Database:
+        def prepare(self, sql):
+            calls.append(sql)
+            return Statement()
+
+    result = asyncio.run(
+        world_infrastructure.d1_storage_usage(
+            SimpleNamespace(DB=Database())
+        )
+    )
+    assert result["bytes"] == 14_811_136
+    assert result["freeDatabaseLimitBytes"] == 500_000_000
+    assert result["paidDatabaseLimitBytes"] == 10_000_000_000
+    assert result["includedAccountStorageBytes"] == 5_000_000_000
+    assert calls == ["SELECT 1 AS capacity_probe", "run"]
 
 
 def test_arrival_counter_keeps_only_fixed_size_unique_sketches():

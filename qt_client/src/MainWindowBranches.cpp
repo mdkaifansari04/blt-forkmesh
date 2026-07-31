@@ -1093,7 +1093,14 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // merge flows delete the branch and keep their own selection handling. "Merge &
     // delete all" lands here too when the branch had no worktree: the branch is gone,
     // so there's even less to re-select (adhoc #428).
-    if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()) {
+    //
+    // A branch that was actually deleted takes neither path (adhoc #15): moving to
+    // the neighbour renders a diff the user didn't ask for, and re-selecting a
+    // branch that no longer exists falls back to the checked-out one. Leave an
+    // animated check in its row instead and select nothing.
+    if (branchDeleted)
+        flashMergedBranchRow(branch);
+    else if (merged && !hasConflicts && branchInBase && worktreePath.isEmpty()) {
         const QString next = neighbourBranchInList(branch);
         if (!next.isEmpty())
             m_branchDiffBranch = next;
@@ -1994,6 +2001,10 @@ QWidget *MainWindow::buildBranchesTab()
     connect(m_branchesTable, &QTableWidget::currentCellChanged, this,
             [this](int row, int, int, int) {
                 QTableWidgetItem *it = m_branchesTable->item(row, 0);
+                // Selecting a real branch retires the "merged & deleted" check
+                // left where a branch used to be (adhoc #15).
+                if (it && !it->text().isEmpty())
+                    clearMergedBranchFlash();
                 showBranchDiff(it ? it->text() : QString());
             });
     // Clicking the Issue / Agent cell jumps to the agent run working that branch,
@@ -2969,6 +2980,48 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         return;
     }
 
+    // adhoc #15: a branch the user just merged & deleted keeps its place in the
+    // list as an animated check, so the row it held reads as "done" instead of the
+    // next branch sliding under the cursor with its diff already loading. Skipped
+    // once the rows belong to another repo, and a pending switchToBranch always
+    // wins — that's a branch the user explicitly clicked.
+    if (!m_branchMergedFlashBranch.isEmpty() && m_branchMergedFlashRow >= 0 &&
+        pendingSelect.isEmpty() && m_branchMergedFlashDir == dir &&
+        !branches.contains(m_branchMergedFlashBranch)) {
+        const int row = qMin(m_branchMergedFlashRow, m_branchesTable->rowCount());
+        m_branchesTable->insertRow(row);
+        auto *cell = new QWidget;
+        cell->setObjectName("branchMergedFlash");
+        cell->setStyleSheet("#branchMergedFlash { background: transparent; }");
+        auto *cellRow = new QHBoxLayout(cell);
+        cellRow->setContentsMargins(4, 0, 8, 0);
+        cellRow->setSpacing(8);
+        cellRow->addWidget(new DoneCheckMark(cell));
+        auto *label = new QLabel(
+            QStringLiteral("Merged & deleted %1").arg(m_branchMergedFlashBranch));
+        label->setStyleSheet("color: #8b949e; background: transparent;");
+        cellRow->addWidget(label);
+        cellRow->addStretch();
+        // An empty name item keeps the row out of neighbourBranchInList and out of
+        // the "select this branch" scan below — it names no branch.
+        m_branchesTable->setItem(row, 0, new QTableWidgetItem);
+        m_branchesTable->setCellWidget(row, 0, cell);
+        for (int c = 1; c < m_branchesTable->columnCount(); ++c)
+            m_branchesTable->setItem(row, c, new QTableWidgetItem);
+        m_branchesTable->setCurrentCell(row, 0);
+        // Table signals are blocked across the rebuild, so blank the diff pane
+        // ourselves rather than leaving the deleted branch's diff on screen.
+        showBranchDiff(QString());
+        if (m_branchDiffView)
+            setDiffHtml(m_branchDiffView,
+                        QStringLiteral("<p style='color:#8b949e'>Merged %1 into %2 "
+                                       "and deleted it. Pick a branch to see its "
+                                       "changes.</p>")
+                            .arg(m_branchMergedFlashBranch.toHtmlEscaped(),
+                                 base.toHtmlEscaped()));
+        return;
+    }
+
     // Re-select the row the user was viewing (falling back to the checked-out
     // branch) so rebuilding the table doesn't leave the diff pane blank. A
     // pending switchToBranch wins: it's the branch the user just clicked.
@@ -3119,16 +3172,7 @@ void MainWindow::deleteRemoteBranch(const QString &branch)
 // removing a branch doesn't jump the list back to the checked-out branch (#256).
 QString MainWindow::neighbourBranchInList(const QString &branch) const
 {
-    if (!m_branchesTable || branch.isEmpty())
-        return QString();
-    int row = -1;
-    for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
-        QTableWidgetItem *it = m_branchesTable->item(r, 0);
-        if (it && it->text() == branch) {
-            row = r;
-            break;
-        }
-    }
+    const int row = branchRowInList(branch);
     if (row < 0)
         return QString();
     for (int r = row + 1; r < m_branchesTable->rowCount(); ++r) {
@@ -3142,6 +3186,51 @@ QString MainWindow::neighbourBranchInList(const QString &branch) const
             return it->text();
     }
     return QString();
+}
+
+int MainWindow::branchRowInList(const QString &branch) const
+{
+    if (!m_branchesTable || branch.isEmpty())
+        return -1;
+    for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
+        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        if (it && it->text() == branch)
+            return r;
+    }
+    return -1;
+}
+
+// "Merge & delete all" ends with the branch gone, so there's nothing left to
+// re-select. Sliding the selection onto the next branch (adhoc #139) drops the
+// user into an unrelated diff they never asked for, so instead we hold the spot:
+// the row the branch occupied comes back as an animated check and the diff pane
+// says what happened (adhoc #15). Nothing here touches git — it only steers the
+// rebuild loadBranchesAndTags() is about to run.
+void MainWindow::flashMergedBranchRow(const QString &branch)
+{
+    const int row = branchRowInList(branch);
+    if (branch.isEmpty() || row < 0)
+        return;
+    m_branchMergedFlashBranch = branch;
+    m_branchMergedFlashDir = m_branchesPanelDir;
+    m_branchMergedFlashRow = row;
+    // Nothing is selected any more; an empty value would otherwise make the
+    // rebuild fall back to the checked-out branch.
+    m_branchDiffBranch.clear();
+    QTimer::singleShot(kBranchMergedFlashMs, this, [this, branch] {
+        // Only retire our own check: a later merge may have replaced it.
+        if (m_branchMergedFlashBranch == branch)
+            clearMergedBranchFlash();
+    });
+}
+
+// Drop the check. Deliberately doesn't repaint the panel: the row disappears at
+// the next natural rebuild, so retiring it never moves anything under the cursor.
+void MainWindow::clearMergedBranchFlash()
+{
+    m_branchMergedFlashBranch.clear();
+    m_branchMergedFlashDir.clear();
+    m_branchMergedFlashRow = -1;
 }
 
 // Prune every branch that's fully merged into the default branch (0 behind and
@@ -4068,9 +4157,23 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         box.setDetailedText(files.join('\n'));
         QPushButton *stashBtn = box.addButton(
             QStringLiteral("Stash, update & restore"), QMessageBox::AcceptRole);
+        // Third way out: the user may just want to look at (or commit) those
+        // files first. Send them to the commits view, whose working-changes
+        // panel lists exactly these paths, instead of making them find it.
+        QPushButton *reviewBtn = box.addButton(QStringLiteral("Review changes"),
+                                               QMessageBox::ActionRole);
         box.addButton(QMessageBox::Cancel);
         box.setDefaultButton(stashBtn);
         box.exec();
+        if (box.clickedButton() == reviewBtn) {
+            setRepoDetailNotice(
+                QStringLiteral("Left %1 unchanged — review its %2 uncommitted file%3 "
+                               "below, then update from %4.")
+                    .arg(branch, n, plural, base));
+            showOverviewCommits(); // the commits panel inside the Code overview
+            loadCommits();         // refresh history + the working-changes panel
+            return;
+        }
         if (box.clickedButton() != stashBtn) {
             setRepoDetailNotice(
                 QStringLiteral("Left %1 unchanged; commit or stash its %2 uncommitted "

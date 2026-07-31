@@ -570,6 +570,116 @@ QString buildHostDiskUsageCommand(const QString &path, QString *error)
     return QStringLiteral("sh -lc ") + shellSingleQuote(script);
 }
 
+QString buildHostMountUsageCommand()
+{
+    const auto sentinelText = [](const char *message) {
+        return QString::fromLatin1(
+            QByteArray(message).toBase64(QByteArray::Base64Encoding));
+    };
+    const QString noBase64 = sentinelText(
+        "This host has no base64 command, so ForkMesh cannot list its mount "
+        "points safely.");
+    const QString noDf = sentinelText(
+        "This host has no df command, so ForkMesh cannot read mount usage.");
+    // `df -P` guarantees one filesystem per logical record. The final field
+    // may contain spaces, so reconstruct it after shifting the five fixed
+    // fields. Only numeric capacity values and a base64 path cross the
+    // sentinel boundary.
+    const QString script =
+        QStringLiteral(
+            "set -u\n"
+            "LC_ALL=C\n"
+            "export LC_ALL\n"
+            "if ! command -v base64 >/dev/null 2>&1; then\n"
+            "  printf 'FORKMESH-MOUNT1-ERROR %1\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "if ! command -v df >/dev/null 2>&1; then\n"
+            "  printf 'FORKMESH-MOUNT1-ERROR %2\\n'\n"
+            "  exit 0\n"
+            "fi\n"
+            "df -P -k -l 2>/dev/null | sed 1d | "
+            "while IFS= read -r line; do\n"
+            "  set -- $line\n"
+            "  [ \"$#\" -ge 6 ] || continue\n"
+            "  total=$2; used=$3; avail=$4\n"
+            "  shift 5\n"
+            "  mp=$*\n"
+            "  case \"$total:$used:$avail\" in\n"
+            "    *[!0-9:]*) continue ;;\n"
+            "  esac\n"
+            "  case \"$mp\" in\n"
+            "    /*) ;;\n"
+            "    *) continue ;;\n"
+            "  esac\n"
+            "  printf 'FORKMESH-MOUNT1 %s %s %s %s\\n' "
+            "\"$total\" \"$used\" \"$avail\" "
+            "\"$(printf '%s' \"$mp\" | base64 | tr -d '\\n')\"\n"
+            "done\n"
+            "printf 'FORKMESH-MOUNT1-END\\n'\n")
+            .arg(noBase64, noDf);
+    return QStringLiteral("sh -lc ") + shellSingleQuote(script);
+}
+
+HostMountUsageList parseHostMountUsage(const QByteArray &output)
+{
+    HostMountUsageList result;
+    QSet<QString> seenPaths;
+    const QStringList lines =
+        QString::fromUtf8(output)
+            .split(QRegularExpression(QStringLiteral("[\\r\\n]")),
+                   Qt::SkipEmptyParts);
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        if (line == QStringLiteral("FORKMESH-MOUNT1-END")) {
+            result.complete = true;
+            continue;
+        }
+        if (line.startsWith(QStringLiteral("FORKMESH-MOUNT1-ERROR "))) {
+            const QByteArray decoded = QByteArray::fromBase64(
+                line.mid(22).trimmed().toLatin1());
+            result.error =
+                decoded.isEmpty()
+                    ? QStringLiteral("The host refused the mount-usage read.")
+                    : QString::fromUtf8(decoded);
+            result.complete = true;
+            continue;
+        }
+        if (!line.startsWith(QStringLiteral("FORKMESH-MOUNT1 ")))
+            continue;
+        const QStringList fields =
+            line.mid(16).split(QLatin1Char(' '), Qt::SkipEmptyParts);
+        if (fields.size() != 4)
+            continue;
+        bool totalOk = false;
+        bool usedOk = false;
+        bool availableOk = false;
+        const qint64 totalKib = fields.at(0).toLongLong(&totalOk);
+        const qint64 usedKib = fields.at(1).toLongLong(&usedOk);
+        const qint64 availableKib = fields.at(2).toLongLong(&availableOk);
+        const QString path = normalizeRemoteDiskPath(QString::fromUtf8(
+            QByteArray::fromBase64(fields.at(3).toLatin1())));
+        if (!totalOk || !usedOk || !availableOk || totalKib <= 0 ||
+            usedKib < 0 || availableKib < 0 || path.isEmpty() ||
+            seenPaths.contains(path)) {
+            continue;
+        }
+        seenPaths.insert(path);
+        result.mounts.append(
+            HostMountUsage{path, totalKib * 1024, usedKib * 1024,
+                           availableKib * 1024});
+    }
+    std::sort(result.mounts.begin(), result.mounts.end(),
+              [](const HostMountUsage &a, const HostMountUsage &b) {
+                  if (a.path == QStringLiteral("/"))
+                      return b.path != QStringLiteral("/");
+                  if (b.path == QStringLiteral("/"))
+                      return false;
+                  return a.path.localeAwareCompare(b.path) < 0;
+              });
+    return result;
+}
+
 HostDiskUsage parseHostDiskUsage(const QByteArray &output, const QString &path)
 {
     HostDiskUsage usage;
@@ -1142,6 +1252,28 @@ QString findCloudflareWorkerDirectory(const QString &sourceDir,
     return worker.canonicalFilePath();
 }
 
+QString findSiteDeployScript(const QString &sourceDir,
+                             const QString &applicationDir)
+{
+    QStringList candidates;
+    const QString overridePath =
+        qEnvironmentVariable("FORKMESH_SITE_DEPLOY").trimmed();
+    if (!overridePath.isEmpty())
+        candidates.append(overridePath);
+    const QString worker =
+        findCloudflareWorkerDirectory(sourceDir, applicationDir);
+    if (!worker.isEmpty()) {
+        candidates.append(
+            QDir(worker).absoluteFilePath(QStringLiteral("deploy.sh")));
+    }
+    for (const QString &candidate : candidates) {
+        const QString resolved = canonicalCandidate(candidate);
+        if (!resolved.isEmpty())
+            return resolved;
+    }
+    return {};
+}
+
 namespace {
 
 QString findPinnedTool(const QString &fileName, const QString &overrideName,
@@ -1198,6 +1330,15 @@ QString findMirrorGatewayScript(
     return findPinnedTool(
         QStringLiteral("mirror_gateway.py"),
         QStringLiteral("FORKMESH_MIRROR_GATEWAY"),
+        sourceDir, applicationDir);
+}
+
+QString findMcpServerScript(
+    const QString &sourceDir, const QString &applicationDir)
+{
+    return findPinnedTool(
+        QStringLiteral("forkmesh_mcp_server.py"),
+        QStringLiteral("FORKMESH_MCP_SERVER"),
         sourceDir, applicationDir);
 }
 
@@ -1827,6 +1968,25 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
     // automatic mirror size; operators can still install manually on custom
     // hosts whose temporary-storage layout meets the same runtime needs.
     constexpr double kMinimumMirrorRamMb = 1024.0;
+    const auto hasUsLocation = [](const QJsonObject &plan) {
+        static const QSet<QString> usRegions{
+            QStringLiteral("ewr"), // Newark, New Jersey / New York metro
+            QStringLiteral("atl"), // Atlanta
+            QStringLiteral("ord"), // Chicago
+            QStringLiteral("dfw"), // Dallas
+            QStringLiteral("mia"), // Miami
+            QStringLiteral("lax"), // Los Angeles
+            QStringLiteral("sea"), // Seattle
+            QStringLiteral("sjc"), // Silicon Valley
+            QStringLiteral("hon"), // Honolulu
+        };
+        for (const QJsonValue &value :
+             plan.value(QStringLiteral("locations")).toArray()) {
+            if (usRegions.contains(value.toString().trimmed().toLower()))
+                return true;
+        }
+        return false;
+    };
     QJsonObject best;
     for (const QJsonValue &value : plans) {
         const QJsonObject plan = value.toObject();
@@ -1835,8 +1995,7 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
         const QString id = plan.value(QStringLiteral("id")).toString();
         if (id.isEmpty() || !std::isfinite(cost) || cost <= 0.0 ||
             !std::isfinite(ram) || ram < kMinimumMirrorRamMb ||
-            !vultrPlanHasIpv4(plan) ||
-            plan.value(QStringLiteral("locations")).toArray().isEmpty()) {
+            !vultrPlanHasIpv4(plan) || !hasUsLocation(plan)) {
             continue;
         }
         if (best.isEmpty()) {
@@ -1863,15 +2022,33 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
 
 QString vultrPlanRegion(const QJsonObject &plan)
 {
-    QStringList locations;
+    // Keep automatically provisioned World mirrors in the United States.
+    // Newark is the closest Vultr region to New York City, followed by
+    // Atlanta; the remaining US locations provide deterministic capacity
+    // fallbacks without silently placing a mirror on another continent.
+    static const QStringList preferredUsRegions{
+        QStringLiteral("ewr"),
+        QStringLiteral("atl"),
+        QStringLiteral("ord"),
+        QStringLiteral("dfw"),
+        QStringLiteral("mia"),
+        QStringLiteral("lax"),
+        QStringLiteral("sea"),
+        QStringLiteral("sjc"),
+        QStringLiteral("hon"),
+    };
+    QSet<QString> locations;
     for (const QJsonValue &value :
          plan.value(QStringLiteral("locations")).toArray()) {
-        const QString region = value.toString().trimmed();
+        const QString region = value.toString().trimmed().toLower();
         if (!region.isEmpty())
-            locations.append(region);
+            locations.insert(region);
     }
-    std::sort(locations.begin(), locations.end());
-    return locations.isEmpty() ? QString() : locations.first();
+    for (const QString &region : preferredUsRegions) {
+        if (locations.contains(region))
+            return region;
+    }
+    return {};
 }
 
 QJsonObject latestVultrDebianOs(const QJsonArray &osList)
@@ -2021,6 +2198,75 @@ bool vultrInstallNeedsLocalBinary(const QString &installOutput)
             return true;
     }
     return false;
+}
+
+QString savedHostVultrInstanceId(const QJsonObject &host)
+{
+    const QString provider =
+        host.value(QStringLiteral("provider")).toString().trimmed();
+    if (provider.compare(QStringLiteral("Vultr"), Qt::CaseInsensitive) != 0)
+        return {};
+    return host.value(QStringLiteral("instanceId")).toString().trimmed();
+}
+
+QString vultrInstanceIdForAddress(const QJsonArray &instances,
+                                  const QString &address)
+{
+    const QString wanted = address.trimmed().toLower();
+    if (wanted.isEmpty())
+        return {};
+    QString match;
+    for (const QJsonValue &value : instances) {
+        const QJsonObject instance = value.toObject();
+        const QString id = instance.value(QStringLiteral("id")).toString().trimmed();
+        if (id.isEmpty())
+            continue;
+        bool hit = false;
+        for (const QString &field : {QStringLiteral("main_ip"),
+                                     QStringLiteral("v6_main_ip"),
+                                     QStringLiteral("label"),
+                                     QStringLiteral("hostname")}) {
+            const QString candidate =
+                instance.value(field).toString().trimmed().toLower();
+            // Vultr reports an unassigned address as "0.0.0.0"/"", which would
+            // otherwise let two booting instances "match" each other.
+            if (candidate.isEmpty() ||
+                candidate == QLatin1String("0.0.0.0")) {
+                continue;
+            }
+            if (candidate == wanted) {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit)
+            continue;
+        if (!match.isEmpty() && match != id)
+            return {}; // ambiguous — fail closed rather than destroy a guess
+        match = id;
+    }
+    return match;
+}
+
+QString validateVultrDestroyRequest(const QString &apiKey,
+                                    const QString &instanceId)
+{
+    static const QRegularExpression keyPattern(
+        QStringLiteral("^[A-Za-z0-9]{20,128}$"));
+    if (!keyPattern.match(apiKey.trimmed()).hasMatch()) {
+        return QStringLiteral(
+            "Enter your Vultr API key (Account \xE2\x86\x92 API in the Vultr "
+            "panel). It is used from memory only and never saved to disk.");
+    }
+    static const QRegularExpression idPattern(QStringLiteral(
+        "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+        "[0-9a-fA-F]{12}$"));
+    if (!idPattern.match(instanceId.trimmed()).hasMatch()) {
+        return QStringLiteral(
+            "No Vultr instance is recorded for this host, so there is nothing "
+            "safe to destroy. Delete it from the Vultr panel instead.");
+    }
+    return {};
 }
 
 bool agentCliCredentialsAreEmpty(const AgentCliCredentials &credentials)

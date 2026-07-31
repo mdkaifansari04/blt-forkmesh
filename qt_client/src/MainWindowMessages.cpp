@@ -756,6 +756,14 @@ QString directoryUserKey(const MemberInfo &u)
     const QString owner = u.ownerUser.trimmed();
     return (owner.isEmpty() ? u.name.trimmed() : owner).toLower();
 }
+
+// Same account key, ignoring the "self" shortcut: the users column groups every
+// row by account name, so the directory has to be indexed by that name too.
+QString directoryAccountKey(const MemberInfo &u)
+{
+    const QString owner = u.ownerUser.trimmed();
+    return (owner.isEmpty() ? u.name.trimmed() : owner).toLower();
+}
 } // namespace
 
 void MainWindow::refreshChatUserDirectory()
@@ -834,9 +842,14 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
 
         const QString avatarPng = obj.value(QStringLiteral("avatarPng")).toString();
         if (!avatarPng.isEmpty()) {
+            const QByteArray png = QByteArray::fromBase64(avatarPng.toLatin1());
             QPixmap avatar;
-            if (avatar.loadFromData(QByteArray::fromBase64(avatarPng.toLatin1())))
+            if (avatar.loadFromData(png))
                 m_avatars.insert(member.id, avatar);
+            // Our own row is the account's picture as the website shows it —
+            // adopt it so the rail avatar matches the web (adhoc #19).
+            if (member.self)
+                adoptWebAccountAvatar(png);
         }
         next.insert(key, member);
     }
@@ -1058,6 +1071,34 @@ void MainWindow::refreshChatMembers()
         addMember(*directory);
         for (const MemberInfo &member : liveByUser.value(key))
             addMember(member);
+    }
+
+    // The users column lists people, and the only people are the registered
+    // accounts /api/accounts/users returns. Everything else that turns up on the
+    // roster — anonymous "Guest 3923" browser tabs, World visitors, bare nodes
+    // with no owning account — is not a user and is dropped here instead of
+    // padding the column (and its count) with rows nobody can look up.
+    //
+    // Only applied once the directory has actually loaded: before the first
+    // successful fetch (or if it fails) an empty directory must not blank the
+    // column. Our own row always stays, even if our account isn't listed yet.
+    if (m_chatDirectoryLoaded) {
+        QSet<QString> accountKeys;
+        for (const MemberInfo &u : std::as_const(m_chatDirectoryUsers)) {
+            const QString key = directoryAccountKey(u);
+            if (!key.isEmpty())
+                accountKeys.insert(key);
+        }
+        const QString selfKey = accountOwner().trimmed().toLower();
+        if (!selfKey.isEmpty())
+            accountKeys.insert(selfKey);
+        groups.erase(std::remove_if(groups.begin(), groups.end(),
+                                    [&](const ChatUserGroup &g) {
+                                        return !g.primary.self &&
+                                               !accountKeys.contains(g.key);
+                                    }),
+                     groups.end());
+        groupIndex.clear(); // indices no longer line up; not used past here
     }
 
     // Fill in any owned nodes we didn't see live, as offline badges, so a user's

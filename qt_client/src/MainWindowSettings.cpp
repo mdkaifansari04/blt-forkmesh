@@ -980,22 +980,10 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoAgentOnStallSetting, enabled);
     });
 
-    // When an idle agent's branch would conflict with base — the same check
-    // that shows the "Fix conflicts with agent" button — automatically ask the
-    // agent to merge and resolve it instead of waiting for a manual click.
-    // On by default.
-    auto *autoFixConflictsCheck =
-        new QCheckBox("Auto-fix agent branch conflicts");
-    autoFixConflictsCheck->setChecked(
-        QSettings().value(kAutoFixAgentConflictsSetting, true).toBool());
-    autoFixConflictsCheck->setToolTip(
-        "When an idle agent's branch conflicts with the base branch, "
-        "automatically ask the agent to merge and resolve the conflicts "
-        "(the same action as the \"Fix conflicts with agent\" button). "
-        "On by default; only attempted once per detected conflict.");
-    connect(autoFixConflictsCheck, &QCheckBox::toggled, this, [](bool enabled) {
-        QSettings().setValue(kAutoFixAgentConflictsSetting, enabled);
-    });
+    // Branch conflicts are no longer fixed automatically (adhoc #446): the
+    // agents list flags a conflicting branch with an orange conflict button and
+    // the agent is only steered into merging base when that button is clicked,
+    // so there's no setting here any more.
 
     // When a repo's tests or build fail, automatically send the failure back
     // to the agent that last worked on that branch instead of waiting for a
@@ -1797,7 +1785,6 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addWidget(agentsHint);
     agentsCol->addLayout(agentForm);
     agentsCol->addWidget(autoStallAgentCheck);
-    agentsCol->addWidget(autoFixConflictsCheck);
     agentsCol->addWidget(autoFixFailuresCheck);
     agentsCol->addWidget(jailAgentsCheck);
     agentsCol->addSpacing(6);
@@ -1846,6 +1833,11 @@ QWidget *MainWindow::buildSettingsSection()
     secretsCol->addWidget(buildCoveGlobalSection());
     secretsCol->addStretch();
     addTab(secretsTab, "Secrets & Coves");
+
+    // MCP: connector token + the config to paste into an external agent, so
+    // anything speaking MCP can work this node's issues and PRs (adhoc #16).
+    // Built in its own translation unit (MainWindowMcp.cpp).
+    addTab(buildMcpConnectorTab(), "MCP");
 
     // Security: private vulnerability reporting form.
     addTab(buildVulnReportTab(), "Security");
@@ -2505,6 +2497,22 @@ void MainWindow::pushAccountAvatar()
         nullptr);
 }
 
+void MainWindow::adoptWebAccountAvatar(const QByteArray &png)
+{
+    // Take the picture the account is showing on the website. The public user
+    // directory refreshChatUserDirectory() polls already carries every
+    // account's avatarPng, so following a change made on the web costs no extra
+    // request. Guarded on being signed in: a local profile that merely shares
+    // the name must never have its picture replaced from the directory.
+    if (!m_accountAuthenticated || png.isEmpty() || png == m_userAvatar)
+        return;
+    m_userAvatar = png;
+    QSettings().setValue(kAvatarSetting, png);
+    updateAvatarButton();
+    updateUserAvatarButton();
+    updateChatIdentity();
+}
+
 void MainWindow::updateAvatarButton()
 {
     // The top-bar node avatar button is gone (only the user avatar remains);
@@ -2517,7 +2525,8 @@ void MainWindow::updateUserAvatarButton()
 {
     if (!m_userAvatarNavButton)
         return;
-    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 34);
+    // Circular, like the website renders an account's picture (adhoc #19).
+    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 34, 0.5);
     if (!pm.isNull())
         m_userAvatarNavButton->setIcon(QIcon(pm));
     m_userAvatarNavButton->setIconSize(QSize(34, 34));
@@ -4311,7 +4320,8 @@ void MainWindow::logSystem(const QString &text)
 
 // Toast pill caps the inline message at this many characters; longer text is
 // elided to one line and revealed in full via the Expand button. Sized to the
-// widened 900px toast container (see m_topMessageContainer).
+// footer mini-log panel the pill now fills (see m_topMessageContainer); the
+// label clips rather than elides below that, and Expand is always one click away.
 static constexpr int kToastMaxChars = 160;
 
 // Auto-dismiss windows for the top toast. Every toast counts down visibly so the
@@ -4326,6 +4336,15 @@ static constexpr int kToastErrorSeconds = 20;
 // retry loop firing errors faster than they can be read shouldn't grow this
 // without bound. The oldest queued message is dropped once the cap is hit.
 static constexpr int kToastQueueLimit = 20;
+
+// The toast is docked in the footer's mini-log panel, and the Git workspace
+// hides that whole footer to give the diff the full window height. Report that
+// so a message raised there still reaches the user (via the floating overlay)
+// instead of being painted into a hidden panel.
+bool MainWindow::topMessageDockVisible() const
+{
+    return m_footerDock && m_footerDock->isVisible();
+}
 
 // (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
 // A long message shows as an elided one-liner so it can never widen the window;
@@ -4368,10 +4387,11 @@ void MainWindow::renderTopMessage()
                                            ? QStringLiteral("Collapse the message")
                                            : QStringLiteral("Show the full message"));
     }
-    // Float the full, wrapped message on top of the layout when expanded; hide
-    // the panel again when collapsed.
+    // Float the full, wrapped message on top of the layout when expanded — or
+    // whenever the footer that hosts the inline pill is hidden, so a Git-workspace
+    // failure is still seen. Hide the panel again when collapsed and docked.
     if (m_topMessageOverlay && m_topMessageOverlayText) {
-        if (m_topMessageExpanded) {
+        if (m_topMessageExpanded || !topMessageDockVisible()) {
             m_topMessageOverlayText->setText(
                 QStringLiteral("<span style='color:%1'>%2 %3</span>")
                     .arg(fg, glyph, m_topMessageRaw.toHtmlEscaped()));
@@ -4385,8 +4405,8 @@ void MainWindow::renderTopMessage()
 }
 
 // Size the floating expanded-toast panel to its content (capped to a readable
-// width) and anchor it just under the inline toast, centred on it but clamped to
-// stay inside the window. Called on expand and on window resize.
+// width) and anchor it to the inline toast, centred on it but clamped to stay
+// inside the window. Called on expand and on window resize.
 void MainWindow::positionTopMessageOverlay()
 {
     if (!m_topMessageOverlay || !m_topMessageContainer)
@@ -4397,13 +4417,24 @@ void MainWindow::positionTopMessageOverlay()
     int h = m_topMessageOverlay->heightForWidth(w);
     if (h <= 0)
         h = m_topMessageOverlay->sizeHint().height();
+    h = qMin(h, qMax(120, height() - 2 * margin));
     m_topMessageOverlay->setFixedHeight(h);
-    // Anchor just below the inline toast, horizontally centred on it.
-    const QPoint anchor =
-        m_topMessageContainer->mapTo(this, QPoint(0, m_topMessageContainer->height()));
-    int x = anchor.x() + m_topMessageContainer->width() / 2 - w / 2;
-    x = qBound(margin, x, width() - w - margin);
-    m_topMessageOverlay->move(x, anchor.y() + 6);
+    // With the footer hidden the pill has no meaningful geometry to anchor to, so
+    // the panel sits where the mini-log would have been: bottom-left of the window.
+    if (!topMessageDockVisible()) {
+        m_topMessageOverlay->move(margin, qMax(margin, height() - h - margin));
+        return;
+    }
+    const QPoint top = m_topMessageContainer->mapTo(this, QPoint(0, 0));
+    int x = top.x() + m_topMessageContainer->width() / 2 - w / 2;
+    x = qBound(margin, x, qMax(margin, width() - w - margin));
+    // Prefer just below the pill, as before — but the toast now lives in the
+    // footer, so there is normally no room down there and the panel opens
+    // upward instead of running off the bottom of the window.
+    const int below = top.y() + m_topMessageContainer->height() + 6;
+    const int y = (below + h + margin <= height()) ? below
+                                                   : qMax(margin, top.y() - h - 6);
+    m_topMessageOverlay->move(x, y);
 }
 
 void MainWindow::resizeEvent(QResizeEvent *event)

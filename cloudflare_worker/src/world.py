@@ -65,7 +65,19 @@ WORLD_FIRST_VISIT_AGE_VALUES = frozenset({
     "over-a-year", "hidden",
 })
 WORLD_DOOR_VALUES = frozenset({"closed", "knock", "open"})
-WORLD_EMOTE_VALUES = frozenset({"celebrate", "idea", "wave"})
+WORLD_EMOTE_VALUES = frozenset({
+    "backflip",
+    "celebrate",
+    "dance",
+    "float",
+    "idea",
+    "jump",
+    "superjump",
+    "sparkle",
+    "spin",
+    "wave",
+    "wobble",
+})
 WORLD_ACCOUNT_STATUS_VALUES = frozenset({
     "Guest", "Registered", "Supporting member", "Mirror operator",
     "Organization admin", "Verified bot",

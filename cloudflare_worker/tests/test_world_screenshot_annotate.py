@@ -89,6 +89,29 @@ def test_annotator_matches_the_desktop_markup_toolset():
     assert "data-shot-download" in APP
 
 
+def test_annotated_screenshot_can_stage_in_the_hud_composer():
+    chat = (ROOT / "public" / "dashboard-chat.js").read_text(
+        encoding="utf-8"
+    )
+    assert "data-shot-compose" in APP
+    assert "Add to chat / prompt" in APP
+    assert "data-shot-alt" in APP
+    assert "this.compactQaFailureScreenshot(" in APP
+    assert "this.openChatTerminal(altText" in APP
+    assert "attachment:" in APP
+    assert "pendingWorldComposerPrefill" in chat
+    assert "fileFromWorldComposerAttachment" in chat
+    assert "stageDashboardAttachments(control, [file])" in chat
+    assert "async function taskAttachmentMetadata(file)" in chat
+    assert 'canvas.toDataURL("image/webp", 0.72)' in chat
+    assert "attachment.thumbnail = thumbnail" in chat
+    assert "Choose a destination, then send." in chat
+    assert "void sendDashboardDraft(control)" not in chat[
+        chat.index("function applyWorldComposerPrefill()"):
+        chat.index("// The World's ForkBot avatar")
+    ]
+
+
 def test_annotator_is_an_accessible_dialog_with_pressed_states():
     assert 'setAttribute("role", "dialog")' in APP
     assert 'setAttribute("aria-modal", "true")' in APP

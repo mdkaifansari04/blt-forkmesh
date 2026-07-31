@@ -681,6 +681,26 @@ bool MainWindow::testAgentColumnsMovable() const
     return m_agentTable && m_agentTable->horizontalHeader()->sectionsMovable();
 }
 
+// adhoc #35: read back the agents list's column labels plus how far the last
+// column reaches, so a test can prove the trimmed layout is what ships — the
+// title column absorbing the spare width, with Updated and Diff pushed against
+// the list's right edge rather than leaving a dead gap after them.
+QString MainWindow::testAgentColumnLayout() const
+{
+    if (!m_agentTable)
+        return QString();
+    QHeaderView *header = m_agentTable->horizontalHeader();
+    QStringList labels;
+    for (int c = 0; c < m_agentTable->columnCount(); ++c)
+        labels << m_agentTable->horizontalHeaderItem(c)->text();
+    // The header's used width vs the width it has to fill: equal means the
+    // columns span the list with nothing left over on the right.
+    return QStringLiteral("%1|%2/%3")
+        .arg(labels.join(QLatin1Char(',')))
+        .arg(header->length())
+        .arg(m_agentTable->viewport()->width());
+}
+
 QString MainWindow::testQuickAddAgentProvider() const
 {
     return m_quickAddAgentProvider ? m_quickAddAgentProvider->currentData().toString()
@@ -1525,15 +1545,9 @@ void MainWindow::sendNodeHeartbeat()
         const bool wasAdmin = m_isAdmin;
         m_isAdmin = resp.value("isAdmin").toBool();
         // Admin status is learned after the initial nav render, so refresh the
-        // top-bar name once when it flips to show/hide the crown — without the
-        // balance re-query the heartbeat path otherwise avoids.
-        if (m_isAdmin != wasAdmin && m_navNodeName) {
-            const QString name = accountNameFromInput(m_userName, QString());
-            const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
-            m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
-            m_navNodeName->setToolTip(
-                m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
-        }
+        // avatar crown badge once when it flips.
+        if (m_isAdmin != wasAdmin)
+            updateAdminCrownBadge();
         // Fetch the shared room-chat key once the account identity is available,
         // so it's cached before the user opens chat (no-op once fetched).
         fetchRoomPassphrase();
@@ -1562,8 +1576,13 @@ void MainWindow::sendNodeHeartbeat()
         // heartbeat reply and flags when it grew since the last beat. Only then
         // do we refresh the display (which may fire the opt-in balance-change
         // alert). Other refreshes happen on startup / address changes.
-        if (resp.value(QStringLiteral("balanceIncreased")).toBool())
+        // (The display itself is otherwise refreshed only on hover — see
+        // refreshNavSolanaBalance — so this forced query is what still lets the
+        // opt-in balance-change alert fire without the user pointing at it.)
+        if (resp.value(QStringLiteral("balanceIncreased")).toBool()) {
             updateNavSolanaBalance();
+            refreshNavSolanaBalance(true);
+        }
         // A user on forkmesh.com is claiming this node (adhoc #53): the reply
         // carries the confirmation code, which is shown on this machine only.
         // Typing it into the website completes the link. Guard on the code so
@@ -2954,6 +2973,11 @@ bool MainWindow::verifyTotpLogin(const QString &email,
             loginRequest.insert(QStringLiteral("pubkey"), publicKey);
             loginRequest.insert(QStringLiteral("deviceTs"), deviceTs);
             loginRequest.insert(QStringLiteral("deviceSig"), deviceSig);
+            // Name the device the relay is about to register, so the account's
+            // device list on the website identifies this machine instead of
+            // showing an unlabelled key.
+            loginRequest.insert(QStringLiteral("deviceLabel"),
+                                machineNodeName());
         }
     }
     int status = 0;

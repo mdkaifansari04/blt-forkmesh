@@ -16,13 +16,15 @@ def test_world_uses_a_mixed_city_and_woodland_surface():
     for contract in (
         '"forkmesh-continuous-city-land"',
         'group.name = "forkmesh-town-mixed-landscape"',
-        '"forkmesh-town-stone-plaza"',
+        '"forkmesh-town-path-junction"',
         "`forkmesh-town-path-${id}`",
         "deterministicTreeLayout().forEach",
-        '"#b29a76"',
         '"/world/assets/city-park-grass-v1.webp"',
     ):
         assert contract in scene
+    assert '"forkmesh-town-stone-plaza"' not in scene
+    assert '"forkmesh-town-plaza-edge"' not in scene
+    assert "forkmesh-town-path-edge-" not in scene
     assert "forkmesh-town-grass-patch" not in scene
     assert 'makeMaterial(THREE, "#174434"' not in scene
 
@@ -48,9 +50,11 @@ def test_repository_and_office_paths_share_the_continuous_grass():
     scene = source()
     for contract in (
         '"hosted-repository-promenade"',
-        '"south-members", [0, 16], [0, MEMBER_PATH_END_Z], 8.4',
+        '"south-members"',
+        "[0, MEMBER_PATH_END_Z]",
         '"forkmesh-leaderboard-promenade"',
-        '"north-office", [0, -16], [0, OFFICE_BRIDGE_START_Z], OFFICE_BRIDGE_WIDTH',
+        '"north-office"',
+        "[0, OFFICE_BRIDGE_START_Z]",
         '"forkmesh-office-bridge"',
         '"forkmesh-office-island-approach"',
         "concreteBrickMaterial(THREE)",
@@ -63,6 +67,36 @@ def test_repository_and_office_paths_share_the_continuous_grass():
     assert '"forkmesh-member-promenade"' not in scene
     assert '"forkmesh-office-land-promenade"' not in scene
     assert "for (let x = -5.4; x <= 5.4; x += 1.2)" not in scene
+
+
+def test_repository_and_leaderboard_districts_share_textured_flush_paths():
+    scene = source()
+    for contract in (
+        "const WORLD_PATH_WIDTH = OFFICE_BRIDGE_WIDTH;",
+        "const WORLD_PATH_HEIGHT = 0.08;",
+        "const WORLD_PATH_SURFACE_Y = 0.105;",
+        (
+            "const REPOSITORY_GROUND_RADIUS = "
+            "REPOSITORY_ISLAND_RING_RADIUS + 7;"
+        ),
+        "function createDistrictGroundCircle(",
+        "radius = DISTRICT_GROUND_RADIUS,",
+        "`forkmesh-${kind}-textured-ground`",
+        '"repositories",\n      REPOSITORY_GROUND_RADIUS,',
+        'createDistrictGroundCircle(THREE, "leaderboards")',
+        "repositoryConnectionLength,\n      WORLD_PATH_HEIGHT,\n      WORLD_PATH_WIDTH,",
+        "leaderboardConnectionLength,\n      WORLD_PATH_HEIGHT,\n      WORLD_PATH_WIDTH,",
+        "repositoryPromenade.position.y = WORLD_PATH_CENTER_Y;",
+        "leaderboardPromenade.position.y = WORLD_PATH_CENTER_Y;",
+        'importKiosk.position.set(0, 0, 0);',
+        'color: repository ? "#c1bbb0" : "#8a829b"',
+    ):
+        assert contract in scene
+    assert 'registerMovableObject("landmark-" + landmark.id, object)' not in scene
+    assert "new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2)" not in scene
+    assert "new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2)" not in scene
+    assert "guide.position.set(0, 0.15, z)" not in scene
+    assert "beacon.position.set(x, 0.72, z)" not in scene
 
 
 def test_continuous_visible_foundation_drives_walkability():
@@ -140,10 +174,30 @@ def test_two_clickable_bikes_use_normal_movement_and_collision():
         assert contract in scene
 
 
-def test_treasury_sign_is_front_centered_with_a_new_window_node_download():
+def test_clickable_quadcopter_flies_on_three_axes_to_a_bounded_high_altitude():
     scene = source()
     for contract in (
-        "treasurySign.position.set(0, 0, 10.8)",
+        'quadcopter.name = "forkmesh-world-quadcopter"',
+        "const QUADCOPTER_HORIZONTAL_SPEED = 42",
+        "const QUADCOPTER_VERTICAL_SPEED = 28",
+        "const QUADCOPTER_MAX_ALTITUDE = 480",
+        "function rideQuadcopter(index)",
+        "function dismountQuadcopter(",
+        "function toggleNearestQuadcopterRide()",
+        "function updateQuadcopterRide(input, delta, time)",
+        '["Space", "KeyC", "ControlLeft", "ControlRight"]',
+        "hit.object.userData.quadcopterIndex",
+        "prepareRoofParachute()",
+        "QUADCOPTER_RIDING_ACTIVITY",
+        "getQuadcopterState:",
+    ):
+        assert contract in scene
+
+
+def test_treasury_sign_is_centered_with_a_new_window_node_download():
+    scene = source()
+    for contract in (
+        "treasurySign.position.set(0, 1, 0)",
         '"reward-treasury-start-node-button"',
         '"start-node-download"',
         '"START A NODE"',
@@ -230,3 +284,7 @@ def test_environment_tracks_the_visitors_local_daylight_without_frame_churn():
     assert "const easedDaylight =" in scene
     assert "nextEnvironmentCheckAt = time + 15_000;" in scene
     assert "if (minuteOfDay !== localDaylightMinute)" in scene
+    assert 'moon.name = "forkmesh-world-moonlight"' in scene
+    assert "moon.castShadow = false" in scene
+    assert "scene.add(sun.target)" in scene
+    assert "(1 - easedDaylight) * 0.9" in scene

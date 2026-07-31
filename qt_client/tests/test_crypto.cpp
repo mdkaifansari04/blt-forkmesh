@@ -15,8 +15,10 @@
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueBurnup.h"
 #include "../src/IssueStore.h"
+#include "../src/LocalBackupStore.h"
 #include "../src/MirrorCrypto.h"
 #include "../src/PrivateMirrorStore.h"
+#include "../src/McpConnector.h"
 #include "../src/NetworkBackoff.h"
 #include "../src/PlatformLogFilter.h"
 #include "../src/ProjectStore.h"
@@ -475,9 +477,16 @@ int main(int argc, char *argv[])
         check(!ForkMeshIdentity::verifySignature(identity.publicKey(), sig,
                                                  canonical + "x"),
               "verifySignature rejects a tampered payload");
+        // Tamper with the FIRST base64 character, not the last: the trailing
+        // characters of a 64-byte signature carry bits that decode to nothing,
+        // so rewriting them sometimes yields the very same signature and the
+        // check flaked. Every bit of the first character is significant.
+        const QString tamperedSignature =
+            (sig.startsWith(QLatin1Char('A')) ? QStringLiteral("B")
+                                              : QStringLiteral("A")) +
+            sig.mid(1);
         check(!ForkMeshIdentity::verifySignature(identity.publicKey(),
-                                                 sig.left(sig.size() - 2) + "AA",
-                                                 canonical),
+                                                 tamperedSignature, canonical),
               "verifySignature rejects a tampered signature");
     }
 
@@ -5792,6 +5801,36 @@ int main(int argc, char *argv[])
               "turns, duration and cost reload intact after restart");
     }
 
+    // The quick-add "YOLO" toggle is stamped onto the session at launch (adhoc
+    // #12), so the auto-merge decision survives a restart and never depends on
+    // where the checkbox happens to sit when the run finishes.
+    {
+        QTemporaryDir tmp;
+        check(tmp.isValid(), "yolo store temp dir is valid");
+        AgentStore store(tmp.path());
+        AgentSession session;
+        session.owner = "octo";
+        session.name = "demo";
+        session = store.createSession(session);
+        check(!session.yolo, "a session defaults to no auto-merge");
+        session.yolo = true;
+        session.branchName = "agent/adhoc-1-yolo";
+        check(store.saveSession(session), "saving a YOLO session succeeds");
+
+        AgentStore reopened(tmp.path());
+        const QList<AgentSession> sessions = reopened.loadAllSessions();
+        check(sessions.size() == 1 && sessions.first().yolo &&
+                  !sessions.first().merged,
+              "the YOLO flag reloads intact after a restart, still unmerged");
+
+        // Sessions written before the flag existed must read back as opt-out —
+        // an absent "yolo" key can never turn into an unattended merge.
+        QJsonObject legacy = session.toJson();
+        legacy.remove("yolo");
+        check(!AgentSession::fromJson(legacy).yolo,
+              "a session JSON without the yolo key never auto-merges");
+    }
+
     {
         // Workflow variable substitution must expand the explicit
         // ${{ vars.NAME }} context form and any declared ${NAME} variables, but
@@ -5893,6 +5932,47 @@ int main(int argc, char *argv[])
                            "jobs:\n  j:\n    steps:\n      - run: echo hi\n"));
         check(any.runsOnNode({QStringLiteral("mirror2")}),
               "the reserved \"any\" label matches every node");
+
+        // The Actions tab's "Run on" dropdown pins a node without editing the
+        // YAML: the pin is stored on the repository record and stands in for the
+        // workflow's own runs-on labels.
+        QStringList pins;
+        check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml"))
+                  .isEmpty(),
+              "no pin means the workflow file decides where it runs");
+        pins = ActionFile::setPinnedNode(pins, {QStringLiteral(".forkmesh/ci.yml")},
+                                         QStringLiteral("Mac1"));
+        check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml")) ==
+                  QStringLiteral("mac1"),
+              "a pinned node is stored lower-cased and read back by path");
+        check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml"))
+                  .isEmpty(),
+              "a pin only applies to the workflow it names");
+        pins = ActionFile::setPinnedNode(
+            pins,
+            {QStringLiteral(".forkmesh/ci.yml"), QStringLiteral(".forkmesh/deploy.yml")},
+            QStringLiteral("mirror2"));
+        check(pins.size() == 2 &&
+                  ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml")) ==
+                      QStringLiteral("mirror2"),
+              "pinning every workflow at once repins the ones already pinned");
+        pins = ActionFile::setPinnedNode(pins, {QStringLiteral(".forkmesh/ci.yml")},
+                                         QString());
+        check(pins.size() == 1 &&
+                  ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml"))
+                      .isEmpty() &&
+                  ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml")) ==
+                      QStringLiteral("mirror2"),
+              "clearing one pin leaves the others alone");
+
+        // A pin decides on its own: the dedication check runs against the pinned
+        // label, so a workflow the file sends elsewhere still runs here.
+        ActionWorkflow pinned;
+        pinned.runsOn = QStringList{
+            ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml"))};
+        check(pinned.runsOnNode({QStringLiteral("mirror2")}) &&
+                  !pinned.runsOnNode({QStringLiteral("mac1")}),
+              "the pinned node is the only one that runs the workflow");
 
         // This node's own labels: node name, mirror-executor name, platform, and
         // whatever capability tags the operator typed in Settings.
@@ -6471,6 +6551,119 @@ int main(int argc, char *argv[])
               "a line without a marker is passed through untouched");
     }
 
+    // --- Hourly local backups of the live database ----------------------
+    // The Settings -> Data backup panel restores whatever these helpers list,
+    // so the naming round-trip, the newest-first order, the retention cut and
+    // the tar argument order are the contract that makes recovery work.
+    {
+        QTemporaryDir backupRoot;
+        const QDateTime taken =
+            QDateTime::fromString(QStringLiteral("2026-07-28T09:15:00"),
+                                  Qt::ISODate);
+        const QString name = forkmesh::backupFileName(taken);
+        check(name == QStringLiteral("forkmesh-backup-20260728-091500.tar.gz"),
+              "a snapshot is named after the moment it was taken");
+        check(forkmesh::backupTimestampFromName(name) == taken,
+              "the timestamp round-trips out of the file name");
+        // Only our own archives may be listed: anything else in the folder is a
+        // file the user put there, and restoring or pruning it would be wrong.
+        check(!forkmesh::backupTimestampFromName(
+                   QStringLiteral("forkmesh-backup-20260728-091500-copy.tar.gz"))
+                   .isValid() &&
+                  !forkmesh::backupTimestampFromName(
+                       QStringLiteral("holiday-photos.tar.gz"))
+                       .isValid(),
+              "a look-alike or unrelated archive is not treated as a snapshot");
+
+        auto write = [&backupRoot](const QString &fileName, int bytes) {
+            QFile f(QDir(backupRoot.path()).filePath(fileName));
+            f.open(QIODevice::WriteOnly);
+            f.write(QByteArray(bytes, 'z'));
+            f.close();
+        };
+        write(QStringLiteral("forkmesh-backup-20260728-070000.tar.gz"), 16);
+        write(QStringLiteral("forkmesh-backup-20260728-090000.tar.gz"), 32);
+        write(QStringLiteral("forkmesh-backup-20260728-080000.tar.gz"), 64);
+        write(QStringLiteral("forkmesh-backup-20260728-100000.tar.gz.part"), 8);
+        write(QStringLiteral("notes.txt"), 4);
+
+        const QList<forkmesh::BackupSnapshot> listed =
+            forkmesh::listBackups(backupRoot.path());
+        check(listed.size() == 3 &&
+                  listed.at(0).fileName ==
+                      QStringLiteral("forkmesh-backup-20260728-090000.tar.gz") &&
+                  listed.at(2).fileName ==
+                      QStringLiteral("forkmesh-backup-20260728-070000.tar.gz"),
+              "snapshots list newest first, ignoring partial and foreign files");
+        check(listed.at(0).bytes == 32 &&
+                  QFileInfo::exists(listed.at(0).path),
+              "each listed snapshot carries its real size and absolute path");
+
+        const QList<forkmesh::BackupSnapshot> pruned =
+            forkmesh::backupsToPrune(listed, 2);
+        check(pruned.size() == 1 &&
+                  pruned.at(0).fileName ==
+                      QStringLiteral("forkmesh-backup-20260728-070000.tar.gz"),
+              "retention drops the oldest snapshot beyond the keep count");
+        check(forkmesh::backupsToPrune(listed, 3).isEmpty() &&
+                  forkmesh::backupsToPrune(listed, 0).size() == 2,
+              "nothing is pruned under the limit, and keep=0 still spares the "
+              "newest snapshot");
+
+        const QDateTime now =
+            QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
+                                  Qt::ISODate);
+        check(forkmesh::backupIsDue(QDateTime(), now),
+              "the very first backup is always due");
+        check(forkmesh::backupIsDue(now.addSecs(-3600), now) &&
+                  !forkmesh::backupIsDue(now.addSecs(-3599), now),
+              "the next snapshot is due exactly one hour after the last");
+        check(!forkmesh::backupIsDue(now.addSecs(3600), now),
+              "a snapshot stamped in the future (clock skew) doesn't fire a "
+              "burst of backups");
+
+        // The archive must hold the app data + settings file and must never
+        // recurse into the mirrors, the browse cache or the backup folder
+        // itself; tar only honours --exclude when it precedes the members.
+        QTemporaryDir dataRoot;
+        const QString appData = QDir(dataRoot.path()).filePath("ForkMesh");
+        QDir().mkpath(QDir(appData).filePath("backups"));
+        QDir().mkpath(QDir(appData).filePath("mirrors"));
+        const QString configFile = QDir(dataRoot.path()).filePath("forkmesh.conf");
+        write(QStringLiteral("unused"), 1);
+        QFile conf(configFile);
+        conf.open(QIODevice::WriteOnly);
+        conf.write("[General]\n");
+        conf.close();
+
+        const QStringList args = forkmesh::configArchiveTarArgs(
+            QStringLiteral("/tmp/out.tar.gz"), appData, configFile,
+            {QDir(appData).filePath("mirrors"),
+             QDir(appData).filePath("backups"),
+             QStringLiteral("/elsewhere/preview")});
+        check(args.value(0) == QStringLiteral("-czf") &&
+                  args.value(1) == QStringLiteral("/tmp/out.tar.gz"),
+              "the archive path is the first thing tar is told to write");
+        check(args.contains(QStringLiteral("--exclude=ForkMesh/backups")) &&
+                  args.contains(QStringLiteral("--exclude=ForkMesh/mirrors")),
+              "nested backups and mirrors are excluded, so a snapshot never "
+              "packs the previous snapshots");
+        check(!args.contains(QStringLiteral("--exclude=/elsewhere/preview")),
+              "a root outside the app-data tree needs no exclusion");
+        check(args.indexOf(QStringLiteral("--exclude=ForkMesh/backups")) <
+                  args.indexOf(QStringLiteral("-C")),
+              "every exclusion precedes the members, as tar requires");
+        check(args.contains(QStringLiteral("ForkMesh")) &&
+                  args.contains(QStringLiteral("forkmesh.conf")),
+              "the app-data dir and the settings file are both archived");
+        check(forkmesh::configArchiveTarArgs(
+                  QStringLiteral("/tmp/out.tar.gz"),
+                  QDir(dataRoot.path()).filePath("missing"),
+                  QDir(dataRoot.path()).filePath("missing.conf"), {})
+                  .isEmpty(),
+              "a fresh install with nothing on disk yet produces no tar run");
+    }
+
     // QFontDatabase logs "OpenType support missing for \"<family>\", script N"
     // once per installed family every time it walks the fallback list for a
     // codepoint the system fonts can't shape, burying the console. The log
@@ -6497,6 +6690,114 @@ int main(int argc, char *argv[])
                   !forkmesh::isFontDatabaseNoise(
                       QStringLiteral("forkmesh-419-control-line")),
               "isFontDatabaseNoise matches only the font-database warning");
+    }
+
+    // MCP connector (adhoc #16): the token is a bearer credential that lets an
+    // external agent write signed entries as this node, so minting, masking,
+    // persistence permissions and revocation all have to hold.
+    {
+        using namespace forkmesh::mcp;
+        QTemporaryDir appData;
+        check(appData.isValid(), "MCP connector test dir created");
+
+        check(!loadConnector(appData.path()).isValid(),
+              "a node with no connector file grants no token");
+
+        const QString token = generateToken();
+        check(isWellFormedToken(token) && token.startsWith("fmcp_") &&
+                  token.size() >= 40,
+              "a generated token is well formed and long enough to be a secret");
+        check(generateToken() != generateToken(),
+              "each generated token is distinct");
+        check(!isWellFormedToken(QStringLiteral("fmcp_short")) &&
+                  !isWellFormedToken(QStringLiteral("hunter2")) &&
+                  !isWellFormedToken(QString()),
+              "malformed tokens are rejected");
+
+        Connector minted;
+        minted.token = token;
+        minted.node = QStringLiteral("nodepub");
+        minted.label = QStringLiteral("laptop");
+        minted.createdMs = 1700000000000LL;
+        QString error;
+        check(saveConnector(appData.path(), minted, &error), "connector saved");
+
+        const Connector loaded = loadConnector(appData.path());
+        check(loaded.token == token && loaded.node == QStringLiteral("nodepub")
+                  && loaded.label == QStringLiteral("laptop")
+                  && loaded.createdMs == 1700000000000LL,
+              "the saved connector round-trips");
+        // Qt reports the same POSIX bits as both the Owner and User flags, so
+        // assert on what actually matters: the owner can read/write it and
+        // nobody else can see it at all.
+        const QFile::Permissions perms =
+            QFile::permissions(connectorPath(appData.path()));
+        check(perms.testFlag(QFile::ReadOwner) &&
+                  perms.testFlag(QFile::WriteOwner) &&
+                  !(perms & (QFile::ReadGroup | QFile::WriteGroup |
+                             QFile::ReadOther | QFile::WriteOther)),
+              "connector.json is owner-only, like the identity key beside it");
+        check(connectorPath(appData.path())
+                  .endsWith(QStringLiteral("/mcp/connector.json")),
+              "the connector lands where forkmesh_mcp_server.py reads it");
+
+        Connector bogus;
+        bogus.token = QStringLiteral("not-a-token");
+        check(!saveConnector(appData.path(), bogus, &error) &&
+                  loadConnector(appData.path()).token == token,
+              "a malformed token is refused without clobbering the live one");
+
+        // A hand-edited/truncated file must read as "no connector" rather than
+        // as a connector whose token nothing can ever match.
+        QFile broken(connectorPath(appData.path()));
+        check(broken.open(QIODevice::WriteOnly | QIODevice::Truncate),
+              "connector file reopened");
+        broken.write("{\"token\":\"\"}");
+        broken.close();
+        check(!loadConnector(appData.path()).isValid(),
+              "a corrupt connector file reads as absent");
+
+        check(saveConnector(appData.path(), minted, &error) &&
+                  revokeConnector(appData.path(), &error) &&
+                  !loadConnector(appData.path()).isValid(),
+              "revoking removes the token");
+        check(revokeConnector(appData.path(), &error),
+              "revoking an already-revoked connector succeeds");
+
+        const QString config = configJson(QStringLiteral("/usr/bin/python3"),
+                                          QStringLiteral("/opt/fm/mcp.py"),
+                                          QStringLiteral("/home/u/mirrors"),
+                                          token);
+        const QJsonObject server =
+            QJsonDocument::fromJson(config.toUtf8()).object()
+                .value("mcpServers").toObject().value("forkmesh").toObject();
+        check(server.value("command").toString() ==
+                      QStringLiteral("/usr/bin/python3") &&
+                  server.value("args").toArray().at(0).toString() ==
+                      QStringLiteral("/opt/fm/mcp.py"),
+              "the generated config launches the resolved interpreter and script");
+        check(server.value("env").toObject().value("FORKMESH_MCP_TOKEN")
+                      .toString() == token &&
+                  server.value("env").toObject().value("FORKMESH_REPOS_DIR")
+                      .toString() == QStringLiteral("/home/u/mirrors"),
+              "the generated config carries the token and repo root");
+        check(!configJson(QString(), QStringLiteral("/opt/fm/mcp.py"),
+                          QString(), QString())
+                   .contains(QStringLiteral("env")),
+              "with no token and no repo root the config has no env block");
+
+        const QString cli = cliCommand(QStringLiteral("python3"),
+                                       QStringLiteral("/home/a b/mcp.py"),
+                                       QString(), token);
+        check(cli.startsWith(QStringLiteral("claude mcp add forkmesh")) &&
+                  cli.contains(QStringLiteral("'/home/a b/mcp.py'")) &&
+                  cli.contains(QStringLiteral("FORKMESH_MCP_TOKEN=") + token),
+              "the CLI one-liner quotes paths with spaces and passes the token");
+
+        check(maskToken(token).startsWith(QStringLiteral("fmcp_")) &&
+                  !maskToken(token).contains(token.mid(12, 8)) &&
+                  maskToken(QString()).isEmpty(),
+              "masking hides the middle of the token");
     }
 
     if (failures) {

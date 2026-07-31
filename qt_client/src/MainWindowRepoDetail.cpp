@@ -92,21 +92,6 @@ void MainWindow::startIssueInIde(int issueNumber, const QString &title,
                          false);
 }
 
-// The repo header's action buttons (Notify/Fork/Mirror/Source/Open) operate on
-// the repository as a whole. On the Agents tab (m_repoDetailStack index 3) they
-// have no bearing and just crowd the tab bar, so hide them there and show them
-// on every other tab. Wired to m_repoDetailStack::currentChanged so it tracks
-// tab switches however they happen (click, programmatic jump, Back/Forward).
-void MainWindow::updateRepoActionButtonsVisibility(int stackIndex)
-{
-    const bool onAgentsTab = stackIndex == 3;
-    for (QPushButton *b : {m_notifyButton, m_forkButton, m_mirrorButton,
-                           m_sourceButton, m_repoOpenButton}) {
-        if (b)
-            b->setVisible(!onAgentsTab);
-    }
-}
-
 // Show/hide the issue-detail "run in IDE" buttons based on the toggle + whether
 // a live extension is detected. Called whenever an issue is rendered.
 void MainWindow::updateIssueIdeButtons()
@@ -1142,6 +1127,7 @@ void MainWindow::forkCurrentRepo()
     fork.publishToNetwork = true;
     fork.actionsEnabled = src.actionsEnabled;
     fork.disabledWorkflows = src.disabledWorkflows;
+    fork.workflowNodes = src.workflowNodes;
     fork.hostedSinceMs = QDateTime::currentMSecsSinceEpoch();
     fork.mirrorPath = repositoryMirrorRoot() + "/" +
                       repoSegment(owner, QStringLiteral("owner")) + "-" +
@@ -1379,6 +1365,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     refreshRepoSettings();
     updateRepoCodeSize();
     updateFooterGitIdentity();
+    updateFooterCommitInfo();
 
     // Point the embedded issues UI at this repo (its combo is hidden).
     refreshIssuesRepoCombo();
@@ -5001,7 +4988,7 @@ QWidget *MainWindow::createNavHistoryButtons()
     auto makeButton = [this](const QString &icon, const QString &tip,
                              void (MainWindow::*slot)()) {
         auto *b = new QPushButton;
-        b->setObjectName("relayOpenButton"); // transparent icon-button styling
+        b->setObjectName("navHistoryButton");
         b->setCursor(Qt::PointingHandCursor);
         b->setFixedSize(30, 30);
         setOcticon(b, icon, 16);
@@ -7529,6 +7516,7 @@ void MainWindow::setRepoBranch(const QString &branch)
     m_repoBranch = branch;
     if (m_branchButton)
         m_branchButton->setText(branch);
+    updateFooterCommitInfo(); // the strip's commit line follows the browsed branch
     loadRepoOverview(QString());
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
 }
@@ -8352,13 +8340,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     // every such move is a step the arrows can return to. Debounced and guarded
     // against replays, so it coalesces a repo-open's tab churn into one entry.
     connect(m_repoDetailStack, &QStackedWidget::currentChanged, this,
-            [this](int index) {
-                scheduleNavRecord();
-                // The repo action buttons (Notify/Fork/Mirror/Source/Open) act on
-                // the repository itself and are irrelevant on the Agents tab
-                // (index 3), where they crowd the tab bar — hide them there.
-                updateRepoActionButtonsVisibility(index);
-            });
+            [this](int) { scheduleNavRecord(); });
     connect(m_repoDetailTabs, &QButtonGroup::idClicked, this, [this](int id) {
         ensureRepoDetailTabBuilt(id);
         m_repoDetailStack->setCurrentIndex(id);
@@ -8472,7 +8454,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     // shows a 2px line along its left edge.
     m_railCodeButton = new ActivityRailButton(QStringLiteral("code"),
                                               QStringLiteral("Code"));
-    m_railCodeButton->setFixedSize(58, 40);
+    m_railCodeButton->setFixedSize(kRailItemWidth, 40);
     m_railCodeButton->setToolTip(QStringLiteral("Browse the repository files"));
     connect(m_railCodeButton, &QPushButton::clicked, this, [this] {
         showSection(0);
@@ -8483,7 +8465,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     });
     m_railGitButton = new ActivityRailButton(QStringLiteral("git-branch"),
                                              QStringLiteral("Git"));
-    m_railGitButton->setFixedSize(58, 40);
+    m_railGitButton->setFixedSize(kRailItemWidth, 40);
     m_railGitButton->setToolTip(
         QStringLiteral("Source control \xE2\x80\x94 view the current changes"));
     connect(m_railGitButton, &QPushButton::clicked, this, [this] {
@@ -8551,11 +8533,17 @@ void MainWindow::updateRepoActivityRail()
     const bool onChanges =
         onCode && m_filesStack && m_filesStack->currentIndex() == 0 &&
         m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+    const bool onAgents =
+        onHome && m_repoDetailStack && m_repoDetailStack->currentIndex() == 3;
     // Git is its own activity-rail destination. Hide every Code/repository
     // header above the source-control workspace instead of leaving several
-    // rows of unrelated repository navigation on screen.
+    // rows of unrelated repository navigation on screen. The Agents tab gets
+    // the same treatment for the repository band: the session list is its own
+    // workspace, and the repo switcher, repo actions and Code/Issues/PRs… tabs
+    // only pushed it down the page. The activity rail's Code/Git entries stay
+    // the way back out of both.
     if (m_repoDetailChrome)
-        m_repoDetailChrome->setVisible(!onChanges);
+        m_repoDetailChrome->setVisible(!onChanges && !onAgents);
     if (m_repoFilesModeBar)
         m_repoFilesModeBar->setVisible(!onChanges);
     if (m_repoOverviewChrome)
@@ -8565,9 +8553,7 @@ void MainWindow::updateRepoActivityRail()
     m_railCodeButton->setChecked(onCode && !onChanges);
     m_railGitButton->setChecked(onChanges);
     if (m_agentsNavButton)
-        m_agentsNavButton->setChecked(
-            onHome && m_repoDetailStack &&
-            m_repoDetailStack->currentIndex() == 3);
+        m_agentsNavButton->setChecked(onAgents);
 }
 
 
@@ -9132,7 +9118,7 @@ void MainWindow::spinRefreshButton(QPushButton *button)
     connect(timer, &QTimer::timeout, button, [button, angle, size] {
         *angle = (*angle + 30) % 360;
         button->setIcon(
-            QIcon(refreshPixmap(QColor(Theme::kTextTertiary), *angle, size)));
+            QIcon(refreshPixmap(QColor(Theme::kRunning), *angle, size)));
     });
     timer->start(60);
     // These refreshes are synchronous (or fire-and-forget), so a brief spin is
@@ -9169,8 +9155,8 @@ void MainWindow::startButtonSpin(QPushButton *button)
         // already in progress between the refresh-arrows and hourglass looks
         // (see setRestartSpinHourglass) without restarting the timer.
         const QPixmap frame = button->property("fmSpinHourglass").toBool()
-                                   ? hourglassPixmap(QColor(Theme::kTextTertiary), *angle, size)
-                                   : refreshPixmap(QColor(Theme::kTextTertiary), *angle, size);
+                                   ? hourglassPixmap(QColor(Theme::kRunning), *angle, size)
+                                   : refreshPixmap(QColor(Theme::kRunning), *angle, size);
         button->setIcon(QIcon(frame));
     });
     timer->start(60);
@@ -9224,7 +9210,7 @@ void MainWindow::startRefreshSpin()
         connect(m_refreshSpinTimer, &QTimer::timeout, this, [this] {
             m_refreshAngle = (m_refreshAngle + 30) % 360;
             m_refreshButton->setIcon(
-                QIcon(refreshPixmap(QColor(Theme::kTextTertiary), m_refreshAngle, 22)));
+                QIcon(refreshPixmap(QColor(Theme::kRunning), m_refreshAngle, 22)));
         });
     }
     m_refreshSpinTimer->start(60);
@@ -9260,7 +9246,7 @@ void MainWindow::startNodeSwitchSpin()
         connect(m_nodeSwitchSpinTimer, &QTimer::timeout, this, [this] {
             m_nodeSwitchAngle = (m_nodeSwitchAngle + 30) % 360;
             m_nodeMenuButton->setIcon(
-                QIcon(refreshPixmap(QColor(Theme::kTextTertiary),
+                QIcon(refreshPixmap(QColor(Theme::kRunning),
                                     m_nodeSwitchAngle, 16)));
         });
     }
@@ -9315,12 +9301,12 @@ void MainWindow::startRepoSwitchSpin()
         connect(m_repoSwitchSpinTimer, &QTimer::timeout, this, [this] {
             m_repoSwitchAngle = (m_repoSwitchAngle + 30) % 360;
             m_repoMenuButton->setIcon(
-                QIcon(refreshPixmap(QColor(Theme::kTextTertiary),
+                QIcon(refreshPixmap(QColor(Theme::kRunning),
                                     m_repoSwitchAngle, 16)));
         });
     }
     m_repoMenuButton->setIcon(
-        QIcon(refreshPixmap(QColor(Theme::kTextTertiary), 0, 16)));
+        QIcon(refreshPixmap(QColor(Theme::kRunning), 0, 16)));
     m_repoSwitchSpinTimer->start(60);
 }
 

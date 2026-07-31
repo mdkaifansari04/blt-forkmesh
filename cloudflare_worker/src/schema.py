@@ -135,10 +135,13 @@ SCHEMA_STATEMENTS = [
     # Worker; retained until its encrypted keys are exported/reconciled/scrubbed.
     """CREATE TABLE IF NOT EXISTS bounty_wallet (
         wallet_bi TEXT PRIMARY KEY, data TEXT NOT NULL)""",
-    # Server-side 5xx / error log surfaced on the admin dashboard.
+    # Server-side 5xx / error log surfaced on the admin dashboard. `actor` is
+    # the account name the failing request's own session proved (empty for
+    # anonymous traffic), so the admin error view can name the affected user.
     """CREATE TABLE IF NOT EXISTS error_log (
         id INTEGER PRIMARY KEY AUTOINCREMENT, ts INTEGER NOT NULL,
-        status INTEGER NOT NULL, method TEXT, path TEXT, message TEXT, ray TEXT)""",
+        status INTEGER NOT NULL, method TEXT, path TEXT, message TEXT, ray TEXT,
+        actor TEXT NOT NULL DEFAULT '')""",
     "CREATE INDEX IF NOT EXISTS idx_error_log_ts ON error_log(ts)",
     # Inbox drain audit log (adhoc #97): one row each time the owner's node acks
     # (drains) queued inbox submissions, so a "my web-filed issue disappeared but
@@ -1715,7 +1718,7 @@ SCHEMA_STATEMENTS = [
                 'department','personal','repository','qa','agent')),
         assignee_kind TEXT NOT NULL DEFAULT 'user'
             CHECK (assignee_kind IN (
-                'user','unassigned','claude','codex')),
+                'user','unassigned','agent')),
         status TEXT NOT NULL DEFAULT 'idle'
             CHECK (status IN ('idle','active')),
         assignee_bi TEXT NOT NULL DEFAULT '',
@@ -1737,6 +1740,8 @@ SCHEMA_STATEMENTS = [
             CHECK (qa_reviewed_at >= 0),
         qa_requested_at INTEGER NOT NULL DEFAULT 0
             CHECK (qa_requested_at >= 0),
+        priority INTEGER NOT NULL DEFAULT 50
+            CHECK (priority BETWEEN 1 AND 99),
         agent_session_id TEXT NOT NULL DEFAULT ''
             CHECK (length(agent_session_id) <= 64))""",
     "CREATE INDEX IF NOT EXISTS idx_organization_tasks_org_updated "
@@ -1747,6 +1752,9 @@ SCHEMA_STATEMENTS = [
     "ON organization_tasks(org_bi, assignee_bi, updated_at DESC)",
     "CREATE INDEX IF NOT EXISTS idx_organization_tasks_qa "
     "ON organization_tasks(org_bi, qa_requested_at, qa_reviewed_at DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_organization_tasks_global_priority "
+    "ON organization_tasks(org_bi, priority, completed_at, updated_at DESC)",
+    "UPDATE organization_tasks SET priority=99 WHERE priority>99",
     """CREATE UNIQUE INDEX IF NOT EXISTS
         idx_organization_tasks_one_active_assignee
         ON organization_tasks(org_bi, active_assignee_bi)
@@ -2386,6 +2394,66 @@ SCHEMA_STATEMENTS = [
         revoked_at INTEGER NOT NULL DEFAULT 0 CHECK (revoked_at >= 0))""",
     "CREATE INDEX IF NOT EXISTS idx_org_bot_tokens_org "
     "ON org_bot_tokens(org_bi, revoked_at, created_at DESC)",
+    # Metadata-only use history: no token secret, body, query string, network
+    # address, or user agent is retained. The generic platform admin browser
+    # can inspect the full append-only table while org admins receive only a
+    # bounded preview through the purpose-built token endpoint.
+    """CREATE TABLE IF NOT EXISTS org_bot_token_usage (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        token_id TEXT NOT NULL,
+        org_bi TEXT NOT NULL,
+        provider TEXT NOT NULL
+            CHECK (provider IN ('codex','claude-code')),
+        action TEXT NOT NULL CHECK (length(action) BETWEEN 1 AND 120),
+        method TEXT NOT NULL
+            CHECK (method IN ('GET','POST','PUT','PATCH','DELETE')),
+        used_at INTEGER NOT NULL CHECK (used_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_org_bot_token_usage_org_time "
+    "ON org_bot_token_usage(org_bi, used_at DESC, id DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_org_bot_token_usage_token_time "
+    "ON org_bot_token_usage(token_id, used_at DESC, id DESC)",
+    # Organization Discord connector policy.  The Worker secret used to call
+    # Discord is never persisted here: this encrypted record contains only a
+    # selected guild and bounded allowlist of public text-channel ids.
+    """CREATE TABLE IF NOT EXISTS organization_discord_connectors (
+        org_bi TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        updated_by_bi TEXT NOT NULL,
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_discord_connectors_updated "
+    "ON organization_discord_connectors(updated_at DESC)",
+    # A single durable, unassigned human setup task per organization.  It
+    # deduplicates changing Discord setup states without storing the task text
+    # or any credential outside organization_tasks' encrypted payload.
+    """CREATE TABLE IF NOT EXISTS organization_discord_setup_tasks (
+        org_bi TEXT PRIMARY KEY,
+        task_id TEXT NOT NULL UNIQUE,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0))""",
+    # A bot's global guild membership is not organization consent. This
+    # encrypted OAuth proof binds a single guild to an org before
+    # any bot channel/message call is allowed. OAuth access/refresh tokens,
+    # authorization codes, and raw callback state are never stored.
+    """CREATE TABLE IF NOT EXISTS organization_discord_oauth_grants (
+        org_bi TEXT PRIMARY KEY,
+        data TEXT NOT NULL,
+        verified_by_bi TEXT NOT NULL,
+        verified_at INTEGER NOT NULL CHECK (verified_at >= 0),
+        updated_at INTEGER NOT NULL CHECK (updated_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_discord_oauth_grants_verified "
+    "ON organization_discord_oauth_grants(verified_at DESC)",
+    # The raw state and PKCE verifier live only inside this encrypted, ten
+    # minute record. Its SHA-256 lookup digest makes the callback one-time
+    # without persisting a reusable raw state value. org_bi is metadata only,
+    # used to revoke pending attempts when an organization is deleted.
+    """CREATE TABLE IF NOT EXISTS organization_discord_oauth_states (
+        state_hash TEXT PRIMARY KEY,
+        org_bi TEXT NOT NULL,
+        data TEXT NOT NULL,
+        created_at INTEGER NOT NULL CHECK (created_at >= 0),
+        expires_at INTEGER NOT NULL CHECK (expires_at >= 0))""",
+    "CREATE INDEX IF NOT EXISTS idx_organization_discord_oauth_states_org "
+    "ON organization_discord_oauth_states(org_bi, expires_at)",
     # Single-row bookkeeping for ensure_schema's fast path: the fingerprint of
     # the DDL that has already been applied to this database. A cold isolate
     # reads this one row instead of replaying all ~90 statements above — the

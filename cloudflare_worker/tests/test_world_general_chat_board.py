@@ -20,17 +20,18 @@ def test_chat_embed_forwards_bounded_history_and_thumbnail_metadata():
         "attachmentMime:",
         "reactionCount:",
         "attachmentPreview",
-        "emitWorldChatHistory({",
+        "emitNewestWorldChatHistory()",
     ):
         assert contract in CHAT
     assert "if (ts < newestHistoryTs) return" not in CHAT
+    assert "if (meta?.attachment && !history)" in CHAT
 
 
-def test_world_accepts_chat_only_from_its_same_origin_chat_frames():
+def test_world_accepts_chat_only_from_its_native_same_window_controller():
     for contract in (
-        'this.$("[data-world-chat-frame]")?.contentWindow',
-        'this.$("[data-world-chat-terminal-frame]")?.contentWindow',
+        'this.$("[data-world-native-chat]") ? [window] : []',
         "if (!chatSources.includes(event.source)) return",
+        '"forkmesh:world-chat-native"',
         "this.recentWorldChatMessages.slice(-40)",
         "this.world?.updateWorldGeneralChat?.(",
         "attachmentPreview.length <= 120_000",
@@ -54,4 +55,3 @@ def test_physical_chat_board_is_beside_events_and_opens_full_chat():
         assert contract in SCENE
     assert 'onWorldGeneralChatSelect: () => {' in WORLD
     assert 'this.openWorldChat("/dashboard/chat")' in WORLD
-

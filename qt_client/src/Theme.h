@@ -12,6 +12,12 @@ namespace Theme {
 inline const char *kPrimary = "#2ea043";
 inline const char *kTextTertiary = "#8b949e";
 
+// "Something is working right now" blue (adhoc #23, recoloured from orange by
+// adhoc #50): every busy spinner and every running-agent dot/glyph paints in
+// this one colour, so in-flight work reads as its own state instead of
+// borrowing success-green or the amber used for queued/waiting.
+inline const char *kRunning = "#58a6ff";
+
 // Sender name colors, hashed per user (GitHub label-ish accents).
 inline const char *kSenderPalette[] = {"#f85149", "#e3b341", "#3fb950",
                                        "#58a6ff", "#bc8cff", "#db61a2",
@@ -21,8 +27,14 @@ inline constexpr int kSenderPaletteSize = 8;
 inline const char *iconColorForButton(const QString &objectName, bool dark)
 {
     if (objectName == QStringLiteral("primaryButton") ||
-        objectName == QStringLiteral("toolbarPrimaryButton"))
+        objectName == QStringLiteral("toolbarPrimaryButton") ||
+        // The magical Agents pill is a saturated gradient in both themes, so
+        // its glyph is white either way (adhoc #42).
+        objectName == QStringLiteral("agentsMagicButton"))
         return "#ffffff";
+    // "genie" send button (adhoc #42): violet, to match its pill.
+    if (objectName == QStringLiteral("quickAddGenieButton"))
+        return dark ? "#c084fc" : "#7c3aed";
     if (objectName == QStringLiteral("dangerButton"))
         return dark ? "#f85149" : "#cf222e";
     if (objectName == QStringLiteral("repoTab") ||
@@ -224,14 +236,14 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
-#settingsTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
     background: #0d1117; color: #8b949e; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover { color: #e6edf3; }
-#settingsTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #e6edf3; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
 #codeEditor {
@@ -336,7 +348,9 @@ QPushButton#serverAddButton:hover { background-color: #2ea043; color: #ffffff; }
 QPushButton#serverAddButton:pressed { background-color: #238636; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #8b949e; font-size: 18px;
-    border-radius: 8px;
+    /* Circular: the account avatar it carries is a circle, so the hover
+       highlight has to be one too. */
+    border-radius: 20px;
 }
 QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3; }
 
@@ -380,9 +394,11 @@ QPushButton#topNavButton:checked {
 QPushButton#topNavButton[railUtility="true"]:checked {
     border-left: 2px solid #2ea043;
 }
-QPushButton#topNavButton[alert="true"] { color: #d29922; border-color: #9e6a03; }
+/* No alert border: the amber glyph plus the corner count badge already read as
+   "pending", and an extra outline boxed the rail's Alerts bell on its own. */
+QPushButton#topNavButton[alert="true"] { color: #d29922; }
 QPushButton#topNavButton[alert="true"]:checked {
-    background-color: #1c1908; color: #f0b72f; border-color: #9e6a03;
+    background-color: #1c1908; color: #f0b72f;
 }
 QPushButton#floatingLogButton {
     background-color: #21262d; border: 1px solid #30363d; border-radius: 6px;
@@ -401,7 +417,7 @@ QPushButton#windowChromeCloseButton:hover {
 }
 /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
-QPushButton#relayOpenButton {
+QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #8b949e;
 }
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
@@ -414,7 +430,7 @@ QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayOpenButton:hover,
+QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
@@ -423,7 +439,25 @@ QPushButton#repoMenuButton:hover {
 #nodeSwitchProgress { background: transparent; border: none; }
 #nodeSwitchProgress::chunk { background-color: #58a6ff; border-radius: 1px; }
 #navCaption { background: transparent; color: #8b949e; font-size: 13px; font-weight: 600; }
-#navNodeName { background: transparent; color: #8b949e; font-size: 11px; font-weight: 600; }
+/* "Magical" Agents pill (adhoc #42): a violet-to-cyan gradient that separates
+   the fleet control from the flat chrome around it. The soft outer glow is a
+   QGraphicsDropShadowEffect applied in buildBreadcrumb() — QSS has no shadow. */
+QPushButton#agentsMagicButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #7c3aed, stop:0.5 #a855f7, stop:1 #22d3ee);
+    border: 1px solid rgba(216,180,254,0.55); border-radius: 11px;
+    color: #ffffff; font-size: 13px; font-weight: 700; padding: 5px 14px;
+}
+QPushButton#agentsMagicButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #8b5cf6, stop:0.5 #c084fc, stop:1 #67e8f9);
+    border-color: #e9d5ff;
+}
+QPushButton#agentsMagicButton:checked {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #6d28d9, stop:0.5 #9333ea, stop:1 #0891b2);
+    border-color: #ffffff;
+}
 #navSolanaBalance {
     background: transparent; border: none; border-radius: 8px;
     color: #8b949e; font-size: 13px; font-weight: 700; padding: 5px 10px;
@@ -552,6 +586,16 @@ QPushButton#quickAddSendIcon[enterTarget="true"] {
 QLabel#quickAddEnterBadge {
     background: #3fb950; color: #0d1117; border-radius: 7px;
     font-size: 9px; font-weight: 600;
+}
+/* "genie" (adhoc #42), stacked above add/new: a violet pill so the
+   pick-your-own-work button reads as a different kind of send. */
+QPushButton#quickAddGenieButton {
+    background: rgba(168,85,247,0.14); border: 1px solid rgba(192,132,252,0.55);
+    color: #c084fc; padding: 4px; border-radius: 4px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#quickAddGenieButton:hover {
+    background: rgba(168,85,247,0.28); border-color: #d8b4fe; color: #e9d5ff;
 }
 #issueSearch {
     background-color: #0d1117; border: 1px solid #30363d;
@@ -911,6 +955,16 @@ QPushButton#quickAddSendIcon[enterTarget="true"] {
 QLabel#quickAddEnterBadge {
     background: #3fb950; color: #0d1117; border-radius: 7px;
     font-size: 9px; font-weight: 600;
+}
+/* "genie" (adhoc #42), stacked above add/new: a violet pill so the
+   pick-your-own-work button reads as a different kind of send. */
+QPushButton#quickAddGenieButton {
+    background: rgba(168,85,247,0.14); border: 1px solid rgba(192,132,252,0.55);
+    color: #c084fc; padding: 4px; border-radius: 4px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#quickAddGenieButton:hover {
+    background: rgba(168,85,247,0.28); border-color: #d8b4fe; color: #e9d5ff;
 }
 /* Footer prompt bottom bar (adhoc #99): the Auto/Create-issue/Agent toggles get
    a green filled checkmark instead of the generic blue-filled indicator, and the
@@ -1451,14 +1505,14 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
-#settingsTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
     background: #ffffff; color: #656d76; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover { color: #1f2328; }
-#settingsTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #1f2328; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
 #codeEditor {
@@ -1561,7 +1615,8 @@ QPushButton#serverAddButton:hover { background-color: #1f883d; color: #ffffff; }
 QPushButton#serverAddButton:pressed { background-color: #1a7f37; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #656d76; font-size: 18px;
-    border-radius: 8px;
+    /* Circular: matches the round account avatar it carries. */
+    border-radius: 20px;
 }
 QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328; }
 
@@ -1633,9 +1688,10 @@ QPushButton#topNavButton:checked {
 QPushButton#topNavButton[railUtility="true"]:checked {
     border-left: 2px solid #2ea043;
 }
-QPushButton#topNavButton[alert="true"] { color: #9a6700; border-color: #d4a72c; }
+/* Border-less for the same reason as the dark sheet: glyph tint + count badge. */
+QPushButton#topNavButton[alert="true"] { color: #9a6700; }
 QPushButton#topNavButton[alert="true"]:checked {
-    background-color: #fff8c5; color: #7d4e00; border-color: #d4a72c;
+    background-color: #fff8c5; color: #7d4e00;
 }
 QPushButton#floatingLogButton {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
@@ -1644,7 +1700,7 @@ QPushButton#floatingLogButton {
 QPushButton#floatingLogButton:hover { background-color: #f3f4f6; color: #1f2328; }
 /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
-QPushButton#relayOpenButton {
+QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #656d76;
 }
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
@@ -1657,7 +1713,7 @@ QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayOpenButton:hover,
+QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
@@ -1666,7 +1722,24 @@ QPushButton#repoMenuButton:hover {
 #nodeSwitchProgress { background: transparent; border: none; }
 #nodeSwitchProgress::chunk { background-color: #0969da; border-radius: 1px; }
 #navCaption { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
-#navNodeName { background: transparent; color: #656d76; font-size: 11px; font-weight: 600; }
+/* Same "magical" Agents pill as the dark sheet (adhoc #42), a shade deeper so
+   white text keeps its contrast against a light chrome bar. */
+QPushButton#agentsMagicButton {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #6d28d9, stop:0.5 #9333ea, stop:1 #0891b2);
+    border: 1px solid rgba(109,40,217,0.45); border-radius: 11px;
+    color: #ffffff; font-size: 13px; font-weight: 700; padding: 5px 14px;
+}
+QPushButton#agentsMagicButton:hover {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #7c3aed, stop:0.5 #a855f7, stop:1 #06b6d4);
+    border-color: #7c3aed;
+}
+QPushButton#agentsMagicButton:checked {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+        stop:0 #5b21b6, stop:0.5 #7e22ce, stop:1 #0e7490);
+    border-color: #1f2328;
+}
 #navSolanaBalance {
     background: transparent; border: none; border-radius: 8px;
     color: #656d76; font-size: 13px; font-weight: 700; padding: 5px 10px;
@@ -1795,6 +1868,15 @@ QPushButton#quickAddSendIcon[enterTarget="true"] {
 QLabel#quickAddEnterBadge {
     background: #1a7f37; color: #ffffff; border-radius: 7px;
     font-size: 9px; font-weight: 600;
+}
+/* Light-theme twin of the violet "genie" pill (adhoc #42). */
+QPushButton#quickAddGenieButton {
+    background: rgba(124,58,237,0.10); border: 1px solid rgba(124,58,237,0.45);
+    color: #7c3aed; padding: 4px; border-radius: 4px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#quickAddGenieButton:hover {
+    background: rgba(124,58,237,0.20); border-color: #7c3aed; color: #5b21b6;
 }
 #issueSearch {
     background-color: #ffffff; border: 1px solid #d0d7de;
@@ -2147,6 +2229,15 @@ QPushButton#quickAddSendIcon[enterTarget="true"] {
 QLabel#quickAddEnterBadge {
     background: #1a7f37; color: #ffffff; border-radius: 7px;
     font-size: 9px; font-weight: 600;
+}
+/* Light-theme twin of the violet "genie" pill (adhoc #42). */
+QPushButton#quickAddGenieButton {
+    background: rgba(124,58,237,0.10); border: 1px solid rgba(124,58,237,0.45);
+    color: #7c3aed; padding: 4px; border-radius: 4px;
+    font-size: 12px; font-weight: 700;
+}
+QPushButton#quickAddGenieButton:hover {
+    background: rgba(124,58,237,0.20); border-color: #7c3aed; color: #5b21b6;
 }
 /* Footer prompt bottom bar (adhoc #99): see the dark-theme block above for the
    rationale — green filled checkmark indicators plus a thin bordered Agent box. */

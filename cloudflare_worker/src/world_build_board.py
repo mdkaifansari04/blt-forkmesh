@@ -8,6 +8,12 @@ MAX_ITEMS = 64
 BODY_LIMIT = 8 * 1024
 KEY_RE = re.compile(r"^(?:task:[a-z0-9-]{1,48}|issue:[a-z0-9-]{1,40}/[a-z0-9._-]{1,60}#[1-9][0-9]{0,8})$")
 BUILTIN_KEYS = frozenset({
+    "task:world-stall-flood",
+    "task:qa-full-catalog",
+    "task:task-completion-note",
+    "task:world-orb-hud",
+    "task:avatar-hud-launcher",
+    "task:fixed-square-hud-shortcuts",
     "task:avatar-selection-runtime",
     "task:member-circle-fire",
     "task:aquarium-fixed-controls",
@@ -41,6 +47,8 @@ BUILTIN_KEYS = frozenset({
     "task:qt-execution-aware-stalls",
     "task:world-profile-social",
     "task:world-reactive-reef",
+    "task:discord-human-authorization",
+    "task:discord-public-chat-connector",
     "task:repo-code-landing",
     "task:repo-board-view-pads",
     "task:world-continuous-city",

@@ -42,7 +42,8 @@ class _Request:
 def _handler_runtime():
     tree = ast.parse(ENTRY, filename=str(ENTRY_PATH))
     wanted_assignments = {
-        "WORLD_QA_DECK_REVISION", "WORLD_QA_CARDS", "WORLD_QA_CARD_KEYS",
+        "WORLD_QA_DECK_REVISION", "WORLD_QA_MAX_CARDS",
+        "WORLD_QA_CARDS", "WORLD_QA_CARD_KEYS",
     }
     selected = []
     for node in tree.body:
@@ -270,6 +271,21 @@ def test_world_has_one_direct_physical_card_with_swipes_and_stats():
     assert ".world-qa-playing-card" not in CSS
 
 
+def test_qa_catalog_is_not_truncated_to_the_first_64_cards():
+    handler = ENTRY[
+        ENTRY.index("async def world_qa_handler"):
+        ENTRY.index("\n\nWORLD_PREFERENCES_MAX_BYTES")
+    ]
+    assert "WORLD_QA_MAX_CARDS = 4096" in ENTRY
+    assert "deck_cards = deck_cards[:64]" not in handler
+    assert "deck_cards = deck_cards[:128]" not in handler
+    assert "LIMIT 64" not in handler
+    assert handler.count("WORLD_QA_MAX_CARDS") >= 6
+    # The 3D desk remains constant-cost even when the catalog grows.
+    assert "const pageSize = 5;" in WORLD
+    assert "Math.ceil(filtered.length / pageSize)" in WORLD
+
+
 def test_private_task_failures_require_a_reason_and_accept_one_screenshot():
     handler = ENTRY[
         ENTRY.index("async def world_qa_handler"):
@@ -338,16 +354,19 @@ def test_completed_build_tasks_can_be_sent_into_the_shared_qa_deck():
         assert contract in SCENE + WORLD
 
 
-def test_exact_view_and_saved_views_live_in_collapsed_right_rail():
+def test_share_and_saved_views_live_in_the_fixed_square_right_rail():
     assert "data-world-share-menu" not in WORLD
     assert "data-world-share-current" in WORLD
     assert "shareCurrentWorldView()" in WORLD
     assert "data-world-saved-views-toggle" not in WORLD
     assert 'data-expanded="true"' in WORLD
-    assert "Quick views" in WORLD
+    assert "Share view" in WORLD
+    assert "Remember" in WORLD
     assert "setSavedViewsExpanded(expanded)" in WORLD
     assert '<div class="world-saved-view-list" data-world-saved-view-list>' in WORLD
-    assert ".world-right-rail[data-expanded=\"false\"] .world-saved-view-list" in CSS
+    fixed_rail = CSS.rsplit("/* Fixed launcher geometry.", 1)[1]
+    assert "grid-template-columns: 48px;" in fixed_rail
+    assert ".world-saved-view-list:empty" in fixed_rail
     # The ordinary right-click menu is untouched and layout editing no longer
     # intercepts it: admins click-select, then use arrows and R instead.
     assert 'renderer.domElement.addEventListener("contextmenu"' not in SCENE

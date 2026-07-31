@@ -434,6 +434,14 @@ int main(int argc, char **argv)
     check(forkmesh::control::findCloudflareWorkerDirectory(client, QString()) ==
               QFileInfo(worker).canonicalFilePath(),
           "repository-pinned Worker directory resolves with the bootstrapper");
+    check(forkmesh::control::findSiteDeployScript(client, QString()).isEmpty(),
+          "site deploy button fails closed without cloudflare_worker/deploy.sh");
+    writeFixture(worker + QStringLiteral("/deploy.sh"),
+                 "#!/usr/bin/env bash\n");
+    check(forkmesh::control::findSiteDeployScript(client, QString()) ==
+              QFileInfo(worker + QStringLiteral("/deploy.sh"))
+                  .canonicalFilePath(),
+          "site deploy script resolves beside the pinned Worker bundle");
     QFile tunnelScript(root.filePath(
         QStringLiteral("tools/cloudflare_tunnel_bootstrap.py")));
     QFile gatewayScript(root.filePath(
@@ -514,6 +522,12 @@ int main(int argc, char **argv)
               QString(), installedBin) ==
               QFileInfo(installedWorker).canonicalFilePath(),
           "installed Worker directory resolves with the bootstrapper");
+    writeFixture(installedWorker + QStringLiteral("/deploy.sh"),
+                 "#!/usr/bin/env bash\n");
+    check(forkmesh::control::findSiteDeployScript(QString(), installedBin) ==
+              QFileInfo(installedWorker + QStringLiteral("/deploy.sh"))
+                  .canonicalFilePath(),
+          "site deploy script resolves from installed resources");
     check(forkmesh::control::findCloudflareTunnelBootstrapScript(
               QString(), installedBin) ==
                   QFileInfo(
@@ -850,6 +864,42 @@ int main(int argc, char **argv)
               forkmesh::control::formatDiskSize(3LL * 1024 * 1024 * 1024) ==
                   QStringLiteral("3.0 GB"),
           "size-map byte formatting is human readable");
+    const QString mountCommand =
+        forkmesh::control::buildHostMountUsageCommand();
+    check(mountCommand.startsWith(QStringLiteral("sh -lc '")) &&
+              mountCommand.contains(QStringLiteral("df -P -k -l")) &&
+              mountCommand.contains(QStringLiteral("FORKMESH-MOUNT1")) &&
+              !mountCommand.contains(QStringLiteral("rm ")) &&
+              !mountCommand.contains(QStringLiteral("chmod")),
+          "the mount overview command is read-only and sentinel framed");
+    const QByteArray mountOutput =
+        QByteArray("login banner\n") +
+        "FORKMESH-MOUNT1 102400 25600 76800 " +
+        QByteArray("/").toBase64() + "\n" +
+        "FORKMESH-MOUNT1 204800 153600 51200 " +
+        QByteArray("/mnt/project data").toBase64() + "\n" +
+        // Duplicate paths are ignored rather than producing duplicate cards.
+        "FORKMESH-MOUNT1 102400 25600 76800 " +
+        QByteArray("/").toBase64() + "\n" +
+        "FORKMESH-MOUNT1-END\n";
+    const auto mounts =
+        forkmesh::control::parseHostMountUsage(mountOutput);
+    check(mounts.complete && mounts.error.isEmpty() &&
+              mounts.mounts.size() == 2 &&
+              mounts.mounts.at(0).path == QStringLiteral("/") &&
+              mounts.mounts.at(0).usedBytes == 25600LL * 1024 &&
+              mounts.mounts.at(1).path ==
+                  QStringLiteral("/mnt/project data") &&
+              mounts.mounts.at(1).availableBytes == 51200LL * 1024,
+          "mount overview parsing is banner-safe, deduplicated and root-first");
+    const auto mountFailure = forkmesh::control::parseHostMountUsage(
+        QByteArray("FORKMESH-MOUNT1-ERROR ") +
+        QByteArray("df unavailable").toBase64() +
+        "\nFORKMESH-MOUNT1-END\n");
+    check(mountFailure.complete &&
+              mountFailure.error == QStringLiteral("df unavailable") &&
+              mountFailure.mounts.isEmpty(),
+          "a host-side mount overview failure remains actionable");
 
     // One-click Vultr provisioning helpers (adhoc #315).
     check(forkmesh::control::validateVultrMirrorRequest(
@@ -895,7 +945,9 @@ int main(int argc, char **argv)
                     {QStringLiteral("monthly_cost"), 5},
                     {QStringLiteral("ram"), 2048},
                     {QStringLiteral("locations"),
-                     QJsonArray{QStringLiteral("syd")}}},
+                     QJsonArray{QStringLiteral("syd"),
+                                QStringLiteral("atl"),
+                                QStringLiteral("ewr")}}},
         // Cheapest of all, but IPv6-only: unreachable for the mesh (adhoc #344).
         QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-0.5gb-v6")},
                     {QStringLiteral("monthly_cost"), 2.5},
@@ -914,10 +966,10 @@ int main(int argc, char **argv)
               !forkmesh::control::vultrPlanHasIpv4(QJsonObject()),
           "IPv6-only Vultr plans are never eligible, however cheap");
     check(forkmesh::control::vultrPlanRegion(cheapest) ==
-              QStringLiteral("syd") &&
+              QStringLiteral("ewr") &&
               forkmesh::control::vultrPlanRegion(
-                  vultrPlans.at(1).toObject()) == QStringLiteral("ams"),
-          "Vultr region selection is the plan's first sorted location");
+                  vultrPlans.at(1).toObject()).isEmpty(),
+          "Vultr region selection prefers New Jersey and rejects non-US locations");
     check(forkmesh::control::cheapestVultrPlan(QJsonArray()).isEmpty(),
           "an empty Vultr plan list yields no selection");
 
@@ -966,11 +1018,11 @@ int main(int argc, char **argv)
     const QJsonObject instancePayload =
         forkmesh::control::vultrInstanceCreatePayload(
             QStringLiteral("vultr-mirror-1"), QStringLiteral("vhp-1c-2gb"),
-            QStringLiteral("syd"), 477, QStringLiteral("key-id-1"));
+            QStringLiteral("ewr"), 477, QStringLiteral("key-id-1"));
     check(instancePayload.value(QStringLiteral("plan")).toString() ==
                   QStringLiteral("vhp-1c-2gb") &&
               instancePayload.value(QStringLiteral("region")).toString() ==
-                  QStringLiteral("syd") &&
+                  QStringLiteral("ewr") &&
               instancePayload.value(QStringLiteral("os_id")).toInt() == 477 &&
               instancePayload.value(QStringLiteral("sshkey_id")).toArray() ==
                   QJsonArray{QStringLiteral("key-id-1")} &&
@@ -1037,6 +1089,78 @@ int main(int argc, char **argv)
                   QStringLiteral("STOREDVULTRKEY01234567890") &&
               forkmesh::control::vultrApiKeyFromVariables({}).isEmpty(),
           "the stored VULTR_API_KEY device variable is resolved case-insensitively");
+
+    // --- Destroying a mirror's server on Vultr (adhoc #24) -----------------
+    const QString destroyId =
+        QStringLiteral("1f2e3d4c-5b6a-4798-8899-aabbccddeeff");
+    check(forkmesh::control::savedHostVultrInstanceId(
+              QJsonObject{{QStringLiteral("provider"), QStringLiteral("vultr")},
+                          {QStringLiteral("instanceId"), destroyId}}) ==
+                  destroyId &&
+              forkmesh::control::savedHostVultrInstanceId(
+                  QJsonObject{{QStringLiteral("provider"),
+                               QStringLiteral("Hetzner")},
+                              {QStringLiteral("instanceId"), destroyId}})
+                  .isEmpty() &&
+              forkmesh::control::savedHostVultrInstanceId(
+                  QJsonObject{{QStringLiteral("provider"),
+                               QStringLiteral("Vultr")}})
+                  .isEmpty(),
+          "only a Vultr-provisioned host with a recorded instance id is "
+          "destroyable by id");
+
+    const QJsonArray destroyInstances{
+        QJsonObject{{QStringLiteral("id"), destroyId},
+                    {QStringLiteral("main_ip"), QStringLiteral("203.0.113.7")},
+                    {QStringLiteral("label"), QStringLiteral("mirror5")}},
+        QJsonObject{{QStringLiteral("id"),
+                     QStringLiteral("00000000-1111-2222-3333-444444444444")},
+                    {QStringLiteral("main_ip"), QStringLiteral("0.0.0.0")},
+                    {QStringLiteral("label"), QStringLiteral("mirror6")}},
+    };
+    check(forkmesh::control::vultrInstanceIdForAddress(
+              destroyInstances, QStringLiteral("203.0.113.7")) == destroyId &&
+              forkmesh::control::vultrInstanceIdForAddress(
+                  destroyInstances, QStringLiteral("MIRROR5")) == destroyId &&
+              forkmesh::control::vultrInstanceIdForAddress(
+                  destroyInstances, QStringLiteral("0.0.0.0"))
+                  .isEmpty() &&
+              forkmesh::control::vultrInstanceIdForAddress(
+                  destroyInstances, QStringLiteral("198.51.100.9"))
+                  .isEmpty() &&
+              forkmesh::control::vultrInstanceIdForAddress(
+                  destroyInstances, QString())
+                  .isEmpty(),
+          "a host is matched to its Vultr instance by address or label, and "
+          "an unassigned address never matches");
+
+    const QJsonArray ambiguousInstances{
+        QJsonObject{{QStringLiteral("id"), destroyId},
+                    {QStringLiteral("main_ip"), QStringLiteral("203.0.113.7")}},
+        QJsonObject{{QStringLiteral("id"),
+                     QStringLiteral("00000000-1111-2222-3333-444444444444")},
+                    {QStringLiteral("label"), QStringLiteral("203.0.113.7")}},
+    };
+    check(forkmesh::control::vultrInstanceIdForAddress(
+              ambiguousInstances, QStringLiteral("203.0.113.7"))
+              .isEmpty(),
+          "two instances matching one address destroy neither");
+
+    check(forkmesh::control::validateVultrDestroyRequest(
+              QStringLiteral("STOREDVULTRKEY01234567890"), destroyId)
+                  .isEmpty() &&
+              !forkmesh::control::validateVultrDestroyRequest(
+                   QStringLiteral("short"), destroyId)
+                   .isEmpty() &&
+              !forkmesh::control::validateVultrDestroyRequest(
+                   QStringLiteral("STOREDVULTRKEY01234567890"),
+                   QStringLiteral("not-an-instance"))
+                   .isEmpty() &&
+              !forkmesh::control::validateVultrDestroyRequest(
+                   QStringLiteral("STOREDVULTRKEY01234567890"), QString())
+                   .isEmpty(),
+          "a destroy call is refused without a plausible API key and instance "
+          "id");
 
     // --- Installing a fresh mirror without a published release (adhoc #408) -
     check(forkmesh::control::localBinaryRunsOnVultrMirror(

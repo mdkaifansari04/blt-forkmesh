@@ -168,7 +168,11 @@ QStringList localProviderCredentialValues()
     values << settings.value(kClaudeApiKeySetting).toString()
            << settings.value(kClaudeAdminKeySetting).toString()
            << settings.value(kCodexApiKeySetting).toString()
-           << settings.value(kOpenAiAdminKeySetting).toString();
+           << settings.value(kOpenAiAdminKeySetting).toString()
+           // Genie's remote-MCP bearer credential (adhoc #42) rides inside the
+           // opening prompt, so it would otherwise land in the transcript, the
+           // run log and the sealed snapshot pushed to the relay.
+           << settings.value(kGenieTokenSetting).toString();
     values << qEnvironmentVariable("ANTHROPIC_API_KEY")
            << qEnvironmentVariable("ANTHROPIC_AUTH_TOKEN")
            << qEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN")
@@ -322,7 +326,7 @@ QJsonValue redactProviderCredentials(
     return result;
 }
 
-// Branch a row's session runs on, stashed on its Status cell so
+// Branch a row's session runs on, stashed on its "#" cell so
 // AgentBranchButtonDelegate (below) can paint the row's branch button and route
 // the click without looking the session back up (adhoc #377).
 constexpr int kAgentBranchRole = Qt::UserRole + 33;
@@ -332,6 +336,11 @@ constexpr int kAgentBranchRole = Qt::UserRole + 33;
 constexpr int kAgentBranchFilesRole = Qt::UserRole + 34;
 constexpr int kAgentBranchDirtyRole = Qt::UserRole + 35;
 constexpr int kAgentBranchWorktreeRole = Qt::UserRole + 36;
+// Diff cell roles behind the orange conflict button (adhoc #446): whether the
+// row's branch still conflicts with base, and the session the click has to
+// steer — AgentConflictButtonDelegate paints and routes straight off these.
+constexpr int kAgentConflictRole = Qt::UserRole + 37;
+constexpr int kAgentConflictSessionRole = Qt::UserRole + 38;
 
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
@@ -340,21 +349,31 @@ QString agentMergeBase(const AgentSession &s)
     return s.baseBranch.isEmpty() ? QStringLiteral("main") : s.baseBranch;
 }
 
-// Fill the agent table's Status cell for a session. A session whose worktree/PR
-// has landed in the base branch (issue #291) simply reads "merged" in the merged-
-// purple foreground used across the app, with a tooltip spelling out the branch
-// and time so the note is visible straight from the list. The Claude run summary
-// ("N turns · Ms") that used to be appended here now lives in the agent
-// detail-page header's Stats line (adhoc #42).
+// Word a session's run state reads as: "merged" once its worktree/PR has landed
+// in the base branch (issue #291), otherwise the run status. The Status column
+// itself is gone (adhoc #29) — the state now rides the "#" cell's glyph — so this
+// only feeds tooltips and the free-text filter.
+QString agentStatusLabel(const AgentSession &s)
+{
+    return s.merged ? QStringLiteral("merged") : agentStatusText(s.status);
+}
+
+// Fill the agent table's leading "#" cell for a session: the session id, the run
+// state as a coloured glyph, and the branch button's roles (adhoc #29 folded the
+// old Status column's glyph and chip in here, so the icons read down the list's
+// left edge instead of halfway across it). The Claude run summary ("N turns ·
+// Ms") that used to sit in Status now lives in the agent detail-page header's
+// Stats line (adhoc #42).
 void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                           const AgentDiffStat &stat = AgentDiffStat())
 {
-    cell->setText(s.merged ? QStringLiteral("merged") : agentStatusText(s.status));
-    cell->setForeground(s.merged ? QColor("#a371f7") : agentStatusColor(s.status));
-    // Status glyph next to the text (issue #108): a green spinner while running, a
-    // purple merge mark once it lands, a green check on success, a red stop sign
-    // when halted, an orange hand while it waits on the user, and a red X circle
-    // on failure (issue #322). The running glyph is seeded at frame 0 here;
+    cell->setData(Qt::DisplayRole, s.id);
+    cell->setData(Qt::UserRole, s.id);
+    // Status glyph (issue #108): a blue spinner while running
+    // (adhoc #23/#50), a purple merge mark once it lands, a green check on success, a
+    // red stop sign when halted, an orange hand while it waits on the user, and a
+    // red X circle on failure (issue #322). The running glyph is seeded at frame 0
+    // here;
     // animateRunningAgentIcons() spins it. A queued session gets the amber clock
     // (adhoc #433) — with the concurrency cap in place it can sit there for a
     // while, so the list has to say why nothing is happening. Other states carry
@@ -362,7 +381,7 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     if (s.merged)
         cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
     else if (s.status == AgentStatus::Running)
-        cell->setIcon(themedOcticon("sync", QColor("#3fb950"), 14));
+        cell->setIcon(themedOcticon("sync", QColor(Theme::kRunning), 14));
     else if (s.status == AgentStatus::Success)
         cell->setIcon(themedOcticon("check-circle", QColor("#3fb950"), 14));
     else if (s.status == AgentStatus::Stopped)
@@ -384,7 +403,9 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     cell->setData(kAgentBranchFilesRole, stat.files);
     cell->setData(kAgentBranchDirtyRole, stat.dirty);
     cell->setData(kAgentBranchWorktreeRole, stat.worktree);
-    QStringList tip;
+    // With the Status column gone the glyph is the only thing showing the run
+    // state, so the tooltip has to name it outright.
+    QStringList tip{agentStatusLabel(s)};
     if (!s.merged && s.status == AgentStatus::Queued)
         tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
                               "agent slots frees up (Settings \xE2\x86\x92 Agents)")
@@ -436,46 +457,57 @@ qint64 agentEffectiveDurationMs(const AgentSession &s)
     return 0;
 }
 
-// Fill the Model cell — the LLM model selected for this session. Displays a
-// human-readable label (e.g. "Opus", "Sonnet") or empty if no specific model
-// was chosen, letting the provider's default apply.
-void applyAgentModelCell(QTableWidgetItem *cell, const AgentSession &s)
-{
-    cell->setText(agentModelLabel(s.model));
-    // Text only — no icon belongs in this column (a reused item must not keep
-    // one a stray write elsewhere left behind).
-    cell->setIcon(QIcon());
-    cell->setToolTip(s.model.isEmpty() ? QStringLiteral("Using provider's default model")
-                                       : QStringLiteral("Selected model: %1")
-                                            .arg(s.model.toHtmlEscaped()));
-}
-
-// Fill the Speed cell — the throughput at which this agent exchanged tokens with
-// the service over the task, in tokens/second (total tokens ÷ run time). A rough
-// gauge of how fast the model and network served the task. Only shown while the
-// session is running (a live tok/s gauge); finished sessions show "-" since the
-// figure is no longer ticking. Sorts on the raw rate via kTableSortRole.
-void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 tokens)
+// Throughput at which this agent exchanged tokens with the service, in
+// tokens/second (total tokens ÷ run time). A rough gauge of how fast the model
+// and network served the task. Only meaningful while the session is running (a
+// live gauge); a finished run's figure has stopped ticking, so report 0 there.
+double agentTokensPerSecond(const AgentSession &s, qint64 tokens)
 {
     const qint64 durationMs = agentEffectiveDurationMs(s);
-    const double rate = (s.status == AgentStatus::Running && tokens > 0 && durationMs > 0)
-                            ? tokens * 1000.0 / static_cast<double>(durationMs)
-                            : 0.0;
-    cell->setData(Qt::DisplayRole,
-                  rate > 0 ? QStringLiteral("%1 tok/s").arg(rate, 0, 'f', 1)
-                           : QStringLiteral("-"));
-    cell->setData(kTableSortRole, rate);
-    cell->setToolTip(
-        QStringLiteral("Communication speed with the service (tokens/second)"));
+    if (s.status != AgentStatus::Running || tokens <= 0 || durationMs <= 0)
+        return 0.0;
+    return tokens * 1000.0 / static_cast<double>(durationMs);
 }
 
-// Fill the Diff cell (issue #170) — a "very small" at-a-glance summary of what
-// this agent changed: the number of files its captured patch touched, plus how
-// far its branch sits ahead of / behind the base branch (only when both differ).
-// Reads "-" until a finished run has a patch and/or a still-existing branch to
-// measure. Sorts on the file count via kTableSortRole.
-void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
-                        const QString &base)
+// The same figure as a label ("2.1 tok/s", or "-" when there is no live rate).
+// Speed left the sessions table with the Agent/Model/Activity columns (adhoc
+// #35) so the Issue title owns the full width; it reads in the detail header now.
+QString agentSpeedText(const AgentSession &s, qint64 tokens)
+{
+    const double rate = agentTokensPerSecond(s, tokens);
+    return rate > 0 ? QStringLiteral("%1 tok/s").arg(rate, 0, 'f', 1)
+                    : QStringLiteral("-");
+}
+
+// A tok/s rate at or above this counts as "flat out" for the activity lights,
+// which scale their pulse between a slow breath and a strobe across 0..this.
+// Sessions spend most of a run well under it (the figure is tokens over *wall*
+// time, so thinking and tool calls drag the average down), which is the point:
+// the lights should still visibly differentiate an ordinary run from a fast one.
+constexpr double kAgentFastTokensPerSecond = 30.0;
+
+// How far a running session's "sync" spinner turns per animation tick (adhoc
+// #50): the glyph spins at the speed the model is actually producing, from a
+// slow turn on a barely-emitting run up to a fast one at
+// kAgentFastTokensPerSecond, on the same 0..1 throughput scale the fleet
+// matrix's activity lights use. A session with no rate yet still creeps, so a
+// just-started run never reads as frozen. Degrees are per kAgentSpinTickMs tick.
+constexpr double kAgentSpinSlowDegrees = 12.0;  // ~0.55 rev/s
+constexpr double kAgentSpinFastDegrees = 66.0;  // ~3.0 rev/s
+
+double agentSpinStepDegrees(const AgentSession &s, qint64 tokens)
+{
+    const double throughput = qBound(
+        0.0, agentTokensPerSecond(s, tokens) / kAgentFastTokensPerSecond, 1.0);
+    return kAgentSpinSlowDegrees +
+           throughput * (kAgentSpinFastDegrees - kAgentSpinSlowDegrees);
+}
+
+// Compact at-a-glance summary of what an agent changed (issue #170): the number
+// of files its captured patch touched, plus how far its branch sits ahead of /
+// behind the base branch (only when both differ). Reads "-" until a finished run
+// has a patch and/or a still-existing branch to measure.
+QString agentDiffSummaryText(const AgentDiffStat &stat)
 {
     QStringList parts;
     if (stat.files >= 0)
@@ -487,25 +519,34 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
         parts << QString::fromUtf8("\xE2\x86\x91%1 \xE2\x86\x93%2")
                      .arg(stat.ahead)
                      .arg(stat.behind);
-    // Conflict marker (adhoc #229): lead the cell with a warning-sign badge when
-    // the branch can no longer merge cleanly into base, so it stands out in the
-    // list. The whole Diff cell is tinted red below to reinforce it.
-    if (stat.conflicted)
-        parts.prepend(QString::fromUtf8("\xE2\x9A\xA0 conflict"));
-    cell->setData(Qt::DisplayRole,
-                  parts.isEmpty()
-                      ? QStringLiteral("-")
-                      : parts.join(QString::fromUtf8("  \xC2\xB7 ")));
+    return parts.isEmpty() ? QStringLiteral("-")
+                           : parts.join(QString::fromUtf8("  \xC2\xB7 "));
+}
+
+// Fill the Diff cell from that summary. Sorts on the file count via
+// kTableSortRole.
+void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
+                        const QString &base, int sessionId = 0)
+{
+    cell->setData(Qt::DisplayRole, agentDiffSummaryText(stat));
     cell->setData(kTableSortRole, stat.files);
-    // Reset the brush explicitly in the clean case: refreshAgentTable() now reuses
-    // row items in place (adhoc #74), so a cell that was red for a conflict must
-    // clear back to the default colour once the conflict is gone rather than
-    // keeping the stale red tint.
-    cell->setForeground(stat.conflicted ? QBrush(QColor(QStringLiteral("#f85149")))
+    // Conflict marker (adhoc #229, reworked adhoc #446): the badge is now an
+    // orange button AgentConflictButtonDelegate paints at the cell's right edge —
+    // clicking it asks the session's agent to merge base and resolve, which used
+    // to happen automatically. The roles are what the delegate paints from; they
+    // are always written (false/0 when clean) because refreshAgentTable() reuses
+    // row items in place (adhoc #74), so a stale conflict flag must be cleared
+    // rather than left behind.
+    cell->setData(kAgentConflictRole, stat.conflicted);
+    cell->setData(kAgentConflictSessionRole, sessionId);
+    // Same reason the brush is reset explicitly in the clean case: a cell that was
+    // tinted for a conflict must fall back to the default colour once it's gone.
+    cell->setForeground(stat.conflicted ? QBrush(QColor(QStringLiteral("#e3742f")))
                                         : QBrush());
     QStringList tip;
     if (stat.conflicted)
-        tip << QStringLiteral("Conflicts with %1 — merge base in and resolve")
+        tip << QStringLiteral("Conflicts with %1 — click the orange conflict "
+                              "button to have this agent merge base in and resolve")
                    .arg(base.isEmpty() ? QStringLiteral("base") : base);
     if (stat.files >= 0)
         tip << QStringLiteral("%1 file%2 changed")
@@ -519,18 +560,24 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
     cell->setToolTip(tip.join(QLatin1Char('\n')));
 }
 
-// "Night rider" scanner light shown in the agents list. Each session gets a
-// small Larson-scanner bar that sweeps left<->right while its raw output is
-// streaming, so the list shows real-time activity at a glance. The sweep is
-// gated on recent raw output: after this many ms with no new output the light
-// drops back to a dim resting state and the driving timer stops.
+// Per-session live-output meter behind the top-bar fleet lights. The meter is
+// gated on recent raw output: after this many ms with no new output it drops
+// back to a dim resting state and the driving timer stops. The agents list used
+// to paint a Larson-scanner bar from it in an "Activity" column too; that column
+// is gone (adhoc #35) and the top-bar dot matrix is the one surface left.
 static constexpr qint64 kScannerIdleMs = 1500;
-// Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 8;
-// "Status" column, which also carries the per-row branch button (adhoc #377).
-static constexpr int kAgentStatusColumn = 4;
+// Leading "#" column, which also carries the run-state glyph and the per-row
+// branch button (adhoc #377, moved here from the dropped Status column by #29).
+static constexpr int kAgentIdColumn = 0;
+// "Issue" column — the title, and the only flexible column: it stretches to fill
+// whatever the others leave, so a long title reads in full (adhoc #35).
+static constexpr int kAgentIssueColumn = 1;
+// "Updated" column, a compact "7m"-style age.
+static constexpr int kAgentUpdatedColumn = 2;
+// "Diff" column, which also carries the per-row conflict button (adhoc #446).
+static constexpr int kAgentDiffColumn = 3;
 
-// Draws a small branch button at the right edge of every Status cell whose
+// Draws a small branch button at the right edge of every "#" cell whose
 // session has a branch, and opens that branch when it's clicked (adhoc #377):
 // jumping to an agent's branch no longer means selecting the row and hunting for
 // the branch chip in the detail header. Subclasses the agents list's own item
@@ -545,7 +592,7 @@ public:
     }
 
     // Reserve the chip's slot in the column's width so ResizeToContents never
-    // sizes the column so tight that the glyph sits on top of the status text.
+    // sizes the column so tight that the chip sits on top of the session id.
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
@@ -695,100 +742,124 @@ private:
     std::function<void(const QString &)> m_onClick;
 };
 
-// Paints a session's Larson-scanner light from MainWindow's per-session state,
-// looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
-// side table keyed by sessionId — rather than per-row child widgets — keeps the
-// animation alive across the agents table's frequent full rebuilds.
-class AgentScannerDelegate : public QStyledItemDelegate
+// Draws an orange "conflict" button at the right edge of every Diff cell whose
+// branch no longer merges cleanly into base, and steers that session into
+// resolving it when the button is clicked (adhoc #446). Conflicts used to be
+// fixed automatically the moment they were spotted; now the list just flags them
+// in orange and the fix runs only when the user asks for it.
+class AgentConflictButtonDelegate : public SelectionBorderRowDelegate
 {
 public:
-    AgentScannerDelegate(const QHash<int, AgentScannerState> *states, QObject *parent)
-        : QStyledItemDelegate(parent), m_states(states)
+    AgentConflictButtonDelegate(QAbstractItemView *view,
+                                std::function<void(int)> onClick)
+        : SelectionBorderRowDelegate(view), m_onClick(std::move(onClick))
     {
     }
 
+    // Reserve the button's slot in the column's width so ResizeToContents never
+    // sizes the column so tight that it lands on top of the diff figures.
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
-        const QSize s = QStyledItemDelegate::sizeHint(opt, idx);
-        return QSize(qMax(s.width(), 96), s.height());
+        QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
+        if (idx.data(kAgentConflictRole).toBool())
+            s.rwidth() += chipWidth(opt) + 2 * kButtonMargin;
+        return s;
     }
 
-    void paint(QPainter *p, const QStyleOptionViewItem &opt,
-               const QModelIndex &idx) const override
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override
     {
-        // Let the style draw the row background (hover) but no text. The solid
-        // green selection fill is suppressed so the row reads as a green outline
-        // (drawn below) over a transparent band, matching the rest of the row.
-        QStyleOptionViewItem o(opt);
-        initStyleOption(&o, idx);
-        o.text.clear();
-        o.state &= ~QStyle::State_Selected;
-        const QWidget *w = o.widget;
-        QStyle *style = w ? w->style() : QApplication::style();
-        style->drawControl(QStyle::CE_ItemViewItem, &o, p, w);
-        paintRowSelectionBorder(p, opt, idx);
-
-        const int sessionId = idx.data(Qt::UserRole).toInt();
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        double phase = 0.0;
-        double intensity = 0.0; // live-output rate, drives the reactive effect
-        bool active = false;
-        if (m_states) {
-            const auto it = m_states->constFind(sessionId);
-            if (it != m_states->constEnd()) {
-                phase = it->phase;
-                intensity = it->intensity;
-                // Keep painting the sweep until the meter has fully wound down,
-                // so the light stays continuously going between output bursts.
-                active = (now - it->lastActivityMs) < kScannerIdleMs
-                         || intensity > 0.0;
-            }
-        }
-
-        const QRect r = opt.rect.adjusted(8, 0, -8, 0);
+        SelectionBorderRowDelegate::paint(painter, option, index);
+        if (!index.data(kAgentConflictRole).toBool())
+            return;
+        const QRect r = buttonRect(option, index);
         if (r.width() <= 0)
             return;
-        const int n = qBound(6, r.width() / 7, 16);
-        const double gap = double(r.width()) / n;
-        const int dotW = qMax(2, int(gap) - 3);
-        const int dotH = qBound(3, r.height() - 10, 7);
-        const double cy = r.center().y() + 0.5;
+        // Orange throughout — the same amber the Waiting status uses for "needs
+        // you" — filling in on hover so it reads as the button it is.
+        const bool hot = option.state & QStyle::State_MouseOver;
+        const bool dark = currentThemeIsDark();
+        const QColor accent(dark ? "#e3742f" : "#bc4c00");
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        QColor fill = accent;
+        fill.setAlpha(hot ? (dark ? 70 : 40) : (dark ? 34 : 20));
+        painter->setBrush(fill);
+        painter->setPen(QPen(accent, 1));
+        painter->drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5);
+        // Glyph at its native size rather than letting QIcon::paint upscale the
+        // 12px pixmap to fill the chip.
+        QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
+                    kGlyphSize, kGlyphSize);
+        themedOcticon("alert", accent, kGlyphSize).paint(painter, glyph);
+        const int textLeft = glyph.right() + 1 + kChipGap;
+        painter->setPen(accent);
+        painter->setFont(chipFont(option));
+        painter->drawText(QRect(textLeft, r.top(),
+                                r.right() - kChipPadding - textLeft + 1, r.height()),
+                          Qt::AlignVCenter | Qt::AlignLeft, kChipText);
+        painter->restore();
+    }
 
-        // Triangle wave: 0 -> (n-1) -> 0, the back-and-forth night-rider sweep.
-        const double tri = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;
-        const double pos = tri * (n - 1);
-        // Real-time reactive effect: the comet's tail streaks longer the more raw
-        // output is pouring in, so the trail length tracks throughput at a glance.
-        const double trail = 1.8 + 2.6 * intensity; // LEDs the comet's glow spans
-
-        p->save();
-        p->setRenderHint(QPainter::Antialiasing, true);
-        p->setPen(Qt::NoPen);
-        // Hot output shifts KITT red toward bright amber, so the colour itself
-        // climbs with the live stream rate (cool #f85149 -> hot #ffc75c).
-        auto mix = [](int a, int b, double t) { return int(a + (b - a) * t); };
-        const QColor base(mix(248, 255, intensity), mix(81, 199, intensity),
-                          mix(73, 92, intensity));
-        const double restAlpha = active ? 0.10 + 0.10 * intensity : 0.06;
-        for (int i = 0; i < n; ++i) {
-            double glow = 0.0;
-            if (active) {
-                const double d = qAbs(i - pos);
-                glow = qMax(0.0, 1.0 - d / trail);
-                glow *= glow;                       // sharpen the comet head
-                glow *= 0.6 + 0.4 * intensity;      // brighter head when busy
+    // Clicks land here before the view starts an edit, so a press+release inside
+    // the button runs the fix and is swallowed (the row still selects on the
+    // press, which is what clicking a row does anyway).
+    bool editorEvent(QEvent *event, QAbstractItemModel *model,
+                     const QStyleOptionViewItem &option,
+                     const QModelIndex &index) override
+    {
+        if (event->type() == QEvent::MouseButtonRelease && m_onClick) {
+            auto *me = static_cast<QMouseEvent *>(event);
+            const int sessionId = index.data(kAgentConflictSessionRole).toInt();
+            if (index.data(kAgentConflictRole).toBool() && sessionId > 0 &&
+                me->button() == Qt::LeftButton &&
+                buttonRect(option, index).contains(me->pos())) {
+                m_onClick(sessionId);
+                return true;
             }
-            QColor c = base;
-            c.setAlphaF(restAlpha + (1.0 - restAlpha) * glow);
-            const double x = r.left() + i * gap + (gap - dotW) / 2.0;
-            p->setBrush(c);
-            p->drawRoundedRect(QRectF(x, cy - dotH / 2.0, dotW, dotH), 1.5, 1.5);
         }
-        p->restore();
+        return SelectionBorderRowDelegate::editorEvent(event, model, option, index);
     }
 
 private:
-    const QHash<int, AgentScannerState> *m_states;
+    static constexpr int kButtonSize = 18;   // chip height
+    static constexpr int kButtonMargin = 4;  // gap to the cell's right edge
+    static constexpr int kGlyphSize = 12;
+    static constexpr int kChipPadding = 4;   // chip edge -> glyph / label
+    static constexpr int kChipGap = 3;       // glyph -> label
+    static constexpr const char *kChipText = "conflict";
+
+    // Small and slightly heavy, matching the branch chip's badge type so the two
+    // buttons in a row read as the same kind of control.
+    static QFont chipFont(const QStyleOptionViewItem &opt)
+    {
+        QFont f = opt.font;
+        if (f.pixelSize() > 0)
+            f.setPixelSize(qMax(9, f.pixelSize() - 3));
+        else
+            f.setPointSizeF(qMax(7.0, f.pointSizeF() - 2.0));
+        f.setWeight(QFont::DemiBold);
+        return f;
+    }
+
+    static int chipWidth(const QStyleOptionViewItem &opt)
+    {
+        return 2 * kChipPadding + kGlyphSize + kChipGap +
+               QFontMetrics(chipFont(opt))
+                   .horizontalAdvance(QLatin1String(kChipText));
+    }
+
+    static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &)
+    {
+        const QRect cell = opt.rect;
+        const int h = qMin(kButtonSize, cell.height() - 2);
+        const int w =
+            qMin(chipWidth(opt), qMax(0, cell.width() - 2 * kButtonMargin));
+        return QRect(cell.right() - kButtonMargin - w + 1,
+                     cell.center().y() - h / 2 + 1, w, h);
+    }
+
+    std::function<void(int)> m_onClick;
 };
 
 QString replyHeader(QNetworkReply *reply, const char *name)
@@ -934,19 +1005,19 @@ QWidget *MainWindow::buildAgentsTab()
 
     auto *listPane = new QWidget;
     listPane->setMinimumWidth(260);
+    // The heading shares the toolbar row rather than owning a line of its own:
+    // with the repository band hidden on this tab (updateRepoActivityRail) the
+    // session list starts at the top of the page, and a one-line header keeps it
+    // there instead of spending two rows on chrome.
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
-    auto *headingRow = new QHBoxLayout;
-    headingRow->setContentsMargins(0, 0, 0, 0);
-    headingRow->setSpacing(8);
-    headingRow->addWidget(heading, 1);
 
-    m_agentTable = new QTableWidget(0, 9);
+    m_agentTable = new QTableWidget(0, 4);
     m_agentTable->setObjectName("issueTable");
     installColumnHeaderMenu(m_agentTable); // 3-dots per-column menu (issue #318)
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
-    // Activity delegate below draws the matching outline slice for its cell.
+    // button delegates below subclass it so their cells keep the same outline.
     m_agentTable->setItemDelegate(new SelectionBorderRowDelegate(m_agentTable));
     // Stripping State_Selected in the delegate stops the delegate from filling
     // the row, but the view still paints the selection band itself from the
@@ -956,13 +1027,16 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setStyleSheet(
         "#issueTable { selection-background-color: transparent; }"
         "#issueTable::item:selected { background: transparent; }");
-    // Turns/Time/Cost/Tokens moved out of the table into the agent detail-page
-    // header (adhoc #42) so the list stays scannable and all of a session's
-    // figures read together in one place; Speed (tok/s) stays as the at-a-glance
-    // throughput. "Diff" (issue #170) is a compact files-changed + ahead/behind badge.
-    m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Model", "Status",
-         "Speed", "Updated", "Diff", "Activity"});
+    // Four columns, and only four: the issue title is what the list is scanned
+    // by, so everything that used to compete with it for width has moved into the
+    // detail header instead. Turns/Time/Cost/Tokens went first (adhoc #42),
+    // Status next (adhoc #29 — its glyph and branch chip ride the "#" cell), and
+    // Agent/Model/Speed plus the night-rider "Activity" light last (adhoc #35:
+    // Speed now reads in the detail header, and the top-bar fleet matrix is the
+    // remaining live-activity surface). What's left is the id, the title, when the
+    // session last moved, and "Diff" — a compact files-changed + ahead/behind
+    // badge (issue #170) that also carries the conflict button.
+    m_agentTable->setHorizontalHeaderLabels({"#", "Issue", "Updated", "Diff"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -972,40 +1046,45 @@ QWidget *MainWindow::buildAgentsTab()
     // Don't tail long titles with a "…" ellipsis (issue #69): ad-hoc sessions
     // carry a full-sentence, prompt-derived title that overruns the Issue column,
     // and Qt::ElideRight peppered every row with trailing dots. Clip cleanly at
-    // the cell edge instead — the column is user-widenable to read a title in full.
+    // the cell edge instead — the column now takes every spare pixel (below), so
+    // there is rarely anything left to clip.
     m_agentTable->setTextElideMode(Qt::ElideNone);
     m_agentTable->setSortingEnabled(true);
     QHeaderView *agentHeader = m_agentTable->horizontalHeader();
     agentHeader->setHighlightSections(false);
     // Let the user drag column headers into a new order (resizing is wired up
-    // by makeColumnsResizable() below). The custom-painted Activity delegate is
-    // bound to its logical column, so it follows the header wherever it lands.
+    // by makeColumnsResizable() below).
     agentHeader->setSectionsMovable(true);
-    agentHeader->setSectionResizeMode(0, QHeaderView::ResizeToContents);
-    // The Issue (title) column is user-expandable: a draggable Interactive column
-    // with a generous default width rather than a locked Stretch flex column, so a
-    // long issue title can be widened to read in full.
-    agentHeader->setSectionResizeMode(1, QHeaderView::Interactive);
-    m_agentTable->setColumnWidth(1, 320);
-    for (int c = 2; c < kAgentActivityColumn; ++c)
-        agentHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
-    // The night-rider light column is a fixed-width, custom-painted scanner.
-    agentHeader->setSectionResizeMode(kAgentActivityColumn, QHeaderView::Fixed);
-    m_agentTable->setColumnWidth(kAgentActivityColumn, 104);
-    m_agentTable->setItemDelegateForColumn(
-        kAgentActivityColumn, new AgentScannerDelegate(&m_scannerStates, m_agentTable));
-    // Branch button on every Status cell (adhoc #377): one click from the list
+    agentHeader->setSectionResizeMode(kAgentIdColumn, QHeaderView::ResizeToContents);
+    // The Issue (title) column is the flex column and stays that way: Updated and
+    // Diff fit their contents and are pushed against the pane's right edge, so the
+    // title has the whole middle of the list to itself with nothing in its way
+    // (adhoc #35). makeColumnsResizable() is told to leave this one stretching.
+    agentHeader->setSectionResizeMode(kAgentIssueColumn, QHeaderView::Stretch);
+    agentHeader->setSectionResizeMode(kAgentUpdatedColumn,
+                                      QHeaderView::ResizeToContents);
+    agentHeader->setSectionResizeMode(kAgentDiffColumn,
+                                      QHeaderView::ResizeToContents);
+    // Branch button on every "#" cell (adhoc #377): one click from the list
     // straight to that session's branch in the Branches panel.
     m_agentTable->setItemDelegateForColumn(
-        kAgentStatusColumn,
+        kAgentIdColumn,
         new AgentBranchButtonDelegate(
             m_agentTable, [this](const QString &branch) { switchToBranch(branch); }));
-    // ~22fps timer that advances + repaints the active scanner lights. It is
-    // started on demand by noteAgentActivity and self-stops once all lights idle.
+    // Conflict button on every Diff cell whose branch no longer merges cleanly
+    // (adhoc #446): one click steers that agent into merging base and resolving,
+    // which is no longer done automatically.
+    m_agentTable->setItemDelegateForColumn(
+        kAgentDiffColumn,
+        new AgentConflictButtonDelegate(
+            m_agentTable, [this](int sessionId) { fixAgentConflictsWithAgent(sessionId); }));
+    // ~22fps timer that advances the per-session output meters and repaints the
+    // top-bar fleet lights off them. It is started on demand by noteAgentActivity
+    // and self-stops once every session has gone idle.
     m_scannerTimer = new QTimer(this);
     m_scannerTimer->setInterval(45);
     connect(m_scannerTimer, &QTimer::timeout, this, &MainWindow::onScannerTick);
-    makeColumnsResizable(m_agentTable);
+    makeColumnsResizable(m_agentTable, kAgentIssueColumn);
 
     // Detect Claude Code sessions running outside ForkMesh and stream the open
     // one. Light enough (a directory scan + small tail reads) to poll often.
@@ -1016,9 +1095,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_externalClaudeTimer->start();
 
     auto *listLayout = new QVBoxLayout(listPane);
-    listLayout->setContentsMargins(18, 18, 12, 18);
+    listLayout->setContentsMargins(18, 12, 12, 14);
     listLayout->setSpacing(8);
-    listLayout->addLayout(headingRow);
 
     // The top-of-list "Start agent" compose row (adhoc #234) was removed from
     // the desktop app (adhoc #271) — starting a new ad-hoc agent now happens
@@ -1089,6 +1167,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(0, 0, 0, 0);
     agentListToolbar->setSpacing(8);
+    agentListToolbar->addWidget(heading, 0);
     agentListToolbar->addWidget(m_agentSearch, 1);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
@@ -1103,27 +1182,15 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTitle->setWordWrap(true);
     m_agentMeta = new QLabel;
     m_agentMeta->setObjectName("statusLine");
-    // Selectable text plus clickable links: the branch name links to its row in
-    // the Worktrees tab (issue #265). The meta string is HTML-escaped and built as
-    // rich text, so pin the format rather than relying on auto-detection.
+    // Selectable text plus clickable links: the issue and PR values link to their
+    // tabs (adhoc #53, #138). The meta string is HTML-escaped and built as rich
+    // text, so pin the format rather than relying on auto-detection.
     m_agentMeta->setTextFormat(Qt::RichText);
     m_agentMeta->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                          Qt::LinksAccessibleByMouse);
     m_agentMeta->setWordWrap(true);
     connect(m_agentMeta, &QLabel::linkActivated, this, [this](const QString &href) {
-        if (href.startsWith(kCopyBranchLinkScheme)) {
-            const QString branch = QUrl::fromPercentEncoding(
-                href.mid(kCopyBranchLinkScheme.size()).toUtf8());
-            QApplication::clipboard()->setText(branch);
-            flashMessage(QStringLiteral("Copied branch name \xE2\x80\x9C%1\xE2\x80\x9D")
-                             .arg(branch));
-        } else if (href.startsWith(kBranchLinkScheme))
-            switchToBranch(QUrl::fromPercentEncoding(
-                href.mid(kBranchLinkScheme.size()).toUtf8()));
-        else if (href.startsWith(kWorktreeLinkScheme))
-            switchToWorktree(QUrl::fromPercentEncoding(
-                href.mid(kWorktreeLinkScheme.size()).toUtf8()));
-        else if (href.startsWith(kPullLinkScheme))
+        if (href.startsWith(kPullLinkScheme))
             switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
         else if (href.startsWith(kIssueLinkScheme)) {
             // Open the issue in its own repo's Issues tab (the session may belong to
@@ -1155,22 +1222,21 @@ QWidget *MainWindow::buildAgentsTab()
         stopStreamSession(m_selectedAgentSessionId);
     });
 
-    m_agentDeleteButton = new QPushButton("Delete");
-    m_agentDeleteButton->setObjectName("dangerButton");
-    m_agentDeleteButton->setCursor(Qt::PointingHandCursor);
-    m_agentDeleteButton->setToolTip("Delete just this agent session");
-    setOcticon(m_agentDeleteButton, "trash", 16);
-    connect(m_agentDeleteButton, &QPushButton::clicked, this,
-            &MainWindow::deleteSelectedAgentSession);
-
     // Delete the agent together with its worktree folder and branch in one action.
-    m_agentDeleteAllButton = new QPushButton("Delete all");
+    // adhoc #51 folded the session-only "Delete" that sat beside it into this one
+    // button, so watch-only rows (no branch of ours to clean up) go down the
+    // session-only path from here.
+    m_agentDeleteAllButton = new QPushButton("Delete");
     m_agentDeleteAllButton->setObjectName("dangerButton");
     m_agentDeleteAllButton->setCursor(Qt::PointingHandCursor);
     m_agentDeleteAllButton->setToolTip(
         "Delete this agent session, its worktree folder and its branch");
     setOcticon(m_agentDeleteAllButton, "trash", 16);
     connect(m_agentDeleteAllButton, &QPushButton::clicked, this, [this] {
+        if (isExternalSession(m_selectedAgentSessionId)) {
+            deleteSelectedAgentSession();
+            return;
+        }
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
         if (!s || s->branchName.isEmpty())
             return;
@@ -1185,7 +1251,7 @@ QWidget *MainWindow::buildAgentsTab()
         // so the click used to sit there for seconds with nothing to show it
         // registered (adhoc #417). Log it, say so and grey the button out now,
         // then let the event loop paint before any of that work starts.
-        logSystem(QStringLiteral("Agents: \"Delete all\" clicked for session #%1 (%2).")
+        logSystem(QStringLiteral("Agents: \"Delete\" clicked for session #%1 (%2).")
                       .arg(sessionId)
                       .arg(branch));
         flashMessage(
@@ -1217,7 +1283,7 @@ QWidget *MainWindow::buildAgentsTab()
     // "Create linked issue" — for ad-hoc sessions (no issue) it files a tracked
     // issue from the run's prompt and links the two (adhoc #189). Hidden once the
     // session already has a linked issue.
-    m_agentCreateIssueButton = new QPushButton("Create linked issue");
+    m_agentCreateIssueButton = new QPushButton("+ issue");
     m_agentCreateIssueButton->setObjectName("primaryButton");
     m_agentCreateIssueButton->setCursor(Qt::PointingHandCursor);
     m_agentCreateIssueButton->setToolTip(
@@ -1233,45 +1299,36 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStatusPill->setTextFormat(Qt::RichText);
     m_agentStatusPill->setAlignment(Qt::AlignCenter);
 
-    // Permission-mode selector (adhoc #26): change the open session's mode in
-    // place rather than only when a follow-up is sent from the composer. Mirrors
-    // the composer's mode selector items — the "Auto mode" data flag marks the
-    // unattended preset. Shown only for providers that carry a mode.
-    m_agentModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
-    m_agentModeSelector->setObjectName("quickAddModeSelector");
-    m_agentModeSelector->setCursor(Qt::PointingHandCursor);
-    m_agentModeSelector->setMinimumContentsLength(10);
-    m_agentModeSelector->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_agentModeSelector->addItem(QStringLiteral("Ask before edits"), false);
-    m_agentModeSelector->addItem(QStringLiteral("Edit automatically"), false);
-    m_agentModeSelector->addItem(QStringLiteral("Plan mode"), false);
-    m_agentModeSelector->addItem(kClaudeAutoModeLabel, true);
-    m_agentModeSelector->setMaxVisibleItems(30);
-    m_agentModeSelector->setToolTip(
-        "Change how much freedom this agent has to edit without asking first. "
-        "Takes effect on its next turn \xE2\x80\x94 a running Codex session "
-        "picks it up immediately.");
-    m_agentModeSelector->hide(); // revealed per-session in syncAgentModeSelector
-    connect(m_agentModeSelector,
-            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this](int) { applySelectedAgentMode(); });
+    // Branch / Worktree, as caption-over-value buttons in the output toolbar
+    // (adhoc #51): the branch name and worktree path read tiny under the caption
+    // and a click opens that branch's row in the Branches tab / that worktree's
+    // row in the Worktrees tab — the same targets the meta table's chips carried
+    // before those two columns moved here.
+    m_agentBranchButton = new StackedCaptionButton(QStringLiteral("Branch"));
+    m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
+    connect(m_agentBranchButton, &QPushButton::clicked, this, [this] {
+        if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+            s && !s->branchName.isEmpty())
+            switchToBranch(s->branchName);
+    });
+    m_agentWorktreeButton = new StackedCaptionButton(QStringLiteral("Worktree"));
+    m_agentWorktreeButton->hide();
+    connect(m_agentWorktreeButton, &QPushButton::clicked, this, [this] {
+        if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+            s && !s->branchName.isEmpty())
+            switchToWorktree(s->branchName);
+    });
 
-    auto *titleCol = new QVBoxLayout;
-    titleCol->setContentsMargins(0, 0, 0, 0);
-    titleCol->setSpacing(4);
-    titleCol->addWidget(m_agentTitle);
-    titleCol->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
-
-    auto *topRow = new QHBoxLayout;
+    // The title owns its row outright (adhoc #35): sharing it with the mode
+    // selector and the action buttons left a long, prompt-derived ad-hoc title
+    // wrapping inside a narrow column with acres of unused space beside it. The
+    // buttons moved down to the output toolbar next to the Transcript | Raw output
+    // toggle, so the header now reads title, then status pill, then the meta table.
+    auto *topRow = new QVBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
-    topRow->addLayout(titleCol, 1);
-    topRow->addWidget(m_agentModeSelector, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentCreateIssueButton, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentViewPrButton, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentDeleteButton, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentDeleteAllButton, 0, Qt::AlignTop);
+    topRow->setSpacing(4);
+    topRow->addWidget(m_agentTitle);
+    topRow->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
 
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
@@ -1298,14 +1355,21 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentTerminal, &TerminalWidget::finished, this, [this](int) {
         if (m_terminalSessionId <= 0)
             return;
-        if (AgentSession *s = findAgentSession(m_terminalSessionId)) {
+        const int sid = m_terminalSessionId; // reloadAgents() below dangles `s`
+        bool finished = false;
+        if (AgentSession *s = findAgentSession(sid)) {
             if (s->status == AgentStatus::Running) {
                 s->status = AgentStatus::Success;
                 s->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
                 m_agentStore->saveSession(*s);
                 scheduleAgentSessionsPush(); // adhoc #182
                 reloadAgents();
+                finished = true;
             }
+        }
+        if (finished) {
+            maybeAutoMergeForSession(sid);   // adhoc #12
+            completeOrgTaskForSession(sid);  // adhoc #18
         }
     });
     // Extension-style transcript for Claude Code (issue #191 follow-up): renders
@@ -1381,7 +1445,7 @@ QWidget *MainWindow::buildAgentsTab()
 
     // Transcript | Raw toggle, shown only for Claude Code transcript sessions.
     m_transcriptModeButton = new QPushButton(QStringLiteral("Transcript"));
-    m_terminalModeButton = new QPushButton(QStringLiteral("Raw output"));
+    m_terminalModeButton = new QPushButton(QStringLiteral("Raw"));
     for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton}) {
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
@@ -1399,30 +1463,12 @@ QWidget *MainWindow::buildAgentsTab()
         m_transcriptModeButton->setChecked(false);
         showAgentRawOutput();
     });
-    // Diff-style selector, sitting at the top of the output area (next to the
-    // Transcript|Raw toggle): pick unified or side-by-side diffs.
-    m_agentDiffModeCombo = new QComboBox;
-    m_agentDiffModeCombo->setObjectName("agentDiffMode");
-    m_agentDiffModeCombo->setCursor(Qt::PointingHandCursor);
-    m_agentDiffModeCombo->addItem(QStringLiteral("Unified diff"), false);
-    m_agentDiffModeCombo->addItem(QStringLiteral("Split diff"), true);
-    m_agentDiffModeCombo->setToolTip(
-        "How Edit/Write diffs are shown in the transcript");
-    m_agentDiffModeCombo->setCurrentIndex(
-        QSettings().value(kClaudeDiffSplitSetting, false).toBool() ? 1 : 0);
-    connect(m_agentDiffModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) {
-                const bool split = m_agentDiffModeCombo->currentData().toBool();
-                QSettings().setValue(kClaudeDiffSplitSetting, split);
-                if (m_agentTranscript)
-                    m_agentTranscript->setSplitDiffs(split);
-                if (m_selectedAgentSessionId != -1) // re-render with the new style
-                    showAgentSession(m_selectedAgentSessionId);
-            });
+    // The unified/split diff-style selector that used to sit here is gone (adhoc
+    // #51); the transcript still honours the stored kClaudeDiffSplitSetting.
 
-    // Search the transcript (adhoc #201): a query box with a "3/12" match counter
-    // and prev/next steppers. Typing highlights every match in the transcript and
-    // jumps to the first; Enter / the steppers walk through the hits.
+    // Search the transcript (adhoc #201): a query box with a "3/12" match counter.
+    // Typing highlights every match in the transcript and jumps to the first;
+    // Enter walks the hits (adhoc #51 dropped the prev/next steppers).
     m_transcriptSearch = new QLineEdit;
     m_transcriptSearch->setObjectName("issueSearch"); // reuse the styled search look
     m_transcriptSearch->setPlaceholderText(
@@ -1431,18 +1477,6 @@ QWidget *MainWindow::buildAgentsTab()
     m_transcriptSearch->setFixedWidth(190);
     m_transcriptSearchCount = new QLabel;
     m_transcriptSearchCount->setObjectName("agentFilesHeading"); // small muted text
-    m_transcriptSearchPrev = new QPushButton;
-    m_transcriptSearchNext = new QPushButton;
-    for (QPushButton *b : {m_transcriptSearchPrev, m_transcriptSearchNext}) {
-        b->setObjectName("ghostButton");
-        b->setProperty("buttonSize", "sm");
-        b->setCursor(Qt::PointingHandCursor);
-        b->setEnabled(false);
-    }
-    setOcticon(m_transcriptSearchPrev, "chevron-up", 14);
-    setOcticon(m_transcriptSearchNext, "chevron-down", 14);
-    m_transcriptSearchPrev->setToolTip(QStringLiteral("Previous match"));
-    m_transcriptSearchNext->setToolTip(QStringLiteral("Next match"));
     connect(m_transcriptSearch, &QLineEdit::textChanged, this,
             [this](const QString &t) {
                 if (!m_agentTranscript)
@@ -1457,46 +1491,57 @@ QWidget *MainWindow::buildAgentsTab()
         if (m_agentTranscript)
             m_agentTranscript->searchNext();
     });
-    connect(m_transcriptSearchPrev, &QPushButton::clicked, this, [this] {
-        if (m_agentTranscript)
-            m_agentTranscript->searchPrev();
-    });
-    connect(m_transcriptSearchNext, &QPushButton::clicked, this, [this] {
-        if (m_agentTranscript)
-            m_agentTranscript->searchNext();
-    });
     connect(m_agentTranscript, &ClaudeTranscriptView::searchResultsChanged, this,
             [this](int current, int total) {
-                if (m_transcriptSearchCount) {
-                    const bool empty = !m_transcriptSearch
-                                       || m_transcriptSearch->text().trimmed().isEmpty();
-                    m_transcriptSearchCount->setText(
-                        empty ? QString()
-                              : QStringLiteral("%1/%2").arg(current).arg(total));
-                }
-                const bool any = total > 0;
-                if (m_transcriptSearchPrev)
-                    m_transcriptSearchPrev->setEnabled(any);
-                if (m_transcriptSearchNext)
-                    m_transcriptSearchNext->setEnabled(any);
+                if (!m_transcriptSearchCount)
+                    return;
+                const bool empty = !m_transcriptSearch
+                                   || m_transcriptSearch->text().trimmed().isEmpty();
+                m_transcriptSearchCount->setText(
+                    empty ? QString()
+                          : QStringLiteral("%1/%2").arg(current).arg(total));
             });
+
+    // Search box and match counter — the transcript-only half of the output
+    // toolbar, grouped so it can be shown and hidden as one without taking the
+    // session action buttons beside it with it (adhoc #35).
+    auto *transcriptToolsRow = new QHBoxLayout;
+    transcriptToolsRow->setContentsMargins(0, 0, 0, 0);
+    transcriptToolsRow->setSpacing(0);
+    transcriptToolsRow->addWidget(m_transcriptSearch);
+    transcriptToolsRow->addSpacing(6);
+    transcriptToolsRow->addWidget(m_transcriptSearchCount);
+    m_agentTranscriptTools = new QWidget;
+    m_agentTranscriptTools->setLayout(transcriptToolsRow);
+
+    // Session actions, moved off the detail header's title row (adhoc #35) so the
+    // title can run the full width: they ride the output toolbar now, immediately
+    // right of the Transcript | Raw toggle. Each already manages its own
+    // visibility ("+ issue", View PR and the Branch/Worktree buttons appear per
+    // session), so they are only laid out here.
+    auto *actionRow = new QHBoxLayout;
+    actionRow->setContentsMargins(0, 0, 0, 0);
+    actionRow->setSpacing(6);
+    actionRow->addWidget(m_agentCreateIssueButton);
+    actionRow->addWidget(m_agentViewPrButton);
+    actionRow->addWidget(m_agentStopButton);
+    actionRow->addWidget(m_agentDeleteAllButton);
+    actionRow->addWidget(m_agentBranchButton);
+    actionRow->addWidget(m_agentWorktreeButton);
 
     auto *toggleRow = new QHBoxLayout;
     toggleRow->setContentsMargins(0, 0, 0, 0);
     toggleRow->setSpacing(0);
     toggleRow->addWidget(m_transcriptModeButton);
     toggleRow->addWidget(m_terminalModeButton);
+    toggleRow->addSpacing(12);
+    toggleRow->addLayout(actionRow);
     toggleRow->addStretch(1);
-    toggleRow->addWidget(m_transcriptSearch);
-    toggleRow->addSpacing(6);
-    toggleRow->addWidget(m_transcriptSearchCount);
-    toggleRow->addWidget(m_transcriptSearchPrev);
-    toggleRow->addWidget(m_transcriptSearchNext);
-    toggleRow->addSpacing(8);
-    toggleRow->addWidget(m_agentDiffModeCombo);
+    toggleRow->addWidget(m_agentTranscriptTools);
     m_agentOutputToggle = new QWidget;
     m_agentOutputToggle->setLayout(toggleRow);
-    m_agentOutputToggle->hide();
+    // The toolbar itself always shows now that it carries the action buttons; the
+    // detail pane it lives in is what stays hidden until a session is opened.
 
     // Edited-files list for the "Files changed" tab: the files this session has
     // touched in its branch (derived from Edit/Write/MultiEdit tool calls, and
@@ -1737,7 +1782,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentNetPanel->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
     auto *detailLayout = new QVBoxLayout(detailPane);
-    detailLayout->setContentsMargins(12, 18, 22, 18);
+    detailLayout->setContentsMargins(12, 12, 22, 14);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(topRow);
     detailLayout->addWidget(m_agentMeta);
@@ -1838,6 +1883,15 @@ void MainWindow::applyComposerSelectionToAgentSession(int sessionId)
                 session->mode = chosenMode;
                 changed = true;
             }
+        }
+        // The reasoning strength rides into the CLI from the same live setting
+        // the resume reads (kClaudeEffortSetting), so keep the session's copy in
+        // step — the organization task reports what the run actually used, not
+        // what it was first launched with (adhoc #18).
+        if (const QString chosenStrength = composerAgentStrength();
+            session->strength != chosenStrength) {
+            session->strength = chosenStrength;
+            changed = true;
         }
         if (changed && m_agentStore)
             m_agentStore->saveSession(*session);
@@ -4090,6 +4144,69 @@ void MainWindow::updateAgentsNavBadge()
         m_agentsNavButton->setText(QStringLiteral("Agents"));
         m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     }
+    refreshAgentDotMatrix();
+}
+
+// The fleet matrix beside that button: one tiny square per session, tinted to
+// the same colour as its status icon in the agents list, with each running
+// session's live-output meter feeding the night-rider sweep so the row shows
+// real activity rather than a decorative animation. Cheap enough to call from
+// the scanner tick — the vector is small and the widget repaints itself.
+void MainWindow::refreshAgentDotMatrix()
+{
+    if (!m_agentDotMatrix)
+        return;
+    QVector<AgentDotMatrix::Dot> dots;
+    dots.reserve(m_agentSessions.size());
+    QHash<QString, int> tally; // status label -> count, for the tooltip
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        AgentDotMatrix::Dot dot;
+        dot.sessionId = session.id;
+        dot.color = agentStatusIconColor(session);
+        dot.running = !session.merged && session.status == AgentStatus::Running;
+        if (dot.running) {
+            dot.intensity = m_scannerStates.value(session.id).intensity;
+            // Token throughput, scaled against a flat-out run, so the blink rate
+            // reflects how fast the model is actually producing and not just how
+            // many bytes happened to land (adhoc #35).
+            dot.throughput = qBound(
+                0.0,
+                agentTokensPerSecond(session, sessionTokenTotal(session)) /
+                    kAgentFastTokensPerSecond,
+                1.0);
+        }
+        dots.append(dot);
+        tally[session.merged ? QStringLiteral("merged")
+                             : agentStatusText(session.status)]++;
+    }
+    m_agentDotMatrix->setDots(dots);
+    m_agentDotMatrix->setVisible(!dots.isEmpty());
+
+    if (dots.isEmpty()) {
+        m_agentDotTooltipKey.clear();
+        return;
+    }
+    // The scanner tick lands here ~20x a second to keep the intensities live, so
+    // only rebuild the tooltip when the fleet's composition actually changed —
+    // formatting and setting the same string 20x a second is pure waste.
+    QStringList parts;
+    for (auto it = tally.constBegin(); it != tally.constEnd(); ++it)
+        parts << QStringLiteral("%1 %2").arg(it.value()).arg(it.key());
+    std::sort(parts.begin(), parts.end());
+    const QString key = parts.join(QStringLiteral(", "));
+    if (key == m_agentDotTooltipKey)
+        return;
+    m_agentDotTooltipKey = key;
+    QString tip = QStringLiteral("%1 agent session%2 \xE2\x80\x94 %3")
+                      .arg(dots.size())
+                      .arg(dots.size() == 1 ? QString() : QStringLiteral("s"),
+                           key);
+    // The grid is bounded, so say so rather than silently dropping the tail.
+    const int shown = m_agentDotMatrix->shownCount();
+    if (shown < dots.size())
+        tip += QStringLiteral("\n(showing the first %1)").arg(shown);
+    tip += QStringLiteral("\nClick a square to open that session.");
+    m_agentDotMatrix->setToolTip(tip);
 }
 
 void MainWindow::refreshAgentTable()
@@ -4261,13 +4378,6 @@ void MainWindow::refreshAgentTable()
         }
     }
 
-    // Auto-fix only consumes completed background results; a cold row remains
-    // unknown until the worker delivers it.
-    for (const AgentSession &session : sessions)
-        if (session.owner == owner && session.name == name)
-            maybeAutoFixAgentConflict(
-                session, agentDiffStat(session, agentGitDir, agentBase));
-
     // The rows this repo + search filter will show, in session order (the table's
     // own sort reorders them afterwards). Also count how many merged sessions the
     // "Delete all merged" batch could act on — across the whole repo, before the
@@ -4392,40 +4502,29 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
         return it;
     };
 
-    QTableWidgetItem *idItem = plain(0);
-    idItem->setData(Qt::DisplayRole, session.id);
-    idItem->setData(Qt::UserRole, session.id);
-    // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
-    // conflict auto-fixer, issueNumber 0) just show their title.
-    plain(1)->setText(session.issueNumber > 0
-                          ? QStringLiteral("#%1 %2")
-                                .arg(session.issueNumber)
-                                .arg(session.issueTitle)
-                          : session.issueTitle);
-    plain(2)->setText(agentProviderName(session.provider));
-    // Model column: the LLM model selected for this session.
-    applyAgentModelCell(plain(3), session);
-    // Diff figures, memoised — feed both the Status cell's branch chip (files /
+    // Diff figures, memoised — feed both the "#" cell's branch chip (files /
     // dirty / worktree badges, adhoc #403) and the Diff column below.
     const AgentDiffStat diffStat = agentDiffStat(session, agentGitDir, agentBase);
-    // Status column: text + coloured glyph (issue #108).
-    applyAgentStatusCell(plain(4), session, diffStat);
-    // Turns/Time/Cost/Tokens now live in the detail-page header (adhoc #42); the
-    // table keeps only Speed as the at-a-glance throughput. The token total still
-    // feeds the Speed figure and is refreshed in place while the session streams
-    // (see updateAgentTokenCell).
-    const qint64 toks = sessionTokenTotal(session);
-    // Speed column: token throughput derived from the token total and run duration.
-    applyAgentSpeedCell(sortable(5), session, toks);
+    // "#" column: the session id plus its run-state glyph and branch chip
+    // (adhoc #29 — the old Status column's icons, moved to the left edge).
+    applyAgentStatusCell(plain(kAgentIdColumn), session, diffStat);
+    // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
+    // conflict auto-fixer, issueNumber 0) just show their title.
+    plain(kAgentIssueColumn)
+        ->setText(session.issueNumber > 0 ? QStringLiteral("#%1 %2")
+                                                .arg(session.issueNumber)
+                                                .arg(session.issueTitle)
+                                          : session.issueTitle);
     // "Updated" column: the most recent of created/started/finished/merged, shown
-    // as a friendly "x ago" string. The tooltip carries the full timestamp and the
-    // raw millisecond value drives chronological sorting.
+    // as a compact "7m"-style age (adhoc #29 — "7 minutes ago" spent a wide column
+    // on words the list doesn't need). The tooltip carries the full timestamp and
+    // the raw millisecond value drives chronological sorting.
     const qint64 updatedMs =
         qMax(qMax(session.createdAtMs, session.startedAtMs),
              qMax(session.finishedAtMs, session.mergedAtMs));
-    QTableWidgetItem *updated = sortable(6);
+    QTableWidgetItem *updated = sortable(kAgentUpdatedColumn);
     updated->setData(Qt::DisplayRole,
-                     updatedMs > 0 ? formatIssueRelativeTime(updatedMs)
+                     updatedMs > 0 ? formatShortRelativeTime(updatedMs / 1000)
                                    : QStringLiteral("-"));
     updated->setData(kTableSortRole, static_cast<qlonglong>(updatedMs));
     updated->setToolTip(updatedMs > 0
@@ -4433,14 +4532,7 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
                                   QStringLiteral("yyyy-MM-dd HH:mm:ss"))
                             : QString());
     // Diff column (issue #170): files changed + branch ahead/behind, memoised.
-    applyAgentDiffCell(sortable(7), diffStat, agentBase);
-    // Night-rider light: a custom-painted scanner that sweeps while this session
-    // streams raw output. AgentScannerDelegate looks the animation state up by the
-    // sessionId stashed here in Qt::UserRole.
-    QTableWidgetItem *activity = plain(kAgentActivityColumn);
-    activity->setData(Qt::UserRole, session.id);
-    activity->setToolTip(QStringLiteral(
-        "Live activity — sweeps while the agent is streaming output"));
+    applyAgentDiffCell(sortable(kAgentDiffColumn), diffStat, agentBase, session.id);
 }
 
 AgentSession *MainWindow::findAgentSession(int sessionId)
@@ -4452,24 +4544,20 @@ AgentSession *MainWindow::findAgentSession(int sessionId)
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
-// issue #291: read back the Status-column text the agent list renders for a
+// issue #291: read back the run-state word the agent list renders for a
 // session — "merged" once its worktree/PR lands in the base branch, otherwise the
 // run status — so a window test can prove the merge note reaches the list. Goes
-// through applyAgentStatusCell (the same painter the live table uses) rather than
-// duplicating its logic.
+// through agentStatusLabel (what the "#" cell's glyph and tooltip are driven off,
+// adhoc #29) rather than duplicating its logic.
 QString MainWindow::testAgentStatusCellText(int sessionId) const
 {
-    for (const AgentSession &s : m_agentSessions) {
-        if (s.id == sessionId) {
-            QTableWidgetItem item;
-            applyAgentStatusCell(&item, s);
-            return item.text();
-        }
-    }
+    for (const AgentSession &s : m_agentSessions)
+        if (s.id == sessionId)
+            return agentStatusLabel(s);
     return QString();
 }
 
-// adhoc #403: read the branch chip's badges back off the Status cell —
+// adhoc #403: read the branch chip's badges back off the "#" cell —
 // AgentBranchButtonDelegate paints straight from these roles, so proving they
 // carry the session's diff stat proves the chip shows the right counts.
 QString MainWindow::testAgentStatusCellBadges(int sessionId,
@@ -4611,6 +4699,7 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
     if (!m_agentStore)
         return false;
     bool changed = false;
+    QList<int> mergedIds;
     for (AgentSession &s : m_agentSessions) {
         if (s.merged)
             continue;
@@ -4627,8 +4716,15 @@ bool MainWindow::markAgentSessionsMerged(int prNumber, const QString &branch)
                    .arg(byPr ? QStringLiteral("PR #%1").arg(prNumber)
                              : QStringLiteral("Branch %1").arg(branch),
                         agentMergeBase(s)));
+        mergedIds << s.id;
         changed = true;
     }
+    // The organization task this session mirrors is closed out with the merge in
+    // its note — the run's own completion may have been reported before the
+    // branch landed, or not reported at all (adhoc #30). Outside the loop: the
+    // post's reply handler re-looks-up sessions by id.
+    for (int id : mergedIds)
+        completeOrgTaskForSession(id, QStringLiteral("The work has been merged."));
     if (changed) {
         refreshAgentTable();
         if (m_selectedAgentSessionId > 0)
@@ -4759,6 +4855,7 @@ void MainWindow::markAgentSessionsLanded(const QList<int> &sessionIds, bool refr
     if (!m_agentStore || sessionIds.isEmpty())
         return;
     bool changed = false;
+    QList<int> mergedIds;
     for (AgentSession &s : m_agentSessions) {
         if (!sessionIds.contains(s.id) || s.merged)
             continue;
@@ -4769,8 +4866,13 @@ void MainWindow::markAgentSessionsLanded(const QList<int> &sessionIds, bool refr
         m_agentStore->saveSession(s);
         m_agentStore->appendLog(
             s, QStringLiteral("\n==> Worktree/PR merged into %1.").arg(agentMergeBase(s)));
+        mergedIds << s.id;
         changed = true;
     }
+    // Same as markAgentSessionsMerged(): a landed branch completes the mirrored
+    // organization task and refreshes its note (adhoc #30).
+    for (int id : mergedIds)
+        completeOrgTaskForSession(id, QStringLiteral("The work has been merged."));
     if (changed && refreshUi) {
         // Merge state feeds the Diff-cell fingerprint; arm the re-validation the
         // same way reloadAgents() does (skipped mid-refresh — the pump can service
@@ -4798,46 +4900,6 @@ static QString chipLinkHtml(const QString &href, const QString &labelHtml)
                "<a href=\"%1\" style=\"color:#c9d1d9;background-color:#21262d;"
                "text-decoration:none\">&nbsp;%2&nbsp;</a>")
         .arg(href, labelHtml);
-}
-
-// Chip for a branch name — same target as branchLinkHtml (open in Branches tab)
-// but styled as a button for the agent-detail header. Empty when there's no
-// branch.
-static QString chipBranchLinkHtml(const QString &branch)
-{
-    if (branch.isEmpty())
-        return QString();
-    const QString href = kBranchLinkScheme +
-                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
-    return chipLinkHtml(href, branch.toHtmlEscaped());
-}
-
-// Small "copy" link rendered right after the branch chip (adhoc #259): clicking
-// it copies the branch name to the clipboard via m_agentMeta's linkActivated
-// handler instead of navigating to the Branches tab.
-static QString copyBranchLinkHtml(const QString &branch)
-{
-    if (branch.isEmpty())
-        return QString();
-    const QString href = kCopyBranchLinkScheme +
-                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
-    return QStringLiteral(
-               " <a href=\"%1\" style=\"color:#8b949e;text-decoration:none\">"
-               "&nbsp;\xE2\xA7\x89&nbsp;</a>")
-        .arg(href);
-}
-
-// HTML for a worktree location shown next to the branch in the agent session
-// header. Clicking it opens the branch's row in the Worktrees tab (handled by
-// m_agentMeta's linkActivated -> switchToWorktree); the branch is carried in the
-// href so the handler can match the row. Empty when there's no worktree on disk.
-static QString worktreeLinkHtml(const QString &branch, const QString &worktreePath)
-{
-    if (branch.isEmpty() || worktreePath.isEmpty())
-        return QString();
-    const QString href = kWorktreeLinkScheme +
-                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
-    return chipLinkHtml(href, worktreePath.toHtmlEscaped());
 }
 
 // "PR #N open" for the agent-detail meta line, as a link to that pull request's
@@ -4887,78 +4949,13 @@ static QString agentDetailTableHtml(const QStringList &headers, const QStringLis
     return html;
 }
 
-// Point the detail header's mode selector at the shown session (adhoc #26).
-// Only Claude Code and Codex carry a permission mode, so the selector hides for
-// API-key agents and watch-only rows. An unset mode falls back to the composer's
-// saved default, matching the "Mode:" meta line so the two never disagree.
-void MainWindow::syncAgentModeSelector(const AgentSession &session)
-{
-    if (!m_agentModeSelector)
-        return;
-    const bool hasMode =
-        !isExternalSession(session.id) &&
-        (session.provider == QLatin1String("claude-code") ||
-         agentIsCodexProvider(session.provider));
-    m_agentModeSelector->setVisible(hasMode);
-    if (!hasMode)
-        return;
-    const QString modeLabel =
-        session.mode.isEmpty()
-            ? QSettings()
-                  .value(kAgentModeSetting,
-                         QSettings().value(kClaudeAutoModeSetting, true).toBool()
-                             ? kClaudeAutoModeLabel
-                             : QStringLiteral("Ask before edits"))
-                  .toString()
-            : session.mode;
-    int idx = m_agentModeSelector->findText(modeLabel);
-    if (idx < 0)
-        idx = m_agentModeSelector->count() - 1;
-    // Guard the programmatic set so it doesn't re-enter applySelectedAgentMode
-    // and write the just-synced value straight back onto the session.
-    const QSignalBlocker block(m_agentModeSelector);
-    m_agentModeSelector->setCurrentIndex(idx);
-}
-
-// Apply the detail header's mode selector back onto the selected session (adhoc
-// #26). Persists the label and mirrors it to the website/other nodes; a live
-// Codex session maps the mode to its approval policy + sandbox at the start of
-// each turn, so retargeting it now makes the switch take effect on the very next
-// reply. Claude Code bakes the mode in at launch, so its stored label is instead
-// picked up on the next resume.
-void MainWindow::applySelectedAgentMode()
-{
-    if (!m_agentModeSelector)
-        return;
-    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
-    if (!session)
-        return;
-    const QString chosenMode = m_agentModeSelector->currentText();
-    if (session->mode == chosenMode)
-        return;
-    session->mode = chosenMode;
-    if (m_agentStore)
-        m_agentStore->saveSession(*session);
-    scheduleAgentSessionsPush(); // adhoc #182 — mirror to the website/other nodes
-    if (CodexAppServerSession *codex =
-            m_codexStreams.value(m_selectedAgentSessionId);
-        codex && codex->running()) {
-        const QString effort =
-            QSettings()
-                .value(kClaudeEffortSetting, QStringLiteral("high"))
-                .toString();
-        codex->setTurnOptions(session->model, session->mode, effort);
-    }
-    // Refresh the "Mode:" meta line so the header value tracks the new choice.
-    if (m_agentMeta)
-        showAgentSession(m_selectedAgentSessionId);
-}
-
 // Rebuild only the detail header's key/value meta lines for a session — the
-// identity block, the issue/branch/worktree/PR button chips and the run Stats
-// (turns/time/cost/tokens). Split out of showAgentSession (adhoc #42) so the
-// live-update paths (token/cost/run-summary events, the running-row ticker) can
-// keep the header current without triggering a full transcript rebuild.
+// identity block, the issue/PR chips, Speed/Diff/Updated (adhoc #35) and the run
+// Stats (turns/time/cost/tokens) — plus the toolbar's Branch/Worktree buttons,
+// which read from the same session (adhoc #51). Split out of
+// showAgentSession (adhoc #42) so the live-update paths (token/cost/run-summary
+// events, the running-row ticker) can keep the header current without triggering
+// a full transcript rebuild.
 void MainWindow::refreshAgentDetailMeta(int sessionId)
 {
     if (!m_agentMeta)
@@ -4980,8 +4977,8 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
             ? QStringLiteral("<span style='color:#a371f7'>merged into %1</span>")
                   .arg(agentMergeBase(*session).toHtmlEscaped())
             : QString();
-    // Resolve this session's worktree folder from its branch so the header can
-    // show its location next to the branch and link straight to it (adhoc #123).
+    // Resolve this session's worktree folder from its branch so the toolbar's
+    // Worktree button can show its location and open it (adhoc #123, #51).
     QString worktreePath;
     if (!session->branchName.isEmpty()) {
         const int repoIdx = repoIndexFor(session->owner, session->name);
@@ -4990,12 +4987,21 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                 sessionId, m_repositories.at(repoIdx).localPath,
                 session->branchName);
     }
+    // Branch and worktree left the meta table for two caption-over-value buttons
+    // in the output toolbar (adhoc #51), so point those at this session; each
+    // hides when the session has nothing to open.
+    if (m_agentBranchButton) {
+        m_agentBranchButton->setVisible(!session->branchName.isEmpty());
+        m_agentBranchButton->setValue(session->branchName);
+    }
+    if (m_agentWorktreeButton) {
+        m_agentWorktreeButton->setVisible(!worktreePath.isEmpty());
+        m_agentWorktreeButton->setValue(worktreePath);
+    }
     if (isExternalSession(sessionId)) {
-        // Rich text so the branch name links to its Branches-tab row and the
-        // worktree location links to its Worktrees-tab row (issue #265, adhoc
-        // #123); every other part is HTML-escaped to stay literal. Rendered as
-        // a mini table — header labels on top, values below (adhoc #90) —
-        // rather than one long "Label: value | Label: value" line.
+        // Rendered as a mini table — header labels on top, values below (adhoc
+        // #90) — rather than one long "Label: value | Label: value" line. Every
+        // part is HTML-escaped to stay literal.
         QStringList headers;
         QStringList values;
         headers << QStringLiteral("Agent");
@@ -5005,15 +5011,6 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                                               session->name.toHtmlEscaped());
         headers << QStringLiteral("Status");
         values << agentStatusText(session->status).toHtmlEscaped();
-        if (!session->branchName.isEmpty()) {
-            headers << QStringLiteral("Branch");
-            values << chipBranchLinkHtml(session->branchName) +
-                           copyBranchLinkHtml(session->branchName);
-            if (!worktreePath.isEmpty()) {
-                headers << QStringLiteral("Worktree");
-                values << worktreeLinkHtml(session->branchName, worktreePath);
-            }
-        }
         headers << QStringLiteral("Mode");
         values << QStringLiteral("watch-only");
         QString meta = agentDetailTableHtml(headers, values);
@@ -5087,17 +5084,23 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     lines << agentStatusText(session->status).toHtmlEscaped();
     headers << QStringLiteral("Issue");
     lines << issueValue;
-    headers << QStringLiteral("Branch");
-    lines << (session->branchName.isEmpty()
-                  ? QStringLiteral("(no branch)")
-                  : chipBranchLinkHtml(session->branchName) +
-                        copyBranchLinkHtml(session->branchName));
-    if (!worktreePath.isEmpty()) {
-        headers << QStringLiteral("Worktree");
-        lines << worktreeLinkHtml(session->branchName, worktreePath);
-    }
     headers << QStringLiteral("PR");
     lines << pr;
+    const qint64 toks = sessionTokenTotal(*session);
+    // Speed / Diff / Updated — the three figures adhoc #35 took out of the
+    // sessions table so the issue title could have its width, landing here with
+    // the rest of the session's numbers rather than disappearing.
+    headers << QStringLiteral("Speed");
+    lines << agentSpeedText(*session, toks).toHtmlEscaped();
+    headers << QStringLiteral("Diff");
+    lines << agentDiffSummaryText(agentDiffStat(*session, QString(), QString()))
+                 .toHtmlEscaped();
+    const qint64 updatedMs = qMax(qMax(session->createdAtMs, session->startedAtMs),
+                                  qMax(session->finishedAtMs, session->mergedAtMs));
+    headers << QStringLiteral("Updated");
+    lines << (updatedMs > 0 ? formatShortRelativeTime(updatedMs / 1000)
+                            : QStringLiteral("-"))
+                 .toHtmlEscaped();
     // Run stats — turns/time/cost/tokens, moved off the sessions table into
     // the detail header so all of a session's figures read together in one
     // place (adhoc #42). Rendered as a single muted, dot-separated value.
@@ -5108,7 +5111,6 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     if (dur > 0)
         stats << QStringLiteral("%1s").arg(dur / 1000);
     stats << agentCostText(session->costUsd).toHtmlEscaped();
-    const qint64 toks = sessionTokenTotal(*session);
     if (toks > 0)
         stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
     headers << QStringLiteral("Stats");
@@ -5139,8 +5141,10 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentViewPrButton->hide();
         if (m_agentCreateIssueButton)
             m_agentCreateIssueButton->hide();
-        if (m_agentModeSelector)
-            m_agentModeSelector->hide();
+        if (m_agentBranchButton)
+            m_agentBranchButton->hide();
+        if (m_agentWorktreeButton)
+            m_agentWorktreeButton->hide();
         if (m_agentLog)
             m_agentLog->clear();
         m_agentLogSession = -1; // log emptied out-of-band; force the next set to render
@@ -5201,7 +5205,6 @@ void MainWindow::showAgentSession(int sessionId)
     refreshAgentDetailMeta(sessionId);
     setAgentUsageLabel(*session);
     refreshAgentStatusPill(sessionId);
-    syncAgentModeSelector(*session);
 
     // View PR button appears once a pull request exists for this session.
     if (m_agentViewPrButton) {
@@ -5293,8 +5296,15 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLog->setPlainText(QString());
         m_agentLogSession = -1; // set out-of-band; the async set re-renders
     }
-    if (m_agentOutputToggle)
-        m_agentOutputToggle->setVisible(transcript);
+    // The output toolbar stays put — it carries this session's action buttons now
+    // (adhoc #35) — but its transcript-only controls come and go with the surface
+    // they act on.
+    if (m_transcriptModeButton)
+        m_transcriptModeButton->setVisible(transcript);
+    if (m_terminalModeButton)
+        m_terminalModeButton->setVisible(transcript);
+    if (m_agentTranscriptTools)
+        m_agentTranscriptTools->setVisible(transcript);
     // The "Files changed" tab only applies to local transcript sessions (external
     // sessions have no worktree/diff here). Hide it otherwise and fall back to the
     // Agent tab so the user never lands on an empty tab.
@@ -5552,6 +5562,13 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.issueTitle = issue.title;
     session.provider = provider;
     session.createPr = createPr;
+    session.yolo = m_quickAddYolo && m_quickAddYolo->isChecked(); // adhoc #12
+    // Snapshot the Task toggle and the run's model/mode/strength now (adhoc
+    // #18): the organization task describes what this run was actually given,
+    // not whatever the composer happens to be set to when it finishes.
+    session.orgTask = !m_quickAddTask || m_quickAddTask->isChecked();
+    session.startedByBot = agentBotLabel(provider);
+    session.strength = composerAgentStrength();
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
@@ -5608,6 +5625,10 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
             issueStore.setAssignees(issue.number, assignees);
         }
     }
+
+    // Past every bail-out above, so a run that never got off the ground doesn't
+    // leave an organization task nothing will ever close out (adhoc #18).
+    openOrgTaskForSession(session);
 
     const int sessionId = session.id;
     m_agentQueue.append(sessionId);
@@ -5889,7 +5910,8 @@ void MainWindow::updateIssueLooperButton()
 // worktree/branch and opens a pull request on finish, like every transcript run.
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
-                                       const QString &model)
+                                       const QString &model,
+                                       const QString &titleOverride)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -5911,14 +5933,26 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     session.prompt = task;   // persisted so the run can resume after a restart
     session.provider = provider;
     session.createPr = createPr;
+    // Snapshot the YOLO toggle now (adhoc #12) rather than reading the checkbox
+    // when the run ends: a session auto-merges because that is what was asked for
+    // when it was launched, not because the box happens to be ticked hours later.
+    session.yolo = m_quickAddYolo && m_quickAddYolo->isChecked();
+    // Same snapshot rule for the Task toggle (adhoc #18): a prompt opens an
+    // organization task because that is what was asked for when it was typed.
+    session.orgTask = !m_quickAddTask || m_quickAddTask->isChecked();
+    session.startedByBot = agentBotLabel(provider);
+    session.strength = composerAgentStrength();
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
         session.mode = m_quickAddModeSelector->currentText();
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
-    // A short title from the prompt's first line, for the list row and the PR.
-    QString title = task.section(QLatin1Char('\n'), 0, 0).simplified();
+    // A short title from the prompt's first line, for the list row and the PR —
+    // or the caller's own title when the prompt does not describe the work.
+    QString title = titleOverride.trimmed().isEmpty()
+                        ? task.section(QLatin1Char('\n'), 0, 0).simplified()
+                        : titleOverride.trimmed();
     if (title.size() > 80)
         title = title.left(77) + QString::fromUtf8("\xE2\x80\xA6");
     session.issueTitle =
@@ -5945,6 +5979,7 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         session,
         QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
+    openOrgTaskForSession(session); // adhoc #18: mirror the run as an org task
 
     // This path launches directly instead of going through processAgentQueue, so
     // it has to honour the run limit itself (adhoc #433) — the quick-add bar is
@@ -6092,12 +6127,18 @@ void MainWindow::continueAgentSession(int sessionId)
 }
 
 // Ask sessionId's agent to merge base and resolve conflicts, then resume it.
-// Used by maybeAutoFixAgentConflict() (any idle session whose branch conflicts
-// with base, when the auto-fix setting is on).
+// Driven by the agents list's orange conflict button (adhoc #446) and the PR
+// page's "Fix conflicts with agent"; never automatically — a conflict is
+// flagged in the list and fixed only when the user clicks it.
 void MainWindow::fixAgentConflictsWithAgent(int sessionId)
 {
     AgentSession *s = findAgentSession(sessionId);
     if (!s)
+        return;
+    // The button stays visible on an already-active session (the conflict is
+    // still real), but steering one that's mid-run would stack a second prompt
+    // on top of the work in flight — the conflict is re-checked when it lands.
+    if (s->status == AgentStatus::Running || s->status == AgentStatus::Queued)
         return;
     const QString base = agentMergeBase(*s);
     const QString prompt =
@@ -6113,32 +6154,6 @@ void MainWindow::fixAgentConflictsWithAgent(int sessionId)
             QJsonObject{{QStringLiteral("type"), QStringLiteral("_local_user")},
                         {QStringLiteral("text"), prompt}});
     continueAgentSession(sid);
-}
-
-// adhoc #210: with kAutoFixAgentConflictsSetting on (the default), an idle
-// session whose branch would conflict with base gets the same treatment as a
-// manual click on "Fix conflicts with agent" — no need to notice and click it
-// by hand. m_agentAutoFixAttempted stops a conflict that survives a retry (or
-// a session sitting Failed/Stopped) from re-queuing the agent on every
-// refreshAgentTable(); it's cleared below once the conflict is actually gone,
-// so a later, genuinely new conflict on the same session can auto-fix again.
-void MainWindow::maybeAutoFixAgentConflict(const AgentSession &session,
-                                           const AgentDiffStat &stat)
-{
-    if (!stat.conflicted) {
-        m_agentAutoFixAttempted.remove(session.id);
-        return;
-    }
-    if (session.status == AgentStatus::Running ||
-        session.status == AgentStatus::Queued ||
-        session.status == AgentStatus::Waiting)
-        return; // already active; conflict will be re-checked once it finishes
-    if (m_agentAutoFixAttempted.contains(session.id))
-        return;
-    if (!QSettings().value(kAutoFixAgentConflictsSetting, true).toBool())
-        return;
-    m_agentAutoFixAttempted.insert(session.id);
-    fixAgentConflictsWithAgent(session.id);
 }
 
 void MainWindow::deleteSelectedAgentSession()
@@ -6206,6 +6221,17 @@ bool MainWindow::deleteStoredAgentSession(int sessionId, bool cleanupWorktree)
             return false;
         }
     }
+
+    // Close out the organization task before the session record goes away: a
+    // deleted session is finished work as far as the organization is concerned,
+    // and this is the last moment its summary can be read off the session
+    // (adhoc #30).
+    completeOrgTaskForSession(snapshot.id,
+                              snapshot.merged
+                                  ? QStringLiteral("The work has been merged and "
+                                                   "the agent session closed.")
+                                  : QStringLiteral("The agent session was closed "
+                                                   "on the desktop."));
 
     if (!m_agentStore->deleteSession(snapshot)) {
         flashMessage("Could not delete the agent session.", true);
@@ -6321,12 +6347,16 @@ void MainWindow::switchToAgentsTab(int sessionId)
 // Rebuild the footer "Agents:" status strip (adhoc #111) from m_agentSessions:
 // one small status glyph per known session (adhoc #114 swapped the plain
 // colored dots for the same icon set the Agents table's Status column uses —
-// a green spinner while running, purple merge mark once landed, orange hand
+// a blue spinner while running, purple merge mark once landed, orange hand
 // while waiting, etc — via agentStatusOcticon), click-through to that
 // session's Agents tab. Called after every reloadAgents() so the strip tracks
 // the same data as the Agents table.
 void MainWindow::refreshAgentStatusRow()
 {
+    // The top-bar matrix shows the same per-session state, so keep it in step
+    // with every path that touches this strip — including bare status flips,
+    // which never reach updateAgentsNavBadge().
+    refreshAgentDotMatrix();
     if (!m_agentStatusIconsLayout || !m_agentStatusRow)
         return;
     QLayoutItem *item;
@@ -6358,6 +6388,8 @@ void MainWindow::refreshAgentStatusRow()
         // spins them the same way animateRunningAgentIcons() spins the table.
         dot->setIcon(agentStatusOcticon(session, 14));
         dot->setProperty("agentStatusSpin", running);
+        // animateAgentStatusIcons() needs the session back to read its tok/s.
+        dot->setProperty("agentSessionId", session.id);
         anyRunning = anyRunning || running;
         const QString label = session.issueNumber > 0
             ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(session.issueTitle)
@@ -6389,27 +6421,34 @@ void MainWindow::refreshAgentStatusRow()
                     &MainWindow::animateAgentStatusIcons);
         }
         if (!m_agentStatusSpinTimer->isActive())
-            m_agentStatusSpinTimer->start(120);
+            m_agentStatusSpinTimer->start(kAgentSpinTickMs);
     } else if (m_agentStatusSpinTimer) {
         m_agentStatusSpinTimer->stop();
     }
 }
 
-// Spin the green "sync" glyph on every running icon in the footer "Agents:"
+// Spin the blue "sync" glyph on every running icon in the footer "Agents:"
 // strip (adhoc #114), mirroring animateRunningAgentIcons()'s treatment of the
-// Agents table. Driven by m_agentStatusSpinTimer, which only ticks while at
-// least one session in the strip is running (see refreshAgentStatusRow).
+// Agents table — each dot at its own session's tok/s (adhoc #50). Driven by
+// m_agentStatusSpinTimer, which only ticks while at least one session in the
+// strip is running (see refreshAgentStatusRow).
 void MainWindow::animateAgentStatusIcons()
 {
     if (!m_agentStatusIconsLayout)
         return;
-    m_agentStatusSpinFrame = (m_agentStatusSpinFrame + 1) % 10;
-    const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor("#3fb950"), 14, m_agentStatusSpinFrame * 36.0));
     for (int i = 0; i < m_agentStatusIconsLayout->count(); ++i) {
         QWidget *w = m_agentStatusIconsLayout->itemAt(i)->widget();
-        if (w && w->property("agentStatusSpin").toBool())
-            static_cast<QPushButton *>(w)->setIcon(icon);
+        if (!w || !w->property("agentStatusSpin").toBool())
+            continue;
+        const int sessionId = w->property("agentSessionId").toInt();
+        const AgentSession *s = findAgentSession(sessionId);
+        if (!s)
+            continue;
+        double &angle = m_agentStatusSpinAngles[sessionId];
+        angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
+                          360.0);
+        static_cast<QPushButton *>(w)->setIcon(QIcon(rotatedTintedOcticonPixmap(
+            "sync", QColor(Theme::kRunning), 14, angle)));
     }
 }
 
@@ -7413,6 +7452,14 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             }
         }
         maybeCreatePullForStreamSession(sid);
+        // Land the branch straight away when the session was started in YOLO mode
+        // (adhoc #12). Before cleanupStreamWorktree, so the merge still has the
+        // worktree to bring up to date with base first — and after the PR, so the
+        // pull request exists as a record of what was merged.
+        maybeAutoMergeForSession(sid);
+        // Close out the organization task the prompt opened (adhoc #18), after
+        // the merge so the completion note can say the branch landed.
+        completeOrgTaskForSession(sid);
         // The PR captured the diff as a patch, so the worktree is no longer
         // needed; drop it to free the branch for checkout (issue #74).
         cleanupStreamWorktree(sid);
@@ -8421,6 +8468,10 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
         }
         if (!assistantText.trimmed().isEmpty())
             m_lastAssistantText[sessionId] = assistantText.trimmed();
+        // Genie (adhoc #42): a run working the organization's shared task list
+        // announces the task it just picked up; retitle the session with it so
+        // the list says what the agent is actually doing, live.
+        applyGenieTaskTitle(sessionId, assistantText);
         // Some clarifying questions never call the AskUserQuestion tool at all —
         // the CLI just lays out a numbered list of options in plain prose (e.g.
         // "do you want me to: 1. ... or 2. ...?"). Detect that the same way the
@@ -8722,21 +8773,16 @@ void MainWindow::updateAgentStatusCell(int sessionId)
     if (!m_agentTable)
         return;
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        QTableWidgetItem *idItem = m_agentTable->item(r, kAgentIdColumn);
         if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
             continue;
         QSignalBlocker block(m_agentTable);
-        // Column 4 is Status (column 3 is Model — see applyAgentRowCells for the
-        // column layout); writing here used to stomp the Model cell instead.
-        QTableWidgetItem *cell = m_agentTable->item(r, 4);
-        if (!cell) {
-            cell = new QTableWidgetItem;
-            m_agentTable->setItem(r, 4, cell);
-        }
+        // The run state rides the leading "#" cell since adhoc #29 — the same cell
+        // the id lives on, so it's the one we just matched on.
         // Reuse the memoised diff stat so the branch chip keeps its files/dirty/
         // worktree badges across a bare status flip without re-shelling git here
         // (an absent entry simply leaves the badges off until the next refresh).
-        applyAgentStatusCell(cell, *s, m_agentDiffStats.value(sessionId));
+        applyAgentStatusCell(idItem, *s, m_agentDiffStats.value(sessionId));
         break;
     }
     // Keep the footer "Agents:" strip's per-session dot (the ones above the
@@ -8810,36 +8856,39 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     m_agentStatusPill->setText(pill);
 }
 
-// Spin the green "sync" glyph on every running row's Status cell so the agents
+// Spin the blue "sync" glyph on every running row's "#" cell so the agents
 // list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
 // ticks while a session is running, so finished rows keep their static icon.
+// Each row spins at its own session's tok/s (adhoc #50), so a fast run visibly
+// outruns a slow one instead of every row turning in lockstep.
 void MainWindow::animateRunningAgentIcons()
 {
     if (!m_agentTable)
         return;
-    const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor("#3fb950"), 14, m_agentsSpinFrame * 36.0));
+    // The spinner ticks faster than the header's run stats need to, so the meta
+    // refresh below keeps its old ~120ms cadence instead of riding every frame.
+    ++m_agentSpinTicks;
+    const bool refreshMeta = m_agentSpinTicks % 2 == 0;
     QSignalBlocker block(m_agentTable);
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
+        QTableWidgetItem *idItem = m_agentTable->item(r, kAgentIdColumn);
         if (!idItem)
             continue;
         const AgentSession *s = findAgentSession(idItem->data(Qt::UserRole).toInt());
         if (!s || s->merged || s->status != AgentStatus::Running)
             continue;
-        // Column 4 is Status (column 3 is Model — the spinner belongs here, not
-        // there; see applyAgentRowCells for the column layout).
-        if (QTableWidgetItem *cell = m_agentTable->item(r, 4))
-            cell->setIcon(icon);
-        // Keep the Speed column's live tok/s figure ticking for running rows
-        // (issue #245): its run duration grows against the wall clock, so recompute
-        // it here rather than spinning up a second timer. The elapsed-time figure
-        // itself now lives in the detail header (adhoc #42), refreshed below.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 5))
-            applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
-        // Tick the detail header's run stats (elapsed time) for the open session —
-        // meta only, so the live transcript isn't rebuilt every second.
-        if (s->id == m_selectedAgentSessionId)
+        // The spinner sits on the "#" cell (adhoc #29 — see applyAgentRowCells for
+        // the column layout).
+        double &angle = m_agentRowSpinAngles[s->id];
+        angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
+                          360.0);
+        idItem->setIcon(QIcon(rotatedTintedOcticonPixmap(
+            "sync", QColor(Theme::kRunning), 14, angle)));
+        // Tick the detail header's run stats (elapsed time, and the live tok/s
+        // figure whose run duration grows against the wall clock — issue #245,
+        // moved here from the table by adhoc #35) for the open session — meta
+        // only, so the live transcript isn't rebuilt every second.
+        if (refreshMeta && s->id == m_selectedAgentSessionId)
             refreshAgentDetailMeta(s->id);
     }
 }
@@ -8886,35 +8935,23 @@ void MainWindow::setAgentUsageLabel(const AgentSession &session)
 }
 
 // Refresh the live token total, in place — cheap enough to call on every
-// assistant message without rebuilding the whole table. The token count itself
-// now shows in the detail-page header (adhoc #42); in the table it only drives
-// the Speed cell's tok/s figure, plus the open header's live stats/usage lines.
+// assistant message without rebuilding the whole table. Both the token count and
+// the tok/s figure it drives now show in the detail-page header (adhoc #42,
+// adhoc #35), so this only touches the open session's header + usage line.
 void MainWindow::updateAgentTokenCell(int sessionId)
 {
-    if (!m_agentTable)
-        return;
-    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
-        if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
-            continue;
-        QSignalBlocker block(m_agentTable);
-        // Recompute the Speed cell so the tok/s figure climbs in real time while
-        // the agent streams — agentEffectiveDurationMs measures a running session
-        // against the wall clock, so this uses the freshly-bumped token total.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 5))
-            if (const AgentSession *s = findAgentSession(sessionId))
-                applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
-        break;
-    }
-    // Keep the open detail header's token/cost stats + the "Session token usage"
-    // line in step with the live counter so they climb in real time instead of
-    // only on the next reload. Meta only — never rebuild the transcript here (the
-    // stream handler already renders it incrementally on each event).
+    // Keep the open detail header's speed/token/cost stats + the "Session token
+    // usage" line in step with the live counter so they climb in real time instead
+    // of only on the next reload. Meta only — never rebuild the transcript here
+    // (the stream handler already renders it incrementally on each event).
     if (sessionId == m_selectedAgentSessionId)
         if (const AgentSession *s = findAgentSession(sessionId)) {
             setAgentUsageLabel(*s);
             refreshAgentDetailMeta(sessionId);
         }
+    // The fleet lights pulse off token throughput as well as raw output volume
+    // (adhoc #35), so a freshly-bumped total changes how fast they blink.
+    refreshAgentDotMatrix();
 }
 
 // Refresh the detail header's Cost stat when a Claude Code run reports its final
@@ -8927,35 +8964,20 @@ void MainWindow::updateAgentCostCell(int sessionId)
         refreshAgentDetailMeta(sessionId);
 }
 
-// Refresh the Speed cell and the detail header's run stats (turns/time) when a
-// Claude Code run reports its final `num_turns`/`duration_ms` via the `result`
-// event, without a full table rebuild. Turns/Time moved into the header
-// (adhoc #42); Speed stays in the table. Sibling of updateAgentCostCell.
+// Refresh the detail header's run stats (turns/time/speed) when a Claude Code run
+// reports its final `num_turns`/`duration_ms` via the `result` event, without a
+// full table rebuild. Turns/Time moved into the header in adhoc #42 and Speed
+// followed in adhoc #35. Sibling of updateAgentCostCell.
 void MainWindow::updateAgentRunSummaryCells(int sessionId)
 {
-    if (!m_agentTable)
-        return;
-    const AgentSession *s = findAgentSession(sessionId);
-    if (!s)
-        return;
-    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
-        if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
-            continue;
-        QSignalBlocker block(m_agentTable);
-        // Speed needs both the token total and the now-known run duration.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, 5))
-            applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
-        break;
-    }
     if (sessionId == m_selectedAgentSessionId)
         refreshAgentDetailMeta(sessionId);
 }
 
-// Pulse a session's night-rider light so its activity column sweeps while raw
-// output is streaming. Called from every raw-output path (headless AgentRunner
-// logs, live Claude stream lines, surfaced external transcripts). The driving
-// timer is started on demand and self-stops once every light has gone idle.
+// Pulse a session's live-output meter so its fleet light blinks while raw output
+// is streaming. Called from every raw-output path (headless AgentRunner logs, live
+// Claude stream lines, surfaced external transcripts). The driving timer is
+// started on demand and self-stops once every light has gone idle.
 void MainWindow::noteAgentActivity(int sessionId, int bytes)
 {
     if (sessionId <= 0)
@@ -8971,15 +8993,12 @@ void MainWindow::noteAgentActivity(int sessionId, int bytes)
         m_scannerTimer->start();
 }
 
-// Advance every active scanner's sweep, repaint the Activity cells, and stop the
-// timer once no session has produced output recently — so idle agents cost
-// nothing while running ones wave left<->right in real time.
+// Decay every session's live-output meter, push the fresh figures into the top
+// bar's fleet lights, and stop the timer once no session has produced output
+// recently — so idle agents cost nothing while running ones blink in real time.
 void MainWindow::onScannerTick()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    // Baseline bounce ~one back-and-forth per 1.7s; the live-output intensity
-    // accelerates it up to ~2.5x so a busy agent visibly races.
-    const double base = (m_scannerTimer ? m_scannerTimer->interval() : 45) / 1700.0;
     bool anyActive = false;
     for (auto it = m_scannerStates.begin(); it != m_scannerStates.end(); ++it) {
         // Decay the live-output meter every frame; noteAgentActivity re-bumps it
@@ -8987,24 +9006,15 @@ void MainWindow::onScannerTick()
         it->intensity *= 0.85;
         if (it->intensity < 0.01)
             it->intensity = 0.0;
-        // Keep the light continuously sweeping while there's any activity left:
-        // either output landed recently or the meter is still winding down.
+        // Keep the light blinking while there's any activity left: either output
+        // landed recently or the meter is still winding down.
         if (it->intensity <= 0.0 && now - it->lastActivityMs >= kScannerIdleMs)
             continue;
-        it->phase += base * (0.6 + 1.9 * it->intensity);
-        if (it->phase >= 1.0)
-            it->phase -= 1.0;
         anyActive = true;
     }
-    // Repaint the visible Activity cells (cheap for these per-repo tables). The
-    // final, just-went-idle tick still repaints, so lights settle to rest.
-    if (m_agentTable) {
-        for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-            if (m_agentTable->item(r, kAgentActivityColumn))
-                m_agentTable->update(
-                    m_agentTable->model()->index(r, kAgentActivityColumn));
-        }
-    }
+    // Push the decayed meters into the top-bar matrix, whose squares pulse off
+    // this live-output signal (and each session's token throughput).
+    refreshAgentDotMatrix();
     if (!anyActive && m_scannerTimer)
         m_scannerTimer->stop();
 }
@@ -9675,6 +9685,318 @@ void MainWindow::landAgentPullForSession(AgentSession session, const QString &pa
                      .arg(repo.owner, repo.name));
 }
 
+// "YOLO" auto-merge (adhoc #12): a session launched with the quick-add YOLO
+// toggle on lands its own branch in the repo's default branch as soon as its run
+// finishes cleanly — the same thing the detail page's "Merge into main" button
+// does, without waiting for a human to click it. Every safety gate lives in
+// mergeWorktreeIntoMain (dirty checkout, wrong branch, conflicts, and the
+// is-ancestor proof before anything is deleted), so a merge that can't land
+// cleanly leaves the branch and worktree exactly where they are.
+// ---- Organization tasks for prompted runs (adhoc #18) ---------------------
+// Typing a prompt starts an agent on this desktop; with the composer's "Task"
+// toggle on it also opens a task in the organization, so the run shows up for
+// everyone rather than only in this app's Agents tab. The task records the run's
+// provenance: the bot that launched it, the bot that reported it finished, and
+// the model, permission mode, and reasoning strength it was given.
+
+// "<provider>@<machine>": which bot on which machine. The provider alone would
+// collapse every desktop in the fleet into one "claude-code", and the machine
+// name alone would lose which CLI actually ran (username vs machine node name:
+// this is deliberately the machine, never the account).
+QString MainWindow::agentBotLabel(const QString &provider) const
+{
+    QString bot = provider.trimmed().toLower();
+    if (bot.isEmpty())
+        bot = QStringLiteral("agent");
+    const QString machine = machineNodeName().trimmed().toLower();
+    if (machine.isEmpty())
+        return bot;
+    return bot + QLatin1Char('@') + machine;
+}
+
+QString MainWindow::composerAgentStrength() const
+{
+    return QSettings()
+        .value(kClaudeEffortSetting, QStringLiteral("high"))
+        .toString()
+        .trimmed()
+        .toLower();
+}
+
+// Authenticate one organization-task write. A desktop that signed in with a
+// password holds an account session token; the ordinary launch path is
+// authenticateSilently(), which proves this install owns the account's key and
+// produces no token at all — so without the signed fallback the Task toggle
+// would silently do nothing for most users. `resource` is the task id for a
+// proof that names one (empty for the collection). Returns false when this node
+// can neither present a session nor sign for the account.
+bool MainWindow::authenticateOrgTaskRequest(QUrl &url, QNetworkRequest &request,
+                                            const QString &proofPrefix,
+                                            const QString &resource) const
+{
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      QStringLiteral("application/json"));
+    if (!m_accountSessionToken.trimmed().isEmpty()) {
+        request.setUrl(url);
+        request.setRawHeader("Authorization",
+                             QByteArrayLiteral("Bearer ") +
+                                 m_accountSessionToken.toUtf8());
+        return true;
+    }
+    const QString node = accountOwner().trimmed().toLower();
+    if (node.isEmpty() || !hasOwnerSigningCapability(node))
+        return false;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    // Must match _org_task_signed_session's canonical string byte for byte.
+    QString canonical = proofPrefix + QLatin1Char('\n') + node + QLatin1Char('\n');
+    if (!resource.isEmpty())
+        canonical += resource + QLatin1Char('\n');
+    canonical += ts;
+    const QString sig = m_profileIdentity.signData(canonical.toUtf8());
+    if (sig.isEmpty())
+        return false;
+    QUrlQuery query(url);
+    query.addQueryItem(QStringLiteral("node"), node);
+    query.addQueryItem(QStringLiteral("ts"), ts);
+    query.addQueryItem(QStringLiteral("sig"), sig);
+    url.setQuery(query);
+    request.setUrl(url);
+    return true;
+}
+
+void MainWindow::recordOrgTaskFields(int sessionId, const QString &taskId,
+                                     const QString &finishedByBot)
+{
+    // Re-look-up rather than capturing the session: a network reply lands after
+    // event-loop turns that can have rebuilt m_agentSessions (git-pump UAF
+    // family, adhoc #106/#119/#124/#149).
+    AgentSession *s = findAgentSession(sessionId);
+    if (!s || !m_agentStore)
+        return;
+    if (!taskId.isEmpty())
+        s->orgTaskId = taskId;
+    if (!finishedByBot.isEmpty())
+        s->finishedByBot = finishedByBot;
+    m_agentStore->saveSession(*s);
+}
+
+void MainWindow::openOrgTaskForSession(const AgentSession &session)
+{
+    if (!session.orgTask || session.id <= 0 || !session.orgTaskId.isEmpty())
+        return;
+    if (!m_networkAccess)
+        return;
+
+    // Bot-assigned tasks live under the agent destination, which requires the
+    // repository the run works in.
+    const QString repository = session.owner + QLatin1Char('/') + session.name;
+    // The board only knows two bot families; the exact provider ("claude-api",
+    // "openai", …) rides along in the agent record below.
+    const QString assigneeKind = agentIsClaudeProvider(session.provider)
+                                     ? QStringLiteral("claude")
+                                     : QStringLiteral("codex");
+    QString details = session.prompt.trimmed();
+    if (details.isEmpty() && session.issueNumber > 0)
+        details = QStringLiteral("ForkMesh issue #%1: %2")
+                      .arg(session.issueNumber)
+                      .arg(session.issueTitle);
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/tasks"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    QNetworkRequest request;
+    // No account session and no signing key: the run is simply local-only,
+    // which is not an error worth interrupting the prompt for.
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskOpenProof, QString()))
+        return;
+    const QJsonObject body{
+        {QStringLiteral("title"), session.issueTitle},
+        {QStringLiteral("details"), details},
+        {QStringLiteral("department"), QStringLiteral("engineering")},
+        {QStringLiteral("destination"), QStringLiteral("agent")},
+        {QStringLiteral("repository"), repository},
+        {QStringLiteral("assigneeKind"), assigneeKind},
+        {QStringLiteral("agent"),
+         QJsonObject{
+             {QStringLiteral("provider"), session.provider},
+             {QStringLiteral("startedBy"), session.startedByBot},
+             {QStringLiteral("model"), session.model},
+             {QStringLiteral("mode"), session.mode},
+             {QStringLiteral("strength"), session.strength},
+             {QStringLiteral("sessionId"), QString::number(session.id)},
+         }},
+    };
+    const int sessionId = session.id;
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, sessionId] {
+        const QByteArray payload = reply->readAll();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        reply->deleteLater();
+        if (status < 200 || status >= 300) {
+            // Not an org member, signed out, relay down: the agent is already
+            // running and nothing about it depends on the task existing.
+            logSystem(QStringLiteral(
+                          "Organization task not opened for agent session #%1 "
+                          "(relay replied %2).")
+                          .arg(sessionId)
+                          .arg(status));
+            return;
+        }
+        const QString taskId = QJsonDocument::fromJson(payload)
+                                   .object()
+                                   .value(QStringLiteral("task"))
+                                   .toObject()
+                                   .value(QStringLiteral("id"))
+                                   .toString();
+        if (taskId.isEmpty())
+            return;
+        recordOrgTaskFields(sessionId, taskId, QString());
+    });
+}
+
+void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followUp)
+{
+    const AgentSession *s = findAgentSession(sessionId);
+    if (!s || s->orgTaskId.isEmpty() || isExternalSession(sessionId))
+        return;
+    // The run's own completion is reported once; a follow-up event (the branch
+    // landing, the session being deleted) re-posts it with a fresh note so the
+    // task reflects how the work actually ended (adhoc #30).
+    if (!s->finishedByBot.isEmpty() && followUp.trimmed().isEmpty())
+        return;
+    // Only a run that has actually stopped closes its task out; Queued/Running/
+    // Waiting sessions are still the organization's open work — unless a
+    // follow-up event says the work is over regardless of where the run got to.
+    if (followUp.trimmed().isEmpty() && s->status != AgentStatus::Success &&
+        s->status != AgentStatus::Failed && s->status != AgentStatus::Stopped)
+        return;
+    if (!m_networkAccess)
+        return;
+
+    const AgentSession session = *s; // by value: the post below pumps the loop
+    const QString finishedBy = agentBotLabel(session.provider);
+    QString note = QStringLiteral("%1 finished this run with status %2.")
+                       .arg(finishedBy)
+                       .arg(session.status);
+    if (!followUp.trimmed().isEmpty())
+        note += QLatin1Char(' ') + followUp.trimmed();
+    if (!session.lastError.trimmed().isEmpty())
+        note += QStringLiteral(" Last error: %1").arg(session.lastError.trimmed());
+    if (session.prNumber > 0)
+        note += QStringLiteral(" Opened pull request #%1.").arg(session.prNumber);
+    if (session.merged)
+        note += QStringLiteral(" Merged into %1.").arg(agentMergeBase(session));
+    if (!session.branchName.isEmpty())
+        note += QStringLiteral(" Branch %1.").arg(session.branchName);
+    // Run summary, the same figures the detail header's Stats line shows, so the
+    // task carries what the run did without opening the desktop (adhoc #30).
+    QStringList stats;
+    if (session.numTurns > 0)
+        stats << QStringLiteral("%1 turns").arg(session.numTurns);
+    const qint64 dur = agentEffectiveDurationMs(session);
+    if (dur > 0)
+        stats << QStringLiteral("%1s").arg(dur / 1000);
+    if (session.costUsd > 0.0)
+        stats << agentCostText(session.costUsd);
+    const qint64 toks = sessionTokenTotal(session);
+    if (toks > 0)
+        stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
+    if (!stats.isEmpty())
+        note += QStringLiteral(" Run summary: %1.")
+                    .arg(stats.join(QStringLiteral(" \xC2\xB7 ")));
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/tasks/") + session.orgTaskId +
+                QStringLiteral("/complete"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    QNetworkRequest request;
+    // The completion proof names the exact task it closes.
+    if (!authenticateOrgTaskRequest(url, request, kOrgTaskCompleteProof,
+                                    session.orgTaskId))
+        return;
+    const QJsonObject body{
+        {QStringLiteral("completionNote"), note},
+        {QStringLiteral("agent"),
+         QJsonObject{
+             {QStringLiteral("provider"), session.provider},
+             {QStringLiteral("finishedBy"), finishedBy},
+             // The model/mode/strength a resumed session ended up running with
+             // can differ from the ones it was launched with (adhoc #372).
+             {QStringLiteral("model"), session.model},
+             {QStringLiteral("mode"), session.mode},
+             {QStringLiteral("strength"), session.strength},
+         }},
+    };
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, sessionId, finishedBy] {
+                const int status =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                reply->deleteLater();
+                if (status < 200 || status >= 300) {
+                    // Leave finishedByBot empty so the next terminal transition
+                    // (or the next app run) retries the completion.
+                    logSystem(QStringLiteral(
+                                  "Organization task for agent session #%1 not "
+                                  "closed out (relay replied %2).")
+                                  .arg(sessionId)
+                                  .arg(status));
+                    return;
+                }
+                recordOrgTaskFields(sessionId, QString(), finishedBy);
+            });
+}
+
+void MainWindow::maybeAutoMergeForSession(int sessionId)
+{
+    const AgentSession *s = findAgentSession(sessionId);
+    if (!s || !s->yolo || s->merged || s->branchName.isEmpty() ||
+        s->status != AgentStatus::Success || isExternalSession(sessionId))
+        return;
+    const int ri = repoIndexFor(s->owner, s->name);
+    if (ri < 0)
+        return;
+    // Snapshot by value before anything below: openRepoDetail and the merge both
+    // pump the GUI event loop over blocking git reads, and a reloadAgents() fired
+    // during the pump rebuilds m_agentSessions — `s` would dangle (git-pump UAF
+    // family, adhoc #106/#119/#124/#149).
+    const AgentSession session = *s;
+    if (m_agentStore)
+        m_agentStore->appendLog(
+            session,
+            QStringLiteral("==> YOLO: merging %1 into the default branch.\n")
+                .arg(session.branchName));
+    // mergeWorktreeIntoMain operates on the repository currently loaded in the
+    // detail view (repoGitDir/m_repoDetailIndex), but a YOLO run can finish while
+    // a different repo is open — merging then would target the wrong checkout. So
+    // bind the detail view to this session's repo first; that only reloads which
+    // repo the detail page holds, it doesn't switch the visible page.
+    if (ri != m_repoDetailIndex)
+        openRepoDetail(ri);
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
+        m_repositories.at(m_repoDetailIndex).owner != session.owner ||
+        m_repositories.at(m_repoDetailIndex).name != session.name) {
+        // Couldn't bind to it (a repo load was already in flight, or the record
+        // moved) — leave the branch alone rather than merge into someone else's.
+        if (m_agentStore)
+            m_agentStore->appendLog(
+                session,
+                QStringLiteral("!! YOLO: %1/%2 could not be opened; merge %3 by hand.\n")
+                    .arg(session.owner, session.name, session.branchName));
+        return;
+    }
+    mergeWorktreeIntoMain(
+        session.branchName,
+        worktreePathForBranch(m_repositories.at(m_repoDetailIndex).localPath,
+                              session.branchName));
+}
+
 // Release the temp worktree a stream session ran in once the run is over. The
 // worktree at /tmp/forkmesh-worktrees/issue-N-sSID holds its branch checked out,
 // so leaving it behind makes any later `git checkout <branch>` (e.g. opening the
@@ -9847,6 +10169,8 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
             landAgentPullForSession(*session, patch, QString());
     }
     reloadAgents(); // rebuilds m_agentSessions; `session` is dangling after this
+    maybeAutoMergeForSession(sessionId); // adhoc #12: YOLO lands it without review
+    completeOrgTaskForSession(sessionId); // adhoc #18: close out the org task
     if (sessionId == m_selectedAgentSessionId)
         showAgentSession(sessionId);
     refreshIssueList();
@@ -9894,14 +10218,14 @@ void MainWindow::updateAgentActionState()
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
     // still holding open.
     const bool aiFixBusy = m_aiFix && m_aiFix->sessionId == m_selectedAgentSessionId;
-    if (m_agentDeleteButton)
-        m_agentDeleteButton->setEnabled((selected || externalSelected) && !aiFixBusy);
-    // "Delete all" also nukes the worktree + branch, so it only applies to a real
-    // stored session that has a branch (not external watch-only rows).
+    // "Delete" also nukes the worktree + branch, so it needs a real stored session
+    // with a branch; on an external watch-only row it drops just the mirrored
+    // session instead (adhoc #51), which is always available.
     if (m_agentDeleteAllButton)
         m_agentDeleteAllButton->setEnabled(
-            selected && !aiFixBusy && session && !session->branchName.isEmpty()
-            && !isExternalSession(m_selectedAgentSessionId));
+            !aiFixBusy
+            && (externalSelected
+                || (selected && session && !session->branchName.isEmpty())));
     updateQuickAddEnterTarget();
 }
 

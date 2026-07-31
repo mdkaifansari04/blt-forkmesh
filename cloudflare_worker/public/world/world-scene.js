@@ -7,7 +7,6 @@ import {
   landmarkById,
   normalizeWorldStatus,
 } from "./world-data.js";
-import { nextOfficeZoneState } from "./world-office.js";
 import {
   OFFICE_AVATAR_RADIUS,
   OFFICE_BRIDGE_END_Z,
@@ -32,8 +31,10 @@ import {
   officeFloorById,
   officeFloorY,
   officeInteriorPointIsWalkable,
+  nextOfficeZoneState,
 } from "./world-office-tower.js";
 import { createWorldSky } from "./world-sky.js";
+import { WORKER_FOOTPRINT } from "./worker-footprint.js";
 // Side-effect import: ForkMesh's own QR generator publishes globalThis.ForkMeshQR,
 // used for the reward-pool treasury address board.
 import "../qr.js";
@@ -63,7 +64,21 @@ const LEADERBOARD_ISLAND_CENTER_X = -130;
 const LEADERBOARD_CONNECTION_MIN_X = -103;
 const LEADERBOARD_CONNECTION_MAX_X = -78;
 const MEMBER_ISLAND_CENTER_Z = 130;
-const MEMBER_PATH_END_Z = MEMBER_ISLAND_CENTER_Z - 21;
+// Carry the south promenade beneath the Members Circle instead of stopping at
+// its edge. The slightly raised dirt disk hides the final stretch, so visitors
+// see one route meeting the clearing without a pavement/dirt seam.
+const MEMBER_PATH_END_Z = MEMBER_ISLAND_CENTER_Z;
+// Every town promenade is cut from the same slab. Keeping its width, depth,
+// and center plane in one place prevents adjacent segments from producing the
+// doubled edges and hairline height changes that are especially visible from
+// the zoomed-out camera.
+const WORLD_PATH_WIDTH = OFFICE_BRIDGE_WIDTH;
+const WORLD_PATH_HEIGHT = 0.08;
+const WORLD_PATH_SURFACE_Y = 0.105;
+const WORLD_PATH_CENTER_Y =
+  WORLD_PATH_SURFACE_Y - WORLD_PATH_HEIGHT / 2;
+const DISTRICT_GROUND_RADIUS = 48;
+const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -79,11 +94,31 @@ const WORLD_BIKE_LANE_CENTER_Z = CONTINUOUS_CITY_CENTER_Z;
 const WORLD_BIKE_MOUNT_DISTANCE = 5;
 const CAR_RIDE_SPEED_MULTIPLIER = 3.2;
 const CAR_RIDING_ACTIVITY = "driving the beach road";
+const QUADCOPTER_HORIZONTAL_SPEED = 42;
+const QUADCOPTER_VERTICAL_SPEED = 28;
+const QUADCOPTER_MAX_ALTITUDE = 480;
+const QUADCOPTER_MOUNT_DISTANCE = 7;
+const QUADCOPTER_RIDING_ACTIVITY = "flying the World quadcopter";
+const JETPACK_HORIZONTAL_SPEED = 30;
+const JETPACK_VERTICAL_SPEED = 22;
+const JETPACK_MAX_ALTITUDE = 480;
+const JETPACK_FLYING_ACTIVITY = "flying with a jetpack";
+// Recreation now belongs to the Office campus garden instead of occupying the
+// Town Square lawn. Both fixtures remain on the same continuous walk surface.
+const GYM_POSITION = Object.freeze([66, 0.14, -137]);
+const SWING_SET_POSITION = Object.freeze([43, 0, -137]);
+const INSTANCE_GARDEN_POSITION = Object.freeze([-52, 0, -140]);
+const GYM_HEAVY_WEIGHT_LB = 315;
+const GYM_MAX_WEIGHT_LB = 1200;
 // Double-clicking the ground sends the avatar to that spot at a dash speed far
 // above the walking cap, so crossing the whole square takes a couple of seconds
 // without teleporting the avatar out from under the camera.
 const PLAYER_DASH_SPEED = 48;
 const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
+// Clears the complete eleven-storey Office tower (176 units) and gives normal
+// walking input enough air time to cross its 170-unit width.
+const PLAYER_SUPER_JUMP_VELOCITY = 82;
+const PLAYER_SUPER_JUMP_MOVE_MULTIPLIER = 3.5;
 const ROOF_PARACHUTE_DEPLOY_VELOCITY = -0.35;
 const ROOF_PARACHUTE_TERMINAL_VELOCITY = -4.2;
 const ROOF_PARACHUTE_GRAVITY = 4.8;
@@ -97,9 +132,23 @@ const CAMERA_ZOOM_MIN = 0.06;
 const CAMERA_ZOOM_MAX = 28;
 const CAMERA_FAR_PLANE = 1800;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
-const RENDER_STALL_THRESHOLD_MS = 150;
-const RENDER_STALL_LOG_COOLDOWN_MS = 1000;
-const MOVEMENT_INPUT_DELAY_THRESHOLD_MS = 50;
+const RENDER_STALL_THRESHOLD_MS = 500;
+// DevTools console work is surprisingly expensive while WebGL is already
+// behind. Aggregate repeated stalls and emit at most one compact warning per
+// window instead of making a slow frame slower once every second.
+const RENDER_STALL_LOG_COOLDOWN_MS = 5 * 60_000;
+const MOVEMENT_INPUT_LOG_COOLDOWN_MS = 5 * 60_000;
+const MOVEMENT_INPUT_DELAY_THRESHOLD_MS = 150;
+const SHADOW_MAP_UPDATE_MS = 2_000;
+const SHADOW_MAP_STALL_COOLDOWN_MS = 10_000;
+const SCENE_LOD_SAMPLE_MS = 500;
+const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
+// Movement, camera controls, and rendering retain display cadence. Decorative
+// callbacks have their own budget: compact GPUs update them at 30 Hz and a
+// zoomed-out overview at 20 Hz, where sub-pixel fire/foliage changes cannot
+// justify running every shader-adjacent CPU update on every frame.
+const VISUAL_ANIMATION_COMPACT_MS = 1000 / 30;
+const VISUAL_ANIMATION_FAR_MS = 1000 / 20;
 // Dragging upward lowers the orbit eye beneath the target, which is how this
 // camera looks into the sky. Allow the full arc in both directions.
 const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
@@ -144,6 +193,12 @@ const OFFICE_INTERIOR_EXIT_Z =
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
 const OFFICE_ELEVATOR_HALF_DEPTH = 4;
 const OFFICE_ELEVATOR_CUT_MARGIN = 0.35;
+const OFFICE_FLOOR_WARP_DOOR_WIDTH = 5.3;
+const OFFICE_FLOOR_WARP_DOOR_HEIGHT = 5.8;
+const OFFICE_FLOOR_WARP_DOOR_SPACING = 5.95;
+const OFFICE_FLOOR_WARP_DOOR_START_X = -81.2;
+const OFFICE_FLOOR_WARP_DOOR_Z = -OFFICE_DEPTH / 2 + 0.34;
+const OFFICE_FLOOR_WARP_TRIGGER_Z = -OFFICE_DEPTH / 2 + 1.18;
 // The reef is a scene-owned lobby exhibit rather than part of the reusable
 // tower shell. Keep its physical footprint beside its scene integration so
 // every movement path observes the same cabinet and glass boundary.
@@ -307,6 +362,8 @@ const SPRINT_KEYS = new Set(["ShiftLeft", "ShiftRight"]);
 // never pull an interior observatory fixture back out of the building.
 const SYSTEM_CAPACITY_INFRASTRUCTURE_POSITION = Object.freeze([-24, 0, 7]);
 const INFRASTRUCTURE_CONSOLE_POSITION = Object.freeze([18, 0, -44.2]);
+const INFRASTRUCTURE_FOOTPRINT_POSITION = Object.freeze([-18, 0, -44.2]);
+const INFRASTRUCTURE_COMPONENTS_POSITION = Object.freeze([44.2, 0, -12]);
 const SERVER_CABINET_YARD_ORIGIN = Object.freeze([18, 0, 0]);
 const ARRIVAL_GRID_BOUNDS = Object.freeze({
   minX: -10.8,
@@ -658,32 +715,28 @@ function badgeTexture(
   return canvasTexture(THREE, 512, 512, (context) => {
     context.fillStyle = "#0c2019";
     context.fillRect(0, 0, 512, 512);
-    // The card border itself is the account-activity indicator. This keeps
-    // the signal inside the box and replaces the detached shirt lamp.
-    const activityBorder =
-      String(identity.accountStatus || "Guest") !== "Guest" &&
-      ACTIVITY_LIGHT_COLORS[identity.activityBucket]
-        ? ACTIVITY_LIGHT_COLORS[identity.activityBucket]
-        : accent;
-    context.strokeStyle = activityBorder;
-    context.lineWidth = 12;
+    // Activity belongs around the avatar portrait, not around this information
+    // panel. Keep a quiet structural edge here so the two signals cannot be
+    // confused.
+    context.strokeStyle = "rgba(158,247,198,0.5)";
+    context.lineWidth = 5;
     context.strokeRect(8, 8, 496, 496);
 
     context.textAlign = "center";
     context.textBaseline = "middle";
     context.font = '62px system-ui, "Apple Color Emoji", "Segoe UI Emoji"';
     context.fillStyle = "#ffffff";
-    context.fillText(identity.flag || "◌", 70, 62);
+    context.fillText(identity.flag || "◌", 54, 62);
 
     context.textAlign = "left";
     context.font = '800 34px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#ffffff";
-    context.fillText(String(identity.name || "guest").slice(0, 14), 112, 54);
+    context.fillText(String(identity.name || "guest").slice(0, 13), 94, 54);
     context.font = '700 18px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#a9b8ff";
     context.fillText(
       String(profile.handle || `@${identity.name || "guest"}`).slice(0, 27),
-      112,
+      94,
       82,
     );
     context.fillStyle = "#9ef7c6";
@@ -695,7 +748,7 @@ function badgeTexture(
         : profile.state === "unavailable"
           ? "FEDIVERSE · UNAVAILABLE"
           : "FEDIVERSE · LOADING",
-      112,
+      94,
       106,
     );
 
@@ -707,20 +760,20 @@ function badgeTexture(
     context.setLineDash(walletAddress ? [] : [7, 6]);
     context.strokeStyle = walletAddress ? "#f7c96b" : "#708078";
     context.lineWidth = 4;
-    context.strokeRect(400, 20, 88, 88);
+    context.strokeRect(376, 12, 124, 124);
     context.setLineDash([]);
     if (walletAddress) {
-      drawQrModules(context, walletAddress, 406, 26, 76);
+      drawQrModules(context, walletAddress, 384, 20, 108);
     } else {
       context.textAlign = "center";
       context.fillStyle = "#708078";
       context.font = '900 28px "ForkMesh Mono", ui-monospace, monospace';
-      context.fillText("+", 444, 57);
+      context.fillText("+", 438, 57);
       context.font = '700 11px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
         identity.walletEditable ? "ADD WALLET" : "NO WALLET",
-        444,
-        84,
+        438,
+        96,
       );
     }
     context.textAlign = "center";
@@ -733,14 +786,51 @@ function badgeTexture(
             maximumFractionDigits: 4,
           })} SOL`
         : "",
-      444,
-      124,
+      438,
+      148,
     );
+    const nodes = Array.isArray(identity.nodes) ? identity.nodes.slice(0, 6) : [];
+    nodes.forEach((node, index) => {
+      const status = String(
+        typeof node === "object"
+          ? node?.health || node?.status || ""
+          : "",
+      ).toLowerCase();
+      const color = ["online", "healthy", "available"].includes(status)
+        ? "#22e06a"
+        : ["warning", "degraded", "stale"].includes(status)
+          ? "#ffd23f"
+          : ["offline", "failed", "error"].includes(status)
+            ? "#ff4d57"
+            : "#8da09a";
+      context.beginPath();
+      context.fillStyle = color;
+      context.arc(112 + index * 25, 132, 8, 0, Math.PI * 2);
+      context.fill();
+      context.strokeStyle = "#dffff1";
+      context.lineWidth = 2;
+      context.stroke();
+    });
+    const socialDot = (x, color, glyph) => {
+      context.beginPath();
+      context.fillStyle = color;
+      context.arc(x, 132, 9, 0, Math.PI * 2);
+      context.fill();
+      context.fillStyle = "#082018";
+      context.font = '900 10px "ForkMesh Mono", ui-monospace, monospace';
+      context.textAlign = "center";
+      context.fillText(glyph, x, 132);
+    };
+    // A compact handful of follower/following people makes the relationship
+    // counts visual without turning the chest into another text-only table.
+    [270, 294].forEach((x) => socialDot(x, "#77d9ff", "←"));
+    [326, 350, 374].forEach((x) => socialDot(x, "#9ef7c6", "→"));
+    context.textAlign = "left";
     context.strokeStyle = "rgba(158,247,198,0.28)";
     context.lineWidth = 2;
     context.beginPath();
-    context.moveTo(30, 142);
-    context.lineTo(482, 142);
+    context.moveTo(30, 154);
+    context.lineTo(482, 154);
     context.stroke();
 
     const joined = joinedAgoLabel(identity.joinedAt);
@@ -785,47 +875,50 @@ function badgeTexture(
     context.font = '700 17px "ForkMesh Mono", ui-monospace, monospace';
     rows.forEach(([text, color], index) => {
       context.fillStyle = color;
-      context.fillText(text, 34, 172 + index * step);
+      context.fillText(text, 34, 181 + index * step);
     });
 
     const posts = Array.isArray(profile.posts) ? profile.posts.slice(0, 1) : [];
     context.fillStyle = "#a9b8ff";
     context.font = '800 15px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("RECENT FEDIVERSE", 34, 300);
+    context.fillText("RECENT FEDIVERSE", 34, 309);
     context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
     posts.forEach((post, index) => {
       context.fillStyle = index ? "#93a4c8" : "#dfe8ff";
-      context.fillText(String(post).slice(0, 48), 34, 324 + index * 23);
+      context.fillText(String(post).slice(0, 48), 34, 330 + index * 23);
     });
     const recentPublicMessage = String(
       identity.recentPublicMessage || "",
     ).replace(/\s+/g, " ").trim().slice(0, 56);
     context.fillStyle = "#77d9ff";
     context.font = '800 15px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("RECENT PUBLIC CHAT", 34, 352);
+    context.fillText("RECENT PUBLIC CHAT", 34, 356);
     context.fillStyle = recentPublicMessage ? "#d9f7ff" : "#708078";
     context.font = '600 14px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText(
       recentPublicMessage || "NO RECENT PUBLIC MESSAGE",
       34,
-      376,
+      378,
     );
 
-    // The world status the visitor set for themselves, on the chest rather
-    // than only floating over the head.
-    const status = badgeStatusLabel(identity);
-    if (status) {
-      context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
-      const width = Math.min(452, context.measureText(status).width + 44);
-      roundedRect(context, 28, 398, width, 34, 17);
-      context.fillStyle = "rgba(158,247,198,0.14)";
-      context.fill();
-      context.strokeStyle = "rgba(158,247,198,0.5)";
-      context.lineWidth = 2;
-      context.stroke();
+    const lastEmailAt = Math.max(0, Number(identity.lastEmailAt) || 0);
+    const lastEmailStatus = String(identity.lastEmailStatus || "").toLowerCase();
+    const emailLabel = lastEmailAt
+      ? `LAST EMAIL ${joinedAgoLabel(lastEmailAt).replace(/^JOINED /, "")} · ${
+          lastEmailStatus === "delivered" ? "DELIVERED" : "FAILED"
+        }`
+      : identity.lastEmailPrivate === false
+        ? "LAST EMAIL NEVER · NO DELIVERY"
+        : "LAST EMAIL · NOT SHARED";
+    context.fillStyle =
+      lastEmailStatus === "failed" ? "#ff6b72" : "#f7c96b";
+    context.font = '800 16px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(emailLabel.slice(0, 43), 34, 410);
+    const frontMood = badgeStatusLabel(identity);
+    if (frontMood) {
       context.fillStyle = "#eafff2";
-      context.textAlign = "left";
-      context.fillText(status, 48, 415);
+      context.font = '800 17px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(`MOOD · ${frontMood}`.slice(0, 27), 34, 435);
     }
 
     context.textAlign = "left";
@@ -840,7 +933,7 @@ function badgeTexture(
         identity.localTime,
       ].filter(Boolean).join(" · "),
       52,
-      466,
+      468,
     );
 
     const followLabel = fediverseFollowLabel(profile);
@@ -868,10 +961,10 @@ const BADGE_FOLLOW_PILL = Object.freeze({
   maxV: 1 - 438 / 512,
 });
 const BADGE_WALLET_SQUARE = Object.freeze({
-  minU: 394 / 512,
-  maxU: 494 / 512,
-  minV: 1 - 132 / 512,
-  maxV: 1 - 14 / 512,
+  minU: 370 / 512,
+  maxU: 506 / 512,
+  minV: 1 - 154 / 512,
+  maxV: 1 - 8 / 512,
 });
 
 function badgeFollowPillHit(uv) {
@@ -3066,24 +3159,43 @@ function officeReclaimedWoodTexture(THREE) {
 // the active implementation queue in a fixed, readable grid. Keep the ordering
 // stable so a repaint never makes cards jump around.
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
+  { key: "task:world-stall-flood", task: "Stop World render stalls + warning floods", detail: "Zoom events now run LOD work only when crossing a real near/far boundary, selection bounds are cadence sampled, frame effects share one timestamp, and compact deferred diagnostics aggregate repeated stalls for 30 seconds instead of allocating stacks and flooding DevTools on the hot frame.", estimate: "implemented · performance QA", done: true },
+  { key: "task:qa-full-catalog", task: "Restore the full QA desk backlog", detail: "Removed the 64-card server truncation that hid built-in cards 65–78 and every later database/task card. The bounded catalog now carries all valid sources while the physical desk stays constant-cost at five cards per page.", estimate: "implemented · focused QA", done: true },
+  { key: "task:task-completion-note", task: "Task completion work notes", detail: "Each actionable task row has an editable What I did to complete this task note. Completion encrypts and retains the bounded note with the task, shows it to organization reviewers, and exposes it alongside the QA-ready record.", estimate: "implemented · focused QA", done: true },
+  { key: "task:screenshot-to-hud-composer", task: "Screenshot → chat / prompt composer", detail: "The annotation preview now carries editable alt text and an Add to chat / prompt action. It compacts the image, stages it in the pinned HUD without posting, and leaves chat, issue, task, or agent routing to the user.", estimate: "implemented · focused QA", done: true },
+  { key: "task:readable-live-task-panel", task: "Readable live task panel + private taken notices", detail: "The Work view expands into a full task workspace with complete titles, details, routing, QA, timers, and controls. Active work has a visible spinner, and task starts fan out through encrypted account notifications only to Organization Engineering members.", estimate: "implemented · focused QA", done: true },
+  { key: "task:lobby-community-kiosk-row", task: "Align lobby community kiosks", detail: "Feedback, task bounties, Link Lab, and Link Rewards form one readable row on the Office clock wall immediately to its left, keeping Noah and the lobby route clear.", estimate: "implemented · focused QA", done: true },
+  { key: "task:district-ground-paths", task: "Clean repository + leaderboard districts", detail: "Removed the ground-level VIEW placards, centered repository imports, added efficient textured district circles, and rebuilt every town connector from one solid concrete slab specification with flush endpoints.", estimate: "implemented · focused QA", done: true },
+  { key: "task:lobby-task-bounties", task: "Lobby task bounty bidding desk", detail: "Organization members can propose scoped work in the lobby, name an exact SOL compensation request, and publish the encrypted record into the shared task catalog as a clearly labeled bid. The request is non-custodial and records no transfer or reserved funds.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-orb-hud", task: "Compact debug + unified activity orbs", detail: "Replaced the bottom bars with logo-sized status circles. DEBUG summarizes every performance grade as green, yellow, or red dots and expands on hover or focus. CHAT shows the latest speaker and unread count, then opens a translucent channel composer with image attachment, separate chat/task actions, human-or-agent routing, team categorization, and a ten-second unified activity stream.", estimate: "deployed · ready for QA", done: true },
+  { key: "task:avatar-hud-launcher", task: "Restore circular avatar HUD launcher", detail: "The account avatar is again a round launcher: hover or focus fans fixed-size tool boxes out without resizing the HUD, notification/error/task counts form a compact actionable row beside it and return to their matching icons when expanded, touch uses a first tap to reveal controls, and player movement or an outside click closes the launcher.", estimate: "ready to deploy · focused QA", done: true },
+  { key: "task:fixed-square-hud-shortcuts", task: "Fixed square World HUD shortcuts", detail: "The avatar is clipped into a true circle. Its right rail is one non-expanding column with only Office, Campfire, Share view, Remember, and square saved thumbnails; reward-pool navigation stays in the World. Dashboard uses a globe, Tasks uses a list, Capture uses a crop frame, and Wave now sits beside chat.", estimate: "ready to deploy · focused QA", done: true },
   { key: "task:avatar-selection-runtime", task: "Reliable user HUD selection", detail: "Avatar clicks use a scoped frame timestamp, prefer the visible avatar hit over nearby geometry, and open the privacy-filtered member side panel without throwing.", estimate: "implemented · focused QA", done: true },
-  { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "The complete member seating circle sits on detailed dirt; every member adds one visible log and slightly increases the bounded campfire scale.", estimate: "implemented · focused QA", done: true },
+  { key: "task:member-circle-fire", task: "Dirt Members Circle + growing fire", detail: "Fresh arrivals spawn seated in the circle; pavement continues beneath its dirt, the fire is three times larger, and a much higher member total sparkles around the newest name.", estimate: "implemented · focused QA", done: true },
   { key: "task:aquarium-fixed-controls", task: "Tank-fixed reef controls", detail: "Feed, tap, backdrop, and light controls stay anchored to the aquarium's lower-right control point instead of floating with the player.", estimate: "implemented · focused QA", done: true },
   { key: "task:recent-public-chat-card", task: "Recent public chat on chest", detail: "Each avatar chest includes one sanitized line from that account's latest public-channel message; private and direct messages never enter the card.", estimate: "implemented · focused QA", done: true },
   { key: "task:verification-pin-state", task: "Green verified pin / red unverified X", detail: "Every signed-in avatar shows a green check when email-verified and a red X in the same front pin when unverified; guests remain neutral.", estimate: "implemented · focused QA", done: true },
-  { key: "task:office-floor-warps", task: "Lobby floor warp hub", detail: "A compact set of ten labeled portal pads left of Noah's lobby desk jumps authorized visitors directly to each accessible floor.", estimate: "implemented · focused QA", done: true },
+  { key: "task:office-floor-warps", task: "Walk-through floor doorways", detail: "Ten straight, wall-mounted lobby doorways sit left of Noah's desk. Walking through an authorized doorway changes floors; inaccessible floors stay visibly closed and cannot be crossed.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-console-cleanup", task: "World console runtime cleanup", detail: "Asset preloads share the texture loader's CORS mode, external avatar failures use stable initial art, and unavailable Actions summaries return retryable application state instead of repeating HTTP 503s.", estimate: "implemented · focused QA", done: true },
   { key: "task:admin-record-detail", task: "Admin database record detail pages", detail: "Every visible database row opens a read-only page that lists the complete redacted record vertically, with a clear route back to its table.", estimate: "implemented · focused QA", done: true },
   { key: "task:member-verification-admin-link", task: "Member verification + admin detail", detail: "Member panels show a red X for every non-guest account without a verified email, and the privileged admin-detail action opens safely in a new tab.", estimate: "implemented · focused QA", done: true },
   { key: "task:engineering-debug-panel", task: "Engineering live debug control panel", detail: "A full in-room panel samples FPS, longest frame, draw calls, triangles, geometries, textures, GPU programs, animation callbacks, interactive targets, members, heap, and pixel ratio with green, orange, or red optimization states.", estimate: "implemented · focused QA", done: true },
   { key: "task:leaderboard-grid", task: "One raised square 5×5 leaderboard", detail: "Every public leaderboard and statistic occupies its own cell in one square wall; the center marker and separate physical boards are gone, and every footing, post, frame, face, and label clears the terrain.", estimate: "verified · ready for QA", done: true },
   { key: "task:reward-node-download", task: "Front SOL sign + start-node action", detail: "The treasury QR now sits at the front midpoint of the first node ring, with a small Start a node control that opens the desktop download page in a new window.", estimate: "verified · ready for QA", done: true },
-  { key: "task:world-member-path", task: "One path to the Members Circle", detail: "The overlapping south path and member promenade are now one concrete-brick route terminating at a fire-marked Members Circle sign.", estimate: "implemented · focused QA", done: true },
+  { key: "task:world-member-path", task: "One path to the Members Circle", detail: "The overlapping south path and member promenade are one concrete-brick route that runs beneath the dirt; the entrance sign is gone and the START HERE map faces inward from the far side.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-office-path", task: "One path to the Office", detail: "The north town route, elevated bridge, and Office approach now meet edge-to-edge at one width; the stacked land promenade and doubled slabs are removed.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-circular-foundation", task: "Circular World foundation", detail: "The continuous visible grass and collision boundary now use one circular radius centered on the circular bike lane.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-frame-hot-loop", task: "Instant movement and lean frame loop", detail: "Keyboard input reaches selected speed on its first frame, camera/movement scratch values are reused, and non-motion DOM/proximity work is cadence bounded while WebGL stays full-rate.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-chat-composer", task: "Primer chat and work composer", detail: "DEBUG occupies the lower-left and dark Primer chat reaches the bottom-right. Channel security and connection state live in the header; its pinned multiline composer selects a channel and repository, then sends chat, signs an issue, or assigns an Engineering agent.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-primer-hud", task: "Primer-styled compact World HUD", detail: "The compact and expanded right-side navigation rail now uses GitHub Primer canvas, border, spacing, button, focus, hover, and selected-state primitives.", estimate: "implemented · focused QA", done: true },
+  { key: "task:discord-human-authorization", task: "P1 · HUMAN · Rotate and authorize Discord", detail: "Regenerate the credential exposed in chat; keep the replacement only in Worker secrets; configure the canonical OAuth callback; install the application with least privilege; authorize as the current organization owner; select intended public channels; verify public read and non-pinging send; never paste the replacement credential into a task, log, repository, dashboard field, or chat.", estimate: "global priority 1 · human action required", done: false },
+  { key: "task:discord-public-chat-connector", task: "P2 · TAKEN · Integrate, deploy, and QA Discord", detail: "Taken by codex-bot using GPT-5 Codex at standard speed. Current-owner OAuth, canonical callback binding, live public-channel checks, non-pinging sends, the production-wide Durable Object rate gate, owner controls, clickable Boards Circle panel, global task priorities, and fail-closed deploy configuration are implemented. Remaining: rotate and install the P1 human-owned credentials, deploy, then record end-to-end production evidence.", estimate: "global priority 2 · active · blocked on P1 secret rotation", done: false },
+  { key: "task:agent-queue-reliability", task: "Durable unlimited agent queue + exact reasons", detail: "Rebase and deploy the arbitrary task-cap removal, durable offline desktop queue for owners, and exact safe rejection reasons without weakening provider authorization or safety preflight.", estimate: "implemented · integration and deployment QA", done: false },
+  { key: "task:task-conversation-reopen", task: "Task replies, full compact context, and mark undone", detail: "Rebase and verify encrypted organization-private task replies, compact ownership/routing/QA context, completion notes, and Mark undone while retaining completion history.", estimate: "implemented · integration QA", done: false },
+  { key: "task:private-task-screenshots", task: "Private screenshot evidence on tasks and agents", detail: "Rebase and deploy encrypted organization task attachments while preserving the distinct issue, chat, and Codex or Claude screenshot routes and bounded payload handling.", estimate: "implemented · integration QA", done: false },
+  { key: "task:member-node-plaza", task: "Compact growing node plaza + bench spawn", detail: "Rebase and verify evenly spaced node cabinets on one concrete-brick plaza that grows with the roster. Fresh visitors now spawn seated in the Members Circle without overriding saved or shared positions.", estimate: "implemented · World integration QA", done: false },
+  { key: "task:d1-free-tier-visibility", task: "D1 free-tier visibility in admin", detail: "Rebase and verify the documented D1 free-tier thresholds and clearly labeled local estimates; exact account consumption remains external unless Cloudflare analytics is configured.", estimate: "implemented · admin integration QA", done: false },
+  { key: "task:office-floor-visibility-guard", task: "Restore Office floors after every story change", detail: "The deployed visibility guard keeps the tower shell, floor and ceiling slabs, lights, furniture, boards, and repositories visible, then synchronizes the selected story immediately after doorway or elevator travel.", estimate: "deployed · ready for World QA", done: true },
   { key: "task:web-pull-workbench", task: "Full web Issue and PR workbench", detail: "Record clicks now open canonical same-origin web pages. Still open: proactive conflict/check readiness and a signed mirror capability for auditable update-from-main before protected merge.", estimate: "record routing done · lifecycle active", done: false },
   { key: "task:session-audit", task: "Audit today’s requested work", detail: "Reconciled the full request history against code, tests, QA, and the build board; restored missing social-frame, repository-orbit, signage, and exact-view tracking while keeping partial and external work open.", estimate: "audit complete · open work retained", done: true },
   { key: "task:repo-record-tower-scale", task: "Count-scaled PR and Issue towers", detail: "Each repository work tower now rises with its complete bounded record count, so a 61-item Issue tower is visibly taller than a 43-item PR tower; both stand beyond the ActivityPub follower orbit.", estimate: "verified · ready for QA", done: true },
@@ -3100,7 +3212,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:world-reactive-reef", task: "Persistent reef controls + reactive fish", detail: "Keep the aquarium controls clickable throughout the lobby and make the school dart gently as a visitor approaches the glass.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:repo-code-landing", task: "Changed files land in repository rings", detail: "Verified changed-file tiles fly into the matching repository with night lightning or daylight shadows, then sizzle and fade for ten seconds.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:repo-agent-live-terminals", task: "Interactive repository agent terminals", detail: "Each robot screen now shows its active task, mirror, status, and latest terminal line; clicking opens that exact engineering session with transcript and secure prompt or re-prompt controls.", estimate: "ready for deploy · in QA", done: true },
-  { key: "task:repo-board-view-pads", task: "Content-height repo boards + view pads", detail: "Each list now fits its page, reads newest at the bottom, carries a lower count footer, and has a height-aware first-person pad.", estimate: "ready for deploy · in QA", done: true },
+  { key: "task:repo-board-view-pads", task: "Content-height repository boards", detail: "Each list fits its page, reads newest at the bottom, and carries a lower count footer. The obsolete ground VIEW placards have been removed from the district.", estimate: "implemented · focused QA", done: true },
   { key: "task:world-continuous-city", task: "One continuous city landscape", detail: "The districts now share one walkable foundation, textured grass, and seamless concrete connections.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-start-here-map", task: "START HERE progress map", detail: "A persistent users-to-nodes checklist now checks bounded milestones as each destination is visited.", estimate: "ready for deploy · in QA", done: true },
   { key: "task:world-roof-and-seating", task: "Parachute roof jump and universal seating", detail: "Space exits the roof with checkout; a mini parachute deploys on descent, caps fall speed, and collapses after landing, while every marked chair and park bench accepts a sitter.", estimate: "verified · ready for QA", done: true },
@@ -4491,6 +4603,342 @@ function campfireDirtTexture(THREE) {
   return texture;
 }
 
+function createProceduralCampfireEffect(THREE) {
+  const effect = new THREE.Group();
+  effect.name = "campfire-procedural-fire";
+
+  const flameVertexShader = `
+    uniform float uTime;
+    uniform float uSpeed;
+    uniform float uPhase;
+    uniform float uCurl;
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      vec3 transformed = position;
+      float lift = pow(uv.y, 1.45);
+      float broadSway = sin(uTime * uSpeed + uPhase) * uCurl;
+      float curling = sin(uTime * uSpeed * 1.73 + uv.y * 8.0 + uPhase * 2.1)
+        * uCurl * 0.42;
+      transformed.x += (broadSway + curling) * lift;
+      transformed.y += sin(uTime * uSpeed * 1.31 + uPhase + uv.y * 5.0)
+        * 0.035 * lift;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(transformed, 1.0);
+    }
+  `;
+  const flameFragmentShader = `
+    uniform float uTime;
+    uniform float uSpeed;
+    uniform float uPhase;
+    uniform float uOpacity;
+    varying vec2 vUv;
+
+    float hash(vec2 p) {
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+    float noise(vec2 p) {
+      vec2 i = floor(p);
+      vec2 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      return mix(
+        mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x),
+        mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0)), f.x),
+        f.y
+      );
+    }
+    float fbm(vec2 p) {
+      float value = 0.0;
+      float amplitude = 0.55;
+      for (int octave = 0; octave < 4; octave++) {
+        value += amplitude * noise(p);
+        p = p * 2.03 + 17.17;
+        amplitude *= 0.5;
+      }
+      return value;
+    }
+    void main() {
+      float t = uTime * uSpeed;
+      float y = vUv.y;
+      float x = vUv.x * 2.0 - 1.0;
+      float turbulence = fbm(vec2(y * 3.35 - t * 0.72, uPhase));
+      float fineNoise = fbm(vec2(x * 2.8 + uPhase, y * 5.4 - t * 1.18));
+      float center = (turbulence - 0.5) * (0.25 + y * 0.44)
+        + sin(y * 9.0 - t * 1.45 + uPhase) * 0.075 * y;
+      float width = mix(0.72, 0.035, pow(y, 0.72));
+      width *= 0.82 + turbulence * 0.42;
+      width += (fineNoise - 0.5) * (0.10 + y * 0.19);
+
+      // A moving notch near the tip makes tall tongues fork before they close.
+      float fork = smoothstep(0.57, 0.9, y)
+        * (1.0 - smoothstep(0.0, 0.18, abs(x - center)))
+        * (0.35 + 0.65 * noise(vec2(floor(t * 2.0), uPhase)));
+      float edgeDistance = abs(x - center) / max(width, 0.025);
+      float body = 1.0 - smoothstep(0.67, 1.0, edgeDistance);
+      body *= 1.0 - fork * smoothstep(0.68, 0.98, y);
+
+      float raggedTop = 0.9
+        + (fbm(vec2(x * 2.1 + uPhase, -t * 1.3)) - 0.5) * 0.24;
+      float topFade = 1.0 - smoothstep(raggedTop - 0.12, raggedTop, y);
+      float alpha = body * topFade * smoothstep(0.0, 0.1, y);
+      alpha *= 0.74 + fineNoise * 0.32;
+      alpha *= uOpacity;
+      if (alpha < 0.008) discard;
+
+      float heat = clamp(edgeDistance, 0.0, 1.0);
+      vec3 whiteCore = mix(vec3(1.0, 0.72, 0.16), vec3(1.0, 0.98, 0.72),
+        (1.0 - heat) * (1.0 - y * 0.38));
+      vec3 orangeMiddle = vec3(1.0, 0.23, 0.012);
+      vec3 redEdge = vec3(0.48, 0.018, 0.002);
+      vec3 color = mix(whiteCore, orangeMiddle, smoothstep(0.16, 0.62, heat));
+      color = mix(color, redEdge, smoothstep(0.62, 1.0, heat));
+      color *= 0.88 + fineNoise * 0.3;
+      gl_FragColor = vec4(color, alpha);
+    }
+  `;
+
+  const flameGeometry = new THREE.PlaneGeometry(1, 1, 18, 28);
+  flameGeometry.translate(0, 0.5, 0);
+  const flameLayers = [
+    {
+      width: 1.35,
+      height: 2.25,
+      angle: 0.1,
+      speed: 1.72,
+      phase: 0.7,
+      opacity: 0.72,
+    },
+    {
+      width: 1.2,
+      height: 2,
+      angle: Math.PI / 2,
+      speed: 2.13,
+      phase: 2.8,
+      opacity: 0.68,
+    },
+    {
+      width: 1,
+      height: 1.72,
+      angle: Math.PI / 4,
+      speed: 2.58,
+      phase: 4.4,
+      opacity: 0.78,
+    },
+    {
+      width: 0.82,
+      height: 1.48,
+      angle: -Math.PI / 4,
+      speed: 3.04,
+      phase: 6.1,
+      opacity: 0.84,
+    },
+    {
+      width: 0.58,
+      height: 1.17,
+      angle: 1.16,
+      speed: 3.47,
+      phase: 8.3,
+      opacity: 0.9,
+    },
+  ];
+  const flameMaterials = [];
+  flameLayers.forEach((layer, index) => {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uTime: { value: 0 },
+        uSpeed: { value: layer.speed },
+        uPhase: { value: layer.phase },
+        uCurl: { value: 0.13 + index * 0.018 },
+        uOpacity: { value: layer.opacity },
+      },
+      vertexShader: flameVertexShader,
+      fragmentShader: flameFragmentShader,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    });
+    const tongue = new THREE.Mesh(flameGeometry, material);
+    tongue.name = `campfire-flame-layer-${index + 1}`;
+    tongue.scale.set(layer.width, layer.height, 1);
+    tongue.rotation.y = layer.angle;
+    tongue.position.set(
+      Math.sin(layer.phase) * 0.09,
+      0,
+      Math.cos(layer.phase) * 0.09,
+    );
+    tongue.renderOrder = 4 + index;
+    effect.add(tongue);
+    flameMaterials.push(material);
+  });
+
+  const emberCount = 34;
+  const emberPositions = new Float32Array(emberCount * 3);
+  const emberSeeds = new Float32Array(emberCount);
+  const emberSizes = new Float32Array(emberCount);
+  let emberRandomState = 0x46_49_52_45;
+  const emberRandom = () => {
+    emberRandomState =
+      (Math.imul(emberRandomState, 1_664_525) + 1_013_904_223) >>> 0;
+    return emberRandomState / 0x1_0000_0000;
+  };
+  for (let index = 0; index < emberCount; index += 1) {
+    const offset = index * 3;
+    emberPositions[offset] = (emberRandom() - 0.5) * 0.65;
+    emberPositions[offset + 1] = emberRandom() * 0.3;
+    emberPositions[offset + 2] = (emberRandom() - 0.5) * 0.65;
+    emberSeeds[index] = emberRandom();
+    emberSizes[index] = 1.5 + emberRandom() * 3.3;
+  }
+  const emberGeometry = new THREE.BufferGeometry();
+  emberGeometry.setAttribute(
+    "position",
+    new THREE.BufferAttribute(emberPositions, 3),
+  );
+  emberGeometry.setAttribute(
+    "aSeed",
+    new THREE.BufferAttribute(emberSeeds, 1),
+  );
+  emberGeometry.setAttribute(
+    "aSize",
+    new THREE.BufferAttribute(emberSizes, 1),
+  );
+  const emberMaterial = new THREE.ShaderMaterial({
+    uniforms: {
+      uTime: { value: 0 },
+      uHeight: { value: 1 },
+    },
+    vertexShader: `
+      uniform float uTime;
+      uniform float uHeight;
+      attribute float aSeed;
+      attribute float aSize;
+      varying float vAlpha;
+      void main() {
+        float age = fract(uTime * (0.12 + aSeed * 0.09) + aSeed * 7.31);
+        vec3 ember = position;
+        float rise = age * (1.65 + aSeed * 1.75) * uHeight;
+        ember.y += rise;
+        ember.x += sin(age * 8.0 + aSeed * 31.0) * (0.08 + age * 0.36);
+        ember.z += cos(age * 6.7 + aSeed * 27.0) * (0.07 + age * 0.28);
+        vec4 viewPosition = modelViewMatrix * vec4(ember, 1.0);
+        gl_Position = projectionMatrix * viewPosition;
+        float life = smoothstep(0.0, 0.08, age) * (1.0 - smoothstep(0.58, 1.0, age));
+        gl_PointSize = aSize * life * (95.0 / max(1.0, -viewPosition.z));
+        vAlpha = life;
+      }
+    `,
+    fragmentShader: `
+      varying float vAlpha;
+      void main() {
+        float radius = length(gl_PointCoord - 0.5) * 2.0;
+        float alpha = (1.0 - smoothstep(0.18, 1.0, radius)) * vAlpha;
+        if (alpha < 0.01) discard;
+        vec3 color = mix(vec3(1.0, 0.16, 0.01), vec3(1.0, 0.88, 0.38),
+          1.0 - radius);
+        gl_FragColor = vec4(color, alpha);
+      }
+    `,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    toneMapped: false,
+  });
+  const embers = new THREE.Points(emberGeometry, emberMaterial);
+  embers.name = "campfire-rising-embers";
+  embers.position.y = 0.12;
+  embers.renderOrder = 10;
+  effect.add(embers);
+
+  const smokeGeometry = new THREE.PlaneGeometry(1, 1);
+  const smokePuffs = [];
+  for (let index = 0; index < 7; index += 1) {
+    const material = new THREE.ShaderMaterial({
+      uniforms: {
+        uPhase: { value: index * 2.37 },
+        uOpacity: { value: 0 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uPhase;
+        uniform float uOpacity;
+        varying vec2 vUv;
+        float hash(vec2 p) {
+          return fract(sin(dot(p, vec2(127.1, 311.7)) + uPhase) * 43758.5453);
+        }
+        void main() {
+          vec2 p = (vUv - 0.5) * 2.0;
+          float angle = atan(p.y, p.x);
+          float uneven = 0.78 + hash(vec2(floor(angle * 5.0), uPhase)) * 0.22;
+          float alpha = (1.0 - smoothstep(0.2, uneven, length(p))) * uOpacity;
+          if (alpha < 0.006) discard;
+          gl_FragColor = vec4(vec3(0.24, 0.22, 0.2), alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.NormalBlending,
+      toneMapped: false,
+    });
+    const puff = new THREE.Mesh(smokeGeometry, material);
+    puff.name = `campfire-smoke-puff-${index + 1}`;
+    puff.rotation.y = (index * Math.PI) / 3.5;
+    puff.userData.smokeSeed = index / 7;
+    puff.userData.smokePhase = index * 1.91;
+    effect.add(puff);
+    smokePuffs.push(puff);
+  }
+
+  const groundGlow = new THREE.Mesh(
+    new THREE.CircleGeometry(3.5, 64),
+    new THREE.ShaderMaterial({
+      uniforms: { uOpacity: { value: 0.34 } },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() {
+          vUv = uv;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        uniform float uOpacity;
+        varying vec2 vUv;
+        void main() {
+          float radius = length(vUv - 0.5) * 2.0;
+          float alpha = (1.0 - smoothstep(0.05, 1.0, radius));
+          alpha *= alpha * uOpacity;
+          if (alpha < 0.004) discard;
+          gl_FragColor = vec4(1.0, 0.19, 0.015, alpha);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      toneMapped: false,
+    }),
+  );
+  groundGlow.name = "campfire-ground-glow";
+  groundGlow.rotation.x = -Math.PI / 2;
+  groundGlow.position.y = -0.245;
+  groundGlow.renderOrder = 2;
+  effect.add(groundGlow);
+
+  effect.userData.flameMaterials = flameMaterials;
+  effect.userData.emberMaterial = emberMaterial;
+  effect.userData.smokePuffs = smokePuffs;
+  effect.userData.groundGlow = groundGlow;
+  return effect;
+}
+
 // Who joined last, by the public directory's joined timestamp. An account
 // seated straight from a presence frame carries no joined date yet (0), so it
 // is skipped rather than ranked as the oldest member in the circle.
@@ -4507,39 +4955,32 @@ function newestMemberName(members) {
   return newest;
 }
 
-// The headline membership number, drawn as glowing embers on transparency so
-// it can hang inside the campfire's flames without a plate behind it. The
-// account that joined most recently is credited on a line underneath, so the
-// fire says who the latest arrival is and not just how many there are.
-function campfireMemberCountTexture(THREE, total, newest) {
+function campfireMemberCountTexture(THREE, total, newest = "") {
   const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
-  const digits = count.toLocaleString("en-US");
   const latest = String(newest || "").trim().slice(0, 18);
-  return canvasTexture(THREE, 512, 256, (context) => {
-    context.clearRect(0, 0, 512, 256);
+  return canvasTexture(THREE, 1024, 384, (context) => {
+    context.clearRect(0, 0, 1024, 384);
     context.textAlign = "center";
     context.textBaseline = "middle";
-    const ember = context.createLinearGradient(0, 20, 0, 150);
-    ember.addColorStop(0, "#fff6cf");
-    ember.addColorStop(0.55, "#ffc457");
-    ember.addColorStop(1, "#ff7a2f");
-    context.shadowColor = "rgba(255,122,47,0.95)";
-    context.shadowBlur = 36;
-    context.fillStyle = ember;
-    context.font = '700 132px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(digits, 256, latest ? 84 : 104);
-    context.shadowBlur = 20;
-    context.fillStyle = "#ffdcac";
-    context.font = '400 40px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 256, latest ? 172 : 198);
-    if (!latest) return;
+    context.shadowColor = "rgba(255,91,20,0.92)";
+    context.shadowBlur = 28;
+    context.font = '900 132px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#fff7d6";
+    context.fillText(count.toLocaleString(), 512, 88);
     context.shadowBlur = 14;
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#ffcb72";
+    context.fillText(count === 1 ? "MEMBER" : "MEMBERS", 512, 181);
+    if (!latest) return;
+    context.font = '800 28px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#ffbd7a";
-    context.font = '400 24px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText("NEWEST", 256, 210);
-    context.fillStyle = "#fff1d2";
-    context.font = '700 30px "ForkMesh Favorit", system-ui, sans-serif';
-    context.fillText(latest, 256, 240);
+    context.fillText("✦ NEWEST MEMBER ✦", 512, 257);
+    context.shadowColor = "rgba(255,196,87,0.96)";
+    context.shadowBlur = 22;
+    const newestSize = latest.length > 13 ? 54 : latest.length > 9 ? 62 : 72;
+    context.font = `900 ${newestSize}px "ForkMesh Mono", ui-monospace, monospace`;
+    context.fillStyle = "#fff5d9";
+    context.fillText(latest.toUpperCase(), 512, 329);
   });
 }
 
@@ -4803,13 +5244,32 @@ const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
 // live colour is read back out of the rendered glyph instead (see
 // edgeEmojiColor) so the sphere is exactly the emoji's own rim colour.
 const AVATAR_EMOJI_SKIN_COLOR = "#ffcc4d";
-// How far the emoji decal is wrapped around the head, centred on the front.
-// Both spans are wider than the glyph itself so the padded canvas carries the
-// emoji's rim colour past where the face ends and no bare sphere is left over.
-const AVATAR_FACE_PHI_START = Math.PI * 0.03;
-const AVATAR_FACE_PHI_LENGTH = Math.PI * 0.94;
-const AVATAR_FACE_THETA_START = Math.PI * 0.117;
-const AVATAR_FACE_THETA_LENGTH = Math.PI * 0.766;
+// The front of the head is cut off flat at this depth in front of the head's
+// centre and the face is a plain disc lying on that cut, so an uploaded avatar
+// photo is shown undistorted instead of being wrapped around a curved shell.
+const AVATAR_HEAD_RADIUS = 0.45;
+const AVATAR_FACE_DEPTH = 0.08;
+// Where the cut plane meets the sphere: the flat circle's exact radius, so the
+// disc covers the whole cut and no bare head shows around the face.
+const AVATAR_FACE_RADIUS = Math.sqrt(
+  AVATAR_HEAD_RADIUS * AVATAR_HEAD_RADIUS - AVATAR_FACE_DEPTH * AVATAR_FACE_DEPTH,
+);
+// Held just off the cut so the disc and the coplanar cap never z-fight.
+const AVATAR_FACE_LIFT = 0.002;
+
+// Slices the front off a head sphere: every vertex further forward than the
+// cut plane is pulled straight back onto it, which leaves the front as one
+// flat circle (avatar fronts face -Z) and the rest of the sphere untouched.
+function flattenSphereFront(geometry, depth) {
+  const position = geometry.attributes?.position;
+  if (!position) return geometry;
+  for (let i = 0; i < position.count; i += 1) {
+    if (position.getZ(i) < -depth) position.setZ(i, -depth);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+  return geometry;
+}
 
 // Reads back the drawn glyph, or "" when the canvas is tainted.
 function emojiPixels(context, canvas) {
@@ -4969,9 +5429,9 @@ function rotateBoxTopUVs(geometry) {
 
 function avatarFaceTexture(THREE, emoji) {
   let color = "";
-  // The glyph is drawn smaller than the canvas so the decal (which is widened
-  // to match, see AVATAR_FACE_*) keeps the face at the same angular size while
-  // its padding wraps further around the head.
+  // The glyph is drawn smaller than the canvas because the disc inscribes the
+  // square: the padding is what fills the corners the circle cuts away, so the
+  // face reaches the rim without the glyph itself being clipped.
   const texture = canvasTexture(THREE, 128, 128, (context, canvas) => {
     context.clearRect(0, 0, 128, 128);
     context.textAlign = "center";
@@ -5200,11 +5660,85 @@ function syncAvatarStatus(THREE, avatar, identity) {
   avatar.userData.emojiStatusKey = key;
   avatar.userData.statusEmoji = status.emoji;
   avatar.userData.statusNote = status.note;
+  // Mood is worn on the face and written on the front card. Nothing floats
+  // over the head, so a row of people keeps a clean silhouette.
   avatar.userData.emojiStatusSprite = null;
-  // Status remains available to the accessible player label and presence
-  // payload, but the large duplicate overhead banner is intentionally not
-  // rendered in-world. The last-used emoji is worn on the face instead.
   syncAvatarFace(THREE, avatar);
+}
+
+function avatarBackNameTexture(THREE, name, activity = {}, work = {}) {
+  const label = String(name || "visitor").replace(/\s+/g, " ").trim().slice(0, 24);
+  const pulls = Math.max(0, Number(activity.pulls) || 0);
+  const issues = Math.max(0, Number(activity.issues) || 0);
+  const discussions = Math.max(0, Number(activity.discussions) || 0);
+  const taskTotal = Math.max(0, Number(work.total) || 0);
+  const taskActive = Math.max(0, Number(work.active) || 0);
+  return canvasTexture(THREE, 640, 300, (context) => {
+    context.clearRect(0, 0, 640, 300);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const size = label.length > 16 ? 40 : label.length > 10 ? 50 : 62;
+    context.font = `950 ${size}px "ForkMesh Mono", ui-monospace, monospace`;
+    context.lineWidth = 12;
+    context.strokeStyle = "rgba(4,16,12,0.96)";
+    context.strokeText(label.toUpperCase(), 320, 43);
+    context.fillStyle = "#ffffff";
+    context.fillText(label.toUpperCase(), 320, 43);
+    context.font = '850 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.lineWidth = 8;
+    const firstCounts = `PRS ${pulls} · ISSUES ${issues}`;
+    const discussionCounts = `DISCUSSIONS ${discussions}`;
+    context.strokeText(firstCounts, 320, 96);
+    context.fillStyle = "#9ef7c6";
+    context.fillText(firstCounts, 320, 96);
+    context.strokeText(discussionCounts, 320, 136);
+    context.fillText(discussionCounts, 320, 136);
+    context.font = '850 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.strokeText("OPEN FILTERED ACTIVITY ↗", 320, 181);
+    context.fillStyle = "#f7c96b";
+    context.fillText("OPEN FILTERED ACTIVITY ↗", 320, 181);
+    const taskLine = work.state === "ready"
+      ? `TASKS ${taskTotal} · RUNNING ${taskActive}`
+      : "TASKS · OPEN WORK PANEL";
+    context.strokeText(taskLine, 320, 239);
+    context.fillStyle = "#77d9ff";
+    context.fillText(taskLine, 320, 239);
+    context.font = '750 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.strokeText("SELECT USER FOR FULL PROFILE", 320, 278);
+    context.fillStyle = "#d9f7ff";
+    context.fillText("SELECT USER FOR FULL PROFILE", 320, 278);
+  });
+}
+
+function syncAvatarBackName(THREE, avatar, identity) {
+  const backName = avatar?.userData?.backName;
+  if (!backName?.material) return;
+  const activity =
+    avatar.userData.fediverseProfile?.typeTotals &&
+    typeof avatar.userData.fediverseProfile.typeTotals === "object"
+      ? avatar.userData.fediverseProfile.typeTotals
+      : identity?.contributionTotals || {};
+  const work = avatar.userData.selfWorkBoard || {};
+  const key = JSON.stringify({
+    name: String(identity?.name || "visitor"),
+    pulls: Math.max(0, Number(activity.pulls) || 0),
+    issues: Math.max(0, Number(activity.issues) || 0),
+    discussions: Math.max(0, Number(activity.discussions) || 0),
+    taskState: String(work.state || ""),
+    taskTotal: Math.max(0, Number(work.total) || 0),
+    taskActive: Math.max(0, Number(work.active) || 0),
+  });
+  if (backName.userData.nameKey === key) return;
+  backName.userData.nameKey = key;
+  const previous = backName.material.map;
+  backName.material.map = avatarBackNameTexture(
+    THREE,
+    identity?.name,
+    activity,
+    work,
+  );
+  backName.material.needsUpdate = true;
+  previous?.dispose?.();
 }
 
 function makeConsentedProfileFace(THREE, follower) {
@@ -5265,7 +5799,23 @@ function makeConsentedProfileFace(THREE, follower) {
   return face;
 }
 
-function syncOperatorBelt(THREE, avatar, nodeCount) {
+function mirrorNodeVisualState(node) {
+  const status = String(
+    typeof node === "object" ? node?.health || node?.status || "" : "",
+  ).toLowerCase();
+  if (["online", "healthy", "available"].includes(status)) {
+    return { color: "#22e06a", blink: false };
+  }
+  if (["warning", "degraded", "stale"].includes(status)) {
+    return { color: "#ffd23f", blink: true };
+  }
+  if (["offline", "failed", "error"].includes(status)) {
+    return { color: "#ff4d57", blink: true };
+  }
+  return { color: "#a9b8b2", blink: false };
+}
+
+function syncOperatorBelt(THREE, avatar, nodesOrCount) {
   const previous = avatar.getObjectByName("forkmesh-operator-belt");
   if (previous) {
     avatar.remove(previous);
@@ -5274,7 +5824,12 @@ function syncOperatorBelt(THREE, avatar, nodeCount) {
       child.material?.dispose?.();
     });
   }
-  const count = Math.max(0, Math.min(6, Number(nodeCount) || 0));
+  const nodes = Array.isArray(nodesOrCount)
+    ? nodesOrCount.slice(0, 6)
+    : Array.from({
+        length: Math.max(0, Math.min(6, Number(nodesOrCount) || 0)),
+      }, () => "node");
+  const count = nodes.length;
   if (!count) {
     if (avatar.userData) avatar.userData.nodeCount = 0;
     return;
@@ -5291,18 +5846,87 @@ function syncOperatorBelt(THREE, avatar, nodeCount) {
   belt.position.y = 1.43;
   beltGroup.add(belt);
   for (let index = 0; index < count; index += 1) {
+    const visual = mirrorNodeVisualState(nodes[index]);
     const light = new THREE.Mesh(
       new THREE.SphereGeometry(0.055, 10, 8),
-      makeMaterial(THREE, "#9ef7c6", {
-        emissive: "#9ef7c6",
+      makeMaterial(THREE, visual.color, {
+        emissive: visual.color,
         emissiveIntensity: 1.2,
       }),
     );
+    light.name = `forkmesh-mirror-node-${index}`;
+    light.userData.mirrorStatusLight = true;
+    light.userData.blink = visual.blink;
+    light.userData.baseColor = visual.color;
+    light.userData.phase = index * 0.91;
     light.position.set(-0.4 + index * 0.16, 1.43, -0.35);
     beltGroup.add(light);
   }
   avatar.add(beltGroup);
   if (avatar.userData) avatar.userData.nodeCount = count;
+}
+
+function createAvatarJetpack(THREE) {
+  const group = new THREE.Group();
+  group.name = "forkmesh-avatar-jetpack";
+  // Avatar fronts face -Z, so positive Z is the centre of the back.
+  group.position.set(0, 2.18, 0.43);
+  const shell = makeMaterial(THREE, "#293748", {
+    metalness: 0.78,
+    roughness: 0.24,
+  });
+  const trim = makeMaterial(THREE, "#79c0ff", {
+    metalness: 0.5,
+    roughness: 0.2,
+    emissive: "#1f6feb",
+    emissiveIntensity: 0.45,
+  });
+  const tanks = [];
+  const flames = [];
+  [-0.34, 0.34].forEach((x) => {
+    const tank = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.2, 0.24, 1.24, 18),
+      shell,
+    );
+    tank.position.set(x, 0, 0);
+    group.add(tank);
+    tanks.push(tank);
+    const cap = new THREE.Mesh(
+      new THREE.SphereGeometry(0.2, 16, 10),
+      trim,
+    );
+    cap.scale.y = 0.55;
+    cap.position.set(x, 0.61, 0);
+    group.add(cap);
+    const nozzle = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.11, 0.16, 0.24, 14),
+      shell,
+    );
+    nozzle.position.set(x, -0.73, 0);
+    group.add(nozzle);
+    const flame = new THREE.Mesh(
+      new THREE.ConeGeometry(0.13, 0.9, 14),
+      makeMaterial(THREE, "#ffcf70", {
+        emissive: "#ff6a2a",
+        emissiveIntensity: 2.2,
+        transparent: true,
+        opacity: 0.9,
+      }),
+    );
+    flame.rotation.z = Math.PI;
+    flame.position.set(x, -1.27, 0);
+    group.add(flame);
+    flames.push(flame);
+  });
+  const spine = new THREE.Mesh(
+    new THREE.BoxGeometry(0.34, 1.02, 0.2),
+    trim,
+  );
+  group.add(spine);
+  group.visible = false;
+  group.userData.tanks = tanks;
+  group.userData.flames = flames;
+  return group;
 }
 
 function createAvatar(THREE, identity, options = {}) {
@@ -5332,45 +5956,59 @@ function createAvatar(THREE, identity, options = {}) {
   torso.position.y = 2.15;
   group.add(torso);
 
-  // Same tessellation as the face shell wrapped over it, so the two silhouettes
-  // agree where the decal reaches around towards the ears.
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.45, 32, 24), skin);
-  head.scale.y = 1.05;
-  head.position.y = 3.36;
-  group.add(head);
-
-  const hair = new THREE.Mesh(
-    new THREE.SphereGeometry(0.47, 16, 10, 0, Math.PI * 2, 0, Math.PI * 0.52),
-    dark,
+  // Rounded everywhere except the front, which is cut off flat to carry the
+  // face disc: the two share AVATAR_FACE_DEPTH so the cut and the disc are the
+  // same circle.
+  const headRig = new THREE.Group();
+  headRig.name = "avatar-head-look-rig";
+  headRig.position.y = 3.36;
+  group.add(headRig);
+  const head = new THREE.Mesh(
+    flattenSphereFront(
+      new THREE.SphereGeometry(AVATAR_HEAD_RADIUS, 32, 24),
+      AVATAR_FACE_DEPTH,
+    ),
+    shirt,
   );
-  hair.position.set(0, 3.46, 0.07);
-  // Tilted back so the cap clears the forehead and the wrapped emoji face
-  // has the whole front of the head to itself.
-  hair.rotation.x = 0.42;
-  group.add(hair);
+  // Left unscaled: an egg-shaped head would stretch the flat cut into an
+  // ellipse and put the avatar photo back out of proportion.
+  headRig.add(head);
 
   // The face wears the last world-status emoji the visitor set (default
-  // smile). Avatar fronts face -Z; the emoji is mapped onto a thin curved
-  // shell hugging the head sphere so it wraps the whole face, and
-  // syncAvatarFace keeps its texture current.
+  // smile), or the visitor's avatar photo. It is a flat disc filling the cut
+  // front of the head, so the picture is shown square-on and unwarped rather
+  // than wrapped around a curve; syncAvatarFace keeps its texture current.
   const faceMesh = new THREE.Mesh(
-    new THREE.SphereGeometry(
-      0.462,
-      32,
-      24,
-      AVATAR_FACE_PHI_START,
-      AVATAR_FACE_PHI_LENGTH,
-      AVATAR_FACE_THETA_START,
-      AVATAR_FACE_THETA_LENGTH,
-    ),
+    new THREE.CircleGeometry(AVATAR_FACE_RADIUS, 48),
     // The canvas is flooded opaque, so the decal renders in the solid pass and
-    // never sorts against the head sphere it is hugging.
+    // never sorts against the head it is lying on.
     new THREE.MeshBasicMaterial({}),
   );
-  faceMesh.scale.y = 1.05;
-  faceMesh.position.y = 3.36;
+  // Avatar fronts face -Z, so the disc is turned to look out of the cut.
+  faceMesh.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT);
   faceMesh.rotation.y = Math.PI;
-  group.add(faceMesh);
+  headRig.add(faceMesh);
+
+  const activityRing = new THREE.Mesh(
+    new THREE.RingGeometry(
+      AVATAR_FACE_RADIUS - 0.05,
+      AVATAR_FACE_RADIUS - 0.012,
+      64,
+    ),
+    new THREE.MeshBasicMaterial({
+      color: "#8da09a",
+      transparent: true,
+      opacity: 0.95,
+      depthWrite: false,
+      toneMapped: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  activityRing.name = "avatar-activity-ring";
+  activityRing.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT * 2);
+  activityRing.rotation.y = Math.PI;
+  activityRing.renderOrder = 6;
+  headRig.add(activityRing);
 
   const limbGeometry = rotateBoxTopUVs(new THREE.BoxGeometry(0.29, 1.25, 0.32));
   const leftArm = new THREE.Mesh(limbGeometry, shirt);
@@ -5379,6 +6017,9 @@ function createAvatar(THREE, identity, options = {}) {
   const rightArm = leftArm.clone();
   rightArm.position.x = 0.73;
   group.add(rightArm);
+
+  const jetpack = createAvatarJetpack(THREE);
+  group.add(jetpack);
 
   // Mouse activity reads as a small antenna riding on the visitor's shoulder
   // that blinks solid green, faster the more their mouse is moving.
@@ -5453,6 +6094,19 @@ function createAvatar(THREE, identity, options = {}) {
   badge.userData.chestBadge = true;
   group.add(badge);
 
+  const backName = new THREE.Mesh(
+    new THREE.PlaneGeometry(1.72, 0.806),
+    new THREE.MeshBasicMaterial({
+      transparent: true,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  backName.name = "avatar-back-username";
+  backName.position.set(0, 2.94, 0.68);
+  backName.renderOrder = 5;
+  group.add(backName);
+
   const verifiedPin = new THREE.Mesh(
     new THREE.CircleGeometry(0.105, 24),
     new THREE.MeshBasicMaterial({
@@ -5462,7 +6116,7 @@ function createAvatar(THREE, identity, options = {}) {
     }),
   );
   verifiedPin.name = "forkmesh-verified-email-pin";
-  verifiedPin.position.set(0.43, 2.72, -0.328);
+  verifiedPin.position.set(-0.66, 2.92, -0.22);
   verifiedPin.rotation.y = Math.PI;
   verifiedPin.renderOrder = 5;
   verifiedPin.userData.verified = identity.emailVerified === true;
@@ -5484,11 +6138,12 @@ function createAvatar(THREE, identity, options = {}) {
     chestTabs: null,
     fediverseProfile: null,
     shirt,
-    shirtMeshes: [torso, leftArm, rightArm],
+    shirtMeshes: [torso, leftArm, rightArm, head],
     skin,
     antenna,
     antennaBulb,
     activityLight: null,
+    activityRing,
     activityBucket: "",
     walletChip: null,
     walletKey: "",
@@ -5500,25 +6155,43 @@ function createAvatar(THREE, identity, options = {}) {
     nodeCount: 0,
     accountStatus: identity.accountStatus || "Guest",
     inputActive: identity.inputActive === true,
-    inactiveSince:
-      identity.inputActive === true ? 0 : performance.now(),
-    avatarOpacity: 1,
     statusEmoji: "",
     statusNote: "",
     emojiStatusKey: "",
     emojiStatusSprite: null,
     faceMesh,
+    headRig,
+    torso,
     faceEmojiShown: "",
     faceIdentityKey: identity.id || identity.name || "",
+    backName,
     verifiedPin,
+    jetpack,
   };
-  syncOperatorBelt(THREE, group, identity.nodes?.length || 0);
+  syncOperatorBelt(THREE, group, identity.nodes || []);
+  syncAvatarBackName(THREE, group, identity);
   syncAvatarStatus(THREE, group, identity);
   syncAvatarActivity(group, identity);
   syncAvatarWallet(THREE, group, identity);
   syncAvatarVerifiedPin(THREE, group, identity);
   setShadows(group, true, true);
   return group;
+}
+
+function applyAvatarLookDirection(avatar, yaw, pitch, turnBody = true) {
+  if (!avatar?.userData) return;
+  if (turnBody && Number.isFinite(yaw)) avatar.rotation.y = yaw;
+  // Three.js camera pitch and the avatar's front-facing rig use opposite X
+  // rotation signs. Invert at this boundary so looking up raises the avatar's
+  // face and looking down lowers it.
+  const lookPitch = clamp(-(Number(pitch) || 0), -0.62, 0.62);
+  if (avatar.userData.headRig) {
+    avatar.userData.headRig.rotation.order = "YXZ";
+    avatar.userData.headRig.rotation.x = lookPitch;
+  }
+  if (avatar.userData.torso) {
+    avatar.userData.torso.rotation.x = lookPitch * 0.12;
+  }
 }
 
 const WORK_BADGE_ROWS = 6;
@@ -5672,6 +6345,12 @@ function avatarWorkBadgeTexture(THREE, board = {}) {
 function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
   if (!avatar?.userData) return null;
   const snapshot = normalizeSelfWorkBoard(board);
+  avatar.userData.selfWorkBoard = snapshot;
+  syncAvatarBackName(
+    THREE,
+    avatar,
+    avatar.userData.badgeIdentity || {},
+  );
   let badge = avatar.userData.selfWorkBadge;
   if (snapshot.state === "locked" && !snapshot.items.length) {
     if (badge) badge.visible = false;
@@ -5684,7 +6363,9 @@ function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
     );
     badge.name = "forkmesh-self-work-back-badge";
     // Avatar fronts face -Z, so the owner-only work board sits on +Z.
-    badge.position.set(0, 2.22, 0.318);
+    // Sits below the identity/activity strip instead of occupying the same
+    // pixels. Both panels clear the jetpack on one shared rear reading plane.
+    badge.position.set(0, 1.92, 0.68);
     badge.renderOrder = 4;
     avatar.add(badge);
     avatar.userData.selfWorkBadge = badge;
@@ -5727,11 +6408,6 @@ function syncCountryShirt(THREE, avatar, identity) {
 function syncAvatarActivity(avatar, identity) {
   if (!avatar?.userData) return;
   const active = identity.inputActive === true;
-  if (active && !avatar.userData.inputActive) {
-    avatar.userData.inactiveSince = 0;
-  } else if (!active && avatar.userData.inputActive) {
-    avatar.userData.inactiveSince = performance.now();
-  }
   avatar.userData.inputActive = active;
   avatar.userData.accountStatus = identity.accountStatus || "Guest";
   if (avatar.userData.antenna) avatar.userData.antenna.visible = active;
@@ -5740,6 +6416,15 @@ function syncAvatarActivity(avatar, identity) {
   ]
     ? String(identity.activityBucket)
     : "";
+  const ring = avatar.userData.activityRing;
+  if (ring?.material) {
+    const color =
+      String(identity.accountStatus || "Guest") !== "Guest" &&
+      ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+        ? ACTIVITY_LIGHT_COLORS[identity.activityBucket]
+        : "#8da09a";
+    ring.material.color.set(color);
+  }
 }
 
 function renderAvatarBadge(THREE, avatar, remote = false) {
@@ -5767,6 +6452,7 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   avatar.userData.badgeRemote = remote === true;
   renderAvatarBadge(THREE, avatar, remote);
   avatar.userData.name = identity.name;
+  syncAvatarBackName(THREE, avatar, identity);
   const faceIdentityKey = identity.id || identity.name || "";
   if (avatar.userData.faceIdentityKey !== faceIdentityKey) {
     avatar.userData.faceIdentityKey = faceIdentityKey;
@@ -5784,6 +6470,7 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   syncAvatarWallet(THREE, avatar, identity);
   syncAvatarStatus(THREE, avatar, identity);
   syncAvatarVerifiedPin(THREE, avatar, identity);
+  syncOperatorBelt(THREE, avatar, identity.nodes || []);
 }
 
 // Starts (or restarts) the wave on one avatar. The pose itself is played by
@@ -5792,6 +6479,28 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
 function startAvatarWave(avatar, startedAt = performance.now()) {
   if (!avatar?.userData?.rightArm) return false;
   avatar.userData.waveStartedAt = startedAt;
+  return true;
+}
+
+function startAvatarHudAction(avatar, action, startedAt = performance.now()) {
+  if (!avatar || !action) return false;
+  const previous = avatar.userData.hudAction;
+  if (previous) {
+    avatar.position.y = previous.baseY;
+    avatar.rotation.set(
+      previous.baseRotation.x,
+      previous.baseRotation.y,
+      previous.baseRotation.z,
+    );
+    avatar.scale.copy(previous.baseScale);
+  }
+  avatar.userData.hudAction = {
+    action,
+    startedAt,
+    baseY: avatar.position.y,
+    baseRotation: avatar.rotation.clone(),
+    baseScale: avatar.scale.clone(),
+  };
   return true;
 }
 
@@ -5811,6 +6520,62 @@ function poseWavingArm(arm, rest, angle) {
 
 function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   if (!avatar?.userData) return;
+  const activityRing = avatar.userData.activityRing;
+  if (activityRing?.material) {
+    const activeRing = Boolean(avatar.userData.activityBucket);
+    activityRing.material.opacity = activeRing
+      ? reducedMotion
+        ? 0.95
+        : 0.72 + Math.sin(time * 0.004 + avatar.userData.phase) * 0.23
+      : 0.58;
+  }
+  avatar.getObjectByName("forkmesh-operator-belt")?.traverse((child) => {
+    if (!child.userData?.mirrorStatusLight || !child.userData.blink) return;
+    const lit =
+      reducedMotion ||
+      Math.sin(time * 0.008 + child.userData.phase) >= 0;
+    child.material.opacity = lit ? 1 : 0.18;
+    child.material.transparent = true;
+    child.material.emissiveIntensity = lit ? 1.8 : 0.12;
+  });
+  const hudAction = avatar.userData.hudAction;
+  if (hudAction) {
+    const duration = reducedMotion ? 360 : 1800;
+    const progress = (time - hudAction.startedAt) / duration;
+    avatar.position.y = hudAction.baseY;
+    avatar.rotation.copy(hudAction.baseRotation);
+    avatar.scale.copy(hudAction.baseScale);
+    if (!(progress >= 0) || progress >= 1) {
+      delete avatar.userData.hudAction;
+    } else if (!reducedMotion) {
+      const cycle = Math.sin(progress * Math.PI);
+      if (hudAction.action === "jump") {
+        avatar.position.y += Math.abs(Math.sin(progress * Math.PI * 4)) * 0.9;
+      } else if (hudAction.action === "superjump") {
+        avatar.position.y += Math.sin(progress * Math.PI) * 8;
+      } else if (hudAction.action === "spin") {
+        avatar.rotation.y += progress * Math.PI * 4;
+      } else if (hudAction.action === "backflip") {
+        avatar.position.y += cycle * 0.8;
+        avatar.rotation.x -= progress * Math.PI * 2;
+      } else if (hudAction.action === "dance") {
+        avatar.rotation.z = Math.sin(progress * Math.PI * 8) * 0.22 * cycle;
+        avatar.rotation.y += Math.sin(progress * Math.PI * 4) * 0.45;
+      } else if (hudAction.action === "float") {
+        avatar.position.y += cycle * 1.8;
+        avatar.rotation.y += progress * Math.PI;
+      } else if (hudAction.action === "wobble") {
+        avatar.rotation.z = Math.sin(progress * Math.PI * 12) * 0.32 * cycle;
+        avatar.scale.copy(hudAction.baseScale).multiplyScalar(
+          1 + Math.sin(progress * Math.PI * 8) * 0.14 * cycle,
+        );
+      } else if (hudAction.action === "sparkle") {
+        avatar.position.y += Math.abs(Math.sin(progress * Math.PI * 6)) * 0.35;
+        avatar.rotation.y += progress * Math.PI * 6;
+        avatar.scale.copy(hudAction.baseScale).multiplyScalar(1 + cycle * 0.22);
+      }
+    }
+  }
   const waveStartedAt = avatar.userData.waveStartedAt || 0;
   const waveArm = waveStartedAt ? avatar.userData.rightArm : null;
   if (waveArm) {
@@ -5848,41 +6613,9 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     const lit = reducedMotion || cycle < 0.5;
     bulb.material.color.set(lit ? ANTENNA_LIT_COLOR : ANTENNA_DARK_COLOR);
   }
-  const inactiveFor = avatar.userData.inactiveSince
-    ? Math.max(0, time - avatar.userData.inactiveSince)
-    : 0;
-  const shouldFade =
-    avatar.userData.accountStatus === "Guest" &&
-    avatar.userData.inputActive !== true &&
-    inactiveFor >= 12000;
-  const targetOpacity = shouldFade ? 0.36 : 1;
-  const blend = 1 - Math.pow(0.006, Math.max(0, delta));
-  avatar.userData.avatarOpacity +=
-    (targetOpacity - avatar.userData.avatarOpacity) * blend;
-  const opacity = avatar.userData.avatarOpacity;
-  const materials = new Set();
-  avatar.traverse((child) => {
-    if (
-      !child.isMesh ||
-      (antenna && antenna === child.parent) ||
-      child.userData?.worldModerationControl ||
-      child.userData?.worldOrgTeamControl
-    ) return;
-    const childMaterials = Array.isArray(child.material)
-      ? child.material
-      : [child.material];
-    childMaterials.filter(Boolean).forEach((material) => materials.add(material));
-  });
-  materials.forEach((material) => {
-    if (material.userData.avatarBaseOpacity === undefined) {
-      material.userData.avatarBaseOpacity = Number(material.opacity) || 1;
-      material.userData.avatarBaseTransparent = Boolean(material.transparent);
-    }
-    material.opacity = material.userData.avatarBaseOpacity * opacity;
-    material.transparent =
-      material.userData.avatarBaseTransparent || opacity < 0.995;
-    material.needsUpdate = true;
-  });
+  // Presence is presence: inactivity changes the antenna signal and activity
+  // label, never the visibility of the person. Guests and members remain fully
+  // opaque until they actually leave the World.
 }
 
 function mirrorNodeIsOnline(node) {
@@ -5946,11 +6679,21 @@ function nodeDataKey(node) {
   return JSON.stringify({
     name: node?.name,
     machineName: node?.machineName,
+    ownerUser: node?.ownerUser,
     online: mirrorNodeIsOnline(node),
     healthy: node?.healthy,
     integrity: node?.integrity,
     activity: node?.activity,
     activityUpdatedAt: node?.activityUpdatedAt,
+    endpoint: node?.endpoint,
+    checkedAt: node?.checkedAt,
+    latencyMs: node?.latencyMs,
+    region: node?.region,
+    endpointHealthy: node?.endpointHealthy,
+    endpointIntegrity: node?.endpointIntegrity,
+    endpointFresh: node?.endpointFresh,
+    abuseBlocked: node?.abuseBlocked,
+    operations: node?.operations,
     cloneAvailable: node?.cloneAvailable,
     commit: node?.commit,
     branch: node?.branch,
@@ -6074,11 +6817,6 @@ function mirrorCommitSnapshot(node, repo) {
 function serverPanelTexture(THREE, node) {
   const online = mirrorNodeIsOnline(node);
   const integrity = String(node?.integrity || "unknown").toLowerCase();
-  const activity = String(node?.activity || "unknown")
-    .replace(/[^a-z0-9-]/gi, "")
-    .replace(/-/g, " ")
-    .toUpperCase()
-    .slice(0, 24);
   const repo = Array.isArray(node?.repositories) ? node.repositories[0] : null;
   const repositoryLabel =
     repo?.owner && repo?.name
@@ -6093,6 +6831,13 @@ function serverPanelTexture(THREE, node) {
   const cpu = mirrorMetric(node?.cpuPercent, 100);
   const memory = mirrorRatio(node?.memoryUsedBytes, node?.memoryTotalBytes);
   const disk = mirrorRatio(node?.diskUsedBytes, node?.diskTotalBytes);
+  const pingLatency = mirrorMetric(node?.latencyMs, 60_000);
+  const pingLabel =
+    pingLatency === null
+      ? "PING NOT REPORTED"
+      : `PING ${Math.round(pingLatency)} MS · ${
+          node?.endpointFresh === true ? "FRESH" : "STALE"
+        }`;
   const statusColor =
     online && integrity === "ok"
       ? "#73f0ad"
@@ -6142,7 +6887,7 @@ function serverPanelTexture(THREE, node) {
     context.font = '600 21px "ForkMesh Mono", ui-monospace, monospace';
     context.fillStyle = "#8ca99a";
     context.textAlign = "right";
-    context.fillText(activity || `SYNCED ${syncAgo}`, 966, 124);
+    context.fillText(pingLabel, 966, 124);
     context.textAlign = "left";
 
     context.strokeStyle = "#294339";
@@ -6228,6 +6973,16 @@ function serverPanelTexture(THREE, node) {
       }`,
       62,
       522,
+    );
+    context.font = '600 16px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillStyle = "#8ca99a";
+    context.fillText(
+      `OWNER ${String(node?.ownerUser || "NOT REPORTED").slice(
+        0,
+        18,
+      )} · ID ${String(node?.nodeId || "NOT REPORTED").slice(0, 16)}`,
+      62,
+      548,
     );
 
     context.strokeStyle = "#294339";
@@ -7067,6 +7822,278 @@ function createInfrastructureConsoleDisplay(THREE, interactive) {
   return display;
 }
 
+function workerFootprintTexture(THREE, footprint = {}) {
+  const modules = Array.isArray(footprint.modules)
+    ? footprint.modules.slice(0, 14)
+    : [];
+  const attached = Math.max(1, Number(footprint.attachedPythonBytes) || 1);
+  const peak = Math.max(1, ...modules.map((module) => Number(module.bytes) || 0));
+  return canvasTexture(THREE, 1800, 1100, (context) => {
+    context.fillStyle = "#041211";
+    context.fillRect(0, 0, 1800, 1100);
+    context.strokeStyle = "#80e8ff";
+    context.lineWidth = 16;
+    context.strokeRect(10, 10, 1780, 1080);
+    context.fillStyle = "#e8fff8";
+    context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("WORKER STARTUP FOOTPRINT", 48, 72);
+    context.fillStyle = "#7eb5a7";
+    context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "MEASURED UNCOMPRESSED SOURCE · EXACT BY MODULE · BUILD GENERATED",
+      50,
+      112,
+    );
+
+    const totals = [
+      ["ATTACHED PYTHON", formatCapacityBytes(attached)],
+      [
+        "STARTUP-LOADED EST.",
+        formatCapacityBytes(footprint.estimatedStartupSourceBytes),
+      ],
+      ["ON DEMAND", formatCapacityBytes(footprint.onDemandSourceBytes)],
+      [
+        "EDGE STATIC (NOT HEAP)",
+        formatCapacityBytes(footprint.staticAssetBytes),
+      ],
+    ];
+    totals.forEach(([label, value], index) => {
+      const x = 50 + index * 425;
+      context.fillStyle = index === 2 ? "#9ef7c6" : "#80e8ff";
+      context.font = '800 29px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(value, x, 160);
+      context.fillStyle = "#75988e";
+      context.font = '650 16px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(label, x, 187);
+    });
+    context.strokeStyle = "#21443a";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(50, 212);
+    context.lineTo(1750, 212);
+    context.stroke();
+
+    modules.forEach((module, index) => {
+      const y = 250 + index * 54;
+      const bytes = Math.max(0, Number(module.bytes) || 0);
+      const width = Math.max(4, (bytes / peak) * 820);
+      const onDemand = module.phase === "on-demand";
+      context.fillStyle = index % 2
+        ? "rgba(10,35,31,0.74)"
+        : "rgba(18,48,42,0.74)";
+      context.fillRect(40, y - 30, 1710, 46);
+      context.fillStyle = "#b7d5cc";
+      context.font = '650 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(module.name || "").slice(0, 29), 54, y);
+      context.fillStyle = onDemand ? "#9ef7c6" : "#399eb5";
+      context.fillRect(440, y - 21, width, 27);
+      context.fillStyle = onDemand ? "#9ef7c6" : "#d4f3ec";
+      context.textAlign = "right";
+      context.font = '750 20px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(formatCapacityBytes(bytes), 1480, y);
+      context.fillStyle = "#789c91";
+      context.fillText(`${((bytes / attached) * 100).toFixed(1)}%`, 1585, y);
+      context.fillStyle = onDemand ? "#9ef7c6" : "#80a99a";
+      context.fillText(onDemand ? "ON DEMAND" : "STARTUP", 1730, y);
+      context.textAlign = "left";
+    });
+
+    context.strokeStyle = "#21443a";
+    context.beginPath();
+    context.moveTo(50, 1020);
+    context.lineTo(1750, 1020);
+    context.stroke();
+    context.fillStyle = "#73968c";
+    context.font = '600 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `${Number(footprint.moduleCount) || 0} PYTHON FILES · ${Number(footprint.staticAssetCount) || 0} STATIC ASSETS`,
+      50,
+      1055,
+    );
+    context.textAlign = "right";
+    context.fillText(
+      "SOURCE BYTES ≠ HEAP · PER-MODULE HEAP IS NOT EXPOSED",
+      1750,
+      1055,
+    );
+    context.textAlign = "left";
+  });
+}
+
+function createWorkerFootprintDisplay(THREE) {
+  const display = new THREE.Group();
+  display.name = "forkmesh-infrastructure-worker-footprint";
+  display.userData.officeFloorId = "infrastructure";
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(25.8, 15.8, 0.45),
+    makeMaterial(THREE, "#153d3f", {
+      emissive: "#155367",
+      emissiveIntensity: 0.42,
+      metalness: 0.58,
+      roughness: 0.32,
+    }),
+  );
+  frame.position.y = 8.2;
+  display.add(frame);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(25.1, 15.1),
+    new THREE.MeshBasicMaterial({
+      map: workerFootprintTexture(THREE, WORKER_FOOTPRINT),
+      toneMapped: false,
+    }),
+  );
+  face.name = "forkmesh-infrastructure-worker-footprint-face";
+  face.position.set(0, 8.2, 0.24);
+  display.add(face);
+  setShadows(display);
+  face.castShadow = false;
+  return display;
+}
+
+function workerComponentTexture(THREE, footprint = {}) {
+  const components = Array.isArray(footprint.components)
+    ? footprint.components.slice(0, 10)
+    : [];
+  const limits =
+    footprint.workerLimits && typeof footprint.workerLimits === "object"
+      ? footprint.workerLimits
+      : {};
+  const staticLimits =
+    footprint.staticLimits && typeof footprint.staticLimits === "object"
+      ? footprint.staticLimits
+      : {};
+  const total = Math.max(
+    1,
+    components.reduce(
+      (sum, component) => sum + Math.max(0, Number(component.bytes) || 0),
+      0,
+    ),
+  );
+  const peak = Math.max(
+    1,
+    ...components.map((component) => Number(component.bytes) || 0),
+  );
+  return canvasTexture(THREE, 1800, 1100, (context) => {
+    context.fillStyle = "#07100e";
+    context.fillRect(0, 0, 1800, 1100);
+    context.strokeStyle = "#9ef7c6";
+    context.lineWidth = 16;
+    context.strokeRect(10, 10, 1780, 1080);
+    context.fillStyle = "#eafff5";
+    context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("WORKER COMPONENT + FREE PLAN MAP", 48, 72);
+    context.fillStyle = "#7eb5a7";
+    context.font = '600 22px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "BUILD-GENERATED SOURCE OWNERSHIP · CONCEPT GROUPS · EXACT BYTES",
+      50,
+      112,
+    );
+    const largestAsset =
+      footprint.largestStaticAsset &&
+      typeof footprint.largestStaticAsset === "object"
+        ? footprint.largestStaticAsset
+        : {};
+    context.fillStyle = "#f7c96b";
+    context.font = '650 19px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `STATIC ${Math.max(0, Number(footprint.staticAssetCount) || 0).toLocaleString()}/${Math.max(0, Number(staticLimits.assetCount) || 0).toLocaleString()} · LARGEST ${formatCapacityBytes(largestAsset.bytes)}/${formatPlatformLimitBytes(staticLimits.maxAssetBytes)} · INITIAL WORLD ${formatCapacityBytes(footprint.initialWorldModuleBytes)}/${formatPlatformLimitBytes(staticLimits.initialWorldModuleBytesSoft)} SOFT`,
+      50,
+      145,
+    );
+
+    components.forEach((component, index) => {
+      const y = 195 + index * 73;
+      const bytes = Math.max(0, Number(component.bytes) || 0);
+      const width = Math.max(5, (bytes / peak) * 750);
+      context.fillStyle =
+        index % 2 ? "rgba(10,35,31,0.78)" : "rgba(18,48,42,0.78)";
+      context.fillRect(40, y - 38, 1710, 62);
+      context.fillStyle = "#d4f3ec";
+      context.font = '700 23px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(String(component.name || "").slice(0, 32), 55, y);
+      context.fillStyle = index === 0 ? "#f7c96b" : "#4fcfa0";
+      context.fillRect(535, y - 27, width, 35);
+      context.textAlign = "right";
+      context.fillStyle = "#d4f3ec";
+      context.fillText(formatCapacityBytes(bytes), 1480, y);
+      context.fillStyle = "#8db5a8";
+      context.fillText(`${((bytes / total) * 100).toFixed(1)}%`, 1695, y);
+      context.textAlign = "left";
+    });
+
+    const constraintY = 910;
+    context.strokeStyle = "#21443a";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(50, constraintY - 35);
+    context.lineTo(1750, constraintY - 35);
+    context.stroke();
+    const constraints = [
+      `MEMORY ${formatPlatformLimitBytes(limits.memoryBytes)} (FREE + PAID)`,
+      `COMPRESSED BUNDLE ${formatPlatformLimitBytes(
+        limits.compressedBundleFreeBytes,
+      )} FREE / ${formatPlatformLimitBytes(
+        limits.compressedBundlePaidBytes,
+      )} PAID`,
+      `UNCOMPRESSED BUNDLE ${formatPlatformLimitBytes(
+        limits.uncompressedBundleBytes,
+      )}`,
+      `STARTUP ${Math.max(0, Number(limits.startupTimeMs) || 0)} MS`,
+      `DYNAMIC REQUESTS ${Math.max(
+        0,
+        Number(limits.dynamicRequestsFreeDaily) || 0,
+      ).toLocaleString()}/DAY FREE`,
+    ];
+    constraints.forEach((line, index) => {
+      context.fillStyle = index === 1 ? "#f7c96b" : "#9ef7c6";
+      context.font = '750 22px "ForkMesh Mono", ui-monospace, monospace';
+      context.fillText(
+        line,
+        55 + (index % 2) * 860,
+        constraintY + Math.floor(index / 2) * 44,
+      );
+    });
+    context.fillStyle = "#73968c";
+    context.font = '600 18px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      "SOURCE BARS ARE UNCOMPRESSED · BUNDLE CAPS APPLY AFTER GZIP",
+      55,
+      1062,
+    );
+  });
+}
+
+function createWorkerComponentDisplay(THREE) {
+  const display = new THREE.Group();
+  display.name = "forkmesh-infrastructure-worker-components";
+  display.userData.officeFloorId = "infrastructure";
+  const frame = new THREE.Mesh(
+    new THREE.BoxGeometry(25.8, 15.8, 0.45),
+    makeMaterial(THREE, "#173b32", {
+      emissive: "#25654d",
+      emissiveIntensity: 0.4,
+      metalness: 0.58,
+      roughness: 0.32,
+    }),
+  );
+  frame.position.y = 8.2;
+  display.add(frame);
+  const face = new THREE.Mesh(
+    new THREE.PlaneGeometry(25.1, 15.1),
+    new THREE.MeshBasicMaterial({
+      map: workerComponentTexture(THREE, WORKER_FOOTPRINT),
+      toneMapped: false,
+    }),
+  );
+  face.name = "forkmesh-infrastructure-worker-components-face";
+  face.position.set(0, 8.2, 0.24);
+  display.add(face);
+  setShadows(display);
+  face.castShadow = false;
+  return display;
+}
+
 function engineeringDebugTexture(THREE, snapshot = {}) {
   const metrics = Array.isArray(snapshot.metrics) ? snapshot.metrics : [];
   const colorFor = (status) =>
@@ -7191,6 +8218,19 @@ function formatCapacityBytes(bytes) {
   return `${shown} ${units[step]}`;
 }
 
+function formatPlatformLimitBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value < 1000) return `${Math.round(value)} B`;
+  const units = ["KB", "MB", "GB", "TB"];
+  let scaled = value / 1000;
+  let index = 0;
+  while (scaled >= 1000 && index < units.length - 1) {
+    scaled /= 1000;
+    index += 1;
+  }
+  return `${scaled >= 10 ? scaled.toFixed(0) : scaled.toFixed(1)} ${units[index]}`;
+}
+
 function systemCapacityMetricPairs(record) {
   const usage =
     record?.usage && typeof record.usage === "object" ? record.usage : null;
@@ -7250,13 +8290,13 @@ function createLandscapePath(
   const dz = end[1] - start[1];
   const length = Math.max(0.1, Math.hypot(dx, dz));
   const path = new THREE.Mesh(
-    new THREE.BoxGeometry(width, 0.08, length),
+    new THREE.BoxGeometry(width, WORLD_PATH_HEIGHT, length),
     material,
   );
   path.name = name;
   path.position.set(
     (start[0] + end[0]) / 2,
-    0.065,
+    WORLD_PATH_CENTER_Y,
     (start[1] + end[1]) / 2,
   );
   path.rotation.y = Math.atan2(dx, dz);
@@ -7326,6 +8366,43 @@ function concreteBrickMaterial(THREE) {
     roughness: 0.96,
     metalness: 0.02,
   });
+}
+
+function districtGroundMaterial(THREE, kind) {
+  const repository = kind === "repositories";
+  return new THREE.MeshStandardMaterial({
+    // Repository portals now sit on a neutral concrete apron. The former
+    // blue-gray circle read as a second, disconnected repository district.
+    color: repository ? "#c1bbb0" : "#8a829b",
+    map: projectAssetTexture(
+      THREE,
+      "/world/assets/concrete-brick-path-v1.webp",
+      12,
+      12,
+    ),
+    roughness: 0.97,
+    metalness: 0.01,
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
+  });
+}
+
+function createDistrictGroundCircle(
+  THREE,
+  kind,
+  radius = DISTRICT_GROUND_RADIUS,
+) {
+  const ground = new THREE.Mesh(
+    new THREE.CircleGeometry(radius, 96),
+    districtGroundMaterial(THREE, kind),
+  );
+  ground.name = `forkmesh-${kind}-textured-ground`;
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = 0.012;
+  ground.receiveShadow = true;
+  ground.userData.ground = true;
+  return ground;
 }
 
 const START_HERE_STEPS = Object.freeze([
@@ -7415,52 +8492,49 @@ function bikeLaneMaterial(THREE) {
 function createTownLandscape(THREE) {
   const group = new THREE.Group();
   group.name = "forkmesh-town-mixed-landscape";
-  const plazaMaterial = makeMaterial(THREE, "#8a857a", {
-    roughness: 0.94,
-  });
-  const pathMaterial = makeMaterial(THREE, "#b29a76", {
-    roughness: 0.98,
-  });
-  pathMaterial.map = concreteBrickTexture(THREE);
-  pathMaterial.needsUpdate = true;
-  const pathEdgeMaterial = makeMaterial(THREE, "#625f59", {
-    roughness: 0.9,
-  });
-  const plaza = new THREE.Mesh(
-    new THREE.CircleGeometry(20, 64),
-    plazaMaterial,
+  const pathMaterial = concreteBrickMaterial(THREE);
+  const junctionWidth = OFFICE_BRIDGE_WIDTH;
+  const junctionHalfWidth = junctionWidth / 2;
+  const junction = new THREE.Mesh(
+    new THREE.BoxGeometry(
+      junctionWidth,
+      WORLD_PATH_HEIGHT,
+      junctionWidth,
+    ),
+    pathMaterial,
   );
-  plaza.name = "forkmesh-town-stone-plaza";
-  plaza.rotation.x = -Math.PI / 2;
-  plaza.position.y = 0.045;
-  plaza.receiveShadow = true;
-  plaza.userData.ground = true;
-  group.add(plaza);
-  const plazaEdge = new THREE.Mesh(
-    new THREE.TorusGeometry(20, 0.28, 8, 96),
-    pathEdgeMaterial,
-  );
-  plazaEdge.name = "forkmesh-town-plaza-edge";
-  plazaEdge.rotation.x = Math.PI / 2;
-  plazaEdge.position.y = 0.08;
-  group.add(plazaEdge);
+  junction.name = "forkmesh-town-path-junction";
+  junction.position.y = WORLD_PATH_CENTER_Y;
+  junction.receiveShadow = true;
+  junction.userData.ground = true;
+  group.add(junction);
 
   [
-    ["east-repositories", [16, 0], [88, 0], 8.4],
-    ["north-office", [0, -16], [0, OFFICE_BRIDGE_START_Z], OFFICE_BRIDGE_WIDTH],
-    ["west-billboards", [-16, 0], [-88, 0], 8.4],
-    ["south-members", [0, 16], [0, MEMBER_PATH_END_Z], 8.4],
+    [
+      "east-repositories",
+      [junctionHalfWidth, 0],
+      [REPOSITORY_CONNECTION_MIN_X, 0],
+      WORLD_PATH_WIDTH,
+    ],
+    [
+      "north-office",
+      [0, -junctionHalfWidth],
+      [0, OFFICE_BRIDGE_START_Z],
+      WORLD_PATH_WIDTH,
+    ],
+    [
+      "west-billboards",
+      [-junctionHalfWidth, 0],
+      [LEADERBOARD_CONNECTION_MAX_X, 0],
+      WORLD_PATH_WIDTH,
+    ],
+    [
+      "south-members",
+      [0, junctionHalfWidth],
+      [0, MEMBER_PATH_END_Z],
+      WORLD_PATH_WIDTH,
+    ],
   ].forEach(([id, start, end, width]) => {
-    const edge = createLandscapePath(
-      THREE,
-      `forkmesh-town-path-edge-${id}`,
-      start,
-      end,
-      width + 0.7,
-      pathEdgeMaterial,
-    );
-    edge.position.y = 0.035;
-    group.add(edge);
     group.add(
       createLandscapePath(
         THREE,
@@ -7528,6 +8602,41 @@ function rewardPoolRimTexture(THREE) {
       )}px "ForkMesh Mono", ui-monospace, monospace`;
       context.fillText("◎", centre + slot / 2, height / 2 + 4);
     }
+  });
+}
+
+// The mirror tally that hangs over the reward pool's orb. The cabinets are
+// already arranged in rings around this basin, so the headline number belongs
+// above them rather than on yet another sign: how many mirror nodes the signed
+// catalog currently lists, and how many of those are answering right now.
+function rewardPoolMirrorCountTexture(THREE, total, online) {
+  const count = Math.max(0, Math.min(9999, Math.round(Number(total) || 0)));
+  const live = Math.max(0, Math.min(count, Math.round(Number(online) || 0)));
+  return canvasTexture(THREE, 512, 256, (context) => {
+    context.clearRect(0, 0, 512, 256);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    const glow = context.createLinearGradient(0, 26, 0, 150);
+    glow.addColorStop(0, "#fff4d2");
+    glow.addColorStop(0.55, "#f7c96b");
+    glow.addColorStop(1, "#ffae3f");
+    context.shadowColor = "rgba(255, 174, 63, 0.9)";
+    context.shadowBlur = 34;
+    context.fillStyle = glow;
+    context.font = '700 142px "ForkMesh Favorit", system-ui, sans-serif';
+    context.fillText(live.toLocaleString("en-US"), 256, 92);
+    context.shadowBlur = 18;
+    context.fillStyle = "#9ef7c6";
+    context.font = '700 36px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("ONLINE", 256, 168);
+    context.shadowBlur = 12;
+    context.fillStyle = "#ffd479";
+    context.font = '500 30px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText(
+      `${count.toLocaleString("en-US")} TOTAL`,
+      256,
+      216,
+    );
   });
 }
 
@@ -7726,7 +8835,7 @@ function createRewardTreasurySign(THREE) {
     }),
   );
   nodeButton.name = "reward-treasury-start-node-button";
-  nodeButton.position.set(1.68, 2.18, 0);
+  nodeButton.position.set(1.68, 1.66, 0);
   nodeButton.userData.interactive = "start-node-download";
   sign.add(nodeButton);
   for (const facing of [1, -1]) {
@@ -7746,6 +8855,37 @@ function createRewardTreasurySign(THREE) {
     face.rotation.y = facing > 0 ? 0 : Math.PI;
     face.userData.interactive = "start-node-download";
     nodeButton.add(face);
+  }
+  const mirrorButton = new THREE.Mesh(
+    new THREE.BoxGeometry(1.82, 0.92, 0.2),
+    makeMaterial(THREE, "#7849d6", {
+      emissive: "#4b22a3",
+      emissiveIntensity: 0.62,
+      metalness: 0.18,
+      roughness: 0.36,
+    }),
+  );
+  mirrorButton.name = "reward-treasury-launch-mirror-button";
+  mirrorButton.position.set(1.86, 2.82, 0);
+  mirrorButton.userData.interactive = "launch-vultr-mirror";
+  sign.add(mirrorButton);
+  for (const facing of [1, -1]) {
+    const face = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.68, 0.78),
+      new THREE.MeshBasicMaterial({
+        map: wordTexture(
+          THREE,
+          "LAUNCH MIRROR",
+          "VULTR  ↗",
+          "#d8c7ff",
+        ),
+        toneMapped: false,
+      }),
+    );
+    face.position.set(0, 0, facing * 0.105);
+    face.rotation.y = facing > 0 ? 0 : Math.PI;
+    face.userData.interactive = "launch-vultr-mirror";
+    mirrorButton.add(face);
   }
   sign.userData.treasurySignature = "";
   return sign;
@@ -7767,6 +8907,16 @@ function applyRewardTreasury(THREE, sign, state) {
 
 function createFountain(THREE, position, interactive, animated) {
   const group = new THREE.Group();
+  const nodeYardConcrete = new THREE.Mesh(
+    new THREE.CylinderGeometry(1, 1, 0.14, 72),
+    makeMaterial(THREE, "#b9b9b0", { roughness: 0.91 }),
+  );
+  nodeYardConcrete.name = "reward-node-concrete-plaza";
+  nodeYardConcrete.position.y = 0.07;
+  nodeYardConcrete.scale.set(14, 1, 14);
+  nodeYardConcrete.receiveShadow = true;
+  group.add(nodeYardConcrete);
+  group.userData.nodeYardConcrete = nodeYardConcrete;
   const darkStone = makeMaterial(THREE, "#1d3b31", { roughness: 0.74 });
   const water = makeMaterial(THREE, "#48d9b1", {
     roughness: 0.2,
@@ -7800,13 +8950,43 @@ function createFountain(THREE, position, interactive, animated) {
   const island = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.65, 1.1, 28), darkStone);
   island.position.y = 1.05;
   group.add(island);
-  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.34, 3.4, 16), sunMat);
-  stem.position.y = 3.05;
-  group.add(stem);
   const sun = new THREE.Mesh(new THREE.IcosahedronGeometry(1.15, 2), sunMat);
-  sun.position.y = 5.15;
+  sun.name = "reward-pool-fireball-sun";
+  sun.position.y = 6.7;
   sun.userData.baseY = sun.position.y;
   group.add(sun);
+  const fireShell = new THREE.Mesh(
+    new THREE.IcosahedronGeometry(1.58, 2),
+    new THREE.MeshBasicMaterial({
+      color: "#ff7a1a",
+      transparent: true,
+      opacity: 0.22,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  fireShell.name = "reward-pool-fireball-corona";
+  fireShell.position.copy(sun.position);
+  group.add(fireShell);
+
+  // Hidden until the first signed catalog lands, so the pool never flashes a
+  // placeholder "0 MIRRORS" before the node payload arrives.
+  const mirrorCountSprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  mirrorCountSprite.name = "reward-pool-mirror-count";
+  mirrorCountSprite.position.y = 6.7;
+  mirrorCountSprite.scale.set(3.6, 1.8, 1);
+  mirrorCountSprite.renderOrder = 12;
+  mirrorCountSprite.visible = false;
+  group.add(mirrorCountSprite);
+  group.userData.mirrorCountSprite = mirrorCountSprite;
 
   for (const radius of [1.75, 2.65, 3.55]) {
     const ring = new THREE.Mesh(
@@ -7821,13 +9001,13 @@ function createFountain(THREE, position, interactive, animated) {
     group.add(ring);
   }
 
-  const particleCount = 190;
+  const particleCount = 230;
   const particlePositions = new Float32Array(particleCount * 3);
   const particleSeeds = [];
   for (let index = 0; index < particleCount; index += 1) {
     const angle = Math.random() * Math.PI * 2;
-    const radius = 0.35 + Math.random() * 3.7;
-    const height = 0.65 + Math.random() * 4.4;
+    const radius = 0.24 + Math.random() * 1.95;
+    const height = 4.8 + Math.random() * 3.6;
     particlePositions[index * 3] = Math.cos(angle) * radius;
     particlePositions[index * 3 + 1] = height;
     particlePositions[index * 3 + 2] = Math.sin(angle) * radius;
@@ -7848,13 +9028,14 @@ function createFountain(THREE, position, interactive, animated) {
   group.add(particles);
 
   const light = new THREE.PointLight("#ffd66e", 5.5, 24, 1.7);
-  light.position.y = 5.3;
+  light.position.y = 6.8;
   group.add(light);
 
   const treasurySign = createRewardTreasurySign(THREE);
-  // The Members Circle sits due south (+Z). Put the SOL board at the front
-  // midpoint of the first 10.8-unit node ring and face it toward those users.
-  treasurySign.position.set(0, 0, 10.8);
+  // The SOL board now rises from the exact centre of the global reward-pool
+  // pedestal. Its raised base clears the pedestal rim while leaving a visible
+  // gap beneath the fireball and its live online/total readout.
+  treasurySign.position.set(0, 1, 0);
   treasurySign.rotation.y = 0;
   group.add(treasurySign);
   group.userData.treasurySign = treasurySign;
@@ -7872,6 +9053,11 @@ function createFountain(THREE, position, interactive, animated) {
     sun.rotation.y = time * 0.00045;
     sun.rotation.x = Math.sin(time * 0.0004) * 0.12;
     sun.position.y = sun.userData.baseY + Math.sin(time * 0.0012) * 0.16;
+    fireShell.position.copy(sun.position);
+    fireShell.rotation.y = -time * 0.00075;
+    fireShell.rotation.z = time * 0.00052;
+    const coronaPulse = 0.94 + Math.sin(time * 0.006) * 0.12;
+    fireShell.scale.setScalar(coronaPulse);
     const positions = particles.geometry.attributes.position.array;
     for (let index = 0; index < particleCount; index += 1) {
       const seed = particleSeeds[index];
@@ -7879,7 +9065,7 @@ function createFountain(THREE, position, interactive, animated) {
       const pulse = 0.78 + Math.sin(phase * 2.3 + index) * 0.18;
       positions[index * 3] = Math.cos(seed.angle + phase) * seed.radius * pulse;
       positions[index * 3 + 1] =
-        0.75 + ((seed.height + time * 0.00065 * seed.speed) % 4.5);
+        4.75 + ((seed.height + time * 0.00082 * seed.speed) % 3.8);
       positions[index * 3 + 2] = Math.sin(seed.angle + phase) * seed.radius * pulse;
     }
     particles.geometry.attributes.position.needsUpdate = true;
@@ -8874,11 +10060,31 @@ function repositoryFollowerFollowedLabel(followedAt) {
   return `FOLLOWING SINCE ${date.toISOString().slice(0, 10)}`;
 }
 
+function canvasReadableImageURL(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 120_000) return "";
+  try {
+    const url = new URL(raw, window.location.href);
+    // Canvas/WebGL may only sample same-origin or embedded images unless the
+    // remote response explicitly opts into CORS. Mastodon media commonly does
+    // not, and browsers provide no preflight-free way to discover that without
+    // logging a CORS failure. Keep the generated fallback for those URLs.
+    if (
+      url.origin !== window.location.origin &&
+      url.protocol !== "data:" &&
+      url.protocol !== "blob:"
+    ) {
+      return "";
+    }
+    return url.href;
+  } catch (_) {
+    return "";
+  }
+}
+
 function loadRepositoryFollowerAvatar(url, onLoad) {
-  // The follower's published avatar, fetched anonymously (no cookies, no
-  // referrer) and only used once it decodes. A server without CORS headers
-  // simply fails here and the card keeps its generated initials plate.
-  if (!url) return;
+  const readableURL = canvasReadableImageURL(url);
+  if (!readableURL) return;
   const image = new Image();
   image.crossOrigin = "anonymous";
   image.referrerPolicy = "no-referrer";
@@ -8887,7 +10093,7 @@ function loadRepositoryFollowerAvatar(url, onLoad) {
     if (image.naturalWidth > 0 && image.naturalHeight > 0) onLoad(image);
   };
   image.onerror = () => {};
-  image.src = url;
+  image.src = readableURL;
 }
 
 function drawRepositoryFollowerAvatar(
@@ -9408,6 +10614,15 @@ function repositoryWedgeGeometry(
 
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
+  // Match the concrete apron to the live repository ring instead of leaving
+  // an oversized blue foundation behind at the former landmark position.
+  group.add(
+    createDistrictGroundCircle(
+      THREE,
+      "repositories",
+      REPOSITORY_GROUND_RADIUS,
+    ),
+  );
   const ringMaterial = makeMaterial(THREE, "#77d9ff", {
     metalness: 0.2,
     roughness: 0.28,
@@ -9497,7 +10712,7 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   // same secure import flow with that provider preselected.
   const importKiosk = new THREE.Group();
   importKiosk.name = "repository-import-kiosk";
-  importKiosk.position.set(0, 0, 5.2);
+  importKiosk.position.set(0, 0, 0);
   const kioskBase = new THREE.Mesh(
     new THREE.CylinderGeometry(2.15, 2.35, 0.42, 8),
     makeMaterial(THREE, "#102a32", {
@@ -10245,6 +11460,43 @@ function worldGeneralChatTexture(THREE, messages = []) {
       context.lineTo(1492, y + 61);
       context.stroke();
     });
+  });
+}
+
+function worldDiscordBoardTexture(THREE) {
+  return canvasTexture(THREE, 1536, 1024, (context) => {
+    context.fillStyle = "#0d1117";
+    context.fillRect(0, 0, 1536, 1024);
+    context.strokeStyle = "#5865f2";
+    context.lineWidth = 14;
+    context.strokeRect(10, 10, 1516, 1004);
+    context.fillStyle = "#f0f6fc";
+    context.font = '900 70px "ForkMesh Mono", ui-monospace, monospace';
+    context.textAlign = "center";
+    context.fillText("DISCORD BRIDGE", 768, 150);
+    context.fillStyle = "#a5b4fc";
+    context.font = '800 38px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("PUBLIC ORGANIZATION CHANNELS", 768, 245);
+    context.strokeStyle = "rgba(88,101,242,0.52)";
+    context.lineWidth = 3;
+    context.beginPath();
+    context.moveTo(160, 300);
+    context.lineTo(1376, 300);
+    context.stroke();
+    context.textAlign = "left";
+    context.fillStyle = "#c9d1d9";
+    context.font = '700 34px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("▸ OWNER-VERIFIED SERVER", 220, 430);
+    context.fillText("▸ SELECTED PUBLIC CHANNELS ONLY", 220, 505);
+    context.fillText("▸ MANUAL REFRESH · NO BACKGROUND RELAY", 220, 580);
+    context.fillText("▸ MENTIONS DISABLED", 220, 655);
+    context.textAlign = "center";
+    context.fillStyle = "#7ee787";
+    context.font = '900 48px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("CLICK TO OPEN CONNECTOR", 768, 810);
+    context.fillStyle = "#8c959f";
+    context.font = '650 25px "ForkMesh Mono", ui-monospace, monospace';
+    context.fillText("CREDENTIALS STAY IN THE WORKER SECRET STORE", 768, 900);
   });
 }
 
@@ -11255,8 +12507,8 @@ const SYSTEM_STATUS_COLORS = Object.freeze({
   operational: "#198a43",
   degraded: "#a66f00",
   down: "#d92d3a",
-  unknown: "#d92d3a",
-  future: "#f5f5f7",
+  unknown: "#8c959f",
+  future: "#dedfe4",
 });
 
 function systemStatusColor(status) {
@@ -11345,7 +12597,7 @@ function systemStatusBannerTexture(THREE, payload = null) {
       context.fillText("24h", 1100, top + Math.max(29, 61 * scale));
       context.fillText("30d", 1282, top + Math.max(29, 61 * scale));
       context.fillText(
-        "coverage", 1452, top + Math.max(29, 61 * scale));
+        "24h data", 1452, top + Math.max(29, 61 * scale));
       context.textAlign = "left";
 
       const days = Array.isArray(system.days) ? system.days.slice(-30) : [];
@@ -11430,13 +12682,21 @@ function systemStatusBannerTexture(THREE, payload = null) {
       });
     });
 
-    context.fillStyle = "#686b74";
     context.font = '600 24px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      "● OPERATIONAL   ● DEGRADED   ● DOWN   ● NO DATA",
-      72,
-      1992,
-    );
+    let legendX = 72;
+    [
+      ["operational", "OPERATIONAL"],
+      ["degraded", "DEGRADED"],
+      ["down", "DOWN"],
+      ["unknown", "NO DATA"],
+    ].forEach(([state, label]) => {
+      context.fillStyle = systemStatusColor(state);
+      context.fillText("●", legendX, 1992);
+      legendX += context.measureText("● ").width;
+      context.fillStyle = "#686b74";
+      context.fillText(label, legendX, 1992);
+      legendX += context.measureText(`${label}   `).width;
+    });
     context.strokeStyle = STATUS_BANNER_OPTIONS.accent;
     context.lineWidth = 16;
     context.strokeRect(12, 12, 1512, 2024);
@@ -13847,6 +15107,11 @@ function updatePlayerLabel(element, identity) {
     identity?.statusNote,
   );
   const name = String(identity?.name || "visitor").slice(0, 32);
+  const guestLabel =
+    String(identity?.accountStatus || "Guest") === "Guest" ||
+    /^World Guest\b|^Guest(?:\s|$)/i.test(name);
+  element.hidden = guestLabel;
+  element.setAttribute("aria-hidden", String(guestLabel));
   const nameCopy = document.createElement("span");
   nameCopy.className = "world-player-label-name";
   nameCopy.textContent = name;
@@ -14007,15 +15272,22 @@ export function createWorldScene({
   onOfficeRooftopLaptopSelect = () => {},
   onWorldBulletinSelect = () => {},
   onWorldGeneralChatSelect = () => {},
+  onWorldDiscordBoardSelect = () => {},
   onMastodonBoardSelect = () => {},
   onMastodonOpenLink = () => {},
   onReferralBoardSelect = () => {},
   onSiteReferrerOpen = () => {},
+  onInstanceBoothSelect = () => {},
+  onLaunchMirrorSelect = () => {},
+  onDrinkWater = () => {},
+  onFederatedWorldTravel = () => {},
   onLobbyLinkKioskSelect = () => {},
   onLobbyFeedbackKioskSelect = () => {},
+  onLobbyTaskBidKioskSelect = () => {},
   onSystemCapacityTableSelect = () => {},
   onInfrastructureConsoleToggle = () => {},
   onBuildBoardNearby = () => {},
+  onBuildVideoSelect = () => {},
   onBuildBoardReorder = () => {},
   onBuildIssueAssign = () => {},
   onBuildSendQa = () => {},
@@ -14035,6 +15307,7 @@ export function createWorldScene({
   onFediverseProfile = () => {},
   onFediverseFollow = () => {},
   onAvatarSelect = () => {},
+  onUnverifiedAvatarDelete = () => {},
   onAvatarWalletAction = () => {},
   onLayoutObjectMoved = () => {},
   onLayoutObjectSelect = () => {},
@@ -14043,8 +15316,11 @@ export function createWorldScene({
   onPlayForkmeshSong = () => {},
   onCreateRepository = () => {},
   onStartNodeDownload = () => {},
+  onRewardBoardHover = () => {},
   onSwingRide = () => {},
   onCameraMode = () => {},
+  onJetpackChange = () => {},
+  onGymState = () => {},
   onStartHereSelect = () => {},
 }) {
   // Phones frequently expose a high-density screen to a comparatively small
@@ -14084,6 +15360,11 @@ export function createWorldScene({
   renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = !compactRenderer;
   renderer.shadowMap.type = THREE.PCFShadowMap;
+  // The sun and almost all shadow casters are static. Rebuilding the complete
+  // atlas on every display frame nearly doubles town-square draw calls, so
+  // refresh it at a bounded cadence while retaining live shadows.
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = !compactRenderer;
   renderer.domElement.className = "world-canvas";
   renderer.domElement.setAttribute("aria-hidden", "true");
   // The canvas is purely visual; leaving a tabindex (even -1) lets a pointer
@@ -14094,11 +15375,33 @@ export function createWorldScene({
   renderer.domElement.dataset.cameraMode = "third-person";
   renderer.domElement.dataset.dragging = "false";
   container.appendChild(renderer.domElement);
-  const handleContextLost = () => {
+  const handleContextLost = (event) => {
+    // preventDefault opts into WebGL's restoration path. Without it, a
+    // transient mobile GPU reset can leave partially redrawn "scratchy"
+    // geometry in place until the whole page is reloaded.
+    event.preventDefault();
     onRendererStateChange("lost");
   };
   const handleContextRestored = () => {
+    renderer.resetState();
+    renderer.info.reset();
+    renderer.shadowMap.needsUpdate = renderer.shadowMap.enabled;
+    scene.traverse((object) => {
+      if (!object.isMesh) return;
+      const materials = Array.isArray(object.material)
+        ? object.material
+        : [object.material];
+      materials.filter(Boolean).forEach((material) => {
+        material.needsUpdate = true;
+        if (material.map) material.map.needsUpdate = true;
+      });
+    });
     resize();
+    running = true;
+    lastFrame = performance.now();
+    lastVisualAnimationAt = lastFrame;
+    nextVisualAnimationAt = 0;
+    renderer.setAnimationLoop(animate);
     onRendererStateChange("restored");
   };
   renderer.domElement.addEventListener(
@@ -14115,10 +15418,10 @@ export function createWorldScene({
   const sun = new THREE.DirectionalLight("#fff1c4", 3.4);
   sun.position.set(-24, 35, 18);
   sun.castShadow = !compactRenderer;
-  // A 2k shadow map is disproportionately costly while the player is moving.
-  // 1k keeps the soft, low-poly look while leaving far more frame budget for
-  // input and world animation.
-  sun.shadow.mapSize.set(1024, 1024);
+  // The World contains hundreds of casters. A 1024px atlas rebuilt twice per
+  // second created the periodic 150–600ms renderer stalls seen on integrated
+  // GPUs; a soft 512px map is enough for this wide outdoor light.
+  sun.shadow.mapSize.set(512, 512);
   sun.shadow.camera.left = -90;
   sun.shadow.camera.right = 90;
   sun.shadow.camera.top = 90;
@@ -14127,6 +15430,15 @@ export function createWorldScene({
   sun.shadow.camera.far = 220;
   sun.shadow.bias = -0.0003;
   scene.add(sun);
+  scene.add(sun.target);
+  const moon = new THREE.DirectionalLight("#c8eaff", 0.82);
+  moon.name = "forkmesh-world-moonlight";
+  moon.position.set(24, 48, -18);
+  // The sun owns the one shadow map. Moonlight is a cheap cool fill, so a
+  // bright night does not double the scene's shadow-rendering cost.
+  moon.castShadow = false;
+  scene.add(moon);
+  scene.add(moon.target);
 
   const world = new THREE.Group();
   scene.add(world);
@@ -14314,6 +15626,49 @@ export function createWorldScene({
   interactive.push(worldGeneralChatFrame, worldGeneralChatFace);
   world.add(worldGeneralChatBoard);
   registerMovableObject("world-general-chat-board", worldGeneralChatBoard);
+
+  const worldDiscordBoard = new THREE.Group();
+  worldDiscordBoard.name = "forkmesh-world-discord-board";
+  const discordBoardBase = new THREE.Mesh(
+    new THREE.BoxGeometry(7.9, 0.26, 1.5),
+    makeMaterial(THREE, "#161b22", { roughness: 0.8 }),
+  );
+  discordBoardBase.position.y = 0.13;
+  worldDiscordBoard.add(discordBoardBase);
+  for (const x of [-3.35, 3.35]) {
+    const post = new THREE.Mesh(
+      new THREE.BoxGeometry(0.18, 6.5, 0.18),
+      makeMaterial(THREE, "#5865f2", {
+        metalness: 0.28,
+        roughness: 0.48,
+      }),
+    );
+    post.position.set(x, 3.25, 0);
+    worldDiscordBoard.add(post);
+  }
+  const worldDiscordFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(7.55, 5.1, 0.24),
+    makeMaterial(THREE, "#202252", {
+      metalness: 0.32,
+      roughness: 0.46,
+    }),
+  );
+  worldDiscordFrame.position.y = BULLETIN_FACE_CENTER_Y;
+  worldDiscordFrame.userData.interactive = "world-discord-board";
+  const worldDiscordFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(7.2, 4.8),
+    new THREE.MeshBasicMaterial({
+      map: worldDiscordBoardTexture(THREE),
+      toneMapped: false,
+    }),
+  );
+  worldDiscordFace.name = "forkmesh-world-discord-board-face";
+  worldDiscordFace.position.set(0, BULLETIN_FACE_CENTER_Y, 0.14);
+  worldDiscordFace.userData.interactive = "world-discord-board";
+  worldDiscordBoard.add(worldDiscordFrame, worldDiscordFace);
+  interactive.push(worldDiscordFrame, worldDiscordFace);
+  world.add(worldDiscordBoard);
+  registerMovableObject("world-discord-board", worldDiscordBoard);
 
   // One uninterrupted city park slab sits under every district, path, and
   // building. Satellite circles remain semantic layout regions only; they no
@@ -14585,15 +15940,17 @@ export function createWorldScene({
   }
   addWorldBench({
     name: "forkmesh-swing-park-bench-west",
-    x: -27,
-    z: 13,
-    heading: Math.PI * 0.72,
+    x: 46,
+    z: -129,
+    heading: Math.PI,
+    activity: "resting beside the recreation garden",
   });
   addWorldBench({
     name: "forkmesh-swing-park-bench-east",
-    x: -11,
-    z: 16,
-    heading: -Math.PI * 0.72,
+    x: 46,
+    z: -145,
+    heading: 0,
+    activity: "resting beside the recreation garden",
   });
   addWorldBench({
     name: "forkmesh-beach-bench",
@@ -14654,6 +16011,91 @@ export function createWorldScene({
   }
   addBeachCar();
 
+  // One lightweight, person-sized quadcopter waits beside the Town Square.
+  // It is deliberately built from a handful of low-segment primitives: the
+  // rotors remain legible nearby without adding meaningful cost to aerial or
+  // map-scale views.
+  const quadcopterStates = [];
+  function addWorldQuadcopter() {
+    const quadcopter = new THREE.Group();
+    quadcopter.name = "forkmesh-world-quadcopter";
+    const frameMaterial = makeMaterial(THREE, "#1f6feb", {
+      metalness: 0.62,
+      roughness: 0.28,
+    });
+    const darkMaterial = makeMaterial(THREE, "#161b22", {
+      metalness: 0.42,
+      roughness: 0.5,
+    });
+    const lightMaterial = makeMaterial(THREE, "#79c0ff", {
+      emissive: "#1f6feb",
+      emissiveIntensity: 1.15,
+      roughness: 0.22,
+    });
+    const body = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.25, 1.45, 0.58, 12),
+      frameMaterial,
+    );
+    body.position.y = 0.52;
+    quadcopter.add(body);
+    const seat = new THREE.Mesh(
+      new THREE.BoxGeometry(0.82, 0.18, 0.92),
+      darkMaterial,
+    );
+    seat.position.set(0, 0.94, 0);
+    quadcopter.add(seat);
+    const rotors = [];
+    for (const [x, z] of [
+      [-2.25, -2.25],
+      [2.25, -2.25],
+      [-2.25, 2.25],
+      [2.25, 2.25],
+    ]) {
+      const arm = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 0.14, 3.05),
+        frameMaterial,
+      );
+      arm.position.set(x * 0.5, 0.62, z * 0.5);
+      arm.rotation.y = Math.atan2(x, z);
+      quadcopter.add(arm);
+      const motor = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.32, 0.38, 0.34, 10),
+        darkMaterial,
+      );
+      motor.position.set(x, 0.72, z);
+      quadcopter.add(motor);
+      const rotor = new THREE.Mesh(
+        new THREE.BoxGeometry(3.1, 0.045, 0.16),
+        lightMaterial,
+      );
+      rotor.position.set(x, 0.96, z);
+      rotor.userData.quadcopterIndex = 0;
+      quadcopter.add(rotor);
+      rotors.push(rotor);
+    }
+    const landingLight = new THREE.Mesh(
+      new THREE.SphereGeometry(0.22, 10, 7),
+      lightMaterial,
+    );
+    landingLight.position.set(0, 0.34, -1.32);
+    quadcopter.add(landingLight);
+    quadcopter.position.set(-34, 0.24, -42);
+    quadcopter.traverse((child) => {
+      if (!child.isMesh) return;
+      child.userData.quadcopterIndex = 0;
+      interactive.push(child);
+    });
+    setShadows(quadcopter);
+    world.add(quadcopter);
+    quadcopterStates.push({
+      quadcopter,
+      rotors,
+      seat,
+      moving: false,
+    });
+  }
+  addWorldQuadcopter();
+
   // Every repository imported from an external provider lives on its own
   // district, whether it is already hosted by a mirror or remains an external
   // stub. Broad earth connects it to town; the legacy "bridge" group is now a
@@ -14668,11 +16110,15 @@ export function createWorldScene({
   const repositoryConnectionLength =
     REPOSITORY_CONNECTION_MAX_X - REPOSITORY_CONNECTION_MIN_X;
   const repositoryPromenade = new THREE.Mesh(
-    new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2),
+    new THREE.BoxGeometry(
+      repositoryConnectionLength,
+      WORLD_PATH_HEIGHT,
+      WORLD_PATH_WIDTH,
+    ),
     concreteBrickMaterial(THREE),
   );
   repositoryPromenade.name = "hosted-repository-promenade";
-  repositoryPromenade.position.y = 0.19;
+  repositoryPromenade.position.y = WORLD_PATH_CENTER_Y;
   repositoryPromenade.receiveShadow = true;
   repositoryPromenade.userData.ground = true;
   repositoryBridge.add(repositoryPromenade);
@@ -14691,46 +16137,26 @@ export function createWorldScene({
   const leaderboardConnectionLength =
     LEADERBOARD_CONNECTION_MAX_X - LEADERBOARD_CONNECTION_MIN_X;
   const leaderboardPromenade = new THREE.Mesh(
-    new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2),
+    new THREE.BoxGeometry(
+      leaderboardConnectionLength,
+      WORLD_PATH_HEIGHT,
+      WORLD_PATH_WIDTH,
+    ),
     concreteBrickMaterial(THREE),
   );
   leaderboardPromenade.name = "forkmesh-leaderboard-promenade";
-  leaderboardPromenade.position.y = 0.19;
+  leaderboardPromenade.position.y = WORLD_PATH_CENTER_Y;
   leaderboardPromenade.receiveShadow = true;
   leaderboardPromenade.userData.ground = true;
   leaderboardConnection.add(leaderboardPromenade);
-  for (const z of [-4.3, 4.3]) {
-    const guide = new THREE.Mesh(
-      new THREE.BoxGeometry(leaderboardConnectionLength - 1, 0.1, 0.14),
-      makeMaterial(THREE, "#9ef7c6", {
-        emissive: "#38ca8d",
-        emissiveIntensity: 1.7,
-        metalness: 0.25,
-        roughness: 0.25,
-      }),
-    );
-    guide.position.set(0, 0.28, z);
-    leaderboardConnection.add(guide);
-  }
-  for (const x of [-10, -5, 0, 5, 10]) {
-    for (const z of [-5.6, 5.6]) {
-      const beacon = new THREE.Mesh(
-        new THREE.SphereGeometry(0.2, 10, 8),
-        makeMaterial(THREE, "#77d9ff", {
-          emissive: "#42bce2",
-          emissiveIntensity: 2,
-          roughness: 0.2,
-        }),
-      );
-      beacon.position.set(x, 0.72, z);
-      leaderboardConnection.add(beacon);
-    }
-  }
   world.add(leaderboardConnection);
 
   const leaderboardDistrict = new THREE.Group();
   leaderboardDistrict.name = "forkmesh-leaderboard-district";
   leaderboardDistrict.position.set(LEADERBOARD_ISLAND_CENTER_X, 0, 0);
+  leaderboardDistrict.add(
+    createDistrictGroundCircle(THREE, "leaderboards"),
+  );
   const leaderboardBeacon = new THREE.Mesh(
     new THREE.CylinderGeometry(3.1, 4.2, 0.7, 24),
     makeMaterial(THREE, "#173c35", {
@@ -14802,6 +16228,7 @@ export function createWorldScene({
     worldGeneralChatBoard,
     "world-general-chat-board",
   );
+  placeBillboardOnIsland(worldDiscordBoard, "world-discord-board");
 
   // Registered members and their named campfire benches have a dedicated
   // southern garden. It is the fourth cardinal district, leaving the live
@@ -14809,50 +16236,9 @@ export function createWorldScene({
   // The south route used to be two overlapping slabs: the town path stopped
   // at z=88 while a second promenade began at z=78. Besides the visible color
   // seam, their different heights caused the large doubled rectangle seen
-  // from above. createTownLandscape now owns one continuous path all the way
-  // to the north edge of the Members Circle.
-  const memberPathSign = new THREE.Group();
-  memberPathSign.name = "forkmesh-members-circle-path-sign";
-  memberPathSign.position.set(6.6, 0, MEMBER_PATH_END_Z - 1.2);
-  memberPathSign.rotation.y = Math.PI;
-  const memberPathSignBacking = new THREE.Mesh(
-    new THREE.BoxGeometry(5.8, 2.55, 0.24),
-    makeMaterial(THREE, "#161b22", {
-      metalness: 0.18,
-      roughness: 0.58,
-    }),
-  );
-  memberPathSignBacking.position.y = 2.35;
-  memberPathSign.add(memberPathSignBacking);
-  const memberPathSignFace = new THREE.Mesh(
-    new THREE.PlaneGeometry(5.5, 2.25),
-    new THREE.MeshBasicMaterial({
-      map: wordTexture(
-        THREE,
-        "🔥  MEMBERS CIRCLE",
-        "members · followers · activity",
-        "#58a6ff",
-      ),
-      transparent: true,
-      toneMapped: false,
-    }),
-  );
-  memberPathSignFace.name = "forkmesh-members-circle-path-sign-face";
-  memberPathSignFace.position.set(0, 2.35, 0.13);
-  memberPathSign.add(memberPathSignFace);
-  for (const x of [-2.25, 2.25]) {
-    const post = new THREE.Mesh(
-      new THREE.BoxGeometry(0.2, 2.35, 0.2),
-      makeMaterial(THREE, "#30363d", {
-        metalness: 0.35,
-        roughness: 0.5,
-      }),
-    );
-    post.position.set(x, 1.17, 0);
-    memberPathSign.add(post);
-  }
-  setShadows(memberPathSign);
-  world.add(memberPathSign);
+  // from above. createTownLandscape now owns one continuous path beneath the
+  // circle dirt. The former entrance sign crowded that route, so the clearing
+  // and its much larger member total now provide the wayfinding on their own.
 
   // The first object encountered when walking from the Members Circle toward
   // the centered nodes is a persistent orientation board. Only bounded step
@@ -14876,8 +16262,10 @@ export function createWorldScene({
   ]);
   const startHereBoard = new THREE.Group();
   startHereBoard.name = "forkmesh-start-here-map";
-  startHereBoard.position.set(-15, 0, 96);
-  startHereBoard.rotation.y = 0;
+  // Keep the large orientation map on the far side of even the maximum-sized
+  // bench ring, facing back toward the fire and arriving visitors.
+  startHereBoard.position.set(0, 0, MEMBER_ISLAND_CENTER_Z + 38);
+  startHereBoard.rotation.y = Math.PI;
   const startHereBacking = new THREE.Mesh(
     new THREE.BoxGeometry(16.4, 10.5, 0.34),
     makeMaterial(THREE, "#161b22", {
@@ -15049,12 +16437,9 @@ export function createWorldScene({
     );
     landmarkObjects.set(landmark.id, object);
     world.add(object);
-    // The tower, island, bridge, admission boundary, and floor colliders form
-    // one structural campus. Letting the layout editor move only the tower
-    // would strand its entrance and is therefore deliberately unsupported.
-    if (landmark.id === "repositories") {
-      registerMovableObject("landmark-" + landmark.id, object);
-    }
+    // Repository portals and their import kiosk form one structural district.
+    // Keep its shared origin fixed so a stale saved landmark transform cannot
+    // split the kiosk and apron away from the live portal ring.
   });
   // Decorative landscaping lives on the Office island but owns no walkable
   // surface or collision metadata. The doorway and its full bridge-width
@@ -15192,6 +16577,9 @@ export function createWorldScene({
     { group: redditBanner, options: REDDIT_BANNER_OPTIONS },
     { group: blogBanner, options: BLOG_BANNER_OPTIONS },
   ];
+  // Status has its own snapshot endpoint, so it must not participate in the
+  // social-feed repaint loop. It does share the lightweight stand timers.
+  const socialBannerTimerRecords = [...socialBanners, statusBannerRecord];
 
   // Post artwork (the blog feed's item images) is a same-origin /assets URL:
   // it only reaches the board texture once it decodes CORS-clean, and its
@@ -15290,15 +16678,9 @@ export function createWorldScene({
       );
       plate.material.needsUpdate = true;
     }
-    const dial = statusBanner.getObjectByName(
-      "forkmesh-status-banner-countdown");
-    if (dial?.material) {
-      const remaining = 60_000 - (Date.now() % 60_000);
-      dial.material.map?.dispose?.();
-      dial.material.map = mastodonCountdownTexture(
-        THREE, remaining, 60_000, false);
-      dial.material.needsUpdate = true;
-    }
+    // The shell's one-second status tick owns the countdown plate. Keeping it
+    // out of this snapshot-only repaint prevents the MM:SS clock from freezing
+    // at whichever second the minute-level HTTP response happened to arrive.
   }
 
   // The stand plates under each banner: a per-second countdown to the next
@@ -15307,7 +16689,7 @@ export function createWorldScene({
   // never rebuilds a texture.
   function updateSocialBannerTimers(payload) {
     let repainted = false;
-    for (const record of socialBanners) {
+    for (const record of socialBannerTimerRecords) {
       const timers = payload?.[record.options.id];
       if (!timers || typeof timers !== "object") continue;
       const total = Math.max(
@@ -15326,6 +16708,8 @@ export function createWorldScene({
           dial.material.map = mastodonCountdownTexture(
             THREE, remaining, total, loading);
           dial.material.needsUpdate = true;
+          dial.userData.countdownSeconds = Math.ceil(remaining / 1000);
+          dial.userData.countdownLoading = loading;
           repainted = true;
         }
       }
@@ -15383,39 +16767,68 @@ export function createWorldScene({
   );
   campfireGround.name = "campfire-member-circle-dirt";
   campfireGround.rotation.x = -Math.PI / 2;
-  campfireGround.position.y = 0.025;
+  // The promenade surface is 0.105 high. Lift the dirt just above it so the
+  // extended pavement is physically present but disappears beneath the circle.
+  campfireGround.position.y = WORLD_PATH_SURFACE_Y + 0.01;
   campfireGround.receiveShadow = true;
   campfire.add(campfireGround);
   const firePit = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.85, 1.0, 0.22, 12),
+    new THREE.CylinderGeometry(1.45, 1.65, 0.22, 16),
     makeMaterial(THREE, "#4a4038", { roughness: 0.9 }),
   );
   firePit.position.y = 0.11;
   firePit.userData.campfirePit = true;
   interactive.push(firePit);
   campfire.add(firePit);
-  for (let index = 0; index < 8; index += 1) {
-    const stoneAngle = (index / 8) * Math.PI * 2;
+  for (let index = 0; index < 12; index += 1) {
+    const stoneAngle = (index / 12) * Math.PI * 2;
     const stone = new THREE.Mesh(
       new THREE.DodecahedronGeometry(0.22, 0),
       makeMaterial(THREE, "#7d766c", { roughness: 0.95 }),
     );
     stone.position.set(
-      Math.cos(stoneAngle) * 1.05,
+      Math.cos(stoneAngle) * 1.85,
       0.16,
-      Math.sin(stoneAngle) * 1.05,
+      Math.sin(stoneAngle) * 1.85,
     );
     campfire.add(stone);
   }
+  const burningLogs = new THREE.Group();
+  burningLogs.name = "campfire-charred-burning-logs";
+  campfire.add(burningLogs);
   for (let index = 0; index < 3; index += 1) {
     const log = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.09, 0.09, 1.15, 8),
-      makeMaterial(THREE, "#5a3b24", { roughness: 0.9 }),
+      new THREE.CylinderGeometry(0.105, 0.12, 1.18, 10),
+      makeMaterial(THREE, index === 1 ? "#21140e" : "#2b1810", {
+        roughness: 1,
+      }),
     );
     log.rotation.z = Math.PI / 2;
-    log.rotation.y = (index / 3) * Math.PI;
-    log.position.y = 0.3;
-    campfire.add(log);
+    log.rotation.y = (index / 3) * Math.PI + 0.08;
+    log.rotation.x = (index - 1) * 0.08;
+    log.position.y = 0.31 + (index % 2) * 0.07;
+    log.castShadow = true;
+    burningLogs.add(log);
+    for (let coalIndex = 0; coalIndex < 3; coalIndex += 1) {
+      const coal = new THREE.Mesh(
+        new THREE.IcosahedronGeometry(0.075 + coalIndex * 0.012, 1),
+        makeMaterial(THREE, coalIndex === 1 ? "#ff6a17" : "#b62d0b", {
+          emissive: coalIndex === 1 ? "#ff4d0a" : "#8e1605",
+          emissiveIntensity: 2.5,
+          roughness: 0.78,
+        }),
+      );
+      const along = (coalIndex - 1) * 0.31;
+      const logAngle = log.rotation.y;
+      coal.position.set(
+        Math.cos(logAngle) * along,
+        log.position.y + 0.09 + (coalIndex % 2) * 0.025,
+        -Math.sin(logAngle) * along,
+      );
+      coal.scale.set(1.35, 0.52, 0.75);
+      coal.userData.glowingCoalPhase = index * 2.4 + coalIndex;
+      burningLogs.add(coal);
+    }
   }
   const logPile = new THREE.Group();
   logPile.name = "campfire-log-pile";
@@ -15458,51 +16871,74 @@ export function createWorldScene({
       interactive.push(log);
     }
   }
-  const flame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.42, 1.05, 8),
-    makeMaterial(THREE, "#ffb547", {
-      emissive: "#ff7a2f",
-      emissiveIntensity: 1.6,
-      transparent: true,
-      opacity: 0.92,
-    }),
+  const proceduralFire = createProceduralCampfireEffect(THREE);
+  const FLAME_HEIGHT = 1.4;
+  const FLAME_BASE_Y = 0.28;
+  proceduralFire.position.y = FLAME_BASE_Y;
+  campfire.add(proceduralFire);
+  // The blaze is a milestone marker rather than a per-member trickle: it holds
+  // its size through a hundred accounts and steps up a notch when the next
+  // century lands, bounded so a large community's fire stays welcoming.
+  const CAMPFIRE_BASE_FIRE_LEVEL = 3;
+  const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.35;
+  const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;
+  let fireLevel = CAMPFIRE_BASE_FIRE_LEVEL;
+  // Reduced-motion visitors skip animated callbacks, so establish a complete
+  // static procedural blaze before the first roster update.
+  proceduralFire.scale.set(
+    CAMPFIRE_BASE_FIRE_LEVEL,
+    CAMPFIRE_BASE_FIRE_LEVEL,
+    CAMPFIRE_BASE_FIRE_LEVEL,
   );
-  flame.position.y = 0.82;
-  campfire.add(flame);
-  const innerFlame = new THREE.Mesh(
-    new THREE.ConeGeometry(0.24, 0.72, 8),
-    makeMaterial(THREE, "#fff0a6", {
-      emissive: "#ffb547",
-      emissiveIntensity: 2.1,
-      transparent: true,
-      opacity: 0.94,
-    }),
-  );
-  innerFlame.position.y = 0.72;
-  campfire.add(innerFlame);
-  let fireLevel = 1;
   const fireLight = new THREE.PointLight("#ffa14d", 3.2, 14, 1.8);
-  fireLight.position.y = 1.1;
+  fireLight.position.y = FLAME_BASE_Y + FLAME_HEIGHT * CAMPFIRE_BASE_FIRE_LEVEL * 0.5;
+  fireLight.castShadow = false;
   campfire.add(fireLight);
-  // The membership total rides in the flames themselves rather than on yet
-  // another sign: an ember-lit numeral hovering over the pit, so the fire
-  // reads as "this many accounts sit here" at a glance. Hidden until the
-  // roster lands so it never flashes a placeholder zero.
   const memberCountSprite = new THREE.Sprite(
     new THREE.SpriteMaterial({
       transparent: true,
+      depthTest: false,
       depthWrite: false,
+      toneMapped: false,
     }),
   );
-  const MEMBER_COUNT_HOVER_Y = 1.95;
-  memberCountSprite.position.y = MEMBER_COUNT_HOVER_Y;
-  memberCountSprite.scale.set(2.8, 1.4, 1);
+  memberCountSprite.name = "campfire-member-count-high";
+  memberCountSprite.position.y = 13.5;
+  memberCountSprite.scale.set(10.8, 4.05, 1);
+  memberCountSprite.renderOrder = 12;
   memberCountSprite.visible = false;
   campfire.add(memberCountSprite);
+  const newestMemberSparkles = new THREE.Points(
+    new THREE.BufferGeometry().setFromPoints(
+      Array.from({ length: 20 }, (_, index) => {
+        const angle = (index / 20) * Math.PI * 2;
+        const radius = index % 2 ? 3.1 : 3.7;
+        return new THREE.Vector3(
+          Math.cos(angle) * radius,
+          Math.sin(angle) * 0.62,
+          0,
+        );
+      }),
+    ),
+    new THREE.PointsMaterial({
+      color: "#fff4b8",
+      size: 0.23,
+      transparent: true,
+      opacity: 0.95,
+      depthTest: false,
+      depthWrite: false,
+      toneMapped: false,
+    }),
+  );
+  newestMemberSparkles.name = "campfire-newest-member-name-sparkles";
+  newestMemberSparkles.position.y = 12.35;
+  newestMemberSparkles.renderOrder = 13;
+  newestMemberSparkles.visible = false;
+  campfire.add(newestMemberSparkles);
   let memberCountShown = "";
-  // Repaints only when the count or the newest member actually moved: the
-  // roster refresh runs on a timer and would otherwise rebuild the canvas
-  // every pass.
+  // The count is a clean, transparent landmark high above the flames: it
+  // remains legible across the square without putting a plate or label in the
+  // entrance or the open centre of the member rings.
   function setCampfireMemberCount(total, newest = "") {
     const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
     const latest = String(newest || "").trim().slice(0, 18);
@@ -15517,21 +16953,88 @@ export function createWorldScene({
     );
     memberCountSprite.material.needsUpdate = true;
     memberCountSprite.visible = true;
-    // Each member contributes one visible log and a small, bounded amount of
-    // warmth. The cap keeps a mature community's fire welcoming, not blocking.
+    newestMemberSparkles.visible = Boolean(latest);
+    // Each member contributes one visible log; the fire itself only grows on
+    // the hundreds, so passing a century is a visible event around the circle.
     rebuildCampfireMemberLogs(count);
-    fireLevel = clamp(1.08 + count * 0.012, 1.08, 1.85);
-    fireLight.distance = 14 + Math.min(count, 80) * 0.08;
+    const fireCenturies = Math.floor(count / 100);
+    fireLevel = clamp(
+      CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY,
+      CAMPFIRE_BASE_FIRE_LEVEL,
+      CAMPFIRE_MAX_FIRE_LEVEL,
+    );
+    fireLight.distance = 16 + Math.min(fireCenturies, 7) * 2.4;
+    if (reducedMotion) {
+      const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;
+      const fireWidthScale =
+        CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32);
+      proceduralFire.scale.set(fireWidthScale, fireLevel, fireWidthScale);
+    }
   }
   animated.push((time) => {
-    const flicker = 1 + Math.sin(time * 0.011) * 0.12 + Math.sin(time * 0.023) * 0.06;
-    const size = fireLevel * flicker;
-    flame.scale.set(size, fireLevel * (1 + Math.sin(time * 0.017) * 0.16), size);
-    innerFlame.scale.set(size * 0.82, size * 0.9, size * 0.82);
-    fireLight.intensity = 3.2 * fireLevel + Math.sin(time * 0.013) * 0.7;
-    // Drift with the flames so the number sits in the fire instead of on it.
+    const seconds = time * 0.001;
+    const slowFlicker = Math.sin(time * 0.0073 + Math.sin(time * 0.0011) * 1.7);
+    const fastFlicker = Math.sin(time * 0.0197 + Math.sin(time * 0.0043) * 2.2);
+    const sparkFlicker = Math.sin(time * 0.0431 + Math.sin(time * 0.0127));
+    const flicker = 1 + slowFlicker * 0.075 + fastFlicker * 0.04;
+    // A milestone fire grows mostly upward: widening it at the same rate would
+    // push the flames out past their own stone ring.
+    const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;
+    const fireWidthScale =
+      CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32);
+    proceduralFire.scale.set(
+      fireWidthScale * flicker,
+      fireLevel * (1 + slowFlicker * 0.055 + fastFlicker * 0.025),
+      fireWidthScale * flicker,
+    );
+    proceduralFire.userData.flameMaterials.forEach((material, index) => {
+      material.uniforms.uTime.value = seconds + index * 0.17;
+    });
+    proceduralFire.userData.emberMaterial.uniforms.uTime.value = seconds;
+    proceduralFire.userData.emberMaterial.uniforms.uHeight.value =
+      Math.min(1.7, fireGrowth);
+    proceduralFire.userData.smokePuffs.forEach((puff, index) => {
+      const seed = puff.userData.smokeSeed;
+      const phase = puff.userData.smokePhase;
+      const age = (seconds * (0.09 + seed * 0.025) + seed) % 1;
+      const smokeScale = 0.42 + age * (1.15 + seed * 0.55);
+      puff.position.set(
+        Math.sin(seconds * 0.54 + phase) * age * 0.48,
+        1.55 + age * (2.15 + fireGrowth * 0.45),
+        Math.cos(seconds * 0.39 + phase * 1.4) * age * 0.32,
+      );
+      puff.scale.set(smokeScale, smokeScale * 1.18, 1);
+      const smokeFadeIn = clamp(age / 0.18, 0, 1);
+      const smokeFadeOut = 1 - clamp((age - 0.48) / 0.52, 0, 1);
+      puff.material.uniforms.uOpacity.value =
+        0.105 * smokeFadeIn * smokeFadeIn * smokeFadeOut * smokeFadeOut;
+      puff.rotation.z = Math.sin(seconds * 0.21 + phase) * 0.3;
+    });
+    proceduralFire.userData.groundGlow.material.uniforms.uOpacity.value =
+      0.28 + slowFlicker * 0.035 + fastFlicker * 0.018;
+    burningLogs.children.forEach((child) => {
+      const phase = child.userData.glowingCoalPhase;
+      if (phase === undefined || !child.material?.emissive) return;
+      child.material.emissiveIntensity =
+        2.15 + Math.sin(time * 0.009 + phase) * 0.55 + sparkFlicker * 0.18;
+    });
+    fireLight.intensity =
+      3.2 * fireLevel +
+      slowFlicker * 0.65 +
+      fastFlicker * 0.36 +
+      sparkFlicker * 0.16;
+    fireLight.position.set(
+      Math.sin(time * 0.0041 + fastFlicker) * 0.13,
+      FLAME_BASE_Y + FLAME_HEIGHT * fireLevel * 0.5 + slowFlicker * 0.09,
+      Math.sin(time * 0.0033 + slowFlicker * 1.4) * 0.11,
+    );
     memberCountSprite.position.y =
-      MEMBER_COUNT_HOVER_Y + Math.sin(time * 0.0017) * 0.07;
+      13.5 + (reducedMotion ? 0 : Math.sin(time * 0.0015) * 0.18);
+    newestMemberSparkles.position.y = memberCountSprite.position.y - 1.15;
+    if (!reducedMotion) newestMemberSparkles.rotation.z = time * 0.0008;
+    newestMemberSparkles.material.opacity = reducedMotion
+      ? 0.9
+      : 0.7 + Math.sin(time * 0.009) * 0.25;
   });
   // The real bench count depends on the member roster, which is still an
   // in-flight network request when the scene first renders. Rather than
@@ -15563,7 +17066,7 @@ export function createWorldScene({
   // sittable) while they walk the world as a live avatar — plus one bench
   // that always stays open so an arriving guest has a spot by the fire, and
   // widens whenever a new account joins so everyone still fits.
-  const CAMPFIRE_BENCH_RADIUS = 6.2;
+  const CAMPFIRE_BENCH_RADIUS = 9;
   // Bench height is set by the sitters, not the other way round: the plank top
   // lands SEATED_SEAT_TO_SOLE above the walking plane so a seated avatar's
   // shins reach the ground instead of dangling (or folding through it).
@@ -15572,7 +17075,9 @@ export function createWorldScene({
   const CAMPFIRE_SEAT_Y = CAMPFIRE_SEAT_TOP_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
   const CAMPFIRE_BENCH_LEG_HEIGHT = CAMPFIRE_SEAT_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
-  const CAMPFIRE_CIRCLE_MAX_SEATS = 96;
+  const CAMPFIRE_CIRCLE_MAX_SEATS = 500;
+  const CAMPFIRE_MEMBERS_PER_ROW = 25;
+  const CAMPFIRE_ROW_SPACING = 2.8;
   const CAMPFIRE_SEAT_SPACING = 2.1;
   // The ring never closes all the way round: a doorway-wide span of it is kept
   // bench-free so visitors can walk straight in to the fire and back out again
@@ -15612,24 +17117,33 @@ export function createWorldScene({
     }
     const ring = new THREE.Group();
     ring.name = "campfire-member-circle";
-    const radius = Math.max(
-      CAMPFIRE_BENCH_RADIUS,
-      (count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI),
-    );
-    campfireGround.scale.setScalar(radius + 1.45);
-    // Benches spread over everything but the entrance arc, with half a bench
-    // gap of padding on each side of it, so the walkway stays clear and the
-    // always-open bench at the end of the ring sits right beside the opening.
-    const entranceAngle = Math.min(
-      CAMPFIRE_ENTRANCE_MAX_ANGLE,
-      CAMPFIRE_ENTRANCE_WIDTH / radius,
-    );
-    const seatStep = (Math.PI * 2 - entranceAngle) / count;
+    const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);
+    const outerRadius =
+      CAMPFIRE_BENCH_RADIUS + Math.max(0, rowCount - 1) * CAMPFIRE_ROW_SPACING;
+    campfireGround.scale.setScalar(outerRadius + 1.45);
     const seatOffsets = [];
     const benches = [];
     for (let index = 0; index < count; index += 1) {
+      const row = Math.floor(index / CAMPFIRE_MEMBERS_PER_ROW);
+      const rowStart = row * CAMPFIRE_MEMBERS_PER_ROW;
+      const seatsInRow = Math.min(
+        CAMPFIRE_MEMBERS_PER_ROW,
+        count - rowStart,
+      );
+      const positionInRow = index - rowStart;
+      const radius = CAMPFIRE_BENCH_RADIUS + row * CAMPFIRE_ROW_SPACING;
+      // Every row reserves the same doorway toward town. The usable arc is
+      // evenly spaced, while rows stop at 25 so avatars never collapse into
+      // one ever-expanding crowded ring.
+      const entranceAngle = Math.min(
+        CAMPFIRE_ENTRANCE_MAX_ANGLE,
+        CAMPFIRE_ENTRANCE_WIDTH / radius,
+      );
+      const seatStep = (Math.PI * 2 - entranceAngle) / seatsInRow;
       const angle =
-        CAMPFIRE_ENTRANCE_ANGLE + entranceAngle / 2 + (index + 0.5) * seatStep;
+        CAMPFIRE_ENTRANCE_ANGLE +
+        entranceAngle / 2 +
+        (positionInRow + 0.5) * seatStep;
       const bench = new THREE.Group();
       bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
       // Long axis tangent to the ring so every bench fronts the flames.
@@ -15681,7 +17195,11 @@ export function createWorldScene({
     campfire.add(ring);
     campfire.userData.seatRing = ring;
     campfire.userData.seatCount = count;
-    campfire.userData.seatRadius = radius;
+    campfire.userData.seatRadius = outerRadius;
+    campfire.userData.seatRadii = Array.from(
+      { length: rowCount },
+      (_, row) => CAMPFIRE_BENCH_RADIUS + row * CAMPFIRE_ROW_SPACING,
+    );
     campfire.userData.seatOffsets = seatOffsets;
     campfire.userData.seatBenches = benches;
     return seatOffsets;
@@ -15710,12 +17228,12 @@ export function createWorldScene({
   movableWorldObjects.delete("campfire");
   registerMovableObject("south-members:campfire", campfire);
 
-  // A wooden swing set west of the fountain: three swings hang from one beam,
-  // so up to three visitors can ride at once. Clicking a seat starts the ride
-  // and clicking it again hops off; the shell's swing-speed slider scales the
-  // pumping, and the regular camera toggle watches the ride in first or third
-  // person because both camera modes follow the player's position.
-  const SWING_SET_POSITION = Object.freeze([-20, 0, 9]);
+  // A wooden swing set beside the Office garden gym: three swings hang from
+  // one beam, so up to three visitors can ride at once. Clicking a seat starts
+  // the ride and clicking it again hops off; the shell's swing-speed slider
+  // scales the pumping, and the regular camera toggle watches the ride in
+  // first or third person because both camera modes follow the player's
+  // position.
   const SWING_SEAT_COUNT = 3;
   const SWING_SEAT_SPACING = 2.3;
   const SWING_BEAM_HEIGHT = 4.6;
@@ -15730,9 +17248,9 @@ export function createWorldScene({
   const swingSet = new THREE.Group();
   swingSet.name = "swing-set";
   swingSet.position.set(...SWING_SET_POSITION);
-  // Local -Z (the way avatars face) points at the fountain so riders swing
-  // looking across the Town Square.
-  swingSet.rotation.y = Math.atan2(SWING_SET_POSITION[0], SWING_SET_POSITION[2]);
+  // Face the nearby gym so the swings and workout equipment read as one
+  // compact recreation garden.
+  swingSet.rotation.y = -Math.PI / 2;
   const swingFrameMaterial = makeMaterial(THREE, "#6f5136", { roughness: 0.82 });
   const swingFrameWidth = SWING_SEAT_COUNT * SWING_SEAT_SPACING + 1.6;
   const swingLegSpread = 1.7;
@@ -15830,6 +17348,324 @@ export function createWorldScene({
   setShadows(swingSet);
   world.add(swingSet);
   registerMovableObject("swing-set", swingSet);
+
+  // An open-air gym beside the Town Square. Every station is a real click
+  // target; the bench press also opens the shell's weight/rep console.
+  const gym = new THREE.Group();
+  gym.name = "forkmesh-world-gym";
+  gym.position.set(...GYM_POSITION);
+  const gymFloor = new THREE.Mesh(
+    new THREE.BoxGeometry(28, 0.22, 18),
+    makeMaterial(THREE, "#17202a", { roughness: 0.86 }),
+  );
+  gymFloor.position.y = 0;
+  gymFloor.receiveShadow = true;
+  gym.add(gymFloor);
+  const gymInset = new THREE.Mesh(
+    new THREE.BoxGeometry(26.8, 0.035, 16.8),
+    makeMaterial(THREE, "#253240", { roughness: 0.96 }),
+  );
+  gymInset.position.y = 0.13;
+  gym.add(gymInset);
+  // Keep wayfinding physically anchored to the scene. Floating labels are
+  // reserved for features that explicitly need screen-facing identification.
+  const gymSign = makeGroundPlaque(
+    THREE,
+    "WORLD GYM",
+    "CLICK A STATION TO TRAIN",
+    "#ff9b54",
+  );
+  gymSign.name = "world-gym-entrance-plaque";
+  gymSign.position.set(0, 0.14, -8.1);
+  gymSign.rotation.y = Math.PI;
+  gym.add(gymSign);
+  const gymSteel = makeMaterial(THREE, "#a8b3bf", {
+    metalness: 0.82,
+    roughness: 0.23,
+  });
+  const gymDark = makeMaterial(THREE, "#1b2632", {
+    metalness: 0.42,
+    roughness: 0.46,
+  });
+  const gymAccent = makeMaterial(THREE, "#ff7b54", {
+    metalness: 0.36,
+    roughness: 0.34,
+    emissive: "#8b2e1d",
+    emissiveIntensity: 0.28,
+  });
+  const gymEquipment = new Map();
+  const markGymInteractive = (object, kind) => {
+    object.userData.gymEquipment = kind;
+    interactive.push(object);
+    gymEquipment.set(kind, gymEquipment.get(kind) || object);
+    return object;
+  };
+
+  // Bench press: the shaft is split into a centre and two hinged sleeves so
+  // genuinely heavy selections can visibly flex instead of only translating.
+  const benchPress = new THREE.Group();
+  benchPress.name = "gym-bench-press";
+  benchPress.position.set(-7.6, 0.18, -1.4);
+  const benchPad = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.32, 5.1), gymAccent),
+    "bench",
+  );
+  benchPad.position.set(0, 1.02, 0.55);
+  benchPress.add(benchPad);
+  [-0.82, 0.82].forEach((x) => {
+    const leg = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 1.02, 0.22),
+      gymSteel,
+    );
+    leg.position.set(x, 0.52, 0.55);
+    benchPress.add(leg);
+  });
+  [-1.25, 1.25].forEach((x) => {
+    const upright = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24, 3.15, 0.32),
+      gymSteel,
+    );
+    upright.position.set(x, 1.68, -1.25);
+    benchPress.add(upright);
+    const hook = new THREE.Mesh(
+      new THREE.BoxGeometry(0.45, 0.18, 0.55),
+      gymDark,
+    );
+    hook.position.set(x, 2.94, -1.08);
+    benchPress.add(hook);
+  });
+  const benchBarRig = new THREE.Group();
+  benchBarRig.position.set(0, 2.9, -0.78);
+  benchPress.add(benchBarRig);
+  const benchBarCenter = markGymInteractive(
+    new THREE.Mesh(
+      new THREE.CylinderGeometry(0.075, 0.075, 2.5, 16),
+      gymSteel,
+    ),
+    "bench",
+  );
+  benchBarCenter.rotation.z = Math.PI / 2;
+  benchBarRig.add(benchBarCenter);
+  const benchBarSleeves = [];
+  const benchPlates = [];
+  [-1, 1].forEach((side) => {
+    const pivot = new THREE.Group();
+    pivot.position.x = side * 1.25;
+    benchBarRig.add(pivot);
+    const sleeve = markGymInteractive(
+      new THREE.Mesh(
+        new THREE.CylinderGeometry(0.09, 0.09, 1.55, 16),
+        gymSteel,
+      ),
+      "bench",
+    );
+    sleeve.rotation.z = Math.PI / 2;
+    sleeve.position.x = side * 0.775;
+    pivot.add(sleeve);
+    benchBarSleeves.push({ pivot, side });
+    for (let plateIndex = 0; plateIndex < 3; plateIndex += 1) {
+      const plate = markGymInteractive(
+        new THREE.Mesh(
+          new THREE.CylinderGeometry(0.56, 0.56, 0.14, 24),
+          plateIndex === 0 ? gymAccent : gymDark,
+        ),
+        "bench",
+      );
+      plate.rotation.z = Math.PI / 2;
+      plate.position.x = side * (0.42 + plateIndex * 0.18);
+      pivot.add(plate);
+      benchPlates.push(plate);
+    }
+  });
+  gym.add(benchPress);
+
+  const treadmill = new THREE.Group();
+  treadmill.name = "gym-treadmill";
+  treadmill.position.set(0, 0.18, -3.7);
+  const treadmillBelt = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.3, 5.5), gymDark),
+    "treadmill",
+  );
+  treadmillBelt.position.y = 0.34;
+  treadmill.add(treadmillBelt);
+  const treadmillConsole = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.05, 0.3), gymAccent),
+    "treadmill",
+  );
+  treadmillConsole.position.set(0, 2.3, -2.05);
+  treadmill.add(treadmillConsole);
+  [-1.05, 1.05].forEach((x) => {
+    const rail = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.07, 0.07, 2.35, 10),
+      gymSteel,
+    );
+    rail.position.set(x, 1.25, -1.85);
+    treadmill.add(rail);
+  });
+  gym.add(treadmill);
+
+  const exerciseBike = new THREE.Group();
+  exerciseBike.name = "gym-exercise-bike";
+  exerciseBike.position.set(6.9, 0.18, -3.4);
+  const bikeWheel = markGymInteractive(
+    new THREE.Mesh(
+      new THREE.TorusGeometry(1.15, 0.13, 12, 30),
+      gymAccent,
+    ),
+    "bike",
+  );
+  bikeWheel.position.set(0, 1.25, 0.25);
+  bikeWheel.rotation.y = Math.PI / 2;
+  exerciseBike.add(bikeWheel);
+  const bikeFrame = new THREE.Mesh(
+    new THREE.BoxGeometry(0.22, 2.2, 0.22),
+    gymSteel,
+  );
+  bikeFrame.position.set(0, 1.22, 0);
+  bikeFrame.rotation.x = -0.35;
+  exerciseBike.add(bikeFrame);
+  const bikeSeat = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.2, 0.55), gymDark),
+    "bike",
+  );
+  bikeSeat.position.set(0, 2.35, 0.34);
+  exerciseBike.add(bikeSeat);
+  gym.add(exerciseBike);
+
+  const rower = new THREE.Group();
+  rower.name = "gym-rower";
+  rower.position.set(6.6, 0.18, 3.7);
+  const rowerRail = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(1.25, 0.24, 5.6), gymSteel),
+    "rower",
+  );
+  rowerRail.position.y = 0.55;
+  rower.add(rowerRail);
+  const rowerSeat = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(1.45, 0.22, 0.85), gymAccent),
+    "rower",
+  );
+  rowerSeat.position.set(0, 0.86, 1.05);
+  rower.add(rowerSeat);
+  const rowerHandle = markGymInteractive(
+    new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.14, 0.14), gymDark),
+    "rower",
+  );
+  rowerHandle.position.set(0, 1.45, -1.65);
+  rower.add(rowerHandle);
+  gym.add(rower);
+
+  const punchingStation = new THREE.Group();
+  punchingStation.name = "gym-punching-bag";
+  punchingStation.position.set(-0.4, 0.18, 4.8);
+  const bagArm = new THREE.Mesh(
+    new THREE.BoxGeometry(3.1, 0.2, 0.2),
+    gymSteel,
+  );
+  bagArm.position.set(0, 4.4, 0);
+  punchingStation.add(bagArm);
+  const bag = markGymInteractive(
+    new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.72, 2.15, 8, 18),
+      gymAccent,
+    ),
+    "punch",
+  );
+  bag.position.set(0.8, 2.55, 0);
+  punchingStation.add(bag);
+  gym.add(punchingStation);
+
+  [
+    ["BENCH PRESS", "WEIGHT + REPS", -10.7, 0.14, -3.7, Math.PI / 2],
+    ["TREADMILL", "CLICK TO RUN", -3.35, 0.14, -6.35, Math.PI],
+    ["EXERCISE BIKE", "CLICK TO RIDE", 8.8, 0.14, -6.35, Math.PI],
+    ["ROWER", "CLICK TO ROW", 10.65, 0.14, 5.7, -Math.PI / 2],
+    ["PUNCHING BAG", "CLICK TO TRAIN", -3.35, 0.14, 7.0, 0],
+  ].forEach(([title, subtitle, x, y, z, rotation]) => {
+    const plaque = makeGroundPlaque(THREE, title, subtitle, "#ffad8f");
+    plaque.name = `world-gym-station-plaque:${worldLayoutId("", title)}`;
+    plaque.position.set(x, y, z);
+    plaque.rotation.y = rotation;
+    gym.add(plaque);
+  });
+
+  const gymState = {
+    active: "",
+    auto: false,
+    weightLb: 135,
+    reps: 0,
+    repStartedAt: 0,
+    activityStartedAt: 0,
+    benchBarRig,
+    benchBarSleeves,
+    benchPlates,
+    treadmillBelt,
+    bikeWheel,
+    rowerSeat,
+    rowerHandle,
+    bag,
+  };
+  const gymPublicState = (open = gymState.active === "bench") => ({
+    active: gymState.active,
+    auto: gymState.auto,
+    weightLb: gymState.weightLb,
+    reps: gymState.reps,
+    heavy: gymState.weightLb >= GYM_HEAVY_WEIGHT_LB,
+    open,
+  });
+  animated.push((time) => {
+    const repElapsed = gymState.repStartedAt
+      ? time - gymState.repStartedAt
+      : Infinity;
+    const repProgress = clamp(repElapsed / 900, 0, 1);
+    const lift =
+      repProgress < 1 ? Math.sin(repProgress * Math.PI) : 0;
+    const heaviness = clamp(
+      (gymState.weightLb - GYM_HEAVY_WEIGHT_LB) /
+        (GYM_MAX_WEIGHT_LB - GYM_HEAVY_WEIGHT_LB),
+      0,
+      1,
+    );
+    const bend = lift * (0.055 + heaviness * 0.15);
+    gymState.benchBarRig.position.y = 2.9 + lift * 0.82;
+    gymState.benchBarRig.position.x =
+      !reducedMotion && heaviness && repProgress < 1
+        ? Math.sin(repProgress * Math.PI * 7) * heaviness * 0.045
+        : 0;
+    gymState.benchBarSleeves.forEach(({ pivot, side }) => {
+      pivot.rotation.z = side * bend;
+    });
+    const plateScale = 0.72 + clamp(gymState.weightLb / 700, 0, 0.72);
+    gymState.benchPlates.forEach((plate) => {
+      plate.scale.set(plateScale, 1, plateScale);
+    });
+    if (
+      gymState.auto &&
+      gymState.active === "bench" &&
+      repElapsed >= 1220
+    ) {
+      gymState.repStartedAt = time;
+      gymState.reps += 1;
+      onGymState(gymPublicState(true));
+    }
+    const exerciseTime = Math.max(0, time - gymState.activityStartedAt);
+    if (gymState.active === "bike") {
+      gymState.bikeWheel.rotation.z = exerciseTime * 0.008;
+    }
+    if (gymState.active === "rower") {
+      const stroke = (Math.sin(exerciseTime * 0.006) + 1) / 2;
+      gymState.rowerSeat.position.z = 0.45 + stroke * 1.3;
+      gymState.rowerHandle.position.z = -1.75 + stroke * 1.15;
+    }
+    if (gymState.active === "punch") {
+      gymState.bag.rotation.z = Math.sin(exerciseTime * 0.011) * 0.16;
+    } else {
+      gymState.bag.rotation.z *= 0.9;
+    }
+  });
+  setShadows(gym);
+  world.add(gym);
+  registerMovableObject("world-gym", gym);
 
   // One square 5×5 wall preserves the whole leaderboard catalog without
   // duplicate physical boards. Lift the complete assembly above the terrain.
@@ -16163,6 +17999,9 @@ export function createWorldScene({
 
   const remotePlayers = new Map();
   const remoteLabels = new Map();
+  // A successful administrative deletion must win over the next stale
+  // presence/directory frame while the edge cache catches up.
+  const administrativelyRemovedAccounts = new Set();
   const moderationActions = new WeakMap();
   const adminGuestCopyActions = new WeakMap();
   const moderationControlKeys = new Map();
@@ -16220,54 +18059,40 @@ export function createWorldScene({
   function officeFloorFinishMaterial(index = 0, lobby = false) {
     const accent =
       officeInteriorAccents[index % officeInteriorAccents.length];
-    const texture = canvasTexture(THREE, 512, 512, (context) => {
-      context.fillStyle = lobby ? "#173129" : "#12251f";
-      context.fillRect(0, 0, 512, 512);
-      const gradient = context.createLinearGradient(0, 0, 512, 512);
-      gradient.addColorStop(0, "rgba(255,255,255,0.055)");
-      gradient.addColorStop(0.5, "rgba(255,255,255,0)");
-      gradient.addColorStop(1, "rgba(0,0,0,0.16)");
-      context.fillStyle = gradient;
-      context.fillRect(0, 0, 512, 512);
-      context.strokeStyle = `${accent}38`;
-      context.lineWidth = lobby ? 3 : 2;
-      const spacing = lobby ? 64 : 48;
-      for (let offset = 0; offset <= 512; offset += spacing) {
-        context.beginPath();
-        context.moveTo(offset, 0);
-        context.lineTo(offset, 512);
-        context.stroke();
-        context.beginPath();
-        context.moveTo(0, offset);
-        context.lineTo(512, offset);
-        context.stroke();
-      }
-      context.strokeStyle = `${accent}88`;
-      context.lineWidth = 5;
-      context.strokeRect(12, 12, 488, 488);
-      if (lobby) {
-        for (let index = 0; index < 180; index += 1) {
-          const x = (index * 83) % 506;
-          const y = (index * 157) % 506;
-          context.fillStyle =
-            index % 3 === 0 ? `${accent}85` : "rgba(232,255,246,0.18)";
-          context.fillRect(x, y, index % 4 === 0 ? 3 : 2, 2);
-        }
-      }
-    });
-    texture.wrapS = THREE.RepeatWrapping;
-    texture.wrapT = THREE.RepeatWrapping;
-    texture.repeat.set(5, 3);
-    texture.needsUpdate = true;
-    return makeMaterial(THREE, "#ffffff", {
-      map: texture,
-      emissive: lobby ? "#091b15" : "#071710",
-      emissiveIntensity: lobby ? 0.36 : 0.28,
-      metalness: lobby ? 0.08 : 0.16,
-      roughness: lobby ? 0.72 : 0.76,
-    });
+    const solidColors = ["#243c35", "#293b3f", "#3d3a2d", "#3e3038"];
+    return makeMaterial(
+      THREE,
+      lobby
+        ? "#29473d"
+        : solidColors[index % solidColors.length],
+      {
+        emissive: accent,
+        emissiveIntensity: lobby ? 0.045 : 0.025,
+        metalness: 0.04,
+        roughness: 0.9,
+      },
+    );
+  }
+  function officeCeilingFinishMaterial(index = 0, lobby = false) {
+    const solidColors = ["#31433d", "#334247", "#454235", "#473842"];
+    return makeMaterial(
+      THREE,
+      lobby
+        ? "#354a43"
+        : solidColors[index % solidColors.length],
+      {
+        emissive: lobby ? "#16332a" : "#17231f",
+        emissiveIntensity: 0.035,
+        metalness: 0.02,
+        roughness: 0.94,
+        transparent: false,
+        opacity: 1,
+      },
+    );
   }
   const officeLobbyFloorMaterial = officeFloorFinishMaterial(0, true);
+  const officeLobbyCeilingMaterial =
+    officeCeilingFinishMaterial(0, true);
   const officeFloorGroups = new Map([["lobby", officeInterior]]);
   const officeFloorAccent = makeMaterial(THREE, "#67efb1", {
     emissive: "#1a9a68",
@@ -16333,7 +18158,57 @@ export function createWorldScene({
       parent.add(slab);
     });
   }
+  function addOfficeCeilingSurface(parent, material) {
+    const minX = -OFFICE_WIDTH / 2;
+    const maxX = OFFICE_WIDTH / 2;
+    const minZ = -OFFICE_DEPTH / 2;
+    const maxZ = OFFICE_DEPTH / 2;
+    const segments = [
+      {
+        minX,
+        maxX,
+        minZ,
+        maxZ: elevatorCutMinZ,
+      },
+      {
+        minX,
+        maxX: elevatorCutMinX,
+        minZ: elevatorCutMinZ,
+        maxZ,
+      },
+      {
+        minX: elevatorCutMaxX,
+        maxX,
+        minZ: elevatorCutMinZ,
+        maxZ,
+      },
+    ];
+    segments.forEach((segment, index) => {
+      const ceiling = new THREE.Mesh(
+        new THREE.BoxGeometry(
+          segment.maxX - segment.minX,
+          OFFICE_LOBBY_SURFACE_Y,
+          segment.maxZ - segment.minZ,
+        ),
+        material,
+      );
+      ceiling.name =
+        `forkmesh-office-ceiling-slab-` +
+        `${parent.userData.officeFloorId || "lobby"}-${index + 1}`;
+      ceiling.position.set(
+        (segment.minX + segment.maxX) / 2,
+        OFFICE_FLOOR_HEIGHT - OFFICE_LOBBY_SURFACE_Y / 2,
+        (segment.minZ + segment.maxZ) / 2,
+      );
+      ceiling.receiveShadow = true;
+      parent.add(ceiling);
+    });
+  }
   addOfficeFloorSurface(officeInterior, officeLobbyFloorMaterial);
+  addOfficeCeilingSurface(
+    officeInterior,
+    officeLobbyCeilingMaterial,
+  );
   function addOfficeFloorAtmosphere(
     floorGroup,
     floorId,
@@ -16353,15 +18228,44 @@ export function createWorldScene({
       metalness: 0.42,
       roughness: 0.44,
     });
+    const fixtureGeometry = new THREE.BoxGeometry(5.2, 0.07, 0.34);
+    const fixtureMaterial = new THREE.MeshBasicMaterial({
+      color: floorIndex % 2 ? "#dff4ff" : "#fff1d6",
+      toneMapped: false,
+    });
+    const fixtureColumns = [-60, -36, -12, 12, 36, 60];
+    const fixtureRows = [-18, 0, 18];
+    const fixtureGrid = new THREE.InstancedMesh(
+      fixtureGeometry,
+      fixtureMaterial,
+      fixtureColumns.length * fixtureRows.length,
+    );
+    fixtureGrid.name = `forkmesh-office-${floorId}-ceiling-light-grid`;
+    const fixtureTransform = new THREE.Object3D();
+    let fixtureIndex = 0;
+    fixtureRows.forEach((z) => {
+      fixtureColumns.forEach((x) => {
+        fixtureTransform.position.set(
+          x,
+          OFFICE_FLOOR_HEIGHT - 0.3,
+          z,
+        );
+        fixtureTransform.updateMatrix();
+        fixtureGrid.setMatrixAt(fixtureIndex, fixtureTransform.matrix);
+        fixtureIndex += 1;
+      });
+    });
+    fixtureGrid.instanceMatrix.needsUpdate = true;
+    floorGroup.add(fixtureGrid);
     for (const [lightIndex, x] of [-38, 38].entries()) {
       const light = new THREE.PointLight(
         lightIndex ? "#b9e9ff" : "#fff0cf",
-        1.25,
-        54,
+        1.45,
+        48,
         1.8,
       );
       light.name = `forkmesh-office-${floorId}-ambient-light-${lightIndex + 1}`;
-      light.position.set(x, OFFICE_FLOOR_HEIGHT - 1.15, -2);
+      light.position.set(x, OFFICE_FLOOR_HEIGHT - 1.1, 0);
       light.castShadow = false;
       floorGroup.add(light);
     }
@@ -16640,19 +18544,16 @@ export function createWorldScene({
     floorGroup.name = `forkmesh-office-floor-${floor.id}`;
     floorGroup.position.y = officeFloorY(floor.id);
     floorGroup.userData.officeFloorId = floor.id;
+    const floorFinish = officeFloorFinishMaterial(interiorIndex + 1);
     addOfficeFloorSurface(
       floorGroup,
-      officeFloorFinishMaterial(interiorIndex + 1),
+      floorFinish,
     );
     if (floor.id !== "rooftop") {
-      for (let x = -72; x <= 72; x += 24) {
-        const light = new THREE.Mesh(
-          new THREE.BoxGeometry(12, 0.08, 0.28),
-          officeFloorAccent,
-        );
-        light.position.set(x, OFFICE_FLOOR_HEIGHT - 0.34, 0);
-        floorGroup.add(light);
-      }
+      addOfficeCeilingSurface(
+        floorGroup,
+        officeCeilingFinishMaterial(interiorIndex + 1),
+      );
     }
     const sign = makeOfficeWallPlacard(
       THREE,
@@ -16676,6 +18577,51 @@ export function createWorldScene({
       floor.id,
       interiorIndex + 1,
     );
+    const lobbyPortal = new THREE.Group();
+    lobbyPortal.name = `forkmesh-office-${floor.id}-lobby-portal`;
+    lobbyPortal.position.set(53, 3.25, -27);
+    const portalRing = new THREE.Mesh(
+      new THREE.TorusGeometry(2.45, 0.24, 10, 40),
+      makeMaterial(THREE, "#58a6ff", {
+        emissive: "#1f6feb",
+        emissiveIntensity: 1.7,
+        metalness: 0.5,
+        roughness: 0.22,
+      }),
+    );
+    const portalFace = new THREE.Mesh(
+      new THREE.CircleGeometry(2.2, 32),
+      new THREE.MeshBasicMaterial({
+        color: "#0d419d",
+        transparent: true,
+        opacity: 0.52,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    portalFace.position.z = -0.02;
+    for (const surface of [portalRing, portalFace]) {
+      surface.userData.interactive = "office-lobby-return-portal";
+      surface.userData.officeFloorId = floor.id;
+      interactive.push(surface);
+    }
+    lobbyPortal.add(portalRing, portalFace);
+    const portalLabel = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: wordTexture(
+          THREE,
+          "LOBBY PORTAL",
+          "CLICK TO RETURN",
+          "#79c0ff",
+        ),
+        transparent: true,
+        depthWrite: false,
+      }),
+    );
+    portalLabel.position.set(0, 3.55, 0);
+    portalLabel.scale.set(6.4, 2.4, 1);
+    lobbyPortal.add(portalLabel);
+    floorGroup.add(lobbyPortal);
     // The transparent tower is an exterior cutaway: visitors should see every
     // furnished floor through its glass before they enter the building.
     floorGroup.visible = true;
@@ -16694,6 +18640,17 @@ export function createWorldScene({
     ...INFRASTRUCTURE_CONSOLE_POSITION,
   );
   infrastructureFloor.add(infrastructureConsoleDisplay);
+  const workerFootprintDisplay = createWorkerFootprintDisplay(THREE);
+  workerFootprintDisplay.position.set(
+    ...INFRASTRUCTURE_FOOTPRINT_POSITION,
+  );
+  infrastructureFloor.add(workerFootprintDisplay);
+  const workerComponentDisplay = createWorkerComponentDisplay(THREE);
+  workerComponentDisplay.position.set(
+    ...INFRASTRUCTURE_COMPONENTS_POSITION,
+  );
+  workerComponentDisplay.rotation.y = -Math.PI / 2;
+  infrastructureFloor.add(workerComponentDisplay);
   const engineeringDebugPanel = createEngineeringDebugPanel(THREE);
   engineeringDebugPanel.position.set(
     31,
@@ -17672,46 +19629,466 @@ export function createWorldScene({
   officeReception.add(noahNameplate);
   officeInterior.add(officeReception);
 
+  const officeFloorWarpDoors = [];
   const officeFloorWarpHub = new THREE.Group();
   officeFloorWarpHub.name = "forkmesh-office-floor-warp-hub";
-  officeFloorWarpHub.position.set(-25.5, 0.04, -32.8);
+  officeFloorWarpHub.position.set(0, 0, 0);
+  officeFloorWarpHub.userData.officeFloorId = "lobby";
   OFFICE_FLOORS.forEach((floor, index) => {
-    const column = index % 2;
-    const row = Math.floor(index / 2);
-    const pad = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.42, 1.42, 0.12, 40),
-      makeMaterial(THREE, column ? "#77d9ff" : "#9ef7c6", {
-        emissive: column ? "#24637c" : "#236847",
-        emissiveIntensity: 0.8,
-        metalness: 0.34,
-        roughness: 0.34,
-      }),
+    const accent = index % 2 ? "#77d9ff" : "#9ef7c6";
+    const doorway = new THREE.Group();
+    doorway.name = `forkmesh-office-floor-doorway-${floor.id}`;
+    doorway.position.set(
+      OFFICE_FLOOR_WARP_DOOR_START_X +
+        index * OFFICE_FLOOR_WARP_DOOR_SPACING,
+      0,
+      OFFICE_FLOOR_WARP_DOOR_Z,
     );
-    pad.name = `forkmesh-office-floor-warp-${floor.id}`;
-    pad.position.set(column * 3.35, 0.06, row * -3.2);
-    pad.userData.interactive = "office-floor-warp";
-    pad.userData.officeFloorId = floor.id;
-    pad.userData.officeFloorNumber = floor.level + 1;
-    interactive.push(pad);
-    officeFloorWarpHub.add(pad);
-    const label = new THREE.Sprite(
-      new THREE.SpriteMaterial({
-        map: wordTexture(
-          THREE,
-          `${floor.level + 1}`,
-          floor.label.toUpperCase(),
-          column ? "#77d9ff" : "#9ef7c6",
-        ),
+    doorway.userData.officeFloorId = "lobby";
+    doorway.userData.officeFloorTargetId = floor.id;
+
+    const frameMaterial = makeMaterial(THREE, "#132d28", {
+      emissive: "#236847",
+      emissiveIntensity: 0.42,
+      metalness: 0.4,
+      roughness: 0.36,
+    });
+    const frameThickness = 0.24;
+    const sideGeometry = new THREE.BoxGeometry(
+      frameThickness,
+      OFFICE_FLOOR_WARP_DOOR_HEIGHT,
+      0.4,
+    );
+    for (const side of [-1, 1]) {
+      const jamb = new THREE.Mesh(sideGeometry, frameMaterial);
+      jamb.position.set(
+        side * (OFFICE_FLOOR_WARP_DOOR_WIDTH / 2),
+        OFFICE_FLOOR_WARP_DOOR_HEIGHT / 2,
+        0,
+      );
+      doorway.add(jamb);
+    }
+    const lintel = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        OFFICE_FLOOR_WARP_DOOR_WIDTH + frameThickness,
+        frameThickness,
+        0.4,
+      ),
+      frameMaterial,
+    );
+    lintel.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT, 0);
+    doorway.add(lintel);
+
+    const portal = new THREE.Mesh(
+      new THREE.PlaneGeometry(
+        OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.38,
+        OFFICE_FLOOR_WARP_DOOR_HEIGHT - 0.36,
+      ),
+      new THREE.MeshBasicMaterial({
+        color: accent,
         transparent: true,
+        opacity: 0.22,
+        side: THREE.DoubleSide,
         depthWrite: false,
+        toneMapped: false,
       }),
     );
-    label.name = `forkmesh-office-floor-warp-label-${floor.id}`;
-    label.position.set(pad.position.x, 1.05, pad.position.z);
-    label.scale.set(2.6, 1.3, 1);
-    officeFloorWarpHub.add(label);
+    portal.name = `forkmesh-office-floor-warp-${floor.id}`;
+    portal.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT / 2, 0.23);
+    portal.userData.interactive = "office-floor-warp";
+    portal.userData.officeFloorId = "lobby";
+    portal.userData.officeFloorTargetId = floor.id;
+    portal.userData.officeFloorNumber = floor.level + 1;
+    doorway.add(portal);
+    interactive.push(portal);
+
+    const closedDoor = new THREE.Mesh(
+      new THREE.BoxGeometry(
+        OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.38,
+        OFFICE_FLOOR_WARP_DOOR_HEIGHT - 0.36,
+        0.24,
+      ),
+      makeMaterial(THREE, "#2b2628", {
+        emissive: "#6e2737",
+        emissiveIntensity: 0.25,
+        metalness: 0.24,
+        roughness: 0.72,
+      }),
+    );
+    closedDoor.name = `forkmesh-office-floor-door-${floor.id}`;
+    closedDoor.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT / 2, 0.12);
+    closedDoor.userData.interactive = "office-floor-warp";
+    closedDoor.userData.officeFloorId = "lobby";
+    closedDoor.userData.officeFloorTargetId = floor.id;
+    closedDoor.userData.officeFloorNumber = floor.level + 1;
+    doorway.add(closedDoor);
+    interactive.push(closedDoor);
+
+    const openLabel = makeOfficeWallPlacard(
+      THREE,
+      `${floor.level + 1} · ${floor.label.toUpperCase()}`,
+      floor.id === "lobby" ? "YOU ARE HERE" : "OPEN · WALK THROUGH",
+      accent,
+      OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.46,
+      1.2,
+    );
+    openLabel.name = `forkmesh-office-floor-warp-label-${floor.id}`;
+    openLabel.position.set(0, OFFICE_FLOOR_WARP_DOOR_HEIGHT - 0.72, 0.38);
+    openLabel.userData.interactive = "office-floor-warp";
+    openLabel.userData.officeFloorId = "lobby";
+    openLabel.userData.officeFloorTargetId = floor.id;
+    doorway.add(openLabel);
+    interactive.push(openLabel);
+
+    const lockedLabel = makeOfficeWallPlacard(
+      THREE,
+      `${floor.level + 1} · ${floor.label.toUpperCase()}`,
+      "CLOSED · ACCESS REQUIRED",
+      "#ff7b83",
+      OFFICE_FLOOR_WARP_DOOR_WIDTH - 0.46,
+      1.2,
+    );
+    lockedLabel.name = `forkmesh-office-floor-warp-locked-${floor.id}`;
+    lockedLabel.position.copy(openLabel.position);
+    lockedLabel.userData.interactive = "office-floor-warp";
+    lockedLabel.userData.officeFloorId = "lobby";
+    lockedLabel.userData.officeFloorTargetId = floor.id;
+    doorway.add(lockedLabel);
+    interactive.push(lockedLabel);
+
+    officeFloorWarpDoors.push({
+      floorId: floor.id,
+      x: doorway.position.x,
+      frameMaterial,
+      portal,
+      closedDoor,
+      openLabel,
+      lockedLabel,
+      allowed: false,
+    });
+    portal.visible = false;
+    openLabel.visible = false;
+    closedDoor.visible = true;
+    lockedLabel.visible = true;
+    officeFloorWarpHub.add(doorway);
   });
   officeInterior.add(officeFloorWarpHub);
+
+  // An open-sided garden tent makes instance creation feel like a welcoming
+  // fair booth. Credentials remain in the device-local UI.
+  const instanceBooth = new THREE.Group();
+  instanceBooth.name = "forkmesh-instance-launch-booth";
+  instanceBooth.position.set(...INSTANCE_GARDEN_POSITION);
+  const instanceBoothDark = makeMaterial(THREE, "#5537a8", {
+    metalness: 0.22,
+    roughness: 0.42,
+  });
+  const boothFloor = new THREE.Mesh(
+    new THREE.CylinderGeometry(10.8, 11.4, 0.38, 48),
+    makeMaterial(THREE, "#f2c94c", { roughness: 0.66 }),
+  );
+  boothFloor.position.set(0, 0.19, 0);
+  instanceBooth.add(boothFloor);
+  const boothPoleMaterials = [
+    makeMaterial(THREE, "#6840c6", {
+      emissive: "#2d1766",
+      emissiveIntensity: 0.34,
+      roughness: 0.36,
+    }),
+    makeMaterial(THREE, "#31d7c4", {
+      emissive: "#0b7169",
+      emissiveIntensity: 0.38,
+      roughness: 0.34,
+    }),
+  ];
+  for (const [index, x, z] of [
+    [0, -8.5, -2.4],
+    [1, 8.5, -2.4],
+    [1, -8.5, 3.6],
+    [0, 8.5, 3.6],
+  ]) {
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.34, 0.44, 9.2, 14),
+      boothPoleMaterials[index],
+    );
+    pole.name = "forkmesh-instance-booth-tent-pole";
+    pole.position.set(x, 4.75, z);
+    instanceBooth.add(pole);
+  }
+  const tentFabricPink = makeMaterial(THREE, "#ff77a8", {
+    emissive: "#8b2647",
+    emissiveIntensity: 0.34,
+    roughness: 0.48,
+    side: THREE.DoubleSide,
+  });
+  const roofSlope = Math.atan2(1.75, 9.5);
+  for (const side of [-1, 1]) {
+    const roofPanel = new THREE.Mesh(
+      new THREE.BoxGeometry(9.75, 0.34, 8.4),
+      side < 0 ? tentFabricPink : makeMaterial(THREE, "#ffd45f", {
+        emissive: "#8c6416",
+        emissiveIntensity: 0.28,
+        roughness: 0.5,
+      }),
+    );
+    roofPanel.name = "forkmesh-instance-booth-tent-canopy";
+    roofPanel.position.set(side * 4.72, 10.35, 0.6);
+    roofPanel.rotation.z = side * -roofSlope;
+    instanceBooth.add(roofPanel);
+  }
+  const boothValance = new THREE.Mesh(
+    new THREE.BoxGeometry(19.4, 0.72, 0.34),
+    makeMaterial(THREE, "#ff77a8", {
+      emissive: "#8b2647",
+      emissiveIntensity: 0.42,
+      roughness: 0.44,
+    }),
+  );
+  boothValance.name = "forkmesh-instance-booth-front-valance";
+  boothValance.position.set(0, 9.55, 4.48);
+  instanceBooth.add(boothValance);
+
+  const globeTexture = canvasTexture(THREE, 1024, 512, (context) => {
+    const ocean = context.createLinearGradient(0, 0, 0, 512);
+    ocean.addColorStop(0, "#72dcff");
+    ocean.addColorStop(0.5, "#1976d2");
+    ocean.addColorStop(1, "#083d86");
+    context.fillStyle = ocean;
+    context.fillRect(0, 0, 1024, 512);
+    context.strokeStyle = "rgba(210, 249, 255, 0.22)";
+    context.lineWidth = 3;
+    for (let x = 0; x <= 1024; x += 128) {
+      context.beginPath();
+      context.moveTo(x, 0);
+      context.lineTo(x, 512);
+      context.stroke();
+    }
+    for (let y = 64; y < 512; y += 96) {
+      context.beginPath();
+      context.moveTo(0, y);
+      context.lineTo(1024, y);
+      context.stroke();
+    }
+    context.fillStyle = "#65d06f";
+    for (const [x, y, width, height, rotation] of [
+      [170, 145, 180, 95, -0.35],
+      [275, 300, 105, 155, 0.24],
+      [535, 150, 220, 105, 0.18],
+      [650, 305, 160, 125, -0.16],
+      [865, 335, 105, 65, 0.22],
+    ]) {
+      context.save();
+      context.translate(x, y);
+      context.rotate(rotation);
+      context.beginPath();
+      context.ellipse(0, 0, width / 2, height / 2, 0, 0, Math.PI * 2);
+      context.ellipse(width * 0.2, -height * 0.24, width * 0.3, height * 0.34, 0, 0, Math.PI * 2);
+      context.fill();
+      context.restore();
+    }
+  });
+  const boothGlobe = new THREE.Mesh(
+    new THREE.SphereGeometry(2.05, 40, 28),
+    new THREE.MeshStandardMaterial({
+      map: globeTexture,
+      roughness: 0.38,
+      metalness: 0.08,
+      emissive: "#0a4d7a",
+      emissiveIntensity: 0.22,
+    }),
+  );
+  boothGlobe.name = "forkmesh-instance-booth-rotating-globe";
+  boothGlobe.position.set(0, 13.25, 0.55);
+  boothGlobe.rotation.z = -0.18;
+  boothGlobe.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(boothGlobe);
+  interactive.push(boothGlobe);
+  const globeLight = new THREE.PointLight("#7de8ff", 2.1, 15, 1.8);
+  globeLight.position.set(-1.8, 14.5, 3);
+  instanceBooth.add(globeLight);
+  animated.push((time) => {
+    boothGlobe.rotation.y = time * 0.00034;
+    boothGlobe.position.y = 13.25 + Math.sin(time * 0.0011) * 0.08;
+  });
+  const boothPrivacySign = makeOfficeWallPlacard(
+    THREE,
+    "LAUNCH INSTANCE",
+    "CREATE A NEW WORLD",
+    "#ffd85a",
+    13.4,
+    2.1,
+  );
+  boothPrivacySign.name = "forkmesh-instance-booth-roof-sign";
+  boothPrivacySign.position.set(0, 8, 4.7);
+  boothPrivacySign.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(boothPrivacySign);
+  interactive.push(boothPrivacySign);
+  const instanceBoothScreen = new THREE.Mesh(
+    new THREE.PlaneGeometry(15.8, 6.5),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, 1580, 650, (context) => {
+        context.fillStyle = "#080d13";
+        context.fillRect(0, 0, 1580, 650);
+        context.strokeStyle = "#58a6ff";
+        context.lineWidth = 18;
+        context.strokeRect(12, 12, 1556, 626);
+        context.fillStyle = "#79c0ff";
+        context.font = '900 58px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "left";
+        context.fillText("LAUNCH A FORKMESH WORLD", 74, 112);
+        context.fillStyle = "#e6edf3";
+        context.font = '760 34px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("WORKER + D1 + DNS + TUNNEL", 74, 212);
+        context.fillText("FIRST MIRROR + FEDERATION BRIDGE", 74, 268);
+        context.fillStyle = "#8b9aaa";
+        context.font = '620 27px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CREDENTIALS STAY ON YOUR DEVICE", 74, 366);
+        context.fillText("SETUP CARD EXCLUDES ALL SECRETS", 74, 410);
+        context.fillStyle = "#7ee787";
+        context.font = '900 42px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CLICK TO CONFIGURE", 74, 540);
+      }),
+      toneMapped: false,
+    }),
+  );
+  instanceBoothScreen.name = "forkmesh-instance-launch-booth-screen";
+  instanceBoothScreen.position.set(0, 3.65, 3.95);
+  instanceBoothScreen.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(instanceBoothScreen);
+  interactive.push(instanceBoothScreen);
+  setShadows(instanceBooth);
+  world.add(instanceBooth);
+  let instanceBoothOccupied = false;
+
+  // Landscaped arrival garden between the bridge and glass office.
+  const officeFrontGarden = new THREE.Group();
+  officeFrontGarden.name = "forkmesh-office-front-garden";
+  const gardenPathMaterial = makeMaterial(THREE, "#d8d3c5", { roughness: 0.96 });
+  for (const [x, z, width, depth] of [
+    [0, -137, 9, 62],
+    [-31, -140, 49, 5],
+    [40, -140, 58, 5],
+  ]) {
+    const path = new THREE.Mesh(
+      new THREE.BoxGeometry(width, 0.14, depth),
+      gardenPathMaterial,
+    );
+    path.position.set(x, 0.07, z);
+    path.receiveShadow = true;
+    officeFrontGarden.add(path);
+  }
+  const gardenFlowerColors = ["#ff668d", "#ffd65a", "#8c6cff", "#64e88d"];
+  for (let index = 0; index < 34; index += 1) {
+    const side = index % 2 ? -1 : 1;
+    const x = side * (13 + (index % 6) * 5.1);
+    const z = -120 - Math.floor(index / 6) * 7.2;
+    const shrub = new THREE.Mesh(
+      new THREE.SphereGeometry(0.8 + (index % 3) * 0.12, 12, 8),
+      makeMaterial(
+        THREE,
+        index % 5 ? "#3d9b59" : gardenFlowerColors[index % 4],
+        {
+          roughness: 0.86,
+        },
+      ),
+    );
+    shrub.name = "office-garden-plant";
+    shrub.position.set(x, 0.72, z);
+    officeFrontGarden.add(shrub);
+  }
+
+  // A rock waterfall with translucent, animated water and a splash response.
+  const waterfall = new THREE.Group();
+  waterfall.name = "forkmesh-interactive-waterfall";
+  waterfall.position.set(73, 0, -157);
+  const rockMaterial = makeMaterial(THREE, "#5f655e", { roughness: 0.94 });
+  for (const [x, y, z, scale] of [
+    [0, 3.2, 0, 4.8],
+    [-3.2, 2.15, 0.6, 3.4],
+    [3.25, 1.75, 0.4, 3.1],
+  ]) {
+    const rock = new THREE.Mesh(
+      new THREE.DodecahedronGeometry(1, 1),
+      rockMaterial,
+    );
+    rock.position.set(x, y, z);
+    rock.scale.set(scale, scale * 0.78, scale * 0.62);
+    waterfall.add(rock);
+  }
+  const cascadeMaterial = new THREE.MeshPhysicalMaterial({
+    color: "#72dfff",
+    roughness: 0.08,
+    metalness: 0,
+    transmission: 0.55,
+    thickness: 0.3,
+    transparent: true,
+    opacity: 0.78,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const cascades = [];
+  for (const x of [-1.65, 0, 1.65]) {
+    const cascade = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.85, 6.2, 8, 24),
+      cascadeMaterial.clone(),
+    );
+    cascade.name = "garden-waterfall-cascade";
+    cascade.position.set(x, 3.75, 3.15);
+    cascade.userData.interactive = "garden-waterfall";
+    waterfall.add(cascade);
+    interactive.push(cascade);
+    cascades.push(cascade);
+  }
+  const waterfallPool = new THREE.Mesh(
+    new THREE.CylinderGeometry(6.5, 6.8, 0.3, 48),
+    cascadeMaterial.clone(),
+  );
+  waterfallPool.name = "garden-waterfall-pool";
+  waterfallPool.position.set(0, 0.2, 4);
+  waterfallPool.scale.z = 0.58;
+  waterfallPool.userData.interactive = "garden-waterfall";
+  waterfall.add(waterfallPool);
+  interactive.push(waterfallPool);
+  let waterfallSplashUntil = 0;
+  animated.push((time) => {
+    const energized = time < waterfallSplashUntil;
+    cascades.forEach((cascade, index) => {
+      cascade.position.y = 3.75 - ((time * 0.0018 + index * 0.7) % 0.42);
+      cascade.material.opacity = (energized ? 0.92 : 0.72) +
+        Math.sin(time * 0.005 + index) * 0.06;
+    });
+    waterfallPool.scale.x = (energized ? 1.05 : 1) + Math.sin(time * 0.003) * 0.02;
+  });
+  officeFrontGarden.add(waterfall);
+
+  const drinkingFountain = new THREE.Group();
+  drinkingFountain.name = "forkmesh-drinking-fountain";
+  drinkingFountain.position.set(25, 0, -145);
+  const fountainBody = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.75, 0.92, 2.5, 16),
+    makeMaterial(THREE, "#9da8aa", { metalness: 0.72, roughness: 0.3 }),
+  );
+  fountainBody.position.y = 1.25;
+  fountainBody.userData.interactive = "drinking-fountain";
+  drinkingFountain.add(fountainBody);
+  interactive.push(fountainBody);
+  const drinkingStream = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.045, 0.045, 1.15, 10),
+    cascadeMaterial.clone(),
+  );
+  drinkingStream.name = "drinking-fountain-water-stream";
+  drinkingStream.position.set(0.42, 3.12, 0);
+  drinkingStream.rotation.z = -0.7;
+  drinkingStream.visible = false;
+  drinkingFountain.add(drinkingStream);
+  let drinkingUntil = 0;
+  animated.push((time) => {
+    drinkingStream.visible = time < drinkingUntil;
+    drinkingStream.scale.y = 0.94 + Math.sin(time * 0.02) * 0.06;
+  });
+  officeFrontGarden.add(drinkingFountain);
+  setShadows(officeFrontGarden);
+  world.add(officeFrontGarden);
 
   // Public lobby Link Lab: a physical, accessible entry point for members to
   // submit public campaign/community links and inspect the transparent reach
@@ -17719,7 +20096,8 @@ export function createWorldScene({
   // stores form values in scene state or multiplayer presence.
   const officeLinkKiosk = new THREE.Group();
   officeLinkKiosk.name = "forkmesh-office-link-kiosk";
-  officeLinkKiosk.position.set(25, 0, -28);
+  officeLinkKiosk.position.set(84, 0, -22);
+  officeLinkKiosk.rotation.y = -Math.PI / 2;
   const officeLinkKioskStand = new THREE.Mesh(
     new THREE.BoxGeometry(8.6, 3.4, 2.8),
     makeMaterial(THREE, "#17352f", {
@@ -17771,7 +20149,8 @@ export function createWorldScene({
   // visitors can leave product feedback without exposing it through presence.
   const officeFeedbackKiosk = new THREE.Group();
   officeFeedbackKiosk.name = "forkmesh-office-feedback-kiosk";
-  officeFeedbackKiosk.position.set(-25, 0, -28);
+  officeFeedbackKiosk.position.set(84, 0, -52);
+  officeFeedbackKiosk.rotation.y = -Math.PI / 2;
   const officeFeedbackKioskStand = new THREE.Mesh(
     new THREE.BoxGeometry(8.6, 3.4, 2.8),
     makeMaterial(THREE, "#24292f", {
@@ -17816,12 +20195,64 @@ export function createWorldScene({
   interactive.push(officeFeedbackKioskFace);
   officeInterior.add(officeFeedbackKiosk);
 
+  // Members can propose scoped work and attach an exact SOL compensation
+  // request at this lobby desk. The mesh only opens the authenticated form;
+  // task copy and bounty metadata remain in the encrypted task catalog.
+  const officeTaskBidKiosk = new THREE.Group();
+  officeTaskBidKiosk.name = "forkmesh-office-task-bid-kiosk";
+  officeTaskBidKiosk.position.set(84, 0, -37);
+  officeTaskBidKiosk.rotation.y = -Math.PI / 2;
+  const officeTaskBidKioskStand = new THREE.Mesh(
+    new THREE.BoxGeometry(10.8, 3.4, 2.8),
+    makeMaterial(THREE, "#24292f", {
+      metalness: 0.38,
+      roughness: 0.4,
+    }),
+  );
+  officeTaskBidKioskStand.position.y = 1.7;
+  officeTaskBidKiosk.add(officeTaskBidKioskStand);
+  const officeTaskBidKioskFace = new THREE.Mesh(
+    new THREE.PlaneGeometry(12.8, 7.4),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, 1280, 740, (context) => {
+        context.fillStyle = "#0d1117";
+        context.fillRect(0, 0, 1280, 740);
+        context.strokeStyle = "#e3b341";
+        context.lineWidth = 18;
+        context.strokeRect(12, 12, 1256, 716);
+        context.fillStyle = "#e3b341";
+        context.font = '900 64px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "center";
+        context.fillText("TASK BOUNTY DESK", 640, 130);
+        context.fillStyle = "#f0f6fc";
+        context.font = '800 40px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("PROPOSE THE WORK", 640, 270);
+        context.fillText("NAME YOUR SOL REQUEST", 640, 326);
+        context.fillStyle = "#7ee787";
+        context.font = '900 44px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CLICK TO SUBMIT A BID", 640, 520);
+        context.fillStyle = "#8c959f";
+        context.font = '650 24px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("REQUEST ONLY · NO FUNDS HELD", 640, 642);
+      }),
+      toneMapped: false,
+    }),
+  );
+  officeTaskBidKioskFace.name = "forkmesh-office-task-bid-kiosk-screen";
+  officeTaskBidKioskFace.position.set(0, 6.7, 0.15);
+  officeTaskBidKioskFace.userData.officeFloorId = "lobby";
+  officeTaskBidKioskFace.userData.interactive = "office-task-bid-kiosk";
+  officeTaskBidKiosk.add(officeTaskBidKioskFace);
+  interactive.push(officeTaskBidKioskFace);
+  officeInterior.add(officeTaskBidKiosk);
+
   // A separate live board beside the submission terminal makes the public
   // links, their submitters, transparent reach inputs, tiny SOL appreciation
   // estimate, and payment state visible without first opening a dialog.
   const officeLinkRewards = new THREE.Group();
   officeLinkRewards.name = "forkmesh-office-link-rewards";
-  officeLinkRewards.position.set(39, 0, -28);
+  officeLinkRewards.position.set(84, 0, -6);
+  officeLinkRewards.rotation.y = -Math.PI / 2;
   const officeLinkRewardsStand = new THREE.Mesh(
     new THREE.BoxGeometry(10.5, 3.4, 2.8),
     makeMaterial(THREE, "#16333b", {
@@ -17929,6 +20360,23 @@ export function createWorldScene({
   officeTaskBulletinFace.position.z = 0.18;
   officeTaskBulletinFace.userData.interactive = "build-task-board";
   officeTaskBulletin.add(officeTaskBulletinFace);
+  const buildVideoLink = new THREE.Mesh(
+    new THREE.PlaneGeometry(2.25, 0.5),
+    new THREE.MeshBasicMaterial({
+      map: wordTexture(
+        THREE,
+        "▶ WATCH VIDEO",
+        "ForkMesh Forever",
+        "#9ef7c6",
+      ),
+      transparent: true,
+      toneMapped: false,
+    }),
+  );
+  buildVideoLink.name = "forkmesh-build-board-video-link";
+  buildVideoLink.position.set(4.55, 2.34, 0.22);
+  buildVideoLink.userData.interactive = "build-video-link";
+  officeTaskBulletin.add(buildVideoLink);
   const buildBoardSpinner = new THREE.Mesh(
     new THREE.TorusGeometry(0.2, 0.055, 10, 28, Math.PI * 1.55),
     new THREE.MeshBasicMaterial({
@@ -17937,7 +20385,7 @@ export function createWorldScene({
     }),
   );
   buildBoardSpinner.name = "forkmesh-build-board-updating-spinner";
-  buildBoardSpinner.position.set(5.28, 2.34, 0.27);
+  buildBoardSpinner.position.set(-5.28, 2.34, 0.27);
   buildBoardSpinner.visible = false;
   officeTaskBulletin.add(buildBoardSpinner);
   animated.push((time) => {
@@ -17994,7 +20442,7 @@ export function createWorldScene({
     post.position.set(x, -0.05, -0.08);
     officeTaskBulletin.add(post);
   }
-  interactive.push(officeTaskBulletinFace);
+  interactive.push(officeTaskBulletinFace, buildVideoLink);
   let humanTodoSessions = [];
   let humanTodoSystemItems = [];
   let buildBoardState = {
@@ -19040,12 +21488,8 @@ export function createWorldScene({
   const neighborhoodHomes = new Map();
   const nodeInfrastructure = new Map();
   const deletedNodeIdentifiers = new Set();
-  // Slot ownership is session-stable: a health refresh, response-time reorder,
-  // or another node joining must not make every cabinet jump to a new place.
-  // Positions remain derived from the live reward-pool location, so moving
-  // the pool still moves the whole ring as one layout.
-  const nodeSlotAssignments = new Map();
   let networkNodeSnapshot = [];
+  let mirrorCountShown = "";
   const mirrorAgentTasksByNode = new Map();
   const repositoryAgentTasksByRepository = new Map();
   let mirrorAgentTasksKey = "";
@@ -19072,11 +21516,14 @@ export function createWorldScene({
   const touchKeys = new Set();
   const touchMovement = new THREE.Vector2();
   const touchPointers = new Map();
+  let externalTouchInteractionActive = false;
+  let pendingTouchResize = false;
   const raycaster = new THREE.Raycaster();
   const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   const pointer = new THREE.Vector2();
   const pointerStart = new THREE.Vector2();
   const pointerLast = new THREE.Vector2();
+  const pointerCurrent = new THREE.Vector2();
   // Hot-path scratch values. Reusing these avoids producing several short-
   // lived vectors on every movement and label frame, which otherwise turns
   // into intermittent garbage-collection pauses while walking.
@@ -19086,6 +21533,7 @@ export function createWorldScene({
   const movementPreviousPosition = new THREE.Vector3();
   const movementDashDirection = new THREE.Vector3();
   const bikeSeatPosition = new THREE.Vector3();
+  const quadcopterHorizontal = new THREE.Vector3();
   const screenLabelPosition = new THREE.Vector3();
   const seatedMovementVector = new THREE.Vector3();
   const movementInputState = {
@@ -19131,20 +21579,26 @@ export function createWorldScene({
   let running = true;
   let disposed = false;
   let lastFrame = performance.now();
+  let lastVisualAnimationAt = lastFrame;
+  let nextVisualAnimationAt = 0;
   let diagnosticsSampleAt = lastFrame;
   let diagnosticsFrameCount = 0;
   let diagnosticsRendererCalls = 0;
   let diagnosticsRendererTriangles = 0;
   let diagnosticsLongestFrameMs = 0;
   let diagnosticsLongFrames = 0;
-  let lastRenderStallLogAt = 0;
+  let lastRenderStallLogAt = -Infinity;
+  let suppressedRenderStalls = 0;
+  let renderStallWarningTimer = 0;
   let diagnosticsPointerMoves = 0;
   let diagnosticsPointerLastAt = 0;
   let diagnosticsPointerWorstGapMs = 0;
   let diagnosticsLastMovementInputMs = 0;
   let diagnosticsWorstMovementInputMs = 0;
   let movementInputStartedAt = 0;
-  let lastMovementInputDelayLogAt = 0;
+  let lastMovementInputDelayLogAt = -Infinity;
+  let suppressedMovementInputDelays = 0;
+  let movementInputWarningTimer = 0;
   // Rolling 0..1 measure of how much the mouse is actually moving, decayed
   // between samples. It only drives the local avatar's antenna blink rate;
   // nothing about it is sent to other visitors.
@@ -19170,6 +21624,7 @@ export function createWorldScene({
   let firstPersonPitch = 0;
   let cameraMode = "third-person";
   let jumpVelocity = 0;
+  let superJumping = false;
   let jumpQueued = false;
   let officeRoofJumping = false;
   let roofParachute = null;
@@ -19190,6 +21645,15 @@ export function createWorldScene({
   // The beach car uses the same immediate input path as walking and cycling;
   // only the top-speed multiplier and seated vehicle pose differ.
   let carRide = null;
+  // The quadcopter owns all three movement axes while mounted. Its position
+  // remains local scene state; the ordinary bounded presence frame carries
+  // only the rider position and activity, just like the bike and car.
+  let quadcopterRide = null;
+  // The jetpack is wearable rather than a mount. It leaves the avatar visible,
+  // follows the normal camera, and unlocks camera-relative horizontal flight
+  // plus explicit ascent/descent controls.
+  let jetpackEquipped = false;
+  let jetpackVerticalControl = 0;
   // 0..1 from the shell's swing-speed slider; maps onto the pendulum amplitude.
   let swingSpeedLevel = 0.55;
   let primaryPointerId = null;
@@ -19204,6 +21668,7 @@ export function createWorldScene({
   let localDaylightMinute = -1;
   let nextEnvironmentCheckAt = 0;
   let nextSceneLodAt = 0;
+  let nextShadowMapUpdateAt = 0;
   let farSceneDetail = null;
   let nextAvatarHighlightAt = 0;
   let nextProximityUpdateAt = 0;
@@ -19252,7 +21717,6 @@ export function createWorldScene({
       depthWrite: false,
     });
     [
-      ["TOWN", 0, 0, "#9ef7c6"],
       ["REPOSITORIES", REPOSITORY_ISLAND_CENTER_X, 0, "#77d9ff"],
       ["LEADERBOARDS", LEADERBOARD_ISLAND_CENTER_X, 0, "#d5b6ff"],
       ["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"],
@@ -19278,30 +21742,35 @@ export function createWorldScene({
     return aerialLandmarkMarkers;
   }
 
-  function updateSceneLevelOfDetail(force = false) {
-    const far =
-      officeSceneMode === "town" &&
-      cameraMode === "third-person" &&
-      cameraZoom >= (compactRenderer ? 1.12 : 1.32);
-    if (!force && farSceneDetail === far) {
-      // Dynamic repository and member layers may have been replaced since the
-      // prior sample, so the bounded target pass below must still run.
-    } else {
-      farSceneDetail = far;
-      renderer.shadowMap.enabled = !compactRenderer && !far;
-      renderer.shadowMap.needsUpdate = !compactRenderer && !far;
-    }
-
-    // The Office is intentionally a transparent cutaway tower. Keep its walls,
-    // floor slabs, lighting, and furniture visible from the outdoor World at
-    // every camera distance. Once a visitor enters, isolate the active floor
-    // to avoid drawing ten floors through the one they are using.
+  function syncOfficeFloorVisibility() {
+    // Story changes are independent of camera zoom. In particular, a lobby
+    // doorway warp and an elevator arrival can both happen while the camera
+    // remains on the same near/far LOD side. Keep this explicit so a skipped
+    // LOD sample can never leave the newly selected floor hidden behind the
+    // last floor's visibility state.
     officeInterior.visible = true;
     for (const [floorId, floorGroup] of officeFloorGroups) {
       if (floorId === "lobby") continue;
       floorGroup.visible =
         officeSceneMode === "town" || floorId === officeCurrentFloorId;
     }
+  }
+
+  function updateSceneLevelOfDetail(force = false) {
+    const far =
+      officeSceneMode === "town" &&
+      cameraMode === "third-person" &&
+      cameraZoom >= (compactRenderer ? 1.12 : 1.32);
+    if (!force && farSceneDetail === far) return;
+    farSceneDetail = far;
+    renderer.shadowMap.enabled = !compactRenderer && !far;
+    renderer.shadowMap.needsUpdate = !compactRenderer && !far;
+
+    // The Office is intentionally a transparent cutaway tower. Keep its walls,
+    // floor slabs, lighting, and furniture visible from the outdoor World at
+    // every camera distance. Once a visitor enters, isolate the active floor
+    // to avoid drawing ten floors through the one they are using.
+    syncOfficeFloorVisibility();
 
     // A purely visual LOD helper must never be able to interrupt movement.
     // Fail it closed once if a future marker asset cannot be constructed; the
@@ -19355,7 +21824,7 @@ export function createWorldScene({
     state.hemiSky.lerp(new THREE.Color("#dff5ff"), easedDaylight);
     state.hemiGround.lerp(new THREE.Color("#566a48"), easedDaylight);
     state.sun.lerp(new THREE.Color("#fff6d5"), easedDaylight);
-    state.sunPower *= 0.18 + easedDaylight * 0.82;
+    state.sunPower *= 0.04 + easedDaylight * 0.96;
     state.hemiPower *= 0.42 + easedDaylight * 0.58;
     state.exposure *= 0.72 + easedDaylight * 0.28;
     const overlay = LOCAL_ENVIRONMENT_OVERLAYS[currentTheme];
@@ -19374,11 +21843,15 @@ export function createWorldScene({
     sun.color.copy(state.sun);
     sun.intensity =
       state.sunPower * (overlay?.lightMultiplier || 1) * lightMultiplier;
-    sun.position.set(
-      Math.cos(solarAngle) * 92,
-      8 + Math.max(0, Math.sin(solarAngle)) * 82,
-      Math.sin(solarAngle * 0.72) * 58,
-    );
+    const solarX = Math.cos(solarAngle) * 92;
+    const solarY = 8 + Math.max(0, Math.sin(solarAngle)) * 82;
+    const solarZ = Math.sin(solarAngle * 0.72) * 58;
+    sun.position.set(solarX, solarY, solarZ);
+    moon.intensity =
+      (0.08 + (1 - easedDaylight) * 0.9) *
+      (overlay?.lightMultiplier || 1) *
+      lightMultiplier;
+    moon.position.set(-solarX, 44 + (1 - easedDaylight) * 30, -solarZ);
     renderer.toneMappingExposure =
       state.exposure *
       (overlay?.exposureMultiplier || 1) *
@@ -19525,6 +21998,25 @@ export function createWorldScene({
     officeFloorHandler = typeof handler === "function" ? handler : null;
   }
 
+  function refreshOfficeFloorWarpDoors() {
+    officeFloorWarpDoors.forEach((doorway) => {
+      const allowed = canAccessOfficeFloor(
+        officeFloorAccess,
+        doorway.floorId,
+      );
+      doorway.allowed = allowed;
+      doorway.portal.visible = allowed;
+      doorway.openLabel.visible = allowed;
+      doorway.closedDoor.visible = !allowed;
+      doorway.lockedLabel.visible = !allowed;
+      doorway.frameMaterial.color.set(allowed ? "#173d32" : "#31282b");
+      doorway.frameMaterial.emissive?.set?.(
+        allowed ? "#1f9c6a" : "#6e2737",
+      );
+      doorway.frameMaterial.emissiveIntensity = allowed ? 0.72 : 0.2;
+    });
+  }
+
   function setOfficeAccess(payload = {}) {
     officeFloorAccess = normalizeOfficeFloorAccess(payload);
     officeElevatorButtons.forEach((button) => {
@@ -19537,6 +22029,7 @@ export function createWorldScene({
       button.material.emissive?.set?.(allowed ? "#1f9c6a" : "#6e2737");
       button.material.emissiveIntensity = allowed ? 0.9 : 0.2;
     });
+    refreshOfficeFloorWarpDoors();
     return { ...officeFloorAccess };
   }
 
@@ -19735,6 +22228,9 @@ export function createWorldScene({
     standUpFromOfficeChair();
     cancelDash();
     officeCurrentFloorId = floor.id;
+    // A direct doorway warp does not necessarily cross a camera LOD boundary.
+    // Render its selected floor before the next movement frame and camera snap.
+    syncOfficeFloorVisibility();
     currentSpace = `office-${floor.id}`;
     currentFloorY = officeFloorY(floor.id) + 0.38;
     const destination = new THREE.Vector3(
@@ -19754,6 +22250,42 @@ export function createWorldScene({
       warp: true,
     });
     return true;
+  }
+
+  function tryOfficeFloorWarpDoorway(avatar, previousPosition) {
+    if (
+      !avatar ||
+      !previousPosition ||
+      officeSceneMode !== "lobby" ||
+      officeCurrentFloorId !== "lobby" ||
+      officeElevatorRide
+    ) {
+      return false;
+    }
+    const current = officeAvatarLocalPosition(avatar);
+    const previous = previousPosition.clone();
+    avatar.parent?.localToWorld?.(previous);
+    officeInterior.worldToLocal(previous);
+    if (
+      current.z > OFFICE_FLOOR_WARP_TRIGGER_Z ||
+      previous.z <= OFFICE_FLOOR_WARP_TRIGGER_Z ||
+      current.z >= previous.z - 1e-5
+    ) {
+      return false;
+    }
+    const doorway = officeFloorWarpDoors.find(
+      (candidate) =>
+        Math.abs(current.x - candidate.x) <=
+        OFFICE_FLOOR_WARP_DOOR_WIDTH / 2 - OFFICE_AVATAR_RADIUS,
+    );
+    if (
+      !doorway ||
+      !doorway.allowed ||
+      doorway.floorId === officeCurrentFloorId
+    ) {
+      return false;
+    }
+    return warpToOfficeFloor(doorway.floorId);
   }
 
   function constrainTownOfficeWalls(previousPosition) {
@@ -20118,6 +22650,12 @@ export function createWorldScene({
       dismountBike({ relocate: false });
     if (enteringFromTown)
       dismountCar({ relocate: false });
+    if (enteringFromTown)
+      dismountQuadcopter({ relocate: false });
+    if (enteringFromTown && jetpackEquipped)
+      setJetpackEquipped(false);
+    if (enteringFromTown)
+      stopGymExercise();
     standUpFromOfficeChair();
     const meetingAvatar = leavingMeeting
       ? officeParticipants.get(officeLocalParticipantId)
@@ -20280,6 +22818,12 @@ export function createWorldScene({
   }
 
   function setOfficeParticipants(participants = []) {
+    participants = (Array.isArray(participants) ? participants : []).filter(
+      (participant) =>
+        !administrativelyRemovedAccounts.has(
+          String(participant?.name || "").trim().toLowerCase(),
+        ),
+    );
     const seenOfficeParticipants = new Set();
     participants.forEach((participant) => {
       const id = String(participant?.id || "");
@@ -20654,7 +23198,7 @@ export function createWorldScene({
   // reach the board texture when they load CORS-clean; otherwise the board
   // keeps its text-only rendering (a tainted canvas cannot feed WebGL).
   function mastodonKioskImage(url) {
-    const key = String(url || "");
+    const key = canvasReadableImageURL(url);
     if (!key) return null;
     const cached = mastodonKioskImages.get(key);
     if (cached) return cached.image;
@@ -21171,48 +23715,6 @@ export function createWorldScene({
     return cameraMode;
   }
 
-  function focusRepositoryViewingPad(pad = null) {
-    if (officeSceneMode !== "town" || !pad?.isObject3D) return false;
-    const data = pad.userData?.repositoryViewingPad;
-    const target = data?.target;
-    if (!target?.isObject3D) return false;
-    dismountSwing({ relocate: false });
-    dismountBike({ relocate: false });
-    dismountCar({ relocate: false });
-    standUpFromBench();
-    cancelDash();
-    const standingPoint = pad.getWorldPosition(new THREE.Vector3());
-    const targetPoint = target.getWorldPosition(new THREE.Vector3());
-    player.position.set(standingPoint.x, currentFloorY, standingPoint.z);
-    lastPosition.copy(player.position);
-    const eye = player.position
-      .clone()
-      .add(new THREE.Vector3(0, FIRST_PERSON_EYE_HEIGHT, 0));
-    const delta = targetPoint.sub(eye);
-    const horizontal = Math.max(0.001, Math.hypot(delta.x, delta.z));
-    cameraYaw = Math.atan2(-delta.x, -delta.z);
-    firstPersonPitch = clamp(
-      -Math.atan2(delta.y, horizontal),
-      FIRST_PERSON_PITCH_MIN,
-      FIRST_PERSON_PITCH_MAX,
-    );
-    player.rotation.y = cameraYaw;
-    firstPersonZoom = 1;
-    cameraFocus = null;
-    selectedLandmark = "repositories";
-    setCameraMode("first-person", `repository-${data.kind || "record"}-pad`);
-    queueMovementEvent({
-      x: Number(player.position.x.toFixed(2)),
-      y: Number(player.position.y.toFixed(2)),
-      z: Number(player.position.z.toFixed(2)),
-      heading: Number(player.rotation.y.toFixed(3)),
-      space: currentSpace,
-      moving: false,
-      activity: `reviewing repository ${data.kind === "issue" ? "issues" : "pull requests"}`,
-    });
-    return true;
-  }
-
   function focusRepositoryAgentTerminal(button = null) {
     if (officeSceneMode !== "town" || !button?.isObject3D) return false;
     const data = button.userData?.repositoryAgentViewingPad;
@@ -21222,6 +23724,7 @@ export function createWorldScene({
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
     dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     standUpFromBench();
     cancelDash();
     const standingPoint = standingTarget.getWorldPosition(
@@ -21458,6 +23961,18 @@ export function createWorldScene({
     };
   }
 
+  function setTouchInteractionActive(active) {
+    externalTouchInteractionActive = Boolean(active);
+    if (
+      !externalTouchInteractionActive &&
+      !touchPointers.size &&
+      pendingTouchResize
+    ) {
+      pendingTouchResize = false;
+      resize();
+    }
+  }
+
   function movementInput() {
     const movement = movementVector.set(0, 0, 0);
     const forwardInput =
@@ -21626,6 +24141,12 @@ export function createWorldScene({
       avatar.rotation.y = Math.atan2(-movement.x, -movement.z);
       if (
         !officeRoofJumping &&
+        tryOfficeFloorWarpDoorway(avatar, previousPosition)
+      ) {
+        return;
+      }
+      if (
+        !officeRoofJumping &&
         constrainOfficeInteriorWalls(avatar, previousPosition)
       ) {
         return;
@@ -21653,6 +24174,12 @@ export function createWorldScene({
         avatar.position.y = officeFloorY(officeCurrentFloorId) + 0.38;
       }
       walking = true;
+      if (
+        !officeRoofJumping &&
+        tryOfficeFloorWarpDoorway(avatar, previousPosition)
+      ) {
+        return;
+      }
       if (
         !officeRoofJumping &&
         constrainOfficeInteriorWalls(avatar, previousPosition)
@@ -21716,6 +24243,9 @@ export function createWorldScene({
     currentFloorY = player.position.y;
     if (progress < 1) return true;
     officeCurrentFloorId = ride.floorId;
+    // Elevator completion also changes the active story without necessarily
+    // changing the camera LOD class.
+    syncOfficeFloorVisibility();
     currentFloorY = officeFloorY(ride.floorId) + 0.38;
     player.position.y = currentFloorY;
     officeElevatorCar.position.y = officeFloorY(ride.floorId);
@@ -21738,6 +24268,7 @@ export function createWorldScene({
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
     dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     const seatPoint = seat.getWorldPosition(new THREE.Vector3());
     benchSeat = {
       // Hips on the plank, not feet: the avatar drops until its thighs rest on
@@ -21795,6 +24326,7 @@ export function createWorldScene({
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
     dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     const seatPoint = seat.getWorldPosition(new THREE.Vector3());
     benchSeat = {
       position: new THREE.Vector3(
@@ -21953,6 +24485,7 @@ export function createWorldScene({
     dismountSwing({ relocate: false });
     standUpFromBench();
     dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     bikeRide = { index };
     completeStartHereStep("explore");
     cancelDash();
@@ -22057,6 +24590,7 @@ export function createWorldScene({
     }
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
+    dismountQuadcopter({ relocate: false });
     standUpFromBench();
     carRide = { index };
     completeStartHereStep("explore");
@@ -22119,6 +24653,469 @@ export function createWorldScene({
     lastPosition.copy(player.position);
   }
 
+  function rideQuadcopter(index) {
+    if (officeSceneMode !== "town") return;
+    const state = quadcopterStates[index];
+    if (!state) return;
+    if (quadcopterRide?.index === index) {
+      dismountQuadcopter();
+      return;
+    }
+    dismountSwing({ relocate: false });
+    dismountBike({ relocate: false });
+    dismountCar({ relocate: false });
+    standUpFromBench();
+    quadcopterRide = { index };
+    completeStartHereStep("explore");
+    cancelDash();
+    cameraFocus = null;
+    jumpVelocity = 0;
+    jumpQueued = false;
+    removeRoofParachute();
+    player.position.set(
+      state.quadcopter.position.x,
+      state.quadcopter.position.y + 1.02,
+      state.quadcopter.position.z,
+    );
+    player.rotation.y = state.quadcopter.rotation.y;
+    player.userData.leftArm.rotation.x = -0.28;
+    player.userData.rightArm.rotation.x = -0.28;
+    applySeatedLegPose(player);
+    lastPosition.copy(player.position);
+    cameraSnapPending = true;
+    queueMovementEvent({
+      x: Number(player.position.x.toFixed(2)),
+      y: Number(player.position.y.toFixed(2)),
+      z: Number(player.position.z.toFixed(2)),
+      heading: Number(player.rotation.y.toFixed(3)),
+      space: currentSpace,
+      moving: false,
+      activity: QUADCOPTER_RIDING_ACTIVITY,
+    });
+  }
+
+  function toggleNearestQuadcopterRide() {
+    if (quadcopterRide) {
+      dismountQuadcopter();
+      return true;
+    }
+    if (officeSceneMode !== "town") return false;
+    let nearestIndex = -1;
+    let nearestDistanceSquared = QUADCOPTER_MOUNT_DISTANCE ** 2;
+    quadcopterStates.forEach((state, index) => {
+      const distanceSquared =
+        (state.quadcopter.position.x - player.position.x) ** 2 +
+        (state.quadcopter.position.z - player.position.z) ** 2 +
+        (state.quadcopter.position.y - player.position.y) ** 2;
+      if (distanceSquared > nearestDistanceSquared) return;
+      nearestDistanceSquared = distanceSquared;
+      nearestIndex = index;
+    });
+    if (nearestIndex < 0) return false;
+    rideQuadcopter(nearestIndex);
+    return true;
+  }
+
+  function dismountQuadcopter({ relocate = true } = {}) {
+    if (!quadcopterRide) return;
+    const state = quadcopterStates[quadcopterRide.index];
+    quadcopterRide = null;
+    if (state) state.moving = false;
+    player.userData.leftArm.rotation.x = 0;
+    player.userData.rightArm.rotation.x = 0;
+    applyLegPitch(player, 0, 0);
+    if (relocate && state) {
+      player.position.x += Math.cos(player.rotation.y) * 2.2;
+      player.position.z -= Math.sin(player.rotation.y) * 2.2;
+    }
+    if (player.position.y > currentFloorY + 2) {
+      prepareRoofParachute();
+      jumpVelocity = -0.4;
+    } else {
+      player.position.y = currentFloorY;
+      jumpVelocity = 0;
+    }
+    lastPosition.copy(player.position);
+  }
+
+  function updateQuadcopterRide(input, delta, time) {
+    if (!quadcopterRide) return false;
+    const state = quadcopterStates[quadcopterRide.index];
+    if (!state) {
+      quadcopterRide = null;
+      return false;
+    }
+    cameraFocus = null;
+    cancelDash();
+    focusedRepositoryKey = "";
+    jumpQueued = false;
+    jumpVelocity = 0;
+    const horizontal = quadcopterHorizontal.copy(input.movement);
+    const vertical =
+      Number(keys.has("Space")) -
+      Number(keys.has("KeyC") || keys.has("ControlLeft") || keys.has("ControlRight"));
+    const moving = horizontal.lengthSq() > 0 || vertical !== 0;
+    if (horizontal.lengthSq()) {
+      state.quadcopter.position.addScaledVector(
+        horizontal,
+        QUADCOPTER_HORIZONTAL_SPEED * delta,
+      );
+      const distance = Math.hypot(
+        state.quadcopter.position.x,
+        state.quadcopter.position.z,
+      );
+      const boundary = WORLD_RADIUS - 12;
+      if (distance > boundary) {
+        const scale = boundary / Math.max(1, distance);
+        state.quadcopter.position.x *= scale;
+        state.quadcopter.position.z *= scale;
+      }
+      state.quadcopter.rotation.y = Math.atan2(
+        -horizontal.x,
+        -horizontal.z,
+      );
+    }
+    state.quadcopter.position.y = clamp(
+      state.quadcopter.position.y +
+        vertical * QUADCOPTER_VERTICAL_SPEED * delta,
+      0.24,
+      QUADCOPTER_MAX_ALTITUDE,
+    );
+    state.moving = moving;
+    const rotorSpeed = moving ? 0.42 : 0.19;
+    state.rotors.forEach((rotor, index) => {
+      rotor.rotation.y += rotorSpeed * (index % 2 ? -1 : 1);
+    });
+    player.position.set(
+      state.quadcopter.position.x,
+      state.quadcopter.position.y + 1.02,
+      state.quadcopter.position.z,
+    );
+    player.rotation.y = state.quadcopter.rotation.y;
+    player.userData.leftArm.rotation.x = -0.28;
+    player.userData.rightArm.rotation.x = -0.28;
+    applySeatedLegPose(player);
+    player.userData.inputEnergy = decayedPointerEnergy(performance.now());
+    animateAvatarActivity(player, time, delta, reducedMotion);
+    if (
+      performance.now() - lastMovementEmit > 250 &&
+      player.position.distanceToSquared(lastPosition) > 0.025
+    ) {
+      lastMovementEmit = performance.now();
+      lastPosition.copy(player.position);
+      queueMovementEvent({
+        x: Number(player.position.x.toFixed(2)),
+        y: Number(player.position.y.toFixed(2)),
+        z: Number(player.position.z.toFixed(2)),
+        heading: Number(player.rotation.y.toFixed(3)),
+        space: currentSpace,
+        moving,
+        activity: QUADCOPTER_RIDING_ACTIVITY,
+      });
+    }
+    wasWalking = moving;
+    return true;
+  }
+
+  function setJetpackEquipped(equipped) {
+    const next = equipped === true;
+    if (next === jetpackEquipped) return jetpackEquipped;
+    if (next && officeSceneMode !== "town") return false;
+    if (next) {
+      dismountSwing({ relocate: false });
+      dismountBike({ relocate: false });
+      dismountCar({ relocate: false });
+      dismountQuadcopter({ relocate: false });
+      standUpFromBench();
+      stopGymExercise();
+      cancelDash();
+      removeRoofParachute();
+      jumpVelocity = 0;
+      jumpQueued = false;
+      superJumping = false;
+    } else {
+      // Flight may cross water or scenery that is intentionally not walkable.
+      // A mid-air unequip keeps its altitude but nudges the parachute column
+      // toward the nearest point on the continuous city instead of eventually
+      // marooning the player on a non-walkable landing coordinate.
+      if (
+        !worldWalkSurfaceContains(
+          player.position.x,
+          player.position.z,
+          OFFICE_AVATAR_RADIUS,
+        )
+      ) {
+        const startX = player.position.x;
+        const startZ = player.position.z;
+        for (let step = 1; step <= 80; step += 1) {
+          const progress = step / 80;
+          const x = startX + (0 - startX) * progress;
+          const z =
+            startZ +
+            (CONTINUOUS_CITY_CENTER_Z - startZ) * progress;
+          if (
+            worldWalkSurfaceContains(x, z, OFFICE_AVATAR_RADIUS)
+          ) {
+            player.position.x = x;
+            player.position.z = z;
+            break;
+          }
+        }
+      }
+      if (player.position.y > currentFloorY + 1.5) {
+        prepareRoofParachute();
+        jumpVelocity = -0.4;
+      }
+    }
+    jetpackEquipped = next;
+    jetpackVerticalControl = 0;
+    if (player.userData.jetpack) {
+      player.userData.jetpack.visible = next;
+    }
+    if (!next) {
+      player.rotation.z = 0;
+      player.userData.leftArm.rotation.x = 0;
+      player.userData.rightArm.rotation.x = 0;
+      applyLegPitch(player, 0, 0);
+    }
+    onJetpackChange({
+      equipped: next,
+      altitude: Math.max(0, player.position.y - currentFloorY),
+      maxAltitude: JETPACK_MAX_ALTITUDE,
+    });
+    return jetpackEquipped;
+  }
+
+  function toggleJetpack() {
+    return setJetpackEquipped(!jetpackEquipped);
+  }
+
+  function setJetpackVertical(direction, pressed = true) {
+    const normalized =
+      direction === "up" ? 1 : direction === "down" ? -1 : 0;
+    if (!pressed && jetpackVerticalControl === normalized) {
+      jetpackVerticalControl = 0;
+    } else if (pressed) {
+      jetpackVerticalControl = normalized;
+    }
+    return jetpackVerticalControl;
+  }
+
+  function updateJetpackFlight(input, delta, time) {
+    if (!jetpackEquipped) return false;
+    cameraFocus = null;
+    cancelDash();
+    focusedRepositoryKey = "";
+    jumpQueued = false;
+    jumpVelocity = 0;
+    const horizontal = movementVector.copy(input.movement);
+    const keyboardVertical =
+      Number(keys.has("Space")) -
+      Number(
+        keys.has("KeyC") ||
+          keys.has("ControlLeft") ||
+          keys.has("ControlRight"),
+      );
+    const vertical = keyboardVertical || jetpackVerticalControl;
+    const speedMultiplier = input.sprinting ? 1.55 : 1;
+    if (horizontal.lengthSq()) {
+      player.position.addScaledVector(
+        horizontal,
+        JETPACK_HORIZONTAL_SPEED * speedMultiplier * delta,
+      );
+      player.rotation.y = Math.atan2(-horizontal.x, -horizontal.z);
+    }
+    const worldDistance = Math.hypot(player.position.x, player.position.z);
+    const boundary = WORLD_RADIUS - 6;
+    if (worldDistance > boundary) {
+      const scale = boundary / Math.max(1, worldDistance);
+      player.position.x *= scale;
+      player.position.z *= scale;
+    }
+    player.position.y = clamp(
+      player.position.y +
+        vertical * JETPACK_VERTICAL_SPEED * speedMultiplier * delta,
+      currentFloorY + 0.05,
+      JETPACK_MAX_ALTITUDE,
+    );
+    const moving = horizontal.lengthSq() > 0 || vertical !== 0;
+    const thrust =
+      0.38 +
+      (vertical > 0 ? 0.75 : 0) +
+      (horizontal.lengthSq() ? 0.34 : 0);
+    const jetpack = player.userData.jetpack;
+    jetpack?.userData?.flames?.forEach((flame, index) => {
+      const flicker = reducedMotion
+        ? 1
+        : 0.86 + Math.sin(time * 0.025 + index * 2.1) * 0.14;
+      flame.scale.set(
+        0.8 + thrust * 0.22,
+        Math.max(0.2, thrust * flicker),
+        0.8 + thrust * 0.22,
+      );
+      flame.visible = true;
+    });
+    player.userData.leftArm.rotation.x = -0.34;
+    player.userData.rightArm.rotation.x = -0.34;
+    applyLegPitch(
+      player,
+      0.12 + Math.sin(time * 0.004) * 0.05,
+      0.12 - Math.sin(time * 0.004) * 0.05,
+    );
+    player.rotation.z =
+      horizontal.lengthSq() && !reducedMotion
+        ? Math.sin(time * 0.003) * 0.025
+        : 0;
+    player.userData.inputEnergy = decayedPointerEnergy(performance.now());
+    animateAvatarActivity(player, time, delta, reducedMotion);
+    if (
+      performance.now() - lastMovementEmit > 250 &&
+      player.position.distanceToSquared(lastPosition) > 0.025
+    ) {
+      lastMovementEmit = performance.now();
+      lastPosition.copy(player.position);
+      queueMovementEvent({
+        x: Number(player.position.x.toFixed(2)),
+        y: Number(player.position.y.toFixed(2)),
+        z: Number(player.position.z.toFixed(2)),
+        heading: Number(player.rotation.y.toFixed(3)),
+        space: currentSpace,
+        moving,
+        activity: JETPACK_FLYING_ACTIVITY,
+      });
+      onJetpackChange({
+        equipped: true,
+        altitude: Math.max(0, player.position.y - currentFloorY),
+        maxAltitude: JETPACK_MAX_ALTITUDE,
+      });
+    }
+    wasWalking = moving;
+    return true;
+  }
+
+  function stopGymExercise({ notify = true } = {}) {
+    if (!gymState.active) return false;
+    gymState.active = "";
+    gymState.auto = false;
+    gymState.repStartedAt = 0;
+    player.rotation.x = 0;
+    player.rotation.z = 0;
+    player.userData.leftArm.rotation.set(0, 0, 0);
+    player.userData.rightArm.rotation.set(0, 0, 0);
+    applyLegPitch(player, 0, 0);
+    if (notify) onGymState(gymPublicState(false));
+    return true;
+  }
+
+  function beginGymExercise(kind) {
+    if (
+      !["bench", "treadmill", "bike", "rower", "punch"].includes(kind) ||
+      officeSceneMode !== "town"
+    ) {
+      return false;
+    }
+    if (jetpackEquipped) setJetpackEquipped(false);
+    dismountSwing({ relocate: false });
+    dismountBike({ relocate: false });
+    dismountCar({ relocate: false });
+    dismountQuadcopter({ relocate: false });
+    standUpFromBench();
+    cancelDash();
+    gymState.active = kind;
+    gymState.auto = false;
+    gymState.activityStartedAt = performance.now();
+    const localPositions = {
+      bench: [-7.6, 1.2, -0.15],
+      treadmill: [0, 0.35, -3.3],
+      bike: [6.9, 2.3, -3.05],
+      rower: [6.6, 0.95, 4.65],
+      punch: [-1.5, 0.18, 4.8],
+    };
+    const point = gym.localToWorld(
+      new THREE.Vector3(...localPositions[kind]),
+    );
+    player.position.copy(point);
+    player.rotation.set(0, kind === "punch" ? -Math.PI / 2 : 0, 0);
+    lastPosition.copy(player.position);
+    onGymState(gymPublicState(kind === "bench"));
+    return true;
+  }
+
+  function setGymWeight(value) {
+    const weight = clamp(
+      Math.round((Number(value) || 45) / 5) * 5,
+      45,
+      GYM_MAX_WEIGHT_LB,
+    );
+    gymState.weightLb = weight;
+    if (weight < GYM_HEAVY_WEIGHT_LB) gymState.auto = false;
+    onGymState(gymPublicState(true));
+    return weight;
+  }
+
+  function performGymRep() {
+    if (gymState.active !== "bench") beginGymExercise("bench");
+    const now = performance.now();
+    if (now - gymState.repStartedAt < 720) return false;
+    gymState.repStartedAt = now;
+    gymState.reps += 1;
+    onGymState(gymPublicState(true));
+    return true;
+  }
+
+  function setGymAuto(enabled) {
+    if (gymState.active !== "bench") beginGymExercise("bench");
+    gymState.auto =
+      enabled === true && gymState.weightLb >= GYM_HEAVY_WEIGHT_LB;
+    if (gymState.auto && performance.now() - gymState.repStartedAt >= 720) {
+      performGymRep();
+    }
+    onGymState(gymPublicState(true));
+    return gymState.auto;
+  }
+
+  function updateGymExercise(input, delta, time) {
+    if (!gymState.active) return false;
+    if (input.movement.lengthSq() || jumpQueued || dashTarget) {
+      stopGymExercise();
+      return false;
+    }
+    const elapsed = Math.max(0, time - gymState.activityStartedAt);
+    if (gymState.active === "bench") {
+      player.rotation.x = -Math.PI / 2;
+      player.userData.leftArm.rotation.x =
+        -1.2 + Math.sin(clamp((time - gymState.repStartedAt) / 900, 0, 1) * Math.PI) * 0.75;
+      player.userData.rightArm.rotation.x =
+        player.userData.leftArm.rotation.x;
+      applyLegPitch(player, 0.28, 0.28);
+    } else if (gymState.active === "treadmill") {
+      const gait = Math.sin(elapsed * 0.014) * 0.72;
+      player.userData.leftArm.rotation.x = gait;
+      player.userData.rightArm.rotation.x = -gait;
+      applyLegPitch(player, -gait * GAIT_LEG_SWING, gait * GAIT_LEG_SWING);
+    } else if (gymState.active === "bike") {
+      player.userData.leftArm.rotation.x = -0.72;
+      player.userData.rightArm.rotation.x = -0.72;
+      const pedal = Math.sin(elapsed * 0.012) * 0.7;
+      applyLegPitch(player, pedal, -pedal);
+    } else if (gymState.active === "rower") {
+      const stroke = Math.sin(elapsed * 0.006);
+      player.userData.leftArm.rotation.x = -0.9 + stroke * 0.48;
+      player.userData.rightArm.rotation.x =
+        player.userData.leftArm.rotation.x;
+      applyLegPitch(player, 0.45 - stroke * 0.2, 0.45 - stroke * 0.2);
+    } else if (gymState.active === "punch") {
+      const punch = Math.sin(elapsed * 0.011);
+      player.userData.leftArm.rotation.x = punch > 0 ? -1.55 : -0.35;
+      player.userData.rightArm.rotation.x = punch < 0 ? -1.55 : -0.35;
+      applyLegPitch(player, 0.1, -0.1);
+    }
+    player.userData.inputEnergy = decayedPointerEnergy(performance.now());
+    animateAvatarActivity(player, time, delta, reducedMotion);
+    wasWalking = false;
+    return true;
+  }
+
   // The world map's Campfire spot is a trip home: it puts the avatar on the
   // bench that carries this member's name and holds the same seated pose
   // clicking the plank gives. Guests — and members the directory has not
@@ -22140,6 +25137,31 @@ export function createWorldScene({
     focusedRepositoryKey = "";
     sitOnCampfireBench(seat);
     return true;
+  }
+
+  // Position persistence intentionally stores no activity label. Recover the
+  // seated pose on refresh by recognizing coordinates on the current bench
+  // ring, then reseating by member name so roster changes cannot strand the
+  // avatar on an obsolete plank.
+  function restoreCampfireSeatIfNearby(spawn, name) {
+    if (
+      officeSceneMode !== "town" ||
+      String(spawn?.space || "") !== "town-square"
+    ) {
+      return false;
+    }
+    const radii = Array.isArray(campfire.userData.seatRadii)
+      ? campfire.userData.seatRadii
+      : [Number(campfire.userData.seatRadius) || 0];
+    if (!radii.some(Boolean)) return false;
+    const dx = Number(spawn?.x) - campfire.position.x;
+    const dz = Number(spawn?.z) - campfire.position.z;
+    if (!Number.isFinite(dx) || !Number.isFinite(dz)) return false;
+    const distance = Math.hypot(dx, dz);
+    if (!radii.some((radius) => Math.abs(distance - radius) <= 1.25)) {
+      return false;
+    }
+    return returnToCampfireBench(name);
   }
 
   // Clicking the flames is a camera interaction: bring the fire and the
@@ -22171,6 +25193,50 @@ export function createWorldScene({
       inputStrength,
       movement,
     } = movementInput();
+    if (
+      updateJetpackFlight(
+        {
+          keyboardActive,
+          sprinting,
+          touchStrength,
+          inputStrength,
+          movement,
+        },
+        delta,
+        time,
+      )
+    ) {
+      return;
+    }
+    if (quadcopterRide) {
+      updateQuadcopterRide(
+        {
+          keyboardActive,
+          sprinting,
+          touchStrength,
+          inputStrength,
+          movement,
+        },
+        delta,
+        time,
+      );
+      return;
+    }
+    if (
+      updateGymExercise(
+        {
+          keyboardActive,
+          sprinting,
+          touchStrength,
+          inputStrength,
+          movement,
+        },
+        delta,
+        time,
+      )
+    ) {
+      return;
+    }
     if (swingRide) {
       // Like the bench below: relocation ends the ride, and so does any
       // movement input, which keeps WASD as the universal "get off" gesture
@@ -22225,6 +25291,7 @@ export function createWorldScene({
     if (player.position.y <= currentFloorY) {
       player.position.y = currentFloorY;
       jumpVelocity = 0;
+      superJumping = false;
       if (roofParachute?.deployedAt && !roofParachute.landedAt) {
         roofParachute.landedAt = time;
       }
@@ -22290,7 +25357,9 @@ export function createWorldScene({
       );
       player.position.addScaledVector(
         movement,
-        keyboardMovementSpeed * delta,
+        keyboardMovementSpeed *
+          (superJumping ? PLAYER_SUPER_JUMP_MOVE_MULTIPLIER : 1) *
+          delta,
       );
       player.rotation.y = Math.atan2(-movement.x, -movement.z);
       walking = true;
@@ -22331,14 +25400,18 @@ export function createWorldScene({
       player.position.z = previousHorizontalPosition.z;
       cancelDash();
     }
-    constrainTownOfficeWalls(previousHorizontalPosition);
+    if (!superJumping) {
+      constrainTownOfficeWalls(previousHorizontalPosition);
+    }
     if (carRide) {
       jumpQueued = false;
       jumpVelocity = 0;
+      superJumping = false;
       applyCarRidePose(walking, delta);
     } else if (bikeRide) {
       jumpQueued = false;
       jumpVelocity = 0;
+      superJumping = false;
       applyBikeRidePose(walking, delta);
     } else {
       const gait = walking ? Math.sin(time * 0.012) * 0.52 : 0;
@@ -22679,6 +25752,28 @@ export function createWorldScene({
       ),
     };
     return true;
+  }
+
+  function showAgentTaskBubble(botId, title) {
+    if (!agentBotAccessAllowed) return false;
+    // The task board names one general bot, so an unknown id speaks through
+    // whichever bot avatar is present rather than staying silent.
+    const state =
+      agentBotStates.get(String(botId || "").toLowerCase()) ||
+      agentBotStates.values().next().value;
+    const taskTitle = String(title || "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 110);
+    if (!state || !taskTitle) return false;
+    state.excitement = null;
+    state.completion = null;
+    state.target.copy(state.avatar.position);
+    state.nextWanderAt = performance.now() + 9000;
+    return showAvatarChatBubble(
+      state.avatar,
+      `New organization task: ${taskTitle}`,
+    );
   }
 
   function setAgentBotAccess(allowed) {
@@ -23098,7 +26193,10 @@ export function createWorldScene({
     avatar.userData.avatarSelectionMeshes = meshes;
     avatar.userData.chestRegistered = true;
     if (!avatar.userData.fediverseProfile) {
-      avatar.userData.fediverseProfile = { state: "loading" };
+      const directoryFigure = String(peerId || "").startsWith("member:");
+      avatar.userData.fediverseProfile = {
+        state: directoryFigure ? "idle" : "loading",
+      };
       const target = {
         peerId: String(peerId || ""),
         name: String(avatar.userData.badgeIdentity?.name || ""),
@@ -23107,10 +26205,12 @@ export function createWorldScene({
         ),
         self: String(peerId || "") === identity.id,
       };
-      // The local player registers while createWorldScene is still returning.
-      // Defer one microtask so world.js has stored the scene handle before a
-      // fast cached profile response tries to paint this card.
-      queueMicrotask(() => onFediverseProfile(target));
+      // Do not fan one profile + contribution request out for every seat as
+      // the directory arrives. Directory figures hydrate on first selection;
+      // local and live peer avatars remain eager.
+      if (!directoryFigure) {
+        queueMicrotask(() => onFediverseProfile(target));
+      }
     }
   }
 
@@ -23132,7 +26232,7 @@ export function createWorldScene({
     activeAvatarSelection = avatar || null;
     const now = performance.now();
     if (now >= nextAvatarHighlightAt) {
-      nextAvatarHighlightAt = now + 80;
+      nextAvatarHighlightAt = now + AVATAR_HIGHLIGHT_SAMPLE_MS;
       refreshAvatarSelectionHighlight();
     }
   }
@@ -23172,7 +26272,13 @@ export function createWorldScene({
       visitCount: Math.max(0, Number(member.visitCount) || 0),
       totalActiveMs: Math.max(0, Number(member.totalActiveMs) || 0),
       nodes: (Array.isArray(member.nodes) ? member.nodes : [])
-        .map((node) => String(node || "").slice(0, 48))
+        .map((node) =>
+          String(
+            node && typeof node === "object"
+              ? node.name || node.node || ""
+              : node || "",
+          ).slice(0, 48),
+        )
         .slice(0, 6),
       teams: (Array.isArray(assignment.teams) ? assignment.teams : [])
         .map((team) => String(team || "").slice(0, 40))
@@ -23186,6 +26292,17 @@ export function createWorldScene({
               bio: String(profile.bio || "").slice(0, 160),
               followers: Math.max(0, Number(profile.followers) || 0),
               following: Math.max(0, Number(profile.following) || 0),
+              typeTotals:
+                profile.typeTotals && typeof profile.typeTotals === "object"
+                  ? {
+                      pulls: Math.max(0, Number(profile.typeTotals.pulls) || 0),
+                      issues: Math.max(0, Number(profile.typeTotals.issues) || 0),
+                      discussions: Math.max(
+                        0,
+                        Number(profile.typeTotals.discussions) || 0,
+                      ),
+                    }
+                  : {},
               posts: (Array.isArray(profile.posts) ? profile.posts : [])
                 .slice(0, 5)
                 .map((post) => ({
@@ -23205,6 +26322,106 @@ export function createWorldScene({
     };
   }
 
+  function removeDeletedAvatar(avatar, peerId = "") {
+    if (!avatar) return;
+    const id = String(peerId || "");
+    removeRemoteModerationControls(avatar, id);
+    removeRemoteOrgTeamControl(avatar, id);
+    unregisterAvatarChestControls(avatar);
+    if (remotePlayers.get(id) === avatar) {
+      remotePlayers.delete(id);
+      remoteLabels.get(id)?.remove();
+      remoteLabels.delete(id);
+    }
+    if (loungeMembers.get(id) === avatar) loungeMembers.delete(id);
+    if (officeParticipants.get(id) === avatar) {
+      officeParticipants.delete(id);
+      officeParticipantLabels.get(id)?.remove();
+      officeParticipantLabels.delete(id);
+      officeBubbles.get(id)?.remove();
+      officeBubbles.delete(id);
+    }
+    avatar.parent?.remove(avatar);
+    disposeObject3D(avatar);
+  }
+
+  async function animateUnverifiedAvatarDeletion(member = {}) {
+    const name = String(member?.name || "").trim().toLowerCase();
+    if (!name) return false;
+    administrativelyRemovedAccounts.add(name);
+    const matches = [];
+    const collect = (avatar, peerId) => {
+      const avatarName = String(
+        avatar?.userData?.badgeIdentity?.name || "",
+      ).trim().toLowerCase();
+      if (avatar && avatarName === name) matches.push({ avatar, peerId });
+    };
+    remotePlayers.forEach((avatar, peerId) => collect(avatar, peerId));
+    loungeMembers.forEach((avatar, peerId) => collect(avatar, peerId));
+    officeParticipants.forEach((avatar, peerId) => collect(avatar, peerId));
+    if (!matches.length) return false;
+
+    const duration = reducedMotion ? 120 : 900;
+    await Promise.all(
+      matches.map(({ avatar, peerId }) => new Promise((resolve) => {
+        const parent = avatar.parent;
+        const burst = new THREE.Group();
+        burst.name = "forkmesh-admin-delete-burst";
+        burst.position.copy(avatar.position);
+        const particles = [];
+        const colors = ["#ff4d6d", "#ffcf4a", "#77d9ff", "#b8f2a1"];
+        for (let index = 0; index < 18; index += 1) {
+          const particle = new THREE.Mesh(
+            new THREE.SphereGeometry(0.035 + (index % 3) * 0.012, 8, 6),
+            new THREE.MeshBasicMaterial({
+              color: colors[index % colors.length],
+              transparent: true,
+              depthWrite: false,
+            }),
+          );
+          const angle = (index / 18) * Math.PI * 2;
+          particle.userData.velocity = new THREE.Vector3(
+            Math.cos(angle) * (0.9 + (index % 4) * 0.18),
+            0.8 + (index % 5) * 0.22,
+            Math.sin(angle) * (0.9 + (index % 4) * 0.18),
+          );
+          particles.push(particle);
+          burst.add(particle);
+        }
+        parent?.add(burst);
+        unregisterAvatarChestControls(avatar);
+        const startedAt = performance.now();
+        const initialY = avatar.position.y;
+        const initialScale = avatar.scale.clone();
+        const frame = (now) => {
+          const progress = Math.min(1, (now - startedAt) / duration);
+          const eased = 1 - (1 - progress) ** 3;
+          avatar.rotation.y += reducedMotion ? 0 : 0.22;
+          avatar.position.y = initialY + eased * 1.35;
+          avatar.scale.copy(initialScale).multiplyScalar(
+            Math.max(0.02, 1 - eased),
+          );
+          particles.forEach((particle) => {
+            const velocity = particle.userData.velocity;
+            particle.position.copy(velocity).multiplyScalar(eased);
+            particle.position.y -= eased * eased * 0.45;
+            particle.material.opacity = 1 - progress;
+          });
+          if (progress < 1) {
+            requestAnimationFrame(frame);
+            return;
+          }
+          parent?.remove(burst);
+          disposeObject3D(burst);
+          removeDeletedAvatar(avatar, peerId);
+          resolve();
+        };
+        requestAnimationFrame(frame);
+      })),
+    );
+    return true;
+  }
+
   /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
   function setAvatarFediverseProfile(peerId, profile) {
     const id = String(peerId || "");
@@ -23218,6 +26435,11 @@ export function createWorldScene({
     if (!avatar?.userData?.badge) return;
     avatar.userData.fediverseProfile =
       profile && typeof profile === "object" ? profile : { state: "unavailable" };
+    syncAvatarBackName(
+      THREE,
+      avatar,
+      avatar.userData.badgeIdentity || {},
+    );
     const profileCountry = /^[A-Z]{2}$/.test(
       String(profile?.countryCode || "").toUpperCase(),
     )
@@ -23611,6 +26833,12 @@ export function createWorldScene({
   }
 
   function setRemotePlayers(players = []) {
+    players = (Array.isArray(players) ? players : []).filter(
+      (remote) =>
+        !administrativelyRemovedAccounts.has(
+          String(remote?.name || "").trim().toLowerCase(),
+        ),
+    );
     const seen = new Set();
     players.forEach((remote) => {
       if (!remote?.id || remote.id === identity.id) return;
@@ -23743,7 +26971,7 @@ export function createWorldScene({
       avatar.userData.status = remote.activity || "exploring";
       if (avatar.userData.badgeKey !== badgeKey) {
         updateAvatarBadge(THREE, avatar, badgeIdentity, true);
-        syncOperatorBelt(THREE, avatar, badgeIdentity.nodes.length);
+        syncOperatorBelt(THREE, avatar, badgeIdentity.nodes);
         avatar.userData.badgeKey = badgeKey;
         updatePlayerLabel(remoteLabels.get(remote.id), badgeIdentity);
       }
@@ -23863,7 +27091,26 @@ export function createWorldScene({
     leaderboardMembers = members,
     guests = 0,
   ) {
-    const total = Math.max(0, Math.min(999999, Number(totalCount) || 0));
+    const incomingMembers = Array.isArray(members) ? members : [];
+    members = incomingMembers.filter(
+      (member) =>
+        !administrativelyRemovedAccounts.has(
+          String(member?.name || "").trim().toLowerCase(),
+        ),
+    );
+    leaderboardMembers = (
+      Array.isArray(leaderboardMembers) ? leaderboardMembers : []
+    ).filter(
+      (member) =>
+        !administrativelyRemovedAccounts.has(
+          String(member?.name || "").trim().toLowerCase(),
+        ),
+    );
+    const removedCount = incomingMembers.length - members.length;
+    const total = Math.max(
+      0,
+      Math.min(999999, (Number(totalCount) || 0) - removedCount),
+    );
     // The aquarium is the same public account directory expressed as a
     // school: present/recent users swim high, inactive users low. No account
     // names or labels are rendered on the fish themselves.
@@ -23915,7 +27162,7 @@ export function createWorldScene({
       const badgeKey = JSON.stringify(enriched);
       if (avatar.userData.badgeKey === badgeKey) return;
       updateAvatarBadge(THREE, avatar, enriched, true);
-      syncOperatorBelt(THREE, avatar, enriched.nodes?.length || 0);
+      syncOperatorBelt(THREE, avatar, enriched.nodes || []);
       avatar.userData.badgeKey = badgeKey;
     });
     leaderboardGridState.members = leaderboardMembers;
@@ -24027,7 +27274,7 @@ export function createWorldScene({
             syncOperatorBelt(
               THREE,
               figure,
-              memberIdentity.nodes.length,
+              memberIdentity.nodes,
             );
             figure.userData.badgeKey = badgeKey;
           }
@@ -24062,6 +27309,7 @@ export function createWorldScene({
         // sitOnCampfireBench.
         figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
         applySeatedLegPose(figure);
+        figure.userData.ambientInteraction = null;
       });
     // Benches past the roster are the open guest seats.
     for (let index = roster.length; index < seats.length; index += 1) {
@@ -24113,134 +27361,41 @@ export function createWorldScene({
     return true;
   }
 
-  // Concentric rings of cabinets around the reward pool, innermost first.
-  // Every ring is fully ordered before `count` is sliced, so the prefix is
-  // identical for 2, 20, or 64 nodes: adding one node never shifts survivors.
-  // Live scene keep-outs are optional so the geometry stays directly testable
-  // without constructing WebGL.
-  function rewardCircleSlots(centreX, centreZ, count, options = {}) {
-    const spacing = 3.8;
+  // Concentric complete rings around the centred SOL board. Each populated
+  // ring distributes its current members at equal angular intervals; a join
+  // or deletion deliberately reflows that ring so gaps never accumulate.
+  function rewardCircleSlots(centreX, centreZ, count) {
+    const minimumSpacing = 3.65;
+    const ringGap = 4.25;
     const requested = Math.max(0, Math.min(64, Math.round(Number(count) || 0)));
-    const defaultCampfire = landmarkById("campfire").position;
-    const campfirePosition = Array.isArray(options.campfirePosition)
-      ? options.campfirePosition
-      : defaultCampfire;
-    const campfireClearance = Math.max(
-      8.2,
-      Number(options.campfireClearance) || 0,
-    );
-    const circleKeepouts = [
-      {
-        x: Number(campfirePosition[0]) || 0,
-        z: Number(campfirePosition[2]) || 0,
-        radius: campfireClearance,
-      },
-      ...(Array.isArray(options.circleKeepouts)
-        ? options.circleKeepouts
-        : []),
-    ];
-    const rectangleKeepouts = Array.isArray(options.rectangleKeepouts)
-      ? options.rectangleKeepouts
-      : [];
-    const isWalkable =
-      typeof options.isWalkable === "function"
-        ? options.isWalkable
-        : () => true;
     const slots = [];
-    let radius = 10.8;
-    while (slots.length < requested && radius < Math.min(68, WORLD_RADIUS - 6)) {
+    let remaining = requested;
+    let radius = 11.75;
+    let ringIndex = 0;
+    while (remaining > 0 && radius < Math.min(68, WORLD_RADIUS - 6)) {
       const capacity = Math.max(
         1,
-        Math.floor((Math.PI * 2 * radius) / spacing),
+        Math.floor((Math.PI * 2 * radius) / minimumSpacing),
       );
-      const open = [];
-      for (let index = 0; index < capacity; index += 1) {
-        const angle = (index / capacity) * Math.PI * 2;
-        const x = centreX + Math.cos(angle) * radius;
-        const z = centreZ + Math.sin(angle) * radius;
-        if (!isWalkable(x, z)) continue;
-        if (
-          circleKeepouts.some((keepout) => {
-            const clearance = Math.max(0, Number(keepout?.radius) || 0);
-            return (
-              Math.hypot(
-                x - (Number(keepout?.x) || 0),
-                z - (Number(keepout?.z) || 0),
-              ) < clearance
-            );
-          })
-        ) {
-          continue;
-        }
-        if (
-          rectangleKeepouts.some((keepout) => {
-            const padding = Math.max(0, Number(keepout?.padding) || 0);
-            return (
-              x >= (Number(keepout?.minX) || 0) - padding &&
-              x <= (Number(keepout?.maxX) || 0) + padding &&
-              z >= (Number(keepout?.minZ) || 0) - padding &&
-              z <= (Number(keepout?.maxZ) || 0) + padding
-            );
-          })
-        ) {
-          continue;
-        }
-        open.push({ x, z, angle });
-      }
-
-      // Farthest-point order gives every prefix a balanced spread. It is
-      // computed from the complete obstacle-filtered ring, independent of
-      // `requested`, which is the stability guarantee membership changes need.
-      const ordered = [];
-      const remaining = open.slice();
-      while (remaining.length) {
-        let bestIndex = 0;
-        let bestDistance = -1;
-        let bestBalance = Number.POSITIVE_INFINITY;
-        remaining.forEach((candidate, candidateIndex) => {
-          const nearest = ordered.length
-            ? Math.min(
-                ...ordered.map((selected) =>
-                  Math.hypot(
-                    candidate.x - selected.x,
-                    candidate.z - selected.z,
-                  ),
-                ),
-              )
-            : candidate.angle <= Math.PI
-              ? Math.PI - candidate.angle
-              : candidate.angle - Math.PI;
-          // Equal-distance candidates are common on a ring. Prefer the one
-          // that keeps this prefix's centroid nearest the relocated pool,
-          // rather than consistently breaking ties toward one semicircle.
-          const balance = Math.hypot(
-            ordered.reduce(
-              (sum, selected) => sum + selected.x - centreX,
-              candidate.x - centreX,
-            ),
-            ordered.reduce(
-              (sum, selected) => sum + selected.z - centreZ,
-              candidate.z - centreZ,
-            ),
-          );
-          if (
-            nearest > bestDistance + 1e-9 ||
-            (
-              Math.abs(nearest - bestDistance) <= 1e-9 &&
-              balance < bestBalance - 1e-9
-            )
-          ) {
-            bestIndex = candidateIndex;
-            bestDistance = nearest;
-            bestBalance = balance;
-          }
+      const ringCount = Math.min(remaining, capacity);
+      const angleStep = (Math.PI * 2) / ringCount;
+      // Offset alternate rings so their cabinets do not line up radially.
+      const phase =
+        Math.PI / 4 +
+        Math.PI / ringCount +
+        (ringIndex % 2) * angleStep * 0.5;
+      for (let index = 0; index < ringCount; index += 1) {
+        const angle = phase + index * angleStep;
+        slots.push({
+          x: centreX + Math.cos(angle) * radius,
+          z: centreZ + Math.sin(angle) * radius,
         });
-        ordered.push(remaining.splice(bestIndex, 1)[0]);
       }
-      slots.push(...ordered.map(({ x, z }) => ({ x, z })));
-      radius += 4.2;
+      remaining -= ringCount;
+      radius += ringGap;
+      ringIndex += 1;
     }
-    return slots.slice(0, requested);
+    return slots;
   }
 
   function deleteNetworkNode(target = {}) {
@@ -24315,6 +27470,7 @@ export function createWorldScene({
       };
       animated.push(animateDeletion);
     });
+    if (matches.length) relayoutNetworkNodes();
     return matches.length > 0;
   }
 
@@ -24381,54 +27537,22 @@ export function createWorldScene({
           entry.name.toLowerCase() !== entries[index - 1].name.toLowerCase(),
       )
       .slice(0, 64);
-    const usableIds = new Set(
-      usableNodes.map(({ name }) => `node:${name.toLowerCase()}`),
-    );
-    nodeSlotAssignments.forEach((_slotIndex, id) => {
-      if (!usableIds.has(id)) nodeSlotAssignments.delete(id);
-    });
-    const usedSlotIndexes = new Set(nodeSlotAssignments.values());
-    usableNodes.forEach(({ name }) => {
-      const id = `node:${name.toLowerCase()}`;
-      if (nodeSlotAssignments.has(id)) return;
-      let slotIndex = 0;
-      while (usedSlotIndexes.has(slotIndex) && slotIndex < 64) {
-        slotIndex += 1;
-      }
-      if (slotIndex >= 64) return;
-      nodeSlotAssignments.set(id, slotIndex);
-      usedSlotIndexes.add(slotIndex);
-    });
-    const campfireRadius =
-      Math.max(6.2, Number(campfire.userData.seatRadius) || 0) + 2;
     const circleSlots = rewardCircleSlots(
       routingX,
       routingZ,
-      64,
-      {
-        campfirePosition: [
-          campfire.position.x,
-          campfire.position.y,
-          campfire.position.z,
-        ],
-        campfireClearance: campfireRadius,
-        circleKeepouts: [
-          {
-            x: swingSet.position.x,
-            z: swingSet.position.z,
-            radius: 6.2,
-          },
-        ],
-        rectangleKeepouts: [
-          {
-            ...ARRIVAL_GRID_BOUNDS,
-            padding: 1.8,
-          },
-        ],
-        isWalkable: (x, z) => worldWalkSurfaceContains(x, z, 1.7),
-      },
+      usableNodes.length,
     );
-    usableNodes.forEach(({ node, name: nodeName }) => {
+    const nodeYardConcrete = fountain?.userData?.nodeYardConcrete;
+    if (nodeYardConcrete) {
+      const farthestRadius = circleSlots.reduce(
+        (largest, slot) =>
+          Math.max(largest, Math.hypot(slot.x - routingX, slot.z - routingZ)),
+        0,
+      );
+      const plazaRadius = Math.max(14, farthestRadius + 4.2);
+      nodeYardConcrete.scale.set(plazaRadius, 1, plazaRadius);
+    }
+    usableNodes.forEach(({ node, name: nodeName }, nodeIndex) => {
       const id = `node:${nodeName.toLowerCase()}`;
       const dataKey = nodeDataKey({ ...node, name: nodeName });
       seen.add(id);
@@ -24477,7 +27601,7 @@ export function createWorldScene({
         }
         nodeInfrastructure.set(id, cabinet);
       }
-      const slot = circleSlots[nodeSlotAssignments.get(id)];
+      const slot = circleSlots[nodeIndex];
       if (!slot) return;
       cabinet.position.set(slot.x, 0.38, slot.z);
       // The front display faces inward so each cabinet remains individually
@@ -24526,6 +27650,15 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
+    // The cabinets standing in the ring are exactly what the tally counts.
+    setRewardPoolMirrorCount(
+      usableNodes.length,
+      usableNodes.filter(
+        ({ node }) =>
+          node?.online === true ||
+          String(node?.status || "").toLowerCase() === "online",
+      ).length,
+    );
   }
 
   function armMirrorPushEffect(
@@ -24665,6 +27798,8 @@ export function createWorldScene({
     if (existing) {
       district.remove(existing);
       existing.traverse((child) => {
+        const interactiveIndex = interactive.indexOf(child);
+        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
         child.geometry?.dispose?.();
         child.material?.map?.dispose?.();
         child.material?.dispose?.();
@@ -24690,7 +27825,13 @@ export function createWorldScene({
           online ? 0.75 : 0.5,
           Math.sin(angle) * 4.3,
         );
+        tower.userData.interactive = "federated-world-portal";
+        tower.userData.origin = String(instance?.origin || "");
+        tower.userData.label = String(
+          instance?.label || "ForkMesh instance",
+        ).slice(0, 80);
         layer.add(tower);
+        interactive.push(tower);
         const label = makeLabelSprite(
           THREE,
           String(instance?.label || "ForkMesh instance").slice(0, 22),
@@ -24701,7 +27842,13 @@ export function createWorldScene({
         label.position.copy(tower.position).add(
           new THREE.Vector3(0, online ? 1.05 : 0.78, 0),
         );
+        label.userData.interactive = "federated-world-portal";
+        label.userData.origin = String(instance?.origin || "");
+        label.userData.label = String(
+          instance?.label || "ForkMesh instance",
+        ).slice(0, 80);
         layer.add(label);
+        interactive.push(label);
       });
     district.add(layer);
     district.userData.federatedInstanceLayer = layer;
@@ -24781,6 +27928,19 @@ export function createWorldScene({
       .filter(Boolean)
       .slice(0, 32);
     const tables = Array.isArray(metrics?.tables) ? metrics.tables : [];
+    const database =
+      metrics?.database && typeof metrics.database === "object"
+        ? metrics.database
+        : {};
+    const databaseBytes = Math.max(0, Number(database.bytes) || 0);
+    const freeDatabaseLimitBytes = Math.max(
+      0,
+      Number(database.freeDatabaseLimitBytes) || 0,
+    );
+    const paidDatabaseLimitBytes = Math.max(
+      0,
+      Number(database.paidDatabaseLimitBytes) || 0,
+    );
     const safeTables = [
       ...new Map(
         tables
@@ -24807,6 +27967,11 @@ export function createWorldScene({
     const signature = JSON.stringify({
       objects: safeRecords,
       tables: safeTables,
+      database: {
+        bytes: databaseBytes,
+        freeDatabaseLimitBytes,
+        paidDatabaseLimitBytes,
+      },
     });
     if (
       systemCapacityPlatform.userData.metricsSignature === signature
@@ -24940,6 +28105,28 @@ export function createWorldScene({
         topLabel.rotation.x = -Math.PI / 2;
         tableLayer.add(topLabel);
       });
+      if (databaseBytes || freeDatabaseLimitBytes || paidDatabaseLimitBytes) {
+        const freeRatio = freeDatabaseLimitBytes
+          ? (databaseBytes / freeDatabaseLimitBytes) * 100
+          : 0;
+        const paidRatio = paidDatabaseLimitBytes
+          ? (databaseBytes / paidDatabaseLimitBytes) * 100
+          : 0;
+        const storageLabel = makeLabelSprite(
+          THREE,
+          `D1 STORAGE ${formatCapacityBytes(databaseBytes)}`,
+          `${freeRatio.toFixed(2)}% OF ${formatPlatformLimitBytes(
+            freeDatabaseLimitBytes,
+          )} FREE · ${paidRatio.toFixed(3)}% OF ${formatPlatformLimitBytes(
+            paidDatabaseLimitBytes,
+          )} PAID`,
+          freeRatio >= 85 ? "#ff9ca4" : "#9ef7c6",
+        );
+        storageLabel.name = "system-capacity-d1-storage";
+        storageLabel.scale.set(6.9, 1.15, 1);
+        storageLabel.position.set(0, 4.65, -3.15);
+        tableLayer.add(storageLabel);
+      }
       layer.add(tableLayer);
     }
 
@@ -25329,12 +28516,12 @@ export function createWorldScene({
     // activity ticket wins, and the directory record fills the rest in.
     const badgeIdentity = withMemberFacts(identity);
     updateAvatarBadge(THREE, player, badgeIdentity, false);
-    syncOperatorBelt(THREE, player, identity.nodes?.length || 0);
+    syncOperatorBelt(THREE, player, identity.nodes || []);
     updateAvatarBadge(THREE, officeLobbyPlayer, badgeIdentity, false);
     syncOperatorBelt(
       THREE,
       officeLobbyPlayer,
-      identity.nodes?.length || 0,
+      identity.nodes || [],
     );
     updatePlayerLabel(playerLabel, identity);
     const nextName = String(identity.name || "").trim().toLowerCase();
@@ -26585,9 +29772,6 @@ export function createWorldScene({
       const rowPitch = 0.52;
       const boardHeight = 0.74 + rows * rowPitch;
       const boardBottomY = groundY + 2.62;
-      const countBottomY = groundY + 1;
-      const boardTopY = boardBottomY + boardHeight;
-      const visualHeight = boardTopY - countBottomY;
       const boardWidth = 4.05;
       const board = new THREE.Mesh(
         new THREE.BoxGeometry(boardWidth, boardHeight, 0.12),
@@ -26845,65 +30029,8 @@ export function createWorldScene({
       pageReadout.position.set(0, groundY + 0.7, 0.2);
       desk.add(pageReadout);
 
-      const viewingPad = new THREE.Group();
-      viewingPad.name = `repository-${kind}-viewing-pad:${repositoryKey}`;
-      viewingPad.position.set(
-        0,
-        groundY + 0.08,
-        Math.max(4.4, visualHeight * 1.28),
-      );
-      const viewingPadBase = new THREE.Mesh(
-        new THREE.BoxGeometry(2.72, 0.14, 1.28),
-        makeMaterial(THREE, kind === "issue" ? "#10231b" : "#171429", {
-          emissive: accent,
-          emissiveIntensity: 0.24,
-          metalness: 0.28,
-          roughness: 0.56,
-        }),
-      );
-      viewingPadBase.name =
-        `repository-${kind}-viewing-pad-base:${repositoryKey}`;
-      const viewingPadFace = new THREE.Mesh(
-        new THREE.PlaneGeometry(2.5, 1.06),
-        new THREE.MeshBasicMaterial({
-          map: repositoryRecordPagerTexture(
-            THREE,
-            "VIEW",
-            "FIRST PERSON",
-            accent,
-          ),
-          transparent: true,
-          toneMapped: false,
-        }),
-      );
-      viewingPadFace.name =
-        `repository-${kind}-viewing-pad-face:${repositoryKey}`;
-      viewingPadFace.rotation.x = -Math.PI / 2;
-      viewingPadFace.position.y = 0.076;
-      const viewingTarget = new THREE.Object3D();
-      viewingTarget.name =
-        `repository-${kind}-viewing-target:${repositoryKey}`;
-      viewingTarget.position.set(
-        0,
-        (countBottomY + boardTopY) / 2,
-        0.04,
-      );
-      desk.add(viewingTarget);
-      const viewingPadData = {
-        owner,
-        name,
-        kind,
-        target: viewingTarget,
-      };
-      for (const object of [viewingPadBase, viewingPadFace]) {
-        object.userData.landmark = "repositories";
-        object.userData.repositoryViewingPad = viewingPadData;
-        interactive.push(object);
-      }
-      viewingPad.add(viewingPadBase, viewingPadFace);
-      desk.add(viewingPad);
       layer.add(desk);
-      return { desk, board, boardHeight, items, viewingPad };
+      return { desk, board, boardHeight, items };
     };
 
     // Keep review and issue work visually and operationally independent:
@@ -27319,7 +30446,41 @@ export function createWorldScene({
     // it plays the same way whether the gesture came from this browser or off
     // the relay.
     if (emote === "wave") startAvatarWave(avatar);
-    const glyphs = { wave: "WAVE", idea: "IDEA ✦", celebrate: "NICE ★" };
+    if (emote === "superjump" && local && officeSceneMode === "town") {
+      standUpFromBench();
+      dismountSwing({ relocate: false });
+      cancelDash();
+      removeRoofParachute();
+      jumpQueued = false;
+      jumpVelocity = PLAYER_SUPER_JUMP_VELOCITY;
+      superJumping = true;
+    } else if (
+      [
+        "jump",
+        "superjump",
+        "spin",
+        "backflip",
+        "dance",
+        "float",
+        "wobble",
+        "sparkle",
+      ].includes(emote)
+    ) {
+      startAvatarHudAction(avatar, emote);
+    }
+    const glyphs = {
+      wave: "WAVE",
+      idea: "IDEA ✦",
+      celebrate: "NICE ★",
+      jump: "BOING ↑",
+      superjump: "SUPER JUMP ⇈",
+      spin: "WHEE ↻",
+      backflip: "FLIP!",
+      dance: "DANCE ♫",
+      float: "UP WE GO ☁",
+      wobble: "WOBBLE 〰",
+      sparkle: "SPARKLE ✦",
+    };
     const sprite = makeLabelSprite(
       THREE,
       glyphs[emote] || "HELLO",
@@ -27435,6 +30596,24 @@ export function createWorldScene({
     const sign = landmarkObjects.get("fountain")?.userData?.treasurySign;
     if (!sign) return;
     applyRewardTreasury(THREE, sign, state);
+  }
+
+  // Repaints the tally hovering over the pool orb. The catalog refresh runs on
+  // a timer and mirror health reorders the payload without changing these two
+  // numbers, so a memo keeps the canvas from being rebuilt every pass.
+  function setRewardPoolMirrorCount(total, online) {
+    const sprite = landmarkObjects.get("fountain")?.userData?.mirrorCountSprite;
+    if (!sprite) return;
+    const count = Math.max(0, Math.min(9999, Math.round(Number(total) || 0)));
+    const live = Math.max(0, Math.min(count, Math.round(Number(online) || 0)));
+    // No cabinets means no catalog yet: stay hidden rather than claim zero.
+    sprite.visible = count > 0;
+    const key = `${count}|${live}`;
+    if (mirrorCountShown === key) return;
+    mirrorCountShown = key;
+    sprite.material.map?.dispose?.();
+    sprite.material.map = rewardPoolMirrorCountTexture(THREE, count, live);
+    sprite.material.needsUpdate = true;
   }
 
   // Freshly pushed code announces itself: a tall light column rises from the
@@ -27607,7 +30786,6 @@ export function createWorldScene({
       new THREE.TorusGeometry(2.05, 0.1, 8, 48),
       new THREE.MeshBasicMaterial({
         color: "#79c0ff",
-        emissive: "#58a6ff",
         transparent: true,
         opacity: 0,
         blending: THREE.AdditiveBlending,
@@ -27836,19 +31014,22 @@ export function createWorldScene({
       return firstPersonZoom;
     }
     cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
-    // Swap complete districts for their constant-cost aerial markers in the
-    // same input event as the zoom. Waiting for the periodic LOD sample left a
-    // few visibly expensive frames at the exact moment the camera pulled out.
-    updateSceneLevelOfDetail(true);
+    // This is intentionally not forced. Pointer and pinch events can arrive
+    // much faster than display frames; the LOD pass only has work when zoom
+    // crosses its near/far boundary.
+    updateSceneLevelOfDetail();
     return cameraZoom;
   }
 
   function touchDistance() {
-    const points = [...touchPointers.values()];
-    if (points.length < 2) return 0;
+    if (touchPointers.size < 2) return 0;
+    const values = touchPointers.values();
+    const first = values.next().value;
+    const second = values.next().value;
+    if (!first || !second) return 0;
     return Math.hypot(
-      points[0].x - points[1].x,
-      points[0].y - points[1].y,
+      first.x - second.x,
+      first.y - second.y,
     );
   }
 
@@ -27883,6 +31064,19 @@ export function createWorldScene({
         CAMERA_PITCH_MAX,
       );
     }
+    const seatedOrMounted =
+      Boolean(benchSeat) ||
+      Boolean(swingRide) ||
+      Boolean(bikeRide) ||
+      Boolean(carRide) ||
+      Boolean(quadcopterRide) ||
+      Boolean(officeElevatorRide);
+    applyAvatarLookDirection(
+      player,
+      cameraYaw,
+      cameraMode === "first-person" ? firstPersonPitch : cameraPitch,
+      !seatedOrMounted,
+    );
   }
 
   function handlePointerDown(event) {
@@ -27946,7 +31140,10 @@ export function createWorldScene({
           onQaAction(qaAction);
         }
       }
-      const boardHit = pressHits.find(
+      const videoHit = pressHits.find(
+        ({ object }) => object === buildVideoLink,
+      );
+      const boardHit = !videoHit && pressHits.find(
         ({ object }) => object === officeTaskBulletinFace,
       );
       if (boardHit) {
@@ -28005,6 +31202,36 @@ export function createWorldScene({
     pointerEnergyY = y;
   }
 
+  // The treasury board only ever shows what the shell last handed to
+  // updateRewardPool, and that balance costs a public Solana RPC round trip,
+  // so it is fetched on demand instead of on a timer. Resting the pointer on
+  // the SOL sign is the refresh gesture; the sample gate keeps a fast mouse
+  // sweep from adding an intersect test to every pointer event, and the edge
+  // transition means holding still asks only once.
+  const REWARD_BOARD_HOVER_SAMPLE_MS = 120;
+  let rewardBoardHoverSampledAt = 0;
+  let rewardBoardHovered = false;
+
+  function updateRewardBoardHover(event, now) {
+    if (now - rewardBoardHoverSampledAt < REWARD_BOARD_HOVER_SAMPLE_MS) return;
+    rewardBoardHoverSampledAt = now;
+    const sign = landmarkObjects.get("fountain")?.userData?.treasurySign;
+    if (
+      !sign ||
+      officeSceneMode !== "town" ||
+      !objectIsEffectivelyVisible(sign)
+    ) {
+      rewardBoardHovered = false;
+      return;
+    }
+    pointerCoordinates(event);
+    raycaster.setFromCamera(pointer, camera);
+    const hovered = raycaster.intersectObject(sign, true).length > 0;
+    if (hovered === rewardBoardHovered) return;
+    rewardBoardHovered = hovered;
+    if (hovered) onRewardBoardHover();
+  }
+
   function handlePointerMove(event) {
     const pointerNow = performance.now();
     recordPointerEnergy(event, pointerNow);
@@ -28041,6 +31268,11 @@ export function createWorldScene({
         event.preventDefault();
         return;
       }
+    }
+    // Only an idle fine pointer is a hover: a held button is a camera drag or
+    // an object gesture, not somebody looking at the treasury board.
+    if (event.pointerType === "mouse" && primaryPointerId === null) {
+      updateRewardBoardHover(event, pointerNow);
     }
     if (event.pointerId !== primaryPointerId) return;
     if (draggedLayoutObject) {
@@ -28129,8 +31361,8 @@ export function createWorldScene({
       event.preventDefault();
       return;
     }
-    const currentPointer = new THREE.Vector2(event.clientX, event.clientY);
-    const movedDistance = pointerStart.distanceTo(currentPointer);
+    pointerCurrent.set(event.clientX, event.clientY);
+    const movedDistance = pointerStart.distanceTo(pointerCurrent);
     const canRotate =
       event.pointerType === "mouse" ||
       (event.pointerType === "touch" &&
@@ -28140,21 +31372,21 @@ export function createWorldScene({
     if (canRotate && movedDistance > 4) {
       if (pointerGestureMoved) {
         rotateCamera(
-          currentPointer.x - pointerLast.x,
-          currentPointer.y - pointerLast.y,
+          pointerCurrent.x - pointerLast.x,
+          pointerCurrent.y - pointerLast.y,
         );
       } else {
         pointerGestureMoved = true;
         rotateCamera(
-          currentPointer.x - pointerStart.x,
-          currentPointer.y - pointerStart.y,
+          pointerCurrent.x - pointerStart.x,
+          pointerCurrent.y - pointerStart.y,
         );
       }
       event.preventDefault();
     } else if (movedDistance > 9) {
       pointerGestureMoved = true;
     }
-    pointerLast.copy(currentPointer);
+    pointerLast.copy(pointerCurrent);
   }
 
   function officeObjectMatchesCurrentFloor(object) {
@@ -28192,6 +31424,14 @@ export function createWorldScene({
         pinchStartDistance = 0;
       }
       remainingTouch = touchPointers.entries().next().value || null;
+      if (
+        !touchPointers.size &&
+        !externalTouchInteractionActive &&
+        pendingTouchResize
+      ) {
+        pendingTouchResize = false;
+        resize();
+      }
     }
     try {
       renderer.domElement.releasePointerCapture(event.pointerId);
@@ -28431,6 +31671,10 @@ export function createWorldScene({
       onWorldGeneralChatSelect();
       return;
     }
+    if (hit?.object?.userData?.interactive === "world-discord-board") {
+      onWorldDiscordBoardSelect();
+      return;
+    }
     const recordPage = hit?.object?.userData?.repositoryRecordPage;
     if (recordPage?.enabled === true) {
       changeRepositoryRecordPage(
@@ -28492,16 +31736,51 @@ export function createWorldScene({
       onStartNodeDownload();
       return;
     }
+    if (hit?.object?.userData?.interactive === "instance-launch-booth") {
+      onInstanceBoothSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "launch-vultr-mirror") {
+      onLaunchMirrorSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "garden-waterfall") {
+      waterfallSplashUntil = performance.now() + 2600;
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "drinking-fountain") {
+      drinkingUntil = performance.now() + 2200;
+      onDrinkWater();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "federated-world-portal") {
+      onFederatedWorldTravel({
+        origin: String(hit.object.userData.origin || ""),
+        label: String(hit.object.userData.label || "ForkMesh instance"),
+      });
+      return;
+    }
     if (hit?.object?.userData?.interactive === "office-link-kiosk") {
       onLobbyLinkKioskSelect();
       return;
     }
     if (hit?.object?.userData?.interactive === "office-floor-warp") {
-      warpToOfficeFloor(hit.object.userData.officeFloorId);
+      warpToOfficeFloor(hit.object.userData.officeFloorTargetId);
+      return;
+    }
+    if (
+      hit?.object?.userData?.interactive ===
+      "office-lobby-return-portal"
+    ) {
+      warpToOfficeFloor("lobby");
       return;
     }
     if (hit?.object?.userData?.interactive === "office-feedback-kiosk") {
       onLobbyFeedbackKioskSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "office-task-bid-kiosk") {
+      onLobbyTaskBidKioskSelect();
       return;
     }
     if (hit?.object?.userData?.interactive === "system-capacity-table") {
@@ -28552,11 +31831,39 @@ export function createWorldScene({
       });
       return;
     }
+    if (hit?.object?.userData?.interactive === "build-video-link") {
+      onBuildVideoSelect();
+      return;
+    }
     const chestControl = hit?.object ? chestControls.get(hit.object) : null;
     if (chestControl && handleChestControl(chestControl, hit)) {
       return;
     }
     if (avatarSelection) {
+      const selectedMember = avatarSelectionPayload(avatarSelection);
+      if (
+        avatarSelection.avatar?.userData?.fediverseProfile?.state === "idle"
+      ) {
+        avatarSelection.avatar.userData.fediverseProfile = {
+          state: "loading",
+        };
+        onFediverseProfile({
+          peerId: String(avatarSelection.peerId || ""),
+          name: selectedMember.name,
+          accountStatus: selectedMember.accountStatus,
+          self: selectedMember.self,
+        });
+      }
+      if (
+        hit.object === avatarSelection.avatar?.userData?.verifiedPin &&
+        identity.isAdmin === true &&
+        selectedMember.self !== true &&
+        selectedMember.emailVerified !== true &&
+        selectedMember.accountStatus.toLowerCase() !== "guest"
+      ) {
+        onUnverifiedAvatarDelete(selectedMember);
+        return;
+      }
       onAvatarSelect(avatarSelectionPayload(avatarSelection));
       return;
     }
@@ -28625,6 +31932,14 @@ export function createWorldScene({
       rideCar(hit.object.userData.carIndex);
       return;
     }
+    if (Number.isInteger(hit?.object?.userData?.quadcopterIndex)) {
+      rideQuadcopter(hit.object.userData.quadcopterIndex);
+      return;
+    }
+    if (hit?.object?.userData?.gymEquipment) {
+      beginGymExercise(String(hit.object.userData.gymEquipment));
+      return;
+    }
     if (hit?.object?.userData?.forkbotChat) {
       onForkbotChat();
       return;
@@ -28673,10 +31988,6 @@ export function createWorldScene({
         source: "world",
         nodeCabinet: { ...hit.object.userData.nodeCabinet },
       });
-      return;
-    }
-    if (hit?.object?.userData?.repositoryViewingPad) {
-      focusRepositoryViewingPad(hit.object);
       return;
     }
     if (hit?.object?.userData?.landmark) {
@@ -29137,6 +32448,30 @@ export function createWorldScene({
       rideBike(bikeHit.object.userData.bikeIndex);
       return;
     }
+    const quadcopterHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(
+        ({ object }) =>
+          Number.isInteger(object.userData?.quadcopterIndex) &&
+          objectIsEffectivelyVisible(object),
+      );
+    if (quadcopterHit) {
+      event.preventDefault();
+      rideQuadcopter(quadcopterHit.object.userData.quadcopterIndex);
+      return;
+    }
+    const gymHit = raycaster
+      .intersectObjects(interactive, false)
+      .find(
+        ({ object }) =>
+          Boolean(object.userData?.gymEquipment) &&
+          objectIsEffectivelyVisible(object),
+      );
+    if (gymHit) {
+      event.preventDefault();
+      beginGymExercise(String(gymHit.object.userData.gymEquipment));
+      return;
+    }
     const point = groundPointAt(event.clientX, event.clientY);
     if (!point) return;
     event.preventDefault();
@@ -29244,6 +32579,14 @@ export function createWorldScene({
       keys.add(event.code);
       event.preventDefault();
     }
+    if (
+      (quadcopterRide || jetpackEquipped) &&
+      ["Space", "KeyC", "ControlLeft", "ControlRight"].includes(event.code)
+    ) {
+      keys.add(event.code);
+      event.preventDefault();
+      return;
+    }
     if (event.code === "Space") {
       const roofJumpStarted = beginOfficeRoofJump();
       const canJump =
@@ -29255,7 +32598,12 @@ export function createWorldScene({
       event.preventDefault();
     }
     if (event.code === "KeyE" && !event.repeat) {
-      if (toggleNearestBikeRide()) event.preventDefault();
+      if (
+        toggleNearestQuadcopterRide() ||
+        toggleNearestBikeRide()
+      ) {
+        event.preventDefault();
+      }
     }
     // R turns the selected object a step at a time; hold Shift to turn it back
     // the other way. Selection never changes the behavior for non-admins.
@@ -29325,6 +32673,15 @@ export function createWorldScene({
   let resizeFrame = 0;
   const resize = () => {
     if (resizeFrame || disposed) return;
+    // Mobile browser chrome and visualViewport can resize the canvas wrapper
+    // while a finger pans, tilts, or pinches. Reallocating the WebGL drawing
+    // buffer mid-gesture clears it and looks exactly like a full page refresh.
+    // Keep the current frame and apply one settled resize after the final
+    // touch pointer is released.
+    if (touchPointers.size > 0 || externalTouchInteractionActive) {
+      pendingTouchResize = true;
+      return;
+    }
     resizeFrame = window.requestAnimationFrame(() => {
       resizeFrame = 0;
       if (disposed) return;
@@ -29369,8 +32726,81 @@ export function createWorldScene({
   window.addEventListener("resize", resize, { passive: true });
   resize();
 
+  function scheduleMovementInputWarning(inputToFrameMs) {
+    if (movementInputWarningTimer || disposed) return;
+    const snapshot = {
+      inputToFrameMs: Math.round(inputToFrameMs),
+      space: currentSpace,
+      scene: officeSceneMode,
+      suppressed: suppressedMovementInputDelays,
+    };
+    suppressedMovementInputDelays = 0;
+    movementInputWarningTimer = window.setTimeout(() => {
+      movementInputWarningTimer = 0;
+      if (disposed) return;
+      console.warn("[ForkMesh World] Movement input delayed", {
+        observedAt: new Date().toISOString(),
+        ...snapshot,
+      });
+    }, 0);
+  }
+
+  function scheduleRenderStallWarning(rawFrameMs, refreshedShadowMap = false) {
+    if (renderStallWarningTimer || disposed) return;
+    const renderCalls = Number(renderer.info?.render?.calls) || 0;
+    const renderedTriangles = Number(renderer.info?.render?.triangles) || 0;
+    let component = `${currentSpace} scene`;
+    let codeArea = "world-scene animate() update/render pipeline";
+    if (refreshedShadowMap) {
+      component = "shadow map refresh";
+      codeArea = "renderer.render(scene, camera) shadow pass";
+    } else if (pinchActive || primaryPointerId !== null) {
+      component = "camera controls";
+      codeArea = "world-scene pointer/pinch camera update";
+    } else if (renderCalls >= 450 || renderedTriangles >= 750_000) {
+      component = "Three.js renderer workload";
+      codeArea = "renderer.render(scene, camera)";
+    } else if (officeSceneMode !== "town") {
+      component = `office ${officeSceneMode} scene`;
+      codeArea = "world-scene office movement and environment updates";
+    }
+    const snapshot = {
+      frameMs: Math.round(rawFrameMs),
+      estimatedMissedFrames: Math.max(
+        0,
+        Math.round(rawFrameMs / 16.67) - 1,
+      ),
+      likelyCause: { component, codeArea },
+      space: currentSpace,
+      scene: officeSceneMode,
+      renderCalls,
+      renderedTriangles,
+      interactiveObjects: interactive.length,
+      animatedObjects: animated.length,
+      suppressed: suppressedRenderStalls,
+    };
+    suppressedRenderStalls = 0;
+    renderStallWarningTimer = window.setTimeout(() => {
+      renderStallWarningTimer = 0;
+      if (disposed) return;
+      const drawingBuffer = renderer.getDrawingBufferSize(
+        diagnosticsDrawingBuffer,
+      );
+      console.warn(
+        `[ForkMesh World] Render stall detected; we think it was ${component} (${codeArea})`,
+        {
+          observedAt: new Date().toISOString(),
+          ...snapshot,
+          drawingBuffer: [drawingBuffer.x, drawingBuffer.y],
+          pixelRatio: renderer.getPixelRatio(),
+        },
+      );
+    }, 0);
+  }
+
   function animate(time) {
     if (!running || disposed) return;
+    const frameWorkStartedAt = performance.now();
     if (time >= nextEnvironmentCheckAt) {
       nextEnvironmentCheckAt = time + 15_000;
       const localNow = new Date();
@@ -29383,10 +32813,16 @@ export function createWorldScene({
       if (minuteOfDay !== localDaylightMinute) updateWorldEnvironment();
     }
     if (time >= nextSceneLodAt) {
-      nextSceneLodAt = time + 180;
+      nextSceneLodAt = time + SCENE_LOD_SAMPLE_MS;
       updateSceneLevelOfDetail();
     }
-    refreshAvatarSelectionHighlight();
+    if (
+      activeAvatarSelection &&
+      time >= nextAvatarHighlightAt
+    ) {
+      nextAvatarHighlightAt = time + AVATAR_HIGHLIGHT_SAMPLE_MS;
+      refreshAvatarSelectionHighlight();
+    }
     const rawFrameMs = Math.max(0, time - lastFrame);
     const delta = clamp(rawFrameMs / 1000, 0, 0.05);
     lastFrame = time;
@@ -29399,89 +32835,21 @@ export function createWorldScene({
       );
       if (
         inputToFrameMs >= MOVEMENT_INPUT_DELAY_THRESHOLD_MS &&
-        time - lastMovementInputDelayLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
+        time - lastMovementInputDelayLogAt >=
+          MOVEMENT_INPUT_LOG_COOLDOWN_MS
       ) {
         lastMovementInputDelayLogAt = time;
-        console.warn("[ForkMesh World] Movement input delayed", {
-          observedAt: new Date().toISOString(),
-          inputToFrameMs: Math.round(inputToFrameMs),
-          space: currentSpace,
-          officeSceneMode,
-          pressedKeys: [...keys],
-          touchStrength: Number(touchMovement.length().toFixed(3)),
-        });
+        scheduleMovementInputWarning(inputToFrameMs);
+      } else if (inputToFrameMs >= MOVEMENT_INPUT_DELAY_THRESHOLD_MS) {
+        suppressedMovementInputDelays += 1;
       }
       movementInputStartedAt = 0;
     }
     diagnosticsLongestFrameMs = Math.max(diagnosticsLongestFrameMs, rawFrameMs);
     if (rawFrameMs > 34) diagnosticsLongFrames += 1;
-    // Report genuine visible-tab stalls without flooding DevTools during a
-    // prolonged hitch. Ordinary 30–60fps variance remains in diagnostics but
-    // does not produce console noise.
-    if (
-      rawFrameMs >= RENDER_STALL_THRESHOLD_MS &&
-      document.visibilityState === "visible" &&
-      time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
-    ) {
-      lastRenderStallLogAt = time;
-      const drawingBuffer = renderer.getDrawingBufferSize(
-        diagnosticsDrawingBuffer,
-      );
-      const memory = performance.memory;
-      console.warn("[ForkMesh World] Render stall detected", {
-        observedAt: new Date().toISOString(),
-        frameMs: Math.round(rawFrameMs),
-        estimatedMissedFrames: Math.max(0, Math.round(rawFrameMs / 16.67) - 1),
-        detectionPoint: "world-scene animate()",
-        cameraMode,
-        camera: {
-          zoom: Number(
-            (cameraMode === "first-person" ? firstPersonZoom : cameraZoom).toFixed(3),
-          ),
-          yaw: Number(cameraYaw.toFixed(3)),
-          pitch: Number(
-            (cameraMode === "first-person" ? firstPersonPitch : cameraPitch).toFixed(3),
-          ),
-          position: camera.position.toArray().map((value) => Number(value.toFixed(2))),
-        },
-        player: {
-          position: player.position.toArray().map((value) => Number(value.toFixed(2))),
-          moving: wasWalking,
-        },
-        space: currentSpace,
-        region: currentRegion,
-        officeSceneMode,
-        input: {
-          dragging: primaryPointerId !== null,
-          pinching: pinchActive,
-          pressedKeys: [...keys],
-          touchPointers: touchPointers.size,
-        },
-        renderer: {
-          pixelRatio: renderer.getPixelRatio(),
-          drawingBuffer: [drawingBuffer.x, drawingBuffer.y],
-          calls: Number(renderer.info?.render?.calls) || 0,
-          triangles: Number(renderer.info?.render?.triangles) || 0,
-          geometries: Number(renderer.info?.memory?.geometries) || 0,
-          textures: Number(renderer.info?.memory?.textures) || 0,
-        },
-        viewport: {
-          width: window.innerWidth,
-          height: window.innerHeight,
-          devicePixelRatio: window.devicePixelRatio || 1,
-        },
-        jsHeap: memory
-          ? {
-              usedMB: Math.round(memory.usedJSHeapSize / 1024 / 1024),
-              totalMB: Math.round(memory.totalJSHeapSize / 1024 / 1024),
-              limitMB: Math.round(memory.jsHeapSizeLimit / 1024 / 1024),
-            }
-          : null,
-        interactiveObjects: interactive.length,
-        animatedObjects: animated.length,
-        stack: new Error("Render stall observed").stack,
-      });
-    }
+    // rawFrameMs includes time spent waiting for requestAnimationFrame and is
+    // useful for FPS diagnostics, but it cannot identify renderer work. Stall
+    // attribution is performed after render from actual main-thread work time.
     updateOfficeElevator(time);
     if (officeSceneMode === "town") {
       walkPlayer(delta, time);
@@ -29489,6 +32857,17 @@ export function createWorldScene({
       walkOfficeLobbyPlayer(delta, time);
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
+    }
+    if (officeSceneMode === "town") {
+      const insideInstanceBooth =
+        Math.abs(player.position.x - instanceBooth.position.x) < 9.7 &&
+        Math.abs(player.position.z - instanceBooth.position.z) < 8.3;
+      if (insideInstanceBooth && !instanceBoothOccupied) {
+        onInstanceBoothSelect();
+      }
+      instanceBoothOccupied = insideInstanceBooth;
+    } else {
+      instanceBoothOccupied = false;
     }
     updateOfficeReceptionGuide(time);
     updateOfficeAttendanceClock(time);
@@ -29572,7 +32951,7 @@ export function createWorldScene({
       const flight = emoteSprites[index];
       const progress = Math.min(
         1,
-        (performance.now() - flight.startedAt) / flight.duration,
+        (time - flight.startedAt) / flight.duration,
       );
       const fadeStart = flight.fadeStart ?? 0.65;
       // Most speakers are direct World children, while Noah is nested inside
@@ -29592,7 +32971,7 @@ export function createWorldScene({
     }
     for (let index = rewardFlights.length - 1; index >= 0; index -= 1) {
       const flight = rewardFlights[index];
-      const elapsed = performance.now() - flight.startedAt;
+      const elapsed = time - flight.startedAt;
       const complete = elapsed / flight.duration;
       flight.particles.forEach((particle, particleIndex) => {
         const stagger = particleIndex * 0.018;
@@ -29619,7 +32998,7 @@ export function createWorldScene({
       index -= 1
     ) {
       const effect = repositoryCodeLandings[index];
-      const elapsed = performance.now() - effect.startedAt;
+      const elapsed = time - effect.startedAt;
       const flightProgress = clamp(
         elapsed / effect.flightDuration,
         0,
@@ -29721,7 +33100,7 @@ export function createWorldScene({
       const surge = pushSurges[index];
       const progress = Math.min(
         1,
-        (performance.now() - surge.startedAt) / surge.duration,
+        (time - surge.startedAt) / surge.duration,
       );
       const fade = 1 - progress;
       // The ring races out to roughly yard scale while the column burns down.
@@ -29741,7 +33120,7 @@ export function createWorldScene({
     }
     for (let index = serveFlights.length - 1; index >= 0; index -= 1) {
       const flight = serveFlights[index];
-      const elapsed = performance.now() - flight.startedAt;
+      const elapsed = time - flight.startedAt;
       // Staggered launches wait on the pad, hidden, until their turn.
       if (elapsed < 0) {
         flight.group.visible = false;
@@ -29783,10 +33162,22 @@ export function createWorldScene({
     }
     updateOfficeSlidingDoors(time, delta);
     updateOfficeLogoReflection(time);
-    if (!reducedMotion) {
-      animated.forEach((callback) => callback(time, delta));
-      animateWeather(weather.rain, time, delta, "rain");
-      animateWeather(weather.snow, time, delta, "snow");
+    if (!reducedMotion && time >= nextVisualAnimationAt) {
+      const visualFrameMs = farSceneDetail
+        ? VISUAL_ANIMATION_FAR_MS
+        : compactRenderer
+          ? VISUAL_ANIMATION_COMPACT_MS
+          : 0;
+      const visualDelta = clamp(
+        (time - lastVisualAnimationAt) / 1000,
+        0,
+        0.05,
+      );
+      lastVisualAnimationAt = time;
+      nextVisualAnimationAt = time + visualFrameMs;
+      animated.forEach((callback) => callback(time, visualDelta));
+      animateWeather(weather.rain, time, visualDelta, "rain");
+      animateWeather(weather.snow, time, visualDelta, "snow");
     }
     // resize() owns the only layout read. Reading the canvas bounds here,
     // after label style writes from the preceding frame, forced a synchronous
@@ -29896,7 +33287,31 @@ export function createWorldScene({
         });
       }
     }
+    let refreshedShadowMap = false;
+    if (renderer.shadowMap.enabled && time >= nextShadowMapUpdateAt) {
+      nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;
+      renderer.shadowMap.needsUpdate = true;
+      refreshedShadowMap = true;
+    }
     renderer.render(scene, camera);
+    const frameWorkMs = Math.max(0, performance.now() - frameWorkStartedAt);
+    if (
+      frameWorkMs >= RENDER_STALL_THRESHOLD_MS &&
+      document.visibilityState === "visible"
+    ) {
+      if (refreshedShadowMap) {
+        nextShadowMapUpdateAt = Math.max(
+          nextShadowMapUpdateAt,
+          time + SHADOW_MAP_STALL_COOLDOWN_MS,
+        );
+      }
+      if (time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS) {
+        lastRenderStallLogAt = time;
+        scheduleRenderStallWarning(frameWorkMs, refreshedShadowMap);
+      } else {
+        suppressedRenderStalls += 1;
+      }
+    }
     diagnosticsFrameCount = Math.min(
       1_000_000,
       diagnosticsFrameCount + 1,
@@ -29915,6 +33330,8 @@ export function createWorldScene({
     running = !paused;
     if (running) {
       lastFrame = performance.now();
+      lastVisualAnimationAt = lastFrame;
+      nextVisualAnimationAt = 0;
       renderer.setAnimationLoop(animate);
     } else {
       renderer.setAnimationLoop(null);
@@ -29973,6 +33390,10 @@ export function createWorldScene({
   function dispose() {
     disposed = true;
     renderer.setAnimationLoop(null);
+    window.clearTimeout(renderStallWarningTimer);
+    window.clearTimeout(movementInputWarningTimer);
+    renderStallWarningTimer = 0;
+    movementInputWarningTimer = 0;
     window.clearTimeout(movementEventTimer);
     window.clearTimeout(officeMovementEventTimer);
     movementEventTimer = 0;
@@ -30010,6 +33431,7 @@ export function createWorldScene({
     );
     aquariumLightAction.removeEventListener("click", handleAquariumLight);
     touchPointers.clear();
+    externalTouchInteractionActive = false;
     keys.clear();
     touchKeys.clear();
     touchMovement.set(0, 0);
@@ -30088,13 +33510,41 @@ export function createWorldScene({
     setMovementTuning,
     setControl,
     setTouchMovement,
+    setTouchInteractionActive,
     setSpawn,
     travelToRegion,
     visitNeighborhoodHome,
     returnToCampfireBench,
+    restoreCampfireSeatIfNearby,
     focusCampfireCircle,
     rideSwing,
     dismountSwing,
+    rideQuadcopter,
+    dismountQuadcopter,
+    toggleJetpack,
+    setJetpackEquipped,
+    setJetpackVertical,
+    getJetpackState: () => ({
+      equipped: jetpackEquipped,
+      altitude: Math.max(0, player.position.y - currentFloorY),
+      maxAltitude: JETPACK_MAX_ALTITUDE,
+    }),
+    beginGymExercise,
+    stopGymExercise,
+    setGymWeight,
+    performGymRep,
+    setGymAuto,
+    getGymState: () => gymPublicState(gymState.active === "bench"),
+    getQuadcopterState: () => ({
+      riding: Boolean(quadcopterRide),
+      altitude: quadcopterRide
+        ? Number(
+            quadcopterStates[quadcopterRide.index]?.quadcopter.position.y
+              .toFixed(2),
+          )
+        : 0,
+      maxAltitude: QUADCOPTER_MAX_ALTITUDE,
+    }),
     setSwingSpeed,
     getSwingState: () => ({
       riding: Boolean(swingRide),
@@ -30106,6 +33556,7 @@ export function createWorldScene({
       })),
     }),
     setRemotePlayers,
+    animateUnverifiedAvatarDeletion,
     setLocalOrgTeam,
     setAvatarFediverseProfile,
     setAvatarRecentPublicMessage,
@@ -30151,6 +33602,7 @@ export function createWorldScene({
     setAgentBotAccess,
     exciteAgentBot,
     completeAgentTask,
+    showAgentTaskBubble,
     updateRewardPool,
     playRewardEvent,
     setPaused,

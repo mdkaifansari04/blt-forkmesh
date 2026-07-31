@@ -8,6 +8,8 @@
 #include "PrivateMirrorStore.h"
 #include "PublicMirrorRuntime.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHeaderView>
@@ -22,6 +24,7 @@
 #include <QStandardPaths>
 #include <QSaveFile>
 #include <QTextDocument>
+#include <QTimer>
 
 using namespace forkmesh::ui;
 
@@ -508,12 +511,49 @@ QWidget *MainWindow::buildControlNodeSection()
     m_cloudflareTokenEdit->setClearButtonEnabled(true);
     cloudflareForm->addRow(QStringLiteral("API token"),
                            m_cloudflareTokenEdit);
+    m_cloudflareVpsHostEdit = new QLineEdit;
+    m_cloudflareVpsHostEdit->setObjectName(
+        QStringLiteral("cloudflareFirstMirrorHost"));
+    m_cloudflareVpsHostEdit->setPlaceholderText(
+        QStringLiteral("optional VPS hostname or address"));
+    cloudflareForm->addRow(QStringLiteral("First mirror VPS"),
+                           m_cloudflareVpsHostEdit);
+    m_cloudflareVpsUserEdit = new QLineEdit;
+    m_cloudflareVpsUserEdit->setObjectName(
+        QStringLiteral("cloudflareFirstMirrorUser"));
+    m_cloudflareVpsUserEdit->setPlaceholderText(
+        QStringLiteral("dedicated non-root SSH user"));
+    cloudflareForm->addRow(QStringLiteral("VPS SSH user"),
+                           m_cloudflareVpsUserEdit);
+    m_cloudflareVpsPasswordEdit = new QLineEdit;
+    m_cloudflareVpsPasswordEdit->setObjectName(
+        QStringLiteral("cloudflareFirstMirrorPassword"));
+    m_cloudflareVpsPasswordEdit->setEchoMode(QLineEdit::Password);
+    m_cloudflareVpsPasswordEdit->setPlaceholderText(
+        QStringLiteral("optional; local SSH key / agent preferred"));
+    m_cloudflareVpsPasswordEdit->setToolTip(
+        QStringLiteral(
+            "Session-only. Supplied to local SSH tooling through environment/"
+            "stdin, never argv, settings, D1, or the Worker."));
+    cloudflareForm->addRow(QStringLiteral("VPS SSH password"),
+                           m_cloudflareVpsPasswordEdit);
     cloudflareCol->addLayout(cloudflareForm);
 
     m_cloudflareConnectCheck =
         new QCheckBox(QStringLiteral("Add and connect to the relay after deployment"));
     m_cloudflareConnectCheck->setChecked(true);
     cloudflareCol->addWidget(m_cloudflareConnectCheck);
+    m_cloudflareInstallVpsCheck = new QCheckBox(
+        QStringLiteral(
+            "Install ForkMesh on the first mirror VPS after deployment"));
+    m_cloudflareInstallVpsCheck->setChecked(false);
+    m_cloudflareInstallVpsCheck->setToolTip(
+        QStringLiteral(
+            "Adds the host locally, runs the checksum-verified installer over "
+            "SSH, and starts the headless node against the newly selected "
+            "relay. Leave the VPS fields empty to keep the mirror on this "
+            "desktop only."));
+    cloudflareCol->addWidget(m_cloudflareInstallVpsCheck);
     auto *deployRow = new QHBoxLayout;
     m_cloudflareDryRunButton =
         new QPushButton(QStringLiteral("Validate Worker + mirror"));
@@ -559,6 +599,9 @@ QWidget *MainWindow::buildControlNodeSection()
     m_controlNodeOutput->setFont(mono);
     cloudflareCol->addWidget(m_controlNodeOutput);
     bodyCol->addWidget(cloudflareCard);
+
+    // --- Ship this checkout with cloudflare_worker/deploy.sh ---------------
+    bodyCol->addWidget(buildSiteDeployCard());
 
     // --- Remote hosts ------------------------------------------------------
     QVBoxLayout *hostsCol = nullptr;
@@ -622,11 +665,163 @@ QWidget *MainWindow::buildControlNodeSection()
     return page;
 }
 
-void MainWindow::openCloudflareSetupFromSystemLink()
+void MainWindow::openCloudflareSetupFromSystemLink(const QString &target)
 {
     showSection(kControlNodeSectionIndex);
+    const QUrl url(target);
+    if (url.isValid() && url.scheme() == QLatin1String("forkmesh") &&
+        url.host() == QLatin1String("control") &&
+        url.path() == QLatin1String("/cloudflare") &&
+        url.userInfo().isEmpty() && url.fragment().isEmpty()) {
+        const QUrlQuery query(url);
+        const auto bounded = [&query](const QString &name, qsizetype maximum) {
+            const QString value =
+                query.queryItemValue(name, QUrl::FullyDecoded).trimmed();
+            return value.size() <= maximum && !value.contains(QChar(u'\0')) &&
+                           !value.contains(QLatin1Char('\n')) &&
+                           !value.contains(QLatin1Char('\r'))
+                       ? value
+                       : QString();
+        };
+        if (bounded(QStringLiteral("mode"), 16) ==
+            QLatin1String("vultr")) {
+            const QString token =
+                QApplication::clipboard()->text().trimmed();
+            const QString node =
+                bounded(QStringLiteral("node"), 63).toLower();
+            static const QRegularExpression tokenPattern(
+                QStringLiteral("^[A-Za-z0-9]{20,128}$"));
+            static const QRegularExpression nodePattern(
+                QStringLiteral("^(?:[a-z][a-z0-9-]{0,62})?$"));
+            if (tokenPattern.match(token).hasMatch() &&
+                nodePattern.match(node).hasMatch()) {
+                if (m_vultrApiKeyEdit)
+                    m_vultrApiKeyEdit->setText(token);
+                if (m_vultrNameEdit && !node.isEmpty())
+                    m_vultrNameEdit->setText(node);
+                if (QApplication::clipboard()->text() == token)
+                    QApplication::clipboard()->clear();
+                QTimer::singleShot(0, this, [this] {
+                    createVultrMirrorFromForm();
+                });
+            } else if (m_vultrStatus) {
+                m_vultrStatus->setText(QStringLiteral(
+                    "The World launch handoff did not contain a valid Vultr "
+                    "token. Return to the LAUNCH MIRROR button and try again."));
+            }
+            return;
+        }
+        const auto dns = [&bounded](const QString &name) {
+            const QString value = bounded(name, 253).toLower();
+            static const QRegularExpression pattern(
+                QStringLiteral(
+                    "^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}"
+                    "[a-z0-9])?\\.)+[a-z](?:[a-z0-9-]{0,61}"
+                    "[a-z0-9])?$"));
+            return pattern.match(value).hasMatch() ? value : QString();
+        };
+        const auto assign = [](QLineEdit *edit, const QString &value) {
+            if (edit && !value.isEmpty())
+                edit->setText(value);
+        };
+        assign(m_cloudflareHostnameEdit, dns(QStringLiteral("hostname")));
+        assign(m_cloudflareMirrorHostnameEdit, dns(QStringLiteral("mirror")));
+        assign(m_cloudflareZoneEdit, dns(QStringLiteral("zone")));
+        const QString account = bounded(QStringLiteral("account"), 128);
+        static const QRegularExpression accountPattern(
+            QStringLiteral("^[A-Za-z0-9_-]{1,128}$"));
+        if (accountPattern.match(account).hasMatch())
+            assign(m_cloudflareAccountEdit, account);
+        const QString node = bounded(QStringLiteral("node"), 63).toLower();
+        static const QRegularExpression nodePattern(
+            QStringLiteral("^[a-z][a-z0-9-]{0,62}$"));
+        if (nodePattern.match(node).hasMatch())
+            assign(m_cloudflareNodeNameEdit, node);
+        assign(m_cloudflareRelayLabelEdit,
+               bounded(QStringLiteral("label"), 80));
+        const QString upstream = bounded(QStringLiteral("upstream"), 300);
+        const QUrl upstreamUrl(upstream);
+        if (upstreamUrl.isValid() &&
+            upstreamUrl.scheme() == QLatin1String("https") &&
+            !upstreamUrl.host().isEmpty() && upstreamUrl.userInfo().isEmpty())
+            assign(m_cloudflareMainRelayEdit, upstream);
+        const QString vpsHost = bounded(QStringLiteral("vpsHost"), 253);
+        static const QRegularExpression vpsHostPattern(
+            QStringLiteral(
+                "^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?|"
+                "(?:[0-9]{1,3}\\.){3}[0-9]{1,3})$"));
+        if (vpsHostPattern.match(vpsHost).hasMatch()) {
+            assign(m_cloudflareVpsHostEdit, vpsHost);
+            if (m_cloudflareInstallVpsCheck)
+                m_cloudflareInstallVpsCheck->setChecked(true);
+        }
+        const QString vpsUser = bounded(QStringLiteral("vpsUser"), 64);
+        static const QRegularExpression vpsUserPattern(
+            QStringLiteral("^[A-Za-z_][A-Za-z0-9_.-]{0,63}$"));
+        if (vpsUserPattern.match(vpsUser).hasMatch())
+            assign(m_cloudflareVpsUserEdit, vpsUser);
+    }
     if (m_cloudflareTokenEdit)
         m_cloudflareTokenEdit->setFocus(Qt::OtherFocusReason);
+}
+
+void MainWindow::installCloudflareFirstMirror()
+{
+    if (!m_cloudflareInstallVpsAfterDeploy)
+        return;
+    m_cloudflareInstallVpsAfterDeploy = false;
+    const QString host =
+        m_cloudflareVpsHostEdit
+            ? m_cloudflareVpsHostEdit->text().trimmed()
+            : QString();
+    const QString user =
+        m_cloudflareVpsUserEdit
+            ? m_cloudflareVpsUserEdit->text().trimmed()
+            : QString();
+    const QString password =
+        m_cloudflareVpsPasswordEdit
+            ? m_cloudflareVpsPasswordEdit->text()
+            : QString();
+    const QString node =
+        m_cloudflareNodeNameEdit
+            ? m_cloudflareNodeNameEdit->text().trimmed()
+            : QString();
+    if (host.isEmpty() || user.isEmpty() || node.isEmpty()) {
+        appendControlNodeOutput(
+            QStringLiteral(
+                "First mirror VPS install skipped because its local SSH "
+                "fields are incomplete.\n"));
+        return;
+    }
+    if (m_hostIpEdit)
+        m_hostIpEdit->setText(host);
+    if (m_hostUserEdit)
+        m_hostUserEdit->setText(user);
+    if (m_hostPassEdit)
+        m_hostPassEdit->setText(password);
+    if (m_hostNameEdit)
+        m_hostNameEdit->setText(node);
+    if (m_cloudflareVpsPasswordEdit)
+        m_cloudflareVpsPasswordEdit->clear();
+    addHostFromForm();
+    appendControlNodeOutput(
+        QStringLiteral(
+            "Starting the checksum-verified ForkMesh install on first mirror "
+            "%1@%2. SSH credentials remain in local process memory only.\n")
+            .arg(user, host));
+    runHostInstall(false, [this, node](bool ok) {
+        appendControlNodeOutput(
+            ok
+                ? QStringLiteral(
+                      "First mirror %1 installed. Its headless node will "
+                      "register signed health and mirror availability with "
+                      "the selected relay.\n")
+                      .arg(node)
+                : QStringLiteral(
+                      "First mirror %1 did not install; review the local Hosts "
+                      "log and retry without redeploying the Worker.\n")
+                      .arg(node));
+    });
 }
 
 void MainWindow::refreshControlNode()
@@ -1801,6 +1996,7 @@ void MainWindow::registerDirectMirrorEndpoint()
 void MainWindow::provisionDirectMirrorEndpoint(bool dryRun)
 {
     auto releaseDeploymentUi = [this] {
+        m_cloudflareInstallVpsAfterDeploy = false;
         if (m_cloudflareDryRunButton)
             m_cloudflareDryRunButton->setEnabled(true);
         if (m_cloudflareDeployButton)
@@ -1968,11 +2164,13 @@ void MainWindow::provisionDirectMirrorEndpoint(bool dryRun)
                         if (m_cloudflareConnectAfterDeploy)
                             connectToDeployedRelay(
                                 m_cloudflareDeployHostname);
+                        installCloudflareFirstMirror();
                     } else if (ok) {
                         appendControlNodeOutput(
                             QStringLiteral(
                                 "Worker and Tunnel validation completed.\n"));
                     } else {
+                        m_cloudflareInstallVpsAfterDeploy = false;
                         appendControlNodeOutput(
                             QStringLiteral(
                                 "Tunnel provisioning failed (exit %1).\n")
@@ -2149,6 +2347,21 @@ void MainWindow::runCloudflareBootstrap(bool dryRun)
             true);
         return;
     }
+    const bool installFirstMirror =
+        !dryRun && m_cloudflareInstallVpsCheck &&
+        m_cloudflareInstallVpsCheck->isChecked();
+    if (installFirstMirror &&
+        ((!m_cloudflareVpsHostEdit ||
+          m_cloudflareVpsHostEdit->text().trimmed().isEmpty()) ||
+         (!m_cloudflareVpsUserEdit ||
+          m_cloudflareVpsUserEdit->text().trimmed().isEmpty()))) {
+        flashMessage(
+            QStringLiteral(
+                "Enter the first mirror VPS host and SSH user, or disable "
+                "the post-deployment VPS install."),
+            true);
+        return;
+    }
     if ((!m_profileIdentity.isValid() && !m_profileIdentity.load()) ||
         !m_profileIdentity.isValid()) {
         flashMessage(
@@ -2219,6 +2432,7 @@ void MainWindow::runCloudflareBootstrap(bool dryRun)
     m_cloudflareConnectAfterDeploy =
         !dryRun && m_cloudflareConnectCheck &&
         m_cloudflareConnectCheck->isChecked();
+    m_cloudflareInstallVpsAfterDeploy = installFirstMirror;
     m_cloudflareActiveSecret = apiToken;
     if (m_cloudflareTokenEdit) {
         m_cloudflareTokenEdit->clear();
@@ -2425,6 +2639,7 @@ void MainWindow::runCloudflareBootstrap(bool dryRun)
                                         : QStringLiteral("deployment"),
                                  m_cloudflareDeployHostname));
                 } else {
+                    m_cloudflareInstallVpsAfterDeploy = false;
                     if (!resultError.isEmpty()) {
                         appendControlNodeOutput(
                             QStringLiteral(
@@ -2510,6 +2725,207 @@ void MainWindow::appendControlNodeOutput(const QString &text)
     m_controlNodeOutput->ensureCursorVisible();
 }
 
+QWidget *MainWindow::buildSiteDeployCard()
+{
+    QVBoxLayout *col = nullptr;
+    QFrame *card =
+        controlCard(QStringLiteral("ForkMesh site deployment"), &col);
+    col->addWidget(controlHint(
+        QStringLiteral(
+            "Runs this checkout's cloudflare_worker/deploy.sh: it builds the "
+            "site, uploads the Worker and static assets, pushes the "
+            ".env.production secrets, and then verifies the live origin is "
+            "serving the new build. Credentials come from the deployment "
+            "machine's own wrangler login and .env.production; nothing is read "
+            "from or written to this page. Output streams below as the script "
+            "runs.")));
+    m_siteDeployStatus = new QLabel;
+    m_siteDeployStatus->setObjectName(QStringLiteral("mutedLabel"));
+    m_siteDeployStatus->setWordWrap(true);
+    const QString deployScript = forkmesh::control::findSiteDeployScript(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    m_siteDeployStatus->setText(
+        deployScript.isEmpty()
+            ? QStringLiteral(
+                  "cloudflare_worker/deploy.sh was not found next to this "
+                  "build's Worker bundle.")
+            : QStringLiteral("Ready: %1").arg(deployScript));
+    col->addWidget(m_siteDeployStatus);
+
+    auto *buttons = new QHBoxLayout;
+    m_siteDeployButton =
+        new QPushButton(QStringLiteral("Deploy to Cloudflare"));
+    m_siteDeployButton->setObjectName(QStringLiteral("siteDeployButton"));
+    m_siteDeployButton->setProperty("buttonSize", "primary");
+    m_siteDeployButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_siteDeployButton, QStringLiteral("rocket"), 14);
+    connect(m_siteDeployButton, &QPushButton::clicked, this,
+            &MainWindow::runSiteDeploy);
+    buttons->addWidget(m_siteDeployButton);
+    m_siteDeployCancelButton = new QPushButton(QStringLiteral("Cancel"));
+    m_siteDeployCancelButton->setObjectName(
+        QStringLiteral("siteDeployCancelButton"));
+    m_siteDeployCancelButton->setCursor(Qt::PointingHandCursor);
+    m_siteDeployCancelButton->setEnabled(false);
+    connect(m_siteDeployCancelButton, &QPushButton::clicked, this,
+            &MainWindow::cancelSiteDeploy);
+    buttons->addWidget(m_siteDeployCancelButton);
+    buttons->addStretch();
+    col->addLayout(buttons);
+
+    m_siteDeployOutput = new QPlainTextEdit;
+    m_siteDeployOutput->setObjectName(QStringLiteral("siteDeployOutput"));
+    m_siteDeployOutput->setReadOnly(true);
+    m_siteDeployOutput->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_siteDeployOutput->setMinimumHeight(220);
+    m_siteDeployOutput->document()->setMaximumBlockCount(5000);
+    m_siteDeployOutput->setPlaceholderText(
+        QStringLiteral("deploy.sh output appears here live; credentials are "
+                       "redacted."));
+    QFont deployMono(QStringLiteral("monospace"));
+    deployMono.setStyleHint(QFont::Monospace);
+    m_siteDeployOutput->setFont(deployMono);
+    col->addWidget(m_siteDeployOutput);
+    return card;
+}
+
+void MainWindow::runSiteDeploy()
+{
+    if (m_siteDeployProcess &&
+        m_siteDeployProcess->state() != QProcess::NotRunning) {
+        flashMessage(QStringLiteral("A site deployment is already running."),
+                     true);
+        return;
+    }
+    const QString script = forkmesh::control::findSiteDeployScript(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    if (script.isEmpty()) {
+        const QString missing = QStringLiteral(
+            "cloudflare_worker/deploy.sh was not found next to this build's "
+            "Worker bundle.");
+        if (m_siteDeployStatus)
+            m_siteDeployStatus->setText(missing);
+        flashMessage(missing, true);
+        return;
+    }
+    const QString bash = QStandardPaths::findExecutable(QStringLiteral("bash"));
+    if (bash.isEmpty()) {
+        flashMessage(
+            QStringLiteral("bash is required to run cloudflare_worker/deploy.sh."),
+            true);
+        return;
+    }
+    if (QMessageBox::question(
+            this, QStringLiteral("Deploy to Cloudflare"),
+            QStringLiteral(
+                "Run %1 now? This uploads the Worker and static site to the "
+                "production Cloudflare account this machine is logged in to.")
+                .arg(script),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes) {
+        return;
+    }
+
+    if (m_siteDeployOutput)
+        m_siteDeployOutput->clear();
+    appendSiteDeployOutput(
+        QStringLiteral("$ %1\n").arg(script));
+    if (m_siteDeployStatus)
+        m_siteDeployStatus->setText(QStringLiteral("Deploying…"));
+    if (m_siteDeployButton)
+        m_siteDeployButton->setEnabled(false);
+    if (m_siteDeployCancelButton)
+        m_siteDeployCancelButton->setEnabled(true);
+    logSystem(QStringLiteral("Control node: site deployment started."));
+
+    auto *process = new QProcess(this);
+    m_siteDeployProcess = process;
+    process->setProcessChannelMode(QProcess::MergedChannels);
+    process->setWorkingDirectory(QFileInfo(script).absolutePath());
+    QProcessEnvironment environment =
+        QProcessEnvironment::systemEnvironment();
+    // Keep the child's Python/Wrangler chatter arriving line by line so the
+    // page shows progress instead of one block at the end.
+    environment.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+    process->setProcessEnvironment(environment);
+    connect(process, &QProcess::readyReadStandardOutput, this,
+            [this, process] {
+                appendSiteDeployOutput(
+                    QString::fromUtf8(process->readAllStandardOutput()));
+            });
+    connect(process, &QProcess::errorOccurred, this,
+            [this](QProcess::ProcessError error) {
+                if (error == QProcess::FailedToStart) {
+                    appendSiteDeployOutput(
+                        QStringLiteral(
+                            "deploy.sh could not start; verify bash and the "
+                            "Worker bundle on this machine.\n"));
+                }
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process](int exitCode, QProcess::ExitStatus status) {
+                appendSiteDeployOutput(
+                    QString::fromUtf8(process->readAllStandardOutput()));
+                const bool ok =
+                    status == QProcess::NormalExit && exitCode == 0;
+                appendSiteDeployOutput(
+                    ok ? QStringLiteral("\nDeployment finished successfully.\n")
+                       : QStringLiteral("\nDeployment failed (exit %1).\n")
+                             .arg(exitCode));
+                if (m_siteDeployStatus)
+                    m_siteDeployStatus->setText(
+                        ok ? QStringLiteral("Last deployment succeeded.")
+                           : QStringLiteral("Last deployment failed (exit %1).")
+                                 .arg(exitCode));
+                if (m_siteDeployButton)
+                    m_siteDeployButton->setEnabled(true);
+                if (m_siteDeployCancelButton)
+                    m_siteDeployCancelButton->setEnabled(false);
+                logSystem(ok
+                              ? QStringLiteral(
+                                    "Control node: site deployment succeeded.")
+                              : QStringLiteral(
+                                    "Control node: site deployment failed "
+                                    "(exit %1).")
+                                    .arg(exitCode));
+                if (m_siteDeployProcess == process)
+                    m_siteDeployProcess = nullptr;
+                process->deleteLater();
+            });
+    process->start(bash, {script});
+}
+
+void MainWindow::cancelSiteDeploy()
+{
+    if (!m_siteDeployProcess ||
+        m_siteDeployProcess->state() == QProcess::NotRunning) {
+        return;
+    }
+    appendSiteDeployOutput(
+        QStringLiteral("Cancellation requested; waiting for deploy.sh to "
+                       "stop.\n"));
+    m_siteDeployProcess->terminate();
+    QPointer<QProcess> process(m_siteDeployProcess);
+    QTimer::singleShot(5000, this, [process] {
+        if (process && process->state() != QProcess::NotRunning)
+            process->kill();
+    });
+}
+
+void MainWindow::appendSiteDeployOutput(const QString &text)
+{
+    if (!m_siteDeployOutput || text.isEmpty())
+        return;
+    const QString safe = forkmesh::control::redactProcessOutput(
+        text, {m_cloudflareActiveSecret});
+    m_siteDeployOutput->moveCursor(QTextCursor::End);
+    m_siteDeployOutput->insertPlainText(safe);
+    m_siteDeployOutput->moveCursor(QTextCursor::End);
+    m_siteDeployOutput->ensureCursorVisible();
+}
+
 void MainWindow::connectToDeployedRelay(const QString &hostname)
 {
     const QString host = hostname.trimmed().toLower();
@@ -2545,7 +2961,8 @@ void MainWindow::deploySavedHostsFromControl()
             .array();
     if (hosts.isEmpty()) {
         flashMessage(
-            QStringLiteral("Add a host in Hosts before starting a fleet deployment."),
+            QStringLiteral(
+                "Add a host in Network > Hosts before starting a fleet deployment."),
             true);
         showSection(7);
         return;

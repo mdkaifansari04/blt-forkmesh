@@ -2018,7 +2018,7 @@
       tone + '">' + escapeHtml(clean) + "</span>";
   }
 
-  function orgMemberFloorGroups(member) {
+  function orgMemberFloorGroups(member, canManage) {
     const teams = new Set(
       (Array.isArray(member?.teams) ? member.teams : [])
         .map((team) => String(team || "").trim().toLowerCase())
@@ -2029,16 +2029,25 @@
       const active = matchingTeams.length > 0;
       const state = active ? "In group" : "Available";
       const title = active
-        ? group.label + " floor through " + matchingTeams.join(", ")
-        : group.label + " floor group is available";
-      return '<span title="' + escapeHtml(title) + '" aria-label="' +
-        escapeHtml(group.label + ": " + state) + '" class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold ' +
+        ? "Remove from " + group.label + " (" + matchingTeams.join(", ") + ")"
+        : "Add to " + group.label;
+      const tag = canManage ? "button" : "span";
+      const controls = canManage
+        ? ' type="button" data-org-member-floor-group="' + escapeHtml(group.id) +
+          '" data-org-member="' + escapeHtml(member?.name || "") +
+          '" aria-pressed="' + (active ? "true" : "false") + '"'
+        : "";
+      return "<" + tag + controls + ' title="' + escapeHtml(title) + '" aria-label="' +
+        escapeHtml(group.label + ": " + state) + '" class="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] font-semibold transition-colors ' +
         (active
           ? "border-[#238636]/50 bg-[#238636]/10 text-[#238636]"
-          : "border-border bg-background text-muted-foreground") + '">' +
+          : "border-border bg-background text-muted-foreground") +
+        (canManage
+          ? " cursor-pointer hover:border-[#2f81f7]/70 hover:bg-[#2f81f7]/10 hover:text-[#2f81f7] disabled:cursor-wait disabled:opacity-60"
+          : "") + '">' +
         '<span aria-hidden="true" class="h-1.5 w-1.5 rounded-full ' +
         (active ? "bg-[#238636]" : "bg-muted-foreground/40") + '"></span>' +
-        escapeHtml(group.label) + "</span>";
+        escapeHtml(group.label) + "</" + tag + ">";
     }).join("");
     const activeCount = ORG_OFFICE_FLOOR_GROUPS.filter(
       (group) => group.aliases.some((team) => teams.has(team)),
@@ -2147,7 +2156,7 @@
     let teams = [];
     let repos = [];
     let fediverse = { controls: { enabled: true }, repos: [] };
-    let botTokens = { permissions: [], tokens: [] };
+    let botTokens = { permissions: [], tokens: [], usagePreview: [] };
     try {
       const [profileData, membersData, teamsData, reposData] = await Promise.all([
         orgApiRequest("GET", "/api/orgs/" + encodeURIComponent(name)),
@@ -2178,6 +2187,87 @@
     }
     renderOrgDetail(
       root, name, profile, members, teams, repos, fediverse, botTokens);
+  }
+
+  function orgRemoteMcpPrompt(name, mode, token) {
+    const deploy = mode === "deploy";
+    const configuration = {
+      mcpServers: {
+        forkmesh: {
+          type: "http",
+          url: window.location.origin + "/mcp",
+          headers: {
+            Authorization: "Bearer " + token,
+          },
+        },
+      },
+    };
+    const finish = deploy
+      ? [
+          "Fetch the latest main again and integrate it into the task branch without force-pushing.",
+          "Push the branch, merge only when the merge and required checks are clean, then deploy using the repository's documented deploy command.",
+          "Verify the live revision and production behavior. Only then call complete_org_task with the commit, deployed revision, tests, and exact QA steps.",
+        ]
+      : [
+          "Push the task branch and open a focused pull request against main using the repository's normal ForkMesh tooling.",
+          "Do not merge or deploy. After the pull request exists, call complete_org_task with its number, branch, tests, and exact QA steps.",
+        ];
+    return [
+      "Configure the following remote Streamable HTTP MCP server named forkmesh, then immediately use it for this assignment:",
+      "",
+      JSON.stringify(configuration, null, 2),
+      "",
+      `Work the shared task list for the ${name} organization.`,
+      "1. Call list_org_tasks. Select the highest-priority unfinished task routed to an agent or explicitly unassigned with a linked repository. Never take a task assigned to a person.",
+      "2. Call get_org_task for the selected id. Read its repository instructions and inspect the latest main branch before planning.",
+      "3. Keep the base checkout untouched. Fetch main and create a dedicated worktree and task branch. Never stash, reset, clean, commit, or edit the base checkout.",
+      "4. Work only in that task worktree. Preserve unrelated changes, implement the smallest complete fix, and run focused tests plus repository-required checks.",
+      "5. Commit only the task files with a clear message. Never force-push or bypass failing checks or conflicts.",
+      ...finish.map((line, index) => `${index + 6}. ${line}`),
+      "",
+      "If credentials, authorization, infrastructure, tests, or conflict resolution block safe completion, report the blocker and do not mark the task complete. Treat the bearer credential above as a secret; never print it in logs, commits, pull requests, task notes, or chat. It can be revoked from Organization Admin.",
+    ].join("\n");
+  }
+
+  function orgRemoteMcpSetup(name) {
+    const workflows = [
+      {
+        id: "pr",
+        icon: "git-pull-request-arrow",
+        title: "Remote MCP → pull request",
+        description: "Creates an isolated task branch and pull request, then sends the completed task to QA without deploying.",
+      },
+      {
+        id: "deploy",
+        icon: "rocket",
+        title: "Remote MCP → verified deployment",
+        description: "Creates isolated work, synchronizes it safely, deploys, verifies production, and then sends the task to QA.",
+      },
+    ];
+    return '<section class="mt-6 rounded-md border border-[#2f81f7]/30 bg-[#2f81f7]/5 p-4" data-org-remote-mcp>' +
+      '<div class="flex items-center gap-2"><i data-lucide="plug-zap" class="h-4 w-4 text-[#58a6ff]"></i>' +
+        '<h4 class="text-sm font-semibold text-foreground">Remote ForkMesh MCP</h4></div>' +
+      '<p class="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">Generate a revocable task-only credential and one complete paste block. It connects the agent directly to <span class="font-mono text-foreground">' +
+        escapeHtml(window.location.origin + "/mcp") +
+        '</span>; there is no local Python server, repository path, or Qt connector token to fill in.</p>' +
+      '<div class="mt-4 grid gap-4 xl:grid-cols-2">' +
+        workflows.map((workflow) =>
+          '<article class="rounded-md border border-border bg-card p-3" data-org-remote-mcp-workflow="' + workflow.id + '">' +
+            '<div class="flex items-start gap-2"><i data-lucide="' + workflow.icon + '" class="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground"></i>' +
+              '<div class="min-w-0 flex-1"><h5 class="text-sm font-semibold text-foreground">' + workflow.title + '</h5>' +
+              '<p class="mt-1 text-[11px] leading-4 text-muted-foreground">' + workflow.description + "</p></div></div>" +
+            '<button type="button" data-org-remote-mcp-generate="' + workflow.id + '" class="' + ORG_BTN_PRIMARY + ' mt-3 gap-1">' +
+              '<i data-lucide="key-round" class="h-3.5 w-3.5"></i> Generate complete setup</button>' +
+            '<div data-org-remote-mcp-output="' + workflow.id + '" hidden class="mt-3">' +
+              '<p class="text-[11px] font-semibold text-amber-500">Shown once. This block contains a live credential.</p>' +
+              '<textarea readonly rows="20" spellcheck="false" class="mt-1 w-full resize-y rounded-md border border-border bg-background p-2 font-mono text-[10px] leading-4 text-foreground"></textarea>' +
+              '<button type="button" data-org-remote-mcp-copy="' + workflow.id + '" class="' + ORG_BTN_SECONDARY + ' mt-2 gap-1"><i data-lucide="copy" class="h-3.5 w-3.5"></i> Copy complete prompt</button>' +
+            "</div>" +
+          "</article>"
+        ).join("") +
+      "</div>" +
+      '<p data-org-remote-mcp-status class="mt-3 min-h-4 text-xs text-muted-foreground" role="status"></p>' +
+    "</section>";
   }
 
   function renderOrgDetail(
@@ -2233,7 +2323,7 @@
           '<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground">' + memberName + "</span>" +
           controls +
         "</div>" +
-        (canManage ? orgMemberFloorGroups(member) : "") +
+        orgMemberFloorGroups(member, canManage) +
       "</div>";
     }).join("") || '<p class="text-sm text-muted-foreground">No members.</p>';
 
@@ -2351,6 +2441,18 @@
               '<p class="mt-2 break-all font-mono text-[10px] text-muted-foreground">' +
                 escapeHtml((token.scopes || []).join(" · ")) + "</p></div>";
           }).join("") || '<p class="text-sm text-muted-foreground">No bot tokens yet.</p>';
+          const usageRows = (botTokens?.usagePreview || []).slice(0, 5).map((usage) =>
+            '<li class="flex items-start justify-between gap-3 rounded-md border border-border bg-background px-3 py-2">' +
+              '<span class="min-w-0"><strong class="block truncate text-xs text-foreground">' +
+                escapeHtml(usage.label || usage.provider || "Bot token") +
+              '</strong><span class="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">' +
+                escapeHtml((usage.method || "GET") + " " + (usage.action || "/api/bot/session")) +
+              "</span></span>" +
+              '<time class="shrink-0 text-[10px] text-muted-foreground" title="' +
+                escapeHtml(formatDate(Number(usage.usedAt || 0))) + '">' +
+                escapeHtml(formatTimeAgo(Number(usage.usedAt || 0))) +
+              "</time></li>"
+          ).join("") || '<li class="text-xs text-muted-foreground">No token use recorded yet.</li>';
           return '<section class="mt-6 rounded-md border border-border bg-card p-4" data-org-bot-tokens>' +
             '<div class="flex items-center gap-2"><i data-lucide="bot" class="h-4 w-4 text-[#58a6ff]"></i>' +
               '<h4 class="text-sm font-semibold text-foreground">Bot tokens</h4></div>' +
@@ -2370,6 +2472,11 @@
             "</form>" +
             '<div data-org-bot-secret hidden class="mt-4 rounded-md border border-amber-500/40 bg-amber-500/10 p-3"></div>' +
             '<div class="mt-4 grid gap-2">' + tokenRows + "</div>" +
+            '<div class="mt-5 border-t border-border pt-4" data-org-bot-usage-preview>' +
+              '<h5 class="text-xs font-semibold text-foreground">Recent token use</h5>' +
+              '<p class="mt-1 text-[11px] leading-4 text-muted-foreground">Latest five successful authentications. The full metadata-only log is available to platform administrators; secrets, bodies, network addresses, and user agents are never logged.</p>' +
+              '<ol class="mt-2 grid gap-2">' + usageRows + "</ol>" +
+            "</div>" +
           "</section>";
         })()
       : "";
@@ -2424,13 +2531,14 @@
       '<section class="mt-6"><h4 class="text-sm font-semibold text-foreground">Linked repos</h4>' +
         '<div class="mt-2 grid gap-2">' + repoRows + "</div>" + repoAdd + "</section>" +
       digestControls +
-      botTokenControls;
+      botTokenControls +
+      (canManage ? orgRemoteMcpSetup(name) : "");
 
     window.lucide?.createIcons();
-    wireOrgDetail(root, name, members);
+    wireOrgDetail(root, name, members, teams);
   }
 
-  function wireOrgDetail(root, name, members) {
+  function wireOrgDetail(root, name, members, teams) {
     const reload = () => showOrgDetail(name);
     const guard = async (fn) => {
       try {
@@ -2482,6 +2590,56 @@
         const member = button.dataset.orgMemberRemove;
         if (!window.confirm("Remove " + member + " from " + name + "?")) return;
         guard(() => orgApiRequest("DELETE", "/api/orgs/" + encodeURIComponent(name) + "/members", { member }));
+      });
+    });
+    root.querySelectorAll("[data-org-member-floor-group]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const member = String(button.dataset.orgMember || "").trim().toLowerCase();
+        const groupId = String(button.dataset.orgMemberFloorGroup || "");
+        const group = ORG_OFFICE_FLOOR_GROUPS.find((item) => item.id === groupId);
+        const memberRecord = members.find(
+          (item) => String(item?.name || "").trim().toLowerCase() === member);
+        if (!member || !group || !memberRecord) return;
+        const memberships = new Set(
+          (Array.isArray(memberRecord.teams) ? memberRecord.teams : [])
+            .map((team) => String(team || "").trim().toLowerCase())
+            .filter(Boolean),
+        );
+        const matchingTeams = group.aliases.filter((team) => memberships.has(team));
+        const knownTeams = new Set(
+          (Array.isArray(teams) ? teams : [])
+            .map((team) => String(team?.team || "").trim().toLowerCase())
+            .filter(Boolean),
+        );
+        button.disabled = true;
+        button.setAttribute("aria-busy", "true");
+        guard(async () => {
+          if (matchingTeams.length) {
+            for (const team of matchingTeams) {
+              await orgApiRequest(
+                "DELETE",
+                "/api/orgs/" + encodeURIComponent(name) + "/teams/" +
+                  encodeURIComponent(team) + "/members",
+                { member },
+              );
+            }
+            return;
+          }
+          const team = group.id;
+          if (!knownTeams.has(team)) {
+            await orgApiRequest(
+              "POST",
+              "/api/orgs/" + encodeURIComponent(name) + "/teams",
+              { team, permission: "read" },
+            );
+          }
+          await orgApiRequest(
+            "POST",
+            "/api/orgs/" + encodeURIComponent(name) + "/teams/" +
+              encodeURIComponent(team) + "/members",
+            { member },
+          );
+        });
       });
     });
 
@@ -2595,6 +2753,66 @@
           "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens",
           { tokenId: button.dataset.orgBotRevoke },
         ));
+      });
+    });
+    root.querySelectorAll("[data-org-remote-mcp-generate]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const mode = button.dataset.orgRemoteMcpGenerate || "pr";
+        const output = [...root.querySelectorAll("[data-org-remote-mcp-output]")]
+          .find((element) => element.dataset.orgRemoteMcpOutput === mode);
+        const status = root.querySelector("[data-org-remote-mcp-status]");
+        button.disabled = true;
+        if (status) {
+          status.textContent = "Creating a revocable task-only credential…";
+          status.className = "mt-3 min-h-4 text-xs text-muted-foreground";
+        }
+        try {
+          const created = await orgApiRequest(
+            "POST",
+            "/api/orgs/" + encodeURIComponent(name) + "/bot-tokens",
+            {
+              provider: "codex",
+              label: "Remote MCP " + (mode === "deploy" ? "deploy" : "pull request"),
+              expiresDays: 90,
+              scopes: [
+                "organization.tasks.read",
+                "organization.tasks.write",
+              ],
+            },
+          );
+          const prompt = orgRemoteMcpPrompt(name, mode, created.token || "");
+          const textarea = output?.querySelector("textarea");
+          if (textarea) textarea.value = prompt;
+          if (output) output.hidden = false;
+          await navigator.clipboard.writeText(prompt).catch(() => {});
+          if (status) {
+            status.textContent = "Complete remote setup generated and copied. Paste it into the agent once; no fields need editing.";
+            status.className = "mt-3 min-h-4 text-xs text-[#238636]";
+          }
+        } catch (error) {
+          if (status) {
+            status.textContent = error.message;
+            status.className = "mt-3 min-h-4 text-xs text-red-500";
+          }
+        } finally {
+          button.disabled = false;
+        }
+      });
+    });
+    root.querySelectorAll("[data-org-remote-mcp-copy]").forEach((button) => {
+      button.addEventListener("click", async () => {
+        const mode = button.dataset.orgRemoteMcpCopy || "pr";
+        const output = [...root.querySelectorAll("[data-org-remote-mcp-output]")]
+          .find((element) => element.dataset.orgRemoteMcpOutput === mode);
+        const textarea = output?.querySelector("textarea");
+        if (!textarea) return;
+        try {
+          await navigator.clipboard.writeText(textarea.value || "");
+          button.textContent = "Copied";
+        } catch (_) {
+          textarea.focus();
+          textarea.select();
+        }
       });
     });
   }

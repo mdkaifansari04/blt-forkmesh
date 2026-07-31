@@ -16,6 +16,18 @@ export const OFFICE_TOWER_HEIGHT = OFFICE_FLOOR_HEIGHT * OFFICE_FLOOR_COUNT;
 export const OFFICE_FRONT_Z = OFFICE_DEPTH / 2;
 export const OFFICE_DOOR_WIDTH = 10;
 export const OFFICE_AVATAR_RADIUS = 0.46;
+export const OFFICE_ENTER_DISTANCE = 6.5;
+export const OFFICE_EXIT_DISTANCE = 7.5;
+
+export function nextOfficeZoneState(currentState, distance) {
+  const threshold =
+    currentState === "nearby"
+      ? OFFICE_EXIT_DISTANCE
+      : OFFICE_ENTER_DISTANCE;
+  return Number.isFinite(distance) && distance <= threshold
+    ? "nearby"
+    : "distant";
+}
 // The panoramic lift straddles the first front curtain-wall bay immediately
 // right of the centered Office entrance. Keeping the complete shaft close to
 // the door makes every floor reachable without a long lobby crossing.
@@ -289,7 +301,23 @@ const FLOOR_OBSTACLES = Object.freeze({
     }),
   ]),
   engineering: Object.freeze([
-    Object.freeze({ type: "rect", minX: -44, maxX: 44, minZ: -5, maxZ: 5 }),
+    // Match the five separate workstation tops. The former single rectangle
+    // created one long invisible wall through all four visible passages.
+    Object.freeze({
+      type: "rect", minX: -41.5, maxX: -30.5, minZ: -2.2, maxZ: 2.2,
+    }),
+    Object.freeze({
+      type: "rect", minX: -23.5, maxX: -12.5, minZ: -2.2, maxZ: 2.2,
+    }),
+    Object.freeze({
+      type: "rect", minX: -5.5, maxX: 5.5, minZ: -2.2, maxZ: 2.2,
+    }),
+    Object.freeze({
+      type: "rect", minX: 12.5, maxX: 23.5, minZ: -2.2, maxZ: 2.2,
+    }),
+    Object.freeze({
+      type: "rect", minX: 30.5, maxX: 41.5, minZ: -2.2, maxZ: 2.2,
+    }),
   ]),
   "product-design": Object.freeze([
     Object.freeze({ type: "circle", x: -36, z: 0, radius: 4 }),

@@ -75,6 +75,7 @@
 #include <QGroupBox>
 #include <QGuiApplication>
 #include <QStandardPaths>
+#include <QStorageInfo>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QJsonArray>
@@ -139,6 +140,7 @@
 #include <QSize>
 #include <QSysInfo>
 #include <QSplitter>
+#include <QSpinBox>
 #include <QStackedWidget>
 #include <QStringList>
 #include <QStringListModel>
@@ -307,6 +309,7 @@ QColor agentStatusColor(const QString &status);
 bool agentSessionActive(const AgentSession *s);
 QString solanaDisplayCurrency();
 QIcon agentStatusOcticon(const AgentSession &s, int px = 13);
+QColor agentStatusIconColor(const AgentSession &s);
 QString linkifyIssueRefs(const QString &escaped);
 QString linkifyReferenceLine(const QString &line);
 class DiffFileNavigator : public QObject
@@ -509,21 +512,10 @@ constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QSt
 constexpr int kCommitBodyRole = Qt::UserRole + 31;     // full message body (fed to the hover box)
 constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has >1 parent
 
-// URL scheme for the clickable worktree-location link in the agent session
-// header; the percent-encoded branch name follows. Clicking it opens that
-// branch's row in the Worktrees tab (issue #265). Shared by the link builder
-// and its handler.
-const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
-
-// URL scheme for the clickable branch-name link in the agent session header; the
-// percent-encoded branch name follows. Clicking it opens that branch's row in
-// the Branches tab (adhoc #123). Shared by the link builder and its handler.
+// URL scheme for a clickable branch-name link; the percent-encoded branch name
+// follows. Clicking it opens that branch's row in the Branches tab (adhoc #123).
+// Shared by the link builder and its handler.
 const QLatin1String kBranchLinkScheme("forkmesh-branch:");
-
-// "forkmesh-copy-branch:<branch>" link next to the branch chip in the agent-detail
-// header (adhoc #259): clicking it copies the branch name to the clipboard
-// instead of navigating anywhere.
-const QLatin1String kCopyBranchLinkScheme("forkmesh-copy-branch:");
 
 // "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
 // has a pull request, its "PR #N" reference links to that PR's tab. Shared by
@@ -1541,6 +1533,162 @@ private:
     QVector<Blip> m_blips;      // mirror nodes echoed as blips inside the dish
 };
 
+// A matrix of tiny squares on the window-chrome line, one per agent session,
+// sitting immediately right of the "Agents (N)" button. Each square is painted
+// in the same colour as that session's status icon in the agents list, so the
+// whole fleet reads at a glance: green running/done, red failed, amber queued,
+// purple merged, grey cleared.
+//
+// Running sessions get the night-rider treatment the agents list used to give its
+// (now dropped) Activity column: a Larson highlight travels along the matrix and
+// each running square pulses at a speed and brightness driven by how hard that
+// session is working, so a busy agent visibly races while a quiet one just
+// breathes. The animation timer only runs while something is actually running.
+class AgentDotMatrix : public QWidget
+{
+public:
+    struct Dot {
+        int sessionId = 0;
+        QColor color;
+        bool running = false;
+        double intensity = 0.0; // 0..1 live-output (bytes) meter
+        // 0..1 token-throughput meter: the session's tok/s scaled against a
+        // flat-out run (adhoc #35). Volume of raw output alone made a session
+        // chewing through a big file look as busy as one actually generating, so
+        // the blink now takes the token rate into account as well.
+        double throughput = 0.0;
+    };
+
+    explicit AgentDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedHeight(kRows * kPitch);
+        setFixedWidth(0); // nothing to show until the first setDots()
+        setCursor(Qt::PointingHandCursor);
+        hide();
+        m_sweep = new QTimer(this);
+        m_sweep->setInterval(60);
+        connect(m_sweep, &QTimer::timeout, this, [this] {
+            m_phase += 0.045;
+            if (m_phase >= 1.0)
+                m_phase -= 1.0;
+            update();
+        });
+    }
+
+    // Replace the fleet. Anything past the visible grid is dropped from the
+    // paint (the caller folds the remainder into the tooltip), so the matrix
+    // can never grow the chrome line without bound.
+    void setDots(const QVector<Dot> &dots)
+    {
+        m_dots = dots.mid(0, kRows * kMaxColumns);
+        const int columns = (m_dots.size() + kRows - 1) / kRows;
+        setFixedWidth(columns * kPitch);
+        bool anyRunning = false;
+        for (const Dot &d : std::as_const(m_dots))
+            anyRunning = anyRunning || d.running;
+        if (anyRunning && !m_sweep->isActive())
+            m_sweep->start();
+        else if (!anyRunning && m_sweep->isActive())
+            m_sweep->stop();
+        update();
+    }
+
+    // How many of the dots handed to setDots() actually fit in the grid, so the
+    // caller can say "showing the first N" instead of silently truncating.
+    int shownCount() const { return m_dots.size(); }
+
+    // Clicking a square opens that session; clicking the empty space around
+    // them falls back to session id 0 (the agents overview).
+    std::function<void(int)> onDotClicked;
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onDotClicked) {
+            const int index = dotAt(e->position().toPoint());
+            onDotClicked(index >= 0 ? m_dots.at(index).sessionId : 0);
+            // Accept it: the window-chrome bar under this widget turns an
+            // unhandled press into a system window-move, so letting the click
+            // fall through would drag the window every time a square is opened.
+            e->accept();
+            return;
+        }
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        for (int i = 0; i < m_dots.size(); ++i) {
+            const Dot &dot = m_dots.at(i);
+            QColor color = dot.color;
+            double scale = 1.0;
+            if (dot.running) {
+                // The highlight travels along the matrix (each square is offset
+                // a little further through the cycle), and how hard the session is
+                // working both speeds up its cycle and deepens the pulse — that's
+                // the "live activity" part: idle running agents breathe slowly and
+                // dimly, streaming ones strobe. "Working" is the stronger of the
+                // raw-output meter and the token throughput (adhoc #35), so an
+                // agent producing fast still races while it thinks between chunks.
+                const double meter = qMax(qBound(0.0, dot.intensity, 1.0),
+                                          qBound(0.0, dot.throughput, 1.0));
+                const double speed = 0.6 + 1.9 * meter;
+                double t = m_phase * speed + i * kSweepStep;
+                t -= std::floor(t);
+                const double tri = 1.0 - std::abs(2.0 * t - 1.0);
+                const double depth = 0.45 + 0.35 * meter;
+                const double glow = (1.0 - depth) + depth * tri;
+                color.setAlphaF(qBound(0.18, glow, 1.0));
+                scale = 0.82 + 0.18 * tri; // the crest swells a touch
+            } else {
+                color.setAlpha(205);
+            }
+            const QPointF center = cellCenter(i);
+            const double side = kSide * scale;
+            p.setBrush(color);
+            p.drawRoundedRect(
+                QRectF(center.x() - side / 2.0, center.y() - side / 2.0, side,
+                       side),
+                1.2, 1.2);
+        }
+    }
+
+private:
+    // Column-major fill, so the fleet grows to the right in tidy columns of
+    // kRows rather than reflowing every square when one agent is added.
+    QPointF cellCenter(int index) const
+    {
+        const int column = index / kRows;
+        const int row = index % kRows;
+        return QPointF(column * kPitch + kPitch / 2.0,
+                       row * kPitch + kPitch / 2.0);
+    }
+
+    int dotAt(const QPoint &pos) const
+    {
+        const int column = pos.x() / kPitch;
+        const int row = pos.y() / kPitch;
+        if (column < 0 || row < 0 || row >= kRows)
+            return -1;
+        const int index = column * kRows + row;
+        return index < m_dots.size() ? index : -1;
+    }
+
+    static constexpr int kRows = 3;        // squares stacked per column
+    static constexpr int kPitch = 7;       // cell size, including its gap
+    static constexpr double kSide = 4.5;   // painted square
+    static constexpr int kMaxColumns = 22; // ~66 agents before the tooltip takes over
+    static constexpr double kSweepStep = 0.06; // per-square offset of the sweep
+
+    QVector<Dot> m_dots;
+    double m_phase = 0.0;      // 0..1 Larson sweep parameter
+    QTimer *m_sweep = nullptr; // only ticks while something is running
+};
+
 // A plain track-and-knob on/off switch, used for controls where the state is a
 // real power switch (e.g. "is this node online") rather than a momentary
 // action, so it reads unambiguously as on/off instead of just another button.
@@ -1842,9 +1990,11 @@ private:
 // ResizeToContents and Stretch/stretch-last columns alike are sized to their content
 // (a Stretch column would otherwise keep only the width it was stretched to fill,
 // which can be narrower than its content and elide the text), and stretch-last is
-// turned off. Fixed button columns are left exactly as the caller set them. Call
+// turned off. Fixed button columns are left exactly as the caller set them, and
+// so is `keepFlexibleColumn` when the caller has one column that must go on
+// absorbing the spare width (the agents list's Issue title, adhoc #35). Call
 // once after the header has been configured.
-inline void makeColumnsResizable(QTableWidget *table)
+inline void makeColumnsResizable(QTableWidget *table, int keepFlexibleColumn = -1)
 {
     if (!table || !table->model())
         return;
@@ -1852,19 +2002,21 @@ inline void makeColumnsResizable(QTableWidget *table)
     auto done = std::make_shared<bool>(false);
     QObject::connect(
         table->model(), &QAbstractItemModel::rowsInserted, table,
-        [table, header, done]() {
+        [table, header, done, keepFlexibleColumn]() {
             if (*done)
                 return;
             *done = true;
             // Defer to the next event-loop turn so the fit reflects the
             // freshly-set cell contents rather than the just-inserted empty rows.
-            QTimer::singleShot(0, table, [table, header]() {
+            QTimer::singleShot(0, table, [table, header, keepFlexibleColumn]() {
                 // The last column may auto-fill via stretchLastSection rather than
                 // a per-section Stretch mode; capture that before turning it off.
                 const bool stretchLast = header->stretchLastSection();
                 const int last = header->count() - 1;
                 header->setStretchLastSection(false);
                 for (int i = 0; i < header->count(); ++i) {
+                    if (i == keepFlexibleColumn)
+                        continue; // stays Stretch, absorbing the spare width
                     const QHeaderView::ResizeMode mode = header->sectionResizeMode(i);
                     const bool autosized =
                         mode == QHeaderView::ResizeToContents ||
@@ -2501,6 +2653,13 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // desktop; seeded on for headless installs in main.cpp (an operator-run VM has
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
+// Hourly local snapshots of the live database (Settings -> Data -> Automatic
+// backups). On by default: the snapshot is small (identity, account and every
+// local store, minus the re-downloadable mirrors) and it is the only thing
+// standing between a corrupted store and a lost account key.
+const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
+// How many hourly snapshots are kept before the oldest is pruned.
+const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");
 // When a new UI stall is detected, hand its backtrace to a coding agent so the
 // freeze gets fixed automatically. On by default (adhoc #205).
 const QString kAutoAgentOnStallSetting =
@@ -2557,6 +2716,15 @@ const QString kQuickAddHistorySetting = QStringLiteral("issues/quickAddHistory")
 // typed prompt without filing an issue first).
 const QString kQuickAddCreateIssueSetting =
     QStringLiteral("issues/quickAddCreateIssue");
+// Genie (adhoc #42): the website's remote-MCP setup, as generated by
+// Organization Admin → "Remote ForkMesh MCP". The token is the revocable
+// task-only bearer credential; the org names whose shared task list the agent
+// works; the workflow picks the finishing sequence ("pr" or "deploy"). The URL
+// defaults to the active relay's /mcp endpoint when left blank.
+const QString kGenieTokenSetting = QStringLiteral("genie/token");
+const QString kGenieOrgSetting = QStringLiteral("genie/org");
+const QString kGenieWorkflowSetting = QStringLiteral("genie/workflow");
+const QString kGenieUrlSetting = QStringLiteral("genie/mcpUrl");
 const QString kClaudeApiKeySetting = QStringLiteral("agents/claudeApiKey");
 // Anthropic Admin API key (sk-ant-admin01-...) — required for the cost report;
 // a regular API key cannot read organization spend.
@@ -2713,12 +2881,6 @@ const QString kAutoSwitchToAgentSetting = QStringLiteral("agents/autoSwitchToAge
 // no agent metadata leaves this machine unless the user opts in.
 const QString kPublishAgentsToWebSetting =
     QStringLiteral("agents/publishToWeb");
-// When an idle agent session's branch would conflict with base (the same
-// condition that shows the "Fix conflicts with agent" button), automatically
-// ask the agent to merge base and resolve the conflicts instead of waiting for
-// a manual click. Default on; can be disabled in Settings.
-const QString kAutoFixAgentConflictsSetting =
-    QStringLiteral("agents/autoFixConflicts");
 // When a repo's tests or build fail (the same kind of failure this very task
 // was dispatched to fix), automatically send the failure back to whichever
 // agent session last worked on that branch instead of waiting for a manual
@@ -2769,6 +2931,33 @@ inline int maxRunningAgents()
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
+// Footer quick-add "YOLO" toggle (adhoc #12): true => every agent started from
+// here merges its own branch into the default branch the moment its run
+// finishes successfully, skipping the pull-request review step.
+const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
+// Footer quick-add "Task" toggle (adhoc #18): true => every agent started from
+// here also opens an organization task recording which bot launched the run,
+// which bot finished it, and the model/mode/strength it used. On by default —
+// the point is that prompted work is visible to the organization, not just to
+// the desktop that typed it — and turned off per-run for throwaway prompts.
+const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// Canonical prefixes this desktop signs with its account key to open and close
+// an organization task when it has no account session token to present (the
+// authenticateSilently path holds keys, not sessions). Must stay byte-identical
+// to ORG_TASK_OPEN_PROOF / ORG_TASK_COMPLETE_PROOF in the worker's entry.py.
+const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
+const QString kOrgTaskCompleteProof =
+    QStringLiteral("forkmesh-org-task-complete-v1");
+// Same key, reading the board. Without it the Tasks tab was empty for every
+// operator who launched normally instead of typing a password (adhoc #52).
+// Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
+const QString kOrgTaskListProof = QStringLiteral("forkmesh-org-task-list-v1");
+// Same signing key, for the one credential the "genie" button needs (adhoc
+// #49): the relay mints this desktop's task-only remote-MCP bearer instead of
+// its operator copying one out of the website. Must stay byte-identical to
+// GENIE_CREDENTIAL_PROOF in entry.py.
+const QString kGenieCredentialProof =
+    QStringLiteral("forkmesh-genie-credential-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -2954,6 +3143,53 @@ protected:
             geo.moveTop(avail.top());
         popup->setGeometry(geo);
     }
+};
+
+// Two-line toolbar button (adhoc #51): a normal caption ("Branch", "Worktree")
+// with the value it opens rendered tiny and muted underneath. Used by the agent
+// detail toolbar, where the branch name and worktree path used to sit as columns
+// in the meta table. Qt buttons can't mix font sizes in their own text, so the
+// two lines are child labels laid out inside the button; they're transparent to
+// mouse events so clicks still reach the button itself.
+class StackedCaptionButton : public QPushButton {
+public:
+    explicit StackedCaptionButton(const QString &caption, QWidget *parent = nullptr)
+        : QPushButton(parent)
+    {
+        setCursor(Qt::PointingHandCursor);
+        // The theme's generous single-line button padding would make a two-line
+        // button tower over its neighbours; trim it here (the rest of the button
+        // styling still cascades from the app stylesheet).
+        setStyleSheet(QStringLiteral("padding: 2px 10px;"));
+        auto *box = new QVBoxLayout(this);
+        box->setContentsMargins(0, 0, 0, 0);
+        box->setSpacing(0);
+        m_caption = new QLabel(caption, this);
+        m_value = new QLabel(this);
+        QFont tiny = m_value->font();
+        tiny.setPointSizeF(qMax(6.0, tiny.pointSizeF() - 2.0));
+        m_value->setFont(tiny);
+        m_value->setStyleSheet(QStringLiteral("color:#8b949e;"));
+        for (QLabel *l : {m_caption, m_value}) {
+            l->setAttribute(Qt::WA_TransparentForMouseEvents);
+            l->setAlignment(Qt::AlignCenter);
+            box->addWidget(l);
+        }
+    }
+
+    // Sets the tiny second line, elided in the middle so a long worktree path
+    // can't stretch the toolbar. The full value stays reachable as the tooltip.
+    void setValue(const QString &value)
+    {
+        m_value->setText(QFontMetrics(m_value->font())
+                             .elidedText(value, Qt::ElideMiddle, kValueWidth));
+        setToolTip(value);
+    }
+
+private:
+    static constexpr int kValueWidth = 150;
+    QLabel *m_caption = nullptr;
+    QLabel *m_value = nullptr;
 };
 
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
@@ -4475,6 +4711,155 @@ private:
     mutable QVector<Segment> m_segments; // rebuilt each paint (geometry-dependent)
 };
 
+// One mounted filesystem beside the big size map (adhoc #21): a small
+// used/free donut plus the mount point, already drawn so the whole set reads
+// as a column of tiny maps. Clicking one re-roots the full scan on that mount,
+// which is how "/" (or any other filesystem) gets expanded without the folder
+// picker. Header-only with a plain callback, like the other Internal.h mini
+// widgets — no Q_OBJECT, so no moc entry is needed.
+class StorageMiniMap final : public QWidget
+{
+public:
+    explicit StorageMiniMap(const QStorageInfo &volume, QWidget *parent = nullptr)
+        : QWidget(parent), m_mountPoint(volume.rootPath()),
+          m_device(QString::fromUtf8(volume.device())),
+          m_type(QString::fromUtf8(volume.fileSystemType())),
+          m_total(qMax<qint64>(0, volume.bytesTotal())),
+          m_used(qMax<qint64>(0, volume.bytesTotal() - volume.bytesAvailable()))
+    {
+        setCursor(Qt::PointingHandCursor);
+        setMouseTracking(true);
+        setMinimumHeight(56);
+        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setToolTip(QStringLiteral("%1\n%2 · %3\n%4 used of %5")
+                       .arg(QDir::toNativeSeparators(m_mountPoint), m_device,
+                            m_type, QLocale().formattedDataSize(m_used),
+                            QLocale().formattedDataSize(m_total)));
+    }
+
+    QString mountPoint() const { return m_mountPoint; }
+
+    void setOnClicked(std::function<void()> callback)
+    {
+        m_onClicked = std::move(callback);
+    }
+
+    // Marks the filesystem the big map is currently showing.
+    void setSelected(bool selected)
+    {
+        if (m_selected == selected)
+            return;
+        m_selected = selected;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter painter(this);
+        painter.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const QColor text(dark ? "#e6edf3" : "#1f2328");
+        const QColor muted(dark ? "#8b949e" : "#656d76");
+        const QColor track(dark ? "#30363d" : "#d0d7de");
+        const QColor used(dark ? "#3987e5" : "#2a78d6");
+        const QColor accent(dark ? "#58a6ff" : "#0969da");
+
+        if (m_selected || m_hover) {
+            painter.setPen(m_selected ? QPen(accent, 1) : Qt::NoPen);
+            painter.setBrush(QColor(dark ? "#161b22" : "#f6f8fa"));
+            painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5),
+                                    6, 6);
+        }
+
+        const qreal ring = 6.0;
+        const qreal diameter = qMin<qreal>(38.0, height() - 12);
+        const QRectF donut(8 + ring / 2, (height() - diameter) / 2.0 + ring / 2,
+                           diameter - ring, diameter - ring);
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(track, ring, Qt::SolidLine, Qt::FlatCap));
+        painter.drawEllipse(donut);
+        const qreal fraction =
+            m_total > 0 ? qBound<qreal>(0.0, double(m_used) / double(m_total), 1.0)
+                        : 0.0;
+        if (fraction > 0) {
+            painter.setPen(QPen(used, ring, Qt::SolidLine, Qt::FlatCap));
+            painter.drawArc(donut, 90 * 16, int(-fraction * 360 * 16));
+        }
+
+        QFont pct = font();
+        pct.setPointSizeF(qMax<qreal>(7.0, font().pointSizeF() - 2.5));
+        painter.setFont(pct);
+        painter.setPen(muted);
+        painter.drawText(donut.adjusted(-ring, -ring, ring, ring), Qt::AlignCenter,
+                         QStringLiteral("%1%").arg(qRound(fraction * 100)));
+
+        const int textLeft = int(8 + diameter + 10);
+        const QRect textArea(textLeft, 6, width() - textLeft - 8, height() - 12);
+        QFont title = font();
+        title.setBold(true);
+        painter.setFont(title);
+        painter.setPen(m_selected ? accent : text);
+        const QRect titleRect(textArea.left(), textArea.top(), textArea.width(),
+                              textArea.height() / 2);
+        painter.drawText(titleRect, Qt::AlignLeft | Qt::AlignVCenter,
+                         painter.fontMetrics().elidedText(
+                             QDir::toNativeSeparators(m_mountPoint),
+                             Qt::ElideMiddle, titleRect.width()));
+        painter.setFont(font());
+        painter.setPen(muted);
+        const QRect subRect(textArea.left(), textArea.center().y(),
+                            textArea.width(), textArea.height() / 2);
+        painter.drawText(subRect, Qt::AlignLeft | Qt::AlignVCenter,
+                         painter.fontMetrics().elidedText(
+                             QStringLiteral("%1 of %2 · %3")
+                                 .arg(QLocale().formattedDataSize(m_used),
+                                      QLocale().formattedDataSize(m_total), m_type),
+                             Qt::ElideRight, subRect.width()));
+    }
+
+    void enterEvent(QEnterEvent *event) override
+    {
+        m_hover = true;
+        update();
+        QWidget::enterEvent(event);
+    }
+
+    void leaveEvent(QEvent *event) override
+    {
+        m_hover = false;
+        update();
+        QWidget::leaveEvent(event);
+    }
+
+    void mouseReleaseEvent(QMouseEvent *event) override
+    {
+        if (event->button() != Qt::LeftButton || !rect().contains(event->pos()) ||
+            !m_onClicked) {
+            QWidget::mouseReleaseEvent(event);
+            return;
+        }
+        // The callback re-roots the map, which rebuilds this whole column and
+        // deleteLater()s this very card — and the rescan behind it pumps the
+        // event loop (runGitCapture), so `this` can already be gone when it
+        // returns. Copy the callback out, accept the event first, and touch
+        // nothing afterwards.
+        const std::function<void()> callback = m_onClicked;
+        event->accept();
+        callback();
+    }
+
+private:
+    QString m_mountPoint;
+    QString m_device;
+    QString m_type;
+    qint64 m_total = 0;
+    qint64 m_used = 0;
+    bool m_hover = false;
+    bool m_selected = false;
+    std::function<void()> m_onClicked;
+};
+
 inline QString formatDuration(qint64 ms)
 {
     const qint64 totalSeconds = std::max<qint64>(0, ms / 1000);
@@ -5061,8 +5446,11 @@ inline QByteArray forkMeshNodeAvatarPng(const QString &seed)
     return png;
 }
 
-// Clip avatar PNG bytes into a rounded-rect pixmap for the nav button.
-inline QPixmap roundedAvatar(const QByteArray &png, int side)
+// Clip avatar PNG bytes into a rounded-rect pixmap for the nav button. The
+// corner radius is a fraction of the side, so 0.5 gives a full circle (what the
+// website shows for an account's picture).
+inline QPixmap roundedAvatar(const QByteArray &png, int side,
+                             qreal radiusRatio = 0.28)
 {
     QPixmap src;
     if (png.isEmpty() || !src.loadFromData(png))
@@ -5072,7 +5460,8 @@ inline QPixmap roundedAvatar(const QByteArray &png, int side)
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing);
     QPainterPath clip;
-    clip.addRoundedRect(0, 0, side, side, side * 0.28, side * 0.28);
+    const qreal radius = side * radiusRatio;
+    clip.addRoundedRect(0, 0, side, side, radius, radius);
     p.setClipPath(clip);
     p.drawPixmap(0, 0, src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
                                   Qt::SmoothTransformation));
@@ -5645,13 +6034,111 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         p.drawPixmap(0, 0,
-                     refreshPixmap(QColor(Theme::kTextTertiary), m_angle, m_size));
+                     refreshPixmap(QColor(Theme::kRunning), m_angle, m_size));
     }
 
 private:
     QTimer *m_timer = nullptr;
     int m_size;
     int m_angle = 0;
+};
+
+// A one-shot "done" mark: a ring draws itself in, a check strokes through it, and
+// the ring then pulses a couple of times before the animation stops for good.
+// Left in the Branches table where a branch used to be once "Merge & delete all"
+// removed it, so the row reads as "merged, gone" instead of the list sliding the
+// next branch under the cursor (adhoc #15). Self-animating like the spinners
+// above: the timer only runs while the mark is visible and never restarts once
+// the pulses are done, so a finished mark costs nothing.
+class DoneCheckMark : public QWidget
+{
+public:
+    explicit DoneCheckMark(QWidget *parent = nullptr, int size = 18,
+                           const QColor &color = QColor("#3fb950"))
+        : QWidget(parent), m_size(size), m_color(color)
+    {
+        setFixedSize(size, size);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        m_timer = new QTimer(this);
+        m_timer->setInterval(kTickMs);
+        connect(m_timer, &QTimer::timeout, this, [this] {
+            m_elapsedMs += kTickMs;
+            if (m_elapsedMs >= kDrawMs + kPulseMs * kPulses)
+                m_timer->stop();
+            update();
+        });
+    }
+
+protected:
+    void showEvent(QShowEvent *e) override
+    {
+        if (m_elapsedMs < kDrawMs + kPulseMs * kPulses)
+            m_timer->start();
+        QWidget::showEvent(e);
+    }
+    void hideEvent(QHideEvent *e) override
+    {
+        m_timer->stop();
+        QWidget::hideEvent(e);
+    }
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        // 0 -> 1 over the draw-in, then pinned at 1 for the pulses.
+        const double t = qBound(0.0, double(m_elapsedMs) / kDrawMs, 1.0);
+        // 0 -> 1 -> 0 once per pulse period, and 0 while the mark is still drawing.
+        double pulse = 0.0;
+        if (m_elapsedMs > kDrawMs) {
+            const double phase =
+                double((m_elapsedMs - kDrawMs) % kPulseMs) / double(kPulseMs);
+            pulse = std::sin(phase * M_PI);
+        }
+
+        const double penWidth = 1.6;
+        const double inset = penWidth / 2.0 + 1.0;
+        const QRectF box(inset, inset, m_size - 2 * inset, m_size - 2 * inset);
+        QColor ringColor = m_color;
+        ringColor.setAlpha(int(110 + 145 * pulse));
+        QPen ring(ringColor);
+        ring.setWidthF(penWidth);
+        p.setPen(ring);
+        p.setBrush(Qt::NoBrush);
+        // Qt arc angles are 1/16° counter-clockwise from 3 o'clock; start at the
+        // top and sweep clockwise so the ring closes as the check is drawn.
+        p.drawArc(box, 90 * 16, -int(t * 360) * 16);
+
+        // The check itself: two segments stroked in as one continuous line, so at
+        // t=0.5 the pen sits at the mark's elbow.
+        const QPointF a(m_size * 0.28, m_size * 0.52);
+        const QPointF b(m_size * 0.43, m_size * 0.68);
+        const QPointF c(m_size * 0.73, m_size * 0.34);
+        const double len1 = QLineF(a, b).length();
+        const double len2 = QLineF(b, c).length();
+        const double drawn = t * (len1 + len2);
+        QPen stroke(m_color);
+        stroke.setWidthF(2.0);
+        stroke.setCapStyle(Qt::RoundCap);
+        stroke.setJoinStyle(Qt::RoundJoin);
+        p.setPen(stroke);
+        if (drawn <= len1) {
+            p.drawLine(QLineF(a, a + (b - a) * (len1 > 0 ? drawn / len1 : 1.0)));
+        } else {
+            p.drawLine(QLineF(a, b));
+            const double rest = qMin(drawn - len1, len2);
+            p.drawLine(QLineF(b, b + (c - b) * (len2 > 0 ? rest / len2 : 1.0)));
+        }
+    }
+
+private:
+    static constexpr int kTickMs = 30;
+    static constexpr int kDrawMs = 420;  // ring + check stroke in
+    static constexpr int kPulseMs = 900; // one breath of the ring
+    static constexpr int kPulses = 2;
+    QTimer *m_timer = nullptr;
+    int m_size;
+    QColor m_color;
+    int m_elapsedMs = 0;
 };
 
 // A thin rotating "processing ring" meant to encircle a small widget it's overlaid
@@ -5666,7 +6153,7 @@ class RingSpinner : public QWidget
 {
 public:
     explicit RingSpinner(QWidget *parent = nullptr,
-                         const QColor &color = QColor("#58a6ff"))
+                         const QColor &color = QColor(Theme::kRunning))
         : QWidget(parent), m_color(color)
     {
         setAttribute(Qt::WA_TranslucentBackground);
@@ -6143,7 +6630,13 @@ inline QIcon themedOcticon(const QString &name, const QColor &color, int size)
     return icon;
 }
 
-// A tinted octicon rotated `angleDeg` about its centre — used to spin the green
+// Tick rate for the running-agent spinners (the Agents table's "#" cells and the
+// footer "Agents:" strip). Fast enough that a flat-out session reads as a smooth
+// spin; how far each session turns per tick comes from its own tok/s (see
+// agentSpinStepDegrees in MainWindowAgents.cpp).
+inline constexpr int kAgentSpinTickMs = 60;
+
+// A tinted octicon rotated `angleDeg` about its centre — used to spin the blue
 // "running" glyph in the agents list (issue #108). Not cached, since the angle
 // changes every animation frame; callers keep it to the handful of running rows.
 inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &color,
@@ -6243,6 +6736,16 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     button->setProperty("forkmeshOcticonRotation", rotationDeg);
     applyStoredOcticon(button);
 }
+
+// Width of one activity-rail entry, and of the rail (scroll area) itself. Every
+// badge in the rail rides its own icon's corner rather than the item's outer
+// edge, so an item only has to be as wide as its icon plus its caption — the
+// rail no longer reserves a column of empty space for a count (adhoc #19).
+constexpr int kRailItemWidth = 46;
+constexpr int kRailWidth = kRailItemWidth + 8; // + room for the scrollbar
+// Size of the bell glyph on the rail's Alerts item — updateNotificationButton
+// needs it to park the pending-approval count on the glyph's corner.
+constexpr int kNotificationBellIconPx = 16;
 
 // One entry in the app-wide activity rail: an octicon over an optional small
 // label, VS-Code style, with the selected state drawn as a 2px accent line along
@@ -6358,7 +6861,7 @@ protected:
             p.setPen(Qt::NoPen);
             p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
             p.drawEllipse(QRect(at, QSize(s, s)).adjusted(-1, -1, 1, 1));
-            p.drawPixmap(at, refreshPixmap(QColor("#58a6ff"), m_spinAngle, s));
+            p.drawPixmap(at, refreshPixmap(QColor(Theme::kRunning), m_spinAngle, s));
         } else if (m_badge > 0) {
             const QString text = m_badge > 99 ? QStringLiteral("99+")
                                               : QString::number(m_badge);

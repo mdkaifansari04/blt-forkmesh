@@ -95,23 +95,19 @@ def test_circle_keeps_a_walk_in_gap_instead_of_closing_the_ring():
     ring = SCENE.split("function rebuildCampfireCircle", 1)[1].split(
         "setShadows(ring);", 1
     )[0]
-    # The arc is reserved by the radius too, so widening the ring for a new
-    # member never closes the gap back up.
-    assert (
-        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
-        in ring
-    )
+    # Members are split into concentric rows of at most 25. Every row computes
+    # its own entrance angle, so the walk-in gap stays aligned across them.
+    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
+    assert "const CAMPFIRE_ROW_SPACING = 2.8;" in SCENE
+    assert "const row = Math.floor(index / CAMPFIRE_MEMBERS_PER_ROW);" in ring
     assert (
         "const entranceAngle = Math.min(\n"
-        "      CAMPFIRE_ENTRANCE_MAX_ANGLE,\n"
-        "      CAMPFIRE_ENTRANCE_WIDTH / radius,\n"
-        "    );" in ring
+        "        CAMPFIRE_ENTRANCE_MAX_ANGLE,\n"
+        "        CAMPFIRE_ENTRANCE_WIDTH / radius,\n"
+        "      );" in ring
     )
-    assert "const seatStep = (Math.PI * 2 - entranceAngle) / count;" in ring
-    assert (
-        "CAMPFIRE_ENTRANCE_ANGLE + entranceAngle / 2 + (index + 0.5) * seatStep"
-        in ring
-    )
+    assert "const seatStep = (Math.PI * 2 - entranceAngle) / seatsInRow;" in ring
+    assert "(positionInRow + 0.5) * seatStep" in ring
     # The old full-circle spacing is gone: it is what walled the fire in.
     assert "(index / count) * Math.PI * 2" not in ring
 
@@ -139,31 +135,58 @@ def test_faces_wear_status_emoji_over_a_unique_generated_default():
     assert "faceMesh.rotation.y = Math.PI;" in SCENE
 
 
-def test_emoji_wraps_the_head_with_no_gap_of_bare_sphere():
+def test_emoji_fills_the_face_with_no_gap_of_bare_head():
     # adhoc #316: the decal used to stop short of the glyph, leaving corners
     # and a rim of head-coloured sphere showing as a seam around the face.
-    # The canvas is now flooded underneath the glyph with its own rim colour,
-    # and the shell it is mapped onto wraps wider than the glyph itself.
+    # The canvas is flooded underneath the glyph with its own rim colour, so
+    # the disc carries that colour all the way out to its rim.
     assert 'context.globalCompositeOperation = "destination-over";' in SCENE
     assert "context.fillRect(0, 0, 128, 128);" in SCENE
     assert 'context.globalCompositeOperation = "source-over";' in SCENE
 
-    def span(name):
-        found = re.search(
-            rf"const AVATAR_FACE_{name} = Math\.PI \* ([\d.]+);", SCENE
-        )
-        assert found, f"AVATAR_FACE_{name} missing"
+
+def test_the_face_is_a_flat_disc_on_a_flat_cut_head():
+    # The face used to be a curved shell wrapped round the head, which warped
+    # an uploaded avatar photo. The head's front is now sliced off flat and the
+    # face is a plain circle lying on that cut.
+    assert "function flattenSphereFront" in SCENE
+    assert "if (position.getZ(i) < -depth) position.setZ(i, -depth);" in SCENE
+    assert "geometry.computeVertexNormals();" in SCENE
+    assert (
+        "flattenSphereFront(\n"
+        "      new THREE.SphereGeometry(AVATAR_HEAD_RADIUS, 32, 24),\n"
+        "      AVATAR_FACE_DEPTH,\n"
+        "    )" in SCENE
+    )
+    assert "new THREE.CircleGeometry(AVATAR_FACE_RADIUS, 48)" in SCENE
+    # No wrapped shell left behind.
+    assert "AVATAR_FACE_PHI_START" not in SCENE
+    assert "AVATAR_FACE_THETA_START" not in SCENE
+
+    def number(name):
+        found = re.search(rf"const {name} = ([\d.]+);", SCENE)
+        assert found, f"{name} missing"
         return float(found.group(1))
 
-    phi = span("PHI_LENGTH")
-    theta = span("THETA_LENGTH")
-    # Wider than the pre-#316 patch (0.84 phi by 0.68 theta) so the padding
-    # reaches past the face, and still centred on the avatar's front.
-    assert phi > 0.84 and theta > 0.68
-    assert abs(span("PHI_START") * 2 + phi - 1) < 1e-9
-    assert abs(span("THETA_START") * 2 + theta - 1) < 1e-9
-    for name in ("PHI_START", "PHI_LENGTH", "THETA_START", "THETA_LENGTH"):
-        assert f"AVATAR_FACE_{name},\n" in SCENE, f"{name} unused by the face"
+    radius = number("AVATAR_HEAD_RADIUS")
+    depth = number("AVATAR_FACE_DEPTH")
+    # The shallow cut makes the photo disc almost the full sphere diameter,
+    # leaving only a narrow patterned helmet rim.
+    assert 0 < depth < 0.25 * radius
+    assert (
+        "Math.sqrt(\n"
+        "  AVATAR_HEAD_RADIUS * AVATAR_HEAD_RADIUS - AVATAR_FACE_DEPTH * AVATAR_FACE_DEPTH,\n"
+        ")" in SCENE
+    )
+    # Turned to look out of the cut, and held just off it so the coplanar disc
+    # and cap cannot z-fight.
+    assert (
+        "faceMesh.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT);" in SCENE
+    )
+    assert 0 < number("AVATAR_FACE_LIFT") < 0.02
+    # An unscaled head keeps the cut a true circle, so the photo stays square.
+    assert "head.scale.y" not in SCENE
+    assert "faceMesh.scale.y" not in SCENE
 
 
 def test_head_colour_is_sampled_from_the_edge_of_the_emoji():
@@ -293,30 +316,18 @@ def test_bench_height_is_derived_from_the_seated_pose():
     assert "leg.position.set(end, CAMPFIRE_BENCH_LEG_HEIGHT / 2, 0);" in ring
 
 
-def test_member_total_burns_as_a_number_in_the_fire():
-    # adhoc #347: the registered-account total is shown as a number hanging in
-    # the flames, painted from the same count that sizes the bench ring.
-    assert "function campfireMemberCountTexture(THREE, total, newest)" in SCENE
-    assert "campfire.add(memberCountSprite);" in SCENE
+def test_member_total_changes_fire_and_the_high_member_count():
+    assert "function campfireMemberCountTexture(THREE, total, newest = \"\")" in SCENE
+    assert 'memberCountSprite.name = "campfire-member-count-high"' in SCENE
+    assert "memberCountSprite.material.map = campfireMemberCountTexture(" in SCENE
+    assert "      latest," in SCENE
     lounge = SCENE.split("function updateMemberLounge", 1)[1]
     assert "setCampfireMemberCount(total, newestMemberName(members));" in lounge
-    # Hidden until the roster lands, so the fire never shows a placeholder 0.
-    assert "memberCountSprite.visible = false;" in SCENE
-    # Repainted only when the count moves; the roster refresh is on a timer.
+    assert "rebuildCampfireMemberLogs(count)" in SCENE
     assert "if (memberCountShown === key) return;" in SCENE
 
 
-def test_fire_credits_the_newest_member_under_the_total():
-    # adhoc #426: the count alone does not say who just arrived, so the most
-    # recently joined account is named under the "MEMBERS" line.
-    count_texture = SCENE.split(
-        "function campfireMemberCountTexture", 1
-    )[1].split("\nfunction ", 1)[0]
-    assert 'context.fillText("NEWEST", 256, 210);' in count_texture
-    assert "context.fillText(latest, 256, 240);" in count_texture
-    # No newest member known yet (empty roster): the old two-line layout stays.
-    assert "if (!latest) return;" in count_texture
-    assert "context.fillText(digits, 256, latest ? 84 : 104);" in count_texture
+def test_fire_tracks_newest_member_without_rendering_a_center_label():
     newest = SCENE.split("function newestMemberName(members) {", 1)[1].split(
         "\n}", 1
     )[0]

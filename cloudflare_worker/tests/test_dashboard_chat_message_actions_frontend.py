@@ -26,9 +26,44 @@ def _region(start, end):
     return CHAT[CHAT.index(start):CHAT.index(end)]
 
 
-def test_controls_are_built_only_for_your_own_messages():
-    append = _region("function appendFullMessage(", "function messageActionButton(")
-    assert "if (self && senderId === selfId) row.append(buildMessageActions(record));" in append
+def test_reactions_are_on_every_message_but_edits_stay_author_only():
+    materialize = _region(
+        "function materializeFullMessage(record)",
+        "function renderHistoryWindow(",
+    )
+    assert "content?.append(buildMessageActions(record));" in materialize
+    actions = _region("function buildMessageActions(", "// An \"(edited)\" marker")
+    assert 'messageActionButton("☺"' in actions
+    assert "if (record.self && record.senderId === selfId)" in actions
+    assert 'messageActionButton("Edit"' in actions
+    assert 'messageActionButton("Delete"' in actions
+
+
+def test_message_avatars_use_uploaded_faces_with_generated_face_fallbacks():
+    assert "function generatedChatFace(handle)" in CHAT
+    assert "function publicChatAvatar(handle)" in CHAT
+    assert "function hydrateChatAvatar(avatar, handle)" in CHAT
+    assert 'fetch(`/api/accounts/${encodeURIComponent(name)}`' in CHAT
+    assert 'image.src = `data:image/png;base64,${avatarPng}`' in CHAT
+    assert 'class="chat-message-avatar avatar' in CHAT
+    assert "hydrateChatAvatar(avatarEl, record.who)" in CHAT
+
+
+def test_dashboard_reactions_use_the_shared_durable_protocol():
+    reaction = _region("function reactionKey(", "// An \"(edited)\" marker")
+    assert "function applyReaction(plain)" in reaction
+    assert "function renderReactions(messageId)" in reaction
+    assert "function toggleReaction(messageId, emoji)" in reaction
+    assert 'makePlain("reaction"' in reaction
+    assert "conversation: CHANNEL_LABEL" in reaction
+    assert "reactorId: selfId" in reaction
+    assert "reactorName: displayName()" in reaction
+    assert "added: !mine" in reaction
+    assert '"reaction"' in CHAT[CHAT.index("const DURABLE_TYPES"):][:200]
+    for source in (SHELL, CHAT_PAGE):
+        assert ".chat-reactions {" in source
+        assert ".chat-reaction-chip" in source
+        assert ".chat-reaction-picker" in source
 
 
 def test_edit_frame_targets_the_message_and_is_durable():

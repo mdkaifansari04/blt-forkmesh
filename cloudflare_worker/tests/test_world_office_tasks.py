@@ -22,6 +22,33 @@ spec.loader.exec_module(tasks_api)
 NOW = 2_100_000_000_000
 
 
+def test_task_image_thumbnails_are_tiny_and_image_only():
+    valid = "data:image/webp;base64,aGVsbG8="
+    result = tasks_api._attachments([
+        {
+            "name": "shot.webp",
+            "mime": "image/webp",
+            "size": 2048,
+            "thumbnail": valid,
+        },
+        {
+            "name": "notes.txt",
+            "mime": "text/plain",
+            "size": 50,
+            "thumbnail": valid,
+        },
+        {
+            "name": "bad.png",
+            "mime": "image/png",
+            "size": 50,
+            "thumbnail": "data:text/html;base64,PHNjcmlwdD4=",
+        },
+    ])
+    assert result[0]["thumbnail"] == valid
+    assert "thumbnail" not in result[1]
+    assert "thumbnail" not in result[2]
+
+
 def run_async_test(function):
     def wrapped(*args, **kwargs):
         return asyncio.run(function(*args, **kwargs))
@@ -43,6 +70,17 @@ class FakeRuntime:
             .read_text(encoding="utf-8"))
         self.db.executescript(
             (ROOT / "migrations" / "0105_organization_tasks.sql")
+            .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" / "0108_organization_tasks_general_bot.sql")
+            .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0112_organization_task_global_priority.sql")
+            .read_text(encoding="utf-8"))
+        self.db.executescript(
+            (ROOT / "migrations" /
+             "0113_organization_task_priority_scale.sql")
             .read_text(encoding="utf-8"))
         self.request_method = "GET"
         self.request_data = {}
@@ -255,6 +293,53 @@ async def create_task(runtime, assignee="bob", title="Write launch post",
 
 
 @run_async_test
+async def test_start_uses_optional_private_engineering_notifier():
+    runtime = FakeRuntime()
+    notices = []
+
+    async def notify(org_bi, actor, task_id, task):
+        notices.append((org_bi, actor, task_id, task))
+
+    runtime.notify_engineering_task_started = notify
+    created = await create_task(runtime)
+    task = created["data"]["task"]
+    started = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/start",
+    )
+    assert started["status"] == 200
+    assert len(notices) == 1
+    assert notices[0][1] == "bob"
+    assert notices[0][2] == task["id"]
+    assert notices[0][3]["title"] == "Write launch post"
+    assert notices[0][3]["status"] == "active"
+
+
+@run_async_test
+async def test_create_and_lifecycle_emit_private_task_activity():
+    runtime = FakeRuntime()
+    notices = []
+
+    async def notify(org_bi, actor, task_id, task, action):
+        notices.append((actor, task_id, task["title"], action))
+
+    runtime.notify_organization_task_activity = notify
+    created = await create_task(runtime)
+    task = created["data"]["task"]
+    await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/start",
+    )
+    await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/stop",
+    )
+    assert [notice[3] for notice in notices] == [
+        "created", "started", "stopped",
+    ]
+
+
+@run_async_test
 async def test_universal_tasks_are_org_private_routable_and_marketing_compatible():
     runtime = FakeRuntime()
     generic = await tasks_api.handle(
@@ -305,6 +390,181 @@ async def test_universal_tasks_are_org_private_routable_and_marketing_compatible
 
 
 @run_async_test
+async def test_global_priorities_are_manager_owned_projected_and_sorted():
+    runtime = FakeRuntime()
+    low = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Lower priority",
+            "assignee": "bob",
+            "priority": 80,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    high = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Highest priority",
+            "assignee": "bob",
+            "priority": 1,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    denied = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "title": "Member cannot self-promote",
+            "assignee": "bob",
+            "priority": 2,
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert denied["status"] == 403
+    assert denied["data"]["error"] == "manager_required"
+    listing = await tasks_api.handle(
+        runtime.use("GET", "carol"), tasks_api.UNIVERSAL_PREFIX)
+    assert [
+        (task["title"], task["priority"])
+        for task in listing["data"]["tasks"]
+    ] == [
+        ("Highest priority", 1),
+        ("Lower priority", 80),
+    ]
+    reprioritized = await tasks_api.handle(
+        runtime.use("PATCH", "alice", {"priority": 3}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{low['data']['task']['id']}",
+    )
+    assert reprioritized["status"] == 200
+    assert reprioritized["data"]["task"]["priority"] == 3
+    assert high["data"]["task"]["priority"] == 1
+    assert runtime.audits[-1]["action"] == (
+        "organization.task_priority_changed")
+    clamped = await tasks_api.handle(
+        runtime.use("PATCH", "alice", {"priority": 500}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{low['data']['task']['id']}",
+    )
+    assert clamped["data"]["task"]["priority"] == 99
+    defaulted = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Normal priority",
+            "assignee": "bob",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert defaulted["data"]["task"]["priority"] == 50
+
+
+@run_async_test
+async def test_follow_up_references_parent_and_inherits_assignee_and_routing():
+    runtime = FakeRuntime()
+    parent_response = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Investigate production error",
+            "department": "engineering",
+            "destination": "agent",
+            "assigneeKind": "agent",
+            "repository": "forkmesh/forkmesh",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    parent = parent_response["data"]["task"]
+    denied = await tasks_api.handle(
+        runtime.use("POST", "carol", {
+            "title": "Unauthorized continuation",
+            "parentTaskId": parent["id"],
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert denied["status"] == 403
+
+    follow_up = await tasks_api.handle(
+        runtime.use("POST", "alice", {
+            "title": "Verify the production repair",
+            "parentTaskId": parent["id"],
+            # Client attempts cannot redirect a follow-up to someone else.
+            "assigneeKind": "user",
+            "assignee": "bob",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert follow_up["status"] == 201
+    task = follow_up["data"]["task"]
+    assert task["parentTaskId"] == parent["id"]
+    assert task["assigneeKind"] == "agent"
+    assert task["assignee"] == "agent"
+    assert task["department"] == "engineering"
+    assert task["destination"] == "agent"
+    assert task["repository"] == "forkmesh/forkmesh"
+    assert runtime.audits[-1]["details"]["followUp"] is True
+
+
+@run_async_test
+async def test_member_can_submit_exact_non_custodial_sol_bounty_bid():
+    runtime = FakeRuntime()
+    response = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "kind": "bid",
+            "title": "Improve the lobby onboarding",
+            "details": "Add a concise first-visit checklist.",
+            "bountyAmountSol": "0.125000000",
+            "department": "community",
+            "destination": "department",
+            # A bid cannot impersonate this supplied assignee.
+            "assigneeKind": "user",
+            "assignee": "carol",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert response["status"] == 201
+    task = response["data"]["task"]
+    assert task["kind"] == "bid"
+    assert task["createdBy"] == "bob"
+    assert task["assignee"] == "bob"
+    assert task["assigneeKind"] == "user"
+    assert task["bountyRequest"] == {
+        "currency": "SOL",
+        "amountSol": "0.125",
+        "lamports": 125_000_000,
+        "status": "requested",
+    }
+    stored = runtime.db.execute(
+        "SELECT data FROM organization_tasks WHERE task_id=?",
+        (task["id"],),
+    ).fetchone()
+    assert "Improve the lobby onboarding" not in stored["data"]
+    assert runtime.audits[-1]["action"] == "organization.task_created"
+    assert runtime.audits[-1]["details"]["kind"] == "bid"
+    assert runtime.audits[-1]["details"]["bountyAmountSol"] == "0.125"
+
+
+@run_async_test
+async def test_bounty_bid_rejects_invalid_or_imprecise_sol_amounts():
+    for amount in (
+        "",
+        "0",
+        "-1",
+        "1e-3",
+        "0.0000000001",
+        "1000000.000000001",
+        "not-sol",
+    ):
+        runtime = FakeRuntime()
+        response = await tasks_api.handle(
+            runtime.use("POST", "bob", {
+                "kind": "bid",
+                "title": "Invalid bounty",
+                "bountyAmountSol": amount,
+                "department": "general",
+                "destination": "department",
+            }),
+            tasks_api.UNIVERSAL_PREFIX,
+        )
+        assert response["status"] == 400, amount
+        assert response["data"]["error"] == "invalid_bounty_request"
+        count = runtime.db.execute(
+            "SELECT COUNT(*) FROM organization_tasks"
+        ).fetchone()[0]
+        assert count == 0
+
+
+@run_async_test
 async def test_universal_tasks_route_to_agents_and_private_qa():
     runtime = FakeRuntime()
     denied_assignment = await tasks_api.handle(
@@ -323,7 +583,7 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
         runtime.use("POST", "mary", {
             "title": "Run an agent",
             "department": "engineering",
-            "assigneeKind": "codex",
+            "assigneeKind": "agent",
         }),
         tasks_api.UNIVERSAL_PREFIX,
     )
@@ -337,24 +597,107 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
             "department": "engineering",
             "destination": "repository",
             "repository": "forkmesh/forkmesh",
+            # A legacy per-vendor kind still routes to the one general bot.
             "assigneeKind": "codex",
             "sendToQa": True,
             "howToTest": "Open the World and verify the result.",
+            "attachments": [
+                {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
+                {
+                    "name": "world.png",
+                    "mime": "image/png",
+                    "size": 4096,
+                    "thumbnail": "data:image/png;base64,aGVsbG8=",
+                },
+            ],
         }),
         tasks_api.UNIVERSAL_PREFIX,
     )
     assert agent["status"] == 201
     task = agent["data"]["task"]
     assert task["destination"] == "agent"
-    assert task["assignee"] == "codex"
+    assert task["assignee"] == "agent"
+    assert task["assigneeKind"] == "agent"
     assert task["qa"]["requestedAt"] == runtime.now_ms
     assert task["repository"] == "forkmesh/forkmesh"
+    assert task["attachments"] == [
+        {"name": "hud-notes.md", "mime": "text/markdown", "size": 842},
+        {
+            "name": "world.png",
+            "mime": "image/png",
+            "size": 4096,
+            "thumbnail": "data:image/png;base64,aGVsbG8=",
+        },
+    ]
     stored = runtime.db.execute(
         "SELECT data FROM organization_tasks WHERE task_id=?",
         (task["id"],),
     ).fetchone()[0]
     assert "Run the private verification" not in stored
     assert "Agent task details" not in stored
+
+
+@run_async_test
+async def test_queued_bot_tasks_return_to_the_task_list():
+    runtime = FakeRuntime()
+    created = await tasks_api.handle(
+        runtime.use("POST", "mary", {
+            "title": "Queue the general bot",
+            "department": "engineering",
+            "destination": "repository",
+            "repository": "forkmesh/forkmesh",
+            "assigneeKind": "agent",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert created["status"] == 201
+    task_id = created["data"]["task"]["id"]
+    linked = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {
+            "agentSessionId": "0123456789abcdef0123456789abcdef",
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert linked["status"] == 200
+    assert linked["data"]["task"]["agentSessionId"]
+
+    # A reader who did not create the task cannot pull it off the node queue.
+    forbidden = await tasks_api.handle(
+        runtime.use("POST", "bob", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}/return",
+    )
+    assert forbidden["status"] == 403
+
+    cancelled = []
+
+    async def cancel(org_bi, session_id):
+        cancelled.append(session_id)
+        return True
+
+    runtime.cancel_agent_session = cancel
+    returned = await tasks_api.handle(
+        runtime.use("POST", "mary", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}/return",
+    )
+    assert returned["status"] == 200
+    task = returned["data"]["task"]
+    assert task["assigneeKind"] == "unassigned"
+    assert task["destination"] == "department"
+    assert task["assignee"] == ""
+    assert task["agentSessionId"] == ""
+    assert cancelled == ["0123456789abcdef0123456789abcdef"]
+    assert any(
+        entry["action"] == "organization.task_returned"
+        for entry in runtime.audits
+    )
+
+    # A task that is already back on the list is no longer queued anywhere.
+    again = await tasks_api.handle(
+        runtime.use("POST", "mary", {}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}/return",
+    )
+    assert again["status"] == 409
+    assert again["data"]["error"] == "task_not_queued"
 
 
 @run_async_test
@@ -742,13 +1085,47 @@ async def test_assignee_or_manager_can_complete_and_only_manager_can_delete():
     )
     assert outsider_done["status"] == 403
     completed = await tasks_api.handle(
-        runtime.use("POST", "bob", {}),
+        runtime.use("POST", "bob", {
+            "completionNote": (
+                "Implemented the requested flow and ran the focused tests."
+            ),
+        }),
         f"{tasks_api.PREFIX}/{task_id}/complete",
     )
     assert completed["status"] == 200
     assert completed["data"]["task"]["status"] == "done"
     assert completed["data"]["task"]["elapsedMs"] == 7_500
     assert completed["data"]["task"]["completedAt"] == runtime.now_ms
+    assert completed["data"]["task"]["destination"] == "qa"
+    assert completed["data"]["task"]["qa"]["status"] == "unknown"
+    assert completed["data"]["task"]["qa"]["requestedAt"] == runtime.now_ms
+    assert completed["data"]["task"]["qa"]["howToTest"]
+    assert completed["data"]["task"]["completionNote"] == (
+        "Implemented the requested flow and ran the focused tests."
+    )
+    sealed = runtime.db.execute(
+        "SELECT data FROM organization_tasks WHERE task_id=?",
+        (task_id,),
+    ).fetchone()[0]
+    assert "Implemented the requested flow" not in sealed
+    assert runtime.audits[-1]["details"]["hasCompletionNote"] is True
+
+    revised = await tasks_api.handle(
+        runtime.use("POST", "bob", {
+            "completionNote": (
+                "Implemented, reviewed the diff, and passed focused QA."
+            ),
+        }),
+        f"{tasks_api.PREFIX}/{task_id}/complete",
+    )
+    assert revised["status"] == 200
+    assert revised["data"]["task"]["completedAt"] == runtime.now_ms
+    assert revised["data"]["task"]["completionNote"] == (
+        "Implemented, reviewed the diff, and passed focused QA."
+    )
+    assert runtime.audits[-1]["action"] == (
+        "organization.task_completion_note_updated"
+    )
 
     restart = await tasks_api.handle(
         runtime.use("POST", "bob", {}),
@@ -857,11 +1234,222 @@ async def test_encrypted_copy_same_origin_reassignment_and_metadata_only_audit()
     assert reassigned["status"] == 200
     assert reassigned["data"]["task"]["assignee"] == "carol"
 
+    agent = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {
+            "assigneeKind": "agent",
+            "repository": "forkmesh/forkmesh",
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert agent["status"] == 200
+    assert agent["data"]["task"]["assigneeKind"] == "agent"
+    assert agent["data"]["task"]["assignee"] == "agent"
+    assert agent["data"]["task"]["destination"] == "agent"
+    assert agent["data"]["task"]["repository"] == "forkmesh/forkmesh"
+
+    returned = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {"assigneeKind": "unassigned"}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert returned["status"] == 200
+    assert returned["data"]["task"]["assigneeKind"] == "unassigned"
+    assert returned["data"]["task"]["assignee"] == ""
+    assert returned["data"]["task"]["destination"] == "department"
+
+    missing_repository = await tasks_api.handle(
+        runtime.use("PATCH", "mary", {
+            "assigneeKind": "agent",
+            "repository": "",
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}",
+    )
+    assert missing_repository["status"] == 400
+    assert missing_repository["data"]["error"] == "repository_required"
+
     member_update = await tasks_api.handle(
         runtime.use("PATCH", "bob", {"title": "Not allowed"}),
         f"{tasks_api.PREFIX}/{task_id}",
     )
     assert member_update["status"] == 403
+
+
+@run_async_test
+async def test_delete_purges_the_promoted_legacy_row_so_it_cannot_return():
+    """A deleted task must not be restored by the legacy Marketing backfill.
+
+    schema.py replays "INSERT OR IGNORE INTO organization_tasks ... SELECT ...
+    FROM world_office_marketing_tasks" whenever the schema fingerprint changes,
+    so a surviving legacy row silently resurrects a deleted task.
+    """
+    runtime = FakeRuntime()
+    created = await create_task(runtime, "bob", "Promoted from Marketing")
+    task_id = created["data"]["task"]["id"]
+    promoted = runtime.db.execute(
+        "SELECT task_id,org_bi,status,assignee_bi,active_assignee_bi,data,"
+        "created_by_bi,created_at,updated_at FROM organization_tasks "
+        "WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    runtime.db.execute(
+        "INSERT INTO world_office_marketing_tasks ("
+        "task_id,org_bi,status,assignee_bi,active_assignee_bi,data,"
+        "created_by_bi,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        tuple(promoted),
+    )
+    runtime.db.execute(
+        "INSERT INTO world_office_marketing_checkins ("
+        "checkin_id,task_id,org_bi,account_bi,state,data,created_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        ("c" * 32, task_id, "org-bi", "bi-bob", "going_well", "sealed", NOW),
+    )
+    runtime.db.commit()
+
+    deleted = await tasks_api.handle(
+        runtime.use("DELETE", "mary", {}),
+        f"{tasks_api.PREFIX}/{task_id}",
+    )
+    assert deleted["status"] == 200
+    assert deleted["data"]["deleted"] is True
+    for table in (
+            "organization_tasks",
+            "world_office_marketing_tasks",
+            "world_office_marketing_checkins",
+    ):
+        assert runtime.db.execute(
+            "SELECT COUNT(*) FROM " + table + " WHERE task_id=?",
+            (task_id,),
+        ).fetchone()[0] == 0
+
+
+@run_async_test
+async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
+    """A prompt-launched task explains which bot ran it, and how (adhoc #18)."""
+
+    runtime = FakeRuntime()
+    opened = await tasks_api.handle(
+        runtime.use("POST", "wendy", {
+            "title": "Add a task toggle to the composer",
+            "details": "Prompt typed in the desktop",
+            "department": "engineering",
+            "repository": "forkmesh/forkmesh",
+            "assigneeKind": "claude",
+            "agent": {
+                "provider": "claude-code",
+                "startedBy": "claude-code@Workstation",
+                "model": "opus",
+                "mode": "Auto mode",
+                "strength": "XHIGH",
+                "sessionId": "418",
+                "finishedBy": "",
+            },
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert opened["status"] == 201
+    task = opened["data"]["task"]
+    assert task["assigneeKind"] == "agent"
+    assert task["agentSessionId"] == "418"
+    assert task["agent"] == {
+        "provider": "claude-code",
+        "startedBy": "claude-code@workstation",
+        "finishedBy": "",
+        "model": "opus",
+        "mode": "Auto mode",
+        "strength": "xhigh",
+        "sessionId": "418",
+    }
+    stored = runtime.db.execute(
+        "SELECT data FROM organization_tasks WHERE task_id=?",
+        (task["id"],),
+    ).fetchone()[0]
+    assert "claude-code@workstation" not in stored
+    assert "Auto mode" not in stored
+
+    # The bot has no member assignee_bi, so the desktop that opened the task —
+    # a plain member without manager rights — reports the run as finished.
+    done = await tasks_api.handle(
+        runtime.use("POST", "wendy", {
+            "completionNote": "claude-code@workstation finished with success.",
+            "agent": {
+                "finishedBy": "claude-code@workstation",
+                "model": "sonnet",
+            },
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}/complete",
+    )
+    assert done["status"] == 200
+    finished = done["data"]["task"]
+    assert finished["status"] == "done"
+    # The launch stamp survives; only the fields the finish reported change.
+    assert finished["agent"]["startedBy"] == "claude-code@workstation"
+    assert finished["agent"]["finishedBy"] == "claude-code@workstation"
+    assert finished["agent"]["model"] == "sonnet"
+    assert finished["agent"]["mode"] == "Auto mode"
+    assert finished["agent"]["strength"] == "xhigh"
+
+    # An unrelated member still cannot close somebody else's agent run out.
+    other = await tasks_api.handle(
+        runtime.use("POST", "bob", {"title": "Another agent run",
+                                    "department": "engineering",
+                                    "repository": "forkmesh/forkmesh",
+                                    "assigneeKind": "codex"}),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert other["status"] == 201
+    denied = await tasks_api.handle(
+        runtime.use("POST", "carol", {"completionNote": "not mine"}),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{other['data']['task']['id']}/complete",
+    )
+    assert denied["status"] == 403
+    assert denied["data"]["error"] == "assignee_or_manager_only"
+
+
+@run_async_test
+async def test_agent_run_provenance_is_bounded_and_edit_safe():
+    runtime = FakeRuntime()
+    opened = await tasks_api.handle(
+        runtime.use("POST", "mary", {
+            "title": "Bounded provenance",
+            "department": "engineering",
+            "repository": "forkmesh/forkmesh",
+            "assigneeKind": "codex",
+            "agent": {
+                "startedBy": "codex@" + "n" * 200,
+                "model": "<script>gpt</script>",
+                "sessionId": "no spaces or markup <b>",
+                "strength": "high",
+            },
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert opened["status"] == 201
+    task = opened["data"]["task"]
+    assert len(task["agent"]["startedBy"]) <= tasks_api.MAX_AGENT_FIELD
+    assert "<" not in task["agent"]["model"]
+    # A reference that cannot be a bounded opaque token is dropped, not stored.
+    assert task["agent"]["sessionId"] == ""
+    assert task["agentSessionId"] == ""
+
+    # A manager editing the copy never rewrites who ran the task or how.
+    edited = await tasks_api.handle(
+        runtime.use("PATCH", "alice", {
+            "title": "Bounded provenance, retitled",
+            "assignee": "alice",
+        }),
+        f"{tasks_api.UNIVERSAL_PREFIX}/{task['id']}",
+    )
+    assert edited["status"] == 200
+    assert edited["data"]["task"]["agent"]["strength"] == "high"
+
+    # A task with no agent record reports none rather than an empty shell.
+    plain = await tasks_api.handle(
+        runtime.use("POST", "mary", {
+            "title": "Human task",
+            "department": "engineering",
+        }),
+        tasks_api.UNIVERSAL_PREFIX,
+    )
+    assert plain["data"]["task"]["agent"] is None
 
 
 def test_migration_has_conditional_active_constraint_and_bounded_tables():

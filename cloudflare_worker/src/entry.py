@@ -35,6 +35,9 @@ from js import fetch as js_fetch
 from pyodide.ffi import to_js as _to_js
 from workers import DurableObject, Response, WorkerEntrypoint
 
+import organization_discord
+from discord_rate import DiscordRateCoordinator
+
 # Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
 # lives in its own module. Wallet signing is intentionally not imported into the
 # Worker: reward transfers are prepared as intents for a local external signer.
@@ -272,6 +275,8 @@ NOTIFICATION_KINDS = frozenset({
     "pending_reward",
     "org_succession",
     "repository_hosted",
+    "organization_task_started",
+    "organization_task_activity",
 })
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
@@ -385,6 +390,8 @@ from urls import (  # noqa: E402
     ORG_TEAM_MEMBERS_RE,
     ORG_REPOS_RE,
     ORG_BOT_TOKENS_RE,
+    ORG_DISCORD_RE,
+    DISCORD_OAUTH_CALLBACK_RE,
     BOT_SESSION_RE,
     ORG_SUCCESSION_RE,
     ORG_FEDIVERSE_RE,
@@ -528,7 +535,6 @@ import activitypub as ap  # noqa: E402
 import activitypub_threads as ap_threads  # noqa: E402
 import edge_routing as https_routing  # noqa: E402
 import fediverse_digest as fedi_digest  # noqa: E402
-import repository_imports as repository_import  # noqa: E402
 import reward_policy  # noqa: E402
 # Objective evidence, one-account-one-vote governance, and contextual-only
 # community placement policy live outside the route spine.
@@ -596,6 +602,22 @@ import blog_feed  # noqa: E402
 # validation are pure data/logic, so they live in their own js-free sibling
 # module; the D1-backed award/list/grant handlers stay below (adhoc #370).
 import badges as badge_catalog  # noqa: E402
+
+
+def _repository_import_module():
+    # Provider-import policy is large and used only by import/logo routes.
+    # Loading it on first use keeps ordinary World/API isolates behaviorally
+    # identical while avoiding its module globals during Worker startup.
+    import repository_imports
+    return repository_imports
+
+
+def _world_infrastructure_module():
+    # Capacity inventory is administrator-only. Keep its grouping/measurement
+    # policy out of ordinary request startup and load it with the first admin
+    # World ticket.
+    import world_infrastructure
+    return world_infrastructure
 
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
@@ -4754,7 +4776,8 @@ async def install_source(env):
     if not candidates:
         return json_response({"ok": False, "error": "no_online_install_source"},
                              status=503,
-                             cache_control="no-store, max-age=0, must-revalidate")
+                             cache_control="no-store, max-age=0, must-revalidate",
+                             extra_headers=EXPECTED_DEGRADED_HEADERS)
 
     start = now - ONLINE_HISTORY_RETAIN_MS
     uptime_rows = await d1_all(
@@ -5189,19 +5212,6 @@ WORLD_MANUAL_TOKEN_DAY_MS = 24 * 60 * 60 * 1000
 # somebody who selected "Away" while still walking around the world. A fresh
 # authenticated world visit resets this quiet-period clock.
 WORLD_INACTIVE_DELAY_MS = 15 * 60 * 1000
-# The platform-admin capacity card is deliberately metadata-only. Keep both the
-# number of sqlite_master rows and the resulting COUNT queries hard-bounded so a
-# ticket refresh cannot turn into an unbounded database-inspection endpoint.
-WORLD_SYSTEM_CAPACITY_MAX_TABLES = 256
-# Durable Object bindings are discovered from the runtime environment rather
-# than listed here, so the card stays truthful as classes are added; the cap
-# keeps an unexpectedly large environment from inflating the ticket.
-WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS = 32
-WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS = 9_007_199_254_740_991
-WORLD_SYSTEM_CAPACITY_TABLE_RE = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]{0,127}")
-
-
 def _world_ticket_signature(env, payload):
     return hmac.new(
         _account_session_secret(env),
@@ -5440,102 +5450,25 @@ async def _world_account_claim(env, request, data=None):
 
 
 async def _world_system_capacity(env):
-    """Return bounded, content-free D1 table counts for platform admins."""
-    rows = await d1_all(
-        env,
-        "SELECT name FROM sqlite_master WHERE type='table' "
-        "AND substr(lower(name),1,7)!='sqlite_' "
-        "AND substr(lower(name),1,4)!='_cf_' "
-        "ORDER BY name LIMIT ?",
-        WORLD_SYSTEM_CAPACITY_MAX_TABLES,
-    )
-    capacity = []
-    for row in rows or []:
-        raw_name = row.get("name") if isinstance(row, dict) else None
-        if not isinstance(raw_name, str):
-            continue
-        name = raw_name.strip()
-        lowered = name.lower()
-        # Names originate in sqlite_master and are then restricted to the
-        # application's conventional identifier grammar before interpolation.
-        # Quotes, whitespace, SQL punctuation, and D1 internal tables therefore
-        # never reach the COUNT statement.
-        if (
-            name != raw_name
-            or lowered.startswith(("sqlite_", "_cf_"))
-            or not WORLD_SYSTEM_CAPACITY_TABLE_RE.fullmatch(name)
-        ):
-            continue
-        try:
-            count_row = await d1_first(
-                env,
-                'SELECT COUNT(*) AS row_count FROM "' + name + '"',
-            )
-            row_count = int((count_row or {}).get("row_count", 0) or 0)
-        except Exception:
-            # A table can disappear during a rolling migration. Skip that
-            # table rather than breaking the short-lived world ticket.
-            continue
-        # Every table is reported, including the empty and single-row ones:
-        # a table that holds nothing yet is part of the platform's shape, and
-        # hiding it made the inventory look far smaller than the database is.
-        if 0 <= row_count <= WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS:
-            capacity.append({"name": name, "rowCount": row_count})
-    return capacity
+    """Delegate the bounded table inventory to its infrastructure module."""
+    return await _world_infrastructure_module().d1_table_inventory(
+        env, d1_all, d1_first)
+
+
+async def _world_d1_storage(env):
+    """Return current D1 bytes alongside documented Free/Paid limits."""
+    return await _world_infrastructure_module().d1_storage_usage(env)
 
 
 async def _world_durable_objects(env):
-    """Auto-detected Durable Object bindings with their relayed byte totals.
-
-    The binding list comes from the runtime environment, so a newly bound
-    class shows up on the System Capacity platform without a code change here.
-    Totals are content-free: bytes and frame counts relayed per class, with no
-    room key, account, peer id, or payload.
-    """
-    bindings = durable_object_bindings(env)
-    if not bindings:
-        return []
-    totals = {}
-    try:
-        rows = await d1_all(
-            env,
-            "SELECT binding, bytes_in, bytes_out, messages, updated_at "
-            "FROM durable_object_traffic ORDER BY binding LIMIT ?",
-            WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS,
-        )
-    except Exception:
-        # The counter table is optional (a rolling migration may not have
-        # created it yet). Bindings are still discovered and reported at zero.
-        rows = []
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        totals[str(row.get("binding") or "")] = row
-
-    def _count(row, field):
-        try:
-            value = int(row.get(field) or 0)
-        except (TypeError, ValueError):
-            return 0
-        return max(0, min(value, DURABLE_OBJECT_TRAFFIC_MAX))
-
-    objects = []
-    for binding in bindings[:WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS]:
-        row = totals.get(binding) or {}
-        bytes_in = _count(row, "bytes_in")
-        bytes_out = _count(row, "bytes_out")
-        objects.append({
-            "id": binding,
-            "binding": binding,
-            "name": durable_object_label(binding),
-            "bytesIn": bytes_in,
-            "bytesOut": bytes_out,
-            "bytesTotal": min(
-                bytes_in + bytes_out, DURABLE_OBJECT_TRAFFIC_MAX),
-            "messages": _count(row, "messages"),
-            "updatedAt": _count(row, "updated_at"),
-        })
-    return objects
+    """Delegate the Durable Object projection to the infrastructure module."""
+    return await _world_infrastructure_module().durable_object_inventory(
+        env,
+        d1_all,
+        durable_object_bindings,
+        durable_object_label,
+        DURABLE_OBJECT_TRAFFIC_MAX,
+    )
 
 
 async def world_ticket_handler(env, request):
@@ -5632,12 +5565,16 @@ async def world_ticket_handler(env, request):
             response_data["systemCapacity"] = {
                 "tables": await _world_system_capacity(env),
                 "durableObjects": await _world_durable_objects(env),
+                "d1Storage": await _world_d1_storage(env),
             }
         except Exception:
             # Capacity telemetry is optional; authentication and multiplayer
             # entry continue to work while D1 is unavailable or migrating.
             response_data["systemCapacity"] = {
-                "tables": [], "durableObjects": []}
+                "tables": [],
+                "durableObjects": [],
+                "d1Storage": {},
+            }
     return json_response(
         response_data,
         cache_control="no-store, max-age=0, must-revalidate",
@@ -7298,7 +7235,11 @@ async def _chat_direct_socket_handler(env, request, conversation_id):
         except Exception as error:
             last_error = error
     await log_durable_object_abort(env, request, url.path, last_error)
-    return json_response({"error": "unavailable"}, status=503)
+    return json_response(
+        {"error": "unavailable"},
+        status=503,
+        extra_headers=EXPECTED_DEGRADED_HEADERS,
+    )
 
 
 async def office_attendance_handler(env, request):
@@ -8185,9 +8126,12 @@ class _WorldCommunityRuntime:
 class _OfficeMarketingTasksRuntime:
     """Least-privilege adapter for the configured organization's task board."""
 
-    def __init__(self, env, request):
+    def __init__(self, env, request, bot_context=None):
         self.env = env
         self.request = request
+        self.bot_context = (
+            bot_context if isinstance(bot_context, dict) else None
+        )
 
     def method(self):
         return method_name(self.request)
@@ -8198,7 +8142,36 @@ class _OfficeMarketingTasksRuntime:
     def new_id(self):
         return _ap_uuid()
 
+    def _signed_query(self):
+        """The node/ts/sig triple a desktop puts on a key-signed task write.
+
+        Presence only — session() is what verifies it. Returning a triple here
+        also means session() will refuse to fall back to cookie auth for this
+        request, which is what makes relaxing the origin check below safe.
+        """
+        params = parse_qs(urlparse(self.request.url).query)
+        node = clean_string(
+            params.get("node", [""])[0], MAX_NODE_NAME).lower()
+        ts = clean_string(params.get("ts", [""])[0], 20)
+        sig = clean_string(params.get("sig", [""])[0], 200)
+        return (node, ts, sig) if node and ts and sig else None
+
     def same_origin(self):
+        # A credential the caller had to present explicitly is not ambient
+        # browser authority and therefore is not vulnerable to cross-site
+        # request forgery: an organization bot token, the account-session
+        # bearer, or a key-signed desktop write. Each still has to validate in
+        # session(). Browser sessions carry the session in a cookie, so they
+        # retain the strict origin check.
+        if self.bot_context or self._signed_query():
+            return True
+        header = str(
+            self.request.headers.get("authorization") or ""
+        ).strip()
+        if header.lower().startswith("bearer "):
+            presented = header[7:].strip()
+            if presented and presented != "cookie":
+                return True
         return _request_same_origin(self.request)
 
     def query(self, name):
@@ -8241,6 +8214,21 @@ class _OfficeMarketingTasksRuntime:
         return (data, "") if isinstance(data, dict) else (None, "invalid_json")
 
     async def session(self, data=None):
+        if self.bot_context:
+            provider = clean_string(
+                self.bot_context.get("provider"), 40
+            ).strip().lower()
+            return self.bot_context["orgBi"], {
+                "name": (provider or "organization") + "-bot",
+                "status": "active",
+            }
+        # A desktop that authenticated silently holds its account's Ed25519 key
+        # and no session token at all, so a prompt could never open its task
+        # without this. Once a triple is on the URL it is the only credential
+        # considered: never fall through to the cookie, or a cross-site POST
+        # could borrow one by appending a junk signature.
+        if self._signed_query():
+            return await _org_task_signed_session(self.env, self.request)
         return await _account_session_record(
             self.env,
             self.request,
@@ -8248,6 +8236,10 @@ class _OfficeMarketingTasksRuntime:
         )
 
     async def organization(self):
+        if self.bot_context:
+            return await _org_row(
+                self.env, str(self.bot_context.get("org") or "")
+            )
         configured = str(
             getattr(self.env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
         ).strip().lower()
@@ -8256,6 +8248,15 @@ class _OfficeMarketingTasksRuntime:
         return await _org_row(self.env, configured)
 
     async def membership(self, org_bi, account):
+        if self.bot_context:
+            if str(org_bi or "") != str(self.bot_context.get("orgBi") or ""):
+                return "", ""
+            scopes = set(self.bot_context.get("scopes") or [])
+            if "organization.tasks.write" in scopes:
+                return "admin", "maintain"
+            if "organization.tasks.read" in scopes:
+                return "member", "read"
+            return "", ""
         role = await _org_role(self.env, org_bi, account)
         if not role:
             return "", ""
@@ -8357,6 +8358,75 @@ class _OfficeMarketingTasksRuntime:
             member["bi"],
         )
         return bool(row)
+
+    async def notify_organization_task_activity(
+            self, org_bi, actor, task_id, task, action):
+        """Send bounded private task activity to Engineering members."""
+        rows = await d1_all(
+            self.env,
+            "SELECT DISTINCT tm.name AS name "
+            "FROM org_team_members tm "
+            "INNER JOIN org_members om "
+            "ON om.org_bi=tm.org_bi AND om.member_bi=tm.member_bi "
+            "WHERE tm.org_bi=? AND tm.team='engineering' "
+            "AND om.role IN ('owner','admin','member') "
+            "ORDER BY tm.name COLLATE NOCASE LIMIT 1000",
+            str(org_bi or ""),
+        )
+        safe_actor = clean_string(
+            actor or "a team member", MAX_NODE_NAME
+        ).strip().lower()
+        title = clean_string(
+            (task or {}).get("title") or "Organization task", 160
+        ).strip()
+        safe_action = clean_string(
+            action or "updated", 32
+        ).strip().lower().replace("_", " ")
+        action_copy = {
+            "created": "created",
+            "started": "started",
+            "stopped": "stopped",
+            "completed": "completed",
+            "returned": "returned",
+            "qa requested": "sent to QA",
+            "deleted": "deleted",
+        }.get(safe_action, safe_action or "updated")
+        for row in rows or []:
+            recipient = clean_string(
+                row.get("name") or "", MAX_NODE_NAME
+            ).strip().lower()
+            if not valid_node_name(recipient):
+                continue
+            await enqueue_notification(
+                self.env,
+                recipient,
+                "organization_task_activity",
+                "Organization task activity",
+                body="@%s %s %s" % (safe_actor, action_copy, title),
+                actor="",
+                source=str(task_id or ""),
+                dedupe="organization-task:%s:%s:%s" % (
+                    safe_action.replace(" ", "-"),
+                    str(task_id or ""),
+                    str((task or {}).get("updatedAt") or ""),
+                ),
+                meta={
+                    "taskId": str(task_id or ""),
+                    "action": safe_action,
+                    "department": clean_string(
+                        (task or {}).get("department") or "", 64
+                    ).strip().lower(),
+                    "team": clean_string(
+                        (task or {}).get("team") or "", 64
+                    ).strip().lower(),
+                },
+            )
+
+    async def notify_engineering_task_started(
+            self, org_bi, actor, task_id, task):
+        """Compatibility wrapper for older task module deployments."""
+        return await self.notify_organization_task_activity(
+            org_bi, actor, task_id, task, "started")
 
     async def marketing_members(self, org_bi):
         """Return active users on an authoritative Marketing floor team."""
@@ -8500,6 +8570,28 @@ class _OfficeMarketingTasksRuntime:
 
     async def d1_run(self, sql, *args):
         return await d1_run(self.env, sql, *args)
+
+    async def cancel_agent_session(self, org_bi, session_id):
+        """Retire the node-queued bot run behind a returned task."""
+
+        session_id = clean_string(session_id, 64).strip().lower()
+        if not re.fullmatch(r"[a-f0-9-]{16,64}", session_id):
+            return False
+        now = int(Date.now())
+        await d1_run(
+            self.env,
+            "UPDATE org_agent_jobs SET status='cancelled',updated_at=? "
+            "WHERE session_id=? AND org_bi=? AND status IN ('queued','leased')",
+            now, session_id, str(org_bi or ""),
+        )
+        await d1_run(
+            self.env,
+            "UPDATE org_agent_sessions SET status='cancelled',updated_at=?,"
+            "completed_at=? WHERE session_id=? AND org_bi=? "
+            "AND status IN ('security_pending','queued','running')",
+            now, now, session_id, str(org_bi or ""),
+        )
+        return True
 
 
 class _ChatChannelsRuntime(_WorldCommunityRuntime):
@@ -8647,11 +8739,318 @@ async def world_workshops_handler(env, request, path):
 
 
 async def organization_tasks_handler(env, request, path):
+    bot_context = None
+    authorization = str(
+        request.headers.get("authorization") or ""
+    ).strip()
+    if authorization.lower().startswith("bearer fmbot_"):
+        await ensure_schema(env)
+        bot_context = await _org_bot_token_context(env, request, touch=True)
+        if not bot_context:
+            return json_response(
+                {"error": "invalid_bot_token"},
+                status=401,
+                cache_control="no-store",
+            )
+        required_scope = (
+            "organization.tasks.read"
+            if method_name(request) == "GET"
+            else "organization.tasks.write"
+        )
+        if required_scope not in set(bot_context.get("scopes") or []):
+            return json_response(
+                {
+                    "error": "permission_denied",
+                    "requiredScope": required_scope,
+                },
+                status=403,
+                cache_control="no-store",
+            )
     return await world_office_tasks.handle(
-        _OfficeMarketingTasksRuntime(env, request), path)
+        _OfficeMarketingTasksRuntime(env, request, bot_context), path)
 
 
 world_office_marketing_tasks_handler = organization_tasks_handler
+
+
+REMOTE_MCP_PROTOCOL_VERSION = "2025-06-18"
+REMOTE_MCP_TASK_ID_RE = re.compile(r"^[a-f0-9]{32}$")
+REMOTE_MCP_TOOLS = [
+    {
+        "name": "list_org_tasks",
+        "title": "List organization tasks",
+        "description": (
+            "List unfinished private tasks for the organization authorized "
+            "by this ForkMesh credential."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "department": {"type": "string"},
+                "team": {"type": "string"},
+                "limit": {
+                    "type": "integer", "minimum": 1, "maximum": 200,
+                    "default": 50,
+                },
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_org_task",
+        "title": "Get organization task",
+        "description": (
+            "Read one private organization task and its repository, "
+            "assignment, completion, and QA details."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string", "pattern": "^[a-f0-9]{32}$",
+                },
+            },
+            "required": ["task_id"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "complete_org_task",
+        "title": "Complete organization task",
+        "description": (
+            "Send completed work to human QA with a concrete evidence note. "
+            "Do not call this before the pull request or deploy is verified."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string", "pattern": "^[a-f0-9]{32}$",
+                },
+                "completion_note": {
+                    "type": "string", "minLength": 1, "maxLength": 4000,
+                },
+            },
+            "required": ["task_id", "completion_note"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
+def _remote_mcp_response(data, status=200):
+    return json_response(
+        data,
+        status=status,
+        cache_control="no-store, max-age=0, must-revalidate",
+        extra_headers={
+            "x-content-type-options": "nosniff",
+            "vary": "authorization, accept",
+        },
+    )
+
+
+def _remote_mcp_result(request_id, result):
+    return {"jsonrpc": "2.0", "id": request_id, "result": result}
+
+
+def _remote_mcp_error(request_id, code, message):
+    return {
+        "jsonrpc": "2.0",
+        "id": request_id,
+        "error": {"code": int(code), "message": str(message)},
+    }
+
+
+def _remote_mcp_tool_result(data, failed=False):
+    result = {
+        "content": [{
+            "type": "text",
+            "text": json.dumps(
+                data, separators=(",", ":"), ensure_ascii=False),
+        }],
+        "structuredContent": data,
+    }
+    if failed:
+        result["isError"] = True
+    return result
+
+
+async def _remote_mcp_task_request(
+        env, request, context, method, path, body=None):
+    """Reuse the task service and its authorization with a JS-owned request."""
+
+    headers = {
+        "authorization": str(
+            request.headers.get("authorization") or "").strip(),
+        "accept": "application/json",
+    }
+    init = {"method": method, "headers": headers}
+    if body is not None:
+        headers["content-type"] = "application/json"
+        init["body"] = json.dumps(body, separators=(",", ":"))
+    internal = JsRequest.new(
+        _public_base_url(env, request).rstrip("/") + path, to_js(init))
+    response = await world_office_tasks.handle(
+        _OfficeMarketingTasksRuntime(env, internal, context),
+        urlparse(path).path,
+    )
+    data = await response.json()
+    if hasattr(data, "to_py"):
+        data = data.to_py()
+    try:
+        data = data if isinstance(data, dict) else dict(data)
+    except Exception:
+        data = {"error": "invalid_task_service_response"}
+    return int(getattr(response, "status", 500) or 500), data
+
+
+async def _remote_mcp_call_tool(env, request, context, name, arguments):
+    if not isinstance(arguments, dict):
+        return _remote_mcp_tool_result(
+            {"error": "arguments_must_be_an_object"}, failed=True)
+    scopes = set(context.get("scopes") or [])
+    required = (
+        "organization.tasks.write"
+        if name == "complete_org_task"
+        else "organization.tasks.read"
+    )
+    if required not in scopes:
+        return _remote_mcp_tool_result({
+            "error": "permission_denied", "requiredScope": required,
+        }, failed=True)
+
+    if name == "list_org_tasks":
+        department = clean_string(arguments.get("department"), 64).lower()
+        team = clean_string(arguments.get("team"), 64).lower()
+        try:
+            limit = max(1, min(200, int(arguments.get("limit") or 50)))
+        except (TypeError, ValueError):
+            return _remote_mcp_tool_result(
+                {"error": "invalid_limit"}, failed=True)
+        query = []
+        if department:
+            query.append(("department", department))
+        if team:
+            query.append(("team", team))
+        path = "/api/tasks" + (
+            "?" + urlencode(query) if query else "")
+        status, data = await _remote_mcp_task_request(
+            env, request, context, "GET", path)
+        if status >= 400:
+            return _remote_mcp_tool_result(data, failed=True)
+        tasks = [
+            task for task in list(data.get("tasks") or [])
+            if not int(task.get("completedAt") or 0)
+            and str(task.get("status") or "") != "done"
+        ]
+        return _remote_mcp_tool_result({
+            "ok": True,
+            "organization": context.get("org") or "",
+            "tasks": tasks[:limit],
+            "returned": min(limit, len(tasks)),
+            "available": len(tasks),
+        })
+
+    task_id = clean_string(arguments.get("task_id"), 32).lower()
+    if not REMOTE_MCP_TASK_ID_RE.fullmatch(task_id):
+        return _remote_mcp_tool_result(
+            {"error": "invalid_task_id"}, failed=True)
+    if name == "get_org_task":
+        status, data = await _remote_mcp_task_request(
+            env, request, context, "GET", "/api/tasks/" + task_id)
+        return _remote_mcp_tool_result(data, failed=status >= 400)
+    if name == "complete_org_task":
+        note = clean_string(arguments.get("completion_note"), 4000).strip()
+        if not note:
+            return _remote_mcp_tool_result(
+                {"error": "completion_note_required"}, failed=True)
+        status, data = await _remote_mcp_task_request(
+            env,
+            request,
+            context,
+            "POST",
+            "/api/tasks/" + task_id + "/complete",
+            {"completionNote": note},
+        )
+        return _remote_mcp_tool_result(data, failed=status >= 400)
+    return None
+
+
+async def remote_mcp_handler(env, request):
+    """Authenticated, stateless MCP Streamable HTTP endpoint."""
+
+    method = method_name(request)
+    if method == "GET":
+        return _remote_mcp_response(
+            {"error": "sse_not_supported"}, status=405)
+    if method != "POST":
+        return _remote_mcp_response(
+            {"error": "method_not_allowed"}, status=405)
+    await ensure_schema(env)
+    context = await _org_bot_token_context(env, request, touch=True)
+    if not context:
+        return _remote_mcp_response(
+            {"error": "invalid_bot_token"}, status=401)
+    try:
+        message = await bounded_json_request(request, max_bytes=64 * 1024)
+    except RequestBodyTooLarge:
+        return _remote_mcp_response(
+            _remote_mcp_error(None, -32600, "Request too large"), status=413)
+    except Exception:
+        return _remote_mcp_response(
+            _remote_mcp_error(None, -32700, "Parse error"), status=400)
+    if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+        return _remote_mcp_response(
+            _remote_mcp_error(
+                message.get("id") if isinstance(message, dict) else None,
+                -32600,
+                "Invalid Request",
+            ),
+            status=400,
+        )
+    request_id = message.get("id")
+    rpc_method = str(message.get("method") or "")
+    params = message.get("params") or {}
+    if rpc_method.startswith("notifications/"):
+        return Response(
+            None,
+            status=202,
+            headers={
+                "cache-control": "no-store",
+                "x-content-type-options": "nosniff",
+            },
+        )
+    if rpc_method == "initialize":
+        return _remote_mcp_response(_remote_mcp_result(request_id, {
+            "protocolVersion": REMOTE_MCP_PROTOCOL_VERSION,
+            "capabilities": {"tools": {"listChanged": False}},
+            "serverInfo": {
+                "name": "ForkMesh Remote MCP", "version": "1.0.0",
+            },
+            "instructions": (
+                "Use these scoped organization task tools only for work "
+                "authorized by the revocable ForkMesh credential."
+            ),
+        }))
+    if rpc_method == "ping":
+        return _remote_mcp_response(_remote_mcp_result(request_id, {}))
+    if rpc_method == "tools/list":
+        return _remote_mcp_response(_remote_mcp_result(
+            request_id, {"tools": REMOTE_MCP_TOOLS}))
+    if rpc_method == "tools/call":
+        if not isinstance(params, dict):
+            return _remote_mcp_response(
+                _remote_mcp_error(request_id, -32602, "Invalid params"))
+        name = clean_string(params.get("name"), 80)
+        result = await _remote_mcp_call_tool(
+            env, request, context, name, params.get("arguments") or {})
+        if result is None:
+            return _remote_mcp_response(
+                _remote_mcp_error(request_id, -32601, "Unknown tool"))
+        return _remote_mcp_response(_remote_mcp_result(request_id, result))
+    return _remote_mcp_response(
+        _remote_mcp_error(request_id, -32601, "Method not found"))
 
 
 async def world_build_board_handler(env, request, path):
@@ -8716,8 +9115,25 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-28-24h-24"
+WORLD_QA_DECK_REVISION = "2026-07-29-full-catalog-28"
+# The physical desk paints only five cards per page, but its catalog must
+# include every bounded source: built-ins, dynamically routed QA items, and
+# the organization's encrypted QA-ready tasks. Organization tasks are capped
+# at 2,000 and the routed board is independently bounded, so 4,096 is a hard
+# response ceiling rather than an arbitrary visible-card truncation.
+WORLD_QA_MAX_CARDS = 4096
 WORLD_QA_CARDS = (
+    ("world-compact-debug-chat-orbs",
+     "Compact debug and unified activity orbs",
+     "Open the World on desktop and mobile. Confirm DEBUG and CHAT are "
+     "logo-sized circles while closed. DEBUG must show nine green, yellow, "
+     "or red metric dots and reveal its complete panel on hover or keyboard "
+     "focus. CHAT must show the latest speaker avatar plus unread count and "
+     "open a translucent composer with channel selection, image attachment, "
+     "separate chat and task buttons, and a second task-routing step for "
+     "human or agent plus team. Send chat and task updates, then confirm every "
+     "chat or status notice flows above the composer and fades after ten "
+     "seconds without removing the underlying chat history."),
     ("world-repository-agent-live-terminals",
      "Interactive repository agent terminals",
      "As an Engineering team member, open a repository with a running Claude "
@@ -9149,7 +9565,8 @@ async def world_qa_handler(env, request):
     dynamic_rows = await d1_all(
         env,
         "SELECT item_key,title,how_to_test,added_at FROM world_qa_items "
-        "WHERE active=1 ORDER BY added_at DESC,item_key LIMIT 64",
+        "WHERE active=1 ORDER BY added_at DESC,item_key LIMIT ?",
+        WORLD_QA_MAX_CARDS,
     )
     deck_cards = list(WORLD_QA_CARDS)
     deck_keys = set(WORLD_QA_CARD_KEYS)
@@ -9161,7 +9578,7 @@ async def world_qa_handler(env, request):
             continue
         deck_cards.append((key, title, how_to_test))
         deck_keys.add(key)
-    deck_cards = deck_cards[:64]
+    deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
 
     async def global_qa_snapshot():
@@ -9268,8 +9685,8 @@ async def world_qa_handler(env, request):
             "SELECT task_id,department,team,qa_status,qa_reviewed_at,data "
             "FROM organization_tasks "
             "WHERE org_bi=? AND qa_requested_at>0 "
-            "ORDER BY qa_requested_at DESC,task_id DESC LIMIT 64",
-            qa_org_bi,
+            "ORDER BY qa_requested_at DESC,task_id DESC LIMIT ?",
+            qa_org_bi, WORLD_QA_MAX_CARDS,
         )
         for task_row in task_rows or []:
             task_id = str(task_row.get("task_id") or "").lower()
@@ -9301,7 +9718,7 @@ async def world_qa_handler(env, request):
             if key not in deck_keys:
                 deck_cards.append((key, title, how_to_test))
                 deck_keys.add(key)
-    deck_cards = deck_cards[:128]
+    deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
@@ -9486,8 +9903,8 @@ async def world_qa_handler(env, request):
     rows = await d1_all(
         env,
         "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
-        "WHERE account_bi=? ORDER BY reviewed_at DESC LIMIT 128",
-        account_bi,
+        "WHERE account_bi=? ORDER BY reviewed_at DESC LIMIT ?",
+        account_bi, WORLD_QA_MAX_CARDS,
     )
     reviews = {}
     for row in rows:
@@ -9504,8 +9921,8 @@ async def world_qa_handler(env, request):
             "SELECT task_id,verdict,data,reviewed_at "
             "FROM organization_task_qa_reviews "
             "WHERE org_bi=? AND reviewer_bi=? "
-            "ORDER BY reviewed_at DESC LIMIT 128",
-            qa_org_bi, account_bi,
+            "ORDER BY reviewed_at DESC LIMIT ?",
+            qa_org_bi, account_bi, WORLD_QA_MAX_CARDS,
         )
         for row in private_rows or []:
             key = "task:" + str(row.get("task_id") or "")
@@ -10291,6 +10708,11 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     """ALTER TABLE world_office_attendance
        ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
        CHECK (visit_scope IN ('legacy', 'office'))""",
+    # Organization tasks share one explicit ordering across the World,
+    # dashboard, bot API, and remote MCP surface.
+    """ALTER TABLE organization_tasks
+       ADD COLUMN priority INTEGER NOT NULL DEFAULT 50
+       CHECK (priority BETWEEN 1 AND 99)""",
 ]
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -10353,6 +10775,10 @@ SCHEMA_ALTER_STATEMENTS = [
     # Edge-observed sign-in address of each account session, shown only to the
     # owner of that account in the World security tab and account settings.
     "ALTER TABLE account_sessions ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''",
+    # Account whose own session was making the request that failed (migration
+    # 0108). Empty for anonymous traffic; the admin error view names it per row
+    # and per group so a recurring failure can be traced to the affected user.
+    "ALTER TABLE error_log ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
 ]
 
 # Fingerprint of the DDL this build would apply. Stored in schema_meta after a
@@ -10702,6 +11128,119 @@ async def _chat_channel_signed_session(env, request):
         ).encode()
     else:
         return "", None
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
+
+
+# Canonical prefixes a desktop signs with its account's Ed25519 key to open and
+# close an organization task for a prompt it just launched. A desktop that
+# authenticated silently holds keys and no session token, so without these the
+# Agents composer's Task toggle could never reach the board (adhoc #18).
+ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
+ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
+# The same key, reading the board it can already write to. Without this the
+# desktop Tasks tab was empty for every operator who launched normally instead
+# of typing a password, because it had no session token to present (adhoc #52).
+ORG_TASK_LIST_PROOF = "forkmesh-org-task-list-v1"
+# The same key, signing for the one credential a desktop's "genie" button needs
+# (adhoc #49): a task-only remote-MCP bearer for the task board. An install that
+# can already open and close tasks with its key should not have to send its
+# operator to the website to copy a token by hand.
+GENIE_CREDENTIAL_PROOF = "forkmesh-genie-credential-v1"
+ORG_TASK_COMPLETE_RE = re.compile(
+    r"^/api/tasks/([a-f0-9]{32})/complete/?$")
+ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
+
+
+async def _org_task_signed_session(env, request):
+    """Resolve the account behind a key-signed organization-task request.
+
+    Deliberately narrow: listing the board, opening a task, and reporting one
+    finished — the reads and writes a desktop performs for its own agent run.
+    Editing, deleting, starting/stopping another member's timer, and QA verdicts
+    all still require a real session. Membership and every other authorization
+    check inside the task API applies to a signed caller exactly as to a
+    session-token one, so a signed list still returns nothing to a non-member.
+
+    The completion proof names the exact task it closes. The list and open
+    proofs can only be replayed inside the five-minute skew window, and only to
+    read the board, or open one more task, as an account that was already
+    entitled to do so.
+    """
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    complete = ORG_TASK_COMPLETE_RE.match(url.path)
+    collection = ORG_TASK_COLLECTION_RE.match(url.path)
+    if method == "GET":
+        # Reads have no write proof to reuse: a GET signed with the open proof
+        # must not be replayable as a task creation, so listing gets its own.
+        if not collection:
+            return "", None
+        canonical = (
+            ORG_TASK_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    elif complete:
+        canonical = (
+            ORG_TASK_COMPLETE_PROOF + "\n" + node + "\n"
+            + complete.group(1) + "\n" + str(ts)
+        ).encode()
+    elif collection:
+        canonical = (
+            ORG_TASK_OPEN_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    else:
+        return "", None
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
+
+
+async def _genie_credential_signed_session(env, request):
+    """Resolve the account behind a key-signed genie-credential request.
+
+    Narrower than _org_task_signed_session: one proof, one path, POST only, and
+    the signature covers nothing but the account and timestamp, so it can only
+    ever mint that account's own task-scoped credential inside the skew window.
+    """
+    if method_name(request) != "POST":
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    canonical = (
+        GENIE_CREDENTIAL_PROOF + "\n" + node + "\n" + str(ts)
+    ).encode()
     pubkey = await _owner_pubkey(env, node)
     if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
         return "", None
@@ -12791,7 +13330,7 @@ async def native_repository_logo_handler(
                     "cache-control": "public, max-age=300",
                 })
             logo = await service._official_logo(env, repository_id)
-            logo = logo or repository_import.deterministic_logo(record)
+            logo = logo or _repository_import_module().deterministic_logo(record)
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
         if committed_logo_url:
@@ -12913,10 +13452,11 @@ async def _repo_about_public(env, request, owner, repo):
     resolved_logo = {}
     logo_record_builder = globals().get("_native_repository_logo_record")
     logo_service_factory = globals().get("_repository_import_service")
-    repository_import_module = globals().get("repository_import")
+    repository_import_loader = globals().get("_repository_import_module")
     if (callable(logo_record_builder)
             and callable(logo_service_factory)
-            and repository_import_module is not None):
+            and callable(repository_import_loader)):
+        repository_import_module = repository_import_loader()
         logo_record = logo_record_builder(rec, owner, repo)
         logo_service = logo_service_factory()
         approved_logo = await logo_service._official_logo(
@@ -14420,6 +14960,29 @@ async def _delete_account_namespace(env, name_bi, rec):
         env, "DELETE FROM account_ssh_keys WHERE account_bi=?", name_bi)
     await d1_run(
         env, "DELETE FROM account_sessions WHERE account_bi=?", name_bi)
+    # Remove every account-keyed auxiliary row as well as the primary identity.
+    # These tables contain no independently owned resource that should survive
+    # a complete account deletion.
+    for table in (
+            "repo_stars",
+            "feedback_email_sends",
+            "role_grants",
+            "owner_encryption_keys",
+            "world_inactive_presence",
+            "world_media_roles",
+            "world_workshop_participants",
+            "world_user_activity",
+            "badge_awards",
+            "world_office_attendance",
+            "world_office_marketing_proofs",
+            "world_qa_reviews",
+            "world_lobby_links",
+            "org_team_collaborators",
+            "world_office_marketing_checkins",
+            "organization_task_checkins",
+    ):
+        await d1_run(
+            env, "DELETE FROM " + table + " WHERE account_bi=?", name_bi)
     await _delete_chat_channel_memberships(env, name_bi)
     await _delete_chat_direct_conversations(env, name_bi)
     if email:
@@ -14427,6 +14990,13 @@ async def _delete_account_namespace(env, name_bi, rec):
         await d1_run(env, "DELETE FROM login_attempts WHERE id_bi=?", email_bi)
     await d1_run(env, "DELETE FROM users WHERE user_bi=?", name_bi)
     await d1_run(env, "DELETE FROM nodes WHERE node_bi=?", name_bi)
+    await asyncio.gather(
+        purge_catalog_related_caches(),
+        edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)),
+        edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
+        edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY),
+        return_exceptions=True,
+    )
 
 
 def _owned_nodes(rec):
@@ -20869,6 +21439,662 @@ async def process_organization_succession_warnings(env):
         _OrganizationSuccessionRuntime(env), limit=50)
 
 
+# --- Organization Discord connector ----------------------------------------
+# The Discord API token stays exclusively in the Worker secret binding.  The
+# policy module receives only the narrow operations below, so a dashboard body,
+# D1 value, audit event, or future connector field cannot accidentally expose
+# or reuse it as an application credential.
+DISCORD_API_ORIGIN = "https://discord.com/api/v10"
+DISCORD_OAUTH_API_ORIGIN = "https://discord.com/api"
+DISCORD_OAUTH_AUTHORIZE_ORIGIN = "https://discord.com/oauth2/authorize"
+DISCORD_OAUTH_CALLBACK_PATH = "/api/integrations/discord/callback"
+DISCORD_OAUTH_TRANSACTION_COOKIE = "forkmesh_discord_oauth"
+DISCORD_API_TIMEOUT_SECONDS = 8
+DISCORD_API_MAX_RESPONSE_BYTES = 512 * 1024
+_DISCORD_SNOWFLAKE_RE = re.compile(r"^[0-9]{17,20}$")
+_DISCORD_OAUTH_TRANSACTION_RE = re.compile(r"^[a-f0-9]{64}$")
+_DISCORD_GUILD_CHANNELS_PATH_RE = re.compile(
+    r"^/guilds/[0-9]{17,20}/channels$")
+_DISCORD_GUILD_ROLES_PATH_RE = re.compile(
+    r"^/guilds/[0-9]{17,20}/roles$")
+_DISCORD_CHANNEL_MESSAGES_GET_PATH_RE = re.compile(
+    r"^/channels/[0-9]{17,20}/messages\?limit=[1-9][0-9]?$" )
+_DISCORD_CHANNEL_MESSAGES_POST_PATH_RE = re.compile(
+    r"^/channels/[0-9]{17,20}/messages$")
+_DISCORD_OAUTH_TOKEN_PATH = "/oauth2/token"
+_DISCORD_OAUTH_IDENTITY_PATH = "/users/@me"
+_DISCORD_OAUTH_GUILDS_PATH = "/users/@me/guilds"
+# One best-effort coordinator is shared by every connector request handled by
+# this Worker isolate. It is intentionally not a durable cross-colo global
+# limiter and carries only short-lived rate metadata plus minimized public
+# channel/@everyone-role projections—never credentials, OAuth values, raw
+# private catalogs, or message history.
+_discord_rate_coordinator = DiscordRateCoordinator()
+
+
+def _discord_bot_token(env):
+    """Return the server-only secret without placing it in any application row."""
+
+    return str(getattr(env, "DISCORD_BOT_TOKEN", "") or "").strip()
+
+
+def _discord_oauth_config(env):
+    """Read only the server-side OAuth application configuration.
+
+    The redirect URI is fixed to the one global callback path.  It is never
+    taken from a dashboard request, so an owner cannot use this connector as an
+    OAuth redirector or turn a bot's global guild visibility into org consent.
+    """
+
+    client_id = _discord_snowflake(
+        getattr(env, "DISCORD_CLIENT_ID", "") or "")
+    client_secret = str(
+        getattr(env, "DISCORD_CLIENT_SECRET", "") or "").strip()
+    redirect_uri = str(
+        getattr(env, "DISCORD_OAUTH_REDIRECT_URI", "") or "").strip()
+    public_base_url = str(
+        getattr(env, "PUBLIC_BASE_URL", "") or "https://forkmesh.com").strip()
+    try:
+        parsed = urlparse(redirect_uri)
+        public_origin = urlparse(public_base_url)
+        redirect_origin = (
+            parsed.scheme, parsed.hostname, parsed.port
+        ) if parsed else None
+        canonical_origin = (
+            public_origin.scheme, public_origin.hostname, public_origin.port
+        ) if public_origin else None
+    except Exception:
+        parsed = None
+        public_origin = None
+        redirect_origin = None
+        canonical_origin = None
+    if not (
+        client_id
+        and client_secret
+        and parsed
+        and public_origin
+        and parsed.scheme == "https"
+        and parsed.hostname
+        and public_origin.scheme == "https"
+        and public_origin.hostname
+        and redirect_origin == canonical_origin
+        and public_origin.path.rstrip("/") in {"", "/"}
+        and not public_origin.params
+        and not public_origin.query
+        and not public_origin.fragment
+        and not public_origin.username
+        and not public_origin.password
+        and parsed.path == DISCORD_OAUTH_CALLBACK_PATH
+        and not parsed.params
+        and not parsed.query
+        and not parsed.fragment
+        and not parsed.username
+        and not parsed.password
+    ):
+        return None
+    return {
+        "clientId": client_id,
+        "clientSecret": client_secret,
+        "redirectUri": redirect_uri,
+    }
+
+
+def _discord_oauth_transaction_cookie(value):
+    value = str(value or "").lower()
+    if not _DISCORD_OAUTH_TRANSACTION_RE.fullmatch(value):
+        return ""
+    return (
+        DISCORD_OAUTH_TRANSACTION_COOKIE + "=" + value
+        + "; Path=" + DISCORD_OAUTH_CALLBACK_PATH
+        + "; Max-Age=600; HttpOnly; Secure; SameSite=Lax"
+    )
+
+
+def _clear_discord_oauth_transaction_cookie():
+    return (
+        DISCORD_OAUTH_TRANSACTION_COOKIE + "=; Path="
+        + DISCORD_OAUTH_CALLBACK_PATH
+        + "; Max-Age=0; HttpOnly; Secure; SameSite=Lax"
+    )
+
+
+def _discord_snowflake(value):
+    value = str(value or "").strip()
+    return value if _DISCORD_SNOWFLAKE_RE.fullmatch(value) else ""
+
+
+def _discord_api_path_allowed(method, path):
+    if method == "GET":
+        return (
+            bool(_DISCORD_GUILD_CHANNELS_PATH_RE.fullmatch(path))
+            or bool(_DISCORD_GUILD_ROLES_PATH_RE.fullmatch(path))
+            or bool(_DISCORD_CHANNEL_MESSAGES_GET_PATH_RE.fullmatch(path))
+        )
+    return (
+        method == "POST"
+        and bool(_DISCORD_CHANNEL_MESSAGES_POST_PATH_RE.fullmatch(path))
+    )
+
+
+def _discord_rate_major(path):
+    match = re.match(r"^/(guilds|channels)/([0-9]{17,20})/", str(path or ""))
+    return (match.group(1) + ":" + match.group(2)) if match else "global"
+
+
+def _discord_rate_route(path):
+    return re.sub(r"[0-9]{17,20}", ":id", str(path or "")).split("?", 1)[0]
+
+
+async def _discord_provider_request(env, method, path, body=None):
+    """Perform one fixed-shape Discord provider request inside the rate DO.
+
+    No caller-provided origin/path/header reaches this helper.  Error bodies
+    and exceptions are deliberately reduced to status + retry metadata before
+    crossing the adapter boundary, because provider errors can echo request
+    context and must never become a token or message-content diagnostic.
+    """
+
+    method = str(method or "").upper()
+    path = str(path or "")
+    if not _discord_api_path_allowed(method, path):
+        return {"status": 400, "data": None, "retryAfterMs": 0}
+    token = _discord_bot_token(env)
+    if not token:
+        return {"status": 0, "data": None, "retryAfterMs": 0}
+    now = int(Date.now())
+    reserved_for = _discord_rate_coordinator.reserve(path, now)
+    if reserved_for:
+        return {"status": 429, "data": None, "retryAfterMs": reserved_for}
+    headers = {
+        "accept": "application/json",
+        "authorization": "Bot " + token,
+        "user-agent": "ForkMesh-Discord-connector/1.0",
+    }
+    options = {
+        "method": method,
+        "headers": headers,
+        # Never forward the credential across a provider redirect.
+        "redirect": "manual",
+    }
+    if body is not None:
+        if method != "POST" or not isinstance(body, dict):
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        headers["content-type"] = "application/json"
+        options["body"] = json.dumps(body, separators=(",", ":"))
+    try:
+        response = await js_fetch_with_timeout(
+            DISCORD_API_ORIGIN + path, options, DISCORD_API_TIMEOUT_SECONDS)
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            announced = 0
+        if announced > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None, "retryAfterMs": 0}
+        try:
+            raw = str(await response.text())
+        except Exception:
+            return {"status": 502, "data": None, "retryAfterMs": 0}
+        if len(raw.encode("utf-8")) > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None, "retryAfterMs": 0}
+        try:
+            data = json.loads(raw) if raw else None
+        except Exception:
+            data = None
+        # Keep only the narrow rate headers used by the shared coordinator;
+        # provider response headers never reach the dashboard or audit trail.
+        rate_headers = {}
+        for name in (
+                "x-ratelimit-bucket", "x-ratelimit-reset-after",
+                "x-ratelimit-reset", "x-ratelimit-remaining",
+                "x-ratelimit-global", "x-ratelimit-scope",
+                "retry-after"):
+            try:
+                rate_headers[name] = str(response.headers.get(name) or "")
+            except Exception:
+                rate_headers[name] = ""
+        observed_now = int(Date.now())
+        coordinated_retry = _discord_rate_coordinator.observe(
+            path, status, rate_headers, data, observed_now)
+        retry_after = 0
+        try:
+            retry_after = int(float(response.headers.get("retry-after") or 0) * 1000)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            retry_after = 0
+        if not retry_after and isinstance(data, dict):
+            try:
+                retry_after = int(float(data.get("retry_after") or 0) * 1000)
+            except (TypeError, ValueError, OverflowError):
+                retry_after = 0
+        return {
+            "status": max(0, min(599, status)),
+            "data": data,
+            "retryAfterMs": max(
+                max(0, min(retry_after, 3_600_000)), coordinated_retry),
+            # Internal-only metadata consumed by ForkMeshDiscordGate. The
+            # outer adapter strips these fields before returning to policy.
+            "rateBucket": rate_headers.get("x-ratelimit-bucket", "")[:100],
+            "rateGlobal": bool(
+                rate_headers.get("x-ratelimit-global")
+                or rate_headers.get("x-ratelimit-scope") == "global"
+                or (isinstance(data, dict) and data.get("global"))),
+        }
+    except Exception:
+        return {"status": 0, "data": None, "retryAfterMs": 0}
+
+
+async def _discord_api_request(env, method, path, body=None):
+    """Route every production bot call through one global Durable Object."""
+
+    method = str(method or "").upper()
+    path = str(path or "")
+    if (
+        not _discord_api_path_allowed(method, path)
+        or (body is not None and (method != "POST" or not isinstance(body, dict)))
+    ):
+        return {"status": 400, "data": None, "retryAfterMs": 0}
+    try:
+        gate_id = env.FORKMESH_DISCORD_GATE.idFromName("bot-rate-v1")
+        gate = env.FORKMESH_DISCORD_GATE.get(gate_id)
+        request = JsRequest.new(
+            "https://forkmesh.internal/discord-gate/request",
+            to_js({
+                "method": "POST",
+                "headers": {"content-type": "application/json"},
+                "body": json.dumps({
+                    "method": method,
+                    "path": path,
+                    "body": body,
+                }, separators=(",", ":")),
+            }),
+        )
+        response = await gate.fetch(request)
+        raw = str(await response.text())
+        result = json.loads(raw) if raw else {}
+        if not isinstance(result, dict):
+            raise ValueError("invalid Discord gate response")
+        return {
+            "status": max(0, min(599, int(result.get("status") or 0))),
+            "data": result.get("data"),
+            "retryAfterMs": max(
+                0, min(3_600_000, int(result.get("retryAfterMs") or 0))),
+        }
+    except Exception:
+        # Production and dev both bind the gate. Missing/broken bindings fail
+        # closed; the stateless Worker must never bypass the global limiter.
+        return {"status": 0, "data": None, "retryAfterMs": 0}
+
+
+def _discord_oauth_path_allowed(method, path):
+    method = str(method or "").upper()
+    path = str(path or "")
+    return bool(
+        (method == "POST" and path == _DISCORD_OAUTH_TOKEN_PATH)
+        or (method == "GET" and path in {
+            _DISCORD_OAUTH_IDENTITY_PATH,
+            _DISCORD_OAUTH_GUILDS_PATH,
+        })
+    )
+
+
+async def _discord_oauth_request(env, method, path, form=None, access_token=""):
+    """Call one fixed Discord OAuth path without persisting a bearer token."""
+
+    method = str(method or "").upper()
+    path = str(path or "")
+    if not _discord_oauth_path_allowed(method, path):
+        return {"status": 400, "data": None}
+    headers = {
+        "accept": "application/json",
+        "user-agent": "ForkMesh-Discord-oauth/1.0",
+    }
+    options = {
+        "method": method,
+        "headers": headers,
+        # OAuth bearer credentials must never cross a provider redirect.
+        "redirect": "manual",
+    }
+    if method == "POST":
+        if not isinstance(form, dict):
+            return {"status": 400, "data": None}
+        headers["content-type"] = "application/x-www-form-urlencoded"
+        options["body"] = urlencode(form)
+    else:
+        token = str(access_token or "")
+        if not token or len(token) > 4096 or any(
+                not char.isprintable() or char.isspace() for char in token):
+            return {"status": 400, "data": None}
+        headers["authorization"] = "Bearer " + token
+    try:
+        response = await js_fetch_with_timeout(
+            DISCORD_OAUTH_API_ORIGIN + path, options,
+            DISCORD_API_TIMEOUT_SECONDS)
+        status = int(getattr(response, "status", 0) or 0)
+        try:
+            announced = int(response.headers.get("content-length") or 0)
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            announced = 0
+        if announced > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None}
+        try:
+            raw = str(await response.text())
+        except Exception:
+            return {"status": 502, "data": None}
+        if len(raw.encode("utf-8")) > DISCORD_API_MAX_RESPONSE_BYTES:
+            return {"status": 502, "data": None}
+        try:
+            data = json.loads(raw) if raw else None
+        except Exception:
+            data = None
+        return {"status": max(0, min(599, status)), "data": data}
+    except Exception:
+        return {"status": 0, "data": None}
+
+
+class _OrganizationDiscordRuntime:
+    """Narrow adapter for the organization Discord policy module."""
+
+    def __init__(self, env, request):
+        self.env = env
+        self.request = request
+
+    def method(self):
+        return method_name(self.request)
+
+    def now(self):
+        return int(Date.now())
+
+    def new_id(self):
+        return _ap_uuid()
+
+    def query(self, name):
+        try:
+            values = parse_qs(
+                urlparse(str(self.request.url)).query,
+                keep_blank_values=True,
+            )
+            first = values.get(str(name), [""])[0]
+            return str(first or "")
+        except Exception:
+            return ""
+
+    def same_origin(self):
+        return _request_same_origin(self.request)
+
+    def response(self, data, status=200, cache_control=None,
+                 extra_headers=None):
+        return json_response(
+            data,
+            status=status,
+            cache_control=cache_control,
+            extra_headers=extra_headers,
+        )
+
+    async def ensure_schema(self):
+        await ensure_schema(self.env)
+
+    async def json_body(self, limit):
+        try:
+            raw_length = self.request.headers.get("content-length") or ""
+            if raw_length and int(raw_length) > int(limit):
+                return None, "payload_too_large"
+        except (TypeError, ValueError):
+            return None, "invalid_content_length"
+        try:
+            raw = await self.request.text()
+        except Exception:
+            return None, "invalid_json"
+        if len(str(raw or "").encode("utf-8")) > int(limit):
+            return None, "payload_too_large"
+        if not str(raw or "").strip():
+            return {}, ""
+        try:
+            data = json.loads(raw)
+        except Exception:
+            return None, "invalid_json"
+        return (data, "") if isinstance(data, dict) else (None, "invalid_json")
+
+    async def session(self, data=None):
+        return await _account_session_record(
+            self.env, self.request, data if isinstance(data, dict) else {})
+
+    async def session_id(self):
+        """Return only the currently validated session's opaque id."""
+
+        try:
+            token, _cookie_auth = _request_account_session_token(
+                self.request, {})
+            _account_bi, _record, session_id = await _account_session_lookup(
+                self.env, token)
+            return str(session_id or "")
+        except Exception:
+            return ""
+
+    async def session_active(self, account_bi, session_id):
+        row = await d1_first(
+            self.env,
+            "SELECT session_id FROM account_sessions WHERE account_bi=? "
+            "AND session_id=? AND revoked_at=0 AND expires_at>?",
+            str(account_bi or ""), str(session_id or ""), int(Date.now()),
+        )
+        return bool(row)
+
+    async def organization(self, org):
+        return await _org_row(self.env, org)
+
+    async def org_role(self, org_bi, account):
+        return await _org_role(self.env, org_bi, account)
+
+    async def seal(self, value):
+        return await encrypt_row(self.env, value)
+
+    async def open(self, value):
+        return await decrypt_row(self.env, value)
+
+    async def d1_first(self, sql, *args):
+        return await d1_first(self.env, sql, *args)
+
+    async def d1_run(self, sql, *args):
+        return await d1_run(self.env, sql, *args)
+
+    async def audit(self, actor, action, target_type="", target="",
+                    outcome="success", details=None):
+        await _audit_sensitive_action(
+            self.env, actor, action, target_type, target, outcome, details)
+
+    def discord_ready(self):
+        return bool(_discord_bot_token(self.env))
+
+    def discord_oauth_ready(self):
+        return bool(_discord_oauth_config(self.env))
+
+    def discord_oauth_redirect_uri(self):
+        config = _discord_oauth_config(self.env) or {}
+        return str(config.get("redirectUri") or "")
+
+    def discord_oauth_authorization_url(self, state, challenge):
+        config = _discord_oauth_config(self.env) or {}
+        state = str(state or "")
+        challenge = str(challenge or "")
+        if (
+            not config
+            or not _DISCORD_OAUTH_TRANSACTION_RE.fullmatch(state)
+            or not challenge
+        ):
+            return ""
+        return DISCORD_OAUTH_AUTHORIZE_ORIGIN + "?" + urlencode({
+            "client_id": config["clientId"],
+            "redirect_uri": config["redirectUri"],
+            "response_type": "code",
+            # Keep the user authorization-code grant separate from Discord's
+            # callback-less bot-install shortcut. Combining `bot` here causes
+            # some Discord clients to return an install result without the
+            # code/state required to verify the organization owner.
+            "scope": "identify guilds",
+            "state": state,
+            "code_challenge": challenge,
+            "code_challenge_method": "S256",
+            "prompt": "consent",
+        })
+
+    def oauth_transaction_cookie(self):
+        return _cookie_value(self.request, DISCORD_OAUTH_TRANSACTION_COOKIE)
+
+    def oauth_start_response(self, data, transaction):
+        cookie = _discord_oauth_transaction_cookie(transaction)
+        if not cookie:
+            return self.response({"error": "oauth_transaction_required"}, 500)
+        return self.response(
+            data, cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={
+                "set-cookie": cookie,
+                "referrer-policy": "no-referrer",
+                "x-content-type-options": "nosniff",
+            })
+
+    def oauth_callback_response(self, outcome):
+        outcome = str(outcome or "invalid")
+        if outcome not in {
+            "connected", "denied", "failed", "invalid", "setup",
+            "invalid_state_format", "invalid_state_missing",
+            "invalid_state_expired", "invalid_state_claim",
+            "invalid_record", "invalid_record_storage",
+            "invalid_record_decrypt", "invalid_record_state",
+            "invalid_record_verifier", "invalid_record_guild",
+            "invalid_context", "invalid_code",
+        }:
+            outcome = "invalid"
+        # Strip OAuth code/state/error from the browser address before any
+        # World UI loads. The one-time callback cookie is cleared regardless of
+        # outcome, and the response is non-cacheable/non-referring.
+        return Response("", status=303, headers={
+            "location": "/world/?discord=" + outcome,
+            "cache-control": "no-store, max-age=0, must-revalidate",
+            "referrer-policy": "no-referrer",
+            "x-content-type-options": "nosniff",
+            "set-cookie": _clear_discord_oauth_transaction_cookie(),
+        })
+
+    async def discord_channels(self, guild_id):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        return await _discord_api_request(
+            self.env, "GET", "/guilds/" + guild_id + "/channels")
+
+    def discord_public_channels_cache(self, guild_id):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id:
+            return None
+        return _discord_rate_coordinator.catalog_get(
+            "public-channels:" + guild_id, int(Date.now()))
+
+    def cache_discord_public_channels(self, guild_id, channels):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id or not isinstance(channels, list):
+            return
+        # The policy module has already removed private/NSFW/thread metadata;
+        # cache only its small id/name/type public projection.
+        _discord_rate_coordinator.catalog_put(
+            "public-channels:" + guild_id, channels, int(Date.now()))
+
+    async def discord_guild_roles(self, guild_id):
+        guild_id = _discord_snowflake(guild_id)
+        if not guild_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        result = await _discord_api_request(
+            self.env, "GET", "/guilds/" + guild_id + "/roles")
+        if int(result.get("status") or 0) != 200:
+            return result
+        roles = result.get("data") if isinstance(result.get("data"), list) else []
+        # Only the @everyone base role participates in ForkMesh's public
+        # channel calculation. Discard every other role before short caching.
+        projected = []
+        for role in roles:
+            if not isinstance(role, dict) or _discord_snowflake(role.get("id")) != guild_id:
+                continue
+            projected.append({
+                "id": guild_id,
+                "permissions": str(role.get("permissions") or "0")[:40],
+            })
+            break
+        return {
+            "status": 200,
+            "data": projected,
+            "retryAfterMs": 0,
+        }
+
+    async def discord_oauth_exchange(self, code, verifier):
+        config = _discord_oauth_config(self.env) or {}
+        if not config:
+            return {"status": 0, "accessToken": ""}
+        result = await _discord_oauth_request(
+            self.env, "POST", _DISCORD_OAUTH_TOKEN_PATH, {
+                "client_id": config["clientId"],
+                "client_secret": config["clientSecret"],
+                "grant_type": "authorization_code",
+                "code": str(code or ""),
+                "redirect_uri": config["redirectUri"],
+                "code_verifier": str(verifier or ""),
+            })
+        data = result.get("data") if isinstance(result, dict) else None
+        access_token = str((data or {}).get("access_token") or "")
+        # Do not return provider response fields such as refresh_token,
+        # scope, or token_type beyond this transient call frame.
+        return {
+            "status": int((result or {}).get("status") or 0),
+            "accessToken": access_token[:4096],
+        }
+
+    async def discord_oauth_identity(self, access_token):
+        return await _discord_oauth_request(
+            self.env, "GET", _DISCORD_OAUTH_IDENTITY_PATH,
+            access_token=access_token)
+
+    async def discord_oauth_guilds(self, access_token):
+        return await _discord_oauth_request(
+            self.env, "GET", _DISCORD_OAUTH_GUILDS_PATH,
+            access_token=access_token)
+
+    async def discord_messages(self, channel_id, limit):
+        channel_id = _discord_snowflake(channel_id)
+        try:
+            limit = max(1, min(50, int(limit)))
+        except (TypeError, ValueError, OverflowError):
+            limit = 50
+        if not channel_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        return await _discord_api_request(
+            self.env, "GET", "/channels/" + channel_id
+            + "/messages?limit=" + str(limit))
+
+    async def discord_send(self, channel_id, content):
+        channel_id = _discord_snowflake(channel_id)
+        if not channel_id:
+            return {"status": 400, "data": None, "retryAfterMs": 0}
+        # Explicitly disable all Discord mention parsing.  A ForkMesh owner can
+        # choose where a text message goes, never who it pings.
+        return await _discord_api_request(
+            self.env,
+            "POST",
+            "/channels/" + channel_id + "/messages",
+            {
+                "content": str(content or ""),
+                "allowed_mentions": {"parse": []},
+            },
+        )
+
+
+async def organization_discord_handler(env, request, org, action=""):
+    return await organization_discord.handle(
+        _OrganizationDiscordRuntime(env, request), org, action)
+
+
+async def organization_discord_oauth_callback_handler(env, request):
+    return await organization_discord.handle_oauth_callback(
+        _OrganizationDiscordRuntime(env, request))
+
+
 async def world_organizations_handler(env, request):
     """List only organization lobbies this world viewer may enter.
 
@@ -21152,6 +22378,51 @@ async def org_handler(env, request, org):
                 env, "DELETE FROM org_team_collaborators WHERE org_bi=?",
                 org_bi)
             await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
+            # Disconnect all Discord connector material before the deterministic
+            # org id can ever be reused. This includes encrypted consent and
+            # one-time OAuth state, so recreating an alias cannot inherit a
+            # former organization's external bridge.
+            await d1_run(
+                env, "DELETE FROM organization_discord_connectors WHERE org_bi=?",
+                org_bi)
+            # The setup-task marker is the authoritative scope for the
+            # connector's human-action tasks. Remove every dependent record
+            # before the task rows themselves so a deleted organization cannot
+            # leave orphaned check-ins, QA verdicts, replies, or attachments.
+            await d1_run(
+                env, "DELETE FROM organization_task_checkins WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_task_qa_reviews WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_task_responses WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_task_attachments WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_tasks WHERE task_id IN "
+                "(SELECT task_id FROM organization_discord_setup_tasks "
+                "WHERE org_bi=?)",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_discord_setup_tasks WHERE org_bi=?",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_discord_oauth_grants WHERE org_bi=?",
+                org_bi)
+            await d1_run(
+                env, "DELETE FROM organization_discord_oauth_states WHERE org_bi=?",
+                org_bi)
             await d1_run(env, "DELETE FROM org_members WHERE org_bi=?", org_bi)
             await d1_run(
                 env, "DELETE FROM ap_org_digest_settings WHERE org_bi=?", org_bi)
@@ -22132,6 +23403,9 @@ async def cleanup_sensitive_audit_records(env):
     await d1_run(
         env, "DELETE FROM sensitive_audit_log WHERE ts<?",
         now - SECURITY_AUDIT_RETAIN_MS)
+    await d1_run(
+        env, "DELETE FROM org_bot_token_usage WHERE used_at<?",
+        now - SECURITY_AUDIT_RETAIN_MS)
 
 
 # --- Achievement badges (adhoc #370) -----------------------------------------
@@ -22305,6 +23579,63 @@ async def _admin_verify_email(env, request):
     return json_response({"ok": True, "target": target, "emailVerified": True})
 
 
+async def _admin_delete_unverified_account(env, request, raw_target):
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    _, actor_rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (actor_rec or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    target = clean_string(raw_target, MAX_NODE_NAME).strip().lower()
+    if not actor_rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    if not await _has_role(env, actor, "platform_administrator"):
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "admin_required"})
+        return json_response({"error": "forbidden"}, status=403)
+    if not valid_node_name(target):
+        return json_response({"error": "invalid_account"}, status=400)
+    if target == actor:
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "self_delete_forbidden"})
+        return json_response({"error": "self_delete_forbidden"}, status=409)
+
+    target_bi, target_rec = await _account_row(env, target)
+    if (
+            not target_rec or target_rec.get("status") != "active"
+            or _account_kind(target_rec) != "user"):
+        return json_response({"error": "no_such_user"}, status=404)
+    if target_rec.get("email_verified") is True:
+        return json_response({"error": "email_already_verified"}, status=409)
+    if not clean_string(target_rec.get("email", ""), 254).strip():
+        return json_response({"error": "account_has_no_email"}, status=409)
+    # Never let the convenience gesture erase another administrator. Revoking
+    # an administrator remains an explicit security-control-plane operation.
+    if await _is_admin(env, target):
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "denied", {"reason": "target_is_admin"})
+        return json_response({"error": "target_is_admin"}, status=409)
+
+    try:
+        await _delete_account_namespace(env, target_bi, target_rec)
+    except Exception:
+        await _audit_sensitive_action(
+            env, actor, "admin.unverified_account_delete", "account",
+            target, "failed", {})
+        raise
+    await _audit_sensitive_action(
+        env, actor, "admin.unverified_account_delete", "account",
+        target, "success", {})
+    return json_response(
+        {"ok": True, "target": target, "accountDeleted": True},
+        cache_control="no-store, max-age=0, must-revalidate",
+    )
+
+
 # --- Transactional email (Mailtrap) -----------------------------------------
 # Signup confirmation goes out through Mailtrap's HTTP sending API. The token is
 # a Worker secret (MAILTRAP_API_TOKEN, pushed from .env.production by deploy.sh).
@@ -22431,6 +23762,7 @@ def _account_email_activity(rec):
 
 async def _repository_provider_fetch(env, provider, path, token=""):
     from js import fetch as js_fetch
+    repository_import = _repository_import_module()
     if provider not in repository_import.PROVIDERS:
         return {"status": 400, "data": {}, "headers": {}}
     if (not isinstance(path, str) or not path.startswith("/")
@@ -22631,6 +23963,7 @@ async def _repository_import_audit(
 
 
 def _repository_import_service():
+    repository_import = _repository_import_module()
     return repository_import.RepositoryImportService({
         "json_response": json_response,
         "ensure_schema": ensure_schema,
@@ -22671,7 +24004,7 @@ async def _email_verify_token(env, name, email):
     return bytes(Uint8Array.new(sig).to_py()).hex()[:32]
 
 
-def _public_base_url(env, request):
+def _public_base_url(env, request=None):
     base = (getattr(env, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
     if base:
         return base
@@ -23548,6 +24881,7 @@ async def world_relay_instances_handler(env, request):
                 row.get("label") or "ForkMesh instance", 80),
             "origin": origin,
             "approved": True,
+            "joinedAt": max(0, int(row.get("approved_at") or 0)),
             "health": health,
             "online": verified_online,
             "healthEvidence": (
@@ -24846,6 +26180,14 @@ async def accounts_handler(env, request):
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
         return await _admin_verify_email(env, request)
+    admin_unverified_prefix = "/api/accounts/admin-unverified/"
+    if (
+            url.path.startswith(admin_unverified_prefix)
+            and method == "DELETE"):
+        target = url.path[len(admin_unverified_prefix):].strip("/")
+        if target and "/" not in target:
+            return await _admin_delete_unverified_account(
+                env, request, target)
     if url.path == "/api/accounts/admin-relays" and method == "GET":
         return await _admin_relays(env, request)
     if url.path == "/api/accounts/admin-relay-approve" and method == "POST":
@@ -28282,6 +29624,7 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
 
 async def _promote_hosted_repository_import(env, catalog_record):
     """Link one verified mirror catalog to its public provider import."""
+    repository_import = _repository_import_module()
     mirror_owner = clean_string(
         catalog_record.get("owner"), MAX_NODE_NAME).lower()
     repository_name = safe_segment(clean_string(
@@ -28630,7 +29973,36 @@ async def notifications_handler(env, request):
                     now, recipient_bi, item_id)
         return json_response({"ok": True})
 
-    return json_response({"error": "method_not_allowed"}, status=405)
+    if method == "DELETE":
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+        item_id = clean_string(data.get("id", ""), 160).lower()
+        if not valid_node_name(node) or not re.fullmatch(
+                r"[a-f0-9]{64}", item_id):
+            return json_response({"error": "bad_request"}, status=400)
+        # A notification can only be removed from the authenticated owner's
+        # own encrypted inbox. The opaque id is still scoped by recipient_bi,
+        # so an id copied from another account cannot delete anything.
+        if await _authed_account_name(env, request, data) != node:
+            return json_response({"error": "unauthorized"}, status=401)
+        recipient_bi = await blind_index(env, node)
+        await d1_run(
+            env,
+            "DELETE FROM notifications "
+            "WHERE recipient_bi=? AND dedupe_bi=?",
+            recipient_bi,
+            item_id,
+        )
+        return json_response({"ok": True})
+
+    return json_response(
+        {"error": "method_not_allowed"},
+        status=405,
+        extra_headers={"allow": "GET, POST, DELETE"},
+    )
 
 
 async def mirror_requests_handler(env, request):
@@ -32497,6 +33869,23 @@ async def _org_bot_token_context(env, request, touch=False):
         "createdAt": int(row.get("created_at") or 0),
         "expiresAt": int(row.get("expires_at") or 0),
     }
+    try:
+        action = str(urlparse(request.url).path or "")[:120]
+    except Exception:
+        action = "/api/bot/session"
+    if not re.fullmatch(r"/[A-Za-z0-9_./-]{0,119}", action):
+        action = "/api/bot/session"
+    method = method_name(request)
+    if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
+        method = "GET"
+    await d1_run(
+        env,
+        "INSERT INTO org_bot_token_usage "
+        "(token_id,org_bi,provider,action,method,used_at) "
+        "VALUES (?,?,?,?,?,?)",
+        context["tokenId"], context["orgBi"], context["provider"],
+        action, method, now,
+    )
     if touch and now - int(row.get("last_used_at") or 0) >= 60_000:
         await d1_run(
             env,
@@ -32528,7 +33917,10 @@ async def org_bot_tokens_handler(env, request, org):
         (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
     if not account_bi or not actor:
         return json_response({"error": "invalid_session"}, status=401)
-    if await _org_role(env, org_bi, actor) not in ("owner", "admin"):
+    actor_role = await _org_role(env, org_bi, actor)
+    if actor_role not in ("owner", "admin", "member"):
+        return json_response({"error": "forbidden"}, status=403)
+    if method in ("GET", "DELETE") and actor_role not in ("owner", "admin"):
         return json_response({"error": "forbidden"}, status=403)
     org_name = str(org_row.get("name") or org)
 
@@ -32558,6 +33950,31 @@ async def org_bot_tokens_handler(env, request, org):
                 "expiresAt": int(row.get("expires_at") or 0),
                 "revokedAt": int(row.get("revoked_at") or 0),
             })
+        usage_rows = await d1_all(
+            env,
+            "SELECT token_id,provider,action,method,used_at "
+            "FROM org_bot_token_usage WHERE org_bi=? "
+            "ORDER BY used_at DESC,id DESC LIMIT 5",
+            org_bi,
+        )
+        token_labels = {
+            token["id"]: token["label"] or token["provider"]
+            for token in tokens
+        }
+        usage_preview = [
+            {
+                "tokenId": str(row.get("token_id") or ""),
+                "label": clean_string(
+                    token_labels.get(str(row.get("token_id") or ""), ""),
+                    80,
+                ),
+                "provider": str(row.get("provider") or ""),
+                "action": clean_string(row.get("action"), 120),
+                "method": str(row.get("method") or ""),
+                "usedAt": int(row.get("used_at") or 0),
+            }
+            for row in usage_rows or []
+        ]
         return json_response({
             "ok": True,
             "organization": org_name,
@@ -32566,6 +33983,7 @@ async def org_bot_tokens_handler(env, request, org):
                 for scope, description in ORG_BOT_TOKEN_SCOPES.items()
             ],
             "tokens": tokens,
+            "usagePreview": usage_preview,
             "plaintextRecovery": False,
         }, cache_control="no-store")
 
@@ -32605,6 +34023,9 @@ async def org_bot_tokens_handler(env, request, org):
     scopes = _org_bot_scopes(data.get("scopes"), default=True)
     if scopes is None or not scopes:
         return json_response({"error": "invalid_bot_permissions"}, status=400)
+    if actor_role == "member" and not set(scopes).issubset({
+            "organization.tasks.read", "organization.tasks.write"}):
+        return json_response({"error": "forbidden"}, status=403)
     count = await d1_first(
         env,
         "SELECT COUNT(*) AS n FROM org_bot_tokens "
@@ -32651,6 +34072,133 @@ async def org_bot_tokens_handler(env, request, org):
         "label": label,
         "scopes": scopes,
         "expiresAt": expires_at,
+        "shownOnce": True,
+    }, status=201, cache_control="no-store")
+
+
+GENIE_CREDENTIAL_SCOPES = ("organization.tasks.read", "organization.tasks.write")
+GENIE_CREDENTIAL_LABEL = "Genie"
+GENIE_CREDENTIAL_DAYS = 90
+
+
+async def genie_credential_handler(env, request):
+    """Mint the desktop's own task-only remote-MCP credential (adhoc #49).
+
+    Pressing "genie" used to require a trip to Organization Admin to generate a
+    bearer token and paste it into Settings first. A desktop that authenticated
+    silently already proves it owns its account's Ed25519 key for every task it
+    opens on the board, so the same signature mints the same revocable,
+    task-scoped credential the website hands out — nothing else changes about
+    it: same store, same scopes, same expiry, same revoke button.
+    """
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(data, dict):
+        data = {}
+    # A key-signed desktop is the point of this endpoint; an explicit account
+    # session (bearer or body token) is accepted too. Ambient cookie authority
+    # is not: _account_session_record refuses a cookie on a cross-origin write,
+    # so a cross-site POST can neither borrow a browser session nor pass off a
+    # junk signature as one.
+    account_bi, account = await _genie_credential_signed_session(env, request)
+    if not account_bi:
+        account_bi, account = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
+    if not account_bi or not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+
+    configured = str(
+        getattr(env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
+    ).strip().lower()
+    if not valid_node_name(configured):
+        return json_response({"error": "task_board_unavailable"}, status=503)
+    org_bi, org_row = await _org_row(env, configured)
+    if not org_row:
+        return json_response({"error": "task_board_unavailable"}, status=503)
+    org_name = str(org_row.get("name") or configured)
+    if await _org_role(env, org_bi, actor) not in ("owner", "admin"):
+        await _audit_sensitive_action(
+            env, actor, "organization.bot_token_create",
+            "organization_bot_token", org_name, "denied",
+            {"source": "desktop-genie"})
+        return json_response(
+            {"error": "forbidden", "organization": org_name}, status=403)
+
+    device = clean_string(data.get("deviceName"), 80).strip()
+    label = GENIE_CREDENTIAL_LABEL + ((" (" + device + ")") if device else "")
+    now = int(Date.now())
+    # One live credential per device: the desktop stores what it is given, so a
+    # re-mint (settings cleared, credential rotated) must retire its own
+    # predecessor instead of walking the org toward ORG_BOT_TOKEN_MAX_ACTIVE.
+    rows = await d1_all(
+        env,
+        "SELECT token_id,data FROM org_bot_tokens "
+        "WHERE org_bi=? AND revoked_at=0 ORDER BY created_at DESC LIMIT 64",
+        org_bi,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if not isinstance(record, dict):
+            continue
+        if clean_string(record.get("label"), 80).strip() != label:
+            continue
+        if clean_string(record.get("createdBy"), MAX_NODE_NAME).strip().lower() \
+                != actor:
+            continue
+        await d1_run(
+            env,
+            "UPDATE org_bot_tokens SET revoked_at=? "
+            "WHERE token_id=? AND org_bi=? AND revoked_at=0",
+            now, str(row.get("token_id") or ""), org_bi,
+        )
+
+    count = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM org_bot_tokens "
+        "WHERE org_bi=? AND revoked_at=0 AND (expires_at=0 OR expires_at>?)",
+        org_bi, now,
+    )
+    if int((count or {}).get("n") or 0) >= ORG_BOT_TOKEN_MAX_ACTIVE:
+        return json_response({"error": "too_many_bot_tokens"}, status=429)
+    scopes = list(GENIE_CREDENTIAL_SCOPES)
+    expires_at = now + GENIE_CREDENTIAL_DAYS * 24 * 60 * 60 * 1000
+    token_id, token = _new_org_bot_token()
+    await d1_run(
+        env,
+        "INSERT INTO org_bot_tokens "
+        "(token_id,org_bi,secret_bi,provider,data,created_by_bi,created_at,"
+        "last_used_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,0,?,0)",
+        token_id, org_bi,
+        await blind_index(env, "org-bot-token:" + token),
+        "claude-code",
+        await encrypt_row(env, {
+            "label": label,
+            "scopes": scopes,
+            "createdBy": actor,
+            "deviceName": device,
+            "linkedAt": 0,
+        }),
+        str(account_bi), now, expires_at,
+    )
+    await _audit_sensitive_action(
+        env, actor, "organization.bot_token_create",
+        "organization_bot_token", org_name + "/" + token_id, "success",
+        {"provider": "claude-code", "scopes": scopes, "expiresAt": expires_at,
+         "source": "desktop-genie"})
+    return json_response({
+        "ok": True,
+        "token": token,
+        "tokenId": token_id,
+        "organization": org_name,
+        "scopes": scopes,
+        "expiresAt": expires_at,
+        "mcpUrl": _public_base_url(env, request).rstrip("/") + "/mcp",
         "shownOnce": True,
     }, status=201, cache_control="no-store")
 
@@ -32704,14 +34252,8 @@ async def bot_session_handler(env, request):
     }, cache_control="no-store")
 
 
-# --- Organization-scoped Claude/Codex bots ---------------------------------
-#
-# This is intentionally NOT an authorization shortcut into repo_agents. Those
-# rows remain owner-device E2EE. Organization bots have their own encrypted-at-
-# rest session/job tables, are visible and controllable only by current members
-# of the organization's Engineering team, and execute only after the selected
-# mirror runs a tool-free Claude Haiku safety preflight.
 ORG_AGENT_PROVIDERS = ("claude-code", "codex")
+ORG_AGENT_GENERAL_PROVIDERS = ("agent", "bot", "auto")
 ORG_AGENT_MODEL_ALIASES = {
     "claude-code": {
         "haiku": "claude-haiku-4-5",
@@ -33087,6 +34629,9 @@ async def org_agent_bots_handler(env, request, org, repo):
 
     provider = clean_string(data.get("provider"), 40).strip().lower()
     prompt = clean_string(data.get("prompt"), ORG_AGENT_MAX_PROMPT).strip()
+    general_bot = provider in ORG_AGENT_GENERAL_PROVIDERS
+    if general_bot:
+        provider = ORG_AGENT_PROVIDERS[0]
     if provider not in ORG_AGENT_PROVIDERS:
         return json_response({"error": "invalid_provider"}, status=400)
     model_alias = clean_string(data.get("model"), 30).strip().lower()
@@ -33101,6 +34646,17 @@ async def org_agent_bots_handler(env, request, org, repo):
         return json_response({"error": "invalid_target_node"}, status=400)
     target_node = await _org_agent_target_mirror(
         env, context, provider, preferred_node)
+    if not target_node and general_bot:
+        # A general bot is runtime-agnostic: take the first supported runtime
+        # with a fresh, capable mirror instead of failing on one vendor.
+        for candidate in ORG_AGENT_PROVIDERS[1:]:
+            target_node = await _org_agent_target_mirror(
+                env, context, candidate, preferred_node)
+            if target_node:
+                provider = candidate
+                model = ORG_AGENT_MODEL_ALIASES.get(
+                    candidate, {}).get(model_alias) or ""
+                break
     if not target_node:
         return json_response(
             {"error": "no_eligible_agent_node"}, status=503,
@@ -33451,7 +35007,7 @@ async def repo_org_agent_job_result_handler(
             env,
             "SELECT data FROM organization_tasks "
             "WHERE org_bi=? AND task_id=? "
-            "AND assignee_kind IN ('claude','codex')",
+            "AND assignee_kind IN ('agent','bot','claude','codex')",
             row["org_bi"], private_task_id,
         )
         private_task_data = (
@@ -33934,16 +35490,38 @@ def _fire_and_forget(coro, label="background"):
     return task
 
 
-async def _write_error_log(env, status, method, path, message, ray=""):
+async def _error_log_actor(env, request):
+    """Account name the failing request itself proved, or "" when anonymous.
+
+    Never trusts a caller-supplied `node`/`owner` string: only a valid account
+    session names a user here. A request without a session token costs nothing
+    (_account_session_lookup rejects the token shape before any D1 read), so an
+    anonymous error storm does not gain a per-error lookup. Best-effort —
+    error logging must never become a new error.
+    """
+    if request is None:
+        return ""
+    try:
+        _, rec = await _account_session_record(env, request)
+        return clean_string(
+            (rec or {}).get("name", ""), MAX_NODE_NAME).strip().lower()
+    except Exception:
+        return ""
+
+
+async def _write_error_log(env, status, method, path, message, ray="",
+                           actor=""):
     try:
         message = _privacy_safe_error_text(path, message)
         await ensure_schema(env)
         await d1_run(
             env,
-            """INSERT INTO error_log (ts, status, method, path, message, ray)
-               VALUES (?,?,?,?,?,?)""",
+            """INSERT INTO error_log
+                 (ts, status, method, path, message, ray, actor)
+               VALUES (?,?,?,?,?,?,?)""",
             int(Date.now()), int(status), str(method or ""), str(path or ""),
             str(message or "")[:1000], str(ray or ""),
+            clean_string(actor or "", MAX_NODE_NAME).strip().lower(),
         )
         # Keep only the most-recent MAX_ERROR_LOG rows so the table is bounded.
         await d1_run(
@@ -34081,6 +35659,10 @@ async def client_error_handler(env, request):
                 status=202,
                 cache_control="no-store",
             )
+        try:
+            actor = await _error_log_actor(env, request)
+        except BaseException:
+            actor = ""
         await _write_error_log(
             env,
             520,
@@ -34088,6 +35670,7 @@ async def client_error_handler(env, request):
             "/client-error/" + surface,
             detail,
             source_key,
+            actor,
         )
     except Exception:
         # Error reporting must never become a new user-visible error.
@@ -34104,13 +35687,14 @@ async def client_error_handler(env, request):
 
 
 async def world_admin_errors_handler(env, request):
-    """Return only the aggregate new-error cursor used by the admin HUD."""
-    if method_name(request) != "GET":
+    """Return the admin HUD cursor and, on demand, a bounded error table."""
+    method = method_name(request)
+    if method not in ("GET", "POST", "DELETE"):
         return json_response(
             {"error": "method_not_allowed"},
             status=405,
             cache_control="no-store",
-            extra_headers={"allow": "GET"},
+            extra_headers={"allow": "GET, POST, DELETE"},
         )
     _, rec = await _account_session_record(env, request)
     actor = clean_string(
@@ -34123,9 +35707,38 @@ async def world_admin_errors_handler(env, request):
         return json_response(
             {"error": "forbidden"}, status=403,
             cache_control="no-store")
+    if method in ("POST", "DELETE"):
+        try:
+            data = await bounded_json_request(request)
+            row_id = int(data.get("id") or 0)
+        except (AttributeError, TypeError, ValueError):
+            row_id = 0
+        if row_id <= 0:
+            return json_response(
+                {"error": "invalid_error_id"},
+                status=400,
+                cache_control="no-store",
+            )
+        if method == "POST":
+            message, details = await _admin_error_create_bot_task(
+                env, {"error_id": [str(row_id)]}, actor)
+            if details.get("taskId"):
+                return json_response(
+                    {"ok": True, "message": message, **details},
+                    status=201,
+                    cache_control="no-store",
+                )
+            return json_response(
+                {"error": "task_create_failed", "message": message},
+                status=403,
+                cache_control="no-store",
+            )
+        await ensure_schema(env)
+        await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
+        return json_response({"ok": True}, cache_control="no-store")
     try:
-        raw_after = parse_qs(urlparse(request.url).query).get(
-            "after", ["0"])[0]
+        query = parse_qs(urlparse(request.url).query)
+        raw_after = query.get("after", ["0"])[0]
         after = max(0, int(raw_after or 0))
     except (TypeError, ValueError):
         after = 0
@@ -34134,13 +35747,79 @@ async def world_admin_errors_handler(env, request):
         env, "SELECT id,ts FROM error_log ORDER BY id DESC LIMIT 1")
     count = await d1_first(
         env, "SELECT COUNT(*) AS n FROM error_log WHERE id>?", after)
+    payload = {
+        "ok": True,
+        "latestId": max(0, int((latest or {}).get("id") or 0)),
+        "latestAt": max(0, int((latest or {}).get("ts") or 0)),
+        "newCount": min(9999, max(0, int((count or {}).get("n") or 0))),
+    }
+    if query.get("include", ["0"])[0] == "1":
+        rows = await d1_all(
+            env,
+            "SELECT id,ts,status,method,path,message,ray,actor "
+            "FROM error_log ORDER BY id DESC LIMIT 100",
+        )
+        payload["errors"] = rows or []
+        grouped_rows = await d1_all(
+            env,
+            "SELECT id,ts,status,method,path,message,ray,actor "
+            "FROM error_log WHERE ts>=? ORDER BY id DESC LIMIT 1000",
+            int(Date.now()) - 24 * 60 * 60 * 1000,
+        )
+        groups = {}
+        for row in grouped_rows or []:
+            signature = (
+                str(row.get("status") or ""),
+                str(row.get("method") or "").upper(),
+                str(row.get("path") or ""),
+                str(row.get("message") or ""),
+            )
+            group = groups.setdefault(signature, {
+                "count": 0,
+                "firstSeen": int(row.get("ts") or 0),
+                "lastSeen": 0,
+                "actors": {},
+                "anonymous": 0,
+            })
+            timestamp = max(0, int(row.get("ts") or 0))
+            group["count"] += 1
+            group["firstSeen"] = min(group["firstSeen"] or timestamp, timestamp)
+            group["lastSeen"] = max(group["lastSeen"], timestamp)
+            related_actor = clean_string(
+                row.get("actor") or "", MAX_NODE_NAME).strip().lower()
+            if related_actor:
+                group["actors"][related_actor] = (
+                    group["actors"].get(related_actor, 0) + 1)
+            else:
+                group["anonymous"] += 1
+        payload["groups"] = [
+            {
+                "status": signature[0],
+                "method": signature[1],
+                "path": signature[2],
+                "message": signature[3],
+                "count": group["count"],
+                "firstSeen": group["firstSeen"],
+                "lastSeen": group["lastSeen"],
+                "actors": [
+                    {"name": name, "count": count}
+                    for name, count in sorted(
+                        group["actors"].items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )[:16]
+                ],
+                "anonymous": group["anonymous"],
+            }
+            for signature, group in sorted(
+                groups.items(),
+                key=lambda item: (
+                    -item[1]["count"],
+                    -item[1]["lastSeen"],
+                ),
+            )[:25]
+        ]
     return json_response(
-        {
-            "ok": True,
-            "latestId": max(0, int((latest or {}).get("id") or 0)),
-            "latestAt": max(0, int((latest or {}).get("ts") or 0)),
-            "newCount": min(9999, max(0, int((count or {}).get("n") or 0))),
-        },
+        payload,
         cache_control="no-store",
     )
 
@@ -34283,8 +35962,14 @@ async def capture_worker_exception(env, request, url, error):
         )
     except BaseException:
         pass
+    # Naming the affected account is a nice-to-have; it must never be able to
+    # cost the log row itself, so it resolves in its own guard.
     try:
-        await _write_error_log(env, 500, method, path, message, ray)
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
+    try:
+        await _write_error_log(env, 500, method, path, message, ray, actor)
     except BaseException:
         pass
 
@@ -34419,7 +36104,11 @@ async def log_error(env, status, method, path, message, ray="", request=None,
         path = await privacy_filter(env, path)
     await capture_sentry_error(
         env, status, method, path, message, ray, request=request, error=error)
-    await _write_error_log(env, status, method, path, message, ray)
+    try:
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
+    await _write_error_log(env, status, method, path, message, ray, actor)
 
 
 async def log_durable_object_abort(env, request, path, error):
@@ -34442,10 +36131,15 @@ async def log_durable_object_abort(env, request, path, error):
         await privacy_filter(env, path)
         if callable(privacy_filter) else path
     )
+    try:
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
     await _write_error_log(
         env, 503, method_name(request), safe_path,
         "durable object aborted: " + _safe_error_text(error)[:400],
-        request.headers.get("cf-ray") or "")
+        request.headers.get("cf-ray") or "",
+        actor)
 
 
 async def log_cron_error(env, path, message, error=None, failures=None):
@@ -35848,6 +37542,27 @@ ADMIN_STYLE = """
  .ab-root .error-spark-bar{display:block;min-height:2px;background:var(--ab-link);
         border-radius:2px 2px 0 0}
  .ab-root .error-spark-bar[data-empty="true"]{background:var(--ab-border)}
+ .ab-root .error-source{display:inline-block;border:1px solid var(--ab-border-2);
+        border-radius:999px;padding:1px 7px;white-space:nowrap;
+        font:600 11px system-ui,sans-serif}
+ .ab-root .error-source.javascript{border-color:#8957e5;color:#a371f7}
+ .ab-root .error-source.worker{border-color:var(--ab-link);color:var(--ab-link)}
+ .ab-root .error-delete{background:transparent;color:var(--ab-danger);
+        border-color:var(--ab-danger);padding:3px 8px;font-size:11px}
+ .ab-root .error-delete:hover{background:var(--ab-danger);color:#fff}
+ .ab-root .error-group-delete{display:inline;margin:0}
+ .ab-root .error-bot{background:transparent;color:var(--ab-link);
+        border-color:var(--ab-link);padding:3px 8px;font-size:11px;white-space:nowrap}
+ .ab-root .error-bot:hover{background:var(--ab-link);color:#fff}
+ .ab-root .error-bot-task{display:inline;margin:0}
+ .ab-root .error-message{display:inline-block;max-width:520px;overflow:hidden;
+        text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+ .ab-root .error-copy{background:transparent;color:var(--ab-muted);
+        border-color:var(--ab-border-2);padding:1px 6px;font-size:11px;
+        margin-left:6px;vertical-align:middle}
+ .ab-root .error-copy:hover{color:var(--ab-fg);border-color:var(--ab-fg)}
+ .ab-root .error-users{color:var(--ab-fg);white-space:nowrap}
+ .ab-root .error-anonymous{color:var(--ab-muted)}
  .ab-root .relative-time{color:var(--ab-muted);white-space:nowrap}
 """
 
@@ -36037,9 +37752,15 @@ def _admin_json_cell(decoded):
 # --- Admin bulk select + delete helpers (operate on rowid) -------------------
 
 def _admin_bulk_form_open(table, csrf_field="", admin_query=""):
+    # Per-row buttons ride this form with their own formaction (forms cannot
+    # nest) and run their own confirmation, so the bulk prompt must not also
+    # fire for them — it asked "delete the selected rows?" for a row action
+    # that deletes nothing.
     return (
         '<form method="post" action="%s" '
-        'onsubmit="return confirm(\'Delete the selected '
+        'onsubmit="return (event.submitter&&'
+        "event.submitter.hasAttribute('formaction'))||"
+        'confirm(\'Delete the selected '
         'row(s)? This cannot be undone.\')">'
         '%s'
         '<div class="tools">'
@@ -36060,6 +37781,158 @@ def _admin_select_all_th():
 def _admin_row_checkbox(rowid):
     return ('<td><input type="checkbox" name="ids" value="%s"></td>'
             % _html_escape(rowid))
+
+
+def _admin_error_source(method, path):
+    """Stable display classification for the shared operational error log."""
+    is_javascript = (
+        str(method or "").strip().upper() == "JS"
+        or str(path or "").startswith("/client-error/")
+    )
+    return "JavaScript" if is_javascript else "Worker"
+
+
+def _admin_error_source_badge(method, path):
+    source = _admin_error_source(method, path)
+    return (
+        '<span class="error-source %s">%s</span>'
+        % (source.lower(), source)
+    )
+
+
+def _admin_error_related_users(actors, anonymous=0):
+    """Summarize which accounts an error (or error group) actually hit.
+
+    `actors` maps account name -> occurrence count. Anonymous occurrences are
+    counted separately rather than dropped: "3 signed-in users plus anonymous
+    traffic" and "only anonymous traffic" are very different bugs.
+    """
+    ranked = sorted(
+        (actors or {}).items(), key=lambda item: (-item[1], item[0]))
+    parts = ["%s (%d)" % (name, hits) for name, hits in ranked]
+    if int(anonymous or 0):
+        parts.append("anonymous (%d)" % int(anonymous))
+    if not parts:
+        return "—"
+    return ", ".join(parts)
+
+
+def _admin_error_users_cell(actors, anonymous=0):
+    summary = _admin_error_related_users(actors, anonymous)
+    shown = summary if len(summary) <= 60 else summary[:60] + "…"
+    return (
+        '<td class="error-users" title="%s">%s</td>'
+        % (_html_escape(summary), _html_escape(shown))
+    )
+
+
+def _admin_error_row_user_cell(actor):
+    name = str(actor or "").strip().lower()
+    return (
+        '<td class="error-users">%s</td>'
+        % (_html_escape(name) if name
+           else '<span class="error-anonymous">anonymous</span>')
+    )
+
+
+def _admin_error_copy_button(text):
+    """Copy the full (untruncated) error text the cell only previews."""
+    return (
+        '<button type="button" class="error-copy" data-copy="%s" '
+        'title="Copy this message" '
+        'onclick="event.stopPropagation()">Copy</button>'
+        % _html_escape(text or "")
+    )
+
+
+def _admin_error_bot_task_fields(status, method, path, message, users=""):
+    return "".join(
+        '<input type="hidden" name="%s" value="%s">'
+        % (_html_escape(name), _html_escape(value))
+        for name, value in (
+            ("group_status", status),
+            ("group_method", method),
+            ("group_path", path),
+            ("group_message", message),
+            ("group_users", users),
+        )
+    )
+
+
+def _admin_error_bot_task_form(
+        status, method, path, message, users="",
+        csrf_field="", admin_query=""):
+    """Send one error (or equivalent-error group) to the organization tasks."""
+    return (
+        '<form class="error-bot-task" method="post" action="%s" '
+        '>%s%s<button class="error-bot" type="submit">'
+        "Send to task</button></form>"
+        % (
+            _admin_href(
+                admin_query, table="error_log", action="create_bot_task"),
+            csrf_field,
+            _admin_error_bot_task_fields(
+                status, method, path, message, users),
+        )
+    )
+
+
+def _admin_error_row_delete_button(rowid, admin_query=""):
+    return (
+        '<button class="error-delete" type="submit" name="error_id" '
+        'value="%s" formaction="%s" '
+        'onclick="event.stopPropagation();return confirm('
+        "'Delete this error? This cannot be undone.')\">Delete</button>"
+        % (
+            _html_escape(rowid),
+            _admin_href(
+                admin_query, table="error_log", action="delete_error_row"),
+        )
+    )
+
+
+def _admin_error_row_bot_task_button(rowid, admin_query=""):
+    # The raw table's rows already live inside the bulk-delete form, so this
+    # rides that form with its own formaction (forms cannot nest). Only the
+    # row id travels; the server re-reads the stored error itself.
+    return (
+        '<button class="error-bot" type="submit" name="error_id" '
+        'value="%s" formaction="%s" '
+        'onclick="event.stopPropagation()">Send to task</button>'
+        % (
+            _html_escape(rowid),
+            _admin_href(
+                admin_query, table="error_log", action="create_bot_task"),
+        )
+    )
+
+
+def _admin_error_group_delete_form(
+        status, method, path, message, csrf_field="", admin_query=""):
+    fields = "".join(
+        '<input type="hidden" name="%s" value="%s">'
+        % (_html_escape(name), _html_escape(value))
+        for name, value in (
+            ("group_status", status),
+            ("group_method", method),
+            ("group_path", path),
+            ("group_message", message),
+        )
+    )
+    return (
+        '<form class="error-group-delete" method="post" action="%s" '
+        'onsubmit="return confirm('
+        "'Delete every error in this group? This cannot be undone.')\">"
+        "%s%s<button class=\"error-delete\" type=\"submit\">"
+        "Delete group</button></form>"
+        % (
+            _admin_href(
+                admin_query, table="error_log",
+                action="delete_error_group"),
+            csrf_field,
+            fields,
+        )
+    )
 
 
 def _admin_record_row_attrs(admin_query, table, rowid):
@@ -36401,7 +38274,7 @@ async def _render_table_view(
         now = int(Date.now())
         recent_24h = await d1_all(
             env,
-            "SELECT ts,status,method,path,message FROM error_log "
+            "SELECT ts,status,method,path,message,actor FROM error_log "
             "WHERE ts>=? ORDER BY ts DESC LIMIT 5000",
             now - 24 * 60 * 60 * 1000,
         )
@@ -36415,14 +38288,34 @@ async def _render_table_view(
             if age_hours < 24:
                 hourly[23 - int(age_hours)] += 1
             signature = (
-                clean_string(row.get("status"), 12),
-                clean_string(row.get("method"), 12).upper(),
-                clean_string(row.get("path"), 240),
-                clean_string(row.get("message"), 240),
+                str(row.get("status") or ""),
+                str(row.get("method") or "").upper(),
+                str(row.get("path") or ""),
+                str(row.get("message") or ""),
             )
-            group_hours = groups.setdefault(signature, [0] * 24)
+            group = groups.setdefault(
+                signature,
+                {
+                    "hours": [0] * 24,
+                    "firstSeen": ts,
+                    "lastSeen": ts,
+                    # Accounts whose own sessions hit this exact failure, and
+                    # how many occurrences carried no session at all. Grouping
+                    # stays keyed on the failure itself so one user's traffic
+                    # never splits a group; the affected users ride along.
+                    "actors": {},
+                    "anonymous": 0,
+                },
+            )
+            group["firstSeen"] = min(group["firstSeen"] or ts, ts)
+            group["lastSeen"] = max(group["lastSeen"] or ts, ts)
+            actor = str(row.get("actor") or "").strip().lower()
+            if actor:
+                group["actors"][actor] = group["actors"].get(actor, 0) + 1
+            else:
+                group["anonymous"] += 1
             if age_hours < 24:
-                group_hours[23 - int(age_hours)] += 1
+                group["hours"][23 - int(age_hours)] += 1
         peak = max(hourly) if hourly else 0
         bars = []
         for index, count in enumerate(hourly):
@@ -36447,9 +38340,10 @@ async def _render_table_view(
                 )
             )
         group_rows = []
-        for (status, request_method, path, message), frequency in sorted(
+        for (status, request_method, path, message), group in sorted(
                 groups.items(),
-                key=lambda item: (-sum(item[1]), item[0]))[:25]:
+                key=lambda item: (-sum(item[1]["hours"]), item[0]))[:25]:
+            frequency = group["hours"]
             count = sum(frequency)
             group_peak = max(frequency) if frequency else 0
             spark_bars = []
@@ -36473,22 +38367,41 @@ async def _render_table_view(
                         bucket_count,
                     )
                 )
+            related_users = _admin_error_related_users(
+                group["actors"], group["anonymous"])
             group_rows.append(
                 '<tr><td>%d</td><td><div class="error-sparkline" '
                 'tabindex="0" role="img" '
                 'aria-label="24-hour frequency: %d occurrence%s">%s</div></td>'
-                "<td>%s</td><td>%s</td><td>%s</td>"
-                "<td title=\"%s\">%s</td></tr>"
+                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td>"
+                "<td title=\"%s\"><span class=\"error-message\">%s</span>%s</td>"
+                "%s"
+                '<td data-ts="%s">%s</td><td data-ts="%s">%s</td>'
+                "<td>%s</td><td>%s</td></tr>"
                 % (
                     count,
                     count,
                     "" if count == 1 else "s",
                     "".join(spark_bars),
+                    _admin_error_source_badge(request_method, path),
                     _html_escape(status or "error"),
                     _html_escape(request_method or "—"),
                     _html_escape(path or "—"),
                     _html_escape(message or "—"),
                     _html_escape((message or "—")[:160]),
+                    _admin_error_copy_button(message or ""),
+                    _admin_error_users_cell(
+                        group["actors"], group["anonymous"]),
+                    _html_escape(group["firstSeen"]),
+                    _html_escape(group["firstSeen"]),
+                    _html_escape(group["lastSeen"]),
+                    _html_escape(group["lastSeen"]),
+                    _admin_error_bot_task_form(
+                        status, request_method, path, message, related_users,
+                        csrf_field, admin_query),
+                    _admin_error_group_delete_form(
+                        status, request_method, path, message,
+                        csrf_field, admin_query),
                 )
             )
         analytics = (
@@ -36504,8 +38417,11 @@ async def _render_table_view(
                 "".join(bars),
                 (
                     "<table><thead><tr><th>Count</th><th>24-hour frequency</th>"
-                    "<th>Status</th>"
-                    "<th>Method</th><th>Path</th><th>Message</th></tr></thead>"
+                    "<th>Source</th><th>Status</th>"
+                    "<th>Method</th><th>Path</th><th>Message</th>"
+                    "<th>Related users</th>"
+                    "<th>First seen</th><th>Last seen</th>"
+                    "<th>Bot task</th><th>Delete</th></tr></thead>"
                     "<tbody>" + "".join(group_rows) + "</tbody></table>"
                     if group_rows
                     else '<div class="empty">No errors in the previous 24 hours.</div>'
@@ -36522,20 +38438,34 @@ async def _render_table_view(
                     admin_query, table, r.get("_rowid_", ""))
                 + _admin_row_checkbox(r.get("_rowid_", ""))
                 + '<td data-ts="%s">%s</td>'
+                "<td>%s</td>"
                 '<td class="%s">%s</td>'
-                "<td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>"
+                "<td>%s</td><td>%s</td>"
+                "<td><span class=\"error-message\">%s</span>%s</td>"
+                "%s<td>%s</td><td>%s</td><td>%s</td></tr>"
                 % (_html_escape(r.get("ts", "")), _html_escape(r.get("ts", "")),
+                   _admin_error_source_badge(
+                       r.get("method", ""), r.get("path", "")),
                    cls, _html_escape(status),
                    _html_escape(r.get("method", "")), _html_escape(r.get("path", "")),
-                   _html_escape(r.get("message", "")), _html_escape(r.get("ray", "")))
+                   _html_escape(r.get("message", "")),
+                   _admin_error_copy_button(r.get("message", "")),
+                   _admin_error_row_user_cell(r.get("actor", "")),
+                   _html_escape(r.get("ray", "")),
+                   _admin_error_row_bot_task_button(
+                       r.get("_rowid_", ""), admin_query),
+                   _admin_error_row_delete_button(
+                       r.get("_rowid_", ""), admin_query))
             )
         if not body:
             inner = '<div class="empty">No errors recorded yet.</div>'
         else:
             inner = (_admin_bulk_form_open(table, csrf_field, admin_query)
                      + "<table><thead><tr>" + _admin_select_all_th()
-                     + "<th>Time</th><th>Status</th><th>Method</th>"
-                     "<th>Path</th><th>Message</th><th>CF-Ray</th></tr></thead><tbody>"
+                     + "<th>Time</th><th>Source</th><th>Status</th><th>Method</th>"
+                     "<th>Path</th><th>Message</th><th>Related user</th>"
+                     "<th>CF-Ray</th>"
+                     "<th>Bot task</th><th>Delete</th></tr></thead><tbody>"
                      + "".join(body) + "</tbody></table></form>")
         return (
             '<div class="title">Error logs · %d row(s)</div>' % total
@@ -36836,6 +38766,26 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "rel.textContent=future?'in '+value+' '+unit+(value===1?'':'s'):"
         "value+' '+unit+(value===1?'':'s')+' ago';}}"
         "updateAdminRelativeTimes();setInterval(updateAdminRelativeTimes,30000);"
+        # Copy-to-clipboard for error messages. Delegated so the analytics and
+        # raw tables share one handler, and written to survive the non-secure
+        # contexts / older browsers where navigator.clipboard is absent.
+        "document.addEventListener('click',function(ev){"
+        "const btn=ev.target.closest&&ev.target.closest('[data-copy]');"
+        "if(!btn)return;ev.preventDefault();ev.stopPropagation();"
+        "const text=btn.getAttribute('data-copy')||'';"
+        "const label=btn.dataset.copyLabel||btn.textContent;"
+        "btn.dataset.copyLabel=label;"
+        "function done(ok){btn.textContent=ok?'Copied':'Copy failed';"
+        "setTimeout(function(){btn.textContent=label;},1200);}"
+        "function fallback(){try{const ta=document.createElement('textarea');"
+        "ta.value=text;ta.setAttribute('readonly','');"
+        "ta.style.position='fixed';ta.style.opacity='0';"
+        "document.body.appendChild(ta);ta.select();"
+        "const ok=document.execCommand('copy');ta.remove();done(ok);}"
+        "catch(e){done(false);}}"
+        "if(navigator.clipboard&&navigator.clipboard.writeText){"
+        "navigator.clipboard.writeText(text).then(function(){done(true);},"
+        "fallback);}else{fallback();}});"
         "if(location.hash==='#operational-alerts'){"
         "var a=document.getElementById('operational-alerts');"
         "if(a){a.scrollIntoView({block:'center'});a.focus({preventScroll:true});}"
@@ -36913,6 +38863,128 @@ async def _admin_console_request_ownership(env, target, owner):
         return "'%s' is already owned by '%s'." % (target, owner)
     return ("Ownership transfer requested: '%s' now needs to approve/deny from "
             "its own client before '%s' takes ownership." % (target, owner))
+
+
+async def _admin_error_create_bot_task(env, form, requester):
+    """Create an organization task assigned to Bot from an error-log entry."""
+    raw_id = form.get("error_id", [""])[0]
+    rowid = int(raw_id) if str(raw_id).isdigit() else 0
+    if rowid > 0:
+        row = await d1_first(
+            env,
+            "SELECT status,method,path,message,actor FROM error_log "
+            "WHERE rowid=?",
+            rowid,
+        )
+        if not row:
+            return "Create bot task failed: that error row is gone.", {}
+        status = str(row.get("status") or "")
+        method = str(row.get("method") or "").upper()
+        path = str(row.get("path") or "")
+        message = str(row.get("message") or "")
+        users = str(row.get("actor") or "").strip().lower() or "anonymous"
+        occurrences = 1
+    else:
+        status = str(form.get("group_status", [""])[0])[:12]
+        method = str(form.get("group_method", [""])[0])[:12].upper()
+        path = str(form.get("group_path", [""])[0])[:2000]
+        message = str(form.get("group_message", [""])[0])[:1000]
+        users = clean_string(form.get("group_users", [""])[0], 300) or "—"
+        if not status or not method:
+            return "Create bot task failed: invalid error group.", {}
+        count_row = await d1_first(
+            env,
+            "SELECT COUNT(*) AS n FROM error_log "
+            "WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "
+            "AND path=? AND message=?",
+            status, method, path, message,
+        )
+        occurrences = int((count_row or {}).get("n") or 0)
+    summary = " ".join(str(message or "").split())
+    title = "Investigate %s %s %s" % (
+        status or "error", method or "—", path or "—")
+    if summary:
+        title = title + " — " + summary
+    # source != "forkbot" skips _forkbot_attributed_body's chat footer, so the
+    # attribution the merged issue needs is written here.
+    filed_by = clean_string(requester or "", MAX_NODE_NAME).strip().lower()
+    body = (
+        "Filed from the platform administration error log%s.\n\n"
+        "- Status: %s\n"
+        "- Method: %s\n"
+        "- Path: %s\n"
+        "- Related user(s): %s\n"
+        "- Logged occurrences: %d\n\n"
+        "Message:\n\n%s\n"
+    ) % (
+        (" by @" + filed_by) if filed_by else "",
+        status or "—", method or "—", path or "—", users,
+        occurrences, str(message or "—"),
+    )
+    # Content stays out of the audit trail; this bounded digest still tells
+    # two tasks filed for different errors apart.
+    details = {
+        "occurrences": occurrences,
+        "errorDigest": hashlib.sha256(
+            (status + "\n" + method + "\n" + path + "\n" + message)
+            .encode("utf-8")
+        ).hexdigest(),
+    }
+    org_name = clean_string(
+        getattr(env, "OFFICE_MARKETING_ORG", "") or "forkmesh",
+        MAX_NODE_NAME,
+    ).strip().lower()
+    org_bi, org_row = await _org_row(env, org_name)
+    role = await _org_role(env, org_bi, requester)
+    if not org_row or role not in ("owner", "admin"):
+        return (
+            "Send to task failed: the administrator is not an organization "
+            "owner or admin.",
+            details,
+        )
+    task_id = _ap_uuid()
+    now = int(Date.now())
+    requester_bi = await blind_index(env, requester)
+    try:
+        status_number = int(status)
+    except (TypeError, ValueError):
+        status_number = 0
+    priority = 5 if status_number >= 500 else 15 if status_number >= 400 else 25
+    sealed = await encrypt_row(env, {
+        "kind": "task",
+        "title": title[:160],
+        "details": body[:4000],
+        "attachments": [],
+        "completionNote": "",
+        "assignee": "agent",
+        "createdBy": clean_string(requester, MAX_NODE_NAME).strip().lower(),
+        "parentTaskId": "",
+        "bountyRequest": None,
+        "repository": FLAGSHIP_MONITOR_ID,
+        "howToTest": (
+            "Reproduce %s %s and verify the error no longer appears in the "
+            "administration error list." % (method or "request", path or "path")
+        )[:720],
+        "qaReviewer": "",
+        "agent": None,
+    })
+    await d1_run(
+        env,
+        "INSERT INTO organization_tasks "
+        "(task_id,org_bi,department,team,destination,assignee_kind,status,"
+        "assignee_bi,data,created_by_bi,created_at,updated_at,elapsed_ms,"
+        "started_at,next_checkin_at,qa_requested_at,agent_session_id,priority) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        task_id, org_bi, "engineering", "", "agent", "agent", "idle", "",
+        sealed, requester_bi, now, now, 0, 0, 0, 0, "", priority,
+    )
+    details["taskId"] = task_id
+    details["priority"] = priority
+    return (
+        "Task %s added to the organization task list and assigned to Bot."
+        % task_id,
+        details,
+    )
 
 
 async def _admin_disburse(env):
@@ -38092,13 +40164,15 @@ async def _https_mirror_private_proxy(env, request, private_record):
     if not router_public_key or not router_seed:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     candidates = await _https_mirror_private_candidates(
         env, private_record, world_request_country(request))
     if not candidates:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     from js import fetch as js_fetch
     for endpoint in candidates:
         target = https_routing.masked_private_replica_url(
@@ -38177,11 +40251,13 @@ async def _https_mirror_private_proxy(env, request, private_record):
         )
     return json_response(
         {"error": "mirror_unavailable"}, status=503,
-        cache_control="no-store")
+        cache_control="no-store",
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 async def _hosted_repository_import_route(env, owner, repo):
     """Resolve one public logical import name to its physical mirror catalog."""
+    repository_import = _repository_import_module()
     owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
     repo_l = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
     if not valid_node_name(owner_l) or not safe_segment(repo_l):
@@ -39389,7 +41465,8 @@ async def _https_mirror_proxy(
     if not router_public_key or not router_seed:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     sticky = (
         await _https_mirror_clone_pin(env, context)
         if operation == "git-upload-pack" else "")
@@ -39398,7 +41475,8 @@ async def _https_mirror_proxy(
     if not candidates:
         return json_response(
             {"error": "mirror_unavailable"}, status=503,
-            cache_control="no-store")
+            cache_control="no-store",
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
     from js import fetch as js_fetch
     for endpoint in candidates:
         if not await _https_mirror_repository_proof(
@@ -39456,7 +41534,11 @@ async def _https_mirror_proxy(
         except Exception:
             status = 0
             upstream = None
-        if upstream is None or status in HTTPS_MIRROR_RETRY_STATUSES:
+        if (
+            upstream is None
+            or status in HTTPS_MIRROR_RETRY_STATUSES
+            or 500 <= status <= 599
+        ):
             # A fresh signed repository proof owns the endpoint's shared
             # integrity state. A request-local timeout, missing optional path,
             # or transient 5xx still fails over, but must not poison the
@@ -39510,7 +41592,8 @@ async def _https_mirror_proxy(
         )
     return json_response(
         {"error": "mirror_unavailable"}, status=503,
-        cache_control="no-store")
+        cache_control="no-store",
+        extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
 class Default(WorkerEntrypoint):
@@ -40057,6 +42140,89 @@ class Default(WorkerEntrypoint):
                             }
                 except Exception as error:
                     banner = "Repository Terms flag failed: " + repr(error)
+            elif action == "create_bot_task":
+                try:
+                    banner, audit_details = (
+                        await _admin_error_create_bot_task(
+                            self.env, form, account_cookie_name))
+                except Exception as error:
+                    banner = "Create bot task failed: " + repr(error)
+            elif action == "delete_error_row":
+                try:
+                    raw_id = form.get("error_id", [""])[0]
+                    rowid = int(raw_id) if str(raw_id).isdigit() else 0
+                    if rowid <= 0:
+                        banner = "Delete error failed: invalid row."
+                    else:
+                        existing = await d1_first(
+                            self.env,
+                            "SELECT 1 AS found FROM error_log WHERE rowid=?",
+                            rowid,
+                        )
+                        audit_details = {
+                            "rowCount": 1 if existing else 0,
+                            "rowDigestBefore": (
+                                await _admin_selected_rows_digest(
+                                    self.env, "error_log", [rowid])
+                            ),
+                        }
+                        await d1_run(
+                            self.env,
+                            "DELETE FROM error_log WHERE rowid=?",
+                            rowid,
+                        )
+                        banner = (
+                            "Deleted error row."
+                            if existing
+                            else "Delete error: row was already gone."
+                        )
+                except Exception as error:
+                    banner = "Delete error failed: " + repr(error)
+            elif action == "delete_error_group":
+                try:
+                    group_status = str(
+                        form.get("group_status", [""])[0])[:12]
+                    group_method = str(
+                        form.get("group_method", [""])[0])[:12]
+                    group_path = str(
+                        form.get("group_path", [""])[0])[:2000]
+                    group_message = str(
+                        form.get("group_message", [""])[0])[:1000]
+                    if not group_status or not group_method:
+                        banner = "Delete error group failed: invalid group."
+                    else:
+                        count_row = await d1_first(
+                            self.env,
+                            "SELECT COUNT(*) AS n FROM error_log "
+                            "WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "
+                            "AND path=? AND message=?",
+                            group_status, group_method.upper(),
+                            group_path, group_message,
+                        )
+                        count = int((count_row or {}).get("n") or 0)
+                        audit_details = {
+                            "rowCount": count,
+                            # Content stays out of the audit trail. This
+                            # bounded digest still distinguishes group purges.
+                            "groupDigest": hashlib.sha256(
+                                (
+                                    group_status + "\n"
+                                    + group_method.upper() + "\n"
+                                    + group_path + "\n" + group_message
+                                ).encode("utf-8")
+                            ).hexdigest(),
+                        }
+                        await d1_run(
+                            self.env,
+                            "DELETE FROM error_log "
+                            "WHERE CAST(status AS TEXT)=? AND UPPER(method)=? "
+                            "AND path=? AND message=?",
+                            group_status, group_method.upper(),
+                            group_path, group_message,
+                        )
+                        banner = "Deleted %d error(s) in the group." % count
+                except Exception as error:
+                    banner = "Delete error group failed: " + repr(error)
             elif action == "delete_rows":
                 try:
                     tables = await _admin_list_tables(self.env)
@@ -40120,7 +42286,8 @@ class Default(WorkerEntrypoint):
                     "disburse", "set_password", "resend_verify",
                     "request_ownership", "delete_rows", "update_row",
                     "insert_row", "set_operational_alerts",
-                    "set_repo_terms_flag"):
+                    "set_repo_terms_flag", "delete_error_row",
+                    "delete_error_group", "create_bot_task"):
                 audit_actor = (
                     account_cookie_name
                     or params.get("admin", [""])[0])
@@ -40132,6 +42299,10 @@ class Default(WorkerEntrypoint):
                     if action == "set_operational_alerts"
                     else "repository"
                     if action == "set_repo_terms_flag"
+                    else "error_log"
+                    if action in (
+                        "delete_error_row", "delete_error_group",
+                        "create_bot_task")
                     else "database_table" if action in (
                         "delete_rows", "update_row", "insert_row")
                     else "legacy_custody")
@@ -40147,6 +42318,10 @@ class Default(WorkerEntrypoint):
                         + form.get("repo", [""])[0]
                     )
                     if action == "set_repo_terms_flag"
+                    else "error_log"
+                    if action in (
+                        "delete_error_row", "delete_error_group",
+                        "create_bot_task")
                     else params.get("table", [""])[0])
                 lowered_banner = str(banner or "").lower()
                 outcome = (
@@ -40418,6 +42593,9 @@ class Default(WorkerEntrypoint):
                 "/api/world/admin/nodes/delete/"):
             return await world_admin_delete_node_handler(self.env, request)
 
+        if url.path in ("/api/genie/credential", "/api/genie/credential/"):
+            return await genie_credential_handler(self.env, request)
+
         if (
             url.path == "/api/tasks"
             or url.path == "/api/tasks/"
@@ -40425,6 +42603,9 @@ class Default(WorkerEntrypoint):
         ):
             return await organization_tasks_handler(
                 self.env, request, url.path)
+
+        if url.path in ("/mcp", "/mcp/"):
+            return await remote_mcp_handler(self.env, request)
 
         if (
             url.path == "/api/world/office/marketing-tasks"
@@ -40809,6 +42990,9 @@ class Default(WorkerEntrypoint):
             return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):
             return await orgs_handler(self.env, request)
+        if DISCORD_OAUTH_CALLBACK_RE.match(url.path):
+            return await organization_discord_oauth_callback_handler(
+                self.env, request)
         org_bot_tokens_match = ORG_BOT_TOKENS_RE.match(url.path)
         if org_bot_tokens_match:
             org = safe_segment(org_bot_tokens_match.group(1))
@@ -40816,6 +43000,14 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await org_bot_tokens_handler(
                 self.env, request, org)
+        org_discord_match = ORG_DISCORD_RE.match(url.path)
+        if org_discord_match:
+            org = safe_segment(org_discord_match.group(1))
+            action = str(org_discord_match.group(2) or "")
+            if not org or action not in {"", "messages", "oauth/start"}:
+                return json_response({"error": "not_found"}, status=404)
+            return await organization_discord_handler(
+                self.env, request, org, action)
         org_members_match = ORG_MEMBERS_RE.match(url.path)
         if org_members_match:
             org = safe_segment(org_members_match.group(1))
@@ -41353,6 +43545,16 @@ class Default(WorkerEntrypoint):
                 # guessed private/missing repository therefore cannot reveal
                 # whether a room or retained history exists.
                 return _private_replica_not_found()
+            if url.path.endswith("/clients"):
+                # The per-room observer was retired in favor of the bounded
+                # network stats snapshot. Older desktop builds still poll this
+                # path; answer before touching a Durable Object so those
+                # clients cannot repeatedly wake or exhaust a room isolate.
+                return json_response(
+                    {"error": "observers_removed"},
+                    status=410,
+                    cache_control="no-store",
+                )
             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
             # The platform can abort a room DO mid-request — the free-tier
             # duration cap kills long-lived requests, and any co-located DO
@@ -41821,6 +44023,20 @@ async def chat_history_recent(env, room_key):
     return [str(r["body"]) for r in rows]
 
 
+def chat_history_replay_body(body):
+    """Mark a stored cipher as backlog without changing its encrypted payload."""
+    source = str(body)
+    try:
+        envelope = json.loads(source)
+    except (TypeError, ValueError):
+        return source
+    if not isinstance(envelope, dict) or envelope.get("kind") != "cipher":
+        return source
+    replay = dict(envelope)
+    replay["historyReplay"] = True
+    return json.dumps(replay, separators=(",", ":"))
+
+
 async def chat_history_since(env, room_key, since_ts=0):
     # The same retained (encrypted) frames chat_history_recent replays to a
     # joining socket, but stamped with their store time and filtered to what
@@ -41893,6 +44109,148 @@ async def chat_history_prune_expired(env):
     await ensure_schema(env)
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE ts<?", cutoff)
+
+
+class ForkMeshDiscordGate(DurableObject):
+    """One production-wide Discord bot rate gate.
+
+    The singleton persists only bounded expiry/bucket metadata. Bot
+    credentials, message bodies, channel catalogs, and provider responses are
+    never written to Durable Object storage.
+    """
+
+    traffic_binding = "FORKMESH_DISCORD_GATE"
+    _MAX_KEYS = 256
+    _RESERVATION_MS = (DISCORD_API_TIMEOUT_SECONDS * 1000) + 1_000
+
+    async def _state(self, now):
+        value = await self.ctx.storage.get("rate_state")
+        try:
+            state = json.loads(str(value or "{}"))
+        except Exception:
+            state = {}
+        state = state if isinstance(state, dict) else {}
+        state = {
+            "globalUntil": max(0, int(state.get("globalUntil") or 0)),
+            "routes": dict(state.get("routes") or {}),
+            "buckets": dict(state.get("buckets") or {}),
+            "routeBuckets": dict(state.get("routeBuckets") or {}),
+        }
+        for group in ("routes", "buckets"):
+            state[group] = {
+                str(key)[:220]: max(0, int(until or 0))
+                for key, until in list(state[group].items())[:self._MAX_KEYS]
+                if int(until or 0) > now
+            }
+        state["routeBuckets"] = {
+            str(key)[:220]: str(bucket)[:100]
+            for key, bucket in list(
+                state["routeBuckets"].items())[:self._MAX_KEYS]
+            if str(bucket or "")
+        }
+        return state
+
+    @staticmethod
+    def _wait_ms(state, route_key, major, now):
+        waits = [
+            int(state.get("globalUntil") or 0) - now,
+            int(state["routes"].get(route_key) or 0) - now,
+        ]
+        bucket = str(state["routeBuckets"].get(route_key) or "")
+        if bucket:
+            waits.append(
+                int(state["buckets"].get(bucket + "|" + major) or 0) - now)
+        return max(0, min(3_600_000, max(waits)))
+
+    async def fetch(self, request):
+        if (
+            str(getattr(request, "method", "GET")).upper() != "POST"
+            or urlparse(request.url).path != "/discord-gate/request"
+        ):
+            return json_response({"error": "not_found"}, status=404)
+        try:
+            raw = str(await request.text())
+            if len(raw.encode("utf-8")) > 8 * 1024:
+                raise ValueError("request too large")
+            payload = json.loads(raw)
+        except Exception:
+            return json_response({
+                "status": 400, "data": None, "retryAfterMs": 0,
+            }, cache_control="no-store")
+        if not isinstance(payload, dict) or set(payload) - {
+                "method", "path", "body"}:
+            return json_response({
+                "status": 400, "data": None, "retryAfterMs": 0,
+            }, cache_control="no-store")
+        method = str(payload.get("method") or "").upper()
+        path = str(payload.get("path") or "")
+        body = payload.get("body")
+        if (
+            not _discord_api_path_allowed(method, path)
+            or (body is not None
+                and (method != "POST" or not isinstance(body, dict)))
+        ):
+            return json_response({
+                "status": 400, "data": None, "retryAfterMs": 0,
+            }, cache_control="no-store")
+
+        now = int(Date.now())
+        major = _discord_rate_major(path)
+        route_key = _discord_rate_route(path) + "|" + major
+        state = await self._state(now)
+        wait_ms = self._wait_ms(state, route_key, major, now)
+        if wait_ms:
+            return json_response({
+                "status": 429, "data": None, "retryAfterMs": wait_ms,
+            }, cache_control="no-store")
+
+        # Reserve before the outbound await. This closes the first-request
+        # race even when concurrent invocations arrive before Discord has
+        # advertised a bucket id.
+        state["routes"][route_key] = now + self._RESERVATION_MS
+        await self.ctx.storage.put(
+            "rate_state", json.dumps(state, separators=(",", ":")))
+        result = await _discord_provider_request(
+            self.env, method, path, body)
+        observed_at = int(Date.now())
+        # Another route may have completed during our provider await. Reload
+        # before merging this observation so disjoint bucket metadata cannot
+        # overwrite one another.
+        state = await self._state(observed_at)
+        state["routes"].pop(route_key, None)
+        retry_ms = max(
+            0, min(3_600_000, int(result.get("retryAfterMs") or 0)))
+        bucket = str(result.get("rateBucket") or "")[:100]
+        if bucket:
+            state["routeBuckets"][route_key] = bucket
+        if retry_ms:
+            until = observed_at + retry_ms
+            if result.get("rateGlobal"):
+                state["globalUntil"] = max(state["globalUntil"], until)
+            elif bucket:
+                bucket_key = bucket + "|" + major
+                state["buckets"][bucket_key] = max(
+                    int(state["buckets"].get(bucket_key) or 0), until)
+            else:
+                state["routes"][route_key] = max(
+                    int(state["routes"].get(route_key) or 0), until)
+        await self.ctx.storage.put(
+            "rate_state", json.dumps(state, separators=(",", ":")))
+        public_result = {
+            "status": max(0, min(599, int(result.get("status") or 0))),
+            "data": result.get("data"),
+            "retryAfterMs": retry_ms,
+        }
+        # Aggregate byte/message counters only; the capacity row never sees
+        # the request body or provider response.
+        durable_object_traffic_note(
+            self,
+            bytes_in=len(raw.encode("utf-8")),
+            bytes_out=len(json.dumps(public_result).encode("utf-8")),
+            messages=1,
+        )
+        await durable_object_traffic_flush(self)
+        return json_response(public_result, cache_control="no-store")
 
 
 class ForkMeshCronWatchdog(DurableObject):
@@ -43362,15 +45720,29 @@ class ForkMeshRoom(DurableObject):
             try:
                 await chat_history_prune(self.env, room_key)
                 for body in await chat_history_recent(self.env, room_key):
+                    replay_body = chat_history_replay_body(body)
                     try:
-                        server.send(body)
+                        server.send(replay_body)
                     except Exception:
                         pass
                     else:
                         durable_object_traffic_note(
-                            self, bytes_out=len(str(body).encode("utf-8")))
+                            self,
+                            bytes_out=len(replay_body.encode("utf-8")),
+                        )
             except Exception:
                 pass
+            try:
+                history_end = json.dumps({
+                    "kind": "forkmesh-history-end",
+                    "v": 1,
+                }, separators=(",", ":"))
+                server.send(history_end)
+            except Exception:
+                pass
+            else:
+                durable_object_traffic_note(
+                    self, bytes_out=len(history_end.encode("utf-8")))
             await durable_object_traffic_flush(self)
 
         return JsResponse.new(None, to_js({"status": 101, "webSocket": client}))
@@ -43440,6 +45812,23 @@ class ForkMeshRoom(DurableObject):
         if not await self._private_room_current(ws):
             self._close_all_chat_sockets(1008, "room access revoked")
             return
+        # Replay markers are server-owned transport metadata. Chat clients send
+        # only encrypted envelopes; dropping plaintext controls and stripping a
+        # forged replay bit prevents a peer from flushing another reader's
+        # backlog or disguising a live message as retained history.
+        try:
+            envelope = json.loads(message)
+        except Exception:
+            return
+        if (
+            not isinstance(envelope, dict)
+            or envelope.get("kind") != "cipher"
+        ):
+            return
+        if "historyReplay" in envelope:
+            envelope = dict(envelope)
+            envelope.pop("historyReplay", None)
+            message = json.dumps(envelope, separators=(",", ":"))
         frame_bytes = len(message.encode("utf-8"))
         durable_object_traffic_note(self, bytes_in=frame_bytes, messages=1)
         sender_id = _ws_attr(ws, "id")
