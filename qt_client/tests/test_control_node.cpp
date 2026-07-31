@@ -858,6 +858,23 @@ int main(int argc, char **argv)
               QStringLiteral("/"))
               .complete == false,
           "a transport failure never looks like a complete size map");
+    // A size map that dies on the credentials asks for the host password and
+    // retries; every other 255 is something no password can fix.
+    check(forkmesh::control::sshFailureNeedsPassword(
+              255, QStringLiteral("root@203.0.113.10: Permission denied "
+                                  "(publickey,password).")) &&
+              forkmesh::control::sshFailureNeedsPassword(
+                  255, QStringLiteral("Authentication failed.")),
+          "a rejected SSH credential is worth asking for a password");
+    check(!forkmesh::control::sshFailureNeedsPassword(
+              255, QStringLiteral("ssh: connect to host port 22: "
+                                  "Connection timed out")) &&
+              !forkmesh::control::sshFailureNeedsPassword(
+                  255, QStringLiteral("Host key verification failed.")) &&
+              !forkmesh::control::sshFailureNeedsPassword(
+                  1, QStringLiteral("permission denied")),
+          "timeouts, host-key mismatches and remote exits never prompt for a "
+          "password");
     check(forkmesh::control::formatDiskSize(0) == QStringLiteral("0 B") &&
               forkmesh::control::formatDiskSize(1536) ==
                   QStringLiteral("1.5 KB") &&

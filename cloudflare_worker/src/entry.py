@@ -13424,12 +13424,22 @@ async def native_repository_logo_handler(
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
         if committed_logo_url:
+            # The committed URL is streamed by a mirror, so it can fail while
+            # the rest of the card renders (offline or lagging host). Ship the
+            # approved/generated artwork with it so a client can swap in place
+            # instead of leaving a broken image where the logo belongs.
+            fallback = await service._official_logo(env, repository_id)
+            fallback = (
+                fallback
+                or _repository_import_module().deterministic_logo(record))
             return json_response({
                 "ok": True,
                 "repositoryId": repository_id,
                 "logo": {
                     "dataUrl": committed_logo_url,
                     "source": "repository",
+                    "fallbackDataUrl": str(
+                        (fallback or {}).get("dataUrl") or ""),
                 },
             }, cache_control="no-store")
         response = await service.logo_for_record(env, repository_id, record)
