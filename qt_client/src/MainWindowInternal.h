@@ -147,6 +147,7 @@
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QStyleHints>
+#include <QStyleOptionComboBox>
 #include <QSyntaxHighlighter>
 #include <QAbstractItemView>
 #include <QHeaderView>
@@ -3393,11 +3394,40 @@ inline void selectQuickAddAgentProvider(QComboBox *combo)
 // reliable workaround: given room for every row plus the container's scroller
 // chrome, nothing needs scrolling so Qt hides the arrows. When the list is
 // genuinely taller than the screen the arrows correctly stay (we cap there).
+// It also sizes itself to the item that is actually showing rather than to the
+// widest item in its list (adhoc #72). Qt's own hint measures every entry, so a
+// single long label — "GPT-5.5 Codex" in the model picker, "Claude API" in the
+// provider one — padded all four composer dropdowns with dead space even while
+// short labels like "CC" or "Auto" were selected.
 class FullPopupComboBox : public QComboBox {
 public:
-    using QComboBox::QComboBox;
+    explicit FullPopupComboBox(QWidget *parent = nullptr) : QComboBox(parent)
+    {
+        // Never wider than the selected label needs; the row's stretches take
+        // the leftover space instead of the dropdowns.
+        setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    }
+
+    QSize sizeHint() const override { return currentTextSizeHint(); }
+    QSize minimumSizeHint() const override { return currentTextSizeHint(); }
 
 protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        // The hint follows the selection, and the pickers are repopulated with
+        // signals blocked (refreshQuickAddSpeedSelector, the model refresh,
+        // applyLiveClaudeModelsToCombos), so currentIndexChanged is not a
+        // reliable place to re-ask for space. A repaint always follows a
+        // selection change: if the text about to be painted is not the one the
+        // last hint was measured from, relayout first. This settles after one
+        // extra layout pass — the next paint sees a matching label.
+        if (m_hintedText != currentText()) {
+            m_hintedText = currentText();
+            updateGeometry();
+        }
+        QComboBox::paintEvent(event);
+    }
+
     void showPopup() override
     {
         setMaxVisibleItems(qMax(maxVisibleItems(), count()));
@@ -3459,6 +3489,28 @@ protected:
             geo.moveTop(avail.top());
         popup->setGeometry(geo);
     }
+
+private:
+    // Same shape as QComboBox's own hint (font metrics for the contents, then
+    // the style adds frame and drop-down arrow) but measured from the current
+    // text alone instead of the widest item in the model.
+    QSize currentTextSizeHint() const
+    {
+        const QFontMetrics fm = fontMetrics();
+        const QString text = currentText();
+        QSize contents(fm.horizontalAdvance(text.isEmpty() ? QStringLiteral("XX") : text),
+                       qMax(fm.height(), 14) + 2);
+        const QIcon icon = currentIndex() >= 0 ? itemIcon(currentIndex()) : QIcon();
+        if (!icon.isNull()) {
+            contents.setWidth(contents.width() + iconSize().width() + 4);
+            contents.setHeight(qMax(contents.height(), iconSize().height()));
+        }
+        QStyleOptionComboBox opt;
+        initStyleOption(&opt);
+        return style()->sizeFromContents(QStyle::CT_ComboBox, &opt, contents, this);
+    }
+
+    QString m_hintedText;
 };
 
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript

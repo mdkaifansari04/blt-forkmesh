@@ -748,8 +748,8 @@ QWidget *MainWindow::buildNetworkLogDock()
         "What picks this prompt up: CC (Claude Code) or Codex run the CLI agents, "
         "OpenAI/Claude API run the headless API agents, and Manual files an issue "
         "instead of starting one.");
-    m_quickAddAgentProvider->setMinimumWidth(74);
-    m_quickAddAgentProvider->setMaximumWidth(112);
+    // No fixed width band (adhoc #72): FullPopupComboBox sizes itself to the
+    // label it is showing, so the four dropdowns take only the room they need.
     // Show the whole list at once rather than a scrollable popup (adhoc #99).
     m_quickAddAgentProvider->setMaxVisibleItems(30);
     m_quickAddAgentProvider->view()->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -757,11 +757,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // list; Codex uses the ChatGPT-backed Codex CLI's supported model list.
     m_quickAddClaudeModel = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
-    m_quickAddClaudeModel->setMinimumWidth(94);
-    m_quickAddClaudeModel->setMaximumWidth(150);
-    m_quickAddClaudeModel->setMinimumContentsLength(8);
-    m_quickAddClaudeModel->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
     // Show the whole model list at once rather than a scrollable popup, even
     // once the live provider list-up fills in more than a handful (adhoc #99).
     m_quickAddClaudeModel->setMaxVisibleItems(30);
@@ -819,11 +814,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // a distinct approval policy and sandbox, including interactive requests.
     m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddModeSelector->setObjectName("quickAddModeSelector");
-    m_quickAddModeSelector->setMinimumWidth(66);
-    m_quickAddModeSelector->setMaximumWidth(104);
-    m_quickAddModeSelector->setMinimumContentsLength(5);
-    m_quickAddModeSelector->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_quickAddModeSelector->addItem(kAgentAskModeLabel, false);
     m_quickAddModeSelector->addItem(QStringLiteral("Edit"), false);
     m_quickAddModeSelector->addItem(QStringLiteral("Plan"), false);
@@ -856,11 +846,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // refreshQuickAddSpeedSelector() and re-runs whenever either changes.
     m_quickAddSpeedSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddSpeedSelector->setObjectName("quickAddSpeedSelector");
-    m_quickAddSpeedSelector->setMinimumWidth(74);
-    m_quickAddSpeedSelector->setMaximumWidth(112);
-    m_quickAddSpeedSelector->setMinimumContentsLength(6);
-    m_quickAddSpeedSelector->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_quickAddSpeedSelector->setMaxVisibleItems(30);
     m_quickAddSpeedSelector->setToolTip(
         "Speed: how hard the model thinks about each turn (the CLI's reasoning "
