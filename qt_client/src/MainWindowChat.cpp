@@ -457,11 +457,12 @@ QWidget *MainWindow::buildChatPage()
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
-    // Agents is deliberately absent here: it lives on the window-chrome line
-    // beside its live fleet matrix (see buildBreadcrumb). Listing it would
-    // re-parent the button into the rail and silently undo that placement.
+    // Agents heads the rail (adhoc #70) — a regular destination like the rest,
+    // badged with the running-session count. Only its fleet matrix stayed on the
+    // window-chrome line (see buildBreadcrumb). The contextual Code and Git
+    // entries are inserted directly below it by buildRepoDetail().
     for (QPushButton *button :
-         {m_reposNavButton, m_tasksNavButton, m_chatButton,
+         {m_agentsNavButton, m_reposNavButton, m_tasksNavButton, m_chatButton,
           m_controlNodeNavButton, m_logNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
             railButton->setCompact(false);
@@ -4604,40 +4605,43 @@ QWidget *MainWindow::buildBreadcrumb()
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
     // the footer "Agents:" label does. Checkable to show when the Agents tab is
-    // active (adhoc #201). Unlike its neighbours it is NOT an ActivityRailButton
-    // and does not live in the app navigation rail: it heads the window-chrome
-    // line's search cluster, immediately left of Back/Forward, so the live agent
-    // matrix can ride beside it along the horizontal top bar.
-    m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
-    // Not a plain #topNavButton any more (adhoc #42): the fleet gets a
-    // "magical" violet-to-cyan gradient pill with a soft glow, so the one
-    // control that opens the running agents stands out from the rest of the
-    // chrome. The glow is a real drop shadow rather than a QSS trick, which
-    // Qt's stylesheets can't render.
-    m_agentsNavButton->setObjectName("agentsMagicButton");
+    // active (adhoc #201). It used to be a "magical" gradient pill on the
+    // window-chrome line; adhoc #70 made it a regular entry heading the app
+    // navigation rail, badged with the number of *running* sessions, so it
+    // reads like every other destination. Its fleet matrix stays on the chrome
+    // line, where the horizontal room for it is.
+    m_agentsNavButton = new ActivityRailButton(QStringLiteral("star"),
+                                               QStringLiteral("Agents"));
+    m_agentsNavButton->setObjectName("topNavButton");
     m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
     m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     setOcticon(m_agentsNavButton, "star", 16);
-    {
-        auto *glow = new QGraphicsDropShadowEffect(m_agentsNavButton);
-        glow->setBlurRadius(18);
-        glow->setOffset(0, 0);
-        glow->setColor(QColor(167, 110, 255, 170));
-        m_agentsNavButton->setGraphicsEffect(glow);
-    }
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
 
-    // One tiny square per agent session, right of the button: the whole fleet's
-    // status as a matrix, with running sessions sweeping in time with their live
-    // output. Populated (and kept current) by refreshAgentDotMatrix().
+    // One tiny square per agent session: the whole fleet's status as a matrix,
+    // with running sessions sweeping in time with their live output. Populated
+    // (and kept current) by refreshAgentDotMatrix().
     m_agentDotMatrix = new AgentDotMatrix;
     m_agentDotMatrix->onDotClicked = [this](int sessionId) {
         if (sessionId > 0)
             switchToAgentsTab(sessionId);
         else
             openAgentsOverview();
+    };
+
+    // Immediately right of the fleet: the most recent action runs and their
+    // status (adhoc #70), so CI reads on the same line as the agents. Kept
+    // current by refreshActionRunStrip().
+    m_actionRunStrip = new ActionRunStrip;
+    m_actionRunStrip->onCellClicked = [this](int runId) {
+        // Past the last square there is nothing specific to open, so fall back
+        // to the newest run — which is what the strip is about.
+        if (runId <= 0 && !m_actionRuns.isEmpty())
+            runId = m_actionRuns.first().id;
+        if (runId > 0)
+            openActionRunFromNotification(runId);
     };
 
     // Chat: its own top-level section (m_sectionStack index 2).
@@ -4821,17 +4825,18 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->setContentsMargins(14, 0, 8, 0);
     chromeRow->setSpacing(8);
     // The instance/relay switcher heads the edge-to-edge chrome, with the public
-    // SOL balance immediately to its right. The Agents button and its live fleet
-    // matrix moved out of the centred search cluster to sit in this same
-    // left-hand group (adhoc #42), so the fleet reads on the same left edge as
-    // the balance instead of drifting with the search box.
+    // SOL balance immediately to its right. The live fleet matrix sits in this
+    // same left-hand group (adhoc #42), so it reads on the same left edge as the
+    // balance instead of drifting with the search box, and the recent action
+    // runs follow it (adhoc #70). The Agents button that used to head this group
+    // is now a regular rail entry.
     chromeRow->addWidget(m_relayMenuButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
     identityBalanceRow->addWidget(m_navSolanaBalance);
-    identityBalanceRow->addWidget(m_agentsNavButton);
     identityBalanceRow->addWidget(m_agentDotMatrix);
+    identityBalanceRow->addWidget(m_actionRunStrip);
     chromeRow->addLayout(identityBalanceRow);
     chromeRow->addStretch();
 

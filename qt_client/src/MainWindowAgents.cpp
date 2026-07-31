@@ -4173,26 +4173,29 @@ void MainWindow::reloadAgents()
     scheduleAgentQueuePump();
 }
 
-// Count badge on the top-bar Agents nav button (adhoc #194), same look as the
-// chat unread badge: sized to the text and pinned to the button's top-right
-// corner, showing the total number of known agent sessions.
+// Count badge on the rail's Agents entry (adhoc #194), riding the icon's corner
+// like every other rail count. It shows the number of *running* sessions rather
+// than every session ever started (adhoc #70): the rail answers "how much is
+// happening right now", and the full tally stays in the tooltip.
 void MainWindow::updateAgentsNavBadge()
 {
     if (!m_agentsNavButton)
         return;
     const int total = m_agentSessions.size();
+    int running = 0;
+    for (const AgentSession &session : std::as_const(m_agentSessions))
+        if (!session.merged && session.status == AgentStatus::Running)
+            ++running;
     if (auto *railButton =
             dynamic_cast<ActivityRailButton *>(m_agentsNavButton))
-        railButton->setBadgeCount(total);
+        railButton->setBadgeCount(running);
     if (total > 0) {
-        m_agentsNavButton->setText(
-            QStringLiteral("Agents (%1)").arg(formatCount(total)));
         m_agentsNavButton->setToolTip(
-            QStringLiteral("Agents \xE2\x80\x94 %1 session%2")
+            QStringLiteral("Agents \xE2\x80\x94 %1 running of %2 session%3")
+                .arg(running)
                 .arg(total)
                 .arg(total == 1 ? QString() : QStringLiteral("s")));
     } else {
-        m_agentsNavButton->setText(QStringLiteral("Agents"));
         m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     }
     refreshAgentDotMatrix();

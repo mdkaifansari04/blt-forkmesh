@@ -91,7 +91,9 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
+class ActionRunStrip;
 }
+using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
 class PacmanProgress;
@@ -2127,13 +2129,15 @@ private:
     // Jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
-    // Refreshes the count badge on the top-bar Agents nav button from
-    // m_agentSessions.size().
+    // Refreshes the running-session count badge on the rail's Agents entry.
     void updateAgentsNavBadge();
-    // Repaints the matrix of per-agent squares beside that button: one square
+    // Repaints the matrix of per-agent squares on the chrome line: one square
     // per session, tinted like its status icon, with the live output meter of
     // each running session driving its night-rider pulse.
     void refreshAgentDotMatrix();
+    // Repaints the strip beside that matrix: the most recent action runs, one
+    // square each, tinted with actionStatusColor() (adhoc #70).
+    void refreshActionRunStrip();
     void processAgentQueue();
     // Re-drain the queue after a slot frees, coalesced onto the event loop and
     // skipped unless something is queued AND there is room to start it.
@@ -4000,13 +4004,17 @@ private:
     bool m_organizationTasksCanManage = false;
     bool m_organizationTasksLoading = false;
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
-    // "Agents (N)" and its live fleet matrix, both on the window-chrome line
-    // immediately left of the Back/Forward buttons.
+    // "Agents" heads the app navigation rail (adhoc #70), badged with the number
+    // of running sessions. Its live fleet matrix stays on the window-chrome
+    // line, followed there by the recent action-run strip.
     QPushButton *m_agentsNavButton = nullptr;
     AgentDotMatrix *m_agentDotMatrix = nullptr;
+    ActionRunStrip *m_actionRunStrip = nullptr;
     // Last status tally rendered into the matrix's tooltip, so the scanner tick
     // can skip rebuilding an unchanged string ~20x a second.
     QString m_agentDotTooltipKey;
+    // Same trick for the run strip's tooltip (see refreshActionRunStrip).
+    QString m_actionRunStripTooltipKey;
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;

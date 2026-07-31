@@ -1599,8 +1599,52 @@ int MainWindow::pendingActionCount() const
     return count;
 }
 
+// The recent-runs strip beside the agent fleet matrix on the window-chrome line
+// (adhoc #70): the newest ActionRunStrip::kMaxCells runs, newest on the left,
+// each square tinted with the same colour the Actions table gives that status.
+// Driven from updateNotificationButton(), which every run-state change already
+// reaches.
+void MainWindow::refreshActionRunStrip()
+{
+    if (!m_actionRunStrip)
+        return;
+    QVector<ActionRunStrip::Cell> cells;
+    QStringList lines;
+    for (const ActionRun &run : std::as_const(m_actionRuns)) {
+        if (cells.size() >= ActionRunStrip::kMaxCells)
+            break;
+        ActionRunStrip::Cell cell;
+        cell.runId = run.id;
+        cell.color = actionStatusColor(run.status);
+        cell.running = run.status == ActionStatus::Running;
+        cells.append(cell);
+        lines << QStringLiteral("%1 \xE2\x80\x94 %2 (%3)")
+                     .arg(run.workflowName.isEmpty() ? run.workflowPath
+                                                     : run.workflowName,
+                          actionStatusText(run.status), run.name);
+    }
+    m_actionRunStrip->setCells(cells);
+    m_actionRunStrip->setVisible(!cells.isEmpty());
+    if (cells.isEmpty()) {
+        m_actionRunStripTooltipKey.clear();
+        return;
+    }
+    // Same reasoning as the fleet matrix's tooltip: this runs on every run-state
+    // change, so skip re-formatting a string that hasn't changed.
+    const QString key = lines.join(QLatin1Char('\n'));
+    if (key == m_actionRunStripTooltipKey)
+        return;
+    m_actionRunStripTooltipKey = key;
+    m_actionRunStrip->setToolTip(
+        QStringLiteral("%1 most recent action run%2, newest first\n%3\n"
+                       "Click a square to open that run.")
+            .arg(cells.size())
+            .arg(cells.size() == 1 ? QString() : QStringLiteral("s"), key));
+}
+
 void MainWindow::updateNotificationButton()
 {
+    refreshActionRunStrip();
     if (!m_notificationButton)
         return;
     const int approvals = pendingActionCount();
