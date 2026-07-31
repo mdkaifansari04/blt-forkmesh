@@ -1691,6 +1691,118 @@ private:
     QTimer *m_sweep = nullptr; // only ticks while something is running
 };
 
+// The CI companion to the fleet matrix (adhoc #70): the most recent action runs
+// as a row of tiny status squares sitting immediately right of the agent dots,
+// so one glance at the chrome line covers both what the agents and what the
+// workflows are doing. Newest run on the left, each square tinted with the same
+// actionStatusColor() the Actions tab uses; a running square breathes so an
+// in-flight workflow is distinguishable from a finished blue one.
+class ActionRunStrip : public QWidget
+{
+public:
+    struct Cell {
+        int runId = 0;
+        QColor color;
+        bool running = false;
+    };
+
+    // How many runs the strip shows before the tooltip takes over.
+    static constexpr int kMaxCells = 9;
+
+    explicit ActionRunStrip(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedHeight(kHeight);
+        setFixedWidth(0); // nothing to show until the first setCells()
+        setCursor(Qt::PointingHandCursor);
+        hide();
+        m_pulse = new QTimer(this);
+        m_pulse->setInterval(90);
+        connect(m_pulse, &QTimer::timeout, this, [this] {
+            m_phase += 0.05;
+            if (m_phase >= 1.0)
+                m_phase -= 1.0;
+            update();
+        });
+    }
+
+    // Replace the strip. Anything past kMaxCells is dropped from the paint (the
+    // caller folds the remainder into the tooltip).
+    void setCells(const QVector<Cell> &cells)
+    {
+        m_cells = cells.mid(0, kMaxCells);
+        setFixedWidth(m_cells.isEmpty() ? 0 : m_cells.size() * kPitch);
+        bool anyRunning = false;
+        for (const Cell &c : std::as_const(m_cells))
+            anyRunning = anyRunning || c.running;
+        if (anyRunning && !m_pulse->isActive())
+            m_pulse->start();
+        else if (!anyRunning && m_pulse->isActive())
+            m_pulse->stop();
+        update();
+    }
+
+    int shownCount() const { return m_cells.size(); }
+
+    // Clicking a square opens that run; clicking past them falls back to run id
+    // 0 (the repository's Actions tab).
+    std::function<void(int)> onCellClicked;
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onCellClicked) {
+            const int index = cellAt(e->position().toPoint());
+            onCellClicked(index >= 0 ? m_cells.at(index).runId : 0);
+            // Same reason as AgentDotMatrix: an unhandled press on the
+            // window-chrome bar below turns into a system window-move.
+            e->accept();
+            return;
+        }
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        for (int i = 0; i < m_cells.size(); ++i) {
+            const Cell &cell = m_cells.at(i);
+            QColor color = cell.color;
+            if (cell.running) {
+                double t = m_phase + i * kPulseStep;
+                t -= std::floor(t);
+                const double tri = 1.0 - std::abs(2.0 * t - 1.0);
+                color.setAlphaF(qBound(0.35, 0.55 + 0.45 * tri, 1.0));
+            } else {
+                color.setAlpha(215);
+            }
+            p.setBrush(color);
+            p.drawRoundedRect(
+                QRectF(i * kPitch + (kPitch - kSide) / 2.0,
+                       (kHeight - kSide) / 2.0, kSide, kSide),
+                2.0, 2.0);
+        }
+    }
+
+private:
+    int cellAt(const QPoint &pos) const
+    {
+        const int index = pos.x() / kPitch;
+        return (index >= 0 && index < m_cells.size()) ? index : -1;
+    }
+
+    static constexpr int kPitch = 11;   // cell size, including its gap
+    static constexpr double kSide = 8.0; // painted square
+    static constexpr int kHeight = 21;  // matches AgentDotMatrix's 3x7 grid
+    static constexpr double kPulseStep = 0.09; // per-square offset of the pulse
+
+    QVector<Cell> m_cells;
+    double m_phase = 0.0;
+    QTimer *m_pulse = nullptr; // only ticks while a run is in flight
+};
+
 // A plain track-and-knob on/off switch, used for controls where the state is a
 // real power switch (e.g. "is this node online") rather than a momentary
 // action, so it reads unambiguously as on/off instead of just another button.
@@ -2568,6 +2680,11 @@ const QString kEmailNotifyHostOfflineSetting = QStringLiteral("notifications/ema
 // whose email is verified — plain nodes and unverified users stay silent, so
 // #welcome reads as a genuine roll-call of real people.
 const QString kWelcomeChannel = QStringLiteral("#welcome");
+// A #welcome greeting only raises a "new user joined" ping while it is this
+// fresh — peers replay their in-session history on every reconnect, and a
+// replayed greeting that fell out of the id-dedupe set must not re-ping for a
+// join the user already saw.
+const qint64 kWelcomePingFreshMs = 5 * 60 * 1000;
 // Legacy QSettings migration prefix retained for installs that already posted to
 // an older welcome room.
 const QString kLegacyWelcomeAnnouncedSettingPrefix =

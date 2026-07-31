@@ -12,6 +12,7 @@
 #include "NodeEventSocket.h"
 #include "PrivateMirrorRuntime.h"
 #include "PublicMirrorRuntime.h"
+#include "UpstreamCheckoutSync.h"
 
 #include <QCryptographicHash>
 #include <QFutureWatcher>
@@ -124,6 +125,7 @@ struct PublicSyncWorkerResult {
     std::shared_ptr<PublicMirrorMaterialization> materialization;
     QString error;
     QString notice;
+    QString upstreamSummary;
     bool created = false;
     bool legacyRemoved = true;
 };
@@ -848,8 +850,17 @@ void MainWindow::loadRepositories()
         if (!repo.name.isEmpty() &&
             (!repositorySource(repo).isEmpty() ||
              PublicMirrorRuntime::isArchiveId(repo.publicArchiveId) ||
-             PrivateMirrorStore::isOpaqueId(repo.privateReplicaId)))
+             PrivateMirrorStore::isOpaqueId(repo.privateReplicaId))) {
             m_repositories.append(repo);
+            // Seed the serving state publishRepositoryNow compares against, so
+            // a repo that was already shared before this run keeps publishing
+            // as a heartbeat rather than looking like a fresh user decision
+            // (see the publishIntent comment there).
+            const QString publishKey = catalogPublishKey(repo);
+            if (!publishKey.isEmpty())
+                m_catalogPublishServeState.insert(publishKey,
+                                                  repo.publishToNetwork);
+        }
     }
     settings.endArray();
     // Re-attach records whose mirror directory moved out from under them (an
@@ -4507,6 +4518,21 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     }
     metadata.insert(QStringLiteral("catalogSigVersion"), 2);
     metadata.insert(QStringLiteral("catalogSig"), catalogSignature);
+    // Tell the relay whether a person asked for this publish or a heartbeat
+    // did. A repository the owner deleted from the website is tombstoned
+    // there, and only a user-initiated publish lifts that tombstone — an
+    // automatic republish must not quietly resurrect the deleted repo
+    // (adhoc #91). Two things count as a person asking: a manual "Publish"
+    // (showDialogOnError), and serving flipping off->on for this repo, which
+    // only ever happens when the user adds/forks it or turns sharing back on.
+    const bool wasServing =
+        m_catalogPublishServeState.value(publishKey, false);
+    const bool userIntent =
+        showDialogOnError || (repo.publishToNetwork && !wasServing);
+    m_catalogPublishServeState.insert(publishKey, repo.publishToNetwork);
+    metadata.insert(QStringLiteral("publishIntent"),
+                    userIntent ? QStringLiteral("user")
+                               : QStringLiteral("auto"));
 
     // Skip the network write when nothing the catalog shows has changed since
     // the last successful publish. Roster presence flickers re-request a
@@ -4522,6 +4548,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     fingerprintSource.remove(QStringLiteral("signature"));
     fingerprintSource.remove(QStringLiteral("catalogSig"));
     fingerprintSource.remove(QStringLiteral("stateSig"));
+    fingerprintSource.remove(QStringLiteral("publishIntent"));
     const QByteArray fingerprint = QCryptographicHash::hash(
         QJsonDocument(fingerprintSource).toJson(QJsonDocument::Compact),
         QCryptographicHash::Sha256);
@@ -4581,6 +4608,34 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                     QJsonDocument::fromJson(body).object();
                 const QString responseCode =
                     responseObject.value(QStringLiteral("error")).toString();
+                // The owner deleted this repository from the website. This
+                // node still holds the mirror, so without acting on the
+                // refusal it would keep republishing and the delete would
+                // never stick (adhoc #91). Stop sharing it, keep the local
+                // mirror, and say so once — turning sharing back on in repo
+                // settings republishes it as a deliberate user action.
+                if (status == 410 &&
+                    responseCode == QLatin1String("repository_deleted")) {
+                    m_catalogPublishedFingerprint.remove(publishKey);
+                    m_catalogPublishedFingerprintAtMs.remove(publishKey);
+                    m_catalogPublishConsecutiveFailures.remove(publishKey);
+                    m_catalogPublishServeState.insert(publishKey, false);
+                    const QString label = repo.owner + "/" + repo.name;
+                    if (repo.publishToNetwork) {
+                        repo.publishToNetwork = false;
+                        saveRepositories();
+                        refreshRepositoryList();
+                    }
+                    const QString message =
+                        label +
+                        " was deleted on forkmesh.com, so this node stopped "
+                        "sharing it. The local mirror is untouched — turn "
+                        "sharing back on in repo settings to publish it again.";
+                    logSystem(QStringLiteral("Catalog: ") + message);
+                    if (showDialogOnError || queuedDialog)
+                        flashMessage(message, /*error=*/true);
+                    return;
+                }
                 if (status == 409 &&
                     responseCode == QLatin1String("stale_update") &&
                     !contributionSnapshotKey.isEmpty()) {
@@ -6020,15 +6075,37 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         "plaintext is limited to owner-only temporary storage.")
                   .arg(repo.owner, repo.name));
 
+    // A headless fleet node seals from its service-managed agent checkout
+    // (repositorySource prefers localPath), so that checkout must itself keep
+    // tracking the relay or the node serves its install-time snapshot forever.
+    // Resolve the upstream URL here; the fetch/fast-forward runs on the worker
+    // thread just before sealing. Owned repos and desktop working copies never
+    // qualify: their local state IS the source of truth.
+    QString upstreamUrl;
+    if (m_headless && source == repo.localPath.trimmed() &&
+        serviceManagedCheckout(repo.localPath)) {
+        const QUrl upstream(repo.cloneUrl.trimmed());
+        if (upstream.isValid() && !upstream.host().isEmpty() &&
+            upstream.host().compare(catalogApiUrl().host(),
+                                    Qt::CaseInsensitive) == 0)
+            upstreamUrl = repo.cloneUrl.trimmed();
+    }
+
     auto result = std::make_shared<PublicSyncWorkerResult>();
     const QString archiveRoot = publicArchiveRoot();
     const QString vaultPath = publicIdentityVaultPath();
     const QString owner = repo.owner;
     const QString name = repo.name;
     QThread *worker = QThread::create(
-        [result, source, archiveRoot, vaultPath,
+        [result, source, upstreamUrl, archiveRoot, vaultPath,
          mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
          legacyMirrorPath, managedMirrorRoot]() mutable {
+            if (!upstreamUrl.isEmpty()) {
+                result->upstreamSummary =
+                    forkmesh::upstream::refreshManagedCheckoutFromUpstream(
+                        source, upstreamUrl)
+                        .summary();
+            }
             if (source.isEmpty()) {
                 result->metadata = PublicMirrorRuntime::readMetadata(
                     archiveRoot, existingArchiveId, &result->error);
@@ -6103,6 +6180,9 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
          quiet] {
             worker->deleteLater();
             m_syncingRepos.remove(index);
+            if (!result->upstreamSummary.isEmpty())
+                logSystem(QStringLiteral("Mirror: %1/%2 %3")
+                              .arg(owner, name, result->upstreamSummary));
             if (index < 0 || index >= m_repositories.size() ||
                 m_repositories.at(index).owner != owner ||
                 m_repositories.at(index).name != name ||

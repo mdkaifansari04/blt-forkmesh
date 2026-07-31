@@ -1248,26 +1248,26 @@ int main(int argc, char *argv[])
     check(prFixMenuFound,
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code after repository navigation"));
-    check(window.testAgentColumnsMovable(),
-          QStringLiteral("agents list column headers are draggable/reorderable "
-                         "after repository navigation"));
-    // adhoc #35 / #84: the list is down to "#" (the run glyph, branch chip and
-    // the age that used to have its own "Updated" column) / title / Diff, and the
-    // title column is the one that flexes — so the columns always span the full
-    // list width with Diff sitting against its right edge, leaving the title
-    // everything in between rather than a fixed 320px slice.
+    check(window.testAgentListChromeHidden(),
+          QStringLiteral("agents list ships with no column header and no frame "
+                         "border (adhoc #92)"));
+    // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
+    // with its conflict alert, the churn bar and the age that used to have its
+    // own "Updated" column) and the title, which is the column that flexes — so
+    // the two always span the full list width with the title running to the
+    // list's right edge rather than a fixed 320px slice.
     const QString agentColumns = window.testAgentColumnLayout();
     const QStringList agentColumnParts =
         agentColumns.split(QLatin1Char('|'));
     const QStringList agentSpan =
         agentColumnParts.size() == 2 ? agentColumnParts.at(1).split(QLatin1Char('/'))
                                      : QStringList();
-    check(agentColumnParts.value(0) == QStringLiteral("#,Issue,Diff") &&
+    check(agentColumnParts.value(0) == QStringLiteral("#,Issue") &&
               agentSpan.size() == 2 &&
               agentSpan.at(0).toInt() == agentSpan.at(1).toInt() &&
               agentSpan.at(1).toInt() > 0,
-          QStringLiteral("agents list is #/Issue/Diff with the title column "
-                         "absorbing the spare width (adhoc #35/#84, layout = %1)")
+          QStringLiteral("agents list is #/Issue with the title column absorbing "
+                         "the spare width (adhoc #35/#84/#92, layout = %1)")
               .arg(agentColumns));
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
