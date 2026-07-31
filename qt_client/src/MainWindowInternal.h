@@ -7931,6 +7931,51 @@ inline QString octiconMarkup(const QString &name, int size,
         .arg(size);
 }
 
+// "Add to prompt" affordance for the log views (adhoc #114): a tiny plus glyph
+// pinned at the very left of every entry, wrapped in an anchor that carries the
+// entry's own text. Clicking it appends that line to the footer prompt box (see
+// MainWindow::eventFilter), so a line worth asking an agent about takes one
+// click instead of a select-copy-paste round trip.
+const QString kLogPromptAnchorPrefix = QStringLiteral("fmlogprompt:");
+// The document-resource URL the glyph is registered under, one copy per log
+// document (the same trick the site favicons use — far cheaper than a base64
+// data URI repeated on every one of a few hundred rendered lines).
+const QString kLogPromptIconResource = QStringLiteral("logprompt://add");
+
+inline QString logPromptAnchorHref(const QString &storedLine)
+{
+    // Percent-encoded, so the line's own quotes and ampersands can't break out
+    // of the href attribute.
+    return kLogPromptAnchorPrefix +
+           QString::fromLatin1(QUrl::toPercentEncoding(storedLine.trimmed()));
+}
+
+// The log line an anchor href carries, or an empty string when the href is not
+// one of ours (a plain http(s) link in the message body, most often).
+inline QString logPromptAnchorLine(const QString &href)
+{
+    if (!href.startsWith(kLogPromptAnchorPrefix))
+        return QString();
+    return QUrl::fromPercentEncoding(
+        href.mid(kLogPromptAnchorPrefix.size()).toLatin1());
+}
+
+// The leading icon markup for one log entry, registering the glyph on `view`'s
+// document so the <img> resolves there. Grey enough to read on both the Log
+// view's themed canvas and the footer strip's forced-white one.
+inline QString logPromptIconTag(QTextEdit *view, const QString &storedLine)
+{
+    if (!view || storedLine.trimmed().isEmpty())
+        return QString();
+    view->document()->addResource(
+        QTextDocument::ImageResource, QUrl(kLogPromptIconResource),
+        tintedOcticonPixmap(QStringLiteral("plus"), QColor("#8b949e"), 12));
+    return QStringLiteral(
+               "<a href='%1' style='text-decoration:none'><img src='%2' "
+               "width='11' height='11' style='vertical-align:middle'></a>&nbsp;")
+        .arg(logPromptAnchorHref(storedLine), kLogPromptIconResource);
+}
+
 inline QString serverHost(const QString &serverUrl)
 {
     const QString trimmed = serverUrl.trimmed();
