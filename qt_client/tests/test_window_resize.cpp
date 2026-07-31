@@ -718,6 +718,44 @@ int main(int argc, char *argv[])
     check(cloudflareToken &&
               cloudflareToken->echoMode() == QLineEdit::Password,
           QStringLiteral("Cloudflare token control masks the session-only secret"));
+
+    // adhoc #108: every control-node area is a tab at the top of the page, and
+    // the API token tab states what the deploy path requires before any call is
+    // made. The token input masks its value like every other credential field.
+    QTabWidget *controlTabs =
+        window.findChild<QTabWidget *>(QStringLiteral("controlNodeTabs"));
+    QStringList controlTabNames;
+    for (int index = 0; controlTabs && index < controlTabs->count(); ++index)
+        controlTabNames << controlTabs->tabText(index);
+    check(controlTabs && controlTabs->count() >= 8 &&
+              controlTabNames.contains(QStringLiteral("Mirror services")) &&
+              controlTabNames.contains(QStringLiteral("API token")) &&
+              controlTabNames.contains(QStringLiteral("Site deployment")),
+          QStringLiteral("control node groups each section under a top tab"));
+    QLineEdit *controlTokenValue =
+        window.findChild<QLineEdit *>(QStringLiteral("controlTokenValue"));
+    QTableWidget *controlTokenTable = window.findChild<QTableWidget *>(
+        QStringLiteral("controlTokenPermissionsTable"));
+    check(controlTokenValue &&
+              controlTokenValue->echoMode() == QLineEdit::Password &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenTestButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenGenerateButton")) != nullptr,
+          QStringLiteral("API token tab exposes a masked token, a check and a "
+                         "rotate button"));
+    QStringList requiredPermissionLabels;
+    for (int row = 0; controlTokenTable && row < controlTokenTable->rowCount();
+         ++row) {
+        const QTableWidgetItem *label = controlTokenTable->item(row, 0);
+        const QTableWidgetItem *need = controlTokenTable->item(row, 1);
+        if (label && need && need->text() == QStringLiteral("Required"))
+            requiredPermissionLabels << label->text();
+    }
+    check(requiredPermissionLabels.contains(QStringLiteral("Workers Scripts: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("D1: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("DNS: Edit")),
+          QStringLiteral("API token tab lists the required permissions up front"));
     window.testShowLogSection();
     QApplication::processEvents();
     check(window.findChild<QPushButton *>(

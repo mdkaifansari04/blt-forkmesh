@@ -1324,6 +1324,24 @@ private:
     void appendSiteDeployOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
     void deploySavedHostsFromControl();
+    // API token tab (adhoc #108): check a Cloudflare token against the exact
+    // permissions the deploy path needs, and mint a correctly scoped
+    // replacement into this device's variables and cloudflare_worker/
+    // .env.production. Token values live in the password edit, the in-memory
+    // redaction copy and those two stores only.
+    QWidget *buildCloudflareTokenCard();
+    QString resolvedCloudflareApiToken() const;
+    void testCloudflareApiToken();
+    void checkCloudflareTokenPolicies(const QString &token,
+                                      const QString &tokenId);
+    void resolveCloudflareTokenTopology(const QString &token);
+    void runCloudflareTokenProbe(const QString &token, int index);
+    void renderCloudflareTokenReport();
+    void setCloudflareTokenBusy(bool busy);
+    void endCloudflareTokenRun();
+    void appendCloudflareTokenOutput(const QString &text);
+    void generateCloudflareApiToken();
+    void adoptRotatedCloudflareToken(const QString &token);
     // First-instance-owner community reward-pool signer. The Solana private key
     // is imported into an encrypted local vault and never leaves this desktop;
     // the Worker only authors public intents and records public reconciliation.
@@ -4298,6 +4316,10 @@ private:
     // Local control-node section. The Cloudflare token exists only in the
     // password edit/process environment and the short-lived redaction copy;
     // unlike public deployment fields, it is never written to QSettings.
+    // One tab per operational area (adhoc #108). The Cloudflare index is kept so
+    // a forkmesh://control/cloudflare deep link lands on the fields it fills.
+    QTabWidget *m_controlNodeTabs = nullptr;
+    int m_controlCloudflareTabIndex = -1;
     QLabel *m_controlNodeStatus = nullptr;
     QLabel *m_controlNodeHealth = nullptr;
     QLabel *m_controlIdentityStatus = nullptr;
@@ -4323,6 +4345,24 @@ private:
     QPushButton *m_cloudflareDeployButton = nullptr;
     QPushButton *m_cloudflareCancelButton = nullptr;
     QPlainTextEdit *m_controlNodeOutput = nullptr;
+    // API token tab. m_controlTokenSecret is the same kind of short-lived
+    // redaction copy as m_cloudflareActiveSecret: it exists so this tab's own
+    // output can never echo the credential, and is cleared when a check ends.
+    QLineEdit *m_controlTokenEdit = nullptr;
+    QLabel *m_controlTokenStatus = nullptr;
+    QLabel *m_controlTokenTargets = nullptr;
+    QTableWidget *m_controlTokenTable = nullptr;
+    QPushButton *m_controlTokenTestButton = nullptr;
+    QPushButton *m_controlTokenGenerateButton = nullptr;
+    QPlainTextEdit *m_controlTokenOutput = nullptr;
+    QString m_controlTokenSecret;
+    QStringList m_controlTokenGrantedGroups;
+    QHash<QString, QString> m_controlTokenProbeResults; // requirement key -> live check
+    QString m_controlTokenAccountId;
+    QString m_controlTokenZoneId;
+    QString m_controlTokenUserResource;
+    bool m_controlTokenPolicyReadable = false;
+    bool m_controlTokenBusy = false;
     // cloudflare_worker/deploy.sh: one button, live merged output, cancel.
     QPushButton *m_siteDeployButton = nullptr;
     QPushButton *m_siteDeployCancelButton = nullptr;
