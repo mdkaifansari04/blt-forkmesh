@@ -89,7 +89,6 @@ def test_node_order_is_stable_but_membership_changes_reflow_the_ring():
     assert "usableNodes.forEach(({ node, name: nodeName }, nodeIndex)" in block
     assert "networkNodeSnapshot" in block
     assert 'worldLayoutId("node-"' not in block
-    assert "registerMovableObject(" not in block
     # Automatic placement piggybacks on the catalog update: it does not add
     # another timer, request, or listener.
     assert "fetch(" not in block
@@ -144,9 +143,6 @@ def test_node_deletion_immediately_reflows_surviving_cabinets():
 
 def test_live_node_layout_reanchors_after_pool_or_obstacle_changes():
     assert "function relayoutNetworkNodes()" in SCENE
-    apply_start = SCENE.index("function applyWorldLayout(")
-    apply_end = SCENE.index("\n  }\n", apply_start)
-    assert "relayoutNetworkNodes();" in SCENE[apply_start:apply_end]
     member_start = SCENE.index("function updateMemberLounge(")
     member_end = SCENE.index("\n  }\n", member_start)
     assert "previousSeatRadius" in SCENE[member_start:member_end]

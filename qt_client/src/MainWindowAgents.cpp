@@ -512,7 +512,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                                       .toString(QStringLiteral("MMM d  hh:mm")))
                             : QString());
     if (!s.branchName.isEmpty()) {
-        tip << QStringLiteral("Click the branch button to open %1").arg(s.branchName);
+        tip << QStringLiteral("Click the branch button to review %1 in the Git view")
+                   .arg(s.branchName);
         if (stat.files >= 0)
             tip << QStringLiteral("%1 file%2 changed")
                        .arg(stat.files)
@@ -1355,7 +1356,9 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentMeta->setWordWrap(true);
     connect(m_agentMeta, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(kPullLinkScheme))
-            switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
+            // The PR's commits/files/diff open in the Git view's range pane
+            // (adhoc #107); its "PR #N" button goes on to the full PR page.
+            openPullDiffInGitView(href.mid(kPullLinkScheme.size()).toInt());
         else if (href.startsWith(kIssueLinkScheme)) {
             // Open the issue in its own repo's Issues tab (the session may belong to
             // a repo other than the one currently shown), reusing the notification
@@ -1485,7 +1488,9 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentViewPrButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
         if (s && s->prNumber > 0)
-            switchToPullTab(s->prNumber);
+            // Land on the PR's commits/files/diff in the Git view (adhoc #107);
+            // the pane's "PR #N" button goes on to the full PR page.
+            openPullDiffInGitView(s->prNumber);
     });
 
     // "Create linked issue" — for ad-hoc sessions (no issue) it files a tracked
@@ -5350,7 +5355,9 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         m_agentBranchButton->setToolTip(
             session->branchName.isEmpty()
                 ? QString()
-                : QStringLiteral("Open branch %1").arg(session->branchName));
+                : QStringLiteral("Review %1's commits, files and diff in the "
+                                 "Git view")
+                      .arg(session->branchName));
     }
     if (m_agentWorktreeButton) {
         m_agentWorktreeButton->setVisible(!worktreePath.isEmpty());
@@ -5626,9 +5633,14 @@ void MainWindow::showAgentSession(int sessionId)
     // View PR button appears once a pull request exists for this session.
     if (m_agentViewPrButton) {
         m_agentViewPrButton->setVisible(session->prNumber > 0);
-        if (session->prNumber > 0)
+        if (session->prNumber > 0) {
             m_agentViewPrButton->setText(
                 QStringLiteral("View PR #%1").arg(session->prNumber));
+            m_agentViewPrButton->setToolTip(
+                QStringLiteral("Review PR #%1's commits, files and diff in the "
+                               "Git view")
+                    .arg(session->prNumber));
+        }
     }
     // "Create linked issue" only makes sense for an ad-hoc, owner-side session
     // that isn't already tracked by one. External (watch-only) sessions and

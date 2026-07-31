@@ -541,7 +541,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_branchesButton->setObjectName("ghostButton");
     m_branchesButton->setCursor(Qt::PointingHandCursor);
     m_branchesButton->setToolTip(
-        "Open the Branches panel to view, compare, switch and delete branches");
+        "Open the Branches panel to manage branches \xE2\x80\x94 click one to "
+        "review its commits and diff in the Git view");
     setOcticon(m_branchesButton, "git-branch", 16);
     connect(m_branchesButton, &QPushButton::clicked, this, [this] {
         // Branches has no top-level tab anymore: its panel lives inside the Code
@@ -5568,8 +5569,14 @@ void MainWindow::updateSearchStatus()
 
 void MainWindow::showCommitList()
 {
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    if (!m_commitsStack)
+        return;
+    // A branch/PR review parked on the range page survives commit-list reloads
+    // (adhoc #107): it re-renders itself, so only the single-commit page needs
+    // resetting to the working-tree changes.
+    if (m_commitsStack->currentIndex() == kCommitWorkspaceRangePage)
+        return;
+    m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
 }
 
 // Select the newest commit (row 0 — the table sorts Date-descending) and open
@@ -8977,9 +8984,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
     connect(m_commitSplitButton, &QPushButton::clicked, this, [this](bool on) {
         setDiffSplitPref(on);
         updateDiffSplitButton(m_commitSplitButton);
-        updateDiffSplitButton(m_pullSplitButton);
-        if (m_pullSplitButton)
-            m_pullSplitButton->setChecked(on);
+        for (QPushButton *b : {m_pullSplitButton, m_branchSplitButton}) {
+            if (b) {
+                b->setChecked(on);
+                updateDiffSplitButton(b);
+            }
+        }
         if (!m_currentCommitHash.isEmpty())
             showCommit(m_currentCommitHash);
     });
@@ -9127,6 +9137,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     m_commitsStack->addWidget(changesPage); // kCommitWorkspaceChangesPage
     m_commitsStack->addWidget(detailPage);  // kCommitWorkspaceCommitPage
+    // The branch/PR range review pane (adhoc #107): the branch diff viewer moved
+    // in from the Branches panel, so a branch or PR opens its commits, files and
+    // diff right here in the Git view.
+    m_commitsStack->addWidget(buildBranchRangePane()); // kCommitWorkspaceRangePage
     m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
 
     auto *workspaceSplit = new QSplitter(Qt::Horizontal);

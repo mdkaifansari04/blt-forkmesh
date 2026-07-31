@@ -855,7 +855,7 @@ ensure() {
   # shellcheck disable=SC2086
   pm_install $pkgs || die "Failed to install $pkgs via $PM."
 
-  "$@" >/dev/null 2>&1 || die "Installed $pkgs but '$what' is still unavailable."
+  "$@" >/dev/null 2>&1 || die "Installed $pkgs but the check for '$what' still fails. If it is already present in a custom prefix, export PATH/CMAKE_PREFIX_PATH so the check can see it, then re-run."
 }
 
 # A C++ compiler can come from any of cc/clang/g++ (or Xcode CLT on macOS).
@@ -864,14 +864,71 @@ have_compiler() {
     || command -v g++ >/dev/null 2>&1 || command -v c++ >/dev/null 2>&1
 }
 
+# pkg-config is not guaranteed to be installed: minimal Debian/Alpine images
+# ship neither it nor Debian's `pkgconf` rename of it, and nothing in the build
+# actually needs it. Run whichever binary exists; returning 1 when neither does
+# means "unknown", which callers must never read as "the library is missing".
+pkg_config_probe() {
+  if command -v pkg-config >/dev/null 2>&1; then
+    pkg-config "$@"
+  elif command -v pkgconf >/dev/null 2>&1; then
+    pkgconf "$@"
+  else
+    return 1
+  fi
+}
+
+# Look for the CMake package files that qt_client's find_package(Qt6 COMPONENTS
+# Widgets ... Svg) actually resolves through, in the prefixes CMake searches:
+# explicit CMAKE_PREFIX_PATH / Qt6_DIR hints first, then the standard system lib
+# dirs — plain lib (Arch, Alpine), lib64 (Fedora, openSUSE), multiarch
+# lib/<triplet> (Debian, Ubuntu) and Homebrew's keg-only opt prefix. Widgets and
+# Svg come from different distro packages (qt6-base-dev vs qt6-svg-dev), so both
+# are checked. This needs no pkg-config, compiler or build tool, so it stays
+# accurate on a host the installer has not finished setting up.
+have_qt6_cmake_package() {
+  local root cfg cmake_dir
+  # shellcheck disable=SC2086
+  for root in ${CMAKE_PREFIX_PATH:+${CMAKE_PREFIX_PATH//[:;]/ }} \
+              ${Qt6_DIR:+$Qt6_DIR} \
+              /usr /usr/local /opt/homebrew/opt/qt /usr/local/opt/qt; do
+    for cfg in "$root"/Qt6Config.cmake \
+               "$root"/lib/cmake/Qt6/Qt6Config.cmake \
+               "$root"/lib64/cmake/Qt6/Qt6Config.cmake \
+               "$root"/lib/*/cmake/Qt6/Qt6Config.cmake; do
+      [ -f "$cfg" ] || continue
+      cmake_dir="$(dirname "$(dirname "$cfg")")"
+      if [ -f "$cmake_dir/Qt6Widgets/Qt6WidgetsConfig.cmake" ] &&
+         [ -f "$cmake_dir/Qt6Svg/Qt6SvgConfig.cmake" ]; then
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
 have_qt6_dev() {
-  command -v pkg-config >/dev/null 2>&1 &&
-    pkg-config --exists Qt6Widgets Qt6Network Qt6Svg
+  # Cheap probe first: the .pc files the Qt 6 development packages ship, for the
+  # same modules the build links against.
+  local mods="Qt6Widgets Qt6Network Qt6Svg Qt6Concurrent"
+  if [ "$(uname -s)" = "Linux" ]; then
+    # Linux additionally needs Qt's D-Bus module for portal screen capture.
+    mods="$mods Qt6DBus"
+  fi
+  # shellcheck disable=SC2086
+  if pkg_config_probe --exists $mods 2>/dev/null; then
+    return 0
+  fi
+  # A host with no pkg-config (or a Qt build that ships no .pc files) must not
+  # read as "Qt 6 is missing": that made the installer reinstall the dev packages
+  # the package manager already had, re-probe with the same broken check and die
+  # with "Installed qt6-base-dev qt6-svg-dev but 'qt' is still unavailable" on a
+  # machine that was ready to build. Look for the CMake packages instead.
+  have_qt6_cmake_package
 }
 
 have_openssl_dev() {
-  if command -v pkg-config >/dev/null 2>&1 &&
-     pkg-config --exists openssl; then
+  if pkg_config_probe --exists openssl 2>/dev/null; then
     return 0
   fi
   [ -f /usr/include/openssl/ssl.h ] ||

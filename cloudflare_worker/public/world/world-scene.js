@@ -3256,7 +3256,6 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:repo-panels-one-column", task: "Single-column PR + Issue panels", estimate: "ready for deploy · in QA", done: true },
   { key: "done:admin-member-detail", task: "Admin member detail + email state", estimate: "ready for deploy · in QA", done: true },
   { key: "done:repo-exhibit-split", task: "Split PR/Issue panels + repo agent terminals", estimate: "ready for deploy · in QA", done: true },
-  { key: "done:object-keyboard-layout", task: "Click-select objects + keyboard layout controls", estimate: "ready for deploy · in QA", done: true },
   { key: "done:member-click-panel", task: "Click a user for public member side panel", estimate: "ready for deploy · in QA", done: true },
   { key: "done:world-node-delete-fix", task: "Fix admin World mirror deletion target", estimate: "ready for deploy · in QA", done: true },
   { key: "done:annotated-world-districts", task: "Four paved routes + west/east/south districts", estimate: "ready for deploy · in QA", done: true },
@@ -3313,7 +3312,7 @@ const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "done:priority-board", task: "Drag priorities with #1 highest", estimate: "deployed", done: true },
   { key: "done:repo-issues-board", task: "Repo issues drag-to-assign board", estimate: "deployed", done: true },
   { key: "done:mobile-stable", task: "Mobile walking stays in place", estimate: "deployed", done: true },
-  { key: "done:live-world-update", task: "Live layouts + explicit code refresh", estimate: "deployed", done: true },
+  { key: "done:live-world-update", task: "Explicit code refresh prompt", estimate: "deployed", done: true },
   { key: "done:capacity-symmetry", task: "Equal full-width status timelines", estimate: "deployed", done: true },
   { key: "done:member-cards", task: "Full seated member identity cards", estimate: "deployed", done: true },
   { key: "done:share-world-view", task: "Share exact World place + camera", estimate: "deployed", done: true },
@@ -5077,8 +5076,8 @@ function applySeatedLegPose(avatar) {
   if (legs.rightKnee) legs.rightKnee.rotation.x = SEATED_KNEE_PITCH;
 }
 
-// Stable, server-safe layout id built from the only durable name a scene prop
-// has: its placard title, or a node's name.
+// Stable, readable id slug built from the only durable name a scene prop has:
+// its placard title, or a node's name.
 function worldLayoutId(prefix, name) {
   const slug = String(name || "")
     .toLowerCase()
@@ -5088,14 +5087,9 @@ function worldLayoutId(prefix, name) {
   return slug ? prefix + slug : "";
 }
 
-function plaqueLayoutId(title) {
-  return worldLayoutId("plaque-", title);
-}
-
 function makeGroundPlaque(THREE, title, subtitle, color) {
   const plaque = new THREE.Group();
   plaque.name = "forkmesh-section-plaque";
-  plaque.userData.plaqueLayoutId = plaqueLayoutId(title);
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(3.9, 0.22, 1.5),
     makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
@@ -5210,7 +5204,6 @@ function arrivalPlaqueTexture(THREE, stats) {
 function makeArrivalPlaque(THREE) {
   const plaque = new THREE.Group();
   plaque.name = "world-arrival-plaque";
-  plaque.userData.plaqueLayoutId = plaqueLayoutId("arrival");
   const base = new THREE.Mesh(
     new THREE.BoxGeometry(4.1, 0.24, 1.6),
     makeMaterial(THREE, "#233b33", { roughness: 0.82 }),
@@ -15482,7 +15475,6 @@ export function createWorldScene({
   labelLayer,
   identity,
   initialSpawn = null,
-  initialWorldLayout = [],
   initialDisabledElements = [],
   reducedMotion = false,
   forceCompactRenderer = false,
@@ -15532,8 +15524,6 @@ export function createWorldScene({
   onAvatarSelect = () => {},
   onUnverifiedAvatarDelete = () => {},
   onAvatarWalletAction = () => {},
-  onLayoutObjectMoved = () => {},
-  onLayoutObjectSelect = () => {},
   onForkbotChat = () => {},
   onAgentBotChat = () => {},
   onPlayForkmeshSong = () => {},
@@ -15670,65 +15660,6 @@ export function createWorldScene({
   const interactive = [];
   const animated = [];
   const landmarkObjects = new Map();
-
-  // Fixed Town Square objects a platform administrator may reposition. The
-  // shared placement is persisted server-side and re-applied for every
-  // visitor when the world loads.
-  const movableWorldObjects = new Map();
-  // Last placement received from /api/world/layout, kept so objects that only
-  // exist after live data arrives (node cabinets) can adopt their locked spot
-  // the moment they are built.
-  const lockedWorldLayout = new Map();
-  (Array.isArray(initialWorldLayout) ? initialWorldLayout : []).forEach(
-    (entry) => {
-      const id = String(entry?.id || "");
-      const x = Number(entry?.x);
-      const z = Number(entry?.z);
-      if (!id || !Number.isFinite(x) || !Number.isFinite(z)) return;
-      lockedWorldLayout.set(id, {
-        x,
-        z,
-        rotation: Number(entry?.rotation) || 0,
-      });
-    },
-  );
-  // One R press is a 15° step: fine enough to line a placard up with a path,
-  // coarse enough that a quarter turn is six taps.
-  const LAYOUT_ROTATION_STEP = Math.PI / 12;
-  const LAYOUT_MOVE_STEP = 0.5;
-  const LAYOUT_COMMIT_DELAY_MS = 450;
-  let layoutEditingEnabled = false;
-  let activeLayoutObject = null;
-  let draggedLayoutObject = null;
-  let layoutCommitTimer = 0;
-  const layoutSelectionBounds = new THREE.Box3();
-  const layoutSelectionHighlight = new THREE.Box3Helper(
-    layoutSelectionBounds,
-    "#9ef7c6",
-  );
-  layoutSelectionHighlight.name = "forkmesh-layout-selection-highlight";
-  layoutSelectionHighlight.visible = false;
-  layoutSelectionHighlight.renderOrder = 40;
-  layoutSelectionHighlight.material.transparent = true;
-  layoutSelectionHighlight.material.opacity = 0.48;
-  layoutSelectionHighlight.material.depthTest = false;
-  layoutSelectionHighlight.material.depthWrite = false;
-  scene.add(layoutSelectionHighlight);
-
-  function registerMovableObject(id, object) {
-    if (!object) return;
-    object.userData.layoutId = id;
-    if (!movableWorldObjects.has(id)) {
-      // Authored heading. Locked rotations are stored as an offset from it so
-      // a row written before rotation existed (rotation 0) leaves the object
-      // facing exactly the way the scene built it.
-      if (!Number.isFinite(object.userData.layoutBaseRotation)) {
-        object.userData.layoutBaseRotation = object.rotation.y;
-      }
-      movableWorldObjects.set(id, object);
-    }
-    applyLockedPlacement(id, object);
-  }
 
   // -------------------------------------------------------------------------
   // Administrator element registry. Every named piece of the World registers
@@ -15998,7 +15929,6 @@ export function createWorldScene({
   worldBulletin.add(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
   interactive.push(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
   world.add(worldBulletin);
-  registerMovableObject("world-bulletin", worldBulletin);
   registerWorldElement(
     "world-bulletin", "Events bulletin board", "Boards & kiosks", worldBulletin,
   );
@@ -16047,7 +15977,6 @@ export function createWorldScene({
     "world-chat-board", "World chat board", "Boards & kiosks",
     worldGeneralChatBoard,
   );
-  registerMovableObject("world-general-chat-board", worldGeneralChatBoard);
 
   const worldDiscordBoard = new THREE.Group();
   worldDiscordBoard.name = "forkmesh-world-discord-board";
@@ -16093,7 +16022,6 @@ export function createWorldScene({
   registerWorldElement(
     "discord-board", "Discord board", "Boards & kiosks", worldDiscordBoard,
   );
-  registerMovableObject("world-discord-board", worldDiscordBoard);
 
   // One uninterrupted city park slab sits under every district, path, and
   // building. Satellite circles remain semantic layout regions only; they no
@@ -16254,7 +16182,6 @@ export function createWorldScene({
     registerWorldElement("bikes", "World bikes", "Vehicles & rides", bike);
     const state = { bike, wheels, seat, moving: false, angle: 0 };
     placeBikeOnLane(state, along * Math.PI * 2);
-    bike.userData.layoutBaseRotation = bike.rotation.y;
     bikeStates.push(state);
   }
   addWorldBike(0, "#77d9ff", 0.38);
@@ -16666,26 +16593,18 @@ export function createWorldScene({
       if (Number.isFinite(billboardIslandBounds.min.y)) {
         object.position.y += 0.12 - billboardIslandBounds.min.y;
       }
-      object.userData.layoutBaseRotation = object.rotation.y;
     });
   };
-  function placeBillboardOnIsland(object, layoutId) {
+  function placeBillboardOnIsland(object) {
     if (!object) return;
     object.parent?.remove(object);
     leaderboardDistrict.add(object);
-    // Public billboards are fixed tangent panels on one perimeter. Keeping
-    // them out of the free-form layout map prevents stale admin coordinates
-    // from breaking the circle for everyone else.
-    movableWorldObjects.delete(layoutId);
-    billboardIslandObjects.push({ object, layoutId });
+    billboardIslandObjects.push({ object });
     relayoutBillboardCircle();
   }
-  placeBillboardOnIsland(worldBulletin, "world-bulletin");
-  placeBillboardOnIsland(
-    worldGeneralChatBoard,
-    "world-general-chat-board",
-  );
-  placeBillboardOnIsland(worldDiscordBoard, "world-discord-board");
+  placeBillboardOnIsland(worldBulletin);
+  placeBillboardOnIsland(worldGeneralChatBoard);
+  placeBillboardOnIsland(worldDiscordBoard);
 
   // Registered members and their named campfire benches have a dedicated
   // southern garden. It is the fourth cardinal district, leaving the live
@@ -16886,7 +16805,6 @@ export function createWorldScene({
   registerWorldElement(
     "arrival-box", "Arrival stats box", "Boards & kiosks", arrivalBox,
   );
-  registerMovableObject("arrival-box", arrivalBox);
 
   const landmarkFactories = {
     fountain: createFountain,
@@ -17015,7 +16933,6 @@ export function createWorldScene({
   registerWorldElement(
     "mastodon-kiosk", "Mastodon kiosk", "Boards & kiosks", mastodonKiosk,
   );
-  registerMovableObject("mastodon-kiosk", mastodonKiosk);
   // Twitter and Reddit flank the Mastodon kiosk on the same ring toward the
   // Office, one board-width of clearance on either side, and the blog board
   // continues the row past Reddit so all four read as one social row on the
@@ -17023,35 +16940,29 @@ export function createWorldScene({
   const twitterBanner = createSocialBanner(
     THREE, interactive, TWITTER_BANNER_OPTIONS);
   world.add(twitterBanner);
-  registerMovableObject("twitter-banner", twitterBanner);
   const redditBanner = createSocialBanner(
     THREE, interactive, REDDIT_BANNER_OPTIONS);
   world.add(redditBanner);
-  registerMovableObject("reddit-banner", redditBanner);
   const blogBanner = createSocialBanner(
     THREE, interactive, BLOG_BANNER_OPTIONS);
   world.add(blogBanner);
-  registerMovableObject("blog-banner", blogBanner);
   // Same physical display format as the Twitter/X sign, placed on the Office
   // approach. Its face mirrors all systems and all three history strips from
   // /status instead of reducing the page to one repository summary.
   const statusBanner = createSocialBanner(
     THREE, interactive, STATUS_BANNER_OPTIONS);
   world.add(statusBanner);
-  registerMovableObject("status-banner", statusBanner);
   registerWorldElement(
     "social-banners", "Social & status banners", "Boards & kiosks",
     [twitterBanner, redditBanner, blogBanner, statusBanner],
   );
   [
-    [mastodonKiosk, "mastodon-kiosk"],
-    [twitterBanner, "twitter-banner"],
-    [redditBanner, "reddit-banner"],
-    [blogBanner, "blog-banner"],
-    [statusBanner, "status-banner"],
-  ].forEach(([board, layoutId]) =>
-    placeBillboardOnIsland(board, layoutId),
-  );
+    mastodonKiosk,
+    twitterBanner,
+    redditBanner,
+    blogBanner,
+    statusBanner,
+  ].forEach((board) => placeBillboardOnIsland(board));
   const statusBannerRecord = {
     group: statusBanner,
     options: STATUS_BANNER_OPTIONS,
@@ -17710,8 +17621,6 @@ export function createWorldScene({
   world.add(campfire);
   registerWorldElement("campfire", "Campfire circle", "Districts", campfire);
   landmarkObjects.set("campfire", campfire);
-  movableWorldObjects.delete("campfire");
-  registerMovableObject("south-members:campfire", campfire);
 
   // A wooden swing set beside the Office garden gym: three swings hang from
   // one beam, so up to three visitors can ride at once. Clicking a seat starts
@@ -17833,7 +17742,6 @@ export function createWorldScene({
   setShadows(swingSet);
   world.add(swingSet);
   registerWorldElement("swing-set", "Swing set", "Recreation", swingSet);
-  registerMovableObject("swing-set", swingSet);
 
   // An open-air gym beside the Town Square. Every station is a real click
   // target; the bench press also opens the shell's weight/rep console.
@@ -18152,7 +18060,6 @@ export function createWorldScene({
   setShadows(gym);
   world.add(gym);
   registerWorldElement("gym", "Outdoor gym", "Recreation", gym);
-  registerMovableObject("world-gym", gym);
 
   // One square 5×5 wall preserves the whole leaderboard catalog without
   // duplicate physical boards. Lift the complete assembly above the terrain.
@@ -18253,15 +18160,6 @@ export function createWorldScene({
     repaintLeaderboardGrid();
   }
   const systemCapacityPlatform = createSystemCapacityPlatform(THREE);
-
-  // Every placard is individually movable, not just the section it belongs to:
-  // a sign that reads well from the path is often a step away from where the
-  // section itself wants to sit.
-  world.traverse((child) => {
-    const plaqueId = String(child.userData?.plaqueLayoutId || "");
-    if (!plaqueId || movableWorldObjects.has(plaqueId)) return;
-    registerMovableObject(plaqueId, child);
-  });
 
   const player = createAvatar(THREE, identity);
   const initialSpawnSpace = String(initialSpawn?.space || "");
@@ -21122,11 +21020,7 @@ export function createWorldScene({
     "office-task-bulletin", "Office task bulletin", "Boards & kiosks",
     officeTaskBulletin,
   );
-  registerMovableObject("office-task-bulletin", officeTaskBulletin);
-  placeBillboardOnIsland(
-    officeTaskBulletin,
-    "office-task-bulletin",
-  );
+  placeBillboardOnIsland(officeTaskBulletin);
 
   const worldQaBoard = new THREE.Group();
   worldQaBoard.name = "forkmesh-world-qa-board";
@@ -21199,8 +21093,7 @@ export function createWorldScene({
   registerWorldElement(
     "qa-board", "QA board", "Boards & kiosks", worldQaBoard,
   );
-  registerMovableObject("world-qa-board", worldQaBoard);
-  placeBillboardOnIsland(worldQaBoard, "world-qa-board");
+  placeBillboardOnIsland(worldQaBoard);
 
   let qaBoardSnapshot = { view: "cards", list: [] };
 
@@ -31717,31 +31610,8 @@ export function createWorldScene({
     if (primaryPointerId !== null) return;
     pointerCoordinates(event);
     raycaster.setFromCamera(pointer, camera);
-    // Shift + primary-drag is the direct layout gesture. It is deliberately
-    // admin-only through layoutEditingEnabled; normal clicks and drags retain
-    // their existing object/camera behavior for every other visitor.
-    if (layoutEditingEnabled && event.shiftKey) {
-      const object = layoutObjectAtPointer();
-      const point = groundPointAt(event.clientX, event.clientY);
-      if (object && point) {
-        const localPoint =
-          object.parent && object.parent !== world
-            ? object.parent.worldToLocal(point.clone())
-            : point;
-        draggedLayoutObject = {
-          object,
-          offsetX: object.position.x - localPoint.x,
-          offsetZ: object.position.z - localPoint.z,
-          startX: object.position.x,
-          startZ: object.position.z,
-          moved: false,
-        };
-        setActiveLayoutObject(object);
-        onLayoutObjectSelect(layoutObjectSelection(object));
-      }
-    }
     const pressHits = raycaster.intersectObjects(interactive, false);
-    const logHit = !draggedLayoutObject && pressHits.find(
+    const logHit = pressHits.find(
       ({ object }) => object.visible && object.userData?.campfireLog,
     );
     if (logHit) {
@@ -31750,7 +31620,7 @@ export function createWorldScene({
       draggedCampfireLog.material.emissive?.set?.("#d88a43");
       draggedCampfireLog.material.emissiveIntensity = 0.5;
     }
-    if (!draggedLayoutObject && !draggedCampfireLog) {
+    if (!draggedCampfireLog) {
       const qaHit = pressHits.find(
         ({ object }) => object === qaBoardFace,
       );
@@ -31898,36 +31768,6 @@ export function createWorldScene({
       updateRewardBoardHover(event, pointerNow);
     }
     if (event.pointerId !== primaryPointerId) return;
-    if (draggedLayoutObject) {
-      const point = groundPointAt(event.clientX, event.clientY);
-      if (point) {
-        const { object, offsetX, offsetZ } = draggedLayoutObject;
-        const localPoint =
-          object.parent && object.parent !== world
-            ? object.parent.worldToLocal(point.clone())
-            : point;
-        moveWorldObject(
-          object,
-          localPoint.x + offsetX,
-          localPoint.z + offsetZ,
-        );
-        draggedLayoutObject.moved = true;
-        refreshActiveLayoutHighlight(object);
-        if (
-          ["fountain", "campfire", "swing-set"].includes(
-            String(object.userData.layoutId || "")
-              .replace(/^west-billboards:/, "")
-              .replace(/^south-members:/, "")
-              .replace(/^landmark-/, ""),
-          )
-        ) {
-          relayoutNetworkNodes();
-        }
-      }
-      pointerGestureMoved = true;
-      event.preventDefault();
-      return;
-    }
     if (draggedCampfireLog) {
       const point = groundPointAt(event.clientX, event.clientY);
       if (point) {
@@ -32081,21 +31921,6 @@ export function createWorldScene({
     primaryPointerId = null;
     renderer.domElement.dataset.dragging =
       touchPointers.size ? "true" : "false";
-    if (draggedLayoutObject) {
-      const drag = draggedLayoutObject;
-      draggedLayoutObject = null;
-      if (cancelled) {
-        moveWorldObject(drag.object, drag.startX, drag.startZ);
-        refreshActiveLayoutHighlight(drag.object);
-      } else if (!drag.moved) {
-        // Shift-click remains a selection gesture and does not emit a write.
-      } else {
-        commitLayoutObject(drag.object);
-      }
-      lastGestureDragged = true;
-      pointerGestureMoved = false;
-      return;
-    }
     if (draggedCampfireLog) {
       const droppedLog = draggedCampfireLog;
       draggedCampfireLog = null;
@@ -32215,11 +32040,6 @@ export function createWorldScene({
       clientY: pointerStart.y,
     });
     raycaster.setFromCamera(pointer, camera);
-    const selectedLayoutObject = layoutObjectAtPointer();
-    setActiveLayoutObject(selectedLayoutObject);
-    if (selectedLayoutObject) {
-      onLayoutObjectSelect(layoutObjectSelection(selectedLayoutObject));
-    }
     const hits = raycaster
       .intersectObjects(interactive, false)
       .filter(
@@ -32729,288 +32549,6 @@ export function createWorldScene({
     return point;
   }
 
-  function moveWorldObject(object, targetX, targetZ) {
-    const radius = Math.hypot(targetX, targetZ);
-    const scale = radius > WORLD_RADIUS ? WORLD_RADIUS / radius : 1;
-    const x = targetX * scale;
-    const z = targetZ * scale;
-    const deltaX = x - object.position.x;
-    const deltaZ = z - object.position.z;
-    if (!deltaX && !deltaZ) return;
-    object.position.x = x;
-    object.position.z = z;
-    // Landmark proximity and focus math read LANDMARKS positions, not the
-    // group transform, so a relocated landmark must update its record too.
-    // Districts register under a "landmark-" prefix; the campfire keeps its
-    // own id but owns a map spot all the same, so match either form.
-    const layoutId = String(object.userData.layoutId || "");
-    const authoredId = layoutId
-      .replace(/^west-billboards:/, "")
-      .replace(/^south-members:/, "");
-    const landmark = layoutId
-      ? LANDMARKS.find(
-          (entry) =>
-            authoredId === "landmark-" + entry.id ||
-            authoredId === entry.id,
-        )
-      : null;
-    if (Array.isArray(landmark?.position)) {
-      landmark.position[0] = x;
-      landmark.position[2] = z;
-    }
-  }
-
-  function normalizeLayoutRotation(value) {
-    const turn = Math.PI * 2;
-    const rotation = Number(value);
-    if (!Number.isFinite(rotation)) return 0;
-    return ((rotation % turn) + turn) % turn;
-  }
-
-  // Locked rotation is an offset from the object's authored heading, applied
-  // on top of it rather than replacing it.
-  function rotateWorldObject(object, rotation) {
-    if (!object) return;
-    const offset = normalizeLayoutRotation(rotation);
-    const base = Number(object.userData.layoutBaseRotation);
-    object.userData.layoutRotation = offset;
-    object.rotation.y = (Number.isFinite(base) ? base : 0) + offset;
-  }
-
-  function applyLockedPlacement(id, object) {
-    const locked = lockedWorldLayout.get(String(id || ""));
-    if (!locked || !object) return;
-    moveWorldObject(object, locked.x, locked.z);
-    rotateWorldObject(object, locked.rotation);
-    refreshActiveLayoutHighlight(object);
-  }
-
-  function applyWorldLayout(objects) {
-    (Array.isArray(objects) ? objects : []).forEach((entry) => {
-      const id = String(entry?.id || "");
-      const x = Number(entry?.x);
-      const z = Number(entry?.z);
-      if (!id || !Number.isFinite(x) || !Number.isFinite(z)) return;
-      lockedWorldLayout.set(id, {
-        x,
-        z,
-        rotation: normalizeLayoutRotation(entry?.rotation),
-      });
-      const object = movableWorldObjects.get(id);
-      if (object) applyLockedPlacement(id, object);
-    });
-    // Layout and catalog reads race independently. Re-anchor after the full
-    // document is applied so a late pool placement cannot strand the cabinet
-    // ring at the pool's authored coordinates.
-    relayoutNetworkNodes();
-  }
-
-  function commitLayoutObject(object) {
-    const id = String(object?.userData?.layoutId || "");
-    if (!id) return;
-    const move = {
-      id,
-      x: Number(object.position.x.toFixed(2)),
-      z: Number(object.position.z.toFixed(2)),
-      rotation: Number(
-        normalizeLayoutRotation(object.userData.layoutRotation).toFixed(4),
-      ),
-    };
-    lockedWorldLayout.set(id, {
-      x: move.x,
-      z: move.z,
-      rotation: move.rotation,
-    });
-    onLayoutObjectMoved(move);
-  }
-
-  // Holding R spins the object continuously; only the settled result is worth
-  // an administrator write, so coalesce the burst into a single save.
-  function scheduleLayoutCommit(object) {
-    if (layoutCommitTimer) clearTimeout(layoutCommitTimer);
-    layoutCommitTimer = setTimeout(() => {
-      layoutCommitTimer = 0;
-      commitLayoutObject(object);
-    }, LAYOUT_COMMIT_DELAY_MS);
-  }
-
-  function setActiveLayoutObject(object) {
-    activeLayoutObject = object || null;
-    if (!activeLayoutObject) {
-      layoutSelectionHighlight.visible = false;
-      return;
-    }
-    layoutSelectionBounds.setFromObject(activeLayoutObject);
-    layoutSelectionHighlight.visible = !layoutSelectionBounds.isEmpty();
-  }
-
-  function refreshActiveLayoutHighlight(object = activeLayoutObject) {
-    if (!object || object !== activeLayoutObject) return;
-    layoutSelectionBounds.setFromObject(object);
-    layoutSelectionHighlight.visible = !layoutSelectionBounds.isEmpty();
-  }
-
-  function layoutObjectSelection(object) {
-    const id = String(object?.userData?.layoutId || "");
-    const authoredId = id
-      .replace(/^west-billboards:/, "")
-      .replace(/^south-members:/, "");
-    let landmarkId = "";
-    object?.traverse?.((child) => {
-      if (landmarkId) return;
-      const candidate = String(child.userData?.landmark || "");
-      if (candidate && landmarkById(candidate)) landmarkId = candidate;
-    });
-    if (!landmarkId && authoredId.startsWith("landmark-")) {
-      const candidate = authoredId.slice("landmark-".length);
-      if (landmarkById(candidate)) landmarkId = candidate;
-    }
-    if (!landmarkId) {
-      landmarkId =
-        {
-          "world-bulletin": "events",
-          "world-general-chat-board": "events",
-          "world-qa-board": "events",
-          "status-banner": "events",
-          "mastodon-kiosk": "fediverse",
-          "twitter-banner": "broadcast",
-          "reddit-banner": "broadcast",
-          "blog-banner": "broadcast",
-          "arrival-box": "neighborhood",
-          campfire: "neighborhood",
-          "swing-set": "neighborhood",
-          "office-task-bulletin": "organizations",
-        }[authoredId] || "neighborhood";
-    }
-    return {
-      id,
-      label: String(object?.name || id || "World object").slice(0, 80),
-      landmarkId,
-      editable: layoutEditingEnabled,
-    };
-  }
-
-  // The visible centre of the object, expressed in the space its position
-  // lives in. Rotation uses this instead of the group origin because several
-  // authored groups keep their geometry well away from (0, 0, 0).
-  function layoutObjectPoint(object) {
-    if (!object) return null;
-    const bounds = new THREE.Box3().setFromObject(object);
-    if (bounds.isEmpty()) return null;
-    const point = bounds.getCenter(new THREE.Vector3());
-    const parent = object.parent;
-    return parent && parent !== world ? parent.worldToLocal(point) : point;
-  }
-
-  function rotateLayoutObjectBy(target, radians) {
-    if (!target) return false;
-    // Turn the object about the centre of its visible footprint —
-    // rather than the group origin. The arrival grid and other groups keep
-    // their geometry well away from origin, where a plain yaw would swing them
-    // across the square instead of spinning them where they stand.
-    const pivot = layoutObjectPoint(target);
-    rotateWorldObject(
-      target,
-      Number(target.userData.layoutRotation || 0) +
-        radians,
-    );
-    const moved = pivot ? layoutObjectPoint(target) : null;
-    if (pivot && moved) {
-      moveWorldObject(
-        target,
-        target.position.x + (pivot.x - moved.x),
-        target.position.z + (pivot.z - moved.z),
-      );
-    }
-    refreshActiveLayoutHighlight(target);
-    scheduleLayoutCommit(target);
-    return true;
-  }
-
-  function rotateActiveLayoutObject(direction) {
-    return rotateLayoutObjectBy(
-      activeLayoutObject,
-      LAYOUT_ROTATION_STEP * direction,
-    );
-  }
-
-  function nudgeActiveLayoutObject(code) {
-    const target = activeLayoutObject;
-    if (!target) return false;
-    const forwardX = -Math.sin(cameraYaw);
-    const forwardZ = -Math.cos(cameraYaw);
-    const rightX = Math.cos(cameraYaw);
-    const rightZ = -Math.sin(cameraYaw);
-    const forward =
-      Number(code === "ArrowUp") - Number(code === "ArrowDown");
-    const right =
-      Number(code === "ArrowRight") - Number(code === "ArrowLeft");
-    if (!forward && !right) return false;
-    const delta = new THREE.Vector3(
-      (forwardX * forward + rightX * right) * LAYOUT_MOVE_STEP,
-      0,
-      (forwardZ * forward + rightZ * right) * LAYOUT_MOVE_STEP,
-    );
-    // Most objects live directly under the World, but individual placards can
-    // sit inside a rotated district group. Convert the camera-relative world
-    // direction into that parent's local axes so Up always moves away from
-    // the camera rather than unexpectedly sliding sideways.
-    if (target.parent && target.parent !== world) {
-      const parentWorldRotation = target.parent.getWorldQuaternion(
-        new THREE.Quaternion(),
-      );
-      delta.applyQuaternion(parentWorldRotation.invert());
-    }
-    moveWorldObject(
-      target,
-      target.position.x + delta.x,
-      target.position.z + delta.z,
-    );
-    refreshActiveLayoutHighlight(target);
-    scheduleLayoutCommit(target);
-    if (
-      ["fountain", "campfire", "swing-set"].includes(
-        String(target.userData.layoutId || "")
-          .replace(/^west-billboards:/, "")
-          .replace(/^south-members:/, "")
-          .replace(/^landmark-/, ""),
-      )
-    ) {
-      relayoutNetworkNodes();
-    }
-    return true;
-  }
-
-  function layoutObjectForDescendant(descendant) {
-    let current = descendant;
-    while (current && current !== world) {
-      const id = String(current.userData?.layoutId || "");
-      if (id && movableWorldObjects.get(id) === current) return current;
-      current = current.parent;
-    }
-    return null;
-  }
-
-  // Selection uses the geometry visitors already see. A click on any visible
-  // part chooses the nearest movable ancestor; there is no hidden handle or
-  // drag gesture competing with the object's normal interaction.
-  function layoutObjectAtPointer() {
-    const objects = [...movableWorldObjects.values()].filter(
-      (object) => objectIsEffectivelyVisible(object),
-    );
-    if (!objects.length) return null;
-    const hits = raycaster.intersectObjects(objects, true);
-    for (const hit of hits) {
-      const object = layoutObjectForDescendant(hit.object);
-      if (object) return object;
-    }
-    return null;
-  }
-
-  function setLayoutEditor(enabled) {
-    layoutEditingEnabled = enabled === true;
-  }
-
   function handleDoubleClick(event) {
     if (event.button !== undefined && event.button !== 0) return;
     if (lastGestureDragged) return;
@@ -33172,15 +32710,6 @@ export function createWorldScene({
       event.target instanceof HTMLAnchorElement ||
       event.target?.isContentEditable
     ) return;
-    if (
-      layoutEditingEnabled &&
-      activeLayoutObject &&
-      event.code.startsWith("Arrow") &&
-      nudgeActiveLayoutObject(event.code)
-    ) {
-      event.preventDefault();
-      return;
-    }
     if (MOVEMENT_KEYS.has(event.code)) {
       if (!keys.size && !event.repeat) {
         const now = performance.now();
@@ -33228,15 +32757,7 @@ export function createWorldScene({
         event.preventDefault();
       }
     }
-    // R turns the selected object a step at a time; hold Shift to turn it back
-    // the other way. Selection never changes the behavior for non-admins.
-    if (event.code === "KeyR" && layoutEditingEnabled) {
-      if (rotateActiveLayoutObject(event.shiftKey ? -1 : 1)) {
-        event.preventDefault();
-      }
-    }
     if (event.code === "Escape") {
-      setActiveLayoutObject(null);
       setActiveAvatarSelection(null);
       if (cameraMode === "first-person") setCameraMode("third-person");
       else clearFocus();
@@ -33264,15 +32785,6 @@ export function createWorldScene({
     jumpVelocity = 0;
     cancelDash();
     primaryPointerId = null;
-    if (draggedLayoutObject) {
-      moveWorldObject(
-        draggedLayoutObject.object,
-        draggedLayoutObject.startX,
-        draggedLayoutObject.startZ,
-      );
-      refreshActiveLayoutHighlight(draggedLayoutObject.object);
-      draggedLayoutObject = null;
-    }
     pointerGestureMoved = false;
     pinchActive = false;
     pinchStartDistance = 0;
@@ -34093,10 +33605,6 @@ export function createWorldScene({
     keys.clear();
     touchKeys.clear();
     touchMovement.set(0, 0);
-    if (layoutCommitTimer) {
-      clearTimeout(layoutCommitTimer);
-      layoutCommitTimer = 0;
-    }
     scene.traverse((child) => {
       child.geometry?.dispose?.();
       if (Array.isArray(child.material)) {
@@ -34250,8 +33758,6 @@ export function createWorldScene({
     setRepositoryIssuePageExpanded,
     setRepositoryIssueAgentPicker,
     setRepositorySizeLoading,
-    applyWorldLayout,
-    setLayoutEditor,
     playEmote,
     playHandshake,
     showChatBubble,

@@ -1729,6 +1729,16 @@ int main(int argc, char *argv[])
               QString("clicking a branch link selects the branch without waiting "
                       "for the panel's git reads (adhoc #420, landed on %1)")
                   .arg(landed.isEmpty() ? QStringLiteral("<none>") : landed));
+        // adhoc #107: the branch diff viewer lives in the Git view now — the
+        // same click must land the commits workspace on the range review pane
+        // with that branch under review.
+        check(window.testCommitWorkspacePage() == 2 &&
+                  window.testBranchDiffBranch() ==
+                      QStringLiteral("feature/keep-selected"),
+              QString("a branch link opens the branch's diff in the Git view's "
+                      "range pane (adhoc #107, page = %1, branch = %2)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBranchDiffBranch()));
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();
