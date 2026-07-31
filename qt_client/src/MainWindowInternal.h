@@ -2980,6 +2980,11 @@ const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
 // the point is that prompted work is visible to the organization, not just to
 // the desktop that typed it — and turned off per-run for throwaway prompts.
 const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// Last known number of open organization tasks, mirrored into settings so the
+// Tasks rail badge is on screen from the first frame after a restart instead of
+// staying blank until someone opens the Tasks page (adhoc #79).
+const QString kOrganizationTaskOpenCountSetting =
+    QStringLiteral("tasks/openCount");
 // Canonical prefixes this desktop signs with its account key to open and close
 // an organization task when it has no account session token to present (the
 // authenticateSilently path holds keys, not sessions). Must stay byte-identical
