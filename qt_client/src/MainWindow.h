@@ -6557,6 +6557,11 @@ private:
     // every ~30s, hammering the relay's D1 for no reader-visible difference.
     QHash<QString, QByteArray> m_catalogPublishedFingerprint; // owner/name -> hash
     QHash<QString, qint64> m_catalogPublishedFingerprintAtMs; // owner/name -> ms
+    // Serving state as of the last publish attempt, so publishRepositoryNow can
+    // tell a heartbeat republish from the user turning sharing on. The relay
+    // uses that distinction to keep a repository deleted from the website
+    // deleted instead of letting this node's next heartbeat resurrect it.
+    QHash<QString, bool> m_catalogPublishServeState; // owner/name -> serving
     // A private catalog write is permitted only after this process has
     // idempotently registered its public hybrid key and repository privacy
     // policy with an authenticated owner session.
