@@ -2351,6 +2351,22 @@ test("World chat keeps five replayed messages lazy and its prompt in view", asyn
   await expect(page.locator(".chat-history-indicator")).toContainText(
     "7 earlier messages",
   );
+  // Oldest at the top, newest on the bottom rail, with the "earlier messages"
+  // handle above the first row and the feed parked at the latest line.
+  const feedOrder = await page.locator("#fullChatMessages").evaluate((element) => {
+    const rows = Array.from(element.querySelectorAll(".chat-message-row"));
+    const indicator = element.querySelector(".chat-history-indicator");
+    return {
+      texts: rows.map((row) => row.querySelector("p")?.textContent?.trim() || ""),
+      indicatorFirst: element.firstElementChild === indicator,
+      atBottom:
+        element.scrollHeight - element.scrollTop - element.clientHeight <= 2,
+    };
+  });
+  expect(feedOrder.indicatorFirst).toBe(true);
+  expect(feedOrder.atBottom).toBe(true);
+  expect(feedOrder.texts[0]).toContain("Retained message 8.");
+  expect(feedOrder.texts.at(-1)).toContain("Edited retained message 12.");
   await expect(page.locator("#fullChatInput")).toBeInViewport();
 
   const geometry = await terminal.evaluate((element) => {
@@ -6210,6 +6226,101 @@ test("the topbar has no clock or emote actions and local light level survives mo
     (shell) => shell.identity,
   );
   expect(publicIdentityState.lightLevel).toBeUndefined();
+});
+
+test("a handshake is offered to one visitor and poses both avatars once accepted", async ({
+  page,
+}) => {
+  test.slow();
+  const frames = [];
+  let relay = null;
+  await prepareWorldPage(page, "handshake-host", {
+    worldSocketHandler(socket, socketId) {
+      relay = socket;
+      socket.onMessage((raw) => frames.push(JSON.parse(String(raw))));
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        peers: [
+          {
+            id: "peer-neighbor",
+            name: "Neighbor",
+            status: "available",
+            x: 3,
+            y: 0.38,
+            z: 4,
+            yaw: 0,
+            space: "town-square",
+          },
+        ],
+      }));
+    },
+  });
+  await waitForWorld(page);
+
+  // A handshake is offered from the selected visitor's own profile, so it is
+  // always addressed at exactly one live peer.
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.openWorldMemberDetail({
+      peerId: "peer-neighbor",
+      name: "Neighbor",
+      accountStatus: "Guest",
+    });
+  });
+  await page.getByRole("button", { name: "Offer handshake" }).click();
+  await expect
+    .poll(() => frames.filter((frame) => frame.kind === "handshake-offer"))
+    .toEqual([
+      { type: "interaction", kind: "handshake-offer", target: "peer-neighbor" },
+    ]);
+  await expect(
+    page.getByRole("button", { name: "Handshake offered" }),
+  ).toBeDisabled();
+
+  // The relay publishes the accepted pair to the room; both halves pose.
+  relay.send(JSON.stringify({
+    type: "interaction",
+    kind: "handshake",
+    from: "peer-neighbor",
+    with: "handshake-host",
+  }));
+  await expect
+    .poll(() =>
+      page.locator("forkmesh-world").evaluate((shell) => ({
+        self:
+          Number(shell.world.player.userData.handshakeStartedAt || 0) > 0,
+        peer:
+          Number(
+            shell.world.scene.getObjectByName("avatar:peer-neighbor")
+              ?.userData?.handshakeStartedAt || 0,
+          ) > 0,
+      })),
+    )
+    .toEqual({ self: true, peer: true });
+  await expect(
+    page.getByRole("button", { name: "Offer handshake" }),
+  ).toBeEnabled();
+
+  // An offer arriving from that peer turns the same panel into the answer.
+  relay.send(JSON.stringify({
+    type: "interaction",
+    kind: "handshake-offer",
+    from: "peer-neighbor",
+  }));
+  await page.getByRole("button", { name: "Shake hands back" }).click();
+  await expect
+    .poll(() => frames.filter((frame) => frame.kind === "handshake-accept"))
+    .toEqual([
+      {
+        type: "interaction",
+        kind: "handshake-accept",
+        target: "peer-neighbor",
+      },
+    ]);
+  // Answering consumes the offer: the panel goes back to offering one.
+  await expect(
+    page.getByRole("button", { name: "Offer handshake" }),
+  ).toBeVisible();
 });
 
 test("Unicode emoji status is local-persisted, coalesced, and available to every avatar label", async ({

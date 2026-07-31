@@ -1395,6 +1395,305 @@ int main(int argc, char **argv)
                   QStringLiteral("A")).isEmpty(),
           "an existing A record is reused so repeat deploys update in place");
 
+    // --- Cloudflare API token check and rotation (adhoc #108) --------------
+    const QList<forkmesh::control::CloudflareTokenRequirement> tokenRequirements =
+        forkmesh::control::cloudflareTokenRequirements();
+    QSet<QString> tokenKeys;
+    bool tokenRequirementsWellFormed = !tokenRequirements.isEmpty();
+    int requiredTokenPermissions = 0;
+    for (const forkmesh::control::CloudflareTokenRequirement &requirement :
+         tokenRequirements) {
+        if (requirement.key.isEmpty() || requirement.label.isEmpty() ||
+            requirement.purpose.isEmpty() ||
+            requirement.groupNames.isEmpty() ||
+            tokenKeys.contains(requirement.key) ||
+            (requirement.scope != QStringLiteral("account") &&
+             requirement.scope != QStringLiteral("zone") &&
+             requirement.scope != QStringLiteral("user"))) {
+            tokenRequirementsWellFormed = false;
+        }
+        tokenKeys.insert(requirement.key);
+        if (requirement.required)
+            ++requiredTokenPermissions;
+    }
+    check(tokenRequirementsWellFormed && requiredTokenPermissions >= 6 &&
+              tokenKeys.contains(QStringLiteral("workers_scripts")) &&
+              tokenKeys.contains(QStringLiteral("d1")) &&
+              tokenKeys.contains(QStringLiteral("dns")),
+          "the API token tab describes every deploy permission exactly once");
+
+    const auto tokenRequirement = [&tokenRequirements](const char *key) {
+        for (const forkmesh::control::CloudflareTokenRequirement &requirement :
+             tokenRequirements) {
+            if (requirement.key == QLatin1String(key))
+                return requirement;
+        }
+        return forkmesh::control::CloudflareTokenRequirement{};
+    };
+    check(forkmesh::control::cloudflareTokenProbePath(
+              tokenRequirement("workers_scripts"),
+              QStringLiteral("acct1"), QStringLiteral("zone1")) ==
+                  QStringLiteral("/accounts/acct1/workers/scripts") &&
+              forkmesh::control::cloudflareTokenProbePath(
+                  tokenRequirement("workers_scripts"), QString(),
+                  QStringLiteral("zone1")).isEmpty() &&
+              forkmesh::control::cloudflareTokenProbePath(
+                  tokenRequirement("dns"), QStringLiteral("acct1"),
+                  QStringLiteral("../../user/tokens")).isEmpty() &&
+              forkmesh::control::cloudflareTokenProbePath(
+                  tokenRequirement("api_tokens_write"),
+                  QStringLiteral("acct1"), QStringLiteral("zone1")).isEmpty(),
+          "capability probes only run against well-formed account/zone ids");
+
+    check(forkmesh::control::isPlausibleCloudflareApiToken(
+              QStringLiteral("token-value-for-checks_1")) &&
+              !forkmesh::control::isPlausibleCloudflareApiToken(
+                  QStringLiteral("short")) &&
+              !forkmesh::control::isPlausibleCloudflareApiToken(
+                  QStringLiteral("token-value with a space")) &&
+              !forkmesh::control::isPlausibleCloudflareApiToken(
+                  QStringLiteral("token-value\nsecond-line-token")),
+          "a pasted credential file or short string never reaches Cloudflare");
+
+    const QJsonObject tokenDetail{
+        {QStringLiteral("result"),
+         QJsonObject{
+             {QStringLiteral("id"), QStringLiteral("tokenid1")},
+             {QStringLiteral("status"), QStringLiteral("active")},
+             {QStringLiteral("policies"),
+              QJsonArray{
+                  QJsonObject{
+                      {QStringLiteral("effect"), QStringLiteral("allow")},
+                      {QStringLiteral("resources"),
+                       QJsonObject{
+                           {QStringLiteral("com.cloudflare.api.account.acct1"),
+                            QStringLiteral("*")}}},
+                      {QStringLiteral("permission_groups"),
+                       QJsonArray{
+                           QJsonObject{
+                               {QStringLiteral("id"), QStringLiteral("pg1")},
+                               {QStringLiteral("name"),
+                                QStringLiteral("Workers Scripts Write")}},
+                           QJsonObject{
+                               {QStringLiteral("id"), QStringLiteral("pg2")},
+                               {QStringLiteral("name"),
+                                QStringLiteral("Account Settings Read")}}}}},
+                  QJsonObject{
+                      {QStringLiteral("effect"), QStringLiteral("allow")},
+                      {QStringLiteral("resources"),
+                       QJsonObject{
+                           {QStringLiteral("com.cloudflare.api.user.user1"),
+                            QStringLiteral("*")}}},
+                      {QStringLiteral("permission_groups"),
+                       QJsonArray{QJsonObject{
+                           {QStringLiteral("id"), QStringLiteral("pg3")},
+                           {QStringLiteral("name"),
+                            QStringLiteral("API Tokens Write")}}}}},
+                  QJsonObject{
+                      {QStringLiteral("effect"), QStringLiteral("deny")},
+                      {QStringLiteral("resources"),
+                       QJsonObject{
+                           {QStringLiteral("com.cloudflare.api.account.zone.zone1"),
+                            QStringLiteral("*")}}},
+                      {QStringLiteral("permission_groups"),
+                       QJsonArray{QJsonObject{
+                           {QStringLiteral("id"), QStringLiteral("pg4")},
+                           {QStringLiteral("name"), QStringLiteral("DNS Write")}}}}},
+              }}}}};
+    const QStringList grantedGroups =
+        forkmesh::control::cloudflareTokenPermissionGroupNames(tokenDetail);
+    check(grantedGroups.contains(QStringLiteral("Workers Scripts Write")) &&
+              grantedGroups.contains(QStringLiteral("API Tokens Write")) &&
+              !grantedGroups.contains(QStringLiteral("DNS Write")),
+          "a denied permission group is never reported as granted");
+    check(forkmesh::control::cloudflareTokenVerifyStatus(tokenDetail) ==
+              QStringLiteral("active") &&
+              forkmesh::control::cloudflareTokenVerifyId(tokenDetail) ==
+                  QStringLiteral("tokenid1") &&
+              forkmesh::control::cloudflareTokenVerifyId(
+                  QJsonObject{{QStringLiteral("result"),
+                               QJsonObject{{QStringLiteral("id"),
+                                            QStringLiteral("../evil")}}}})
+                  .isEmpty(),
+          "token verification reads the status and only a safe token id");
+    check(forkmesh::control::cloudflareTokenGrantsRequirement(
+              tokenRequirement("workers_scripts"), grantedGroups) &&
+              !forkmesh::control::cloudflareTokenGrantsRequirement(
+                  tokenRequirement("dns"), grantedGroups) &&
+              forkmesh::control::cloudflareTokenGrantsRequirement(
+                  tokenRequirement("zone"),
+                  {QStringLiteral("Zone Write")}),
+          "a broader group satisfies a read requirement, a missing one does not");
+    check(forkmesh::control::cloudflareTokenAccountIds(tokenDetail) ==
+              QStringList{QStringLiteral("acct1")} &&
+              forkmesh::control::cloudflareTokenUserResourceKey(tokenDetail) ==
+                  QStringLiteral("com.cloudflare.api.user.user1"),
+          "a token's own policy reveals its account and user resource");
+
+    QJsonArray permissionGroupCatalog;
+    for (const forkmesh::control::CloudflareTokenRequirement &requirement :
+         tokenRequirements) {
+        const QString scope =
+            requirement.scope == QStringLiteral("account")
+                ? QStringLiteral("com.cloudflare.api.account")
+                : requirement.scope == QStringLiteral("zone")
+                      ? QStringLiteral("com.cloudflare.api.account.zone")
+                      : QStringLiteral("com.cloudflare.api.user");
+        permissionGroupCatalog.append(QJsonObject{
+            // Cloudflare permission-group ids are hex, and the resolver refuses
+            // anything else so a malformed catalog can never reach a policy.
+            {QStringLiteral("id"),
+             QStringLiteral("pgid") +
+                 QString::number(permissionGroupCatalog.size())},
+            {QStringLiteral("name"), requirement.groupNames.constFirst()},
+            {QStringLiteral("scopes"), QJsonArray{scope}},
+        });
+    }
+    // A same-named group at the wrong scope must not be borrowed.
+    permissionGroupCatalog.append(QJsonObject{
+        {QStringLiteral("id"), QStringLiteral("pgwrongscope")},
+        {QStringLiteral("name"), QStringLiteral("DNS Write")},
+        {QStringLiteral("scopes"),
+         QJsonArray{QStringLiteral("com.cloudflare.api.user")}},
+    });
+    QString tokenPayloadError;
+    const QJsonObject tokenPayload =
+        forkmesh::control::cloudflareTokenCreatePayload(
+            QStringLiteral("ForkMesh mirror9 20260731-101500"),
+            QStringLiteral("acct1"), QStringLiteral("zone1"),
+            QStringLiteral("com.cloudflare.api.user.user1"),
+            permissionGroupCatalog, &tokenPayloadError);
+    const QJsonArray tokenPolicies =
+        tokenPayload.value(QStringLiteral("policies")).toArray();
+    QSet<QString> tokenPolicyResources;
+    QSet<QString> tokenPolicyGroups;
+    for (const QJsonValue &policy : tokenPolicies) {
+        const QJsonObject object = policy.toObject();
+        check(object.value(QStringLiteral("effect")).toString() ==
+                  QStringLiteral("allow"),
+              "a minted token only ever carries allow policies");
+        const QJsonObject resources =
+            object.value(QStringLiteral("resources")).toObject();
+        for (auto it = resources.constBegin(); it != resources.constEnd(); ++it)
+            tokenPolicyResources.insert(it.key());
+        const QJsonArray groups =
+            object.value(QStringLiteral("permission_groups")).toArray();
+        for (const QJsonValue &group : groups) {
+            tokenPolicyGroups.insert(
+                group.toObject().value(QStringLiteral("name")).toString());
+        }
+    }
+    check(tokenPayloadError.isEmpty() &&
+              tokenPayload.value(QStringLiteral("name")).toString() ==
+                  QStringLiteral("ForkMesh mirror9 20260731-101500") &&
+              tokenPolicies.size() == 3 &&
+              tokenPolicyResources.contains(
+                  QStringLiteral("com.cloudflare.api.account.acct1")) &&
+              tokenPolicyResources.contains(
+                  QStringLiteral("com.cloudflare.api.account.zone.zone1")) &&
+              tokenPolicyResources.contains(
+                  QStringLiteral("com.cloudflare.api.user.user1")) &&
+              tokenPolicyGroups.contains(QStringLiteral("Workers Scripts Write")) &&
+              tokenPolicyGroups.contains(QStringLiteral("DNS Write")) &&
+              tokenPolicyGroups.contains(QStringLiteral("API Tokens Write")),
+          "a minted token is scoped to one account, one zone and this user");
+
+    QJsonArray catalogMissingD1;
+    for (const QJsonValue &group : permissionGroupCatalog) {
+        if (group.toObject().value(QStringLiteral("name")).toString() !=
+            QStringLiteral("D1 Write")) {
+            catalogMissingD1.append(group);
+        }
+    }
+    QString missingGroupError;
+    check(forkmesh::control::cloudflareTokenCreatePayload(
+              QStringLiteral("ForkMesh mirror9 20260731-101500"),
+              QStringLiteral("acct1"), QStringLiteral("zone1"),
+              QStringLiteral("com.cloudflare.api.user.user1"),
+              catalogMissingD1, &missingGroupError).isEmpty() &&
+              missingGroupError.contains(QStringLiteral("D1")),
+          "a catalog missing a required group fails closed instead of minting");
+    QString missingZoneError;
+    check(forkmesh::control::cloudflareTokenCreatePayload(
+              QStringLiteral("ForkMesh mirror9 20260731-101500"),
+              QStringLiteral("acct1"), QString(),
+              QStringLiteral("com.cloudflare.api.user.user1"),
+              permissionGroupCatalog, &missingZoneError).isEmpty() &&
+              !missingZoneError.isEmpty(),
+          "minting refuses to guess a zone for the DNS permission");
+    QString badNameError;
+    check(forkmesh::control::cloudflareTokenCreatePayload(
+              QStringLiteral("ForkMesh\nmirror9"), QStringLiteral("acct1"),
+              QStringLiteral("zone1"),
+              QStringLiteral("com.cloudflare.api.user.user1"),
+              permissionGroupCatalog, &badNameError).isEmpty() &&
+              !badNameError.isEmpty(),
+          "a token name carrying a newline is rejected");
+    // Optional user-scoped groups are dropped when the user resource is unknown,
+    // so a token that cannot read itself can still mint a deploy token.
+    const QJsonObject withoutUserPolicy =
+        forkmesh::control::cloudflareTokenCreatePayload(
+            QStringLiteral("ForkMesh mirror9 20260731-101500"),
+            QStringLiteral("acct1"), QStringLiteral("zone1"), QString(),
+            permissionGroupCatalog, nullptr);
+    check(withoutUserPolicy.value(QStringLiteral("policies")).toArray().size() ==
+              2,
+          "an unknown user resource drops only the optional API Tokens policy");
+
+    const QString createdToken =
+        forkmesh::control::cloudflareCreatedTokenValue(
+            QJsonObject{{QStringLiteral("result"),
+                         QJsonObject{{QStringLiteral("value"),
+                                      QStringLiteral(
+                                          "brand-new-token-value_9")}}}});
+    check(createdToken == QStringLiteral("brand-new-token-value_9") &&
+              forkmesh::control::cloudflareCreatedTokenValue(
+                  QJsonObject{{QStringLiteral("result"),
+                               QJsonObject{{QStringLiteral("value"),
+                                            QStringLiteral("nope")}}}})
+                  .isEmpty(),
+          "only a usable token value is adopted from a create response");
+    check(forkmesh::control::maskedTokenSuffix(
+              QStringLiteral("brand-new-token-value_9"))
+                  .endsWith(QStringLiteral("ue_9")) &&
+              !forkmesh::control::maskedTokenSuffix(
+                   QStringLiteral("brand-new-token-value_9"))
+                   .contains(QStringLiteral("brand")),
+          "a token is only ever named by its last four characters");
+
+    const QString envBefore = QStringLiteral(
+        "# production\r\n"
+        "ADMIN_PATH=/secret-admin\r\n"
+        "CLOUDFLARE_API_TOKEN=old-token-value\r\n"
+        "#CLOUDFLARE_API_TOKEN=commented-example\r\n"
+        "OTHER=keepme\r\n"
+        "CLOUDFLARE_API_TOKEN = stale-duplicate\r\n");
+    const QString envAfter = forkmesh::control::updatedEnvAssignment(
+        envBefore, QStringLiteral("CLOUDFLARE_API_TOKEN"),
+        QStringLiteral("rotated-token-value"));
+    check(envAfter.contains(
+              QStringLiteral("CLOUDFLARE_API_TOKEN=rotated-token-value\r\n")) &&
+              !envAfter.contains(QStringLiteral("old-token-value")) &&
+              !envAfter.contains(QStringLiteral("stale-duplicate")) &&
+              envAfter.contains(
+                  QStringLiteral("#CLOUDFLARE_API_TOKEN=commented-example")) &&
+              envAfter.contains(QStringLiteral("ADMIN_PATH=/secret-admin")) &&
+              envAfter.contains(QStringLiteral("OTHER=keepme")) &&
+              envAfter.count(QStringLiteral("CLOUDFLARE_API_TOKEN=rotated")) == 1,
+          ".env.production rotation replaces the token and keeps every secret");
+    const QString envAppended = forkmesh::control::updatedEnvAssignment(
+        QStringLiteral("ADMIN_PATH=/secret-admin\n\n"),
+        QStringLiteral("CLOUDFLARE_ACCOUNT_ID"), QStringLiteral("acct1"));
+    check(envAppended ==
+              QStringLiteral("ADMIN_PATH=/secret-admin\n"
+                             "CLOUDFLARE_ACCOUNT_ID=acct1\n") &&
+              forkmesh::control::updatedEnvAssignment(
+                  QStringLiteral("ADMIN_PATH=/secret-admin\n"),
+                  QStringLiteral("CLOUDFLARE_API_TOKEN"),
+                  QStringLiteral("line\ninjected")) ==
+                  QStringLiteral("ADMIN_PATH=/secret-admin\n"),
+          "a missing assignment is appended and a multi-line value is refused");
+
     QTemporaryDir hostSettingsDir;
     const QString hostSettingsPath =
         hostSettingsDir.filePath(QStringLiteral("controller.ini"));

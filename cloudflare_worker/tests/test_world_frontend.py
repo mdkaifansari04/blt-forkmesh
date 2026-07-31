@@ -431,7 +431,7 @@ def test_self_profile_has_follower_avatars_and_activitypub_selfie_composer():
             timer
             not in APP[
                 APP.index("  async loadWorldFediverseProfile(target = {}) {"):
-                APP.index("  applyWorldLayoutEditor() {")
+                APP.index("  applyAdminElementsAccess() {")
             ]
         )
 
@@ -550,6 +550,42 @@ def test_presence_pongs_do_not_trigger_full_avatar_or_capacity_rebuilds():
     assert "if (peersChanged) this.schedulePeerRender()" in receiver
     assert 'message.type === "move"' in receiver
     assert 'message.type === "ping"' not in receiver
+
+
+def test_handshakes_are_offered_from_one_profile_and_answered_by_the_peer():
+    # The greeting is offered from the visitor's own profile panel, so it is
+    # always addressed at exactly the avatar the visitor selected.
+    assert "data-world-handshake-offer" in APP
+    assert "data-world-handshake-accept" in APP
+    assert "data-world-handshake-decline" in APP
+    assert "offerWorldHandshake(peerId)" in APP
+    assert "answerWorldHandshake(peerId, accepted)" in APP
+    assert '"handshake-offer",\n        "handshake-accept",' in APP
+    # Offers are live-socket state on both ends: they expire, and a peer who
+    # leaves takes their open greeting with them.
+    assert "WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000" in APP
+    assert "this.pendingHandshakes = new Map()" in APP
+    assert "this.sentHandshakeOffers = new Map()" in APP
+    assert "pruneWorldHandshakes()" in APP
+    receiver = APP[
+        APP.index("  receivePresence(message) {"):
+        APP.index(
+            "\n  setupBroadcastChannel()",
+            APP.index("  receivePresence(message) {"),
+        )
+    ]
+    assert "this.pendingHandshakes.delete(departed)" in receiver
+    assert 'message.kind === "handshake-offer"' in receiver
+    assert 'message.kind === "handshake-decline"' in receiver
+    # Only an accepted handshake animates for everyone, and it names both
+    # halves of the pair so each browser poses the same two avatars.
+    assert 'message.kind === "handshake" &&' in receiver
+    assert "this.playWorldHandshake(accepterId, offererId)" in receiver
+    assert "function playHandshake(peerId, partnerId)" in SCENE
+    assert "function startAvatarHandshake(avatar" in SCENE
+    assert "function poseHandshakingArm(arm, rest, angle)" in SCENE
+    assert "AVATAR_HANDSHAKE_DURATION_MS = 2200" in SCENE
+    assert "playHandshake," in SCENE
 
 
 def test_world_hud_omits_the_redundant_repository_node_and_player_counts():
@@ -2369,7 +2405,6 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "system-capacity-database-tables" in SCENE
     assert 'systemCapacityPlatform.userData.officeFloorId = "infrastructure"' in SCENE
     assert "infrastructureFloor.add(systemCapacityPlatform);" in SCENE
-    assert 'registerMovableObject("system-capacity-platform"' not in SCENE
     assert "Math.log1p(table.rowCount)" in SCENE
     # Every table the Worker counted is drawn, empty ones included, up to the
     # same ceiling the Worker itself enumerates.

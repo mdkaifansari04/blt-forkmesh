@@ -6515,7 +6515,9 @@ forkmesh-world.world-office-active .world-quick-dock {
 
 .world-settings-tabs {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* Five tabs for administrators, four for everyone else: let the strip
+     decide its own column count and wrap instead of hard-coding three. */
+  grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   margin-top: 16px;
   border: 1px solid var(--world-line);
 }
@@ -6545,6 +6547,138 @@ forkmesh-world.world-office-active .world-quick-dock {
 
 .world-settings-pane[hidden] {
   display: none;
+}
+
+/* Debug tab: the same graded one-second readouts as the floating pill, laid
+   out with room to read, plus ranked improvement suggestions. */
+.world-debug-live {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0 0;
+  font-size: 0.72rem;
+}
+
+.world-debug-live > div {
+  display: grid;
+  grid-template-columns: 96px minmax(0, 1fr);
+  gap: 8px;
+  border-top: 1px solid var(--world-line);
+  padding-top: 6px;
+}
+
+.world-debug-live dt {
+  color: var(--world-mint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.world-debug-live dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--world-copy);
+}
+
+.world-debug-suggestions {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0 0 0 18px;
+  font-size: 0.74rem;
+  line-height: 1.5;
+  color: var(--world-copy);
+}
+
+.world-debug-suggestions li::marker {
+  color: var(--world-muted);
+}
+
+.world-debug-suggestions li[data-level="good"] {
+  color: var(--world-mint);
+}
+
+.world-debug-suggestions li[data-level="caution"] {
+  color: var(--world-sun);
+}
+
+.world-debug-suggestions li[data-level="high"] {
+  color: var(--world-danger);
+}
+
+/* Elements tab: one switch per registered world element, grouped by kind. */
+.world-element-master {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.world-element-master button {
+  min-height: 34px;
+  border: 1px solid var(--world-line);
+  background: #0a1915;
+  color: var(--world-copy);
+  cursor: pointer;
+  font: 0.62rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-element-master button:hover,
+.world-element-master button:focus-visible {
+  background: #12332a;
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-element-category {
+  margin-top: 12px;
+}
+
+.world-element-category h4 {
+  margin: 0 0 2px;
+  color: var(--world-muted);
+  font: 700 0.6rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.world-element-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  border-top: 1px solid var(--world-line);
+  padding: 4px 0;
+  cursor: pointer;
+}
+
+.world-element-row input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--world-mint);
+}
+
+.world-element-copy {
+  display: grid;
+  min-width: 0;
+}
+
+.world-element-copy strong {
+  color: var(--world-copy);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.world-element-copy small {
+  color: var(--world-muted);
+  font-size: 0.62rem;
+}
+
+.world-element-row[data-enabled="false"] .world-element-copy strong {
+  color: var(--world-muted);
+  text-decoration: line-through;
 }
 
 .world-work-stats {

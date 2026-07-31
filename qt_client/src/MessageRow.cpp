@@ -314,6 +314,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
                 QAction *copyAction = menu->addAction("Copy");
                 connect(copyAction, &QAction::triggered, this,
                         [this] { QApplication::clipboard()->setText(m_message.text); });
+                QAction *sendToComposerAction = menu->addAction("Send to Composer");
+                connect(sendToComposerAction, &QAction::triggered, this,
+                        [this] { emit sendToComposerRequested(m_message.text); });
             }
             if (showEdit) {
                 QAction *editAction = menu->addAction("Edit");
