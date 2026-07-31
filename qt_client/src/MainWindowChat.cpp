@@ -460,9 +460,10 @@ QWidget *MainWindow::buildChatPage()
     // Agents is deliberately absent here: it lives on the window-chrome line
     // beside its live fleet matrix (see buildBreadcrumb). Listing it would
     // re-parent the button into the rail and silently undo that placement.
+    // Log lives in the bottom utility group, under Settings, instead of here.
     for (QPushButton *button :
          {m_reposNavButton, m_tasksNavButton, m_chatButton,
-          m_controlNodeNavButton, m_logNavButton, m_networkNavButton}) {
+          m_controlNodeNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
             railButton->setCompact(false);
             railButton->setFixedSize(kRailItemWidth, 40);
@@ -494,6 +495,13 @@ QWidget *MainWindow::buildChatPage()
         m_appNavigationRailLayout->addWidget(host, 0, Qt::AlignHCenter);
     };
     addUtility(m_settingsNavButton, QStringLiteral("Settings"));
+    // Log sits directly under Settings in the bottom utility group rather than
+    // among the primary destinations above the stretch.
+    if (auto *logRailButton = dynamic_cast<ActivityRailButton *>(m_logNavButton)) {
+        logRailButton->setCompact(false);
+        logRailButton->setFixedSize(kRailItemWidth, 40);
+    }
+    m_appNavigationRailLayout->addWidget(m_logNavButton, 0, Qt::AlignLeft);
     addUtility(m_navDrawButton, QStringLiteral("Draw"));
     addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
     addUtility(m_navResizeButton, QStringLiteral("Resize"));
