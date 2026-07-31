@@ -57,8 +57,8 @@ def test_billboards_use_one_aligned_perimeter():
         "worldQaBoard",
     ):
         assert f"placeBillboardOnIsland({object_name}" in SCENE or (
-            object_name in SCENE and "placeBillboardOnIsland(board, layoutId)"
-            in SCENE
+            object_name in SCENE
+            and "placeBillboardOnIsland(board))" in SCENE
         )
 
 
