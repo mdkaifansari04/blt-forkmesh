@@ -840,7 +840,16 @@ void MainWindow::refreshSourceControl(bool force)
             actionsLayout->addWidget(open);
             h->addWidget(actions);
             w->setActionsWidget(actions);
-            w->onClicked = [this, item] { m_scmTree->setCurrentItem(item); };
+            // setCurrentItem() alone only shows the diff via currentItemChanged,
+            // which Qt does not emit when this row is already the current item
+            // (e.g. the user switched the right pane to a branch/PR view, then
+            // clicked back on the still-selected file). Show the diff directly
+            // so a click always does, regardless of prior selection state.
+            const bool staged = r.staged;
+            w->onClicked = [this, item, path, staged, untracked] {
+                m_scmTree->setCurrentItem(item);
+                showScmDiff(path, staged, untracked);
+            };
             m_scmTree->setItemWidget(item, 0, w);
         }
         group->setExpanded(true);
