@@ -3077,11 +3077,56 @@ async def _record_status_deploy_sample(env, now):
     )
 
 
+async def _claim_status_sample_minute(env, now):
+    """At-most-once gate for this minute's /status health sample.
+
+    Two independent schedulers call record_status_sample: the platform Cron
+    Trigger directly (the only per-minute schedule the platform itself
+    guarantees, so /status keeps landing samples even while Durable Objects
+    are wedged or over their free-tier quota) and the ForkMeshCronRunner
+    alarm batch. The daily/hourly rollups are checks-counter increments, so
+    a doubly-recorded minute would inflate an hour's coverage; whichever
+    caller INSERTs the minute's claim row first owns the sample and the
+    other returns without probing. D1's Python client exposes no reliable
+    changes() count, so the winner recognizes itself by reading back a
+    random token. Fails open on a claim-infrastructure error: a duplicated
+    minute costs one extra check count, while a skipped minute paints
+    public fake downtime.
+    """
+    minute_ts = (int(now) // STATUS_SAMPLE_WINDOW_MS) * STATUS_SAMPLE_WINDOW_MS
+    try:
+        rnd = js_crypto.getRandomValues(Uint8Array.new(16))
+        claim = "".join("%02x" % int(rnd[i]) for i in range(16))
+    except Exception:
+        claim = ("%032x" % int(Date.now()))[-32:]
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO system_status_sample_claim "
+            "(minute_ts, claim, claimed_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(minute_ts) DO NOTHING",
+            minute_ts, claim, int(now),
+        )
+        row = await d1_first(
+            env,
+            "SELECT claim FROM system_status_sample_claim WHERE minute_ts=?",
+            minute_ts,
+        )
+    except Exception:
+        return True
+    winner = str((row or {}).get("claim") or "")
+    return (not winner) or winner == claim
+
+
 async def record_status_sample(env):
-    # Called once a minute by the scheduled (cron) handler. Best-effort per
-    # system so one failing check can't blank the rest of the page.
+    # Called once a minute by the platform Cron Trigger (scheduled()) and by
+    # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
+    # exactly one of them record each minute. Best-effort per system so one
+    # failing check can't blank the rest of the page.
     await ensure_schema(env)
     now = int(Date.now())
+    if not await _claim_status_sample_minute(env, now):
+        return
     if await _status_deploy_semaphore_active(env, now):
         await _record_status_deploy_sample(env, now)
         return
@@ -3288,9 +3333,17 @@ async def record_status_sample(env):
     except Exception as exc:
         # The aggregate Git-hosting row already reports a registry query
         # failure. Do not fabricate per-node identities when the authoritative
-        # registry itself could not be read.
-        console.warn(
-            "status mirror registry query failed: " + _safe_error_text(exc))
+        # registry itself could not be read. Workers Logs stays off, so the
+        # failure goes straight to Sentry (best-effort — never let telemetry
+        # sink the sample; an error_log row here would also turn a registry
+        # hiccup into a red "errors" minute).
+        try:
+            await capture_sentry_error(
+                env, 500, "scheduled", "/cron/record-status-sample",
+                "status mirror registry query failed: "
+                + _safe_error_text(exc), error=exc)
+        except BaseException:
+            pass
 
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
@@ -3346,9 +3399,15 @@ async def record_status_sample(env):
         await _record_status_monitor_transitions(
             env, ok, reason, now, status_systems)
     except Exception as exc:
-        console.warn(
-            "record_status_monitor_transitions failed: " +
-            _safe_error_text(exc))
+        # Same reasoning as the registry read above: Sentry-only visibility,
+        # never an error_log row and never a raised sample.
+        try:
+            await capture_sentry_error(
+                env, 500, "scheduled", "/cron/record-status-sample",
+                "record_status_monitor_transitions failed: "
+                + _safe_error_text(exc), error=exc)
+        except BaseException:
+            pass
     # Retention prunes only need to run occasionally, not 60x/hour: sweep on
     # the first sample of each hour.
     if now - hour_ts < STATUS_SAMPLE_WINDOW_MS:
@@ -3362,6 +3421,11 @@ async def record_status_sample(env):
         )
         await d1_run(
             env, "DELETE FROM system_status_minute WHERE minute_ts < ?",
+            minute_ts - STATUS_MINUTE_RETAIN_MS,
+        )
+        await d1_run(
+            env,
+            "DELETE FROM system_status_sample_claim WHERE minute_ts < ?",
             minute_ts - STATUS_MINUTE_RETAIN_MS,
         )
 
@@ -41901,11 +41965,45 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
-        # Keep the platform Cron Trigger deliberately tiny. It starts (and then
-        # once a minute reconciles) a singleton Durable Object alarm. The alarm
-        # re-arms itself before work, so a stateless Python wrapper poisoned by
-        # another request or a killed maintenance batch cannot stop the runner.
-        await _cron_runner_kick(self.env)
+        # The platform Cron Trigger does two things, cheapest and most public
+        # first.
+        #
+        # (1) It records the /status health sample DIRECTLY. The trigger is
+        # the only per-minute schedule the platform itself guarantees, so the
+        # public minute strip must not depend on the Durable Object subsystem
+        # being healthy: a wedged runner isolate or exhausted free-tier DO
+        # allowance left multi-hour "no health sample was recorded" gaps that
+        # read as fake downtime. The per-minute claim inside
+        # record_status_sample keeps this sample and the runner's own from
+        # double-counting an hour's checks — whichever lands first wins.
+        try:
+            await record_status_sample(self.env)
+        except BaseException as error:
+            try:
+                await log_cron_error(
+                    self.env, "/cron/record-status-sample",
+                    "record_status_sample failed: " + _safe_error_text(error),
+                    error=error)
+            except BaseException:
+                pass
+        # (2) It starts (and then once a minute reconciles) the singleton
+        # Durable Object alarm that owns every other maintenance job. The
+        # alarm re-arms itself before work, so a stateless Python wrapper
+        # poisoned by another request or a killed maintenance batch cannot
+        # stop the runner. A failed kick must not erase the sample above or
+        # hide behind it: it is captured to Sentry only (an error_log row
+        # would paint the "errors" system red for a DO-plan-limit condition
+        # the independent watchdog already emails about).
+        try:
+            await _cron_runner_kick(self.env)
+        except BaseException as error:
+            try:
+                await capture_sentry_error(
+                    self.env, 500, "scheduled", "/cron/runner-kick",
+                    "cron runner kick failed: " + _safe_error_text(error),
+                    error=error)
+            except BaseException:
+                pass
 
     async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
         # Cron trigger (every minute, see [triggers] in wrangler.toml).
@@ -44679,8 +44777,15 @@ class ForkMeshCronRunner(DurableObject):
                 _safe_error_text(error)[:1000],
             )
             await self.ctx.storage.put("last_failure_at", int(Date.now()))
+            # Workers Logs stays off, so a swallowed batch failure would
+            # otherwise be invisible: send it straight to Sentry. Best-effort
+            # — the already-armed successor alarm must survive a Sentry
+            # outage too.
             try:
-                print("cron runner alarm failed: " + _safe_error_text(error))
+                await capture_sentry_error(
+                    self.env, 500, "alarm", "/cron-runner/alarm",
+                    "cron runner alarm failed: " + _safe_error_text(error),
+                    error=error)
             except BaseException:
                 pass
             return

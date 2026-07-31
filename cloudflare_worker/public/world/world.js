@@ -973,8 +973,30 @@ function randomId() {
   }
 }
 
+// The stored session carries the account's avatarPng (tens of KB of base64)
+// and hot paths consult the session several times a second, so re-parsing the
+// blob on every read allocated tens of KB per call in heap profiling. Parse
+// once per distinct stored string: writers go through storeWorldSession and
+// cross-tab edits both change the raw string, which misses the memo and
+// re-parses. Callers treat the parsed session as read-only.
+let readSessionMemoRaw;
+let readSessionMemoValue = null;
 function readSession() {
-  return readJSON(localStorage, "forkmesh.session", null);
+  let raw = null;
+  try {
+    raw = localStorage.getItem("forkmesh.session");
+  } catch (_) {
+    return null;
+  }
+  if (raw === readSessionMemoRaw) return readSessionMemoValue;
+  readSessionMemoRaw = raw;
+  try {
+    const value = JSON.parse(raw || "null");
+    readSessionMemoValue = value && typeof value === "object" ? value : null;
+  } catch (_) {
+    readSessionMemoValue = null;
+  }
+  return readSessionMemoValue;
 }
 
 function validWorldSession() {
@@ -5346,6 +5368,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
+    this.worldActivityLoungeRenderedMinute = -1;
     this.accountReturnFocus = null;
     this.settingsReturnFocus = null;
     this.officeMeeting = null;
@@ -6708,13 +6731,7 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.syncRecentIssueAssignments();
       this.applyWorldLayoutEditor();
-      this.world.updateNetworkNodes(
-        liveNodeRecordsWithActions(
-          this.network,
-          this.mirrorCatalogs,
-          this.mirrorActionRunsByNode,
-        ),
-      );
+      this.pushLiveMirrorNodes();
       this.world.updateFederatedInstances?.(this.federatedInstances);
       this.celebrateRecentInstance(this.federatedInstances);
       if (this.visitorStats) {
@@ -8792,12 +8809,6 @@ class ForkMeshWorld extends HTMLElement {
     if (statusResult.status === "fulfilled") {
       this.applySystemStatusBoard(statusResult.value);
     }
-    const liveMirrors = liveNodeRecordsWithActions(
-      this.network,
-      this.mirrorCatalogs,
-      this.mirrorActionRunsByNode,
-    );
-    this.liveMirrorNodes = liveMirrors;
     const rewardAddress = String(this.rewardState?.address || "").trim();
     this.landmarkCapabilities.fountain = {
       live:
@@ -8836,9 +8847,7 @@ class ForkMeshWorld extends HTMLElement {
       reason: LANDMARK_CONSTRUCTION_REASONS.events,
     };
     this.syncConstructionMarkers();
-    this.world?.updateNetworkNodes(
-      liveMirrors,
-    );
+    this.pushLiveMirrorNodes();
     this.world?.updateFederatedInstances?.(this.federatedInstances);
     this.world?.updateBots(this.botDirectory);
     this.world?.updateOrganizations(this.organizations);
@@ -10124,10 +10133,8 @@ class ForkMeshWorld extends HTMLElement {
         const nodeName = String(
           mirrorNodeButton.dataset.worldMirrorNode || "",
         ).toLowerCase();
-        const node = liveNodeRecordsWithActions(
-          this.network,
-          this.mirrorCatalogs,
-          this.mirrorActionRunsByNode,
+        const node = (
+          Array.isArray(this.liveMirrorNodes) ? this.liveMirrorNodes : []
         ).find((candidate) => candidate.name.toLowerCase() === nodeName);
         if (node) {
           this.openMirrorNodeDetail(node, {
@@ -12876,6 +12883,22 @@ class ForkMeshWorld extends HTMLElement {
     return this.statusBoardLoad;
   }
 
+  // Normalizing the mirror catalog into live node records walks every
+  // payload, sorts and slices every node's repositories, and clones every
+  // action run — expensive enough that read-only consumers (the activity
+  // ticker, the lounge's mirror lookup) must never trigger it themselves.
+  // Build once here, cache for those readers, and push to the scene.
+  pushLiveMirrorNodes() {
+    const liveMirrors = liveNodeRecordsWithActions(
+      this.network,
+      this.mirrorCatalogs,
+      this.mirrorActionRunsByNode,
+    );
+    this.liveMirrorNodes = liveMirrors;
+    this.world?.updateNetworkNodes(liveMirrors);
+    return liveMirrors;
+  }
+
   async refreshMirrorCatalogs({ force = false } = {}) {
     const payload = await this.fetchMirrorCatalog({ force });
     this.mirrorCatalogs = [
@@ -12885,12 +12908,7 @@ class ForkMeshWorld extends HTMLElement {
         requestedRepo: FLAGSHIP_REPOSITORY.repo,
       },
     ];
-    const liveMirrors = liveNodeRecordsWithActions(
-      this.network,
-      this.mirrorCatalogs,
-      this.mirrorActionRunsByNode,
-    );
-    this.world?.updateNetworkNodes(liveMirrors);
+    this.pushLiveMirrorNodes();
   }
 
   startMirrorPolling() {
@@ -12911,13 +12929,7 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       if (this.mirrorActionRunsByNode.size) {
         this.mirrorActionRunsByNode.clear();
-        this.world?.updateNetworkNodes(
-          liveNodeRecordsWithActions(
-            this.network,
-            this.mirrorCatalogs,
-            this.mirrorActionRunsByNode,
-          ),
-        );
+        this.pushLiveMirrorNodes();
       }
       return false;
     }
@@ -12940,13 +12952,7 @@ class ForkMeshWorld extends HTMLElement {
     if (!normalized) return false;
     this.mirrorActionRunsByNode.clear();
     this.mirrorActionRunsByNode.set(normalized.node, normalized.runs);
-    this.world?.updateNetworkNodes(
-      liveNodeRecordsWithActions(
-        this.network,
-        this.mirrorCatalogs,
-        this.mirrorActionRunsByNode,
-      ),
-    );
+    this.pushLiveMirrorNodes();
     return true;
   }
 
@@ -25612,7 +25618,11 @@ class ForkMeshWorld extends HTMLElement {
 
   startActivityTicker() {
     const messages = () => {
-      const nodes = liveNodeRecords(this.network, this.mirrorCatalogs);
+      // Read the cached records: rebuilding the normalized mirror catalog
+      // every 6.5s tick just to name one node dominated idle allocations.
+      const nodes = Array.isArray(this.liveMirrorNodes)
+        ? this.liveMirrorNodes
+        : [];
       const repos = this.repositories;
       const output = [
         nodes.length
@@ -25843,6 +25853,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
+    this.worldActivityLoungeRenderedMinute = -1;
     // Signing out drops the account's active-time row off the player's own
     // chest instead of freezing the last reading there.
     if (this.identity) this.identity.totalActiveMs = null;
@@ -25939,6 +25950,7 @@ class ForkMeshWorld extends HTMLElement {
       : String(ticket.ticket || "");
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
+    this.worldActivityLoungeRenderedMinute = -1;
     this.syncCurrentWorldActivity();
     return true;
   }
@@ -25986,7 +25998,18 @@ class ForkMeshWorld extends HTMLElement {
     const renderedSecond = Math.floor(this.currentWorldActivityMs() / 1000);
     if (renderedSecond === this.worldActivityRenderedSecond) return;
     this.worldActivityRenderedSecond = renderedSecond;
-    this.syncMemberLounge();
+    // The lounge renders whole-minute activity (leaderboardMembers quantizes
+    // totals), yet this one-second tick was rebuilding it on every call:
+    // hundreds of member-fact derivations, per-avatar badge keys, and the
+    // leaderboard repaint key stringify each second for output that could
+    // not have changed. Membership and presence changes reach the lounge
+    // through their own syncMemberLounge call sites, so this path only needs
+    // to fire when the rendered minute advances.
+    const renderedLoungeMinute = Math.floor(renderedSecond / 60);
+    if (renderedLoungeMinute !== this.worldActivityLoungeRenderedMinute) {
+      this.worldActivityLoungeRenderedMinute = renderedLoungeMinute;
+      this.syncMemberLounge();
+    }
     this.syncOwnBadgeActivity();
   }
 
@@ -26017,6 +26040,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
+    this.worldActivityLoungeRenderedMinute = -1;
     this.syncMemberLounge();
 
     const session = validWorldSession();
