@@ -2351,6 +2351,22 @@ test("World chat keeps five replayed messages lazy and its prompt in view", asyn
   await expect(page.locator(".chat-history-indicator")).toContainText(
     "7 earlier messages",
   );
+  // Oldest at the top, newest on the bottom rail, with the "earlier messages"
+  // handle above the first row and the feed parked at the latest line.
+  const feedOrder = await page.locator("#fullChatMessages").evaluate((element) => {
+    const rows = Array.from(element.querySelectorAll(".chat-message-row"));
+    const indicator = element.querySelector(".chat-history-indicator");
+    return {
+      texts: rows.map((row) => row.querySelector("p")?.textContent?.trim() || ""),
+      indicatorFirst: element.firstElementChild === indicator,
+      atBottom:
+        element.scrollHeight - element.scrollTop - element.clientHeight <= 2,
+    };
+  });
+  expect(feedOrder.indicatorFirst).toBe(true);
+  expect(feedOrder.atBottom).toBe(true);
+  expect(feedOrder.texts[0]).toContain("Retained message 8.");
+  expect(feedOrder.texts.at(-1)).toContain("Edited retained message 12.");
   await expect(page.locator("#fullChatInput")).toBeInViewport();
 
   const geometry = await terminal.evaluate((element) => {

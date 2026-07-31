@@ -2731,6 +2731,12 @@ const QString kDefaultRoomName = forkmesh::mainnode::kDefaultRoomName;
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
+// Last repo-detail tab actually viewed (updated by recordNavLocation()); a
+// restart restores this instead of Settings -> General's "open repositories
+// on tab" preference, which is meant for switching repos mid-session, not for
+// where the app happens to relaunch (adhoc #101).
+const QString kLastRepoDetailTabSetting =
+    QStringLiteral("repositories/lastOpenDetailTab");
 // Issue looper (adhoc #125): persist the running state so a restart resumes the
 // loop on the same repo with the same provider instead of silently dropping it.
 const QString kLooperActiveSetting = QStringLiteral("looper/active");
