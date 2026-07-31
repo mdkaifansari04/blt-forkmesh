@@ -1313,6 +1313,14 @@ private:
         QString *error = nullptr, bool restartRunningGateway = false);
     void startDirectMirrorServices();
     void stopDirectMirrorServices();
+    // Startup auto-start for provisioned direct HTTPS mirrors (gated by
+    // control/autoStartMirrorServices, default on): re-establishes the
+    // gateway + Tunnel + registration after a restart without anyone
+    // clicking "Start mirror services" — a headless VPS has nobody to click.
+    void maybeAutoStartDirectMirrorServices();
+    // Arms the 5-minute health/registration recheck once; normally created
+    // with the Control Node page, which a headless node never builds.
+    void ensureDirectMirrorRegistrationTimer(QObject *parent);
     void registerDirectMirrorEndpoint();
     void checkDirectMirrorGatewayHealth();
     void appendControlNodeOutput(const QString &text);

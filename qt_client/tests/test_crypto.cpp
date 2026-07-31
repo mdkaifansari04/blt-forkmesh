@@ -6621,6 +6621,13 @@ int main(int argc, char *argv[])
               "nothing is pruned under the limit, and keep=0 still spares the "
               "newest snapshot");
 
+        // The hourly toggle's unset-default is platform-shaped: a desktop
+        // wants the safety net, an unattended VPS must not fill its disk with
+        // a day of ~1GB tarballs (operators opt in explicitly instead).
+        check(forkmesh::autoBackupDefault(false) &&
+                  !forkmesh::autoBackupDefault(true),
+              "hourly backups default on for desktops and off headless");
+
         const QDateTime now =
             QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
                                   Qt::ISODate);

@@ -2915,9 +2915,11 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
-// backups). On by default: the snapshot is small (identity, account and every
-// local store, minus the re-downloadable mirrors) and it is the only thing
-// standing between a corrupted store and a lost account key.
+// backups). On by default on the desktop — the snapshot is the only thing
+// standing between a corrupted store and a lost account key — but OFF by
+// default headless: a rolling day of ~1GB tarballs filled several small VPS
+// disks (see forkmesh::autoBackupDefault). An explicit true still enables
+// backups on a headless node.
 const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
 // How many hourly snapshots are kept before the oldest is pruned.
 const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");

@@ -718,7 +718,15 @@ QWidget *MainWindow::buildControlNodeSection()
         }
     });
     m_controlNodeRefreshTimer->start();
-    m_directMirrorRegistrationTimer = new QTimer(page);
+    ensureDirectMirrorRegistrationTimer(page);
+    return page;
+}
+
+void MainWindow::ensureDirectMirrorRegistrationTimer(QObject *parent)
+{
+    if (m_directMirrorRegistrationTimer)
+        return;
+    m_directMirrorRegistrationTimer = new QTimer(parent);
     m_directMirrorRegistrationTimer->setInterval(5 * 60 * 1000);
     connect(m_directMirrorRegistrationTimer, &QTimer::timeout, this,
             [this] {
@@ -726,7 +734,6 @@ QWidget *MainWindow::buildControlNodeSection()
                 registerDirectMirrorEndpoint();
             });
     m_directMirrorRegistrationTimer->start();
-    return page;
 }
 
 void MainWindow::openCloudflareSetupFromSystemLink(const QString &target)
@@ -1252,6 +1259,49 @@ void MainWindow::startControlNodeServing()
     logSystem(QStringLiteral(
         "Control node: repository update channels requested."));
     refreshControlNode();
+}
+
+void MainWindow::maybeAutoStartDirectMirrorServices()
+{
+    QSettings settings;
+    if (!settings
+             .value(QStringLiteral("control/autoStartMirrorServices"), true)
+             .toBool())
+        return;
+    // Respect an explicitly parked node — the desktop's "Start mirror
+    // services" button is the deliberate un-park. Headless nodes are forced
+    // online in setHeadlessMode, so this never strands an unattended mirror.
+    if (m_nodeOffline)
+        return;
+    const QString hostname =
+        settings.value(QStringLiteral("control/cloudflareMirrorHostname"))
+            .toString()
+            .trimmed()
+            .toLower();
+    if (hostname.isEmpty())
+        return;
+    // Only a fully provisioned endpoint qualifies: the owner-only connector
+    // token proves provisionDirectMirrorEndpoint (or the installer) already
+    // ran here. Same regular-file/owner-only test the Tunnel launch applies.
+    const QFileInfo tokenInfo(directGatewayConnectorTokenPath());
+    const auto forbiddenPermissions =
+        QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+        QFileDevice::ExeGroup | QFileDevice::ReadOther |
+        QFileDevice::WriteOther | QFileDevice::ExeOther;
+    if (!tokenInfo.isFile() || tokenInfo.isSymLink() ||
+        (tokenInfo.permissions() & forbiddenPermissions))
+        return;
+    if ((m_mirrorGatewayProcess &&
+         m_mirrorGatewayProcess->state() != QProcess::NotRunning) ||
+        (m_cloudflaredProcess &&
+         m_cloudflaredProcess->state() != QProcess::NotRunning))
+        return;
+    logSystem(QStringLiteral(
+                  "Control node: auto-starting direct HTTPS mirror services "
+                  "for %1.")
+                  .arg(hostname));
+    ensureDirectMirrorRegistrationTimer(this);
+    startDirectMirrorServices();
 }
 
 void MainWindow::stopControlNodeServing()
