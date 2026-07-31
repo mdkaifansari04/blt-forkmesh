@@ -6636,12 +6636,15 @@ void MainWindow::refreshRepoSyncIndicators()
     refreshCommitMarkersIfStale();
 
     // The activity rail's Git icon spins while the open repo is pushing or
-    // publishing (adhoc #357).
+    // publishing (adhoc #357). A quiet background auto-sync (the periodic
+    // mirror refresh) must not light this up — it isn't something the user
+    // did, so a spinner tied to it reads as unexplained (adhoc #81).
     const int index = m_repoDetailIndex;
     if (m_railGitButton)
-        m_railGitButton->setSyncing(index >= 0 &&
-                                    (m_pushingRepos.contains(index) ||
-                                     m_syncingRepos.contains(index)));
+        m_railGitButton->setSyncing(
+            index >= 0 &&
+            (m_pushingRepos.contains(index) ||
+             (m_syncingRepos.contains(index) && !m_syncingRepos.value(index))));
 }
 
 // Canonicalize and hash the stdout of `git for-each-ref

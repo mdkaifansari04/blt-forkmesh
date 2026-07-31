@@ -1503,7 +1503,7 @@ void MainWindow::mirrorPreviewRepository(int index)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, false);
     refreshRepositoryList();
     setRepoDetailNotice("Creating permanent mirror...");
     logSystem(QStringLiteral("Mirror: promoting preview %1/%2 from %3 to %4.")
@@ -5288,7 +5288,7 @@ void MainWindow::syncPrivateRepository(int index, bool quiet)
     // retaining a collaborator.
     if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) &&
         repo.publishToNetwork) {
-        m_syncingRepos.insert(index);
+        m_syncingRepos.insert(index, quiet);
         refreshRepositoryList();
         requestPrivateRecipientBundles(
             repo, /*updateCollaboratorList=*/false,
@@ -5383,7 +5383,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
     const QString managedMirrorRoot = repositoryMirrorRoot();
 
     auto result = std::make_shared<PrivateSyncWorkerResult>();
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     // Recompute publication state before encryption/migration; private
     // repository names remain absent from public presence and catalogs.
     startRepoHosts();
@@ -5592,7 +5592,7 @@ void MainWindow::resealPrivateRepositoryRecipients(
     const QString vaultPath = privateIdentityVaultPath();
     const QString opaqueId = repo.privateReplicaId;
     auto result = std::make_shared<PrivateDownloadWorkerResult>();
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, false);
     refreshRepositoryList();
     QThread *worker = QThread::create(
         [result, replicaRoot, vaultPath, opaqueId, recipientBundles,
@@ -5691,7 +5691,7 @@ void MainWindow::downloadPrivateReplica(int index, bool quiet)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     ensurePrivateMirrorRecipientIdentityRegistered(
         [this, index, repo, quiet, unavailable](
@@ -5998,7 +5998,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     logSystem(QStringLiteral(
         "Public mirror: sealing %1/%2 with official age encryption; "
@@ -6422,7 +6422,7 @@ void MainWindow::syncRepository(int index, bool quiet)
     // subprocess runs — so clicking "Sync" flips the button to "Syncing…"
     // instantly and never blocks the GUI thread. The insert also guards
     // re-entrancy so a concurrent auto-sync can't start a second fetch on this repo.
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     if (!quiet) {
         const QString prefix =

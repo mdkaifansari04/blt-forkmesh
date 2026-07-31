@@ -6578,7 +6578,11 @@ private:
     qint64 m_releaseDownloadsFetchedMs = 0; // throttle: last fetch kick time
     // "owner/name" -> { times served through the mainnode, clones }.
     QHash<QString, QPair<int, int>> m_repoStats;
-    QSet<int> m_syncingRepos;
+    // value: true when this sync was started quietly (a background auto-sync,
+    // not a user-driven click) — refreshRepoSyncIndicators keeps those out of
+    // the rail's Git spinner so the icon only spins for activity the user
+    // actually cares about (adhoc #81).
+    QHash<int, bool> m_syncingRepos;
     QSet<int> m_pushingRepos;
     // "owner/name" repos with an SSH mirror push in flight (pushToSshMirrorRemotes),
     // so overlapping sync completions can't stack pushes to the same gateway.
