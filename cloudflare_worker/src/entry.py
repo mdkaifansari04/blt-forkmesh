@@ -9280,13 +9280,6 @@ WORLD_QA_CARDS = (
      "confirm one compact 45-degree robot screen appears in front with its "
      "provider, live state, task snapshot, and target node; confirm a "
      "non-Engineering member sees no agent terminal."),
-    ("world-object-click-keyboard-layout", "Click-selected World object editing",
-     "Click a movable Town object and confirm a restrained mint outline appears "
-     "while its related information opens in the side panel. As an is_admin "
-     "user, use all four arrow keys and confirm they nudge the selected object "
-     "relative to the camera; press R and Shift+R to rotate both ways. Confirm "
-     "the placement persists in a second browser. Drag the camera and use the "
-     "mouse wheel to confirm neither gesture moves or rotates the object."),
     ("world-member-click-detail", "Clickable World member information",
      "Click the body or chest of your own avatar and two other visible users, "
      "including one inside the Office. Confirm a subtle blue outline follows "
