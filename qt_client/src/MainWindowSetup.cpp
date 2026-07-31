@@ -3750,16 +3750,9 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
     runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
         setUpdateStatus("Rebuilding...");
-        // Cap parallelism by RAM, not just cores: cc1plus peaks well past
-        // 1 GB on the big Qt translation units, and an OOM kill during an
-        // in-place update can take out the RUNNING node — which nothing
-        // restarts (the fleet daemons run under nohup, no supervisor).
-        int jobs = QThread::idealThreadCount();
-        const qint64 totalRam = SystemStats::totalMemoryBytes();
-        if (totalRam > 0)
-            jobs = qBound(1, int(totalRam / (1536LL * 1024 * 1024)), jobs);
         runUpdateStepUser("cmake",
-                          {"--build", buildDir, "-j", QString::number(jobs)},
+                          {"--build", buildDir, "-j",
+                           QString::number(ramCappedBuildJobs())},
                           buildDir, [this, buildDir, appPath] {
             const QString built = builtExecutablePath(buildDir);
             installAndRelaunch(built, appPath);

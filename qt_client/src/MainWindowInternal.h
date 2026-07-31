@@ -19,7 +19,6 @@
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
 #include "ScrollJumpButtons.h"
-#include "CommitCommentStore.h"
 #include "DirectorySizeScan.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
@@ -4117,6 +4116,24 @@ inline QString brewPrefix(const QString &formula)
     return QString::fromUtf8(process.readAllStandardOutput()).trimmed();
 }
 #endif
+
+// How many parallel jobs a local qt_client build may use. cc1plus peaks
+// between 0.6 GB and 1.6 GB on the big MainWindow*.cpp translation units, so a
+// plain -j<cores> on a many-core box swamps physical RAM and shoves the whole
+// machine into swap — and an OOM kill during an in-place update can take out
+// the RUNNING node, which nothing restarts (the fleet daemons run under nohup,
+// no supervisor). Budget ~3 GiB of RAM per job, never exceeding the core
+// count. The Ninja-generator builds additionally gate the heavy targets'
+// compiles behind the forkmesh_heavy job pool (see qt_client/CMakeLists.txt);
+// this cap is what protects Makefile-generator builds, which ignore pools.
+inline int ramCappedBuildJobs()
+{
+    int jobs = QThread::idealThreadCount();
+    const qint64 totalRam = SystemStats::totalMemoryBytes();
+    if (totalRam > 0)
+        jobs = qBound(1, int(totalRam / (3LL * 1024 * 1024 * 1024)), jobs);
+    return jobs;
+}
 
 inline QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir,
                                const QString &buildType)
@@ -8508,11 +8525,8 @@ inline QString mirrorReleaseBlobPath(const QString &mirrorPath, const QString &h
 // artifacts a node can serve. Advertised to peers for the Mirror nodes view.
 // Returns -1 when the mirror path can't be read, so "unknown" (older peer) stays
 // distinct from a genuine zero; a store with no blobs yet counts as zero.
-inline int mirrorArtifactCount(const QString &mirrorPath)
+inline int releaseCasBlobCount(const QDir &casDir)
 {
-    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
-        return -1;
-    const QDir casDir(mirrorReleaseCasRoot(mirrorPath));
     if (!casDir.exists())
         return 0; // no artifacts stored yet
     int count = 0;
@@ -8528,6 +8542,24 @@ inline int mirrorArtifactCount(const QString &mirrorPath)
                 ++count;
     }
     return count;
+}
+inline int mirrorArtifactCount(const QString &mirrorPath)
+{
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return -1;
+    return releaseCasBlobCount(QDir(mirrorReleaseCasRoot(mirrorPath)));
+}
+// The same tally for a working copy: the standalone release publisher's
+// default CAS lives inside the checkout at .forkmesh/release-blobs (gitignored;
+// see .forkmesh/release.yml), not at <mirror>/forkmesh-releases. Lets the
+// source of truth — which may serve straight from its working copy with no
+// bare mirror at all — still report the artifacts it hosts.
+inline int checkoutArtifactCount(const QString &localPath)
+{
+    if (localPath.trimmed().isEmpty() || !QDir(localPath).exists())
+        return -1;
+    return releaseCasBlobCount(QDir(
+        QDir(localPath).filePath(QStringLiteral(".forkmesh/release-blobs/sha256"))));
 }
 
 // One release artifact blob physically stored in a node's mirror CAS, resolved
