@@ -3158,6 +3158,14 @@ private:
     void saveIssueTitleEdit();
     void cancelIssueTitleEdit();
     void promptNewIssue();
+    // promptNewIssue() with the compose page pre-filled. Kept as a separate
+    // name (not a defaulted overload) so promptNewIssue stays connectable to
+    // QPushButton::clicked.
+    void composeNewIssue(const QString &prefillTitle, const QString &prefillBody);
+    // Chat -> issue: file what someone said in chat as a repository issue.
+    // Asks which repository, then opens the pre-filled compose page there.
+    void promptIssueFromChatMessage(const QString &text, const QString &senderName,
+                                    qint64 timestampMs);
     void quickAddIssue();
     // Quick-add image attachment (issue #79): pick or paste an image in the footer
     // quick-add bar. In "No issue" mode the path is sent to the agent in its

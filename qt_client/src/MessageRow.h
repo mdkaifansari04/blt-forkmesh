@@ -33,6 +33,10 @@ public:
 signals:
     void reactionToggled(const QString &messageId, const QString &emoji);
     void editRequested(const QString &messageId, const QString &currentText);
+    // "Create issue" on any message (not just your own): file what was said in
+    // chat as a repository issue instead of retyping it on the Issues tab.
+    void createIssueRequested(const QString &text, const QString &senderName,
+                              qint64 timestampMs);
     void deleteRequested(const QString &messageId);
     // Admin moderation delete of someone else's message.
     void moderateDeleteRequested(const QString &messageId);

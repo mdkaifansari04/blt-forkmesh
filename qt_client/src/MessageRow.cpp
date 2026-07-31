@@ -293,6 +293,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     // qualifies for all three.
     if (!message.deleted) {
         const bool showCopy = !message.text.isEmpty();
+        // Filing someone else's bug report is the common case, so "Create
+        // issue" is offered on every message with text, not just your own.
+        const bool showCreateIssue = !message.text.isEmpty();
         // Edit stays author-only (you can only rewrite your own words).
         const bool showEdit = message.self && !message.text.isEmpty();
         // Delete is offered on EVERY message for an admin (a full moderation
@@ -302,7 +305,8 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         // is the ordinary author delete.
         const bool showModerateDelete = canModerate;
         const bool showSelfDelete = !canModerate && message.self;
-        if (showCopy || showEdit || showModerateDelete || showSelfDelete) {
+        if (showCopy || showCreateIssue || showEdit || showModerateDelete ||
+            showSelfDelete) {
             auto *menuButton = new QToolButton;
             menuButton->setObjectName("messageAction");
             menuButton->setText(QString::fromUtf8("\xE2\x8B\xAF")); // "⋯"
@@ -314,6 +318,14 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
                 QAction *copyAction = menu->addAction("Copy");
                 connect(copyAction, &QAction::triggered, this,
                         [this] { QApplication::clipboard()->setText(m_message.text); });
+            }
+            if (showCreateIssue) {
+                QAction *issueAction = menu->addAction("Create issue\xE2\x80\xA6");
+                connect(issueAction, &QAction::triggered, this, [this] {
+                    emit createIssueRequested(m_message.text,
+                                              m_message.senderName,
+                                              m_message.timestampMs);
+                });
             }
             if (showEdit) {
                 QAction *editAction = menu->addAction("Edit");
