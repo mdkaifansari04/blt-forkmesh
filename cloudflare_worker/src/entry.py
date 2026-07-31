@@ -15045,6 +15045,10 @@ async def _delete_repo_namespace(env, owner_bi, owner):
                 "DELETE FROM funds_received WHERE scope='project' AND key=?",
                 owner + "/" + repo)
     await d1_run(env, "DELETE FROM catalog_rate WHERE owner_bi=?", owner_bi)
+    # The account itself is going away, so its website-delete tombstones have
+    # nothing left to protect — keeping them would only block a re-registered
+    # account of the same name from publishing the same repo names.
+    await d1_run(env, "DELETE FROM repo_deletions WHERE owner_bi=?", owner_bi)
     await purge_catalog_related_caches()
 
 
