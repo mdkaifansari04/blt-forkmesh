@@ -567,7 +567,10 @@
         const repo = sourceOfTruth(group);
         return {
           repo,
-          key: repoKey(repo),
+          // Dedupe on the label, so a repo already listed under its
+          // organization does not come back a second time under the node that
+          // publishes it.
+          key: `${groupDisplayOwner(group)}/${repo.name || ""}`,
           href: repoPathUrl(repo),
           organization: false,
         };
@@ -613,8 +616,8 @@
     ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
       .filter((entry, index, values) =>
         values.findIndex((candidate) =>
-          repoKey(candidate.repo).toLowerCase() ===
-          repoKey(entry.repo).toLowerCase()) === index)
+          repoDisplayKey(candidate.repo).toLowerCase() ===
+          repoDisplayKey(entry.repo).toLowerCase()) === index)
       .slice(0, 8);
     container.innerHTML = `
       ${entries.length
