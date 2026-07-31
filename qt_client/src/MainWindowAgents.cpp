@@ -3973,6 +3973,16 @@ void MainWindow::updateAgentTotalSpend()
 void MainWindow::applyClaudeUsage(bool weekly, int percent)
 {
     const int pct = qBound(0, percent, 100);
+    // Replaying transcript history hands us the SAME figure once per rate_limit
+    // event: loadEarlierTranscriptEvents() → prependEarlierEvents() feeds a whole
+    // page of earlier events through handleEvent(), and each one built a QSettings
+    // (re-reading/parsing the ini) and wrote it back. The stall watchdog clocked
+    // that at ~1.0 s of frozen GUI for a single "load earlier" click (adhoc #93).
+    // Nothing below changes when the percentage hasn't moved, so drop the repeat.
+    int &lastPct = weekly ? m_claudeUsageLastWeekPct : m_claudeUsageLast5hPct;
+    if (lastPct == pct)
+        return;
+    lastPct = pct;
     // Feed the figure into the top-bar mini chart (issue #266) and cache it so it
     // survives a restart and renders on the very first frame. The detail-page
     // gauges were retired in issue #84 in favour of this single chart.
@@ -6703,6 +6713,8 @@ void MainWindow::purgeSessionState(int sessionId)
     if (m_agentDiffRenderedSession == sessionId) {
         m_agentDiffRenderedSession = -1;
         m_agentDiffLastHtml.clear();
+        m_agentDiffRenderKey.clear();
+        m_agentDiffRenderedPatch.clear();
     }
     if (m_agentLogSession == sessionId) {
         m_agentLogSession = -1;
@@ -9735,12 +9747,33 @@ void MainWindow::renderAgentDiff(int sessionId, const AgentDiffProbe &probe)
         return;
     const QString dir = sessionWorkdir(sessionId);
     const QString base = sessionDiffBase(sessionId, dir);
+    // Turning the patch into HTML is the expensive half of this function — the
+    // stall watchdog caught renderSplitDiffHtml() alone blocking the GUI thread
+    // for ~590 ms on a large session diff. It fires on every transcript burst
+    // while an agent streams, and the patch is usually byte-identical to the one
+    // we rendered a moment ago, so key the rendered HTML *and* its file table on
+    // the patch bytes and skip the whole render when nothing changed (adhoc #93).
+    // The setHtml skip below stayed, but it only saved the layout, not the build.
+    const QString renderKey = QString::number(sessionId) + QLatin1Char('\n') + dir +
+                              QLatin1Char('\n') + base;
+    static QList<DiffFileEntry> renderedFiles; // paired with m_agentDiffRenderKey
     QList<DiffFileEntry> files;
-    const QString html =
-        renderDiffHtml(QString::fromUtf8(probe.patch), files, dir, base, QString(),
-                       QString(), QHash<QString, QString>(), QSet<QString>());
-    const QString shown =
-        html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>") : html;
+    QString shown;
+    if (renderKey == m_agentDiffRenderKey && probe.patch == m_agentDiffRenderedPatch &&
+        !m_agentDiffLastHtml.isEmpty()) {
+        files = renderedFiles;
+        shown = m_agentDiffLastHtml;
+    } else {
+        const QString html =
+            renderDiffHtml(QString::fromUtf8(probe.patch), files, dir, base, QString(),
+                           QString(), QHash<QString, QString>(), QSet<QString>());
+        shown = html.isEmpty()
+                    ? QStringLiteral("<p style='color:#8b949e'>No changes yet.</p>")
+                    : html;
+        m_agentDiffRenderKey = renderKey;
+        m_agentDiffRenderedPatch = probe.patch;
+        renderedFiles = files;
+    }
     // Re-running setHtml when the rendered diff is byte-identical to what's
     // already on screen just re-freezes the UI for no visible change (this fires
     // on every transcript burst while an agent streams). Skip it when unchanged;

@@ -7707,27 +7707,61 @@ QString MainWindow::repoDefaultBranchFast() const
     // in the stall log when a transcript stream was being pumped at the same
     // time (adhoc #82). The unconfigured default branch only moves on branch
     // create/delete, so 5 s of staleness is harmless.
+    // Past 5 s the cache is still good as long as the ref store hasn't been
+    // touched: a filesystem-only fingerprint (refs/heads + packed-refs + HEAD)
+    // decides that without spawning anything. The 5 s expiry alone meant every
+    // agent-session selection past it paid the subprocess again, and the stall
+    // watchdog caught that spawn blocking the GUI thread for ~1.2 s while a
+    // transcript was streaming (adhoc #93).
     const qint64 now = QDateTime::currentSecsSinceEpoch();
+    auto stamp = [&dir](const QString &leaf) {
+        return QString::number(QFileInfo(QDir(dir).filePath(leaf))
+                                   .lastModified()
+                                   .toMSecsSinceEpoch());
+    };
+    const QString fingerprint = stamp(QStringLiteral("refs/heads")) +
+                                QLatin1Char('|') +
+                                stamp(QStringLiteral("packed-refs")) +
+                                QLatin1Char('|') + stamp(QStringLiteral("HEAD"));
     if (dir == m_defaultBranchFastCacheDir &&
         !m_defaultBranchFastCache.isEmpty() &&
-        now - m_defaultBranchFastCacheTime < 5) {
+        (now - m_defaultBranchFastCacheTime < 5 ||
+         fingerprint == m_defaultBranchFastCacheSig)) {
         return m_defaultBranchFastCache;
     }
+    // On a miss, ask only about the two names that decide the answer in every
+    // normal repo. repoDefaultBranch() below picks main, then master, ahead of
+    // anything else, so when either exists the full refs/heads/ enumeration —
+    // hundreds of entries once a repo accumulates agent branches — is wasted work.
     QStringList branches;
-    QByteArray out;
+    QByteArray probe;
     if (runGitCapture(dir,
-                      {"for-each-ref", "--format=%(refname:short)", "refs/heads/"},
-                      &out, nullptr)) {
-        for (const QString &line : QString::fromUtf8(out).split('\n')) {
-            const QString branch = line.trimmed();
-            if (!branch.isEmpty() && !branches.contains(branch))
-                branches.append(branch);
+                      {"for-each-ref", "--format=%(refname:short)",
+                       "refs/heads/main", "refs/heads/master"},
+                      &probe, nullptr)) {
+        for (const QString &line :
+             QString::fromUtf8(probe).split('\n', Qt::SkipEmptyParts))
+            branches.append(line.trimmed());
+    }
+    if (!branches.contains(QStringLiteral("main")) &&
+        !branches.contains(QStringLiteral("master"))) {
+        branches.clear();
+        QByteArray out;
+        if (runGitCapture(dir,
+                          {"for-each-ref", "--format=%(refname:short)", "refs/heads/"},
+                          &out, nullptr)) {
+            for (const QString &line : QString::fromUtf8(out).split('\n')) {
+                const QString branch = line.trimmed();
+                if (!branch.isEmpty() && !branches.contains(branch))
+                    branches.append(branch);
+            }
         }
     }
     const QString base = repoDefaultBranch(branches);
     m_defaultBranchFastCacheDir = dir;
     m_defaultBranchFastCache = base;
     m_defaultBranchFastCacheTime = now;
+    m_defaultBranchFastCacheSig = fingerprint;
     return base;
 }
 

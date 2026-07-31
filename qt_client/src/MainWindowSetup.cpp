@@ -60,19 +60,16 @@ void MainWindow::loadCachedAvatars()
     const QString dir = QStandardPaths::writableLocation(
                             QStandardPaths::AppDataLocation) +
                         "/avatars";
-    QDir d(dir);
-    if (!d.exists())
-        return;
-    QStringList paths;
-    const QFileInfoList files = d.entryInfoList({"*.png"}, QDir::Files);
-    for (const QFileInfo &fi : files)
-        paths.append(fi.absoluteFilePath());
-    if (paths.isEmpty())
+    if (!QDir(dir).exists())
         return;
     // Reading and PNG-decoding the whole cache inline blocked startup for ~1s
     // once a few dozen avatars accumulated (stall log: loadCachedAvatars ←
     // startSession). Decode to QImages on the thread pool; only the cheap
     // QImage→QPixmap hop runs back on the GUI thread.
+    // *Listing* the directory belongs on that worker too: entryInfoList stats
+    // every file, and on a cold cache dir with a few hundred avatars the
+    // readdir+stat sweep alone froze startup for ~860 ms (stall log:
+    // loadCachedAvatars → QDir::entryInfoList → getdents64) (adhoc #93).
     auto *watcher = new QFutureWatcher<QList<QPair<QString, QImage>>>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
         watcher->deleteLater();
@@ -92,13 +89,16 @@ void MainWindow::loadCachedAvatars()
         }
         refreshChatMembers();
     });
-    watcher->setFuture(QtConcurrent::run([paths] {
+    watcher->setFuture(QtConcurrent::run([dir] {
         const forkmesh::BackgroundScope activity(
             QStringLiteral("avatars"),
-            QStringLiteral("Decoding %1 avatar image(s)").arg(paths.size()));
+            QStringLiteral("Decoding cached avatar image(s)"));
         QList<QPair<QString, QImage>> decoded;
-        for (const QString &path : paths) {
-            QFile f(path);
+        // Names only (no QFileInfo stat per entry) — we open each file anyway.
+        const QStringList names =
+            QDir(dir).entryList({QStringLiteral("*.png")}, QDir::Files);
+        for (const QString &name : names) {
+            QFile f(QDir(dir).filePath(name));
             if (!f.open(QIODevice::ReadOnly))
                 continue;
             const QByteArray data = f.readAll();
@@ -3525,12 +3525,22 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     m_footerUpdateLog->append(html);
     // QTextEdit has no setMaximumBlockCount: trim the oldest lines by hand so a
     // long-running session can't grow the strip without bound.
+    // Drop them in ONE edit: removing a block at a time made QTextDocument
+    // re-lay-out the whole 300-line rich-text document per removed line, and the
+    // stall watchdog caught that quadratic loop freezing the GUI thread for
+    // ~520 ms when flushBackgroundOutcomes() flushed a burst of lines at once
+    // (stall log: setFooterUpdateLine → QTextCursor::deleteChar →
+    // QTextDocumentLayout::doLayout, adhoc #93). Selecting from the start of the
+    // document to the start of the first block we keep also swallows the
+    // separators the old per-block deleteChar() had to clean up.
     QTextDocument *doc = m_footerUpdateLog->document();
-    while (doc->blockCount() > kFooterLogSeedLines) {
-        QTextCursor trim(doc->firstBlock());
-        trim.select(QTextCursor::BlockUnderCursor);
+    if (const int excess = doc->blockCount() - kFooterLogSeedLines; excess > 0) {
+        QTextCursor trim(doc);
+        trim.beginEditBlock();
+        trim.movePosition(QTextCursor::Start);
+        trim.movePosition(QTextCursor::NextBlock, QTextCursor::KeepAnchor, excess);
         trim.removeSelectedText();
-        trim.deleteChar(); // the block separator left behind by the selection
+        trim.endEditBlock();
     }
     // Remember the full, untruncated line on the block just appended so the
     // no-wrap strip can still show it on hover and open the full Log at it on
