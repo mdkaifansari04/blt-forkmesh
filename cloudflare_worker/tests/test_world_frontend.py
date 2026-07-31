@@ -545,7 +545,9 @@ def test_presence_pongs_do_not_trigger_full_avatar_or_capacity_rebuilds():
         APP.index("\n  setupBroadcastChannel()", APP.index("  receivePresence(message) {"))
     ]
     assert "let peersChanged = false" in receiver
-    assert "if (peersChanged) this.renderPeers()" in receiver
+    # Roster changes coalesce into one deferred renderPeers() pass instead of
+    # a full member-directory rebuild per inbound movement frame.
+    assert "if (peersChanged) this.schedulePeerRender()" in receiver
     assert 'message.type === "move"' in receiver
     assert 'message.type === "ping"' not in receiver
 
@@ -2775,16 +2777,18 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         "    return Date.now() >= this.activityNoticesEnabledAt;\n"
         "  }"
     ) in APP
-    # Native chat already owns both message and system rows. The World accepts
-    # those signals for avatar/unread state without drawing a second overlay.
+    # Native chat owns the transcript rows; the floating bubble stack renders
+    # each signal at most once, only after the join grace, and system activity
+    # re-entering from the transcript never bounces back into it.
     handler = APP[
         APP.index("  handleWorldChatMessage = (event) => {"):
         APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
     ]
-    assert (
-        'if (data.type === "forkmesh:world-activity") return;' in handler
+    assert "transcript: false," in handler
+    assert handler.count("if (this.activityNoticesSettled()) {") == 2
+    assert handler.index("if (data.history === true) return;") < handler.index(
+        '{ kind: "chat", sender },'
     )
-    assert "this.activityNotice(" not in handler
     # The first notification/event reads still seed the seen sets, so nothing
     # already waiting at load is announced on a later poll either.
     announce = APP[
@@ -2795,9 +2799,7 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         "globalEvents.forEach((item) => this.seenWorldEvents.add(item.id));"
         in announce
     )
-    assert (
-        "if (announcements.length && this.activityNoticesSettled()) {" in announce
-    )
+    assert "if (!this.activityNoticesSettled()) return;" in announce
     # A mirror doorbell during the grace still arms the scene effect and the
     # catalog refresh; only its narration is held back.
     push = APP[

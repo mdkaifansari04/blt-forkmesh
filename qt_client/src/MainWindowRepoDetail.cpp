@@ -1304,6 +1304,32 @@ void MainWindow::downloadCurrentRepoZip()
          currentRef()});
 }
 
+// Every repo-scoped git helper — repoGitDir(), repoBranches(), repoDefaultBranch(),
+// and so everything built on them (mergeWorktreeIntoMain, removeWorktree, …) —
+// resolves against the repo the *detail view* currently holds. The Agents and
+// Worktrees surfaces are global, though: the session a user acts on is often not
+// the repo the detail page last loaded, and acting then reads a different repo's
+// checkout, HEAD and default branch. Bind the detail view to the repo first, then
+// act. This only reloads which repo the detail page holds; it doesn't switch the
+// visible page. Returns false when the bind didn't take (a load was already in
+// flight, or the record moved) — the caller must leave git alone in that case
+// rather than operate on someone else's checkout.
+bool MainWindow::bindRepoDetailToRepo(int repoIndex)
+{
+    if (repoIndex < 0 || repoIndex >= m_repositories.size())
+        return false;
+    // Copy the identity out before the load: openRepoDetail pumps the event loop
+    // over a dozen blocking git reads, and a roster callback landing in that pump
+    // can reallocate m_repositories (git-pump UAF family).
+    const QString owner = m_repositories.at(repoIndex).owner;
+    const QString name = m_repositories.at(repoIndex).name;
+    if (repoIndex != m_repoDetailIndex)
+        openRepoDetail(repoIndex);
+    return m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()
+           && m_repositories.at(m_repoDetailIndex).owner == owner
+           && m_repositories.at(m_repoDetailIndex).name == name;
+}
+
 void MainWindow::openRepoDetail(int repoIndex)
 {
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
@@ -7760,6 +7786,17 @@ QString MainWindow::repoDefaultBranchFast() const
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return QString();
+    // Short-lived cache mirroring repoBranches()'s: this runs on every
+    // agent-session selection, and even the cheap for-each-ref spawn showed up
+    // in the stall log when a transcript stream was being pumped at the same
+    // time (adhoc #82). The unconfigured default branch only moves on branch
+    // create/delete, so 5 s of staleness is harmless.
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (dir == m_defaultBranchFastCacheDir &&
+        !m_defaultBranchFastCache.isEmpty() &&
+        now - m_defaultBranchFastCacheTime < 5) {
+        return m_defaultBranchFastCache;
+    }
     QStringList branches;
     QByteArray out;
     if (runGitCapture(dir,
@@ -7771,7 +7808,11 @@ QString MainWindow::repoDefaultBranchFast() const
                 branches.append(branch);
         }
     }
-    return repoDefaultBranch(branches);
+    const QString base = repoDefaultBranch(branches);
+    m_defaultBranchFastCacheDir = dir;
+    m_defaultBranchFastCache = base;
+    m_defaultBranchFastCacheTime = now;
+    return base;
 }
 
 void MainWindow::loadBranchesAndTags()
@@ -7789,8 +7830,20 @@ void MainWindow::loadBranchesAndTags()
     // explicit branch pick (setRepoBranch) does.
     const QStringList branches = repoBranches();
     m_repoBranch = repoDefaultBranch(branches);
-    if (m_branchButton)
-        m_branchButton->setText(m_repoBranch.isEmpty() ? "HEAD" : m_repoBranch);
+    if (m_branchButton) {
+        const QString label = m_repoBranch.isEmpty() ? QStringLiteral("HEAD") : m_repoBranch;
+        m_branchButton->setText(label);
+        // Because the label is pinned, it is the ref being *browsed* — not
+        // necessarily what git has checked out. Say so on hover when the two have
+        // drifted apart, so an action that reports "it's on <branch>" doesn't
+        // silently contradict a button reading "main".
+        const QString head = repoHeadBranch();
+        m_branchButton->setToolTip(
+            head.isEmpty() || head == m_repoBranch
+                ? QStringLiteral("Switch branch")
+                : QStringLiteral("Browsing %1 — the checkout is on %2")
+                      .arg(label, head));
+    }
 
     if (m_branchesButton) {
         m_branchesButton->setText(

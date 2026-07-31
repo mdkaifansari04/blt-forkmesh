@@ -51,6 +51,11 @@ struct AgentDiffStat {
     // ask, 0 when it is clean).
     QString worktree;
     int dirty = -1;
+    // Line churn behind the Diff column's tiny red/green bar (adhoc #84): lines
+    // the session added and removed, -1 when there was nothing to count them
+    // from (no captured patch and no branch left to diff).
+    int added = -1;
+    int removed = -1;
 };
 
 #include <QElapsedTimer>
@@ -1152,6 +1157,12 @@ private:
     QWidget *buildOrganizationTasksSection();
     void refreshOrganizationTasks();
     void applyOrganizationTasks(const QJsonObject &payload);
+    // Tasks rail badge (adhoc #79). The open count is persisted, painted back
+    // onto the rail at launch, and refreshed in the background so it no longer
+    // takes a visit to the Tasks page to show a number.
+    void setOrganizationTaskBadge(int openCount);
+    void restoreOrganizationTaskBadge();
+    void refreshOrganizationTaskBadge();
     void renderOrganizationTaskDetail();
     void updateOrganizationTaskActions();
     void createOrganizationTask();
@@ -2401,6 +2412,10 @@ private:
     void persistVariablesFromTable();
 
     void openRepoDetail(int repoIndex);
+    // Point the detail view at `repoIndex` so the repo-scoped git helpers
+    // (repoGitDir/repoBranches/repoDefaultBranch) resolve against it. False when
+    // the bind didn't take — callers must not touch git then.
+    bool bindRepoDetailToRepo(int repoIndex);
     // Open a repo from the top-bar switcher: paint a spinner, then run the heavy
     // (synchronous) load on the next event-loop turn so the menu closes snappily.
     void openRepoDetailDeferred(int repoIndex);
@@ -2587,6 +2602,11 @@ private:
     void mergeWorktreeIntoMain(const QString &branch,
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
+    // The same merge for an agent session's branch, but bound to that session's
+    // repository first — the Agents tab is global, so the repo the detail view
+    // holds is often not the session's. False when the bind didn't take.
+    bool mergeAgentBranchIntoBase(int repoIndex, const QString &branch,
+                                  bool deleteAgent);
     // Merge the default branch into a worktree's branch, run inside that worktree,
     // so it picks up the latest from main without leaving its folder. baseArg lets a
     // caller name the base branch explicitly; callers that leave it empty fall back
@@ -3824,6 +3844,11 @@ private:
     // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
     // pull it immediately instead of waiting for the next auto-sync tick.
     void syncMirrorsBehindRoster();
+    // `git cat-file -e` probe with memoized positive answers, so the roster
+    // reconcile doesn't re-spawn git for the same converged tip on every peer
+    // hello (adhoc #82).
+    bool mirrorHasCommit(const QString &mirrorPath, const QString &commit);
+    QSet<QString> m_mirrorCommitsPresent; // "<mirrorPath>\x1f<commit>" seen present
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
     // for the three-minute auto-sync, so counts and content converge right away.
@@ -3954,6 +3979,10 @@ private:
     // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
     // MainWindow.cpp).
     QWidget *m_relayRadar = nullptr;
+    // Echoes the mesh's serving nodes into the dish as blips (m_radarNodes).
+    // `force` overrides the repo-scoped Mirror-nodes panel's claim on the dish,
+    // for the case where that panel has no repo to show.
+    void updateRelayRadarNodes(bool force = false);
     QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
     bool m_relayProbeInFlight = false;     // guard against overlapping probes
     qint64 m_lastWsLatencySampleMs = 0;    // when the room socket last ponged
@@ -4159,6 +4188,11 @@ private:
         int repoCount = 0;
     };
     QList<NodeMenuEntry> m_nodeMenuEntries;
+    // The mesh's real serving nodes (refreshNodesTable's filtered list), echoed
+    // as blips inside the relay radar. Without this the radar only ever showed
+    // nodes while the repo-detail Mirror-nodes tab happened to be open, so it
+    // swept an empty dish from launch (adhoc #79).
+    QList<NodeMenuEntry> m_radarNodes;
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
@@ -5043,6 +5077,13 @@ private:
     mutable QStringList m_branchesCache;
     mutable QString m_branchesCacheDir;
     mutable qint64 m_branchesCacheTime = 0;
+    // Same idea for repoDefaultBranchFast(): its `git for-each-ref` ran on every
+    // agent-session selection and the stall watchdog caught it blocking the GUI
+    // thread (adhoc #82). The default branch only moves on explicit
+    // configuration or branch create/delete, so a short cache is safe.
+    mutable QString m_defaultBranchFastCache;
+    mutable QString m_defaultBranchFastCacheDir;
+    mutable qint64 m_defaultBranchFastCacheTime = 0;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     // Top-bar "search everything" box and its floating results dropdown. The popup
     // is parented to the window (not the short top bar) so it isn't clipped, and is
@@ -5613,6 +5654,12 @@ private:
     // Guards scheduleAgentQueuePump()'s zero-timer against piling up one pump
     // per status/reload hook in a burst.
     bool m_agentQueuePumpScheduled = false;
+    // Sessions processAgentQueue() put back at the head of the queue while
+    // their persisted transcript loads off-thread (parsing a long session's
+    // events.jsonl on the GUI thread stalled the window >1 s, adhoc #82).
+    // Value: the m_agentQuietResume disposition of the deferred pass, restored
+    // when the load's completion re-drains the queue.
+    QHash<int, bool> m_agentQueueAwaitingEvents;
     // True while runDeferredStartup() drains the sessions initAgents() re-queued
     // after an app restart: resumed runs must NOT jump to the Agents tab the way
     // a fresh user-driven start does. At startup that jump forced a full cold
@@ -6571,7 +6618,11 @@ private:
     qint64 m_releaseDownloadsFetchedMs = 0; // throttle: last fetch kick time
     // "owner/name" -> { times served through the mainnode, clones }.
     QHash<QString, QPair<int, int>> m_repoStats;
-    QSet<int> m_syncingRepos;
+    // value: true when this sync was started quietly (a background auto-sync,
+    // not a user-driven click) — refreshRepoSyncIndicators keeps those out of
+    // the rail's Git spinner so the icon only spins for activity the user
+    // actually cares about (adhoc #81).
+    QHash<int, bool> m_syncingRepos;
     QSet<int> m_pushingRepos;
     // "owner/name" repos with an SSH mirror push in flight (pushToSshMirrorRemotes),
     // so overlapping sync completions can't stack pushes to the same gateway.

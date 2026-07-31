@@ -1391,10 +1391,9 @@ QWidget *MainWindow::buildNetworkLogDock()
                 Qt::QueuedConnection);
         });
 
-    // The live log and Background queue form one left-hand region. A definite
-    // divider comes after both, so Background can never drift into the prompt
-    // half. Each compact panel has the same rounded green border language as the
-    // prompt.
+    // The live log and Background queue form one left-hand region, butted
+    // together and ending where the prompt half begins. Each compact panel has
+    // the same rounded green border language as the prompt.
     auto *logPanel = new QFrame;
     logPanel->setObjectName(QStringLiteral("footerLogPanel"));
     auto *logPanelLayout = new QVBoxLayout(logPanel);
@@ -1413,21 +1412,21 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
-    leftRegionLayout->setSpacing(8);
+    // No gap between the log and the Background panel (adhoc #84): they are one
+    // region, and the strip of empty footer between their two borders only read
+    // as a seam.
+    leftRegionLayout->setSpacing(0);
     leftRegionLayout->addWidget(logPanel, 1);
     leftRegionLayout->addWidget(m_backgroundQueue, 0);
 
-    auto *footerDivider = new QFrame;
-    footerDivider->setObjectName(QStringLiteral("footerDivider"));
-    footerDivider->setFrameShape(QFrame::VLine);
-    footerDivider->setFixedWidth(1);
-
-    // Horizontal split: bordered log + Background, divider, then prompt.
+    // Horizontal split: bordered log + Background, then prompt. The hairline
+    // rule that used to sit between the two halves is gone (adhoc #84): every
+    // panel in the row already carries its own border, so the extra line was one
+    // divider too many.
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(8, 8, 8, 8);
     dockRow->setSpacing(8);
     dockRow->addWidget(leftRegion, 1);
-    dockRow->addWidget(footerDivider, 0);
     dockRow->addWidget(promptWrapper, 1);
 
     // Pin the footer to just the compact prompt's height (adhoc #107): the dock
@@ -5516,6 +5515,33 @@ void MainWindow::onRelayLatencySampled(int ms)
         static_cast<RelayRadarWidget *>(m_relayRadar)->setLatency(ms);
 }
 
+// Echo the mesh's serving nodes into the radar dish as blips (adhoc #79). The
+// repo-detail Mirror-nodes panel paints a repo-scoped set of blips (per-node
+// sync/integrity state, which only that panel knows) and wins while it is on
+// screen; everywhere else — including a freshly launched app that has never
+// opened a repo — the dish shows the node roster, so it no longer sweeps empty.
+// The ring only fits so many dots before they touch, so cap the fan-out and
+// keep the online nodes when the mesh is bigger than that.
+void MainWindow::updateRelayRadarNodes(bool force)
+{
+    if (!m_relayRadar)
+        return;
+    if (!force && m_mirrorNodesTable && m_mirrorNodesTable->isVisible())
+        return;
+    constexpr int kMaxRadarBlips = 16; // dots of ~5.6px around the r*0.8 ring
+    QVector<RelayRadarWidget::Blip> blips;
+    for (int pass = 0; pass < 2 && blips.size() < kMaxRadarBlips; ++pass) {
+        for (const NodeMenuEntry &e : std::as_const(m_radarNodes)) {
+            if (e.online != (pass == 0))
+                continue;
+            if (blips.size() >= kMaxRadarBlips)
+                break;
+            blips.append(RelayRadarWidget::Blip{e.name, e.online, false, false});
+        }
+    }
+    static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips(blips);
+}
+
 // Measure the round-trip latency to the active relay and feed it to the radar
 // readout. We GET the relay's lightweight /api/version endpoint (small JSON, no
 // Durable-Object fan-out) and time the request; a transport error or timeout
@@ -6609,12 +6635,15 @@ void MainWindow::refreshRepoSyncIndicators()
     refreshCommitMarkersIfStale();
 
     // The activity rail's Git icon spins while the open repo is pushing or
-    // publishing (adhoc #357).
+    // publishing (adhoc #357). A quiet background auto-sync (the periodic
+    // mirror refresh) must not light this up — it isn't something the user
+    // did, so a spinner tied to it reads as unexplained (adhoc #81).
     const int index = m_repoDetailIndex;
     if (m_railGitButton)
-        m_railGitButton->setSyncing(index >= 0 &&
-                                    (m_pushingRepos.contains(index) ||
-                                     m_syncingRepos.contains(index)));
+        m_railGitButton->setSyncing(
+            index >= 0 &&
+            (m_pushingRepos.contains(index) ||
+             (m_syncingRepos.contains(index) && !m_syncingRepos.value(index))));
 }
 
 // Canonicalize and hash the stdout of `git for-each-ref
@@ -10631,6 +10660,12 @@ void MainWindow::refreshNodesTable()
     // switcher list: every chat user account, world-chat guest and repo owner in
     // it was counted as a node, so a mesh of four nodes badged "21" (adhoc #26).
     updateNetworkCounts(-1, visible.size(), -1);
+    // Same filtered list feeds the relay radar's blips, so the dish shows the
+    // mesh from launch instead of only while a repo's Mirror-nodes tab is open
+    // (adhoc #79). Also runs before the page is built, for the same reason the
+    // count above does.
+    m_radarNodes = visible;
+    updateRelayRadarNodes();
     if (!m_nodesTable)
         return; // page not built yet — the count above is all that's on screen
 

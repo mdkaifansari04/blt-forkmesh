@@ -1239,8 +1239,9 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
-        if (m_relayRadar)
-            static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips({});
+        // No repo to scope the blips to: fall back to the mesh's node roster so
+        // the dish still shows the network rather than going empty (adhoc #79).
+        updateRelayRadarNodes(true);
         m_mirrorNodesTable->setSortingEnabled(true);
         updateMirrorNodeLightTimer(); // empty table: stops the beacon spinner
         return;

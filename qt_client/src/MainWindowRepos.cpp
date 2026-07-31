@@ -1503,7 +1503,7 @@ void MainWindow::mirrorPreviewRepository(int index)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, false);
     refreshRepositoryList();
     setRepoDetailNotice("Creating permanent mirror...");
     logSystem(QStringLiteral("Mirror: promoting preview %1/%2 from %3 to %4.")
@@ -4861,6 +4861,27 @@ void MainWindow::autoSyncMirrors()
     reattestStalePins();
 }
 
+// True when the bare mirror already contains `commit`. Presence is effectively
+// monotonic for advertised branch tips (a fetched commit stays reachable for
+// the life of the session), so positive answers are memoized: the roster
+// reconcile below re-asked git about the same converged tip on every peer
+// hello — 100+ foreground `git cat-file -e` spawns per session on the GUI
+// thread (adhoc #82). Negative answers are never cached; the next probe after
+// a fetch flips to (memoized) present.
+bool MainWindow::mirrorHasCommit(const QString &mirrorPath, const QString &commit)
+{
+    const QString key = mirrorPath + QLatin1Char('\x1f') + commit;
+    if (m_mirrorCommitsPresent.contains(key))
+        return true;
+    if (!runGitCapture(mirrorPath,
+                       {QStringLiteral("cat-file"), QStringLiteral("-e"),
+                        commit + QStringLiteral("^{commit}")},
+                       nullptr, nullptr))
+        return false;
+    m_mirrorCommitsPresent.insert(key);
+    return true;
+}
+
 void MainWindow::syncMirrorsBehindRoster()
 {
     // A peer just (re-)advertised its mirror set via hello. For every repo we
@@ -4903,10 +4924,7 @@ void MainWindow::syncMirrorsBehindRoster()
                     continue;
                 // A peer advertises a commit our mirror lacks → we are behind.
                 if (!m.commit.isEmpty() &&
-                    !runGitCapture(repo.mirrorPath,
-                                   {QStringLiteral("cat-file"), QStringLiteral("-e"),
-                                    m.commit + QStringLiteral("^{commit}")},
-                                   nullptr, nullptr))
+                    !mirrorHasCommit(repo.mirrorPath, m.commit))
                     behind = true;
                 if (m.artifactCount > localArtifactCount)
                     artifactsBehind = true;
@@ -5007,10 +5025,7 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     const QString target = commit.trimmed();
     const RepositoryRecord &matched = m_repositories.at(matchIndex);
     if (!target.isEmpty() && !matched.mirrorPath.trimmed().isEmpty() &&
-        runGitCapture(matched.mirrorPath,
-                      {QStringLiteral("cat-file"), QStringLiteral("-e"),
-                       target + QStringLiteral("^{commit}")},
-                      nullptr, nullptr)) {
+        mirrorHasCommit(matched.mirrorPath, target)) {
         if (m_backend)
             m_backend->notifyMirrorSynced(ownerName, target);
         return;
@@ -5313,7 +5328,7 @@ void MainWindow::syncPrivateRepository(int index, bool quiet)
     // retaining a collaborator.
     if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) &&
         repo.publishToNetwork) {
-        m_syncingRepos.insert(index);
+        m_syncingRepos.insert(index, quiet);
         refreshRepositoryList();
         requestPrivateRecipientBundles(
             repo, /*updateCollaboratorList=*/false,
@@ -5408,7 +5423,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
     const QString managedMirrorRoot = repositoryMirrorRoot();
 
     auto result = std::make_shared<PrivateSyncWorkerResult>();
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     // Recompute publication state before encryption/migration; private
     // repository names remain absent from public presence and catalogs.
     startRepoHosts();
@@ -5617,7 +5632,7 @@ void MainWindow::resealPrivateRepositoryRecipients(
     const QString vaultPath = privateIdentityVaultPath();
     const QString opaqueId = repo.privateReplicaId;
     auto result = std::make_shared<PrivateDownloadWorkerResult>();
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, false);
     refreshRepositoryList();
     QThread *worker = QThread::create(
         [result, replicaRoot, vaultPath, opaqueId, recipientBundles,
@@ -5716,7 +5731,7 @@ void MainWindow::downloadPrivateReplica(int index, bool quiet)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     ensurePrivateMirrorRecipientIdentityRegistered(
         [this, index, repo, quiet, unavailable](
@@ -6023,7 +6038,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     logSystem(QStringLiteral(
         "Public mirror: sealing %1/%2 with official age encryption; "
@@ -6447,7 +6462,7 @@ void MainWindow::syncRepository(int index, bool quiet)
     // subprocess runs — so clicking "Sync" flips the button to "Syncing…"
     // instantly and never blocks the GUI thread. The insert also guards
     // re-entrancy so a concurrent auto-sync can't start a second fetch on this repo.
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     if (!quiet) {
         const QString prefix =
