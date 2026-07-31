@@ -53,9 +53,10 @@ def test_world_arms_a_pagehide_cleared_crash_guard_with_heartbeat():
     # once-per-second diagnostics tick, cleared on every orderly pagehide.
     assert "this.armCrashGuard();" in WORLD
     assert "this.beatCrashGuard();" in WORLD
-    assert "this.disarmCrashGuard();" in WORLD
-    assert WORLD.index("this.disarmCrashGuard();") < WORLD.index(
-        "this.pauseWorldActivity();")
+    assert (
+        "this.disarmCrashGuard();\n"
+        "    this.pauseWorldActivity();"
+    ) in WORLD
     # The heartbeat carries the diagnostics that make the report debuggable.
     assert "heapUsedMb" in WORLD
     assert "contextLosses" in WORLD
