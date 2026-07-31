@@ -80,6 +80,21 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
         int files = patch.startsWith(QLatin1String("diff --git ")) ? 1 : 0;
         files += patch.count(QStringLiteral("\ndiff --git "));
         stat.files = files;
+        // Added/removed lines for the Diff column's churn bar (adhoc #84). The
+        // "+++"/"---" file headers are patch framing, not content.
+        int added = 0;
+        int removed = 0;
+        for (const QStringView line : QStringView(patch).split(QLatin1Char('\n'))) {
+            if (line.startsWith(QLatin1String("+++")) ||
+                line.startsWith(QLatin1String("---")))
+                continue;
+            if (line.startsWith(QLatin1Char('+')))
+                ++added;
+            else if (line.startsWith(QLatin1Char('-')))
+                ++removed;
+        }
+        stat.added = added;
+        stat.removed = removed;
     }
     if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
         session.branchName != base &&
@@ -88,6 +103,36 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                        QStringLiteral("--quiet"),
                        QStringLiteral("refs/heads/%1").arg(session.branchName)},
                       nullptr, nullptr)) {
+        // A session with no captured patch (never stored one, or restored from
+        // another machine) used to leave the row with no file count at all, so
+        // its branch chip showed a bare glyph while its neighbours showed
+        // numbers (adhoc #84). Ask git for the same figures instead.
+        if (stat.files < 0) {
+            QByteArray numstat;
+            if (runGitCapture(gitDir,
+                              {QStringLiteral("diff"), QStringLiteral("--numstat"),
+                               base + QStringLiteral("...") + session.branchName},
+                              &numstat, nullptr)) {
+                int files = 0;
+                int added = 0;
+                int removed = 0;
+                for (const QString &line :
+                     QString::fromUtf8(numstat).split(QLatin1Char('\n'))) {
+                    const QStringList cols = line.trimmed().split(
+                        QRegularExpression(QStringLiteral("\\s+")));
+                    if (cols.size() < 3)
+                        continue;
+                    // A "-" in either count column means a binary file: it is a
+                    // changed file but contributes no lines.
+                    ++files;
+                    added += cols.at(0).toInt();
+                    removed += cols.at(1).toInt();
+                }
+                stat.files = files;
+                stat.added = added;
+                stat.removed = removed;
+            }
+        }
         QByteArray counts;
         if (runGitCapture(gitDir,
                           {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
@@ -343,6 +388,10 @@ constexpr int kAgentBranchWorktreeRole = Qt::UserRole + 36;
 // steer — AgentConflictButtonDelegate paints and routes straight off these.
 constexpr int kAgentConflictRole = Qt::UserRole + 37;
 constexpr int kAgentConflictSessionRole = Qt::UserRole + 38;
+// Line churn the same Diff cell draws its tiny red/green bar from (adhoc #84):
+// lines added and removed, -1 when unknown.
+constexpr int kAgentAddedRole = Qt::UserRole + 39;
+constexpr int kAgentRemovedRole = Qt::UserRole + 40;
 
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
@@ -369,8 +418,18 @@ QString agentStatusLabel(const AgentSession &s)
 void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                           const AgentDiffStat &stat = AgentDiffStat())
 {
-    cell->setData(Qt::DisplayRole, s.id);
+    // What the cell reads is the session's age, not its number (adhoc #84): the
+    // separate "Updated" column is gone and its value moved in here, while the
+    // header stayed "#". The id is still the cell's identity (Qt::UserRole, which
+    // every row lookup matches on) and still what the column sorts by, so the
+    // list's order is unchanged — only the text is.
+    const qint64 updatedMs = qMax(qMax(s.createdAtMs, s.startedAtMs),
+                                  qMax(s.finishedAtMs, s.mergedAtMs));
+    cell->setData(Qt::DisplayRole,
+                  updatedMs > 0 ? formatShortRelativeTime(updatedMs / 1000)
+                                : QStringLiteral("-"));
     cell->setData(Qt::UserRole, s.id);
+    cell->setData(kTableSortRole, s.id);
     // Status glyph (issue #108): a blue spinner while running
     // (adhoc #23/#50), a purple merge mark once it lands, a green check on success, a
     // red stop sign when halted, an orange hand while it waits on the user, and a
@@ -411,8 +470,15 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     cell->setData(kAgentBranchDirtyRole, stat.dirty);
     cell->setData(kAgentBranchWorktreeRole, stat.worktree);
     // With the Status column gone the glyph is the only thing showing the run
-    // state, so the tooltip has to name it outright.
-    QStringList tip{agentStatusLabel(s)};
+    // state, so the tooltip has to name it outright. The session number and the
+    // full "updated" timestamp lead it now that the cell itself shows neither
+    // (adhoc #84).
+    QStringList tip{QStringLiteral("Agent #%1").arg(s.id)};
+    if (updatedMs > 0)
+        tip << QStringLiteral("Updated %1")
+                   .arg(QDateTime::fromMSecsSinceEpoch(updatedMs).toString(
+                       QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    tip << agentStatusLabel(s);
     if (s.genie)
         tip << QStringLiteral("Genie \xE2\x80\x94 working the organization's "
                               "shared task list from the website's remote MCP");
