@@ -348,6 +348,18 @@ public:
     QStringList testNetworkLog() const { return m_networkLog; }
     void testResetNetworkLog();
     void testLogSystem(const QString &text) { logSystem(text); }
+    // adhoc #73: record a UI stall the way the watchdog does, then read back the
+    // fix-it prompt the footer badge drafts into the quick-add composer.
+    void testRecordUiStall(qint64 peakMs, const QString &blockingCall,
+                           const QString &backtrace)
+    {
+        onUiStall(peakMs, blockingCall, backtrace);
+    }
+    QString testStallFixPrompt() const { return stallFixPrompt(); }
+    // False (without opening the modal fallback dialog, which would block a test
+    // run) when this window has no footer composer to draft into.
+    bool testDraftStallPromptInComposer();
+    QString testQuickAddText() const;
     // Drives the network log's segmented-render + scroll-to-top-loads-more path
     // (adhoc #15) without needing real scroll-wheel input.
     void testShowSettingsSection() { showSection(1); }
@@ -1065,6 +1077,14 @@ private:
     // Hand every recorded UI stall to a fresh coding agent as one task. Returns
     // true if an agent was started. Backs the dialog's "Send to a new agent" button.
     bool sendStallLogToAgent();
+    // The ready-to-send "please fix these stalls" prompt: what happened, where
+    // the durable stall log and the app log live, and the recorded reports
+    // themselves (newest first, trimmed to the composer's length cap).
+    QString stallFixPrompt() const;
+    // Footer stall badge click (adhoc #73): drop stallFixPrompt() into the
+    // quick-add composer so the recorded freezes are one Enter from a fix.
+    // Falls back to the detail dialog when nothing has been recorded.
+    void sendStallReportToComposer();
     void showDiagnosticsDialog();
     void showHighMemoryProcessPanel();
     void refreshHighMemoryProcessTable();

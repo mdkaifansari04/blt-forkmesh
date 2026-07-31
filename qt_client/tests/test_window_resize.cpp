@@ -2366,6 +2366,36 @@ int main(int argc, char *argv[])
         window.testResetNetworkLog();
     }
 
+    // adhoc #73: clicking the footer stall badge drafts a "fix these stalls"
+    // prompt (with the log locations) into the quick-add composer, and every
+    // stall also lands in the main app log rather than only the dialog.
+    {
+        window.testResetNetworkLog();
+        window.testRecordUiStall(2100, QStringLiteral("git ls-tree"),
+                                 QStringLiteral("#0 ForkMesh::renderAgentDiff()"));
+        const QStringList logged = window.testNetworkLog();
+        check(!logged.isEmpty() &&
+                  logged.last().contains(QStringLiteral("UI stalled ~2100 ms")) &&
+                  logged.last().contains(QStringLiteral("git ls-tree")),
+              QStringLiteral("a recorded stall is written to the main app log"));
+
+        if (window.testDraftStallPromptInComposer()) {
+            const QString drafted = window.testQuickAddText();
+            check(drafted.contains(QStringLiteral("Please fix these UI stalls")),
+                  QStringLiteral("the stall badge fills the composer with a fix-it prompt"));
+            check(drafted.contains(QStringLiteral("App log:")) &&
+                      drafted.contains(QStringLiteral("network_log.txt")),
+                  QStringLiteral("the drafted prompt names where the log file lives"));
+            check(drafted.contains(QStringLiteral("renderAgentDiff")),
+                  QStringLiteral("the drafted prompt carries the recorded backtrace"));
+            check(drafted.size() <= 16000,
+                  QStringLiteral("the drafted prompt fits the composer's length cap"));
+            check(drafted == window.testStallFixPrompt(),
+                  QStringLiteral("the composer holds exactly the stall fix-it prompt"));
+        }
+        window.testResetNetworkLog();
+    }
+
     // adhoc #436: hosts with a hardcoded mark (api.anthropic.com serves no
     // /favicon.ico, so fetching one logged a 404 error line of its own) resolve
     // locally, and every log line that names a host leads with an icon in both
