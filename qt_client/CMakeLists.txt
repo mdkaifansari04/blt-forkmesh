@@ -92,6 +92,43 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
+# The MainWindow*.cpp translation units are enormous (MainWindow.h +
+# MainWindowInternal.h alone are ~800 KB of headers), and cc1plus peaks between
+# 0.6 GB and 1.6 GB compiling each one. A plain `ninja`/`cmake --build -j$(nproc)`
+# runs dozens of them at once on a many-core box, which swamps physical RAM and
+# shoves the whole machine into swap — and several builds (agent worktrees, PR
+# previews, the quick-update) can be running concurrently. Cap how many of the
+# heavy targets' compiles may run at the same time with a Ninja job pool sized
+# by physical RAM (~one compile per 3 GiB), regardless of what -j the invoker
+# passes. Targets without the app sources keep full parallelism. The Makefile
+# generator ignores job pools; there the RAM-capped -j of run.sh /
+# ramCappedBuildJobs() is the only guard.
+cmake_host_system_information(RESULT FORKMESH_TOTAL_RAM_MB
+                              QUERY TOTAL_PHYSICAL_MEMORY)
+cmake_host_system_information(RESULT FORKMESH_LOGICAL_CORES
+                              QUERY NUMBER_OF_LOGICAL_CORES)
+if(NOT FORKMESH_TOTAL_RAM_MB GREATER 0)
+    set(FORKMESH_TOTAL_RAM_MB 8192) # query failed: assume a small machine
+endif()
+if(NOT FORKMESH_LOGICAL_CORES GREATER 0)
+    set(FORKMESH_LOGICAL_CORES 2)
+endif()
+math(EXPR FORKMESH_HEAVY_JOBS "${FORKMESH_TOTAL_RAM_MB} / 3072")
+if(FORKMESH_HEAVY_JOBS LESS 1)
+    set(FORKMESH_HEAVY_JOBS 1)
+elseif(FORKMESH_HEAVY_JOBS GREATER FORKMESH_LOGICAL_CORES)
+    set(FORKMESH_HEAVY_JOBS ${FORKMESH_LOGICAL_CORES})
+endif()
+set_property(GLOBAL PROPERTY JOB_POOLS forkmesh_heavy=${FORKMESH_HEAVY_JOBS})
+
+# RelWithDebInfo (-O2 -g) is what the agent-session builds use, and at -O2 -g
+# GCC's variable-location tracking is the single biggest cc1plus memory
+# consumer on the giant translation units. Function and line debug info — what
+# the StallWatchdog's and gdb's backtraces actually read — survives without it.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    string(APPEND CMAKE_CXX_FLAGS_RELWITHDEBINFO " -fno-var-tracking-assignments")
+endif()
+
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg Concurrent)
 find_package(OpenSSL REQUIRED)
 include(GNUInstallDirs)
@@ -223,6 +260,8 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
     src/ClaudeSessionScan.cpp
+    src/DirectorySizeScan.h
+    src/DirectorySizeScan.cpp
     src/ScrollJumpButtons.h
     src/ScrollJumpButtons.cpp
     src/ScreenCaptureOverlay.h
@@ -274,6 +313,8 @@ qt_add_executable(forkmesh
     src/forkmesh_autogen.cpp
 )
 add_dependencies(forkmesh forkmesh-version-header)
+# Heavy app sources: throttle concurrent compiles (see the forkmesh_heavy pool).
+set_target_properties(forkmesh PROPERTIES JOB_POOL_COMPILE forkmesh_heavy)
 
 # The app compiles its Qt meta-object code through the single, checked-in
 # src/forkmesh_autogen.cpp above rather than AUTOMOC's machine-generated
@@ -520,6 +561,8 @@ if(FORKMESH_BUILD_TESTS)
         src/LocalBackupStore.cpp
         src/McpConnector.h
         src/McpConnector.cpp
+        src/DirectorySizeScan.h
+        src/DirectorySizeScan.cpp
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h
@@ -794,6 +837,9 @@ if(FORKMESH_BUILD_TESTS)
         target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_HAVE_PORTAL)
     endif()
     target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_WINDOW_TESTS)
+    # Recompiles every heavy app source: same throttle as the app target.
+    set_target_properties(forkmesh-window-tests PROPERTIES
+        JOB_POOL_COMPILE forkmesh_heavy)
     if(APPLE)
         set_target_properties(forkmesh-window-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
@@ -814,6 +860,9 @@ if(FORKMESH_BUILD_TESTS)
         target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_HAVE_PORTAL)
     endif()
     target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_WINDOW_TESTS)
+    # Recompiles every heavy app source: same throttle as the app target.
+    set_target_properties(forkmesh-perf-tests PROPERTIES
+        JOB_POOL_COMPILE forkmesh_heavy)
     if(APPLE)
         set_target_properties(forkmesh-perf-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()

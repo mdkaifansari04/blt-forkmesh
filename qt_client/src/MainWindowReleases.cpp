@@ -34,6 +34,7 @@ enum MirrorNodeColumn {
     MirrorNodeColPlatform,
     MirrorNodeColVersion,
     MirrorNodeColId,
+    MirrorNodeColTunnel,
     MirrorNodeColClones,
     MirrorNodeColWebsite,
     MirrorNodeColArtifacts,
@@ -1068,7 +1069,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorNodesTable->setHorizontalHeaderLabels(
         {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Size",
          "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU", "RAM",
-         "Disk", "Platform", "Version", "Node id", "Clones", "Website",
+         "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
          "Artifacts"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -1099,6 +1100,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColPlatform, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColVersion, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColId, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColTunnel, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColClones, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColWebsite, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColArtifacts, QHeaderView::ResizeToContents);
@@ -1228,15 +1230,29 @@ static MirrorSelfSnapshot gatherMirrorSelfSnapshot(const RepositoryRecord &repo,
     advert.commit = tip.commit;
     advert.commitIdentity = mirrorCommitIdentity(mirror, repo.localPath, tip.commit);
     advert.updatedMs = repo.lastSyncMs;
-    advert.sizeBytes = mirrorRepoSizeBytes(mirror);
-    advert.issueCount = mirrorIssueCount(mirror, advert.branch);
-    advert.commitCount = mirrorCommitCount(mirror, advert.branch);
-    advert.branchCount = mirrorBranchCount(mirror);
-    advert.pullCount = mirrorPullCount(mirror, advert.branch);
-    advert.discussionCount = mirrorDiscussionCount(mirror, advert.branch);
+    // The source of truth may carry no bare mirror at all — its working copy IS
+    // the served data and the record's mirrorPath is legitimately empty. The
+    // tip/identity reads above already fall back to the working copy; hand the
+    // count helpers the same fallback, or the self row renders em-dashes for
+    // Size/Issues/Commits/Branches/Pulls/Discussions while the node is visibly
+    // serving the repository.
+    const QString countsDir =
+        (!mirror.trimmed().isEmpty() && QDir(mirror).exists())
+            ? mirror
+            : repo.localPath.trimmed();
+    advert.sizeBytes = mirrorRepoSizeBytes(countsDir);
+    advert.issueCount = mirrorIssueCount(countsDir, advert.branch);
+    advert.commitCount = mirrorCommitCount(countsDir, advert.branch);
+    advert.branchCount = mirrorBranchCount(countsDir);
+    advert.pullCount = mirrorPullCount(countsDir, advert.branch);
+    advert.discussionCount = mirrorDiscussionCount(countsDir, advert.branch);
     advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
+    // Artifacts: a bare mirror stores its release CAS at
+    // <mirror>/forkmesh-releases, a working copy at .forkmesh/release-blobs.
     advert.artifactCount = mirrorArtifactCount(mirror);
-    snapshot.servedCommit = mirrorBranchCommit(mirror, advert.branch);
+    if (advert.artifactCount < 0)
+        advert.artifactCount = checkoutArtifactCount(repo.localPath);
+    snapshot.servedCommit = mirrorBranchCommit(countsDir, advert.branch);
     if (hasWorkingTree && !repo.localPath.trimmed().isEmpty() &&
         !snapshot.servedCommit.isEmpty()) {
         QByteArray out;
@@ -1607,6 +1623,21 @@ void MainWindow::loadMirrorNodesPanel()
     // serves, because the refs fingerprint it published matches no state the
     // source of truth attested (current pin or recent history).
     QHash<QString, QString> integrityByNode;
+    // Per-node direct-HTTPS tunnel state, also from /mirrors: whether the node
+    // has a registered gateway endpoint, whether the relay's signed health
+    // probe finds it healthy/fresh, and its measured latency. Feeds the Tunnel
+    // column so an operator can see at a glance which nodes are reachable
+    // through their tunnel and which serve only via relay sync.
+    struct TunnelInfo {
+        bool registered = false;
+        bool healthy = false;
+        bool fresh = false;
+        bool abuseBlocked = false;
+        int latencyMs = 0;
+        QString endpoint;
+        QString integrity;
+    };
+    QHash<QString, TunnelInfo> tunnelByNode;
     if (m_catalogMirrorsSource == source) {
         for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
             const QJsonObject m = value.toObject();
@@ -1615,9 +1646,60 @@ void MainWindow::loadMirrorNodesPanel()
                 serveCounts.insert(n, {m.value("clonesServed").toInt(-1),
                                        m.value("websiteServed").toInt(-1)});
                 integrityByNode.insert(n, m.value("integrity").toString());
+                TunnelInfo tunnel;
+                tunnel.endpoint = m.value("endpoint").toString().trimmed();
+                tunnel.registered = !tunnel.endpoint.isEmpty();
+                tunnel.healthy = m.value("endpointHealthy").toBool();
+                tunnel.fresh = m.value("endpointFresh").toBool();
+                tunnel.abuseBlocked = m.value("abuseBlocked").toBool();
+                tunnel.latencyMs = m.value("latencyMs").toInt(0);
+                tunnel.integrity = m.value("endpointIntegrity").toString();
+                tunnelByNode.insert(n, tunnel);
             }
         }
     }
+    // Tunnel column cell: "—" when the node never registered a gateway
+    // endpoint, otherwise a compact verdict with the endpoint hostname and
+    // probe details on hover. Sorts healthy → degraded → blocked → none.
+    auto makeTunnelCell = [](const TunnelInfo &tunnel) -> SortTableWidgetItem * {
+        QString text = QString::fromUtf8("\xE2\x80\x94"); // — (no tunnel)
+        double sortValue = 0;
+        QString tip = QStringLiteral("No direct-HTTPS tunnel endpoint registered; "
+                                     "this node serves through relay sync only.");
+        if (tunnel.abuseBlocked) {
+            text = QStringLiteral("blocked");
+            sortValue = 1;
+            tip = QStringLiteral("Endpoint blocked for abuse.");
+        } else if (tunnel.registered) {
+            if (tunnel.healthy && tunnel.fresh) {
+                text = tunnel.latencyMs > 0
+                           ? QStringLiteral("up · %1 ms").arg(tunnel.latencyMs)
+                           : QStringLiteral("up");
+                sortValue = 4;
+                tip = QStringLiteral("Tunnel healthy (%1)").arg(tunnel.endpoint);
+            } else if (tunnel.healthy) {
+                text = QStringLiteral("up · stale");
+                sortValue = 3;
+                tip = QStringLiteral(
+                          "Tunnel answered its last signed health probe, but the "
+                          "node has not been seen recently (%1)")
+                          .arg(tunnel.endpoint);
+            } else {
+                text = QStringLiteral("down");
+                sortValue = 2;
+                tip = QStringLiteral("Tunnel registered but failing its signed "
+                                     "health probe (%1)")
+                          .arg(tunnel.endpoint);
+            }
+            if (!tunnel.integrity.isEmpty() &&
+                tunnel.integrity != QLatin1String("ok"))
+                tip += QStringLiteral("\nIntegrity: %1").arg(tunnel.integrity);
+        }
+        auto *item = new SortTableWidgetItem(text);
+        item->setData(kTableSortRole, sortValue);
+        item->setToolTip(tip);
+        return item;
+    };
     // A right-aligned tally cell: em-dash when the count is unknown (-1), else the
     // (abbreviated) number, sorting on the raw value.
     auto makeServeCountCell = [](int value, const QString &tip) -> SortTableWidgetItem * {
@@ -1998,20 +2080,28 @@ void MainWindow::loadMirrorNodesPanel()
         idItem->setToolTip(node.id);
         m_mirrorNodesTable->setItem(row, MirrorNodeColId, idItem);
 
-        // Clones / website serves: per-node local counters. Our own row reads the
-        // freshest count straight from the local tally (keyed as onRequestServed
-        // writes it); peers come from their published catalog record (serveCounts).
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColTunnel,
+            makeTunnelCell(tunnelByNode.value(nodeDisplay.trimmed().toLower())));
+
+        // Clones / website serves. The authoritative tally is router-counted by
+        // the Worker and arrives via /mirrors (serveCounts) for every node,
+        // ourselves included — the retired per-repository transport was the last
+        // thing that let a node count its own traffic. Our own row still folds
+        // in the legacy local tally (kept as onRequestServed wrote it) when it
+        // is the larger figure, so pre-router history isn't lost.
         int nodeClones = -1, nodeWebsite = -1;
-        if (node.self) {
-            const QPair<int, int> s =
-                m_repoStats.value(catalogOwner(repo) + "/" + repo.name);
-            nodeClones = s.second;
-            nodeWebsite = qMax(0, s.first - s.second);
-        } else {
+        {
             const QPair<int, int> s =
                 serveCounts.value(nodeDisplay.trimmed().toLower(), {-1, -1});
             nodeClones = s.first;
             nodeWebsite = s.second;
+        }
+        if (node.self) {
+            const QPair<int, int> s =
+                m_repoStats.value(catalogOwner(repo) + "/" + repo.name);
+            nodeClones = qMax(nodeClones, s.second);
+            nodeWebsite = qMax(nodeWebsite, qMax(0, s.first - s.second));
         }
         m_mirrorNodesTable->setItem(row, MirrorNodeColClones,
                                     makeServeCountCell(nodeClones, clonesTip(nodeClones)));
@@ -2253,6 +2343,10 @@ void MainWindow::loadMirrorNodesPanel()
             if (!catId.isEmpty())
                 catIdItem->setToolTip(catId);
             m_mirrorNodesTable->setItem(row, MirrorNodeColId, catIdItem);
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColTunnel,
+                makeTunnelCell(tunnelByNode.value(
+                    nodeName.trimmed().toLower())));
             // Clones / website serves the publishing node reported (adhoc #56 kin);
             // an em-dash for records predating the counters.
             const int catClones = m.value("clonesServed").toInt(-1);
