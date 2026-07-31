@@ -41,6 +41,7 @@ QJsonObject AgentSession::toJson() const
     obj["mode"] = mode;
     obj["createPr"] = createPr;
     obj["yolo"] = yolo;
+    obj["genie"] = genie;
     obj["strength"] = strength;
     obj["orgTask"] = orgTask;
     obj["orgTaskId"] = orgTaskId;
@@ -86,6 +87,7 @@ AgentSession AgentSession::fromJson(const QJsonObject &obj)
     session.mode = obj.value("mode").toString();
     session.createPr = obj.value("createPr").toBool();
     session.yolo = obj.value("yolo").toBool();
+    session.genie = obj.value("genie").toBool();
     session.strength = obj.value("strength").toString();
     session.orgTask = obj.value("orgTask").toBool();
     session.orgTaskId = obj.value("orgTaskId").toString();

@@ -3737,7 +3737,7 @@ QWidget *MainWindow::buildRepoActionsTab()
     m_actionFixAgentCombo->setToolTip("Which agent fixes this run");
     m_actionFixAgentCombo->addItem(QStringLiteral("Claude"), QStringLiteral("claude"));
     m_actionFixAgentCombo->addItem(QStringLiteral("OpenAI"), QStringLiteral("openai"));
-    m_actionFixAgentCombo->addItem(QStringLiteral("Claude Code"),
+    m_actionFixAgentCombo->addItem(QStringLiteral("CC"),
                                    QStringLiteral("claude-code"));
     m_actionFixAgentCombo->hide();
     // Start on the user's configured default agent (Settings -> Agents), same as

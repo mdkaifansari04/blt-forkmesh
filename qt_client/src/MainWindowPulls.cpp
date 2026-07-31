@@ -283,7 +283,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullFixClaudeAction = m_pullFixMenu->addAction(QStringLiteral("Claude API"));
     m_pullFixOpenAiAction = m_pullFixMenu->addAction(QStringLiteral("OpenAI API"));
     m_pullFixClaudeCodeAction =
-        m_pullFixMenu->addAction(QStringLiteral("Claude Code"));
+        m_pullFixMenu->addAction(QStringLiteral("CC")); // Claude Code (adhoc #38)
     connect(m_pullFixClaudeAction, &QAction::triggered, this,
             [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude")); });
     connect(m_pullFixOpenAiAction, &QAction::triggered, this,
