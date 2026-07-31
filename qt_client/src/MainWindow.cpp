@@ -695,8 +695,9 @@ void MainWindow::runDeferredStartup()
     refreshClaudeCodeUsage();
 
     // Hourly snapshot of the live database to the local drive (Settings -> Data
-    // -> Automatic backups). Armed for every launch, headless included — an
-    // unattended mirror is exactly where a lost identity key hurts most.
+    // -> Automatic backups). Armed for every launch, headless included, but it
+    // only starts a timer where backups are actually on: control nodes by
+    // default, anyone who ticked the box.
     startAutoBackups();
 
     // A provisioned direct HTTPS mirror (hostname configured + owner-only
