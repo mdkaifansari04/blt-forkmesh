@@ -7532,8 +7532,10 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
 {
     // The source of truth writes into its normal working copy. A public mirror
     // with no checkout uses a short-lived linked worktree below, commits onto
-    // the served branch, and acknowledges with ?mirror=1 so the relay keeps the
-    // same row queued for the owner.
+    // the served branch, and acknowledges with ?mirror=1 — a real drain: the
+    // merged submission now lives in the repo itself and propagates across the
+    // mirror mesh, so the relay deletes the row instead of holding it pending
+    // for the source of truth.
     const RepositoryRecord writable = writableRecordFor(repo);
     bool ownerIntake = false;
     {
@@ -7827,8 +7829,15 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
             // Acknowledge only after IssueStore committed (or confirmed the
             // event was already committed). A failed write must retain its
             // lease for another attempt instead of disappearing from the
-            // source queue or being falsely marked visible on a mirror.
-            if (!validMentionId && !inboxId.isEmpty() &&
+            // queue. A mirror ack permanently drains the row, so two
+            // owner-only side effects stay queued for the source node instead:
+            // fediverse-mention confirmation (validMentionId, owner path
+            // below) and the auto-agent start the owner requested on their own
+            // web submission (meta.wantsAgent — only the owner's node can
+            // launch that agent).
+            const bool ownerOnlyRow =
+                validMentionId || (mirrorIntake && meta.wantsAgent);
+            if (!ownerOnlyRow && !inboxId.isEmpty() &&
                 !drainedIds.contains(inboxId))
                 drainedIds << inboxId;
             ++merged;
@@ -7888,9 +7897,11 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
             ? accountOwner().trimmed().toLower()
             : repoSegment(repo.owner, QStringLiteral("owner"));
         QUrlQuery ackQuery = signedInboxQuery(ackSigner);
-        if (mirrorIntake)
+        if (mirrorIntake) {
             ackQuery.addQueryItem(
                 QStringLiteral("mirror"), QStringLiteral("1"));
+            appendMirrorStateAttestation(&ackQuery, repo, ackSigner);
+        }
         ackQuery.addQueryItem("ids", drainedIds.join(QStringLiteral(",")));
         if (!mirrorIntake && !materialized.isEmpty())
             ackQuery.addQueryItem(
@@ -7988,7 +7999,7 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         setIssueInlineNotice(
             mirrorIntake
                 ? QStringLiteral(
-                      "Materialized %1 submission(s) on this mirror.")
+                      "Merged %1 submission(s) into this mirror.")
                       .arg(merged)
                 : QStringLiteral(
                       "Merged %1 submission(s) into .forkmesh/issues/.")

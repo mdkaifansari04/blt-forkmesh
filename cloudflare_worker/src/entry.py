@@ -32245,29 +32245,36 @@ async def _claim_issue_inbox(
     return claimant_bi
 
 
-async def _materialize_issue_inbox_on_mirror(
+async def _drain_issue_inbox_on_mirror(
         env, request, repo_bi, claimant_bi, mirror_node):
-    """Mark exact rows visible on one mirror without consuming owner delivery."""
+    """Drain the exact leased rows an online mirror has merged into the repo.
+
+    A mirror merge is authoritative: the submission is committed to the served
+    branch and propagates across the mirror mesh (and back into the source's
+    working copy when that node returns), so the row is deleted outright — the
+    queue drains whenever ANY approved mirror is online, with no pending copy
+    retained for the source-of-truth node. The claim predicate keeps competing
+    mirrors converging on one winner per row.
+    """
     ids = _drain_ids_from_request(request)
     if not ids or not claimant_bi or not mirror_node:
         return 0
     marks = ",".join("?" for _ in ids)
-    mirror_bi = await blind_index(env, "issue-mirror:" + mirror_node)
     row = await d1_first(
         env,
         "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
-        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0" % marks,
+        "AND id IN (%s) AND claimed_by_bi=?" % marks,
         repo_bi, *ids, claimant_bi,
     )
     count = int((row or {}).get("c") or 0)
     if count:
         await d1_run(
             env,
-            "UPDATE issue_inbox SET mirrored_by_bi=?,mirrored_at=?,"
-            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
-            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0" % marks,
-            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+            "DELETE FROM issue_inbox WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=?" % marks,
+            repo_bi, *ids, claimant_bi,
         )
+        await _log_inbox_drain(env, repo_bi, "issues", count)
     return count
 
 
@@ -32290,35 +32297,98 @@ async def _claim_collaboration_inbox_on_mirror(
     return claimant_bi
 
 
-async def _materialize_collaboration_inbox_on_mirror(
+async def _drain_collaboration_inbox_on_mirror(
         env, request, table, repo_bi, claimant_bi, mirror_node):
-    """Mark exact PR/discussion rows browsable without consuming source sync."""
+    """Drain exact leased PR/discussion rows once a mirror commits them.
+
+    Same semantics as _drain_issue_inbox_on_mirror: the mirror's merge is the
+    real merge, so the acknowledged rows leave the queue instead of waiting as
+    "pending" for the source-of-truth node to come online.
+    """
     if table not in ("pull_inbox", "discussion_inbox"):
         return 0
     ids = _drain_ids_from_request(request)
     if not ids or not claimant_bi or not mirror_node:
         return 0
     marks = ",".join("?" for _ in ids)
-    mirror_bi = await blind_index(
-        env, "collaboration-mirror:" + table + ":" + mirror_node)
     row = await d1_first(
         env,
         "SELECT COUNT(*) AS c FROM %s WHERE repo_bi=? "
-        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
-        % (table, marks),
+        "AND id IN (%s) AND claimed_by_bi=?" % (table, marks),
         repo_bi, *ids, claimant_bi,
     )
     count = int((row or {}).get("c") or 0)
     if count:
         await d1_run(
             env,
-            "UPDATE %s SET mirrored_by_bi=?,mirrored_at=?,"
-            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
-            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
-            % (table, marks),
-            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+            "DELETE FROM %s WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=?" % (table, marks),
+            repo_bi, *ids, claimant_bi,
         )
+        await _log_inbox_drain(
+            env, repo_bi,
+            "pulls" if table == "pull_inbox" else "discussions", count)
     return count
+
+
+async def _record_mirror_attested_state(env, request, owner, repo, mirror_node):
+    """Admit the refs state an intake mirror serves after merging submissions.
+
+    A mirror that just committed web submissions onto the branch it serves now
+    advertises a refs fingerprint the source never attested, and
+    clone_state_pins would drop it (and every peer that converges on it) from
+    the read fan-out while the source is offline. A drain ack therefore
+    carries the mirror's fresh self-attestation — state/stateTs/stateSig over
+    the same forkmesh-repostate-v1 canonical it signs on its own catalog
+    publishes — and after the signature and freshness checks the digest joins
+    the repo's accepted pin history exactly like a source publish would. Only
+    callers that already passed _authorized_mirror_issue_signing_key reach
+    this, so the grant stays bounded to the repo's approved, healthy mirror
+    group. Best-effort: a malformed attestation never fails the drain that
+    carried it.
+    """
+    try:
+        params = parse_qs(urlparse(request.url).query)
+        digest = clean_string(
+            params.get("state", [""])[0], 64).strip().lower()
+        ts = params.get("stateTs", [""])[0]
+        sig = params.get("stateSig", [""])[0]
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or not ts or not sig:
+            return False
+        try:
+            if abs(int(Date.now()) - int(ts)) > LOGIN_MAX_SKEW_MS:
+                return False
+        except (TypeError, ValueError):
+            return False
+        canonical = (
+            "forkmesh-repostate-v1\n" + mirror_node + "\n" + repo + "\n"
+            + digest + "\n" + ts
+        ).encode()
+        verified = False
+        for public_key in await _owner_signing_pubkeys(env, mirror_node):
+            if await ed25519_verify(public_key, sig, canonical):
+                verified = True
+                break
+        if not verified:
+            return False
+        key_bi = await blind_index(env, owner + "/" + repo)
+        await d1_run(
+            env,
+            "INSERT INTO repo_state_history (key_bi, state_hash, ts) "
+            "VALUES (?,?,?) ON CONFLICT(key_bi, state_hash) "
+            "DO UPDATE SET ts=excluded.ts",
+            key_bi, digest, int(Date.now()),
+        )
+        await d1_run(
+            env,
+            "DELETE FROM repo_state_history WHERE key_bi=? "
+            "AND state_hash NOT IN (SELECT state_hash FROM "
+            "repo_state_history WHERE key_bi=? ORDER BY ts DESC LIMIT ?)",
+            key_bi, key_bi, STATE_PIN_HISTORY,
+        )
+        return True
+    except Exception:
+        return False
 
 
 async def _drain_issue_inbox(env, request, repo_bi, claimant_bi=""):
@@ -32574,13 +32644,16 @@ async def issues_handler(env, request, owner, repo):
         claimant_bi = await blind_index(
             env, "issue-inbox-claim:" + signing_key)
         if mirror_intake:
-            materialized = await _materialize_issue_inbox_on_mirror(
+            drained = await _drain_issue_inbox_on_mirror(
                 env, request, repo_bi, claimant_bi, mirror_node)
+            if drained:
+                await _record_mirror_attested_state(
+                    env, request, owner, repo, mirror_node)
             return json_response({
                 "ok": True,
-                "drained": 0,
-                "materialized": materialized,
-                "retainedForSource": True,
+                "drained": drained,
+                "materialized": drained,
+                "retainedForSource": False,
             })
         materialized = await _confirm_fediverse_issue_materializations(
             env, request)
@@ -32784,14 +32857,17 @@ async def pulls_handler(env, request, owner, repo):
             ) if signing_key else ""
             if not claimant_bi:
                 return json_response({"error": "unauthorized"}, status=401)
-            materialized = await _materialize_collaboration_inbox_on_mirror(
+            drained = await _drain_collaboration_inbox_on_mirror(
                 env, request, "pull_inbox", repo_bi, claimant_bi,
                 mirror_node)
+            if drained:
+                await _record_mirror_attested_state(
+                    env, request, owner, repo, mirror_node)
             return json_response({
                 "ok": True,
-                "drained": 0,
-                "materialized": materialized,
-                "retainedForSource": True,
+                "drained": drained,
+                "materialized": drained,
+                "retainedForSource": False,
             })
         if not await _authorize_repo_inbox_owner(
                 env, request, owner, repo):
@@ -32917,14 +32993,17 @@ async def discussions_handler(env, request, owner, repo):
             ) if signing_key else ""
             if not claimant_bi:
                 return json_response({"error": "unauthorized"}, status=401)
-            materialized = await _materialize_collaboration_inbox_on_mirror(
+            drained = await _drain_collaboration_inbox_on_mirror(
                 env, request, "discussion_inbox", repo_bi, claimant_bi,
                 mirror_node)
+            if drained:
+                await _record_mirror_attested_state(
+                    env, request, owner, repo, mirror_node)
             return json_response({
                 "ok": True,
-                "drained": 0,
-                "materialized": materialized,
-                "retainedForSource": True,
+                "drained": drained,
+                "materialized": drained,
+                "retainedForSource": False,
             })
         if not await _authorize_repo_inbox_signing_key(
                 env, request, owner, repo):
