@@ -12,7 +12,7 @@ export const WORKER_FOOTPRINT = Object.freeze({
     "name": "assets/video/forkmesh-forever.mp4",
     "bytes": 23562112
   },
-  "initialWorldModuleBytes": 2402865,
+  "initialWorldModuleBytes": 2402873,
   "initialWorldModuleCount": 13,
   "initialWorldModules": [
     "qr.js",
