@@ -44829,7 +44829,8 @@ class ForkMeshWorld(DurableObject):
                          trusted_name=None, trusted_node_count=None,
                          pending_knocks=None, arrival_slot=None, is_admin=None,
                          ip_token=None, agent_token=None, ticket_nonce=None,
-                         client_ip=None, client_user_agent=None):
+                         client_ip=None, client_user_agent=None,
+                         pending_handshakes=None):
         if country_source is None:
             country_source = _ws_attr(ws, "country_source", "")
         if trusted_name is None:
@@ -44838,6 +44839,8 @@ class ForkMeshWorld(DurableObject):
             trusted_node_count = _ws_attr(ws, "trusted_node_count", 0)
         if pending_knocks is None:
             pending_knocks = _ws_attr(ws, "pending_knocks", [])
+        if pending_handshakes is None:
+            pending_handshakes = _ws_attr(ws, "pending_handshakes", [])
         if arrival_slot is None:
             arrival_slot = _ws_attr(ws, "arrival_slot", -1)
         if is_admin is None:
@@ -44855,6 +44858,11 @@ class ForkMeshWorld(DurableObject):
         pending_knocks = [
             str(peer_id)
             for peer_id in list(pending_knocks or [])[-8:]
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(peer_id or ""))
+        ]
+        pending_handshakes = [
+            str(peer_id)
+            for peer_id in list(pending_handshakes or [])[-8:]
             if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(peer_id or ""))
         ]
         trusted_fields = world_protocol.trusted_presence_claim(
@@ -44904,6 +44912,10 @@ class ForkMeshWorld(DurableObject):
             # One-use, live-socket-only consent requests. They are never
             # persisted, broadcast, or exposed in the public presence record.
             "pending_knocks": pending_knocks,
+            # The same one-use shape for handshake offers this socket has
+            # received: only an offer parked here can be shaken back or
+            # declined, so nobody can answer a greeting they were never sent.
+            "pending_handshakes": pending_handshakes,
             # A room-local collision-avoidance index. It is never broadcast,
             # persisted, or derived from an account/network identifier.
             "arrival_slot": int(arrival_slot),
@@ -45081,10 +45093,11 @@ class ForkMeshWorld(DurableObject):
             return
         interaction = world_protocol.sanitize_interaction(payload, state)
         if interaction is not None:
-            # Home interactions are targeted, text-free consent frames. The
-            # server keeps at most eight one-use knocks inside the live socket
-            # attachment; hibernation/disconnect naturally expires them.
-            # Sender identity always comes from the attachment, never JSON.
+            # Home and handshake interactions are targeted, text-free consent
+            # frames. The server keeps at most eight one-use knocks and eight
+            # one-use handshake offers inside the live socket attachment;
+            # hibernation/disconnect naturally expires them. Sender identity
+            # always comes from the attachment, never JSON.
             self._save_attachment(
                 ws, state, last=now,
                 rate_start=rate_start, rate_count=rate_count)
@@ -45112,6 +45125,64 @@ class ForkMeshWorld(DurableObject):
                             "from": state.get("id"),
                         })
                         break
+            elif interaction["kind"] == "handshake-offer":
+                # A handshake offer reaches one live peer and nobody else, so
+                # an unanswered greeting stays between the two of them.
+                for peer in self._live_sockets(cleanup=True):
+                    if _ws_attr(peer, "id") == interaction["target"]:
+                        pending = list(
+                            _ws_attr(peer, "pending_handshakes", []) or [])
+                        if state.get("id") not in pending:
+                            pending.append(state.get("id"))
+                        self._save_attachment(
+                            peer,
+                            self._socket_state(peer),
+                            last=_ws_attr(peer, "last", now),
+                            rate_start=_ws_attr(peer, "rl_start", now),
+                            rate_count=_ws_attr(peer, "rl_count", 0),
+                            pending_handshakes=pending[-8:],
+                        )
+                        self._safe_send(peer, {
+                            "type": "interaction",
+                            "kind": "handshake-offer",
+                            "from": state.get("id"),
+                        })
+                        break
+            elif interaction["kind"] in (
+                "handshake-accept", "handshake-decline",
+            ):
+                pending = list(
+                    _ws_attr(ws, "pending_handshakes", []) or [])
+                if interaction["target"] not in pending:
+                    return
+                pending = [
+                    peer_id for peer_id in pending
+                    if peer_id != interaction["target"]
+                ]
+                self._save_attachment(
+                    ws, state, last=now,
+                    rate_start=rate_start, rate_count=rate_count,
+                    pending_handshakes=pending,
+                )
+                if interaction["kind"] == "handshake-decline":
+                    for peer in self._live_sockets(cleanup=True):
+                        if _ws_attr(peer, "id") == interaction["target"]:
+                            self._safe_send(peer, {
+                                "type": "interaction",
+                                "kind": "handshake-decline",
+                                "from": state.get("id"),
+                            })
+                            break
+                else:
+                    # Two people shaking hands is a public gesture: the room
+                    # animates the pair the same way it animates an emote. The
+                    # frame carries the two peer ids and nothing else.
+                    self._broadcast({
+                        "type": "interaction",
+                        "kind": "handshake",
+                        "from": state.get("id"),
+                        "with": interaction["target"],
+                    }, exclude_id=state.get("id"), budgeted=True)
             elif interaction["kind"] in ("home-grant", "home-decline"):
                 pending = list(
                     _ws_attr(ws, "pending_knocks", []) or [])
