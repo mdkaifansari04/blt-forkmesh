@@ -4696,6 +4696,23 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
 
+    // Red dot pinned over the favicon while a freshly launched instance waits
+    // to be linked (adhoc #97), with the Approve button that opens the join
+    // dialog right beside it. Both stay hidden until the signed heartbeat
+    // reply reports a pending join request for this admin.
+    m_relayJoinDot = new QLabel(m_relayMenuButton);
+    m_relayJoinDot->setObjectName(QStringLiteral("relayJoinDot"));
+    m_relayJoinDot->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_relayJoinDot->setFixedSize(10, 10);
+    m_relayJoinDot->hide();
+    m_relayJoinApproveButton = new QPushButton(QStringLiteral("Approve"));
+    m_relayJoinApproveButton->setObjectName(
+        QStringLiteral("relayJoinApproveButton"));
+    m_relayJoinApproveButton->setCursor(Qt::PointingHandCursor);
+    m_relayJoinApproveButton->hide();
+    connect(m_relayJoinApproveButton, &QPushButton::clicked, this,
+            &MainWindow::showRelayJoinApprovalDialog);
+
     // Spinning radar + once-a-minute latency readout, sitting just left of the
     // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
     m_relayRadar = new RelayRadarWidget;
@@ -5305,6 +5322,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // runs follow it (adhoc #70). The Agents button that used to head this group
     // is now a regular rail entry.
     chromeRow->addWidget(m_relayMenuButton);
+    chromeRow->addWidget(m_relayJoinApproveButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
