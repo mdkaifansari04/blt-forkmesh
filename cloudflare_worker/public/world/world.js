@@ -16293,7 +16293,7 @@ class ForkMeshWorld extends HTMLElement {
                         <span>${item.unread ? "Unread" : item.source === "global" ? `Ends ${escapeHTML(item.endsAt ? new Date(item.endsAt).toLocaleString() : "—")}` : `Read ${escapeHTML(item.readAt ? new Date(item.readAt).toLocaleString() : "—")}`}</span>
                         <span class="world-activity-row-actions">
                           ${item.href ? `<a href="${escapeHTML(item.href)}" rel="noopener noreferrer">Open</a>` : ""}
-                          ${item.source === "personal" ? `<button type="button" data-world-notification-delete="${escapeHTML(item.id)}">Delete</button>` : ""}
+                          ${item.source === "personal" ? `<button type="button" data-world-notification-delete="${escapeHTML(item.id)}" aria-label="Delete notification" title="Delete notification">🗑</button>` : ""}
                         </span>
                       </li>`;
                     })

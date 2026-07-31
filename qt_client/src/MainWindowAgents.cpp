@@ -12,6 +12,9 @@
 #include "KebabHeaderView.h"
 #include "CodexAppServerSession.h"
 
+#include <QTextLayout>
+#include <QTextOption>
+
 using namespace forkmesh::ui;
 
 // ---- Agents ---------------------------------------------------------------
@@ -80,6 +83,21 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
         int files = patch.startsWith(QLatin1String("diff --git ")) ? 1 : 0;
         files += patch.count(QStringLiteral("\ndiff --git "));
         stat.files = files;
+        // Added/removed lines for the Diff column's churn bar (adhoc #84). The
+        // "+++"/"---" file headers are patch framing, not content.
+        int added = 0;
+        int removed = 0;
+        for (const QStringView line : QStringView(patch).split(QLatin1Char('\n'))) {
+            if (line.startsWith(QLatin1String("+++")) ||
+                line.startsWith(QLatin1String("---")))
+                continue;
+            if (line.startsWith(QLatin1Char('+')))
+                ++added;
+            else if (line.startsWith(QLatin1Char('-')))
+                ++removed;
+        }
+        stat.added = added;
+        stat.removed = removed;
     }
     if (!gitDir.isEmpty() && !base.isEmpty() && !session.branchName.isEmpty() &&
         session.branchName != base &&
@@ -88,6 +106,36 @@ AgentDiffStat readAgentDiffStat(const AgentStore &store,
                        QStringLiteral("--quiet"),
                        QStringLiteral("refs/heads/%1").arg(session.branchName)},
                       nullptr, nullptr)) {
+        // A session with no captured patch (never stored one, or restored from
+        // another machine) used to leave the row with no file count at all, so
+        // its branch chip showed a bare glyph while its neighbours showed
+        // numbers (adhoc #84). Ask git for the same figures instead.
+        if (stat.files < 0) {
+            QByteArray numstat;
+            if (runGitCapture(gitDir,
+                              {QStringLiteral("diff"), QStringLiteral("--numstat"),
+                               base + QStringLiteral("...") + session.branchName},
+                              &numstat, nullptr)) {
+                int files = 0;
+                int added = 0;
+                int removed = 0;
+                for (const QString &line :
+                     QString::fromUtf8(numstat).split(QLatin1Char('\n'))) {
+                    const QStringList cols = line.trimmed().split(
+                        QRegularExpression(QStringLiteral("\\s+")));
+                    if (cols.size() < 3)
+                        continue;
+                    // A "-" in either count column means a binary file: it is a
+                    // changed file but contributes no lines.
+                    ++files;
+                    added += cols.at(0).toInt();
+                    removed += cols.at(1).toInt();
+                }
+                stat.files = files;
+                stat.added = added;
+                stat.removed = removed;
+            }
+        }
         QByteArray counts;
         if (runGitCapture(gitDir,
                           {QStringLiteral("rev-list"), QStringLiteral("--left-right"),
@@ -277,21 +325,23 @@ QString redactProviderCredentials(QString text,
         if (secret.size() >= 8)
             text.replace(secret, QStringLiteral("***"));
     }
-    text.replace(
-        QRegularExpression(
-            QStringLiteral(
-                "(?i)(authorization\\s*:\\s*bearer\\s+)[A-Za-z0-9._~+/-]{8,}")),
-        QStringLiteral("\\1***"));
-    text.replace(
-        QRegularExpression(
-            QStringLiteral(
-                "(?i)([\"']?(?:accessToken|refreshToken|apiKey|"
-                "anthropicApiKey|openAiApiKey|authorization)[\"']?"
-                "\\s*[:=]\\s*[\"'])[^\"'\\r\\n]+")),
-        QStringLiteral("\\1***"));
-    text.replace(
-        QRegularExpression(QStringLiteral("\\bsk-[A-Za-z0-9_-]{20,}")),
-        QStringLiteral("sk-***"));
+    // static: this runs on the GUI thread for every string leaf of every
+    // transcript event, and a per-call QRegularExpression re-compiles its
+    // PCRE2 pattern each time — the stall watchdog caught that compile burning
+    // ~500 ms of a stream burst (adhoc #82).
+    static const QRegularExpression bearerHeader(
+        QStringLiteral(
+            "(?i)(authorization\\s*:\\s*bearer\\s+)[A-Za-z0-9._~+/-]{8,}"));
+    static const QRegularExpression credentialAssignment(
+        QStringLiteral(
+            "(?i)([\"']?(?:accessToken|refreshToken|apiKey|"
+            "anthropicApiKey|openAiApiKey|authorization)[\"']?"
+            "\\s*[:=]\\s*[\"'])[^\"'\\r\\n]+"));
+    static const QRegularExpression skToken(
+        QStringLiteral("\\bsk-[A-Za-z0-9_-]{20,}"));
+    text.replace(bearerHeader, QStringLiteral("\\1***"));
+    text.replace(credentialAssignment, QStringLiteral("\\1***"));
+    text.replace(skToken, QStringLiteral("sk-***"));
     return text;
 }
 
@@ -340,9 +390,13 @@ constexpr int kAgentBranchDirtyRole = Qt::UserRole + 35;
 constexpr int kAgentBranchWorktreeRole = Qt::UserRole + 36;
 // Diff cell roles behind the orange conflict button (adhoc #446): whether the
 // row's branch still conflicts with base, and the session the click has to
-// steer — AgentConflictButtonDelegate paints and routes straight off these.
+// steer — AgentDiffCellDelegate paints and routes straight off these.
 constexpr int kAgentConflictRole = Qt::UserRole + 37;
 constexpr int kAgentConflictSessionRole = Qt::UserRole + 38;
+// Line churn the same Diff cell draws its tiny red/green bar from (adhoc #84):
+// lines added and removed, -1 when unknown.
+constexpr int kAgentAddedRole = Qt::UserRole + 39;
+constexpr int kAgentRemovedRole = Qt::UserRole + 40;
 
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
@@ -369,8 +423,18 @@ QString agentStatusLabel(const AgentSession &s)
 void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                           const AgentDiffStat &stat = AgentDiffStat())
 {
-    cell->setData(Qt::DisplayRole, s.id);
+    // What the cell reads is the session's age, not its number (adhoc #84): the
+    // separate "Updated" column is gone and its value moved in here, while the
+    // header stayed "#". The id is still the cell's identity (Qt::UserRole, which
+    // every row lookup matches on) and still what the column sorts by, so the
+    // list's order is unchanged — only the text is.
+    const qint64 updatedMs = qMax(qMax(s.createdAtMs, s.startedAtMs),
+                                  qMax(s.finishedAtMs, s.mergedAtMs));
+    cell->setData(Qt::DisplayRole,
+                  updatedMs > 0 ? formatShortRelativeTime(updatedMs / 1000)
+                                : QStringLiteral("-"));
     cell->setData(Qt::UserRole, s.id);
+    cell->setData(kTableSortRole, s.id);
     // Status glyph (issue #108): a blue spinner while running
     // (adhoc #23/#50), a purple merge mark once it lands, a green check on success, a
     // red stop sign when halted, an orange hand while it waits on the user, and a
@@ -411,8 +475,15 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     cell->setData(kAgentBranchDirtyRole, stat.dirty);
     cell->setData(kAgentBranchWorktreeRole, stat.worktree);
     // With the Status column gone the glyph is the only thing showing the run
-    // state, so the tooltip has to name it outright.
-    QStringList tip{agentStatusLabel(s)};
+    // state, so the tooltip has to name it outright. The session number and the
+    // full "updated" timestamp lead it now that the cell itself shows neither
+    // (adhoc #84).
+    QStringList tip{QStringLiteral("Agent #%1").arg(s.id)};
+    if (updatedMs > 0)
+        tip << QStringLiteral("Updated %1")
+                   .arg(QDateTime::fromMSecsSinceEpoch(updatedMs).toString(
+                       QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+    tip << agentStatusLabel(s);
     if (s.genie)
         tip << QStringLiteral("Genie \xE2\x80\x94 working the organization's "
                               "shared task list from the website's remote MCP");
@@ -513,16 +584,21 @@ double agentSpinStepDegrees(const AgentSession &s, qint64 tokens)
            throughput * (kAgentSpinFastDegrees - kAgentSpinSlowDegrees);
 }
 
-// Compact at-a-glance summary of what an agent changed (issue #170): the number
-// of files its captured patch touched, plus how far its branch sits ahead of /
-// behind the base branch (only when both differ). Reads "-" until a finished run
-// has a patch and/or a still-existing branch to measure.
+// What an agent changed, as words — the number of files its patch touched, the
+// lines it added and removed, and how far its branch sits ahead of / behind base
+// (issue #170). The Diff *cell* no longer prints any of this: adhoc #84 replaced
+// the figures with the churn bar AgentDiffCellDelegate paints, so the words are
+// left to the cell's tooltip and the detail header's Info popup, which lists the
+// same "Diff" figure. Reads "-" until a finished run has a patch and/or a
+// still-existing branch to measure.
 QString agentDiffSummaryText(const AgentDiffStat &stat)
 {
     QStringList parts;
     if (stat.files >= 0)
         parts << (stat.files == 1 ? QStringLiteral("1 file")
                                   : QStringLiteral("%1 files").arg(stat.files));
+    if (stat.added >= 0 && stat.removed >= 0)
+        parts << QStringLiteral("+%1 -%2").arg(stat.added).arg(stat.removed);
     // Up arrow = ahead, down arrow = behind. Omit when the branch matches base
     // (both zero) so a tidy, merged-in session stays uncluttered.
     if (stat.ahead >= 0 && stat.behind >= 0 && (stat.ahead > 0 || stat.behind > 0))
@@ -533,15 +609,22 @@ QString agentDiffSummaryText(const AgentDiffStat &stat)
                            : parts.join(QString::fromUtf8("  \xC2\xB7 "));
 }
 
-// Fill the Diff cell from that summary. Sorts on the file count via
+// Fill the Diff cell. The cell paints no text (adhoc #84 — the figures were a
+// wall of numbers on every row): AgentDiffCellDelegate draws a tiny green/red
+// churn bar from the roles below and the conflict button beside it, and the
+// summary text moves into the tooltip. Sorts on the file count via
 // kTableSortRole.
 void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
                         const QString &base, int sessionId = 0)
 {
-    cell->setData(Qt::DisplayRole, agentDiffSummaryText(stat));
+    cell->setData(Qt::DisplayRole, QString());
     cell->setData(kTableSortRole, stat.files);
+    // Always written, clean or not, for the same reason the conflict roles are:
+    // refreshAgentTable() reuses row items in place (adhoc #74).
+    cell->setData(kAgentAddedRole, stat.added);
+    cell->setData(kAgentRemovedRole, stat.removed);
     // Conflict marker (adhoc #229, reworked adhoc #446): the badge is now an
-    // orange button AgentConflictButtonDelegate paints at the cell's right edge —
+    // orange button AgentDiffCellDelegate paints at the cell's right edge —
     // clicking it asks the session's agent to merge base and resolve, which used
     // to happen automatically. The roles are what the delegate paints from; they
     // are always written (false/0 when clean) because refreshAgentTable() reuses
@@ -562,6 +645,13 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
         tip << QStringLiteral("%1 file%2 changed")
                    .arg(stat.files)
                    .arg(stat.files == 1 ? QString() : QStringLiteral("s"));
+    // The figures the cell used to print (adhoc #84): the bar shows the shape of
+    // the change, the tooltip still has the exact numbers.
+    if (stat.added >= 0 && stat.removed >= 0)
+        tip << QStringLiteral("%1 line%2 added \xC2\xB7 %3 removed")
+                   .arg(stat.added)
+                   .arg(stat.added == 1 ? QString() : QStringLiteral("s"))
+                   .arg(stat.removed);
     if (stat.ahead >= 0 && stat.behind >= 0)
         tip << QString::fromUtf8("%1 ahead \xC2\xB7 %2 behind %3")
                    .arg(stat.ahead)
@@ -576,16 +666,16 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
 // to paint a Larson-scanner bar from it in an "Activity" column too; that column
 // is gone (adhoc #35) and the top-bar dot matrix is the one surface left.
 static constexpr qint64 kScannerIdleMs = 1500;
-// Leading "#" column, which also carries the run-state glyph and the per-row
-// branch button (adhoc #377, moved here from the dropped Status column by #29).
+// Leading "#" column, which also carries the run-state glyph, the per-row branch
+// button (adhoc #377, moved here from the dropped Status column by #29) and — in
+// place of the session number — the compact "7m"-style age the separate
+// "Updated" column used to show (adhoc #84).
 static constexpr int kAgentIdColumn = 0;
 // "Issue" column — the title, and the only flexible column: it stretches to fill
 // whatever the others leave, so a long title reads in full (adhoc #35).
 static constexpr int kAgentIssueColumn = 1;
-// "Updated" column, a compact "7m"-style age.
-static constexpr int kAgentUpdatedColumn = 2;
-// "Diff" column, which also carries the per-row conflict button (adhoc #446).
-static constexpr int kAgentDiffColumn = 3;
+// "Diff" column: the churn bar, plus the per-row conflict button (adhoc #446).
+static constexpr int kAgentDiffColumn = 2;
 
 // Draws a small branch button at the right edge of every "#" cell whose
 // session has a branch, and opens that branch when it's clicked (adhoc #377):
@@ -752,27 +842,29 @@ private:
     std::function<void(const QString &)> m_onClick;
 };
 
-// Draws an orange "conflict" button at the right edge of every Diff cell whose
-// branch no longer merges cleanly into base, and steers that session into
-// resolving it when the button is clicked (adhoc #446). Conflicts used to be
-// fixed automatically the moment they were spotted; now the list just flags them
-// in orange and the fix runs only when the user asks for it.
-class AgentConflictButtonDelegate : public SelectionBorderRowDelegate
+// Paints the whole Diff cell: a tiny two-bar green/red picture of the lines the
+// session added and removed (adhoc #84 — the column used to print "3 files ·
+// ↑46 ↓0" on every row, which is a lot of numbers to scan past), and, for a
+// branch that no longer merges cleanly into base, an orange conflict button at
+// the cell's right edge that steers that session into resolving it (adhoc #446 —
+// conflicts used to be fixed automatically the moment they were spotted).
+class AgentDiffCellDelegate : public SelectionBorderRowDelegate
 {
 public:
-    AgentConflictButtonDelegate(QAbstractItemView *view,
-                                std::function<void(int)> onClick)
+    AgentDiffCellDelegate(QAbstractItemView *view, std::function<void(int)> onClick)
         : SelectionBorderRowDelegate(view), m_onClick(std::move(onClick))
     {
     }
 
-    // Reserve the button's slot in the column's width so ResizeToContents never
-    // sizes the column so tight that it lands on top of the diff figures.
+    // Reserve the bar's and the button's slots in the column's width so
+    // ResizeToContents can't size the column down on top of either.
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
+        s.rwidth() += kBarWidth + 2 * kButtonMargin;
         if (idx.data(kAgentConflictRole).toBool())
-            s.rwidth() += chipWidth(opt) + 2 * kButtonMargin;
+            s.rwidth() += chipWidth() + kButtonMargin;
+        s.rheight() = qMax(s.height(), kBarHeight + 6);
         return s;
     }
 
@@ -780,13 +872,16 @@ public:
                const QModelIndex &index) const override
     {
         SelectionBorderRowDelegate::paint(painter, option, index);
+        paintChurnBars(painter, option, index);
         if (!index.data(kAgentConflictRole).toBool())
             return;
         const QRect r = buttonRect(option, index);
         if (r.width() <= 0)
             return;
         // Orange throughout — the same amber the Waiting status uses for "needs
-        // you" — filling in on hover so it reads as the button it is.
+        // you" — filling in on hover so it reads as the button it is. Icon only
+        // (adhoc #84): the word "conflict" beside it doubled the column's width
+        // for a state one glyph already says.
         const bool hot = option.state & QStyle::State_MouseOver;
         const bool dark = currentThemeIsDark();
         const QColor accent(dark ? "#e3742f" : "#bc4c00");
@@ -799,15 +894,9 @@ public:
         painter->drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 5, 5);
         // Glyph at its native size rather than letting QIcon::paint upscale the
         // 12px pixmap to fill the chip.
-        QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
-                    kGlyphSize, kGlyphSize);
+        const QRect glyph(r.center().x() - kGlyphSize / 2,
+                          r.center().y() - kGlyphSize / 2, kGlyphSize, kGlyphSize);
         themedOcticon("alert", accent, kGlyphSize).paint(painter, glyph);
-        const int textLeft = glyph.right() + 1 + kChipGap;
-        painter->setPen(accent);
-        painter->setFont(chipFont(option));
-        painter->drawText(QRect(textLeft, r.top(),
-                                r.right() - kChipPadding - textLeft + 1, r.height()),
-                          Qt::AlignVCenter | Qt::AlignLeft, kChipText);
         painter->restore();
     }
 
@@ -835,36 +924,64 @@ private:
     static constexpr int kButtonSize = 18;   // chip height
     static constexpr int kButtonMargin = 4;  // gap to the cell's right edge
     static constexpr int kGlyphSize = 12;
-    static constexpr int kChipPadding = 4;   // chip edge -> glyph / label
-    static constexpr int kChipGap = 3;       // glyph -> label
-    static constexpr const char *kChipText = "conflict";
+    static constexpr int kChipPadding = 4;   // chip edge -> glyph
+    // The churn picture: two thin bars side by side, added then removed.
+    static constexpr int kBarThickness = 3;
+    static constexpr int kBarGap = 2;
+    static constexpr int kBarHeight = 12;  // a bar at full scale
+    static constexpr int kBarWidth = 2 * kBarThickness + kBarGap;
+    // Line count a bar reaches full height at. The scale is logarithmic, so a
+    // one-line touch-up is still visible and a thousand-line sweep doesn't peg
+    // every neighbouring row flat by comparison.
+    static constexpr double kBarFullScaleLines = 800.0;
 
-    // Small and slightly heavy, matching the branch chip's badge type so the two
-    // buttons in a row read as the same kind of control.
-    static QFont chipFont(const QStyleOptionViewItem &opt)
+    static int chipWidth() { return 2 * kChipPadding + kGlyphSize; }
+
+    // Height of one bar for `lines`, floored at a visible stub so "1 line
+    // changed" never reads the same as "nothing changed".
+    static int barHeight(int lines)
     {
-        QFont f = opt.font;
-        if (f.pixelSize() > 0)
-            f.setPixelSize(qMax(9, f.pixelSize() - 3));
-        else
-            f.setPointSizeF(qMax(7.0, f.pointSizeF() - 2.0));
-        f.setWeight(QFont::DemiBold);
-        return f;
+        if (lines <= 0)
+            return 0;
+        const double scale = std::log1p(lines) / std::log1p(kBarFullScaleLines);
+        return qBound(2, qRound(qMin(1.0, scale) * kBarHeight), kBarHeight);
     }
 
-    static int chipWidth(const QStyleOptionViewItem &opt)
+    // The two bars, bottom-aligned on a shared baseline at the cell's left edge,
+    // so a row's change reads as a mini bar chart rather than two floating dots.
+    void paintChurnBars(QPainter *painter, const QStyleOptionViewItem &option,
+                        const QModelIndex &index) const
     {
-        return 2 * kChipPadding + kGlyphSize + kChipGap +
-               QFontMetrics(chipFont(opt))
-                   .horizontalAdvance(QLatin1String(kChipText));
+        const int added = index.data(kAgentAddedRole).toInt();
+        const int removed = index.data(kAgentRemovedRole).toInt();
+        if (added <= 0 && removed <= 0)
+            return;
+        const bool dark = currentThemeIsDark();
+        const int baseline = option.rect.center().y() + kBarHeight / 2;
+        const int left = option.rect.left() + kButtonMargin;
+        painter->save();
+        painter->setPen(Qt::NoPen);
+        const QColor green(dark ? "#3fb950" : "#1a7f37");
+        const QColor red(dark ? "#f85149" : "#cf222e");
+        const int addH = barHeight(added);
+        if (addH > 0) {
+            painter->setBrush(green);
+            painter->drawRect(left, baseline - addH, kBarThickness, addH);
+        }
+        const int delH = barHeight(removed);
+        if (delH > 0) {
+            painter->setBrush(red);
+            painter->drawRect(left + kBarThickness + kBarGap, baseline - delH,
+                              kBarThickness, delH);
+        }
+        painter->restore();
     }
 
     static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &)
     {
         const QRect cell = opt.rect;
         const int h = qMin(kButtonSize, cell.height() - 2);
-        const int w =
-            qMin(chipWidth(opt), qMax(0, cell.width() - 2 * kButtonMargin));
+        const int w = qMin(chipWidth(), qMax(0, cell.width() - 2 * kButtonMargin));
         return QRect(cell.right() - kButtonMargin - w + 1,
                      cell.center().y() - h / 2 + 1, w, h);
     }
@@ -1007,6 +1124,99 @@ void rememberAcceptedAgentPrompt(const QString &token)
                       tokens);
 }
 
+// The agent detail header's title (adhoc #84). A plain QLabel either wraps a
+// long ad-hoc title down the whole pane or, pinned to one line, shows a
+// truncated "…" tail — and the header can spare exactly two lines. This keeps
+// the full string and lays it out itself: wrap at the label's current width,
+// stop after two lines, and elide only if the text still runs past them. The
+// full title is always in the tooltip.
+class WrappedTitleLabel : public QLabel
+{
+public:
+    explicit WrappedTitleLabel(const QString &text, QWidget *parent = nullptr)
+        : QLabel(parent)
+    {
+        setWordWrap(true);
+        setFullText(text);
+    }
+
+    void setFullText(const QString &text)
+    {
+        m_full = text.simplified();
+        setToolTip(m_full);
+        applyLayout();
+    }
+
+    // The pane is free to be narrower than the title — that is what the wrapping
+    // is for — so don't let the label's own minimum widen the splitter.
+    QSize minimumSizeHint() const override
+    {
+        QSize s = QLabel::minimumSizeHint();
+        s.setWidth(0);
+        return s;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QLabel::resizeEvent(event);
+        applyLayout();
+    }
+
+private:
+    static constexpr int kMaxLines = 2;
+
+    void applyLayout()
+    {
+        const int usable = width() - 2; // breathing room against the pane edge
+        // QLabel::setText() is a no-op when the string is unchanged, so the
+        // setText -> relayout -> resize -> setText path settles immediately.
+        QLabel::setText(usable > 0 ? elidedToLines(m_full, usable) : m_full);
+    }
+
+    QString elidedToLines(const QString &text, int lineWidth) const
+    {
+        if (text.isEmpty())
+            return text;
+        QTextLayout layout(text, font());
+        QTextOption option;
+        option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        layout.setTextOption(option);
+        int lastLineStart = 0;
+        int consumed = 0;
+        layout.beginLayout();
+        for (int line = 0; line < kMaxLines; ++line) {
+            QTextLine textLine = layout.createLine();
+            if (!textLine.isValid())
+                break;
+            textLine.setLineWidth(lineWidth);
+            lastLineStart = textLine.textStart();
+            consumed = textLine.textStart() + textLine.textLength();
+        }
+        layout.endLayout();
+        if (consumed >= text.size())
+            return text; // fits in two lines as-is
+        // It doesn't: keep the first line whole and elide what is left onto the
+        // second, so the "…" lands at the end of the title rather than the top.
+        return text.left(lastLineStart) +
+               fontMetrics().elidedText(text.mid(lastLineStart), Qt::ElideRight,
+                                        lineWidth);
+    }
+
+    QString m_full;
+};
+
+// Set the detail header's title through the wrapping label's own setter, so the
+// full string is what gets laid out (and what the tooltip carries). m_agentTitle
+// is typed QLabel* in the header; this is the one place that knows better.
+void setAgentTitleText(QLabel *label, const QString &text)
+{
+    if (auto *wrapped = dynamic_cast<WrappedTitleLabel *>(label))
+        wrapped->setFullText(text);
+    else if (label)
+        label->setText(text);
+}
+
 } // namespace
 
 QWidget *MainWindow::buildAgentsTab()
@@ -1022,7 +1232,7 @@ QWidget *MainWindow::buildAgentsTab()
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
 
-    m_agentTable = new QTableWidget(0, 4);
+    m_agentTable = new QTableWidget(0, 3);
     m_agentTable->setObjectName("issueTable");
     installColumnHeaderMenu(m_agentTable); // 3-dots per-column menu (issue #318)
     // Selected agent rows get a green outline with a transparent fill (rather
@@ -1037,16 +1247,18 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setStyleSheet(
         "#issueTable { selection-background-color: transparent; }"
         "#issueTable::item:selected { background: transparent; }");
-    // Four columns, and only four: the issue title is what the list is scanned
+    // Three columns, and only three: the issue title is what the list is scanned
     // by, so everything that used to compete with it for width has moved into the
     // detail header instead. Turns/Time/Cost/Tokens went first (adhoc #42),
     // Status next (adhoc #29 — its glyph and branch chip ride the "#" cell), and
     // Agent/Model/Speed plus the night-rider "Activity" light last (adhoc #35:
     // Speed now reads in the detail header, and the top-bar fleet matrix is the
-    // remaining live-activity surface). What's left is the id, the title, when the
-    // session last moved, and "Diff" — a compact files-changed + ahead/behind
-    // badge (issue #170) that also carries the conflict button.
-    m_agentTable->setHorizontalHeaderLabels({"#", "Issue", "Updated", "Diff"});
+    // remaining live-activity surface). "Updated" folded into the "#" cell too
+    // (adhoc #84 — the age is what the leading column shows now, under the same
+    // "#" header). What's left is that cell, the title, and "Diff" — a tiny
+    // added/removed churn bar (issue #170, adhoc #84) that also carries the
+    // conflict button.
+    m_agentTable->setHorizontalHeaderLabels({"#", "Issue", "Diff"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1066,13 +1278,11 @@ QWidget *MainWindow::buildAgentsTab()
     // by makeColumnsResizable() below).
     agentHeader->setSectionsMovable(true);
     agentHeader->setSectionResizeMode(kAgentIdColumn, QHeaderView::ResizeToContents);
-    // The Issue (title) column is the flex column and stays that way: Updated and
-    // Diff fit their contents and are pushed against the pane's right edge, so the
-    // title has the whole middle of the list to itself with nothing in its way
-    // (adhoc #35). makeColumnsResizable() is told to leave this one stretching.
+    // The Issue (title) column is the flex column and stays that way: Diff fits
+    // its contents and is pushed against the pane's right edge, so the title has
+    // the whole middle of the list to itself with nothing in its way (adhoc #35).
+    // makeColumnsResizable() is told to leave this one stretching.
     agentHeader->setSectionResizeMode(kAgentIssueColumn, QHeaderView::Stretch);
-    agentHeader->setSectionResizeMode(kAgentUpdatedColumn,
-                                      QHeaderView::ResizeToContents);
     agentHeader->setSectionResizeMode(kAgentDiffColumn,
                                       QHeaderView::ResizeToContents);
     // Branch button on every "#" cell (adhoc #377): one click from the list
@@ -1081,12 +1291,13 @@ QWidget *MainWindow::buildAgentsTab()
         kAgentIdColumn,
         new AgentBranchButtonDelegate(
             m_agentTable, [this](const QString &branch) { switchToBranch(branch); }));
-    // Conflict button on every Diff cell whose branch no longer merges cleanly
-    // (adhoc #446): one click steers that agent into merging base and resolving,
-    // which is no longer done automatically.
+    // The Diff cell's churn bar (adhoc #84), plus the conflict button on every
+    // row whose branch no longer merges cleanly (adhoc #446): one click steers
+    // that agent into merging base and resolving, which is no longer done
+    // automatically.
     m_agentTable->setItemDelegateForColumn(
         kAgentDiffColumn,
-        new AgentConflictButtonDelegate(
+        new AgentDiffCellDelegate(
             m_agentTable, [this](int sessionId) { fixAgentConflictsWithAgent(sessionId); }));
     // ~22fps timer that advances the per-session output meters and repaints the
     // top-bar fleet lights off them. It is started on demand by noteAgentActivity
@@ -1187,9 +1398,10 @@ QWidget *MainWindow::buildAgentsTab()
     listLayout->addWidget(m_agentTable, 1);
 
     auto *detailPane = new QWidget;
-    m_agentTitle = new QLabel("Select a session");
+    // Wraps onto a second line and elides only past that (adhoc #84): an ad-hoc
+    // session's title is a whole sentence, and a one-line header cut it off.
+    m_agentTitle = new WrappedTitleLabel(QStringLiteral("Select a session"));
     m_agentTitle->setObjectName("channelTitle");
-    m_agentTitle->setWordWrap(true);
     // The session's field list (Agent/Model/Repo/Status/Issue/PR/… plus Branch
     // and Worktree) no longer sits open across the top of the detail pane: it
     // filled a full-width band above the transcript for information that is only
@@ -1247,8 +1459,21 @@ QWidget *MainWindow::buildAgentsTab()
             return;
         }
         m_agentMetaPopup->adjustSize();
-        m_agentMetaPopup->move(
-            m_agentInfoButton->mapToGlobal(QPoint(0, m_agentInfoButton->height() + 4)));
+        QPoint at =
+            m_agentInfoButton->mapToGlobal(QPoint(0, m_agentInfoButton->height() + 4));
+        // The list is as wide as its longest branch/worktree value now (adhoc
+        // #68), so a session deep in the screen's right half would otherwise open
+        // partly off it. Slide it back in.
+        const QScreen *screen = m_agentMetaPopup->screen()
+                                    ? m_agentMetaPopup->screen()
+                                    : QGuiApplication::primaryScreen();
+        if (screen) {
+            const QRect avail = screen->availableGeometry();
+            at.setX(qBound(avail.left(),
+                           qMin(at.x(), avail.right() - m_agentMetaPopup->width() + 1),
+                           avail.right()));
+        }
+        m_agentMetaPopup->move(at);
         m_agentMetaPopup->show();
     });
 
@@ -1352,7 +1577,11 @@ QWidget *MainWindow::buildAgentsTab()
     // that made them half-height oddities beside the other actions: they are
     // plain full-size buttons now, and the names they open moved into the Info
     // popup's list (they stay on the tooltip too).
+    // Both are green (adhoc #84): opening the branch or its checkout is the
+    // ordinary, safe thing to do from a finished run, so they read as go actions
+    // beside the red Stop/Delete pair rather than as more of the same.
     m_agentBranchButton = new QPushButton(QStringLiteral("Branch"));
+    m_agentBranchButton->setObjectName("successButton");
     m_agentBranchButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentBranchButton, "git-branch", 16);
     m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
@@ -1362,6 +1591,7 @@ QWidget *MainWindow::buildAgentsTab()
             switchToBranch(s->branchName);
     });
     m_agentWorktreeButton = new QPushButton(QStringLiteral("Worktree"));
+    m_agentWorktreeButton->setObjectName("successButton");
     m_agentWorktreeButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentWorktreeButton, "file-directory", 16);
     m_agentWorktreeButton->hide();
@@ -1371,11 +1601,27 @@ QWidget *MainWindow::buildAgentsTab()
             switchToWorktree(s->branchName);
     });
 
-    // The title owns its row outright (adhoc #35): sharing it with the mode
-    // selector and the action buttons left a long, prompt-derived ad-hoc title
-    // wrapping inside a narrow column with acres of unused space beside it. The
-    // buttons moved down to the output toolbar next to the Transcript | Raw output
-    // toggle, so the header now reads title, then status pill, then the meta table.
+    // Session actions: "+ issue", View PR, Stop, Delete, Branch and Worktree.
+    // Each already manages its own visibility (they appear per session), so they
+    // are only laid out here. adhoc #35 moved them off the header onto the output
+    // toolbar so a long ad-hoc title could have its row to itself; adhoc #84
+    // brings them back up beside the status pill, where the run's state and the
+    // things you can do about it read together — and the output toolbar below
+    // gives the whole width back to the transcript search.
+    auto *actionRow = new QHBoxLayout;
+    actionRow->setContentsMargins(0, 0, 0, 0);
+    actionRow->setSpacing(6);
+    actionRow->addWidget(m_agentCreateIssueButton);
+    actionRow->addWidget(m_agentViewPrButton);
+    actionRow->addWidget(m_agentStopButton);
+    actionRow->addWidget(m_agentDeleteAllButton);
+    actionRow->addWidget(m_agentBranchButton);
+    actionRow->addWidget(m_agentWorktreeButton);
+
+    // The title still owns its row outright (adhoc #35): sharing it with the mode
+    // selector left a long, prompt-derived ad-hoc title wrapping inside a narrow
+    // column with acres of unused space beside it. The header reads title, then
+    // the status pill with the session's actions beside it, then the meta table.
     auto *topRow = new QVBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
     topRow->setSpacing(4);
@@ -1385,6 +1631,8 @@ QWidget *MainWindow::buildAgentsTab()
     statusRow->setSpacing(8);
     statusRow->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
     statusRow->addWidget(m_agentInfoButton, 0, Qt::AlignLeft);
+    statusRow->addSpacing(4);
+    statusRow->addLayout(actionRow);
     statusRow->addStretch(1);
     topRow->addLayout(statusRow);
 
@@ -1563,45 +1811,31 @@ QWidget *MainWindow::buildAgentsTab()
             });
 
     // Search box and match counter — the transcript-only half of the output
-    // toolbar, grouped so it can be shown and hidden as one without taking the
-    // session action buttons beside it with it (adhoc #35).
+    // toolbar, grouped so it can be shown and hidden as one (adhoc #35).
     auto *transcriptToolsRow = new QHBoxLayout;
     transcriptToolsRow->setContentsMargins(0, 0, 0, 0);
     transcriptToolsRow->setSpacing(0);
-    transcriptToolsRow->addWidget(m_transcriptSearch);
+    transcriptToolsRow->addWidget(m_transcriptSearch, 1);
     transcriptToolsRow->addSpacing(6);
     transcriptToolsRow->addWidget(m_transcriptSearchCount);
     m_agentTranscriptTools = new QWidget;
     m_agentTranscriptTools->setLayout(transcriptToolsRow);
 
-    // Session actions, moved off the detail header's title row (adhoc #35) so the
-    // title can run the full width: they ride the output toolbar now, immediately
-    // right of the Transcript | Raw toggle. Each already manages its own
-    // visibility ("+ issue", View PR and the Branch/Worktree buttons appear per
-    // session), so they are only laid out here.
-    auto *actionRow = new QHBoxLayout;
-    actionRow->setContentsMargins(0, 0, 0, 0);
-    actionRow->setSpacing(6);
-    actionRow->addWidget(m_agentCreateIssueButton);
-    actionRow->addWidget(m_agentViewPrButton);
-    actionRow->addWidget(m_agentStopButton);
-    actionRow->addWidget(m_agentDeleteAllButton);
-    actionRow->addWidget(m_agentBranchButton);
-    actionRow->addWidget(m_agentWorktreeButton);
-
+    // With the session actions back up in the header (adhoc #84) the toolbar is
+    // just the Transcript | Raw toggle and the search box — so the search takes
+    // the whole remaining width instead of hugging the right edge with a gap
+    // where the buttons used to be.
     auto *toggleRow = new QHBoxLayout;
     toggleRow->setContentsMargins(0, 0, 0, 0);
     toggleRow->setSpacing(0);
     toggleRow->addWidget(m_transcriptModeButton);
     toggleRow->addWidget(m_terminalModeButton);
     toggleRow->addSpacing(12);
-    toggleRow->addLayout(actionRow);
-    toggleRow->addStretch(1);
-    toggleRow->addWidget(m_agentTranscriptTools);
+    toggleRow->addWidget(m_agentTranscriptTools, 1);
     m_agentOutputToggle = new QWidget;
     m_agentOutputToggle->setLayout(toggleRow);
-    // The toolbar itself always shows now that it carries the action buttons; the
-    // detail pane it lives in is what stays hidden until a session is opened.
+    // The toolbar itself always shows; the detail pane it lives in is what stays
+    // hidden until a session is opened.
 
     // Edited-files list for the "Files changed" tab: the files this session has
     // touched in its branch (derived from Edit/Write/MultiEdit tool calls, and
@@ -4567,9 +4801,11 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     // Diff figures, memoised — feed both the "#" cell's branch chip (files /
     // dirty / worktree badges, adhoc #403) and the Diff column below.
     const AgentDiffStat diffStat = agentDiffStat(session, agentGitDir, agentBase);
-    // "#" column: the session id plus its run-state glyph and branch chip
-    // (adhoc #29 — the old Status column's icons, moved to the left edge).
-    applyAgentStatusCell(plain(kAgentIdColumn), session, diffStat);
+    // "#" column: the session's age plus its run-state glyph and branch chip
+    // (adhoc #29 — the old Status column's icons, moved to the left edge; adhoc
+    // #84 — the age took the session number's place in the text). Sortable
+    // because the cell no longer displays the number it sorts by.
+    applyAgentStatusCell(sortable(kAgentIdColumn), session, diffStat);
     // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
     // conflict auto-fixer, issueNumber 0) just show their title.
     plain(kAgentIssueColumn)
@@ -4577,23 +4813,10 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
                                                 .arg(session.issueNumber)
                                                 .arg(session.issueTitle)
                                           : session.issueTitle);
-    // "Updated" column: the most recent of created/started/finished/merged, shown
-    // as a compact "7m"-style age (adhoc #29 — "7 minutes ago" spent a wide column
-    // on words the list doesn't need). The tooltip carries the full timestamp and
-    // the raw millisecond value drives chronological sorting.
-    const qint64 updatedMs =
-        qMax(qMax(session.createdAtMs, session.startedAtMs),
-             qMax(session.finishedAtMs, session.mergedAtMs));
-    QTableWidgetItem *updated = sortable(kAgentUpdatedColumn);
-    updated->setData(Qt::DisplayRole,
-                     updatedMs > 0 ? formatShortRelativeTime(updatedMs / 1000)
-                                   : QStringLiteral("-"));
-    updated->setData(kTableSortRole, static_cast<qlonglong>(updatedMs));
-    updated->setToolTip(updatedMs > 0
-                            ? QDateTime::fromMSecsSinceEpoch(updatedMs).toString(
-                                  QStringLiteral("yyyy-MM-dd HH:mm:ss"))
-                            : QString());
-    // Diff column (issue #170): files changed + branch ahead/behind, memoised.
+    // The "Updated" column is gone (adhoc #84): the most recent of
+    // created/started/finished/merged now reads as the "#" cell's own text, with
+    // the full timestamp in that cell's tooltip — see applyAgentStatusCell.
+    // Diff column (issue #170): the churn bar, memoised.
     applyAgentDiffCell(sortable(kAgentDiffColumn), diffStat, agentBase, session.id);
 }
 
@@ -5008,6 +5231,30 @@ static QString agentDetailTableHtml(const QStringList &headers, const QStringLis
     return html;
 }
 
+// Size the info popup's label to the table it just rendered. The popup is a
+// Qt::Popup laid out by adjustSize(), and a word-wrapping QLabel reports a
+// deliberately squarish sizeHint, so long values — agent/adhoc-NN-… branch names
+// and their /tmp/forkmesh-worktrees paths — wrapped mid-name in a narrow popup
+// (adhoc #68). Measure the rendered document instead and pin the label that
+// wide, capped against the screen so one pathological value can't grow the popup
+// off it (values longer than the cap still wrap, as before).
+static void fitAgentMetaWidth(QLabel *label)
+{
+    if (!label)
+        return;
+    QTextDocument doc;
+    doc.setDefaultFont(label->font());
+    doc.setHtml(label->text());
+    doc.setTextWidth(-1); // lay the table out at its natural width
+    const QScreen *screen = label->screen() ? label->screen()
+                                            : QGuiApplication::primaryScreen();
+    const int maxWidth =
+        screen ? qMax(420, int(screen->availableGeometry().width() * 0.6)) : 900;
+    const int ideal = int(doc.idealWidth()) + 4; // +4: rounding + the label frame
+    label->setMinimumWidth(qBound(420, ideal > 4 ? ideal : 520, maxWidth));
+    label->setMaximumWidth(maxWidth);
+}
+
 qint64 MainWindow::agentSessionProcessId(int sessionId) const
 {
     if (ClaudeStreamSession *stream = m_streamSessions.value(sessionId))
@@ -5110,6 +5357,16 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         headers << QStringLiteral("Repo");
         values << QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
                                               session->name.toHtmlEscaped());
+        // Watch-only rows have no branch of ours, but when ForkMesh could match
+        // the running CLI to one they read here too (adhoc #68).
+        if (!session->branchName.isEmpty()) {
+            headers << QStringLiteral("Branch");
+            values << session->branchName.toHtmlEscaped();
+        }
+        if (!worktreePath.isEmpty()) {
+            headers << QStringLiteral("Worktree");
+            values << worktreePath.toHtmlEscaped();
+        }
         headers << QStringLiteral("Status");
         values << agentStatusText(session->status).toHtmlEscaped();
         headers << QStringLiteral("Mode");
@@ -5118,6 +5375,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         if (!mergedMeta.isEmpty())
             meta += QStringLiteral("<br>") + mergedMeta;
         m_agentMeta->setText(meta);
+        fitAgentMetaWidth(m_agentMeta);
         if (m_agentMetaPopup && m_agentMetaPopup->isVisible())
             m_agentMetaPopup->adjustSize();
         return;
@@ -5189,10 +5447,13 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         headers << QStringLiteral("Branch");
         lines << session->branchName.toHtmlEscaped();
     }
-    if (!worktreePath.isEmpty()) {
-        headers << QStringLiteral("Worktree");
-        lines << worktreePath.toHtmlEscaped();
-    }
+    // Worktree is always a row, even when the session has none (never got one, or
+    // it was cleaned up after the merge) — "where is this agent working?" should
+    // answer itself here rather than leaving the row silently absent (adhoc #68).
+    headers << QStringLiteral("Worktree");
+    lines << (worktreePath.isEmpty()
+                  ? QStringLiteral("<span style='color:#8b949e'>none</span>")
+                  : worktreePath.toHtmlEscaped());
     headers << QStringLiteral("Status");
     lines << agentStatusText(session->status).toHtmlEscaped();
     headers << QStringLiteral("Issue");
@@ -5244,6 +5505,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     if (!mergedMeta.isEmpty())
         meta += QStringLiteral("<br>") + mergedMeta;
     m_agentMeta->setText(meta);
+    fitAgentMetaWidth(m_agentMeta);
     // Live updates (token/cost events, the running ticker) can land while the
     // popup is open; keep it fitted to the list rather than clipping the new row.
     if (m_agentMetaPopup && m_agentMetaPopup->isVisible())
@@ -5255,8 +5517,7 @@ void MainWindow::showAgentSession(int sessionId)
     m_selectedAgentSessionId = sessionId;
     AgentSession *liveSession = findAgentSession(sessionId);
     if (!liveSession) {
-        if (m_agentTitle)
-            m_agentTitle->setText("Select a session");
+        setAgentTitleText(m_agentTitle, QStringLiteral("Select a session"));
         if (m_agentStatusPill)
             m_agentStatusPill->clear();
         if (m_agentMeta)
@@ -5311,9 +5572,21 @@ void MainWindow::showAgentSession(int sessionId)
                                       : (session->branchName.isEmpty()
                                              ? QStringLiteral("session")
                                              : session->branchName);
-            m_agentTitle->setText(QStringLiteral("External Claude Code · %1").arg(label));
+            setAgentTitleText(
+                m_agentTitle,
+                QStringLiteral("External Claude Code · %1").arg(label));
         } else {
-            m_agentTitle->setText(
+            // An ad-hoc session's stored issueTitle is the prompt's first line
+            // capped at 80 characters, so the header used to end in a "…" that
+            // no amount of pane width would fill in. Take the first line of the
+            // prompt itself when there is one and let the label wrap it over two
+            // lines (adhoc #84).
+            QString adHocTitle = session->issueTitle;
+            if (session->issueNumber <= 0 && !session->prompt.trimmed().isEmpty())
+                adHocTitle =
+                    session->prompt.section(QLatin1Char('\n'), 0, 0).simplified();
+            setAgentTitleText(
+                m_agentTitle,
                 session->issueNumber > 0
                     ? QStringLiteral("#%1 · %2")
                           .arg(session->issueNumber)
@@ -5325,9 +5598,9 @@ void MainWindow::showAgentSession(int sessionId)
                     // is 0, and the prompt is what identifies the run anyway.
                     : QStringLiteral("%1 · %2")
                           .arg(agentProviderName(session->provider))
-                          .arg(session->issueTitle.isEmpty()
+                          .arg(adHocTitle.isEmpty()
                                    ? QStringLiteral("pull #%1").arg(session->prNumber)
-                                   : session->issueTitle));
+                                   : adHocTitle));
         }
     }
     // The detail header's key/value meta lines (identity, issue/branch/worktree/PR
@@ -6755,6 +7028,25 @@ void MainWindow::processAgentQueue()
         // runner. startClaudeCodeTerminal remains for the legacy embedded-TUI.
         if (session->provider == QLatin1String("claude-code") ||
             agentIsCodexProvider(session->provider)) {
+            // A resume replays the persisted transcript, and startCliTranscript's
+            // synchronous ensureStreamEventsLoaded() parses the whole
+            // events.jsonl on the GUI thread — >1 s blocked on a long session
+            // (adhoc #82). Warm the cache through the off-thread loader first
+            // and park the session back at the head of the queue; the load's
+            // completion re-drains it (same quiet/loud disposition) and the
+            // then-instant synchronous path proceeds as before.
+            if (!m_streamEvents.contains(sessionId) &&
+                !m_streamEventsAbsent.contains(sessionId) &&
+                !isExternalSession(sessionId)) {
+                ensureStreamEventsLoadedAsync(sessionId);
+                if (m_streamEventsLoading.contains(sessionId)) {
+                    m_agentQueue.prepend(sessionId);
+                    if (!m_agentQueueAwaitingEvents.contains(sessionId))
+                        m_agentQueueAwaitingEvents.insert(sessionId,
+                                                          m_agentQuietResume);
+                    break;
+                }
+            }
             startCliTranscript(*session, issue, agentGitDir, session->prompt);
             ++active;
             changed = true;
@@ -9142,6 +9434,18 @@ bool MainWindow::ensureStreamEventsLoadedAsync(int sessionId)
             }
             if (sessionId == m_selectedAgentSessionId)
                 showAgentSession(sessionId); // render the restored history
+            // processAgentQueue() parked this session here while its transcript
+            // loaded (adhoc #82); re-drain the queue now that the events are in
+            // memory, restoring the disposition of the deferred pass so a
+            // user-driven start still jumps to the transcript and a restart
+            // resume stays quiet.
+            if (m_agentQueueAwaitingEvents.contains(sessionId)) {
+                const bool quiet = m_agentQueueAwaitingEvents.take(sessionId);
+                const bool wasQuiet = m_agentQuietResume;
+                m_agentQuietResume = quiet;
+                processAgentQueue();
+                m_agentQuietResume = wasQuiet;
+            }
         });
     return false;
 }

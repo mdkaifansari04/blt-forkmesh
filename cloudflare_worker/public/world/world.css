@@ -11141,13 +11141,16 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   overflow-x: auto;
 }
 
+/* The later generic .world-activity-row rule (46px avatar + copy grid) must
+   never win over the tabular layout, or every cell stacks vertically. */
 .world-notification-table-header,
 .world-notification-row {
   display: grid !important;
-  min-width: 1480px;
+  min-width: 1220px;
+  gap: 0 !important;
   grid-template-columns:
-    120px minmax(190px, 1.25fr) minmax(260px, 1.8fr) 82px
-    minmax(150px, 1fr) minmax(150px, 1fr) 150px 150px 120px;
+    108px minmax(160px, 1.1fr) minmax(220px, 1.7fr) 74px
+    minmax(130px, 1fr) minmax(120px, 0.9fr) 142px 118px 96px !important;
   align-items: center;
 }
 
@@ -11178,11 +11181,11 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 .world-notification-table {
   display: block;
-  min-width: 1480px;
+  min-width: 1220px;
 }
 
 .world-notification-table .world-notification-row {
-  min-height: 42px;
+  min-height: 34px;
   border: 0 !important;
   border-bottom: 1px solid rgb(139 148 158 / 0.16) !important;
   border-left: 3px solid #58a6ff !important;
