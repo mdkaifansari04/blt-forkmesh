@@ -1247,8 +1247,21 @@ QWidget *MainWindow::buildAgentsTab()
             return;
         }
         m_agentMetaPopup->adjustSize();
-        m_agentMetaPopup->move(
-            m_agentInfoButton->mapToGlobal(QPoint(0, m_agentInfoButton->height() + 4)));
+        QPoint at =
+            m_agentInfoButton->mapToGlobal(QPoint(0, m_agentInfoButton->height() + 4));
+        // The list is as wide as its longest branch/worktree value now (adhoc
+        // #68), so a session deep in the screen's right half would otherwise open
+        // partly off it. Slide it back in.
+        const QScreen *screen = m_agentMetaPopup->screen()
+                                    ? m_agentMetaPopup->screen()
+                                    : QGuiApplication::primaryScreen();
+        if (screen) {
+            const QRect avail = screen->availableGeometry();
+            at.setX(qBound(avail.left(),
+                           qMin(at.x(), avail.right() - m_agentMetaPopup->width() + 1),
+                           avail.right()));
+        }
+        m_agentMetaPopup->move(at);
         m_agentMetaPopup->show();
     });
 
@@ -5008,6 +5021,30 @@ static QString agentDetailTableHtml(const QStringList &headers, const QStringLis
     return html;
 }
 
+// Size the info popup's label to the table it just rendered. The popup is a
+// Qt::Popup laid out by adjustSize(), and a word-wrapping QLabel reports a
+// deliberately squarish sizeHint, so long values — agent/adhoc-NN-… branch names
+// and their /tmp/forkmesh-worktrees paths — wrapped mid-name in a narrow popup
+// (adhoc #68). Measure the rendered document instead and pin the label that
+// wide, capped against the screen so one pathological value can't grow the popup
+// off it (values longer than the cap still wrap, as before).
+static void fitAgentMetaWidth(QLabel *label)
+{
+    if (!label)
+        return;
+    QTextDocument doc;
+    doc.setDefaultFont(label->font());
+    doc.setHtml(label->text());
+    doc.setTextWidth(-1); // lay the table out at its natural width
+    const QScreen *screen = label->screen() ? label->screen()
+                                            : QGuiApplication::primaryScreen();
+    const int maxWidth =
+        screen ? qMax(420, int(screen->availableGeometry().width() * 0.6)) : 900;
+    const int ideal = int(doc.idealWidth()) + 4; // +4: rounding + the label frame
+    label->setMinimumWidth(qBound(420, ideal > 4 ? ideal : 520, maxWidth));
+    label->setMaximumWidth(maxWidth);
+}
+
 qint64 MainWindow::agentSessionProcessId(int sessionId) const
 {
     if (ClaudeStreamSession *stream = m_streamSessions.value(sessionId))
@@ -5110,6 +5147,16 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         headers << QStringLiteral("Repo");
         values << QStringLiteral("%1/%2").arg(session->owner.toHtmlEscaped(),
                                               session->name.toHtmlEscaped());
+        // Watch-only rows have no branch of ours, but when ForkMesh could match
+        // the running CLI to one they read here too (adhoc #68).
+        if (!session->branchName.isEmpty()) {
+            headers << QStringLiteral("Branch");
+            values << session->branchName.toHtmlEscaped();
+        }
+        if (!worktreePath.isEmpty()) {
+            headers << QStringLiteral("Worktree");
+            values << worktreePath.toHtmlEscaped();
+        }
         headers << QStringLiteral("Status");
         values << agentStatusText(session->status).toHtmlEscaped();
         headers << QStringLiteral("Mode");
@@ -5118,6 +5165,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         if (!mergedMeta.isEmpty())
             meta += QStringLiteral("<br>") + mergedMeta;
         m_agentMeta->setText(meta);
+        fitAgentMetaWidth(m_agentMeta);
         if (m_agentMetaPopup && m_agentMetaPopup->isVisible())
             m_agentMetaPopup->adjustSize();
         return;
@@ -5189,10 +5237,13 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         headers << QStringLiteral("Branch");
         lines << session->branchName.toHtmlEscaped();
     }
-    if (!worktreePath.isEmpty()) {
-        headers << QStringLiteral("Worktree");
-        lines << worktreePath.toHtmlEscaped();
-    }
+    // Worktree is always a row, even when the session has none (never got one, or
+    // it was cleaned up after the merge) — "where is this agent working?" should
+    // answer itself here rather than leaving the row silently absent (adhoc #68).
+    headers << QStringLiteral("Worktree");
+    lines << (worktreePath.isEmpty()
+                  ? QStringLiteral("<span style='color:#8b949e'>none</span>")
+                  : worktreePath.toHtmlEscaped());
     headers << QStringLiteral("Status");
     lines << agentStatusText(session->status).toHtmlEscaped();
     headers << QStringLiteral("Issue");
@@ -5244,6 +5295,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     if (!mergedMeta.isEmpty())
         meta += QStringLiteral("<br>") + mergedMeta;
     m_agentMeta->setText(meta);
+    fitAgentMetaWidth(m_agentMeta);
     // Live updates (token/cost events, the running ticker) can land while the
     // popup is open; keep it fitted to the list rather than clipping the new row.
     if (m_agentMetaPopup && m_agentMetaPopup->isVisible())
