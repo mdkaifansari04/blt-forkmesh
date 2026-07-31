@@ -153,6 +153,10 @@ const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";
 const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
 const ADMIN_ERROR_POLL_MS = 15_000;
+// Element ids an administrator switched off in the Elements tab. Kept on the
+// device (never in account preferences) so a perf experiment on one machine
+// cannot dim the world on every other signed-in device.
+const DISABLED_ELEMENTS_KEY = "forkmesh.world.disabledElements.v1";
 const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
@@ -302,6 +306,152 @@ function diagnosticStateLevel(state) {
   return ["connecting", "handshaking", "reconnecting"].includes(state)
     ? "caution"
     : "high";
+}
+
+function compactCountLabel(value) {
+  const count = Math.max(0, Number(value) || 0);
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}m`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+  return `${Math.round(count)}`;
+}
+
+// Chromium-only heap reading; NaN elsewhere and the caller omits the figure.
+function heapUsedMB() {
+  const bytes = Number(performance?.memory?.usedJSHeapSize);
+  return Number.isFinite(bytes) && bytes > 0 ? bytes / (1024 * 1024) : NaN;
+}
+
+// Turn one diagnostics sample into concrete, ranked advice. Every suggestion
+// names the reading that triggered it and, where the Elements tab can prove
+// the theory, the heaviest currently-enabled candidates to switch off first.
+function worldDebugSuggestions(snapshot, { isAdmin = false, elements = [] } = {}) {
+  const suggestions = [];
+  const renderer = snapshot?.renderer;
+  const connection = snapshot?.connection || {};
+  const traffic = snapshot?.traffic || {};
+  const queues = snapshot?.queues || {};
+  if (!renderer) {
+    return [
+      {
+        level: "high",
+        text: "The WebGL renderer is unavailable. Reload the page; if it persists, this device or browser is refusing 3D contexts.",
+      },
+    ];
+  }
+  const heaviest = (metric) =>
+    elements
+      .filter((element) => element.enabled && element[metric] > 0)
+      .sort((a, b) => b[metric] - a[metric])
+      .slice(0, 3)
+      .map(
+        (element) =>
+          `${element.label} (${compactCountLabel(element[metric])})`,
+      )
+      .join(", ");
+  const elementsHint = (metric) => {
+    if (!isAdmin) return "";
+    const top = heaviest(metric);
+    return top
+      ? ` Heaviest enabled elements: ${top} — switch them off in the Elements tab to confirm.`
+      : "";
+  };
+  if (renderer.paused) {
+    suggestions.push({
+      level: "caution",
+      text: "The renderer is paused (tab hidden or crash guard). Readings resume with the next visible frame.",
+    });
+    return suggestions;
+  }
+  if (diagnosticLevel("fps", renderer.fps) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("fps", renderer.fps),
+      text: `Rendering at ${renderer.fps.toFixed(0)} FPS (${renderer.frameTimeMs.toFixed(1)} ms/frame). Work down the suggestions below in order; each removed cost shows up here within a second.`,
+    });
+  }
+  if (diagnosticLevel("calls", renderer.calls) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("calls", renderer.calls),
+      text: `${Math.round(renderer.calls).toLocaleString()} draw calls per frame is high — every mesh is a separate GPU submission.${elementsHint("drawables")}`,
+    });
+  }
+  if (diagnosticLevel("triangles", renderer.triangles) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("triangles", renderer.triangles),
+      text: `${compactCountLabel(renderer.triangles)} triangles per frame strains integrated GPUs.${elementsHint("triangles")}`,
+    });
+  }
+  if (
+    renderer.shadowsEnabled &&
+    diagnosticLevel("fps", renderer.fps) !== "good"
+  ) {
+    suggestions.push({
+      level: "caution",
+      text: isAdmin
+        ? "Shadow maps re-render every caster on refresh. Toggle Shadow maps off in the Elements tab: if long frames disappear, shadows are your stall."
+        : "Shadow maps are enabled; on integrated GPUs they are a common source of periodic long frames.",
+    });
+  }
+  if (
+    diagnosticLevel("longFrames", renderer.longFrames) !== "good" ||
+    diagnosticLevel("longestFrameMs", renderer.longestFrameMs) !== "good"
+  ) {
+    suggestions.push({
+      level: "caution",
+      text: `${Math.round(renderer.longFrames)} long frames (worst ${renderer.longestFrameMs.toFixed(0)} ms) in the last sample. One-off spikes are usually garbage collection or a background tab; steady repeats point at scene cost or shadow refreshes.`,
+    });
+  }
+  if (renderer.pixelRatio >= 2 && diagnosticLevel("fps", renderer.fps) !== "good") {
+    suggestions.push({
+      level: "caution",
+      text: `Device pixel ratio ${renderer.pixelRatio.toFixed(1)} multiplies fragment work ~${Math.round(renderer.pixelRatio ** 2)}×. Lowering browser zoom (or OS scaling) shrinks the canvas the renderer must fill.`,
+    });
+  }
+  if (renderer.animations >= 150) {
+    suggestions.push({
+      level: "caution",
+      text: `${Math.round(renderer.animations)} ambient animation callbacks run per visual tick.${isAdmin ? " Toggle Ambient animations off in the Elements tab to measure their main-thread share." : ""}`,
+    });
+  }
+  if (renderer.remoteAvatars >= 8) {
+    suggestions.push({
+      level: "caution",
+      text: `${renderer.remoteAvatars} remote avatars are being simulated.${isAdmin ? " Toggle Remote visitor avatars off in the Elements tab to see their cost." : ""}`,
+    });
+  }
+  if (diagnosticLevel("movementInputMs", renderer.worstInputResponseMs) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("movementInputMs", renderer.worstInputResponseMs),
+      text: `Worst movement input took ${renderer.worstInputResponseMs.toFixed(0)} ms to reach a frame — the main thread is blocking. Close other tabs and heavy extensions; if it tracks the scene readings above, reduce scene cost first.`,
+    });
+  }
+  if (diagnosticStateLevel(connection.state) !== "good") {
+    suggestions.push({
+      level: diagnosticStateLevel(connection.state),
+      text: `The world socket is ${connection.state}. Presence and chat degrade gracefully, but reconnect churn costs main-thread time.`,
+    });
+  }
+  if (diagnosticLevel("backpressure", queues.backpressureEvents) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("backpressure", queues.backpressureEvents),
+      text: `${queues.backpressureEvents} socket backpressure events — the relay or this connection cannot drain frames as fast as they are produced. The client already coalesces; a calmer network or fewer peers helps.`,
+    });
+  }
+  if (
+    diagnosticLevel("frameRate", traffic.inboundRate) !== "good" ||
+    diagnosticLevel("frameRate", traffic.outboundRate) !== "good"
+  ) {
+    suggestions.push({
+      level: "caution",
+      text: `Socket traffic is running at ${(Number(traffic.inboundRate) || 0).toFixed(0)}/s inbound, ${(Number(traffic.outboundRate) || 0).toFixed(0)}/s outbound. Each frame is parsed on the main thread, so busy hours show up as input jitter.`,
+    });
+  }
+  if (!suggestions.length) {
+    suggestions.push({
+      level: "good",
+      text: "All readings are healthy. If it still feels slow, the cost is outside this tab — check the operating system's GPU/CPU monitors.",
+    });
+  }
+  return suggestions.slice(0, 8);
 }
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
 const WORLD_PULL_MERGE_POLL_MS = 400;
@@ -558,6 +708,14 @@ function writeJSON(storage, key, value) {
   try {
     storage.setItem(key, JSON.stringify(value));
   } catch (_) {}
+}
+
+function storedDisabledWorldElements() {
+  const stored = readJSON(localStorage, DISABLED_ELEMENTS_KEY, []);
+  return (Array.isArray(stored) ? stored : [])
+    .map((id) => String(id || "").slice(0, 64))
+    .filter((id) => /^[a-z0-9-]+$/.test(id))
+    .slice(0, 200);
 }
 
 function positionIdentityToken(value) {
@@ -4644,6 +4802,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button type="button" role="tab" aria-selected="true" data-world-settings-tab="view">View</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="work">Work</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="security">Security</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="debug">Debug</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="elements" data-world-elements-tab hidden>Elements</button>
           </div>
 
           <div class="world-settings-pane" data-world-settings-pane="work" hidden>
@@ -4767,6 +4927,66 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </fieldset>
           </div>
 
+          <div class="world-settings-pane" data-world-settings-pane="debug" hidden>
+            <fieldset class="world-setting-group">
+              <legend>Live debug · sampled locally every second</legend>
+              <p class="world-setting-note">
+                This panel stays open while you walk, ride, and fly: click or
+                move in the world and the readings keep updating in place.
+                Everything is measured in this browser only — nothing here is
+                transmitted.
+              </p>
+              <label class="world-privacy-option">
+                <span>Show floating debug pill over the world</span>
+                <input
+                  type="checkbox"
+                  data-world-debug-panel
+                  ${settings.debugPanel ? "checked" : ""}
+                />
+              </label>
+              <dl class="world-debug-live" data-world-debug-live aria-live="off">
+                <div><dt>Renderer</dt><dd data-world-debug-renderer>Starting…</dd></div>
+                <div><dt>Frame health</dt><dd data-world-debug-frame-health>Sampling…</dd></div>
+                <div><dt>Input / scene</dt><dd data-world-debug-input>Sampling…</dd></div>
+                <div><dt>GPU memory</dt><dd data-world-debug-memory>Sampling…</dd></div>
+                <div><dt>World state</dt><dd data-world-debug-world-state>Sampling…</dd></div>
+                <div><dt>Music</dt><dd data-world-debug-music>Nothing playing</dd></div>
+                <div><dt>Connection</dt><dd data-world-debug-connection>Connecting…</dd></div>
+                <div><dt>Socket frames</dt><dd data-world-debug-traffic>Inbound 0 · outbound 0</dd></div>
+                <div><dt>Coalescing</dt><dd data-world-debug-queues>Movement idle · profile idle</dd></div>
+                <div><dt>Build</dt><dd data-world-debug-build>Loading current version…</dd></div>
+              </dl>
+            </fieldset>
+            <fieldset class="world-setting-group">
+              <legend>Suggestions</legend>
+              <ol class="world-debug-suggestions" data-world-debug-suggestions>
+                <li data-level="caution">Collecting the first sample…</li>
+              </ol>
+            </fieldset>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="elements" hidden>
+            <fieldset class="world-setting-group">
+              <legend>World elements · administrator, this device only</legend>
+              <p class="world-setting-note">
+                Switch any element off to remove it completely from the game —
+                its geometry leaves the scene, its raycast targets are dropped,
+                and its per-frame work stops — then watch the Debug tab to see
+                what it was costing. Switch it back on to restore it. Choices
+                apply to this browser only; every other visitor still sees the
+                full world.
+              </p>
+              <div class="world-element-master">
+                <button type="button" data-world-element-master="on">Everything on</button>
+                <button type="button" data-world-element-master="off">Everything off</button>
+              </div>
+              <div class="world-element-list" data-world-element-list>
+                <p class="world-setting-note">Sign in as an administrator to control world elements.</p>
+              </div>
+              <p class="world-office-panel-status" data-world-element-status role="status" aria-live="polite"></p>
+            </fieldset>
+          </div>
+
           <div class="world-settings-pane" data-world-settings-pane="view">
           <fieldset class="world-setting-group">
             <legend>Personal environment · synced to your account</legend>
@@ -4812,14 +5032,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 data-world-light-level
               />
               <small>Full daylight is the default. Signed-in preferences follow you across devices and never change the shared world for anyone else.</small>
-            </label>
-            <label class="world-privacy-option">
-              <span>Show debug panel</span>
-              <input
-                type="checkbox"
-                data-world-debug-panel
-                ${settings.debugPanel ? "checked" : ""}
-              />
             </label>
           </fieldset>
 
@@ -5205,6 +5417,10 @@ class ForkMeshWorld extends HTMLElement {
     this.worldLayoutFingerprint = "";
     this.pendingWorldShare = null;
     this.savedViews = [];
+    // Element ids an administrator switched off on this device. Applied to
+    // the scene at construction and edited live from the Elements tab.
+    this.disabledWorldElements = storedDisabledWorldElements();
+    this.worldTicketResolved = false;
     this.settingsUpdatedAt = 0;
     this.worldPreferencesLoaded = false;
     this.worldPreferencesLoading = null;
@@ -6184,6 +6400,10 @@ class ForkMeshWorld extends HTMLElement {
             ? FRESH_ARRIVAL_CAMPFIRE_PREVIEW
             : null),
         initialWorldLayout: mergedInitialLayout,
+        // Applied before the admin ticket resolves; a device whose session
+        // turns out not to be an administrator is restored to the full world
+        // by applyWorldLayoutEditor the moment that answer arrives.
+        initialDisabledElements: this.disabledWorldElements,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
         // After a detected crash the same GPU or memory pressure would likely
         // kill this reload too; boot the low-memory compact renderer instead.
@@ -8089,6 +8309,9 @@ class ForkMeshWorld extends HTMLElement {
     } else {
       this.clearWorldTicketIdentity();
     }
+    // Only an answered ticket request may demote element toggles: until now
+    // isAdmin === false just means "not verified yet".
+    this.worldTicketResolved = true;
     const country = String(context?.country || context?.countryCode || "")
       .trim()
       .toUpperCase()
@@ -9680,6 +9903,10 @@ class ForkMeshWorld extends HTMLElement {
       const settingsPanel = this.$("[data-world-settings]");
       if (
         settingsPanel?.dataset.open === "true" &&
+        // The Debug and Elements tabs exist to be watched while playing, so
+        // clicking back into the world must not dismiss them. They close only
+        // from their × button or Escape.
+        !["debug", "elements"].includes(this.settingsTab || "") &&
         !event.target.closest("[data-world-settings]") &&
         !event.target.closest(
           "[data-world-settings-open], [data-world-tasks-open]",
@@ -9921,6 +10148,15 @@ class ForkMeshWorld extends HTMLElement {
       const settingsTab = event.target.closest("[data-world-settings-tab]");
       if (settingsTab) {
         this.selectSettingsTab(settingsTab.dataset.worldSettingsTab);
+        return;
+      }
+      const elementMaster = event.target.closest(
+        "[data-world-element-master]",
+      );
+      if (elementMaster) {
+        this.setAllWorldElementsEnabled(
+          elementMaster.dataset.worldElementMaster !== "off",
+        );
         return;
       }
       const sessionRevoke = event.target.closest("[data-world-session-revoke]");
@@ -10394,6 +10630,16 @@ class ForkMeshWorld extends HTMLElement {
             !debugPanel.checked,
           );
         }
+        return;
+      }
+      const elementToggle = event.target.closest(
+        "[data-world-element-toggle]",
+      );
+      if (elementToggle) {
+        this.setWorldElementEnabled(
+          elementToggle.dataset.worldElementToggle,
+          elementToggle.checked,
+        );
         return;
       }
       const emojiCategory = event.target.closest(
@@ -11745,6 +11991,26 @@ class ForkMeshWorld extends HTMLElement {
   applyWorldLayoutEditor() {
     const enabled = this.identity?.isAdmin === true;
     this.world?.setLayoutEditor?.(enabled);
+    const elementsTab = this.$("[data-world-elements-tab]");
+    if (elementsTab) elementsTab.hidden = !enabled;
+    if (
+      !enabled &&
+      this.worldTicketResolved &&
+      this.disabledWorldElements.length
+    ) {
+      // A stored experiment from an admin session must never dim the world
+      // for whoever is signed in (or signed out) on this device now.
+      this.disabledWorldElements = [];
+      writeJSON(localStorage, DISABLED_ELEMENTS_KEY, []);
+      (this.world?.listWorldElements?.() || [])
+        .filter((element) => !element.enabled)
+        .forEach((element) =>
+          this.world.setWorldElementEnabled(element.id, true),
+        );
+    }
+    if (!enabled && this.settingsTab === "elements") {
+      this.selectSettingsTab("view");
+    }
     if (!enabled || this.layoutEditorAnnounced) return;
     // Selection is handle-free and preserves the camera's drag/wheel gestures.
     this.layoutEditorAnnounced = true;
@@ -22474,7 +22740,14 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   selectSettingsTab(tab) {
-    const selected = ["view", "work", "security"].includes(tab) ? tab : "view";
+    let selected = ["view", "work", "security", "debug", "elements"].includes(
+      tab,
+    )
+      ? tab
+      : "view";
+    if (selected === "elements" && this.identity?.isAdmin !== true) {
+      selected = "view";
+    }
     this.settingsTab = selected;
     const panel = this.$("[data-world-settings]");
     if (panel) panel.dataset.activeTab = selected;
@@ -22492,6 +22765,13 @@ class ForkMeshWorld extends HTMLElement {
       // re-read on entry rather than polled while the panel sits open.
       void this.loadWorldSessions();
     }
+    if (selected === "debug") {
+      // Paint the readings immediately instead of waiting out the 1s tick.
+      this.renderDiagnostics();
+    }
+    if (selected === "elements") {
+      this.renderWorldElementsPane();
+    }
     if (selected === "work") {
       void this.ensureOfficeRuntime({ userInitiated: true }).then(() => {
         if (this.destroyed || this.settingsTab !== "work") return;
@@ -22501,6 +22781,117 @@ class ForkMeshWorld extends HTMLElement {
         void this.officeTasks?.refresh?.({ quiet: true });
       });
     }
+  }
+
+  setWorldElementEnabled(id, enabled) {
+    const elementId = String(id || "");
+    if (
+      this.identity?.isAdmin !== true ||
+      !this.world?.setWorldElementEnabled?.(elementId, enabled)
+    ) {
+      return;
+    }
+    const disabled = new Set(this.disabledWorldElements);
+    if (enabled) disabled.delete(elementId);
+    else disabled.add(elementId);
+    this.disabledWorldElements = [...disabled];
+    writeJSON(localStorage, DISABLED_ELEMENTS_KEY, this.disabledWorldElements);
+    const element = (this.world.listWorldElements?.() || []).find(
+      (entry) => entry.id === elementId,
+    );
+    this.renderWorldElementsPane(
+      element
+        ? `${element.label} ${enabled ? "restored" : "removed"} — watch the Debug tab for the effect.`
+        : "",
+    );
+  }
+
+  setAllWorldElementsEnabled(enabled) {
+    if (this.identity?.isAdmin !== true) return;
+    const elements = this.world?.listWorldElements?.() || [];
+    elements.forEach((element) =>
+      this.world.setWorldElementEnabled(element.id, enabled),
+    );
+    this.disabledWorldElements = enabled
+      ? []
+      : elements.map((element) => element.id);
+    writeJSON(localStorage, DISABLED_ELEMENTS_KEY, this.disabledWorldElements);
+    this.renderWorldElementsPane(
+      enabled
+        ? "Every element is back in the game."
+        : "Every element removed — an empty scene is your renderer baseline.",
+    );
+  }
+
+  renderWorldElementsPane(statusMessage = "") {
+    const list = this.$("[data-world-element-list]");
+    if (!list) return;
+    const status = this.$("[data-world-element-status]");
+    if (status) status.textContent = String(statusMessage || "").slice(0, 200);
+    if (this.identity?.isAdmin !== true) {
+      list.innerHTML =
+        '<p class="world-setting-note">Sign in as an administrator to control world elements.</p>';
+      return;
+    }
+    const elements = this.world?.listWorldElements?.() || [];
+    if (!elements.length) {
+      list.innerHTML =
+        '<p class="world-setting-note">The world is still loading — element controls appear once the scene is built.</p>';
+      return;
+    }
+    const categoryOrder = [
+      "Systems",
+      "Terrain",
+      "Districts",
+      "Boards & kiosks",
+      "Scenery",
+      "Recreation",
+      "Vehicles & rides",
+      "Avatars & bots",
+      "Infrastructure",
+    ];
+    const grouped = new Map();
+    elements.forEach((element) => {
+      const category = String(element.category || "Other");
+      if (!grouped.has(category)) grouped.set(category, []);
+      grouped.get(category).push(element);
+    });
+    const orderedCategories = [
+      ...categoryOrder.filter((category) => grouped.has(category)),
+      ...[...grouped.keys()].filter(
+        (category) => !categoryOrder.includes(category),
+      ),
+    ];
+    list.innerHTML = orderedCategories
+      .map((category) => {
+        const rows = grouped
+          .get(category)
+          .sort((a, b) => a.label.localeCompare(b.label))
+          .map((element) => {
+            const stats = element.system
+              ? "per-frame system"
+              : `${compactCountLabel(element.drawables)} drawn · ${compactCountLabel(element.triangles)} tri · ${compactCountLabel(element.interactives)} click`;
+            return `
+            <label class="world-element-row" data-enabled="${element.enabled}">
+              <input
+                type="checkbox"
+                data-world-element-toggle="${escapeHTML(element.id)}"
+                ${element.enabled ? "checked" : ""}
+              />
+              <span class="world-element-copy">
+                <strong>${escapeHTML(element.label)}</strong>
+                <small>${escapeHTML(stats)}</small>
+              </span>
+            </label>`;
+          })
+          .join("");
+        return `
+        <section class="world-element-category">
+          <h4>${escapeHTML(category)}</h4>
+          ${rows}
+        </section>`;
+      })
+      .join("");
   }
 
   renderWorldSessions(message = "", tone = "") {
@@ -24654,6 +25045,27 @@ class ForkMeshWorld extends HTMLElement {
               0,
               Math.min(1_000_000, Number(scene.animations) || 0),
             ),
+            geometries: Math.max(
+              0,
+              Math.min(1_000_000, Number(scene.geometries) || 0),
+            ),
+            textures: Math.max(
+              0,
+              Math.min(1_000_000, Number(scene.textures) || 0),
+            ),
+            programs: Math.max(
+              0,
+              Math.min(100_000, Number(scene.programs) || 0),
+            ),
+            remoteAvatars: Math.max(
+              0,
+              Math.min(10_000, Number(scene.remoteAvatars) || 0),
+            ),
+            disabledElements: Math.max(
+              0,
+              Math.min(1_000, Number(scene.disabledElements) || 0),
+            ),
+            shadowsEnabled: scene.shadowsEnabled === true,
             pixelRatio: Math.max(0, Math.min(8, Number(scene.pixelRatio) || 0)),
             cameraMode: String(scene.cameraMode || "unknown").slice(0, 32),
             space: String(scene.space || "unknown").slice(0, 64),
@@ -24743,11 +25155,14 @@ class ForkMeshWorld extends HTMLElement {
 
   renderDiagnostics() {
     const root = this.$("[data-world-diagnostics]");
-    if (!root) return;
-    // With the debug panel disabled the whole element carries `hidden`;
-    // rebuilding its readouts every second is pure waste in that state.
-    if (root.hidden) return;
+    const floatingVisible = Boolean(root && !root.hidden);
+    const debugPane = this.settingsDebugPaneElement();
+    // With the floating pill hidden and the Debug tab closed there is nothing
+    // to paint; rebuilding readouts every second would be pure waste.
+    if (!floatingVisible && !debugPane) return;
     const snapshot = this.collectDiagnostics();
+    if (debugPane) this.renderDebugSettingsPane(debugPane, snapshot);
+    if (!floatingVisible) return;
     const { renderer, connection, traffic, queues, build, music } = snapshot;
     const formatRate = (value) =>
       `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
@@ -24905,61 +25320,108 @@ class ForkMeshWorld extends HTMLElement {
     // collapsed only the summary readouts above are visible, so skip the
     // nine per-second innerHTML rebuilds until it opens.
     if (!root.open) return;
-    const rendererDetail = this.$("[data-world-diagnostics-renderer]");
-    if (rendererDetail) {
-      rendererDetail.innerHTML = renderer
-        ? `${renderer.paused ? diagnosticReading("Paused", "caution") : `${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(1)} FPS`)} · ${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms/frame`)}`} · ${diagnosticMetric("calls", renderer.calls, `${Math.round(renderer.calls).toLocaleString()} calls`)} · ${diagnosticMetric("triangles", renderer.triangles, `${Math.round(renderer.triangles).toLocaleString()} triangles`)}`
-        : unavailable("WebGL renderer unavailable");
-    }
-    const frameHealth = this.$("[data-world-diagnostics-frame-health]");
-    if (frameHealth) {
-      frameHealth.innerHTML = renderer
-        ? `${diagnosticMetric("longFrames", renderer.longFrames, `${Math.round(renderer.longFrames).toLocaleString()} long frames`)} · ${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(1)} ms worst`)} in the last sample`
-        : unavailable("WebGL renderer unavailable");
-    }
-    const inputDetail = this.$("[data-world-diagnostics-input]");
-    if (inputDetail) {
-      inputDetail.innerHTML = renderer
-        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${diagnosticMetric("movementInputMs", renderer.inputResponseMs, `${renderer.inputResponseMs.toFixed(1)} ms movement response`)} · ${diagnosticMetric("movementInputMs", renderer.worstInputResponseMs, `${renderer.worstInputResponseMs.toFixed(1)} ms worst movement response`)} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
-        : unavailable("WebGL renderer unavailable");
-    }
-    const worldState = this.$("[data-world-diagnostics-world-state]");
-    if (worldState) {
-      worldState.innerHTML = renderer
-        ? escapeHTML(
-            `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}`,
-          )
-        : unavailable("World state unavailable");
+    const readouts = this.diagnosticsDetailReadouts(snapshot);
+    for (const [slot, html] of Object.entries({
+      renderer: readouts.renderer,
+      "frame-health": readouts.frameHealth,
+      input: readouts.input,
+      "world-state": readouts.worldState,
+      connection: readouts.connection,
+      traffic: readouts.traffic,
+      queues: readouts.queues,
+      build: readouts.build,
+    })) {
+      const detail = this.$(`[data-world-diagnostics-${slot}]`);
+      if (detail) detail.innerHTML = html;
     }
     const musicDetail = this.$("[data-world-diagnostics-music]");
-    if (musicDetail) {
-      musicDetail.textContent =
+    if (musicDetail) musicDetail.textContent = readouts.music;
+  }
+
+  // The nine detailed one-second readouts, shared verbatim by the floating
+  // debug pill's expanded body and the settings panel's Debug tab.
+  diagnosticsDetailReadouts(snapshot) {
+    const { renderer, connection, traffic, queues, build, music } = snapshot;
+    const formatRate = (value) =>
+      `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
+    const unavailable = (label) => diagnosticReading(label, "high");
+    const version = build.version
+      ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
+      : "build pending";
+    return {
+      renderer: renderer
+        ? `${renderer.paused ? diagnosticReading("Paused", "caution") : `${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(1)} FPS`)} · ${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms/frame`)}`} · ${diagnosticMetric("calls", renderer.calls, `${Math.round(renderer.calls).toLocaleString()} calls`)} · ${diagnosticMetric("triangles", renderer.triangles, `${Math.round(renderer.triangles).toLocaleString()} triangles`)}`
+        : unavailable("WebGL renderer unavailable"),
+      frameHealth: renderer
+        ? `${diagnosticMetric("longFrames", renderer.longFrames, `${Math.round(renderer.longFrames).toLocaleString()} long frames`)} · ${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(1)} ms worst`)} in the last sample`
+        : unavailable("WebGL renderer unavailable"),
+      input: renderer
+        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${diagnosticMetric("movementInputMs", renderer.inputResponseMs, `${renderer.inputResponseMs.toFixed(1)} ms movement response`)} · ${diagnosticMetric("movementInputMs", renderer.worstInputResponseMs, `${renderer.worstInputResponseMs.toFixed(1)} ms worst movement response`)} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
+        : unavailable("WebGL renderer unavailable"),
+      memory: renderer
+        ? escapeHTML(
+            `${Math.round(renderer.geometries).toLocaleString()} geometries · ${Math.round(renderer.textures).toLocaleString()} textures · ${Math.round(renderer.programs).toLocaleString()} GPU programs${Number.isFinite(heapUsedMB()) ? ` · ${heapUsedMB().toFixed(0)} MB JS heap` : ""}`,
+          )
+        : unavailable("WebGL renderer unavailable"),
+      worldState: renderer
+        ? escapeHTML(
+            `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}${renderer.remoteAvatars ? ` · ${renderer.remoteAvatars} remote avatars` : ""}${renderer.disabledElements ? ` · ${renderer.disabledElements} elements off` : ""}`,
+          )
+        : unavailable("World state unavailable"),
+      music:
         music.state === "playing" || music.state === "paused"
           ? `${music.title} · ${formatMediaPosition(music.positionMs)}${music.durationMs ? ` / ${formatMediaPosition(music.durationMs)}` : ""} · ${music.state}`
-          : "Nothing playing";
-    }
-    const connectionDetail = this.$(
-      "[data-world-diagnostics-connection]",
-    );
-    if (connectionDetail) {
-      connectionDetail.innerHTML = `${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects} reconnect attempts`)} · ${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`)}`;
-    }
-    const trafficDetail = this.$("[data-world-diagnostics-traffic]");
-    if (trafficDetail) {
-      trafficDetail.innerHTML = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))})`;
-    }
-    const queueDetail = this.$("[data-world-diagnostics-queues]");
-    if (queueDetail) {
-      queueDetail.innerHTML = `Movement ${escapeHTML(queues.movement)} (${diagnosticMetric("coalesced", queues.movementCoalesced, `${queues.movementCoalesced} coalesced`)}) · profile ${escapeHTML(queues.profile)} (${diagnosticMetric("coalesced", queues.profileCoalesced, `${queues.profileCoalesced} coalesced`)}) · ${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents} backpressure events`)}`;
-    }
-    const buildDetail = this.$("[data-world-diagnostics-build]");
-    if (buildDetail) {
-      buildDetail.innerHTML = build.version
+          : "Nothing playing",
+      connection: `${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects} reconnect attempts`)} · ${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`)}`,
+      traffic: `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))})`,
+      queues: `Movement ${escapeHTML(queues.movement)} (${diagnosticMetric("coalesced", queues.movementCoalesced, `${queues.movementCoalesced} coalesced`)}) · profile ${escapeHTML(queues.profile)} (${diagnosticMetric("coalesced", queues.profileCoalesced, `${queues.profileCoalesced} coalesced`)}) · ${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents} backpressure events`)}`,
+      build: build.version
         ? escapeHTML(
             `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`,
           )
-        : unavailable("Version endpoint unavailable");
+        : unavailable("Version endpoint unavailable"),
+    };
+  }
+
+  // The settings panel's Debug tab is live while it is open: this repaints
+  // every diagnostics tick, whether or not the floating pill is shown.
+  settingsDebugPaneElement() {
+    if (this.settingsTab !== "debug") return null;
+    if (this.$("[data-world-settings]")?.dataset.open !== "true") return null;
+    return this.$("[data-world-debug-live]");
+  }
+
+  renderDebugSettingsPane(pane, snapshot) {
+    const readouts = this.diagnosticsDetailReadouts(snapshot);
+    for (const [slot, html] of Object.entries({
+      renderer: readouts.renderer,
+      "frame-health": readouts.frameHealth,
+      input: readouts.input,
+      memory: readouts.memory,
+      "world-state": readouts.worldState,
+      connection: readouts.connection,
+      traffic: readouts.traffic,
+      queues: readouts.queues,
+      build: readouts.build,
+    })) {
+      const detail = pane.querySelector(`[data-world-debug-${slot}]`);
+      if (detail) detail.innerHTML = html;
     }
+    const musicDetail = pane.querySelector("[data-world-debug-music]");
+    if (musicDetail) musicDetail.textContent = readouts.music;
+    const suggestionList = this.$("[data-world-debug-suggestions]");
+    if (!suggestionList) return;
+    const isAdmin = this.identity?.isAdmin === true;
+    const suggestions = worldDebugSuggestions(snapshot, {
+      isAdmin,
+      elements: isAdmin ? this.world?.listWorldElements?.() || [] : [],
+    });
+    suggestionList.innerHTML = suggestions
+      .map(
+        (suggestion) =>
+          `<li data-level="${suggestion.level}">${escapeHTML(suggestion.text)}</li>`,
+      )
+      .join("");
   }
 
   startActivityTicker() {
