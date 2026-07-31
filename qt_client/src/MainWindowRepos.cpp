@@ -6957,7 +6957,10 @@ void MainWindow::onAvatarChosen(const QByteArray &pngData)
 void MainWindow::logout()
 {
     // Drop the signed-in account (admin/heartbeat state) so the user can log
-    // back in, then tear the session down to the setup screen.
+    // back in, then tear the mesh session down. There is no setup screen to
+    // return to any more (adhoc #115) — cancelling the re-login prompt below
+    // just leaves the app logged out, with the top-bar pill offering the way
+    // back in.
     const QString previousAccount = m_accountName;
     if (m_heartbeatTimer)
         m_heartbeatTimer->stop();
@@ -6974,11 +6977,19 @@ void MainWindow::logout()
     m_isAdmin = false;
     m_seenPendingUsers.clear();
     m_accountName.clear();
+    // Drop the cached user-account linkage too. These are display caches that
+    // refreshProfileAccountStatus() already clears whenever accountOwner() is
+    // empty — which it now is — and leaving them set would keep the top-bar
+    // "Log in / Sign up" pill hidden on a machine that just logged out.
+    m_nodeOwnerUser.clear();
+    m_profileIsUserAccount = false;
+    m_profileLinkedNodes.clear();
     QSettings().remove(kAuthedAccountSetting);
     QSettings().remove(kAccountNameSetting);
     refreshSettingsEmailVerifiedBadge();
     leaveSession();
-    // Come straight back with a password login. The setup screen's silent auth
+    updateUserSwitcher();
+    // Come straight back with a password login. Silent auth on the next start
     // only checks this node's key locally, so the website never learned about
     // the device; runLoginFlow() posts pubkey/deviceTs/deviceSig, which makes
     // the relay register this desktop key against the account and hand back a
@@ -7024,8 +7035,8 @@ bool MainWindow::promptRelogin(const QString &previousAccount)
     if (m_settingsMachineNodeEdit)
         m_settingsMachineNodeEdit->setText(machineNodeName());
     refreshSettingsEmailVerifiedBadge();
-    // logout() left us on the setup screen; rejoin with the freshly signed-in
-    // account so the user lands back in the app instead of clicking "Join".
+    // logout() tore the mesh session down; rejoin with the freshly signed-in
+    // account so the app is live again rather than sitting disconnected.
     if (m_nameEdit)
         m_nameEdit->setText(m_accountName);
     startSession();

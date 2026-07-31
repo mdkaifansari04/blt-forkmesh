@@ -282,27 +282,9 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoUpdateSetting, enabled);
     });
 
-    // Default tab a repository opens on. Stored as the repo-detail tab index;
-    // defaults to Agents (see defaultRepoTabIndex()).
-    auto *defaultTabLabel = new QLabel("Open repositories on tab");
-    auto *defaultTabCombo = new QComboBox;
-    defaultTabCombo->addItem(QStringLiteral("Code"), 0);
-    defaultTabCombo->addItem(QStringLiteral("Commits"), 1);
-    defaultTabCombo->addItem(QStringLiteral("Issues"), 2);
-    defaultTabCombo->addItem(QStringLiteral("Agents"), 3);
-    defaultTabCombo->addItem(QStringLiteral("Pull requests"), 4);
-    defaultTabCombo->addItem(QStringLiteral("Discussions"), 5);
-    defaultTabCombo->setToolTip(
-        "Which tab to show when you open a repository. Defaults to Agents.");
-    {
-        const int idx = defaultTabCombo->findData(defaultRepoTabIndex());
-        defaultTabCombo->setCurrentIndex(idx < 0 ? 0 : idx);
-    }
-    connect(defaultTabCombo, &QComboBox::currentIndexChanged, this,
-            [defaultTabCombo](int) {
-                QSettings().setValue(kDefaultRepoTabSetting,
-                                     defaultTabCombo->currentData().toInt());
-            });
+    // There is no "open repositories on tab" preference any more (adhoc #119): a
+    // repo opens on its Code overview, and a relaunch restores the tab last
+    // viewed. See kRepoLandingTab.
 
     auto *autoSwitchToAgentCheck =
         new QCheckBox("Switch to Agents tab when a new agent is created");
@@ -1715,8 +1697,6 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_autostartInfo);
     generalCol->addLayout(autostartRemoveRow);
     generalCol->addWidget(autoUpdateCheck);
-    generalCol->addWidget(defaultTabLabel);
-    generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(autoSwitchToAgentCheck);
     generalCol->addWidget(excludeExternalClaudeCheck);
     generalCol->addWidget(publishAgentsToWebCheck);
@@ -3136,7 +3116,11 @@ void MainWindow::leaveSession(const QString &)
         m_backend = nullptr;
     }
     updateConnectionStatus();
-    m_stack->setCurrentIndex(0);
+    // Leaving the mesh used to dump the user back on the setup screen; that
+    // screen is gone (adhoc #115), so stay in the app — the status line already
+    // reports the disconnect and the top-bar pill reappears if the account went
+    // with it.
+    updateSignInButton();
     m_userName.clear();
 
     m_homeRoster.clear();

@@ -763,6 +763,23 @@ void MainWindow::testCloseBranchRange()
     if (m_branchCloseButton)
         m_branchCloseButton->click();
 }
+
+bool MainWindow::testClickBranchReviewMerge(bool deleteAll)
+{
+    QPushButton *button = deleteAll ? m_branchMergeDeleteButton : m_branchMergeButton;
+    if (!button)
+        return false;
+    // updateBranchDetailActions fills the detail bar from a worker thread, and a
+    // click on a still-disabled button is a silent no-op — wait for the real
+    // enabled state rather than reaching past the button.
+    QDeadlineTimer deadline(10000);
+    while (!button->isEnabled() && !deadline.hasExpired())
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
+    if (!button->isEnabled())
+        return false;
+    button->click();
+    return true;
+}
 #endif
 
 bool MainWindow::selectWorktreeRow(const QString &branch)
@@ -895,10 +912,20 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
     }
 }
 
+// A merge started from the branch review ends that review (adhoc #119): the
+// branch's work is in the base branch now, so the diff on screen either describes
+// history the user is done with or — after "Merge & delete all" — a branch that no
+// longer exists. Hand the Git view's columns back to the working tree, exactly
+// like the pane's own ✕ does, instead of leaving a finished diff open.
+void MainWindow::closeBranchDiffAfterMerge()
+{
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+}
+
 // Merge a worktree's branch into the repo's default branch. Direct + safe: only
 // when the primary checkout is ON the default branch and clean (otherwise it
 // would clobber concurrent WIP) — else point the user at Create PR.
-void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
+bool MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                                        const QString &worktreePathArg,
                                        bool deleteAgent)
 {
@@ -911,10 +938,10 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     const QString dir = repoGitDir();
     const QString base = repoDefaultBranch(repoBranches());
     if (branch.isEmpty() || branch == base || dir.isEmpty())
-        return;
+        return false;
     if (!repoHasWorkingTree()) {
         setRepoDetailNotice("Read-only mirror — nothing to merge into here.", true);
-        return;
+        return false;
     }
     // Uncommitted work in the checkout blocks the merge outright — check it first,
     // because it is also the only thing that makes the branch switch below unsafe.
@@ -924,7 +951,7 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         setRepoDetailNotice(
             "The checkout has uncommitted changes — commit/stash them or use Create PR.",
             true);
-        return;
+        return false;
     }
     // The merge commit has to land on `base`, so `base` has to be what's checked
     // out. Ask git rather than reading the browsed ref: that ref is pinned to the
@@ -950,7 +977,7 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                     .arg(base, head.isEmpty() ? QStringLiteral("a detached HEAD") : head,
                          cerr.left(200)),
                 true);
-            return;
+            return false;
         }
         logSystem(QStringLiteral("Git: switched the checkout to %1 to merge %2 into it.")
                       .arg(base, branch));
@@ -984,7 +1011,7 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                                "them first (they'd be lost when it's deleted).")
                     .arg(branch),
                 true);
-            return;
+            return false;
         }
         QString uerr;
         const bool updated = runGitCapture(
@@ -1007,7 +1034,7 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
                 true);
             loadWorktreesPanel();
             loadBranchesAndTags();
-            return;
+            return false;
         }
     }
 
@@ -1177,6 +1204,7 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
     // is driven from the Agents/Worktrees tabs, not the Branches tab.
     // loadBranchesAndTags() repaints the panel only if it's the visible tab.
     loadBranchesAndTags();
+    return merged && !hasConflicts && branchInBase;
 }
 
 void MainWindow::removeWorktree(const QString &worktreePath, const QString &branch,
@@ -2432,8 +2460,9 @@ QWidget *MainWindow::buildBranchRangePane()
     setOcticon(m_branchMergeButton, "check-circle", 14);
     m_branchMergeButton->setEnabled(false);
     connect(m_branchMergeButton, &QPushButton::clicked, this, [this] {
-        if (!m_branchDiffBranch.isEmpty())
-            mergeWorktreeIntoMain(m_branchDiffBranch, QString());
+        if (!m_branchDiffBranch.isEmpty()
+            && mergeWorktreeIntoMain(m_branchDiffBranch, QString()))
+            closeBranchDiffAfterMerge();
     });
 
     // Same merge, but nothing of the branch survives it: its worktree, the branch
@@ -2453,9 +2482,10 @@ QWidget *MainWindow::buildBranchRangePane()
         const QString repoPath = repoGitDir();
         // An empty path is fine — it just means the branch has no worktree of its
         // own, so there's nothing to prune beyond the branch and its agent.
-        mergeWorktreeIntoMain(m_branchDiffBranch,
-                              worktreePathForBranch(repoPath, m_branchDiffBranch),
-                              /*deleteAgent=*/true);
+        if (mergeWorktreeIntoMain(m_branchDiffBranch,
+                                  worktreePathForBranch(repoPath, m_branchDiffBranch),
+                                  /*deleteAgent=*/true))
+            closeBranchDiffAfterMerge();
     });
 
     auto *detailBar = new QHBoxLayout;

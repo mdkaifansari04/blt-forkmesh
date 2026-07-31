@@ -5991,11 +5991,15 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.issueTitle = issue.title;
     session.provider = provider;
     session.createPr = createPr;
-    session.yolo = m_quickAddYolo && m_quickAddYolo->isChecked(); // adhoc #12
-    // Snapshot the Task toggle and the run's model/mode/strength now (adhoc
-    // #18): the organization task describes what this run was actually given,
-    // not whatever the composer happens to be set to when it finishes.
-    session.orgTask = !m_quickAddTask || m_quickAddTask->isChecked();
+    // No composer YOLO toggle any more (adhoc #120): a run launched from the
+    // prompt bar never merges itself without review. Only sessions stamped
+    // yolo=true by an earlier build still auto-merge (adhoc #12).
+    session.yolo = false;
+    // Every prompted run is mirrored as an organization task (adhoc #18, always
+    // on since adhoc #120), stamped with the run's model/mode/strength now: the
+    // task describes what this run was actually given, not whatever the composer
+    // happens to be set to when it finishes.
+    session.orgTask = true;
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
     session.model = model.trimmed(); // empty leaves the provider's own default
@@ -6362,18 +6366,18 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     session.prompt = task;   // persisted so the run can resume after a restart
     session.provider = provider;
     session.createPr = createPr;
-    // Snapshot the YOLO toggle now (adhoc #12) rather than reading the checkbox
-    // when the run ends: a session auto-merges because that is what was asked for
-    // when it was launched, not because the box happens to be ticked hours later.
-    session.yolo = m_quickAddYolo && m_quickAddYolo->isChecked();
-    // Same snapshot rule for the Task toggle (adhoc #18): a prompt opens an
-    // organization task because that is what was asked for when it was typed.
-    session.orgTask = !m_quickAddTask || m_quickAddTask->isChecked();
+    // The composer's YOLO toggle is gone (adhoc #120): an ad-hoc prompt waits for
+    // a pull request like any other run instead of landing on the default branch
+    // by itself (adhoc #12).
+    session.yolo = false;
+    // Every prompt opens an organization task (adhoc #18, no longer optional
+    // since adhoc #120).
+    session.orgTask = true;
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
-    // Genie (adhoc #38): stamped at launch like YOLO and Task, so a resumed run
-    // still reads as a genie even though the button that started it is long
-    // since forgotten.
+    // Genie (adhoc #38): stamped at launch, so a resumed run still reads as a
+    // genie even though the "task" button that started it is long since
+    // forgotten.
     session.genie = genie;
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
@@ -6787,11 +6791,18 @@ void MainWindow::openAgentsOverview()
         switchToAgentsTab(newest->id);
         return;
     }
-    if (m_repoDetailIndex >= 0 && m_repoDetailTabs && m_repoDetailTabs->button(3)) {
+    if (m_repoDetailIndex >= 0 && m_repoDetailStack) {
         showSection(0);
-        m_repoDetailTabs->button(3)->setChecked(true);
-        if (m_repoDetailStack)
-            m_repoDetailStack->setCurrentIndex(3);
+        // Agents lost its top-bar button when it moved to the nav strip (adhoc
+        // #178), so drive the stack directly — gating this on that button made the
+        // no-sessions case a silent no-op. It went unnoticed while Agents was also
+        // the tab every repo opened on; since adhoc #119 dropped that default, this
+        // is the only way in for a repo that has no sessions yet.
+        ensureRepoDetailTabBuilt(3);
+        m_repoDetailStack->setCurrentIndex(3);
+        if (m_agentsNavButton)
+            m_agentsNavButton->setChecked(true);
+        reloadAgents();
     }
 }
 
@@ -10665,11 +10676,13 @@ bool MainWindow::quickAddShouldFollowUpAgent() const
 // currently activates — see the eventFilter Key_Return branch in
 // MainWindowIssues.cpp — carries a green outline. Both call sites share
 // quickAddShouldFollowUpAgent() so the indicator can never drift from the
-// actual routing.
+// actual routing. The outline and the "(Enter)" tooltip are the whole
+// indicator: the corner "⏎" badge that used to sit on "new" is gone (adhoc
+// #120).
 void MainWindow::updateQuickAddEnterTarget()
 {
     const bool toAgent = quickAddShouldFollowUpAgent() && m_quickAddSendToAgentButton;
-    auto apply = [](QPushButton *button, QLabel *badge, bool isTarget,
+    auto apply = [](QPushButton *button, bool isTarget,
                      const QString &baseTooltip) {
         if (!button)
             return;
@@ -10681,11 +10694,8 @@ void MainWindow::updateQuickAddEnterTarget()
             button->style()->polish(button);
         }
         button->update();
-        if (badge)
-            badge->setVisible(isTarget);
     };
-    apply(m_quickAddSendToAgentButton, nullptr, toAgent,
+    apply(m_quickAddSendToAgentButton, toAgent,
           QStringLiteral("Send to the agent open above, as a follow-up message"));
-    apply(m_quickAddSendButton, m_quickAddSendEnterBadge, !toAgent,
-          QStringLiteral("Send to a new agent"));
+    apply(m_quickAddSendButton, !toAgent, QStringLiteral("Send to a new agent"));
 }

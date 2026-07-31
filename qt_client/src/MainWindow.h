@@ -449,6 +449,11 @@ public:
     void testEnablePaidMirroring() { enablePaidMirroring(); }
     int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
     int testStackIndex() const;
+    // adhoc #115: state of the top-bar "Log in / Sign up" pill. Reported from
+    // isHidden() rather than isVisible() so it means "this widget wants to show"
+    // even in a test window that is never actually shown.
+    bool testSignInButtonVisible() const;
+    void testRefreshSignInButton() { updateSignInButton(); }
     QString testUserName() const { return m_userName; }
     QString testAccountName() const { return m_accountName; }
     QString testSavedSolanaAddress() const;
@@ -627,6 +632,9 @@ public:
     {
         m_agentSessions.append(session);
     }
+    // Take the nav strip's route to the Agents tab, so a test can read that
+    // lazily-built list back the way a user reaches it (adhoc #119).
+    void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
@@ -655,6 +663,10 @@ public:
     // Click the range pane's close button, so a test can prove the left column
     // goes back to the working tree when the review is dismissed (adhoc #110).
     void testCloseBranchRange();
+    // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
+    // all" button once it's live, so a test can prove merging from the review
+    // closes it (adhoc #119). False when the button never became clickable.
+    bool testClickBranchReviewMerge(bool deleteAll);
     // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
     // session the app navigated to (m_selectedAgentSessionId), so a test can prove
     // clicking the cell jumps to that branch's agent (adhoc #258).
@@ -2528,6 +2540,11 @@ private:
     void markWebAlertsRead();
     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
     void updateNavRebuildButton();
+    // Show the top-bar "Log in / Sign up" pill only while this machine has no
+    // forkmesh.com user account attached (adhoc #115).
+    void updateSignInButton();
+    // Menu behind that pill: in-app password login, or the website's signup page.
+    void showSignInMenu();
     // Reposition the floating "Log" button to the live-log strip's corner.
     void positionFloatingLogButton();
     // Keep the pause-scroll toggle in the live-log strip's bottom-right corner,
@@ -2755,10 +2772,16 @@ private:
     // Merge a worktree's branch into the default branch. On success the now-merged
     // worktree and its branch are removed (the work is preserved in the merge
     // commit); pass its folder so it can be. deleteAgent=true additionally tears
-    // down the agent session(s) that produced the branch.
-    void mergeWorktreeIntoMain(const QString &branch,
+    // down the agent session(s) that produced the branch. Returns true only when
+    // the branch's commits provably landed in the base branch — callers that tidy
+    // up after themselves (closing the branch diff, adhoc #119) must leave the
+    // review open when the merge was refused or conflicted.
+    bool mergeWorktreeIntoMain(const QString &branch,
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
+    // Leave the branch review after one of its merge buttons landed the branch,
+    // returning the Git view to the working tree (adhoc #119).
+    void closeBranchDiffAfterMerge();
     // The same merge for an agent session's branch, but bound to that session's
     // repository first — the Agents tab is global, so the repo the detail view
     // holds is often not the session's. False when the bind didn't take.
@@ -4432,6 +4455,11 @@ private:
     // Network button's badge.
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
+    // Top-bar "Log in / Sign up" pill. The first-run setup screen is gone (adhoc
+    // #115) — the app opens straight into the shell — so this is the only entry
+    // point for attaching this machine to a forkmesh.com user account. Hidden as
+    // soon as one is attached (see updateSignInButton).
+    QPushButton *m_navSignInButton = nullptr;
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
@@ -4859,20 +4887,19 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
-    // "genie" (adhoc #42), stacked above "add" and "new": starts an agent wired
-    // to the website's remote MCP server so it picks its own work off the
-    // organization's shared task list instead of running a typed prompt.
+    // The "task" button (adhoc #42, relabelled from "genie" in adhoc #120),
+    // stacked above "add" and "new": starts an agent wired to the website's
+    // remote MCP server so it picks its own work off the organization's shared
+    // task list instead of running a typed prompt.
     QPushButton *m_quickAddGenieButton = nullptr;
     // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
     // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
     // can restyle it as the two selected/deselected agent detail changes which of
     // the two buttons Enter actually triggers.
     QPushButton *m_quickAddSendButton = nullptr;
-    // Small green "Enter" badge (adhoc #89), shown on the "new" send button
-    // when Enter currently activates it. The "add" (follow-up) button has no
-    // such badge — it's only ever the Enter target while the Agents tab
-    // itself is on screen, so the button's own green outline is enough.
-    QLabel *m_quickAddSendEnterBadge = nullptr;
+    // No corner badge on either send button (adhoc #120): the small green "⏎"
+    // glyph that used to ride the top-right corner of "new" while Enter targeted
+    // it is gone; the button's own green outline is the only Enter indicator.
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
@@ -4911,18 +4938,11 @@ private:
     // is submitted (same as Enter/Send) as soon as a voice dictation finishes its
     // final transcription, so you can dictate-and-go without reaching for the keyboard.
     QCheckBox *m_quickAddVoiceAutoSubmit = nullptr;
-    // "YOLO" toggle beside it (adhoc #12): when checked, every agent started while
-    // it is on merges its own branch into the default branch the moment its run
-    // finishes successfully, instead of waiting for a pull-request review. Read at
-    // launch time and stamped onto the session (AgentSession::yolo), so flipping it
-    // later never changes what an already-running agent will do.
-    QCheckBox *m_quickAddYolo = nullptr;
-    // "Task" toggle beside it (adhoc #18): when checked, every agent started while
-    // it is on also opens an organization task for the run. Read at launch time and
-    // stamped onto the session (AgentSession::orgTask), so unticking it later never
-    // orphans the task an already-running agent is going to close out. On by
-    // default, unlike YOLO: opening a task changes nothing about the run itself.
-    QCheckBox *m_quickAddTask = nullptr;
+    // The composer's "YOLO" (adhoc #12) and "Task" (adhoc #18) checkboxes are
+    // gone (adhoc #120). Runs launched from the prompt bar are stamped with what
+    // those toggles defaulted to — AgentSession::yolo false (never merge without
+    // review) and AgentSession::orgTask true (mirror the run as an organization
+    // task) — in startAgentForIssue()/startAdHocAgentForRepo().
     // Dictation can target any text box, not just the footer prompt: m_voiceTargetEdit
     // is the box the current capture writes into and m_voiceActiveButton the mic that
     // started it (so its icon swaps to red while recording). m_voiceIdlePlaceholder is
