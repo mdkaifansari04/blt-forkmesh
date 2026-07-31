@@ -331,6 +331,7 @@ function mountForkMeshDashboardChat() {
   let historyIndicator = null;
   let revealingHistory = false;
   let lastFullLogScrollTop = 0;
+  let stickToNewest = true;
   let historyTouchStartY = null;
   let historyTouchRevealed = false;
   let historyWheelLatched = false;
@@ -1541,8 +1542,7 @@ function mountForkMeshDashboardChat() {
     historyIndicator.className = "chat-history-indicator";
     historyIndicator.setAttribute("aria-live", "polite");
     historyIndicator.addEventListener("click", () => revealOlderHistory());
-    if (simpleWorldComposer) fullLog.append(historyIndicator);
-    else fullLog.prepend(historyIndicator);
+    fullLog.prepend(historyIndicator);
     return historyIndicator;
   }
 
@@ -1550,8 +1550,11 @@ function mountForkMeshDashboardChat() {
     const records = historyRowIds
       .map((id) => rows.get(id))
       .filter(Boolean);
+    // World-embed history arrives out of order (the Discord bridge folds its
+    // own backlog in), so it is sorted here. Both modes read oldest first,
+    // newest last.
     return simpleWorldComposer
-      ? records.sort((left, right) => right.tsMs - left.tsMs)
+      ? records.sort((left, right) => left.tsMs - right.tsMs)
       : records;
   }
 
@@ -1633,9 +1636,10 @@ function mountForkMeshDashboardChat() {
     } else if (simpleWorldComposer) {
       const next = Array.from(fullLog.querySelectorAll(".chat-message-row"))
         .find((candidate) =>
-          Number(candidate.dataset.chatTimestamp || 0) <= record.tsMs);
+          Number(candidate.dataset.chatTimestamp || 0) > record.tsMs);
       row.dataset.chatTimestamp = String(record.tsMs);
-      fullLog.insertBefore(row, next || historyIndicator || null);
+      if (next) fullLog.insertBefore(row, next);
+      else fullLog.append(row);
     } else {
       fullLog.append(row);
     }
@@ -1645,6 +1649,30 @@ function mountForkMeshDashboardChat() {
       if (record.editedAt) markEdited(record, record.editedAt);
     }
     return row;
+  }
+
+  function fullLogAtNewest() {
+    if (!fullLog) return true;
+    return fullLog.scrollHeight - fullLog.scrollTop - fullLog.clientHeight <= 48;
+  }
+
+  // The newest line lives at the bottom, so "keep up with the room" means
+  // keeping the feed scrolled all the way down. The World embed mounts its log
+  // inside a closed <details>, so the first render happens at zero height and
+  // the scroll only takes once layout lands - hence the follow-up frame and the
+  // resize re-pin below.
+  function pinFullLogToNewest() {
+    if (!fullLog) return;
+    stickToNewest = true;
+    const settle = () => {
+      fullLog.scrollTop = fullLog.scrollHeight;
+      lastFullLogScrollTop = fullLog.scrollTop;
+      syncChatScrollThumb();
+    };
+    settle();
+    requestAnimationFrame(() => {
+      if (stickToNewest) settle();
+    });
   }
 
   function renderHistoryWindow({ preserveScroll = false } = {}) {
@@ -1663,9 +1691,7 @@ function mountForkMeshDashboardChat() {
     const hiddenCount = Math.max(0, records.length - visibleCount);
     ensureHistoryIndicator();
     records.forEach((record, index) => {
-      const visible = simpleWorldComposer
-        ? index < visibleCount
-        : index >= hiddenCount;
+      const visible = index >= hiddenCount;
       if (visible) materializeFullMessage(record);
       if (record.el) record.el.hidden = !visible;
     });
@@ -1673,15 +1699,15 @@ function mountForkMeshDashboardChat() {
     indicator.dataset.complete = hiddenCount ? "false" : "true";
     indicator.disabled = hiddenCount <= 0;
     indicator.textContent = hiddenCount
-      ? `${simpleWorldComposer ? "↓" : "↑"} ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · ${simpleWorldComposer ? "open" : "scroll up"} to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
+      ? `↑ ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · scroll up to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
       : "Beginning of conversation";
     if (preserveScroll) {
       fullLog.scrollTop += Math.max(0, fullLog.scrollHeight - previousHeight);
-    } else {
-      fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
+      lastFullLogScrollTop = fullLog.scrollTop;
+      syncChatScrollThumb();
+      return;
     }
-    lastFullLogScrollTop = fullLog.scrollTop;
-    syncChatScrollThumb();
+    pinFullLogToNewest();
   }
 
   function revealOlderHistory() {
@@ -1744,7 +1770,7 @@ function mountForkMeshDashboardChat() {
       return;
     }
     materializeFullMessage(record);
-    fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
+    pinFullLogToNewest();
   }
 
   // ---- edit / delete own messages ----------------------------------------
@@ -2194,13 +2220,8 @@ function mountForkMeshDashboardChat() {
       const row = document.createElement("div");
       row.className = "chat-system-bubble my-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground";
       row.textContent = text;
-      if (simpleWorldComposer) {
-        fullLog.prepend(row);
-        fullLog.scrollTop = 0;
-      } else {
-        fullLog.append(row);
-        fullLog.scrollTop = fullLog.scrollHeight;
-      }
+      fullLog.append(row);
+      pinFullLogToNewest();
     }
     if (emit) emitWorldActivity(text, "status");
   }
@@ -4033,6 +4054,7 @@ function mountForkMeshDashboardChat() {
       });
     fullLog?.addEventListener("scroll", () => {
       syncChatScrollThumb();
+      stickToNewest = fullLogAtNewest();
       const currentTop = fullLog.scrollTop;
       if (
         hasHiddenHistory() &&
@@ -4086,7 +4108,10 @@ function mountForkMeshDashboardChat() {
       historyTouchRevealed = false;
     }, { passive: true });
     if (fullLog && "ResizeObserver" in window) {
-      new ResizeObserver(syncChatScrollThumb).observe(fullLog);
+      new ResizeObserver(() => {
+        if (stickToNewest) pinFullLogToNewest();
+        else syncChatScrollThumb();
+      }).observe(fullLog);
     }
     syncChatScrollThumb();
     document
