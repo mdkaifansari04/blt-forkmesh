@@ -365,7 +365,7 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
         "setAvatarFediverseProfile,",
         "queueMicrotask(() => onFediverseProfile(target))",
         '"FEDIVERSE · UNAVAILABLE"',
-        "const activityBorder =",
+        'activityRing.name = "avatar-activity-ring"',
         "new THREE.PlaneGeometry(0.88, 0.88)",
     ):
         assert contract in SCENE
@@ -545,7 +545,9 @@ def test_presence_pongs_do_not_trigger_full_avatar_or_capacity_rebuilds():
         APP.index("\n  setupBroadcastChannel()", APP.index("  receivePresence(message) {"))
     ]
     assert "let peersChanged = false" in receiver
-    assert "if (peersChanged) this.renderPeers()" in receiver
+    # Roster changes coalesce into one deferred renderPeers() pass instead of
+    # a full member-directory rebuild per inbound movement frame.
+    assert "if (peersChanged) this.schedulePeerRender()" in receiver
     assert 'message.type === "move"' in receiver
     assert 'message.type === "ping"' not in receiver
 
@@ -901,9 +903,12 @@ def test_mobile_world_stays_stable_while_walking_and_keeps_the_quick_map():
     assert "event.preventDefault();" in pull_guard
     assert "[data-world-thumbstick]" in pull_guard
     assert "[data-world-canvas-wrap]" in pull_guard
-    assert "if (touchPointers.size > 0)" in SCENE
     assert "pendingTouchResize = true;" in SCENE
-    assert "if (!touchPointers.size && pendingTouchResize)" in SCENE
+    assert "externalTouchInteractionActive" in SCENE
+    assert "setTouchInteractionActive" in SCENE
+    assert "touchPointers.size > 0 || externalTouchInteractionActive" in SCENE
+    assert "this.world?.setTouchInteractionActive?.(true);" in APP
+    assert "this.world?.setTouchInteractionActive?.(false);" in APP
     mobile = CSS[CSS.index("@media (max-width: 720px)"):]
     assert ".world-right-rail {" in mobile
     assert "display: grid;" in mobile
@@ -925,7 +930,7 @@ def test_saved_world_views_keep_a_thumbnail_label_position_and_camera():
         "saveCurrentWorldView()",
         "editSavedWorldView(id)",
         "restoreSavedWorldView(id)",
-        "this.officeController?.restoreSavedView?.(view)",
+        "officeController?.restoreSavedView?.(view)",
     ):
         assert contract in APP
     for contract in (
@@ -1016,7 +1021,7 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert 'id="fullChatAction" type="hidden" value="chat"' in APP
     assert "Send to bot</option>" not in APP
     assert '<span data-dashboard-chat-send-label>Chat</span>' in APP
-    assert 'title="Send this task to the bot">Task</button>' in APP
+    assert 'title="Enter will send this task to the bot"' in APP
     assert "world-chat-terminal-channel" in APP
     assert "world-chat-terminal-connection" in APP
     chat_version = hashlib.sha256(DASHBOARD_CHAT.encode()).hexdigest()[:12]
@@ -1440,10 +1445,13 @@ def test_render_stalls_include_bounded_likely_component_attribution():
     assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
     assert "const frameWorkStartedAt = performance.now();" in SCENE
     assert "performance.now() - frameWorkStartedAt" in SCENE
-    assert "scheduleRenderStallWarning(frameWorkMs);" in SCENE
+    assert "scheduleRenderStallWarning(frameWorkMs, refreshedShadowMap);" in SCENE
     assert "scheduleRenderStallWarning(rawFrameMs);" not in SCENE
     assert "renderer.shadowMap.autoUpdate = false;" in SCENE
-    assert "nextShadowMapUpdateAt = time + 500;" in SCENE
+    assert "sun.shadow.mapSize.set(512, 512);" in SCENE
+    assert "nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;" in SCENE
+    assert "time + SHADOW_MAP_STALL_COOLDOWN_MS" in SCENE
+    assert 'component = "shadow map refresh";' in SCENE
     assert "function canvasReadableImageURL(value)" in SCENE
     assert "url.origin !== window.location.origin" in SCENE
     assert "const key = canvasReadableImageURL(url);" in SCENE
@@ -2277,6 +2285,24 @@ def test_world_member_directory_seats_registered_users_from_roster():
     assert "this.memberDirectory.length" in APP
 
 
+def test_world_settings_moves_focus_before_hiding_the_panel():
+    assert (
+        'data-world-settings aria-labelledby="world-settings-title" '
+        'aria-hidden="true" inert'
+    ) in APP
+    toggle = APP.split("  toggleSettings(open) {", 1)[1].split(
+        "\n  selectSettingsTab(", 1
+    )[0]
+    assert "panel.inert = false;" in toggle
+    assert "panel.contains(active)" in toggle
+    assert "target?.focus?.();" in toggle
+    assert "active.blur();" in toggle
+    assert toggle.index("target?.focus?.();") < toggle.index(
+        'panel.setAttribute("aria-hidden", "true");'
+    )
+    assert "panel.inert = true;" in toggle
+
+
 def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     # adhoc #287: one bench per registered account rings the campfire. Away
     # members appear as seated figures facing the fire, members walking the
@@ -2298,11 +2324,10 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
     assert "noteDirectoryMembers" in APP
-    # The ring's arc carries the seats plus the walk-in gap (adhoc #430).
-    assert (
-        "(count * CAMPFIRE_SEAT_SPACING + CAMPFIRE_ENTRANCE_WIDTH) / (2 * Math.PI)"
-        in SCENE
-    )
+    # Concentric rows hold 25 people each and preserve one aligned walk-in gap.
+    assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
+    assert "const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);" in SCENE
+    assert "CAMPFIRE_ENTRANCE_WIDTH / radius" in SCENE
     assert '"sitting around the campfire"' in SCENE
     # Figures and idle live avatars both face the pit at the circle's centre.
     # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
@@ -2752,16 +2777,18 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         "    return Date.now() >= this.activityNoticesEnabledAt;\n"
         "  }"
     ) in APP
-    # Native chat already owns both message and system rows. The World accepts
-    # those signals for avatar/unread state without drawing a second overlay.
+    # Native chat owns the transcript rows; the floating bubble stack renders
+    # each signal at most once, only after the join grace, and system activity
+    # re-entering from the transcript never bounces back into it.
     handler = APP[
         APP.index("  handleWorldChatMessage = (event) => {"):
         APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
     ]
-    assert (
-        'if (data.type === "forkmesh:world-activity") return;' in handler
+    assert "transcript: false," in handler
+    assert handler.count("if (this.activityNoticesSettled()) {") == 2
+    assert handler.index("if (data.history === true) return;") < handler.index(
+        '{ kind: "chat", sender },'
     )
-    assert "this.activityNotice(" not in handler
     # The first notification/event reads still seed the seen sets, so nothing
     # already waiting at load is announced on a later poll either.
     announce = APP[
@@ -2772,9 +2799,7 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         "globalEvents.forEach((item) => this.seenWorldEvents.add(item.id));"
         in announce
     )
-    assert (
-        "if (announcements.length && this.activityNoticesSettled()) {" in announce
-    )
+    assert "if (!this.activityNoticesSettled()) return;" in announce
     # A mirror doorbell during the grace still arms the scene effect and the
     # catalog refresh; only its narration is held back.
     push = APP[

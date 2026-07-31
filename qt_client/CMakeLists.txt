@@ -184,8 +184,6 @@ set(FORKMESH_APP_SOURCES
     src/PullBadgeWidget.h
     src/PullBadgeWidget.cpp
     src/PacmanProgress.h
-    src/CommitCommentStore.h
-    src/CommitCommentStore.cpp
     src/ReferenceLinks.h
     src/ActionFile.h
     src/ActionFile.cpp
@@ -196,6 +194,8 @@ set(FORKMESH_APP_SOURCES
     src/AgentStore.h
     src/AgentStore.cpp
     src/AgentJail.h
+    src/AgentPromptImages.h
+    src/AgentPromptImages.cpp
     src/AgentRunner.h
     src/AgentRunner.cpp
     src/QrCode.h
@@ -245,6 +245,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowShared.cpp
     src/MainWindowSetup.cpp
     src/MainWindowChat.cpp
+    src/MainWindowTasks.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
@@ -513,8 +514,6 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
-        src/CommitCommentStore.h
-        src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/ActionStore.h
@@ -528,6 +527,8 @@ if(FORKMESH_BUILD_TESTS)
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h
+        src/SystemStats.h
+        src/SystemStats.cpp
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)
@@ -770,8 +771,6 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
-        src/CommitCommentStore.h
-        src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/ActionStore.h

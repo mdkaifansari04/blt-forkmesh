@@ -8,6 +8,8 @@
 #include "PrivateMirrorStore.h"
 #include "PublicMirrorRuntime.h"
 
+#include <QApplication>
+#include <QClipboard>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHeaderView>
@@ -22,6 +24,7 @@
 #include <QStandardPaths>
 #include <QSaveFile>
 #include <QTextDocument>
+#include <QTimer>
 
 using namespace forkmesh::ui;
 
@@ -680,6 +683,34 @@ void MainWindow::openCloudflareSetupFromSystemLink(const QString &target)
                        ? value
                        : QString();
         };
+        if (bounded(QStringLiteral("mode"), 16) ==
+            QLatin1String("vultr")) {
+            const QString token =
+                QApplication::clipboard()->text().trimmed();
+            const QString node =
+                bounded(QStringLiteral("node"), 63).toLower();
+            static const QRegularExpression tokenPattern(
+                QStringLiteral("^[A-Za-z0-9]{20,128}$"));
+            static const QRegularExpression nodePattern(
+                QStringLiteral("^(?:[a-z][a-z0-9-]{0,62})?$"));
+            if (tokenPattern.match(token).hasMatch() &&
+                nodePattern.match(node).hasMatch()) {
+                if (m_vultrApiKeyEdit)
+                    m_vultrApiKeyEdit->setText(token);
+                if (m_vultrNameEdit && !node.isEmpty())
+                    m_vultrNameEdit->setText(node);
+                if (QApplication::clipboard()->text() == token)
+                    QApplication::clipboard()->clear();
+                QTimer::singleShot(0, this, [this] {
+                    createVultrMirrorFromForm();
+                });
+            } else if (m_vultrStatus) {
+                m_vultrStatus->setText(QStringLiteral(
+                    "The World launch handoff did not contain a valid Vultr "
+                    "token. Return to the LAUNCH MIRROR button and try again."));
+            }
+            return;
+        }
         const auto dns = [&bounded](const QString &name) {
             const QString value = bounded(name, 253).toLower();
             static const QRegularExpression pattern(
@@ -2930,7 +2961,8 @@ void MainWindow::deploySavedHostsFromControl()
             .array();
     if (hosts.isEmpty()) {
         flashMessage(
-            QStringLiteral("Add a host in Hosts before starting a fleet deployment."),
+            QStringLiteral(
+                "Add a host in Network > Hosts before starting a fleet deployment."),
             true);
         showSection(7);
         return;

@@ -1554,6 +1554,10 @@ void MainWindow::sendNodeHeartbeat()
         // Bring the World virtual office's channel conversations into the chat
         // sidebar (adhoc #412). Idempotent, so the heartbeat can just call it.
         startOfficeChannelMirror();
+        // Keep the bell's badge honest about alerts raised on the website
+        // (adhoc #59). Throttled inside, so this 60s beat costs one read per
+        // five minutes rather than one per beat.
+        refreshWebAlerts();
         if (m_isAdmin) {
             if (!m_adminPollTimer) {
                 m_adminPollTimer = new QTimer(this);
@@ -2976,6 +2980,11 @@ bool MainWindow::verifyTotpLogin(const QString &email,
             loginRequest.insert(QStringLiteral("pubkey"), publicKey);
             loginRequest.insert(QStringLiteral("deviceTs"), deviceTs);
             loginRequest.insert(QStringLiteral("deviceSig"), deviceSig);
+            // Name the device the relay is about to register, so the account's
+            // device list on the website identifies this machine instead of
+            // showing an unlabelled key.
+            loginRequest.insert(QStringLiteral("deviceLabel"),
+                                machineNodeName());
         }
     }
     int status = 0;

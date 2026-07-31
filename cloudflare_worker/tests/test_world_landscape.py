@@ -197,7 +197,7 @@ def test_clickable_quadcopter_flies_on_three_axes_to_a_bounded_high_altitude():
 def test_treasury_sign_is_centered_with_a_new_window_node_download():
     scene = source()
     for contract in (
-        "treasurySign.position.set(0, 0, 0)",
+        "treasurySign.position.set(0, 1, 0)",
         '"reward-treasury-start-node-button"',
         '"start-node-download"',
         '"START A NODE"',

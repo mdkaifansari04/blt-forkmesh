@@ -19,7 +19,6 @@
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
 #include "ScrollJumpButtons.h"
-#include "CommitCommentStore.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
@@ -511,22 +510,14 @@ constexpr int kCommitFilePathRole = Qt::UserRole + 29; // file row: repo-relativ
 constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QStringList)
 constexpr int kCommitBodyRole = Qt::UserRole + 31;     // full message body (fed to the hover box)
 constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has >1 parent
+constexpr int kCommitFilesRole =
+    Qt::UserRole + 33; // QStringList "path\tadds\tdels" of the files the commit
+                       // touched, previewed in the summary's hover box
 
-// URL scheme for the clickable worktree-location link in the agent session
-// header; the percent-encoded branch name follows. Clicking it opens that
-// branch's row in the Worktrees tab (issue #265). Shared by the link builder
-// and its handler.
-const QLatin1String kWorktreeLinkScheme("forkmesh-worktree:");
-
-// URL scheme for the clickable branch-name link in the agent session header; the
-// percent-encoded branch name follows. Clicking it opens that branch's row in
-// the Branches tab (adhoc #123). Shared by the link builder and its handler.
+// URL scheme for a clickable branch-name link; the percent-encoded branch name
+// follows. Clicking it opens that branch's row in the Branches tab (adhoc #123).
+// Shared by the link builder and its handler.
 const QLatin1String kBranchLinkScheme("forkmesh-branch:");
-
-// "forkmesh-copy-branch:<branch>" link next to the branch chip in the agent-detail
-// header (adhoc #259): clicking it copies the branch name to the clipboard
-// instead of navigating anywhere.
-const QLatin1String kCopyBranchLinkScheme("forkmesh-copy-branch:");
 
 // "forkmesh-pull:<number>" link in the agent-detail meta line: when a session
 // has a pull request, its "PR #N" reference links to that PR's tab. Shared by
@@ -2857,23 +2848,59 @@ const QString kClaudeAutoModeSetting = QStringLiteral("agents/claudeAutoMode");
 // Exact composer mode shared by CLI-backed agents. The older bool above remains
 // for settings migration and code paths that only distinguish unattended runs.
 const QString kAgentModeSetting = QStringLiteral("agents/cliPermissionMode");
-// The composer mode-selector label that runs the agent unattended. Only this
-// one skips the CLI's permission prompts today; the other labels ("Ask before
-// edits" / "Edit automatically" / "Plan mode") all mean "don't skip" until the
-// app can drive per-tool approval headlessly (see MainWindowChat's selector).
-const QString kClaudeAutoModeLabel = QStringLiteral("Auto mode");
+// The composer mode-selector labels. One word each (adhoc #38) so the whole
+// composer row stays compact — "Auto mode" was the only one carrying the word
+// "mode" and the dropdown itself already says what it is. Only "Auto" skips the
+// CLI's permission prompts today; "Ask" / "Edit" / "Plan" all mean "don't skip"
+// until the app can drive per-tool approval headlessly (see MainWindowChat's
+// selector). Codex maps each label to an approval policy/sandbox by substring
+// ("ask", "edit", "plan", "auto"), so these names are what it keys off too.
+const QString kClaudeAutoModeLabel = QStringLiteral("Auto");
+const QString kAgentAskModeLabel = QStringLiteral("Ask");
 
 // Does a session's stored permission-mode label (AgentSession::mode) run the
 // agent unattended? An empty label means the session predates per-session mode
-// capture, so callers fall back to the global kClaudeAutoModeSetting.
+// capture, so callers fall back to the global kClaudeAutoModeSetting. Sessions
+// (and the saved kAgentModeSetting) written before the labels were shortened
+// still say "Auto mode", and must keep running unattended.
 inline bool agentModeSkipsPermissions(const QString &modeLabel)
 {
-    return modeLabel.trimmed() == kClaudeAutoModeLabel;
+    const QString label = modeLabel.trimmed().toLower();
+    return label == QLatin1String("auto") || label == QLatin1String("auto mode");
 }
 // Slash-actions menu (adhoc #116), mirroring the Claude Code extension's "/"
 // actions popup. Effort level for Claude Code runs ("low"/"medium"/"high"/
 // "xhigh"/"max"), passed to the CLI as `--effort`.
 const QString kClaudeEffortSetting = QStringLiteral("agents/claudeEffort");
+// Effort levels the installed `claude` CLI actually accepts, probed from its own
+// `--help` output (adhoc #38) and cached so the composer's speed picker offers
+// the real list rather than a hard-coded guess that drifts with the CLI. Empty /
+// unset falls back to defaultAgentEffortLevels() below.
+const QString kClaudeEffortLevelsCacheSetting =
+    QStringLiteral("agents/claudeEffortLevels");
+// The fallback ladder for the composer's speed picker: what the CLI has shipped
+// for a while, used until a probe (Claude Code) or the app-server model catalog
+// (Codex) says otherwise.
+inline QStringList defaultAgentEffortLevels()
+{
+    return {QStringLiteral("low"), QStringLiteral("medium"),
+            QStringLiteral("high"), QStringLiteral("xhigh"),
+            QStringLiteral("max")};
+}
+// One short label per effort id, for the composer's speed picker. Unknown ids (a
+// CLI probe can surface levels this app has never heard of) just get their first
+// letter capitalised, so a new level still reads as a real choice.
+inline QString agentEffortLabel(const QString &level)
+{
+    const QString id = level.trimmed().toLower();
+    if (id.isEmpty())
+        return QString();
+    if (id == QLatin1String("xhigh"))
+        return QStringLiteral("Ultra");
+    QString label = id;
+    label[0] = label[0].toUpper();
+    return label;
+}
 // "Thinking" toggle: false => launch the CLI with MAX_THINKING_TOKENS=0 so the
 // model skips extended thinking. Default on (the CLI's own behavior).
 const QString kClaudeThinkingSetting = QStringLiteral("agents/claudeThinking");
@@ -2952,6 +2979,11 @@ const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
 // the point is that prompted work is visible to the organization, not just to
 // the desktop that typed it — and turned off per-run for throwaway prompts.
 const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// Last known number of open organization tasks, mirrored into settings so the
+// Tasks rail badge is on screen from the first frame after a restart instead of
+// staying blank until someone opens the Tasks page (adhoc #79).
+const QString kOrganizationTaskOpenCountSetting =
+    QStringLiteral("tasks/openCount");
 // Canonical prefixes this desktop signs with its account key to open and close
 // an organization task when it has no account session token to present (the
 // authenticateSilently path holds keys, not sessions). Must stay byte-identical
@@ -2959,6 +2991,24 @@ const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
 const QString kOrgTaskOpenProof = QStringLiteral("forkmesh-org-task-open-v1");
 const QString kOrgTaskCompleteProof =
     QStringLiteral("forkmesh-org-task-complete-v1");
+// Same key, reading the board. Without it the Tasks tab was empty for every
+// operator who launched normally instead of typing a password (adhoc #52).
+// Must stay byte-identical to ORG_TASK_LIST_PROOF in entry.py.
+const QString kOrgTaskListProof = QStringLiteral("forkmesh-org-task-list-v1");
+// Same signing key, for the one credential the "genie" button needs (adhoc
+// #49): the relay mints this desktop's task-only remote-MCP bearer instead of
+// its operator copying one out of the website. Must stay byte-identical to
+// GENIE_CREDENTIAL_PROOF in entry.py.
+const QString kGenieCredentialProof =
+    QStringLiteral("forkmesh-genie-credential-v1");
+// Same signing key, for this account's own website alert inbox: the Alerts page
+// shows what the site's bell shows, and clears it from here (adhoc #59). Must
+// stay byte-identical to ACCOUNT_ALERT_LIST_PROOF / ACCOUNT_ALERT_READ_PROOF in
+// entry.py.
+const QString kAccountAlertListProof =
+    QStringLiteral("forkmesh-account-alert-list-v1");
+const QString kAccountAlertReadProof =
+    QStringLiteral("forkmesh-account-alert-read-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -3382,6 +3432,23 @@ inline void selectModelComboValue(QComboBox *combo, const QString &model)
 // Friendly label for a session's `model` field, so the agent header can show
 // which LLM actually did the work alongside its worktree location. Known short
 // aliases and full IDs are mapped to display names; anything else is shown as-is.
+// Model names in the pickers drop the vendor prefix (adhoc #38): the provider
+// dropdown sitting right beside them already says which CLI is running, so the
+// live "Claude Opus 5" reads as "Opus 5" and the composer row stays compact.
+inline QString compactModelName(const QString &name)
+{
+    QString label = name.trimmed();
+    static const QLatin1String prefixes[] = {QLatin1String("Claude "),
+                                             QLatin1String("Anthropic ")};
+    for (const QLatin1String &prefix : prefixes) {
+        if (label.startsWith(prefix, Qt::CaseInsensitive)) {
+            label = label.mid(prefix.size()).trimmed();
+            break;
+        }
+    }
+    return label.isEmpty() ? name.trimmed() : label;
+}
+
 inline QString agentModelLabel(const QString &model)
 {
     if (model.trimmed().isEmpty())
@@ -3474,7 +3541,9 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
         const QString id = m.value(QStringLiteral("id")).toString();
         if (id.isEmpty())
             continue;
-        combo->addItem(m.value(QStringLiteral("display_name")).toString(id), id);
+        combo->addItem(
+            compactModelName(m.value(QStringLiteral("display_name")).toString(id)),
+            id);
     }
     const int idx = combo->findData(picked);
     // No restorable pick: land on the first live model, not the synthetic
@@ -6584,7 +6653,13 @@ inline QIcon themedOcticon(const QString &name, const QColor &color, int size)
     return icon;
 }
 
-// A tinted octicon rotated `angleDeg` about its centre — used to spin the green
+// Tick rate for the running-agent spinners (the Agents table's "#" cells).
+// Fast enough that a flat-out session reads as a smooth
+// spin; how far each session turns per tick comes from its own tok/s (see
+// agentSpinStepDegrees in MainWindowAgents.cpp).
+inline constexpr int kAgentSpinTickMs = 60;
+
+// A tinted octicon rotated `angleDeg` about its centre — used to spin the blue
 // "running" glyph in the agents list (issue #108). Not cached, since the angle
 // changes every animation frame; callers keep it to the handful of running rows.
 inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &color,
@@ -6684,6 +6759,75 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     button->setProperty("forkmeshOcticonRotation", rotationDeg);
     applyStoredOcticon(button);
 }
+
+// A push button whose label never pins its pane open: the text is elided to
+// whatever width the button is actually given, and both its preferred and its
+// minimum width are capped instead of tracking the full string. A long branch
+// name in the commits search row otherwise set the minimum width of the whole
+// left column, so dragging the workspace splitter narrower "got stuck" hundreds
+// of pixels short of where it could go (adhoc #74). Keep the untruncated text on
+// the tooltip at the call site.
+class ElidingPushButton : public QPushButton
+{
+public:
+    using QPushButton::QPushButton;
+
+    // Full, untruncated label. What's painted is derived from it on every
+    // resize; setText() alone would be overwritten by the next elide.
+    void setFullText(const QString &text)
+    {
+        m_fullText = text;
+        applyElide();
+    }
+    QString fullText() const { return m_fullText; }
+
+    // Both hints are computed from the *full* text, never from the elided one,
+    // so a re-elide can never feed back into the layout that caused it.
+    QSize sizeHint() const override
+    {
+        QSize hint = QPushButton::sizeHint();
+        hint.setWidth(qBound(kMinWidth,
+                             fontMetrics().horizontalAdvance(m_fullText) +
+                                 chromeWidth(),
+                             kMaxWidth));
+        return hint;
+    }
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QPushButton::minimumSizeHint();
+        hint.setWidth(qMin(hint.width(), kMinWidth));
+        return hint;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QPushButton::resizeEvent(event);
+        applyElide();
+    }
+
+private:
+    static constexpr int kMinWidth = 56;  // still shows a few characters
+    static constexpr int kMaxWidth = 240; // long refs stop growing the row here
+
+    // The frame padding, the leading octicon and the menu indicator all eat
+    // into the width the label actually gets.
+    int chromeWidth() const
+    {
+        return 28 + (icon().isNull() ? 0 : iconSize().width() + 6) +
+               (menu() ? 14 : 0);
+    }
+
+    void applyElide()
+    {
+        const QString elided = fontMetrics().elidedText(
+            m_fullText, Qt::ElideMiddle, qMax(0, width() - chromeWidth()));
+        if (elided != text())
+            QPushButton::setText(elided);
+    }
+
+    QString m_fullText;
+};
 
 // Width of one activity-rail entry, and of the rail (scroll area) itself. Every
 // badge in the rail rides its own icon's corner rather than the item's outer

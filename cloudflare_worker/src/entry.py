@@ -146,7 +146,10 @@ CLIENT_ERROR_SURFACES = frozenset({
     "home", "world", "dashboard", "documentation", "blog", "network",
     "chat", "account", "repository", "public-page",
 })
-CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection"})
+# "crash" rows come from the world's crash guard: a page instance that ended
+# without pagehide (GPU/OOM kill, tab discard) or a lost WebGL context, with
+# the last heartbeat's diagnostics in the message.
+CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection", "crash"})
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
@@ -201,9 +204,6 @@ MAX_PENDING_PER_AUTHOR = 50
 # generated files or vendored code) isn't rejected at submission.
 MAX_PULL_BYTES = 100 * 1024 * 1024
 MAX_PENDING_PULLS = 200
-# Commit-comment inbox: small signed text comments keyed by commit hash.
-MAX_COMMIT_COMMENT_BYTES = 64 * 1024
-MAX_PENDING_COMMIT_COMMENTS = 500
 # Discussion inbox: signed open/comment events for read-only contributors.
 MAX_DISCUSSION_BYTES = 64 * 1024
 MAX_PENDING_DISCUSSIONS = 500
@@ -350,7 +350,6 @@ from urls import (  # noqa: E402
     REPO_PULLS_RE,
     REPO_PULL_MERGE_RE,
     REPO_ACTION_RUNS_RE,
-    REPO_COMMITS_RE,
     REPO_DISCUSSIONS_RE,
     REPO_PENDING_RE,
     REPO_SUBSCRIBE_RE,
@@ -518,7 +517,6 @@ from events import (  # noqa: E402
     normalized_discussion_category,
     pull_comment_content,
     sha256_hex,
-    verify_commit_comment_event,
     verify_discussion_event,
     verify_issue_event,
     verify_pull_comment_event,
@@ -535,7 +533,6 @@ import activitypub as ap  # noqa: E402
 import activitypub_threads as ap_threads  # noqa: E402
 import edge_routing as https_routing  # noqa: E402
 import fediverse_digest as fedi_digest  # noqa: E402
-import repository_imports as repository_import  # noqa: E402
 import reward_policy  # noqa: E402
 # Objective evidence, one-account-one-vote governance, and contextual-only
 # community placement policy live outside the route spine.
@@ -603,6 +600,22 @@ import blog_feed  # noqa: E402
 # validation are pure data/logic, so they live in their own js-free sibling
 # module; the D1-backed award/list/grant handlers stay below (adhoc #370).
 import badges as badge_catalog  # noqa: E402
+
+
+def _repository_import_module():
+    # Provider-import policy is large and used only by import/logo routes.
+    # Loading it on first use keeps ordinary World/API isolates behaviorally
+    # identical while avoiding its module globals during Worker startup.
+    import repository_imports
+    return repository_imports
+
+
+def _world_infrastructure_module():
+    # Capacity inventory is administrator-only. Keep its grouping/measurement
+    # policy out of ordinary request startup and load it with the first admin
+    # World ticket.
+    import world_infrastructure
+    return world_infrastructure
 
 # Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
 # message; matches the host's 256 KiB git-chunk ceiling so neither side trips
@@ -5197,19 +5210,6 @@ WORLD_MANUAL_TOKEN_DAY_MS = 24 * 60 * 60 * 1000
 # somebody who selected "Away" while still walking around the world. A fresh
 # authenticated world visit resets this quiet-period clock.
 WORLD_INACTIVE_DELAY_MS = 15 * 60 * 1000
-# The platform-admin capacity card is deliberately metadata-only. Keep both the
-# number of sqlite_master rows and the resulting COUNT queries hard-bounded so a
-# ticket refresh cannot turn into an unbounded database-inspection endpoint.
-WORLD_SYSTEM_CAPACITY_MAX_TABLES = 256
-# Durable Object bindings are discovered from the runtime environment rather
-# than listed here, so the card stays truthful as classes are added; the cap
-# keeps an unexpectedly large environment from inflating the ticket.
-WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS = 32
-WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS = 9_007_199_254_740_991
-WORLD_SYSTEM_CAPACITY_TABLE_RE = re.compile(
-    r"[A-Za-z_][A-Za-z0-9_]{0,127}")
-
-
 def _world_ticket_signature(env, payload):
     return hmac.new(
         _account_session_secret(env),
@@ -5448,102 +5448,25 @@ async def _world_account_claim(env, request, data=None):
 
 
 async def _world_system_capacity(env):
-    """Return bounded, content-free D1 table counts for platform admins."""
-    rows = await d1_all(
-        env,
-        "SELECT name FROM sqlite_master WHERE type='table' "
-        "AND substr(lower(name),1,7)!='sqlite_' "
-        "AND substr(lower(name),1,4)!='_cf_' "
-        "ORDER BY name LIMIT ?",
-        WORLD_SYSTEM_CAPACITY_MAX_TABLES,
-    )
-    capacity = []
-    for row in rows or []:
-        raw_name = row.get("name") if isinstance(row, dict) else None
-        if not isinstance(raw_name, str):
-            continue
-        name = raw_name.strip()
-        lowered = name.lower()
-        # Names originate in sqlite_master and are then restricted to the
-        # application's conventional identifier grammar before interpolation.
-        # Quotes, whitespace, SQL punctuation, and D1 internal tables therefore
-        # never reach the COUNT statement.
-        if (
-            name != raw_name
-            or lowered.startswith(("sqlite_", "_cf_"))
-            or not WORLD_SYSTEM_CAPACITY_TABLE_RE.fullmatch(name)
-        ):
-            continue
-        try:
-            count_row = await d1_first(
-                env,
-                'SELECT COUNT(*) AS row_count FROM "' + name + '"',
-            )
-            row_count = int((count_row or {}).get("row_count", 0) or 0)
-        except Exception:
-            # A table can disappear during a rolling migration. Skip that
-            # table rather than breaking the short-lived world ticket.
-            continue
-        # Every table is reported, including the empty and single-row ones:
-        # a table that holds nothing yet is part of the platform's shape, and
-        # hiding it made the inventory look far smaller than the database is.
-        if 0 <= row_count <= WORLD_SYSTEM_CAPACITY_MAX_SAFE_ROWS:
-            capacity.append({"name": name, "rowCount": row_count})
-    return capacity
+    """Delegate the bounded table inventory to its infrastructure module."""
+    return await _world_infrastructure_module().d1_table_inventory(
+        env, d1_all, d1_first)
+
+
+async def _world_d1_storage(env):
+    """Return current D1 bytes alongside documented Free/Paid limits."""
+    return await _world_infrastructure_module().d1_storage_usage(env)
 
 
 async def _world_durable_objects(env):
-    """Auto-detected Durable Object bindings with their relayed byte totals.
-
-    The binding list comes from the runtime environment, so a newly bound
-    class shows up on the System Capacity platform without a code change here.
-    Totals are content-free: bytes and frame counts relayed per class, with no
-    room key, account, peer id, or payload.
-    """
-    bindings = durable_object_bindings(env)
-    if not bindings:
-        return []
-    totals = {}
-    try:
-        rows = await d1_all(
-            env,
-            "SELECT binding, bytes_in, bytes_out, messages, updated_at "
-            "FROM durable_object_traffic ORDER BY binding LIMIT ?",
-            WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS,
-        )
-    except Exception:
-        # The counter table is optional (a rolling migration may not have
-        # created it yet). Bindings are still discovered and reported at zero.
-        rows = []
-    for row in rows or []:
-        if not isinstance(row, dict):
-            continue
-        totals[str(row.get("binding") or "")] = row
-
-    def _count(row, field):
-        try:
-            value = int(row.get(field) or 0)
-        except (TypeError, ValueError):
-            return 0
-        return max(0, min(value, DURABLE_OBJECT_TRAFFIC_MAX))
-
-    objects = []
-    for binding in bindings[:WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS]:
-        row = totals.get(binding) or {}
-        bytes_in = _count(row, "bytes_in")
-        bytes_out = _count(row, "bytes_out")
-        objects.append({
-            "id": binding,
-            "binding": binding,
-            "name": durable_object_label(binding),
-            "bytesIn": bytes_in,
-            "bytesOut": bytes_out,
-            "bytesTotal": min(
-                bytes_in + bytes_out, DURABLE_OBJECT_TRAFFIC_MAX),
-            "messages": _count(row, "messages"),
-            "updatedAt": _count(row, "updated_at"),
-        })
-    return objects
+    """Delegate the Durable Object projection to the infrastructure module."""
+    return await _world_infrastructure_module().durable_object_inventory(
+        env,
+        d1_all,
+        durable_object_bindings,
+        durable_object_label,
+        DURABLE_OBJECT_TRAFFIC_MAX,
+    )
 
 
 async def world_ticket_handler(env, request):
@@ -5640,12 +5563,16 @@ async def world_ticket_handler(env, request):
             response_data["systemCapacity"] = {
                 "tables": await _world_system_capacity(env),
                 "durableObjects": await _world_durable_objects(env),
+                "d1Storage": await _world_d1_storage(env),
             }
         except Exception:
             # Capacity telemetry is optional; authentication and multiplayer
             # entry continue to work while D1 is unavailable or migrating.
             response_data["systemCapacity"] = {
-                "tables": [], "durableObjects": []}
+                "tables": [],
+                "durableObjects": [],
+                "d1Storage": {},
+            }
     return json_response(
         response_data,
         cache_control="no-store, max-age=0, must-revalidate",
@@ -10782,8 +10709,8 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     # Organization tasks share one explicit ordering across the World,
     # dashboard, bot API, and remote MCP surface.
     """ALTER TABLE organization_tasks
-       ADD COLUMN priority INTEGER NOT NULL DEFAULT 500
-       CHECK (priority BETWEEN 1 AND 999)""",
+       ADD COLUMN priority INTEGER NOT NULL DEFAULT 50
+       CHECK (priority BETWEEN 1 AND 99)""",
 ]
 
 # Post-CREATE column additions for tables that predate them. Idempotent: a
@@ -10819,7 +10746,6 @@ SCHEMA_ALTER_STATEMENTS = [
     "ALTER TABLE pull_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE pull_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE pull_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE discussion_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
@@ -11219,25 +11145,37 @@ async def _chat_channel_signed_session(env, request):
 # Agents composer's Task toggle could never reach the board (adhoc #18).
 ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
 ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
+# The same key, reading the board it can already write to. Without this the
+# desktop Tasks tab was empty for every operator who launched normally instead
+# of typing a password, because it had no session token to present (adhoc #52).
+ORG_TASK_LIST_PROOF = "forkmesh-org-task-list-v1"
+# The same key, signing for the one credential a desktop's "genie" button needs
+# (adhoc #49): a task-only remote-MCP bearer for the task board. An install that
+# can already open and close tasks with its key should not have to send its
+# operator to the website to copy a token by hand.
+GENIE_CREDENTIAL_PROOF = "forkmesh-genie-credential-v1"
 ORG_TASK_COMPLETE_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/complete/?$")
 ORG_TASK_COLLECTION_RE = re.compile(r"^/api/tasks/?$")
 
 
 async def _org_task_signed_session(env, request):
-    """Resolve the account behind a key-signed organization-task write.
+    """Resolve the account behind a key-signed organization-task request.
 
-    Deliberately narrow: only opening a task and reporting one finished, the
-    two writes a desktop performs for its own agent run. Editing, deleting,
-    starting/stopping another member's timer, and QA verdicts all still require
-    a real session. Membership and every other authorization check inside the
-    task API applies to a signed caller exactly as to a session-token one.
+    Deliberately narrow: listing the board, opening a task, and reporting one
+    finished — the reads and writes a desktop performs for its own agent run.
+    Editing, deleting, starting/stopping another member's timer, and QA verdicts
+    all still require a real session. Membership and every other authorization
+    check inside the task API applies to a signed caller exactly as to a
+    session-token one, so a signed list still returns nothing to a non-member.
 
-    The completion proof names the exact task it closes. The open proof can
-    only be replayed inside the five-minute skew window, and only to open one
-    more task as an account that was already entitled to open tasks.
+    The completion proof names the exact task it closes. The list and open
+    proofs can only be replayed inside the five-minute skew window, and only to
+    read the board, or open one more task, as an account that was already
+    entitled to do so.
     """
-    if method_name(request) != "POST":
+    method = method_name(request)
+    if method not in ("GET", "POST"):
         return "", None
     url = urlparse(request.url)
     params = parse_qs(url.query)
@@ -11247,19 +11185,36 @@ async def _org_task_signed_session(env, request):
     if not node or not sig or not _ts_ok(ts):
         return "", None
     complete = ORG_TASK_COMPLETE_RE.match(url.path)
-    if complete:
+    collection = ORG_TASK_COLLECTION_RE.match(url.path)
+    if method == "GET":
+        # Reads have no write proof to reuse: a GET signed with the open proof
+        # must not be replayable as a task creation, so listing gets its own.
+        if not collection:
+            return "", None
+        canonical = (
+            ORG_TASK_LIST_PROOF + "\n" + node + "\n" + str(ts)
+        ).encode()
+    elif complete:
         canonical = (
             ORG_TASK_COMPLETE_PROOF + "\n" + node + "\n"
             + complete.group(1) + "\n" + str(ts)
         ).encode()
-    elif ORG_TASK_COLLECTION_RE.match(url.path):
+    elif collection:
         canonical = (
             ORG_TASK_OPEN_PROOF + "\n" + node + "\n" + str(ts)
         ).encode()
     else:
         return "", None
-    pubkey = await _owner_pubkey(env, node)
-    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+    # Every key the account may sign as, not just its primary pubkey: a desktop
+    # that logged in with a password registers THIS machine's key in
+    # account_devices, while rec["pubkey"] keeps naming whichever install
+    # created the account. That session token lives only in memory, so the next
+    # launch authenticates silently and signs the board read with the device
+    # key — and a gate that trusted only the primary answered invalid_session,
+    # which is why the Tasks tab loaded until the app was restarted (adhoc #63).
+    # Same family as the /api/sync drain gate; see _owner_signing_pubkeys for
+    # why reusing the stored device keys is account-bound and safe.
+    if not await _verify_owner_signature(env, node, sig, canonical):
         return "", None
     account_bi, record = await _account_row(env, node)
     if (
@@ -11270,6 +11225,99 @@ async def _org_task_signed_session(env, request):
     ):
         return "", None
     return account_bi, record
+
+
+async def _genie_credential_signed_session(env, request):
+    """Resolve the account behind a key-signed genie-credential request.
+
+    Narrower than _org_task_signed_session: one proof, one path, POST only, and
+    the signature covers nothing but the account and timestamp, so it can only
+    ever mint that account's own task-scoped credential inside the skew window.
+    """
+    if method_name(request) != "POST":
+        return "", None
+    url = urlparse(request.url)
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return "", None
+    canonical = (
+        GENIE_CREDENTIAL_PROOF + "\n" + node + "\n" + str(ts)
+    ).encode()
+    # Same durable desktop identity as _org_task_signed_session: a reinstalled
+    # or password-logged-in machine signs with its account_devices key, which is
+    # never promoted to the account's primary pubkey (adhoc #63).
+    if not await _verify_owner_signature(env, node, sig, canonical):
+        return "", None
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return "", None
+    return account_bi, record
+
+
+# The same account key, reading and clearing its own alert inbox. The desktop's
+# Alerts page mirrors the website's bell, and an install that authenticated
+# silently holds keys and no session token — so without these the linked inbox
+# would answer "unauthorized" to the very operator who owns it (adhoc #59, the
+# notification twin of ORG_TASK_LIST_PROOF).
+ACCOUNT_ALERT_LIST_PROOF = "forkmesh-account-alert-list-v1"
+ACCOUNT_ALERT_READ_PROOF = "forkmesh-account-alert-read-v1"
+ACCOUNT_ALERT_COLLECTION_RE = re.compile(r"^/api/notifications/?$")
+
+
+async def _account_alert_signed_session(env, request):
+    """Resolve the account behind a key-signed alert-inbox request.
+
+    Deliberately narrow: reading the account's own notifications and marking
+    them read, the two things the desktop Alerts page does. Deleting one still
+    requires a real session, and the read proof is distinct from the list proof
+    so a signed GET can never be replayed as a mutation. Returns the account
+    name, or "" when nothing valid signed the request.
+    """
+    method = method_name(request)
+    if method not in ("GET", "POST"):
+        return ""
+    url = urlparse(request.url)
+    if not ACCOUNT_ALERT_COLLECTION_RE.match(url.path):
+        return ""
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return ""
+    proof = (ACCOUNT_ALERT_LIST_PROOF if method == "GET"
+             else ACCOUNT_ALERT_READ_PROOF)
+    canonical = (proof + "\n" + node + "\n" + str(ts)).encode()
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return ""
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return ""
+    return clean_string(record.get("name", ""), MAX_NODE_NAME).lower()
+
+
+async def _alert_inbox_account_name(env, request, data=None):
+    """The account whose alert inbox this request is entitled to touch.
+
+    A browser proves it with a session token; the desktop, which normally holds
+    none, proves it by signing the request with the account key.
+    """
+    name = await _authed_account_name(env, request, data)
+    return name or await _account_alert_signed_session(env, request)
 
 
 async def _room_key_authorized(env, request):
@@ -13347,7 +13395,7 @@ async def native_repository_logo_handler(
                     "cache-control": "public, max-age=300",
                 })
             logo = await service._official_logo(env, repository_id)
-            logo = logo or repository_import.deterministic_logo(record)
+            logo = logo or _repository_import_module().deterministic_logo(record)
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
         if committed_logo_url:
@@ -13469,10 +13517,11 @@ async def _repo_about_public(env, request, owner, repo):
     resolved_logo = {}
     logo_record_builder = globals().get("_native_repository_logo_record")
     logo_service_factory = globals().get("_repository_import_service")
-    repository_import_module = globals().get("repository_import")
+    repository_import_loader = globals().get("_repository_import_module")
     if (callable(logo_record_builder)
             and callable(logo_service_factory)
-            and repository_import_module is not None):
+            and callable(repository_import_loader)):
+        repository_import_module = repository_import_loader()
         logo_record = logo_record_builder(rec, owner, repo)
         logo_service = logo_service_factory()
         approved_logo = await logo_service._official_logo(
@@ -14747,9 +14796,6 @@ async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
             env, "UPDATE pull_inbox SET repo_bi=? WHERE repo_bi=?",
             new_repo_bi, old_repo_bi)
         await d1_run(
-            env, "UPDATE commit_inbox SET repo_bi=? WHERE repo_bi=?",
-            new_repo_bi, old_repo_bi)
-        await d1_run(
             env, "UPDATE discussion_inbox SET repo_bi=? WHERE repo_bi=?",
             new_repo_bi, old_repo_bi)
         await d1_run(
@@ -14893,7 +14939,6 @@ async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(env, "DELETE FROM repo_shares WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM issue_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
-    await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM discussion_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM host_presence WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM clone_rr WHERE repo_bi=?", repo_bi)
@@ -23778,6 +23823,7 @@ def _account_email_activity(rec):
 
 async def _repository_provider_fetch(env, provider, path, token=""):
     from js import fetch as js_fetch
+    repository_import = _repository_import_module()
     if provider not in repository_import.PROVIDERS:
         return {"status": 400, "data": {}, "headers": {}}
     if (not isinstance(path, str) or not path.startswith("/")
@@ -23978,6 +24024,7 @@ async def _repository_import_audit(
 
 
 def _repository_import_service():
+    repository_import = _repository_import_module()
     return repository_import.RepositoryImportService({
         "json_response": json_response,
         "ensure_schema": ensure_schema,
@@ -29638,6 +29685,7 @@ async def enqueue_notification(env, recipient, kind, title, body="", repo="",
 
 async def _promote_hosted_repository_import(env, catalog_record):
     """Link one verified mirror catalog to its public provider import."""
+    repository_import = _repository_import_module()
     mirror_owner = clean_string(
         catalog_record.get("owner"), MAX_NODE_NAME).lower()
     repository_name = safe_segment(clean_string(
@@ -29814,7 +29862,6 @@ async def notify_pending_inbox(env, owner, repo, source, actor, title, number=0)
     label = {
         "issue": "Issue submitted",
         "pull": "Pull request submitted",
-        "commit_comment": "Commit comment submitted",
         "discussion": "Discussion submitted",
     }.get(source, "Pending inbox item")
     await enqueue_notification(
@@ -29922,8 +29969,9 @@ async def notifications_handler(env, request):
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
         # A notification inbox is private to its owner: only the account itself,
-        # proven by its session token (bearer header on this GET), may read it.
-        if await _authed_account_name(env, request) != node:
+        # proven by its session token (bearer header on this GET) or by an
+        # account-key signature on the URL (the desktop Alerts page), may read it.
+        if await _alert_inbox_account_name(env, request) != node:
             return json_response({"error": "unauthorized"}, status=401)
         try:
             limit = int(params.get("limit", ["40"])[0])
@@ -29965,9 +30013,10 @@ async def notifications_handler(env, request):
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
-        # Marking notifications read mutates the owner's inbox: same session gate
-        # as the GET (token from the POST body or an Authorization: Bearer header).
-        if await _authed_account_name(env, request, data) != node:
+        # Marking notifications read mutates the owner's inbox: same gate as the
+        # GET (token from the POST body or an Authorization: Bearer header, or
+        # the account-key read proof signed onto the URL).
+        if await _alert_inbox_account_name(env, request, data) != node:
             return json_response({"error": "unauthorized"}, status=401)
         recipient_bi = await blind_index(env, node)
         now = int(Date.now())
@@ -29986,7 +30035,36 @@ async def notifications_handler(env, request):
                     now, recipient_bi, item_id)
         return json_response({"ok": True})
 
-    return json_response({"error": "method_not_allowed"}, status=405)
+    if method == "DELETE":
+        try:
+            data = await bounded_json_request(request)
+        except Exception:
+            return json_response({"error": "invalid_json"}, status=400)
+        node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
+        item_id = clean_string(data.get("id", ""), 160).lower()
+        if not valid_node_name(node) or not re.fullmatch(
+                r"[a-f0-9]{64}", item_id):
+            return json_response({"error": "bad_request"}, status=400)
+        # A notification can only be removed from the authenticated owner's
+        # own encrypted inbox. The opaque id is still scoped by recipient_bi,
+        # so an id copied from another account cannot delete anything.
+        if await _authed_account_name(env, request, data) != node:
+            return json_response({"error": "unauthorized"}, status=401)
+        recipient_bi = await blind_index(env, node)
+        await d1_run(
+            env,
+            "DELETE FROM notifications "
+            "WHERE recipient_bi=? AND dedupe_bi=?",
+            recipient_bi,
+            item_id,
+        )
+        return json_response({"ok": True})
+
+    return json_response(
+        {"error": "method_not_allowed"},
+        status=405,
+        extra_headers={"allow": "GET, POST, DELETE"},
+    )
 
 
 async def mirror_requests_handler(env, request):
@@ -32520,73 +32598,6 @@ async def pulls_handler(env, request, owner, repo):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
-async def commits_handler(env, request, owner, repo):
-    await ensure_schema(env)
-    method = method_name(request)
-    repo_bi = await blind_index(env, owner + "/" + repo)
-    if method == "POST":
-        try:
-            data = await bounded_json_request(request)
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-        comment = data.get("comment")
-        sha = clean_string(data.get("sha", ""), 40)
-        if not isinstance(comment, dict) or not sha:
-            return json_response({"error": "comment_required"}, status=400)
-        if len((comment.get("body", "") or "").encode("utf-8")) > MAX_COMMIT_COMMENT_BYTES:
-            return json_response({"error": "comment_too_large"}, status=413)
-        if not await verify_commit_comment_event(sha, comment):
-            return json_response({"error": "bad_signature"}, status=401)
-        count = await d1_first(
-            env, "SELECT COUNT(*) AS c FROM commit_inbox WHERE repo_bi=?", repo_bi
-        )
-        if count and count.get("c", 0) >= MAX_PENDING_COMMIT_COMMENTS:
-            return json_response({"error": "inbox_full"}, status=429)
-        submitter_bi = await blind_index(env, comment.get("author", ""))
-        if await _inbox_author_over_quota(env, "commit_inbox", repo_bi, submitter_bi):
-            return json_response({"error": "author_quota"}, status=429)
-        item = {
-            "sha": sha,
-            "comment": comment,
-            "submitter": clean_string(comment.get("author", ""), 120),
-            "submittedAt": int(Date.now()),
-        }
-        await d1_run(
-            env,
-            "INSERT INTO commit_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
-            repo_bi, await encrypt_row(env, item), submitter_bi,
-        )
-        await _record_contributor(env, comment.get("author", ""), "commits")
-        actor = clean_string(comment.get("authorName", "") or comment.get("author", ""), MAX_NODE_NAME).lower()
-        await notify_pending_inbox(env, owner, repo, "commit_comment", actor, sha, 0)
-        await notify_mentions(env, owner, repo, actor, "Commit " + sha[:12], comment.get("body", ""),
-                              repo_web_href(owner, repo), "commit_comment")
-        await notify_repo_host(env, owner, repo, "commits")
-        await _best_effort_inbox_side_effect(_ap_publish_repo_event(
-            env, request, owner, repo, "commit", "comment", sha, "",
-            comment.get("body", ""), comment.get("authorName", "")))
-        return json_response({"ok": True}, status=201)
-
-    if method == "GET":
-        if not await _authorize_owner(env, request, owner):
-            return json_response({"error": "unauthorized"}, status=401)
-        rows = await d1_all(
-            env, "SELECT data FROM commit_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
-        )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        return json_response({"ok": True, "pending": pending})
-
-    if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
-            return json_response({"error": "unauthorized"}, status=401)
-        await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
-        return json_response({"ok": True})
-
-    return json_response({"error": "method_not_allowed"}, status=405)
-
-
 async def discussions_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -32744,9 +32755,8 @@ async def repo_pending_counts_handler(env, request, owner, repo):
         "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox "
         "WHERE repo_bi=? AND mirrored_at=0 "
         "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox "
-        "WHERE repo_bi=? AND mirrored_at=0 "
-        "UNION ALL SELECT 'commits', COUNT(*) FROM commit_inbox WHERE repo_bi=?",
-        repo_bi, repo_bi, repo_bi, repo_bi,
+        "WHERE repo_bi=? AND mirrored_at=0",
+        repo_bi, repo_bi, repo_bi,
     )
     counts = {str(r.get("k") or ""): int(r.get("c") or 0) for r in rows or []}
     return json_response({
@@ -32755,7 +32765,6 @@ async def repo_pending_counts_handler(env, request, owner, repo):
             "issues": counts.get("issues", 0),
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
-            "commits": counts.get("commits", 0),
         },
     }, cache_seconds=30)
 
@@ -32763,7 +32772,7 @@ async def repo_pending_counts_handler(env, request, owner, repo):
 async def sync_handler(env, request):
     # GET /api/sync?owner={name}&ts=&sig= — one signed round-trip returning
     # everything the owner's desktop node needs across ALL of its repos:
-    # pending issue/pull/discussion/commit inbox items, queued agent prompts
+    # pending issue/pull/discussion inbox items, queued agent prompts
     # (drained on read, same semantics as GET /agents), and the relay's pinned
     # repo state. This replaces the node's old fast polling (4 inbox GETs per
     # repo every 60s + agents every 30s + catalog list for pin checks): the
@@ -32808,7 +32817,6 @@ async def sync_handler(env, request):
                 ("issues", "issue_inbox", True),
                 ("pulls", "pull_inbox", True),
                 ("discussions", "discussion_inbox", True),
-                ("commits", "commit_inbox", True),
                 ("agentPrompts", "agent_prompts", True),
                 ("aboutUpdate", "about_inbox", False)):
             order = " ORDER BY id ASC" if ordered else ""
@@ -32851,7 +32859,7 @@ async def sync_handler(env, request):
                     # instead of blanket-deleting it undelivered (adhoc #97).
                     drain_id = r.get("drain_id")
                     if drain_id is not None and topic in (
-                            "issues", "pulls", "discussions", "commits"):
+                            "issues", "pulls", "discussions"):
                         item["id"] = drain_id
                     by_repo.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(topic, []).append(item)
@@ -33862,8 +33870,6 @@ async def _org_bot_token_context(env, request, touch=False):
     method = method_name(request)
     if method not in ("GET", "POST", "PUT", "PATCH", "DELETE"):
         method = "GET"
-    # Append one metadata-only use record after successful credential
-    # validation. Never store the secret, query, body, address, or user agent.
     await d1_run(
         env,
         "INSERT INTO org_bot_token_usage "
@@ -33903,7 +33909,10 @@ async def org_bot_tokens_handler(env, request, org):
         (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
     if not account_bi or not actor:
         return json_response({"error": "invalid_session"}, status=401)
-    if await _org_role(env, org_bi, actor) not in ("owner", "admin"):
+    actor_role = await _org_role(env, org_bi, actor)
+    if actor_role not in ("owner", "admin", "member"):
+        return json_response({"error": "forbidden"}, status=403)
+    if method in ("GET", "DELETE") and actor_role not in ("owner", "admin"):
         return json_response({"error": "forbidden"}, status=403)
     org_name = str(org_row.get("name") or org)
 
@@ -34006,6 +34015,9 @@ async def org_bot_tokens_handler(env, request, org):
     scopes = _org_bot_scopes(data.get("scopes"), default=True)
     if scopes is None or not scopes:
         return json_response({"error": "invalid_bot_permissions"}, status=400)
+    if actor_role == "member" and not set(scopes).issubset({
+            "organization.tasks.read", "organization.tasks.write"}):
+        return json_response({"error": "forbidden"}, status=403)
     count = await d1_first(
         env,
         "SELECT COUNT(*) AS n FROM org_bot_tokens "
@@ -34052,6 +34064,133 @@ async def org_bot_tokens_handler(env, request, org):
         "label": label,
         "scopes": scopes,
         "expiresAt": expires_at,
+        "shownOnce": True,
+    }, status=201, cache_control="no-store")
+
+
+GENIE_CREDENTIAL_SCOPES = ("organization.tasks.read", "organization.tasks.write")
+GENIE_CREDENTIAL_LABEL = "Genie"
+GENIE_CREDENTIAL_DAYS = 90
+
+
+async def genie_credential_handler(env, request):
+    """Mint the desktop's own task-only remote-MCP credential (adhoc #49).
+
+    Pressing "genie" used to require a trip to Organization Admin to generate a
+    bearer token and paste it into Settings first. A desktop that authenticated
+    silently already proves it owns its account's Ed25519 key for every task it
+    opens on the board, so the same signature mints the same revocable,
+    task-scoped credential the website hands out — nothing else changes about
+    it: same store, same scopes, same expiry, same revoke button.
+    """
+    await ensure_schema(env)
+    if method_name(request) != "POST":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        return json_response({"error": "invalid_json"}, status=400)
+    if not isinstance(data, dict):
+        data = {}
+    # A key-signed desktop is the point of this endpoint; an explicit account
+    # session (bearer or body token) is accepted too. Ambient cookie authority
+    # is not: _account_session_record refuses a cookie on a cross-origin write,
+    # so a cross-site POST can neither borrow a browser session nor pass off a
+    # junk signature as one.
+    account_bi, account = await _genie_credential_signed_session(env, request)
+    if not account_bi:
+        account_bi, account = await _account_session_record(env, request, data)
+    actor = clean_string(
+        (account or {}).get("name"), MAX_NODE_NAME).strip().lower()
+    if not account_bi or not actor:
+        return json_response({"error": "invalid_session"}, status=401)
+
+    configured = str(
+        getattr(env, "OFFICE_MARKETING_ORG", "") or "forkmesh"
+    ).strip().lower()
+    if not valid_node_name(configured):
+        return json_response({"error": "task_board_unavailable"}, status=503)
+    org_bi, org_row = await _org_row(env, configured)
+    if not org_row:
+        return json_response({"error": "task_board_unavailable"}, status=503)
+    org_name = str(org_row.get("name") or configured)
+    if await _org_role(env, org_bi, actor) not in ("owner", "admin"):
+        await _audit_sensitive_action(
+            env, actor, "organization.bot_token_create",
+            "organization_bot_token", org_name, "denied",
+            {"source": "desktop-genie"})
+        return json_response(
+            {"error": "forbidden", "organization": org_name}, status=403)
+
+    device = clean_string(data.get("deviceName"), 80).strip()
+    label = GENIE_CREDENTIAL_LABEL + ((" (" + device + ")") if device else "")
+    now = int(Date.now())
+    # One live credential per device: the desktop stores what it is given, so a
+    # re-mint (settings cleared, credential rotated) must retire its own
+    # predecessor instead of walking the org toward ORG_BOT_TOKEN_MAX_ACTIVE.
+    rows = await d1_all(
+        env,
+        "SELECT token_id,data FROM org_bot_tokens "
+        "WHERE org_bi=? AND revoked_at=0 ORDER BY created_at DESC LIMIT 64",
+        org_bi,
+    )
+    for row in rows or []:
+        record = await decrypt_row(env, row.get("data"))
+        if not isinstance(record, dict):
+            continue
+        if clean_string(record.get("label"), 80).strip() != label:
+            continue
+        if clean_string(record.get("createdBy"), MAX_NODE_NAME).strip().lower() \
+                != actor:
+            continue
+        await d1_run(
+            env,
+            "UPDATE org_bot_tokens SET revoked_at=? "
+            "WHERE token_id=? AND org_bi=? AND revoked_at=0",
+            now, str(row.get("token_id") or ""), org_bi,
+        )
+
+    count = await d1_first(
+        env,
+        "SELECT COUNT(*) AS n FROM org_bot_tokens "
+        "WHERE org_bi=? AND revoked_at=0 AND (expires_at=0 OR expires_at>?)",
+        org_bi, now,
+    )
+    if int((count or {}).get("n") or 0) >= ORG_BOT_TOKEN_MAX_ACTIVE:
+        return json_response({"error": "too_many_bot_tokens"}, status=429)
+    scopes = list(GENIE_CREDENTIAL_SCOPES)
+    expires_at = now + GENIE_CREDENTIAL_DAYS * 24 * 60 * 60 * 1000
+    token_id, token = _new_org_bot_token()
+    await d1_run(
+        env,
+        "INSERT INTO org_bot_tokens "
+        "(token_id,org_bi,secret_bi,provider,data,created_by_bi,created_at,"
+        "last_used_at,expires_at,revoked_at) VALUES (?,?,?,?,?,?,?,0,?,0)",
+        token_id, org_bi,
+        await blind_index(env, "org-bot-token:" + token),
+        "claude-code",
+        await encrypt_row(env, {
+            "label": label,
+            "scopes": scopes,
+            "createdBy": actor,
+            "deviceName": device,
+            "linkedAt": 0,
+        }),
+        str(account_bi), now, expires_at,
+    )
+    await _audit_sensitive_action(
+        env, actor, "organization.bot_token_create",
+        "organization_bot_token", org_name + "/" + token_id, "success",
+        {"provider": "claude-code", "scopes": scopes, "expiresAt": expires_at,
+         "source": "desktop-genie"})
+    return json_response({
+        "ok": True,
+        "token": token,
+        "tokenId": token_id,
+        "organization": org_name,
+        "scopes": scopes,
+        "expiresAt": expires_at,
+        "mcpUrl": _public_base_url(env, request).rstrip("/") + "/mcp",
         "shownOnce": True,
     }, status=201, cache_control="no-store")
 
@@ -34105,16 +34244,7 @@ async def bot_session_handler(env, request):
     }, cache_control="no-store")
 
 
-# --- Organization-scoped Claude/Codex bots ---------------------------------
-#
-# This is intentionally NOT an authorization shortcut into repo_agents. Those
-# rows remain owner-device E2EE. Organization bots have their own encrypted-at-
-# rest session/job tables, are visible and controllable only by current members
-# of the organization's Engineering team, and execute only after the selected
-# mirror runs a tool-free Claude Haiku safety preflight.
 ORG_AGENT_PROVIDERS = ("claude-code", "codex")
-# The task board dispatches one general bot. "agent" asks the Worker to pick
-# whichever supported runtime has an eligible mirror online right now.
 ORG_AGENT_GENERAL_PROVIDERS = ("agent", "bot", "auto")
 ORG_AGENT_MODEL_ALIASES = {
     "claude-code": {
@@ -35550,12 +35680,13 @@ async def client_error_handler(env, request):
 
 async def world_admin_errors_handler(env, request):
     """Return the admin HUD cursor and, on demand, a bounded error table."""
-    if method_name(request) != "GET":
+    method = method_name(request)
+    if method not in ("GET", "POST", "DELETE"):
         return json_response(
             {"error": "method_not_allowed"},
             status=405,
             cache_control="no-store",
-            extra_headers={"allow": "GET"},
+            extra_headers={"allow": "GET, POST, DELETE"},
         )
     _, rec = await _account_session_record(env, request)
     actor = clean_string(
@@ -35568,6 +35699,35 @@ async def world_admin_errors_handler(env, request):
         return json_response(
             {"error": "forbidden"}, status=403,
             cache_control="no-store")
+    if method in ("POST", "DELETE"):
+        try:
+            data = await bounded_json_request(request)
+            row_id = int(data.get("id") or 0)
+        except (AttributeError, TypeError, ValueError):
+            row_id = 0
+        if row_id <= 0:
+            return json_response(
+                {"error": "invalid_error_id"},
+                status=400,
+                cache_control="no-store",
+            )
+        if method == "POST":
+            message, details = await _admin_error_create_bot_task(
+                env, {"error_id": [str(row_id)]}, actor)
+            if details.get("taskId"):
+                return json_response(
+                    {"ok": True, "message": message, **details},
+                    status=201,
+                    cache_control="no-store",
+                )
+            return json_response(
+                {"error": "task_create_failed", "message": message},
+                status=403,
+                cache_control="no-store",
+            )
+        await ensure_schema(env)
+        await d1_run(env, "DELETE FROM error_log WHERE id=?", row_id)
+        return json_response({"ok": True}, cache_control="no-store")
     try:
         query = parse_qs(urlparse(request.url).query)
         raw_after = query.get("after", ["0"])[0]
@@ -35592,6 +35752,64 @@ async def world_admin_errors_handler(env, request):
             "FROM error_log ORDER BY id DESC LIMIT 100",
         )
         payload["errors"] = rows or []
+        grouped_rows = await d1_all(
+            env,
+            "SELECT id,ts,status,method,path,message,ray,actor "
+            "FROM error_log WHERE ts>=? ORDER BY id DESC LIMIT 1000",
+            int(Date.now()) - 24 * 60 * 60 * 1000,
+        )
+        groups = {}
+        for row in grouped_rows or []:
+            signature = (
+                str(row.get("status") or ""),
+                str(row.get("method") or "").upper(),
+                str(row.get("path") or ""),
+                str(row.get("message") or ""),
+            )
+            group = groups.setdefault(signature, {
+                "count": 0,
+                "firstSeen": int(row.get("ts") or 0),
+                "lastSeen": 0,
+                "actors": {},
+                "anonymous": 0,
+            })
+            timestamp = max(0, int(row.get("ts") or 0))
+            group["count"] += 1
+            group["firstSeen"] = min(group["firstSeen"] or timestamp, timestamp)
+            group["lastSeen"] = max(group["lastSeen"], timestamp)
+            related_actor = clean_string(
+                row.get("actor") or "", MAX_NODE_NAME).strip().lower()
+            if related_actor:
+                group["actors"][related_actor] = (
+                    group["actors"].get(related_actor, 0) + 1)
+            else:
+                group["anonymous"] += 1
+        payload["groups"] = [
+            {
+                "status": signature[0],
+                "method": signature[1],
+                "path": signature[2],
+                "message": signature[3],
+                "count": group["count"],
+                "firstSeen": group["firstSeen"],
+                "lastSeen": group["lastSeen"],
+                "actors": [
+                    {"name": name, "count": count}
+                    for name, count in sorted(
+                        group["actors"].items(),
+                        key=lambda item: (-item[1], item[0]),
+                    )[:16]
+                ],
+                "anonymous": group["anonymous"],
+            }
+            for signature, group in sorted(
+                groups.items(),
+                key=lambda item: (
+                    -item[1]["count"],
+                    -item[1]["lastSeen"],
+                ),
+            )[:25]
+        ]
     return json_response(
         payload,
         cache_control="no-store",
@@ -37636,18 +37854,11 @@ def _admin_error_bot_task_fields(status, method, path, message, users=""):
 def _admin_error_bot_task_form(
         status, method, path, message, users="",
         csrf_field="", admin_query=""):
-    """Hand one error (or one equivalent-error group) to ForkBot as a task.
-
-    Files a relay-authored issue on the flagship repository through the same
-    audited ForkBot inbox path chat and the QA deck use, so the queued work is
-    ordinary tracked work a desktop node drains — not a new side channel.
-    """
+    """Send one error (or equivalent-error group) to the organization tasks."""
     return (
         '<form class="error-bot-task" method="post" action="%s" '
-        'onsubmit="return confirm('
-        "'File a ForkBot task for this error on forkmesh/forkmesh?')\">"
-        "%s%s<button class=\"error-bot\" type=\"submit\">"
-        "Create bot task</button></form>"
+        '>%s%s<button class="error-bot" type="submit">'
+        "Send to task</button></form>"
         % (
             _admin_href(
                 admin_query, table="error_log", action="create_bot_task"),
@@ -37679,9 +37890,7 @@ def _admin_error_row_bot_task_button(rowid, admin_query=""):
     return (
         '<button class="error-bot" type="submit" name="error_id" '
         'value="%s" formaction="%s" '
-        'onclick="event.stopPropagation();return confirm('
-        "'File a ForkBot task for this error on forkmesh/forkmesh?')\">"
-        "Create bot task</button>"
+        'onclick="event.stopPropagation()">Send to task</button>'
         % (
             _html_escape(rowid),
             _admin_href(
@@ -38649,14 +38858,7 @@ async def _admin_console_request_ownership(env, target, owner):
 
 
 async def _admin_error_create_bot_task(env, form, requester):
-    """File a ForkBot task for one error row, or one equivalent-error group.
-
-    Goes through the same audited ForkBot inbox path chat and the QA deck use:
-    a relay-authored issue on the flagship repository, plus the wantsAgent
-    request that makes the owner's node start a coding agent on it. The relay
-    still runs nothing itself. Returns (banner, audit_details).
-    """
-    owner, repo = FLAGSHIP_MONITOR_ID.split("/", 1)
+    """Create an organization task assigned to Bot from an error-log entry."""
     raw_id = form.get("error_id", [""])[0]
     rowid = int(raw_id) if str(raw_id).isdigit() else 0
     if rowid > 0:
@@ -38720,44 +38922,59 @@ async def _admin_error_create_bot_task(env, form, requester):
             .encode("utf-8")
         ).hexdigest(),
     }
-    queued, result = await _forkbot_enqueue_issue(
-        env, owner, repo, title[:240], body, requester,
-        source="admin-error-log", labels=["bug", "error-log"],
+    org_name = clean_string(
+        getattr(env, "OFFICE_MARKETING_ORG", "") or "forkmesh",
+        MAX_NODE_NAME,
+    ).strip().lower()
+    org_bi, org_row = await _org_row(env, org_name)
+    role = await _org_role(env, org_bi, requester)
+    if not org_row or role not in ("owner", "admin"):
+        return (
+            "Send to task failed: the administrator is not an organization "
+            "owner or admin.",
+            details,
+        )
+    task_id = _ap_uuid()
+    now = int(Date.now())
+    requester_bi = await blind_index(env, requester)
+    try:
+        status_number = int(status)
+    except (TypeError, ValueError):
+        status_number = 0
+    priority = 5 if status_number >= 500 else 15 if status_number >= 400 else 25
+    sealed = await encrypt_row(env, {
+        "kind": "task",
+        "title": title[:160],
+        "details": body[:4000],
+        "attachments": [],
+        "completionNote": "",
+        "assignee": "agent",
+        "createdBy": clean_string(requester, MAX_NODE_NAME).strip().lower(),
+        "parentTaskId": "",
+        "bountyRequest": None,
+        "repository": FLAGSHIP_MONITOR_ID,
+        "howToTest": (
+            "Reproduce %s %s and verify the error no longer appears in the "
+            "administration error list." % (method or "request", path or "path")
+        )[:720],
+        "qaReviewer": "",
+        "agent": None,
+    })
+    await d1_run(
+        env,
+        "INSERT INTO organization_tasks "
+        "(task_id,org_bi,department,team,destination,assignee_kind,status,"
+        "assignee_bi,data,created_by_bi,created_at,updated_at,elapsed_ms,"
+        "started_at,next_checkin_at,qa_requested_at,agent_session_id,priority) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        task_id, org_bi, "engineering", "", "agent", "agent", "idle", "",
+        sealed, requester_bi, now, now, 0, 0, 0, 0, "", priority,
     )
-    if not queued:
-        return (
-            "Create bot task failed: " + str(result or "issue_failed") + ".",
-            details,
-        )
-    number = int(
-        (result or {}).get("number")
-        or (result or {}).get("issueNumber")
-        or 0
-    )
-    details["issueNumber"] = number
-    if number <= 0:
-        # The desktop will assign the number when it drains the inbox, so
-        # there is nothing to attach an agent request to yet.
-        return (
-            "Bot task filed on %s/%s; %s's node numbers it on the next sync."
-            % (owner, repo, owner),
-            details,
-        )
-    # The admin page's own auth already proved _is_admin, which is exactly the
-    # privilege gate _forkbot_action_start_agent applies to wantsAgent.
-    agent_ok, agent_result = await _forkbot_enqueue_agent_request(
-        env, owner, repo, number, requester)
-    details["agentRequested"] = bool(agent_ok)
-    if not agent_ok:
-        return (
-            "Bot task filed as %s/%s issue #%d, but the coding-agent request "
-            "was not queued: %s." % (owner, repo, number, agent_result),
-            details,
-        )
+    details["taskId"] = task_id
+    details["priority"] = priority
     return (
-        "Bot task filed as %s/%s issue #%d and a coding agent was queued for "
-        "it; the owner's node starts it on the next inbox sync."
-        % (owner, repo, number),
+        "Task %s added to the organization task list and assigned to Bot."
+        % task_id,
         details,
     )
 
@@ -40032,6 +40249,7 @@ async def _https_mirror_private_proxy(env, request, private_record):
 
 async def _hosted_repository_import_route(env, owner, repo):
     """Resolve one public logical import name to its physical mirror catalog."""
+    repository_import = _repository_import_module()
     owner_l = clean_string(owner, MAX_NODE_NAME).strip().lower()
     repo_l = clean_string(repo, MAX_REPO_SEGMENT).strip().lower()
     if not valid_node_name(owner_l) or not safe_segment(repo_l):
@@ -42367,6 +42585,9 @@ class Default(WorkerEntrypoint):
                 "/api/world/admin/nodes/delete/"):
             return await world_admin_delete_node_handler(self.env, request)
 
+        if url.path in ("/api/genie/credential", "/api/genie/credential/"):
+            return await genie_credential_handler(self.env, request)
+
         if (
             url.path == "/api/tasks"
             or url.path == "/api/tasks/"
@@ -42987,19 +43208,6 @@ class Default(WorkerEntrypoint):
                                  self.env, request, owner))):
                 return json_response({"error": "not_found"}, status=404)
             return await pulls_handler(self.env, request, owner, repo)
-
-        commits_match = REPO_COMMITS_RE.match(url.path)
-        if commits_match:
-            owner = safe_segment(commits_match.group(1))
-            repo = safe_segment(commits_match.group(2))
-            if not owner or not repo:
-                return json_response({"error": "not_found"}, status=404)
-            if (await _repo_is_private(self.env, owner, repo)
-                    and not (method_name(request) in ("GET", "DELETE")
-                             and await _authorize_owner(
-                                 self.env, request, owner))):
-                return json_response({"error": "not_found"}, status=404)
-            return await commits_handler(self.env, request, owner, repo)
 
         discussions_match = REPO_DISCUSSIONS_RE.match(url.path)
         if discussions_match:

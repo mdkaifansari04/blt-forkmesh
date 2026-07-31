@@ -283,7 +283,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullFixClaudeAction = m_pullFixMenu->addAction(QStringLiteral("Claude API"));
     m_pullFixOpenAiAction = m_pullFixMenu->addAction(QStringLiteral("OpenAI API"));
     m_pullFixClaudeCodeAction =
-        m_pullFixMenu->addAction(QStringLiteral("Claude Code"));
+        m_pullFixMenu->addAction(QStringLiteral("CC")); // Claude Code (adhoc #38)
     connect(m_pullFixClaudeAction, &QAction::triggered, this,
             [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude")); });
     connect(m_pullFixOpenAiAction, &QAction::triggered, this,
@@ -7464,136 +7464,6 @@ void MainWindow::submitPullEventToInbox(int number, const PullEvent &ev)
     });
 }
 
-QUrl MainWindow::commitsApiUrl(const RepositoryRecord &repo) const
-{
-    QUrl url = catalogApiUrl();
-    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
-                repoSegment(repo.name, QStringLiteral("repository")) + "/commits");
-    return url;
-}
-
-void MainWindow::submitCommitCommentToInbox(const QString &sha, const CommitComment &c)
-{
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-        return;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    const QJsonObject payload{{"owner", repo.owner},
-                              {"repo", repo.name},
-                              {"sha", sha},
-                              {"comment", c.toJson()}};
-    QNetworkRequest request(commitsApiUrl(repo));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    QNetworkReply *reply = m_networkAccess->post(
-        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, repo] {
-        reply->deleteLater();
-        if (reply->error() == QNetworkReply::NoError)
-            flashMessage("Your commit comment was delivered to " + repo.owner + "/" +
-                         repo.name + ".");
-        else
-            QMessageBox::warning(this, "Commit comment",
-                                 "Could not send your comment: " + reply->errorString());
-    });
-}
-
-void MainWindow::drainCommitInboxFor(RepositoryRecord repo, bool interactive)
-{
-    const RepositoryRecord writable = writableRecordFor(repo);
-    {
-        CommitCommentStore probe(writable.localPath, writable.mirrorPath,
-                                 &m_profileIdentity, m_userName);
-        if (!probe.canWrite())
-            return;
-    }
-    if (!hasOwnerSigningCapability(repo.owner))
-        return;
-    QUrl url = commitsApiUrl(repo);
-    // Auto-polls back off exponentially while the relay is failing (offline /
-    // HTTP 429); a manual "Sync inbox" (interactive) always tries immediately.
-    const QString backoffKey = url.toString();
-    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-    if (!interactive && !m_pollBackoff.ready(backoffKey, nowMs))
-        return;
-
-    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
-    const QString ts = QString::number(nowMs);
-    const QByteArray canonical =
-        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
-    const QString sig = m_profileIdentity.signData(canonical);
-    QUrlQuery query;
-    query.addQueryItem("owner", owner);
-    query.addQueryItem("ts", ts);
-    query.addQueryItem("sig", sig);
-    url.setQuery(query);
-
-    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, interactive, backoffKey] {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(backoffKey,
-                                      QDateTime::currentMSecsSinceEpoch());
-            if (interactive)
-                QMessageBox::warning(this, "Sync inbox",
-                                     "Could not reach the inbox: " +
-                                         reply->errorString());
-            return;
-        }
-        m_pollBackoff.noteSuccess(backoffKey);
-        applyCommitInboxPayload(repo,
-                                QJsonDocument::fromJson(reply->readAll())
-                                    .object()
-                                    .value("pending")
-                                    .toArray(),
-                                interactive);
-    });
-}
-
-// Merge pending commit comments into the local store and ack the inbox.
-// `pending` comes from either a per-repo GET /commits drain reply or the
-// repo's slice of the consolidated GET /api/sync response.
-void MainWindow::applyCommitInboxPayload(const RepositoryRecord &repo,
-                                         const QJsonArray &pending,
-                                         bool interactive)
-{
-    if (!hasOwnerSigningCapability(repo.owner))
-        return;
-    if (pending.isEmpty()) {
-        if (interactive)
-            QMessageBox::information(this, "Sync inbox",
-                                     "No pending commit comments.");
-        return;
-    }
-    const RepositoryRecord writable = writableRecordFor(repo);
-    CommitCommentStore store(writable.localPath, writable.mirrorPath,
-                             &m_profileIdentity, m_userName);
-    if (!store.canWrite())
-        return;
-    int merged = 0;
-    for (const QJsonValue &value : pending) {
-        const QJsonObject obj = value.toObject();
-        const QString sha = obj.value("sha").toString();
-        const CommitComment c =
-            CommitComment::fromJson(obj.value("comment").toObject());
-        if (store.applyRemoteComment(sha, c))
-            ++merged;
-    }
-    QUrl ackUrl = commitsApiUrl(repo);
-    ackUrl.setQuery(
-        signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner"))));
-    m_networkAccess->deleteResource(QNetworkRequest(ackUrl)); // ack/clear
-    const bool onThisRepo =
-        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
-        m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
-        m_repositories.at(m_repoDetailIndex).name == repo.name;
-    if (onThisRepo && !m_currentCommitHash.isEmpty())
-        renderCommitThread(m_currentCommitHash);
-    if (interactive)
-        QMessageBox::information(
-            this, "Sync inbox",
-            QStringLiteral("Merged %1 commit comment(s).").arg(merged));
-}
-
 void MainWindow::syncPullsInbox()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -7886,7 +7756,6 @@ void MainWindow::pollOwnedInboxes()
             drainIssuesInboxFor(repo, /*interactive=*/false);
         drainPullsInboxFor(repo, /*interactive=*/false);
         drainDiscussionsInboxFor(repo, /*interactive=*/false);
-        drainCommitInboxFor(repo, /*interactive=*/false);
     }
 }
 
@@ -8038,8 +7907,6 @@ void MainWindow::performRelaySync()
             applyDiscussionsInboxPayload(repo,
                                          entry.value("discussions").toArray(),
                                          /*interactive=*/false);
-            applyCommitInboxPayload(repo, entry.value("commits").toArray(),
-                                    /*interactive=*/false);
             applyAgentPromptsPayload(repo, entry.value("agentPrompts").toArray());
             // About edit made on the website (gear icon): write it into the
             // repo's committed .forkmesh/info.json via the same code path as

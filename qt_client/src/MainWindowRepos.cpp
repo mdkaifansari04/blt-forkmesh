@@ -1505,7 +1505,7 @@ void MainWindow::mirrorPreviewRepository(int index)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, false);
     refreshRepositoryList();
     setRepoDetailNotice("Creating permanent mirror...");
     logSystem(QStringLiteral("Mirror: promoting preview %1/%2 from %3 to %4.")
@@ -2080,7 +2080,8 @@ void MainWindow::importRemoteRepository()
     process->start();
 }
 
-QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
+QString MainWindow::repositoryWebUrl(const QString &owner,
+                                     const QString &name) const
 {
     // Clean repository route on the public website, derived from the same host
     // that serves the catalog API. Static Assets routes this to the catalog SPA.
@@ -2089,10 +2090,15 @@ QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
     // Using catalogOwner here would point every repo at the local account and
     // open the wrong node's page for repos mirrored from other nodes.
     QUrl url = catalogApiUrl();
-    url.setPath("/" + repoSegment(repo.owner, QStringLiteral("owner")) +
-                "/" + repoSegment(repo.name, QStringLiteral("repository")));
+    url.setPath("/" + repoSegment(owner, QStringLiteral("owner")) + "/" +
+                repoSegment(name, QStringLiteral("repository")));
     url.setFragment(QString());
     return url.toString();
+}
+
+QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
+{
+    return repositoryWebUrl(repo.owner, repo.name);
 }
 
 void MainWindow::updateRepoActionMenus()
@@ -4857,6 +4863,27 @@ void MainWindow::autoSyncMirrors()
     reattestStalePins();
 }
 
+// True when the bare mirror already contains `commit`. Presence is effectively
+// monotonic for advertised branch tips (a fetched commit stays reachable for
+// the life of the session), so positive answers are memoized: the roster
+// reconcile below re-asked git about the same converged tip on every peer
+// hello — 100+ foreground `git cat-file -e` spawns per session on the GUI
+// thread (adhoc #82). Negative answers are never cached; the next probe after
+// a fetch flips to (memoized) present.
+bool MainWindow::mirrorHasCommit(const QString &mirrorPath, const QString &commit)
+{
+    const QString key = mirrorPath + QLatin1Char('\x1f') + commit;
+    if (m_mirrorCommitsPresent.contains(key))
+        return true;
+    if (!runGitCapture(mirrorPath,
+                       {QStringLiteral("cat-file"), QStringLiteral("-e"),
+                        commit + QStringLiteral("^{commit}")},
+                       nullptr, nullptr))
+        return false;
+    m_mirrorCommitsPresent.insert(key);
+    return true;
+}
+
 void MainWindow::syncMirrorsBehindRoster()
 {
     // A peer just (re-)advertised its mirror set via hello. For every repo we
@@ -4899,10 +4926,7 @@ void MainWindow::syncMirrorsBehindRoster()
                     continue;
                 // A peer advertises a commit our mirror lacks → we are behind.
                 if (!m.commit.isEmpty() &&
-                    !runGitCapture(repo.mirrorPath,
-                                   {QStringLiteral("cat-file"), QStringLiteral("-e"),
-                                    m.commit + QStringLiteral("^{commit}")},
-                                   nullptr, nullptr))
+                    !mirrorHasCommit(repo.mirrorPath, m.commit))
                     behind = true;
                 if (m.artifactCount > localArtifactCount)
                     artifactsBehind = true;
@@ -5003,10 +5027,7 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     const QString target = commit.trimmed();
     const RepositoryRecord &matched = m_repositories.at(matchIndex);
     if (!target.isEmpty() && !matched.mirrorPath.trimmed().isEmpty() &&
-        runGitCapture(matched.mirrorPath,
-                      {QStringLiteral("cat-file"), QStringLiteral("-e"),
-                       target + QStringLiteral("^{commit}")},
-                      nullptr, nullptr)) {
+        mirrorHasCommit(matched.mirrorPath, target)) {
         if (m_backend)
             m_backend->notifyMirrorSynced(ownerName, target);
         return;
@@ -5120,7 +5141,7 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
 
     const QString repoKey = repo.owner + "/" + repo.name;
 
-    // Loading every issue, pull request and commit-comment thread off disk (each a
+    // Loading every issue and pull request thread off disk (each a
     // parse of many small files) is the heavy part: on a large repo — the flagship
     // forkmesh project runs to hundreds of issues/PRs — it froze the UI every time
     // a sync or inbox drain finished, which is what fired this scan. Do that I/O on
@@ -5133,36 +5154,27 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
 
     auto loadedIssues = std::make_shared<QList<Issue>>();
     auto loadedPulls = std::make_shared<QList<PullRequest>>();
-    auto loadedComments =
-        std::make_shared<QList<QPair<QString, QList<CommitComment>>>>();
     IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
                           m_userName);
     PullStore pullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
                         m_userName);
-    CommitCommentStore commentStore(repo.localPath, repo.mirrorPath,
-                                    &m_profileIdentity, m_userName);
     QThread *worker = QThread::create(
-        [issueStore, pullStore, commentStore, loadedIssues, loadedPulls,
-         loadedComments]() mutable {
+        [issueStore, pullStore, loadedIssues, loadedPulls]() mutable {
             *loadedIssues = issueStore.loadAll();
             *loadedPulls = pullStore.loadAll();
-            *loadedComments = commentStore.loadAll();
         });
     connect(worker, &QThread::finished, this,
-            [this, worker, repo, repoKey, loadedIssues, loadedPulls,
-             loadedComments]() {
+            [this, worker, repo, repoKey, loadedIssues, loadedPulls]() {
                 worker->deleteLater();
                 m_mentionScanInFlight.remove(repoKey);
-                applyRepoMentions(repo, *loadedIssues, *loadedPulls,
-                                  *loadedComments);
+                applyRepoMentions(repo, *loadedIssues, *loadedPulls);
             });
     worker->start();
 }
 
-void MainWindow::applyRepoMentions(
-    const RepositoryRecord &repo, const QList<Issue> &allIssues,
-    const QList<PullRequest> &allPulls,
-    const QList<QPair<QString, QList<CommitComment>>> &allCommitComments)
+void MainWindow::applyRepoMentions(const RepositoryRecord &repo,
+                                   const QList<Issue> &allIssues,
+                                   const QList<PullRequest> &allPulls)
 {
     const QString repoKey = repo.owner + "/" + repo.name;
     QSettings settings;
@@ -5251,22 +5263,6 @@ void MainWindow::applyRepoMentions(
                      ev.authorName, ev.body, QStringLiteral("PR "));
     }
 
-    // Commit comments: per-commit conversations keyed by SHA (no number). Scan
-    // every commented commit so an @mention in a commit thread notifies too.
-    for (const auto &thread : allCommitComments) {
-        const QString &sha = thread.first;
-        for (const CommitComment &c : thread.second) {
-            NotificationLink link;
-            link.kind = QStringLiteral("commit");
-            link.owner = repo.owner;
-            link.name = repo.name;
-            link.ref = sha;
-            notifyMention(QStringLiteral("%1#commit%2:%3").arg(repoKey, sha, c.id),
-                          c.author, c.authorName, c.body,
-                          QStringLiteral("commit %1").arg(sha.left(8)), link);
-        }
-    }
-
     if (dirty) {
         const QStringList keys(seen.cbegin(), seen.cend());
         settings.setValue(QStringLiteral("mentions/seen"), keys);
@@ -5309,7 +5305,7 @@ void MainWindow::syncPrivateRepository(int index, bool quiet)
     // retaining a collaborator.
     if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) &&
         repo.publishToNetwork) {
-        m_syncingRepos.insert(index);
+        m_syncingRepos.insert(index, quiet);
         refreshRepositoryList();
         requestPrivateRecipientBundles(
             repo, /*updateCollaboratorList=*/false,
@@ -5404,7 +5400,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
     const QString managedMirrorRoot = repositoryMirrorRoot();
 
     auto result = std::make_shared<PrivateSyncWorkerResult>();
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     // Recompute publication state before encryption/migration; private
     // repository names remain absent from public presence and catalogs.
     startRepoHosts();
@@ -5613,7 +5609,7 @@ void MainWindow::resealPrivateRepositoryRecipients(
     const QString vaultPath = privateIdentityVaultPath();
     const QString opaqueId = repo.privateReplicaId;
     auto result = std::make_shared<PrivateDownloadWorkerResult>();
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, false);
     refreshRepositoryList();
     QThread *worker = QThread::create(
         [result, replicaRoot, vaultPath, opaqueId, recipientBundles,
@@ -5712,7 +5708,7 @@ void MainWindow::downloadPrivateReplica(int index, bool quiet)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     ensurePrivateMirrorRecipientIdentityRegistered(
         [this, index, repo, quiet, unavailable](
@@ -6019,7 +6015,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     logSystem(QStringLiteral(
         "Public mirror: sealing %1/%2 with official age encryption; "
@@ -6381,17 +6377,14 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                                              "push %1 to SSH mirror %2.")
                                   .arg(repoKey, gatewayHost));
                 });
-        // Push from the served bare mirror so the gateway receives exactly the
-        // refs this node serves; forced, because the source of truth wins over
-        // whatever state a mirror gateway holds. Heads + tags only — the same
-        // stable namespaces every mirror serves (issues/PRs live on heads).
-        // --prune, because clone admission compares the mirror's WHOLE
-        // heads+tags advertisement digest against this node's attested
-        // stateHash: a branch deleted here but left on the gateway keeps the
-        // digests unequal forever, and once the stale states age out of the
-        // relay's pin history every public read of the repo hard-fails with
-        // mirror_unavailable (the gateway hides its internal refs from the
-        // push, so prune can only drop refs this node stopped serving).
+        // Push from the served bare mirror, but never let an unattended desktop
+        // rewind or delete a branch that advanced on the gateway while this
+        // checkout was offline. Automatic propagation therefore uses ordinary
+        // fast-forward refspecs and explicitly disables force and prune, even
+        // when a machine carries old push configuration. An intentional rewrite
+        // or branch deletion must go through an explicit, reviewed Git
+        // operation; otherwise one stale three-minute sync can undo a clean main
+        // merge on every headless mirror.
         trackProcessActivity(process, QStringLiteral("push"),
                              QStringLiteral("Pushing %1/%2 to %3")
                                  .arg(repo.owner, repo.name, url));
@@ -6399,9 +6392,10 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                        {QStringLiteral("-C"), repo.mirrorPath,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
                         QStringLiteral("--atomic"),
-                        QStringLiteral("--prune"),
-                        url, QStringLiteral("+refs/heads/*:refs/heads/*"),
-                        QStringLiteral("+refs/tags/*:refs/tags/*")});
+                        QStringLiteral("--no-force"),
+                        QStringLiteral("--no-prune"),
+                        url, QStringLiteral("refs/heads/*:refs/heads/*"),
+                        QStringLiteral("refs/tags/*:refs/tags/*")});
     }
 }
 
@@ -6470,7 +6464,7 @@ void MainWindow::syncRepository(int index, bool quiet)
     // subprocess runs — so clicking "Sync" flips the button to "Syncing…"
     // instantly and never blocks the GUI thread. The insert also guards
     // re-entrancy so a concurrent auto-sync can't start a second fetch on this repo.
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     if (!quiet) {
         const QString prefix =
@@ -6784,10 +6778,15 @@ void MainWindow::logout()
 {
     // Drop the signed-in account (admin/heartbeat state) so the user can log
     // back in, then tear the session down to the setup screen.
+    const QString previousAccount = m_accountName;
     if (m_heartbeatTimer)
         m_heartbeatTimer->stop();
     if (m_adminPollTimer)
         m_adminPollTimer->stop();
+    // Revoke the website session first — it is what the browser and the
+    // account-scoped worker APIs see, so leaving it alive would keep this
+    // machine "signed in" on the site after a desktop logout.
+    revokeAccountSession();
     setDesktopCapability(m_accountName, false);
     m_accountAuthenticated = false;
     m_accountTier = QStringLiteral("free");
@@ -6799,6 +6798,58 @@ void MainWindow::logout()
     QSettings().remove(kAccountNameSetting);
     refreshSettingsEmailVerifiedBadge();
     leaveSession();
+    // Come straight back with a password login. The setup screen's silent auth
+    // only checks this node's key locally, so the website never learned about
+    // the device; runLoginFlow() posts pubkey/deviceTs/deviceSig, which makes
+    // the relay register this desktop key against the account and hand back a
+    // real website session.
+    promptRelogin(previousAccount);
+}
+
+void MainWindow::revokeAccountSession()
+{
+    const QString token = m_accountSessionToken.trimmed();
+    m_accountSessionToken.clear();
+    if (token.isEmpty() || !m_networkAccess)
+        return;
+    int status = 0;
+    postAccountSync(QStringLiteral("logout"),
+                    QJsonObject{{QStringLiteral("sessionToken"), token}},
+                    &status);
+}
+
+bool MainWindow::promptRelogin(const QString &previousAccount)
+{
+    // A headless node has no one at the keyboard: it re-authenticates with its
+    // key on the next start, so never block the service on a dialog.
+    if (m_headless)
+        return false;
+    QString accountName = AccountCapability::normalizedAccount(previousAccount);
+    if (!isValidNodeName(accountName)) {
+        bool ok = false;
+        accountName = QInputDialog::getText(this, "Log back in",
+                                            "ForkMesh username:",
+                                            QLineEdit::Normal, QString(), &ok)
+                          .trimmed()
+                          .toLower();
+        if (!ok || !isValidNodeName(accountName))
+            return false;
+    }
+    if (!runLoginFlow(accountName))
+        return false;
+
+    QSettings().setValue(kAccountNameSetting, m_accountName);
+    if (m_settingsNameEdit)
+        m_settingsNameEdit->setText(m_accountName);
+    if (m_settingsMachineNodeEdit)
+        m_settingsMachineNodeEdit->setText(machineNodeName());
+    refreshSettingsEmailVerifiedBadge();
+    // logout() left us on the setup screen; rejoin with the freshly signed-in
+    // account so the user lands back in the app instead of clicking "Join".
+    if (m_nameEdit)
+        m_nameEdit->setText(m_accountName);
+    startSession();
+    return true;
 }
 
 void MainWindow::loginToUserAccount()

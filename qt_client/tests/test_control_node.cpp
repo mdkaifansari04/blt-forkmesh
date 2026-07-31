@@ -945,7 +945,9 @@ int main(int argc, char **argv)
                     {QStringLiteral("monthly_cost"), 5},
                     {QStringLiteral("ram"), 2048},
                     {QStringLiteral("locations"),
-                     QJsonArray{QStringLiteral("syd")}}},
+                     QJsonArray{QStringLiteral("syd"),
+                                QStringLiteral("atl"),
+                                QStringLiteral("ewr")}}},
         // Cheapest of all, but IPv6-only: unreachable for the mesh (adhoc #344).
         QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-0.5gb-v6")},
                     {QStringLiteral("monthly_cost"), 2.5},
@@ -964,10 +966,10 @@ int main(int argc, char **argv)
               !forkmesh::control::vultrPlanHasIpv4(QJsonObject()),
           "IPv6-only Vultr plans are never eligible, however cheap");
     check(forkmesh::control::vultrPlanRegion(cheapest) ==
-              QStringLiteral("syd") &&
+              QStringLiteral("ewr") &&
               forkmesh::control::vultrPlanRegion(
-                  vultrPlans.at(1).toObject()) == QStringLiteral("ams"),
-          "Vultr region selection is the plan's first sorted location");
+                  vultrPlans.at(1).toObject()).isEmpty(),
+          "Vultr region selection prefers New Jersey and rejects non-US locations");
     check(forkmesh::control::cheapestVultrPlan(QJsonArray()).isEmpty(),
           "an empty Vultr plan list yields no selection");
 
@@ -1016,11 +1018,11 @@ int main(int argc, char **argv)
     const QJsonObject instancePayload =
         forkmesh::control::vultrInstanceCreatePayload(
             QStringLiteral("vultr-mirror-1"), QStringLiteral("vhp-1c-2gb"),
-            QStringLiteral("syd"), 477, QStringLiteral("key-id-1"));
+            QStringLiteral("ewr"), 477, QStringLiteral("key-id-1"));
     check(instancePayload.value(QStringLiteral("plan")).toString() ==
                   QStringLiteral("vhp-1c-2gb") &&
               instancePayload.value(QStringLiteral("region")).toString() ==
-                  QStringLiteral("syd") &&
+                  QStringLiteral("ewr") &&
               instancePayload.value(QStringLiteral("os_id")).toInt() == 477 &&
               instancePayload.value(QStringLiteral("sshkey_id")).toArray() ==
                   QJsonArray{QStringLiteral("key-id-1")} &&

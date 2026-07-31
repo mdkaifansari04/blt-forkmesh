@@ -12,10 +12,16 @@ namespace Theme {
 inline const char *kPrimary = "#2ea043";
 inline const char *kTextTertiary = "#8b949e";
 
-// "Something is working right now" orange (adhoc #23): every busy spinner and
-// every running-agent dot/glyph paints in this one colour, so in-flight work
-// reads as its own state instead of borrowing success-green or link-blue.
-inline const char *kRunning = "#f0883e";
+// "Something is working right now" blue (adhoc #23, recoloured from orange by
+// adhoc #50): every busy spinner and every running-agent dot/glyph paints in
+// this one colour, so in-flight work reads as its own state instead of
+// borrowing success-green or the amber used for queued/waiting.
+inline const char *kRunning = "#58a6ff";
+
+// "Genie" (adhoc #38): a long-running run launched with the ForkMesh MCP
+// connector attached. Its own violet so a genie run's sparkle glyph never reads
+// as the orange "ordinary agent working" or the purple "merged" state.
+inline const char *kGenie = "#bc8cff";
 
 // Sender name colors, hashed per user (GitHub label-ish accents).
 inline const char *kSenderPalette[] = {"#f85149", "#e3b341", "#3fb950",
@@ -36,6 +42,10 @@ inline const char *iconColorForButton(const QString &objectName, bool dark)
         return dark ? "#c084fc" : "#7c3aed";
     if (objectName == QStringLiteral("dangerButton"))
         return dark ? "#f85149" : "#cf222e";
+    // Outlined-green actions (the agent header's Branch/Worktree, adhoc #84):
+    // the danger button's twin, in the go colour.
+    if (objectName == QStringLiteral("successButton"))
+        return dark ? "#3fb950" : "#1a7f37";
     if (objectName == QStringLiteral("repoTab") ||
         objectName == QStringLiteral("socialIconButton"))
         return dark ? "#8b949e" : "#656d76";
@@ -102,20 +112,20 @@ QComboBox QAbstractItemView {
     selection-background-color: #1f6feb; selection-color: #0d1117; color: #e6edf3;
 }
 QComboBox QAbstractItemView::item:selected { color: #0d1117; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(88, 166, 255, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
@@ -165,12 +175,7 @@ QPushButton#logFilterChip:checked {
     background-color: #21262d; color: #e6edf3; border-color: #2ea043;
 }
 
-/* --- Quick-add issue bar: grey-bordered, centered card with social + donate --- */
-#quickAddCard {
-    background-color: #0d1117;
-    border: 1px solid #6e7681;
-    border-radius: 10px;
-}
+/* --- Quick-add bar extras: social + donate buttons --- */
 QPushButton#donateButton {
     background-color: #9945ff; border: 1px solid #b07bff; color: #ffffff;
     font-weight: 700;
@@ -235,14 +240,14 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
-#settingsTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
     background: #0d1117; color: #8b949e; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover { color: #e6edf3; }
-#settingsTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #e6edf3; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
 #codeEditor {
@@ -416,7 +421,7 @@ QPushButton#windowChromeCloseButton:hover {
 }
 /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
-QPushButton#relayOpenButton {
+QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #8b949e;
 }
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
@@ -429,7 +434,7 @@ QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayOpenButton:hover,
+QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
@@ -514,6 +519,14 @@ QPushButton#dangerButton {
 }
 QPushButton#dangerButton:hover { background-color: #da3633; color: #ffffff; }
 
+/* --- Success button: the danger button's outlined twin, in green (adhoc #84,
+   the agent detail header's Branch / Worktree actions) --- */
+QPushButton#successButton {
+    background: transparent; border: 1px solid #2ea043; border-radius: 6px;
+    color: #3fb950; font-weight: 600;
+}
+QPushButton#successButton:hover { background-color: #2ea043; color: #ffffff; }
+
 /* --- Sidebar --- */
 #sidebar { background-color: #0d1117; border-right: 1px solid #30363d; }
 #sidebar QLabel { background: transparent; }
@@ -567,7 +580,6 @@ QPushButton#memberDeleteButton:hover {
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 6px;
 }
-#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -758,6 +770,10 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #reactionPicker {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
 }
+/* Agent detail "Info" popup: the session's field list (adhoc #61). */
+#agentMetaPopup {
+    background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
+}
 #reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
 #reactionPickerButton:hover { background-color: #21262d; }
 #messageAction {
@@ -935,7 +951,6 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 8px;
 }
-#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
@@ -1017,22 +1032,6 @@ QCheckBox#slashToggle::indicator {
     width: 28px; height: 16px; border-radius: 8px; border: none; background: #30363d;
 }
 QCheckBox#slashToggle::indicator:checked { background: #2ea043; }
-/* "Agents:" status strip above the footer prompt (adhoc #111): a plain
-   ghost-button label plus small borderless dot buttons, one per session. */
-QPushButton#agentStatusLabel {
-    background: transparent; border: none; color: #8b949e;
-    font-weight: 600; font-size: 12px; padding: 2px 0;
-}
-QPushButton#agentStatusLabel:hover { color: #e6edf3; }
-QPushButton#agentStatusDot {
-    background: transparent; border: none; padding: 0; border-radius: 3px;
-}
-QPushButton#agentStatusDot:hover { background: rgba(139,148,158,0.2); }
-QPushButton#agentStatusMore {
-    background: transparent; border: none; color: #8b949e;
-    font-weight: 600; font-size: 12px; padding: 2px 4px; border-radius: 4px;
-}
-QPushButton#agentStatusMore:hover { color: #e6edf3; background: rgba(139,148,158,0.2); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;
@@ -1407,20 +1406,20 @@ QComboBox QAbstractItemView {
     selection-background-color: #0969da; selection-color: #1f2328; color: #1f2328;
 }
 QComboBox QAbstractItemView::item:selected { color: #1f2328; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(9, 105, 218, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
@@ -1504,14 +1503,14 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
-#settingsTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
     background: #ffffff; color: #656d76; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover { color: #1f2328; }
-#settingsTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #1f2328; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
 #codeEditor {
@@ -1699,7 +1698,7 @@ QPushButton#floatingLogButton {
 QPushButton#floatingLogButton:hover { background-color: #f3f4f6; color: #1f2328; }
 /* Top-row switchers (relay / node / repo): dropdown (relay's shows its
    favicon inline) + open-in-browser */
-QPushButton#relayOpenButton {
+QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #656d76;
 }
 QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
@@ -1712,7 +1711,7 @@ QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-QPushButton#relayOpenButton:hover,
+QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,
 QPushButton#nodeMenuButton:hover,
 QPushButton#repoMenuButton:hover {
@@ -1796,6 +1795,14 @@ QPushButton#dangerButton {
 }
 QPushButton#dangerButton:hover { background-color: #cf222e; color: #ffffff; }
 
+/* --- Success button: the danger button's outlined twin, in green (adhoc #84,
+   the agent detail header's Branch / Worktree actions) --- */
+QPushButton#successButton {
+    background: transparent; border: 1px solid #1a7f37; border-radius: 6px;
+    color: #1a7f37; font-weight: 600;
+}
+QPushButton#successButton:hover { background-color: #1a7f37; color: #ffffff; }
+
 /* --- Sidebar --- */
 #sidebar { background-color: #ffffff; border-right: 1px solid #d0d7de; }
 #sidebar QLabel { background: transparent; }
@@ -1849,7 +1856,6 @@ QPushButton#memberDeleteButton:hover {
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 6px;
 }
-#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -2018,6 +2024,10 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 }
 #reactionAdd:hover { border-color: #d0d7de; background-color: #f6f8fa; }
 #reactionPicker {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;
+}
+/* Agent detail "Info" popup: the session's field list (adhoc #61). */
+#agentMetaPopup {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;
 }
 #reactionPickerButton { background: transparent; border: none; border-radius: 8px; }
@@ -2209,7 +2219,6 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 8px;
 }
-#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
@@ -2288,22 +2297,6 @@ QCheckBox#slashToggle::indicator {
     width: 28px; height: 16px; border-radius: 8px; border: none; background: #d0d7de;
 }
 QCheckBox#slashToggle::indicator:checked { background: #1a7f37; }
-/* "Agents:" status strip above the footer prompt (adhoc #111): a plain
-   ghost-button label plus small borderless dot buttons, one per session. */
-QPushButton#agentStatusLabel {
-    background: transparent; border: none; color: #6e7781;
-    font-weight: 600; font-size: 12px; padding: 2px 0;
-}
-QPushButton#agentStatusLabel:hover { color: #1f2328; }
-QPushButton#agentStatusDot {
-    background: transparent; border: none; padding: 0; border-radius: 3px;
-}
-QPushButton#agentStatusDot:hover { background: rgba(110,119,129,0.2); }
-QPushButton#agentStatusMore {
-    background: transparent; border: none; color: #6e7781;
-    font-weight: 600; font-size: 12px; padding: 2px 4px; border-radius: 4px;
-}
-QPushButton#agentStatusMore:hover { color: #1f2328; background: rgba(110,119,129,0.2); }
 #issuePageTitle {
     font-size: 26px;
     font-weight: 400;

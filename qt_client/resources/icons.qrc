@@ -33,6 +33,7 @@
         <file alias="hand.svg">icons/octicons/hand.svg</file>
         <file alias="history.svg">icons/octicons/history.svg</file>
         <file alias="home.svg">icons/octicons/home.svg</file>
+        <file alias="info.svg">icons/octicons/info.svg</file>
         <file alias="issue-opened.svg">icons/octicons/issue-opened.svg</file>
         <file alias="issue-reopened.svg">icons/octicons/issue-reopened.svg</file>
         <file alias="key.svg">icons/octicons/key.svg</file>
@@ -59,6 +60,7 @@
         <file alias="sign-in.svg">icons/octicons/sign-in.svg</file>
         <file alias="sign-out.svg">icons/octicons/sign-out.svg</file>
         <file alias="sort-desc.svg">icons/octicons/sort-desc.svg</file>
+        <file alias="sparkle.svg">icons/octicons/sparkle.svg</file>
         <file alias="star.svg">icons/octicons/star.svg</file>
         <file alias="stop.svg">icons/octicons/stop.svg</file>
         <file alias="sun.svg">icons/octicons/sun.svg</file>

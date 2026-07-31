@@ -94,11 +94,25 @@ def test_build_board_refreshes_on_approach_with_a_scene_native_spinner():
     ]
     assert "this.world?.setBuildBoardLoading?.(true);" in refresh
     assert "this.world?.setBuildBoardLoading?.(false);" in refresh
-    assert "maxAge: WORLD_BUILD_BOARD_POLL_MS" in refresh
-    assert "backoff: true" in refresh
-    assert "staleIfError: true" in refresh
+    assert "this.refreshBuildBoardRepositoryIssues()" in refresh
     assert "Repository issue enrichment is optional" in refresh
     assert "location.reload()" not in refresh
+
+
+def test_repository_issue_enrichment_has_a_shared_long_lived_cooldown():
+    enrichment = WORLD[
+        WORLD.index("  async refreshBuildBoardRepositoryIssues("):
+        WORLD.index("\n  async refreshBuildBoard(", WORLD.index(
+            "  async refreshBuildBoardRepositoryIssues("))
+    ]
+    assert "document.visibilityState === \"hidden\"" in enrichment
+    assert "this.buildBoardRepositoryRetryAt" in enrichment
+    assert "WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS" in enrichment
+    assert "WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS" in enrichment
+    assert "WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS" in enrichment
+    assert "backoff: true" in enrichment
+    assert "staleIfError: false" in enrichment
+    assert "return this.buildBoardRepositoryIssues;" in enrichment
 
 
 def test_engineering_agent_signals_feed_a_separate_human_todo_board():
