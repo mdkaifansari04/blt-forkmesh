@@ -112,8 +112,8 @@ private:
 
 // Compact source-control row: the filename stays prominent, its directory is a
 // muted suffix, and potentially destructive actions only appear while the row
-// is under the pointer. The row paints its own neutral hover because a
-// QTreeWidget item delegate is behind setItemWidget() children.
+// is under the pointer. No hover highlight is drawn; only the selected (current)
+// row gets a thin green outline.
 class ScmFileRow : public QWidget
 {
 public:
@@ -172,23 +172,14 @@ protected:
 private:
     void applyStyle()
     {
-        const bool dark =
-            palette().color(QPalette::Base).lightness() < 128;
-        const QString background =
-            m_selected
-                ? (dark ? QStringLiteral("#15251a")
-                        : QStringLiteral("#eef8f0"))
-                : (m_hovered
-                       ? (dark ? QStringLiteral("#21262d")
-                               : QStringLiteral("#f1f3f5"))
-                       : QStringLiteral("transparent"));
+        // Current file: a thin green outline only, no fill and no hover tint
+        // (issue #252 style, but without the background wash other lists use).
         const QString border =
-            (m_selected || m_hovered) ? QStringLiteral("#2da44e")
-                                      : QStringLiteral("transparent");
+            m_selected ? QStringLiteral("#2da44e") : QStringLiteral("transparent");
         setStyleSheet(
-            QStringLiteral("QWidget#scmFileRow{background:%1;"
-                           "border:1px solid %2;border-radius:4px;}")
-                .arg(background, border));
+            QStringLiteral("QWidget#scmFileRow{background:transparent;"
+                           "border:1px solid %1;border-radius:4px;}")
+                .arg(border));
         if (m_actions)
             m_actions->setVisible(m_hovered);
     }
@@ -492,6 +483,10 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmTree->setMinimumWidth(160);
     m_scmTree->setRootIsDecorated(true);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    // ScmFileRow (via setItemWidget) draws its own thin green selection
+    // outline; blank the app-wide #fileTree::item:selected solid fill so it
+    // doesn't paint underneath the row widget (issue #252 pattern).
+    blankSelectionBand(m_scmTree);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *item, QTreeWidgetItem *previous) {
                 if (previous) {
