@@ -40225,6 +40225,7 @@ async def https_mirror_health_cron(env):
         """SELECT node_bi,node_name,base_url,public_key
              FROM mirror_https_endpoints
             ORDER BY
+              CASE WHEN checked_at = 0 THEN 0 ELSE 1 END ASC,
               CASE WHEN updated_at > checked_at
                    THEN updated_at ELSE checked_at END ASC,
               node_name ASC
