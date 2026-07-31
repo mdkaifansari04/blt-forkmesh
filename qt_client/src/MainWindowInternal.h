@@ -20,6 +20,7 @@
 #include "ClaudeTranscriptView.h"
 #include "ScrollJumpButtons.h"
 #include "CommitCommentStore.h"
+#include "DirectorySizeScan.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
@@ -4316,17 +4317,10 @@ private:
     QList<IssueBurnupPoint> m_series;
 };
 
-// One entry in the Size map tab's tree: total bytes of everything beneath
-// it, with subdirectories and direct files as children (largest first,
-// adhoc #189/#262). A file is a leaf — no children — so the chart offers
-// zoom only on directories, and zooming into a files-only directory shows
-// one slice per file, matching the website's size map.
-struct SunburstNode {
-    QString name;
-    qint64 size = 0;
-    int fileCount = 0;
-    QList<SunburstNode> children;
-};
+// One entry in the Size map tab's tree. It lives in DirectorySizeScan.h so
+// the scan can also run from the elevated helper process, which links none of
+// the widget code (adhoc #76).
+using forkmesh::SunburstNode;
 
 // The Size map tab's multi-level pie (adhoc #189): ring 1 is the working
 // tree's top-level directories and files, each deeper ring subdivides its

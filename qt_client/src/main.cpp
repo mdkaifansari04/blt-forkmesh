@@ -1,5 +1,6 @@
 #include "CrashHandler.h"
 #include "ControlNode.h"
+#include "DirectorySizeScan.h"
 #include "ForkMeshIdentity.h"
 #include "HeadlessConsole.h"
 #include "MainWindow.h"
@@ -26,6 +27,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QEvent>
+#include <QFile>
+#include <QFileInfo>
 #include <QFileOpenEvent>
 #include <QMetaObject>
 #include <QElapsedTimer>
@@ -147,6 +150,39 @@ bool validExternalIdentityRequest(
     if (publicKey)
         *publicKey = key;
     return true;
+}
+
+// Elevated size-map helper (adhoc #76). The Size map tab re-executes this very
+// binary through pkexec (or sudo where polkit is absent) so root can measure
+// the directories the desktop user cannot read; the request — folder, depth and
+// prune set — arrives in a file so stdin stays free for sudo's password, and
+// the tree goes back over stdout in the compact DirectorySizeScan binary
+// format, which carries the million-node trees a scan of "/" produces far more
+// cheaply than JSON. It deliberately touches nothing else: no settings, no
+// identity, no node, so nothing root-owned is left behind in the user's data.
+int runSizeMapScan(const QString &requestPath)
+{
+    QFile request(requestPath);
+    if (!request.open(QIODevice::ReadOnly)) {
+        std::fprintf(stderr, "size-map-scan: cannot read request\n");
+        return 2;
+    }
+    const QByteArray payload = request.read(16 * 1024 * 1024);
+    QString path;
+    forkmesh::DirectorySizeScanOptions options;
+    if (!forkmesh::decodeScanRequest(payload, &path, &options)) {
+        std::fprintf(stderr, "size-map-scan: invalid request\n");
+        return 2;
+    }
+    if (!QFileInfo(path).isDir()) {
+        std::fprintf(stderr, "size-map-scan: not a directory\n");
+        return 2;
+    }
+    const QByteArray result =
+        forkmesh::encodeScanResult(forkmesh::scanDirectorySizes(path, options));
+    std::fwrite(result.constData(), 1, std::size_t(result.size()), stdout);
+    std::fflush(stdout);
+    return 0;
 }
 
 void writeHelperResponse(const QJsonObject &response)
@@ -506,6 +542,14 @@ int runMirrorManifestSigner(int argc, char *argv[])
 
 int main(int argc, char *argv[])
 {
+    // The elevated size-map helper runs as root under pkexec/sudo, so it is
+    // dispatched before anything else in main() can write to the desktop
+    // user's crash log, settings or single-instance lock (adhoc #76).
+    for (int i = 1; i + 1 < argc; ++i) {
+        if (qstrcmp(argv[i], "--size-map-scan") == 0)
+            return runSizeMapScan(QString::fromLocal8Bit(argv[i + 1]));
+    }
+
     // First thing, before anything can fault: install the crash handlers so an
     // unexpected exit/crash leaves a record in the network log. A compact signal
     // breadcrumb and the full backtrace go to network_log.txt directly so the

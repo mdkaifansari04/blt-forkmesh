@@ -10,6 +10,7 @@
 #include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
+#include "../src/DirectorySizeScan.h"
 #include "../src/DiscussionInboxBackoff.h"
 #include "../src/DiscussionStore.h"
 #include "../src/ForkMeshIdentity.h"
@@ -6830,6 +6831,93 @@ int main(int argc, char *argv[])
                   !maskToken(token).contains(token.mid(12, 8)) &&
                   maskToken(QString()).isEmpty(),
               "masking hides the middle of the token");
+    }
+
+    {
+        // Size map over a folder the user cannot fully read (adhoc #76): the
+        // mount table has to yield the pseudo filesystems Qt's QStorageInfo
+        // hides (or /proc/kcore's fictional terabytes swallow a scan of "/"),
+        // unreadable directories have to be counted rather than silently
+        // skipped, and the tree has to survive the trip back from the elevated
+        // helper process.
+        using namespace forkmesh;
+
+        const QByteArray mountInfo =
+            "23 28 0:22 / /proc rw,nosuid,relatime shared:12 - proc proc rw\n"
+            "24 28 0:23 / /sys rw,nosuid shared:2 - sysfs sysfs rw\n"
+            "31 28 0:29 / /media/My\\040Disk rw,relatime shared:5 - ext4 "
+            "/dev/sdb1 rw\n";
+        const QSet<QString> mounts = mountPointsFromMountTable(mountInfo);
+        check(mounts.contains(QStringLiteral("/proc")) &&
+                  mounts.contains(QStringLiteral("/sys")) &&
+                  mounts.contains(QStringLiteral("/media/My Disk")),
+              "mountinfo yields the pseudo mounts QStorageInfo hides, "
+              "unescaped");
+        const QSet<QString> mtab = mountPointsFromMountTable(
+            "proc /proc proc rw,nosuid 0 0\ntmpfs /run tmpfs rw 0 0\n");
+        check(mtab.contains(QStringLiteral("/proc")) &&
+                  mtab.contains(QStringLiteral("/run")) && mtab.size() == 2,
+              "the /proc/mounts layout parses to the same mount points");
+
+        QTemporaryDir tree;
+        check(tree.isValid(), "the size-map scan gets a scratch tree");
+        const QDir root(tree.path());
+        check(root.mkpath(QStringLiteral("keep")) &&
+                  root.mkpath(QStringLiteral("pruned")) &&
+                  root.mkpath(QStringLiteral("locked")),
+              "the scratch tree has readable, pruned and locked folders");
+        const auto writeBytes = [&root](const QString &relative, int size) {
+            QFile file(root.absoluteFilePath(relative));
+            return file.open(QIODevice::WriteOnly) &&
+                   file.write(QByteArray(size, 'x')) == size;
+        };
+        check(writeBytes(QStringLiteral("keep/a.bin"), 4096) &&
+                  writeBytes(QStringLiteral("pruned/b.bin"), 8192) &&
+                  writeBytes(QStringLiteral("locked/c.bin"), 2048),
+              "the scratch tree has one file per folder");
+        QFile::setPermissions(root.absoluteFilePath(QStringLiteral("locked")),
+                              QFileDevice::WriteOwner);
+
+        DirectorySizeScanOptions options;
+        options.pruned.insert(root.absoluteFilePath(QStringLiteral("pruned")));
+        const DirectorySizeScanResult scan =
+            scanDirectorySizes(tree.path(), options);
+        check(scan.root.size == 4096 &&
+                  (runningAsRoot() || scan.root.fileCount == 1),
+              "pruned paths contribute no bytes to the totals");
+        if (!runningAsRoot()) {
+            check(scan.unreadableDirs == 1 &&
+                      scan.unreadableSample.size() == 1 &&
+                      scan.unreadableSample.first().endsWith(
+                          QStringLiteral("/locked")),
+                  "an unlistable directory is reported, not silently dropped");
+        }
+        // Restore, or QTemporaryDir cannot clean up after itself.
+        QFile::setPermissions(root.absoluteFilePath(QStringLiteral("locked")),
+                              QFileDevice::ReadOwner | QFileDevice::WriteOwner |
+                                  QFileDevice::ExeOwner);
+
+        QString requestPath;
+        DirectorySizeScanOptions decodedOptions;
+        check(decodeScanRequest(encodeScanRequest(tree.path(), options),
+                                &requestPath, &decodedOptions) &&
+                  requestPath == tree.path() &&
+                  decodedOptions.pruned == options.pruned &&
+                  decodedOptions.maxDepth == options.maxDepth,
+              "the elevated helper's request survives the round trip");
+        check(!decodeScanRequest(QByteArray("{}"), &requestPath, &decodedOptions),
+              "a request without a folder is rejected");
+
+        DirectorySizeScanResult decoded;
+        check(decodeScanResult(encodeScanResult(scan), &decoded) &&
+                  decoded.root.size == scan.root.size &&
+                  decoded.root.children.size() == scan.root.children.size() &&
+                  decoded.unreadableDirs == scan.unreadableDirs &&
+                  decoded.unreadableSample == scan.unreadableSample,
+              "the elevated helper's tree survives the round trip");
+        check(!decodeScanResult(QByteArray("not a scan"), &decoded) &&
+                  !decodeScanResult(QByteArray(), &decoded),
+              "a truncated or foreign payload is never read as a tree");
     }
 
 #if defined(Q_OS_LINUX)

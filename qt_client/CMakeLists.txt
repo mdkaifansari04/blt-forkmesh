@@ -223,6 +223,8 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
     src/ClaudeSessionScan.cpp
+    src/DirectorySizeScan.h
+    src/DirectorySizeScan.cpp
     src/ScrollJumpButtons.h
     src/ScrollJumpButtons.cpp
     src/ScreenCaptureOverlay.h
@@ -526,6 +528,8 @@ if(FORKMESH_BUILD_TESTS)
         src/LocalBackupStore.cpp
         src/McpConnector.h
         src/McpConnector.cpp
+        src/DirectorySizeScan.h
+        src/DirectorySizeScan.cpp
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h
