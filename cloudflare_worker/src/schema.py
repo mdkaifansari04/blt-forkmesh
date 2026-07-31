@@ -2257,7 +2257,7 @@ SCHEMA_STATEMENTS = [
     "ON world_manual_blocks(target_type, subject_token, expires_at) "
     "WHERE revoked_at=0",
     # The administrator-curated Town Square placement overrides (migrations
-    # 0080/0082) were retired with the layout editor by migration 0114; make
+    # 0080/0082) were retired with the layout editor by migration 0115; make
     # sure lazily-ensured DBs lose the table too.
     "DROP TABLE IF EXISTS world_object_layout",
     # One public, last-known-good CelesTrak VISUAL OMM snapshot. A scheduled
