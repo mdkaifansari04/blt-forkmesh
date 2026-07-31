@@ -4798,6 +4798,10 @@ private:
     QTableWidget *m_highMemoryProcessTable = nullptr;
     QLabel *m_highMemoryProcessStatus = nullptr;
     QPointer<QProcess> m_highMemoryProcessQuery;
+    // Resident-size history per listed PID, feeding the per-row trend squares
+    // in the high-memory panel (adhoc #98). Rebuilt on every refresh from the
+    // PIDs still on the list, so it stays table-sized.
+    QHash<qint64, QVector<double>> m_highMemoryRssHistory;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
 
