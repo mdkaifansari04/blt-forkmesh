@@ -1136,10 +1136,10 @@ def test_world_receives_private_notifications_and_global_announcements():
     assert 'this.postJSON("/api/notifications"' in APP
     assert "data-world-notification-count" in APP
     assert "data-world-notifications-open" in APP
-    assert "Show global and personal notifications" in APP
+    assert "Show global and personal pings" in APP
     assert 'this.openLandmark("events")' in APP
     assert 'id === "events"' in APP
-    assert 'label: "Notifications"' in APP
+    assert 'label: "Pings"' in APP
     assert "data-world-notifications-refresh" in APP
     assert "data-world-notifications-read" in APP
     assert "World announcement:" in APP

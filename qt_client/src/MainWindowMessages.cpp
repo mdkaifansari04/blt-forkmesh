@@ -249,6 +249,23 @@ void MainWindow::onMessage(const ChatMessage &message)
     }
     updateChatButton();
 
+    // #welcome traffic is the new-user roll-call (maybeAnnounceWelcome), so a
+    // fresh line there raises a "New user joined" ping whose link brings the
+    // reader straight to the channel (adhoc #88).
+    if (!ownMessage && conversation == kWelcomeChannel &&
+        message.timestampMs >
+            QDateTime::currentMSecsSinceEpoch() - kWelcomePingFreshMs) {
+        NotificationLink link;
+        link.kind = QStringLiteral("chat");
+        link.ref = kWelcomeChannel;
+        const QString who = message.senderName.trimmed();
+        addNotification(QStringLiteral("New user joined"),
+                        who.isEmpty()
+                            ? QStringLiteral("Someone new said hello in #welcome")
+                            : who + QStringLiteral(" said hello in #welcome"),
+                        false, link);
+    }
+
     if (!ownMessage) {
         const QString where = isDirectConversation(conversation)
                                   ? "sent you a message"

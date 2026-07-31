@@ -505,7 +505,7 @@ QWidget *MainWindow::buildChatPage()
     addUtility(m_navDrawButton, QStringLiteral("Draw"));
     addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
     addUtility(m_navResizeButton, QStringLiteral("Resize"));
-    addUtility(m_notificationButton, QStringLiteral("Alerts"));
+    addUtility(m_notificationButton, QStringLiteral("Pings"));
 
     // Pending approvals use the same corner-count language as Chat and Agents:
     // the count rides the bell's own top-right corner (updateNotificationButton
@@ -4749,7 +4749,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_notificationButton->setCheckable(true);
     m_notificationButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_notificationButton, "bell", kNotificationBellIconPx);
-    m_notificationButton->setToolTip("Notifications");
+    m_notificationButton->setToolTip("Pings");
     m_navGroup->addButton(m_notificationButton, 3); // section 3: Notifications
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
@@ -7758,7 +7758,7 @@ void MainWindow::showSection(int index)
         // Entering Chat clears the unread marker for the open conversation.
         clearActiveConversationUnread();
     } else if (index == 3) {
-        // Opening Alerts is the moment the website inbox has to be current
+        // Opening Pings is the moment the website inbox has to be current
         // (adhoc #59); refreshWebAlerts() repaints the table when it lands.
         refreshWebAlerts();
         refreshNotificationsTable();
