@@ -880,17 +880,8 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         setRepoDetailNotice("Read-only mirror — nothing to merge into here.", true);
         return;
     }
-    // Ask git which branch is checked out rather than reading the browsed ref:
-    // that ref is pinned to the default branch now (adhoc #80), so it can no
-    // longer stand in for HEAD in this "base must be checked out" gate.
-    const QString head = repoHeadBranch();
-    const QString current = head.isEmpty() ? base : head;
-    if (current != base) {
-        setRepoDetailNotice(
-            QStringLiteral("Switch the repo to %1 first (it's on %2), or use Create PR.")
-                .arg(base, current), true);
-        return;
-    }
+    // Uncommitted work in the checkout blocks the merge outright — check it first,
+    // because it is also the only thing that makes the branch switch below unsafe.
     QByteArray st;
     if (runGitCapture(dir, {"status", "--porcelain"}, &st, nullptr)
         && !QString::fromUtf8(st).trimmed().isEmpty()) {
@@ -898,6 +889,35 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
             "The checkout has uncommitted changes — commit/stash them or use Create PR.",
             true);
         return;
+    }
+    // The merge commit has to land on `base`, so `base` has to be what's checked
+    // out. Ask git rather than reading the browsed ref: that ref is pinned to the
+    // default branch (adhoc #80), so it can no longer stand in for HEAD here.
+    //
+    // When they differ, just switch the checkout back to base instead of refusing.
+    // The tree is clean (checked above), so nothing can be clobbered — and being
+    // parked elsewhere is almost never a state the user chose: every merge path
+    // transiently checks another branch out in this checkout ("Update from main",
+    // the merge editor, the PR update flow), and one that was interrupted leaves
+    // HEAD sitting there. Refusing then produced the confusing report this fixes:
+    // "Switch the repo to main first (it's on <branch>)" while the status strip
+    // below read main, with no visible way to switch. An empty head means a
+    // detached HEAD, which needs the switch just as much: merging there would put
+    // the merge commit on no branch at all while the teardown below — seeing the
+    // branch contained in HEAD — deleted it.
+    const QString head = repoHeadBranch();
+    if (head != base) {
+        QString cerr;
+        if (!runGitCapture(dir, {"checkout", base}, nullptr, &cerr)) {
+            setRepoDetailNotice(
+                QStringLiteral("Couldn't switch the checkout to %1 (it's on %2): %3")
+                    .arg(base, head.isEmpty() ? QStringLiteral("a detached HEAD") : head,
+                         cerr.left(200)),
+                true);
+            return;
+        }
+        logSystem(QStringLiteral("Git: switched the checkout to %1 to merge %2 into it.")
+                      .arg(base, branch));
     }
     // No confirmation dialog on any merge path (adhoc #441, extending #130's "just
     // do the merge in the background, don't jump around"): every entry point here is
