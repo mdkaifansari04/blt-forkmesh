@@ -2230,17 +2230,10 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_world_manual_blocks_active "
     "ON world_manual_blocks(target_type, subject_token, expires_at) "
     "WHERE revoked_at=0",
-    # Shared, administrator-curated placement overrides for the fixed Town
-    # Square scene objects. One row per scene object id holding only ground
-    # coordinates and a heading offset in radians (migration 0082); no
-    # visitor, account, or session data is stored here.
-    """CREATE TABLE IF NOT EXISTS world_object_layout (
-        object_id TEXT PRIMARY KEY,
-        x REAL NOT NULL,
-        z REAL NOT NULL,
-        rotation REAL NOT NULL DEFAULT 0,
-        updated_by_bi TEXT NOT NULL,
-        updated_at INTEGER NOT NULL)""",
+    # The administrator-curated Town Square placement overrides (migrations
+    # 0080/0082) were retired with the layout editor by migration 0114; make
+    # sure lazily-ensured DBs lose the table too.
+    "DROP TABLE IF EXISTS world_object_layout",
     # One public, last-known-good CelesTrak VISUAL OMM snapshot. A scheduled
     # refresh owns all upstream traffic; visitor reads never fetch CelesTrak.
     # This row contains no visitor location, account, session, or wallet data.
