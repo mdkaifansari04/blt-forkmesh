@@ -1859,6 +1859,14 @@ private:
                                  const QString &preferredBase = QString(),
                                  const QString &preferredHead = QString());
     void switchToPullTab(int pullNumber);
+    // Open a pull request's commits/files/diff in the Git view's range pane
+    // (adhoc #107) — the agent view's PR links land here; the pane's "PR #N"
+    // button goes on to the full pull request page (switchToPullTab).
+    void openPullDiffInGitView(int pullNumber);
+    // Review threads keyed path\x1fside:line for renderDiffHtml's lineNotes —
+    // factored out of renderPullDiff so the Git view's range pane can render the
+    // same threads when it shows a PR (adhoc #107).
+    QHash<QString, QString> buildPullLineNotes(const PullRequest &pr);
     void updateCurrentPullBranch();
     void mergeCurrentPull();
     void resolveCurrentPullConflicts(); // open the per-conflict merge editor
@@ -2638,17 +2646,18 @@ private:
     // Open the Worktrees tab and select the row for a branch (used by the
     // clickable worktree-location link in the agent session header — issue #265).
     void switchToWorktree(const QString &branch);
-    // Open the Branches tab and select the row for a branch, previewing its diff
-    // (used by the clickable branch-name link in the agent session header —
-    // adhoc #123).
+    // Open a branch's commits/files/diff in the Git view's range pane (adhoc
+    // #107; used by the clickable branch links in the agent session header, the
+    // PR header and the Branches panel — adhoc #123).
     void switchToBranch(const QString &branch);
     // Select the worktrees-table row whose branch matches, repopulating the diff
     // pane and detail buttons. Returns false if no such row exists. Used to keep
     // the selection on the worktree being acted on after loadWorktreesPanel()
     // rebuilds the table (which would otherwise clear it — issue #272).
     bool selectWorktreeRow(const QString &branch);
-    // Same for the branches table: select the row whose name matches (which fires
-    // currentCellChanged -> showBranchDiff). Returns false if no such row exists.
+    // Same for the branches table: select the row whose name matches (selection
+    // only — the diff renders in the Git view's range pane, adhoc #107).
+    // Returns false if no such row exists.
     bool selectBranchRow(const QString &branch);
     // Explain that a branch link pointed at a branch this repository doesn't have.
     void reportBranchNotFound(const QString &branch);
@@ -2728,6 +2737,23 @@ private:
     // Rebuild the sticky-bar file-span map from whatever is currently in the
     // branch diff document (called once a streamed render has fully landed).
     void rebuildBranchDiffSpans();
+    // The branch/PR range review pane hosted in the Git view's commits workspace
+    // (adhoc #107): detail action bar + scope/files lists + diff, plus the PR
+    // viewer's diff tools (find bar, prev/next change, split toggle, Pac-Man
+    // sticky header, auto-mark-viewed on scroll).
+    QWidget *buildBranchRangePane();
+    // Refresh m_branchFileTops (absolute document y of each file header) from the
+    // span map; cheap enough to rebuild lazily whenever a render drops the cache.
+    void computeBranchFileTops();
+    // Debounced off the branch diff's scrollbar: mark files scrolled fully
+    // through as viewed and re-render, mirroring the PR pane (adhoc #107).
+    void applyBranchAutoMarkViewedOnScroll();
+    // Scroll the branch/PR diff to the next/previous hunk ("@@ -" header).
+    bool branchScrollToAdjacentHunk(int delta);
+    // Find-in-diff over the range pane (mirrors togglePullDiffSearch and friends).
+    void toggleBranchDiffSearch(bool show);
+    void branchDiffSearchRecompute();
+    void branchDiffSearchGoTo(int delta);
     // Open the selected branch's working directory in VSCodium: its dedicated
     // worktree if it has one, otherwise the repo's main checkout.
     void openBranchInCodium(const QString &branch);
@@ -4950,10 +4976,6 @@ private:
     QPushButton *m_repoProjectsTab = nullptr; // handle for the Projects (N) badge
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
-    // Splitter holding the branches table + changed-files/scope lists + diff view.
-    // loadBranchesPanel() freezes it while it tears down and rebuilds the rows so
-    // the panes don't flash blank during a refresh/merge (adhoc #256).
-    QWidget *m_branchesSplit = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
     // When checked, a successful "Merge to main" auto-runs "Pull <base> into all"
@@ -4970,6 +4992,12 @@ private:
     QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
+    // Pull request the range pane is reviewing, or -1 when it shows a plain
+    // branch. Set only by the two entry points (openPullDiffInGitView /
+    // switchToBranch) so internal refreshes keep the current mode (adhoc #107).
+    // PR mode renders the PR's review threads + comment gutters into the diff
+    // and shows the "PR #N" button that opens the full pull request page.
+    int m_branchDiffPullNumber = -1;
     // Branch that auto-pull has already been attempted for (see showBranchDiff),
     // so a declined stash prompt or an aborted merge doesn't re-nag every time the
     // panel happens to rebuild while the same branch is still selected. Cleared
@@ -5007,12 +5035,39 @@ private:
     // a commit, or the uncommitted changes); set by renderBranchDiffPatch so the
     // per-file Viewed toggle persists against the right scope, not always "all".
     QString m_branchDiffViewedContext;
-    QLabel *m_branchDiffSticky = nullptr;
+    // Sticky header pinned over the branch/PR diff (same form as the PR viewer's:
+    // filename, Pac-Man read-progress chart, percent label and a Viewed toggle).
+    QFrame *m_branchDiffSticky = nullptr;
+    QLabel *m_branchStickyPath = nullptr;
+    PacmanProgress *m_branchStickyPacman = nullptr;
+    QLabel *m_branchStickyPercent = nullptr;
+    QPushButton *m_branchStickyViewed = nullptr;
+    QString m_branchStickyFile; // file the sticky bar currently mirrors
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     // Ordered file paths of the diff currently in the branch view, so the
     // sticky-bar span map can be rebuilt once the whole diff has landed (the
     // render is progressive — see renderDiffStreamed, adhoc #51/#421).
     QStringList m_branchDiffFilePaths;
+    // Absolute document y of each file header (aligned to m_branchDiffFileSpans),
+    // cached so the per-scroll-tick sticky/progress update doesn't re-measure the
+    // document; cleared on every re-render / stream-finish (mirrors the PR pane).
+    QList<int> m_branchFileTops;
+    // Keeps the changed-files list from re-scrolling the diff while the list
+    // selection is itself following the scroll (mirrors m_pullSuppressFileScroll).
+    bool m_branchSuppressFileScroll = false;
+    // Debounces the auto-mark-viewed sweep off the branch diff's scrollbar, same
+    // rhythm as the PR viewer's m_pullAutoViewedDebounce (adhoc #107).
+    QTimer *m_branchAutoViewedDebounce = nullptr;
+    // Find-in-diff bar over the branch/PR range pane (mirrors the PR viewer's).
+    QWidget *m_branchDiffSearchBar = nullptr;
+    QLineEdit *m_branchDiffSearchInput = nullptr;
+    QLabel *m_branchDiffSearchCount = nullptr;
+    QList<QTextCursor> m_branchDiffSearchMatches;
+    int m_branchDiffSearchIndex = -1;
+    // Unified <-> side-by-side toggle for the range pane (shared preference).
+    QPushButton *m_branchSplitButton = nullptr;
+    // "PR #N" — shown in PR mode; opens the full pull request page.
+    QPushButton *m_branchOpenPullButton = nullptr;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
     // Detail-pane action bar above the branch diff: acts on the selected branch
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
@@ -5230,6 +5285,9 @@ private:
     // Source Control panel (left side of the Commits tab).
     static constexpr int kCommitWorkspaceChangesPage = 0;
     static constexpr int kCommitWorkspaceCommitPage = 1;
+    // Branch/PR range review pane (adhoc #107): the branch diff viewer, moved
+    // into the Git view so a branch or PR opens its commits/files/diff here.
+    static constexpr int kCommitWorkspaceRangePage = 2;
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;

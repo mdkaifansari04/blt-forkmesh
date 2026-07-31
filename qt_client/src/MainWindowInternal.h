@@ -301,6 +301,11 @@ void flushDiffStream(QTextEdit *view);
 void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook);
 bool autoMarkViewedOnScrollPref();
 void setAutoMarkViewedOnScrollPref(bool on);
+// Paint find-in-diff matches as extra selections (active match brighter) and
+// update the "n/m" count label. Shared by the PR and branch/PR-range find bars.
+void applyDiffSearchHighlights(QTextBrowser *diff,
+                               const QList<QTextCursor> &matches, int activeIndex,
+                               QLabel *countLabel, bool termEmpty);
 QString diffStickyStyleSheet(int fontPt);
 QString diffStickyPathHtml(const QString &path);
 QString agentCostText(double usd);

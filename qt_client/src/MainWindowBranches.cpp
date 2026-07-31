@@ -8,6 +8,7 @@
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
 #include "KebabHeaderView.h"
+#include "PacmanProgress.h"
 
 #include <QComboBox>
 #include <QTimer>
@@ -650,23 +651,38 @@ void MainWindow::switchToWorktree(const QString &branch)
     selectWorktreeRow(branch);
 }
 
-// Open the Branches tab and select the row whose name matches, so clicking a
-// branch name in the agent session header lands on that branch's diff (adhoc
-// #123). Selecting the row fires currentCellChanged -> showBranchDiff.
+// Open a branch's commits, changed files and diff in the Git view's range pane
+// (adhoc #107) — clicking a branch name in the agent session header, the PR
+// header or the Branches panel lands here. The render starts straight away
+// (its git reads run on worker threads — adhoc #420); the Branches panel's
+// refresh below keeps its rows in step and reports a branch that doesn't exist.
 void MainWindow::switchToBranch(const QString &branch)
 {
-    // The branches panel lives inside the Code overview now (no top-level tab).
-    showOverviewBranches();
+    m_branchDiffPullNumber = -1; // plain branch mode
+    showOverviewCommits();
+    if (m_commitsStack)
+        m_commitsStack->setCurrentIndex(kCommitWorkspaceRangePage);
+    showBranchDiff(branch);
+    // Ctrl+F and the scroll-driven tools act on the diff from the first key.
+    if (m_branchDiffView)
+        m_branchDiffView->setFocus();
+    // The commits workspace may not have been opened yet this visit: fill the
+    // left rail (history + working changes) the same deferred way the Commits
+    // toggle does, without stealing the right pane (showCommitList keeps its
+    // hands off the range page).
+    QTimer::singleShot(0, this, [this] {
+        if (commitsListIsCurrent())
+            refreshSourceControl();
+        else
+            loadCommits();
+    });
     if (!m_branchesTable || branch.isEmpty()) {
         loadBranchesPanel();
         return;
     }
-    // Select from the rows already on screen first — the panel's git reads run on
-    // a worker thread now, and waiting for that rebuild before showing anything
-    // is what made following a branch link feel slow (adhoc #420). The rows are
-    // only trustworthy when they were built for the repo we're selecting into;
-    // otherwise (and when the branch isn't listed yet) the refresh below picks
-    // the branch up when it lands.
+    // Keep the branches table's selection in step when its rows were built for
+    // this repo; otherwise let the refresh land on the branch (and tell the user
+    // when it doesn't exist here at all — adhoc #185/#420).
     const bool fresh = !m_branchesPanelDir.isEmpty() &&
                        m_branchesPanelDir == repoGitDir();
     if (fresh && selectBranchRow(branch))
@@ -2014,38 +2030,50 @@ QWidget *MainWindow::buildBranchesTab()
     // Keep it Fixed and size it to the actual buttons in loadBranchesPanel().
     bh->setSectionResizeMode(5, QHeaderView::Fixed);
     makeColumnsResizable(m_branchesTable);
-    connect(m_branchesTable, &QTableWidget::cellDoubleClicked, this,
-            [this](int row, int) {
-                QTableWidgetItem *it = m_branchesTable->item(row, 0);
-                if (it)
-                    setRepoBranch(it->text());
-            });
-    // Selecting a branch (single click or arrow keys) previews its changes
-    // against the default branch in the panel below — no checkout required.
+    // Selecting a real branch (click or arrow keys) retires the "merged &
+    // deleted" check left where a branch used to be (adhoc #15). The diff
+    // preview that used to ride this selection moved into the Git view's range
+    // pane (adhoc #107) — see the cellClicked navigation below.
     connect(m_branchesTable, &QTableWidget::currentCellChanged, this,
             [this](int row, int, int, int) {
                 QTableWidgetItem *it = m_branchesTable->item(row, 0);
-                // Selecting a real branch retires the "merged & deleted" check
-                // left where a branch used to be (adhoc #15).
                 if (it && !it->text().isEmpty())
                     clearMergedBranchFlash();
-                showBranchDiff(it ? it->text() : QString());
             });
-    // Clicking the Issue / Agent cell jumps to the agent run working that branch,
-    // so the list links straight to its session (adhoc #258). Other columns fall
-    // through to the normal row-select preview above.
+    // Clicking the Issue / Agent cell jumps to the agent run working that branch
+    // (adhoc #258). Clicking any other (non-action) cell opens the branch's
+    // commits, changed files and diff in the Git view — the branch diff viewer
+    // lives there now (adhoc #107).
     connect(m_branchesTable, &QTableWidget::cellClicked, this,
             [this](int row, int column) {
-                if (column != 4)
+                if (column == 4) {
+                    QTableWidgetItem *it = m_branchesTable->item(row, 4);
+                    if (!it)
+                        return;
+                    const QVariant sid = it->data(Qt::UserRole);
+                    if (sid.isValid())
+                        switchToAgentsTab(sid.toInt());
                     return;
-                QTableWidgetItem *it = m_branchesTable->item(row, 4);
-                if (!it)
-                    return;
-                const QVariant sid = it->data(Qt::UserRole);
-                if (sid.isValid())
-                    switchToAgentsTab(sid.toInt());
+                }
+                if (column >= 4)
+                    return; // action column: its cell widgets own their clicks
+                QTableWidgetItem *it = m_branchesTable->item(row, 0);
+                if (it && !it->text().isEmpty())
+                    switchToBranch(it->text());
             });
 
+    layout->addWidget(m_branchesTable, 1);
+    return page;
+}
+
+// The branch/PR range review pane, hosted as the Git view's third workspace page
+// (adhoc #107): the branch detail viewer that used to sit inside the Branches
+// panel, moved beside the working-tree and commit pages and upgraded with the PR
+// viewer's diff tools (find bar, prev/next change, split toggle, Pac-Man sticky
+// header, auto-mark-viewed on scroll). switchToBranch()/openPullDiffInGitView()
+// land here.
+QWidget *MainWindow::buildBranchRangePane()
+{
     m_branchDiffView = new QTextBrowser;
     m_branchDiffView->setObjectName("diffView");
     m_branchDiffView->setOpenExternalLinks(false);
@@ -2053,22 +2081,72 @@ QWidget *MainWindow::buildBranchesTab()
     connect(m_branchDiffView, &QTextBrowser::anchorClicked, this,
             &MainWindow::onBranchDiffAnchorClicked);
     registerDiffView(m_branchDiffView);
-    // Sticky header naming the file currently scrolled into view.
-    m_branchDiffSticky = new QLabel(m_branchDiffView->viewport());
+    // Sticky header overlay pinned over the diff viewport — same form as the PR
+    // viewer's: filename + Pac-Man read-progress + percent + a Viewed toggle.
+    m_branchDiffSticky = new QFrame(m_branchDiffView->viewport());
     m_branchDiffSticky->setObjectName("diffStickyHeader");
-    m_branchDiffSticky->setStyleSheet(diffStickyStyleSheet(m_diffFontPt));
-    m_branchDiffSticky->setTextFormat(Qt::RichText);
-    m_branchDiffSticky->setOpenExternalLinks(false);
-    connect(m_branchDiffSticky, &QLabel::linkActivated, this,
-            [this](const QString &href) { onBranchDiffAnchorClicked(QUrl(href)); });
-    m_branchDiffSticky->hide();
+    {
+        const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
+        m_branchDiffSticky->setStyleSheet(
+            QStringLiteral(
+                "#diffStickyHeader{background:%1;border-bottom:1px solid %2;}"
+                "#diffStickyHeader QLabel{background:transparent;}"
+                "#diffStickyHeader QPushButton{background:transparent;border:none;"
+                "color:%3;font-size:11px;padding:2px 4px;}"
+                "#diffStickyHeader QPushButton:hover{color:#3fb950;}")
+                .arg(dark ? "#161b22" : "#f6f8fa", dark ? "#30363d" : "#d0d7de",
+                     dark ? "#8b949e" : "#57606a"));
+        auto *sl = new QHBoxLayout(m_branchDiffSticky);
+        sl->setContentsMargins(10, 4, 8, 4);
+        sl->setSpacing(8);
+        m_branchStickyPath = new QLabel(m_branchDiffSticky);
+        m_branchStickyPath->setTextFormat(Qt::RichText);
+        m_branchStickyPath->setTextInteractionFlags(Qt::NoTextInteraction);
+        sl->addWidget(m_branchStickyPath, 1);
+        m_branchStickyPacman = new PacmanProgress(m_branchDiffSticky);
+        m_branchStickyPacman->setToolTip(
+            QStringLiteral("How much of this file you've scrolled through"));
+        sl->addWidget(m_branchStickyPacman, 0);
+        m_branchStickyPercent = new QLabel(QStringLiteral("0% read"),
+                                           m_branchDiffSticky);
+        m_branchStickyPercent->setObjectName("hintLabel");
+        m_branchStickyPercent->setMinimumWidth(52);
+        m_branchStickyPercent->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        sl->addWidget(m_branchStickyPercent, 0);
+        m_branchStickyViewed = new QPushButton(m_branchDiffSticky);
+        m_branchStickyViewed->setCursor(Qt::PointingHandCursor);
+        m_branchStickyViewed->setToolTip(QStringLiteral("Mark this file as viewed"));
+        connect(m_branchStickyViewed, &QPushButton::clicked, this, [this] {
+            if (m_branchStickyFile.isEmpty())
+                return;
+            onBranchDiffAnchorClicked(QUrl(
+                QStringLiteral("viewed:") +
+                QString::fromLatin1(QUrl::toPercentEncoding(m_branchStickyFile))));
+        });
+        sl->addWidget(m_branchStickyViewed, 0);
+        m_branchDiffSticky->hide();
+    }
+    // Debounce the auto-mark-viewed sweep off scroll ticks, exactly as the PR
+    // viewer does: the re-render that collapses newly-viewed files is too heavy
+    // to run on every pixel of a fast scroll.
+    m_branchAutoViewedDebounce = new QTimer(this);
+    m_branchAutoViewedDebounce->setSingleShot(true);
+    m_branchAutoViewedDebounce->setInterval(400);
+    connect(m_branchAutoViewedDebounce, &QTimer::timeout, this,
+            &MainWindow::applyBranchAutoMarkViewedOnScroll);
     connect(m_branchDiffView->verticalScrollBar(), &QScrollBar::valueChanged, this,
-            &MainWindow::updateBranchDiffSticky);
+            [this] {
+                // Cheap, every-tick: sticky header / Pac-Man / list follow.
+                updateBranchDiffSticky();
+                // Heavy, debounced: collapse fully-seen files into "Viewed".
+                if (m_branchAutoViewedDebounce)
+                    m_branchAutoViewedDebounce->start();
+            });
 
     // Scope selector: pick what the diff pane shows for the selected branch —
     // every change it adds over base, its uncommitted working-tree changes, or a
     // single commit. Selecting a row re-renders the diff for that scope.
-    m_branchScopeLabel = new QLabel;
+    m_branchScopeLabel = new QLabel(QStringLiteral("Scope"));
     m_branchScopeLabel->setObjectName("sectionLabel");
     m_branchScopeLabel->setTextFormat(Qt::RichText);
     m_branchScopeList = new QListWidget;
@@ -2078,8 +2156,64 @@ QWidget *MainWindow::buildBranchesTab()
     connect(m_branchScopeList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *, QListWidgetItem *) { renderBranchScopeDiff(); });
 
+    // Diff tools on the scope header row (brought over from the PR viewer):
+    // text-size zoom, unified <-> side-by-side, and prev/next change.
+    auto *diffZoomOut = new QPushButton(QString::fromUtf8("\xE2\x88\x92")); // −
+    diffZoomOut->setToolTip("Smaller diff text");
+    connect(diffZoomOut, &QPushButton::clicked, this, [this] { adjustDiffFont(-1); });
+    auto *diffZoomIn = new QPushButton(QStringLiteral("+"));
+    diffZoomIn->setToolTip("Larger diff text");
+    connect(diffZoomIn, &QPushButton::clicked, this, [this] { adjustDiffFont(1); });
+    m_branchSplitButton = new QPushButton;
+    m_branchSplitButton->setCheckable(true);
+    m_branchSplitButton->setChecked(diffSplitPref());
+    setOcticon(m_branchSplitButton, "diff", 14);
+    updateDiffSplitButton(m_branchSplitButton);
+    connect(m_branchSplitButton, &QPushButton::clicked, this, [this](bool on) {
+        setDiffSplitPref(on);
+        updateDiffSplitButton(m_branchSplitButton);
+        // Keep the commit and PR toggles (which share the preference) in step.
+        for (QPushButton *b : {m_commitSplitButton, m_pullSplitButton}) {
+            if (b) {
+                b->setChecked(on);
+                updateDiffSplitButton(b);
+            }
+        }
+        if (m_branchDiffLastValid)
+            renderBranchDiffPatch(QString::fromUtf8(m_branchDiffLastPatch),
+                                  m_branchDiffLastEmpty, m_branchDiffViewedContext);
+        else
+            renderBranchScopeDiff();
+    });
+    auto *prevChange = new QPushButton;
+    prevChange->setToolTip("Previous change");
+    setOcticon(prevChange, "chevron-up", 14);
+    connect(prevChange, &QPushButton::clicked, this,
+            [this] { branchScrollToAdjacentHunk(-1); });
+    auto *nextChange = new QPushButton;
+    nextChange->setToolTip("Next change");
+    setOcticon(nextChange, "chevron-down", 14);
+    connect(nextChange, &QPushButton::clicked, this,
+            [this] { branchScrollToAdjacentHunk(1); });
+    for (QPushButton *b :
+         {diffZoomOut, diffZoomIn, m_branchSplitButton, prevChange, nextChange}) {
+        b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    auto *scopeHeader = new QHBoxLayout;
+    scopeHeader->setContentsMargins(0, 0, 0, 0);
+    scopeHeader->addWidget(m_branchScopeLabel);
+    scopeHeader->addStretch();
+    scopeHeader->addWidget(diffZoomOut);
+    scopeHeader->addWidget(diffZoomIn);
+    scopeHeader->addWidget(m_branchSplitButton);
+    scopeHeader->addWidget(prevChange);
+    scopeHeader->addWidget(nextChange);
+
     // Changed-files list beside the diff (same pattern as the commit/PR viewers):
-    // click a file to scroll the diff straight to it.
+    // click a file to scroll the diff straight to it; the selection follows the
+    // scroll (see updateBranchDiffSticky).
     m_branchFilesSummary = new QLabel;
     m_branchFilesSummary->setObjectName("sectionLabel");
     m_branchFilesSummary->setTextFormat(Qt::RichText);
@@ -2089,7 +2223,7 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchFileList->setMinimumWidth(180);
     connect(m_branchFileList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item && m_branchDiffView) {
+                if (item && m_branchDiffView && !m_branchSuppressFileScroll) {
                     // The file may still be queued behind the visible window.
                     flushDiffStream(m_branchDiffView);
                     m_branchDiffView->scrollToAnchor(
@@ -2100,7 +2234,7 @@ QWidget *MainWindow::buildBranchesTab()
     auto *filesLayout = new QVBoxLayout(filesPane);
     filesLayout->setContentsMargins(0, 0, 0, 0);
     filesLayout->setSpacing(6);
-    filesLayout->addWidget(m_branchScopeLabel);
+    filesLayout->addLayout(scopeHeader);
     filesLayout->addWidget(m_branchScopeList, 1);
     filesLayout->addWidget(m_branchFilesSummary);
     filesLayout->addWidget(m_branchFileList, 1);
@@ -2113,6 +2247,19 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchDetailLabel = new QLabel;
     m_branchDetailLabel->setObjectName("sectionLabel");
     m_branchDetailLabel->setTextFormat(Qt::RichText);
+
+    // "PR #N": shown while the pane reviews a pull request (adhoc #107) — jumps
+    // to the full PR page (conversation, checks, merge controls).
+    m_branchOpenPullButton = new QPushButton;
+    m_branchOpenPullButton->setObjectName("ghostButton");
+    m_branchOpenPullButton->setProperty("buttonSize", "sm");
+    m_branchOpenPullButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchOpenPullButton, "git-pull-request", 14);
+    m_branchOpenPullButton->hide();
+    connect(m_branchOpenPullButton, &QPushButton::clicked, this, [this] {
+        if (m_branchDiffPullNumber >= 0)
+            switchToPullTab(m_branchDiffPullNumber);
+    });
 
     // Open in Codium: launch VSCodium on the selected branch's working directory
     // (its worktree, or the main checkout) so the branch can be edited in the IDE
@@ -2270,6 +2417,7 @@ QWidget *MainWindow::buildBranchesTab()
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_branchDetailLabel);
     detailBar->addStretch();
+    detailBar->addWidget(m_branchOpenPullButton);
     detailBar->addWidget(m_branchOpenCodiumButton);
     detailBar->addWidget(m_branchMergeEditorButton);
     detailBar->addWidget(m_branchPullButton);
@@ -2279,34 +2427,80 @@ QWidget *MainWindow::buildBranchesTab()
     detailBar->addWidget(m_branchPrButton);
     detailBar->addWidget(m_branchMergeButton);
     detailBar->addWidget(m_branchMergeDeleteButton);
-    auto *diffPane = new QWidget;
-    auto *diffPaneLayout = new QVBoxLayout(diffPane);
-    diffPaneLayout->setContentsMargins(0, 0, 0, 0);
-    diffPaneLayout->setSpacing(6);
-    diffPaneLayout->addLayout(detailBar);
-    diffPaneLayout->addWidget(m_branchDiffView, 1);
+
+    // ---- Find bar (mirrors the PR viewer's, issue #333): Ctrl+F over the pane
+    // highlights every occurrence in the combined diff and steps between matches.
+    m_branchDiffSearchInput = new QLineEdit;
+    m_branchDiffSearchInput->setObjectName("issueSearch");
+    m_branchDiffSearchInput->setPlaceholderText("Find in diff\xE2\x80\xA6");
+    m_branchDiffSearchInput->setClearButtonEnabled(true);
+    connect(m_branchDiffSearchInput, &QLineEdit::textChanged, this,
+            [this] { branchDiffSearchRecompute(); });
+    connect(m_branchDiffSearchInput, &QLineEdit::returnPressed, this, [this] {
+        branchDiffSearchGoTo(QGuiApplication::keyboardModifiers() & Qt::ShiftModifier
+                                 ? -1
+                                 : 1);
+    });
+    m_branchDiffSearchCount = new QLabel;
+    m_branchDiffSearchCount->setObjectName("hintLabel");
+    auto *searchPrev = new QPushButton;
+    searchPrev->setToolTip("Previous match");
+    setOcticon(searchPrev, "chevron-up", 14);
+    connect(searchPrev, &QPushButton::clicked, this,
+            [this] { branchDiffSearchGoTo(-1); });
+    auto *searchNext = new QPushButton;
+    searchNext->setToolTip("Next match");
+    setOcticon(searchNext, "chevron-down", 14);
+    connect(searchNext, &QPushButton::clicked, this,
+            [this] { branchDiffSearchGoTo(1); });
+    auto *searchClose = new QPushButton;
+    searchClose->setToolTip("Close find bar");
+    setOcticon(searchClose, "x", 14);
+    connect(searchClose, &QPushButton::clicked, this,
+            [this] { toggleBranchDiffSearch(false); });
+    for (QPushButton *b : {searchPrev, searchNext, searchClose}) {
+        b->setObjectName("ghostButton");
+        b->setProperty("buttonSize", "sm");
+        b->setCursor(Qt::PointingHandCursor);
+    }
+    m_branchDiffSearchBar = new QWidget;
+    auto *searchBarLayout = new QHBoxLayout(m_branchDiffSearchBar);
+    searchBarLayout->setContentsMargins(0, 0, 0, 6);
+    searchBarLayout->addWidget(m_branchDiffSearchInput, 1);
+    searchBarLayout->addWidget(m_branchDiffSearchCount);
+    searchBarLayout->addWidget(searchPrev);
+    searchBarLayout->addWidget(searchNext);
+    searchBarLayout->addWidget(searchClose);
+    m_branchDiffSearchBar->setVisible(false);
 
     auto *split = new QSplitter(Qt::Horizontal);
-    m_branchesSplit = split;
     split->setChildrenCollapsible(false);
-    split->addWidget(m_branchesTable);
     split->addWidget(filesPane);
-    split->addWidget(diffPane);
-    // Let the branches table share the window's extra width with the diff pane
-    // rather than staying pinned narrow while only the diff grew. The old 0/0/1
-    // factors sent every extra pixel to the diff, so on a wide window the table
-    // stayed cramped and its Branch/Worktree columns clipped — you had to drag the
-    // divider to read the full list. Now the table grows too (factor 1), the file
-    // list stays compact (0), and the table keeps showing everything as the window
-    // widens (#205).
-    split->setStretchFactor(0, 1);
-    split->setStretchFactor(1, 0);
-    split->setStretchFactor(2, 1);
-    // Open the branches list expanded — the table takes the larger share so every
-    // column (Branch, Status, Updated, Worktree, Issue/Agent, actions) is visible
-    // at a glance without dragging the divider (#205; was ~50% per adhoc #193).
-    split->setSizes({1100, 200, 600});
+    split->addWidget(m_branchDiffView);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+    split->setSizes({260, 900});
+
+    auto *page = new QWidget;
+    auto *layout = new QVBoxLayout(page);
+    // Match the sibling workspace pages (working-tree changes / commit detail).
+    layout->setContentsMargins(16, 12, 16, 16);
+    layout->setSpacing(8);
+    layout->addLayout(detailBar);
+    layout->addWidget(m_branchDiffSearchBar);
     layout->addWidget(split, 1);
+
+    // Ctrl+F / Escape scoped to this pane only (WidgetWithChildren): a
+    // window-wide Find here would collide with the PR viewer's find bar.
+    auto *findShortcut = new QShortcut(QKeySequence::Find, page);
+    findShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(findShortcut, &QShortcut::activated, this,
+            [this] { toggleBranchDiffSearch(true); });
+    auto *closeSearchShortcut =
+        new QShortcut(QKeySequence(Qt::Key_Escape), m_branchDiffSearchInput);
+    closeSearchShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(closeSearchShortcut, &QShortcut::activated, this,
+            [this] { toggleBranchDiffSearch(false); });
     return page;
 }
 
@@ -2531,16 +2725,14 @@ void MainWindow::loadBranchesPanel()
 
 void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
 {
-    // Freeze the whole splitter — table, changed-files/scope lists and diff view —
-    // while we tear down and rebuild the rows so a refresh after a merge/delete
-    // doesn't flash all of them blank before the new contents land; they all
-    // repaint once together when the guard lifts (adhoc #256).
-    TableRepaintGuard repaintGuard(m_branchesSplit ? m_branchesSplit
-                                                   : static_cast<QWidget *>(m_branchesTable));
-    // Block the table's selection signals across the rebuild so clearing the rows
-    // doesn't fire currentCellChanged -> showBranchDiff(empty), which would blank
-    // the diff pane and churn m_branchDiffBranch mid-rebuild. We re-render the
-    // viewed branch's diff explicitly at the end instead (adhoc #256).
+    // Freeze the table while we tear down and rebuild the rows so a refresh
+    // after a merge/delete doesn't flash it blank before the new contents land;
+    // it repaints once when the guard lifts (adhoc #256). (The changed-files /
+    // scope / diff panes live in the Git view's range pane now — adhoc #107.)
+    TableRepaintGuard repaintGuard(m_branchesTable);
+    // Block the table's selection signals across the rebuild so clearing the
+    // rows doesn't churn the selection handlers mid-rebuild. The Git view's
+    // range pane is refreshed explicitly at the end instead (adhoc #256/#107).
     QSignalBlocker branchesTableBlock(m_branchesTable);
     // Allocate the model in one change. insertRow() emitted rowsInserted for
     // every branch, and QTableView responded to each signal with a full editor/
@@ -3075,11 +3267,12 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
             break;
         }
     }
-    // The table's selection signals were blocked across the rebuild, so the
-    // setCurrentCell above won't have re-rendered the diff. Do it explicitly now —
-    // a single, guarded transition rather than the blank-then-refill flash the
-    // old signal-driven path produced (adhoc #256).
-    showBranchDiff(target);
+    // Refresh the Git view's range pane only when it is showing this branch
+    // (adhoc #107): a background rebuild of the list must not hijack the pane
+    // onto whatever branch the table happens to select (e.g. the checked-out
+    // fallback after a not-found report).
+    if (!target.isEmpty() && target == m_branchDiffBranch)
+        showBranchDiff(target);
 }
 
 void MainWindow::promptNewBranch()
@@ -3465,7 +3658,45 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
                 text += QString::fromUtf8(
                     " \xC2\xB7 <span style='color:#f85149'>conflicts</span>");
         }
+        // Reviewing a pull request (adhoc #107): lead with its number and state
+        // so the pane reads as that PR's changes, not just a branch.
+        if (m_branchDiffPullNumber >= 0 && !text.isEmpty()) {
+            QString state;
+            for (const PullRequest &p : std::as_const(m_currentPulls)) {
+                if (p.number == m_branchDiffPullNumber) {
+                    state = p.status;
+                    break;
+                }
+            }
+            const QString color = state == QLatin1String("merged")
+                                      ? QStringLiteral("#a371f7")
+                                      : state == QLatin1String("closed")
+                                            ? QStringLiteral("#f85149")
+                                            : QStringLiteral("#3fb950");
+            text = QString::fromUtf8("<b>PR #%1</b>%2 \xC2\xB7 %3")
+                       .arg(m_branchDiffPullNumber)
+                       .arg(state.isEmpty()
+                                ? QString()
+                                : QStringLiteral(
+                                      " <span style='color:%1'>%2</span>")
+                                      .arg(color, state.toHtmlEscaped()))
+                       .arg(text);
+        }
         m_branchDetailLabel->setText(text);
+    }
+
+    // "PR #N" jump to the full pull request page: only while reviewing a PR.
+    if (m_branchOpenPullButton) {
+        const bool prMode = m_branchDiffPullNumber >= 0;
+        m_branchOpenPullButton->setVisible(prMode);
+        if (prMode) {
+            m_branchOpenPullButton->setText(
+                QStringLiteral("PR #%1").arg(m_branchDiffPullNumber));
+            m_branchOpenPullButton->setToolTip(
+                QStringLiteral("Open pull request #%1 \xE2\x80\x94 conversation, "
+                               "checks and merge controls")
+                    .arg(m_branchDiffPullNumber));
+        }
     }
 
     // Open in Codium: available whenever there's a local checkout to open. Works
@@ -3597,6 +3828,10 @@ void MainWindow::maybeAutoPullBranch(const QString &branch)
 {
     if (branch.isEmpty() || m_branchDiffBranch != branch)
         return;
+    // Reviewing a PR must not rewrite its head branch as a side effect of
+    // opening the diff; the PR page's own Update button owns that (adhoc #107).
+    if (m_branchDiffPullNumber >= 0)
+        return;
     if (!m_branchPullButton || !m_branchPullButton->isEnabled() ||
         (m_branchFixButton && m_branchFixButton->isVisible()) ||
         m_branchConflictProbes.contains(branch) ||
@@ -3689,6 +3924,10 @@ void MainWindow::showBranchDiff(const QString &branch)
     updateBranchDetailActions(branch);
 
     m_branchDiffFileSpans.clear();
+    m_branchFileTops.clear();
+    m_branchStickyFile.clear();
+    if (m_branchDiffSticky)
+        m_branchDiffSticky->hide(); // no spans yet; reappears on scroll
     m_branchDiffViewedContext.clear();
     // A new branch's diff hasn't been fetched yet; drop the cached patch so the
     // "Viewed" toggle can't re-render a stale one before the async read lands.
@@ -3821,6 +4060,10 @@ void MainWindow::renderBranchScopeDiff()
     // reads GUI state via branchWorkDir) is resolved here on the GUI thread.
     const QString work =
         scope == QLatin1String("wt") ? branchWorkDir(branch) : QString();
+    // In PR mode the whole-range scope shares the PR viewer's per-file Viewed
+    // state ("pull/<N>"), so a file checked off in either place stays checked in
+    // both (adhoc #107). Commit / uncommitted scopes keep their branch contexts.
+    const int pullNumber = m_branchDiffPullNumber;
     const int gen = ++m_branchScopeDiffGen;
     struct ScopeDiff {
         bool ok = true;
@@ -3830,7 +4073,7 @@ void MainWindow::renderBranchScopeDiff()
         QString viewedContext;
     };
     runOffThread<ScopeDiff>(
-        [dir, base, branch, scope, work]() {
+        [dir, base, branch, scope, work, pullNumber]() {
             ScopeDiff r;
             if (scope == QLatin1String("wt")) {
                 // The branch's uncommitted changes (working tree vs HEAD), with
@@ -3863,7 +4106,10 @@ void MainWindow::renderBranchScopeDiff()
                 if (!runGitCapture(dir, {"show", "--format=", hash}, &r.out, &r.err))
                     r.ok = false;
             } else {
-                r.viewedContext = QStringLiteral("branch/") + branch;
+                r.viewedContext = pullNumber >= 0
+                                      ? QStringLiteral("pull/") +
+                                            QString::number(pullNumber)
+                                      : QStringLiteral("branch/") + branch;
                 r.emptyMessage =
                     QStringLiteral("No changes between %1 and %2.").arg(branch, base);
                 if (!runGitCapture(dir, {"diff", base + ".." + branch}, &r.out, &r.err))
@@ -3918,8 +4164,23 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
     const QString base = repoDefaultBranch(repoBranches());
     QList<DiffFileEntry> files;
     const QSet<QString> viewed = loadDiffViewed(viewedContext);
+    // PR mode (adhoc #107): drop the PR's review threads beneath the lines they
+    // annotate and turn on the clickable comment gutters, exactly as the PR
+    // viewer's Files-changed page does (onBranchDiffAnchorClicked forwards the
+    // comment/thread anchors to the PR handlers).
+    QHash<QString, QString> notes;
+    QString anchorFile;
+    if (m_branchDiffPullNumber >= 0) {
+        for (const PullRequest &p : std::as_const(m_currentPulls)) {
+            if (p.number == m_branchDiffPullNumber) {
+                notes = buildPullLineNotes(p);
+                anchorFile = QStringLiteral("*");
+                break;
+            }
+        }
+    }
     const QString html = renderDiffHtml(patch, files, dir, base, m_branchDiffBranch,
-                                        QString(), QHash<QString, QString>(), viewed);
+                                        anchorFile, notes, viewed);
     m_branchDiffFilePaths.clear();
     for (const DiffFileEntry &f : files)
         m_branchDiffFilePaths.append(f.path);
@@ -3962,6 +4223,7 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
             }
             item->setIcon(themedOcticon(icon, tint, 14));
             item->setData(Qt::UserRole, f.anchor);
+            item->setData(Qt::UserRole + 1, f.path); // scroll-follow + auto-viewed
             item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
             m_branchFileList->addItem(item);
         }
@@ -3972,7 +4234,12 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
     // diff is still streaming in only the first blocks are in the document now;
     // the stream-finished hook (onDiffStreamFinished) rebuilds the full map once
     // the last batch lands. Either way this covers whatever is currently shown.
+    m_branchFileTops.clear(); // positions change on re-render; force a recompute
+    m_branchStickyFile.clear();
     rebuildBranchDiffSpans();
+    // The document was just replaced; an open find bar's cursors died with it.
+    if (m_branchDiffSearchBar && m_branchDiffSearchBar->isVisible())
+        branchDiffSearchRecompute();
 }
 
 // Rebuild the sticky-bar file-span map from whatever is currently in the branch
@@ -4870,6 +5137,30 @@ void MainWindow::fixBranchConflictsWithAgent(const QString &branch,
 
 void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
 {
+    // In PR mode the comment gutters and review-thread actions are live: hand
+    // them to the PR handlers (they act on m_currentPullNumber), then re-render
+    // this pane so the new/changed thread shows here too (adhoc #107).
+    const QString href = url.toString(QUrl::FullyDecoded);
+    if (m_branchDiffPullNumber >= 0 &&
+        (href.startsWith(QLatin1String("thread:")) ||
+         url.scheme() == QLatin1String("cmt") ||
+         url.scheme() == QLatin1String("filecomment"))) {
+        // The PR tab may have moved on to another PR since this pane opened;
+        // re-anchor it so the comment lands on the PR being reviewed here.
+        if (m_currentPullNumber != m_branchDiffPullNumber)
+            showPull(m_branchDiffPullNumber);
+        const int scroll =
+            m_branchDiffView ? m_branchDiffView->verticalScrollBar()->value() : 0;
+        onPullDiffAnchorClicked(url); // dialogs pump the event loop; members only
+        if (m_branchDiffLastValid)
+            renderBranchDiffPatch(QString::fromUtf8(m_branchDiffLastPatch),
+                                  m_branchDiffLastEmpty, m_branchDiffViewedContext);
+        else
+            renderBranchScopeDiff();
+        if (m_branchDiffView)
+            m_branchDiffView->verticalScrollBar()->setValue(scroll);
+        return;
+    }
     if (url.scheme() != QLatin1String("viewed"))
         return;
     const QString path = url.path();
@@ -4896,47 +5187,295 @@ void MainWindow::onBranchDiffAnchorClicked(const QUrl &url)
         m_branchDiffView->verticalScrollBar()->setValue(scroll);
 }
 
+// Absolute document y-position of each file header (aligned to
+// m_branchDiffFileSpans), collected in one pass and cached until the next
+// re-render — the per-scroll-tick sticky/progress update just reads the cache
+// (mirrors computePullFileTops, adhoc #107).
+void MainWindow::computeBranchFileTops()
+{
+    m_branchFileTops.assign(m_branchDiffFileSpans.size(), -1);
+    if (!m_branchDiffView || m_branchDiffFileSpans.isEmpty())
+        return;
+    QScrollBar *vbar = m_branchDiffView->verticalScrollBar();
+    const int viewTop = vbar ? vbar->value() : 0;
+    QTextDocument *doc = m_branchDiffView->document();
+    for (int i = 0; i < m_branchDiffFileSpans.size(); ++i) {
+        QTextCursor cur(doc);
+        cur.setPosition(
+            qMin(m_branchDiffFileSpans.at(i).first, doc->characterCount() - 1));
+        m_branchFileTops[i] = m_branchDiffView->cursorRect(cur).top() + viewTop;
+    }
+}
+
+// Runs on every scroll tick of the branch/PR diff (cheap; no re-render): mirrors
+// the current file's header into the sticky bar, advances the Pac-Man chart by
+// how much of the file has scrolled past, and selects the file in the list so it
+// follows the scroll — the same behaviour as the PR viewer's sticky (adhoc #107).
 void MainWindow::updateBranchDiffSticky()
 {
     if (!m_branchDiffView || !m_branchDiffSticky)
         return;
-    const int sv = m_branchDiffView->verticalScrollBar()->value();
-    QString cur;
-    if (!m_branchDiffFileSpans.isEmpty()) {
-        const QTextCursor top = m_branchDiffView->cursorForPosition(QPoint(2, 2));
-        const int pos = top.position();
-        for (const auto &span : m_branchDiffFileSpans) {
-            if (span.first <= pos)
-                cur = span.second;
-            else
-                break;
-        }
-    }
-    if (cur.isEmpty() || sv <= 0) {
+    QScrollBar *vbar = m_branchDiffView->verticalScrollBar();
+    if (!vbar)
+        return;
+    if (m_branchDiffFileSpans.isEmpty()) {
         m_branchDiffSticky->hide();
         return;
     }
+    const int viewTop = vbar->value();
+    const int viewBottom = viewTop + m_branchDiffView->viewport()->height();
+    const int docHeight =
+        m_branchDiffView->document()->documentLayout()->documentSize().height();
+    if (m_branchFileTops.size() != m_branchDiffFileSpans.size())
+        computeBranchFileTops();
+
+    // The file at the top of the viewport is the first whose section still
+    // reaches below the top edge.
+    int idx = -1, fileTop = 0, fileBottom = 0;
+    for (int i = 0; i < m_branchDiffFileSpans.size(); ++i) {
+        if (m_branchFileTops.at(i) < 0)
+            continue;
+        const int bottom =
+            (i + 1 < m_branchFileTops.size() && m_branchFileTops.at(i + 1) >= 0)
+                ? m_branchFileTops.at(i + 1)
+                : docHeight;
+        if (bottom > viewTop) {
+            idx = i;
+            fileTop = m_branchFileTops.at(i);
+            fileBottom = bottom;
+            break;
+        }
+    }
+    if (idx < 0) {
+        m_branchDiffSticky->hide();
+        return;
+    }
+    const QString cur = m_branchDiffFileSpans.at(idx).second;
+
+    // Fraction of the file's extent that has passed the viewport's bottom edge.
+    double progress = 1.0;
+    if (fileBottom > fileTop)
+        progress = double(viewBottom - fileTop) / double(fileBottom - fileTop);
+    progress = qBound(0.0, progress, 1.0);
+
     const QString viewedContext = m_branchDiffViewedContext.isEmpty()
                                       ? QStringLiteral("branch/") + m_branchDiffBranch
                                       : m_branchDiffViewedContext;
     const bool isViewed = loadDiffViewed(viewedContext).contains(cur);
-    const QString encPath = QString::fromLatin1(QUrl::toPercentEncoding(cur));
-    const QString pathHtml = diffStickyPathHtml(cur);
-    m_branchDiffSticky->setText(
-        QStringLiteral("<table width='100%' cellspacing='0' cellpadding='0'><tr><td>%1"
-                       "</td><td align='right'>"
-                       "<a style='color:%2; text-decoration:none' href='viewed:%3'>"
-                       "<span style='font-size:19px'>%4</span> Viewed</a>"
-                       "</td></tr></table>")
-            .arg(pathHtml,
-                 isViewed ? QStringLiteral("#3fb950") : QStringLiteral("#8b949e"),
-                 encPath,
-                 isViewed ? QString::fromUtf8("\xE2\x98\x91")
-                          : QString::fromUtf8("\xE2\x98\x90")));
+    if (cur != m_branchStickyFile) {
+        m_branchStickyFile = cur;
+        if (m_branchStickyPath)
+            m_branchStickyPath->setText(diffStickyPathHtml(cur));
+        // The changed-files list follows the scroll.
+        if (m_branchFileList) {
+            for (int row = 0; row < m_branchFileList->count(); ++row) {
+                QListWidgetItem *item = m_branchFileList->item(row);
+                if (!item || item->data(Qt::UserRole + 1).toString() != cur)
+                    continue;
+                if (m_branchFileList->currentItem() != item) {
+                    m_branchSuppressFileScroll = true;
+                    m_branchFileList->setCurrentItem(item);
+                    m_branchFileList->scrollToItem(item);
+                    m_branchSuppressFileScroll = false;
+                }
+                break;
+            }
+        }
+    }
+    if (m_branchStickyViewed)
+        m_branchStickyViewed->setText(isViewed
+                                          ? QString::fromUtf8("\xE2\x98\x91 Viewed")
+                                          : QString::fromUtf8("\xE2\x98\x90 Viewed"));
+    if (m_branchStickyPacman) {
+        m_branchStickyPacman->setColor(progress >= 0.999 || isViewed
+                                           ? QColor(0x3f, 0xb9, 0x50)
+                                           : QColor(0x58, 0xa6, 0xff));
+        m_branchStickyPacman->setProgress(isViewed ? 1.0 : progress);
+    }
+    if (m_branchStickyPercent) {
+        const int percent = isViewed ? 100 : qBound(0, qRound(progress * 100.0), 100);
+        m_branchStickyPercent->setText(QStringLiteral("%1% read").arg(percent));
+    }
+
     m_branchDiffSticky->setGeometry(0, 0, m_branchDiffView->viewport()->width(),
                                     m_branchDiffSticky->sizeHint().height());
+    // Do not cover the real per-file header while it is still visible.
+    if (viewTop <= fileTop + m_branchDiffSticky->sizeHint().height()) {
+        m_branchDiffSticky->hide();
+        return;
+    }
     m_branchDiffSticky->show();
     m_branchDiffSticky->raise();
+}
+
+// Debounced off the branch diff's scrollbar: mark every file scrolled fully
+// through (its end reached the viewport bottom) as Viewed, re-render once for
+// the batch and keep the current file on screen — the PR viewer's
+// read-as-you-scroll behaviour, brought over with the pane (adhoc #107).
+void MainWindow::applyBranchAutoMarkViewedOnScroll()
+{
+    if (!m_branchDiffView || m_branchDiffFileSpans.isEmpty() ||
+        !m_branchDiffLastValid || !autoMarkViewedOnScrollPref())
+        return;
+    QScrollBar *vbar = m_branchDiffView->verticalScrollBar();
+    if (!vbar)
+        return;
+    const int viewBottom = vbar->value() + m_branchDiffView->viewport()->height();
+    const int docHeight =
+        m_branchDiffView->document()->documentLayout()->documentSize().height();
+    if (m_branchFileTops.size() != m_branchDiffFileSpans.size())
+        computeBranchFileTops();
+
+    const QString context = m_branchDiffViewedContext.isEmpty()
+                                ? QStringLiteral("branch/") + m_branchDiffBranch
+                                : m_branchDiffViewedContext;
+    const QSet<QString> viewed = loadDiffViewed(context);
+    QString currentFile; // first file the reviewer hasn't fully scrolled through
+    QStringList newlyViewed;
+    for (int i = 0; i < m_branchDiffFileSpans.size(); ++i) {
+        if (m_branchFileTops.at(i) < 0)
+            continue;
+        const int bottom =
+            (i + 1 < m_branchFileTops.size() && m_branchFileTops.at(i + 1) >= 0)
+                ? m_branchFileTops.at(i + 1)
+                : docHeight;
+        const QString &path = m_branchDiffFileSpans.at(i).second;
+        if (bottom <= viewBottom) {
+            if (!viewed.contains(path))
+                newlyViewed << path;
+        } else if (currentFile.isEmpty()) {
+            currentFile = path;
+        }
+    }
+    if (newlyViewed.isEmpty())
+        return;
+    for (const QString &path : std::as_const(newlyViewed))
+        setDiffViewed(context, path, true);
+    renderBranchDiffPatch(QString::fromUtf8(m_branchDiffLastPatch),
+                          m_branchDiffLastEmpty, context);
+    if (!currentFile.isEmpty() && m_branchFileList) {
+        // Collapsing the files above shifted the document; land back on the
+        // file still being read (anchors are rebuilt by the render above).
+        for (int row = 0; row < m_branchFileList->count(); ++row) {
+            QListWidgetItem *item = m_branchFileList->item(row);
+            if (item && item->data(Qt::UserRole + 1).toString() == currentFile) {
+                flushDiffStream(m_branchDiffView);
+                m_branchDiffView->scrollToAnchor(
+                    item->data(Qt::UserRole).toString());
+                break;
+            }
+        }
+    }
+}
+
+// Scroll the branch/PR diff to the next/previous hunk header ("@@ -"), the same
+// navigation the PR viewer's Prev/Next change buttons provide (adhoc #107).
+bool MainWindow::branchScrollToAdjacentHunk(int delta)
+{
+    if (!m_branchDiffView)
+        return false;
+    QScrollBar *vbar = m_branchDiffView->verticalScrollBar();
+    if (!vbar)
+        return false;
+    // Next/Prev reaches past the visible window, so land the whole diff first.
+    flushDiffStream(m_branchDiffView);
+    const int curTop = vbar->value();
+    int target = delta > 0 ? std::numeric_limits<int>::max()
+                           : std::numeric_limits<int>::min();
+    QTextCursor cur(m_branchDiffView->document());
+    while (true) {
+        cur = m_branchDiffView->document()->find(QStringLiteral("@@ -"), cur);
+        if (cur.isNull())
+            break;
+        QTextCursor lineCur(cur);
+        lineCur.setPosition(cur.selectionStart());
+        lineCur.movePosition(QTextCursor::StartOfLine);
+        const int y = m_branchDiffView->cursorRect(lineCur).top() + curTop;
+        if (delta > 0) {
+            if (y > curTop + 4)
+                target = std::min(target, y);
+        } else if (y < curTop - 4) {
+            target = std::max(target, y);
+        }
+    }
+    if (delta > 0 ? target == std::numeric_limits<int>::max()
+                  : target == std::numeric_limits<int>::min())
+        return false; // no further hunk in that direction
+    vbar->setValue(std::clamp(target - 4, vbar->minimum(), vbar->maximum()));
+    return true;
+}
+
+// Show or hide the range pane's find bar; hiding clears the search text (and so
+// the highlights), matching the PR viewer's bar (issue #333, adhoc #107).
+void MainWindow::toggleBranchDiffSearch(bool show)
+{
+    if (!m_branchDiffSearchBar || !m_branchDiffSearchInput)
+        return;
+    m_branchDiffSearchBar->setVisible(show);
+    if (show) {
+        m_branchDiffSearchInput->setFocus();
+        m_branchDiffSearchInput->selectAll();
+    } else {
+        m_branchDiffSearchInput->clear(); // triggers recompute; clears highlights
+        if (m_branchDiffView)
+            m_branchDiffView->setFocus();
+    }
+}
+
+// Re-scan the branch/PR diff for the current search text and highlight every
+// match; called on every keystroke and after each re-render.
+void MainWindow::branchDiffSearchRecompute()
+{
+    if (!m_branchDiffView)
+        return;
+    m_branchDiffSearchMatches.clear();
+    m_branchDiffSearchIndex = -1;
+
+    const QString term =
+        m_branchDiffSearchInput ? m_branchDiffSearchInput->text() : QString();
+    if (!term.isEmpty()) {
+        // Search covers the whole diff, not just the rendered window.
+        flushDiffStream(m_branchDiffView);
+        QTextCursor cur = m_branchDiffView->document()->find(term);
+        while (!cur.isNull()) {
+            m_branchDiffSearchMatches.append(cur);
+            if (m_branchDiffSearchMatches.size() >= 5000)
+                break; // safety cap on pathological match counts
+            cur = m_branchDiffView->document()->find(term, cur);
+        }
+        if (!m_branchDiffSearchMatches.isEmpty())
+            m_branchDiffSearchIndex = 0;
+    }
+
+    applyDiffSearchHighlights(m_branchDiffView, m_branchDiffSearchMatches,
+                              m_branchDiffSearchIndex, m_branchDiffSearchCount,
+                              term.isEmpty());
+    if (m_branchDiffSearchIndex >= 0)
+        branchDiffSearchGoTo(0);
+}
+
+// Step the active match by delta (wrapping), re-highlight, and scroll it into
+// view; delta of 0 just scrolls to the current match.
+void MainWindow::branchDiffSearchGoTo(int delta)
+{
+    if (!m_branchDiffView || m_branchDiffSearchMatches.isEmpty())
+        return;
+    QScrollBar *vbar = m_branchDiffView->verticalScrollBar();
+    if (!vbar)
+        return;
+    const int count = m_branchDiffSearchMatches.size();
+    m_branchDiffSearchIndex =
+        ((m_branchDiffSearchIndex + delta) % count + count) % count;
+    applyDiffSearchHighlights(m_branchDiffView, m_branchDiffSearchMatches,
+                              m_branchDiffSearchIndex, m_branchDiffSearchCount,
+                              false);
+    const QTextCursor &target =
+        m_branchDiffSearchMatches.at(m_branchDiffSearchIndex);
+    QTextCursor lineCur(target);
+    lineCur.setPosition(target.selectionStart());
+    const int y = m_branchDiffView->cursorRect(lineCur).top() + vbar->value();
+    const int centered = y - m_branchDiffView->viewport()->height() / 3;
+    vbar->setValue(std::clamp(centered, vbar->minimum(), vbar->maximum()));
 }
 
 QString MainWindow::diffViewedScope(const QString &context) const
