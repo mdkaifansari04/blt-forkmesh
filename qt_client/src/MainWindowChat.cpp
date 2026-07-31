@@ -748,8 +748,8 @@ QWidget *MainWindow::buildNetworkLogDock()
         "What picks this prompt up: CC (Claude Code) or Codex run the CLI agents, "
         "OpenAI/Claude API run the headless API agents, and Manual files an issue "
         "instead of starting one.");
-    m_quickAddAgentProvider->setMinimumWidth(74);
-    m_quickAddAgentProvider->setMaximumWidth(112);
+    // No fixed width band (adhoc #72): FullPopupComboBox sizes itself to the
+    // label it is showing, so the four dropdowns take only the room they need.
     // Show the whole list at once rather than a scrollable popup (adhoc #99).
     m_quickAddAgentProvider->setMaxVisibleItems(30);
     m_quickAddAgentProvider->view()->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -757,11 +757,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // list; Codex uses the ChatGPT-backed Codex CLI's supported model list.
     m_quickAddClaudeModel = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
-    m_quickAddClaudeModel->setMinimumWidth(94);
-    m_quickAddClaudeModel->setMaximumWidth(150);
-    m_quickAddClaudeModel->setMinimumContentsLength(8);
-    m_quickAddClaudeModel->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
     // Show the whole model list at once rather than a scrollable popup, even
     // once the live provider list-up fills in more than a handful (adhoc #99).
     m_quickAddClaudeModel->setMaxVisibleItems(30);
@@ -819,11 +814,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // a distinct approval policy and sandbox, including interactive requests.
     m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddModeSelector->setObjectName("quickAddModeSelector");
-    m_quickAddModeSelector->setMinimumWidth(66);
-    m_quickAddModeSelector->setMaximumWidth(104);
-    m_quickAddModeSelector->setMinimumContentsLength(5);
-    m_quickAddModeSelector->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_quickAddModeSelector->addItem(kAgentAskModeLabel, false);
     m_quickAddModeSelector->addItem(QStringLiteral("Edit"), false);
     m_quickAddModeSelector->addItem(QStringLiteral("Plan"), false);
@@ -856,11 +846,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     // refreshQuickAddSpeedSelector() and re-runs whenever either changes.
     m_quickAddSpeedSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddSpeedSelector->setObjectName("quickAddSpeedSelector");
-    m_quickAddSpeedSelector->setMinimumWidth(74);
-    m_quickAddSpeedSelector->setMaximumWidth(112);
-    m_quickAddSpeedSelector->setMinimumContentsLength(6);
-    m_quickAddSpeedSelector->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
     m_quickAddSpeedSelector->setMaxVisibleItems(30);
     m_quickAddSpeedSelector->setToolTip(
         "Speed: how hard the model thinks about each turn (the CLI's reasoning "
@@ -4546,6 +4531,10 @@ QWidget *MainWindow::buildLogSection()
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
     m_settingsLog->setOpenExternalLinks(true);
+    // Clicks on the leading "add to prompt" plus of an entry are handled in
+    // MainWindow::eventFilter before the browser's own anchor activation sees
+    // them (adhoc #114); http(s) links in the message body still open normally.
+    m_settingsLog->viewport()->installEventFilter(this);
     // No setMaximumBlockCount here: that trims blocks from the *top* of the
     // document, which would silently discard the older segments this view now
     // loads on demand when the user scrolls up (adhoc #15). m_networkLog
@@ -4835,6 +4824,23 @@ QWidget *MainWindow::buildBreadcrumb()
     m_relayMenuButton->setToolTip("Switch, search, or add relays");
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
+
+    // Red dot pinned over the favicon while a freshly launched instance waits
+    // to be linked (adhoc #97), with the Approve button that opens the join
+    // dialog right beside it. Both stay hidden until the signed heartbeat
+    // reply reports a pending join request for this admin.
+    m_relayJoinDot = new QLabel(m_relayMenuButton);
+    m_relayJoinDot->setObjectName(QStringLiteral("relayJoinDot"));
+    m_relayJoinDot->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_relayJoinDot->setFixedSize(10, 10);
+    m_relayJoinDot->hide();
+    m_relayJoinApproveButton = new QPushButton(QStringLiteral("Approve"));
+    m_relayJoinApproveButton->setObjectName(
+        QStringLiteral("relayJoinApproveButton"));
+    m_relayJoinApproveButton->setCursor(Qt::PointingHandCursor);
+    m_relayJoinApproveButton->hide();
+    connect(m_relayJoinApproveButton, &QPushButton::clicked, this,
+            &MainWindow::showRelayJoinApprovalDialog);
 
     // Spinning radar + once-a-minute latency readout, sitting just left of the
     // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
@@ -5445,6 +5451,7 @@ QWidget *MainWindow::buildBreadcrumb()
     // runs follow it (adhoc #70). The Agents button that used to head this group
     // is now a regular rail entry.
     chromeRow->addWidget(m_relayMenuButton);
+    chromeRow->addWidget(m_relayJoinApproveButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);

@@ -7387,21 +7387,44 @@ async def office_attendance_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
+    visit_id = str(data.get("visitId") or "").strip().lower()
+    if visit_id and not re.fullmatch(r"[0-9a-f]{32}", visit_id):
+        return json_response(
+            {"error": "invalid_visit"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
 
     await ensure_schema(env)
     now = int(Date.now())
     floor_id = _office_attendance_floor(data.get("floor"))
     initial_floor_id = floor_id or "lobby"
     if action == "in":
-        # The partial unique index on open visits makes repeated/concurrent
-        # background authorization requests converge on the same visit.
+        # A page/physical entry owns one visit id. Retrying that same IN remains
+        # idempotent, while a new page entry closes an abandoned open punch at
+        # its last heartbeat instead of inheriting its elapsed time.
+        if visit_id:
+            await d1_run(
+                env,
+                "UPDATE world_office_attendance "
+                "SET out_at=MAX(in_at,COALESCE(NULLIF(last_seen_at,0),in_at)), "
+                "floor_id='' "
+                "WHERE account_bi=? AND out_at IS NULL AND visit_id<>? "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM world_office_attendance WHERE visit_id=?"
+                ")",
+                str(account_bi),
+                visit_id,
+                visit_id,
+            )
         await d1_run(
             env,
             "INSERT OR IGNORE INTO world_office_attendance "
             "(visit_id, account_bi, account_name, in_at, out_at, "
             "last_seen_at, floor_id, visit_scope) "
             "VALUES (?, ?, ?, ?, NULL, ?, ?, 'office')",
-            new_world_peer_id(),
+            visit_id or new_world_peer_id(),
             str(account_bi),
             world_protocol.clean_display_name(
                 account.get("name"), "Contributor"),
@@ -7414,21 +7437,27 @@ async def office_attendance_handler(env, request):
             "UPDATE world_office_attendance "
             "SET last_seen_at=?, "
             "floor_id=CASE WHEN ?<>'' THEN ? ELSE floor_id END "
-            "WHERE account_bi=? AND out_at IS NULL",
+            "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?)",
             now,
             floor_id,
             floor_id,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     elif action == "heartbeat":
         await d1_run(
             env,
             "UPDATE world_office_attendance "
             "SET last_seen_at=?, floor_id=? "
-            "WHERE account_bi=? AND out_at IS NULL",
+            "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?)",
             now,
             initial_floor_id,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     else:
         # Close, in place, only this account's newest open visit. Repeated OUT
@@ -7440,11 +7469,14 @@ async def office_attendance_handler(env, request):
             "WHERE visit_id=("
             "SELECT visit_id FROM world_office_attendance "
             "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?) "
             "ORDER BY in_at DESC, visit_id DESC LIMIT 1"
             ") AND out_at IS NULL",
             now,
             now,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     visits = await _office_attendance_recent(env, now)
     return json_response(
@@ -18541,6 +18573,7 @@ async def _account_heartbeat(env, request):
     else:
         notification_preferences = dict(
             prefs_rec.get("notification_preferences") or {})
+    is_admin = await _is_admin(env, name)
     response = {"ok": True, "online": True,
                 "hasPayoutAddress": bool(rec.get("solana")),
                 "payoutCustody": "external-self-custodial-public-address",
@@ -18549,13 +18582,25 @@ async def _account_heartbeat(env, request):
                     "public balance only. ForkMesh holds no wallet key or user "
                     "funds, and balance never gates reward eligibility."
                 ),
-                "isAdmin": await _is_admin(env, name),
+                "isAdmin": is_admin,
                 "emailNotifications": prefs_rec.get("email_notifications") is not False,
                 "notificationPreferences": notification_preferences}
     if balance_lamports is not None:
         response["balanceLamports"] = balance_lamports
         response["balanceFundsState"] = "user-owned-external-wallet"
         response["balanceIncreased"] = balance_increased
+    # A freshly launched federated instance's join request rides back on the
+    # admin's own signed heartbeat (adhoc #97), the same rail as the claim /
+    # ownership payloads below: the desktop shows a red dot over the relay
+    # favicon plus an Approve button. Count only — relay details are fetched on
+    # demand through the signed admin-relays endpoint when the admin clicks.
+    if is_admin and _is_main_relay(env):
+        try:
+            pending_row = await d1_first(
+                env, "SELECT COUNT(*) AS n FROM relays WHERE status='pending'")
+            response["pendingRelays"] = int((pending_row or {}).get("n") or 0)
+        except Exception:
+            pass
     # A pending website claim (adhoc #53) rides back on the signed heartbeat:
     # only the node's key holder ever sees the confirmation code, and the node
     # shows it on its own screen for the claiming user to type into the site.
@@ -25199,6 +25244,44 @@ async def _federation_register(env, request):
     return json_response({"ok": True, "status": "pending"})
 
 
+# Launch-time join ping (adhoc #97): one announce per isolate per minute is
+# plenty — the endpoint only re-sends this relay's own idempotent registration.
+_FEDERATION_ANNOUNCE_MIN_MS = 60 * 1000
+_federation_announce_at = [0]
+
+
+async def _federation_announce(env, request):
+    """Register with the main relay now instead of on the next staggered cron.
+
+    A freshly deployed federated instance is POSTed here (on its own origin)
+    by the launch bootstrap the moment it passes its health check, so its
+    request to join shows up on the main relay — and as the red dot in the
+    operator's desktop — immediately. Unauthenticated by design: the request
+    body is ignored and the only effect is re-sending this relay's own signed
+    registration upstream (an idempotent upsert there), throttled per isolate.
+    """
+    del request
+    if _is_main_relay(env):
+        return json_response({"error": "not_federated_relay"}, status=404)
+    now = int(Date.now())
+    if now - _federation_announce_at[0] < _FEDERATION_ANNOUNCE_MIN_MS:
+        return json_response({"ok": True, "status": "throttled"},
+                             cache_control="no-store")
+    _federation_announce_at[0] = now
+    label = clean_string(getattr(env, "RELAY_LABEL", "") or "", 80)
+    base = clean_string(getattr(env, "PUBLIC_BASE_URL", "") or "", 200)
+    reply = await _call_main_relay(
+        env, "/api/federation/register", {"label": label, "baseUrl": base})
+    if not reply or not reply.get("ok"):
+        return json_response(
+            {"error": "main_relay_unreachable"}, status=502,
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
+    return json_response(
+        {"ok": True,
+         "status": clean_string(reply.get("status", "") or "pending", 20)},
+        cache_control="no-store")
+
+
 async def _federation_donation_address(env, request):
     del env, request
     return json_response({
@@ -25505,6 +25588,8 @@ async def federation_handler(env, request):
             "/api/relay-mesh/", "/api/federation/", 1))
     if url.path == "/api/federation/register":
         return await _federation_register(env, request)
+    if url.path == "/api/federation/announce":
+        return await _federation_announce(env, request)
     if url.path == "/api/federation/donation-address":
         return await _federation_donation_address(env, request)
     if url.path == "/api/federation/donation-status":
@@ -40304,6 +40389,7 @@ async def https_mirror_health_cron(env):
         """SELECT node_bi,node_name,base_url,public_key
              FROM mirror_https_endpoints
             ORDER BY
+              CASE WHEN checked_at = 0 THEN 0 ELSE 1 END ASC,
               CASE WHEN updated_at > checked_at
                    THEN updated_at ELSE checked_at END ASC,
               node_name ASC

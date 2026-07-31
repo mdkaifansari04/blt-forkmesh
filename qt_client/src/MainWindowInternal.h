@@ -147,6 +147,7 @@
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QStyleHints>
+#include <QStyleOptionComboBox>
 #include <QSyntaxHighlighter>
 #include <QAbstractItemView>
 #include <QHeaderView>
@@ -301,6 +302,11 @@ void flushDiffStream(QTextEdit *view);
 void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook);
 bool autoMarkViewedOnScrollPref();
 void setAutoMarkViewedOnScrollPref(bool on);
+// Paint find-in-diff matches as extra selections (active match brighter) and
+// update the "n/m" count label. Shared by the PR and branch/PR-range find bars.
+void applyDiffSearchHighlights(QTextBrowser *diff,
+                               const QList<QTextCursor> &matches, int activeIndex,
+                               QLabel *countLabel, bool termEmpty);
 QString diffStickyStyleSheet(int fontPt);
 QString diffStickyPathHtml(const QString &path);
 QString agentCostText(double usd);
@@ -3393,11 +3399,40 @@ inline void selectQuickAddAgentProvider(QComboBox *combo)
 // reliable workaround: given room for every row plus the container's scroller
 // chrome, nothing needs scrolling so Qt hides the arrows. When the list is
 // genuinely taller than the screen the arrows correctly stay (we cap there).
+// It also sizes itself to the item that is actually showing rather than to the
+// widest item in its list (adhoc #72). Qt's own hint measures every entry, so a
+// single long label — "GPT-5.5 Codex" in the model picker, "Claude API" in the
+// provider one — padded all four composer dropdowns with dead space even while
+// short labels like "CC" or "Auto" were selected.
 class FullPopupComboBox : public QComboBox {
 public:
-    using QComboBox::QComboBox;
+    explicit FullPopupComboBox(QWidget *parent = nullptr) : QComboBox(parent)
+    {
+        // Never wider than the selected label needs; the row's stretches take
+        // the leftover space instead of the dropdowns.
+        setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    }
+
+    QSize sizeHint() const override { return currentTextSizeHint(); }
+    QSize minimumSizeHint() const override { return currentTextSizeHint(); }
 
 protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        // The hint follows the selection, and the pickers are repopulated with
+        // signals blocked (refreshQuickAddSpeedSelector, the model refresh,
+        // applyLiveClaudeModelsToCombos), so currentIndexChanged is not a
+        // reliable place to re-ask for space. A repaint always follows a
+        // selection change: if the text about to be painted is not the one the
+        // last hint was measured from, relayout first. This settles after one
+        // extra layout pass — the next paint sees a matching label.
+        if (m_hintedText != currentText()) {
+            m_hintedText = currentText();
+            updateGeometry();
+        }
+        QComboBox::paintEvent(event);
+    }
+
     void showPopup() override
     {
         setMaxVisibleItems(qMax(maxVisibleItems(), count()));
@@ -3459,6 +3494,28 @@ protected:
             geo.moveTop(avail.top());
         popup->setGeometry(geo);
     }
+
+private:
+    // Same shape as QComboBox's own hint (font metrics for the contents, then
+    // the style adds frame and drop-down arrow) but measured from the current
+    // text alone instead of the widest item in the model.
+    QSize currentTextSizeHint() const
+    {
+        const QFontMetrics fm = fontMetrics();
+        const QString text = currentText();
+        QSize contents(fm.horizontalAdvance(text.isEmpty() ? QStringLiteral("XX") : text),
+                       qMax(fm.height(), 14) + 2);
+        const QIcon icon = currentIndex() >= 0 ? itemIcon(currentIndex()) : QIcon();
+        if (!icon.isNull()) {
+            contents.setWidth(contents.width() + iconSize().width() + 4);
+            contents.setHeight(qMax(contents.height(), iconSize().height()));
+        }
+        QStyleOptionComboBox opt;
+        initStyleOption(&opt);
+        return style()->sizeFromContents(QStyle::CT_ComboBox, &opt, contents, this);
+    }
+
+    QString m_hintedText;
 };
 
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
@@ -7878,6 +7935,51 @@ inline QString octiconMarkup(const QString &name, int size,
                "<img src='data:image/png;base64,%1' width='%2' height='%2'>")
         .arg(QString::fromLatin1(png.toBase64()))
         .arg(size);
+}
+
+// "Add to prompt" affordance for the log views (adhoc #114): a tiny plus glyph
+// pinned at the very left of every entry, wrapped in an anchor that carries the
+// entry's own text. Clicking it appends that line to the footer prompt box (see
+// MainWindow::eventFilter), so a line worth asking an agent about takes one
+// click instead of a select-copy-paste round trip.
+const QString kLogPromptAnchorPrefix = QStringLiteral("fmlogprompt:");
+// The document-resource URL the glyph is registered under, one copy per log
+// document (the same trick the site favicons use — far cheaper than a base64
+// data URI repeated on every one of a few hundred rendered lines).
+const QString kLogPromptIconResource = QStringLiteral("logprompt://add");
+
+inline QString logPromptAnchorHref(const QString &storedLine)
+{
+    // Percent-encoded, so the line's own quotes and ampersands can't break out
+    // of the href attribute.
+    return kLogPromptAnchorPrefix +
+           QString::fromLatin1(QUrl::toPercentEncoding(storedLine.trimmed()));
+}
+
+// The log line an anchor href carries, or an empty string when the href is not
+// one of ours (a plain http(s) link in the message body, most often).
+inline QString logPromptAnchorLine(const QString &href)
+{
+    if (!href.startsWith(kLogPromptAnchorPrefix))
+        return QString();
+    return QUrl::fromPercentEncoding(
+        href.mid(kLogPromptAnchorPrefix.size()).toLatin1());
+}
+
+// The leading icon markup for one log entry, registering the glyph on `view`'s
+// document so the <img> resolves there. Grey enough to read on both the Log
+// view's themed canvas and the footer strip's forced-white one.
+inline QString logPromptIconTag(QTextEdit *view, const QString &storedLine)
+{
+    if (!view || storedLine.trimmed().isEmpty())
+        return QString();
+    view->document()->addResource(
+        QTextDocument::ImageResource, QUrl(kLogPromptIconResource),
+        tintedOcticonPixmap(QStringLiteral("plus"), QColor("#8b949e"), 12));
+    return QStringLiteral(
+               "<a href='%1' style='text-decoration:none'><img src='%2' "
+               "width='11' height='11' style='vertical-align:middle'></a>&nbsp;")
+        .arg(logPromptAnchorHref(storedLine), kLogPromptIconResource);
 }
 
 inline QString serverHost(const QString &serverUrl)
