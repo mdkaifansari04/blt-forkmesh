@@ -454,7 +454,19 @@ QWidget *MainWindow::buildSetupPage()
     auto *setupContent = new QWidget;
     auto *setupContentLayout = new QVBoxLayout(setupContent);
     setupContentLayout->addStretch();
-    setupContentLayout->addWidget(card, 0, Qt::AlignHCenter);
+    // Centre the card with stretches, not Qt::AlignHCenter: the card wraps its
+    // subtitle (heightForWidth), and an aligned widget's height gets computed
+    // at the full row width rather than the card's fixed 420px. The taller,
+    // narrower reality was then squeezed by ~32px, which half-clipped the
+    // subtitle's second line and cut the descenders off the generated node
+    // name in the username field (adhoc #113: "the node name is a bit cut
+    // off"). Inside this row the card's cell is exactly its own width, so its
+    // wrapped height is computed correctly.
+    auto *cardRow = new QHBoxLayout;
+    cardRow->addStretch();
+    cardRow->addWidget(card);
+    cardRow->addStretch();
+    setupContentLayout->addLayout(cardRow);
     setupContentLayout->addStretch();
 
     auto *setupScroll = new QScrollArea;
