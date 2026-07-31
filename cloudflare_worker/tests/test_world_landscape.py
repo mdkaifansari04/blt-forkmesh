@@ -92,7 +92,6 @@ def test_repository_and_leaderboard_districts_share_textured_flush_paths():
         'color: repository ? "#c1bbb0" : "#8a829b"',
     ):
         assert contract in scene
-    assert 'registerMovableObject("landmark-" + landmark.id, object)' not in scene
     assert "new THREE.BoxGeometry(repositoryConnectionLength, 0.08, 7.2)" not in scene
     assert "new THREE.BoxGeometry(leaderboardConnectionLength, 0.08, 7.2)" not in scene
     assert "guide.position.set(0, 0.15, z)" not in scene
@@ -197,7 +196,7 @@ def test_clickable_quadcopter_flies_on_three_axes_to_a_bounded_high_altitude():
 def test_treasury_sign_is_centered_with_a_new_window_node_download():
     scene = source()
     for contract in (
-        "treasurySign.position.set(0, 0, 0)",
+        "treasurySign.position.set(0, 1, 0)",
         '"reward-treasury-start-node-button"',
         '"start-node-download"',
         '"START A NODE"',

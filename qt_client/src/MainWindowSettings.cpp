@@ -341,10 +341,10 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kPublishAgentsToWebSetting, enabled);
     });
 
-    auto *notifyLabel = new QLabel("NOTIFICATIONS");
+    auto *notifyLabel = new QLabel("PINGS");
     notifyLabel->setObjectName("sectionLabel");
     auto *pushAlertCheck =
-        new QCheckBox("Show a system alert when a push reaches a mirror");
+        new QCheckBox("Show a system ping when a push reaches a mirror");
     pushAlertCheck->setChecked(
         QSettings().value(kPushAlertSetting, false).toBool());
     pushAlertCheck->setToolTip(
@@ -354,14 +354,14 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kPushAlertSetting, enabled);
     });
     auto *actionAlertCombo = new QComboBox;
-    actionAlertCombo->addItem("Action alerts: all runs", QStringLiteral("all"));
-    actionAlertCombo->addItem("Action alerts: failures only",
+    actionAlertCombo->addItem("Action pings: all runs", QStringLiteral("all"));
+    actionAlertCombo->addItem("Action pings: failures only",
                               QStringLiteral("failed"));
-    actionAlertCombo->addItem("Action alerts: off", QStringLiteral("none"));
+    actionAlertCombo->addItem("Action pings: off", QStringLiteral("none"));
     actionAlertCombo->setToolTip(
         "Desktop notifications for .forkmesh/ workflows: pop one for every run "
         "(start and finish), only when a run fails, or never. The in-app "
-        "Notifications page logs every run regardless.");
+        "Pings page logs every run regardless.");
     {
         const int idx = actionAlertCombo->findData(actionAlertMode());
         actionAlertCombo->setCurrentIndex(idx < 0 ? 0 : idx);
@@ -372,7 +372,7 @@ QWidget *MainWindow::buildSettingsSection()
                                      actionAlertCombo->currentData().toString());
             });
     auto *nodeConnectAlertCheck =
-        new QCheckBox("Show a system alert when a node connects");
+        new QCheckBox("Show a system ping when a node connects");
     nodeConnectAlertCheck->setChecked(
         QSettings().value(kNodeConnectAlertSetting, false).toBool());
     nodeConnectAlertCheck->setToolTip(
@@ -383,7 +383,7 @@ QWidget *MainWindow::buildSettingsSection()
     });
     auto *disbursementAlertCheck =
         new QCheckBox(
-            "Show a system alert when your public wallet balance increases");
+            "Show a system ping when your public wallet balance increases");
     disbursementAlertCheck->setChecked(
         QSettings().value(kDisbursementAlertSetting, false).toBool());
     disbursementAlertCheck->setToolTip(
@@ -405,35 +405,35 @@ QWidget *MainWindow::buildSettingsSection()
         return box;
     };
     auto *chatMessageAlertCheck = alertCheck(
-        "Show a system alert for new chat messages", kChatMessageAlertSetting,
+        "Show a system ping for new chat messages", kChatMessageAlertSetting,
         "Pop up a desktop notification when a chat message arrives while ForkMesh "
         "isn't the active window.");
     auto *mentionAlertCheck = alertCheck(
-        "Show a system alert when you're @mentioned", kMentionAlertSetting,
+        "Show a system ping when you're @mentioned", kMentionAlertSetting,
         "Pop up a desktop notification when your node name is mentioned in chat or "
         "in an issue/pull request.");
     auto *issueAlertCheck = alertCheck(
-        "Show a system alert for new issues", kIssueAlertSetting,
+        "Show a system ping for new issues", kIssueAlertSetting,
         "Pop up a desktop notification when another node files an issue on one of "
         "your repositories.");
     auto *pullAlertCheck = alertCheck(
-        "Show a system alert for new pull requests", kPullAlertSetting,
+        "Show a system ping for new pull requests", kPullAlertSetting,
         "Pop up a desktop notification when another node opens a pull request on "
         "one of your repositories.");
     auto *commentAlertCheck = alertCheck(
-        "Show a system alert for new issue comments", kCommentAlertSetting,
+        "Show a system ping for new issue comments", kCommentAlertSetting,
         "Pop up a desktop notification when someone comments on one of your "
         "issues.");
     auto *mirrorUpdateAlertCheck = alertCheck(
-        "Show a system alert when a mirror updates", kMirrorUpdateAlertSetting,
+        "Show a system ping when a mirror updates", kMirrorUpdateAlertSetting,
         "Pop up a desktop notification when a peer refreshes the mirror of a repo "
         "you also mirror.");
     auto *coveOpenAlertCheck = alertCheck(
-        "Show a system alert when a cove is opened", kCoveOpenAlertSetting,
+        "Show a system ping when a cove is opened", kCoveOpenAlertSetting,
         "Pop up a desktop notification when someone opens an encrypted cove you "
         "created with notifications enabled.");
     auto *newUserAlertCheck = alertCheck(
-        "Show a system alert when a new user joins", kNewUserAlertSetting,
+        "Show a system ping when a new user joins", kNewUserAlertSetting,
         "Admin: pop up a desktop notification when a new user signs up and needs "
         "email verification.");
 
@@ -1571,6 +1571,12 @@ QWidget *MainWindow::buildSettingsSection()
     auto *leaveButton = new QPushButton("Leave node");
     leaveButton->setObjectName("dangerButton");
     leaveButton->setCursor(Qt::PointingHandCursor);
+    // Same action as the profile panel's "Disconnect": mesh only, the account
+    // stays signed in. Spelled out so it is never confused with the account
+    // logout sitting two buttons along (adhoc #63).
+    leaveButton->setToolTip(
+        "Disconnect this machine from the mesh and return to the setup "
+        "screen. Your ForkMesh account stays signed in on this machine.");
     setOcticon(leaveButton, "sign-out", 16);
     connect(leaveButton, &QPushButton::clicked, this, [this] { leaveSession(); });
 
@@ -1598,10 +1604,16 @@ QWidget *MainWindow::buildSettingsSection()
             [this] { loginToUserAccount(); });
 
     // Log out clears the signed-in account so you can log back in (as the same
-    // or a different account).
-    auto *logoutButton = new QPushButton("Log out");
+    // or a different account). "of account" is part of the label: this is the
+    // only one of the app's three sign-out-ish buttons that drops the account
+    // rather than just the mesh session (adhoc #63).
+    auto *logoutButton = new QPushButton("Log out of account");
     logoutButton->setObjectName("ghostButton");
     logoutButton->setCursor(Qt::PointingHandCursor);
+    logoutButton->setToolTip(
+        "Sign this machine out of its ForkMesh user account: revokes the "
+        "website session, forgets the account here, and returns to the login "
+        "screen. Repositories and settings on this computer are kept.");
     setOcticon(logoutButton, "sign-out", 16);
     connect(logoutButton, &QPushButton::clicked, this, [this] { logout(); });
 
@@ -1774,7 +1786,7 @@ QWidget *MainWindow::buildSettingsSection()
     notifyCol->addWidget(emailHostOnlineCheck);
     notifyCol->addWidget(emailHostOfflineCheck);
     notifyCol->addStretch();
-    addTab(notifyTab, "Notifications");
+    addTab(notifyTab, "Pings");
 
     // Agents & IDE: model keys/commands and editor integration.
     auto *agentsTab = new QWidget;
@@ -4066,8 +4078,12 @@ void MainWindow::rebuildLogFilterButtons()
 
     auto addChip = [this](const QString &label, const QString &category,
                           const QString &tip = QString()) {
-        auto *chip = new QPushButton(label);
+        auto *chip = new QPushButton(logFilterChipLabel(label, category));
         chip->setObjectName("logFilterChip");
+        // Remembered so updateLogFilterChipCounts() can refresh just the number
+        // on each chip instead of tearing the whole row down per log line.
+        chip->setProperty("logChipName", label);
+        chip->setProperty("logChipCategory", category);
         chip->setCheckable(true);
         chip->setChecked(m_logFilter == category);
         chip->setCursor(Qt::PointingHandCursor);
@@ -4116,10 +4132,39 @@ void MainWindow::rebuildLogFilterButtons()
     };
     for (const char *b : order) {
         const QString badge = QString::fromLatin1(b);
-        if (m_logFilterCategories.contains(badge))
+        if (m_logFilterCounts.value(badge) > 0)
             addChip(badge, badge);
     }
     m_logFilterRow->addStretch();
+}
+
+// How many buffered events a chip covers, appended to its name (adhoc #64) so
+// the row doubles as a tally of what the log actually contains. A count of zero
+// — the pinned STALL chip on a healthy session — shows the bare name rather
+// than a "0", which would read as a broken counter.
+QString MainWindow::logFilterChipLabel(const QString &name,
+                                       const QString &category) const
+{
+    const int count = category.isEmpty() ? m_networkLog.size()
+                                         : m_logFilterCounts.value(category);
+    return count > 0 ? QStringLiteral("%1 %2").arg(name).arg(count) : name;
+}
+
+// Repaint the counts in place. logSystem() runs on every network event, so a
+// full rebuildLogFilterButtons() per line (two dozen buttons destroyed and
+// recreated) would be wasteful — and would drop the chip the user is hovering.
+void MainWindow::updateLogFilterChipCounts()
+{
+    if (!m_logFilterRow)
+        return;
+    for (int i = 0; i < m_logFilterRow->count(); ++i) {
+        QLayoutItem *item = m_logFilterRow->itemAt(i);
+        auto *chip = item ? qobject_cast<QPushButton *>(item->widget()) : nullptr;
+        if (!chip)
+            continue;
+        chip->setText(logFilterChipLabel(chip->property("logChipName").toString(),
+                                         chip->property("logChipCategory").toString()));
+    }
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -4138,8 +4183,10 @@ QStringList MainWindow::testLogFilterChipLabels() const
 void MainWindow::testResetNetworkLog()
 {
     m_networkLog.clear();
+    m_logFilterCounts.clear(); // the chip counts describe the buffer we just emptied
     m_networkLogDiskLines = 0;
     QFile::remove(networkLogPath());
+    rebuildLogFilterButtons();
     rebuildNetworkLogView();
 }
 #endif
@@ -4276,7 +4323,16 @@ void MainWindow::logSystem(const QString &text)
     plain.replace(QChar(0x2026), QStringLiteral("..."));
     const QString line = time + "  " + plain;
     m_networkLog.append(line);
+    bool chipsChanged = false;
     while (m_networkLog.size() > kNetworkLogLimit) {
+        // The counts describe the buffered history, so a line ageing out of it
+        // gives its category's chip back a tally point (and retires the chip
+        // entirely once it was the last line of its kind).
+        const QString dropped = logBadgeFor(m_networkLog.first());
+        if (--m_logFilterCounts[dropped] <= 0) {
+            m_logFilterCounts.remove(dropped);
+            chipsChanged = true;
+        }
         m_networkLog.removeFirst();
         // m_logRenderFrom indexes into m_networkLog; trimming the front shifts
         // every index down by one, so keep it pointed at the same line.
@@ -4286,10 +4342,12 @@ void MainWindow::logSystem(const QString &text)
 
     // A category we haven't seen yet earns its own quick-filter chip.
     const QString badge = networkLogStyleFor(plain).badge;
-    if (!m_logFilterCategories.contains(badge)) {
-        m_logFilterCategories.insert(badge);
+    if (++m_logFilterCounts[badge] == 1)
+        chipsChanged = true;
+    if (chipsChanged)
         rebuildLogFilterButtons(); // no-ops until the log section is built
-    }
+    else
+        updateLogFilterChipCounts(); // just repaint the numbers
     // Only render the line if it passes the active filter. The first line to
     // pass while the "No X events recorded." notice is up rebuilds the view so
     // the notice goes away instead of sitting above the entry.

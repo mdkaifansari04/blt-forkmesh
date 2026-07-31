@@ -69,7 +69,6 @@ def _harness(owner_e2ee=False):
         "issue_inbox": [],       # {"repo_bi","data"}
         "pull_inbox": [],
         "discussion_inbox": [],
-        "commit_inbox": [],
         "repo_merge_jobs": [],
     }
     agent_prompts = []  # {"id","repo_bi","data"}

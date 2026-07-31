@@ -455,7 +455,16 @@ class CloudflareAPI:
         return "; ".join(messages) or "request was rejected"
 
     def verify_token(self) -> None:
-        result = self.request("GET", "/user/tokens/verify")
+        try:
+            result = self.request("GET", "/user/tokens/verify")
+        except BootstrapError as error:
+            # Account-owned API tokens are valid for the account/zone calls
+            # this client makes, but the user-scoped verify endpoint rejects
+            # them with HTTP 401 "Invalid API Token". Defer to the account
+            # resolution that always follows, which still fails closed.
+            if "HTTP 401" in str(error):
+                return
+            raise
         if not isinstance(result, dict) or result.get("status") != "active":
             raise BootstrapError("Cloudflare API token is not active")
 

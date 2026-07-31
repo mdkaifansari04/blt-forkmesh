@@ -876,6 +876,17 @@ QString sshConnectionFailureHint(int exitCode, const QString &outputTail,
     return {};
 }
 
+bool sshFailureNeedsPassword(int exitCode, const QString &outputTail)
+{
+    if (exitCode != 255)
+        return false;
+    const QString tail = outputTail.toLower();
+    return tail.contains(QStringLiteral("permission denied")) ||
+           tail.contains(QStringLiteral("authentication failed")) ||
+           tail.contains(
+               QStringLiteral("no supported authentication methods"));
+}
+
 QJsonArray loadSavedHosts(QSettings &settings, const QString &settingsKey,
                           QHash<QString, QString> *sessionPasswords)
 {
@@ -1968,6 +1979,25 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
     // automatic mirror size; operators can still install manually on custom
     // hosts whose temporary-storage layout meets the same runtime needs.
     constexpr double kMinimumMirrorRamMb = 1024.0;
+    const auto hasUsLocation = [](const QJsonObject &plan) {
+        static const QSet<QString> usRegions{
+            QStringLiteral("ewr"), // Newark, New Jersey / New York metro
+            QStringLiteral("atl"), // Atlanta
+            QStringLiteral("ord"), // Chicago
+            QStringLiteral("dfw"), // Dallas
+            QStringLiteral("mia"), // Miami
+            QStringLiteral("lax"), // Los Angeles
+            QStringLiteral("sea"), // Seattle
+            QStringLiteral("sjc"), // Silicon Valley
+            QStringLiteral("hon"), // Honolulu
+        };
+        for (const QJsonValue &value :
+             plan.value(QStringLiteral("locations")).toArray()) {
+            if (usRegions.contains(value.toString().trimmed().toLower()))
+                return true;
+        }
+        return false;
+    };
     QJsonObject best;
     for (const QJsonValue &value : plans) {
         const QJsonObject plan = value.toObject();
@@ -1976,8 +2006,7 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
         const QString id = plan.value(QStringLiteral("id")).toString();
         if (id.isEmpty() || !std::isfinite(cost) || cost <= 0.0 ||
             !std::isfinite(ram) || ram < kMinimumMirrorRamMb ||
-            !vultrPlanHasIpv4(plan) ||
-            plan.value(QStringLiteral("locations")).toArray().isEmpty()) {
+            !vultrPlanHasIpv4(plan) || !hasUsLocation(plan)) {
             continue;
         }
         if (best.isEmpty()) {
@@ -2004,15 +2033,33 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
 
 QString vultrPlanRegion(const QJsonObject &plan)
 {
-    QStringList locations;
+    // Keep automatically provisioned World mirrors in the United States.
+    // Newark is the closest Vultr region to New York City, followed by
+    // Atlanta; the remaining US locations provide deterministic capacity
+    // fallbacks without silently placing a mirror on another continent.
+    static const QStringList preferredUsRegions{
+        QStringLiteral("ewr"),
+        QStringLiteral("atl"),
+        QStringLiteral("ord"),
+        QStringLiteral("dfw"),
+        QStringLiteral("mia"),
+        QStringLiteral("lax"),
+        QStringLiteral("sea"),
+        QStringLiteral("sjc"),
+        QStringLiteral("hon"),
+    };
+    QSet<QString> locations;
     for (const QJsonValue &value :
          plan.value(QStringLiteral("locations")).toArray()) {
-        const QString region = value.toString().trimmed();
+        const QString region = value.toString().trimmed().toLower();
         if (!region.isEmpty())
-            locations.append(region);
+            locations.insert(region);
     }
-    std::sort(locations.begin(), locations.end());
-    return locations.isEmpty() ? QString() : locations.first();
+    for (const QString &region : preferredUsRegions) {
+        if (locations.contains(region))
+            return region;
+    }
+    return {};
 }
 
 QJsonObject latestVultrDebianOs(const QJsonArray &osList)
@@ -2544,6 +2591,488 @@ QString cloudflareDnsRecordId(const QJsonArray &records,
         found = id;
     }
     return found;
+}
+
+// --- Cloudflare API token check and rotation (adhoc #108) ------------------
+
+namespace {
+
+const QRegularExpression &cloudflareIdPattern()
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^[A-Za-z0-9]{1,64}$"));
+    return pattern;
+}
+
+// The scope string Cloudflare tags a permission group with, and the resource
+// key prefix a policy for it must use.
+QString cloudflareScopeString(const QString &scope)
+{
+    if (scope == QLatin1String("account"))
+        return QStringLiteral("com.cloudflare.api.account");
+    if (scope == QLatin1String("zone"))
+        return QStringLiteral("com.cloudflare.api.account.zone");
+    if (scope == QLatin1String("user"))
+        return QStringLiteral("com.cloudflare.api.user");
+    return {};
+}
+
+// Accept either a full Cloudflare envelope or the bare `result` object, so
+// callers can hand over whatever they already have.
+QJsonObject cloudflareResultObject(const QJsonObject &response)
+{
+    const QJsonValue result = response.value(QStringLiteral("result"));
+    return result.isObject() ? result.toObject() : response;
+}
+
+// Every resource key a token's policies name, flattened over the nested form
+// Cloudflare uses for "all zones in this account".
+QStringList cloudflarePolicyResourceKeys(const QJsonObject &tokenDetail)
+{
+    QStringList keys;
+    const QJsonArray policies =
+        cloudflareResultObject(tokenDetail)
+            .value(QStringLiteral("policies"))
+            .toArray();
+    for (const QJsonValue &value : policies) {
+        const QJsonObject resources =
+            value.toObject().value(QStringLiteral("resources")).toObject();
+        for (auto it = resources.constBegin(); it != resources.constEnd();
+             ++it) {
+            keys.append(it.key());
+            if (!it.value().isObject())
+                continue;
+            const QJsonObject nested = it.value().toObject();
+            for (auto inner = nested.constBegin(); inner != nested.constEnd();
+                 ++inner) {
+                keys.append(inner.key());
+            }
+        }
+    }
+    keys.removeDuplicates();
+    return keys;
+}
+
+// Resolve one permission group's id from GET /user/tokens/permission_groups.
+// A name is only accepted when the catalog entry also carries the scope the
+// requirement is bound to: several group names (e.g. "Logs Read") exist at both
+// account and zone scope with different ids.
+QString cloudflarePermissionGroupId(const QJsonArray &catalog,
+                                    const QString &name, const QString &scope)
+{
+    const QString wantedScope = cloudflareScopeString(scope);
+    if (wantedScope.isEmpty())
+        return {};
+    for (const QJsonValue &value : catalog) {
+        const QJsonObject group = value.toObject();
+        if (group.value(QStringLiteral("name"))
+                .toString()
+                .trimmed()
+                .compare(name, Qt::CaseInsensitive) != 0) {
+            continue;
+        }
+        bool scoped = false;
+        const QJsonArray scopes =
+            group.value(QStringLiteral("scopes")).toArray();
+        for (const QJsonValue &entry : scopes) {
+            if (entry.toString().trimmed() == wantedScope) {
+                scoped = true;
+                break;
+            }
+        }
+        if (!scoped)
+            continue;
+        const QString id =
+            group.value(QStringLiteral("id")).toString().trimmed();
+        if (cloudflareIdPattern().match(id).hasMatch())
+            return id;
+    }
+    return {};
+}
+
+} // namespace
+
+QList<CloudflareTokenRequirement> cloudflareTokenRequirements()
+{
+    return {
+        {QStringLiteral("account_settings"),
+         QStringLiteral("Account Settings: Read"),
+         QStringLiteral("Discovers the account that owns the Worker, the D1 "
+                        "database and the Tunnel."),
+         {QStringLiteral("Account Settings Read"),
+          QStringLiteral("Account Settings Write")},
+         QStringLiteral("account"),
+         QStringLiteral("/accounts?per_page=1"),
+         true},
+        {QStringLiteral("workers_scripts"),
+         QStringLiteral("Workers Scripts: Edit"),
+         QStringLiteral("Uploads the relay Worker with its static assets, "
+                        "Durable Objects, cron triggers and secrets."),
+         {QStringLiteral("Workers Scripts Write")},
+         QStringLiteral("account"),
+         QStringLiteral("/accounts/{account}/workers/scripts"),
+         true},
+        {QStringLiteral("d1"),
+         QStringLiteral("D1: Edit"),
+         QStringLiteral("Creates and migrates the forkmesh D1 database the "
+                        "Worker binds as DB."),
+         {QStringLiteral("D1 Write")},
+         QStringLiteral("account"),
+         QStringLiteral("/accounts/{account}/d1/database?per_page=1"),
+         true},
+        {QStringLiteral("zone"),
+         QStringLiteral("Zone: Read"),
+         QStringLiteral("Finds the zone the relay and mirror hostnames are "
+                        "derived from."),
+         {QStringLiteral("Zone Read"), QStringLiteral("Zone Write")},
+         QStringLiteral("zone"),
+         QStringLiteral("/zones?per_page=1"),
+         true},
+        {QStringLiteral("dns"),
+         QStringLiteral("DNS: Edit"),
+         QStringLiteral("Publishes the proxied relay and mirror records, plus "
+                        "the A record of each one-click mirror."),
+         {QStringLiteral("DNS Write")},
+         QStringLiteral("zone"),
+         QStringLiteral("/zones/{zone}/dns_records?per_page=1"),
+         true},
+        {QStringLiteral("tunnel"),
+         QStringLiteral("Cloudflare Tunnel: Edit"),
+         QStringLiteral("Provisions the direct-HTTPS mirror gateway's Tunnel "
+                        "and its connector credential."),
+         {QStringLiteral("Cloudflare Tunnel Write"),
+          QStringLiteral("Argo Tunnel Write")},
+         QStringLiteral("account"),
+         QStringLiteral("/accounts/{account}/cfd_tunnel?per_page=1"),
+         true},
+        {QStringLiteral("workers_tail"),
+         QStringLiteral("Workers Tail: Read"),
+         QStringLiteral("Streams the live Worker log shown in Network > Logs."),
+         {QStringLiteral("Workers Tail Read")},
+         QStringLiteral("account"),
+         QString(),
+         false},
+        {QStringLiteral("api_tokens_read"),
+         QStringLiteral("API Tokens: Read"),
+         QStringLiteral("Lets this page report the token's exact policy instead "
+                        "of inferring it from read-only probes."),
+         {QStringLiteral("API Tokens Read")},
+         QStringLiteral("user"),
+         QStringLiteral("/user/tokens?per_page=1"),
+         false},
+        {QStringLiteral("api_tokens_write"),
+         QStringLiteral("API Tokens: Edit"),
+         QStringLiteral("Required by this page's own button that mints a "
+                        "replacement token."),
+         {QStringLiteral("API Tokens Write")},
+         QStringLiteral("user"),
+         QString(),
+         false},
+    };
+}
+
+QString cloudflareTokenProbePath(const CloudflareTokenRequirement &requirement,
+                                 const QString &accountId,
+                                 const QString &zoneId)
+{
+    QString path = requirement.probePath;
+    if (path.isEmpty())
+        return {};
+    const auto substitute = [&path](const QString &placeholder,
+                                    const QString &id) {
+        if (!path.contains(placeholder))
+            return true;
+        const QString value = id.trimmed();
+        if (!cloudflareIdPattern().match(value).hasMatch())
+            return false;
+        path.replace(placeholder, value);
+        return true;
+    };
+    if (!substitute(QStringLiteral("{account}"), accountId) ||
+        !substitute(QStringLiteral("{zone}"), zoneId)) {
+        return {};
+    }
+    return path;
+}
+
+bool isPlausibleCloudflareApiToken(const QString &token)
+{
+    static const QRegularExpression pattern(
+        QStringLiteral("^[A-Za-z0-9_-]{20,160}$"));
+    return pattern.match(token).hasMatch();
+}
+
+QString cloudflareTokenVerifyStatus(const QJsonObject &verifyResult)
+{
+    return cloudflareResultObject(verifyResult)
+        .value(QStringLiteral("status"))
+        .toString()
+        .trimmed()
+        .toLower();
+}
+
+QString cloudflareTokenVerifyId(const QJsonObject &verifyResult)
+{
+    const QString id = cloudflareResultObject(verifyResult)
+                           .value(QStringLiteral("id"))
+                           .toString()
+                           .trimmed();
+    return cloudflareIdPattern().match(id).hasMatch() ? id : QString();
+}
+
+QStringList cloudflareTokenPermissionGroupNames(const QJsonObject &tokenDetail)
+{
+    QStringList names;
+    const QJsonArray policies =
+        cloudflareResultObject(tokenDetail)
+            .value(QStringLiteral("policies"))
+            .toArray();
+    for (const QJsonValue &value : policies) {
+        const QJsonObject policy = value.toObject();
+        // A deny policy subtracts access; reporting its groups as granted would
+        // be a false positive on exactly the permission that is missing.
+        if (policy.value(QStringLiteral("effect")).toString().trimmed().toLower() ==
+            QLatin1String("deny")) {
+            continue;
+        }
+        const QJsonArray groups =
+            policy.value(QStringLiteral("permission_groups")).toArray();
+        for (const QJsonValue &entry : groups) {
+            const QString name = entry.toObject()
+                                     .value(QStringLiteral("name"))
+                                     .toString()
+                                     .trimmed();
+            if (!name.isEmpty())
+                names.append(name);
+        }
+    }
+    names.removeDuplicates();
+    names.sort(Qt::CaseInsensitive);
+    return names;
+}
+
+bool cloudflareTokenGrantsRequirement(
+    const CloudflareTokenRequirement &requirement,
+    const QStringList &grantedGroupNames)
+{
+    for (const QString &accepted : requirement.groupNames) {
+        for (const QString &granted : grantedGroupNames) {
+            if (granted.compare(accepted, Qt::CaseInsensitive) == 0)
+                return true;
+        }
+    }
+    return false;
+}
+
+QStringList cloudflareTokenAccountIds(const QJsonObject &tokenDetail)
+{
+    static const QRegularExpression accountKey(
+        QStringLiteral("^com\\.cloudflare\\.api\\.account\\.([A-Za-z0-9]{1,64})$"));
+    QStringList ids;
+    const QStringList keys = cloudflarePolicyResourceKeys(tokenDetail);
+    for (const QString &key : keys) {
+        const QRegularExpressionMatch match = accountKey.match(key);
+        if (match.hasMatch())
+            ids.append(match.captured(1));
+    }
+    ids.removeDuplicates();
+    return ids;
+}
+
+QString cloudflareTokenUserResourceKey(const QJsonObject &tokenDetail)
+{
+    static const QRegularExpression userKey(
+        QStringLiteral("^com\\.cloudflare\\.api\\.user\\.[A-Za-z0-9]{1,64}$"));
+    const QStringList keys = cloudflarePolicyResourceKeys(tokenDetail);
+    for (const QString &key : keys) {
+        if (userKey.match(key).hasMatch())
+            return key;
+    }
+    return {};
+}
+
+QJsonObject cloudflareTokenCreatePayload(
+    const QString &tokenName, const QString &accountId, const QString &zoneId,
+    const QString &userResourceKey, const QJsonArray &permissionGroupCatalog,
+    QString *error)
+{
+    const auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return QJsonObject();
+    };
+    if (error)
+        error->clear();
+
+    const QString name = tokenName.trimmed();
+    static const QRegularExpression namePattern(
+        QStringLiteral("^[A-Za-z0-9][A-Za-z0-9 ._:-]{0,119}$"));
+    if (!namePattern.match(name).hasMatch())
+        return fail(QStringLiteral("The token name is not a valid Cloudflare "
+                                   "token name."));
+    const QString account = accountId.trimmed();
+    const QString zone = zoneId.trimmed();
+    const QString user = userResourceKey.trimmed();
+    static const QRegularExpression userKey(
+        QStringLiteral("^com\\.cloudflare\\.api\\.user\\.[A-Za-z0-9]{1,64}$"));
+    if (!account.isEmpty() && !cloudflareIdPattern().match(account).hasMatch())
+        return fail(QStringLiteral("The Cloudflare account ID is malformed."));
+    if (!zone.isEmpty() && !cloudflareIdPattern().match(zone).hasMatch())
+        return fail(QStringLiteral("The Cloudflare zone ID is malformed."));
+    if (!user.isEmpty() && !userKey.match(user).hasMatch())
+        return fail(QStringLiteral("The Cloudflare user resource is malformed."));
+
+    QJsonArray accountGroups;
+    QJsonArray zoneGroups;
+    QJsonArray userGroups;
+    const QList<CloudflareTokenRequirement> requirements =
+        cloudflareTokenRequirements();
+    for (const CloudflareTokenRequirement &requirement : requirements) {
+        const bool haveResource =
+            (requirement.scope == QLatin1String("account") && !account.isEmpty()) ||
+            (requirement.scope == QLatin1String("zone") && !zone.isEmpty()) ||
+            (requirement.scope == QLatin1String("user") && !user.isEmpty());
+        QString groupId;
+        QString groupName;
+        if (haveResource) {
+            for (const QString &candidate : requirement.groupNames) {
+                groupId = cloudflarePermissionGroupId(permissionGroupCatalog,
+                                                      candidate,
+                                                      requirement.scope);
+                if (!groupId.isEmpty()) {
+                    groupName = candidate;
+                    break;
+                }
+            }
+        }
+        if (groupId.isEmpty()) {
+            // Optional capabilities are dropped rather than blocking rotation:
+            // a token that cannot read its own policies still deploys.
+            if (!requirement.required)
+                continue;
+            if (!haveResource) {
+                return fail(
+                    QStringLiteral("%1 needs a Cloudflare %2 ID; none is "
+                                   "configured on this page.")
+                        .arg(requirement.label, requirement.scope));
+            }
+            return fail(
+                QStringLiteral("Cloudflare's permission-group catalog has no "
+                               "%1 group for %2.")
+                    .arg(requirement.groupNames.value(0), requirement.label));
+        }
+        const QJsonObject group{
+            {QStringLiteral("id"), groupId},
+            {QStringLiteral("name"), groupName},
+        };
+        if (requirement.scope == QLatin1String("account"))
+            accountGroups.append(group);
+        else if (requirement.scope == QLatin1String("zone"))
+            zoneGroups.append(group);
+        else
+            userGroups.append(group);
+    }
+
+    QJsonArray policies;
+    const auto addPolicy = [&policies](const QString &resourceKey,
+                                       const QJsonArray &groups) {
+        if (groups.isEmpty())
+            return;
+        policies.append(QJsonObject{
+            {QStringLiteral("effect"), QStringLiteral("allow")},
+            {QStringLiteral("resources"),
+             QJsonObject{{resourceKey, QStringLiteral("*")}}},
+            {QStringLiteral("permission_groups"), groups},
+        });
+    };
+    addPolicy(QStringLiteral("com.cloudflare.api.account.") + account,
+              accountGroups);
+    addPolicy(QStringLiteral("com.cloudflare.api.account.zone.") + zone,
+              zoneGroups);
+    addPolicy(user, userGroups);
+    if (policies.isEmpty())
+        return fail(QStringLiteral("No Cloudflare permissions could be resolved "
+                                   "for a replacement token."));
+    return {
+        {QStringLiteral("name"), name},
+        {QStringLiteral("policies"), policies},
+    };
+}
+
+QString cloudflareCreatedTokenValue(const QJsonObject &createResult)
+{
+    const QString value = cloudflareResultObject(createResult)
+                              .value(QStringLiteral("value"))
+                              .toString()
+                              .trimmed();
+    return isPlausibleCloudflareApiToken(value) ? value : QString();
+}
+
+QString updatedEnvAssignment(const QString &contents, const QString &name,
+                             const QString &value)
+{
+    static const QRegularExpression namePattern(
+        QStringLiteral("^[A-Za-z_][A-Za-z0-9_]{0,127}$"));
+    if (!namePattern.match(name).hasMatch() ||
+        value.contains(QLatin1Char('\n')) ||
+        value.contains(QLatin1Char('\r'))) {
+        return contents;
+    }
+    const QString assignment = name + QLatin1Char('=') + value;
+    // Only a real assignment counts: a commented-out example keeps its place,
+    // and deploy.sh ignores it too.
+    const QRegularExpression linePattern(
+        QStringLiteral("^[ \\t]*") + QRegularExpression::escape(name) +
+        QStringLiteral("[ \\t]*="));
+
+    QStringList lines = contents.split(QLatin1Char('\n'));
+    bool replaced = false;
+    for (int index = 0; index < lines.size();) {
+        QString line = lines.at(index);
+        const bool carriage = line.endsWith(QLatin1Char('\r'));
+        if (carriage)
+            line.chop(1);
+        if (!linePattern.match(line).hasMatch()) {
+            ++index;
+            continue;
+        }
+        if (!replaced) {
+            lines[index] = carriage ? assignment + QLatin1Char('\r')
+                                    : assignment;
+            replaced = true;
+            ++index;
+            continue;
+        }
+        // A later duplicate would win when deploy.sh sources the file, so a
+        // rotation that left one behind would keep exporting the old token.
+        lines.removeAt(index);
+    }
+    if (!replaced) {
+        while (!lines.isEmpty() && lines.constLast().trimmed().isEmpty())
+            lines.removeLast();
+        lines.append(assignment);
+    }
+    QString result = lines.join(QLatin1Char('\n'));
+    if (!result.endsWith(QLatin1Char('\n')))
+        result.append(QLatin1Char('\n'));
+    return result;
+}
+
+QString siteDeployEnvFilePath(const QString &sourceDir,
+                              const QString &applicationDir)
+{
+    const QString worker =
+        findCloudflareWorkerDirectory(sourceDir, applicationDir);
+    if (worker.isEmpty())
+        return {};
+    return QDir(worker).absoluteFilePath(QStringLiteral(".env.production"));
+}
+
+QString maskedTokenSuffix(const QString &token)
+{
+    const QString ellipsis = QString::fromUtf8("\xE2\x80\xA6");
+    const QString trimmed = token.trimmed();
+    return trimmed.size() < 8 ? ellipsis : ellipsis + trimmed.right(4);
 }
 
 } // namespace forkmesh::control

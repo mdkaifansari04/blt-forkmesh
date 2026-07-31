@@ -41,6 +41,9 @@ public:
 
     bool busy() const { return m_busy; }
     int currentSessionId() const { return m_session.id; }
+    // PID of the CLI this runner is driving (0 when nothing runs), so the UI can
+    // count the build processes spawned below it (adhoc #57).
+    qint64 processId() const;
 
     void start(const AgentSession &session, const Issue &issue,
                const QString &repoPath, const Config &config);

@@ -4,8 +4,11 @@ import {
   officeFloorById,
 } from "./world-office-tower.js";
 
-export const OFFICE_ENTER_DISTANCE = 6.5;
-export const OFFICE_EXIT_DISTANCE = 7.5;
+export {
+  OFFICE_ENTER_DISTANCE,
+  OFFICE_EXIT_DISTANCE,
+  nextOfficeZoneState,
+} from "./world-office-tower.js";
 
 const OFFICE_CHAT_PATH = "/chat?embed=office";
 const OFFICE_UNLOAD_DELAY_MS = 2000;
@@ -43,16 +46,6 @@ export function officeAttendanceVisitExpired(seenAt, now) {
   const observed = Number(now) || 0;
   if (acknowledged <= 0 || observed <= 0) return false;
   return observed - acknowledged >= OFFICE_ATTENDANCE_LIVE_TTL_MS;
-}
-
-export function nextOfficeZoneState(currentState, distance) {
-  const threshold =
-    currentState === "nearby"
-      ? OFFICE_EXIT_DISTANCE
-      : OFFICE_ENTER_DISTANCE;
-  return Number.isFinite(distance) && distance <= threshold
-    ? "nearby"
-    : "distant";
 }
 
 export function createWorldOfficeController({

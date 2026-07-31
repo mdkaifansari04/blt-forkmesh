@@ -16,10 +16,18 @@ QT_CONTROL = (
 ).read_text(encoding="utf-8")
 
 
-def test_walk_in_booth_uses_a_flat_non_modal_device_local_form():
+def test_outdoor_world_tent_uses_a_flat_non_modal_device_local_form():
     assert 'instanceBooth.name = "forkmesh-instance-launch-booth"' in SCENE
     assert 'userData.interactive = "instance-launch-booth"' in SCENE
-    assert "WALK IN · PRIVATE SETUP" in SCENE
+    assert "INSTANCE_GARDEN_POSITION" in SCENE
+    assert 'pole.name = "forkmesh-instance-booth-tent-pole"' in SCENE
+    assert 'roofPanel.name = "forkmesh-instance-booth-tent-canopy"' in SCENE
+    assert 'boothGlobe.name = "forkmesh-instance-booth-rotating-globe"' in SCENE
+    assert "boothGlobe.rotation.y = time * 0.00034" in SCENE
+    assert "forkmesh-instance-world-portal" not in SCENE
+    assert "LAUNCH INSTANCE" in SCENE
+    assert "CREATE A NEW WORLD" in SCENE
+    assert "world.add(instanceBooth)" in SCENE
     assert "insideInstanceBooth && !instanceBoothOccupied" in SCENE
     assert "onInstanceBoothSelect();" in SCENE
     assert 'class="world-instance-launcher"' in APP
@@ -29,6 +37,48 @@ def test_walk_in_booth_uses_a_flat_non_modal_device_local_form():
     )[1].split("</section>", 1)[0]
     assert ".world-instance-launcher[data-open=\"true\"]" in CSS
     assert "border-radius: 0" in CSS
+
+
+def test_front_garden_water_and_recreation_are_interactive():
+    assert 'officeFrontGarden.name = "forkmesh-office-front-garden"' in SCENE
+    assert 'waterfall.name = "forkmesh-interactive-waterfall"' in SCENE
+    assert "new THREE.MeshPhysicalMaterial" in SCENE
+    assert 'userData.interactive = "garden-waterfall"' in SCENE
+    assert 'drinkingFountain.name = "forkmesh-drinking-fountain"' in SCENE
+    assert 'userData.interactive = "drinking-fountain"' in SCENE
+    assert "onDrinkWater();" in SCENE
+    assert "const GYM_POSITION = Object.freeze([66, 0.14, -137])" in SCENE
+    assert "const SWING_SET_POSITION = Object.freeze([43, 0, -137])" in SCENE
+    assert 'name: "forkmesh-swing-park-bench-west"' in SCENE
+    assert 'name: "forkmesh-swing-park-bench-east"' in SCENE
+    assert "x: 46" in SCENE
+    assert "z: -129" in SCENE
+    assert "z: -145" in SCENE
+
+
+def test_node_plaza_grows_and_sol_is_a_floating_fireball():
+    assert 'nodeYardConcrete.name = "reward-node-concrete-plaza"' in SCENE
+    assert "farthestRadius + 4.2" in SCENE
+    assert 'sun.name = "reward-pool-fireball-sun"' in SCENE
+    assert 'fireShell.name = "reward-pool-fireball-corona"' in SCENE
+    fountain = SCENE.split("function createFountain(", 1)[1].split(
+        "function compactSceneBytes", 1
+    )[0]
+    assert "const stem =" not in fountain
+
+
+def test_launch_mirror_hands_token_to_desktop_without_a_secret_url():
+    assert 'mirrorButton.userData.interactive = "launch-vultr-mirror"' in SCENE
+    assert "launchVultrMirrorFromWorld" in APP
+    launch = APP.split("async launchVultrMirrorFromWorld()", 1)[1].split(
+        "validateInstanceLauncher(values)", 1
+    )[0]
+    assert "navigator.clipboard.writeText(token)" in launch
+    assert 'launchURL.searchParams.set("mode", "vultr")' in launch
+    assert 'launchURL.searchParams.set("token"' not in launch
+    assert 'bounded(QStringLiteral("mode"), 16)' in QT_CONTROL
+    assert "QApplication::clipboard()->clear()" in QT_CONTROL
+    assert "createVultrMirrorFromForm();" in QT_CONTROL
 
 
 def test_scope_help_matches_the_resources_used_by_the_bootstrapper():

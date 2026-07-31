@@ -24,6 +24,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QRegularExpression>
@@ -239,22 +242,25 @@ QWidget *MainWindow::buildMcpConnectorTab()
 
     // --- genie ---------------------------------------------------------------
     // The other direction (adhoc #42): instead of handing an outside agent this
-    // node's mesh, this hands a local agent the *website's* task list. The
-    // credential is minted on the site (Organization Admin -> "Remote ForkMesh
-    // MCP"), pasted here once, and the prompt bar's "genie" button then starts
-    // runs that pick their own work off that list.
+    // node's mesh, this hands a local agent the *website's* task list. Nothing
+    // here has to be filled in any more (adhoc #49): the first press of the
+    // prompt bar's "genie" button has the relay mint this node's own task-only
+    // credential, signed with the account key this install already holds, and
+    // saves it into these fields.
     auto *genieLabel = new QLabel("GENIE (WEBSITE TASK LIST)");
     genieLabel->setObjectName("sectionLabel");
 
     auto *genieHint = new QLabel(QStringLiteral(
-        "Paste the revocable task-only credential your organization generated "
-        "on the website (Organization Admin \xe2\x86\x92 <b>Remote ForkMesh "
-        "MCP</b>). The <b>genie</b> button in the prompt bar then starts an "
-        "agent against <code>%1</code>: it calls <code>list_org_tasks</code>, "
-        "takes the highest-priority unassigned task, works it in an isolated "
-        "worktree, and reports back with <code>complete_org_task</code>. The "
-        "task it picks becomes this session's title while it runs. Revoke the "
-        "credential on the website to cut every agent still holding it.")
+        "The <b>genie</b> button in the prompt bar starts an agent against "
+        "<code>%1</code>: it calls <code>list_org_tasks</code>, takes the "
+        "highest-priority unassigned task, works it in an isolated worktree, "
+        "and reports back with <code>complete_org_task</code> \xe2\x80\x94 as a "
+        "normal running agent session, titled with the task it picked. You do "
+        "not need to fill anything in below: pressing genie mints this node's "
+        "own revocable task-only credential from the account it is signed in "
+        "as. A credential generated on the website (Organization Admin "
+        "\xe2\x86\x92 <b>Remote ForkMesh MCP</b>) still works if you paste it "
+        "here, and revoking it there cuts every agent still holding it.")
             .arg(genieMcpUrl().toString()));
     genieHint->setObjectName("statusLine");
     genieHint->setTextFormat(Qt::RichText);
@@ -263,10 +269,11 @@ QWidget *MainWindow::buildMcpConnectorTab()
     m_genieTokenEdit = new QLineEdit;
     m_genieTokenEdit->setEchoMode(QLineEdit::Password);
     m_genieTokenEdit->setPlaceholderText(
-        "Bearer credential from the website \xe2\x80\x94 genie is off without it");
+        "Empty \xe2\x80\x94 pressing genie mints this node's own credential");
     m_genieTokenEdit->setToolTip(
-        "The organization bot token the website minted. Anything holding it can "
-        "read and complete that organization's tasks.");
+        "The organization bot token this node minted (or one pasted from the "
+        "website). Anything holding it can read and complete that "
+        "organization's tasks.");
 
     m_genieOrgEdit = new QLineEdit;
     m_genieOrgEdit->setPlaceholderText("organization");
@@ -386,8 +393,10 @@ void MainWindow::refreshMcpConnectorTab()
     if (m_genieStatusLabel)
         m_genieStatusLabel->setText(
             genieToken.isEmpty()
-                ? QStringLiteral("Genie: not configured \xe2\x80\x94 the prompt "
-                                 "bar's genie button will send you back here.")
+                ? QStringLiteral("Genie: no credential yet \xe2\x80\x94 the "
+                                 "prompt bar's genie button mints one against "
+                                 "%1 on its first press.")
+                      .arg(genieMcpUrl().toString())
                 : QStringLiteral("Genie: ready against %1.")
                       .arg(genieMcpUrl().toString()));
 }
@@ -581,10 +590,14 @@ QString MainWindow::genieSetupPrompt(const QString &extraInstruction) const
         settings.value(kGenieWorkflowSetting, QStringLiteral("pr")).toString() ==
         QLatin1String("deploy");
 
+    // "forkmesh-tasks", not "forkmesh": a checkout can already define a
+    // project-scoped `forkmesh` server (this repository's own .mcp.json points
+    // that name at the local stdio mesh server), and a name collision is how a
+    // genie run ends up with no list_org_tasks tool at all (adhoc #49).
     const QJsonObject config{
         {QStringLiteral("mcpServers"),
          QJsonObject{
-             {QStringLiteral("forkmesh"),
+             {QStringLiteral("forkmesh-tasks"),
               QJsonObject{
                   {QStringLiteral("type"), QStringLiteral("http")},
                   {QStringLiteral("url"), genieMcpUrl().toString()},
@@ -598,15 +611,18 @@ QString MainWindow::genieSetupPrompt(const QString &extraInstruction) const
     QStringList lines;
     lines << QStringLiteral(
         "Configure the following remote Streamable HTTP MCP server named "
-        "forkmesh, then immediately use it for this assignment:")
+        "forkmesh-tasks, then immediately use it for this assignment. Add it as "
+        "a new server: leave any existing MCP server this checkout configures "
+        "(including one named forkmesh) exactly as it is.")
           << QString()
           << QString::fromUtf8(QJsonDocument(config).toJson(QJsonDocument::Indented))
           << QStringLiteral("Work the shared task list for the %1 organization.")
                  .arg(org.isEmpty() ? QStringLiteral("connected") : org)
           << QStringLiteral(
-                 "1. Call list_org_tasks. Select the highest-priority unfinished "
-                 "task routed to an agent or explicitly unassigned. Never take a "
-                 "task assigned to a person.")
+                 "1. Call list_org_tasks on forkmesh-tasks. Select the "
+                 "highest-priority unfinished task routed to an agent or "
+                 "explicitly unassigned. Never take a task assigned to a "
+                 "person.")
           << QStringLiteral(
                  "2. The moment you have chosen, print one line of its own in "
                  "exactly this form, before doing anything else:\n"
@@ -659,18 +675,6 @@ QString MainWindow::genieSetupPrompt(const QString &extraInstruction) const
 
 void MainWindow::startGenieAgent()
 {
-    const QString token =
-        QSettings().value(kGenieTokenSetting).toString().trimmed();
-    if (token.isEmpty()) {
-        flashMessage(
-            QString::fromUtf8(
-                "Genie needs the remote MCP credential from the website "
-                "\xE2\x80\x94 generate it in Organization Admin, then paste it "
-                "into Settings \xE2\x86\x92 MCP."),
-            true);
-        showSection(1); // Settings
-        return;
-    }
     const int repoIndex = issuesRepoIndex();
     if (repoIndex < 0) {
         flashMessage("Open a repository first \xE2\x80\x94 genie runs in its "
@@ -679,14 +683,133 @@ void MainWindow::startGenieAgent()
         return;
     }
     // Anything typed in the quick-add box is guidance for the genie run, not the
-    // task itself: the task comes from the shared list. Keep it in the history
-    // like every other send, then clear the box so the next prompt starts fresh.
-    QString typed;
-    if (m_issueQuickAdd) {
-        typed = m_issueQuickAdd->toPlainText().trimmed();
-        if (!typed.isEmpty())
-            recordQuickAddHistory(typed);
+    // task itself: the task comes from the shared list.
+    const QString typed =
+        m_issueQuickAdd ? m_issueQuickAdd->toPlainText().trimmed() : QString();
+    const QString token =
+        QSettings().value(kGenieTokenSetting).toString().trimmed();
+    if (token.isEmpty()) {
+        // Nothing to configure by hand: this install is already signed in as its
+        // account, so it mints its own task-only credential and then launches.
+        requestGenieCredential(repoIndex, typed);
+        return;
     }
+    launchGenieRun(repoIndex, typed);
+}
+
+// Ask the relay for this desktop's task-only remote-MCP bearer, signed with the
+// account key, then start the run (adhoc #49). Nothing is pasted, nothing is
+// generated on the website, and the credential is stored exactly where a pasted
+// one would be — so a later press reuses it and Settings → MCP can still show
+// and clear it.
+void MainWindow::requestGenieCredential(int repoIndex,
+                                        const QString &typedGuidance)
+{
+    if (m_genieCredentialPending)
+        return;
+    if (repoIndex < 0 || repoIndex >= m_repositories.size())
+        return;
+    if (!m_networkAccess) {
+        flashMessage("Genie needs the relay to mint its task credential.", true);
+        return;
+    }
+    // The run starts after a network round trip, and m_repositories can be
+    // rebuilt in between, so remember which repository by name and look it up
+    // again rather than trusting the index to still mean the same checkout.
+    const QString repoOwner = m_repositories.at(repoIndex).owner;
+    const QString repoName = m_repositories.at(repoIndex).name;
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/genie/credential"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+    QNetworkRequest request;
+    // Same proof family as the org-task writes this desktop already signs: an
+    // account session token when there is one, the account key otherwise.
+    if (!authenticateOrgTaskRequest(url, request, kGenieCredentialProof,
+                                    QString())) {
+        flashMessage(QString::fromUtf8(
+                         "Genie needs an account on this node \xE2\x80\x94 sign "
+                         "in (or import your key) and press genie again."),
+                     true);
+        return;
+    }
+    m_genieCredentialPending = true;
+    setIssueInlineNotice(
+        QString::fromUtf8("Genie is getting its own task credential\xE2\x80\xA6"));
+    const QJsonObject body{
+        {QStringLiteral("deviceName"), machineNodeName()},
+    };
+    QNetworkReply *reply = m_networkAccess->post(
+        request, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, repoOwner, repoName, typedGuidance] {
+                const QByteArray payload = reply->readAll();
+                const int status =
+                    reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                        .toInt();
+                reply->deleteLater();
+                m_genieCredentialPending = false;
+                const QJsonObject obj =
+                    QJsonDocument::fromJson(payload).object();
+                const QString token =
+                    obj.value(QStringLiteral("token")).toString().trimmed();
+                if (status < 200 || status >= 300 || token.isEmpty()) {
+                    const QString error =
+                        obj.value(QStringLiteral("error")).toString();
+                    setIssueInlineNotice(QString());
+                    flashMessage(
+                        error == QLatin1String("forbidden")
+                            ? QString::fromUtf8(
+                                  "Genie needs an owner or admin of the task "
+                                  "board's organization; this account is not "
+                                  "one.")
+                            : QStringLiteral("Genie could not mint its task "
+                                             "credential (relay replied %1).")
+                                  .arg(status),
+                        true);
+                    return;
+                }
+                QSettings settings;
+                settings.setValue(kGenieTokenSetting, token);
+                const QString org =
+                    obj.value(QStringLiteral("organization")).toString().trimmed();
+                if (!org.isEmpty())
+                    settings.setValue(kGenieOrgSetting, org);
+                // The relay names the origin the credential is scoped to; honour
+                // it over the default guess when it is a usable URL, since a
+                // credential minted for one origin authorizes nowhere else.
+                const QUrl mcpUrl(
+                    obj.value(QStringLiteral("mcpUrl")).toString().trimmed());
+                if (mcpUrl.isValid() && !mcpUrl.host().isEmpty())
+                    settings.setValue(kGenieUrlSetting, mcpUrl.toString());
+                refreshMcpConnectorTab(); // Settings shows the minted credential
+                int repoIndex = -1;
+                for (int i = 0; i < m_repositories.size(); ++i) {
+                    if (m_repositories.at(i).owner == repoOwner &&
+                        m_repositories.at(i).name == repoName) {
+                        repoIndex = i;
+                        break;
+                    }
+                }
+                if (repoIndex < 0) {
+                    setIssueInlineNotice(QString());
+                    flashMessage(QStringLiteral("Genie has its credential, but "
+                                                "%1/%2 is no longer open \xE2\x80"
+                                                "\x94 press genie again.")
+                                     .arg(repoOwner, repoName),
+                                 true);
+                    return;
+                }
+                launchGenieRun(repoIndex, typedGuidance);
+            });
+}
+
+void MainWindow::launchGenieRun(int repoIndex, const QString &typedGuidance)
+{
+    // The typed guidance joins the prompt history like every other send, then
+    // the box is cleared so the next prompt starts fresh.
+    if (!typedGuidance.isEmpty())
+        recordQuickAddHistory(typedGuidance);
     // Genie is a Claude Code run by construction: the remote server is
     // configured from the prompt, which needs an agent that can add an MCP
     // server to itself. The API-key providers have no such tool.
@@ -696,19 +819,28 @@ void MainWindow::startGenieAgent()
     // credentials this app stores locally — but it is registered in
     // localProviderCredentialValues() so it is redacted out of the transcript,
     // the run log, and the owner-sealed snapshot pushed to the relay.
+    //
+    // The title is set explicitly: the prompt's first line is MCP setup, so
+    // without it the session list would show a configuration sentence instead of
+    // a genie run, and the run would only be recognizable in the logs (adhoc
+    // #49). applyGenieTaskTitle() replaces it with the task the agent announces.
     const int sessionId = startAdHocAgentForRepo(
-        repoIndex, genieSetupPrompt(typed), QStringLiteral("claude-code"),
+        repoIndex, genieSetupPrompt(typedGuidance),
+        QStringLiteral("claude-code"),
         /*createPr=*/true,
-        QSettings().value(kClaudeCodeModelSetting).toString());
+        QSettings().value(kClaudeCodeModelSetting).toString(),
+        QString::fromUtf8("Genie \xE2\x80\x94 picking a task\xE2\x80\xA6"),
+        /*genie=*/true);
     if (sessionId <= 0)
         return;
     if (m_issueQuickAdd)
         m_issueQuickAdd->clear();
     clearQuickAddImages();
     setIssueInlineNotice(
-        QString::fromUtf8("Genie is picking its own task off the shared list "
-                          "\xE2\x80\x94 the title updates here once it has "
-                          "chosen."));
+        QString::fromUtf8("Genie is running as agent session #%1 \xE2\x80\x94 "
+                          "the task title appears on that session once it has "
+                          "chosen.")
+            .arg(sessionId));
 }
 
 // Watch a running agent's assistant text for the "FORKMESH_TASK <id>: <title>"
@@ -733,6 +865,9 @@ void MainWindow::applyGenieTaskTitle(int sessionId, const QString &assistantText
     title = title.trimmed();
     if (title.isEmpty())
         return;
+    // Keep the run readable as the genie in the session list: the task it picked,
+    // still labelled by what started it (adhoc #49).
+    title = QString::fromUtf8("Genie \xE2\x80\x94 ") + title;
     if (title.size() > 80)
         title = title.left(77) + QString::fromUtf8("\xE2\x80\xA6");
 

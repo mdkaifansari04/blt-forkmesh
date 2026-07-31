@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.6 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.8 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -92,6 +92,43 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
+# The MainWindow*.cpp translation units are enormous (MainWindow.h +
+# MainWindowInternal.h alone are ~800 KB of headers), and cc1plus peaks between
+# 0.6 GB and 1.6 GB compiling each one. A plain `ninja`/`cmake --build -j$(nproc)`
+# runs dozens of them at once on a many-core box, which swamps physical RAM and
+# shoves the whole machine into swap — and several builds (agent worktrees, PR
+# previews, the quick-update) can be running concurrently. Cap how many of the
+# heavy targets' compiles may run at the same time with a Ninja job pool sized
+# by physical RAM (~one compile per 3 GiB), regardless of what -j the invoker
+# passes. Targets without the app sources keep full parallelism. The Makefile
+# generator ignores job pools; there the RAM-capped -j of run.sh /
+# ramCappedBuildJobs() is the only guard.
+cmake_host_system_information(RESULT FORKMESH_TOTAL_RAM_MB
+                              QUERY TOTAL_PHYSICAL_MEMORY)
+cmake_host_system_information(RESULT FORKMESH_LOGICAL_CORES
+                              QUERY NUMBER_OF_LOGICAL_CORES)
+if(NOT FORKMESH_TOTAL_RAM_MB GREATER 0)
+    set(FORKMESH_TOTAL_RAM_MB 8192) # query failed: assume a small machine
+endif()
+if(NOT FORKMESH_LOGICAL_CORES GREATER 0)
+    set(FORKMESH_LOGICAL_CORES 2)
+endif()
+math(EXPR FORKMESH_HEAVY_JOBS "${FORKMESH_TOTAL_RAM_MB} / 3072")
+if(FORKMESH_HEAVY_JOBS LESS 1)
+    set(FORKMESH_HEAVY_JOBS 1)
+elseif(FORKMESH_HEAVY_JOBS GREATER FORKMESH_LOGICAL_CORES)
+    set(FORKMESH_HEAVY_JOBS ${FORKMESH_LOGICAL_CORES})
+endif()
+set_property(GLOBAL PROPERTY JOB_POOLS forkmesh_heavy=${FORKMESH_HEAVY_JOBS})
+
+# RelWithDebInfo (-O2 -g) is what the agent-session builds use, and at -O2 -g
+# GCC's variable-location tracking is the single biggest cc1plus memory
+# consumer on the giant translation units. Function and line debug info — what
+# the StallWatchdog's and gdb's backtraces actually read — survives without it.
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    string(APPEND CMAKE_CXX_FLAGS_RELWITHDEBINFO " -fno-var-tracking-assignments")
+endif()
+
 find_package(Qt6 6.4 REQUIRED COMPONENTS Widgets Network Svg Concurrent)
 find_package(OpenSSL REQUIRED)
 include(GNUInstallDirs)
@@ -129,6 +166,8 @@ set(FORKMESH_APP_SOURCES
     src/PrivateMirrorRuntime.cpp
     src/PublicMirrorRuntime.h
     src/PublicMirrorRuntime.cpp
+    src/UpstreamCheckoutSync.h
+    src/UpstreamCheckoutSync.cpp
     src/CoveStore.h
     src/CoveStore.cpp
     src/ChatHistoryLimits.h
@@ -182,8 +221,6 @@ set(FORKMESH_APP_SOURCES
     src/PullBadgeWidget.h
     src/PullBadgeWidget.cpp
     src/PacmanProgress.h
-    src/CommitCommentStore.h
-    src/CommitCommentStore.cpp
     src/ReferenceLinks.h
     src/ActionFile.h
     src/ActionFile.cpp
@@ -194,6 +231,8 @@ set(FORKMESH_APP_SOURCES
     src/AgentStore.h
     src/AgentStore.cpp
     src/AgentJail.h
+    src/AgentPromptImages.h
+    src/AgentPromptImages.cpp
     src/AgentRunner.h
     src/AgentRunner.cpp
     src/QrCode.h
@@ -221,12 +260,12 @@ set(FORKMESH_APP_SOURCES
     src/ClaudeTranscriptView.cpp
     src/ClaudeSessionScan.h
     src/ClaudeSessionScan.cpp
+    src/DirectorySizeScan.h
+    src/DirectorySizeScan.cpp
     src/ScrollJumpButtons.h
     src/ScrollJumpButtons.cpp
     src/ScreenCaptureOverlay.h
     src/ScreenCaptureOverlay.cpp
-    src/ScreenDrawOverlay.h
-    src/ScreenDrawOverlay.cpp
     src/ScreenshotMarkupWindow.h
     src/ScreenshotMarkupWindow.cpp
     src/StallWatchdog.h
@@ -243,6 +282,7 @@ set(FORKMESH_APP_SOURCES
     src/MainWindowShared.cpp
     src/MainWindowSetup.cpp
     src/MainWindowChat.cpp
+    src/MainWindowTasks.cpp
     src/MainWindowIssues.cpp
     src/MainWindowSourceControl.cpp
     src/MainWindowDiscussions.cpp
@@ -273,6 +313,8 @@ qt_add_executable(forkmesh
     src/forkmesh_autogen.cpp
 )
 add_dependencies(forkmesh forkmesh-version-header)
+# Heavy app sources: throttle concurrent compiles (see the forkmesh_heavy pool).
+set_target_properties(forkmesh PROPERTIES JOB_POOL_COMPILE forkmesh_heavy)
 
 # The app compiles its Qt meta-object code through the single, checked-in
 # src/forkmesh_autogen.cpp above rather than AUTOMOC's machine-generated
@@ -301,7 +343,6 @@ qt_wrap_cpp(FORKMESH_MOC_SOURCES
     src/OfficeChannelMirror.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
-    src/ScreenDrawOverlay.h
     src/ScreenshotMarkupWindow.h
     src/ScrollJumpButtons.h
     src/ServerNode.h
@@ -365,7 +406,6 @@ set_source_files_properties(
     src/OfficeChannelMirror.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
-    src/ScreenDrawOverlay.h
     src/ScreenshotMarkupWindow.h
     src/ScrollJumpButtons.h
     src/ServerNode.h
@@ -511,8 +551,6 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
-        src/CommitCommentStore.h
-        src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/ActionStore.h
@@ -523,9 +561,13 @@ if(FORKMESH_BUILD_TESTS)
         src/LocalBackupStore.cpp
         src/McpConnector.h
         src/McpConnector.cpp
+        src/DirectorySizeScan.h
+        src/DirectorySizeScan.cpp
         src/ReferenceLinks.h
         src/ChatHistoryLimits.h
         src/ChatVisitorPresence.h
+        src/SystemStats.h
+        src/SystemStats.cpp
     )
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network OpenSSL::Crypto)
     if(APPLE)
@@ -648,6 +690,23 @@ if(FORKMESH_BUILD_TESTS)
             MACOSX_BUNDLE FALSE)
     endif()
 
+    # Headless fleet nodes seal their public mirror from the installer's agent
+    # checkout; this suite proves that checkout keeps tracking the upstream
+    # relay clone (fast-forwards, forced pulls-metadata tracking, safe pruning,
+    # divergence preservation) against real local git repositories.
+    qt_add_executable(forkmesh-upstream-sync-tests
+        tests/test_upstream_checkout_sync.cpp
+        src/UpstreamCheckoutSync.h
+        src/UpstreamCheckoutSync.cpp
+    )
+    target_include_directories(forkmesh-upstream-sync-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(forkmesh-upstream-sync-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-upstream-sync-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
+    endif()
+
     # The first-instance owner's community reward-pool key remains inside a
     # passphrase-encrypted, owner-only desktop vault. These tests exercise key
     # import, strict transaction inspection, local signing, canonical owner
@@ -751,8 +810,6 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
-        src/CommitCommentStore.h
-        src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/ActionStore.h
@@ -780,6 +837,9 @@ if(FORKMESH_BUILD_TESTS)
         target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_HAVE_PORTAL)
     endif()
     target_compile_definitions(forkmesh-window-tests PRIVATE FORKMESH_WINDOW_TESTS)
+    # Recompiles every heavy app source: same throttle as the app target.
+    set_target_properties(forkmesh-window-tests PROPERTIES
+        JOB_POOL_COMPILE forkmesh_heavy)
     if(APPLE)
         set_target_properties(forkmesh-window-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
@@ -800,6 +860,9 @@ if(FORKMESH_BUILD_TESTS)
         target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_HAVE_PORTAL)
     endif()
     target_compile_definitions(forkmesh-perf-tests PRIVATE FORKMESH_WINDOW_TESTS)
+    # Recompiles every heavy app source: same throttle as the app target.
+    set_target_properties(forkmesh-perf-tests PROPERTIES
+        JOB_POOL_COMPILE forkmesh_heavy)
     if(APPLE)
         set_target_properties(forkmesh-perf-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()
@@ -818,6 +881,7 @@ if(FORKMESH_BUILD_TESTS)
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
+        forkmesh-upstream-sync-tests
         forkmesh-e2e-stub-agent forkmesh-e2e
         forkmesh-window-tests forkmesh-perf-tests
         PROPERTIES EXCLUDE_FROM_ALL TRUE)
@@ -849,6 +913,8 @@ if(FORKMESH_BUILD_TESTS)
              COMMAND forkmesh-private-mirror-tests)
     add_test(NAME forkmesh-public-mirror-tests
              COMMAND forkmesh-public-mirror-tests)
+    add_test(NAME forkmesh-upstream-sync-tests
+             COMMAND forkmesh-upstream-sync-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
     add_test(NAME forkmesh-perf-tests COMMAND forkmesh-perf-tests)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
@@ -867,6 +933,7 @@ if(FORKMESH_BUILD_TESTS)
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
+        forkmesh-upstream-sync-tests
         forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
         forkmesh-e2e-stub-agent)
 
@@ -879,6 +946,7 @@ if(FORKMESH_BUILD_TESTS)
             forkmesh-chat-transport-tests
             forkmesh-action-security-tests
             forkmesh-private-mirror-tests forkmesh-public-mirror-tests
+            forkmesh-upstream-sync-tests
             forkmesh-reward-pool-tests forkmesh-e2e-stub-agent forkmesh-e2e
             forkmesh-window-tests forkmesh-perf-tests)
         add_dependencies(${_forkmesh_test_target} forkmesh-version-header)

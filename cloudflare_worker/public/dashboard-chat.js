@@ -167,6 +167,44 @@ function mountForkMeshDashboardChat() {
     });
   }
 
+  async function taskAttachmentMetadata(file) {
+    const attachment = {
+      name: safeAttachmentName(file?.name),
+      mime: safeAttachmentMime(file?.type),
+      size: Math.max(0, Number(file?.size) || 0),
+    };
+    if (
+      !["image/png", "image/jpeg", "image/webp"].includes(attachment.mime) ||
+      !file ||
+      attachment.size > 1024 * 1024 ||
+      typeof createImageBitmap !== "function"
+    ) {
+      return attachment;
+    }
+    try {
+      const bitmap = await createImageBitmap(file);
+      const side = 48;
+      const canvas = document.createElement("canvas");
+      canvas.width = side;
+      canvas.height = side;
+      const context = canvas.getContext("2d");
+      const scale = Math.max(side / bitmap.width, side / bitmap.height);
+      const width = bitmap.width * scale;
+      const height = bitmap.height * scale;
+      context.drawImage(
+        bitmap,
+        (side - width) / 2,
+        (side - height) / 2,
+        width,
+        height,
+      );
+      bitmap.close?.();
+      const thumbnail = canvas.toDataURL("image/webp", 0.72);
+      if (thumbnail.length <= 10_000) attachment.thumbnail = thumbnail;
+    } catch (_) {}
+    return attachment;
+  }
+
   function applyWorldComposerPrefill() {
     const data = pendingWorldComposerPrefill;
     if (!data) return false;
@@ -293,6 +331,7 @@ function mountForkMeshDashboardChat() {
   let historyIndicator = null;
   let revealingHistory = false;
   let lastFullLogScrollTop = 0;
+  let stickToNewest = true;
   let historyTouchStartY = null;
   let historyTouchRevealed = false;
   let historyWheelLatched = false;
@@ -735,30 +774,42 @@ function mountForkMeshDashboardChat() {
     discordRefreshRunning = true;
     try {
       const sources = await discoverDiscordSources();
-      const results = await Promise.allSettled(sources.map(async (source) => {
+      const messages = [];
+      // Discord applies rate limits across related connector routes. Fetching
+      // every channel concurrently turns one provider-wide 429 into a burst
+      // of identical failures, so read channels serially and stop immediately
+      // when the connector asks us to cool down.
+      for (const source of sources) {
         const path =
           `/api/orgs/${encodeURIComponent(source.organization)}` +
           `/discord/messages?channelId=${encodeURIComponent(source.channelId)}`;
-        const payload = await discordJson(path);
-        const channelName = String(
-          payload?.channel?.name || source.channelName || source.channelId,
-        ).trim();
-        return (Array.isArray(payload?.messages) ? payload.messages : []).map(
-          (message) => ({
-            ...message,
-            organization: source.organization,
-            channelName,
-          }),
-        );
-      }));
-      const messages = results
-        .flatMap((result) => result.status === "fulfilled" ? result.value : [])
+        try {
+          const payload = await discordJson(path);
+          const channelName = String(
+            payload?.channel?.name || source.channelName || source.channelId,
+          ).trim();
+          messages.push(
+            ...(Array.isArray(payload?.messages) ? payload.messages : []).map(
+              (message) => ({
+                ...message,
+                organization: source.organization,
+                channelName,
+              }),
+            ),
+          );
+        } catch (error) {
+          if (error?.status === 429 || error?.status === 503) throw error;
+          // A missing channel is isolated; continue with the remaining
+          // configured channels without putting the whole connector on ice.
+        }
+      }
+      const orderedMessages = messages
         .filter((message) => message?.id && String(message?.content || "").trim())
         .sort((left, right) =>
           Date.parse(left?.createdAt || "") - Date.parse(right?.createdAt || ""));
       const visibleMessages = discordInitialMessagesLoaded
-        ? messages
-        : messages.slice(-DISCORD_MAX_INITIAL_MESSAGES);
+        ? orderedMessages
+        : orderedMessages.slice(-DISCORD_MAX_INITIAL_MESSAGES);
       let appended = 0;
       for (const message of visibleMessages) {
         if (appendDiscordMessage(message)) appended += 1;
@@ -776,7 +827,9 @@ function mountForkMeshDashboardChat() {
       console.info("[ForkMesh chat] Discord refresh deferred", {
         reason: String(error?.message || "unavailable").slice(0, 160),
       });
-      discordSources = null;
+      if (!Array.isArray(discordSources) || !discordSources.length) {
+        discordSources = null;
+      }
     } finally {
       discordRefreshRunning = false;
     }
@@ -1489,8 +1542,7 @@ function mountForkMeshDashboardChat() {
     historyIndicator.className = "chat-history-indicator";
     historyIndicator.setAttribute("aria-live", "polite");
     historyIndicator.addEventListener("click", () => revealOlderHistory());
-    if (simpleWorldComposer) fullLog.append(historyIndicator);
-    else fullLog.prepend(historyIndicator);
+    fullLog.prepend(historyIndicator);
     return historyIndicator;
   }
 
@@ -1498,8 +1550,11 @@ function mountForkMeshDashboardChat() {
     const records = historyRowIds
       .map((id) => rows.get(id))
       .filter(Boolean);
+    // World-embed history arrives out of order (the Discord bridge folds its
+    // own backlog in), so it is sorted here. Both modes read oldest first,
+    // newest last.
     return simpleWorldComposer
-      ? records.sort((left, right) => right.tsMs - left.tsMs)
+      ? records.sort((left, right) => left.tsMs - right.tsMs)
       : records;
   }
 
@@ -1581,9 +1636,10 @@ function mountForkMeshDashboardChat() {
     } else if (simpleWorldComposer) {
       const next = Array.from(fullLog.querySelectorAll(".chat-message-row"))
         .find((candidate) =>
-          Number(candidate.dataset.chatTimestamp || 0) <= record.tsMs);
+          Number(candidate.dataset.chatTimestamp || 0) > record.tsMs);
       row.dataset.chatTimestamp = String(record.tsMs);
-      fullLog.insertBefore(row, next || historyIndicator || null);
+      if (next) fullLog.insertBefore(row, next);
+      else fullLog.append(row);
     } else {
       fullLog.append(row);
     }
@@ -1593,6 +1649,30 @@ function mountForkMeshDashboardChat() {
       if (record.editedAt) markEdited(record, record.editedAt);
     }
     return row;
+  }
+
+  function fullLogAtNewest() {
+    if (!fullLog) return true;
+    return fullLog.scrollHeight - fullLog.scrollTop - fullLog.clientHeight <= 48;
+  }
+
+  // The newest line lives at the bottom, so "keep up with the room" means
+  // keeping the feed scrolled all the way down. The World embed mounts its log
+  // inside a closed <details>, so the first render happens at zero height and
+  // the scroll only takes once layout lands - hence the follow-up frame and the
+  // resize re-pin below.
+  function pinFullLogToNewest() {
+    if (!fullLog) return;
+    stickToNewest = true;
+    const settle = () => {
+      fullLog.scrollTop = fullLog.scrollHeight;
+      lastFullLogScrollTop = fullLog.scrollTop;
+      syncChatScrollThumb();
+    };
+    settle();
+    requestAnimationFrame(() => {
+      if (stickToNewest) settle();
+    });
   }
 
   function renderHistoryWindow({ preserveScroll = false } = {}) {
@@ -1611,9 +1691,7 @@ function mountForkMeshDashboardChat() {
     const hiddenCount = Math.max(0, records.length - visibleCount);
     ensureHistoryIndicator();
     records.forEach((record, index) => {
-      const visible = simpleWorldComposer
-        ? index < visibleCount
-        : index >= hiddenCount;
+      const visible = index >= hiddenCount;
       if (visible) materializeFullMessage(record);
       if (record.el) record.el.hidden = !visible;
     });
@@ -1621,15 +1699,15 @@ function mountForkMeshDashboardChat() {
     indicator.dataset.complete = hiddenCount ? "false" : "true";
     indicator.disabled = hiddenCount <= 0;
     indicator.textContent = hiddenCount
-      ? `${simpleWorldComposer ? "↓" : "↑"} ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · ${simpleWorldComposer ? "open" : "scroll up"} to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
+      ? `↑ ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · scroll up to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
       : "Beginning of conversation";
     if (preserveScroll) {
       fullLog.scrollTop += Math.max(0, fullLog.scrollHeight - previousHeight);
-    } else {
-      fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
+      lastFullLogScrollTop = fullLog.scrollTop;
+      syncChatScrollThumb();
+      return;
     }
-    lastFullLogScrollTop = fullLog.scrollTop;
-    syncChatScrollThumb();
+    pinFullLogToNewest();
   }
 
   function revealOlderHistory() {
@@ -1692,7 +1770,7 @@ function mountForkMeshDashboardChat() {
       return;
     }
     materializeFullMessage(record);
-    fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
+    pinFullLogToNewest();
   }
 
   // ---- edit / delete own messages ----------------------------------------
@@ -2071,6 +2149,9 @@ function mountForkMeshDashboardChat() {
     deferHistory = false,
   ) {
     if (orgAgentIdentity(who, senderId) && !orgAgentEngineeringAccess) return;
+    const channelMetadata = {
+      sourceLabel: CHANNEL.startsWith("#") ? CHANNEL : `#${CHANNEL}`,
+    };
     appendFullMessage(
       kind,
       who,
@@ -2080,6 +2161,7 @@ function mountForkMeshDashboardChat() {
       tsMs,
       attachment,
       deferHistory,
+      channelMetadata,
     );
     appendSideMessage(
       kind,
@@ -2090,6 +2172,7 @@ function mountForkMeshDashboardChat() {
       tsMs,
       attachment,
       deferHistory,
+      channelMetadata,
     );
     rememberContext(who, text);
   }
@@ -2137,13 +2220,8 @@ function mountForkMeshDashboardChat() {
       const row = document.createElement("div");
       row.className = "chat-system-bubble my-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground";
       row.textContent = text;
-      if (simpleWorldComposer) {
-        fullLog.prepend(row);
-        fullLog.scrollTop = 0;
-      } else {
-        fullLog.append(row);
-        fullLog.scrollTop = fullLog.scrollHeight;
-      }
+      fullLog.append(row);
+      pinFullLogToNewest();
     }
     if (emit) emitWorldActivity(text, "status");
   }
@@ -3167,9 +3245,17 @@ function mountForkMeshDashboardChat() {
     };
     bar.parentElement?.insertBefore(queue, bar);
     const sendButton = inputEl === fullInput ? fullSend : sideSend;
-    bar.insertBefore(fileInput, sendButton || null);
-    bar.insertBefore(button, sendButton || null);
-    bar.append(feedback);
+    const quickSlot =
+      simpleWorldComposer && inputEl === fullInput
+        ? bar.querySelector("[data-world-quick-attachment]")
+        : null;
+    if (quickSlot) {
+      quickSlot.append(fileInput, button, feedback);
+    } else {
+      bar.insertBefore(fileInput, sendButton || null);
+      bar.insertBefore(button, sendButton || null);
+      bar.append(feedback);
+    }
     button.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", () => {
       const files = Array.from(fileInput.files || []);
@@ -3216,15 +3302,47 @@ function mountForkMeshDashboardChat() {
   function setComposerStatus(message = "", tone = "muted") {
     if (!fullComposerStatus) return;
     fullComposerStatus.textContent = message;
-    fullComposerStatus.className =
+    fullComposerStatus.classList.remove(
+      "text-destructive",
+      "text-primary",
+      "text-muted-foreground",
+    );
+    fullComposerStatus.classList.add(
       tone === "bad"
         ? "text-destructive"
         : tone === "good"
           ? "text-primary"
-          : "text-muted-foreground";
+          : "text-muted-foreground",
+    );
+  }
+
+  function pulseWorldQuickComposer(action = "chat") {
+    const composer = fullInput?.closest("[data-dashboard-chat-composer]");
+    if (!composer) return;
+    composer.removeAttribute("data-just-sent");
+    composer.setAttribute("data-submitting", action);
+    window.setTimeout(() => {
+      composer.removeAttribute("data-submitting");
+      composer.setAttribute("data-just-sent", action);
+      window.setTimeout(
+        () => composer.removeAttribute("data-just-sent"),
+        720,
+      );
+    }, 180);
   }
 
   function setFullComposerBusy(busy) {
+    const composer = fullInput?.closest("[data-dashboard-chat-composer]");
+    if (composer) {
+      composer.toggleAttribute("data-submitting", Boolean(busy));
+      if (!busy) {
+        composer.setAttribute("data-just-sent", fullAction?.value || "chat");
+        window.setTimeout(
+          () => composer.removeAttribute("data-just-sent"),
+          720,
+        );
+      }
+    }
     for (const control of [
       fullInput,
       fullSend,
@@ -3252,6 +3370,14 @@ function mountForkMeshDashboardChat() {
       }
       fullInput.placeholder = "Message #general…";
       if (taskRouting) taskRouting.hidden = true;
+      fullSend?.setAttribute(
+        "aria-pressed",
+        String(fullAction.value === "chat"),
+      );
+      fullTaskSend?.setAttribute(
+        "aria-pressed",
+        String(fullAction.value !== "chat"),
+      );
       syncChatContextBubbles();
       return;
     }
@@ -3364,6 +3490,10 @@ function mountForkMeshDashboardChat() {
 
   async function loadTaskRouting() {
     if (!taskAssignee || !taskTeam) return;
+    // Task routing is account-scoped: a guest has no session token, so the
+    // request can only ever come back 401. Skip it rather than logging an
+    // unauthorized fetch (and flashing a status) on every public World load.
+    if (!userSession()) return;
     try {
       const payload = await taskApiRequest("GET", "/api/tasks");
       const selfName = String(payload?.actor || displayName()).toLowerCase();
@@ -3535,12 +3665,10 @@ function mountForkMeshDashboardChat() {
         const destination = botTask
           ? "agent"
           : String(taskDestination?.value || "department");
-        const taskAttachments = (attachmentControl?.draft || []).map(
-          ({ file }) => ({
-            name: safeAttachmentName(file?.name),
-            mime: safeAttachmentMime(file?.type),
-            size: Math.max(0, Number(file?.size) || 0),
-          }),
+        const taskAttachments = await Promise.all(
+          (attachmentControl?.draft || []).map(({ file }) =>
+            taskAttachmentMetadata(file),
+          ),
         );
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
@@ -3620,12 +3748,10 @@ function mountForkMeshDashboardChat() {
         const lines = text.split(/\r?\n/);
         const title = String(lines.shift() || "").trim().slice(0, 160);
         const details = lines.join("\n").trim().slice(0, 4000);
-        const taskAttachments = (attachmentControl?.draft || []).map(
-          ({ file }) => ({
-            name: safeAttachmentName(file?.name),
-            mime: safeAttachmentMime(file?.type),
-            size: Math.max(0, Number(file?.size) || 0),
-          }),
+        const taskAttachments = await Promise.all(
+          (attachmentControl?.draft || []).map(({ file }) =>
+            taskAttachmentMetadata(file),
+          ),
         );
         const created = await taskApiRequest("POST", "/api/tasks", {
           title,
@@ -3742,6 +3868,10 @@ function mountForkMeshDashboardChat() {
     sendEl.addEventListener("click", () => {
       if (simpleWorldComposer && inputEl === fullInput && fullAction) {
         fullAction.value = "chat";
+        syncFullComposerAction();
+      }
+      if (simpleWorldComposer && inputEl === fullInput) {
+        pulseWorldQuickComposer("chat");
       }
       sendFrom(inputEl, attachmentControl);
     });
@@ -3789,8 +3919,8 @@ function mountForkMeshDashboardChat() {
       }
       if (event.key === "Enter" && !event.shiftKey) {
         event.preventDefault();
-        if (simpleWorldComposer && inputEl === fullInput && fullAction) {
-          fullAction.value = "chat";
+        if (simpleWorldComposer && inputEl === fullInput) {
+          pulseWorldQuickComposer(fullAction?.value || "chat");
         }
         sendFrom(inputEl, attachmentControl);
       }
@@ -3818,7 +3948,12 @@ function mountForkMeshDashboardChat() {
       if (simpleWorldComposer) {
         fullAction.value = "agent";
         if (taskAssignee) taskAssignee.value = "agent";
-        void runFullComposerAction(fullInput);
+        syncFullComposerAction();
+        setComposerStatus("Dispatching task instantly…", "good");
+        const attachmentControl = attachmentControls.find(
+          (control) => control.inputEl === fullInput,
+        );
+        void runFullComposerAction(fullInput, attachmentControl);
         return;
       }
       if (fullAction.value !== "task") {
@@ -3919,6 +4054,7 @@ function mountForkMeshDashboardChat() {
       });
     fullLog?.addEventListener("scroll", () => {
       syncChatScrollThumb();
+      stickToNewest = fullLogAtNewest();
       const currentTop = fullLog.scrollTop;
       if (
         hasHiddenHistory() &&
@@ -3972,7 +4108,10 @@ function mountForkMeshDashboardChat() {
       historyTouchRevealed = false;
     }, { passive: true });
     if (fullLog && "ResizeObserver" in window) {
-      new ResizeObserver(syncChatScrollThumb).observe(fullLog);
+      new ResizeObserver(() => {
+        if (stickToNewest) pinFullLogToNewest();
+        else syncChatScrollThumb();
+      }).observe(fullLog);
     }
     syncChatScrollThumb();
     document
