@@ -18573,6 +18573,7 @@ async def _account_heartbeat(env, request):
     else:
         notification_preferences = dict(
             prefs_rec.get("notification_preferences") or {})
+    is_admin = await _is_admin(env, name)
     response = {"ok": True, "online": True,
                 "hasPayoutAddress": bool(rec.get("solana")),
                 "payoutCustody": "external-self-custodial-public-address",
@@ -18581,13 +18582,25 @@ async def _account_heartbeat(env, request):
                     "public balance only. ForkMesh holds no wallet key or user "
                     "funds, and balance never gates reward eligibility."
                 ),
-                "isAdmin": await _is_admin(env, name),
+                "isAdmin": is_admin,
                 "emailNotifications": prefs_rec.get("email_notifications") is not False,
                 "notificationPreferences": notification_preferences}
     if balance_lamports is not None:
         response["balanceLamports"] = balance_lamports
         response["balanceFundsState"] = "user-owned-external-wallet"
         response["balanceIncreased"] = balance_increased
+    # A freshly launched federated instance's join request rides back on the
+    # admin's own signed heartbeat (adhoc #97), the same rail as the claim /
+    # ownership payloads below: the desktop shows a red dot over the relay
+    # favicon plus an Approve button. Count only — relay details are fetched on
+    # demand through the signed admin-relays endpoint when the admin clicks.
+    if is_admin and _is_main_relay(env):
+        try:
+            pending_row = await d1_first(
+                env, "SELECT COUNT(*) AS n FROM relays WHERE status='pending'")
+            response["pendingRelays"] = int((pending_row or {}).get("n") or 0)
+        except Exception:
+            pass
     # A pending website claim (adhoc #53) rides back on the signed heartbeat:
     # only the node's key holder ever sees the confirmation code, and the node
     # shows it on its own screen for the claiming user to type into the site.
@@ -25231,6 +25244,44 @@ async def _federation_register(env, request):
     return json_response({"ok": True, "status": "pending"})
 
 
+# Launch-time join ping (adhoc #97): one announce per isolate per minute is
+# plenty — the endpoint only re-sends this relay's own idempotent registration.
+_FEDERATION_ANNOUNCE_MIN_MS = 60 * 1000
+_federation_announce_at = [0]
+
+
+async def _federation_announce(env, request):
+    """Register with the main relay now instead of on the next staggered cron.
+
+    A freshly deployed federated instance is POSTed here (on its own origin)
+    by the launch bootstrap the moment it passes its health check, so its
+    request to join shows up on the main relay — and as the red dot in the
+    operator's desktop — immediately. Unauthenticated by design: the request
+    body is ignored and the only effect is re-sending this relay's own signed
+    registration upstream (an idempotent upsert there), throttled per isolate.
+    """
+    del request
+    if _is_main_relay(env):
+        return json_response({"error": "not_federated_relay"}, status=404)
+    now = int(Date.now())
+    if now - _federation_announce_at[0] < _FEDERATION_ANNOUNCE_MIN_MS:
+        return json_response({"ok": True, "status": "throttled"},
+                             cache_control="no-store")
+    _federation_announce_at[0] = now
+    label = clean_string(getattr(env, "RELAY_LABEL", "") or "", 80)
+    base = clean_string(getattr(env, "PUBLIC_BASE_URL", "") or "", 200)
+    reply = await _call_main_relay(
+        env, "/api/federation/register", {"label": label, "baseUrl": base})
+    if not reply or not reply.get("ok"):
+        return json_response(
+            {"error": "main_relay_unreachable"}, status=502,
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
+    return json_response(
+        {"ok": True,
+         "status": clean_string(reply.get("status", "") or "pending", 20)},
+        cache_control="no-store")
+
+
 async def _federation_donation_address(env, request):
     del env, request
     return json_response({
@@ -25537,6 +25588,8 @@ async def federation_handler(env, request):
             "/api/relay-mesh/", "/api/federation/", 1))
     if url.path == "/api/federation/register":
         return await _federation_register(env, request)
+    if url.path == "/api/federation/announce":
+        return await _federation_announce(env, request)
     if url.path == "/api/federation/donation-address":
         return await _federation_donation_address(env, request)
     if url.path == "/api/federation/donation-status":
