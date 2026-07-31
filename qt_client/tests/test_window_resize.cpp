@@ -2414,6 +2414,10 @@ int main(int argc, char *argv[])
                   QStringLiteral("the drafted prompt names where the log file lives"));
             check(drafted.contains(QStringLiteral("renderAgentDiff")),
                   QStringLiteral("the drafted prompt carries the recorded backtrace"));
+            // adhoc #90: the sampled frames only name the call that happened to
+            // be on the stack, so the prompt also asks for a sweep of the logs.
+            check(drafted.contains(QStringLiteral("never got backgrounded")),
+                  QStringLiteral("the drafted prompt asks for un-backgrounded work too"));
             check(drafted.size() <= 16000,
                   QStringLiteral("the drafted prompt fits the composer's length cap"));
             check(drafted == window.testStallFixPrompt(),

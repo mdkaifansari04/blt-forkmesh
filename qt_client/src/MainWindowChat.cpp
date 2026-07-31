@@ -3257,19 +3257,23 @@ void MainWindow::updateFooterCommitInfo()
 
 // Start the UI-stall watchdog + the live CPU/memory readout. Called once the
 // window is up so the heartbeat reflects a real, interactive event loop.
+QString MainWindow::stallLogPath()
+{
+#ifdef FORKMESH_WINDOW_TESTS
+    // Test binaries stall on purpose (blocking asserts, offscreen waits) —
+    // never let their reports pollute the user's real diagnostics log.
+    return QString();
+#else
+    return QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
+#endif
+}
+
 void MainWindow::startDiagnostics()
 {
     if (!m_stallWatchdog) {
         m_stallWatchdog = new StallWatchdog(this);
         connect(m_stallWatchdog, &StallWatchdog::stalled, this, &MainWindow::onUiStall);
-#ifdef FORKMESH_WINDOW_TESTS
-        // Test binaries stall on purpose (blocking asserts, offscreen waits) —
-        // never let their reports pollute the user's real diagnostics log.
-        const QString logPath;
-#else
-        const QString logPath =
-            QDir::homePath() + QStringLiteral("/.forkmesh/diagnostics/stalls.log");
-#endif
+        const QString logPath = stallLogPath();
         m_stallLogPath = logPath;
         // Rotate an oversized log (it had grown past 12 MB) so appends and any
         // "read the stall log" tooling stay fast; one previous generation kept.
@@ -3574,8 +3578,9 @@ bool MainWindow::sendStallLogToAgent()
             "was blocked, which makes the window freeze. For each report below, find "
             "the blocking call in the backtrace and fix it so the UI stays responsive "
             "(move the slow work off the main thread, or skip it when nothing "
-            "changed). Recorded stalls:\n\n%2")
+            "changed).\n\n%2\nRecorded stalls:\n\n%3")
             .arg(m_stallLog.size())
+            .arg(stallLogLocationsBlock())
             .arg(m_stallLog.join(QStringLiteral("\n\n---\n\n")));
     if (startAdHocAgentForRepo(repoIndex, prompt, defaultAgentProvider(),
                                /*createPr=*/true) <= 0) {
@@ -3596,6 +3601,27 @@ static constexpr int kStallPromptMaxChars = 15500;
 // The "please fix these stalls" prompt the footer badge drafts: the ask, where
 // both logs live, and the recorded reports newest-first (the freshest freeze is
 // the one most likely still reproducible).
+// Both on-disk logs an agent needs to work a stall report, plus the standing ask
+// to sweep them for work that should have been backgrounded but was not: the
+// sampled backtrace only names the call that happened to be on the stack, while
+// the app log records every slow main-thread operation of the session (adhoc #90).
+QString MainWindow::stallLogLocationsBlock() const
+{
+    QString block;
+    const QString stallLog =
+        m_stallLogPath.isEmpty() ? stallLogPath() : m_stallLogPath;
+    if (!stallLog.isEmpty())
+        block += QStringLiteral("Stall log: %1\n")
+                     .arg(QDir::toNativeSeparators(stallLog));
+    block += QStringLiteral("App log: %1\n")
+                 .arg(QDir::toNativeSeparators(networkLogPath()));
+    block += QStringLiteral(
+        "\nAlso read both logs for any other work that never got backgrounded — "
+        "slow git/network/disk operations still running on the GUI thread — and "
+        "move those off the main thread too, not just the sampled frames below.\n");
+    return block;
+}
+
 QString MainWindow::stallFixPrompt() const
 {
     QString head =
@@ -3606,11 +3632,7 @@ QString MainWindow::stallFixPrompt() const
             "stays responsive (move the slow work off the main thread, or skip it "
             "when nothing changed).\n\n")
             .arg(m_stallCount);
-    if (!m_stallLogPath.isEmpty())
-        head += QStringLiteral("Stall log: %1\n")
-                    .arg(QDir::toNativeSeparators(m_stallLogPath));
-    head += QStringLiteral("App log: %1\n")
-                .arg(QDir::toNativeSeparators(networkLogPath()));
+    head += stallLogLocationsBlock();
     head += QStringLiteral("\nRecorded stalls (newest first):\n\n");
 
     QString body;
