@@ -3219,10 +3219,6 @@ private:
     // overlay so you can drag a rectangle anywhere on the computer, then queues the
     // captured region as a quick-add attachment.
     void captureScreenRegion();
-    // Pencil button (next to the screenshot button): drops a full-screen overlay
-    // you can draw on freehand anywhere on the computer. Nothing is captured — it's
-    // a throwaway scratch layer for pointing things out. Esc dismisses it.
-    void startScreenDraw();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
     // appears beside the prompt box. It is push-to-talk: press and hold to
     // record from the microphone, release to stop and transcribe the audio into
@@ -4209,7 +4205,6 @@ private:
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
-    QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
     // A manual rebuild & restart was requested while an agent was still running:

@@ -14,7 +14,7 @@ class MarkupCanvas;
 // drop shape outlines, or add text labels on top, then sends the flattened
 // result to the prompt.
 //
-// Workflow: ScreenCaptureOverlay (or ScreenDrawOverlay) emits captured() →
+// Workflow: ScreenCaptureOverlay emits captured() →
 // caller constructs a ScreenshotMarkupWindow, connects imageAccepted() to the
 // save/queue path, and shows the dialog. On "Add to Prompt" the markup is
 // composited onto the base image and imageAccepted() fires; on "Discard" the
