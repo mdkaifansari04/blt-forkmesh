@@ -12,6 +12,9 @@
 #include "KebabHeaderView.h"
 #include "CodexAppServerSession.h"
 
+#include <QTextLayout>
+#include <QTextOption>
+
 using namespace forkmesh::ui;
 
 // ---- Agents ---------------------------------------------------------------
@@ -1118,6 +1121,99 @@ void rememberAcceptedAgentPrompt(const QString &token)
                       tokens);
 }
 
+// The agent detail header's title (adhoc #84). A plain QLabel either wraps a
+// long ad-hoc title down the whole pane or, pinned to one line, shows a
+// truncated "…" tail — and the header can spare exactly two lines. This keeps
+// the full string and lays it out itself: wrap at the label's current width,
+// stop after two lines, and elide only if the text still runs past them. The
+// full title is always in the tooltip.
+class WrappedTitleLabel : public QLabel
+{
+public:
+    explicit WrappedTitleLabel(const QString &text, QWidget *parent = nullptr)
+        : QLabel(parent)
+    {
+        setWordWrap(true);
+        setFullText(text);
+    }
+
+    void setFullText(const QString &text)
+    {
+        m_full = text.simplified();
+        setToolTip(m_full);
+        applyLayout();
+    }
+
+    // The pane is free to be narrower than the title — that is what the wrapping
+    // is for — so don't let the label's own minimum widen the splitter.
+    QSize minimumSizeHint() const override
+    {
+        QSize s = QLabel::minimumSizeHint();
+        s.setWidth(0);
+        return s;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QLabel::resizeEvent(event);
+        applyLayout();
+    }
+
+private:
+    static constexpr int kMaxLines = 2;
+
+    void applyLayout()
+    {
+        const int usable = width() - 2; // breathing room against the pane edge
+        // QLabel::setText() is a no-op when the string is unchanged, so the
+        // setText -> relayout -> resize -> setText path settles immediately.
+        QLabel::setText(usable > 0 ? elidedToLines(m_full, usable) : m_full);
+    }
+
+    QString elidedToLines(const QString &text, int lineWidth) const
+    {
+        if (text.isEmpty())
+            return text;
+        QTextLayout layout(text, font());
+        QTextOption option;
+        option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        layout.setTextOption(option);
+        int lastLineStart = 0;
+        int consumed = 0;
+        layout.beginLayout();
+        for (int line = 0; line < kMaxLines; ++line) {
+            QTextLine textLine = layout.createLine();
+            if (!textLine.isValid())
+                break;
+            textLine.setLineWidth(lineWidth);
+            lastLineStart = textLine.textStart();
+            consumed = textLine.textStart() + textLine.textLength();
+        }
+        layout.endLayout();
+        if (consumed >= text.size())
+            return text; // fits in two lines as-is
+        // It doesn't: keep the first line whole and elide what is left onto the
+        // second, so the "…" lands at the end of the title rather than the top.
+        return text.left(lastLineStart) +
+               fontMetrics().elidedText(text.mid(lastLineStart), Qt::ElideRight,
+                                        lineWidth);
+    }
+
+    QString m_full;
+};
+
+// Set the detail header's title through the wrapping label's own setter, so the
+// full string is what gets laid out (and what the tooltip carries). m_agentTitle
+// is typed QLabel* in the header; this is the one place that knows better.
+void setAgentTitleText(QLabel *label, const QString &text)
+{
+    if (auto *wrapped = dynamic_cast<WrappedTitleLabel *>(label))
+        wrapped->setFullText(text);
+    else if (label)
+        label->setText(text);
+}
+
 } // namespace
 
 QWidget *MainWindow::buildAgentsTab()
@@ -1299,9 +1395,10 @@ QWidget *MainWindow::buildAgentsTab()
     listLayout->addWidget(m_agentTable, 1);
 
     auto *detailPane = new QWidget;
-    m_agentTitle = new QLabel("Select a session");
+    // Wraps onto a second line and elides only past that (adhoc #84): an ad-hoc
+    // session's title is a whole sentence, and a one-line header cut it off.
+    m_agentTitle = new WrappedTitleLabel(QStringLiteral("Select a session"));
     m_agentTitle->setObjectName("channelTitle");
-    m_agentTitle->setWordWrap(true);
     // The session's field list (Agent/Model/Repo/Status/Issue/PR/… plus Branch
     // and Worktree) no longer sits open across the top of the detail pane: it
     // filled a full-width band above the transcript for information that is only
@@ -1464,7 +1561,11 @@ QWidget *MainWindow::buildAgentsTab()
     // that made them half-height oddities beside the other actions: they are
     // plain full-size buttons now, and the names they open moved into the Info
     // popup's list (they stay on the tooltip too).
+    // Both are green (adhoc #84): opening the branch or its checkout is the
+    // ordinary, safe thing to do from a finished run, so they read as go actions
+    // beside the red Stop/Delete pair rather than as more of the same.
     m_agentBranchButton = new QPushButton(QStringLiteral("Branch"));
+    m_agentBranchButton->setObjectName("successButton");
     m_agentBranchButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentBranchButton, "git-branch", 16);
     m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
@@ -1474,6 +1575,7 @@ QWidget *MainWindow::buildAgentsTab()
             switchToBranch(s->branchName);
     });
     m_agentWorktreeButton = new QPushButton(QStringLiteral("Worktree"));
+    m_agentWorktreeButton->setObjectName("successButton");
     m_agentWorktreeButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentWorktreeButton, "file-directory", 16);
     m_agentWorktreeButton->hide();
@@ -1483,11 +1585,27 @@ QWidget *MainWindow::buildAgentsTab()
             switchToWorktree(s->branchName);
     });
 
-    // The title owns its row outright (adhoc #35): sharing it with the mode
-    // selector and the action buttons left a long, prompt-derived ad-hoc title
-    // wrapping inside a narrow column with acres of unused space beside it. The
-    // buttons moved down to the output toolbar next to the Transcript | Raw output
-    // toggle, so the header now reads title, then status pill, then the meta table.
+    // Session actions: "+ issue", View PR, Stop, Delete, Branch and Worktree.
+    // Each already manages its own visibility (they appear per session), so they
+    // are only laid out here. adhoc #35 moved them off the header onto the output
+    // toolbar so a long ad-hoc title could have its row to itself; adhoc #84
+    // brings them back up beside the status pill, where the run's state and the
+    // things you can do about it read together — and the output toolbar below
+    // gives the whole width back to the transcript search.
+    auto *actionRow = new QHBoxLayout;
+    actionRow->setContentsMargins(0, 0, 0, 0);
+    actionRow->setSpacing(6);
+    actionRow->addWidget(m_agentCreateIssueButton);
+    actionRow->addWidget(m_agentViewPrButton);
+    actionRow->addWidget(m_agentStopButton);
+    actionRow->addWidget(m_agentDeleteAllButton);
+    actionRow->addWidget(m_agentBranchButton);
+    actionRow->addWidget(m_agentWorktreeButton);
+
+    // The title still owns its row outright (adhoc #35): sharing it with the mode
+    // selector left a long, prompt-derived ad-hoc title wrapping inside a narrow
+    // column with acres of unused space beside it. The header reads title, then
+    // the status pill with the session's actions beside it, then the meta table.
     auto *topRow = new QVBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
     topRow->setSpacing(4);
@@ -1497,6 +1615,8 @@ QWidget *MainWindow::buildAgentsTab()
     statusRow->setSpacing(8);
     statusRow->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
     statusRow->addWidget(m_agentInfoButton, 0, Qt::AlignLeft);
+    statusRow->addSpacing(4);
+    statusRow->addLayout(actionRow);
     statusRow->addStretch(1);
     topRow->addLayout(statusRow);
 
@@ -1675,45 +1795,31 @@ QWidget *MainWindow::buildAgentsTab()
             });
 
     // Search box and match counter — the transcript-only half of the output
-    // toolbar, grouped so it can be shown and hidden as one without taking the
-    // session action buttons beside it with it (adhoc #35).
+    // toolbar, grouped so it can be shown and hidden as one (adhoc #35).
     auto *transcriptToolsRow = new QHBoxLayout;
     transcriptToolsRow->setContentsMargins(0, 0, 0, 0);
     transcriptToolsRow->setSpacing(0);
-    transcriptToolsRow->addWidget(m_transcriptSearch);
+    transcriptToolsRow->addWidget(m_transcriptSearch, 1);
     transcriptToolsRow->addSpacing(6);
     transcriptToolsRow->addWidget(m_transcriptSearchCount);
     m_agentTranscriptTools = new QWidget;
     m_agentTranscriptTools->setLayout(transcriptToolsRow);
 
-    // Session actions, moved off the detail header's title row (adhoc #35) so the
-    // title can run the full width: they ride the output toolbar now, immediately
-    // right of the Transcript | Raw toggle. Each already manages its own
-    // visibility ("+ issue", View PR and the Branch/Worktree buttons appear per
-    // session), so they are only laid out here.
-    auto *actionRow = new QHBoxLayout;
-    actionRow->setContentsMargins(0, 0, 0, 0);
-    actionRow->setSpacing(6);
-    actionRow->addWidget(m_agentCreateIssueButton);
-    actionRow->addWidget(m_agentViewPrButton);
-    actionRow->addWidget(m_agentStopButton);
-    actionRow->addWidget(m_agentDeleteAllButton);
-    actionRow->addWidget(m_agentBranchButton);
-    actionRow->addWidget(m_agentWorktreeButton);
-
+    // With the session actions back up in the header (adhoc #84) the toolbar is
+    // just the Transcript | Raw toggle and the search box — so the search takes
+    // the whole remaining width instead of hugging the right edge with a gap
+    // where the buttons used to be.
     auto *toggleRow = new QHBoxLayout;
     toggleRow->setContentsMargins(0, 0, 0, 0);
     toggleRow->setSpacing(0);
     toggleRow->addWidget(m_transcriptModeButton);
     toggleRow->addWidget(m_terminalModeButton);
     toggleRow->addSpacing(12);
-    toggleRow->addLayout(actionRow);
-    toggleRow->addStretch(1);
-    toggleRow->addWidget(m_agentTranscriptTools);
+    toggleRow->addWidget(m_agentTranscriptTools, 1);
     m_agentOutputToggle = new QWidget;
     m_agentOutputToggle->setLayout(toggleRow);
-    // The toolbar itself always shows now that it carries the action buttons; the
-    // detail pane it lives in is what stays hidden until a session is opened.
+    // The toolbar itself always shows; the detail pane it lives in is what stays
+    // hidden until a session is opened.
 
     // Edited-files list for the "Files changed" tab: the files this session has
     // touched in its branch (derived from Edit/Write/MultiEdit tool calls, and
@@ -5356,8 +5462,7 @@ void MainWindow::showAgentSession(int sessionId)
     m_selectedAgentSessionId = sessionId;
     AgentSession *liveSession = findAgentSession(sessionId);
     if (!liveSession) {
-        if (m_agentTitle)
-            m_agentTitle->setText("Select a session");
+        setAgentTitleText(m_agentTitle, QStringLiteral("Select a session"));
         if (m_agentStatusPill)
             m_agentStatusPill->clear();
         if (m_agentMeta)
@@ -5412,9 +5517,21 @@ void MainWindow::showAgentSession(int sessionId)
                                       : (session->branchName.isEmpty()
                                              ? QStringLiteral("session")
                                              : session->branchName);
-            m_agentTitle->setText(QStringLiteral("External Claude Code · %1").arg(label));
+            setAgentTitleText(
+                m_agentTitle,
+                QStringLiteral("External Claude Code · %1").arg(label));
         } else {
-            m_agentTitle->setText(
+            // An ad-hoc session's stored issueTitle is the prompt's first line
+            // capped at 80 characters, so the header used to end in a "…" that
+            // no amount of pane width would fill in. Take the first line of the
+            // prompt itself when there is one and let the label wrap it over two
+            // lines (adhoc #84).
+            QString adHocTitle = session->issueTitle;
+            if (session->issueNumber <= 0 && !session->prompt.trimmed().isEmpty())
+                adHocTitle =
+                    session->prompt.section(QLatin1Char('\n'), 0, 0).simplified();
+            setAgentTitleText(
+                m_agentTitle,
                 session->issueNumber > 0
                     ? QStringLiteral("#%1 · %2")
                           .arg(session->issueNumber)
@@ -5426,9 +5543,9 @@ void MainWindow::showAgentSession(int sessionId)
                     // is 0, and the prompt is what identifies the run anyway.
                     : QStringLiteral("%1 · %2")
                           .arg(agentProviderName(session->provider))
-                          .arg(session->issueTitle.isEmpty()
+                          .arg(adHocTitle.isEmpty()
                                    ? QStringLiteral("pull #%1").arg(session->prNumber)
-                                   : session->issueTitle));
+                                   : adHocTitle));
         }
     }
     // The detail header's key/value meta lines (identity, issue/branch/worktree/PR

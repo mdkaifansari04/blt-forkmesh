@@ -1413,7 +1413,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
-    leftRegionLayout->setSpacing(8);
+    // No gap between the log and the Background panel (adhoc #84): they are one
+    // region, and the strip of empty footer between their two borders only read
+    // as a seam.
+    leftRegionLayout->setSpacing(0);
     leftRegionLayout->addWidget(logPanel, 1);
     leftRegionLayout->addWidget(m_backgroundQueue, 0);
 
