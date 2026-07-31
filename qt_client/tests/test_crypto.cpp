@@ -7,7 +7,6 @@
 #include "../src/BackoffNetworkAccessManager.h"
 #include "../src/ChatHistoryLimits.h"
 #include "../src/ChatVisitorPresence.h"
-#include "../src/CommitCommentStore.h"
 #include "../src/CoveCrypto.h"
 #include "../src/CoveStore.h"
 #include "../src/DiscussionInboxBackoff.h"
@@ -1223,17 +1222,6 @@ int main(int argc, char *argv[])
         check(prompts == 1 && !manager.seenPaths.isEmpty(),
               "the accepted firewall rule whitelists subsequent requests");
     }
-
-    // --- Commit comment signing ------------------------------------------
-    CommitComment commitVec;
-    commitVec.author = "TESTPUB";
-    commitVec.ts = 3000;
-    commitVec.body = "Nice";
-    const QByteArray expectedCommit =
-        "forkmesh-commit-comment-v1\nabc123\nTESTPUB\n3000\n"
-        "fdc96ffbf256523aec8846ae56321053c7ab751c99eb766e6bb4a7d362a4f060";
-    check(CommitCommentStore::canonicalString("abc123", commitVec) == expectedCommit,
-          "commit-comment canonical string matches the cross-language vector");
 
     // A burn-up series must reconstruct historical state, including a close
     // and a later reopening, rather than repeating today's status backwards.
@@ -5488,16 +5476,6 @@ int main(int argc, char *argv[])
             check(cf2.contains(QStringLiteral("mt.txt")),
                   "checkMergeable names the conflicting file from the ref-merge");
         }
-
-        // --- CommitCommentStore round-trip -------------------------------
-        const QByteArray head = gitOutput({"rev-parse", "HEAD"}).trimmed();
-        CommitCommentStore comments(tmp.path(), QString(), &identity, "tester");
-        check(comments.addComment(QString::fromUtf8(head), "great commit", &err),
-              "commit addComment succeeds");
-        const QList<CommitComment> loadedComments =
-            comments.loadFor(QString::fromUtf8(head));
-        check(loadedComments.size() == 1 && loadedComments.first().body == "great commit",
-              "commit comment round-trips from commits/<sha>/NNNN-comment.md");
 
         // --- CoveStore round-trip ----------------------------------------
         // Create an encrypted cove, confirm the committed file is opaque, then

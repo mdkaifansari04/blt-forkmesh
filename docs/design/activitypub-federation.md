@@ -21,8 +21,8 @@ non-private repos federate; the visibility checks mirror the public-profile
 and catalog rules.
 
 Outbound: verified signed-inbox submissions federate as `Create(Note)` —
-issue opens/comments, PR opens/comments/reviews, discussion opens/comments,
-commit comments. The repo actor posts to its followers; when the event's
+issue opens/comments, PR opens/comments/reviews, discussion opens/comments.
+The repo actor posts to its followers; when the event's
 author maps to a local account, the user actor posts to theirs as well.
 Releases and merges never pass through the relay inboxes (they are canonical
 on the owner's node), so the owner-signed `POST
