@@ -418,6 +418,17 @@ int main(int argc, char *argv[])
 
     MainWindow window;
 
+    // adhoc #115: the first-run screen that asked for a username and a relay
+    // host is retired — it only ever loaded straight into the app — so a freshly
+    // constructed window is already on the app shell, before any session starts.
+    check(window.testStackIndex() == 1,
+          QStringLiteral("the app opens on the app shell, not a setup screen"));
+    // Its replacement is the top-bar "Log in / Sign up" pill, which stays hidden
+    // until the deferred startup has resolved whether a user account is attached
+    // (otherwise every launch would flash it at an already-signed-in user).
+    check(!window.testSignInButtonVisible(),
+          QStringLiteral("the sign-in pill waits for silent auth to resolve"));
+
     // Opening Chat from its unread badge should land directly on the unread
     // conversation carrying the newest message, while preserving the already
     // open conversation when that conversation itself is unread.
@@ -992,6 +1003,13 @@ int main(int argc, char *argv[])
           QStringLiteral("column drag leaves others untouched after a move"));
 
     window.testEnableSessionStartBypass(true);
+
+    // adhoc #115: startup has resolved now (the bypass marks it done) and this
+    // node has no user account, so the pill appears — it is the only way in that
+    // the retired setup screen left behind.
+    window.testRefreshSignInButton();
+    check(window.testSignInButtonVisible(),
+          QStringLiteral("the sign-in pill offers a way in once no account is found"));
 
     // No wallet, no signup: starting a node needs only a valid name. The core
     // flow never invokes the (opt-in) account/signup flow, and a fresh node drops

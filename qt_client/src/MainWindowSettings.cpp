@@ -3116,7 +3116,11 @@ void MainWindow::leaveSession(const QString &)
         m_backend = nullptr;
     }
     updateConnectionStatus();
-    m_stack->setCurrentIndex(0);
+    // Leaving the mesh used to dump the user back on the setup screen; that
+    // screen is gone (adhoc #115), so stay in the app — the status line already
+    // reports the disconnect and the top-bar pill reappears if the account went
+    // with it.
+    updateSignInButton();
     m_userName.clear();
 
     m_homeRoster.clear();

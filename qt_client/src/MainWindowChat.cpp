@@ -5331,6 +5331,21 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
 
+    // "Log in / Sign up" pill (adhoc #115). The old first-run screen that asked
+    // for a username and a relay host is gone — the app opens straight into the
+    // shell — so this is what a user who hasn't attached a forkmesh.com account
+    // clicks. updateSignInButton() hides it the moment one is attached.
+    m_navSignInButton = new QPushButton(QStringLiteral("Log in / Sign up"));
+    m_navSignInButton->setObjectName("primaryButton");
+    m_navSignInButton->setCursor(Qt::PointingHandCursor);
+    m_navSignInButton->setToolTip(
+        QStringLiteral("Attach this machine to your ForkMesh account, or create "
+                       "one on forkmesh.com"));
+    setOcticon(m_navSignInButton, "sign-in", 14);
+    m_navSignInButton->hide();
+    connect(m_navSignInButton, &QPushButton::clicked, this,
+            &MainWindow::showSignInMenu);
+
     // Square screenshot button beside the rebuild/restart button: drag a region
     // anywhere on screen and it lands in the prompt as an attachment.
     m_navScreenshotButton = new QPushButton;
@@ -5421,6 +5436,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // runs follow it (adhoc #70). The Agents button that used to head this group
     // is now a regular rail entry.
     chromeRow->addWidget(m_relayMenuButton);
+    // Logged-out only: the sign-in pill sits immediately after the relay switcher
+    // so it is the first thing on the bar that isn't chrome, and it lives in the
+    // left-hand group because that group never scrolls out of a narrow window.
+    chromeRow->addWidget(m_navSignInButton);
     chromeRow->addWidget(m_relayJoinApproveButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
@@ -5529,6 +5548,7 @@ QWidget *MainWindow::buildBreadcrumb()
     refreshRepoSyncIndicators();
     updateNavRebuildButton();
     updateNodeOnlineControls();
+    updateSignInButton();
     return bar;
 }
 
@@ -5538,6 +5558,58 @@ void MainWindow::updateNavRebuildButton()
         QSettings().value(kShowRebuildButtonSetting, false).toBool();
     if (m_navRebuildButton)
         m_navRebuildButton->setVisible(visible);
+}
+
+// The top-bar "Log in / Sign up" pill replaces the retired first-run screen
+// (adhoc #115), so it must be honest about state rather than eager: it stays
+// hidden until the deferred startup has actually resolved who this machine is.
+// Silent auth runs a few seconds after launch and is what fills
+// nodeOwnerDisplayName() on a signed-in machine — offering "Log in" before then
+// would flash the pill on every start for a user who is already logged in. A
+// headless mirror authenticates with its node key and has nobody at the
+// keyboard, so it never gets the pill at all.
+void MainWindow::updateSignInButton()
+{
+    if (!m_navSignInButton)
+        return;
+    const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
+    m_navSignInButton->setVisible(!m_headless && m_deferredStartupRun && !signedIn);
+}
+
+void MainWindow::showSignInMenu()
+{
+    QMenu menu(this);
+    // In-app email/password login: this is the path that attaches this machine
+    // to an existing forkmesh.com account (runLoginFlow registers the desktop
+    // key with the relay and hands back a real website session).
+    QAction *login = menu.addAction(QStringLiteral("Log in to your account\xE2\x80\xA6"));
+    // Linking through the browser needs a registered, key-bound node — the relay
+    // links by node name + this node's key — so only offer it once that holds.
+    QAction *browser = nullptr;
+    if (!accountOwner().isEmpty() && hasOwnerSigningCapability(accountOwner()))
+        browser = menu.addAction(
+            QStringLiteral("Link this node in your browser\xE2\x80\xA6"));
+    QAction *signup = menu.addAction(QStringLiteral("Create an account\xE2\x80\xA6"));
+
+    QAction *chosen = menu.exec(m_navSignInButton->mapToGlobal(
+        QPoint(0, m_navSignInButton->height())));
+    if (!chosen)
+        return;
+    if (chosen == login) {
+        loginToUserAccount();
+        updateUserSwitcher();
+        return;
+    }
+    if (browser && chosen == browser) {
+        openLinkNodeInBrowser();
+        return;
+    }
+    if (chosen == signup) {
+        QUrl url = catalogApiUrl(); // http(s) on the mainnode host
+        url.setPath(QStringLiteral("/signup"));
+        QDesktopServices::openUrl(url);
+        logSystem("Account: opened the browser to create a ForkMesh account.");
+    }
 }
 
 // Pin the floating "Log" button to the bottom-right corner of the live-log
@@ -6190,6 +6262,9 @@ void MainWindow::updateUserSwitcher()
     }
     updateUserAvatarButton();
     updateChatIdentity();
+    // Every profile-hydration path lands here, so this is also where the top-bar
+    // "Log in / Sign up" pill learns that an account just arrived (or went away).
+    updateSignInButton();
     // The top-right node-name label folds in the user account name
     // ("user/node"), so keep it in step with the user identity too.
     refreshWebUserSolanaAddress();

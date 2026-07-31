@@ -449,6 +449,11 @@ public:
     void testEnablePaidMirroring() { enablePaidMirroring(); }
     int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
     int testStackIndex() const;
+    // adhoc #115: state of the top-bar "Log in / Sign up" pill. Reported from
+    // isHidden() rather than isVisible() so it means "this widget wants to show"
+    // even in a test window that is never actually shown.
+    bool testSignInButtonVisible() const;
+    void testRefreshSignInButton() { updateSignInButton(); }
     QString testUserName() const { return m_userName; }
     QString testAccountName() const { return m_accountName; }
     QString testSavedSolanaAddress() const;
@@ -2505,6 +2510,11 @@ private:
     void markWebAlertsRead();
     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
     void updateNavRebuildButton();
+    // Show the top-bar "Log in / Sign up" pill only while this machine has no
+    // forkmesh.com user account attached (adhoc #115).
+    void updateSignInButton();
+    // Menu behind that pill: in-app password login, or the website's signup page.
+    void showSignInMenu();
     // Reposition the floating "Log" button to the live-log strip's corner.
     void positionFloatingLogButton();
     // Keep the pause-scroll toggle in the live-log strip's bottom-right corner,
@@ -4407,6 +4417,11 @@ private:
     // Network button's badge.
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
+    // Top-bar "Log in / Sign up" pill. The first-run setup screen is gone (adhoc
+    // #115) — the app opens straight into the shell — so this is the only entry
+    // point for attaching this machine to a forkmesh.com user account. Hidden as
+    // soon as one is attached (see updateSignInButton).
+    QPushButton *m_navSignInButton = nullptr;
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
