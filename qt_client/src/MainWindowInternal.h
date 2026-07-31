@@ -1335,6 +1335,92 @@ private:
     QVector<double> m_history;
 };
 
+// A row-sized memory trend square for one process in the "High memory usage"
+// panel (adhoc #98). Each refresh of that panel pushes the process's resident
+// size in, so a row shows at a glance whether that PID is still growing or has
+// levelled off. Unlike ResourceSparkline it plots on a caller-supplied scale
+// shared by every row (the largest resident size on the list), so the squares
+// are comparable down the column, and it carries no label — the numbers are
+// already in the neighbouring cells.
+class ProcessMemorySparkline : public QWidget
+{
+public:
+    static constexpr int kMaxPoints = 24; // ~2 minutes at the panel's 5s refresh
+
+    explicit ProcessMemorySparkline(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(kSide, kSide);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+
+    // `history` is oldest-to-newest resident sizes in KB; `maxValue` is the
+    // shared full-scale value for the column.
+    void setHistory(const QVector<double> &history, double maxValue)
+    {
+        m_history = history;
+        m_max = maxValue > 0 ? maxValue : 1.0;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(box, 3, 3);
+        QColor card = palette().color(QPalette::WindowText);
+        card.setAlpha(28);
+        p.setPen(Qt::NoPen);
+        p.setBrush(card);
+        p.drawPath(cardPath);
+        const QRectF area = box.adjusted(1.5, 1.5, -1.5, -1.5);
+        if (m_history.isEmpty() || area.height() < 2 || area.width() < 2)
+            return;
+
+        // A single sample is still worth drawing — a flat line at that level
+        // says the process was only just seen.
+        p.save();
+        p.setClipPath(cardPath);
+        const double norm = qBound(0.0, m_history.last() / m_max, 1.0);
+        const QColor line = norm >= 0.66   ? QColor("#f85149")
+                            : norm >= 0.33 ? QColor("#d29922")
+                                           : QColor("#3fb950");
+        const int n = m_history.size();
+        const double step = area.width() / double(kMaxPoints - 1);
+        QPolygonF curve;
+        for (int i = 0; i < n; ++i) {
+            const double x =
+                n > 1 ? area.right() - (n - 1 - i) * step : area.left();
+            const double v = qBound(0.0, m_history.at(i) / m_max, 1.0);
+            curve << QPointF(x, area.bottom() - v * area.height());
+        }
+        if (n == 1)
+            curve << QPointF(area.right(), curve.first().y());
+        QPolygonF fill = curve;
+        fill << QPointF(curve.last().x(), area.bottom())
+             << QPointF(curve.first().x(), area.bottom());
+        QColor under = line;
+        under.setAlpha(70);
+        p.setBrush(under);
+        p.setPen(Qt::NoPen);
+        p.drawPolygon(fill);
+        QPen pen(line);
+        pen.setWidthF(1.2);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(curve);
+        p.restore();
+    }
+
+private:
+    static constexpr int kSide = 34; // fits a table row without growing it
+    QVector<double> m_history;
+    double m_max = 1.0;
+};
+
 // Spinning-radar dish with a latency readout centered inside it, shown on the
 // window-chrome line just left of the CPU/MEM/DISK sparklines (adhoc #87). The
 // dish always sweeps (a continuously rotating wedge) so the relay looks
