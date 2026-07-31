@@ -4723,12 +4723,13 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *bar = new QWidget;
     bar->setObjectName("breadcrumbBar");
 
-    // --- Relay switcher: a "favicon  domain ▾ count" dropdown (search / switch
-    // / add). -----------------------------------------------------------------
+    // --- Relay switcher: just the active relay's favicon (adhoc #91) — the
+    // domain and relay count moved into the dropdown it opens (search / switch
+    // / add). ----------------------------------------------------------------
     m_relayMenuButton = new QPushButton;
     m_relayMenuButton->setObjectName("relayMenuButton");
     m_relayMenuButton->setCursor(Qt::PointingHandCursor);
-    m_relayMenuButton->setIconSize(QSize(18, 18));
+    m_relayMenuButton->setIconSize(QSize(28, 28));
     m_relayMenuButton->setToolTip("Switch, search, or add relays");
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
@@ -5332,7 +5333,8 @@ QWidget *MainWindow::buildBreadcrumb()
 
     auto *chrome = new WindowChromeBar;
     auto *chromeRow = new QHBoxLayout(chrome);
-    chromeRow->setContentsMargins(14, 0, 8, 0);
+    // 24px on the left nudges the favicon in off the window edge (adhoc #91).
+    chromeRow->setContentsMargins(24, 0, 8, 0);
     chromeRow->setSpacing(8);
     // The instance/relay switcher heads the edge-to-edge chrome, with the public
     // SOL balance immediately to its right. The live fleet matrix sits in this
@@ -5730,11 +5732,14 @@ void MainWindow::updateRelaySwitcher()
                                                  : host)));
     if (host.isEmpty())
         host = QStringLiteral("ForkMesh");
-    // "domain ▾ count": the caret signals it drops down; the count is the
-    // number of configured relays.
-    const QString caret = QString::fromUtf8("\xE2\x96\xBE");
-    m_relayMenuButton->setText(host + "  " + caret + "  " +
-                               QString::number(m_servers.size()));
+    // The button is favicon-only (adhoc #91): the domain and relay count moved
+    // into the dropdown itself, so here they only ride the hover tooltip.
+    m_relayMenuButton->setToolTip(
+        QStringLiteral("%1 — %2 %3 configured. Switch, search, or add relays.")
+            .arg(host)
+            .arg(m_servers.size())
+            .arg(m_servers.size() == 1 ? QStringLiteral("relay")
+                                       : QStringLiteral("relays")));
 }
 
 // The room socket's keepalive pong carries the relay round trip for free every
@@ -5948,9 +5953,16 @@ void MainWindow::showRelayMenu()
         return;
     QMenu menu(this);
 
-    // Header showing the relay count.
-    QAction *header =
-        menu.addAction(QStringLiteral("Relays (%1)").arg(formatCount(m_servers.size())));
+    // Header: the active relay's domain plus the relay count — the readout
+    // that used to sit on the chrome-line button label itself (adhoc #91).
+    QString activeHost;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        activeHost = serverHost(m_servers.at(m_activeServer).url);
+    QAction *header = menu.addAction(
+        activeHost.isEmpty()
+            ? QStringLiteral("Relays (%1)").arg(formatCount(m_servers.size()))
+            : QStringLiteral("%1 — Relays (%2)")
+                  .arg(activeHost, formatCount(m_servers.size())));
     header->setEnabled(false);
 
     // Search box at the top; filters the relay list live.
