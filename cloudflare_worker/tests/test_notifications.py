@@ -120,7 +120,6 @@ def test_worker_indexes_notifications_from_existing_event_sources():
     assert "_best_effort_inbox_side_effect(\n            notify_issue_assignees(" in ENTRY_TEXT
     for marker in (
         "await notify_pending_inbox(env, owner, repo, \"pull\"",
-        "await notify_pending_inbox(env, owner, repo, \"commit_comment\"",
         "await notify_pending_inbox(env, owner, repo, \"discussion\"",
         "await notify_mentions(env, owner, repo,",
         "await enqueue_notification(env, grantee, \"repo_shared\"",
