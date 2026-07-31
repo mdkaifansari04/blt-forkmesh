@@ -56,6 +56,22 @@ struct AgentDiffStat {
     int removed = -1;
 };
 
+// Everything the Mirror nodes panel shows for THIS node's own row, gathered in
+// one pass so the ~12 git subprocesses behind it can run on a worker thread
+// instead of freezing the panel rebuild (adhoc #93). `key` is the filesystem-only
+// fingerprint of the mirror + working tree the snapshot was read from: while it
+// matches, nothing on disk has moved and the snapshot is reused as-is.
+struct MirrorSelfSnapshot {
+    QString key;
+    MirrorAdvert advert;
+    QString servedCommit; // tip of the branch we actually serve
+    int pendingPush = 0;  // local commits not yet in the served mirror
+    // When this snapshot was taken. A running mirror sync rewrites refs
+    // continuously, so the key would go stale again the moment each gather
+    // finishes; this floors how often we re-read.
+    qint64 gatheredMs = 0;
+};
+
 #include <QElapsedTimer>
 #include <QHash>
 #include <QIcon>
@@ -2139,6 +2155,12 @@ private:
     // shows it: the per-session usage bar, the top-bar mini chart and the
     // persisted cache. `weekly` picks the window.
     void applyClaudeUsage(bool weekly, int percent);
+    // Last percentage applied per window (-1 = none yet). applyClaudeUsage() is
+    // called once per replayed rate_limit event when transcript history is
+    // prepended, and each repeat used to cost a QSettings read+write on the GUI
+    // thread; an unchanged figure is now a no-op (adhoc #93).
+    int m_claudeUsageLastWeekPct = -1;
+    int m_claudeUsageLast5hPct = -1;
     // Issue #50: feed one window's reset instant (epoch ms, from the OAuth usage
     // endpoint's resets_at) into the top-bar mini chart's tooltip as a "resets in
     // Xh / Xd" countdown, and cache it so the figure survives a restart.
@@ -2831,6 +2853,15 @@ private:
     // Whether `path` is switched off for the open repo.
     bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
+    // Self-row snapshot for that panel (adhoc #93). The key is filesystem-only —
+    // mirror HEAD/refs plus the working tree's HEAD/refs/worktrees mtimes — so
+    // deciding "has anything moved?" costs a handful of stats rather than the git
+    // subprocesses the snapshot itself needs. refreshMirrorSelfSnapshot() gathers
+    // a stale one on a worker thread and rebuilds the panel once when it lands.
+    QString mirrorSelfSnapshotKey(const RepositoryRecord &repo) const;
+    void refreshMirrorSelfSnapshot(const RepositoryRecord &repo, const QString &key);
+    QHash<QString, MirrorSelfSnapshot> m_mirrorSelfSnapshots; // keyed by mirrorPath
+    QSet<QString> m_mirrorSelfSnapshotsInFlight;
     // Spin the caution/error status lights on Mirror-nodes rows (adhoc #230);
     // updateMirrorNodeLightTimer() keeps the timer running only while a row's
     // light is actually spinning, so an all-green table never ticks.
@@ -5096,6 +5127,10 @@ private:
     mutable QString m_defaultBranchFastCache;
     mutable QString m_defaultBranchFastCacheDir;
     mutable qint64 m_defaultBranchFastCacheTime = 0;
+    // Filesystem-only fingerprint of the ref store the cached answer was read
+    // from; while it matches, the cache outlives the 5 s window and no git
+    // subprocess is spawned at all (adhoc #93).
+    mutable QString m_defaultBranchFastCacheSig;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     // Top-bar "search everything" box and its floating results dropdown. The popup
     // is parented to the window (not the short top bar) so it isn't clipped, and is
@@ -5845,6 +5880,14 @@ private:
     // diff is byte-identical just re-freezes the UI for seconds with no visible
     // change, so we skip the setHtml when this matches.
     QString m_agentDiffLastHtml;
+    // …and the inputs that produced it: session/workdir/base plus the raw patch
+    // bytes. Skipping only the setHtml still left renderDiffHtml() rebuilding the
+    // whole diff document on every burst, which the stall watchdog clocked at
+    // ~590 ms of blocked GUI thread; on a hit we reuse the HTML and the parsed
+    // per-file table (a renderAgentDiff-local cache, since DiffFileEntry lives in
+    // MainWindowInternal.h) instead of re-rendering (adhoc #93).
+    QString m_agentDiffRenderKey;
+    QByteArray m_agentDiffRenderedPatch;
     QPushButton *m_agentMergeButton = nullptr;   // worktree: merge into main
     QPushButton *m_agentMergeDeleteButton = nullptr; // merge + delete agent too
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
