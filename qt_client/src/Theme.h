@@ -580,7 +580,6 @@ QPushButton#memberDeleteButton:hover {
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 6px;
 }
-#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -952,7 +951,6 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 8px;
 }
-#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
@@ -1858,7 +1856,6 @@ QPushButton#memberDeleteButton:hover {
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 6px;
 }
-#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -2222,7 +2219,6 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 8px;
 }
-#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
