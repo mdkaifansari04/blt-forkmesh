@@ -7,6 +7,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SCENE = (ROOT / "public" / "world" / "world-scene.js").read_text(
     encoding="utf-8"
 )
+WORLD = (ROOT / "public" / "world" / "world.js").read_text(encoding="utf-8")
 
 
 def test_lobby_kiosks_line_up_left_of_the_office_clock():
