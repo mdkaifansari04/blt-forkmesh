@@ -3170,9 +3170,10 @@
     const hint = $("[data-email-verification-hint]");
     if (!hint) return;
     hint.textContent = message ? " " + message : "";
+    // Only utilities already present in the built dashboard/tailwind.css.
     hint.className = kind === "bad" ? "text-red-300"
       : kind === "good" ? "text-emerald-300"
-        : "text-amber-200/80";
+        : "text-amber-300";
   }
 
   // An unverified address blocks node renames and every account email, and the

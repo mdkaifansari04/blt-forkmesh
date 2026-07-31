@@ -6,7 +6,7 @@ export const WORKER_FOOTPRINT = Object.freeze({
   "onDemandSourceBytes": 124114,
   "vendoredBytes": 0,
   "moduleCount": 48,
-  "staticAssetBytes": 103086657,
+  "staticAssetBytes": 103086585,
   "staticAssetCount": 382,
   "largestStaticAsset": {
     "name": "assets/video/forkmesh-forever.mp4",
