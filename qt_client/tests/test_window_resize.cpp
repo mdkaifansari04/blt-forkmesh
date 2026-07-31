@@ -1131,6 +1131,34 @@ int main(int argc, char *argv[])
     check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(QStringLiteral("jett")),
           QStringLiteral("a plain user account online is not logged as a node connecting"));
 
+    // Adhoc #113: an anonymous chat guest coming online is a person passing
+    // through, not a node. Only a guest that advertises a machine nodeName (a
+    // first-run desktop) is announced — under the machine's name, never the
+    // person's "Guest ####" alias.
+    window.testResetNetworkLog();
+    QList<MemberInfo> withGuestPeer = withUserPeer;
+    MemberInfo guestPeer =
+        testMember(QStringLiteral("guest-peer"), QStringLiteral("Guest 4242"));
+    guestPeer.accountKind = QStringLiteral("guest");
+    withGuestPeer.append(guestPeer);
+    window.testSetRoster(withGuestPeer);
+    check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(
+              QStringLiteral("Guest 4242")),
+          QStringLiteral("an anonymous guest online is not logged as a node"));
+    window.testResetNetworkLog();
+    MemberInfo guestDesktopPeer =
+        testMember(QStringLiteral("guest-desktop-peer"),
+                   QStringLiteral("Guest 4242"));
+    guestDesktopPeer.accountKind = QStringLiteral("guest");
+    guestDesktopPeer.nodeName = QStringLiteral("magnetic-terminal-4242");
+    withGuestPeer.append(guestDesktopPeer);
+    window.testSetRoster(withGuestPeer);
+    const QString guestLog = window.testNetworkLog().join(QLatin1Char('\n'));
+    check(guestLog.contains(QStringLiteral("magnetic-terminal-4242")) &&
+              !guestLog.contains(QStringLiteral("Guest 4242")),
+          QStringLiteral(
+              "a first-run desktop guest announces as its machine node name"));
+
     // adhoc #404: a browser guest / World visitor that stops sending presence is
     // forgotten after ten idle minutes, while a real node keeps its offline row
     // so it stays selectable in the Node dropdown.

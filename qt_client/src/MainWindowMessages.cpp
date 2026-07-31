@@ -630,9 +630,18 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             // counts as a node for backward compatibility.
             if (m.accountKind == QLatin1String("user"))
                 continue;
+            // Anonymous chat guests are people passing through, not nodes
+            // (adhoc #308). A first-run desktop guest still advertises its
+            // machine's nodeName (adhoc #113), so that machine still counts.
+            if (isTemporaryChatGuest(m))
+                continue;
             if (!previouslyOnline.contains(m.id)) {
-                const QString displayName =
-                    m.name.trimmed().isEmpty() ? m.id : m.name.trimmed();
+                // This is a node alert: name the machine (nodeName first).
+                // A first-run desktop's chat alias is "Guest ####" while its
+                // machine keeps the generated node name (adhoc #113).
+                QString displayName = nodeListIdentityKey(m).trimmed();
+                if (displayName.isEmpty())
+                    displayName = m.id;
                 logSystem(QStringLiteral("Node connected: %1 is online").arg(displayName));
                 if (!showNodeConnectAlert)
                     continue;
