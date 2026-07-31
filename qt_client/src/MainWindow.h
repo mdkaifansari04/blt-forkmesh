@@ -5039,8 +5039,14 @@ private:
     // so the remaining branches catch up with the merge (adhoc #250).
     QCheckBox *m_branchAutoPullAllCheck = nullptr;
     QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
-    QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
-    QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
+    QListWidget *m_branchFileList = nullptr;    // the range's changed files
+    QLabel *m_branchFilesSummary = nullptr;     // "CHANGED FILES · N" header
+    // The two lists as standalone panes: while a branch/PR range is under review
+    // the Git view lends them its left column's slots (adhoc #110) — files where
+    // the working-tree CHANGES tree sits, commits where the history sits — so the
+    // review reads in the places those things already live.
+    QWidget *m_branchFilesPane = nullptr;
+    QWidget *m_branchScopePane = nullptr;
     // Scope selector above the changed-files list: "All changes", the branch's
     // uncommitted working-tree changes (when its checkout is dirty), and one row
     // per commit the branch adds over base. Selecting a row re-renders the diff
@@ -5129,7 +5135,10 @@ private:
     // Detail-pane action bar above the branch diff: acts on the selected branch
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
     // state is refreshed in updateBranchDetailActions() as the selection changes.
-    QLabel *m_branchDetailLabel = nullptr;      // "<branch> · N behind · M ahead"
+    QLabel *m_branchDetailLabel = nullptr;      // "<branch> -> <base> · N behind · M ahead"
+    // Closes the review and hands the Git view's left column back to the working
+    // tree / commit history (adhoc #110).
+    QPushButton *m_branchCloseButton = nullptr;
     QPushButton *m_branchOpenCodiumButton = nullptr; // "Open in Codium" (VSCodium)
     QPushButton *m_branchMergeEditorButton = nullptr; // "Merge editor" (resolve by hand)
     QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
@@ -5345,6 +5354,13 @@ private:
     // Branch/PR range review pane (adhoc #107): the branch diff viewer, moved
     // into the Git view so a branch or PR opens its commits/files/diff here.
     static constexpr int kCommitWorkspaceRangePage = 2;
+    // The Git view's left column: two stacks that normally show the working-tree
+    // changes (top) and the commit history (bottom), and swap to a reviewed
+    // range's changed files / commits while the range page is up (adhoc #110).
+    QStackedWidget *m_gitFilesSlot = nullptr;
+    QStackedWidget *m_gitHistorySlot = nullptr;
+    // Show a right-pane page and put the left column in the matching state.
+    void setCommitWorkspacePage(int page);
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;
