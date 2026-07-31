@@ -74,6 +74,7 @@ def test_remote_clone_only_group_uses_clone_url_canonical_identity():
     transformed = DASHBOARD_JS.replace(
         "  applyDashboardTheme(readDashboardTheme());\n"
         "  if (initSharedChrome()) {\n"
+        "    startAccountSessionWatch();\n"
         "    (PAGE_INITS[currentPage()] || initHomePage)();\n"
         "    initPageHistory();\n"
         "  }",
@@ -107,6 +108,7 @@ global.window = {
   history: { pushState() {} },
   lucide: { createIcons() {} },
   setTimeout() {},
+  setInterval() {},
   clearInterval() {},
 };
 global.navigator = {};
