@@ -322,10 +322,16 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_userName = saved;
 
     m_stack = new QStackedWidget(this);
+    // The setup page is no longer a screen anyone sees (adhoc #115): it only ever
+    // asked for a username and a relay host that both already have working
+    // defaults, so it loaded straight into the app anyway. It stays in the stack
+    // purely as the data holder for m_nameEdit / m_serverUrlEdit / m_setupError,
+    // which the session, settings and update paths all still read and write.
     m_stack->addWidget(buildSetupPage());
     logStartup(QStringLiteral("setup page built"));
     m_stack->addWidget(buildChatPage());
     logStartup(QStringLiteral("chat/app page built"));
+    m_stack->setCurrentIndex(1); // open in the app shell, always
     setCentralWidget(m_stack);
     // Build the two largest, most frequently visited repository surfaces before
     // the window becomes interactive. QWidget construction cannot legally run
@@ -491,17 +497,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_setupError->setText(m_profileIdentity.errorString());
         m_setupError->show();
     } else {
-        // Avoid a flash of the login/setup screen on restart only when the
-        // persisted capability belongs to both this account and this exact
-        // local identity key. The identity must be loaded before this check.
-        const QSettings startupSettings;
-        if (AccountCapability::persistedMarkerMatches(
-                startupSettings.value(kDesktopCapableAccountSetting).toString(),
-                startupSettings.value(kDesktopCapablePublicKeySetting).toString(),
-                startupSettings.value(kAuthedAccountSetting).toString(),
-                m_profileIdentity.publicKey())) {
-            m_stack->setCurrentIndex(1);
-        }
+        // The stack already opens on the app shell, so there is no login/setup
+        // screen left to flash past here — the persisted-capability check that
+        // used to decide it is gone with the screen (adhoc #115).
         if (m_pubkeyLabel) {
             m_pubkeyLabel->setText("Ed25519 public key: " +
                                    m_profileIdentity.shortPublicKey());
@@ -570,8 +568,10 @@ void MainWindow::runDeferredStartup()
     // No account is required: the node drops straight into the app shell.
     // Silent auth is best-effort — it restores an existing active account's
     // hosting/payout state when this key owns one, but its absence no longer
-    // keeps the node on the welcome screen. The empty-name branch below is now
-    // just a safety net (e.g. name-generation somehow failed).
+    // keeps the node on the welcome screen. A missing/invalid name (e.g. name
+    // generation somehow failed) no longer falls back to the retired setup
+    // screen either; the app stays put and the top-bar sign-in pill is the way
+    // in (adhoc #115).
     auto startNetworking = [&] {
         if (m_pendingSilentAuth) {
             m_pendingSilentAuth = false;
@@ -580,12 +580,8 @@ void MainWindow::runDeferredStartup()
                                      : QString();
             if (!name.isEmpty() && isValidNodeName(name)) {
                 authenticateSilently(name);
-                if (m_stack)
-                    m_stack->setCurrentIndex(1); // app shell
                 startSession();
                 runHeadlessBootstrap();
-            } else if (m_stack) {
-                m_stack->setCurrentIndex(0); // first run / no name: show setup
             }
         }
 
@@ -601,13 +597,15 @@ void MainWindow::runDeferredStartup()
                     if (m_nameEdit)
                         m_nameEdit->setText(name);
                     authenticateSilently(name);
-                    if (m_stack)
-                        m_stack->setCurrentIndex(1);
                     startSession();
                 }
                 runHeadlessBootstrap();
             }
         }
+
+        // Silent auth has now had its say, so the top-bar pill can offer "Log in
+        // / Sign up" (or stay hidden) knowing whether a user account is attached.
+        updateSignInButton();
     };
 
     // An unattended node must publish/host no matter what the restore below

@@ -3246,16 +3246,10 @@ inline int maxRunningAgents()
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
-// Footer quick-add "YOLO" toggle (adhoc #12): true => every agent started from
-// here merges its own branch into the default branch the moment its run
-// finishes successfully, skipping the pull-request review step.
-const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
-// Footer quick-add "Task" toggle (adhoc #18): true => every agent started from
-// here also opens an organization task recording which bot launched the run,
-// which bot finished it, and the model/mode/strength it used. On by default —
-// the point is that prompted work is visible to the organization, not just to
-// the desktop that typed it — and turned off per-run for throwaway prompts.
-const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// The footer quick-add "YOLO" (adhoc #12) and "Task" (adhoc #18) toggles were
+// dropped from the composer in adhoc #120, so agents/quickAddYolo and
+// agents/quickAddTask are no longer read or written: a prompted run never
+// auto-merges and always opens an organization task.
 // Last known number of open organization tasks, mirrored into settings so the
 // Tasks rail badge is on screen from the first frame after a restart instead of
 // staying blank until someone opens the Tasks page (adhoc #79).
@@ -3286,6 +3280,11 @@ const QString kAccountAlertListProof =
     QStringLiteral("forkmesh-account-alert-list-v1");
 const QString kAccountAlertReadProof =
     QStringLiteral("forkmesh-account-alert-read-v1");
+// Deleting one ping from that inbox signs the row's id as well, so a captured
+// delete cannot be replayed against a different notification (adhoc #77). Must
+// stay byte-identical to ACCOUNT_ALERT_DELETE_PROOF in entry.py.
+const QString kAccountAlertDeleteProof =
+    QStringLiteral("forkmesh-account-alert-delete-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
