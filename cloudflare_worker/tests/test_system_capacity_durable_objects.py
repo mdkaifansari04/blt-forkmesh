@@ -3,6 +3,7 @@
 
 import ast
 import asyncio
+import importlib.util
 import re
 import tomllib
 from pathlib import Path
@@ -18,6 +19,13 @@ WORLD_APP = ROOT / "public" / "world" / "world.js"
 WORLD_SCENE = ROOT / "public" / "world" / "world-scene.js"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 ENTRY_AST = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
+INFRASTRUCTURE = ROOT / "src" / "world_infrastructure.py"
+INFRASTRUCTURE_SPEC = importlib.util.spec_from_file_location(
+    "forkmesh_world_infrastructure",
+    INFRASTRUCTURE,
+)
+world_infrastructure = importlib.util.module_from_spec(INFRASTRUCTURE_SPEC)
+INFRASTRUCTURE_SPEC.loader.exec_module(world_infrastructure)
 
 
 def _load(names, namespace):
@@ -210,6 +218,7 @@ def test_capacity_reports_every_binding_with_its_relayed_totals():
         ("_world_durable_objects",),
         {
             "d1_all": d1_all,
+            "_world_infrastructure_module": lambda: world_infrastructure,
             "durable_object_bindings": lambda _env: [
                 "FORKMESH_NODES", "FORKMESH_WORLD"],
             "durable_object_label": lambda binding: binding.title(),
@@ -242,6 +251,7 @@ def test_capacity_still_lists_bindings_when_the_counter_table_is_missing():
         ("_world_durable_objects",),
         {
             "d1_all": d1_all,
+            "_world_infrastructure_module": lambda: world_infrastructure,
             "durable_object_bindings": lambda _env: ["FORKMESH_WORLD"],
             "durable_object_label": lambda binding: binding,
             "WORLD_SYSTEM_CAPACITY_MAX_DURABLE_OBJECTS": 32,

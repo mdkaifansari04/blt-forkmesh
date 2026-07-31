@@ -2078,7 +2078,8 @@ void MainWindow::importRemoteRepository()
     process->start();
 }
 
-QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
+QString MainWindow::repositoryWebUrl(const QString &owner,
+                                     const QString &name) const
 {
     // Clean repository route on the public website, derived from the same host
     // that serves the catalog API. Static Assets routes this to the catalog SPA.
@@ -2087,10 +2088,15 @@ QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
     // Using catalogOwner here would point every repo at the local account and
     // open the wrong node's page for repos mirrored from other nodes.
     QUrl url = catalogApiUrl();
-    url.setPath("/" + repoSegment(repo.owner, QStringLiteral("owner")) +
-                "/" + repoSegment(repo.name, QStringLiteral("repository")));
+    url.setPath("/" + repoSegment(owner, QStringLiteral("owner")) + "/" +
+                repoSegment(name, QStringLiteral("repository")));
     url.setFragment(QString());
     return url.toString();
+}
+
+QString MainWindow::repositoryWebUrl(const RepositoryRecord &repo) const
+{
+    return repositoryWebUrl(repo.owner, repo.name);
 }
 
 void MainWindow::updateRepoActionMenus()
@@ -6354,17 +6360,14 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                                              "push %1 to SSH mirror %2.")
                                   .arg(repoKey, gatewayHost));
                 });
-        // Push from the served bare mirror so the gateway receives exactly the
-        // refs this node serves; forced, because the source of truth wins over
-        // whatever state a mirror gateway holds. Heads + tags only — the same
-        // stable namespaces every mirror serves (issues/PRs live on heads).
-        // --prune, because clone admission compares the mirror's WHOLE
-        // heads+tags advertisement digest against this node's attested
-        // stateHash: a branch deleted here but left on the gateway keeps the
-        // digests unequal forever, and once the stale states age out of the
-        // relay's pin history every public read of the repo hard-fails with
-        // mirror_unavailable (the gateway hides its internal refs from the
-        // push, so prune can only drop refs this node stopped serving).
+        // Push from the served bare mirror, but never let an unattended desktop
+        // rewind or delete a branch that advanced on the gateway while this
+        // checkout was offline. Automatic propagation therefore uses ordinary
+        // fast-forward refspecs and explicitly disables force and prune, even
+        // when a machine carries old push configuration. An intentional rewrite
+        // or branch deletion must go through an explicit, reviewed Git
+        // operation; otherwise one stale three-minute sync can undo a clean main
+        // merge on every headless mirror.
         trackProcessActivity(process, QStringLiteral("push"),
                              QStringLiteral("Pushing %1/%2 to %3")
                                  .arg(repo.owner, repo.name, url));
@@ -6372,9 +6375,10 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                        {QStringLiteral("-C"), repo.mirrorPath,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
                         QStringLiteral("--atomic"),
-                        QStringLiteral("--prune"),
-                        url, QStringLiteral("+refs/heads/*:refs/heads/*"),
-                        QStringLiteral("+refs/tags/*:refs/tags/*")});
+                        QStringLiteral("--no-force"),
+                        QStringLiteral("--no-prune"),
+                        url, QStringLiteral("refs/heads/*:refs/heads/*"),
+                        QStringLiteral("refs/tags/*:refs/tags/*")});
     }
 }
 
@@ -6757,10 +6761,15 @@ void MainWindow::logout()
 {
     // Drop the signed-in account (admin/heartbeat state) so the user can log
     // back in, then tear the session down to the setup screen.
+    const QString previousAccount = m_accountName;
     if (m_heartbeatTimer)
         m_heartbeatTimer->stop();
     if (m_adminPollTimer)
         m_adminPollTimer->stop();
+    // Revoke the website session first — it is what the browser and the
+    // account-scoped worker APIs see, so leaving it alive would keep this
+    // machine "signed in" on the site after a desktop logout.
+    revokeAccountSession();
     setDesktopCapability(m_accountName, false);
     m_accountAuthenticated = false;
     m_accountTier = QStringLiteral("free");
@@ -6772,6 +6781,58 @@ void MainWindow::logout()
     QSettings().remove(kAccountNameSetting);
     refreshSettingsEmailVerifiedBadge();
     leaveSession();
+    // Come straight back with a password login. The setup screen's silent auth
+    // only checks this node's key locally, so the website never learned about
+    // the device; runLoginFlow() posts pubkey/deviceTs/deviceSig, which makes
+    // the relay register this desktop key against the account and hand back a
+    // real website session.
+    promptRelogin(previousAccount);
+}
+
+void MainWindow::revokeAccountSession()
+{
+    const QString token = m_accountSessionToken.trimmed();
+    m_accountSessionToken.clear();
+    if (token.isEmpty() || !m_networkAccess)
+        return;
+    int status = 0;
+    postAccountSync(QStringLiteral("logout"),
+                    QJsonObject{{QStringLiteral("sessionToken"), token}},
+                    &status);
+}
+
+bool MainWindow::promptRelogin(const QString &previousAccount)
+{
+    // A headless node has no one at the keyboard: it re-authenticates with its
+    // key on the next start, so never block the service on a dialog.
+    if (m_headless)
+        return false;
+    QString accountName = AccountCapability::normalizedAccount(previousAccount);
+    if (!isValidNodeName(accountName)) {
+        bool ok = false;
+        accountName = QInputDialog::getText(this, "Log back in",
+                                            "ForkMesh username:",
+                                            QLineEdit::Normal, QString(), &ok)
+                          .trimmed()
+                          .toLower();
+        if (!ok || !isValidNodeName(accountName))
+            return false;
+    }
+    if (!runLoginFlow(accountName))
+        return false;
+
+    QSettings().setValue(kAccountNameSetting, m_accountName);
+    if (m_settingsNameEdit)
+        m_settingsNameEdit->setText(m_accountName);
+    if (m_settingsMachineNodeEdit)
+        m_settingsMachineNodeEdit->setText(machineNodeName());
+    refreshSettingsEmailVerifiedBadge();
+    // logout() left us on the setup screen; rejoin with the freshly signed-in
+    // account so the user lands back in the app instead of clicking "Join".
+    if (m_nameEdit)
+        m_nameEdit->setText(m_accountName);
+    startSession();
+    return true;
 }
 
 void MainWindow::loginToUserAccount()

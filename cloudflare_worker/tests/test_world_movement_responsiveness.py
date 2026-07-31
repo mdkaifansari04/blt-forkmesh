@@ -135,7 +135,8 @@ def test_stall_logs_are_aggregated_deferred_and_never_capture_stacks():
         "  function scheduleRenderStallWarning(",
         "\n  function animate(",
     )
-    assert "const RENDER_STALL_LOG_COOLDOWN_MS = 30_000;" in SCENE
+    assert "const RENDER_STALL_THRESHOLD_MS = 500;" in SCENE
+    assert "const RENDER_STALL_LOG_COOLDOWN_MS = 5 * 60_000;" in SCENE
     assert "suppressedRenderStalls += 1" in animate
     assert "window.setTimeout(" in warning
     assert "console.warn(" in warning

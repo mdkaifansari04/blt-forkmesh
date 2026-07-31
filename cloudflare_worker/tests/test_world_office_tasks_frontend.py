@@ -23,7 +23,7 @@ def test_marketing_task_controller_is_wired_to_the_office_and_scene():
     world = source(WORLD)
     office = source(OFFICE)
     for contract in (
-        'from "./world-office-tasks.js"',
+        'import("./world-office-tasks.js")',
         "createWorldOfficeTasksController",
         "onOfficeTaskBoardSelect",
         "this.officeTasks",
@@ -62,7 +62,7 @@ def test_work_tab_has_a_compact_universal_task_creator_with_agent_routing():
         "data-world-work-task-priority",
     ):
         assert contract in world
-    assert "Codex / Claude agent on linked desktop" in tasks
+    assert 'label: "Bot"' in tasks
     assert 'assignment === "agent" ? "agent"' in tasks
     assert 'mutate(OFFICE_TASKS_PATH, body)' in tasks
     assert "repository before assigning agent work" in tasks
@@ -171,6 +171,79 @@ def test_top_nav_task_count_and_sortable_catalog_include_departments():
     assert "world-task-row-metadata" in tasks
 
 
+def test_organization_catalog_is_a_dense_sortable_table_with_row_bubbles():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    for contract in (
+        'class="world-task-table-header" role="row"',
+        "data-world-task-column-sort",
+        'class="world-task-row-summary"',
+        'class="world-task-chat-bubble"',
+        'role="table"',
+        '<option value="repository">Repository</option>',
+        '<option value="tracked">Tracked time</option>',
+        '<option value="qa">QA</option>',
+    ):
+        assert contract in tasks or contract in world
+    for column in (
+        "world-task-cell-title",
+        "world-task-cell-status",
+        "world-task-cell-priority",
+        "world-task-cell-owner",
+        "world-task-cell-agent",
+        "world-task-cell-model",
+        "world-task-cell-speed",
+        "world-task-cell-route",
+        "world-task-cell-updated",
+        "world-task-cell-time",
+        "world-task-cell-qa",
+        "world-task-cell-actions",
+    ):
+        assert column in tasks
+    for styled_column in (
+        "world-task-cell-title",
+        "world-task-cell-status",
+        "world-task-cell-priority",
+        "world-task-cell-owner",
+        "world-task-cell-route",
+        "world-task-cell-time",
+        "world-task-cell-qa",
+        "world-task-cell-actions",
+    ):
+        assert styled_column in css
+    assert "grid-template-columns:" in css
+    assert "min-height: 42px" in css
+
+
+def test_task_table_has_quick_filters_bot_batches_thumbnails_and_words():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    for marker in (
+        'data-world-task-quick-filter="active"',
+        'data-world-task-quick-filter="queued"',
+        'data-world-task-batch-size',
+        'value="10"',
+        "data-world-task-batch-send",
+    ):
+        assert marker in world
+    for marker in (
+        'task.agent?.provider',
+        'task.agent?.model',
+        'task.agent?.strength',
+        "world-task-attachment-thumbnail",
+        ">Follow-up</button>",
+        '"Start"',
+        '"Stop"',
+        '"Done"',
+        ">Delete</button>",
+    ):
+        assert marker in tasks
+    assert "min-width: 1580px" in css
+    assert ".world-task-attachment-thumbnail" in css
+
+
 def test_work_tab_expands_and_active_tasks_have_readable_spinner_status():
     tasks = source(TASKS)
     world = source(WORLD)
@@ -253,7 +326,7 @@ def test_assignment_control_has_explicit_contrast_and_tasks_can_finish_or_delete
     assert 'data-world-office-task-action="complete"' in tasks
     assert 'data-world-office-task-action="delete"' in tasks
     assert '{ method: "DELETE", removeOnSuccess: true }' in tasks
-    assert 'window.confirm("Delete this task' in tasks
+    assert 'window.confirm("Delete this task' not in tasks
     assert ".world-office-task-manager select option" in css
     assert "background: #071713" in css
     assert '.world-office-task[data-status="done"]' in css

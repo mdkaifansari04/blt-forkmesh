@@ -82,6 +82,7 @@ async function prepareWorldPage(
     ticketActivity = null,
     directoryUsers = [],
     systemCapacityTables = [],
+    systemCapacityD1Storage = null,
     officeEntryRequests = [],
     officeFloorRequests = [],
     officeAttendanceRequests = [],
@@ -314,7 +315,9 @@ async function prepareWorldPage(
                     authenticated: true,
                     accountStatus: "Registered",
                     name: session.nodeName,
-                    isAdmin: systemCapacityTables.length > 0,
+                    isAdmin:
+                      systemCapacityTables.length > 0 ||
+                      Boolean(systemCapacityD1Storage),
                     ticket: "playwright-world-ticket",
                     expiresAt: FIXED_NOW + 300_000,
                     totalActiveMs: Math.max(
@@ -323,10 +326,13 @@ async function prepareWorldPage(
                     ),
                     activityObservedAt:
                       Number(ticketActivity?.activityObservedAt) || FIXED_NOW,
-                    ...(systemCapacityTables.length
+                    ...(systemCapacityTables.length || systemCapacityD1Storage
                       ? {
                           systemCapacity: {
                             tables: systemCapacityTables,
+                            ...(systemCapacityD1Storage
+                              ? { d1Storage: systemCapacityD1Storage }
+                              : {}),
                           },
                         }
                       : {}),
@@ -1329,6 +1335,81 @@ async function openWorldRepositoryExplorer(page) {
   );
 }
 
+test("World prompt button copies owner deploy and member PR workflows", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  await page.addInitScript(() => {
+    window.__worldCopiedPrompts = [];
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text) => {
+          window.__worldCopiedPrompts.push(text);
+        },
+      },
+    });
+  });
+  await prepareWorldPage(page, "world-mcp-prompt", {
+    session: {
+      nodeName: "jett",
+      sessionToken: "playwright-jett-session",
+    },
+  });
+  await waitForWorld(page);
+
+  const promptButton = page.getByRole("button", {
+    name: "Copy MCP task prompt",
+  });
+  await expect(promptButton).toContainText("Prompt");
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    shell.sessionAuthenticated = true;
+    shell.organizations = [{ name: "forkmesh", role: "owner" }];
+    shell.postJSON = async (path, body) => {
+      window.__worldPromptRequest = { path, body };
+      return { token: "fmbot_owner_test" };
+    };
+    await shell.copyMcpTaskPrompt(
+      shell.querySelector("[data-world-mcp-prompt]"),
+    );
+  });
+  await expect.poll(() =>
+    page.evaluate(() => window.__worldCopiedPrompts.length)
+  ).toBe(1);
+  await expect(promptButton).toBeEnabled();
+
+  const owner = await page.evaluate(() => ({
+    prompt: window.__worldCopiedPrompts[0],
+    request: window.__worldPromptRequest,
+  }));
+  expect(owner.request.path).toBe("/api/orgs/forkmesh/bot-tokens");
+  expect(owner.request.body.scopes).toEqual([
+    "organization.tasks.read",
+    "organization.tasks.write",
+  ]);
+  expect(owner.request.body.expiresDays).toBe(1);
+  expect(owner.prompt).toContain("merge only when the merge");
+  expect(owner.prompt).toContain("then deploy");
+  expect(owner.prompt).not.toContain("Do not merge or deploy");
+
+  await page.locator("forkmesh-world").evaluate(async (shell) => {
+    shell.organizations = [{ name: "forkmesh", role: "member" }];
+    shell.postJSON = async () => ({ token: "fmbot_member_test" });
+    await shell.copyMcpTaskPrompt(
+      shell.querySelector("[data-world-mcp-prompt]"),
+    );
+  });
+  await expect.poll(() =>
+    page.evaluate(() => window.__worldCopiedPrompts.length)
+  ).toBe(2);
+  const memberPrompt = await page.evaluate(
+    () => window.__worldCopiedPrompts[1],
+  );
+  expect(memberPrompt).toContain("open a focused pull request");
+  expect(memberPrompt).toContain("Do not merge or deploy");
+  expect(memberPrompt).not.toContain("then deploy");
+});
+
 test("signed-in World receives private and global notifications", async ({
   page,
 }) => {
@@ -1574,6 +1655,121 @@ test("collapsed CHAT bar counts unread remote lines but never your own", async (
   await expect(badge).toBeHidden();
 });
 
+test("chat launcher opens on hover with messages and left-aligned channels", async ({
+  page,
+}) => {
+  test.slow();
+  const passphrase = "playwright-world-hover-chat-passphrase";
+  const key = worldChatKey(passphrase);
+  await page.routeWebSocket(
+    "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
+    (socket) => {
+      socket.send(
+        JSON.stringify(
+          encryptWorldChatEnvelope(
+            {
+              type: "chat",
+              id: "hover-history-1",
+              senderId: "hover-guest",
+              sender: "Hover Guest",
+              accountKind: "guest",
+              channel: "#general",
+              text: "The latest chats open with the launcher.",
+              ts: FIXED_NOW - 1_000,
+            },
+            key,
+            1,
+          ),
+        ),
+      );
+      socket.send(JSON.stringify({
+        kind: "forkmesh-history-end",
+        v: 1,
+      }));
+    },
+  );
+  await prepareWorldPage(page, "world-quick-composer", {
+    chatPassphrase: passphrase,
+  });
+  await waitForWorld(page);
+
+  const terminal = page.locator("[data-world-chat-terminal]");
+  const summary = terminal.locator("summary");
+  const collapsed = await summary.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const marker = getComputedStyle(
+      element.querySelector(".world-chat-terminal-avatar"),
+      "::after",
+    );
+    return {
+      width: Math.round(rect.width),
+      height: Math.round(rect.height),
+      marker: marker.display,
+    };
+  });
+  expect(collapsed).toEqual({ width: 56, height: 56, marker: "none" });
+
+  const summaryBox = await summary.boundingBox();
+  expect(summaryBox).not.toBeNull();
+  await page.mouse.move(
+    summaryBox.x + summaryBox.width / 2,
+    summaryBox.y + summaryBox.height / 2,
+  );
+  await expect(terminal).toHaveAttribute("open", "");
+  await expect(page.locator("[data-world-quick-composer-avatar]")).toBeVisible();
+  await expect(terminal).toHaveAttribute("data-show-feed", "true");
+  await expect(page.locator("[data-world-quick-chat-feed]")).toBeVisible();
+  await expect(
+    page.locator("#fullChatMessages .chat-message-row"),
+  ).toContainText("The latest chats open with the launcher.");
+
+  const channelLayout = await page
+    .locator("[data-world-quick-channels]")
+    .evaluate((element) => {
+      const style = getComputedStyle(element);
+      const rect = element.getBoundingClientRect();
+      const first = element.querySelector("button")?.getBoundingClientRect();
+      const second = element
+        .querySelector("button:nth-of-type(2)")
+        ?.getBoundingClientRect();
+      const feed = element
+        .parentElement
+        ?.querySelector("[data-world-quick-chat-feed]")
+        ?.getBoundingClientRect();
+      return {
+        display: style.display,
+        flexDirection: style.flexDirection,
+        channelLeft: Math.round(rect.left),
+        firstLeft: Math.round(first?.left || 0),
+        firstTop: Math.round(first?.top || 0),
+        secondLeft: Math.round(second?.left || 0),
+        secondTop: Math.round(second?.top || 0),
+        feedLeft: Math.round(feed?.left || 0),
+        feedTop: Math.round(feed?.top || 0),
+      };
+    });
+  expect(channelLayout).toMatchObject({
+    display: "flex",
+    flexDirection: "row",
+  });
+  expect(channelLayout.firstLeft).toBeLessThanOrEqual(
+    channelLayout.channelLeft + 8,
+  );
+  expect(channelLayout.firstLeft).toBeLessThanOrEqual(
+    channelLayout.feedLeft + 8,
+  );
+  expect(channelLayout.secondLeft).toBeGreaterThan(channelLayout.firstLeft);
+  expect(channelLayout.secondTop).toBe(channelLayout.firstTop);
+  expect(channelLayout.feedTop).toBeGreaterThan(channelLayout.firstTop);
+
+  await page.mouse.move(0, 0);
+  await terminal.evaluate((element) => {
+    element.removeAttribute("open");
+    element.classList.add("world-chat-terminal--idle");
+  });
+  await expect(page.locator(".world-chat-terminal-prompt-icon")).toBeVisible();
+});
+
 test("mobile World chat keeps its composer above the terminal bars", async ({
   page,
 }) => {
@@ -1696,6 +1892,7 @@ test("World chat keeps five replayed messages lazy and its prompt in view", asyn
   await terminal.evaluate((element) => {
     element.open = true;
   });
+  await page.locator('[data-world-quick-channel="general"]').click();
   const messages = page.locator("#fullChatMessages .chat-message-row");
   await expect(messages).toHaveCount(5);
   await expect(page.locator(".chat-history-indicator")).toContainText(
@@ -1865,6 +2062,39 @@ test("ForkMesh Office walk-in opens chat only through the explicit fallback", as
   expect(chatSocketURLs).toHaveLength(globalChatSocketCount + 1);
   expect(page.url()).toBe(worldURL);
   expect(context.pages()).toHaveLength(pageCount);
+});
+
+test("Office runtime stays off the initial World graph and loads on demand", async ({
+  page,
+}) => {
+  const officeModules = new Set([
+    "/world/world-office.js",
+    "/world/world-office-meeting.js",
+    "/world/world-office-tasks.js",
+  ]);
+  const requestedOfficeModules = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (officeModules.has(path)) requestedOfficeModules.push(path);
+  });
+  await prepareWorldPage(page, "office-lazy-runtime");
+  await waitForWorld(page);
+  expect(requestedOfficeModules).toEqual([]);
+
+  const runtime = await page.locator("forkmesh-world").evaluate(async (shell) => {
+    const controller = await shell.ensureOfficeRuntime();
+    return {
+      controller: Boolean(controller),
+      meeting: Boolean(shell.officeMeeting),
+      tasks: Boolean(shell.officeTasks),
+    };
+  });
+  expect(runtime).toEqual({
+    controller: true,
+    meeting: true,
+    tasks: true,
+  });
+  expect(new Set(requestedOfficeModules)).toEqual(officeModules);
 });
 
 test("a signed-in member walks into the continuous ten-story Office without a gate", async ({
@@ -5846,6 +6076,63 @@ test("thumbstick motion is continuous, proportional, and recenters on release", 
   await context.close();
 });
 
+test("thumbstick walking defers renderer resize until release", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "thumbstick-resize");
+  await waitForWorld(page);
+
+  const thumbstick = page.locator("[data-world-thumbstick]");
+  const box = await thumbstick.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+    id: 1,
+  };
+  const client = await page.context().newCDPSession(page);
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: [centre],
+  });
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchMove",
+    touchPoints: [{ ...centre, y: centre.y - box.height * 0.3 }],
+  });
+
+  const bufferBeforeResize = await page
+    .locator(".world-canvas")
+    .evaluate((canvas) => ({ width: canvas.width, height: canvas.height }));
+  await page.locator("[data-world-canvas-wrap]").evaluate((wrap) => {
+    wrap.style.height = `${Math.max(
+      240,
+      Math.round(wrap.getBoundingClientRect().height - 120),
+    )}px`;
+  });
+  await page.waitForTimeout(150);
+  expect(
+    await page
+      .locator(".world-canvas")
+      .evaluate((canvas) => ({ width: canvas.width, height: canvas.height })),
+  ).toEqual(bufferBeforeResize);
+
+  await client.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await expect.poll(() =>
+    page.locator(".world-canvas").evaluate((canvas) => canvas.height),
+  ).not.toBe(bufferBeforeResize.height);
+  await client.detach();
+  await context.close();
+});
+
 test("one-finger look and two-finger pinch use distinct bounded gestures", async ({
   browser,
 }) => {
@@ -6010,6 +6297,7 @@ test("approved instances stay truthful", async ({
 test("System Capacity fits one height-scaled bar per populated D1 table", async ({
   page,
 }) => {
+  test.setTimeout(60_000);
   await prepareWorldPage(page, "system-capacity-bars", {
     session: {
       sessionToken: "playwright-admin-session",
@@ -6020,6 +6308,12 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
       { name: "repositories", rowCount: 27 },
       { name: "world_events", rowCount: 4096 },
     ],
+    systemCapacityD1Storage: {
+      bytes: 14_811_136,
+      freeDatabaseLimitBytes: 500_000_000,
+      paidDatabaseLimitBytes: 10_000_000_000,
+      includedAccountStorageBytes: 5_000_000_000,
+    },
   });
   await waitForWorld(page);
 
@@ -6029,6 +6323,21 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
     );
     const tableLayer = shell.world.scene.getObjectByName(
       "system-capacity-database-tables",
+    );
+    const footprint = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-footprint",
+    );
+    const footprintFace = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-footprint-face",
+    );
+    const components = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-components",
+    );
+    const componentsFace = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-components-face",
+    );
+    const d1Storage = shell.world.scene.getObjectByName(
+      "system-capacity-d1-storage",
     );
     const bars = [];
     tableLayer?.traverse((object) => {
@@ -6045,16 +6354,34 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
     return {
       platformName: platform?.name || "",
       visibleTableCount: platform?.userData.visibleTableCount,
-      legend: Boolean(
-        shell.world.scene.getObjectByName("system-capacity-table-legend"),
-      ),
+      footprint: {
+        floor: footprint?.userData.officeFloorId || "",
+        width: footprintFace?.material?.map?.image?.width || 0,
+        height: footprintFace?.material?.map?.image?.height || 0,
+      },
+      components: {
+        floor: components?.userData.officeFloorId || "",
+        width: componentsFace?.material?.map?.image?.width || 0,
+        height: componentsFace?.material?.map?.image?.height || 0,
+      },
+      d1StorageVisible: Boolean(d1Storage),
       bars,
     };
   });
 
   expect(capacity.platformName).toBe("system-capacity-infrastructure");
   expect(capacity.visibleTableCount).toBe(3);
-  expect(capacity.legend).toBe(true);
+  expect(capacity.footprint).toEqual({
+    floor: "infrastructure",
+    width: 1800,
+    height: 1100,
+  });
+  expect(capacity.components).toEqual({
+    floor: "infrastructure",
+    width: 1800,
+    height: 1100,
+  });
+  expect(capacity.d1StorageVisible).toBe(true);
   expect(capacity.bars.map((bar) => bar.name).sort()).toEqual([
     "repositories",
     "users",
@@ -6073,11 +6400,20 @@ test("System Capacity fits one height-scaled bar per populated D1 table", async 
 
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.world.setPaused(true);
-    shell.world.camera.position.set(8, 7.5, -14);
-    shell.world.camera.lookAt(8, 1.6, -27);
+    const face = shell.world.scene.getObjectByName(
+      "forkmesh-infrastructure-worker-footprint-face",
+    );
+    const target = face.getWorldPosition(shell.world.camera.position.clone());
+    const front = face
+      .localToWorld(target.clone().set(0, 0, 1))
+      .sub(target)
+      .normalize();
+    shell.world.camera.position.copy(target).add(front.multiplyScalar(28));
+    shell.world.camera.lookAt(target);
+    shell.world.camera.updateMatrixWorld();
     shell.world.renderer.render(shell.world.scene, shell.world.camera);
   });
-  await expect(page).toHaveScreenshot("world-system-capacity.png", {
+  await expect(page).toHaveScreenshot("world-worker-footprint.png", {
     animations: "disabled",
     maxDiffPixelRatio: 0.012,
   });
@@ -7580,6 +7916,157 @@ test("the authenticated member appears immediately and active time advances loca
   expect(stillPaused).toBeCloseTo(paused.totalActiveMs, 3);
 });
 
+test("a fresh member spawns seated in the open Members Circle", async ({
+  page,
+}) => {
+  const session = {
+    nodeName: "newcomer",
+    sessionToken: "fresh-member-circle-session",
+  };
+  await prepareWorldPage(page, "fresh-member-circle", {
+    session,
+    directoryUsers: [
+      {
+        name: "newcomer",
+        nodes: [],
+        createdAt: FIXED_NOW - 1_000,
+      },
+    ],
+  });
+  await waitForWorld(page);
+  await page.waitForFunction(() => {
+    const shell = document.querySelector("forkmesh-world");
+    return shell?.world?.scene?.getObjectByName(
+      "campfire-newest-member-name-sparkles",
+    )?.visible === true;
+  });
+
+  const arrival = await page.locator("forkmesh-world").evaluate((shell) => {
+    const player = shell.world.player;
+    const count = shell.world.scene.getObjectByName("campfire-member-count");
+    const sparkle = shell.world.scene.getObjectByName(
+      "campfire-newest-member-name-sparkles",
+    );
+    const fireSparksLeft = shell.world.scene.getObjectByName(
+      "campfire-newest-member-fire-sparks-left",
+    );
+    const fireSparksRight = shell.world.scene.getObjectByName(
+      "campfire-newest-member-fire-sparks-right",
+    );
+    const flame = shell.world.scene.getObjectByName("campfire-primary-flame");
+    const dirt = shell.world.scene.getObjectByName(
+      "campfire-member-circle-dirt",
+    );
+    const startHere = shell.world.scene.getObjectByName(
+      "forkmesh-start-here-map",
+    );
+    return {
+      seated: shell.freshArrivalCampfireSeated,
+      activity: shell.lastMovement.activity,
+      x: player.position.x,
+      y: player.position.y,
+      z: player.position.z,
+      leftKnee: player.userData.leftKnee.rotation.x,
+      countScale: count.scale.toArray(),
+      countY: count.position.y,
+      sparkleVisible: sparkle.visible,
+      fireSparksVisible: fireSparksLeft.visible && fireSparksRight.visible,
+      fireSparksSpan:
+        fireSparksRight.geometry.attributes.position.getX(15) -
+        fireSparksLeft.geometry.attributes.position.getX(15),
+      fireHeight: flame.scale.y,
+      fireWidth: flame.scale.x,
+      dirtY: dirt.position.y,
+      signPresent: Boolean(
+        shell.world.scene.getObjectByName(
+          "forkmesh-members-circle-path-sign",
+        ),
+      ),
+      startHere: {
+        x: startHere.position.x,
+        z: startHere.position.z,
+        rotation: startHere.rotation.y,
+      },
+    };
+  });
+
+  expect(arrival.seated).toBe(true);
+  expect(arrival.activity).toBe("sitting beside the campfire");
+  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeGreaterThan(5);
+  expect(Math.hypot(arrival.x, arrival.z - 130)).toBeLessThan(10);
+  expect(arrival.y).toBeLessThan(0.38);
+  expect(Math.abs(arrival.leftKnee)).toBeGreaterThan(0.5);
+  expect(arrival.countScale).toEqual([9.5, 4.75, 1]);
+  expect(arrival.countY).toBeGreaterThan(14);
+  expect(arrival.sparkleVisible).toBe(true);
+  expect(arrival.fireSparksVisible).toBe(true);
+  expect(Math.abs(arrival.fireSparksSpan)).toBeGreaterThan(8);
+  expect(arrival.fireHeight).toBeGreaterThan(2.5);
+  expect(arrival.fireWidth).toBeGreaterThan(2.5);
+  expect(arrival.dirtY).toBeGreaterThan(0.105);
+  expect(arrival.signPresent).toBe(false);
+  expect(arrival.startHere.x).toBe(0);
+  expect(arrival.startHere.z).toBe(168);
+  expect(arrival.startHere.rotation).toBeCloseTo(Math.PI, 5);
+
+  // Position storage contains coordinates but deliberately no activity label.
+  // A clean reload must recognize the bench ring and rebuild the seated pose.
+  await page.reload();
+  await waitForWorld(page);
+  const reloaded = await page.locator("forkmesh-world").evaluate((shell) => ({
+    activity: shell.lastMovement.activity,
+    y: shell.world.player.position.y,
+    leftKnee: shell.world.player.userData.leftKnee.rotation.x,
+    radius: Math.hypot(
+      shell.world.player.position.x,
+      shell.world.player.position.z - 130,
+    ),
+  }));
+  expect(reloaded.activity).toBe("sitting beside the campfire");
+  expect(reloaded.y).toBeLessThan(0.38);
+  expect(Math.abs(reloaded.leftKnee)).toBeGreaterThan(0.5);
+  expect(reloaded.radius).toBeGreaterThan(5);
+  expect(reloaded.radius).toBeLessThan(10);
+});
+
+test("the System Status board countdown advances between minute syncs", async ({
+  page,
+}) => {
+  await prepareWorldPage(page, "status-board-countdown");
+  await waitForWorld(page);
+
+  const countdown = await page.locator("forkmesh-world").evaluate(
+    (shell, fixedNow) => {
+      let now = fixedNow + 5_000;
+      Date.now = () => now;
+      shell.statusBoardLoad = null;
+      shell.statusBoardRequestedAt = fixedNow;
+      shell.statusBoardLastCheckAt = fixedNow - 25_000;
+      shell.syncSystemStatusBoardTimer();
+      const dial = shell.world.scene.getObjectByName(
+        "forkmesh-status-banner-countdown",
+      );
+      const first = {
+        seconds: dial.userData.countdownSeconds,
+        loading: dial.userData.countdownLoading,
+      };
+      now += 11_000;
+      shell.syncSystemStatusBoardTimer();
+      return {
+        first,
+        second: {
+          seconds: dial.userData.countdownSeconds,
+          loading: dial.userData.countdownLoading,
+        },
+      };
+    },
+    FIXED_NOW,
+  );
+
+  expect(countdown.first).toEqual({ seconds: 55, loading: false });
+  expect(countdown.second).toEqual({ seconds: 44, loading: false });
+});
+
 test("Town Square placement is contextual, tracking-free, and collapses safely", async ({
   page,
 }) => {
@@ -8053,12 +8540,19 @@ test("focus music selection and controls persist without autoplaying on reload",
 test("portrait coarse-pointer thumbstick and visual viewport remain usable", async ({
   browser,
 }) => {
+  test.setTimeout(60_000);
   const context = await browser.newContext({
     viewport: { width: 390, height: 844 },
     hasTouch: true,
     isMobile: true,
   });
   const page = await context.newPage();
+  const hiddenFocusWarnings = [];
+  page.on("console", (message) => {
+    if (message.text().includes("Blocked aria-hidden on an element")) {
+      hiddenFocusWarnings.push(message.text());
+    }
+  });
   await prepareWorldPage(page, "portrait-touch");
   await waitForWorld(page);
 
@@ -8068,8 +8562,8 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
     "data-open",
     "true",
   );
-  const nameInput = page.locator("[data-world-display-name]");
-  await nameInput.focus();
+  const statusNoteInput = page.locator("[data-world-status-note]");
+  await statusNoteInput.focus();
   const before = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getPosition(),
   );
@@ -8100,6 +8594,7 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
     "data-open",
     "false",
   );
+  expect(hiddenFocusWarnings).toEqual([]);
 
   const control = page.locator("[data-world-thumbstick]");
   // Leave enough time for more than one animation frame even when the release

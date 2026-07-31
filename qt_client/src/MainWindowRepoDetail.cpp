@@ -1365,6 +1365,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     refreshRepoSettings();
     updateRepoCodeSize();
     updateFooterGitIdentity();
+    updateFooterCommitInfo();
 
     // Point the embedded issues UI at this repo (its combo is hidden).
     refreshIssuesRepoCombo();
@@ -4990,7 +4991,7 @@ QWidget *MainWindow::createNavHistoryButtons()
     auto makeButton = [this](const QString &icon, const QString &tip,
                              void (MainWindow::*slot)()) {
         auto *b = new QPushButton;
-        b->setObjectName("relayOpenButton"); // transparent icon-button styling
+        b->setObjectName("navHistoryButton");
         b->setCursor(Qt::PointingHandCursor);
         b->setFixedSize(30, 30);
         setOcticon(b, icon, 16);
@@ -7518,6 +7519,7 @@ void MainWindow::setRepoBranch(const QString &branch)
     m_repoBranch = branch;
     if (m_branchButton)
         m_branchButton->setText(branch);
+    updateFooterCommitInfo(); // the strip's commit line follows the browsed branch
     loadRepoOverview(QString());
     loadCommits(); // also refreshes the Insights counts when that tab is on screen
 }

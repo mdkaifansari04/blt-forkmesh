@@ -369,8 +369,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
 {
     cell->setData(Qt::DisplayRole, s.id);
     cell->setData(Qt::UserRole, s.id);
-    // Status glyph (issue #108): an orange spinner while running
-    // (adhoc #23), a purple merge mark once it lands, a green check on success, a
+    // Status glyph (issue #108): a blue spinner while running
+    // (adhoc #23/#50), a purple merge mark once it lands, a green check on success, a
     // red stop sign when halted, an orange hand while it waits on the user, and a
     // red X circle on failure (issue #322). The running glyph is seeded at frame 0
     // here;
@@ -457,46 +457,57 @@ qint64 agentEffectiveDurationMs(const AgentSession &s)
     return 0;
 }
 
-// Fill the Model cell — the LLM model selected for this session. Displays a
-// human-readable label (e.g. "Opus", "Sonnet") or empty if no specific model
-// was chosen, letting the provider's default apply.
-void applyAgentModelCell(QTableWidgetItem *cell, const AgentSession &s)
-{
-    cell->setText(agentModelLabel(s.model));
-    // Text only — no icon belongs in this column (a reused item must not keep
-    // one a stray write elsewhere left behind).
-    cell->setIcon(QIcon());
-    cell->setToolTip(s.model.isEmpty() ? QStringLiteral("Using provider's default model")
-                                       : QStringLiteral("Selected model: %1")
-                                            .arg(s.model.toHtmlEscaped()));
-}
-
-// Fill the Speed cell — the throughput at which this agent exchanged tokens with
-// the service over the task, in tokens/second (total tokens ÷ run time). A rough
-// gauge of how fast the model and network served the task. Only shown while the
-// session is running (a live tok/s gauge); finished sessions show "-" since the
-// figure is no longer ticking. Sorts on the raw rate via kTableSortRole.
-void applyAgentSpeedCell(QTableWidgetItem *cell, const AgentSession &s, qint64 tokens)
+// Throughput at which this agent exchanged tokens with the service, in
+// tokens/second (total tokens ÷ run time). A rough gauge of how fast the model
+// and network served the task. Only meaningful while the session is running (a
+// live gauge); a finished run's figure has stopped ticking, so report 0 there.
+double agentTokensPerSecond(const AgentSession &s, qint64 tokens)
 {
     const qint64 durationMs = agentEffectiveDurationMs(s);
-    const double rate = (s.status == AgentStatus::Running && tokens > 0 && durationMs > 0)
-                            ? tokens * 1000.0 / static_cast<double>(durationMs)
-                            : 0.0;
-    cell->setData(Qt::DisplayRole,
-                  rate > 0 ? QStringLiteral("%1 tok/s").arg(rate, 0, 'f', 1)
-                           : QStringLiteral("-"));
-    cell->setData(kTableSortRole, rate);
-    cell->setToolTip(
-        QStringLiteral("Communication speed with the service (tokens/second)"));
+    if (s.status != AgentStatus::Running || tokens <= 0 || durationMs <= 0)
+        return 0.0;
+    return tokens * 1000.0 / static_cast<double>(durationMs);
 }
 
-// Fill the Diff cell (issue #170) — a "very small" at-a-glance summary of what
-// this agent changed: the number of files its captured patch touched, plus how
-// far its branch sits ahead of / behind the base branch (only when both differ).
-// Reads "-" until a finished run has a patch and/or a still-existing branch to
-// measure. Sorts on the file count via kTableSortRole.
-void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
-                        const QString &base, int sessionId = 0)
+// The same figure as a label ("2.1 tok/s", or "-" when there is no live rate).
+// Speed left the sessions table with the Agent/Model/Activity columns (adhoc
+// #35) so the Issue title owns the full width; it reads in the detail header now.
+QString agentSpeedText(const AgentSession &s, qint64 tokens)
+{
+    const double rate = agentTokensPerSecond(s, tokens);
+    return rate > 0 ? QStringLiteral("%1 tok/s").arg(rate, 0, 'f', 1)
+                    : QStringLiteral("-");
+}
+
+// A tok/s rate at or above this counts as "flat out" for the activity lights,
+// which scale their pulse between a slow breath and a strobe across 0..this.
+// Sessions spend most of a run well under it (the figure is tokens over *wall*
+// time, so thinking and tool calls drag the average down), which is the point:
+// the lights should still visibly differentiate an ordinary run from a fast one.
+constexpr double kAgentFastTokensPerSecond = 30.0;
+
+// How far a running session's "sync" spinner turns per animation tick (adhoc
+// #50): the glyph spins at the speed the model is actually producing, from a
+// slow turn on a barely-emitting run up to a fast one at
+// kAgentFastTokensPerSecond, on the same 0..1 throughput scale the fleet
+// matrix's activity lights use. A session with no rate yet still creeps, so a
+// just-started run never reads as frozen. Degrees are per kAgentSpinTickMs tick.
+constexpr double kAgentSpinSlowDegrees = 12.0;  // ~0.55 rev/s
+constexpr double kAgentSpinFastDegrees = 66.0;  // ~3.0 rev/s
+
+double agentSpinStepDegrees(const AgentSession &s, qint64 tokens)
+{
+    const double throughput = qBound(
+        0.0, agentTokensPerSecond(s, tokens) / kAgentFastTokensPerSecond, 1.0);
+    return kAgentSpinSlowDegrees +
+           throughput * (kAgentSpinFastDegrees - kAgentSpinSlowDegrees);
+}
+
+// Compact at-a-glance summary of what an agent changed (issue #170): the number
+// of files its captured patch touched, plus how far its branch sits ahead of /
+// behind the base branch (only when both differ). Reads "-" until a finished run
+// has a patch and/or a still-existing branch to measure.
+QString agentDiffSummaryText(const AgentDiffStat &stat)
 {
     QStringList parts;
     if (stat.files >= 0)
@@ -508,10 +519,16 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
         parts << QString::fromUtf8("\xE2\x86\x91%1 \xE2\x86\x93%2")
                      .arg(stat.ahead)
                      .arg(stat.behind);
-    cell->setData(Qt::DisplayRole,
-                  parts.isEmpty()
-                      ? QStringLiteral("-")
-                      : parts.join(QString::fromUtf8("  \xC2\xB7 ")));
+    return parts.isEmpty() ? QStringLiteral("-")
+                           : parts.join(QString::fromUtf8("  \xC2\xB7 "));
+}
+
+// Fill the Diff cell from that summary. Sorts on the file count via
+// kTableSortRole.
+void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
+                        const QString &base, int sessionId = 0)
+{
+    cell->setData(Qt::DisplayRole, agentDiffSummaryText(stat));
     cell->setData(kTableSortRole, stat.files);
     // Conflict marker (adhoc #229, reworked adhoc #446): the badge is now an
     // orange button AgentConflictButtonDelegate paints at the cell's right edge —
@@ -543,21 +560,22 @@ void applyAgentDiffCell(QTableWidgetItem *cell, const AgentDiffStat &stat,
     cell->setToolTip(tip.join(QLatin1Char('\n')));
 }
 
-// "Night rider" scanner light shown in the agents list. Each session gets a
-// small Larson-scanner bar that sweeps left<->right while its raw output is
-// streaming, so the list shows real-time activity at a glance. The sweep is
-// gated on recent raw output: after this many ms with no new output the light
-// drops back to a dim resting state and the driving timer stops.
+// Per-session live-output meter behind the top-bar fleet lights. The meter is
+// gated on recent raw output: after this many ms with no new output it drops
+// back to a dim resting state and the driving timer stops. The agents list used
+// to paint a Larson-scanner bar from it in an "Activity" column too; that column
+// is gone (adhoc #35) and the top-bar dot matrix is the one surface left.
 static constexpr qint64 kScannerIdleMs = 1500;
-// Far-right "Activity" column the scanner is painted into.
-static constexpr int kAgentActivityColumn = 7;
 // Leading "#" column, which also carries the run-state glyph and the per-row
 // branch button (adhoc #377, moved here from the dropped Status column by #29).
 static constexpr int kAgentIdColumn = 0;
+// "Issue" column — the title, and the only flexible column: it stretches to fill
+// whatever the others leave, so a long title reads in full (adhoc #35).
+static constexpr int kAgentIssueColumn = 1;
+// "Updated" column, a compact "7m"-style age.
+static constexpr int kAgentUpdatedColumn = 2;
 // "Diff" column, which also carries the per-row conflict button (adhoc #446).
-static constexpr int kAgentDiffColumn = 6;
-// "Speed" column, refreshed in place while a session streams.
-static constexpr int kAgentSpeedColumn = 4;
+static constexpr int kAgentDiffColumn = 3;
 
 // Draws a small branch button at the right edge of every "#" cell whose
 // session has a branch, and opens that branch when it's clicked (adhoc #377):
@@ -844,102 +862,6 @@ private:
     std::function<void(int)> m_onClick;
 };
 
-// Paints a session's Larson-scanner light from MainWindow's per-session state,
-// looked up by the sessionId stored in the cell's Qt::UserRole. Reading from a
-// side table keyed by sessionId — rather than per-row child widgets — keeps the
-// animation alive across the agents table's frequent full rebuilds.
-class AgentScannerDelegate : public QStyledItemDelegate
-{
-public:
-    AgentScannerDelegate(const QHash<int, AgentScannerState> *states, QObject *parent)
-        : QStyledItemDelegate(parent), m_states(states)
-    {
-    }
-
-    QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
-    {
-        const QSize s = QStyledItemDelegate::sizeHint(opt, idx);
-        return QSize(qMax(s.width(), 96), s.height());
-    }
-
-    void paint(QPainter *p, const QStyleOptionViewItem &opt,
-               const QModelIndex &idx) const override
-    {
-        // Let the style draw the row background (hover) but no text. The solid
-        // green selection fill is suppressed so the row reads as a green outline
-        // (drawn below) over a transparent band, matching the rest of the row.
-        QStyleOptionViewItem o(opt);
-        initStyleOption(&o, idx);
-        o.text.clear();
-        o.state &= ~QStyle::State_Selected;
-        const QWidget *w = o.widget;
-        QStyle *style = w ? w->style() : QApplication::style();
-        style->drawControl(QStyle::CE_ItemViewItem, &o, p, w);
-        paintRowSelectionBorder(p, opt, idx);
-
-        const int sessionId = idx.data(Qt::UserRole).toInt();
-        const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        double phase = 0.0;
-        double intensity = 0.0; // live-output rate, drives the reactive effect
-        bool active = false;
-        if (m_states) {
-            const auto it = m_states->constFind(sessionId);
-            if (it != m_states->constEnd()) {
-                phase = it->phase;
-                intensity = it->intensity;
-                // Keep painting the sweep until the meter has fully wound down,
-                // so the light stays continuously going between output bursts.
-                active = (now - it->lastActivityMs) < kScannerIdleMs
-                         || intensity > 0.0;
-            }
-        }
-
-        const QRect r = opt.rect.adjusted(8, 0, -8, 0);
-        if (r.width() <= 0)
-            return;
-        const int n = qBound(6, r.width() / 7, 16);
-        const double gap = double(r.width()) / n;
-        const int dotW = qMax(2, int(gap) - 3);
-        const int dotH = qBound(3, r.height() - 10, 7);
-        const double cy = r.center().y() + 0.5;
-
-        // Triangle wave: 0 -> (n-1) -> 0, the back-and-forth night-rider sweep.
-        const double tri = phase < 0.5 ? phase * 2.0 : (1.0 - phase) * 2.0;
-        const double pos = tri * (n - 1);
-        // Real-time reactive effect: the comet's tail streaks longer the more raw
-        // output is pouring in, so the trail length tracks throughput at a glance.
-        const double trail = 1.8 + 2.6 * intensity; // LEDs the comet's glow spans
-
-        p->save();
-        p->setRenderHint(QPainter::Antialiasing, true);
-        p->setPen(Qt::NoPen);
-        // Hot output shifts KITT red toward bright amber, so the colour itself
-        // climbs with the live stream rate (cool #f85149 -> hot #ffc75c).
-        auto mix = [](int a, int b, double t) { return int(a + (b - a) * t); };
-        const QColor base(mix(248, 255, intensity), mix(81, 199, intensity),
-                          mix(73, 92, intensity));
-        const double restAlpha = active ? 0.10 + 0.10 * intensity : 0.06;
-        for (int i = 0; i < n; ++i) {
-            double glow = 0.0;
-            if (active) {
-                const double d = qAbs(i - pos);
-                glow = qMax(0.0, 1.0 - d / trail);
-                glow *= glow;                       // sharpen the comet head
-                glow *= 0.6 + 0.4 * intensity;      // brighter head when busy
-            }
-            QColor c = base;
-            c.setAlphaF(restAlpha + (1.0 - restAlpha) * glow);
-            const double x = r.left() + i * gap + (gap - dotW) / 2.0;
-            p->setBrush(c);
-            p->drawRoundedRect(QRectF(x, cy - dotH / 2.0, dotW, dotH), 1.5, 1.5);
-        }
-        p->restore();
-    }
-
-private:
-    const QHash<int, AgentScannerState> *m_states;
-};
-
 QString replyHeader(QNetworkReply *reply, const char *name)
 {
     return QString::fromUtf8(reply->rawHeader(name)).trimmed();
@@ -1090,12 +1012,12 @@ QWidget *MainWindow::buildAgentsTab()
     auto *heading = new QLabel("Agent sessions");
     heading->setObjectName("channelTitle");
 
-    m_agentTable = new QTableWidget(0, 8);
+    m_agentTable = new QTableWidget(0, 4);
     m_agentTable->setObjectName("issueTable");
     installColumnHeaderMenu(m_agentTable); // 3-dots per-column menu (issue #318)
     // Selected agent rows get a green outline with a transparent fill (rather
     // than the solid green band the other issueTable lists use); the per-column
-    // Activity delegate below draws the matching outline slice for its cell.
+    // button delegates below subclass it so their cells keep the same outline.
     m_agentTable->setItemDelegate(new SelectionBorderRowDelegate(m_agentTable));
     // Stripping State_Selected in the delegate stops the delegate from filling
     // the row, but the view still paints the selection band itself from the
@@ -1105,15 +1027,16 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setStyleSheet(
         "#issueTable { selection-background-color: transparent; }"
         "#issueTable::item:selected { background: transparent; }");
-    // Turns/Time/Cost/Tokens moved out of the table into the agent detail-page
-    // header (adhoc #42) so the list stays scannable and all of a session's
-    // figures read together in one place; Speed (tok/s) stays as the at-a-glance
-    // throughput. "Diff" (issue #170) is a compact files-changed + ahead/behind badge.
-    // "Status" is gone too (adhoc #29): its glyph and branch chip now ride the "#"
-    // cell, so both icons sit at the list's left edge without costing a column.
-    m_agentTable->setHorizontalHeaderLabels(
-        {"#", "Issue", "Agent", "Model",
-         "Speed", "Updated", "Diff", "Activity"});
+    // Four columns, and only four: the issue title is what the list is scanned
+    // by, so everything that used to compete with it for width has moved into the
+    // detail header instead. Turns/Time/Cost/Tokens went first (adhoc #42),
+    // Status next (adhoc #29 — its glyph and branch chip ride the "#" cell), and
+    // Agent/Model/Speed plus the night-rider "Activity" light last (adhoc #35:
+    // Speed now reads in the detail header, and the top-bar fleet matrix is the
+    // remaining live-activity surface). What's left is the id, the title, when the
+    // session last moved, and "Diff" — a compact files-changed + ahead/behind
+    // badge (issue #170) that also carries the conflict button.
+    m_agentTable->setHorizontalHeaderLabels({"#", "Issue", "Updated", "Diff"});
     m_agentTable->verticalHeader()->setVisible(false);
     m_agentTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_agentTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1123,28 +1046,25 @@ QWidget *MainWindow::buildAgentsTab()
     // Don't tail long titles with a "…" ellipsis (issue #69): ad-hoc sessions
     // carry a full-sentence, prompt-derived title that overruns the Issue column,
     // and Qt::ElideRight peppered every row with trailing dots. Clip cleanly at
-    // the cell edge instead — the column is user-widenable to read a title in full.
+    // the cell edge instead — the column now takes every spare pixel (below), so
+    // there is rarely anything left to clip.
     m_agentTable->setTextElideMode(Qt::ElideNone);
     m_agentTable->setSortingEnabled(true);
     QHeaderView *agentHeader = m_agentTable->horizontalHeader();
     agentHeader->setHighlightSections(false);
     // Let the user drag column headers into a new order (resizing is wired up
-    // by makeColumnsResizable() below). The custom-painted Activity delegate is
-    // bound to its logical column, so it follows the header wherever it lands.
+    // by makeColumnsResizable() below).
     agentHeader->setSectionsMovable(true);
     agentHeader->setSectionResizeMode(kAgentIdColumn, QHeaderView::ResizeToContents);
-    // The Issue (title) column is user-expandable: a draggable Interactive column
-    // with a generous default width rather than a locked Stretch flex column, so a
-    // long issue title can be widened to read in full.
-    agentHeader->setSectionResizeMode(1, QHeaderView::Interactive);
-    m_agentTable->setColumnWidth(1, 320);
-    for (int c = 2; c < kAgentActivityColumn; ++c)
-        agentHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
-    // The night-rider light column is a fixed-width, custom-painted scanner.
-    agentHeader->setSectionResizeMode(kAgentActivityColumn, QHeaderView::Fixed);
-    m_agentTable->setColumnWidth(kAgentActivityColumn, 104);
-    m_agentTable->setItemDelegateForColumn(
-        kAgentActivityColumn, new AgentScannerDelegate(&m_scannerStates, m_agentTable));
+    // The Issue (title) column is the flex column and stays that way: Updated and
+    // Diff fit their contents and are pushed against the pane's right edge, so the
+    // title has the whole middle of the list to itself with nothing in its way
+    // (adhoc #35). makeColumnsResizable() is told to leave this one stretching.
+    agentHeader->setSectionResizeMode(kAgentIssueColumn, QHeaderView::Stretch);
+    agentHeader->setSectionResizeMode(kAgentUpdatedColumn,
+                                      QHeaderView::ResizeToContents);
+    agentHeader->setSectionResizeMode(kAgentDiffColumn,
+                                      QHeaderView::ResizeToContents);
     // Branch button on every "#" cell (adhoc #377): one click from the list
     // straight to that session's branch in the Branches panel.
     m_agentTable->setItemDelegateForColumn(
@@ -1158,12 +1078,13 @@ QWidget *MainWindow::buildAgentsTab()
         kAgentDiffColumn,
         new AgentConflictButtonDelegate(
             m_agentTable, [this](int sessionId) { fixAgentConflictsWithAgent(sessionId); }));
-    // ~22fps timer that advances + repaints the active scanner lights. It is
-    // started on demand by noteAgentActivity and self-stops once all lights idle.
+    // ~22fps timer that advances the per-session output meters and repaints the
+    // top-bar fleet lights off them. It is started on demand by noteAgentActivity
+    // and self-stops once every session has gone idle.
     m_scannerTimer = new QTimer(this);
     m_scannerTimer->setInterval(45);
     connect(m_scannerTimer, &QTimer::timeout, this, &MainWindow::onScannerTick);
-    makeColumnsResizable(m_agentTable);
+    makeColumnsResizable(m_agentTable, kAgentIssueColumn);
 
     // Detect Claude Code sessions running outside ForkMesh and stream the open
     // one. Light enough (a directory scan + small tail reads) to poll often.
@@ -1261,27 +1182,15 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTitle->setWordWrap(true);
     m_agentMeta = new QLabel;
     m_agentMeta->setObjectName("statusLine");
-    // Selectable text plus clickable links: the branch name links to its row in
-    // the Worktrees tab (issue #265). The meta string is HTML-escaped and built as
-    // rich text, so pin the format rather than relying on auto-detection.
+    // Selectable text plus clickable links: the issue and PR values link to their
+    // tabs (adhoc #53, #138). The meta string is HTML-escaped and built as rich
+    // text, so pin the format rather than relying on auto-detection.
     m_agentMeta->setTextFormat(Qt::RichText);
     m_agentMeta->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                          Qt::LinksAccessibleByMouse);
     m_agentMeta->setWordWrap(true);
     connect(m_agentMeta, &QLabel::linkActivated, this, [this](const QString &href) {
-        if (href.startsWith(kCopyBranchLinkScheme)) {
-            const QString branch = QUrl::fromPercentEncoding(
-                href.mid(kCopyBranchLinkScheme.size()).toUtf8());
-            QApplication::clipboard()->setText(branch);
-            flashMessage(QStringLiteral("Copied branch name \xE2\x80\x9C%1\xE2\x80\x9D")
-                             .arg(branch));
-        } else if (href.startsWith(kBranchLinkScheme))
-            switchToBranch(QUrl::fromPercentEncoding(
-                href.mid(kBranchLinkScheme.size()).toUtf8()));
-        else if (href.startsWith(kWorktreeLinkScheme))
-            switchToWorktree(QUrl::fromPercentEncoding(
-                href.mid(kWorktreeLinkScheme.size()).toUtf8()));
-        else if (href.startsWith(kPullLinkScheme))
+        if (href.startsWith(kPullLinkScheme))
             switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
         else if (href.startsWith(kIssueLinkScheme)) {
             // Open the issue in its own repo's Issues tab (the session may belong to
@@ -1313,22 +1222,21 @@ QWidget *MainWindow::buildAgentsTab()
         stopStreamSession(m_selectedAgentSessionId);
     });
 
-    m_agentDeleteButton = new QPushButton("Delete");
-    m_agentDeleteButton->setObjectName("dangerButton");
-    m_agentDeleteButton->setCursor(Qt::PointingHandCursor);
-    m_agentDeleteButton->setToolTip("Delete just this agent session");
-    setOcticon(m_agentDeleteButton, "trash", 16);
-    connect(m_agentDeleteButton, &QPushButton::clicked, this,
-            &MainWindow::deleteSelectedAgentSession);
-
     // Delete the agent together with its worktree folder and branch in one action.
-    m_agentDeleteAllButton = new QPushButton("Delete all");
+    // adhoc #51 folded the session-only "Delete" that sat beside it into this one
+    // button, so watch-only rows (no branch of ours to clean up) go down the
+    // session-only path from here.
+    m_agentDeleteAllButton = new QPushButton("Delete");
     m_agentDeleteAllButton->setObjectName("dangerButton");
     m_agentDeleteAllButton->setCursor(Qt::PointingHandCursor);
     m_agentDeleteAllButton->setToolTip(
         "Delete this agent session, its worktree folder and its branch");
     setOcticon(m_agentDeleteAllButton, "trash", 16);
     connect(m_agentDeleteAllButton, &QPushButton::clicked, this, [this] {
+        if (isExternalSession(m_selectedAgentSessionId)) {
+            deleteSelectedAgentSession();
+            return;
+        }
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
         if (!s || s->branchName.isEmpty())
             return;
@@ -1343,7 +1251,7 @@ QWidget *MainWindow::buildAgentsTab()
         // so the click used to sit there for seconds with nothing to show it
         // registered (adhoc #417). Log it, say so and grey the button out now,
         // then let the event loop paint before any of that work starts.
-        logSystem(QStringLiteral("Agents: \"Delete all\" clicked for session #%1 (%2).")
+        logSystem(QStringLiteral("Agents: \"Delete\" clicked for session #%1 (%2).")
                       .arg(sessionId)
                       .arg(branch));
         flashMessage(
@@ -1375,7 +1283,7 @@ QWidget *MainWindow::buildAgentsTab()
     // "Create linked issue" — for ad-hoc sessions (no issue) it files a tracked
     // issue from the run's prompt and links the two (adhoc #189). Hidden once the
     // session already has a linked issue.
-    m_agentCreateIssueButton = new QPushButton("Create linked issue");
+    m_agentCreateIssueButton = new QPushButton("+ issue");
     m_agentCreateIssueButton->setObjectName("primaryButton");
     m_agentCreateIssueButton->setCursor(Qt::PointingHandCursor);
     m_agentCreateIssueButton->setToolTip(
@@ -1391,45 +1299,36 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStatusPill->setTextFormat(Qt::RichText);
     m_agentStatusPill->setAlignment(Qt::AlignCenter);
 
-    // Permission-mode selector (adhoc #26): change the open session's mode in
-    // place rather than only when a follow-up is sent from the composer. Mirrors
-    // the composer's mode selector items — the "Auto mode" data flag marks the
-    // unattended preset. Shown only for providers that carry a mode.
-    m_agentModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
-    m_agentModeSelector->setObjectName("quickAddModeSelector");
-    m_agentModeSelector->setCursor(Qt::PointingHandCursor);
-    m_agentModeSelector->setMinimumContentsLength(10);
-    m_agentModeSelector->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_agentModeSelector->addItem(QStringLiteral("Ask before edits"), false);
-    m_agentModeSelector->addItem(QStringLiteral("Edit automatically"), false);
-    m_agentModeSelector->addItem(QStringLiteral("Plan mode"), false);
-    m_agentModeSelector->addItem(kClaudeAutoModeLabel, true);
-    m_agentModeSelector->setMaxVisibleItems(30);
-    m_agentModeSelector->setToolTip(
-        "Change how much freedom this agent has to edit without asking first. "
-        "Takes effect on its next turn \xE2\x80\x94 a running Codex session "
-        "picks it up immediately.");
-    m_agentModeSelector->hide(); // revealed per-session in syncAgentModeSelector
-    connect(m_agentModeSelector,
-            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-            [this](int) { applySelectedAgentMode(); });
+    // Branch / Worktree, as caption-over-value buttons in the output toolbar
+    // (adhoc #51): the branch name and worktree path read tiny under the caption
+    // and a click opens that branch's row in the Branches tab / that worktree's
+    // row in the Worktrees tab — the same targets the meta table's chips carried
+    // before those two columns moved here.
+    m_agentBranchButton = new StackedCaptionButton(QStringLiteral("Branch"));
+    m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
+    connect(m_agentBranchButton, &QPushButton::clicked, this, [this] {
+        if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+            s && !s->branchName.isEmpty())
+            switchToBranch(s->branchName);
+    });
+    m_agentWorktreeButton = new StackedCaptionButton(QStringLiteral("Worktree"));
+    m_agentWorktreeButton->hide();
+    connect(m_agentWorktreeButton, &QPushButton::clicked, this, [this] {
+        if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
+            s && !s->branchName.isEmpty())
+            switchToWorktree(s->branchName);
+    });
 
-    auto *titleCol = new QVBoxLayout;
-    titleCol->setContentsMargins(0, 0, 0, 0);
-    titleCol->setSpacing(4);
-    titleCol->addWidget(m_agentTitle);
-    titleCol->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
-
-    auto *topRow = new QHBoxLayout;
+    // The title owns its row outright (adhoc #35): sharing it with the mode
+    // selector and the action buttons left a long, prompt-derived ad-hoc title
+    // wrapping inside a narrow column with acres of unused space beside it. The
+    // buttons moved down to the output toolbar next to the Transcript | Raw output
+    // toggle, so the header now reads title, then status pill, then the meta table.
+    auto *topRow = new QVBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
-    topRow->addLayout(titleCol, 1);
-    topRow->addWidget(m_agentModeSelector, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentCreateIssueButton, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentViewPrButton, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentStopButton, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentDeleteButton, 0, Qt::AlignTop);
-    topRow->addWidget(m_agentDeleteAllButton, 0, Qt::AlignTop);
+    topRow->setSpacing(4);
+    topRow->addWidget(m_agentTitle);
+    topRow->addWidget(m_agentStatusPill, 0, Qt::AlignLeft);
 
     m_agentLog = new QPlainTextEdit;
     m_agentLog->setReadOnly(true);
@@ -1546,7 +1445,7 @@ QWidget *MainWindow::buildAgentsTab()
 
     // Transcript | Raw toggle, shown only for Claude Code transcript sessions.
     m_transcriptModeButton = new QPushButton(QStringLiteral("Transcript"));
-    m_terminalModeButton = new QPushButton(QStringLiteral("Raw output"));
+    m_terminalModeButton = new QPushButton(QStringLiteral("Raw"));
     for (QPushButton *b : {m_transcriptModeButton, m_terminalModeButton}) {
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
@@ -1564,30 +1463,12 @@ QWidget *MainWindow::buildAgentsTab()
         m_transcriptModeButton->setChecked(false);
         showAgentRawOutput();
     });
-    // Diff-style selector, sitting at the top of the output area (next to the
-    // Transcript|Raw toggle): pick unified or side-by-side diffs.
-    m_agentDiffModeCombo = new QComboBox;
-    m_agentDiffModeCombo->setObjectName("agentDiffMode");
-    m_agentDiffModeCombo->setCursor(Qt::PointingHandCursor);
-    m_agentDiffModeCombo->addItem(QStringLiteral("Unified diff"), false);
-    m_agentDiffModeCombo->addItem(QStringLiteral("Split diff"), true);
-    m_agentDiffModeCombo->setToolTip(
-        "How Edit/Write diffs are shown in the transcript");
-    m_agentDiffModeCombo->setCurrentIndex(
-        QSettings().value(kClaudeDiffSplitSetting, false).toBool() ? 1 : 0);
-    connect(m_agentDiffModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) {
-                const bool split = m_agentDiffModeCombo->currentData().toBool();
-                QSettings().setValue(kClaudeDiffSplitSetting, split);
-                if (m_agentTranscript)
-                    m_agentTranscript->setSplitDiffs(split);
-                if (m_selectedAgentSessionId != -1) // re-render with the new style
-                    showAgentSession(m_selectedAgentSessionId);
-            });
+    // The unified/split diff-style selector that used to sit here is gone (adhoc
+    // #51); the transcript still honours the stored kClaudeDiffSplitSetting.
 
-    // Search the transcript (adhoc #201): a query box with a "3/12" match counter
-    // and prev/next steppers. Typing highlights every match in the transcript and
-    // jumps to the first; Enter / the steppers walk through the hits.
+    // Search the transcript (adhoc #201): a query box with a "3/12" match counter.
+    // Typing highlights every match in the transcript and jumps to the first;
+    // Enter walks the hits (adhoc #51 dropped the prev/next steppers).
     m_transcriptSearch = new QLineEdit;
     m_transcriptSearch->setObjectName("issueSearch"); // reuse the styled search look
     m_transcriptSearch->setPlaceholderText(
@@ -1596,18 +1477,6 @@ QWidget *MainWindow::buildAgentsTab()
     m_transcriptSearch->setFixedWidth(190);
     m_transcriptSearchCount = new QLabel;
     m_transcriptSearchCount->setObjectName("agentFilesHeading"); // small muted text
-    m_transcriptSearchPrev = new QPushButton;
-    m_transcriptSearchNext = new QPushButton;
-    for (QPushButton *b : {m_transcriptSearchPrev, m_transcriptSearchNext}) {
-        b->setObjectName("ghostButton");
-        b->setProperty("buttonSize", "sm");
-        b->setCursor(Qt::PointingHandCursor);
-        b->setEnabled(false);
-    }
-    setOcticon(m_transcriptSearchPrev, "chevron-up", 14);
-    setOcticon(m_transcriptSearchNext, "chevron-down", 14);
-    m_transcriptSearchPrev->setToolTip(QStringLiteral("Previous match"));
-    m_transcriptSearchNext->setToolTip(QStringLiteral("Next match"));
     connect(m_transcriptSearch, &QLineEdit::textChanged, this,
             [this](const QString &t) {
                 if (!m_agentTranscript)
@@ -1622,46 +1491,57 @@ QWidget *MainWindow::buildAgentsTab()
         if (m_agentTranscript)
             m_agentTranscript->searchNext();
     });
-    connect(m_transcriptSearchPrev, &QPushButton::clicked, this, [this] {
-        if (m_agentTranscript)
-            m_agentTranscript->searchPrev();
-    });
-    connect(m_transcriptSearchNext, &QPushButton::clicked, this, [this] {
-        if (m_agentTranscript)
-            m_agentTranscript->searchNext();
-    });
     connect(m_agentTranscript, &ClaudeTranscriptView::searchResultsChanged, this,
             [this](int current, int total) {
-                if (m_transcriptSearchCount) {
-                    const bool empty = !m_transcriptSearch
-                                       || m_transcriptSearch->text().trimmed().isEmpty();
-                    m_transcriptSearchCount->setText(
-                        empty ? QString()
-                              : QStringLiteral("%1/%2").arg(current).arg(total));
-                }
-                const bool any = total > 0;
-                if (m_transcriptSearchPrev)
-                    m_transcriptSearchPrev->setEnabled(any);
-                if (m_transcriptSearchNext)
-                    m_transcriptSearchNext->setEnabled(any);
+                if (!m_transcriptSearchCount)
+                    return;
+                const bool empty = !m_transcriptSearch
+                                   || m_transcriptSearch->text().trimmed().isEmpty();
+                m_transcriptSearchCount->setText(
+                    empty ? QString()
+                          : QStringLiteral("%1/%2").arg(current).arg(total));
             });
+
+    // Search box and match counter — the transcript-only half of the output
+    // toolbar, grouped so it can be shown and hidden as one without taking the
+    // session action buttons beside it with it (adhoc #35).
+    auto *transcriptToolsRow = new QHBoxLayout;
+    transcriptToolsRow->setContentsMargins(0, 0, 0, 0);
+    transcriptToolsRow->setSpacing(0);
+    transcriptToolsRow->addWidget(m_transcriptSearch);
+    transcriptToolsRow->addSpacing(6);
+    transcriptToolsRow->addWidget(m_transcriptSearchCount);
+    m_agentTranscriptTools = new QWidget;
+    m_agentTranscriptTools->setLayout(transcriptToolsRow);
+
+    // Session actions, moved off the detail header's title row (adhoc #35) so the
+    // title can run the full width: they ride the output toolbar now, immediately
+    // right of the Transcript | Raw toggle. Each already manages its own
+    // visibility ("+ issue", View PR and the Branch/Worktree buttons appear per
+    // session), so they are only laid out here.
+    auto *actionRow = new QHBoxLayout;
+    actionRow->setContentsMargins(0, 0, 0, 0);
+    actionRow->setSpacing(6);
+    actionRow->addWidget(m_agentCreateIssueButton);
+    actionRow->addWidget(m_agentViewPrButton);
+    actionRow->addWidget(m_agentStopButton);
+    actionRow->addWidget(m_agentDeleteAllButton);
+    actionRow->addWidget(m_agentBranchButton);
+    actionRow->addWidget(m_agentWorktreeButton);
 
     auto *toggleRow = new QHBoxLayout;
     toggleRow->setContentsMargins(0, 0, 0, 0);
     toggleRow->setSpacing(0);
     toggleRow->addWidget(m_transcriptModeButton);
     toggleRow->addWidget(m_terminalModeButton);
+    toggleRow->addSpacing(12);
+    toggleRow->addLayout(actionRow);
     toggleRow->addStretch(1);
-    toggleRow->addWidget(m_transcriptSearch);
-    toggleRow->addSpacing(6);
-    toggleRow->addWidget(m_transcriptSearchCount);
-    toggleRow->addWidget(m_transcriptSearchPrev);
-    toggleRow->addWidget(m_transcriptSearchNext);
-    toggleRow->addSpacing(8);
-    toggleRow->addWidget(m_agentDiffModeCombo);
+    toggleRow->addWidget(m_agentTranscriptTools);
     m_agentOutputToggle = new QWidget;
     m_agentOutputToggle->setLayout(toggleRow);
-    m_agentOutputToggle->hide();
+    // The toolbar itself always shows now that it carries the action buttons; the
+    // detail pane it lives in is what stays hidden until a session is opened.
 
     // Edited-files list for the "Files changed" tab: the files this session has
     // touched in its branch (derived from Edit/Write/MultiEdit tool calls, and
@@ -4284,8 +4164,17 @@ void MainWindow::refreshAgentDotMatrix()
         dot.sessionId = session.id;
         dot.color = agentStatusIconColor(session);
         dot.running = !session.merged && session.status == AgentStatus::Running;
-        if (dot.running)
+        if (dot.running) {
             dot.intensity = m_scannerStates.value(session.id).intensity;
+            // Token throughput, scaled against a flat-out run, so the blink rate
+            // reflects how fast the model is actually producing and not just how
+            // many bytes happened to land (adhoc #35).
+            dot.throughput = qBound(
+                0.0,
+                agentTokensPerSecond(session, sessionTokenTotal(session)) /
+                    kAgentFastTokensPerSecond,
+                1.0);
+        }
         dots.append(dot);
         tally[session.merged ? QStringLiteral("merged")
                              : agentStatusText(session.status)]++;
@@ -4621,21 +4510,11 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     applyAgentStatusCell(plain(kAgentIdColumn), session, diffStat);
     // Issue-scoped sessions show "#<issue> <title>"; PR-scoped ones (e.g. the
     // conflict auto-fixer, issueNumber 0) just show their title.
-    plain(1)->setText(session.issueNumber > 0
-                          ? QStringLiteral("#%1 %2")
-                                .arg(session.issueNumber)
-                                .arg(session.issueTitle)
-                          : session.issueTitle);
-    plain(2)->setText(agentProviderName(session.provider));
-    // Model column: the LLM model selected for this session.
-    applyAgentModelCell(plain(3), session);
-    // Turns/Time/Cost/Tokens now live in the detail-page header (adhoc #42); the
-    // table keeps only Speed as the at-a-glance throughput. The token total still
-    // feeds the Speed figure and is refreshed in place while the session streams
-    // (see updateAgentTokenCell).
-    const qint64 toks = sessionTokenTotal(session);
-    // Speed column: token throughput derived from the token total and run duration.
-    applyAgentSpeedCell(sortable(kAgentSpeedColumn), session, toks);
+    plain(kAgentIssueColumn)
+        ->setText(session.issueNumber > 0 ? QStringLiteral("#%1 %2")
+                                                .arg(session.issueNumber)
+                                                .arg(session.issueTitle)
+                                          : session.issueTitle);
     // "Updated" column: the most recent of created/started/finished/merged, shown
     // as a compact "7m"-style age (adhoc #29 — "7 minutes ago" spent a wide column
     // on words the list doesn't need). The tooltip carries the full timestamp and
@@ -4643,7 +4522,7 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
     const qint64 updatedMs =
         qMax(qMax(session.createdAtMs, session.startedAtMs),
              qMax(session.finishedAtMs, session.mergedAtMs));
-    QTableWidgetItem *updated = sortable(5);
+    QTableWidgetItem *updated = sortable(kAgentUpdatedColumn);
     updated->setData(Qt::DisplayRole,
                      updatedMs > 0 ? formatShortRelativeTime(updatedMs / 1000)
                                    : QStringLiteral("-"));
@@ -4654,13 +4533,6 @@ void MainWindow::applyAgentRowCells(int row, const AgentSession &session,
                             : QString());
     // Diff column (issue #170): files changed + branch ahead/behind, memoised.
     applyAgentDiffCell(sortable(kAgentDiffColumn), diffStat, agentBase, session.id);
-    // Night-rider light: a custom-painted scanner that sweeps while this session
-    // streams raw output. AgentScannerDelegate looks the animation state up by the
-    // sessionId stashed here in Qt::UserRole.
-    QTableWidgetItem *activity = plain(kAgentActivityColumn);
-    activity->setData(Qt::UserRole, session.id);
-    activity->setToolTip(QStringLiteral(
-        "Live activity — sweeps while the agent is streaming output"));
 }
 
 AgentSession *MainWindow::findAgentSession(int sessionId)
@@ -5030,46 +4902,6 @@ static QString chipLinkHtml(const QString &href, const QString &labelHtml)
         .arg(href, labelHtml);
 }
 
-// Chip for a branch name — same target as branchLinkHtml (open in Branches tab)
-// but styled as a button for the agent-detail header. Empty when there's no
-// branch.
-static QString chipBranchLinkHtml(const QString &branch)
-{
-    if (branch.isEmpty())
-        return QString();
-    const QString href = kBranchLinkScheme +
-                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
-    return chipLinkHtml(href, branch.toHtmlEscaped());
-}
-
-// Small "copy" link rendered right after the branch chip (adhoc #259): clicking
-// it copies the branch name to the clipboard via m_agentMeta's linkActivated
-// handler instead of navigating to the Branches tab.
-static QString copyBranchLinkHtml(const QString &branch)
-{
-    if (branch.isEmpty())
-        return QString();
-    const QString href = kCopyBranchLinkScheme +
-                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
-    return QStringLiteral(
-               " <a href=\"%1\" style=\"color:#8b949e;text-decoration:none\">"
-               "&nbsp;\xE2\xA7\x89&nbsp;</a>")
-        .arg(href);
-}
-
-// HTML for a worktree location shown next to the branch in the agent session
-// header. Clicking it opens the branch's row in the Worktrees tab (handled by
-// m_agentMeta's linkActivated -> switchToWorktree); the branch is carried in the
-// href so the handler can match the row. Empty when there's no worktree on disk.
-static QString worktreeLinkHtml(const QString &branch, const QString &worktreePath)
-{
-    if (branch.isEmpty() || worktreePath.isEmpty())
-        return QString();
-    const QString href = kWorktreeLinkScheme +
-                         QString::fromUtf8(QUrl::toPercentEncoding(branch));
-    return chipLinkHtml(href, worktreePath.toHtmlEscaped());
-}
-
 // "PR #N open" for the agent-detail meta line, as a link to that pull request's
 // tab (forkmesh-pull:N, handled by m_agentMeta's linkActivated). Lets a session
 // with a PR jump straight to it from the detail header.
@@ -5117,78 +4949,13 @@ static QString agentDetailTableHtml(const QStringList &headers, const QStringLis
     return html;
 }
 
-// Point the detail header's mode selector at the shown session (adhoc #26).
-// Only Claude Code and Codex carry a permission mode, so the selector hides for
-// API-key agents and watch-only rows. An unset mode falls back to the composer's
-// saved default, matching the "Mode:" meta line so the two never disagree.
-void MainWindow::syncAgentModeSelector(const AgentSession &session)
-{
-    if (!m_agentModeSelector)
-        return;
-    const bool hasMode =
-        !isExternalSession(session.id) &&
-        (session.provider == QLatin1String("claude-code") ||
-         agentIsCodexProvider(session.provider));
-    m_agentModeSelector->setVisible(hasMode);
-    if (!hasMode)
-        return;
-    const QString modeLabel =
-        session.mode.isEmpty()
-            ? QSettings()
-                  .value(kAgentModeSetting,
-                         QSettings().value(kClaudeAutoModeSetting, true).toBool()
-                             ? kClaudeAutoModeLabel
-                             : QStringLiteral("Ask before edits"))
-                  .toString()
-            : session.mode;
-    int idx = m_agentModeSelector->findText(modeLabel);
-    if (idx < 0)
-        idx = m_agentModeSelector->count() - 1;
-    // Guard the programmatic set so it doesn't re-enter applySelectedAgentMode
-    // and write the just-synced value straight back onto the session.
-    const QSignalBlocker block(m_agentModeSelector);
-    m_agentModeSelector->setCurrentIndex(idx);
-}
-
-// Apply the detail header's mode selector back onto the selected session (adhoc
-// #26). Persists the label and mirrors it to the website/other nodes; a live
-// Codex session maps the mode to its approval policy + sandbox at the start of
-// each turn, so retargeting it now makes the switch take effect on the very next
-// reply. Claude Code bakes the mode in at launch, so its stored label is instead
-// picked up on the next resume.
-void MainWindow::applySelectedAgentMode()
-{
-    if (!m_agentModeSelector)
-        return;
-    AgentSession *session = findAgentSession(m_selectedAgentSessionId);
-    if (!session)
-        return;
-    const QString chosenMode = m_agentModeSelector->currentText();
-    if (session->mode == chosenMode)
-        return;
-    session->mode = chosenMode;
-    if (m_agentStore)
-        m_agentStore->saveSession(*session);
-    scheduleAgentSessionsPush(); // adhoc #182 — mirror to the website/other nodes
-    if (CodexAppServerSession *codex =
-            m_codexStreams.value(m_selectedAgentSessionId);
-        codex && codex->running()) {
-        const QString effort =
-            QSettings()
-                .value(kClaudeEffortSetting, QStringLiteral("high"))
-                .toString();
-        codex->setTurnOptions(session->model, session->mode, effort);
-    }
-    // Refresh the "Mode:" meta line so the header value tracks the new choice.
-    if (m_agentMeta)
-        showAgentSession(m_selectedAgentSessionId);
-}
-
 // Rebuild only the detail header's key/value meta lines for a session — the
-// identity block, the issue/branch/worktree/PR button chips and the run Stats
-// (turns/time/cost/tokens). Split out of showAgentSession (adhoc #42) so the
-// live-update paths (token/cost/run-summary events, the running-row ticker) can
-// keep the header current without triggering a full transcript rebuild.
+// identity block, the issue/PR chips, Speed/Diff/Updated (adhoc #35) and the run
+// Stats (turns/time/cost/tokens) — plus the toolbar's Branch/Worktree buttons,
+// which read from the same session (adhoc #51). Split out of
+// showAgentSession (adhoc #42) so the live-update paths (token/cost/run-summary
+// events, the running-row ticker) can keep the header current without triggering
+// a full transcript rebuild.
 void MainWindow::refreshAgentDetailMeta(int sessionId)
 {
     if (!m_agentMeta)
@@ -5210,8 +4977,8 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
             ? QStringLiteral("<span style='color:#a371f7'>merged into %1</span>")
                   .arg(agentMergeBase(*session).toHtmlEscaped())
             : QString();
-    // Resolve this session's worktree folder from its branch so the header can
-    // show its location next to the branch and link straight to it (adhoc #123).
+    // Resolve this session's worktree folder from its branch so the toolbar's
+    // Worktree button can show its location and open it (adhoc #123, #51).
     QString worktreePath;
     if (!session->branchName.isEmpty()) {
         const int repoIdx = repoIndexFor(session->owner, session->name);
@@ -5220,12 +4987,21 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                 sessionId, m_repositories.at(repoIdx).localPath,
                 session->branchName);
     }
+    // Branch and worktree left the meta table for two caption-over-value buttons
+    // in the output toolbar (adhoc #51), so point those at this session; each
+    // hides when the session has nothing to open.
+    if (m_agentBranchButton) {
+        m_agentBranchButton->setVisible(!session->branchName.isEmpty());
+        m_agentBranchButton->setValue(session->branchName);
+    }
+    if (m_agentWorktreeButton) {
+        m_agentWorktreeButton->setVisible(!worktreePath.isEmpty());
+        m_agentWorktreeButton->setValue(worktreePath);
+    }
     if (isExternalSession(sessionId)) {
-        // Rich text so the branch name links to its Branches-tab row and the
-        // worktree location links to its Worktrees-tab row (issue #265, adhoc
-        // #123); every other part is HTML-escaped to stay literal. Rendered as
-        // a mini table — header labels on top, values below (adhoc #90) —
-        // rather than one long "Label: value | Label: value" line.
+        // Rendered as a mini table — header labels on top, values below (adhoc
+        // #90) — rather than one long "Label: value | Label: value" line. Every
+        // part is HTML-escaped to stay literal.
         QStringList headers;
         QStringList values;
         headers << QStringLiteral("Agent");
@@ -5235,15 +5011,6 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                                               session->name.toHtmlEscaped());
         headers << QStringLiteral("Status");
         values << agentStatusText(session->status).toHtmlEscaped();
-        if (!session->branchName.isEmpty()) {
-            headers << QStringLiteral("Branch");
-            values << chipBranchLinkHtml(session->branchName) +
-                           copyBranchLinkHtml(session->branchName);
-            if (!worktreePath.isEmpty()) {
-                headers << QStringLiteral("Worktree");
-                values << worktreeLinkHtml(session->branchName, worktreePath);
-            }
-        }
         headers << QStringLiteral("Mode");
         values << QStringLiteral("watch-only");
         QString meta = agentDetailTableHtml(headers, values);
@@ -5317,17 +5084,23 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     lines << agentStatusText(session->status).toHtmlEscaped();
     headers << QStringLiteral("Issue");
     lines << issueValue;
-    headers << QStringLiteral("Branch");
-    lines << (session->branchName.isEmpty()
-                  ? QStringLiteral("(no branch)")
-                  : chipBranchLinkHtml(session->branchName) +
-                        copyBranchLinkHtml(session->branchName));
-    if (!worktreePath.isEmpty()) {
-        headers << QStringLiteral("Worktree");
-        lines << worktreeLinkHtml(session->branchName, worktreePath);
-    }
     headers << QStringLiteral("PR");
     lines << pr;
+    const qint64 toks = sessionTokenTotal(*session);
+    // Speed / Diff / Updated — the three figures adhoc #35 took out of the
+    // sessions table so the issue title could have its width, landing here with
+    // the rest of the session's numbers rather than disappearing.
+    headers << QStringLiteral("Speed");
+    lines << agentSpeedText(*session, toks).toHtmlEscaped();
+    headers << QStringLiteral("Diff");
+    lines << agentDiffSummaryText(agentDiffStat(*session, QString(), QString()))
+                 .toHtmlEscaped();
+    const qint64 updatedMs = qMax(qMax(session->createdAtMs, session->startedAtMs),
+                                  qMax(session->finishedAtMs, session->mergedAtMs));
+    headers << QStringLiteral("Updated");
+    lines << (updatedMs > 0 ? formatShortRelativeTime(updatedMs / 1000)
+                            : QStringLiteral("-"))
+                 .toHtmlEscaped();
     // Run stats — turns/time/cost/tokens, moved off the sessions table into
     // the detail header so all of a session's figures read together in one
     // place (adhoc #42). Rendered as a single muted, dot-separated value.
@@ -5338,7 +5111,6 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
     if (dur > 0)
         stats << QStringLiteral("%1s").arg(dur / 1000);
     stats << agentCostText(session->costUsd).toHtmlEscaped();
-    const qint64 toks = sessionTokenTotal(*session);
     if (toks > 0)
         stats << QStringLiteral("%1 tokens").arg(formatCount(toks));
     headers << QStringLiteral("Stats");
@@ -5369,8 +5141,10 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentViewPrButton->hide();
         if (m_agentCreateIssueButton)
             m_agentCreateIssueButton->hide();
-        if (m_agentModeSelector)
-            m_agentModeSelector->hide();
+        if (m_agentBranchButton)
+            m_agentBranchButton->hide();
+        if (m_agentWorktreeButton)
+            m_agentWorktreeButton->hide();
         if (m_agentLog)
             m_agentLog->clear();
         m_agentLogSession = -1; // log emptied out-of-band; force the next set to render
@@ -5431,7 +5205,6 @@ void MainWindow::showAgentSession(int sessionId)
     refreshAgentDetailMeta(sessionId);
     setAgentUsageLabel(*session);
     refreshAgentStatusPill(sessionId);
-    syncAgentModeSelector(*session);
 
     // View PR button appears once a pull request exists for this session.
     if (m_agentViewPrButton) {
@@ -5523,8 +5296,15 @@ void MainWindow::showAgentSession(int sessionId)
         m_agentLog->setPlainText(QString());
         m_agentLogSession = -1; // set out-of-band; the async set re-renders
     }
-    if (m_agentOutputToggle)
-        m_agentOutputToggle->setVisible(transcript);
+    // The output toolbar stays put — it carries this session's action buttons now
+    // (adhoc #35) — but its transcript-only controls come and go with the surface
+    // they act on.
+    if (m_transcriptModeButton)
+        m_transcriptModeButton->setVisible(transcript);
+    if (m_terminalModeButton)
+        m_terminalModeButton->setVisible(transcript);
+    if (m_agentTranscriptTools)
+        m_agentTranscriptTools->setVisible(transcript);
     // The "Files changed" tab only applies to local transcript sessions (external
     // sessions have no worktree/diff here). Hide it otherwise and fall back to the
     // Agent tab so the user never lands on an empty tab.
@@ -6130,7 +5910,8 @@ void MainWindow::updateIssueLooperButton()
 // worktree/branch and opens a pull request on finish, like every transcript run.
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
-                                       const QString &model)
+                                       const QString &model,
+                                       const QString &titleOverride)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -6167,8 +5948,11 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         session.mode = m_quickAddModeSelector->currentText();
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
-    // A short title from the prompt's first line, for the list row and the PR.
-    QString title = task.section(QLatin1Char('\n'), 0, 0).simplified();
+    // A short title from the prompt's first line, for the list row and the PR —
+    // or the caller's own title when the prompt does not describe the work.
+    QString title = titleOverride.trimmed().isEmpty()
+                        ? task.section(QLatin1Char('\n'), 0, 0).simplified()
+                        : titleOverride.trimmed();
     if (title.size() > 80)
         title = title.left(77) + QString::fromUtf8("\xE2\x80\xA6");
     session.issueTitle =
@@ -6563,7 +6347,7 @@ void MainWindow::switchToAgentsTab(int sessionId)
 // Rebuild the footer "Agents:" status strip (adhoc #111) from m_agentSessions:
 // one small status glyph per known session (adhoc #114 swapped the plain
 // colored dots for the same icon set the Agents table's Status column uses —
-// an orange spinner while running, purple merge mark once landed, orange hand
+// a blue spinner while running, purple merge mark once landed, orange hand
 // while waiting, etc — via agentStatusOcticon), click-through to that
 // session's Agents tab. Called after every reloadAgents() so the strip tracks
 // the same data as the Agents table.
@@ -6604,6 +6388,8 @@ void MainWindow::refreshAgentStatusRow()
         // spins them the same way animateRunningAgentIcons() spins the table.
         dot->setIcon(agentStatusOcticon(session, 14));
         dot->setProperty("agentStatusSpin", running);
+        // animateAgentStatusIcons() needs the session back to read its tok/s.
+        dot->setProperty("agentSessionId", session.id);
         anyRunning = anyRunning || running;
         const QString label = session.issueNumber > 0
             ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(session.issueTitle)
@@ -6635,27 +6421,34 @@ void MainWindow::refreshAgentStatusRow()
                     &MainWindow::animateAgentStatusIcons);
         }
         if (!m_agentStatusSpinTimer->isActive())
-            m_agentStatusSpinTimer->start(120);
+            m_agentStatusSpinTimer->start(kAgentSpinTickMs);
     } else if (m_agentStatusSpinTimer) {
         m_agentStatusSpinTimer->stop();
     }
 }
 
-// Spin the orange "sync" glyph on every running icon in the footer "Agents:"
+// Spin the blue "sync" glyph on every running icon in the footer "Agents:"
 // strip (adhoc #114), mirroring animateRunningAgentIcons()'s treatment of the
-// Agents table. Driven by m_agentStatusSpinTimer, which only ticks while at
-// least one session in the strip is running (see refreshAgentStatusRow).
+// Agents table — each dot at its own session's tok/s (adhoc #50). Driven by
+// m_agentStatusSpinTimer, which only ticks while at least one session in the
+// strip is running (see refreshAgentStatusRow).
 void MainWindow::animateAgentStatusIcons()
 {
     if (!m_agentStatusIconsLayout)
         return;
-    m_agentStatusSpinFrame = (m_agentStatusSpinFrame + 1) % 10;
-    const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor(Theme::kRunning), 14, m_agentStatusSpinFrame * 36.0));
     for (int i = 0; i < m_agentStatusIconsLayout->count(); ++i) {
         QWidget *w = m_agentStatusIconsLayout->itemAt(i)->widget();
-        if (w && w->property("agentStatusSpin").toBool())
-            static_cast<QPushButton *>(w)->setIcon(icon);
+        if (!w || !w->property("agentStatusSpin").toBool())
+            continue;
+        const int sessionId = w->property("agentSessionId").toInt();
+        const AgentSession *s = findAgentSession(sessionId);
+        if (!s)
+            continue;
+        double &angle = m_agentStatusSpinAngles[sessionId];
+        angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
+                          360.0);
+        static_cast<QPushButton *>(w)->setIcon(QIcon(rotatedTintedOcticonPixmap(
+            "sync", QColor(Theme::kRunning), 14, angle)));
     }
 }
 
@@ -9063,15 +8856,19 @@ void MainWindow::refreshAgentStatusPill(int sessionId)
     m_agentStatusPill->setText(pill);
 }
 
-// Spin the orange "sync" glyph on every running row's "#" cell so the agents
+// Spin the blue "sync" glyph on every running row's "#" cell so the agents
 // list shows a live spinner (issue #108). Driven by m_agentsSpinTimer, which only
 // ticks while a session is running, so finished rows keep their static icon.
+// Each row spins at its own session's tok/s (adhoc #50), so a fast run visibly
+// outruns a slow one instead of every row turning in lockstep.
 void MainWindow::animateRunningAgentIcons()
 {
     if (!m_agentTable)
         return;
-    const QIcon icon(rotatedTintedOcticonPixmap(
-        "sync", QColor(Theme::kRunning), 14, m_agentsSpinFrame * 36.0));
+    // The spinner ticks faster than the header's run stats need to, so the meta
+    // refresh below keeps its old ~120ms cadence instead of riding every frame.
+    ++m_agentSpinTicks;
+    const bool refreshMeta = m_agentSpinTicks % 2 == 0;
     QSignalBlocker block(m_agentTable);
     for (int r = 0; r < m_agentTable->rowCount(); ++r) {
         QTableWidgetItem *idItem = m_agentTable->item(r, kAgentIdColumn);
@@ -9082,16 +8879,16 @@ void MainWindow::animateRunningAgentIcons()
             continue;
         // The spinner sits on the "#" cell (adhoc #29 — see applyAgentRowCells for
         // the column layout).
-        idItem->setIcon(icon);
-        // Keep the Speed column's live tok/s figure ticking for running rows
-        // (issue #245): its run duration grows against the wall clock, so recompute
-        // it here rather than spinning up a second timer. The elapsed-time figure
-        // itself now lives in the detail header (adhoc #42), refreshed below.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, kAgentSpeedColumn))
-            applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
-        // Tick the detail header's run stats (elapsed time) for the open session —
-        // meta only, so the live transcript isn't rebuilt every second.
-        if (s->id == m_selectedAgentSessionId)
+        double &angle = m_agentRowSpinAngles[s->id];
+        angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
+                          360.0);
+        idItem->setIcon(QIcon(rotatedTintedOcticonPixmap(
+            "sync", QColor(Theme::kRunning), 14, angle)));
+        // Tick the detail header's run stats (elapsed time, and the live tok/s
+        // figure whose run duration grows against the wall clock — issue #245,
+        // moved here from the table by adhoc #35) for the open session — meta
+        // only, so the live transcript isn't rebuilt every second.
+        if (refreshMeta && s->id == m_selectedAgentSessionId)
             refreshAgentDetailMeta(s->id);
     }
 }
@@ -9138,35 +8935,23 @@ void MainWindow::setAgentUsageLabel(const AgentSession &session)
 }
 
 // Refresh the live token total, in place — cheap enough to call on every
-// assistant message without rebuilding the whole table. The token count itself
-// now shows in the detail-page header (adhoc #42); in the table it only drives
-// the Speed cell's tok/s figure, plus the open header's live stats/usage lines.
+// assistant message without rebuilding the whole table. Both the token count and
+// the tok/s figure it drives now show in the detail-page header (adhoc #42,
+// adhoc #35), so this only touches the open session's header + usage line.
 void MainWindow::updateAgentTokenCell(int sessionId)
 {
-    if (!m_agentTable)
-        return;
-    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
-        if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
-            continue;
-        QSignalBlocker block(m_agentTable);
-        // Recompute the Speed cell so the tok/s figure climbs in real time while
-        // the agent streams — agentEffectiveDurationMs measures a running session
-        // against the wall clock, so this uses the freshly-bumped token total.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, kAgentSpeedColumn))
-            if (const AgentSession *s = findAgentSession(sessionId))
-                applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
-        break;
-    }
-    // Keep the open detail header's token/cost stats + the "Session token usage"
-    // line in step with the live counter so they climb in real time instead of
-    // only on the next reload. Meta only — never rebuild the transcript here (the
-    // stream handler already renders it incrementally on each event).
+    // Keep the open detail header's speed/token/cost stats + the "Session token
+    // usage" line in step with the live counter so they climb in real time instead
+    // of only on the next reload. Meta only — never rebuild the transcript here
+    // (the stream handler already renders it incrementally on each event).
     if (sessionId == m_selectedAgentSessionId)
         if (const AgentSession *s = findAgentSession(sessionId)) {
             setAgentUsageLabel(*s);
             refreshAgentDetailMeta(sessionId);
         }
+    // The fleet lights pulse off token throughput as well as raw output volume
+    // (adhoc #35), so a freshly-bumped total changes how fast they blink.
+    refreshAgentDotMatrix();
 }
 
 // Refresh the detail header's Cost stat when a Claude Code run reports its final
@@ -9179,35 +8964,20 @@ void MainWindow::updateAgentCostCell(int sessionId)
         refreshAgentDetailMeta(sessionId);
 }
 
-// Refresh the Speed cell and the detail header's run stats (turns/time) when a
-// Claude Code run reports its final `num_turns`/`duration_ms` via the `result`
-// event, without a full table rebuild. Turns/Time moved into the header
-// (adhoc #42); Speed stays in the table. Sibling of updateAgentCostCell.
+// Refresh the detail header's run stats (turns/time/speed) when a Claude Code run
+// reports its final `num_turns`/`duration_ms` via the `result` event, without a
+// full table rebuild. Turns/Time moved into the header in adhoc #42 and Speed
+// followed in adhoc #35. Sibling of updateAgentCostCell.
 void MainWindow::updateAgentRunSummaryCells(int sessionId)
 {
-    if (!m_agentTable)
-        return;
-    const AgentSession *s = findAgentSession(sessionId);
-    if (!s)
-        return;
-    for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-        QTableWidgetItem *idItem = m_agentTable->item(r, 0);
-        if (!idItem || idItem->data(Qt::UserRole).toInt() != sessionId)
-            continue;
-        QSignalBlocker block(m_agentTable);
-        // Speed needs both the token total and the now-known run duration.
-        if (QTableWidgetItem *speed = m_agentTable->item(r, kAgentSpeedColumn))
-            applyAgentSpeedCell(speed, *s, sessionTokenTotal(*s));
-        break;
-    }
     if (sessionId == m_selectedAgentSessionId)
         refreshAgentDetailMeta(sessionId);
 }
 
-// Pulse a session's night-rider light so its activity column sweeps while raw
-// output is streaming. Called from every raw-output path (headless AgentRunner
-// logs, live Claude stream lines, surfaced external transcripts). The driving
-// timer is started on demand and self-stops once every light has gone idle.
+// Pulse a session's live-output meter so its fleet light blinks while raw output
+// is streaming. Called from every raw-output path (headless AgentRunner logs, live
+// Claude stream lines, surfaced external transcripts). The driving timer is
+// started on demand and self-stops once every light has gone idle.
 void MainWindow::noteAgentActivity(int sessionId, int bytes)
 {
     if (sessionId <= 0)
@@ -9223,15 +8993,12 @@ void MainWindow::noteAgentActivity(int sessionId, int bytes)
         m_scannerTimer->start();
 }
 
-// Advance every active scanner's sweep, repaint the Activity cells, and stop the
-// timer once no session has produced output recently — so idle agents cost
-// nothing while running ones wave left<->right in real time.
+// Decay every session's live-output meter, push the fresh figures into the top
+// bar's fleet lights, and stop the timer once no session has produced output
+// recently — so idle agents cost nothing while running ones blink in real time.
 void MainWindow::onScannerTick()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    // Baseline bounce ~one back-and-forth per 1.7s; the live-output intensity
-    // accelerates it up to ~2.5x so a busy agent visibly races.
-    const double base = (m_scannerTimer ? m_scannerTimer->interval() : 45) / 1700.0;
     bool anyActive = false;
     for (auto it = m_scannerStates.begin(); it != m_scannerStates.end(); ++it) {
         // Decay the live-output meter every frame; noteAgentActivity re-bumps it
@@ -9239,27 +9006,15 @@ void MainWindow::onScannerTick()
         it->intensity *= 0.85;
         if (it->intensity < 0.01)
             it->intensity = 0.0;
-        // Keep the light continuously sweeping while there's any activity left:
-        // either output landed recently or the meter is still winding down.
+        // Keep the light blinking while there's any activity left: either output
+        // landed recently or the meter is still winding down.
         if (it->intensity <= 0.0 && now - it->lastActivityMs >= kScannerIdleMs)
             continue;
-        it->phase += base * (0.6 + 1.9 * it->intensity);
-        if (it->phase >= 1.0)
-            it->phase -= 1.0;
         anyActive = true;
     }
-    // Push the decayed meters into the top-bar matrix so its squares pulse off
-    // the same live-output signal as the Activity column's scanner lights.
+    // Push the decayed meters into the top-bar matrix, whose squares pulse off
+    // this live-output signal (and each session's token throughput).
     refreshAgentDotMatrix();
-    // Repaint the visible Activity cells (cheap for these per-repo tables). The
-    // final, just-went-idle tick still repaints, so lights settle to rest.
-    if (m_agentTable) {
-        for (int r = 0; r < m_agentTable->rowCount(); ++r) {
-            if (m_agentTable->item(r, kAgentActivityColumn))
-                m_agentTable->update(
-                    m_agentTable->model()->index(r, kAgentActivityColumn));
-        }
-    }
     if (!anyActive && m_scannerTimer)
         m_scannerTimer->stop();
 }
@@ -10463,14 +10218,14 @@ void MainWindow::updateAgentActionState()
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
     // still holding open.
     const bool aiFixBusy = m_aiFix && m_aiFix->sessionId == m_selectedAgentSessionId;
-    if (m_agentDeleteButton)
-        m_agentDeleteButton->setEnabled((selected || externalSelected) && !aiFixBusy);
-    // "Delete all" also nukes the worktree + branch, so it only applies to a real
-    // stored session that has a branch (not external watch-only rows).
+    // "Delete" also nukes the worktree + branch, so it needs a real stored session
+    // with a branch; on an external watch-only row it drops just the mirrored
+    // session instead (adhoc #51), which is always available.
     if (m_agentDeleteAllButton)
         m_agentDeleteAllButton->setEnabled(
-            selected && !aiFixBusy && session && !session->branchName.isEmpty()
-            && !isExternalSession(m_selectedAgentSessionId));
+            !aiFixBusy
+            && (externalSelected
+                || (selected && session && !session->branchName.isEmpty())));
     updateQuickAddEnterTarget();
 }
 

@@ -171,7 +171,7 @@ def test_cabinet_faces_are_swapped_and_agent_sides_are_provider_specific():
 
 def test_top_right_identity_control_uses_account_avatar_not_country_flag():
     assert "data-world-shirt-avatar" in APP
-    assert "data-world-shirt-initial" in APP
+    assert "data-world-shirt-initial" not in APP
     assert "data-world-shirt-flag" not in APP
     badge = CSS[
         CSS.index(".world-shirt-badge {"):

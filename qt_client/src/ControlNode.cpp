@@ -1968,6 +1968,25 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
     // automatic mirror size; operators can still install manually on custom
     // hosts whose temporary-storage layout meets the same runtime needs.
     constexpr double kMinimumMirrorRamMb = 1024.0;
+    const auto hasUsLocation = [](const QJsonObject &plan) {
+        static const QSet<QString> usRegions{
+            QStringLiteral("ewr"), // Newark, New Jersey / New York metro
+            QStringLiteral("atl"), // Atlanta
+            QStringLiteral("ord"), // Chicago
+            QStringLiteral("dfw"), // Dallas
+            QStringLiteral("mia"), // Miami
+            QStringLiteral("lax"), // Los Angeles
+            QStringLiteral("sea"), // Seattle
+            QStringLiteral("sjc"), // Silicon Valley
+            QStringLiteral("hon"), // Honolulu
+        };
+        for (const QJsonValue &value :
+             plan.value(QStringLiteral("locations")).toArray()) {
+            if (usRegions.contains(value.toString().trimmed().toLower()))
+                return true;
+        }
+        return false;
+    };
     QJsonObject best;
     for (const QJsonValue &value : plans) {
         const QJsonObject plan = value.toObject();
@@ -1976,8 +1995,7 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
         const QString id = plan.value(QStringLiteral("id")).toString();
         if (id.isEmpty() || !std::isfinite(cost) || cost <= 0.0 ||
             !std::isfinite(ram) || ram < kMinimumMirrorRamMb ||
-            !vultrPlanHasIpv4(plan) ||
-            plan.value(QStringLiteral("locations")).toArray().isEmpty()) {
+            !vultrPlanHasIpv4(plan) || !hasUsLocation(plan)) {
             continue;
         }
         if (best.isEmpty()) {
@@ -2004,15 +2022,33 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
 
 QString vultrPlanRegion(const QJsonObject &plan)
 {
-    QStringList locations;
+    // Keep automatically provisioned World mirrors in the United States.
+    // Newark is the closest Vultr region to New York City, followed by
+    // Atlanta; the remaining US locations provide deterministic capacity
+    // fallbacks without silently placing a mirror on another continent.
+    static const QStringList preferredUsRegions{
+        QStringLiteral("ewr"),
+        QStringLiteral("atl"),
+        QStringLiteral("ord"),
+        QStringLiteral("dfw"),
+        QStringLiteral("mia"),
+        QStringLiteral("lax"),
+        QStringLiteral("sea"),
+        QStringLiteral("sjc"),
+        QStringLiteral("hon"),
+    };
+    QSet<QString> locations;
     for (const QJsonValue &value :
          plan.value(QStringLiteral("locations")).toArray()) {
-        const QString region = value.toString().trimmed();
+        const QString region = value.toString().trimmed().toLower();
         if (!region.isEmpty())
-            locations.append(region);
+            locations.insert(region);
     }
-    std::sort(locations.begin(), locations.end());
-    return locations.isEmpty() ? QString() : locations.first();
+    for (const QString &region : preferredUsRegions) {
+        if (locations.contains(region))
+            return region;
+    }
+    return {};
 }
 
 QJsonObject latestVultrDebianOs(const QJsonArray &osList)
