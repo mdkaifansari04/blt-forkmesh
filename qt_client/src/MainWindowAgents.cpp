@@ -277,21 +277,23 @@ QString redactProviderCredentials(QString text,
         if (secret.size() >= 8)
             text.replace(secret, QStringLiteral("***"));
     }
-    text.replace(
-        QRegularExpression(
-            QStringLiteral(
-                "(?i)(authorization\\s*:\\s*bearer\\s+)[A-Za-z0-9._~+/-]{8,}")),
-        QStringLiteral("\\1***"));
-    text.replace(
-        QRegularExpression(
-            QStringLiteral(
-                "(?i)([\"']?(?:accessToken|refreshToken|apiKey|"
-                "anthropicApiKey|openAiApiKey|authorization)[\"']?"
-                "\\s*[:=]\\s*[\"'])[^\"'\\r\\n]+")),
-        QStringLiteral("\\1***"));
-    text.replace(
-        QRegularExpression(QStringLiteral("\\bsk-[A-Za-z0-9_-]{20,}")),
-        QStringLiteral("sk-***"));
+    // static: this runs on the GUI thread for every string leaf of every
+    // transcript event, and a per-call QRegularExpression re-compiles its
+    // PCRE2 pattern each time — the stall watchdog caught that compile burning
+    // ~500 ms of a stream burst (adhoc #82).
+    static const QRegularExpression bearerHeader(
+        QStringLiteral(
+            "(?i)(authorization\\s*:\\s*bearer\\s+)[A-Za-z0-9._~+/-]{8,}"));
+    static const QRegularExpression credentialAssignment(
+        QStringLiteral(
+            "(?i)([\"']?(?:accessToken|refreshToken|apiKey|"
+            "anthropicApiKey|openAiApiKey|authorization)[\"']?"
+            "\\s*[:=]\\s*[\"'])[^\"'\\r\\n]+"));
+    static const QRegularExpression skToken(
+        QStringLiteral("\\bsk-[A-Za-z0-9_-]{20,}"));
+    text.replace(bearerHeader, QStringLiteral("\\1***"));
+    text.replace(credentialAssignment, QStringLiteral("\\1***"));
+    text.replace(skToken, QStringLiteral("sk-***"));
     return text;
 }
 
@@ -6807,6 +6809,25 @@ void MainWindow::processAgentQueue()
         // runner. startClaudeCodeTerminal remains for the legacy embedded-TUI.
         if (session->provider == QLatin1String("claude-code") ||
             agentIsCodexProvider(session->provider)) {
+            // A resume replays the persisted transcript, and startCliTranscript's
+            // synchronous ensureStreamEventsLoaded() parses the whole
+            // events.jsonl on the GUI thread — >1 s blocked on a long session
+            // (adhoc #82). Warm the cache through the off-thread loader first
+            // and park the session back at the head of the queue; the load's
+            // completion re-drains it (same quiet/loud disposition) and the
+            // then-instant synchronous path proceeds as before.
+            if (!m_streamEvents.contains(sessionId) &&
+                !m_streamEventsAbsent.contains(sessionId) &&
+                !isExternalSession(sessionId)) {
+                ensureStreamEventsLoadedAsync(sessionId);
+                if (m_streamEventsLoading.contains(sessionId)) {
+                    m_agentQueue.prepend(sessionId);
+                    if (!m_agentQueueAwaitingEvents.contains(sessionId))
+                        m_agentQueueAwaitingEvents.insert(sessionId,
+                                                          m_agentQuietResume);
+                    break;
+                }
+            }
             startCliTranscript(*session, issue, agentGitDir, session->prompt);
             ++active;
             changed = true;
@@ -9194,6 +9215,18 @@ bool MainWindow::ensureStreamEventsLoadedAsync(int sessionId)
             }
             if (sessionId == m_selectedAgentSessionId)
                 showAgentSession(sessionId); // render the restored history
+            // processAgentQueue() parked this session here while its transcript
+            // loaded (adhoc #82); re-drain the queue now that the events are in
+            // memory, restoring the disposition of the deferred pass so a
+            // user-driven start still jumps to the transcript and a restart
+            // resume stays quiet.
+            if (m_agentQueueAwaitingEvents.contains(sessionId)) {
+                const bool quiet = m_agentQueueAwaitingEvents.take(sessionId);
+                const bool wasQuiet = m_agentQuietResume;
+                m_agentQuietResume = quiet;
+                processAgentQueue();
+                m_agentQuietResume = wasQuiet;
+            }
         });
     return false;
 }
