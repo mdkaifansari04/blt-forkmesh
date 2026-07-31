@@ -453,9 +453,9 @@ public:
     // new order: resizing one column leaves every other column's width untouched
     // for movable-header tables like the agents list.
     Q_INVOKABLE bool testSpreadsheetResizeAfterMove();
-    // Verifies the agents list lets the user drag its column headers into a new
-    // order (in addition to resizing them).
-    Q_INVOKABLE bool testAgentColumnsMovable() const;
+    // Verifies the agents list ships without its column header or frame border
+    // (adhoc #92) — the rows are the whole list now.
+    Q_INVOKABLE bool testAgentListChromeHidden() const;
     // "<labels>|<usedWidth>/<viewportWidth>" for the agents list, so a test can
     // pin the trimmed column set and the title column's flex behaviour (adhoc #35).
     Q_INVOKABLE QString testAgentColumnLayout() const;
