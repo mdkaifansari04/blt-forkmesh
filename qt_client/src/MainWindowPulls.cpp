@@ -3515,7 +3515,7 @@ void MainWindow::buildAndPreviewCurrentPull()
     // recursive lambda so each step starts the next only on success.
     auto steps = std::make_shared<QList<PullPreviewStep>>(
         pullPreviewSteps(gitDir, previewDir, clientDir, buildDir, commit,
-                         haveWorktree, QThread::idealThreadCount()));
+                         haveWorktree, ramCappedBuildJobs()));
 
     auto runNext = std::make_shared<std::function<void(int)>>();
     *runNext = [this, steps, runNext, dlg, statusPtr, appendLog,
