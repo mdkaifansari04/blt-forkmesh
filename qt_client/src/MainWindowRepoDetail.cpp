@@ -5128,6 +5128,12 @@ void MainWindow::recordNavLocation()
                          ? m_repoDetailStack->currentIndex()
                          : -1;
 
+    // Remember the tab actually being viewed so a relaunch can restore it
+    // (see kLastRepoDetailTabSetting / runDeferredStartup) instead of always
+    // landing on Settings -> General's "open repositories on tab" default.
+    if (here.detailTab >= 0)
+        QSettings().setValue(kLastRepoDetailTabSetting, here.detailTab);
+
     if (m_navHistoryIndex >= 0 && m_navHistoryIndex < m_navHistory.size() &&
         m_navHistory.at(m_navHistoryIndex) == here)
         return; // already standing here — nothing moved
