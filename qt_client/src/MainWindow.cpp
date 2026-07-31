@@ -699,6 +699,16 @@ void MainWindow::runDeferredStartup()
     // -> Automatic backups). Armed for every launch, headless included — an
     // unattended mirror is exactly where a lost identity key hurts most.
     startAutoBackups();
+
+    // A provisioned direct HTTPS mirror (hostname configured + owner-only
+    // connector token on disk) used to stay dark after every restart until
+    // someone clicked "Start mirror services" — a headless VPS has nobody to
+    // click it, so its Cloudflare Tunnel never came back. Auto-start the
+    // gateway/Tunnel/registration chain, deferred a further beat so spawning
+    // the gateway and cloudflared doesn't compete with the startup sync burst
+    // (autoSyncMirrors/performRelaySync fire in this same window).
+    QTimer::singleShot(10000, this,
+                       &MainWindow::maybeAutoStartDirectMirrorServices);
 }
 
 void MainWindow::applyTheme()

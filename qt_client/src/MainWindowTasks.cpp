@@ -454,8 +454,22 @@ void MainWindow::requestOrganizationTasks(
         const QString proof = organizationTaskProof(method, path, &resource);
         if (proof.isEmpty() ||
             !authenticateOrgTaskRequest(url, request, proof, resource)) {
-            handler(false, {}, QStringLiteral(
-                "Sign in to an organization account to use private tasks."));
+            // Distinguish "not signed in at all" from "signed in with this
+            // device's key, but this change (delete, edit, QA, another
+            // member's timer, ...) deliberately needs a real session." The
+            // first message told an operator who was plainly using their own
+            // account to "sign in" to it, which reads as a no-op bug when the
+            // actual, actionable step is a password login (adhoc #108).
+            handler(false, {},
+                    m_accountAuthenticated
+                        ? QString::fromUtf8(
+                              "This change needs a password sign-in on this "
+                              "device, not just its saved account key \xE2"
+                              "\x80\x94 use Settings \xE2\x86\x92 \"Log in to "
+                              "a user account\", then try again.")
+                        : QStringLiteral(
+                              "Sign in to an organization account to use "
+                              "private tasks."));
             return;
         }
         keySigned = true;
@@ -1271,7 +1285,14 @@ void MainWindow::deleteOrganizationTask()
             m_organizationTasksStatus->setText(
                 ok ? QStringLiteral("Task deleted.")
                    : QStringLiteral("Task deletion failed: %1").arg(error));
-            if (ok)
+            if (ok) {
                 refreshOrganizationTasks();
+                return;
+            }
+            // A failed delete left the task sitting right where it was, with
+            // only a status label above the table to explain why — easy to
+            // miss, which read as "delete did nothing" (adhoc #108). Put the
+            // reason somewhere the operator cannot scroll past.
+            QMessageBox::warning(this, QStringLiteral("Delete task"), error);
         });
 }

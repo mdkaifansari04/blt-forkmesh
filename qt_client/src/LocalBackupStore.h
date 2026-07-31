@@ -38,6 +38,12 @@ constexpr int kBackupKeepDefault = 24;
 constexpr int kBackupKeepMin = 1;
 constexpr int kBackupKeepMax = 240;
 
+// The default for backup/hourlyEnabled when the user has never chosen: on for
+// desktops, off for headless nodes. A day of hourly ~1GB tarballs filled
+// several small VPS disks outright; an unattended mirror's operator opts in
+// with an explicit backup/hourlyEnabled=true instead.
+constexpr bool autoBackupDefault(bool headless) { return !headless; }
+
 // Where snapshots live: <app data>/backups. Kept inside the app-data dir so it
 // travels with the rest of ForkMesh's storage and shows up in the Data tab —
 // callers must therefore exclude it when packing (see configArchiveTarArgs).

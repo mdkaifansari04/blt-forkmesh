@@ -48,6 +48,7 @@ def _load(*names, extra_globals=None):
         "_status_minute", "_is_tunnel_content_path",
         "_status_deploy_semaphore_active",
         "_record_status_deploy_sample",
+        "_claim_status_sample_minute",
     }
     selected = []
     for node in list(urls_tree.body) + list(tree.body):
@@ -902,6 +903,75 @@ def test_record_status_sample_writes_one_minute_row_per_system():
     ok_db, no_reason = minutes["database"]
     assert ok_db == 1
     assert no_reason is None
+
+
+def test_one_sampler_records_each_minute_via_the_claim_row():
+    # The platform Cron Trigger and the ForkMeshCronRunner alarm both call
+    # record_status_sample every minute. The claim row must let exactly one
+    # of them record the minute — the daily/hourly rollups are checks-counter
+    # increments, so a second recording would inflate the hour's coverage.
+    extra, inserted, hourly, minutely = _sample_env(_Clock.value, [])
+    claims = {}
+    base_d1_run = extra["d1_run"]
+    base_d1_first = extra["d1_first"]
+
+    async def d1_run(env, sql, *args):
+        if sql.startswith("INSERT INTO system_status_sample_claim"):
+            claims.setdefault(args[0], args[1])
+            return
+        await base_d1_run(env, sql, *args)
+
+    async def d1_first(env, sql, *args):
+        if "system_status_sample_claim" in sql:
+            return {"claim": claims.get(args[0])}
+        return await base_d1_first(env, sql, *args)
+
+    counter = [0]
+
+    class _Uint8Array:
+        @staticmethod
+        def new(length):
+            return length
+
+    class _Crypto:
+        @staticmethod
+        def getRandomValues(length):
+            counter[0] += 1
+            return [(counter[0] + i) % 256 for i in range(length)]
+
+    extra.update({
+        "d1_run": d1_run, "d1_first": d1_first,
+        "js_crypto": _Crypto, "Uint8Array": _Uint8Array,
+    })
+    g = _load("record_status_sample", extra_globals=extra)
+    asyncio.run(g["record_status_sample"](object()))
+    recorded = len(minutely)
+    assert recorded > 0
+
+    # A second caller inside the same minute loses the read-back token check
+    # and must skip the whole sample (no minute rows, no counter increments).
+    asyncio.run(g["record_status_sample"](object()))
+    assert len(minutely) == recorded
+    assert len(inserted) == recorded
+    assert len(hourly) == recorded
+
+
+def test_claim_infrastructure_failure_fails_open_and_still_samples():
+    # A broken claim table must never blank the public sample — worst case a
+    # duplicated minute overwrites cleanly and costs one extra check count,
+    # while a skipped minute would paint fake downtime.
+    extra, _inserted, _hourly, minutely = _sample_env(_Clock.value, [])
+    base_d1_run = extra["d1_run"]
+
+    async def d1_run(env, sql, *args):
+        if sql.startswith("INSERT INTO system_status_sample_claim"):
+            raise RuntimeError("no such table: system_status_sample_claim")
+        await base_d1_run(env, sql, *args)
+
+    extra["d1_run"] = d1_run
+    g = _load("record_status_sample", extra_globals=extra)
+    asyncio.run(g["record_status_sample"](object()))
+    assert len(minutely) > 0
 
 
 def test_minute_strip_is_sixty_buckets_oldest_to_newest():

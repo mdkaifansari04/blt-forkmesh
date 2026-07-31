@@ -662,7 +662,10 @@ QString MainWindow::backupRoot() const
 
 bool MainWindow::autoBackupEnabled() const
 {
-    return QSettings().value(kAutoBackupEnabledSetting, true).toBool();
+    return QSettings()
+        .value(kAutoBackupEnabledSetting,
+               forkmesh::autoBackupDefault(m_headless))
+        .toBool();
 }
 
 int MainWindow::backupKeepCount() const
