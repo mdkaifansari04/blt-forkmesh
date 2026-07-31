@@ -1286,6 +1286,12 @@ int main(int argc, char *argv[])
     check(prFixMenuFound,
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code after repository navigation"));
+    // The Agents tab is built when it's first opened, and a repo no longer opens
+    // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
+    // before reading its list back. This also proves that route works for a repo
+    // with no sessions yet.
+    window.testOpenAgentsOverview();
+    QApplication::processEvents();
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));

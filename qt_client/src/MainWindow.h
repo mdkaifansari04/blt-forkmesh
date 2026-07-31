@@ -627,6 +627,9 @@ public:
     {
         m_agentSessions.append(session);
     }
+    // Take the nav strip's route to the Agents tab, so a test can read that
+    // lazily-built list back the way a user reaches it (adhoc #119).
+    void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
