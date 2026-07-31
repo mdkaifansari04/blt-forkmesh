@@ -14055,16 +14055,21 @@ async def repo_mirrors_handler(env, request, owner, repo):
     # shows the human owner without each publisher having to know it.
     for mirror in payload.get("mirrors", []):
         node_name = str(mirror.get("node") or "").strip().lower()
-        counted = serve_counts.get(node_name)
-        if counted:
-            legacy_clones = mirror.get("clonesServed")
-            legacy_website = mirror.get("websiteServed")
-            mirror["clonesServed"] = (
-                legacy_clones if isinstance(legacy_clones, int)
-                and legacy_clones > 0 else 0) + counted[0]
-            mirror["websiteServed"] = (
-                legacy_website if isinstance(legacy_website, int)
-                and legacy_website > 0 else 0) + counted[1]
+        # The router counts for every node it routes to, so each served node
+        # gets a concrete figure: counted-so-far (zero included) plus whatever
+        # positive legacy tally the node still publishes. Keeping the record's
+        # -1 "never advertised" sentinel when no counter row existed yet left
+        # nodes that predate the counters — the SSH-fed headless mirrors — as a
+        # permanent em-dash even though the router was already counting them.
+        counted = serve_counts.get(node_name, (0, 0))
+        legacy_clones = mirror.get("clonesServed")
+        legacy_website = mirror.get("websiteServed")
+        mirror["clonesServed"] = (
+            legacy_clones if isinstance(legacy_clones, int)
+            and legacy_clones > 0 else 0) + counted[0]
+        mirror["websiteServed"] = (
+            legacy_website if isinstance(legacy_website, int)
+            and legacy_website > 0 else 0) + counted[1]
         endpoint = endpoint_by_node.get(node_name) or {}
         try:
             operations = json.loads(
