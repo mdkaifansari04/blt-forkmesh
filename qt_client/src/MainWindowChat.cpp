@@ -1391,10 +1391,9 @@ QWidget *MainWindow::buildNetworkLogDock()
                 Qt::QueuedConnection);
         });
 
-    // The live log and Background queue form one left-hand region. A definite
-    // divider comes after both, so Background can never drift into the prompt
-    // half. Each compact panel has the same rounded green border language as the
-    // prompt.
+    // The live log and Background queue form one left-hand region, butted
+    // together and ending where the prompt half begins. Each compact panel has
+    // the same rounded green border language as the prompt.
     auto *logPanel = new QFrame;
     logPanel->setObjectName(QStringLiteral("footerLogPanel"));
     auto *logPanelLayout = new QVBoxLayout(logPanel);
@@ -1413,21 +1412,21 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
-    leftRegionLayout->setSpacing(8);
+    // No gap between the log and the Background panel (adhoc #84): they are one
+    // region, and the strip of empty footer between their two borders only read
+    // as a seam.
+    leftRegionLayout->setSpacing(0);
     leftRegionLayout->addWidget(logPanel, 1);
     leftRegionLayout->addWidget(m_backgroundQueue, 0);
 
-    auto *footerDivider = new QFrame;
-    footerDivider->setObjectName(QStringLiteral("footerDivider"));
-    footerDivider->setFrameShape(QFrame::VLine);
-    footerDivider->setFixedWidth(1);
-
-    // Horizontal split: bordered log + Background, divider, then prompt.
+    // Horizontal split: bordered log + Background, then prompt. The hairline
+    // rule that used to sit between the two halves is gone (adhoc #84): every
+    // panel in the row already carries its own border, so the extra line was one
+    // divider too many.
     auto *dockRow = new QHBoxLayout(dock);
     dockRow->setContentsMargins(8, 8, 8, 8);
     dockRow->setSpacing(8);
     dockRow->addWidget(leftRegion, 1);
-    dockRow->addWidget(footerDivider, 0);
     dockRow->addWidget(promptWrapper, 1);
 
     // Pin the footer to just the compact prompt's height (adhoc #107): the dock

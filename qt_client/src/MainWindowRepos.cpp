@@ -4861,6 +4861,27 @@ void MainWindow::autoSyncMirrors()
     reattestStalePins();
 }
 
+// True when the bare mirror already contains `commit`. Presence is effectively
+// monotonic for advertised branch tips (a fetched commit stays reachable for
+// the life of the session), so positive answers are memoized: the roster
+// reconcile below re-asked git about the same converged tip on every peer
+// hello — 100+ foreground `git cat-file -e` spawns per session on the GUI
+// thread (adhoc #82). Negative answers are never cached; the next probe after
+// a fetch flips to (memoized) present.
+bool MainWindow::mirrorHasCommit(const QString &mirrorPath, const QString &commit)
+{
+    const QString key = mirrorPath + QLatin1Char('\x1f') + commit;
+    if (m_mirrorCommitsPresent.contains(key))
+        return true;
+    if (!runGitCapture(mirrorPath,
+                       {QStringLiteral("cat-file"), QStringLiteral("-e"),
+                        commit + QStringLiteral("^{commit}")},
+                       nullptr, nullptr))
+        return false;
+    m_mirrorCommitsPresent.insert(key);
+    return true;
+}
+
 void MainWindow::syncMirrorsBehindRoster()
 {
     // A peer just (re-)advertised its mirror set via hello. For every repo we
@@ -4903,10 +4924,7 @@ void MainWindow::syncMirrorsBehindRoster()
                     continue;
                 // A peer advertises a commit our mirror lacks → we are behind.
                 if (!m.commit.isEmpty() &&
-                    !runGitCapture(repo.mirrorPath,
-                                   {QStringLiteral("cat-file"), QStringLiteral("-e"),
-                                    m.commit + QStringLiteral("^{commit}")},
-                                   nullptr, nullptr))
+                    !mirrorHasCommit(repo.mirrorPath, m.commit))
                     behind = true;
                 if (m.artifactCount > localArtifactCount)
                     artifactsBehind = true;
@@ -5007,10 +5025,7 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     const QString target = commit.trimmed();
     const RepositoryRecord &matched = m_repositories.at(matchIndex);
     if (!target.isEmpty() && !matched.mirrorPath.trimmed().isEmpty() &&
-        runGitCapture(matched.mirrorPath,
-                      {QStringLiteral("cat-file"), QStringLiteral("-e"),
-                       target + QStringLiteral("^{commit}")},
-                      nullptr, nullptr)) {
+        mirrorHasCommit(matched.mirrorPath, target)) {
         if (m_backend)
             m_backend->notifyMirrorSynced(ownerName, target);
         return;
