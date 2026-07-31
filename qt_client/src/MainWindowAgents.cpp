@@ -17,11 +17,12 @@ using namespace forkmesh::ui;
 
 QString MainWindow::agentProviderName(const QString &provider) const
 {
-    // "Claude Code" runs the real `claude` CLI; "Codex" runs the local `codex`
-    // CLI; legacy "claude" sessions map to Claude API and legacy "openai"
-    // sessions keep their old OpenAI API label.
+    // "CC" is Claude Code — the real `claude` CLI — abbreviated (adhoc #38) so
+    // the provider fits the composer row and the agents list's narrow columns.
+    // "Codex" runs the local `codex` CLI; legacy "claude" sessions map to Claude
+    // API and legacy "openai" sessions keep their old OpenAI API label.
     if (provider == QLatin1String("claude-code"))
-        return QStringLiteral("Claude Code");
+        return QStringLiteral("CC");
     if (agentIsCodexProvider(provider))
         return QStringLiteral("Codex");
     if (provider.startsWith(QLatin1String("claude")))
@@ -380,6 +381,11 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // no icon.
     if (s.merged)
         cell->setIcon(themedOcticon("git-merge", QColor("#a371f7"), 14));
+    // Genie runs still working (adhoc #38): a violet sparkle rather than the
+    // shared spinner/clock, so a run off the website's shared task list is
+    // recognisable in the list. animateRunningAgentIcons() spins this one too.
+    else if (s.genieInFlight())
+        cell->setIcon(themedOcticon("sparkle", QColor(Theme::kGenie), 14));
     else if (s.status == AgentStatus::Running)
         cell->setIcon(themedOcticon("sync", QColor(Theme::kRunning), 14));
     else if (s.status == AgentStatus::Success)
@@ -406,6 +412,9 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // With the Status column gone the glyph is the only thing showing the run
     // state, so the tooltip has to name it outright.
     QStringList tip{agentStatusLabel(s)};
+    if (s.genie)
+        tip << QStringLiteral("Genie \xE2\x80\x94 working the organization's "
+                              "shared task list from the website's remote MCP");
     if (!s.merged && s.status == AgentStatus::Queued)
         tip << QStringLiteral("Queued \xE2\x80\x94 starts when one of the %1 running "
                               "agent slots frees up (Settings \xE2\x86\x92 Agents)")
@@ -5163,7 +5172,7 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
                       .value(kAgentModeSetting,
                              QSettings().value(kClaudeAutoModeSetting, true).toBool()
                                  ? kClaudeAutoModeLabel
-                                 : QStringLiteral("Ask before edits"))
+                                 : kAgentAskModeLabel)
                       .toString()
                 : session->mode;
         headers << QStringLiteral("Mode");
@@ -6031,7 +6040,7 @@ void MainWindow::updateIssueLooperButton()
 int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
                                        const QString &provider, bool createPr,
                                        const QString &model,
-                                       const QString &titleOverride)
+                                       const QString &titleOverride, bool genie)
 {
     if (!m_agentStore || task.isEmpty())
         return 0;
@@ -6062,6 +6071,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     session.orgTask = !m_quickAddTask || m_quickAddTask->isChecked();
     session.startedByBot = agentBotLabel(provider);
     session.strength = composerAgentStrength();
+    // Genie (adhoc #38): stamped at launch like YOLO and Task, so a resumed run
+    // still reads as a genie even though the button that started it is long
+    // since forgotten.
+    session.genie = genie;
     session.model = model.trimmed(); // empty leaves the provider's own default
     if ((provider == QLatin1String("claude-code") || agentIsCodexProvider(provider)) &&
         m_quickAddModeSelector)
@@ -6099,6 +6112,11 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         session,
         QStringLiteral("==> Started from a prompt (%1).\n")
             .arg(agentProviderName(provider)));
+    if (genie)
+        m_agentStore->appendLog(
+            session,
+            QStringLiteral("==> Genie: long-running run against the website's "
+                           "remote MCP task list.\n"));
     openOrgTaskForSession(session); // adhoc #18: mirror the run as an org task
 
     // This path launches directly instead of going through processAgentQueue, so
@@ -7629,7 +7647,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
             const QString mode =
                 sessionMode.isEmpty()
                     ? (autoMode ? kClaudeAutoModeLabel
-                                : QStringLiteral("Ask before edits"))
+                                : kAgentAskModeLabel)
                     : sessionMode;
             const QString effort =
                 QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
@@ -8895,8 +8913,12 @@ void MainWindow::animateRunningAgentIcons()
         double &angle = m_agentRowSpinAngles[s->id];
         angle = std::fmod(angle + agentSpinStepDegrees(*s, sessionTokenTotal(*s)),
                           360.0);
+        // A genie turns its own violet sparkle rather than the shared sync
+        // arrows (adhoc #38), so its glyph survives the animation instead of
+        // being overwritten frame by frame.
         idItem->setIcon(QIcon(rotatedTintedOcticonPixmap(
-            "sync", QColor(Theme::kRunning), 14, angle)));
+            s->genie ? "sparkle" : "sync",
+            QColor(s->genie ? Theme::kGenie : Theme::kRunning), 14, angle)));
         // Tick the detail header's run stats (elapsed time, and the live tok/s
         // figure whose run duration grows against the wall clock — issue #245,
         // moved here from the table by adhoc #35) for the open session — meta
