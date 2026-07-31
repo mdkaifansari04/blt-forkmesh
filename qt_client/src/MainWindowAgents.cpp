@@ -10502,6 +10502,17 @@ void MainWindow::onAgentNeedsAttention(int sessionId, const QString &message)
     // doesn't just appear stuck while the CLI waits on sign-in / credits.
     switchToAgentsTab(sessionId);
     flashMessage(message, true);
+    // Never exec a modal on a headless node: nobody can dismiss it, and its
+    // nested event loop parks the slot chain that delivered the signal — the
+    // AgentRunner stdout path — for good. mirror6 sat inside this QMessageBox
+    // for a day while its catalog lease expired. The console/system log carries
+    // the same guidance for an SSH operator.
+    if (m_headless) {
+        logSystem(QStringLiteral("Agent needs attention (session %1): %2")
+                      .arg(sessionId)
+                      .arg(message));
+        return;
+    }
     QMessageBox::warning(this, QStringLiteral("Agent needs attention"), message);
 }
 

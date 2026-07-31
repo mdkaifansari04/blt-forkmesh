@@ -2439,6 +2439,19 @@ QString MainWindow::hostedCloneUrl(const QString &owner, const QString &name) co
     return url.toString();
 }
 
+bool MainWindow::serviceManagedCheckout(const QString &localPath) const
+{
+    const QString canonical =
+        QFileInfo(localPath.trimmed()).canonicalFilePath();
+    const QString serviceHome =
+        QFileInfo(QDir::homePath()).canonicalFilePath();
+    return !canonical.isEmpty() && !serviceHome.isEmpty() &&
+           (canonical == serviceHome ||
+            canonical.startsWith(serviceHome + QLatin1Char('/'))) &&
+           QFileInfo(QDir(canonical).filePath(QStringLiteral(".git")))
+               .exists();
+}
+
 void MainWindow::ensureFlagshipRepo()
 {
     if (!m_networkAccess)
@@ -2488,19 +2501,9 @@ void MainWindow::ensureFlagshipRepo()
                 // installed provider CLIs unable to claim any job. Preserve a
                 // private checkout beneath the service account's home, while
                 // still rejecting stale, external, or missing paths copied
-                // from another machine.
-                const QString localPath =
-                    QFileInfo(repo.localPath).canonicalFilePath();
-                const QString serviceHome =
-                    QFileInfo(QDir::homePath()).canonicalFilePath();
-                const bool serviceManagedCheckout =
-                    !localPath.isEmpty() && !serviceHome.isEmpty() &&
-                    (localPath == serviceHome ||
-                     localPath.startsWith(serviceHome + QLatin1Char('/'))) &&
-                    QFileInfo(QDir(localPath).filePath(
-                                  QStringLiteral(".git")))
-                        .exists();
-                if (!serviceManagedCheckout) {
+                // from another machine. (The sealing sync keeps a preserved
+                // checkout tracking the relay — see UpstreamCheckoutSync.)
+                if (!serviceManagedCheckout(repo.localPath)) {
                     repo.localPath.clear();
                     changed = true;
                 }

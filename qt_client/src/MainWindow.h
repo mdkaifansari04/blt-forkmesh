@@ -786,6 +786,11 @@ private:
     // Bootstrap a fresh client by mirroring the flagship ForkMesh repository so
     // it appears in the Repos list without first walking the full join flow.
     void ensureFlagshipRepo();
+    // Whether localPath is the installer-provisioned agent working tree: a real
+    // checkout beneath the service account's home. Such a checkout survives
+    // headless bootstrap (agents need it) and is kept tracking the relay by the
+    // sealing sync; stale, external, or missing paths never qualify.
+    bool serviceManagedCheckout(const QString &localPath) const;
     // Log in by email (+ optional TOTP). accountName is only used as a fallback
     // node name if the server response omits one. If *fatal is non-null it is set
     // true when the failure is unrecoverable (the same credentials can never

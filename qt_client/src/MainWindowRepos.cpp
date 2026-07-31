@@ -12,6 +12,7 @@
 #include "NodeEventSocket.h"
 #include "PrivateMirrorRuntime.h"
 #include "PublicMirrorRuntime.h"
+#include "UpstreamCheckoutSync.h"
 
 #include <QCryptographicHash>
 #include <QFutureWatcher>
@@ -124,6 +125,7 @@ struct PublicSyncWorkerResult {
     std::shared_ptr<PublicMirrorMaterialization> materialization;
     QString error;
     QString notice;
+    QString upstreamSummary;
     bool created = false;
     bool legacyRemoved = true;
 };
@@ -6020,15 +6022,37 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         "plaintext is limited to owner-only temporary storage.")
                   .arg(repo.owner, repo.name));
 
+    // A headless fleet node seals from its service-managed agent checkout
+    // (repositorySource prefers localPath), so that checkout must itself keep
+    // tracking the relay or the node serves its install-time snapshot forever.
+    // Resolve the upstream URL here; the fetch/fast-forward runs on the worker
+    // thread just before sealing. Owned repos and desktop working copies never
+    // qualify: their local state IS the source of truth.
+    QString upstreamUrl;
+    if (m_headless && source == repo.localPath.trimmed() &&
+        serviceManagedCheckout(repo.localPath)) {
+        const QUrl upstream(repo.cloneUrl.trimmed());
+        if (upstream.isValid() && !upstream.host().isEmpty() &&
+            upstream.host().compare(catalogApiUrl().host(),
+                                    Qt::CaseInsensitive) == 0)
+            upstreamUrl = repo.cloneUrl.trimmed();
+    }
+
     auto result = std::make_shared<PublicSyncWorkerResult>();
     const QString archiveRoot = publicArchiveRoot();
     const QString vaultPath = publicIdentityVaultPath();
     const QString owner = repo.owner;
     const QString name = repo.name;
     QThread *worker = QThread::create(
-        [result, source, archiveRoot, vaultPath,
+        [result, source, upstreamUrl, archiveRoot, vaultPath,
          mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
          legacyMirrorPath, managedMirrorRoot]() mutable {
+            if (!upstreamUrl.isEmpty()) {
+                result->upstreamSummary =
+                    forkmesh::upstream::refreshManagedCheckoutFromUpstream(
+                        source, upstreamUrl)
+                        .summary();
+            }
             if (source.isEmpty()) {
                 result->metadata = PublicMirrorRuntime::readMetadata(
                     archiveRoot, existingArchiveId, &result->error);
@@ -6103,6 +6127,9 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
          quiet] {
             worker->deleteLater();
             m_syncingRepos.remove(index);
+            if (!result->upstreamSummary.isEmpty())
+                logSystem(QStringLiteral("Mirror: %1/%2 %3")
+                              .arg(owner, name, result->upstreamSummary));
             if (index < 0 || index >= m_repositories.size() ||
                 m_repositories.at(index).owner != owner ||
                 m_repositories.at(index).name != name ||
