@@ -4394,6 +4394,28 @@ bool MainWindow::topMessageDockVisible() const
     return m_footerDock && m_footerDock->isVisible();
 }
 
+// Park a message behind the toast that is currently counting down, dropping the
+// oldest once the queue is full. Used both by a burst of errors and by the
+// stream of pings this area mirrors (adhoc #77).
+void MainWindow::queueTopMessage(const QString &text, bool error)
+{
+    const QString trimmed = text.simplified();
+    if (trimmed.isEmpty())
+        return;
+    m_topMessageQueue.append(qMakePair(trimmed, error));
+    while (m_topMessageQueue.size() > kToastQueueLimit)
+        m_topMessageQueue.removeFirst();
+    renderTopMessageCountdown(); // repaint the "(+N more)" suffix
+}
+
+// True while a toast is on screen with its countdown still running: a new
+// background event must queue instead of stomping what is being read.
+bool MainWindow::topMessageBusy() const
+{
+    return m_topMessage && m_topMessage->isVisible() && m_topMessageTimer &&
+           m_topMessageTimer->isActive();
+}
+
 // (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
 // A long message shows as an elided one-liner so it can never widen the window;
 // expanding it wraps the full text so the toast grows in place (no modal).
@@ -4491,6 +4513,9 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
     if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
         positionTopMessageOverlay();
+    // The red error-ping border hugs the window edges (adhoc #77).
+    if (m_errorBorderOverlay && m_errorBorderOverlay->isVisible())
+        m_errorBorderOverlay->setGeometry(rect());
 }
 
 void MainWindow::flashMessage(const QString &text, bool error,
@@ -4518,10 +4543,7 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // shows it with its own full countdown once the current toast finishes.
     if (error && m_topMessage->isVisible() && m_topMessageError &&
         m_topMessageTimer && m_topMessageTimer->isActive()) {
-        m_topMessageQueue.append(trimmed);
-        while (m_topMessageQueue.size() > kToastQueueLimit)
-            m_topMessageQueue.removeFirst();
-        renderTopMessageCountdown(); // repaint the "(+N more)" suffix
+        queueTopMessage(trimmed, true);
         return;
     }
     m_topMessageError = error;
@@ -4592,7 +4614,7 @@ void MainWindow::renderTopMessageCountdown()
     // Tell the user more errors are waiting behind this one, so a fading toast
     // doesn't feel like it silently dropped the rest of a quick burst.
     QString queuedSuffix;
-    if (m_topMessageError && !m_topMessageQueue.isEmpty())
+    if (!m_topMessageQueue.isEmpty())
         queuedSuffix = QStringLiteral(" <span style='color:#6e7681'>(+%1 more)</span>")
                            .arg(m_topMessageQueue.size());
     m_topMessage->setText(m_topMessageBaseHtml + suffix + queuedSuffix);
@@ -4625,7 +4647,7 @@ void MainWindow::dismissTopMessage()
         m_topMessageClose->hide();
 }
 
-// Show the next queued error (its own full countdown, per flashMessage), or
+// Show the next queued message (its own full countdown, per flashMessage), or
 // fully dismiss the toast if nothing is waiting. Called when the current
 // toast's countdown runs out or the user dismisses it early.
 void MainWindow::advanceTopMessageQueue()
@@ -4634,8 +4656,14 @@ void MainWindow::advanceTopMessageQueue()
         dismissTopMessage();
         return;
     }
-    const QString next = m_topMessageQueue.takeFirst();
-    flashMessage(next, /*error=*/true);
+    const QPair<QString, bool> next = m_topMessageQueue.takeFirst();
+    // Hide first: flashMessage would otherwise see a toast that is still
+    // visible and queue this one straight back behind itself.
+    if (m_topMessage)
+        m_topMessage->hide();
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop();
+    flashMessage(next.first, next.second);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

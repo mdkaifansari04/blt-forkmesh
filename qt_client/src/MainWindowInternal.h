@@ -3272,6 +3272,11 @@ const QString kAccountAlertListProof =
     QStringLiteral("forkmesh-account-alert-list-v1");
 const QString kAccountAlertReadProof =
     QStringLiteral("forkmesh-account-alert-read-v1");
+// Deleting one ping from that inbox signs the row's id as well, so a captured
+// delete cannot be replayed against a different notification (adhoc #77). Must
+// stay byte-identical to ACCOUNT_ALERT_DELETE_PROOF in entry.py.
+const QString kAccountAlertDeleteProof =
+    QStringLiteral("forkmesh-account-alert-delete-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
