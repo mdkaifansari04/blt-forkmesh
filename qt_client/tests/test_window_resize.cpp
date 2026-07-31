@@ -1211,6 +1211,18 @@ int main(int argc, char *argv[])
               QStringLiteral("status bar shows the open branch's commit "
                              "(date, message, author): ") +
                   commitText);
+
+        // adhoc #65: the strip only fits one elided line, so hovering it pops
+        // up the rest — full hash, author identity and the diffstat.
+        const QString tip = commitInfo ? commitInfo->toolTip() : QString();
+        check(tip.startsWith(QStringLiteral("<table")) &&
+                  tip.contains(QStringLiteral("Commit: ")) &&
+                  tip.contains(QStringLiteral("a@b.c")) &&
+                  tip.contains(QStringLiteral("Changes: ")) &&
+                  tip.contains(QStringLiteral("init")),
+              QStringLiteral("hovering the status bar commit pops up its full "
+                             "details (hash, author, changes): ") +
+                  tip);
     }
 
     // Repository detail is intentionally built on first navigation. Verify the

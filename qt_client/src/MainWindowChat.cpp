@@ -3134,6 +3134,11 @@ void MainWindow::updateFooterGitIdentity()
 // author, so the strip says where that branch actually sits (adhoc #55). Read
 // detached for the same reason the identity above is — this runs from
 // openRepoDetail, where a synchronous git call blocks the GUI thread.
+//
+// The strip only has room for one elided line, so the same read also pulls the
+// fields nobody can see there — full hash, decorations, author email, committer,
+// message body, diffstat — and hovering the label pops the lot up as a rich
+// tooltip (adhoc #65).
 void MainWindow::updateFooterCommitInfo()
 {
     if (!m_footerCommitInfo)
@@ -3146,20 +3151,24 @@ void MainWindow::updateFooterCommitInfo()
     const QString ref = currentRef();
     runGitDetached(
         dir,
-        {QStringLiteral("log"), QStringLiteral("-1"),
+        // Separators are git's own %x1f/%x1e placeholders rather than literal
+        // escapes so the body (which is last, and may contain anything) stays
+        // unambiguous. --root so the initial commit still reports a diffstat.
+        {QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--root"),
+         QStringLiteral("--shortstat"),
          QStringLiteral("--date=format:%Y-%m-%d %H:%M"),
-         QStringLiteral("--pretty=%H\x1f%h\x1f%ad\x1f%s\x1f%an\x1f%ct"), ref,
-         QStringLiteral("--")},
+         QStringLiteral("--pretty=%H%x1f%h%x1f%ad%x1f%s%x1f%an%x1f%ct%x1f%ae"
+                        "%x1f%cn%x1f%cd%x1f%D%x1f%b%x1e"),
+         ref, QStringLiteral("--")},
         [this, dir, ref](bool ok, const QByteArray &out) {
             if (!m_footerCommitInfo)
                 return;
             // Repo or branch switched (or closed) while the read was in flight.
             if (repoGitDir() != dir || currentRef() != ref)
                 return;
-            const QStringList f = QString::fromUtf8(out)
-                                      .split(QLatin1Char('\n'))
-                                      .value(0)
-                                      .split(QLatin1Char('\x1f'));
+            const QString raw = QString::fromUtf8(out);
+            const QStringList f =
+                raw.section(QLatin1Char('\x1e'), 0, 0).split(QLatin1Char('\x1f'));
             // No commits yet (fresh repo), or the ref doesn't resolve.
             if (!ok || f.size() < 5) {
                 m_footerCommitInfo->clear();
@@ -3177,11 +3186,61 @@ void MainWindow::updateFooterCommitInfo()
             m_footerCommitInfo->setText(
                 QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 %2 \xC2\xB7 %3 \xC2\xB7 %4")
                     .arg(f.at(1), date, shortSubject, author));
-            QString tip = QStringLiteral("%1\n%2\n%3 committed %4")
-                              .arg(f.at(0), subject, author, date);
-            if (!rel.isEmpty())
-                tip += QString::fromUtf8(" (%1 ago)").arg(rel);
-            m_footerCommitInfo->setToolTip(tip);
+
+            // Everything the one-line strip had to drop, laid out for hover.
+            const QString email = f.value(6).trimmed();
+            const QString committer = f.value(7).trimmed();
+            const QString commitDate = f.value(8).trimmed();
+            const QString refs = f.value(9).trimmed();
+            // Rejoin past field 10: a message body may legitimately contain the
+            // separator, and losing the tail would be worse than keeping it.
+            QString body = f.mid(10).join(QLatin1Char('\x1f')).trimmed();
+            const QString stat = raw.section(QLatin1Char('\x1e'), 1)
+                                     .trimmed()
+                                     .section(QLatin1Char('\n'), 0, 0);
+
+            const QString muted = QStringLiteral("#8b949e");
+            QStringList lines;
+            lines << QStringLiteral("<b>%1</b>").arg(subject.toHtmlEscaped());
+            if (!body.isEmpty()) {
+                // A long body is trimmed here, not scrolled: a tooltip taller
+                // than the window is worse than a truncated one.
+                if (body.size() > 800)
+                    body = body.left(800) + QString::fromUtf8("\xE2\x80\xA6");
+                lines << QStringLiteral("<span style='color:%1'>%2</span>")
+                             .arg(muted, body.toHtmlEscaped().replace(
+                                             QLatin1Char('\n'),
+                                             QStringLiteral("<br>")));
+            }
+            QStringList meta;
+            meta << QStringLiteral("Commit: %1").arg(f.at(0).toHtmlEscaped());
+            if (!refs.isEmpty())
+                meta << QStringLiteral("Refs: %1").arg(refs.toHtmlEscaped());
+            meta << QStringLiteral("Author: %1")
+                        .arg((email.isEmpty()
+                                  ? author
+                                  : QStringLiteral("%1 <%2>").arg(author, email))
+                                 .toHtmlEscaped());
+            if (!committer.isEmpty() && committer != author)
+                meta << QStringLiteral("Committer: %1").arg(committer.toHtmlEscaped());
+            meta << QStringLiteral("Authored: %1%2")
+                        .arg(date.toHtmlEscaped(),
+                             rel.isEmpty()
+                                 ? QString()
+                                 : QString::fromUtf8(" (%1 ago)").arg(rel));
+            if (!commitDate.isEmpty() && commitDate != date)
+                meta << QStringLiteral("Committed: %1").arg(commitDate.toHtmlEscaped());
+            if (!stat.isEmpty())
+                meta << QStringLiteral("Changes: %1").arg(stat.toHtmlEscaped());
+            lines << QStringLiteral("<span style='color:%1'>%2</span>")
+                         .arg(muted, meta.join(QStringLiteral("<br>")));
+
+            // A width attribute, not CSS: Qt's rich text ignores the latter, and
+            // without it the hash and body lines lay out as one endless row.
+            m_footerCommitInfo->setToolTip(
+                QStringLiteral("<table cellspacing='0' cellpadding='0'><tr>"
+                               "<td width='460'>%1</td></tr></table>")
+                    .arg(lines.join(QStringLiteral("<br><br>"))));
         });
 }
 
