@@ -13,6 +13,7 @@
 #include <QAbstractTextDocumentLayout>
 #include <QCheckBox>
 #include <QFileDialog>
+#include <QFontMetrics>
 #include <QLayout>
 #include <QFutureWatcher>
 #include <QGraphicsOpacityEffect>
@@ -20,6 +21,7 @@
 #include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QPointer>
 #include <QProcess>
 #include <QPropertyAnimation>
 #include <QScrollArea>
@@ -34,6 +36,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
+#include <memory>
 
 using namespace forkmesh::ui;
 
@@ -1101,8 +1104,7 @@ void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
     Q_UNUSED(untracked);
     if (!m_scmDiff || m_scmSuppressFileScroll)
         return; // suppressed: the selection is following the scroll, not driving it
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     if (m_scmSectionKeys.isEmpty())
         renderScmCombinedDiff();
     scrollScmDiffToFile(path, staged);
@@ -1114,8 +1116,7 @@ void MainWindow::showScmDiffAll(bool staged)
 {
     if (!m_scmDiff)
         return;
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     if (m_scmSectionKeys.isEmpty())
         renderScmCombinedDiff();
     const QString prefix = staged ? QStringLiteral("s|") : QStringLiteral("u|");
@@ -3208,7 +3209,9 @@ QWidget *MainWindow::buildSizeMapTab()
         "(.git excluded). Click a directory to zoom in, the centre to zoom "
         "back out; slices with no further subdivision are individual files. "
         "It starts on this repository's working copy — pick any other folder "
-        "on disk, or a filesystem on the right, to size that instead.");
+        "on disk, or a filesystem on the right, to size that instead. Folders "
+        "holding directories this user cannot read — \"/\" above all — ask for "
+        "the root password first, so the map covers everything.");
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
@@ -3218,7 +3221,7 @@ QWidget *MainWindow::buildSizeMapTab()
     refresh->setCursor(Qt::PointingHandCursor);
     setOcticon(refresh, "sync", 16);
     connect(refresh, &QPushButton::clicked, this,
-            [this] { refreshSizeMapTab(true); });
+            [this] { refreshSizeMapTab(true, true); });
     addRefreshSpin(refresh);
 
     auto *headingCol = new QVBoxLayout;
@@ -3275,7 +3278,7 @@ QWidget *MainWindow::buildSizeMapTab()
         "map, so only tracked and un-ignored files count toward the sizes.");
     m_sizeMapHideIgnored = hideIgnored;
     connect(hideIgnored, &QCheckBox::toggled, this,
-            [this] { refreshSizeMapTab(true); });
+            [this] { refreshSizeMapTab(true, true); });
     layout->addWidget(hideIgnored);
 
     m_sizeMapStatus = new QLabel;
@@ -3291,8 +3294,8 @@ QWidget *MainWindow::buildSizeMapTab()
     elevate->setCursor(Qt::PointingHandCursor);
     setOcticon(elevate, "lock", 16);
     elevate->setToolTip(
-        "Ask for the administrator password and measure the folders this user "
-        "cannot read.");
+        "Ask for the administrator (root) password and measure the folders this "
+        "user cannot read.");
     elevate->setVisible(false);
     m_sizeMapElevate = elevate;
     connect(elevate, &QPushButton::clicked, this,
@@ -3430,10 +3433,13 @@ void MainWindow::setSizeMapRootOverride(const QString &path)
     if (m_sizeMapRootOverride == path)
         return;
     m_sizeMapRootOverride = path;
-    refreshSizeMapTab(true);
+    // Picking a folder is a click, so this is allowed to ask for the root
+    // password when that folder needs it — clicking "/" is the whole reason the
+    // prompt moved to the front (adhoc #112).
+    refreshSizeMapTab(true, true);
 }
 
-void MainWindow::refreshSizeMapTab(bool force)
+void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
 {
     auto *chart = static_cast<RepoSunburstChart *>(m_sizeMapChart);
     if (!chart || !m_sizeMapStatus)
@@ -3477,10 +3483,48 @@ void MainWindow::refreshSizeMapTab(bool force)
         m_sizeMapHideIgnored && m_sizeMapHideIgnored->isChecked();
     DirectorySizeScanOptions options;
     options.pruned = sizeMapPrunedPaths(path);
+    // Folders this user cannot fully read — "/" above all — used to be scanned
+    // twice: once unprivileged into a map missing /root, /var/lib and the rest,
+    // then again after clicking the button. Ask for the password on the click
+    // that chose the folder instead (adhoc #112).
+    if (allowElevation && forkmesh::scanNeedsElevation(path, options.pruned)) {
+        // Off the click's own stack: where pkexec is missing the prompt is a
+        // modal dialog, and pumping the event loop from inside a filesystem
+        // card's click handler would run the deleteLater() refreshSizeMapVolumes
+        // just queued for that very card. The epoch also collapses a second
+        // click into one prompt.
+        const int pending = ++m_sizeMapScanEpoch;
+        m_sizeMapStatus->setText(
+            QStringLiteral("Asking for administrator access to size %1 …")
+                .arg(QDir::toNativeSeparators(path)));
+        QTimer::singleShot(0, this, [this, pending] {
+            if (pending == m_sizeMapScanEpoch)
+                rescanSizeMapElevated(true);
+        });
+        return;
+    }
     m_sizeMapScanning = true;
     const int epoch = ++m_sizeMapScanEpoch;
     m_sizeMapStatus->setText(
         QStringLiteral("Scanning %1 …").arg(QDir::toNativeSeparators(path)));
+    // The walk reports the folder it is in from the worker thread; the hop
+    // through invokeMethod() is what keeps the label on the GUI thread. The
+    // QPointer matters because the pool thread outlives a window closed
+    // mid-scan.
+    const QPointer<MainWindow> guard(this);
+    const forkmesh::DirectorySizeScanProgress progress =
+        [this, guard, epoch](const QString &current, qint64 bytes, int files) {
+            if (!guard)
+                return;
+            QMetaObject::invokeMethod(
+                this,
+                [this, epoch, current, bytes, files] {
+                    if (epoch != m_sizeMapScanEpoch)
+                        return; // a newer scan owns the label now
+                    showSizeMapScanProgress(current, bytes, files, false);
+                },
+                Qt::QueuedConnection);
+        };
     auto *watcher = new QFutureWatcher<DirectorySizeScanResult>(this);
     connect(watcher, &QFutureWatcher<DirectorySizeScanResult>::finished, this,
             [this, watcher, path, epoch, hideIgnored] {
@@ -3498,11 +3542,37 @@ void MainWindow::refreshSizeMapTab(bool force)
                 }
                 applySizeMapResult(path, std::move(result), hideIgnored, false);
             });
-    watcher->setFuture(QtConcurrent::run([path, options] {
+    watcher->setFuture(QtConcurrent::run([path, options, progress] {
         const forkmesh::BackgroundScope activity(
             QStringLiteral("scan"), QStringLiteral("Sizing %1").arg(path));
-        return forkmesh::scanDirectorySizes(path, options);
+        return forkmesh::scanDirectorySizes(path, options, progress);
     }));
+}
+
+// Live status line while a scan runs: the folder being walked right now, with
+// the totals counted so far (adhoc #112). The path is elided rather than
+// wrapped, so a deep tree cannot rewrap the row on every update.
+void MainWindow::showSizeMapScanProgress(const QString &current, qint64 bytes,
+                                         int files, bool elevated)
+{
+    if (!m_sizeMapStatus)
+        return;
+    const QString suffix =
+        QStringLiteral("  ·  %1 files · %2 so far")
+            .arg(QLocale().toString(files),
+                 QLocale().formattedDataSize(bytes));
+    const QString prefix = elevated
+                               ? QStringLiteral("Scanning as administrator: ")
+                               : QStringLiteral("Scanning: ");
+    const QFontMetrics metrics(m_sizeMapStatus->font());
+    const int budget = qMax(220, m_sizeMapStatus->width() -
+                                    metrics.horizontalAdvance(prefix + suffix) -
+                                    16);
+    m_sizeMapStatus->setText(
+        prefix +
+        metrics.elidedText(QDir::toNativeSeparators(current), Qt::ElideMiddle,
+                           budget) +
+        suffix);
 }
 
 QSet<QString> MainWindow::sizeMapPrunedPaths(const QString &path) const
@@ -3588,7 +3658,7 @@ void MainWindow::applySizeMapResult(const QString &path,
     }
 }
 
-void MainWindow::rescanSizeMapElevated()
+void MainWindow::rescanSizeMapElevated(bool upfront)
 {
     if (m_sizeMapScanning || !m_sizeMapStatus)
         return;
@@ -3610,6 +3680,8 @@ void MainWindow::rescanSizeMapElevated()
         m_sizeMapStatus->setText(
             QStringLiteral("Could not prepare the elevated scan (no writable "
                            "temporary directory)."));
+        if (upfront)
+            refreshSizeMapTab(true); // still size what this user can read
         return;
     }
     request->write(forkmesh::encodeScanRequest(path, options));
@@ -3630,12 +3702,19 @@ void MainWindow::rescanSizeMapElevated()
         bool accepted = false;
         const QString password = QInputDialog::getText(
             this, QStringLiteral("Administrator password"),
-            QStringLiteral(
-                "Enter the password for sudo to measure the folders this user "
-                "cannot read:"),
+            QStringLiteral("Enter the root password for sudo, so %1 can be "
+                           "measured in full — including the folders this user "
+                           "cannot read:")
+                .arg(QDir::toNativeSeparators(path)),
             QLineEdit::Password, QString(), &accepted);
         if (!accepted) {
             delete request;
+            // Dismissed before anything was drawn: size what this user can read
+            // rather than leaving the tab empty. That scan's own status ends in
+            // "scan as administrator to include them", so the decline is not
+            // silent.
+            if (upfront)
+                refreshSizeMapTab(true);
             return;
         }
         program = QStringLiteral("sudo");
@@ -3657,9 +3736,36 @@ void MainWindow::rescanSizeMapElevated()
     request->setParent(process); // the temp file dies with the process
     process->setProgram(program);
     process->setArguments(arguments);
+    // Root's walk reports itself on stderr, one line per update, so the same
+    // live folder name appears whether the scan runs here or in the helper
+    // (adhoc #112). Whole lines only: a read can land mid-line.
+    auto pending = std::make_shared<QByteArray>();
+    connect(process, &QProcess::readyReadStandardError, this,
+            [this, process, pending, epoch] {
+                pending->append(process->readAllStandardError());
+                for (int cut = pending->indexOf('\n'); cut >= 0;
+                     cut = pending->indexOf('\n')) {
+                    const QByteArray line = pending->left(cut);
+                    pending->remove(0, cut + 1);
+                    QString current;
+                    qint64 bytes = 0;
+                    int files = 0;
+                    // Anything else on stderr is pkexec's or sudo's own chatter.
+                    if (!forkmesh::decodeScanProgress(line, &current, &bytes,
+                                                      &files))
+                        continue;
+                    if (epoch != m_sizeMapScanEpoch)
+                        continue;
+                    showSizeMapScanProgress(current, bytes, files, true);
+                }
+                // A helper that never emits a newline must not grow the buffer
+                // for the length of a scan of "/".
+                if (pending->size() > 64 * 1024)
+                    pending->clear();
+            });
     connect(process, &QProcess::finished, this,
-            [this, process, path, epoch, hideIgnored](int exitCode,
-                                                      QProcess::ExitStatus) {
+            [this, process, path, epoch, hideIgnored, upfront](
+                int exitCode, QProcess::ExitStatus) {
                 process->deleteLater();
                 m_sizeMapScanning = false;
                 if (epoch != m_sizeMapScanEpoch)
@@ -3668,6 +3774,14 @@ void MainWindow::rescanSizeMapElevated()
                 DirectorySizeScanResult result;
                 if (exitCode != 0 ||
                     !forkmesh::decodeScanResult(payload, &result)) {
+                    // Nothing has been drawn yet when the prompt came first, so
+                    // fall back to the unprivileged walk rather than leaving an
+                    // empty tab behind a dismissed password box. Its status
+                    // offers the rescan again.
+                    if (upfront) {
+                        refreshSizeMapTab(true);
+                        return;
+                    }
                     // 126/127 is pkexec's "dismissed / not authorised".
                     m_sizeMapStatus->setText(
                         exitCode == 126 || exitCode == 127
@@ -3690,13 +3804,19 @@ void MainWindow::rescanSizeMapElevated()
     // A missing pkexec/sudo never emits finished(), so the scanning flag would
     // stay set and block every later rescan.
     connect(process, &QProcess::errorOccurred, this,
-            [this, process, epoch](QProcess::ProcessError error) {
+            [this, process, epoch, upfront](QProcess::ProcessError error) {
                 if (error != QProcess::FailedToStart)
                     return;
                 process->deleteLater();
                 m_sizeMapScanning = false;
                 if (epoch != m_sizeMapScanEpoch || !m_sizeMapStatus)
                     return;
+                // Same fallback as a declined prompt: a map of the readable
+                // folders beats an empty tab.
+                if (upfront) {
+                    refreshSizeMapTab(true);
+                    return;
+                }
                 m_sizeMapStatus->setText(QStringLiteral(
                     "No way to ask for administrator access on this machine "
                     "(neither pkexec nor sudo could be started)."));

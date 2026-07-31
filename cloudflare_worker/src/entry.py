@@ -18573,6 +18573,7 @@ async def _account_heartbeat(env, request):
     else:
         notification_preferences = dict(
             prefs_rec.get("notification_preferences") or {})
+    is_admin = await _is_admin(env, name)
     response = {"ok": True, "online": True,
                 "hasPayoutAddress": bool(rec.get("solana")),
                 "payoutCustody": "external-self-custodial-public-address",
@@ -18581,13 +18582,25 @@ async def _account_heartbeat(env, request):
                     "public balance only. ForkMesh holds no wallet key or user "
                     "funds, and balance never gates reward eligibility."
                 ),
-                "isAdmin": await _is_admin(env, name),
+                "isAdmin": is_admin,
                 "emailNotifications": prefs_rec.get("email_notifications") is not False,
                 "notificationPreferences": notification_preferences}
     if balance_lamports is not None:
         response["balanceLamports"] = balance_lamports
         response["balanceFundsState"] = "user-owned-external-wallet"
         response["balanceIncreased"] = balance_increased
+    # A freshly launched federated instance's join request rides back on the
+    # admin's own signed heartbeat (adhoc #97), the same rail as the claim /
+    # ownership payloads below: the desktop shows a red dot over the relay
+    # favicon plus an Approve button. Count only — relay details are fetched on
+    # demand through the signed admin-relays endpoint when the admin clicks.
+    if is_admin and _is_main_relay(env):
+        try:
+            pending_row = await d1_first(
+                env, "SELECT COUNT(*) AS n FROM relays WHERE status='pending'")
+            response["pendingRelays"] = int((pending_row or {}).get("n") or 0)
+        except Exception:
+            pass
     # A pending website claim (adhoc #53) rides back on the signed heartbeat:
     # only the node's key holder ever sees the confirmation code, and the node
     # shows it on its own screen for the claiming user to type into the site.
@@ -25231,6 +25244,44 @@ async def _federation_register(env, request):
     return json_response({"ok": True, "status": "pending"})
 
 
+# Launch-time join ping (adhoc #97): one announce per isolate per minute is
+# plenty — the endpoint only re-sends this relay's own idempotent registration.
+_FEDERATION_ANNOUNCE_MIN_MS = 60 * 1000
+_federation_announce_at = [0]
+
+
+async def _federation_announce(env, request):
+    """Register with the main relay now instead of on the next staggered cron.
+
+    A freshly deployed federated instance is POSTed here (on its own origin)
+    by the launch bootstrap the moment it passes its health check, so its
+    request to join shows up on the main relay — and as the red dot in the
+    operator's desktop — immediately. Unauthenticated by design: the request
+    body is ignored and the only effect is re-sending this relay's own signed
+    registration upstream (an idempotent upsert there), throttled per isolate.
+    """
+    del request
+    if _is_main_relay(env):
+        return json_response({"error": "not_federated_relay"}, status=404)
+    now = int(Date.now())
+    if now - _federation_announce_at[0] < _FEDERATION_ANNOUNCE_MIN_MS:
+        return json_response({"ok": True, "status": "throttled"},
+                             cache_control="no-store")
+    _federation_announce_at[0] = now
+    label = clean_string(getattr(env, "RELAY_LABEL", "") or "", 80)
+    base = clean_string(getattr(env, "PUBLIC_BASE_URL", "") or "", 200)
+    reply = await _call_main_relay(
+        env, "/api/federation/register", {"label": label, "baseUrl": base})
+    if not reply or not reply.get("ok"):
+        return json_response(
+            {"error": "main_relay_unreachable"}, status=502,
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
+    return json_response(
+        {"ok": True,
+         "status": clean_string(reply.get("status", "") or "pending", 20)},
+        cache_control="no-store")
+
+
 async def _federation_donation_address(env, request):
     del env, request
     return json_response({
@@ -25537,6 +25588,8 @@ async def federation_handler(env, request):
             "/api/relay-mesh/", "/api/federation/", 1))
     if url.path == "/api/federation/register":
         return await _federation_register(env, request)
+    if url.path == "/api/federation/announce":
+        return await _federation_announce(env, request)
     if url.path == "/api/federation/donation-address":
         return await _federation_donation_address(env, request)
     if url.path == "/api/federation/donation-status":
@@ -32277,29 +32330,36 @@ async def _claim_issue_inbox(
     return claimant_bi
 
 
-async def _materialize_issue_inbox_on_mirror(
+async def _drain_issue_inbox_on_mirror(
         env, request, repo_bi, claimant_bi, mirror_node):
-    """Mark exact rows visible on one mirror without consuming owner delivery."""
+    """Drain the exact leased rows an online mirror has merged into the repo.
+
+    A mirror merge is authoritative: the submission is committed to the served
+    branch and propagates across the mirror mesh (and back into the source's
+    working copy when that node returns), so the row is deleted outright — the
+    queue drains whenever ANY approved mirror is online, with no pending copy
+    retained for the source-of-truth node. The claim predicate keeps competing
+    mirrors converging on one winner per row.
+    """
     ids = _drain_ids_from_request(request)
     if not ids or not claimant_bi or not mirror_node:
         return 0
     marks = ",".join("?" for _ in ids)
-    mirror_bi = await blind_index(env, "issue-mirror:" + mirror_node)
     row = await d1_first(
         env,
         "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
-        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0" % marks,
+        "AND id IN (%s) AND claimed_by_bi=?" % marks,
         repo_bi, *ids, claimant_bi,
     )
     count = int((row or {}).get("c") or 0)
     if count:
         await d1_run(
             env,
-            "UPDATE issue_inbox SET mirrored_by_bi=?,mirrored_at=?,"
-            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
-            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0" % marks,
-            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+            "DELETE FROM issue_inbox WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=?" % marks,
+            repo_bi, *ids, claimant_bi,
         )
+        await _log_inbox_drain(env, repo_bi, "issues", count)
     return count
 
 
@@ -32322,35 +32382,98 @@ async def _claim_collaboration_inbox_on_mirror(
     return claimant_bi
 
 
-async def _materialize_collaboration_inbox_on_mirror(
+async def _drain_collaboration_inbox_on_mirror(
         env, request, table, repo_bi, claimant_bi, mirror_node):
-    """Mark exact PR/discussion rows browsable without consuming source sync."""
+    """Drain exact leased PR/discussion rows once a mirror commits them.
+
+    Same semantics as _drain_issue_inbox_on_mirror: the mirror's merge is the
+    real merge, so the acknowledged rows leave the queue instead of waiting as
+    "pending" for the source-of-truth node to come online.
+    """
     if table not in ("pull_inbox", "discussion_inbox"):
         return 0
     ids = _drain_ids_from_request(request)
     if not ids or not claimant_bi or not mirror_node:
         return 0
     marks = ",".join("?" for _ in ids)
-    mirror_bi = await blind_index(
-        env, "collaboration-mirror:" + table + ":" + mirror_node)
     row = await d1_first(
         env,
         "SELECT COUNT(*) AS c FROM %s WHERE repo_bi=? "
-        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
-        % (table, marks),
+        "AND id IN (%s) AND claimed_by_bi=?" % (table, marks),
         repo_bi, *ids, claimant_bi,
     )
     count = int((row or {}).get("c") or 0)
     if count:
         await d1_run(
             env,
-            "UPDATE %s SET mirrored_by_bi=?,mirrored_at=?,"
-            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
-            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
-            % (table, marks),
-            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+            "DELETE FROM %s WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=?" % (table, marks),
+            repo_bi, *ids, claimant_bi,
         )
+        await _log_inbox_drain(
+            env, repo_bi,
+            "pulls" if table == "pull_inbox" else "discussions", count)
     return count
+
+
+async def _record_mirror_attested_state(env, request, owner, repo, mirror_node):
+    """Admit the refs state an intake mirror serves after merging submissions.
+
+    A mirror that just committed web submissions onto the branch it serves now
+    advertises a refs fingerprint the source never attested, and
+    clone_state_pins would drop it (and every peer that converges on it) from
+    the read fan-out while the source is offline. A drain ack therefore
+    carries the mirror's fresh self-attestation — state/stateTs/stateSig over
+    the same forkmesh-repostate-v1 canonical it signs on its own catalog
+    publishes — and after the signature and freshness checks the digest joins
+    the repo's accepted pin history exactly like a source publish would. Only
+    callers that already passed _authorized_mirror_issue_signing_key reach
+    this, so the grant stays bounded to the repo's approved, healthy mirror
+    group. Best-effort: a malformed attestation never fails the drain that
+    carried it.
+    """
+    try:
+        params = parse_qs(urlparse(request.url).query)
+        digest = clean_string(
+            params.get("state", [""])[0], 64).strip().lower()
+        ts = params.get("stateTs", [""])[0]
+        sig = params.get("stateSig", [""])[0]
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or not ts or not sig:
+            return False
+        try:
+            if abs(int(Date.now()) - int(ts)) > LOGIN_MAX_SKEW_MS:
+                return False
+        except (TypeError, ValueError):
+            return False
+        canonical = (
+            "forkmesh-repostate-v1\n" + mirror_node + "\n" + repo + "\n"
+            + digest + "\n" + ts
+        ).encode()
+        verified = False
+        for public_key in await _owner_signing_pubkeys(env, mirror_node):
+            if await ed25519_verify(public_key, sig, canonical):
+                verified = True
+                break
+        if not verified:
+            return False
+        key_bi = await blind_index(env, owner + "/" + repo)
+        await d1_run(
+            env,
+            "INSERT INTO repo_state_history (key_bi, state_hash, ts) "
+            "VALUES (?,?,?) ON CONFLICT(key_bi, state_hash) "
+            "DO UPDATE SET ts=excluded.ts",
+            key_bi, digest, int(Date.now()),
+        )
+        await d1_run(
+            env,
+            "DELETE FROM repo_state_history WHERE key_bi=? "
+            "AND state_hash NOT IN (SELECT state_hash FROM "
+            "repo_state_history WHERE key_bi=? ORDER BY ts DESC LIMIT ?)",
+            key_bi, key_bi, STATE_PIN_HISTORY,
+        )
+        return True
+    except Exception:
+        return False
 
 
 async def _drain_issue_inbox(env, request, repo_bi, claimant_bi=""):
@@ -32606,13 +32729,16 @@ async def issues_handler(env, request, owner, repo):
         claimant_bi = await blind_index(
             env, "issue-inbox-claim:" + signing_key)
         if mirror_intake:
-            materialized = await _materialize_issue_inbox_on_mirror(
+            drained = await _drain_issue_inbox_on_mirror(
                 env, request, repo_bi, claimant_bi, mirror_node)
+            if drained:
+                await _record_mirror_attested_state(
+                    env, request, owner, repo, mirror_node)
             return json_response({
                 "ok": True,
-                "drained": 0,
-                "materialized": materialized,
-                "retainedForSource": True,
+                "drained": drained,
+                "materialized": drained,
+                "retainedForSource": False,
             })
         materialized = await _confirm_fediverse_issue_materializations(
             env, request)
@@ -32816,14 +32942,17 @@ async def pulls_handler(env, request, owner, repo):
             ) if signing_key else ""
             if not claimant_bi:
                 return json_response({"error": "unauthorized"}, status=401)
-            materialized = await _materialize_collaboration_inbox_on_mirror(
+            drained = await _drain_collaboration_inbox_on_mirror(
                 env, request, "pull_inbox", repo_bi, claimant_bi,
                 mirror_node)
+            if drained:
+                await _record_mirror_attested_state(
+                    env, request, owner, repo, mirror_node)
             return json_response({
                 "ok": True,
-                "drained": 0,
-                "materialized": materialized,
-                "retainedForSource": True,
+                "drained": drained,
+                "materialized": drained,
+                "retainedForSource": False,
             })
         if not await _authorize_repo_inbox_owner(
                 env, request, owner, repo):
@@ -32949,14 +33078,17 @@ async def discussions_handler(env, request, owner, repo):
             ) if signing_key else ""
             if not claimant_bi:
                 return json_response({"error": "unauthorized"}, status=401)
-            materialized = await _materialize_collaboration_inbox_on_mirror(
+            drained = await _drain_collaboration_inbox_on_mirror(
                 env, request, "discussion_inbox", repo_bi, claimant_bi,
                 mirror_node)
+            if drained:
+                await _record_mirror_attested_state(
+                    env, request, owner, repo, mirror_node)
             return json_response({
                 "ok": True,
-                "drained": 0,
-                "materialized": materialized,
-                "retainedForSource": True,
+                "drained": drained,
+                "materialized": drained,
+                "retainedForSource": False,
             })
         if not await _authorize_repo_inbox_signing_key(
                 env, request, owner, repo):

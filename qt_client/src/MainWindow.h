@@ -650,6 +650,14 @@ public:
     // lands on the range review pane in the Git view (adhoc #107).
     int testCommitWorkspacePage() const;
     QString testBranchDiffBranch() const { return m_branchDiffBranch; }
+    // Which page each half of the Git view's left column shows: 0 = the working
+    // tree's changes / commit history, 1 = the reviewed range's changed files /
+    // commits (adhoc #110). Returns -1 when that half doesn't exist yet.
+    int testGitFilesSlotPage() const;
+    int testGitHistorySlotPage() const;
+    // Click the range pane's close button, so a test can prove the left column
+    // goes back to the working tree when the review is dismissed (adhoc #110).
+    void testCloseBranchRange();
     // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
     // session the app navigated to (m_selectedAgentSessionId), so a test can prove
     // clicking the cell jumps to that branch's agent (adhoc #258).
@@ -876,6 +884,16 @@ private:
     bool isOfficeConversation(const QString &conversation) const;
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
+    // Pending federated-instance join requests (adhoc #97): a freshly launched
+    // instance pings the main relay asking to join; for admins the pending
+    // count rides the signed heartbeat reply, a red dot over the top-left
+    // relay favicon flags it, and the Approve button beside it opens the link
+    // dialog. Approving marks the relay approved upstream, which adds it to
+    // /api/world/instances — the World then runs its firework show for the
+    // newly joined instance.
+    void setPendingRelayJoins(int count);
+    void showRelayJoinApprovalDialog();
+    bool adminRelayApprove(const QString &pubkey, const QString &action);
     void verifyWallet();
     QUrl accountsApiUrl(const QString &leaf) const;
     QJsonObject postAccountSync(const QString &leaf, const QJsonObject &body,
@@ -1730,7 +1748,11 @@ private:
     // sizes. refreshSizeMapTab scans on a worker thread; force=false is the
     // lazy tab-click path that reuses the last scan of the same repo.
     QWidget *buildSizeMapTab();
-    void refreshSizeMapTab(bool force);
+    // allowElevation marks the refreshes a click asked for (Rescan, a new
+    // folder, a filesystem card): those may go straight to the password prompt
+    // when the folder needs root, rather than drawing a half-empty map first
+    // (adhoc #112). Automatic refreshes never prompt.
+    void refreshSizeMapTab(bool force, bool allowElevation = false);
     // Folder the size map scans: m_sizeMapRootOverride when the user picked one
     // with "Choose folder…", otherwise this repository's working copy.
     QString sizeMapRoot() const;
@@ -1748,7 +1770,14 @@ private:
     // were skipped (adhoc #76). pkexec — or a password prompt feeding
     // `sudo -S` where pkexec is missing — runs this same binary in its
     // --size-map-scan helper mode and streams the tree back.
-    void rescanSizeMapElevated();
+    // upfront distinguishes the prompt raised the moment a root-only folder is
+    // selected from the one behind the button: if that prompt is dismissed the
+    // map falls back to an unprivileged scan, so the tab is never left blank.
+    void rescanSizeMapElevated(bool upfront = false);
+    // Live "scanning <folder> · N files · M so far" line, driven from the walk
+    // itself (adhoc #112).
+    void showSizeMapScanProgress(const QString &current, qint64 bytes,
+                                 int files, bool elevated);
     void applySizeMapResult(const QString &path,
                             forkmesh::DirectorySizeScanResult result,
                             bool hideIgnored, bool elevated);
@@ -3331,6 +3360,14 @@ private:
     void saveIssueTitleEdit();
     void cancelIssueTitleEdit();
     void promptNewIssue();
+    // promptNewIssue() with the compose page pre-filled. Kept as a separate
+    // name (not a defaulted overload) so promptNewIssue stays connectable to
+    // QPushButton::clicked.
+    void composeNewIssue(const QString &prefillTitle, const QString &prefillBody);
+    // Chat -> issue: file what someone said in chat as a repository issue.
+    // Asks which repository, then opens the pre-filled compose page there.
+    void promptIssueFromChatMessage(const QString &text, const QString &senderName,
+                                    qint64 timestampMs);
     void quickAddIssue();
     // Quick-add image attachment (issue #79): pick or paste an image in the footer
     // quick-add bar. In "No issue" mode the path is sent to the agent in its
@@ -3673,6 +3710,13 @@ private:
     // owner/ts/sig query params carrying the forkmesh-issues-pull-v1 drain
     // token — the shared auth for inbox GET/DELETE and /api/sync.
     QUrlQuery signedInboxQuery(const QString &owner) const;
+    // On a mirror-intake ack, attach this node's fresh signed refs
+    // attestation (state/stateTs/stateSig) so the relay pins the state the
+    // mirror now serves — without it, the merged submissions would knock the
+    // mirror out of the clone integrity gate while the source is offline.
+    void appendMirrorStateAttestation(QUrlQuery *query,
+                                      const RepositoryRecord &repo,
+                                      const QString &signer) const;
     // #368: identity key backup/export/import UI + first-run "back up" nag.
     void backUpIdentityKey();
     void refreshIdentityBackupNag();
@@ -3979,6 +4023,13 @@ private:
     // hello (adhoc #82).
     bool mirrorHasCommit(const QString &mirrorPath, const QString &commit);
     QSet<QString> m_mirrorCommitsPresent; // "<mirrorPath>\x1f<commit>" seen present
+    // Source-of-truth catch-up: online mirrors merge (and drain) web-submitted
+    // issues/PRs/discussions directly into the branches they serve, so when a
+    // peer advertises commits this node's OWN repo lacks, fast-forward the
+    // bare mirror and working copy from the mesh instead of skipping "because
+    // we are upstream". Strictly additive — local-only work is never touched.
+    void convergeSourceRepoFromMesh(int index);
+    QHash<QString, qint64> m_sourceConvergeAttemptMs; // owner/name -> last try
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
     // for the three-minute auto-sync, so counts and content converge right away.
@@ -4102,6 +4153,13 @@ private:
     // Top-bar relay switcher: a "favicon  domain ▾ count" dropdown button
     // (search/switch/add relays).
     QPushButton *m_relayMenuButton = nullptr;
+    // Red dot pinned to the relay favicon's corner while a freshly launched
+    // instance waits to be linked, plus the Approve button beside it that
+    // opens the join dialog. Hidden unless this account is an admin with at
+    // least one pending join request (adhoc #97).
+    QLabel *m_relayJoinDot = nullptr;
+    QPushButton *m_relayJoinApproveButton = nullptr;
+    int m_pendingRelayJoins = 0;
     // Spinning-radar + latency readout sitting on the window-chrome line just
     // left of the CPU/MEM/DISK sparklines: probes the active relay once a
     // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
@@ -5048,8 +5106,14 @@ private:
     // so the remaining branches catch up with the merge (adhoc #250).
     QCheckBox *m_branchAutoPullAllCheck = nullptr;
     QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
-    QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
-    QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
+    QListWidget *m_branchFileList = nullptr;    // the range's changed files
+    QLabel *m_branchFilesSummary = nullptr;     // "CHANGED FILES · N" header
+    // The two lists as standalone panes: while a branch/PR range is under review
+    // the Git view lends them its left column's slots (adhoc #110) — files where
+    // the working-tree CHANGES tree sits, commits where the history sits — so the
+    // review reads in the places those things already live.
+    QWidget *m_branchFilesPane = nullptr;
+    QWidget *m_branchScopePane = nullptr;
     // Scope selector above the changed-files list: "All changes", the branch's
     // uncommitted working-tree changes (when its checkout is dirty), and one row
     // per commit the branch adds over base. Selecting a row re-renders the diff
@@ -5138,7 +5202,10 @@ private:
     // Detail-pane action bar above the branch diff: acts on the selected branch
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
     // state is refreshed in updateBranchDetailActions() as the selection changes.
-    QLabel *m_branchDetailLabel = nullptr;      // "<branch> · N behind · M ahead"
+    QLabel *m_branchDetailLabel = nullptr;      // "<branch> -> <base> · N behind · M ahead"
+    // Closes the review and hands the Git view's left column back to the working
+    // tree / commit history (adhoc #110).
+    QPushButton *m_branchCloseButton = nullptr;
     QPushButton *m_branchOpenCodiumButton = nullptr; // "Open in Codium" (VSCodium)
     QPushButton *m_branchMergeEditorButton = nullptr; // "Merge editor" (resolve by hand)
     QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
@@ -5354,6 +5421,13 @@ private:
     // Branch/PR range review pane (adhoc #107): the branch diff viewer, moved
     // into the Git view so a branch or PR opens its commits/files/diff here.
     static constexpr int kCommitWorkspaceRangePage = 2;
+    // The Git view's left column: two stacks that normally show the working-tree
+    // changes (top) and the commit history (bottom), and swap to a reviewed
+    // range's changed files / commits while the range page is up (adhoc #110).
+    QStackedWidget *m_gitFilesSlot = nullptr;
+    QStackedWidget *m_gitHistorySlot = nullptr;
+    // Show a right-pane page and put the left column in the matching state.
+    void setCommitWorkspacePage(int page);
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;

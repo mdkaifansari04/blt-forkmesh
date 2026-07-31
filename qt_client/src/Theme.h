@@ -384,6 +384,16 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
     background-color: #da3633; color: #ffffff; border: 1px solid #0d1117;
     border-radius: 7px; font-size: 9px; font-weight: 700;
 }
+/* Red "instance waiting to be linked" dot on the relay favicon (adhoc #97),
+   with the Approve button that sits beside it. */
+#relayJoinDot {
+    background-color: #da3633; border: 1px solid #0d1117; border-radius: 5px;
+}
+QPushButton#relayJoinApproveButton {
+    background-color: #da3633; color: #ffffff; border: none;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700;
+}
+QPushButton#relayJoinApproveButton:hover { background-color: #f85149; }
 /* Count label on the agents button (no red styling). */
 #agentsNavBadge {
     color: #656d76; font-size: 13px; font-weight: 600;
@@ -1675,6 +1685,16 @@ QPushButton#windowChromeCloseButton:hover {
     background-color: #cf222e; color: #ffffff; border: 1px solid #ffffff;
     border-radius: 7px; font-size: 9px; font-weight: 700;
 }
+/* Red "instance waiting to be linked" dot on the relay favicon (adhoc #97),
+   with the Approve button that sits beside it. */
+#relayJoinDot {
+    background-color: #cf222e; border: 1px solid #ffffff; border-radius: 5px;
+}
+QPushButton#relayJoinApproveButton {
+    background-color: #cf222e; color: #ffffff; border: none;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700;
+}
+QPushButton#relayJoinApproveButton:hover { background-color: #a40e26; }
 /* Count label on the agents button (no red styling). */
 #agentsNavBadge {
     color: #8b949e; font-size: 13px; font-weight: 600;

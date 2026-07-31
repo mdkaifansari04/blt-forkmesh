@@ -1881,8 +1881,7 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
 
     m_branchDiffPullNumber = pullNumber;
     showOverviewCommits();
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceRangePage);
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
     const QString dir = repoGitDir();
     if (!pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head)) {
         // Live branch: the full range pane (scope list, uncommitted changes,
@@ -7760,9 +7759,11 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
             mirrorIntake ? accountOwner().trimmed().toLower()
                          : repoSegment(repo.owner, QStringLiteral("owner"));
         QUrlQuery query = signedInboxQuery(ackSigner);
-        if (mirrorIntake)
+        if (mirrorIntake) {
             query.addQueryItem(
                 QStringLiteral("mirror"), QStringLiteral("1"));
+            appendMirrorStateAttestation(&query, repo, ackSigner);
+        }
         query.addQueryItem(QStringLiteral("ids"),
                            drainedIds.join(QStringLiteral(",")));
         ackUrl.setQuery(query);
@@ -7857,6 +7858,34 @@ QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
     query.addQueryItem("ts", ts);
     query.addQueryItem("sig", m_profileIdentity.signData(canonical));
     return query;
+}
+
+// A mirror-intake ack permanently drains the acknowledged inbox rows, so the
+// state the mirror now serves must stay clone-admissible while the source of
+// truth is offline. Sign the mirror's post-merge refs fingerprint with the
+// same forkmesh-repostate-v1 canonical a catalog publish uses; the relay
+// verifies it against this account's keys and adds the digest to the repo's
+// accepted pin history.
+void MainWindow::appendMirrorStateAttestation(QUrlQuery *query,
+                                              const RepositoryRecord &repo,
+                                              const QString &signer) const
+{
+    if (!query || signer.isEmpty() || !hasOwnerSigningCapability(signer) ||
+        !m_profileIdentity.isValid())
+        return;
+    const QString stateHash = mirrorStateHash(repo.mirrorPath);
+    if (stateHash.isEmpty())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-repostate-v1\n" + signer + "\n" +
+         repoSegment(repo.name, QStringLiteral("repository")) + "\n" +
+         stateHash + "\n" + ts)
+            .toUtf8();
+    query->addQueryItem(QStringLiteral("state"), stateHash);
+    query->addQueryItem(QStringLiteral("stateTs"), ts);
+    query->addQueryItem(QStringLiteral("stateSig"),
+                        m_profileIdentity.signData(canonical));
 }
 
 // Coalesce pushed relay event frames (NodeEventSocket) and explicit local
