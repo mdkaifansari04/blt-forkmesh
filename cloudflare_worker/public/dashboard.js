@@ -483,6 +483,52 @@
     return `${repo.owner || ""}/${repo.name || ""}`;
   }
 
+  // Repository bytes are published by nodes, but the catalog resolves every
+  // physical route to the user/organization that actually owns the work
+  // (ownerKind / logicalOwner / logicalOwners). Lists must show that identity —
+  // "forkmesh/forkmesh", never the serving machine's "mirror8/forkmesh".
+  // Routing keys stay physical: repoKey/repoPathUrl/data-dashboard-open-repo
+  // must keep matching the catalog rows.
+  function repoLogicalOwners(repo) {
+    const values = Array.isArray(repo?.logicalOwners) ? repo.logicalOwners : [];
+    const owners = values.map((value) => ({
+      kind: String(value?.kind || "").trim().toLowerCase(),
+      owner: String(value?.owner || "").trim(),
+    }));
+    if (!owners.length) {
+      owners.push({
+        kind: String(repo?.ownerKind || "").trim().toLowerCase(),
+        owner: String(repo?.logicalOwner || "").trim(),
+      });
+    }
+    return owners.filter((value) =>
+      value.owner && (value.kind === "user" || value.kind === "organization"));
+  }
+
+  function repoDisplayOwner(repo) {
+    const owners = repoLogicalOwners(repo);
+    const organization = owners.find((value) => value.kind === "organization");
+    return (organization || owners[0])?.owner || String(repo?.owner || "").trim();
+  }
+
+  function repoDisplayKey(repo) {
+    return `${repoDisplayOwner(repo) || ""}/${repo?.name || ""}`;
+  }
+
+  // Mirrors of one logical repository are grouped by root commit, so an
+  // organization alias registered on any member names the whole group.
+  function groupDisplayOwner(group) {
+    const origin = sourceOfTruth(group);
+    const name = String(origin?.name || "").trim().toLowerCase();
+    for (const member of [origin, ...(group?.members || [])]) {
+      if (String(member?.name || "").trim().toLowerCase() !== name) continue;
+      const organization = repoLogicalOwners(member)
+        .find((value) => value.kind === "organization");
+      if (organization) return organization.owner;
+    }
+    return repoDisplayOwner(origin);
+  }
+
   function normalizeRepoSegment(value) {
     const text = String(value || "").trim();
     return /^[A-Za-z0-9._:-]+$/.test(text) ? text : "";
@@ -5167,6 +5213,9 @@
       repo.name,
       canonical.owner,
       canonical.name,
+      // Cards are labelled with the logical owner, so filtering by the
+      // organization (or account) name has to match too.
+      ...repoLogicalOwners(repo).map((value) => value.owner),
       repo.description,
       repo.channel,
       repo.source,
@@ -5256,7 +5305,7 @@
         >
           <i data-lucide="book-marked" class="h-3.5 w-3.5 text-muted-foreground"></i>
           <span class="min-w-0">
-            <span class="block truncate font-medium text-foreground">${escapeHtml(key)}</span>
+            <span class="block truncate font-medium text-foreground">${escapeHtml(`${groupDisplayOwner(group)}/${repo.name || ""}`)}</span>
             <span class="block truncate text-xs text-muted-foreground">${escapeHtml(globalSearchRepoSummary(group, repo))}</span>
           </span>
         </button>`;
@@ -5434,19 +5483,39 @@
       }).then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const body = await response.json();
-        if (String(state.session?.sessionToken || "") !== token) return "";
-        return nativeRepositoryLogoDataUrl(body?.logo?.dataUrl);
+        if (String(state.session?.sessionToken || "") !== token) return null;
+        return {
+          dataUrl: nativeRepositoryLogoDataUrl(body?.logo?.dataUrl),
+          // The repository's own root logo streams through a mirror, so it can
+          // fail long after the card rendered. The generated/approved artwork
+          // ships with it so the card swaps instead of showing a broken image.
+          fallbackDataUrl: nativeRepositoryLogoDataUrl(
+            body?.logo?.fallbackDataUrl),
+        };
       }).catch(() => {
         // Do not negatively cache authorization failures or transient errors.
         // The same card can be retried after login or on a later render.
         if (nativeRepositoryLogoCache.get(cacheKey) === pending) {
           nativeRepositoryLogoCache.delete(cacheKey);
         }
-        return "";
+        return null;
       });
       nativeRepositoryLogoCache.set(cacheKey, pending);
     }
     return nativeRepositoryLogoCache.get(cacheKey);
+  }
+
+  function showNativeRepositoryLogo(image) {
+    image.classList.remove("hidden");
+    image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
+      ?.classList.add("hidden");
+  }
+
+  function hideNativeRepositoryLogo(image) {
+    image.classList.add("hidden");
+    image.removeAttribute("src");
+    image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
+      ?.classList.remove("hidden");
   }
 
   function hydrateNativeRepositoryLogos(root) {
@@ -5455,12 +5524,24 @@
       const endpoint = image.getAttribute("data-logo-endpoint") || "";
       if (!endpoint || image.dataset.logoHydrated === "true") return;
       image.dataset.logoHydrated = "true";
-      const dataUrl = await loadNativeRepositoryLogo(endpoint);
+      const logo = await loadNativeRepositoryLogo(endpoint);
+      const dataUrl = String(logo?.dataUrl || "");
+      const fallbackDataUrl = String(logo?.fallbackDataUrl || "");
       if (!dataUrl || !image.isConnected) return;
+      // The committed root logo is served by a mirror, so it can fail after the
+      // card rendered (offline or lagging host). Swap to the generated artwork,
+      // then to the repository icon — never leave a broken image behind.
+      image.onerror = () => {
+        if (fallbackDataUrl && image.dataset.logoFallbackUsed !== "true") {
+          image.dataset.logoFallbackUsed = "true";
+          image.src = fallbackDataUrl;
+          return;
+        }
+        image.onerror = null;
+        hideNativeRepositoryLogo(image);
+      };
       image.src = dataUrl;
-      image.classList.remove("hidden");
-      image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
-        ?.classList.add("hidden");
+      showNativeRepositoryLogo(image);
     });
   }
 
@@ -5496,6 +5577,10 @@
     const origin = sourceOfTruth(group);
     const repo = group.primary;
     const key = repoKey(origin);
+    const displayOwner = groupDisplayOwner(group);
+    const servedNote = displayOwner.toLowerCase() !== String(origin.owner || "").toLowerCase()
+      ? ` (published from ${origin.owner || "a node"})`
+      : "";
     const live = repoIsLive(origin);
     const viaMirror = repoServedByMirror(origin);
     const visibility = origin.isPrivate ? "private" : "public";
@@ -5515,14 +5600,14 @@
     const activityWeeks = groupActivityWeeks(group);
     const language = repoLanguage(origin);
     return `
-      <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+      <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(`${displayOwner || "owner"}/${origin.name || "repository"}`)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
           <div class="flex min-w-0 items-start gap-3">
             ${nativeRepositoryLogoMarkup(origin)}
             <div class="min-w-0 flex-1">
             <div class="flex min-w-0 items-center gap-2">
-              <p class="min-w-0 truncate text-sm font-medium text-foreground">
-                <span class="text-muted-foreground">${escapeHtml(origin.owner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
+              <p class="min-w-0 truncate text-sm font-medium text-foreground" title="${escapeHtml(`${displayOwner || "owner"}/${origin.name || "repository"}${servedNote}`)}">
+                <span class="text-muted-foreground">${escapeHtml(displayOwner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
               </p>
               <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
                 ${statusText}
@@ -5709,7 +5794,7 @@
       return `
         <a href="${escapeHtml(entry.href)}" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
           <span class="h-2 w-2 shrink-0 rounded-full ${live ? "bg-primary" : "bg-muted-foreground/40"}"></span>
-          <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
+          <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repoDisplayOwner(repo) || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
           ${repositoryTermsBadge(repo, true)}
           ${entry.organization ? '<span class="shrink-0 rounded border border-border px-1 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">org</span>' : ""}
         </a>`;
@@ -5742,10 +5827,9 @@
       ${entries.length
         ? `<div class="grid gap-1">${entries.map((entry) => {
             const repo = entry.repo;
-            const key = repoKey(repo);
             return `<a href="${escapeHtml(entry.href)}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
               <i data-lucide="${entry.organization ? "building-2" : "book-marked"}" class="h-3.5 w-3.5 shrink-0"></i>
-              <span class="min-w-0 truncate">${escapeHtml(key)}</span>
+              <span class="min-w-0 truncate">${escapeHtml(repoDisplayKey(repo))}</span>
               ${repositoryTermsBadge(repo, true)}
               ${entry.organization ? '<span class="ml-auto shrink-0 text-[9px] uppercase text-muted-foreground">organization</span>' : ""}
             </a>`;
@@ -5777,7 +5861,7 @@
 
   function homeFeedRepositoryCard(group) {
     const repo = sourceOfTruth(group);
-    const key = repoKey(repo);
+    const key = `${groupDisplayOwner(group)}/${repo.name || ""}`;
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
     const description = repo.description || "No description published.";
