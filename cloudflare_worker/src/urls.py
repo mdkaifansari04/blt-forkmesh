@@ -58,7 +58,6 @@ REPO_PULL_MERGE_RE = re.compile(
 REPO_ACTION_RUNS_RE = re.compile(
     r"^/api/repo/([^/]+)/([^/]+)/actions/runs$")
 # Commit-comment inbox: signed per-commit comments from any node.
-REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")
 # Discussion inbox: signed discussion open/comment submissions from any node.
 REPO_DISCUSSIONS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/discussions$")
 # Content-free tallies of inbox items awaiting the owner node's next sync, so
