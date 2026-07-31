@@ -6307,8 +6307,6 @@ void MainWindow::showCommit(const QString &hash)
     startCommitDiffSpin();
 
     m_currentCommitHash = hash; // refined to the full hash when metadata lands
-    if (m_commitComposer)
-        m_commitComposer->setMentionCandidates(mentionCandidateNames());
     if (m_commitDownloadButton)
         m_commitDownloadButton->setEnabled(true);
     if (m_commitDeleteButton || m_commitRevertButton) {
@@ -6494,91 +6492,9 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
         m_pendingCommitFileScroll.clear();
     }
 
-    renderCommitThread(m_currentCommitHash);
     stopCommitDiffSpin();
     if (m_commitsStack)
         m_commitsStack->setCurrentIndex(kCommitWorkspaceCommitPage);
-}
-
-void MainWindow::renderCommitThread(const QString &sha)
-{
-    if (!m_commitThreadLayout)
-        return;
-    while (QLayoutItem *item = m_commitThreadLayout->takeAt(0)) {
-        if (QWidget *w = item->widget())
-            w->deleteLater();
-        delete item;
-    }
-    // Trailing stretch first so cards flow top to bottom (see renderPullThread).
-    m_commitThreadLayout->addStretch();
-    if (sha.isEmpty())
-        return;
-    QString linkOwner = QStringLiteral("repo");
-    QString linkRepo = QStringLiteral("commit");
-    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-        linkOwner = m_repositories.at(m_repoDetailIndex).owner;
-        linkRepo = m_repositories.at(m_repoDetailIndex).name;
-    }
-    const QString commitLink =
-        QStringLiteral("forkmesh://commit/%1/%2/%3").arg(linkOwner, linkRepo, sha);
-    const RepositoryRecord rec =
-        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
-            ? writableRecordFor(m_repositories.at(m_repoDetailIndex))
-            : RepositoryRecord();
-    CommitCommentStore store(rec.localPath, rec.mirrorPath, &m_profileIdentity,
-                             m_userName);
-    for (const CommitComment &c : store.loadFor(sha)) {
-        const QString who = c.authorName.isEmpty() ? c.author.left(10) : c.authorName;
-        addConversationCard(
-            m_commitThreadLayout, who,
-            QStringLiteral("<b>%1</b> <span style='color:#8b949e'>commented %2</span>")
-                .arg(who.toHtmlEscaped(), formatIssueRelativeTime(c.ts)),
-            c.body, QString(),
-            commitLink + QStringLiteral("#%1")
-                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id),
-            c.author);
-    }
-}
-
-void MainWindow::submitCommitComment()
-{
-    if (m_currentCommitHash.isEmpty() || !m_commitComposer)
-        return;
-    const QString body = m_commitComposer->markdown().trimmed();
-    if (body.isEmpty()) {
-        flashMessage(QStringLiteral("Write a comment first."));
-        return;
-    }
-    const RepositoryRecord rec =
-        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
-            ? writableRecordFor(m_repositories.at(m_repoDetailIndex))
-            : RepositoryRecord();
-    CommitCommentStore store(rec.localPath, rec.mirrorPath, &m_profileIdentity,
-                             m_userName);
-    if (store.canWrite()) {
-        QString error;
-        if (!store.addComment(m_currentCommitHash, body, &error)) {
-            QMessageBox::warning(this, "Comment", error);
-            return;
-        }
-        // Push the new comment into the bare mirror and tell mirroring peers
-        // right away (like issue/PR comments do) so it converges in seconds
-        // instead of at the next three-minute auto-sync. Resolve the writable
-        // repo's own index — the open detail may be a read-only preview of a
-        // repo we actually host under a different entry.
-        const int srcIndex = repoIndexFor(rec.owner, rec.name);
-        propagateRepoUpdate(srcIndex >= 0 ? srcIndex : m_repoDetailIndex);
-    } else {
-        const CommitComment c =
-            store.makeSignedComment(m_currentCommitHash, [&] {
-                CommitComment x;
-                x.body = body;
-                return x;
-            }());
-        submitCommitCommentToInbox(m_currentCommitHash, c);
-    }
-    m_commitComposer->setMarkdown(QString());
-    renderCommitThread(m_currentCommitHash);
 }
 
 void MainWindow::loadRepoInsights()
@@ -9073,6 +8989,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
     diffSpinRow->addStretch();
     diffSpinRow->addWidget(m_commitDiffSpinner);
 
+    // Commit commenting was removed (line-level review comments live in the
+    // pull-request view), so the diff owns the rest of the page.
     auto *split = new QWidget;
     auto *splitLayout = new QVBoxLayout(split);
     splitLayout->setContentsMargins(0, 0, 0, 0);
@@ -9080,57 +8998,13 @@ QWidget *MainWindow::buildRepoCommitsTab()
     splitLayout->addLayout(diffSpinRow);
     splitLayout->addWidget(m_commitDiffView, 1);
 
-    // --- Per-commit conversation: comment thread + composer.
-    m_commitThreadContainer = new QWidget;
-    m_commitThreadLayout = new QVBoxLayout(m_commitThreadContainer);
-    m_commitThreadLayout->setContentsMargins(0, 0, 0, 0);
-    m_commitThreadLayout->setSpacing(10);
-    m_commitThreadLayout->addStretch();
-    auto *commitThreadScroll = new QScrollArea;
-    commitThreadScroll->setWidgetResizable(true);
-    commitThreadScroll->setWidget(m_commitThreadContainer);
-    commitThreadScroll->setObjectName("issuePageScroll");
-    commitThreadScroll->setFrameShape(QFrame::NoFrame);
-    m_commitComposer = new MarkdownEditor;
-    m_commitComposer->setPlaceholderText("Leave a comment on this commit\xE2\x80\xA6");
-    m_commitComposer->setMinimumHeight(80);
-    m_commitCommentButton = new QPushButton("Comment");
-    m_commitCommentButton->setObjectName("ghostButton");
-    m_commitCommentButton->setProperty("buttonSize", "sm");
-    m_commitCommentButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitCommentButton, "comment", 16);
-    connect(m_commitCommentButton, &QPushButton::clicked, this,
-            &MainWindow::submitCommitComment);
-    auto *commitComposerButtons = new QHBoxLayout;
-    commitComposerButtons->setContentsMargins(0, 0, 0, 0);
-    // Speak the comment with the voice engine, just like the footer prompt mic.
-    commitComposerButtons->addWidget(makeVoiceButton(m_commitComposer), 0, Qt::AlignLeft);
-    commitComposerButtons->addStretch();
-    commitComposerButtons->addWidget(m_commitCommentButton);
-    auto *commitConversation = new QWidget;
-    auto *commitConversationLayout = new QVBoxLayout(commitConversation);
-    commitConversationLayout->setContentsMargins(0, 0, 0, 0);
-    commitConversationLayout->setSpacing(8);
-    commitConversationLayout->addWidget(commitThreadScroll, 1);
-    commitConversationLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Commenting")));
-    commitConversationLayout->addWidget(m_commitComposer);
-    commitConversationLayout->addLayout(commitComposerButtons);
-
-    auto *commitVSplit = new QSplitter(Qt::Vertical);
-    commitVSplit->setChildrenCollapsible(false);
-    commitVSplit->addWidget(split);
-    commitVSplit->addWidget(commitConversation);
-    commitVSplit->setStretchFactor(0, 3);
-    commitVSplit->setStretchFactor(1, 2);
-    commitVSplit->setSizes({440, 240});
-
     auto *detailLayout = new QVBoxLayout(detailPage);
     detailLayout->setContentsMargins(16, 12, 16, 16);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(headerRow);
     detailLayout->addWidget(m_commitMessage);
     detailLayout->addWidget(m_commitMeta);
-    detailLayout->addWidget(commitVSplit, 1);
+    detailLayout->addWidget(split, 1);
 
     // Left column: working-tree changes above commit history. The column is one
     // resizable splitter pane, so the user can give lists just enough room and

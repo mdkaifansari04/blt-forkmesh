@@ -182,8 +182,6 @@ set(FORKMESH_APP_SOURCES
     src/PullBadgeWidget.h
     src/PullBadgeWidget.cpp
     src/PacmanProgress.h
-    src/CommitCommentStore.h
-    src/CommitCommentStore.cpp
     src/ReferenceLinks.h
     src/ActionFile.h
     src/ActionFile.cpp
@@ -514,8 +512,6 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
-        src/CommitCommentStore.h
-        src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/ActionStore.h
@@ -756,8 +752,6 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
-        src/CommitCommentStore.h
-        src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/ActionStore.h
