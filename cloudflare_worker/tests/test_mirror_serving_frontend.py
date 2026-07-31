@@ -53,10 +53,13 @@ def test_repo_card_groups_mirrors_under_source_of_truth():
         DASHBOARD_JS.index("function repositoryCard(group)")
         : DASHBOARD_JS.index("function updateRepositoryPagination(")
     ]
-    # Title, clone command, and Browse target all name the source of truth.
+    # Clone command and Browse target name the source of truth; the visible
+    # title names that group's logical owner (organization/account), not the
+    # machine the bytes happen to be published from.
     assert "const origin = sourceOfTruth(group);" in card
     assert "const key = repoKey(origin);" in card
-    assert 'escapeHtml(origin.owner || "owner")' in card
+    assert "const displayOwner = groupDisplayOwner(group);" in card
+    assert 'escapeHtml(displayOwner || "owner")' in card
     assert 'escapeHtml(origin.name || "repository")' in card
     assert "cloneUrl(origin)" in card
     # A grouped repo advertises how many nodes mirror it.
