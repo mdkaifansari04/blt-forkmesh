@@ -51,6 +51,11 @@ struct AgentDiffStat {
     // ask, 0 when it is clean).
     QString worktree;
     int dirty = -1;
+    // Line churn behind the Diff column's tiny red/green bar (adhoc #84): lines
+    // the session added and removed, -1 when there was nothing to count them
+    // from (no captured patch and no branch left to diff).
+    int added = -1;
+    int removed = -1;
 };
 
 #include <QElapsedTimer>
@@ -3840,6 +3845,11 @@ private:
     // Roster-driven catch-up: when a peer advertises a commit our mirror lacks,
     // pull it immediately instead of waiting for the next auto-sync tick.
     void syncMirrorsBehindRoster();
+    // `git cat-file -e` probe with memoized positive answers, so the roster
+    // reconcile doesn't re-spawn git for the same converged tip on every peer
+    // hello (adhoc #82).
+    bool mirrorHasCommit(const QString &mirrorPath, const QString &commit);
+    QSet<QString> m_mirrorCommitsPresent; // "<mirrorPath>\x1f<commit>" seen present
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
     // for the three-minute auto-sync, so counts and content converge right away.
@@ -5068,6 +5078,13 @@ private:
     mutable QStringList m_branchesCache;
     mutable QString m_branchesCacheDir;
     mutable qint64 m_branchesCacheTime = 0;
+    // Same idea for repoDefaultBranchFast(): its `git for-each-ref` ran on every
+    // agent-session selection and the stall watchdog caught it blocking the GUI
+    // thread (adhoc #82). The default branch only moves on explicit
+    // configuration or branch create/delete, so a short cache is safe.
+    mutable QString m_defaultBranchFastCache;
+    mutable QString m_defaultBranchFastCacheDir;
+    mutable qint64 m_defaultBranchFastCacheTime = 0;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     // Top-bar "search everything" box and its floating results dropdown. The popup
     // is parented to the window (not the short top bar) so it isn't clipped, and is
@@ -5638,6 +5655,12 @@ private:
     // Guards scheduleAgentQueuePump()'s zero-timer against piling up one pump
     // per status/reload hook in a burst.
     bool m_agentQueuePumpScheduled = false;
+    // Sessions processAgentQueue() put back at the head of the queue while
+    // their persisted transcript loads off-thread (parsing a long session's
+    // events.jsonl on the GUI thread stalled the window >1 s, adhoc #82).
+    // Value: the m_agentQuietResume disposition of the deferred pass, restored
+    // when the load's completion re-drains the queue.
+    QHash<int, bool> m_agentQueueAwaitingEvents;
     // True while runDeferredStartup() drains the sessions initAgents() re-queued
     // after an app restart: resumed runs must NOT jump to the Agents tab the way
     // a fresh user-driven start does. At startup that jump forced a full cold
