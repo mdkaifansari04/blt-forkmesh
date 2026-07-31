@@ -1116,6 +1116,19 @@ int main(int argc, char *argv[])
               networkLog.contains(QStringLiteral("New Peer")),
           QStringLiteral("newly online peer is logged when node-connect alerts are disabled"));
 
+    // adhoc #121: a plain user account (accountKind "user" — e.g. ForkBot's
+    // relayed chat identity, or a desktop signed in as a user rather than a
+    // linked node) coming online must not be announced as "Node connected":
+    // it isn't a node.
+    window.testResetNetworkLog();
+    QList<MemberInfo> withUserPeer = initialRoster;
+    MemberInfo userPeer = testMember(QStringLiteral("user-peer"), QStringLiteral("jett"));
+    userPeer.accountKind = QStringLiteral("user");
+    withUserPeer.append(userPeer);
+    window.testSetRoster(withUserPeer);
+    check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(QStringLiteral("jett")),
+          QStringLiteral("a plain user account online is not logged as a node connecting"));
+
     // adhoc #404: a browser guest / World visitor that stops sending presence is
     // forgotten after ten idle minutes, while a real node keeps its offline row
     // so it stays selectable in the Node dropdown.
