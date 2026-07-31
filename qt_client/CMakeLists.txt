@@ -194,6 +194,8 @@ set(FORKMESH_APP_SOURCES
     src/AgentStore.h
     src/AgentStore.cpp
     src/AgentJail.h
+    src/AgentPromptImages.h
+    src/AgentPromptImages.cpp
     src/AgentRunner.h
     src/AgentRunner.cpp
     src/QrCode.h

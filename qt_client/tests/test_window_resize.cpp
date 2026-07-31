@@ -2363,6 +2363,49 @@ int main(int argc, char *argv[])
         if (logView)
             check(logView->toPlainText().contains(QStringLiteral("Pushed 2 commits")),
                   QStringLiteral("clearing the filter restores every log line"));
+
+        // adhoc #64: each chip carries how many buffered lines it covers, and
+        // All counts the whole buffer.
+        {
+            const QStringList labels = window.testLogFilterChipLabels();
+            check(labels.contains(QStringLiteral("All 2")) &&
+                      labels.contains(QStringLiteral("STALL 1")) &&
+                      labels.contains(QStringLiteral("GIT 1")),
+                  QStringLiteral("log filter chips show the event count for each "
+                                 "category"));
+        }
+        window.testResetNetworkLog();
+        check(window.testLogFilterChipLabels().contains(QStringLiteral("STALL")),
+              QStringLiteral("an empty category's chip shows no count at all"));
+    }
+
+    // adhoc #73: clicking the footer stall badge drafts a "fix these stalls"
+    // prompt (with the log locations) into the quick-add composer, and every
+    // stall also lands in the main app log rather than only the dialog.
+    {
+        window.testResetNetworkLog();
+        window.testRecordUiStall(2100, QStringLiteral("git ls-tree"),
+                                 QStringLiteral("#0 ForkMesh::renderAgentDiff()"));
+        const QStringList logged = window.testNetworkLog();
+        check(!logged.isEmpty() &&
+                  logged.last().contains(QStringLiteral("UI stalled ~2100 ms")) &&
+                  logged.last().contains(QStringLiteral("git ls-tree")),
+              QStringLiteral("a recorded stall is written to the main app log"));
+
+        if (window.testDraftStallPromptInComposer()) {
+            const QString drafted = window.testQuickAddText();
+            check(drafted.contains(QStringLiteral("Please fix these UI stalls")),
+                  QStringLiteral("the stall badge fills the composer with a fix-it prompt"));
+            check(drafted.contains(QStringLiteral("App log:")) &&
+                      drafted.contains(QStringLiteral("network_log.txt")),
+                  QStringLiteral("the drafted prompt names where the log file lives"));
+            check(drafted.contains(QStringLiteral("renderAgentDiff")),
+                  QStringLiteral("the drafted prompt carries the recorded backtrace"));
+            check(drafted.size() <= 16000,
+                  QStringLiteral("the drafted prompt fits the composer's length cap"));
+            check(drafted == window.testStallFixPrompt(),
+                  QStringLiteral("the composer holds exactly the stall fix-it prompt"));
+        }
         window.testResetNetworkLog();
     }
 

@@ -487,7 +487,9 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmTree->setObjectName("fileTree");
     m_scmTree->setColumnCount(1);
     m_scmTree->setHeaderHidden(true);
-    m_scmTree->setMinimumWidth(240);
+    // Low enough that the workspace splitter, not this tree, decides how narrow
+    // the left column may get (adhoc #74); rows elide, so they stay readable.
+    m_scmTree->setMinimumWidth(160);
     m_scmTree->setRootIsDecorated(true);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
