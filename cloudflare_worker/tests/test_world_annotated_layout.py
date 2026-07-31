@@ -39,11 +39,10 @@ def test_all_repositories_live_expanded_on_the_east_island():
     assert "label.visible = true;" in SCENE
 
 
-def test_billboards_use_one_aligned_perimeter_and_ignore_legacy_coordinates():
-    assert "function placeBillboardOnIsland(object, layoutId)" in SCENE
-    assert "movableWorldObjects.delete(layoutId);" in SCENE
+def test_billboards_use_one_aligned_perimeter():
+    assert "function placeBillboardOnIsland(object)" in SCENE
     assert "const relayoutBillboardCircle = () =>" in SCENE
-    assert "billboardIslandObjects.push({ object, layoutId });" in SCENE
+    assert "billboardIslandObjects.push({ object });" in SCENE
     assert "Math.cos(angle) * radius" in SCENE
     assert "Math.sin(angle) * radius" in SCENE
     for object_name in (
@@ -80,7 +79,7 @@ def test_members_share_continuous_land_with_path_under_dirt_and_open_entrance():
     assert "startHereBoard.rotation.y = Math.PI;" in SCENE
     assert "function worldWalkSurfaceContains(x, z" in SCENE
     assert "position: [0, 0, 130]" in DATA
-    assert 'registerMovableObject("south-members:campfire", campfire);' in SCENE
+    assert 'landmarkObjects.set("campfire", campfire);' in SCENE
     assert "const POSITION_RADIUS = 620;" in APP
     assert "or abs(x) > 620 or abs(y) > 100 or abs(z) > 620" in ENTRY
 
