@@ -604,6 +604,24 @@ function canvasTexture(THREE, width, height, draw) {
   return texture;
 }
 
+// Redraws an existing CanvasTexture in place. Recurring plates (the
+// per-second sync countdowns and per-minute staleness readouts) must never
+// allocate a fresh canvas or swap material.map: doing that once per plate per
+// second disposed and re-created a GL texture and re-validated the material
+// each tick, which surfaced as a metronomic ~50ms render stall while the
+// World idled. Reusing the canvas keeps a tick at one cheap 2D redraw plus a
+// same-size upload of a small texture that was already resident.
+function repaintCanvasTexture(material, draw) {
+  const texture = material?.map;
+  const canvas = texture?.image;
+  const context = canvas?.getContext?.("2d");
+  if (!context) return false;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  draw(context, canvas);
+  texture.needsUpdate = true;
+  return true;
+}
+
 function roundedRect(context, x, y, width, height, radius) {
   const r = Math.min(radius, width / 2, height / 2);
   context.beginPath();
@@ -11973,32 +11991,41 @@ function mastodonCountdownClock(remainingMs) {
 // the time left in the ten-minute refresh window. It repaints once a second
 // on its own small texture so the big board texture is only rebuilt when the
 // snapshot itself changes.
-function mastodonCountdownTexture(
-  THREE,
+function drawMastodonCountdown(
+  context,
   remainingMs = MASTODON_KIOSK_REFRESH_MS,
   totalMs = MASTODON_KIOSK_REFRESH_MS,
   loading = false,
 ) {
   const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
   const remaining = clamp(Number(remainingMs) || 0, 0, total);
-  return canvasTexture(THREE, 256, 128, (context) => {
-    // Unframed: just the label over a soft backing plate, no border, so it
-    // reads as lettering on the stand rather than a badge on the board.
-    context.fillStyle = "rgba(15,16,36,0.72)";
-    roundedRect(context, 4, 4, 248, 120, 22);
-    context.fill();
-    context.textAlign = "center";
-    context.fillStyle = "#8b8db8";
-    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(loading ? "REFRESHING" : "NEXT SYNC", 128, 44);
-    context.fillStyle = loading ? "#8b9bf4" : "#ffd257";
-    context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(
-      loading ? "--:--" : mastodonCountdownClock(remaining),
-      128,
-      100,
-    );
-  });
+  // Unframed: just the label over a soft backing plate, no border, so it
+  // reads as lettering on the stand rather than a badge on the board.
+  context.fillStyle = "rgba(15,16,36,0.72)";
+  roundedRect(context, 4, 4, 248, 120, 22);
+  context.fill();
+  context.textAlign = "center";
+  context.fillStyle = "#8b8db8";
+  context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+  context.fillText(loading ? "REFRESHING" : "NEXT SYNC", 128, 44);
+  context.fillStyle = loading ? "#8b9bf4" : "#ffd257";
+  context.font = '800 54px "ForkMesh Mono", ui-monospace, monospace';
+  context.fillText(
+    loading ? "--:--" : mastodonCountdownClock(remaining),
+    128,
+    100,
+  );
+}
+
+function mastodonCountdownTexture(
+  THREE,
+  remainingMs = MASTODON_KIOSK_REFRESH_MS,
+  totalMs = MASTODON_KIOSK_REFRESH_MS,
+  loading = false,
+) {
+  return canvasTexture(THREE, 256, 128, (context) =>
+    drawMastodonCountdown(context, remainingMs, totalMs, loading),
+  );
 }
 
 // Posting-cadence thresholds for the last-post plate. Mastodon presence
@@ -12042,6 +12069,28 @@ function mastodonLastPostColor(
 // fetched yet, or a feed with no dated posts) renders a neutral placeholder.
 // The social banners reuse the same plate with their own label and
 // thresholds.
+function drawMastodonLastPost(
+  context,
+  sinceMs = null,
+  label = "LAST POST",
+  freshMs = MASTODON_POST_FRESH_MS,
+  staleMs = MASTODON_POST_STALE_MS,
+) {
+  const known = Number.isFinite(Number(sinceMs)) && Number(sinceMs) >= 0;
+  context.fillStyle = "rgba(15,16,36,0.72)";
+  roundedRect(context, 4, 4, 248, 120, 22);
+  context.fill();
+  context.textAlign = "center";
+  context.fillStyle = "#8b8db8";
+  context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
+  context.fillText(label, 128, 44);
+  context.fillStyle = known
+    ? mastodonLastPostColor(sinceMs, freshMs, staleMs)
+    : "#8b9bf4";
+  context.font = '800 44px "ForkMesh Mono", ui-monospace, monospace';
+  context.fillText(known ? mastodonLastPostClock(sinceMs) : "--", 128, 96);
+}
+
 function mastodonLastPostTexture(
   THREE,
   sinceMs = null,
@@ -12049,21 +12098,9 @@ function mastodonLastPostTexture(
   freshMs = MASTODON_POST_FRESH_MS,
   staleMs = MASTODON_POST_STALE_MS,
 ) {
-  const known = Number.isFinite(Number(sinceMs)) && Number(sinceMs) >= 0;
-  return canvasTexture(THREE, 256, 128, (context) => {
-    context.fillStyle = "rgba(15,16,36,0.72)";
-    roundedRect(context, 4, 4, 248, 120, 22);
-    context.fill();
-    context.textAlign = "center";
-    context.fillStyle = "#8b8db8";
-    context.font = '700 22px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(label, 128, 44);
-    context.fillStyle = known
-      ? mastodonLastPostColor(sinceMs, freshMs, staleMs)
-      : "#8b9bf4";
-    context.font = '800 44px "ForkMesh Mono", ui-monospace, monospace';
-    context.fillText(known ? mastodonLastPostClock(sinceMs) : "--", 128, 96);
-  });
+  return canvasTexture(THREE, 256, 128, (context) =>
+    drawMastodonLastPost(context, sinceMs, label, freshMs, staleMs),
+  );
 }
 
 function createMastodonKiosk(THREE, interactive) {
@@ -16703,17 +16740,15 @@ export function createWorldScene({
     const since = lastCheck > 0 ? Math.max(0, Date.now() - lastCheck) : null;
     const plate = statusBanner.getObjectByName(
       "forkmesh-status-banner-lastpost");
-    if (plate?.material) {
-      plate.material.map?.dispose?.();
-      plate.material.map = mastodonLastPostTexture(
-        THREE,
+    repaintCanvasTexture(plate?.material, (context) =>
+      drawMastodonLastPost(
+        context,
         since,
         STATUS_BANNER_OPTIONS.staleness.label,
         STATUS_BANNER_OPTIONS.staleness.freshMs,
         STATUS_BANNER_OPTIONS.staleness.staleMs,
-      );
-      plate.material.needsUpdate = true;
-    }
+      ),
+    );
     // The shell's one-second status tick owns the countdown plate. Keeping it
     // out of this snapshot-only repaint prevents the MM:SS clock from freezing
     // at whichever second the minute-level HTTP response happened to arrive.
@@ -16739,11 +16774,11 @@ export function createWorldScene({
         const dial = record.group.getObjectByName(
           `forkmesh-${record.options.id}-banner-countdown`,
         );
-        if (dial?.material) {
-          dial.material.map?.dispose?.();
-          dial.material.map = mastodonCountdownTexture(
-            THREE, remaining, total, loading);
-          dial.material.needsUpdate = true;
+        if (
+          repaintCanvasTexture(dial?.material, (context) =>
+            drawMastodonCountdown(context, remaining, total, loading),
+          )
+        ) {
           dial.userData.countdownSeconds = Math.ceil(remaining / 1000);
           dial.userData.countdownLoading = loading;
           repainted = true;
@@ -16760,12 +16795,13 @@ export function createWorldScene({
         const plate = record.group.getObjectByName(
           `forkmesh-${record.options.id}-banner-lastpost`,
         );
-        if (plate?.material) {
-          const config = record.options.staleness;
-          plate.material.map?.dispose?.();
-          plate.material.map = mastodonLastPostTexture(
-            THREE, since, config.label, config.freshMs, config.staleMs);
-          plate.material.needsUpdate = true;
+        const config = record.options.staleness;
+        if (
+          repaintCanvasTexture(plate?.material, (context) =>
+            drawMastodonLastPost(
+              context, since, config.label, config.freshMs, config.staleMs),
+          )
+        ) {
           repainted = true;
         }
       }
@@ -23312,35 +23348,29 @@ export function createWorldScene({
   }
 
   // The dial is its own small texture: a one-second countdown tick must not
-  // rebuild the 1536×4096 board texture.
+  // rebuild the 1536×4096 board texture, and it repaints the existing dial
+  // canvas in place rather than allocating a texture per tick.
   function repaintMastodonCountdown() {
     const dial = mastodonKiosk.getObjectByName(
       "forkmesh-mastodon-kiosk-countdown",
     );
-    if (!dial?.material) return false;
-    dial.material.map?.dispose?.();
-    dial.material.map = mastodonCountdownTexture(
-      THREE,
-      mastodonKioskCountdown.remainingMs,
-      mastodonKioskCountdown.totalMs,
-      mastodonKioskCountdown.loading,
+    return repaintCanvasTexture(dial?.material, (context) =>
+      drawMastodonCountdown(
+        context,
+        mastodonKioskCountdown.remainingMs,
+        mastodonKioskCountdown.totalMs,
+        mastodonKioskCountdown.loading,
+      ),
     );
-    dial.material.needsUpdate = true;
-    return true;
   }
 
   function repaintMastodonLastPost() {
     const plate = mastodonKiosk.getObjectByName(
       "forkmesh-mastodon-kiosk-lastpost",
     );
-    if (!plate?.material) return false;
-    plate.material.map?.dispose?.();
-    plate.material.map = mastodonLastPostTexture(
-      THREE,
-      mastodonKioskLastPostSinceMs,
+    return repaintCanvasTexture(plate?.material, (context) =>
+      drawMastodonLastPost(context, mastodonKioskLastPostSinceMs),
     );
-    plate.material.needsUpdate = true;
-    return true;
   }
 
   function updateMastodonCountdown({
