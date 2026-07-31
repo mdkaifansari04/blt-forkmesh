@@ -1773,6 +1773,16 @@ int main(int argc, char *argv[])
         // they're finished with. Re-open the range pane, then let its "Merge to
         // main" button run: the Git view must go back to the working tree exactly
         // as if the pane's ✕ had been clicked.
+        //
+        // This fixture's linked worktree lives inside the parent checkout, so git
+        // reports it as untracked content and the merge would refuse ("the checkout
+        // has uncommitted changes"). Exclude it locally — the tracked tree is clean,
+        // which is the state that check is really about.
+        QFile excludeFile(wtRepo.path() + QStringLiteral("/.git/info/exclude"));
+        if (excludeFile.open(QIODevice::WriteOnly | QIODevice::Append)) {
+            excludeFile.write("wt-keep/\n");
+            excludeFile.close();
+        }
         window.testSwitchToBranchImmediateSelection(
             QStringLiteral("feature/keep-selected"));
         QApplication::processEvents();
