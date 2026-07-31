@@ -1698,9 +1698,7 @@ QWidget *MainWindow::buildAgentsTab()
         const int ri = repoIndexFor(s->owner, s->name);
         if (ri < 0)
             return;
-        mergeWorktreeIntoMain(
-            s->branchName,
-            worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName));
+        mergeAgentBranchIntoBase(ri, s->branchName, /*deleteAgent=*/false);
     });
     // Same merge, but also tear down this agent session once its branch is in main
     // (mirrors the Worktrees tab's "Merge & delete agent").
@@ -1721,10 +1719,7 @@ QWidget *MainWindow::buildAgentsTab()
         const int ri = repoIndexFor(s->owner, s->name);
         if (ri < 0)
             return;
-        mergeWorktreeIntoMain(
-            s->branchName,
-            worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName),
-            /*deleteAgent=*/true);
+        mergeAgentBranchIntoBase(ri, s->branchName, /*deleteAgent=*/true);
     });
     m_agentWtDeleteButton = new QPushButton("Delete worktree");
     m_agentWtDeleteButton->setObjectName("ghostButton");
@@ -1740,9 +1735,15 @@ QWidget *MainWindow::buildAgentsTab()
         const int ri = repoIndexFor(s->owner, s->name);
         if (ri < 0)
             return;
-        deleteWorktreeBranchAndAgent(
-            worktreePathForBranch(m_repositories.at(ri).localPath, s->branchName),
-            s->branchName);
+        // Same cross-repo bind the merge buttons need: deleteWorktreeBranchAndAgent
+        // resolves the checkout from the repo the detail view holds, not from the
+        // session, and the Agents tab is global. Snapshot before the bind — it pumps
+        // the event loop and can reallocate both lists (git-pump UAF family).
+        const QString branch = s->branchName;
+        const QString localPath = m_repositories.at(ri).localPath;
+        if (!bindRepoDetailToRepo(ri))
+            return;
+        deleteWorktreeBranchAndAgent(worktreePathForBranch(localPath, branch), branch);
     });
 
     auto *filesActionBar = new QHBoxLayout;
@@ -9973,6 +9974,51 @@ void MainWindow::completeOrgTaskForSession(int sessionId, const QString &followU
             });
 }
 
+// Merge an agent session's branch into its repo's default branch — the one entry
+// point behind the detail bar's "Merge into main" / "Merge & delete agent" and the
+// YOLO auto-merge.
+//
+// mergeWorktreeIntoMain resolves the checkout, the base branch and the branch list
+// from whichever repo the *detail view* currently holds (repoGitDir /
+// m_repoDetailIndex), but the Agents tab is global: the session being acted on is
+// often not the repo the detail page last loaded. Merging then read a different
+// repo's HEAD and default branch, so "Merge & delete agent" would refuse with
+// "Switch the repo to main first (it's on <branch>)" — naming a branch of some
+// other repository — while the status strip at the bottom left showed main. Bind
+// the detail view to the session's repo first (the same shape "Update from main"
+// already carries, adhoc #28); that only reloads which repo the detail page holds,
+// it doesn't switch the visible page. Returns false when the bind didn't take, so
+// the YOLO path can log its own "merge it by hand" note.
+bool MainWindow::mergeAgentBranchIntoBase(int repoIndex, const QString &branchArg,
+                                          bool deleteAgent)
+{
+    if (repoIndex < 0 || repoIndex >= m_repositories.size())
+        return false;
+    // Copy everything out of the lists before the bind: it pumps the GUI event
+    // loop over blocking git reads, and a reload landing in that pump rebuilds
+    // m_repositories/m_agentSessions — `branchArg` aliases a session field
+    // (git-pump UAF family, adhoc #106/#119/#124/#149).
+    const QString branch = branchArg;
+    const QString localPath = m_repositories.at(repoIndex).localPath;
+    const QString owner = m_repositories.at(repoIndex).owner;
+    const QString name = m_repositories.at(repoIndex).name;
+    if (branch.isEmpty())
+        return false;
+    if (!bindRepoDetailToRepo(repoIndex)) {
+        // Couldn't bind to it (a repo load was already in flight, or the record
+        // moved) — leave the branch alone rather than merge into someone else's.
+        setRepoDetailNotice(
+            QStringLiteral("Couldn't open %1/%2 to merge %3 — try again from that "
+                           "repository.")
+                .arg(owner, name, branch),
+            true);
+        return false;
+    }
+    mergeWorktreeIntoMain(branch, worktreePathForBranch(localPath, branch),
+                          deleteAgent);
+    return true;
+}
+
 void MainWindow::maybeAutoMergeForSession(int sessionId)
 {
     const AgentSession *s = findAgentSession(sessionId);
@@ -9982,39 +10028,21 @@ void MainWindow::maybeAutoMergeForSession(int sessionId)
     const int ri = repoIndexFor(s->owner, s->name);
     if (ri < 0)
         return;
-    // Snapshot by value before anything below: openRepoDetail and the merge both
-    // pump the GUI event loop over blocking git reads, and a reloadAgents() fired
-    // during the pump rebuilds m_agentSessions — `s` would dangle (git-pump UAF
-    // family, adhoc #106/#119/#124/#149).
+    // Snapshot by value before anything below: the merge pumps the GUI event loop
+    // over blocking git reads, and a reloadAgents() fired during the pump rebuilds
+    // m_agentSessions — `s` would dangle (git-pump UAF family).
     const AgentSession session = *s;
     if (m_agentStore)
         m_agentStore->appendLog(
             session,
             QStringLiteral("==> YOLO: merging %1 into the default branch.\n")
                 .arg(session.branchName));
-    // mergeWorktreeIntoMain operates on the repository currently loaded in the
-    // detail view (repoGitDir/m_repoDetailIndex), but a YOLO run can finish while
-    // a different repo is open — merging then would target the wrong checkout. So
-    // bind the detail view to this session's repo first; that only reloads which
-    // repo the detail page holds, it doesn't switch the visible page.
-    if (ri != m_repoDetailIndex)
-        openRepoDetail(ri);
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size() ||
-        m_repositories.at(m_repoDetailIndex).owner != session.owner ||
-        m_repositories.at(m_repoDetailIndex).name != session.name) {
-        // Couldn't bind to it (a repo load was already in flight, or the record
-        // moved) — leave the branch alone rather than merge into someone else's.
-        if (m_agentStore)
-            m_agentStore->appendLog(
-                session,
-                QStringLiteral("!! YOLO: %1/%2 could not be opened; merge %3 by hand.\n")
-                    .arg(session.owner, session.name, session.branchName));
-        return;
-    }
-    mergeWorktreeIntoMain(
-        session.branchName,
-        worktreePathForBranch(m_repositories.at(m_repoDetailIndex).localPath,
-                              session.branchName));
+    if (!mergeAgentBranchIntoBase(ri, session.branchName, /*deleteAgent=*/false)
+        && m_agentStore)
+        m_agentStore->appendLog(
+            session,
+            QStringLiteral("!! YOLO: %1/%2 could not be opened; merge %3 by hand.\n")
+                .arg(session.owner, session.name, session.branchName));
 }
 
 // Release the temp worktree a stream session ran in once the run is over. The

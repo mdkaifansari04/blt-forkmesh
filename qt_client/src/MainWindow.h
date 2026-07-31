@@ -1152,6 +1152,12 @@ private:
     QWidget *buildOrganizationTasksSection();
     void refreshOrganizationTasks();
     void applyOrganizationTasks(const QJsonObject &payload);
+    // Tasks rail badge (adhoc #79). The open count is persisted, painted back
+    // onto the rail at launch, and refreshed in the background so it no longer
+    // takes a visit to the Tasks page to show a number.
+    void setOrganizationTaskBadge(int openCount);
+    void restoreOrganizationTaskBadge();
+    void refreshOrganizationTaskBadge();
     void renderOrganizationTaskDetail();
     void updateOrganizationTaskActions();
     void createOrganizationTask();
@@ -2401,6 +2407,10 @@ private:
     void persistVariablesFromTable();
 
     void openRepoDetail(int repoIndex);
+    // Point the detail view at `repoIndex` so the repo-scoped git helpers
+    // (repoGitDir/repoBranches/repoDefaultBranch) resolve against it. False when
+    // the bind didn't take — callers must not touch git then.
+    bool bindRepoDetailToRepo(int repoIndex);
     // Open a repo from the top-bar switcher: paint a spinner, then run the heavy
     // (synchronous) load on the next event-loop turn so the menu closes snappily.
     void openRepoDetailDeferred(int repoIndex);
@@ -2587,6 +2597,11 @@ private:
     void mergeWorktreeIntoMain(const QString &branch,
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
+    // The same merge for an agent session's branch, but bound to that session's
+    // repository first — the Agents tab is global, so the repo the detail view
+    // holds is often not the session's. False when the bind didn't take.
+    bool mergeAgentBranchIntoBase(int repoIndex, const QString &branch,
+                                  bool deleteAgent);
     // Merge the default branch into a worktree's branch, run inside that worktree,
     // so it picks up the latest from main without leaving its folder. baseArg lets a
     // caller name the base branch explicitly; callers that leave it empty fall back
@@ -3954,6 +3969,10 @@ private:
     // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
     // MainWindow.cpp).
     QWidget *m_relayRadar = nullptr;
+    // Echoes the mesh's serving nodes into the dish as blips (m_radarNodes).
+    // `force` overrides the repo-scoped Mirror-nodes panel's claim on the dish,
+    // for the case where that panel has no repo to show.
+    void updateRelayRadarNodes(bool force = false);
     QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
     bool m_relayProbeInFlight = false;     // guard against overlapping probes
     qint64 m_lastWsLatencySampleMs = 0;    // when the room socket last ponged
@@ -4159,6 +4178,11 @@ private:
         int repoCount = 0;
     };
     QList<NodeMenuEntry> m_nodeMenuEntries;
+    // The mesh's real serving nodes (refreshNodesTable's filtered list), echoed
+    // as blips inside the relay radar. Without this the radar only ever showed
+    // nodes while the repo-detail Mirror-nodes tab happened to be open, so it
+    // swept an empty dish from launch (adhoc #79).
+    QList<NodeMenuEntry> m_radarNodes;
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row

@@ -511,6 +511,9 @@ constexpr int kCommitFilePathRole = Qt::UserRole + 29; // file row: repo-relativ
 constexpr int kCommitRefsRole = Qt::UserRole + 30;     // branch/tag badges (QStringList)
 constexpr int kCommitBodyRole = Qt::UserRole + 31;     // full message body (fed to the hover box)
 constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has >1 parent
+constexpr int kCommitFilesRole =
+    Qt::UserRole + 33; // QStringList "path\tadds\tdels" of the files the commit
+                       // touched, previewed in the summary's hover box
 
 // URL scheme for a clickable branch-name link; the percent-encoded branch name
 // follows. Clicking it opens that branch's row in the Branches tab (adhoc #123).
@@ -2977,6 +2980,11 @@ const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
 // the point is that prompted work is visible to the organization, not just to
 // the desktop that typed it — and turned off per-run for throwaway prompts.
 const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// Last known number of open organization tasks, mirrored into settings so the
+// Tasks rail badge is on screen from the first frame after a restart instead of
+// staying blank until someone opens the Tasks page (adhoc #79).
+const QString kOrganizationTaskOpenCountSetting =
+    QStringLiteral("tasks/openCount");
 // Canonical prefixes this desktop signs with its account key to open and close
 // an organization task when it has no account session token to present (the
 // authenticateSilently path holds keys, not sessions). Must stay byte-identical
@@ -6752,6 +6760,75 @@ inline void setOcticon(QPushButton *button, const QString &name, int size = 16,
     button->setProperty("forkmeshOcticonRotation", rotationDeg);
     applyStoredOcticon(button);
 }
+
+// A push button whose label never pins its pane open: the text is elided to
+// whatever width the button is actually given, and both its preferred and its
+// minimum width are capped instead of tracking the full string. A long branch
+// name in the commits search row otherwise set the minimum width of the whole
+// left column, so dragging the workspace splitter narrower "got stuck" hundreds
+// of pixels short of where it could go (adhoc #74). Keep the untruncated text on
+// the tooltip at the call site.
+class ElidingPushButton : public QPushButton
+{
+public:
+    using QPushButton::QPushButton;
+
+    // Full, untruncated label. What's painted is derived from it on every
+    // resize; setText() alone would be overwritten by the next elide.
+    void setFullText(const QString &text)
+    {
+        m_fullText = text;
+        applyElide();
+    }
+    QString fullText() const { return m_fullText; }
+
+    // Both hints are computed from the *full* text, never from the elided one,
+    // so a re-elide can never feed back into the layout that caused it.
+    QSize sizeHint() const override
+    {
+        QSize hint = QPushButton::sizeHint();
+        hint.setWidth(qBound(kMinWidth,
+                             fontMetrics().horizontalAdvance(m_fullText) +
+                                 chromeWidth(),
+                             kMaxWidth));
+        return hint;
+    }
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QPushButton::minimumSizeHint();
+        hint.setWidth(qMin(hint.width(), kMinWidth));
+        return hint;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent *event) override
+    {
+        QPushButton::resizeEvent(event);
+        applyElide();
+    }
+
+private:
+    static constexpr int kMinWidth = 56;  // still shows a few characters
+    static constexpr int kMaxWidth = 240; // long refs stop growing the row here
+
+    // The frame padding, the leading octicon and the menu indicator all eat
+    // into the width the label actually gets.
+    int chromeWidth() const
+    {
+        return 28 + (icon().isNull() ? 0 : iconSize().width() + 6) +
+               (menu() ? 14 : 0);
+    }
+
+    void applyElide()
+    {
+        const QString elided = fontMetrics().elidedText(
+            m_fullText, Qt::ElideMiddle, qMax(0, width() - chromeWidth()));
+        if (elided != text())
+            QPushButton::setText(elided);
+    }
+
+    QString m_fullText;
+};
 
 // Width of one activity-rail entry, and of the rail (scroll area) itself. Every
 // badge in the rail rides its own icon's corner rather than the item's outer
