@@ -1912,13 +1912,31 @@ int main(int argc, char *argv[])
                   QStringLiteral("picking a speed persists the effort the next run "
                                  "is launched with"));
         }
-        // The genie button is the top of the send column, above "add" and "new"
-        // (adhoc #42/#38), and the strip of session dots that used to sit above
-        // the prompt is gone (adhoc #38) — its state lives in the top bar now.
+        // The pick-your-own-work button is the top of the send column, above
+        // "add" and "new" (adhoc #42/#38), and reads "task" rather than "genie"
+        // (adhoc #120). The strip of session dots that used to sit above the
+        // prompt is gone (adhoc #38) — its state lives in the top bar now.
         auto *genieButton =
             seeded.findChild<QPushButton *>(QStringLiteral("quickAddGenieButton"));
-        check(genieButton && genieButton->isVisible(),
-              QStringLiteral("the composer offers the genie button"));
+        check(genieButton && genieButton->isVisible() &&
+                  genieButton->text() == QStringLiteral("task"),
+              QStringLiteral("the composer offers the task button"));
+        // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
+        // the composer (adhoc #120): the only Enter indicator is the green
+        // outline on whichever send button Enter activates.
+        auto *composerDock = seeded.findChild<QWidget *>(QStringLiteral("logDock"));
+        QStringList composerChecks;
+        if (composerDock) {
+            for (auto *box : composerDock->findChildren<QCheckBox *>())
+                composerChecks << box->text();
+        }
+        check(composerDock && !composerChecks.contains(QStringLiteral("YOLO")) &&
+                  !composerChecks.contains(QStringLiteral("Task")),
+              QString("the composer has no YOLO/Task toggles (%1)")
+                  .arg(composerChecks.join(QStringLiteral(", "))));
+        check(seeded.findChild<QLabel *>(QStringLiteral("quickAddEnterBadge")) ==
+                  nullptr,
+              QStringLiteral("no corner Enter badge on the send buttons"));
         check(seeded.findChild<QWidget *>(QStringLiteral("agentStatusRow")) == nullptr &&
                   seeded.findChild<QPushButton *>(
                       QStringLiteral("agentStatusMore")) == nullptr,
