@@ -436,6 +436,7 @@ void MainWindow::requestOrganizationTasks(
     request.setTransferTimeout(15000);
     request.setRawHeader(QByteArrayLiteral("Accept"),
                          QByteArrayLiteral("application/json"));
+    bool keySigned = false;
     if (!m_accountSessionToken.trimmed().isEmpty()) {
         request.setRawHeader(
             QByteArrayLiteral("Authorization"),
@@ -457,6 +458,7 @@ void MainWindow::requestOrganizationTasks(
                 "Sign in to an organization account to use private tasks."));
             return;
         }
+        keySigned = true;
     }
     const QByteArray payload =
         body.isEmpty() ? QByteArray() : QJsonDocument(body).toJson(
@@ -475,7 +477,8 @@ void MainWindow::requestOrganizationTasks(
     else
         reply = m_networkAccess->sendCustomRequest(request, method, payload);
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, method, path, handler = std::move(handler)]() mutable {
+            [this, reply, method, path, keySigned,
+             handler = std::move(handler)]() mutable {
                 const QByteArray raw = reply->readAll();
                 const QJsonDocument document = QJsonDocument::fromJson(raw);
                 const QJsonObject data = document.object();
@@ -484,13 +487,21 @@ void MainWindow::requestOrganizationTasks(
                 const bool ok = reply->error() == QNetworkReply::NoError &&
                                 status >= 200 && status < 300 &&
                                 data.value(QStringLiteral("ok")).toBool(true);
-                const QString error = ok
+                QString error = ok
                     ? QString()
                     : taskErrorText(
                           data,
                           status > 0
                               ? QStringLiteral("HTTP %1").arg(status)
                               : reply->errorString());
+                // "invalid session" reads as a bug to an operator who is
+                // plainly signed in: what the relay actually rejected is this
+                // machine's key. Say so, and name the one action that fixes it.
+                if (keySigned && status == 401)
+                    error += QString::fromUtf8(
+                        " \xE2\x80\x94 this machine's key is not authorized "
+                        "for the account. Use Settings \xE2\x86\x92 \"Log in "
+                        "to a user account\" to register it.");
                 logSystem(
                     QStringLiteral("Organization tasks: %1 %2 %3.")
                         .arg(QString::fromLatin1(method), path,

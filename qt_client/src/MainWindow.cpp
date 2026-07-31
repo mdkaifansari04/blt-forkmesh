@@ -1,4 +1,5 @@
 #include "ForkMeshVersion.h"
+#include "AgentPromptImages.h"
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"
@@ -568,6 +569,12 @@ void MainWindow::runDeferredStartup()
             openRepoDetail(firstRepo);
     }
     m_pendingRestoreRepoIndex = -1;
+
+    // Rescue screenshot attachments still sitting in the old temp directory so
+    // the transcripts that reference them keep their thumbnails past the next
+    // reboot (adhoc #66). Deferred: it touches the disk and nothing on screen
+    // needs it before the first frame.
+    AgentPromptImages::migrateLegacy();
 
     // Resume the agent sessions initAgents() re-queued after the restart, only
     // now that the first frame is up and the last repository is restored.

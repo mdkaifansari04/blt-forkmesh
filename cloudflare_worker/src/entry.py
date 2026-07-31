@@ -11208,8 +11208,16 @@ async def _org_task_signed_session(env, request):
         ).encode()
     else:
         return "", None
-    pubkey = await _owner_pubkey(env, node)
-    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+    # Every key the account may sign as, not just its primary pubkey: a desktop
+    # that logged in with a password registers THIS machine's key in
+    # account_devices, while rec["pubkey"] keeps naming whichever install
+    # created the account. That session token lives only in memory, so the next
+    # launch authenticates silently and signs the board read with the device
+    # key — and a gate that trusted only the primary answered invalid_session,
+    # which is why the Tasks tab loaded until the app was restarted (adhoc #63).
+    # Same family as the /api/sync drain gate; see _owner_signing_pubkeys for
+    # why reusing the stored device keys is account-bound and safe.
+    if not await _verify_owner_signature(env, node, sig, canonical):
         return "", None
     account_bi, record = await _account_row(env, node)
     if (
@@ -11241,8 +11249,10 @@ async def _genie_credential_signed_session(env, request):
     canonical = (
         GENIE_CREDENTIAL_PROOF + "\n" + node + "\n" + str(ts)
     ).encode()
-    pubkey = await _owner_pubkey(env, node)
-    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+    # Same durable desktop identity as _org_task_signed_session: a reinstalled
+    # or password-logged-in machine signs with its account_devices key, which is
+    # never promoted to the account's primary pubkey (adhoc #63).
+    if not await _verify_owner_signature(env, node, sig, canonical):
         return "", None
     account_bi, record = await _account_row(env, node)
     if (
