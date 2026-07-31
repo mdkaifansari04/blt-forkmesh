@@ -881,6 +881,16 @@ private:
     bool isOfficeConversation(const QString &conversation) const;
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
+    // Pending federated-instance join requests (adhoc #97): a freshly launched
+    // instance pings the main relay asking to join; for admins the pending
+    // count rides the signed heartbeat reply, a red dot over the top-left
+    // relay favicon flags it, and the Approve button beside it opens the link
+    // dialog. Approving marks the relay approved upstream, which adds it to
+    // /api/world/instances — the World then runs its firework show for the
+    // newly joined instance.
+    void setPendingRelayJoins(int count);
+    void showRelayJoinApprovalDialog();
+    bool adminRelayApprove(const QString &pubkey, const QString &action);
     void verifyWallet();
     QUrl accountsApiUrl(const QString &leaf) const;
     QJsonObject postAccountSync(const QString &leaf, const QJsonObject &body,
@@ -4112,6 +4122,13 @@ private:
     // Top-bar relay switcher: a "favicon  domain ▾ count" dropdown button
     // (search/switch/add relays).
     QPushButton *m_relayMenuButton = nullptr;
+    // Red dot pinned to the relay favicon's corner while a freshly launched
+    // instance waits to be linked, plus the Approve button beside it that
+    // opens the join dialog. Hidden unless this account is an admin with at
+    // least one pending join request (adhoc #97).
+    QLabel *m_relayJoinDot = nullptr;
+    QPushButton *m_relayJoinApproveButton = nullptr;
+    int m_pendingRelayJoins = 0;
     // Spinning-radar + latency readout sitting on the window-chrome line just
     // left of the CPU/MEM/DISK sparklines: probes the active relay once a
     // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
