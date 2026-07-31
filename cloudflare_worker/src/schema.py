@@ -98,10 +98,6 @@ SCHEMA_STATEMENTS = [
         mirrored_by_bi TEXT NOT NULL DEFAULT '',
         mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi)",
-    """CREATE TABLE IF NOT EXISTS commit_inbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        data TEXT NOT NULL)""",
-    "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS discussion_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL, submitter_bi TEXT,
@@ -783,6 +779,19 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS about_inbox (
         repo_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
         queued_at INTEGER NOT NULL)""",
+    # Repositories deleted from the website's repo Settings tab (adhoc #91).
+    # The owner's node keeps its local mirror and republishes the catalog
+    # record on every heartbeat, so a web delete used to reappear within a
+    # minute and looked like it had silently failed. This tombstone makes the
+    # deletion stick: automatic publishes for the repo are refused with HTTP
+    # 410 until it expires, and an explicit user-initiated publish from the
+    # desktop ("publishIntent":"user", owner-signed like any other publish)
+    # clears the row so the repo can be shared again.
+    """CREATE TABLE IF NOT EXISTS repo_deletions (
+        repo_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL,
+        deleted_at INTEGER NOT NULL, expires_at INTEGER NOT NULL)""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_deletions_expires "
+    "ON repo_deletions(expires_at)",
     # Repo stars (migration 0032): which accounts starred which repo. Keyed by
     # blind indexes only (no signing needed - a star is a plain per-account
     # preference, same trust level as profile_follows), so the count and the

@@ -972,9 +972,10 @@ private:
     QColor m_color;
 };
 
-// A super-tiny two-row usage meter for the top bar, sized to tuck in next to the
-// node's public-wallet balance/avatar (issue #266). The top row is the rolling 5-hour window,
-// the bottom row the weekly window; each draws a horizontal track that fills
+// A super-tiny usage meter for the top bar, sized to tuck in next to the
+// node's public-wallet balance/avatar (issue #266). One thin vertical bar per
+// rolling window — 5-hour, weekly, and (Claude only, adhoc #96) the premium
+// per-model weekly window we label "Fable" — each an empty track that fills
 // 0..100% of that window's utilisation and is tinted green/amber/red as it nears
 // the cap. Values are fed from Claude Code rate-limit events (see usageChanged);
 // a value of -1 means "unknown" and leaves an empty track. Stored as a plain
@@ -982,24 +983,32 @@ private:
 class TokenUsageMiniChart : public QWidget
 {
 public:
+    // Which rolling window a figure belongs to. Fable is the per-model weekly
+    // allowance the provider reports alongside the plan-wide one; charts built
+    // with `windows == 2` (Codex) simply never show it.
+    enum Window { FiveHour = 0, Weekly = 1, Fable = 2, WindowCount = 3 };
+
     explicit TokenUsageMiniChart(const QString &title =
                                      QStringLiteral("Claude Code usage"),
                                  bool remainingMode = false,
+                                 int windows = 2,
                                  QWidget *parent = nullptr)
-        : QWidget(parent), m_title(title), m_remainingMode(remainingMode)
+        : QWidget(parent), m_title(title), m_remainingMode(remainingMode),
+          m_windows(qBound(1, windows, int(WindowCount)))
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        // Two thin vertical bars (5h + weekly) that ride in the prompt toolbar
-        // (adhoc #47). No inline text — the label/figures live in the hover
-        // tooltip only, so the strip stays tiny next to the send buttons.
-        setFixedSize(15, 22);
+        // Thin vertical bars that ride in the prompt toolbar (adhoc #47). No
+        // inline text — the label/figures live in the hover tooltip only, so the
+        // strip stays tiny next to the send buttons. The 3px padding around the
+        // bars is what the hover refresh box is drawn in (adhoc #96).
+        setFixedSize(qRound(m_windows * kBarW + (m_windows - 1) * kGap) + 6, 24);
         refreshTooltip();
     }
 
     // Update one window's utilisation (0..100); pass -1 to mark it unknown.
-    void setUsage(bool weekly, int percent)
+    void setUsage(Window window, int percent)
     {
-        int &slot = weekly ? m_weekly : m_fiveHour;
+        int &slot = m_pct[window];
         const int clamped = percent < 0 ? -1 : qBound(0, percent, 100);
         if (slot == clamped)
             return;
@@ -1007,25 +1016,37 @@ public:
         refreshTooltip();
         update();
     }
+    void setUsage(bool weekly, int percent)
+    {
+        setUsage(weekly ? Weekly : FiveHour, percent);
+    }
 
     // Update one window's "resets in ..." text (e.g. "2h 13m"), shown next to its
     // utilisation in the tooltip so the user can see how long until the limit
     // clears (issue #50). Pass an empty string to mark it unknown.
-    void setReset(bool weekly, const QString &remaining)
+    void setReset(Window window, const QString &remaining)
     {
-        setWindowNote(weekly,
+        setWindowNote(window,
                       remaining.isEmpty()
                           ? QString()
                           : QStringLiteral("resets in %1").arg(remaining));
     }
-
-    void setWindowNote(bool weekly, const QString &note)
+    void setReset(bool weekly, const QString &remaining)
     {
-        QString &slot = weekly ? m_weeklyNote : m_fiveHourNote;
+        setReset(weekly ? Weekly : FiveHour, remaining);
+    }
+
+    void setWindowNote(Window window, const QString &note)
+    {
+        QString &slot = m_note[window];
         if (slot == note)
             return;
         slot = note;
         refreshTooltip();
+    }
+    void setWindowNote(bool weekly, const QString &note)
+    {
+        setWindowNote(weekly ? Weekly : FiveHour, note);
     }
 
     // For Codex we do not get a live utilization percentage from the CLI today,
@@ -1035,6 +1056,22 @@ public:
     {
         setUsage(weekly, percent);
         setWindowNote(weekly, note);
+    }
+
+    // Hover feedback (adhoc #96): flash a box around the bars — green when the
+    // hover pulled a fresh reading, red when the refresh failed — so a hover
+    // that leaves the figures unchanged still says whether it worked.
+    void flashRefresh(bool ok)
+    {
+        m_flash = ok ? 1 : -1;
+        update();
+        const int token = ++m_flashToken;
+        QTimer::singleShot(kFlashMs, this, [this, token] {
+            if (token != m_flashToken) // a newer flash owns the box now
+                return;
+            m_flash = 0;
+            update();
+        });
     }
 
     // The per-session token/cost detail that used to live on the agent detail
@@ -1065,28 +1102,36 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        // Two vertical gauges side by side: 5-hour on the left, weekly on the
-        // right. Each is an empty track filling from the bottom to its
-        // utilisation and tinted by barColor(); -1 (unknown) leaves it empty.
-        const int vals[2] = {m_fiveHour, m_weekly};
-        const qreal barW = 4.0;
-        const qreal gap = 3.0;
-        const qreal totalW = 2 * barW + gap;
+        // Vertical gauges side by side, in Window order: 5-hour, weekly, Fable.
+        // Each is an empty track filling from the bottom to its utilisation and
+        // tinted by barColor(); -1 (unknown) leaves it empty.
+        const qreal totalW = m_windows * kBarW + (m_windows - 1) * kGap;
         qreal x = (width() - totalW) / 2.0;
-        const qreal top = 1.0;
-        const qreal trackH = height() - 2.0;
-        for (int i = 0; i < 2; ++i) {
-            const QRectF track(x, top, barW, trackH);
+        const qreal top = 3.0;
+        const qreal trackH = height() - 6.0;
+        for (int i = 0; i < m_windows; ++i) {
+            const QRectF track(x, top, kBarW, trackH);
             p.setPen(Qt::NoPen);
             p.setBrush(textColor(38));
-            p.drawRoundedRect(track, barW / 2.0, barW / 2.0);
-            if (vals[i] > 0) {
-                const qreal fillH = trackH * qBound(0, vals[i], 100) / 100.0;
-                const QRectF fill(x, top + trackH - fillH, barW, fillH);
-                p.setBrush(barColor(vals[i]));
-                p.drawRoundedRect(fill, barW / 2.0, barW / 2.0);
+            p.drawRoundedRect(track, kBarW / 2.0, kBarW / 2.0);
+            if (m_pct[i] > 0) {
+                const qreal fillH = trackH * qBound(0, m_pct[i], 100) / 100.0;
+                const QRectF fill(x, top + trackH - fillH, kBarW, fillH);
+                p.setBrush(barColor(m_pct[i]));
+                p.drawRoundedRect(fill, kBarW / 2.0, kBarW / 2.0);
             }
-            x += barW + gap;
+            x += kBarW + kGap;
+        }
+
+        // The refresh-result box (adhoc #96) rides in the padding around the
+        // bars, so it never overdraws a gauge.
+        if (m_flash != 0) {
+            QPen pen(m_flash > 0 ? QColor("#3fb950") : QColor("#f85149"));
+            pen.setWidthF(1.5);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(QRectF(rect()).adjusted(0.75, 0.75, -0.75, -0.75),
+                              4.0, 4.0);
         }
     }
 
@@ -1125,24 +1170,28 @@ private:
                 s += QString::fromUtf8(" \xC2\xB7 ") + note; // ·
             return s;
         };
-        QString tip = QStringLiteral("%1\n%2\n%3")
-                          .arg(m_title,
-                               line(QStringLiteral("5-hour"), m_fiveHour,
-                                    m_fiveHourNote),
-                               line(QStringLiteral("Weekly"), m_weekly,
-                                    m_weeklyNote));
+        static const char *labels[WindowCount] = {"5-hour", "Weekly", "Fable"};
+        QString tip = m_title;
+        for (int i = 0; i < m_windows; ++i)
+            tip += QLatin1Char('\n')
+                   + line(QString::fromLatin1(labels[i]), m_pct[i], m_note[i]);
         if (!m_stats.isEmpty())
             tip += QStringLiteral("\n\n") + m_stats;
         setToolTip(tip);
     }
 
+    static constexpr qreal kBarW = 4.0;
+    static constexpr qreal kGap = 3.0;
+    static constexpr int kFlashMs = 900; // how long the hover box stays up
+
     QString m_title;
     bool m_remainingMode = false;
-    int m_fiveHour = -1;
-    int m_weekly = -1;
-    QString m_fiveHourNote; // extra tooltip text for the 5-hour window
-    QString m_weeklyNote;   // extra tooltip text for the weekly window
+    int m_windows = 2;              // how many of the Window slots are drawn
+    int m_pct[WindowCount] = {-1, -1, -1};
+    QString m_note[WindowCount];    // extra tooltip text per window
     QString m_stats; // per-session token/cost line, shown under the gauges
+    int m_flash = 0;     // 0 = none, 1 = refreshed (green), -1 = failed (red)
+    int m_flashToken = 0; // guards against an older flash clearing a newer one
 };
 
 // A tiny moving line chart for one system resource (CPU, memory or disk). New
@@ -1286,6 +1335,92 @@ private:
     QString m_value;
     double m_max = 100.0;
     QVector<double> m_history;
+};
+
+// A row-sized memory trend square for one process in the "High memory usage"
+// panel (adhoc #98). Each refresh of that panel pushes the process's resident
+// size in, so a row shows at a glance whether that PID is still growing or has
+// levelled off. Unlike ResourceSparkline it plots on a caller-supplied scale
+// shared by every row (the largest resident size on the list), so the squares
+// are comparable down the column, and it carries no label — the numbers are
+// already in the neighbouring cells.
+class ProcessMemorySparkline : public QWidget
+{
+public:
+    static constexpr int kMaxPoints = 24; // ~2 minutes at the panel's 5s refresh
+
+    explicit ProcessMemorySparkline(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedSize(kSide, kSide);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+    }
+
+    // `history` is oldest-to-newest resident sizes in KB; `maxValue` is the
+    // shared full-scale value for the column.
+    void setHistory(const QVector<double> &history, double maxValue)
+    {
+        m_history = history;
+        m_max = maxValue > 0 ? maxValue : 1.0;
+        update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        const QRectF box = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
+        QPainterPath cardPath;
+        cardPath.addRoundedRect(box, 3, 3);
+        QColor card = palette().color(QPalette::WindowText);
+        card.setAlpha(28);
+        p.setPen(Qt::NoPen);
+        p.setBrush(card);
+        p.drawPath(cardPath);
+        const QRectF area = box.adjusted(1.5, 1.5, -1.5, -1.5);
+        if (m_history.isEmpty() || area.height() < 2 || area.width() < 2)
+            return;
+
+        // A single sample is still worth drawing — a flat line at that level
+        // says the process was only just seen.
+        p.save();
+        p.setClipPath(cardPath);
+        const double norm = qBound(0.0, m_history.last() / m_max, 1.0);
+        const QColor line = norm >= 0.66   ? QColor("#f85149")
+                            : norm >= 0.33 ? QColor("#d29922")
+                                           : QColor("#3fb950");
+        const int n = m_history.size();
+        const double step = area.width() / double(kMaxPoints - 1);
+        QPolygonF curve;
+        for (int i = 0; i < n; ++i) {
+            const double x =
+                n > 1 ? area.right() - (n - 1 - i) * step : area.left();
+            const double v = qBound(0.0, m_history.at(i) / m_max, 1.0);
+            curve << QPointF(x, area.bottom() - v * area.height());
+        }
+        if (n == 1)
+            curve << QPointF(area.right(), curve.first().y());
+        QPolygonF fill = curve;
+        fill << QPointF(curve.last().x(), area.bottom())
+             << QPointF(curve.first().x(), area.bottom());
+        QColor under = line;
+        under.setAlpha(70);
+        p.setBrush(under);
+        p.setPen(Qt::NoPen);
+        p.drawPolygon(fill);
+        QPen pen(line);
+        pen.setWidthF(1.2);
+        p.setPen(pen);
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(curve);
+        p.restore();
+    }
+
+private:
+    static constexpr int kSide = 34; // fits a table row without growing it
+    QVector<double> m_history;
+    double m_max = 1.0;
 };
 
 // Spinning-radar dish with a latency readout centered inside it, shown on the
@@ -1691,6 +1826,118 @@ private:
     QVector<Dot> m_dots;
     double m_phase = 0.0;      // 0..1 Larson sweep parameter
     QTimer *m_sweep = nullptr; // only ticks while something is running
+};
+
+// The CI companion to the fleet matrix (adhoc #70): the most recent action runs
+// as a row of tiny status squares sitting immediately right of the agent dots,
+// so one glance at the chrome line covers both what the agents and what the
+// workflows are doing. Newest run on the left, each square tinted with the same
+// actionStatusColor() the Actions tab uses; a running square breathes so an
+// in-flight workflow is distinguishable from a finished blue one.
+class ActionRunStrip : public QWidget
+{
+public:
+    struct Cell {
+        int runId = 0;
+        QColor color;
+        bool running = false;
+    };
+
+    // How many runs the strip shows before the tooltip takes over.
+    static constexpr int kMaxCells = 9;
+
+    explicit ActionRunStrip(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedHeight(kHeight);
+        setFixedWidth(0); // nothing to show until the first setCells()
+        setCursor(Qt::PointingHandCursor);
+        hide();
+        m_pulse = new QTimer(this);
+        m_pulse->setInterval(90);
+        connect(m_pulse, &QTimer::timeout, this, [this] {
+            m_phase += 0.05;
+            if (m_phase >= 1.0)
+                m_phase -= 1.0;
+            update();
+        });
+    }
+
+    // Replace the strip. Anything past kMaxCells is dropped from the paint (the
+    // caller folds the remainder into the tooltip).
+    void setCells(const QVector<Cell> &cells)
+    {
+        m_cells = cells.mid(0, kMaxCells);
+        setFixedWidth(m_cells.isEmpty() ? 0 : m_cells.size() * kPitch);
+        bool anyRunning = false;
+        for (const Cell &c : std::as_const(m_cells))
+            anyRunning = anyRunning || c.running;
+        if (anyRunning && !m_pulse->isActive())
+            m_pulse->start();
+        else if (!anyRunning && m_pulse->isActive())
+            m_pulse->stop();
+        update();
+    }
+
+    int shownCount() const { return m_cells.size(); }
+
+    // Clicking a square opens that run; clicking past them falls back to run id
+    // 0 (the repository's Actions tab).
+    std::function<void(int)> onCellClicked;
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onCellClicked) {
+            const int index = cellAt(e->position().toPoint());
+            onCellClicked(index >= 0 ? m_cells.at(index).runId : 0);
+            // Same reason as AgentDotMatrix: an unhandled press on the
+            // window-chrome bar below turns into a system window-move.
+            e->accept();
+            return;
+        }
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        p.setPen(Qt::NoPen);
+        for (int i = 0; i < m_cells.size(); ++i) {
+            const Cell &cell = m_cells.at(i);
+            QColor color = cell.color;
+            if (cell.running) {
+                double t = m_phase + i * kPulseStep;
+                t -= std::floor(t);
+                const double tri = 1.0 - std::abs(2.0 * t - 1.0);
+                color.setAlphaF(qBound(0.35, 0.55 + 0.45 * tri, 1.0));
+            } else {
+                color.setAlpha(215);
+            }
+            p.setBrush(color);
+            p.drawRoundedRect(
+                QRectF(i * kPitch + (kPitch - kSide) / 2.0,
+                       (kHeight - kSide) / 2.0, kSide, kSide),
+                2.0, 2.0);
+        }
+    }
+
+private:
+    int cellAt(const QPoint &pos) const
+    {
+        const int index = pos.x() / kPitch;
+        return (index >= 0 && index < m_cells.size()) ? index : -1;
+    }
+
+    static constexpr int kPitch = 11;   // cell size, including its gap
+    static constexpr double kSide = 8.0; // painted square
+    static constexpr int kHeight = 21;  // matches AgentDotMatrix's 3x7 grid
+    static constexpr double kPulseStep = 0.09; // per-square offset of the pulse
+
+    QVector<Cell> m_cells;
+    double m_phase = 0.0;
+    QTimer *m_pulse = nullptr; // only ticks while a run is in flight
 };
 
 // A plain track-and-knob on/off switch, used for controls where the state is a
@@ -2570,6 +2817,11 @@ const QString kEmailNotifyHostOfflineSetting = QStringLiteral("notifications/ema
 // whose email is verified — plain nodes and unverified users stay silent, so
 // #welcome reads as a genuine roll-call of real people.
 const QString kWelcomeChannel = QStringLiteral("#welcome");
+// A #welcome greeting only raises a "new user joined" ping while it is this
+// fresh — peers replay their in-session history on every reconnect, and a
+// replayed greeting that fell out of the id-dedupe set must not re-ping for a
+// join the user already saw.
+const qint64 kWelcomePingFreshMs = 5 * 60 * 1000;
 // Legacy QSettings migration prefix retained for installs that already posted to
 // an older welcome room.
 const QString kLegacyWelcomeAnnouncedSettingPrefix =
@@ -2778,6 +3030,10 @@ const QString kClaudeUsageWeekPctSetting = QStringLiteral("agents/claudeUsageWee
 // away on the first frame after a restart (issue #50).
 const QString kClaudeUsage5hResetSetting = QStringLiteral("agents/claudeUsage5hReset");
 const QString kClaudeUsageWeekResetSetting = QStringLiteral("agents/claudeUsageWeekReset");
+// Same pair for the premium per-model weekly window the OAuth usage endpoint
+// reports next to the plan-wide one — the third bar on the chart (adhoc #96).
+const QString kClaudeUsageFablePctSetting = QStringLiteral("agents/claudeUsageFablePct");
+const QString kClaudeUsageFableResetSetting = QStringLiteral("agents/claudeUsageFableReset");
 constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
 constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 // Issue #346: whether either window has been seen maxed out (>=99%) since it
@@ -2981,6 +3237,11 @@ const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
 // the point is that prompted work is visible to the organization, not just to
 // the desktop that typed it — and turned off per-run for throwaway prompts.
 const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// Last known number of open organization tasks, mirrored into settings so the
+// Tasks rail badge is on screen from the first frame after a restart instead of
+// staying blank until someone opens the Tasks page (adhoc #79).
+const QString kOrganizationTaskOpenCountSetting =
+    QStringLiteral("tasks/openCount");
 // Canonical prefixes this desktop signs with its account key to open and close
 // an organization task when it has no account session token to present (the
 // authenticateSilently path holds keys, not sessions). Must stay byte-identical
@@ -6817,6 +7078,83 @@ private:
     }
 
     QString m_fullText;
+};
+
+// A push button that stacks its octicon above a small caption — the same
+// icon-over-words form as the activity rail's entries (adhoc #91) — but driven
+// by the button's live text(), so the existing "Issues (60)" / "Fork 0" count
+// updates keep working. Two forms: Tab paints the repo tabs' checked underline,
+// Action paints the repoAction pill's fill and border. Fully custom-painted
+// (like ActivityRailButton), so the QPushButton QSS box — including
+// #repoAction's max-height, which would squash the stacked layout — never
+// shapes what's drawn.
+class VerticalIconButton : public QPushButton
+{
+public:
+    enum Form { Action, Tab };
+    explicit VerticalIconButton(const QString &text, Form form,
+                                QWidget *parent = nullptr)
+        : QPushButton(text, parent), m_form(form)
+    {
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    QSize sizeHint() const override
+    {
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const int textW = QFontMetrics(f).horizontalAdvance(text());
+        return QSize(qMax(44, qMax(kIconPx, textW) + 16), kHeight);
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const bool hovered = isEnabled() && underMouse();
+        QColor fg;
+        if (m_form == Tab)
+            fg = dark ? QColor(isChecked() || hovered ? "#e6edf3" : "#8b949e")
+                      : QColor(isChecked() || hovered ? "#1f2328" : "#656d76");
+        else
+            fg = dark ? QColor("#e6edf3") : QColor("#1f2328");
+        if (!isEnabled())
+            fg = QColor("#6e7681");
+
+        if (m_form == Action) {
+            p.setPen(QColor(dark ? "#30363d" : "#d0d7de"));
+            p.setBrush(QColor(dark ? (hovered ? "#30363d" : "#21262d")
+                                   : (hovered ? "#d0d7de" : "#eaeef2")));
+            p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6,
+                              6);
+        } else if (isChecked()) {
+            p.fillRect(QRect(0, height() - 2, width(), 2),
+                       QColor(dark ? "#2ea043" : "#1f883d"));
+        }
+
+        const QRect iconRect((width() - kIconPx) / 2, 6, kIconPx, kIconPx);
+        icon().paint(&p, iconRect, Qt::AlignCenter,
+                     isEnabled() ? QIcon::Normal : QIcon::Disabled);
+
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        p.setFont(f);
+        p.setPen(fg);
+        p.drawText(QRect(2, iconRect.bottom() + 2, width() - 4, 14),
+                   Qt::AlignHCenter | Qt::AlignTop,
+                   QFontMetrics(f).elidedText(text(), Qt::ElideRight,
+                                              width() - 4));
+    }
+
+private:
+    static constexpr int kIconPx = 16;
+    static constexpr int kHeight = 44;
+    Form m_form;
 };
 
 // Width of one activity-rail entry, and of the rail (scroll area) itself. Every

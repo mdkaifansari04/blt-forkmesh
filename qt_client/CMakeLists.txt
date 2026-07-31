@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(ForkMesh VERSION 0.7.6 LANGUAGES CXX)
+project(ForkMesh VERSION 0.7.8 LANGUAGES CXX)
 
 # The version stamped into the binary. It tracks the project() version above on
 # every configure, so bumping that line (e.g. cutting a release) immediately
@@ -129,6 +129,8 @@ set(FORKMESH_APP_SOURCES
     src/PrivateMirrorRuntime.cpp
     src/PublicMirrorRuntime.h
     src/PublicMirrorRuntime.cpp
+    src/UpstreamCheckoutSync.h
+    src/UpstreamCheckoutSync.cpp
     src/CoveStore.h
     src/CoveStore.cpp
     src/ChatHistoryLimits.h
@@ -182,8 +184,6 @@ set(FORKMESH_APP_SOURCES
     src/PullBadgeWidget.h
     src/PullBadgeWidget.cpp
     src/PacmanProgress.h
-    src/CommitCommentStore.h
-    src/CommitCommentStore.cpp
     src/ReferenceLinks.h
     src/ActionFile.h
     src/ActionFile.cpp
@@ -229,8 +229,6 @@ set(FORKMESH_APP_SOURCES
     src/ScrollJumpButtons.cpp
     src/ScreenCaptureOverlay.h
     src/ScreenCaptureOverlay.cpp
-    src/ScreenDrawOverlay.h
-    src/ScreenDrawOverlay.cpp
     src/ScreenshotMarkupWindow.h
     src/ScreenshotMarkupWindow.cpp
     src/StallWatchdog.h
@@ -306,7 +304,6 @@ qt_wrap_cpp(FORKMESH_MOC_SOURCES
     src/OfficeChannelMirror.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
-    src/ScreenDrawOverlay.h
     src/ScreenshotMarkupWindow.h
     src/ScrollJumpButtons.h
     src/ServerNode.h
@@ -370,7 +367,6 @@ set_source_files_properties(
     src/OfficeChannelMirror.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
-    src/ScreenDrawOverlay.h
     src/ScreenshotMarkupWindow.h
     src/ScrollJumpButtons.h
     src/ServerNode.h
@@ -516,8 +512,6 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
-        src/CommitCommentStore.h
-        src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/ActionStore.h
@@ -657,6 +651,23 @@ if(FORKMESH_BUILD_TESTS)
             MACOSX_BUNDLE FALSE)
     endif()
 
+    # Headless fleet nodes seal their public mirror from the installer's agent
+    # checkout; this suite proves that checkout keeps tracking the upstream
+    # relay clone (fast-forwards, forced pulls-metadata tracking, safe pruning,
+    # divergence preservation) against real local git repositories.
+    qt_add_executable(forkmesh-upstream-sync-tests
+        tests/test_upstream_checkout_sync.cpp
+        src/UpstreamCheckoutSync.h
+        src/UpstreamCheckoutSync.cpp
+    )
+    target_include_directories(forkmesh-upstream-sync-tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+    target_link_libraries(forkmesh-upstream-sync-tests PRIVATE Qt6::Core)
+    if(APPLE)
+        set_target_properties(forkmesh-upstream-sync-tests PROPERTIES
+            MACOSX_BUNDLE FALSE)
+    endif()
+
     # The first-instance owner's community reward-pool key remains inside a
     # passphrase-encrypted, owner-only desktop vault. These tests exercise key
     # import, strict transaction inspection, local signing, canonical owner
@@ -760,8 +771,6 @@ if(FORKMESH_BUILD_TESTS)
         src/PullReviewModel.cpp
         src/PullAiReview.h
         src/PullAiReview.cpp
-        src/CommitCommentStore.h
-        src/CommitCommentStore.cpp
         src/AgentStore.h
         src/AgentStore.cpp
         src/ActionStore.h
@@ -827,6 +836,7 @@ if(FORKMESH_BUILD_TESTS)
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
+        forkmesh-upstream-sync-tests
         forkmesh-e2e-stub-agent forkmesh-e2e
         forkmesh-window-tests forkmesh-perf-tests
         PROPERTIES EXCLUDE_FROM_ALL TRUE)
@@ -858,6 +868,8 @@ if(FORKMESH_BUILD_TESTS)
              COMMAND forkmesh-private-mirror-tests)
     add_test(NAME forkmesh-public-mirror-tests
              COMMAND forkmesh-public-mirror-tests)
+    add_test(NAME forkmesh-upstream-sync-tests
+             COMMAND forkmesh-upstream-sync-tests)
     add_test(NAME forkmesh-window-tests COMMAND forkmesh-window-tests)
     add_test(NAME forkmesh-perf-tests COMMAND forkmesh-perf-tests)
     add_test(NAME forkmesh-e2e COMMAND forkmesh-e2e)
@@ -876,6 +888,7 @@ if(FORKMESH_BUILD_TESTS)
         forkmesh-action-security-tests
         forkmesh-private-mirror-tests
         forkmesh-public-mirror-tests
+        forkmesh-upstream-sync-tests
         forkmesh-window-tests forkmesh-perf-tests forkmesh-e2e
         forkmesh-e2e-stub-agent)
 
@@ -888,6 +901,7 @@ if(FORKMESH_BUILD_TESTS)
             forkmesh-chat-transport-tests
             forkmesh-action-security-tests
             forkmesh-private-mirror-tests forkmesh-public-mirror-tests
+            forkmesh-upstream-sync-tests
             forkmesh-reward-pool-tests forkmesh-e2e-stub-agent forkmesh-e2e
             forkmesh-window-tests forkmesh-perf-tests)
         add_dependencies(${_forkmesh_test_target} forkmesh-version-header)

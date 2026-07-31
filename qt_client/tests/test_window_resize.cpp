@@ -1211,6 +1211,18 @@ int main(int argc, char *argv[])
               QStringLiteral("status bar shows the open branch's commit "
                              "(date, message, author): ") +
                   commitText);
+
+        // adhoc #65: the strip only fits one elided line, so hovering it pops
+        // up the rest — full hash, author identity and the diffstat.
+        const QString tip = commitInfo ? commitInfo->toolTip() : QString();
+        check(tip.startsWith(QStringLiteral("<table")) &&
+                  tip.contains(QStringLiteral("Commit: ")) &&
+                  tip.contains(QStringLiteral("a@b.c")) &&
+                  tip.contains(QStringLiteral("Changes: ")) &&
+                  tip.contains(QStringLiteral("init")),
+              QStringLiteral("hovering the status bar commit pops up its full "
+                             "details (hash, author, changes): ") +
+                  tip);
     }
 
     // Repository detail is intentionally built on first navigation. Verify the
@@ -1236,25 +1248,26 @@ int main(int argc, char *argv[])
     check(prFixMenuFound,
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code after repository navigation"));
-    check(window.testAgentColumnsMovable(),
-          QStringLiteral("agents list column headers are draggable/reorderable "
-                         "after repository navigation"));
-    // adhoc #35: the list is down to id / title / Updated / Diff, and the title
-    // column is the one that flexes — so the columns always span the full list
-    // width with Updated and Diff sitting against its right edge, leaving the
-    // title everything in between rather than a fixed 320px slice.
+    check(window.testAgentListChromeHidden(),
+          QStringLiteral("agents list ships with no column header and no frame "
+                         "border (adhoc #92)"));
+    // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
+    // with its conflict alert, the churn bar and the age that used to have its
+    // own "Updated" column) and the title, which is the column that flexes — so
+    // the two always span the full list width with the title running to the
+    // list's right edge rather than a fixed 320px slice.
     const QString agentColumns = window.testAgentColumnLayout();
     const QStringList agentColumnParts =
         agentColumns.split(QLatin1Char('|'));
     const QStringList agentSpan =
         agentColumnParts.size() == 2 ? agentColumnParts.at(1).split(QLatin1Char('/'))
                                      : QStringList();
-    check(agentColumnParts.value(0) == QStringLiteral("#,Issue,Updated,Diff") &&
+    check(agentColumnParts.value(0) == QStringLiteral("#,Issue") &&
               agentSpan.size() == 2 &&
               agentSpan.at(0).toInt() == agentSpan.at(1).toInt() &&
               agentSpan.at(1).toInt() > 0,
-          QStringLiteral("agents list is #/Issue/Updated/Diff with the title column "
-                         "absorbing the spare width (adhoc #35, layout = %1)")
+          QStringLiteral("agents list is #/Issue with the title column absorbing "
+                         "the spare width (adhoc #35/#84/#92, layout = %1)")
               .arg(agentColumns));
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
@@ -2401,6 +2414,10 @@ int main(int argc, char *argv[])
                   QStringLiteral("the drafted prompt names where the log file lives"));
             check(drafted.contains(QStringLiteral("renderAgentDiff")),
                   QStringLiteral("the drafted prompt carries the recorded backtrace"));
+            // adhoc #90: the sampled frames only name the call that happened to
+            // be on the stack, so the prompt also asks for a sweep of the logs.
+            check(drafted.contains(QStringLiteral("never got backgrounded")),
+                  QStringLiteral("the drafted prompt asks for un-backgrounded work too"));
             check(drafted.size() <= 16000,
                   QStringLiteral("the drafted prompt fits the composer's length cap"));
             check(drafted == window.testStallFixPrompt(),

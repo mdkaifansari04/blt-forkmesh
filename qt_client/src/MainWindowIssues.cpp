@@ -1000,7 +1000,7 @@ QWidget *MainWindow::buildIssuesSection()
     connect(m_issueLinkPullButton, &QPushButton::clicked, this,
             &MainWindow::linkPullToIssueFromIssuePage);
     addMetaSection("Development", m_issueDevelopmentValue, m_issueLinkPullButton);
-    addMetaSection("Notifications", makeValue("You are receiving notifications because you're subscribed to this thread."));
+    addMetaSection("Pings", makeValue("You are receiving pings because you're subscribed to this thread."));
     addMetaSection("Participants", makeValue("No participants"));
     auto *transferIssue = makeAction("Transfer issue", "arrow-left");
     auto *cloneIssue = makeAction("Clone issue", "copy");
@@ -4812,8 +4812,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     // Keep the floating "Log" button pinned to the live-log strip's bottom-right
     // corner as the strip resizes (adhoc #137). Don't consume — the strip still
     // needs the resize.
-    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog)
+    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog) {
         positionFloatingLogButton();
+        // Same corner, same reason: the pause-scroll toggle rides on top of the
+        // strip rather than in its layout (adhoc #92).
+        positionFooterLogPauseButton();
+    }
     // Right-click on selected text anywhere in the app: offer "Send to
     // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
     if (event->type() == QEvent::ContextMenu) {
