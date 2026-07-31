@@ -14023,6 +14023,31 @@ async def repo_mirrors_handler(env, request, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     payload["owner"] = public_owner
     payload["repo"] = public_repo
+    # Router-counted serve tallies (mirror_serve_counters). Nodes stopped
+    # seeing per-request traffic when the per-repository WebSocket transport
+    # was retired, so records they publish carry only pre-retirement legacy
+    # tallies (or 0/-1). The Worker counts every read it routes in
+    # _https_mirror_route_advance; overlay those counts on top of whatever
+    # legacy figure the node still publishes — the two eras never overlap, so
+    # the sum is the node's true lifetime contribution.
+    serve_counts = {}
+    try:
+        count_rows = await d1_all(
+            env,
+            "SELECT node_name, clones, website FROM mirror_serve_counters"
+            " WHERE owner=? AND repo=?",
+            str(owner or "").strip().lower(),
+            str(repo or "").strip().lower(),
+        )
+        for row in count_rows:
+            name = str(row.get("node_name") or "").strip().lower()
+            if name:
+                serve_counts[name] = (
+                    max(0, int(row.get("clones") or 0)),
+                    max(0, int(row.get("website") or 0)),
+                )
+    except Exception:
+        serve_counts = {}
     # Owner column: a headless mirror's catalog record carries no ownerUser of
     # its own, but the node account may be claim-linked to a user (adhoc #53:
     # the node record's `owner` field names the linked user). Resolve that link
@@ -14030,6 +14055,16 @@ async def repo_mirrors_handler(env, request, owner, repo):
     # shows the human owner without each publisher having to know it.
     for mirror in payload.get("mirrors", []):
         node_name = str(mirror.get("node") or "").strip().lower()
+        counted = serve_counts.get(node_name)
+        if counted:
+            legacy_clones = mirror.get("clonesServed")
+            legacy_website = mirror.get("websiteServed")
+            mirror["clonesServed"] = (
+                legacy_clones if isinstance(legacy_clones, int)
+                and legacy_clones > 0 else 0) + counted[0]
+            mirror["websiteServed"] = (
+                legacy_website if isinstance(legacy_website, int)
+                and legacy_website > 0 else 0) + counted[1]
         endpoint = endpoint_by_node.get(node_name) or {}
         try:
             operations = json.loads(
@@ -40628,6 +40663,34 @@ async def _https_mirror_route_advance(env, context, served_node, operation):
                    owner=excluded.owner,ts=excluded.ts""",
             context["repoBi"], served_node, now,
         )
+    # Serve tallies for the Mirror nodes view (Clones / Website columns). One
+    # git clone is two requests: info/refs (counted above only as the sticky
+    # pin) and the upload-pack POST — count the pack transfer so the pair
+    # lands as one clone. Every other read routed here is a website/browse
+    # fetch backed by this node's copy (tree/blob/raw/history/…/release-blob),
+    # the same classification the retired local gateway used. Keyed by the
+    # canonical catalog owner so org-alias routes tally onto one row.
+    if operation == "git-info-refs":
+        return
+    field = "clones" if operation == "git-upload-pack" else "website"
+    try:
+        await d1_run(
+            env,
+            """INSERT INTO mirror_serve_counters(
+                   node_name,owner,repo,{field},updated_at)
+                 VALUES (?,?,?,1,?)
+                 ON CONFLICT(node_name,owner,repo) DO UPDATE SET
+                   {field}=mirror_serve_counters.{field}+1,
+                   updated_at=excluded.updated_at""".format(field=field),
+            str(served_node or "").strip().lower(),
+            str(context["owner"] or "").strip().lower(),
+            str(context["repo"] or "").strip().lower(),
+            now,
+        )
+    except Exception:
+        # Best-effort display counter; a D1 hiccup must never fail the read
+        # that was just served.
+        pass
 
 
 def _https_mirror_request_query(url, operation, release_sha=""):

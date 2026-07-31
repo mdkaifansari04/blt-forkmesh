@@ -270,6 +270,20 @@ SCHEMA_STATEMENTS = [
     # when the pin expires. The owner name is public catalog data.
     "CREATE TABLE IF NOT EXISTS clone_sticky ("
     "repo_bi TEXT PRIMARY KEY, owner TEXT NOT NULL, ts INTEGER NOT NULL)",
+    # Per-node serve tallies, counted at the router. The Worker is the only
+    # component that sees every public read it routes to a mirror endpoint —
+    # nodes stopped seeing per-request traffic when the per-repository
+    # WebSocket transport (RepoHost) was retired — so it owns the Clones /
+    # Website counters the Mirror nodes view shows. Names are public catalog
+    # identities, already listed on the repository's Mirrors tab.
+    """CREATE TABLE IF NOT EXISTS mirror_serve_counters (
+        node_name TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        clones INTEGER NOT NULL DEFAULT 0,
+        website INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (node_name, owner, repo))""",
     # Recent owner-attested repo-state pins (sha256 of the canonical heads+tags
     # advertisement), appended on every catalog publish by a working-copy holder
     # ("local-node"). Mirrors are integrity-checked against the SOURCE's pins —
