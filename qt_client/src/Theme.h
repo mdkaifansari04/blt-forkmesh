@@ -2219,6 +2219,11 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     font-family: monospace;
     font-size: 12px;
 }
+/* Compact ping feed above the network log (adhoc #77). */
+#logEventList {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    color: #1f2328; font-family: monospace; font-size: 12px;
+}
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #issueQuickAdd {
     background-color: #ffffff;
