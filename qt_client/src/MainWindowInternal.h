@@ -8507,11 +8507,8 @@ inline QString mirrorReleaseBlobPath(const QString &mirrorPath, const QString &h
 // artifacts a node can serve. Advertised to peers for the Mirror nodes view.
 // Returns -1 when the mirror path can't be read, so "unknown" (older peer) stays
 // distinct from a genuine zero; a store with no blobs yet counts as zero.
-inline int mirrorArtifactCount(const QString &mirrorPath)
+inline int releaseCasBlobCount(const QDir &casDir)
 {
-    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
-        return -1;
-    const QDir casDir(mirrorReleaseCasRoot(mirrorPath));
     if (!casDir.exists())
         return 0; // no artifacts stored yet
     int count = 0;
@@ -8527,6 +8524,24 @@ inline int mirrorArtifactCount(const QString &mirrorPath)
                 ++count;
     }
     return count;
+}
+inline int mirrorArtifactCount(const QString &mirrorPath)
+{
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return -1;
+    return releaseCasBlobCount(QDir(mirrorReleaseCasRoot(mirrorPath)));
+}
+// The same tally for a working copy: the standalone release publisher's
+// default CAS lives inside the checkout at .forkmesh/release-blobs (gitignored;
+// see .forkmesh/release.yml), not at <mirror>/forkmesh-releases. Lets the
+// source of truth — which may serve straight from its working copy with no
+// bare mirror at all — still report the artifacts it hosts.
+inline int checkoutArtifactCount(const QString &localPath)
+{
+    if (localPath.trimmed().isEmpty() || !QDir(localPath).exists())
+        return -1;
+    return releaseCasBlobCount(QDir(
+        QDir(localPath).filePath(QStringLiteral(".forkmesh/release-blobs/sha256"))));
 }
 
 // One release artifact blob physically stored in a node's mirror CAS, resolved
