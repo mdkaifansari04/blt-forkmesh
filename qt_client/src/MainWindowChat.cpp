@@ -17,7 +17,6 @@
 #include "RepoSecurity.h"
 #include "RewardPoolSigner.h"
 #include "ScreenCaptureOverlay.h"
-#include "ScreenDrawOverlay.h"
 #include "ScreenshotMarkupWindow.h"
 #include "TerminalWidget.h"
 #include "WorldSpeechBridge.h"
@@ -26,12 +25,14 @@
 #include <QCryptographicHash>
 #include <QDialog>
 #include <QGraphicsDropShadowEffect>
+#include <QGuiApplication>
 #include <QInputDialog>
 #include <QNetworkInformation>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QScreen>
 #include <QSharedPointer>
 #include <QStandardPaths>
 #include <QTabWidget>
@@ -457,12 +458,14 @@ QWidget *MainWindow::buildChatPage()
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
-    // Agents is deliberately absent here: it lives on the window-chrome line
-    // beside its live fleet matrix (see buildBreadcrumb). Listing it would
-    // re-parent the button into the rail and silently undo that placement.
-    // Log lives in the bottom utility group, under Settings, instead of here.
+    // Agents heads the rail (adhoc #70) — a regular destination like the rest,
+    // badged with the running-session count. Only its fleet matrix stayed on the
+    // window-chrome line (see buildBreadcrumb). The contextual Code and Git
+    // entries are inserted directly below it by buildRepoDetail().
+    // Log and Tasks live in the bottom utility group instead of here; Tasks sits
+    // directly above Pings there (adhoc #97).
     for (QPushButton *button :
-         {m_reposNavButton, m_tasksNavButton, m_chatButton,
+         {m_agentsNavButton, m_reposNavButton, m_chatButton,
           m_controlNodeNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
             railButton->setCompact(false);
@@ -502,10 +505,18 @@ QWidget *MainWindow::buildChatPage()
         logRailButton->setFixedSize(kRailItemWidth, 40);
     }
     m_appNavigationRailLayout->addWidget(m_logNavButton, 0, Qt::AlignLeft);
-    addUtility(m_navDrawButton, QStringLiteral("Draw"));
     addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
     addUtility(m_navResizeButton, QStringLiteral("Resize"));
-    addUtility(m_notificationButton, QStringLiteral("Alerts"));
+    // Tasks sits immediately above Pings (adhoc #97). It keeps the full rail
+    // treatment rather than the tiny utility wrapper so its open-task badge
+    // (setOrganizationTaskBadge) still has room to paint.
+    if (auto *tasksRailButton =
+            dynamic_cast<ActivityRailButton *>(m_tasksNavButton)) {
+        tasksRailButton->setCompact(false);
+        tasksRailButton->setFixedSize(kRailItemWidth, 40);
+    }
+    m_appNavigationRailLayout->addWidget(m_tasksNavButton, 0, Qt::AlignLeft);
+    addUtility(m_notificationButton, QStringLiteral("Pings"));
 
     // Pending approvals use the same corner-count language as Chat and Agents:
     // the count rides the bell's own top-right corner (updateNotificationButton
@@ -3134,6 +3145,11 @@ void MainWindow::updateFooterGitIdentity()
 // author, so the strip says where that branch actually sits (adhoc #55). Read
 // detached for the same reason the identity above is — this runs from
 // openRepoDetail, where a synchronous git call blocks the GUI thread.
+//
+// The strip only has room for one elided line, so the same read also pulls the
+// fields nobody can see there — full hash, decorations, author email, committer,
+// message body, diffstat — and hovering the label pops the lot up as a rich
+// tooltip (adhoc #65).
 void MainWindow::updateFooterCommitInfo()
 {
     if (!m_footerCommitInfo)
@@ -3146,20 +3162,24 @@ void MainWindow::updateFooterCommitInfo()
     const QString ref = currentRef();
     runGitDetached(
         dir,
-        {QStringLiteral("log"), QStringLiteral("-1"),
+        // Separators are git's own %x1f/%x1e placeholders rather than literal
+        // escapes so the body (which is last, and may contain anything) stays
+        // unambiguous. --root so the initial commit still reports a diffstat.
+        {QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--root"),
+         QStringLiteral("--shortstat"),
          QStringLiteral("--date=format:%Y-%m-%d %H:%M"),
-         QStringLiteral("--pretty=%H\x1f%h\x1f%ad\x1f%s\x1f%an\x1f%ct"), ref,
-         QStringLiteral("--")},
+         QStringLiteral("--pretty=%H%x1f%h%x1f%ad%x1f%s%x1f%an%x1f%ct%x1f%ae"
+                        "%x1f%cn%x1f%cd%x1f%D%x1f%b%x1e"),
+         ref, QStringLiteral("--")},
         [this, dir, ref](bool ok, const QByteArray &out) {
             if (!m_footerCommitInfo)
                 return;
             // Repo or branch switched (or closed) while the read was in flight.
             if (repoGitDir() != dir || currentRef() != ref)
                 return;
-            const QStringList f = QString::fromUtf8(out)
-                                      .split(QLatin1Char('\n'))
-                                      .value(0)
-                                      .split(QLatin1Char('\x1f'));
+            const QString raw = QString::fromUtf8(out);
+            const QStringList f =
+                raw.section(QLatin1Char('\x1e'), 0, 0).split(QLatin1Char('\x1f'));
             // No commits yet (fresh repo), or the ref doesn't resolve.
             if (!ok || f.size() < 5) {
                 m_footerCommitInfo->clear();
@@ -3177,11 +3197,61 @@ void MainWindow::updateFooterCommitInfo()
             m_footerCommitInfo->setText(
                 QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 %2 \xC2\xB7 %3 \xC2\xB7 %4")
                     .arg(f.at(1), date, shortSubject, author));
-            QString tip = QStringLiteral("%1\n%2\n%3 committed %4")
-                              .arg(f.at(0), subject, author, date);
-            if (!rel.isEmpty())
-                tip += QString::fromUtf8(" (%1 ago)").arg(rel);
-            m_footerCommitInfo->setToolTip(tip);
+
+            // Everything the one-line strip had to drop, laid out for hover.
+            const QString email = f.value(6).trimmed();
+            const QString committer = f.value(7).trimmed();
+            const QString commitDate = f.value(8).trimmed();
+            const QString refs = f.value(9).trimmed();
+            // Rejoin past field 10: a message body may legitimately contain the
+            // separator, and losing the tail would be worse than keeping it.
+            QString body = f.mid(10).join(QLatin1Char('\x1f')).trimmed();
+            const QString stat = raw.section(QLatin1Char('\x1e'), 1)
+                                     .trimmed()
+                                     .section(QLatin1Char('\n'), 0, 0);
+
+            const QString muted = QStringLiteral("#8b949e");
+            QStringList lines;
+            lines << QStringLiteral("<b>%1</b>").arg(subject.toHtmlEscaped());
+            if (!body.isEmpty()) {
+                // A long body is trimmed here, not scrolled: a tooltip taller
+                // than the window is worse than a truncated one.
+                if (body.size() > 800)
+                    body = body.left(800) + QString::fromUtf8("\xE2\x80\xA6");
+                lines << QStringLiteral("<span style='color:%1'>%2</span>")
+                             .arg(muted, body.toHtmlEscaped().replace(
+                                             QLatin1Char('\n'),
+                                             QStringLiteral("<br>")));
+            }
+            QStringList meta;
+            meta << QStringLiteral("Commit: %1").arg(f.at(0).toHtmlEscaped());
+            if (!refs.isEmpty())
+                meta << QStringLiteral("Refs: %1").arg(refs.toHtmlEscaped());
+            meta << QStringLiteral("Author: %1")
+                        .arg((email.isEmpty()
+                                  ? author
+                                  : QStringLiteral("%1 <%2>").arg(author, email))
+                                 .toHtmlEscaped());
+            if (!committer.isEmpty() && committer != author)
+                meta << QStringLiteral("Committer: %1").arg(committer.toHtmlEscaped());
+            meta << QStringLiteral("Authored: %1%2")
+                        .arg(date.toHtmlEscaped(),
+                             rel.isEmpty()
+                                 ? QString()
+                                 : QString::fromUtf8(" (%1 ago)").arg(rel));
+            if (!commitDate.isEmpty() && commitDate != date)
+                meta << QStringLiteral("Committed: %1").arg(commitDate.toHtmlEscaped());
+            if (!stat.isEmpty())
+                meta << QStringLiteral("Changes: %1").arg(stat.toHtmlEscaped());
+            lines << QStringLiteral("<span style='color:%1'>%2</span>")
+                         .arg(muted, meta.join(QStringLiteral("<br>")));
+
+            // A width attribute, not CSS: Qt's rich text ignores the latter, and
+            // without it the hash and body lines lay out as one endless row.
+            m_footerCommitInfo->setToolTip(
+                QStringLiteral("<table cellspacing='0' cellpadding='0'><tr>"
+                               "<td width='460'>%1</td></tr></table>")
+                    .arg(lines.join(QStringLiteral("<br><br>"))));
         });
 }
 
@@ -3701,6 +3771,15 @@ void MainWindow::showDiagnosticsDialog()
     dlg.exec();
 }
 
+// Column layout of the "High memory usage" table; adhoc #98 added the trend
+// square and the command line, so the indexes are worth naming.
+static constexpr int kHighMemoryTrendColumn = 1;
+static constexpr int kHighMemoryCommandColumn = 6;
+static constexpr int kHighMemoryActionColumn = 7;
+// How many rows carry a trend square. One per row for all 30 would be mostly
+// noise; the top ten are the ones worth watching grow.
+static constexpr int kHighMemoryTrendRows = 10;
+
 void MainWindow::showHighMemoryProcessPanel()
 {
     if (m_highMemoryDialog) {
@@ -3717,14 +3796,22 @@ void MainWindow::showHighMemoryProcessPanel()
     dialog->setWindowModality(Qt::NonModal);
     dialog->setModal(false);
     dialog->setWindowTitle(QStringLiteral("High memory usage"));
-    dialog->resize(820, 560);
+    // Wide enough for the command-line column to be worth reading (adhoc #98),
+    // clamped to the screen so it still fits on smaller displays.
+    QSize preferred(1280, 620);
+    if (QScreen *screen = QGuiApplication::primaryScreen())
+        preferred =
+            preferred.boundedTo(screen->availableGeometry().size() * 0.92);
+    dialog->resize(preferred);
     auto *layout = new QVBoxLayout(dialog);
 
     auto *heading = new QLabel(QStringLiteral(
         "<b>Host memory is above 85%</b><br>"
-        "Processes are sorted by resident memory. “Kill” requests a normal "
-        "termination and “Kill all” does the same for every listed process "
-        "sharing that name; ForkMesh and PID 1 are protected."));
+        "Processes are sorted by resident memory, and the top ten carry a "
+        "trend square showing how their memory has moved since this panel "
+        "opened. “Kill” requests a normal termination and “Kill all” does the "
+        "same for every listed process sharing that name; ForkMesh and PID 1 "
+        "are protected."));
     heading->setTextFormat(Qt::RichText);
     heading->setWordWrap(true);
     layout->addWidget(heading);
@@ -3734,11 +3821,12 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessStatus->setObjectName(QStringLiteral("statusLine"));
     layout->addWidget(m_highMemoryProcessStatus);
 
-    m_highMemoryProcessTable = new QTableWidget(0, 6);
+    m_highMemoryProcessTable = new QTableWidget(0, 8);
     m_highMemoryProcessTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Process"), QStringLiteral("PID"),
-         QStringLiteral("Owner"), QStringLiteral("Memory"),
-         QStringLiteral("Host %"), QStringLiteral("Action")});
+        {QStringLiteral("Process"), QStringLiteral("Trend"),
+         QStringLiteral("PID"), QStringLiteral("Owner"),
+         QStringLiteral("Memory"), QStringLiteral("Host %"),
+         QStringLiteral("Command line"), QStringLiteral("Action")});
     m_highMemoryProcessTable->verticalHeader()->setVisible(false);
     m_highMemoryProcessTable->setSelectionBehavior(
         QAbstractItemView::SelectRows);
@@ -3746,16 +3834,24 @@ void MainWindow::showHighMemoryProcessPanel()
         QAbstractItemView::NoEditTriggers);
     m_highMemoryProcessTable->setSortingEnabled(false);
     m_highMemoryProcessTable->setAlternatingRowColors(true);
-    m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::Stretch);
-    for (int column = 1; column < 6; ++column)
+    m_highMemoryProcessTable->setWordWrap(false);
+    m_highMemoryProcessTable->setTextElideMode(Qt::ElideRight);
+    // The command line takes every spare pixel now that it is the widest cell;
+    // the rest stay at fixed, content-sized widths.
+    for (int column = 0; column < 8; ++column)
         m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
-            column, QHeaderView::Fixed);
-    m_highMemoryProcessTable->setColumnWidth(1, 72);
-    m_highMemoryProcessTable->setColumnWidth(2, 110);
-    m_highMemoryProcessTable->setColumnWidth(3, 105);
-    m_highMemoryProcessTable->setColumnWidth(4, 72);
-    m_highMemoryProcessTable->setColumnWidth(5, 160); // Kill + Kill all
+            column, column == kHighMemoryCommandColumn ? QHeaderView::Stretch
+                                                       : QHeaderView::Fixed);
+    m_highMemoryProcessTable->setColumnWidth(0, 180);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryTrendColumn, 46);
+    m_highMemoryProcessTable->setColumnWidth(2, 72);
+    m_highMemoryProcessTable->setColumnWidth(3, 110);
+    m_highMemoryProcessTable->setColumnWidth(4, 105);
+    m_highMemoryProcessTable->setColumnWidth(5, 72);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryActionColumn,
+                                            160); // Kill + Kill all
+    // Tall enough for a trend square to sit inside a row.
+    m_highMemoryProcessTable->verticalHeader()->setDefaultSectionSize(38);
     layout->addWidget(m_highMemoryProcessTable, 1);
 
     auto *refresh = new QPushButton(QStringLiteral("Refresh"));
@@ -3775,6 +3871,7 @@ void MainWindow::showHighMemoryProcessPanel()
         m_highMemoryProcessTable = nullptr;
         m_highMemoryProcessStatus = nullptr;
         m_highMemoryProcessQuery = nullptr;
+        m_highMemoryRssHistory.clear();
     });
     auto *autoRefresh = new QTimer(dialog);
     autoRefresh->setInterval(5000);
@@ -3825,6 +3922,7 @@ void MainWindow::refreshHighMemoryProcessTable()
                     qint64 rssKb = 0;
                     double percent = 0.0;
                     QString name;
+                    QString commandLine;
                 };
                 QVector<ProcessRow> rows;
                 rows.reserve(30);
@@ -3842,19 +3940,47 @@ void MainWindow::refreshHighMemoryProcessTable()
                     const qint64 rssKb = fields.at(2).toLongLong(&rssOk);
                     const QString percent =
                         QString::fromLocal8Bit(fields.at(3));
-                    const QString name =
+                    // `args` (not `comm`) so the arguments have something to
+                    // show (adhoc #98); the Process column keeps reading like
+                    // the old command name by taking argv[0]'s basename.
+                    const QString commandLine =
                         QString::fromLocal8Bit(
                             QByteArrayList(fields.mid(4)).join(' '));
-                    if (!pidOk || !rssOk || pid <= 0 || name.isEmpty())
+                    if (!pidOk || !rssOk || pid <= 0 || commandLine.isEmpty())
                         continue;
+                    QString name = commandLine.section(QLatin1Char(' '), 0, 0);
+                    const int slash = name.lastIndexOf(QLatin1Char('/'));
+                    if (slash >= 0)
+                        name = name.mid(slash + 1);
+                    if (name.isEmpty())
+                        name = commandLine;
                     ++validProcesses;
                     // `ps` is already RSS-sorted. Only materialize the top
                     // culprits: hundreds of cell widgets and repeated
                     // ResizeToContents passes were what made the old alert
                     // appear frozen under memory pressure.
                     if (rows.size() < 30)
-                        rows.append({pid, owner, rssKb, percent.toDouble(), name});
+                        rows.append({pid, owner, rssKb, percent.toDouble(),
+                                     name, commandLine});
                 }
+
+                // Per-PID resident history, so the top rows can each carry a
+                // trend square. Only PIDs still on the list are kept, which
+                // bounds the map to the table's own size.
+                QHash<qint64, QVector<double>> history;
+                history.reserve(rows.size());
+                double historyMaxKb = 1.0;
+                for (const ProcessRow &process : rows) {
+                    QVector<double> samples =
+                        m_highMemoryRssHistory.value(process.pid);
+                    samples.append(double(process.rssKb));
+                    while (samples.size() > ProcessMemorySparkline::kMaxPoints)
+                        samples.removeFirst();
+                    for (double sample : samples)
+                        historyMaxKb = qMax(historyMaxKb, sample);
+                    history.insert(process.pid, samples);
+                }
+                m_highMemoryRssHistory = history;
 
                 // Which listed PIDs share each command name, so a row's "Kill
                 // all" can act on the whole family (the `killall` shape) without
@@ -3878,21 +4004,55 @@ void MainWindow::refreshHighMemoryProcessTable()
                         m_highMemoryProcessTable->setItem(row, column, item);
                     };
                     put(0, process.name);
-                    put(1, QString::number(process.pid), process.pid);
-                    put(2, process.owner);
-                    put(3, SystemStats::formatBytes(process.rssKb * 1024),
+                    put(2, QString::number(process.pid), process.pid);
+                    put(3, process.owner);
+                    put(4, SystemStats::formatBytes(process.rssKb * 1024),
                         process.rssKb);
-                    put(4, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
+                    put(5, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
                         process.percent);
+                    // The full command line outgrows any sane column, so the
+                    // cell elides and the tooltip carries the whole thing.
+                    put(kHighMemoryCommandColumn, process.commandLine);
+                    if (QTableWidgetItem *command =
+                            m_highMemoryProcessTable->item(
+                                row, kHighMemoryCommandColumn))
+                        command->setToolTip(process.commandLine);
                     if (row < 5) {
-                        for (int column = 0; column < 5; ++column) {
+                        for (int column = 0; column <= kHighMemoryCommandColumn;
+                             ++column) {
                             QTableWidgetItem *item =
                                 m_highMemoryProcessTable->item(row, column);
+                            if (!item) // the trend column holds a widget, not an item
+                                continue;
                             QFont font = item->font();
                             font.setBold(true);
                             item->setFont(font);
                             item->setForeground(QColor(QStringLiteral("#cf222e")));
                         }
+                    }
+
+                    // Trend square for the top ten: the footer sparkline shape,
+                    // on a scale shared by every row so the squares compare
+                    // against each other.
+                    if (row < kHighMemoryTrendRows) {
+                        const QVector<double> samples =
+                            history.value(process.pid);
+                        auto *chart = new ProcessMemorySparkline;
+                        chart->setHistory(samples, historyMaxKb);
+                        auto *cell = new QWidget;
+                        // The square ignores mouse events, so its tooltip has
+                        // to live on the cell around it.
+                        cell->setToolTip(
+                            QStringLiteral("Resident memory for %1 (PID %2) "
+                                           "over the last %3 refreshes")
+                                .arg(process.name)
+                                .arg(process.pid)
+                                .arg(samples.size()));
+                        auto *cellRow = new QHBoxLayout(cell);
+                        cellRow->setContentsMargins(0, 0, 0, 0);
+                        cellRow->addWidget(chart, 0, Qt::AlignCenter);
+                        m_highMemoryProcessTable->setCellWidget(
+                            row, kHighMemoryTrendColumn, cell);
                     }
 
                     auto *kill = new QPushButton(QStringLiteral("Kill"));
@@ -3946,7 +4106,8 @@ void MainWindow::refreshHighMemoryProcessTable()
                     actionRow->setSpacing(4);
                     actionRow->addWidget(kill);
                     actionRow->addWidget(killAll);
-                    m_highMemoryProcessTable->setCellWidget(row, 5, actions);
+                    m_highMemoryProcessTable->setCellWidget(
+                        row, kHighMemoryActionColumn, actions);
                 }
                 m_highMemoryProcessTable->setUpdatesEnabled(true);
                 m_highMemoryProcessTable->viewport()->update();
@@ -3974,7 +4135,7 @@ void MainWindow::refreshHighMemoryProcessTable()
             });
     query->start(QStringLiteral("ps"),
                  {QStringLiteral("-eo"),
-                  QStringLiteral("pid=,user=,rss=,%mem=,comm="),
+                  QStringLiteral("pid=,user=,rss=,%mem=,args="),
                   QStringLiteral("--sort=-rss")});
     // A broken or heavily starved `ps` must not leave the panel looking busy
     // forever. Killing this helper is safe and does not affect listed processes.
@@ -4591,13 +4752,18 @@ QWidget *MainWindow::buildBreadcrumb()
     // utilisation so it renders immediately; from there it only updates when the
     // user hovers the chart to check it (adhoc #20) — no background poll and no
     // other trigger keeps it current between those.
-    auto *tokenUsage = new TokenUsageMiniChart;
+    // Three bars: 5-hour, weekly, and the account's Fable weekly window
+    // (adhoc #96).
+    auto *tokenUsage = new TokenUsageMiniChart(
+        QStringLiteral("Claude Code usage"), /*remainingMode=*/false,
+        /*windows=*/3);
     m_navTokenUsage = tokenUsage;
     // This hover is also the only place that re-fetches the live claude-code
     // model list (GET /v1/models, adhoc #41) — everywhere else that touches a
-    // model combo just applies whatever's already cached.
+    // model combo just applies whatever's already cached. The refresh flashes a
+    // green/red box around the chart when it lands (adhoc #96).
     tokenUsage->onHover = [this] {
-        refreshClaudeCodeUsage();
+        refreshClaudeCodeUsage(/*fromHover=*/true);
         refreshClaudeModelCombo();
     };
     {
@@ -4608,26 +4774,38 @@ QWidget *MainWindow::buildBreadcrumb()
         };
         restore(false, kClaudeUsage5hPctSetting);
         restore(true, kClaudeUsageWeekPctSetting);
+        if (settings.contains(kClaudeUsageFablePctSetting))
+            tokenUsage->setUsage(TokenUsageMiniChart::Fable,
+                                 settings.value(kClaudeUsageFablePctSetting).toInt());
         // Reset countdown (issue #50): the cached instant is wall-clock, so derive
         // the remaining time relative to now; a window that already elapsed shows
         // no countdown until the next poll refreshes it.
-        auto restoreReset = [&](bool weekly, const QString &key) {
+        auto restoreReset = [&](TokenUsageMiniChart::Window window,
+                                const QString &key) {
             if (!settings.contains(key))
                 return;
             const qint64 remaining = settings.value(key).toLongLong() -
                                      QDateTime::currentMSecsSinceEpoch();
             if (remaining > 0)
-                tokenUsage->setReset(weekly, humanizeRemaining(remaining));
+                tokenUsage->setReset(window, humanizeRemaining(remaining));
         };
-        restoreReset(false, kClaudeUsage5hResetSetting);
-        restoreReset(true, kClaudeUsageWeekResetSetting);
+        restoreReset(TokenUsageMiniChart::FiveHour, kClaudeUsage5hResetSetting);
+        restoreReset(TokenUsageMiniChart::Weekly, kClaudeUsageWeekResetSetting);
+        restoreReset(TokenUsageMiniChart::Fable, kClaudeUsageFableResetSetting);
     }
     // Codex rides beside Claude Code. App-server updates replace the local
     // countdown estimate with the account's live utilization and reset time.
+    // Two bars only — Codex has no per-model weekly window.
     auto *codexUsage = new TokenUsageMiniChart(
-        QStringLiteral("Codex usage remaining"), /*remainingMode=*/true);
+        QStringLiteral("Codex usage remaining"), /*remainingMode=*/true,
+        /*windows=*/2);
     m_navCodexUsage = codexUsage;
-    codexUsage->onHover = [this] { refreshCodexUsageRemaining(); };
+    // The Codex figures are computed locally, so the hover always "succeeds";
+    // the green box still confirms the reading is fresh (adhoc #96).
+    codexUsage->onHover = [this] {
+        refreshCodexUsageRemaining();
+        flashUsageChart(m_navCodexUsage, true);
+    };
     refreshCodexUsageRemaining();
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
@@ -4712,7 +4890,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_notificationButton->setCheckable(true);
     m_notificationButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_notificationButton, "bell", kNotificationBellIconPx);
-    m_notificationButton->setToolTip("Notifications");
+    m_notificationButton->setToolTip("Pings");
     m_navGroup->addButton(m_notificationButton, 3); // section 3: Notifications
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
@@ -4903,34 +5081,24 @@ QWidget *MainWindow::buildBreadcrumb()
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
     // the footer "Agents:" label does. Checkable to show when the Agents tab is
-    // active (adhoc #201). Unlike its neighbours it is NOT an ActivityRailButton
-    // and does not live in the app navigation rail: it heads the window-chrome
-    // line's search cluster, immediately left of Back/Forward, so the live agent
-    // matrix can ride beside it along the horizontal top bar.
-    m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
-    // Not a plain #topNavButton any more (adhoc #42): the fleet gets a
-    // "magical" violet-to-cyan gradient pill with a soft glow, so the one
-    // control that opens the running agents stands out from the rest of the
-    // chrome. The glow is a real drop shadow rather than a QSS trick, which
-    // Qt's stylesheets can't render.
-    m_agentsNavButton->setObjectName("agentsMagicButton");
+    // active (adhoc #201). It used to be a "magical" gradient pill on the
+    // window-chrome line; adhoc #70 made it a regular entry heading the app
+    // navigation rail, badged with the number of *running* sessions, so it
+    // reads like every other destination. Its fleet matrix stays on the chrome
+    // line, where the horizontal room for it is.
+    m_agentsNavButton = new ActivityRailButton(QStringLiteral("star"),
+                                               QStringLiteral("Agents"));
+    m_agentsNavButton->setObjectName("topNavButton");
     m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
     m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     setOcticon(m_agentsNavButton, "star", 16);
-    {
-        auto *glow = new QGraphicsDropShadowEffect(m_agentsNavButton);
-        glow->setBlurRadius(18);
-        glow->setOffset(0, 0);
-        glow->setColor(QColor(167, 110, 255, 170));
-        m_agentsNavButton->setGraphicsEffect(glow);
-    }
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
 
-    // One tiny square per agent session, right of the button: the whole fleet's
-    // status as a matrix, with running sessions sweeping in time with their live
-    // output. Populated (and kept current) by refreshAgentDotMatrix().
+    // One tiny square per agent session: the whole fleet's status as a matrix,
+    // with running sessions sweeping in time with their live output. Populated
+    // (and kept current) by refreshAgentDotMatrix().
     m_agentDotMatrix = new AgentDotMatrix;
     m_agentDotMatrix->onDotClicked = [this](int sessionId) {
         if (sessionId > 0)
@@ -4938,6 +5106,22 @@ QWidget *MainWindow::buildBreadcrumb()
         else
             openAgentsOverview();
     };
+
+    // Immediately right of the fleet: the most recent action runs and their
+    // status (adhoc #70), so CI reads on the same line as the agents. Kept
+    // current by refreshActionRunStrip().
+    m_actionRunStrip = new ActionRunStrip;
+    m_actionRunStrip->onCellClicked = [this](int runId) {
+        // Past the last square there is nothing specific to open, so fall back
+        // to the newest run — which is what the strip is about.
+        if (runId <= 0 && !m_actionRuns.isEmpty())
+            runId = m_actionRuns.first().id;
+        if (runId > 0)
+            openActionRunFromNotification(runId);
+    };
+    // Runs are loaded before the chrome exists, so paint the strip once here
+    // rather than waiting for the next run-state change to reach it.
+    refreshActionRunStrip();
 
     // Chat: its own top-level section (m_sectionStack index 2).
     m_chatButton = new ActivityRailButton(QStringLiteral("comment"),
@@ -5042,19 +5226,7 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navScreenshotButton, &QPushButton::clicked, this,
             &MainWindow::captureScreenRegion);
 
-    // Pencil button beside the screenshot button: drop a transparent overlay you
-    // can scribble on freehand anywhere on screen — handy for pointing things out.
-    m_navDrawButton = new QPushButton;
-    m_navDrawButton->setObjectName("topNavButton");
-    m_navDrawButton->setCursor(Qt::PointingHandCursor);
-    m_navDrawButton->setToolTip(
-        QString::fromUtf8("Draw on the screen \xE2\x80\x94 scribble freehand "
-                          "anywhere; Esc to clear it away"));
-    setOcticon(m_navDrawButton, "pencil", 14);
-    connect(m_navDrawButton, &QPushButton::clicked, this,
-            &MainWindow::startScreenDraw);
-
-    // Resize button beside the draw/screenshot buttons: snap the window down to
+    // Resize button beside the screenshot button: snap the window down to
     // a common minimal screen size (1280x720), so it's quick to preview how
     // ForkMesh looks on a smaller display before filing a UI bug.
     m_navResizeButton = new QPushButton;
@@ -5125,17 +5297,18 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->setContentsMargins(14, 0, 8, 0);
     chromeRow->setSpacing(8);
     // The instance/relay switcher heads the edge-to-edge chrome, with the public
-    // SOL balance immediately to its right. The Agents button and its live fleet
-    // matrix moved out of the centred search cluster to sit in this same
-    // left-hand group (adhoc #42), so the fleet reads on the same left edge as
-    // the balance instead of drifting with the search box.
+    // SOL balance immediately to its right. The live fleet matrix sits in this
+    // same left-hand group (adhoc #42), so it reads on the same left edge as the
+    // balance instead of drifting with the search box, and the recent action
+    // runs follow it (adhoc #70). The Agents button that used to head this group
+    // is now a regular rail entry.
     chromeRow->addWidget(m_relayMenuButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
     identityBalanceRow->addWidget(m_navSolanaBalance);
-    identityBalanceRow->addWidget(m_agentsNavButton);
     identityBalanceRow->addWidget(m_agentDotMatrix);
+    identityBalanceRow->addWidget(m_actionRunStrip);
     chromeRow->addLayout(identityBalanceRow);
     chromeRow->addStretch();
 
@@ -5278,44 +5451,6 @@ void MainWindow::captureScreenRegion()
         return;
     }
     connect(overlay, &ScreenCaptureOverlay::captured, this,
-            [this](const QImage &image) {
-                auto *markup = new ScreenshotMarkupWindow(image, this);
-                connect(markup, &ScreenshotMarkupWindow::imageAccepted, this,
-                        [this](const QImage &annotated) {
-                            const QString path = saveNewAgentPromptImage(annotated);
-                            if (path.isEmpty()) {
-                                logSystem("Couldn't save the screenshot.");
-                                return;
-                            }
-                            queueQuickAddImage(path);
-                            if (m_issueQuickAdd)
-                                m_issueQuickAdd->setFocus();
-                        });
-                markup->show();
-                markup->raise();
-                markup->activateWindow();
-            });
-}
-
-// Pencil button: drop a transparent overlay over the whole desktop (the live
-// screen stays visible) that you can scribble on freehand with the pointer, to
-// point things out on screen. Esc / right-click clears the ink and dismisses it.
-// The overlay also carries a "Screenshot" button: clicking it grabs a region with
-// the drawn ink baked in and queues it as the next attachment.
-void MainWindow::startScreenDraw()
-{
-    ScreenDrawOverlay *overlay = ScreenDrawOverlay::begin();
-    if (!overlay) {
-        logSystem("Couldn't open the on-screen drawing overlay.");
-        return;
-    }
-    // Let clicks on the nav screenshot button open the capture selector rather than draw.
-    if (m_navScreenshotButton) {
-        const QRect globalRect(m_navScreenshotButton->mapToGlobal(QPoint(0, 0)),
-                               m_navScreenshotButton->size());
-        overlay->setScreenshotHotzone(globalRect);
-    }
-    connect(overlay, &ScreenDrawOverlay::captured, this,
             [this](const QImage &image) {
                 auto *markup = new ScreenshotMarkupWindow(image, this);
                 connect(markup, &ScreenshotMarkupWindow::imageAccepted, this,
@@ -7721,7 +7856,7 @@ void MainWindow::showSection(int index)
         // Entering Chat clears the unread marker for the open conversation.
         clearActiveConversationUnread();
     } else if (index == 3) {
-        // Opening Alerts is the moment the website inbox has to be current
+        // Opening Pings is the moment the website inbox has to be current
         // (adhoc #59); refreshWebAlerts() repaints the table when it lands.
         refreshWebAlerts();
         refreshNotificationsTable();
@@ -12922,12 +13057,20 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     layout->addWidget(buttons);
 
+    // The password can change mid-dialog: a host that only accepts password
+    // login rejects the key-only first attempt, and the scan then asks for one
+    // and retries with it (see the finished handler below).
+    const QString identityFile = savedHostIdentityFile(node, ip, user);
+    const QString credentialKey =
+        forkmesh::control::savedHostCredentialKey(node, ip, user);
+    auto sessionPass = std::make_shared<QString>(pass);
+
     auto currentPath = std::make_shared<QString>(QStringLiteral("/"));
     auto loadPath = std::make_shared<std::function<void(const QString &)>>();
     *loadPath = [this, dialog, table, pathEdit, status, totalLabel, upButton,
                  openButton, refreshButton, currentPath, mountCardsLayout,
-                 mountStatus, loadPath, ip, user, pass,
-                 node](const QString &requested) {
+                 mountStatus, loadPath, ip, user, sessionPass, identityFile,
+                 credentialKey, node](const QString &requested) {
         if (m_hostDiskProcess &&
             m_hostDiskProcess->state() != QProcess::NotRunning) {
             status->setText(QStringLiteral(
@@ -12950,8 +13093,8 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         QString sshError;
         const forkmesh::control::HostSshCommand ssh =
             forkmesh::control::buildHostSshCommand(
-                ip, user, pass, remoteCommand, &sshError,
-                savedHostIdentityFile(node, ip, user));
+                ip, user, *sessionPass, remoteCommand, &sshError,
+                identityFile);
         if (ssh.program.isEmpty()) {
             status->setText(sshError);
             return;
@@ -12979,8 +13122,9 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         connect(proc, &QProcess::readyReadStandardOutput, dialog,
                 [proc, output] { output->append(proc->readAllStandardOutput()); });
         connect(proc, &QProcess::finished, dialog,
-                [this, proc, output, table, status, totalLabel, navWidgets,
-                 path, ip, user, mountCardsLayout, mountStatus, loadPath](
+                [this, dialog, proc, output, table, status, totalLabel,
+                 navWidgets, path, ip, user, mountCardsLayout, mountStatus,
+                 loadPath, sessionPass, identityFile, credentialKey](
                     int code, QProcess::ExitStatus exitStatus) {
                     if (m_hostDiskProcess == proc)
                         m_hostDiskProcess = nullptr;
@@ -13091,6 +13235,73 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                                 tail, ip);
                         if (!sshHint.isEmpty())
                             message += QLatin1Char(' ') + sshHint;
+                        // Without a password ssh runs BatchMode/publickey-only,
+                        // so a password-login host can never finish this scan:
+                        // ask for the one credential that would, then retry the
+                        // same folder. Hosts pinned to a ForkMesh-managed key
+                        // never fall back to a password, so they are left alone.
+                        const int sshExit =
+                            exitStatus == QProcess::NormalExit ? code : 255;
+                        if (identityFile.isEmpty() &&
+                            forkmesh::control::sshFailureNeedsPassword(sshExit,
+                                                                       tail)) {
+                            status->setText(
+                                message +
+                                QString::fromUtf8(
+                                    " Asking for this host's SSH password "
+                                    "\xE2\x80\xA6"));
+                            // Prompting has to leave this finished handler
+                            // first: a modal dialog run inside a QProcess
+                            // signal would pump the event loop under it.
+                            QTimer::singleShot(
+                                0, dialog,
+                                [this, guard = QPointer<QDialog>(dialog),
+                                 status, loadPath, sessionPass, credentialKey,
+                                 path, ip, user] {
+                                    QDialog *dialog = guard.data();
+                                    if (!dialog)
+                                        return;
+                                    bool accepted = false;
+                                    const QString entered =
+                                        QInputDialog::getText(
+                                            dialog,
+                                            QStringLiteral(
+                                                "SSH password needed"),
+                                            QString::fromUtf8(
+                                                "%1@%2 rejected the login "
+                                                "ForkMesh tried. Enter that "
+                                                "host's SSH password to "
+                                                "measure its disk \xE2\x80\x94 "
+                                                "it is kept in memory for this "
+                                                "session only and is never "
+                                                "written to settings.")
+                                                .arg(user, ip),
+                                            QLineEdit::Password, *sessionPass,
+                                            &accepted);
+                                    // getText ran a nested event loop, so the
+                                    // size map (and its status label) may be
+                                    // gone by the time it returns.
+                                    if (!guard)
+                                        return;
+                                    if (!accepted || entered.isEmpty()) {
+                                        status->setText(QString::fromUtf8(
+                                            "The size map needs an SSH "
+                                            "password (or a working key) for "
+                                            "%1@%2. Press Refresh to try "
+                                            "again.")
+                                                            .arg(user, ip));
+                                        return;
+                                    }
+                                    *sessionPass = entered;
+                                    // Remember it for the rest of this session
+                                    // so drilling into folders — and every
+                                    // other host action — stops re-asking.
+                                    m_hostSessionPasswords.insert(credentialKey,
+                                                                  entered);
+                                    (*loadPath)(path);
+                                });
+                            return;
+                        }
                         status->setText(message);
                         return;
                     }

@@ -146,7 +146,10 @@ CLIENT_ERROR_SURFACES = frozenset({
     "home", "world", "dashboard", "documentation", "blog", "network",
     "chat", "account", "repository", "public-page",
 })
-CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection"})
+# "crash" rows come from the world's crash guard: a page instance that ended
+# without pagehide (GPU/OOM kill, tab discard) or a lost WebGL context, with
+# the last heartbeat's diagnostics in the message.
+CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection", "crash"})
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
@@ -201,9 +204,6 @@ MAX_PENDING_PER_AUTHOR = 50
 # generated files or vendored code) isn't rejected at submission.
 MAX_PULL_BYTES = 100 * 1024 * 1024
 MAX_PENDING_PULLS = 200
-# Commit-comment inbox: small signed text comments keyed by commit hash.
-MAX_COMMIT_COMMENT_BYTES = 64 * 1024
-MAX_PENDING_COMMIT_COMMENTS = 500
 # Discussion inbox: signed open/comment events for read-only contributors.
 MAX_DISCUSSION_BYTES = 64 * 1024
 MAX_PENDING_DISCUSSIONS = 500
@@ -350,7 +350,6 @@ from urls import (  # noqa: E402
     REPO_PULLS_RE,
     REPO_PULL_MERGE_RE,
     REPO_ACTION_RUNS_RE,
-    REPO_COMMITS_RE,
     REPO_DISCUSSIONS_RE,
     REPO_PENDING_RE,
     REPO_SUBSCRIBE_RE,
@@ -518,7 +517,6 @@ from events import (  # noqa: E402
     normalized_discussion_category,
     pull_comment_content,
     sha256_hex,
-    verify_commit_comment_event,
     verify_discussion_event,
     verify_issue_event,
     verify_pull_comment_event,
@@ -10748,7 +10746,6 @@ SCHEMA_ALTER_STATEMENTS = [
     "ALTER TABLE pull_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE pull_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE pull_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE discussion_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
@@ -12983,6 +12980,16 @@ async def catalog_handler(env, request):
             return limited
 
         key_bi = await blind_index(env, owner + "/" + record["name"])
+        # The owner deleted this repository from the website, but the node that
+        # hosts it still republishes on every heartbeat. Refuse those automatic
+        # publishes so the delete sticks (adhoc #91). The signature above has
+        # already proven this is the owner's key, so an explicit user-initiated
+        # publish from the desktop is allowed to lift the tombstone.
+        if await _repo_delete_tombstone_active(env, key_bi):
+            if clean_string(data.get("publishIntent", ""), 16) != "user":
+                return json_response(
+                    {"error": "repository_deleted"}, status=410)
+            await _clear_repo_delete_tombstone(env, key_bi)
         # Per-owner record cap (an update to an existing repo is always allowed).
         prior_row = await d1_first(
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
@@ -13176,6 +13183,12 @@ async def catalog_handler(env, request):
                 audit_target, "failed", {"reason": "storage_error"})
             raise
         if not row:
+            # No catalog row right now, but the owner node may still be about
+            # to republish one (that race is exactly what makes a web delete
+            # look like it did nothing). Tombstone it anyway.
+            if session_authorized:
+                await _record_repo_delete_tombstone(
+                    env, key_bi, await blind_index(env, owner))
             return json_response({"ok": True, "deleted": False})
         try:
             existing = await decrypt_row(env, row["data"])
@@ -13226,6 +13239,15 @@ async def catalog_handler(env, request):
         # host presence, agent state, bounties, chat history) keeps the repo
         # alive in practice even though its catalog row is gone.
         try:
+            # A delete made from the website has to outlive the owner node's
+            # next heartbeat: that node still holds the mirror and republishes
+            # automatically, which used to re-create the row within a minute
+            # (adhoc #91). The desktop's own owner-signed delete needs no
+            # tombstone — it is the publisher, and it also uses this endpoint
+            # to move a repo to a renamed owner.
+            if session_authorized:
+                await _record_repo_delete_tombstone(
+                    env, key_bi, await blind_index(env, owner))
             await _delete_repo_scoped_state(env, key_bi)
             await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
             await _delete_bounties_namespace(env, owner, name)
@@ -13402,12 +13424,22 @@ async def native_repository_logo_handler(
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
         if committed_logo_url:
+            # The committed URL is streamed by a mirror, so it can fail while
+            # the rest of the card renders (offline or lagging host). Ship the
+            # approved/generated artwork with it so a client can swap in place
+            # instead of leaving a broken image where the logo belongs.
+            fallback = await service._official_logo(env, repository_id)
+            fallback = (
+                fallback
+                or _repository_import_module().deterministic_logo(record))
             return json_response({
                 "ok": True,
                 "repositoryId": repository_id,
                 "logo": {
                     "dataUrl": committed_logo_url,
                     "source": "repository",
+                    "fallbackDataUrl": str(
+                        (fallback or {}).get("dataUrl") or ""),
                 },
             }, cache_control="no-store")
         response = await service.logo_for_record(env, repository_id, record)
@@ -14799,9 +14831,6 @@ async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
             env, "UPDATE pull_inbox SET repo_bi=? WHERE repo_bi=?",
             new_repo_bi, old_repo_bi)
         await d1_run(
-            env, "UPDATE commit_inbox SET repo_bi=? WHERE repo_bi=?",
-            new_repo_bi, old_repo_bi)
-        await d1_run(
             env, "UPDATE discussion_inbox SET repo_bi=? WHERE repo_bi=?",
             new_repo_bi, old_repo_bi)
         await d1_run(
@@ -14929,6 +14958,48 @@ async def _delete_bounties_namespace(env, owner, repo):
                 row.get("bounty_bi"))
 
 
+# A repository deleted from the website stays deleted. The owner's node keeps
+# the local mirror and republishes its catalog record on every heartbeat, so
+# without a tombstone the row reappeared within a minute and the web delete
+# looked like it had silently done nothing (adhoc #91). The tombstone refuses
+# automatic republishes; an explicit user-initiated publish from the desktop
+# clears it, so the owner can always share the repo again.
+REPO_DELETE_TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000
+
+
+async def _repo_delete_tombstone_active(env, repo_bi):
+    try:
+        row = await d1_first(
+            env,
+            "SELECT repo_bi FROM repo_deletions WHERE repo_bi=? AND "
+            "expires_at>?",
+            repo_bi, int(Date.now()))
+    except Exception:
+        # An unreadable tombstone table must never block publishing; the
+        # website delete degrades to its old behaviour instead.
+        return False
+    return bool(row)
+
+
+async def _record_repo_delete_tombstone(env, repo_bi, owner_bi):
+    now = int(Date.now())
+    await d1_run(env, "DELETE FROM repo_deletions WHERE expires_at<=?", now)
+    await d1_run(
+        env,
+        "INSERT INTO repo_deletions (repo_bi, owner_bi, deleted_at, "
+        "expires_at) VALUES (?,?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET "
+        "owner_bi=excluded.owner_bi, deleted_at=excluded.deleted_at, "
+        "expires_at=excluded.expires_at",
+        repo_bi, owner_bi, now, now + REPO_DELETE_TOMBSTONE_TTL_MS)
+
+
+async def _clear_repo_delete_tombstone(env, repo_bi):
+    try:
+        await d1_run(env, "DELETE FROM repo_deletions WHERE repo_bi=?", repo_bi)
+    except Exception:
+        pass
+
+
 async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(
         env, "DELETE FROM profile_contribution_days WHERE source_repo_bi=?",
@@ -14945,7 +15016,6 @@ async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(env, "DELETE FROM repo_shares WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM issue_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
-    await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM discussion_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM host_presence WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM clone_rr WHERE repo_bi=?", repo_bi)
@@ -14985,6 +15055,10 @@ async def _delete_repo_namespace(env, owner_bi, owner):
                 "DELETE FROM funds_received WHERE scope='project' AND key=?",
                 owner + "/" + repo)
     await d1_run(env, "DELETE FROM catalog_rate WHERE owner_bi=?", owner_bi)
+    # The account itself is going away, so its website-delete tombstones have
+    # nothing left to protect — keeping them would only block a re-registered
+    # account of the same name from publishing the same repo names.
+    await d1_run(env, "DELETE FROM repo_deletions WHERE owner_bi=?", owner_bi)
     await purge_catalog_related_caches()
 
 
@@ -29869,7 +29943,6 @@ async def notify_pending_inbox(env, owner, repo, source, actor, title, number=0)
     label = {
         "issue": "Issue submitted",
         "pull": "Pull request submitted",
-        "commit_comment": "Commit comment submitted",
         "discussion": "Discussion submitted",
     }.get(source, "Pending inbox item")
     await enqueue_notification(
@@ -32606,73 +32679,6 @@ async def pulls_handler(env, request, owner, repo):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
-async def commits_handler(env, request, owner, repo):
-    await ensure_schema(env)
-    method = method_name(request)
-    repo_bi = await blind_index(env, owner + "/" + repo)
-    if method == "POST":
-        try:
-            data = await bounded_json_request(request)
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-        comment = data.get("comment")
-        sha = clean_string(data.get("sha", ""), 40)
-        if not isinstance(comment, dict) or not sha:
-            return json_response({"error": "comment_required"}, status=400)
-        if len((comment.get("body", "") or "").encode("utf-8")) > MAX_COMMIT_COMMENT_BYTES:
-            return json_response({"error": "comment_too_large"}, status=413)
-        if not await verify_commit_comment_event(sha, comment):
-            return json_response({"error": "bad_signature"}, status=401)
-        count = await d1_first(
-            env, "SELECT COUNT(*) AS c FROM commit_inbox WHERE repo_bi=?", repo_bi
-        )
-        if count and count.get("c", 0) >= MAX_PENDING_COMMIT_COMMENTS:
-            return json_response({"error": "inbox_full"}, status=429)
-        submitter_bi = await blind_index(env, comment.get("author", ""))
-        if await _inbox_author_over_quota(env, "commit_inbox", repo_bi, submitter_bi):
-            return json_response({"error": "author_quota"}, status=429)
-        item = {
-            "sha": sha,
-            "comment": comment,
-            "submitter": clean_string(comment.get("author", ""), 120),
-            "submittedAt": int(Date.now()),
-        }
-        await d1_run(
-            env,
-            "INSERT INTO commit_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
-            repo_bi, await encrypt_row(env, item), submitter_bi,
-        )
-        await _record_contributor(env, comment.get("author", ""), "commits")
-        actor = clean_string(comment.get("authorName", "") or comment.get("author", ""), MAX_NODE_NAME).lower()
-        await notify_pending_inbox(env, owner, repo, "commit_comment", actor, sha, 0)
-        await notify_mentions(env, owner, repo, actor, "Commit " + sha[:12], comment.get("body", ""),
-                              repo_web_href(owner, repo), "commit_comment")
-        await notify_repo_host(env, owner, repo, "commits")
-        await _best_effort_inbox_side_effect(_ap_publish_repo_event(
-            env, request, owner, repo, "commit", "comment", sha, "",
-            comment.get("body", ""), comment.get("authorName", "")))
-        return json_response({"ok": True}, status=201)
-
-    if method == "GET":
-        if not await _authorize_owner(env, request, owner):
-            return json_response({"error": "unauthorized"}, status=401)
-        rows = await d1_all(
-            env, "SELECT data FROM commit_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
-        )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        return json_response({"ok": True, "pending": pending})
-
-    if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
-            return json_response({"error": "unauthorized"}, status=401)
-        await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
-        return json_response({"ok": True})
-
-    return json_response({"error": "method_not_allowed"}, status=405)
-
-
 async def discussions_handler(env, request, owner, repo):
     await ensure_schema(env)
     method = method_name(request)
@@ -32830,9 +32836,8 @@ async def repo_pending_counts_handler(env, request, owner, repo):
         "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox "
         "WHERE repo_bi=? AND mirrored_at=0 "
         "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox "
-        "WHERE repo_bi=? AND mirrored_at=0 "
-        "UNION ALL SELECT 'commits', COUNT(*) FROM commit_inbox WHERE repo_bi=?",
-        repo_bi, repo_bi, repo_bi, repo_bi,
+        "WHERE repo_bi=? AND mirrored_at=0",
+        repo_bi, repo_bi, repo_bi,
     )
     counts = {str(r.get("k") or ""): int(r.get("c") or 0) for r in rows or []}
     return json_response({
@@ -32841,7 +32846,6 @@ async def repo_pending_counts_handler(env, request, owner, repo):
             "issues": counts.get("issues", 0),
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
-            "commits": counts.get("commits", 0),
         },
     }, cache_seconds=30)
 
@@ -32849,7 +32853,7 @@ async def repo_pending_counts_handler(env, request, owner, repo):
 async def sync_handler(env, request):
     # GET /api/sync?owner={name}&ts=&sig= — one signed round-trip returning
     # everything the owner's desktop node needs across ALL of its repos:
-    # pending issue/pull/discussion/commit inbox items, queued agent prompts
+    # pending issue/pull/discussion inbox items, queued agent prompts
     # (drained on read, same semantics as GET /agents), and the relay's pinned
     # repo state. This replaces the node's old fast polling (4 inbox GETs per
     # repo every 60s + agents every 30s + catalog list for pin checks): the
@@ -32894,7 +32898,6 @@ async def sync_handler(env, request):
                 ("issues", "issue_inbox", True),
                 ("pulls", "pull_inbox", True),
                 ("discussions", "discussion_inbox", True),
-                ("commits", "commit_inbox", True),
                 ("agentPrompts", "agent_prompts", True),
                 ("aboutUpdate", "about_inbox", False)):
             order = " ORDER BY id ASC" if ordered else ""
@@ -32937,7 +32940,7 @@ async def sync_handler(env, request):
                     # instead of blanket-deleting it undelivered (adhoc #97).
                     drain_id = r.get("drain_id")
                     if drain_id is not None and topic in (
-                            "issues", "pulls", "discussions", "commits"):
+                            "issues", "pulls", "discussions"):
                         item["id"] = drain_id
                     by_repo.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(topic, []).append(item)
@@ -43286,19 +43289,6 @@ class Default(WorkerEntrypoint):
                                  self.env, request, owner))):
                 return json_response({"error": "not_found"}, status=404)
             return await pulls_handler(self.env, request, owner, repo)
-
-        commits_match = REPO_COMMITS_RE.match(url.path)
-        if commits_match:
-            owner = safe_segment(commits_match.group(1))
-            repo = safe_segment(commits_match.group(2))
-            if not owner or not repo:
-                return json_response({"error": "not_found"}, status=404)
-            if (await _repo_is_private(self.env, owner, repo)
-                    and not (method_name(request) in ("GET", "DELETE")
-                             and await _authorize_owner(
-                                 self.env, request, owner))):
-                return json_response({"error": "not_found"}, status=404)
-            return await commits_handler(self.env, request, owner, repo)
 
         discussions_match = REPO_DISCUSSIONS_RE.match(url.path)
         if discussions_match:

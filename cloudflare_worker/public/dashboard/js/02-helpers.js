@@ -387,6 +387,52 @@
     return `${repo.owner || ""}/${repo.name || ""}`;
   }
 
+  // Repository bytes are published by nodes, but the catalog resolves every
+  // physical route to the user/organization that actually owns the work
+  // (ownerKind / logicalOwner / logicalOwners). Lists must show that identity —
+  // "forkmesh/forkmesh", never the serving machine's "mirror8/forkmesh".
+  // Routing keys stay physical: repoKey/repoPathUrl/data-dashboard-open-repo
+  // must keep matching the catalog rows.
+  function repoLogicalOwners(repo) {
+    const values = Array.isArray(repo?.logicalOwners) ? repo.logicalOwners : [];
+    const owners = values.map((value) => ({
+      kind: String(value?.kind || "").trim().toLowerCase(),
+      owner: String(value?.owner || "").trim(),
+    }));
+    if (!owners.length) {
+      owners.push({
+        kind: String(repo?.ownerKind || "").trim().toLowerCase(),
+        owner: String(repo?.logicalOwner || "").trim(),
+      });
+    }
+    return owners.filter((value) =>
+      value.owner && (value.kind === "user" || value.kind === "organization"));
+  }
+
+  function repoDisplayOwner(repo) {
+    const owners = repoLogicalOwners(repo);
+    const organization = owners.find((value) => value.kind === "organization");
+    return (organization || owners[0])?.owner || String(repo?.owner || "").trim();
+  }
+
+  function repoDisplayKey(repo) {
+    return `${repoDisplayOwner(repo) || ""}/${repo?.name || ""}`;
+  }
+
+  // Mirrors of one logical repository are grouped by root commit, so an
+  // organization alias registered on any member names the whole group.
+  function groupDisplayOwner(group) {
+    const origin = sourceOfTruth(group);
+    const name = String(origin?.name || "").trim().toLowerCase();
+    for (const member of [origin, ...(group?.members || [])]) {
+      if (String(member?.name || "").trim().toLowerCase() !== name) continue;
+      const organization = repoLogicalOwners(member)
+        .find((value) => value.kind === "organization");
+      if (organization) return organization.owner;
+    }
+    return repoDisplayOwner(origin);
+  }
+
   function normalizeRepoSegment(value) {
     const text = String(value || "").trim();
     return /^[A-Za-z0-9._:-]+$/.test(text) ? text : "";

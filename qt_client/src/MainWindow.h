@@ -19,8 +19,6 @@
 #include "RepoContributionSnapshot.h"
 #include "MirrorCrypto.h"
 
-struct CommitComment; // CommitCommentStore.h
-
 // Per-session live-output state behind the top bar's blinking fleet lights.
 // lastActivityMs is bumped on every raw-output chunk so the light keeps blinking
 // while the agent is actively producing output. intensity is a smoothed
@@ -56,6 +54,22 @@ struct AgentDiffStat {
     // from (no captured patch and no branch left to diff).
     int added = -1;
     int removed = -1;
+};
+
+// Everything the Mirror nodes panel shows for THIS node's own row, gathered in
+// one pass so the ~12 git subprocesses behind it can run on a worker thread
+// instead of freezing the panel rebuild (adhoc #93). `key` is the filesystem-only
+// fingerprint of the mirror + working tree the snapshot was read from: while it
+// matches, nothing on disk has moved and the snapshot is reused as-is.
+struct MirrorSelfSnapshot {
+    QString key;
+    MirrorAdvert advert;
+    QString servedCommit; // tip of the branch we actually serve
+    int pendingPush = 0;  // local commits not yet in the served mirror
+    // When this snapshot was taken. A running mirror sync rewrites refs
+    // continuously, so the key would go stale again the moment each gather
+    // finishes; this floors how often we re-read.
+    qint64 gatheredMs = 0;
 };
 
 #include <QElapsedTimer>
@@ -96,7 +110,9 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
+class ActionRunStrip;
 }
+using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
 class PacmanProgress;
@@ -248,11 +264,12 @@ struct RepositoryRecord {
 // related screen/item when double-clicked (issue #292). An empty kind means the
 // notification carries no destination and the row is inert.
 struct NotificationLink {
-    QString kind;    // "issue" | "pull" | "discussion" | "commit"
+    // "issue" | "pull" | "discussion" | "commit" | "release" | "repo" | "chat"
+    QString kind;
     QString owner;   // repo owner
     QString name;    // repo name
     int number = -1; // issue / PR / discussion number
-    QString ref;     // commit hash, when kind == "commit"
+    QString ref;     // commit hash ("commit") or chat channel ("chat")
 
     bool isValid() const { return !kind.isEmpty(); }
 };
@@ -452,9 +469,9 @@ public:
     // new order: resizing one column leaves every other column's width untouched
     // for movable-header tables like the agents list.
     Q_INVOKABLE bool testSpreadsheetResizeAfterMove();
-    // Verifies the agents list lets the user drag its column headers into a new
-    // order (in addition to resizing them).
-    Q_INVOKABLE bool testAgentColumnsMovable() const;
+    // Verifies the agents list ships without its column header or frame border
+    // (adhoc #92) — the rows are the whole list now.
+    Q_INVOKABLE bool testAgentListChromeHidden() const;
     // "<labels>|<usedWidth>/<viewportWidth>" for the agents list, so a test can
     // pin the trimmed column set and the title column's flex behaviour (adhoc #35).
     Q_INVOKABLE QString testAgentColumnLayout() const;
@@ -785,6 +802,11 @@ private:
     // Bootstrap a fresh client by mirroring the flagship ForkMesh repository so
     // it appears in the Repos list without first walking the full join flow.
     void ensureFlagshipRepo();
+    // Whether localPath is the installer-provisioned agent working tree: a real
+    // checkout beneath the service account's home. Such a checkout survives
+    // headless bootstrap (agents need it) and is kept tracking the relay by the
+    // sealing sync; stale, external, or missing paths never qualify.
+    bool serviceManagedCheckout(const QString &localPath) const;
     // Log in by email (+ optional TOTP). accountName is only used as a fallback
     // node name if the server response omits one. If *fatal is non-null it is set
     // true when the failure is unrecoverable (the same credentials can never
@@ -1649,8 +1671,6 @@ private:
     // Filter the commit list by the search box (matches hash or summary).
     void filterCommits(const QString &query);
     void downloadCommitPatch();           // save the open commit as a .patch file
-    void renderCommitThread(const QString &sha); // per-commit conversation
-    void submitCommitComment();                  // post a comment on the open commit
     // Sync a diff split/unified toggle button's label+tooltip to the preference.
     void updateDiffSplitButton(QPushButton *button);
     // Append one conversation card (avatar + header + markdown body) to a thread
@@ -1922,11 +1942,6 @@ private:
     // Submit a signed PR conversation event (comment/review) to the relay inbox
     // for repos this node can't write directly.
     void submitPullEventToInbox(int number, const PullEvent &ev);
-    // Submit a signed commit comment to the relay inbox.
-    void submitCommitCommentToInbox(const QString &sha, const CommitComment &c);
-    // Drain a repo's commit-comment inbox (owner-only); apply + commit.
-    void drainCommitInboxFor(RepositoryRecord repo, bool interactive);
-    QUrl commitsApiUrl(const RepositoryRecord &repo) const;
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
     // Agent sessions tab: local OpenAI API / Claude API runs assigned from issues.
@@ -2120,8 +2135,13 @@ private:
     // 5-hour + weekly figures the CLI's /usage shows) straight from the claude.ai
     // OAuth usage endpoint. No background timer drives this (adhoc #76), and
     // adhoc #20 dropped every other trigger too — this now only runs when the
-    // user hovers the top-bar chart to check the current figures.
-    void refreshClaudeCodeUsage();
+    // user hovers the top-bar chart to check the current figures. `fromHover`
+    // asks for the green/red result box on the chart (adhoc #96) — background
+    // callers leave it off so the box only ever answers a hover.
+    void refreshClaudeCodeUsage(bool fromHover = false);
+    // Flash the green (refreshed) / red (refresh failed) box on one of the
+    // top-bar usage charts. `chart` is a TokenUsageMiniChart* held as QWidget*.
+    void flashUsageChart(QWidget *chart, bool ok);
     // Ask the provider which models this account can drive right now
     // (GET /v1/models) and merge them into the composer's per-session model
     // picker, so the dropdown reflects the live line-up (new releases appear
@@ -2143,10 +2163,21 @@ private:
     // shows it: the per-session usage bar, the top-bar mini chart and the
     // persisted cache. `weekly` picks the window.
     void applyClaudeUsage(bool weekly, int percent);
+    // Last percentage applied per window (-1 = none yet). applyClaudeUsage() is
+    // called once per replayed rate_limit event when transcript history is
+    // prepended, and each repeat used to cost a QSettings read+write on the GUI
+    // thread; an unchanged figure is now a no-op (adhoc #93).
+    int m_claudeUsageLastWeekPct = -1;
+    int m_claudeUsageLast5hPct = -1;
     // Issue #50: feed one window's reset instant (epoch ms, from the OAuth usage
     // endpoint's resets_at) into the top-bar mini chart's tooltip as a "resets in
     // Xh / Xd" countdown, and cache it so the figure survives a restart.
     void applyClaudeReset(bool weekly, qint64 resetMs);
+    // Same pair for the premium per-model weekly window shown as the chart's
+    // third bar (adhoc #96). Kept separate from the bool-keyed calls above so
+    // MainWindow.h doesn't need the chart's Window enum.
+    void applyClaudeFableUsage(int percent);
+    void applyClaudeFableReset(qint64 resetMs);
     // Issue #346: when a Claude Code usage window that was previously maxed out
     // (>=99%) drops back down, optionally tell the node's owner by email — the
     // only useful signal for a headless node that has no one watching its
@@ -2166,13 +2197,15 @@ private:
     // Jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
-    // Refreshes the count badge on the top-bar Agents nav button from
-    // m_agentSessions.size().
+    // Refreshes the running-session count badge on the rail's Agents entry.
     void updateAgentsNavBadge();
-    // Repaints the matrix of per-agent squares beside that button: one square
+    // Repaints the matrix of per-agent squares on the chrome line: one square
     // per session, tinted like its status icon, with the live output meter of
     // each running session driving its night-rider pulse.
     void refreshAgentDotMatrix();
+    // Repaints the strip beside that matrix: the most recent action runs, one
+    // square each, tinted with actionStatusColor() (adhoc #70).
+    void refreshActionRunStrip();
     void processAgentQueue();
     // Re-drain the queue after a slot frees, coalesced onto the event loop and
     // skipped unless something is queued AND there is room to start it.
@@ -2828,6 +2861,15 @@ private:
     // Whether `path` is switched off for the open repo.
     bool isWorkflowDisabled(const QString &path) const;
     void loadMirrorNodesPanel();
+    // Self-row snapshot for that panel (adhoc #93). The key is filesystem-only —
+    // mirror HEAD/refs plus the working tree's HEAD/refs/worktrees mtimes — so
+    // deciding "has anything moved?" costs a handful of stats rather than the git
+    // subprocesses the snapshot itself needs. refreshMirrorSelfSnapshot() gathers
+    // a stale one on a worker thread and rebuilds the panel once when it lands.
+    QString mirrorSelfSnapshotKey(const RepositoryRecord &repo) const;
+    void refreshMirrorSelfSnapshot(const RepositoryRecord &repo, const QString &key);
+    QHash<QString, MirrorSelfSnapshot> m_mirrorSelfSnapshots; // keyed by mirrorPath
+    QSet<QString> m_mirrorSelfSnapshotsInFlight;
     // Spin the caution/error status lights on Mirror-nodes rows (adhoc #230);
     // updateMirrorNodeLightTimer() keeps the timer running only while a row's
     // light is actually spinning, so an all-green table never ticks.
@@ -3226,10 +3268,6 @@ private:
     // overlay so you can drag a rectangle anywhere on the computer, then queues the
     // captured region as a quick-add attachment.
     void captureScreenRegion();
-    // Pencil button (next to the screenshot button): drops a full-screen overlay
-    // you can draw on freehand anywhere on the computer. Nothing is captured — it's
-    // a throwaway scratch layer for pointing things out. Esc dismisses it.
-    void startScreenDraw();
     // Voice input: when whisper.cpp is installed (from Settings) a mic button
     // appears beside the prompt box. It is push-to-talk: press and hold to
     // record from the microphone, release to stop and transcribe the audio into
@@ -3517,13 +3555,12 @@ private:
     // user's node is what alerts them. Deduped and seeded via QSettings so we
     // never repeat an alert or backfill a freshly-cloned repo's history.
     void scanRepoMentionsFor(const RepositoryRecord &repo);
-    // Match @mentions against issues/PRs/commit-comments already loaded off the UI
-    // thread (see scanRepoMentionsFor) and raise notifications. Runs on the main
-    // thread so it can touch QSettings and the notification UI.
-    void applyRepoMentions(
-        const RepositoryRecord &repo, const QList<Issue> &allIssues,
-        const QList<PullRequest> &allPulls,
-        const QList<QPair<QString, QList<CommitComment>>> &allCommitComments);
+    // Match @mentions against issues/PRs already loaded off the UI thread (see
+    // scanRepoMentionsFor) and raise notifications. Runs on the main thread so
+    // it can touch QSettings and the notification UI.
+    void applyRepoMentions(const RepositoryRecord &repo,
+                           const QList<Issue> &allIssues,
+                           const QList<PullRequest> &allPulls);
     // Periodically pull every owned repo's inboxes so the source of truth picks
     // up issues/PRs/comments filed by other nodes without a manual sync.
     void pollOwnedInboxes();
@@ -3546,8 +3583,6 @@ private:
                                       const QJsonArray &pending,
                                       bool interactive,
                                       bool mirrorIntake = false);
-    void applyCommitInboxPayload(const RepositoryRecord &repo,
-                                 const QJsonArray &pending, bool interactive);
     void applyAgentPromptsPayload(const RepositoryRecord &repo,
                                   const QJsonArray &prompts);
     void acknowledgeAgentPrompts(const RepositoryRecord &repo,
@@ -4075,13 +4110,17 @@ private:
     bool m_organizationTasksCanManage = false;
     bool m_organizationTasksLoading = false;
     QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
-    // "Agents (N)" and its live fleet matrix, both on the window-chrome line
-    // immediately left of the Back/Forward buttons.
+    // "Agents" heads the app navigation rail (adhoc #70), badged with the number
+    // of running sessions. Its live fleet matrix stays on the window-chrome
+    // line, followed there by the recent action-run strip.
     QPushButton *m_agentsNavButton = nullptr;
     AgentDotMatrix *m_agentDotMatrix = nullptr;
+    ActionRunStrip *m_actionRunStrip = nullptr;
     // Last status tally rendered into the matrix's tooltip, so the scanner tick
     // can skip rebuilding an unchanged string ~20x a second.
     QString m_agentDotTooltipKey;
+    // Same trick for the run strip's tooltip (see refreshActionRunStrip).
+    QString m_actionRunStripTooltipKey;
     // Small connection status dot painted over the top-right avatar (green
     // online / amber connecting / grey offline), replacing the old text pill.
     QLabel *m_connectionDot = nullptr;
@@ -4215,7 +4254,6 @@ private:
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
-    QPushButton *m_navDrawButton = nullptr; // pencil -> draw freehand on the screen
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
     // A manual rebuild & restart was requested while an agent was still running:
@@ -4804,6 +4842,10 @@ private:
     QTableWidget *m_highMemoryProcessTable = nullptr;
     QLabel *m_highMemoryProcessStatus = nullptr;
     QPointer<QProcess> m_highMemoryProcessQuery;
+    // Resident-size history per listed PID, feeding the per-row trend squares
+    // in the high-memory panel (adhoc #98). Rebuilt on every refresh from the
+    // PIDs still on the list, so it stays table-sized.
+    QHash<qint64, QVector<double>> m_highMemoryRssHistory;
     qulonglong m_diagLastCpuTicks = 0;
     qint64 m_diagLastCpuMs = 0;
 
@@ -5092,6 +5134,10 @@ private:
     mutable QString m_defaultBranchFastCache;
     mutable QString m_defaultBranchFastCacheDir;
     mutable qint64 m_defaultBranchFastCacheTime = 0;
+    // Filesystem-only fingerprint of the ref store the cached answer was read
+    // from; while it matches, the cache outlives the 5 s window and no git
+    // subprocess is spawned at all (adhoc #93).
+    mutable QString m_defaultBranchFastCacheSig;
     QLineEdit *m_commitSearch = nullptr;       // filter the commit list by hash/summary
     // Top-bar "search everything" box and its floating results dropdown. The popup
     // is parented to the window (not the short top bar) so it isn't clipped, and is
@@ -5231,11 +5277,6 @@ private:
     QPushButton *m_commitSplitButton = nullptr; // toggle unified <-> side-by-side
     QString m_currentCommitHash; // full hash shown in the detail view
     int m_currentCommitRow = -1; // row in m_commitsTable the detail view is showing
-    // Per-commit conversation (comment thread + composer).
-    QWidget *m_commitThreadContainer = nullptr;
-    QVBoxLayout *m_commitThreadLayout = nullptr;
-    MarkdownEditor *m_commitComposer = nullptr;
-    QPushButton *m_commitCommentButton = nullptr;
     // Files view: a GitHub-style overview (latest commit + file list + README)
     // that switches to an explorer-tree + editor-tabs view when a file is open.
     QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 editor
@@ -5846,6 +5887,14 @@ private:
     // diff is byte-identical just re-freezes the UI for seconds with no visible
     // change, so we skip the setHtml when this matches.
     QString m_agentDiffLastHtml;
+    // …and the inputs that produced it: session/workdir/base plus the raw patch
+    // bytes. Skipping only the setHtml still left renderDiffHtml() rebuilding the
+    // whole diff document on every burst, which the stall watchdog clocked at
+    // ~590 ms of blocked GUI thread; on a hit we reuse the HTML and the parsed
+    // per-file table (a renderAgentDiff-local cache, since DiffFileEntry lives in
+    // MainWindowInternal.h) instead of re-rendering (adhoc #93).
+    QString m_agentDiffRenderKey;
+    QByteArray m_agentDiffRenderedPatch;
     QPushButton *m_agentMergeButton = nullptr;   // worktree: merge into main
     QPushButton *m_agentMergeDeleteButton = nullptr; // merge + delete agent too
     QPushButton *m_agentUpdateButton = nullptr;  // worktree: update from main
@@ -6568,6 +6617,11 @@ private:
     // every ~30s, hammering the relay's D1 for no reader-visible difference.
     QHash<QString, QByteArray> m_catalogPublishedFingerprint; // owner/name -> hash
     QHash<QString, qint64> m_catalogPublishedFingerprintAtMs; // owner/name -> ms
+    // Serving state as of the last publish attempt, so publishRepositoryNow can
+    // tell a heartbeat republish from the user turning sharing on. The relay
+    // uses that distinction to keep a repository deleted from the website
+    // deleted instead of letting this node's next heartbeat resurrect it.
+    QHash<QString, bool> m_catalogPublishServeState; // owner/name -> serving
     // A private catalog write is permitted only after this process has
     // idempotently registered its public hybrid key and repository privacy
     // policy with an authenticated owner session.

@@ -302,24 +302,6 @@ async def verify_pull_comment_event(number, ev):
     return await ed25519_verify(author, signature, canonical)
 
 
-async def verify_commit_comment_event(sha, c):
-    # Mirrors CommitCommentStore::canonicalString(sha, c).
-    author = c.get("author", "")
-    signature = c.get("sig", "")
-    if not author or not signature or not sha:
-        return False
-    try:
-        ts = int(c.get("ts", 0))
-    except (TypeError, ValueError):
-        return False
-    content_hash = await sha256_hex(c.get("body", ""))
-    canonical = (
-        "forkmesh-commit-comment-v1\n" + sha + "\n" + author + "\n" + str(ts) +
-        "\n" + content_hash
-    ).encode()
-    return await ed25519_verify(author, signature, canonical)
-
-
 # ---------------------------------------------------------------------------
 # Release publishing (issue #304). See docs/design/release-binary-publishing.md.
 #

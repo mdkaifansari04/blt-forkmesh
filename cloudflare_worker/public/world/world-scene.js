@@ -15296,6 +15296,7 @@ export function createWorldScene({
   initialSpawn = null,
   initialWorldLayout = [],
   reducedMotion = false,
+  forceCompactRenderer = false,
   onLandmarkSelect = () => {},
   onOfficeProximity = () => {},
   onOfficeEnter = () => {},
@@ -15360,9 +15361,11 @@ export function createWorldScene({
   // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
   // buffers that can make WebGL context creation fail outright on those
   // devices.  Coarse pointer is capability-based, so a small desktop window
-  // keeps its full renderer.
+  // keeps its full renderer.  The embedder also forces this mode when the
+  // previous session in this tab crashed, so a GPU that just died is not
+  // asked for the same multisample and shadow allocations again.
   const compactRenderer = Boolean(
-    window.matchMedia?.("(pointer: coarse)")?.matches,
+    forceCompactRenderer || window.matchMedia?.("(pointer: coarse)")?.matches,
   );
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(DAYLIGHT_ENVIRONMENT.background);

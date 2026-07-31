@@ -2306,7 +2306,7 @@
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data || data.ok === false) return;
       const pending = data.pending || {};
-      ["issues", "pulls", "discussions", "commits"].forEach((tab) => {
+      ["issues", "pulls", "discussions"].forEach((tab) => {
         setRepoTabPending(tab, pending[tab]);
       });
       // Remember the server-side issue tally so the Issues list can show the

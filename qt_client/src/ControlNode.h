@@ -181,6 +181,12 @@ QString formatDiskSize(qint64 bytes);
 QString sshConnectionFailureHint(int exitCode, const QString &outputTail,
                                  const QString &host = QString());
 
+// True when a failed SSH run was rejected for its credentials, so asking the
+// operator for the host's SSH password and retrying can actually succeed. Only
+// the credential rejections qualify: a timeout, a refused port or a changed
+// host key all exit 255 too, and no password fixes any of them.
+bool sshFailureNeedsPassword(int exitCode, const QString &outputTail);
+
 // Describe the non-routable IPv4 range `host` falls in (RFC 1918 private,
 // RFC 6598 carrier-grade NAT, link-local, loopback), or an empty string when it
 // is a routable address or not an IPv4 literal at all.

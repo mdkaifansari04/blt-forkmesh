@@ -1048,10 +1048,18 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         const double u = info.value(QStringLiteral("utilization")).toDouble();
         const int pct = qRound(u <= 1.0 ? u * 100.0 : u);
         const QString rlt = info.value(QStringLiteral("rateLimitType")).toString();
+        // The premium per-model weekly window (adhoc #96) is its own bar, so it
+        // must be recognised before the plain weekly test below — its type name
+        // carries "seven_day" too.
+        const bool fable = rlt.contains(QStringLiteral("fable"))
+                           || rlt.contains(QStringLiteral("opus"))
+                           || rlt.contains(QStringLiteral("premium"));
         const bool weekly = rlt.contains(QStringLiteral("seven"))
                             || rlt.contains(QStringLiteral("week"));
-        emit usageChanged(weekly ? QStringLiteral("weekly") : QStringLiteral("5h"),
-                          QStringLiteral("%1%").arg(pct), pct);
+        const QString kind = fable ? QStringLiteral("fable")
+                                   : (weekly ? QStringLiteral("weekly")
+                                             : QStringLiteral("5h"));
+        emit usageChanged(kind, QStringLiteral("%1%").arg(pct), pct);
     } else if (type == QLatin1String("result")) {
         finalizeThinking(QString());
         clearActivity(); // the turn is done

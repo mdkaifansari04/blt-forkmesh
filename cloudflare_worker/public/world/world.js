@@ -123,6 +123,17 @@ const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
 const SAVED_VIEWS_MAX = 5;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
+// A tab that dies abruptly (GPU reset, renderer out-of-memory kill, browser
+// tab discard) never fires pagehide, so a per-tab marker that survives into
+// the next load proves the previous world session crashed and this load is
+// the automatic reload. The marker carries a rolling heartbeat of
+// renderer/socket diagnostics so the crash report describes the moments
+// before the crash, and a per-tab crash counter reboots repeat offenders
+// into the low-memory compact renderer to break GPU crash loops.
+const CRASH_GUARD_KEY = "forkmesh.world.crash-guard.v1";
+const CRASH_COUNT_KEY = "forkmesh.world.crash-count.v1";
+const CRASH_COUNT_MAX = 9;
+const CRASH_GUARD_SNAPSHOT_STALE_MS = 4000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
 // timer on the billboard counts the same window down.
@@ -3939,7 +3950,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </span>
             <span class="world-prompt-label">Prompt</span>
           </button>
-          <button class="world-notification-button" type="button" data-world-notifications-open aria-label="Open notifications" title="Show global and personal notifications">
+          <button class="world-notification-button" type="button" data-world-notifications-open aria-label="Open pings" title="Show global and personal pings">
             <span class="world-status-action-icon" aria-hidden="true">🔔</span>
             <span class="world-tool-count" data-world-notification-count>0</span>
           </button>
@@ -4148,7 +4159,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <button type="button" data-world-quick-channel="direct" aria-label="Open direct messages in a new tab"><span>●</span> Direct messages</button>
                 <button type="button" data-world-quick-channel="errors"><span>△</span> Errors <output data-world-admin-error-count hidden>0</output></button>
                 <button type="button" data-world-quick-channel="tasks"><span>✓</span> Tasks <output data-world-task-count hidden>0</output></button>
-                <button type="button" data-world-quick-channel="notifications"><span>◇</span> Notifications <output data-world-notification-count hidden>0</output></button>
+                <button type="button" data-world-quick-channel="notifications"><span>◇</span> Pings <output data-world-notification-count hidden>0</output></button>
               </nav>
               <button class="world-quick-chat-close" type="button" data-world-chat-terminal-close aria-label="Close World chat">×</button>
             </header>
@@ -5314,6 +5325,11 @@ class ForkMeshWorld extends HTMLElement {
     // If the module arrived after the index watchdog already surfaced the
     // load error, retract it — the world is taking over the page now.
     document.querySelector("[data-world-load-error]")?.remove();
+    // Surface an abrupt end of the previous world session in this tab (the
+    // crash guard is only cleared by pagehide) before anything below can
+    // throw, then decide whether this boot needs the safe-mode renderer.
+    this.reportPreviousWorldCrash();
+    this.rendererSafeMode = this.worldCrashCount() > 0;
     this.mode = this.dataset.worldMode || "public";
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
@@ -5415,6 +5431,7 @@ class ForkMeshWorld extends HTMLElement {
       },
     );
     this.startClock();
+    this.armCrashGuard();
     this.startDiagnostics();
     this.bootstrap();
     this.startWorldTicketRefresh();
@@ -6168,6 +6185,9 @@ class ForkMeshWorld extends HTMLElement {
             : null),
         initialWorldLayout: mergedInitialLayout,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        // After a detected crash the same GPU or memory pressure would likely
+        // kill this reload too; boot the low-memory compact renderer instead.
+        forceCompactRenderer: this.rendererSafeMode === true,
         onLandmarkSelect: (id, meta = {}) => {
           if (id === "office") {
             this.closeLandmark();
@@ -7617,6 +7637,10 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   handlePageHide = (event) => {
+    // Every orderly exit (navigation, reload, bfcache entry, tab close)
+    // passes through pagehide; a session that ends while the guard is still
+    // armed therefore crashed.
+    this.disarmCrashGuard();
     this.pauseWorldActivity();
     this.captureWorldPosition(true);
     if (event?.persisted === true) {
@@ -7631,6 +7655,7 @@ class ForkMeshWorld extends HTMLElement {
 
   handlePageShow = (event) => {
     if (event?.persisted !== true || this.destroyed) return;
+    this.armCrashGuard();
     this.syncViewportHeight();
     this.world?.setPaused(document.hidden);
     if (document.hidden) return;
@@ -7639,7 +7664,165 @@ class ForkMeshWorld extends HTMLElement {
     void this.refreshMirrorCatalogs();
   };
 
+  worldCrashCount() {
+    try {
+      return Math.max(
+        0,
+        Math.min(
+          CRASH_COUNT_MAX,
+          Number(sessionStorage.getItem(CRASH_COUNT_KEY)) || 0,
+        ),
+      );
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  recordWorldCrash() {
+    try {
+      sessionStorage.setItem(
+        CRASH_COUNT_KEY,
+        String(Math.min(CRASH_COUNT_MAX, this.worldCrashCount() + 1)),
+      );
+    } catch (_) {}
+  }
+
+  armCrashGuard() {
+    if (!this.crashGuardStartedAt) this.crashGuardStartedAt = Date.now();
+    this.beatCrashGuard();
+  }
+
+  disarmCrashGuard() {
+    try {
+      sessionStorage.removeItem(CRASH_GUARD_KEY);
+    } catch (_) {}
+  }
+
+  rendererGpuLabel() {
+    // The unmasked GPU string pins "crashed on which hardware" reports to a
+    // driver family. It is stable for the page's lifetime, so resolve it once
+    // the renderer exists and reuse it afterwards.
+    if (this.cachedGpuLabel) return this.cachedGpuLabel;
+    let label = "";
+    try {
+      const gl = this.world?.renderer?.getContext?.();
+      const info = gl?.getExtension?.("WEBGL_debug_renderer_info");
+      if (gl && info) {
+        label = String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL) || "");
+      }
+    } catch (_) {}
+    this.cachedGpuLabel = label.replace(/[^\w ().,-]+/g, " ").slice(0, 120);
+    return this.cachedGpuLabel;
+  }
+
+  beatCrashGuard() {
+    if (this.destroyed) return;
+    const now = Date.now();
+    let snapshot = this.lastDiagnosticsSnapshot;
+    if (
+      !snapshot ||
+      now - (this.lastDiagnosticsSnapshotAt || 0) > CRASH_GUARD_SNAPSHOT_STALE_MS
+    ) {
+      snapshot = this.collectDiagnostics();
+    }
+    const renderer = snapshot?.renderer;
+    const memory =
+      typeof performance.memory === "object" ? performance.memory : null;
+    const record = {
+      startedAt: this.crashGuardStartedAt || now,
+      beatAt: now,
+      visibility: String(document.visibilityState || "unknown").slice(0, 16),
+      socket: String(snapshot?.connection?.state || "unknown").slice(0, 16),
+      peers: Math.max(0, Number(snapshot?.connection?.peers) || 0),
+      fps: renderer ? Math.round(renderer.fps) : -1,
+      frameTimeMs: renderer ? Math.round(renderer.frameTimeMs) : -1,
+      longestFrameMs: renderer ? Math.round(renderer.longestFrameMs) : -1,
+      triangles: renderer ? Math.round(renderer.triangles) : -1,
+      pixelRatio: renderer ? Number(renderer.pixelRatio) || 0 : 0,
+      heapUsedMb: memory
+        ? Math.round(Number(memory.usedJSHeapSize) / 1048576)
+        : -1,
+      heapLimitMb: memory
+        ? Math.round(Number(memory.jsHeapSizeLimit) / 1048576)
+        : -1,
+      contextLosses: Math.max(0, Number(this.rendererContextLosses) || 0),
+      safeMode: this.rendererSafeMode === true,
+      gpu: this.rendererGpuLabel(),
+    };
+    try {
+      sessionStorage.setItem(CRASH_GUARD_KEY, JSON.stringify(record));
+    } catch (_) {}
+  }
+
+  reportPreviousWorldCrash() {
+    let record = null;
+    try {
+      record = JSON.parse(sessionStorage.getItem(CRASH_GUARD_KEY) || "null");
+    } catch (_) {}
+    this.disarmCrashGuard();
+    const beatAt = Number(record?.beatAt);
+    if (!record || typeof record !== "object" || !(beatAt > 0)) return;
+    // A browser-initiated discard (memory pressure on a background tab) also
+    // skips pagehide. Report it for visibility, but only real crashes count
+    // toward the safe-mode reboot.
+    const discarded = document.wasDiscarded === true;
+    if (!discarded) this.recordWorldCrash();
+    const describe = (value, unit = "") =>
+      Number.isFinite(Number(value)) && Number(value) >= 0
+        ? `${Math.round(Number(value))}${unit}`
+        : "unknown";
+    const navigation = String(
+      performance.getEntriesByType?.("navigation")?.[0]?.type || "unknown",
+    ).slice(0, 16);
+    const parts = [
+      discarded
+        ? "World reloaded after the browser discarded the tab"
+        : "World crashed and reloaded; previous session ended without pagehide",
+      `uptime ${describe((beatAt - Number(record.startedAt)) / 1000, "s")}`,
+      `heartbeat gap ${describe((Date.now() - beatAt) / 1000, "s")}`,
+      `navigation ${navigation}`,
+      `visibility ${String(record.visibility || "unknown").slice(0, 16)}`,
+      `tab crashes ${this.worldCrashCount()}`,
+      `socket ${String(record.socket || "unknown").slice(0, 16)} with ${describe(record.peers)} peers`,
+      `fps ${describe(record.fps)}`,
+      `frame ${describe(record.frameTimeMs, "ms")} worst ${describe(record.longestFrameMs, "ms")}`,
+      `triangles ${describe(record.triangles)}`,
+      `dpr ${Number(record.pixelRatio) || 0}`,
+      `heap ${describe(record.heapUsedMb, "MB")} of ${describe(record.heapLimitMb, "MB")}`,
+      `context losses ${describe(record.contextLosses)}`,
+      `safe mode ${record.safeMode === true ? "on" : "off"}`,
+    ];
+    const gpu = String(record.gpu || "").slice(0, 120);
+    if (gpu) parts.push(`gpu ${gpu}`);
+    this.reportWorldClientError(parts.join("; "));
+  }
+
+  reportWorldClientError(message) {
+    // Same private operational collector as uncaught exceptions; the Worker
+    // redacts, rate-limits, and stores the row for the admin error HUD.
+    try {
+      fetch("/api/client-errors", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "crash",
+          surface: "world",
+          message: String(message || "").slice(0, 500),
+          stack: "",
+          source: "world.js",
+          line: 0,
+          column: 0,
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
   reloadForRendererRecovery = () => {
+    // The context never restored, so this GPU could not sustain the full
+    // renderer; count it like a crash so the reload boots into safe mode.
+    this.recordWorldCrash();
     this.preserveWorldPositionForRefresh();
     location.reload();
   };
@@ -7664,6 +7847,28 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     if (state !== "lost") return;
+    this.rendererContextLosses = (this.rendererContextLosses || 0) + 1;
+    if (!this.reportedRendererContextLoss) {
+      // One report per page instance: repeated losses in the same session
+      // add noise, and the rolling crash-guard heartbeat already counts them.
+      this.reportedRendererContextLoss = true;
+      const renderer = this.lastDiagnosticsSnapshot?.renderer;
+      const uptimeS = Math.max(
+        0,
+        Math.round((Date.now() - (this.crashGuardStartedAt || Date.now())) / 1000),
+      );
+      const parts = [
+        `World renderer crashed; WebGL context lost after ${uptimeS}s`,
+        `fps ${renderer ? Math.round(renderer.fps) : "unknown"}`,
+        `triangles ${renderer ? Math.round(renderer.triangles) : "unknown"}`,
+        `dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
+        `safe mode ${this.rendererSafeMode === true ? "on" : "off"}`,
+      ];
+      const gpu = this.rendererGpuLabel();
+      if (gpu) parts.push(`gpu ${gpu}`);
+      this.reportWorldClientError(parts.join("; "));
+    }
+    this.beatCrashGuard();
     recovery.hidden = false;
     const title = recovery.querySelector(
       "[data-world-renderer-recovery-title]",
@@ -12650,17 +12855,17 @@ class ForkMeshWorld extends HTMLElement {
         ? {
             id: "events",
             color: "#77d9ff",
-            eyebrow: "WORLD NOTIFICATIONS",
-            label: "Notifications",
+            eyebrow: "WORLD PINGS",
+            label: "Pings",
             summary:
               "Your private account updates and public World announcements in one place.",
             status: "LIVE · PERSONAL + GLOBAL",
             metaphor:
               "A shared bulletin beside a private inbox that only you can open.",
             reality:
-              "Personal notifications use your signed-in session. Global announcements are public UTC event records.",
+              "Personal pings use your signed-in session. Global announcements are public UTC event records.",
             bullets: [
-              "Your notifications are account-scoped and never sent through multiplayer presence.",
+              "Your pings are account-scoped and never sent through multiplayer presence.",
               "Global announcements are visible to everyone in the World.",
             ],
             primary: null,
@@ -16012,30 +16217,30 @@ class ForkMeshWorld extends HTMLElement {
     const unreadCount = this.notifications.filter((item) => !item.readAt).length;
     return `
       <div data-world-events-panel-content>
-      <section class="world-activity-board world-activity-board--notifications" aria-label="Notifications and announcements">
+      <section class="world-activity-board world-activity-board--notifications" aria-label="Pings and announcements">
         <header class="world-activity-board-heading">
           <div>
             <p class="world-eyebrow">YOUR SIGNAL</p>
-            <h3>Notifications</h3>
+            <h3>Pings</h3>
             <span>${session?.sessionToken ? `${unreadCount} unread` : "Sign in for private updates"} · ${globalCount} global</span>
           </div>
           <div class="world-activity-tools">
-            <label><span class="world-visually-hidden">Search notifications</span><input type="search" value="${escapeHTML(
+            <label><span class="world-visually-hidden">Search pings</span><input type="search" value="${escapeHTML(
               this.notificationBoardSearch,
-            )}" placeholder="Search notifications…" data-world-activity-search="notifications" /></label>
-            <label><span class="world-visually-hidden">Filter notifications</span><select data-world-activity-filter="notifications" aria-label="Filter notifications">
+            )}" placeholder="Search pings…" data-world-activity-search="notifications" /></label>
+            <label><span class="world-visually-hidden">Filter pings</span><select data-world-activity-filter="notifications" aria-label="Filter pings">
               <option value="all"${filter === "all" ? " selected" : ""}>All activity</option>
               <option value="unread"${filter === "unread" ? " selected" : ""}>Unread</option>
               <option value="personal"${filter === "personal" ? " selected" : ""}>Personal</option>
               <option value="global"${filter === "global" ? " selected" : ""}>Global</option>
             </select></label>
-            <label><span class="world-visually-hidden">Sort notifications</span><select data-world-activity-sort="notifications" aria-label="Sort notifications">
+            <label><span class="world-visually-hidden">Sort pings</span><select data-world-activity-sort="notifications" aria-label="Sort pings">
               <option value="newest"${this.notificationBoardSort === "newest" ? " selected" : ""}>Newest</option>
               <option value="oldest"${this.notificationBoardSort === "oldest" ? " selected" : ""}>Oldest</option>
               <option value="title"${this.notificationBoardSort === "title" ? " selected" : ""}>Title</option>
               <option value="kind"${this.notificationBoardSort === "kind" ? " selected" : ""}>Type</option>
             </select></label>
-            <button type="button" data-world-notifications-refresh aria-label="Refresh notifications" title="Refresh notifications">↻</button>
+            <button type="button" data-world-notifications-refresh aria-label="Refresh pings" title="Refresh pings">↻</button>
           </div>
         </header>
         <div class="world-activity-stats">
@@ -16048,10 +16253,11 @@ class ForkMeshWorld extends HTMLElement {
           <span>Scope</span><span>Destination</span><span>Reference</span>
           <span>When</span><span>State</span><span>Actions</span>
         </div>
-        <ol class="world-activity-table world-notification-table" aria-label="Sortable notification table">
+        <ol class="world-activity-table world-notification-table" aria-label="Sortable ping table">
           ${
-            ["loading"].includes(this.notificationsState) &&
-            this.eventsState === "loading"
+            !rows.length &&
+            (this.notificationsState === "loading" ||
+              this.eventsState === "loading")
               ? '<li class="world-activity-loading"><i aria-hidden="true"></i><strong>Loading your activity…</strong></li>'
               : rows.length
                 ? rows
@@ -16088,20 +16294,20 @@ class ForkMeshWorld extends HTMLElement {
                         <span>${item.unread ? "Unread" : item.source === "global" ? `Ends ${escapeHTML(item.endsAt ? new Date(item.endsAt).toLocaleString() : "—")}` : `Read ${escapeHTML(item.readAt ? new Date(item.readAt).toLocaleString() : "—")}`}</span>
                         <span class="world-activity-row-actions">
                           ${item.href ? `<a href="${escapeHTML(item.href)}" rel="noopener noreferrer">Open</a>` : ""}
-                          ${item.source === "personal" ? `<button type="button" data-world-notification-delete="${escapeHTML(item.id)}">Delete</button>` : ""}
+                          ${item.source === "personal" ? `<button type="button" data-world-notification-delete="${escapeHTML(item.id)}" aria-label="Delete notification" title="Delete notification">🗑</button>` : ""}
                         </span>
                       </li>`;
                     })
                     .join("")
                 : `<li class="world-activity-empty"><span aria-hidden="true">✦</span><strong>${
                     query || filter !== "all"
-                      ? "No notifications match these controls."
+                      ? "No pings match these controls."
                       : this.eventsState === "unavailable" &&
                           this.notificationsState === "unavailable"
                         ? "Activity is temporarily unavailable. No seeded or demo announcement is being presented as scheduled."
                       : this.notificationsState === "signed-out" && !globalCount
-                        ? "Sign in to receive private notifications."
-                        : "No notification activity yet."
+                        ? "Sign in to receive private pings."
+                        : "No ping activity yet."
                   }</strong></li>`
           }
         </ol>
@@ -16194,8 +16400,8 @@ class ForkMeshWorld extends HTMLElement {
       button.setAttribute(
         "aria-label",
         count
-          ? `Open World notifications, ${count} active`
-          : "Open World notifications",
+          ? `Open World pings, ${count} active`
+          : "Open World pings",
       );
     });
   }
@@ -16227,11 +16433,11 @@ class ForkMeshWorld extends HTMLElement {
       this.toast(`World announcement: +${globalEvents.length - 3} more events`);
     }
     personalNotifications.slice(0, 3).forEach((item) => {
-      this.toast(`New notification: ${item.title}`);
+      this.toast(`New ping: ${item.title}`);
     });
     if (personalNotifications.length > 3) {
       this.toast(
-        `New notification: +${personalNotifications.length - 3} more`,
+        `New ping: +${personalNotifications.length - 3} more`,
       );
     }
   }
@@ -16364,9 +16570,9 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = this.notifications.length ? "ready" : "empty";
       this.updateNotificationBadge();
       this.refreshOpenEventsPanel();
-      this.toast("World notifications marked read.");
+      this.toast("World pings marked read.");
     } catch (_) {
-      this.toast("World notifications could not be marked read.");
+      this.toast("World pings could not be marked read.");
     }
   }
 
@@ -16393,9 +16599,9 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = this.notifications.length ? "ready" : "empty";
       this.updateNotificationBadge();
       this.refreshOpenEventsPanel();
-      this.toast("Notification deleted.");
+      this.toast("Ping deleted.");
     } catch (_) {
-      this.toast("Notification could not be deleted.");
+      this.toast("Ping could not be deleted.");
     }
   }
 
@@ -24353,7 +24559,10 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.diagnosticsTimer);
     this.renderDiagnostics();
     this.diagnosticsTimer = window.setInterval(
-      () => this.renderDiagnostics(),
+      () => {
+        this.renderDiagnostics();
+        this.beatCrashGuard();
+      },
       WORLD_DIAGNOSTICS_INTERVAL_MS,
     );
   }
@@ -24528,6 +24737,7 @@ class ForkMeshWorld extends HTMLElement {
       })(),
     };
     this.lastDiagnosticsSnapshot = snapshot;
+    this.lastDiagnosticsSnapshotAt = Date.now();
     return snapshot;
   }
 
@@ -25007,6 +25217,7 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
+    const wasAuthenticated = this.sessionAuthenticated;
     this.sessionAuthenticated = true;
     this.identity.name = sanitizePresenceText(
       ticket.name,
@@ -25029,6 +25240,12 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicketExpires = Number(ticket.expiresAt || 0);
     void this.loadWorldPreferences();
     this.startAdminErrorPolling();
+    // The ticket usually authenticates after the initial loadContext() already
+    // gave up on personal pings ("signed-out"), which stranded the board empty
+    // until the next 60s poll. Fetch them the moment the session proves out.
+    if (!wasAuthenticated || this.notificationsState === "signed-out") {
+      void this.refreshPersonalNotifications(this.isEventsPanelOpen());
+    }
     return true;
   }
 
@@ -26912,6 +27129,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.destroyed) return;
     if (this.spawnSelected) this.captureWorldPosition(true);
     this.destroyed = true;
+    this.disarmCrashGuard();
     this.closeScreenshotUI();
     this.clearPullReviewScrollTracking();
     document.removeEventListener("visibilitychange", this.handleVisibility);
