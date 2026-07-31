@@ -5400,6 +5400,33 @@ void MainWindow::onRelayLatencySampled(int ms)
         static_cast<RelayRadarWidget *>(m_relayRadar)->setLatency(ms);
 }
 
+// Echo the mesh's serving nodes into the radar dish as blips (adhoc #79). The
+// repo-detail Mirror-nodes panel paints a repo-scoped set of blips (per-node
+// sync/integrity state, which only that panel knows) and wins while it is on
+// screen; everywhere else — including a freshly launched app that has never
+// opened a repo — the dish shows the node roster, so it no longer sweeps empty.
+// The ring only fits so many dots before they touch, so cap the fan-out and
+// keep the online nodes when the mesh is bigger than that.
+void MainWindow::updateRelayRadarNodes(bool force)
+{
+    if (!m_relayRadar)
+        return;
+    if (!force && m_mirrorNodesTable && m_mirrorNodesTable->isVisible())
+        return;
+    constexpr int kMaxRadarBlips = 16; // dots of ~5.6px around the r*0.8 ring
+    QVector<RelayRadarWidget::Blip> blips;
+    for (int pass = 0; pass < 2 && blips.size() < kMaxRadarBlips; ++pass) {
+        for (const NodeMenuEntry &e : std::as_const(m_radarNodes)) {
+            if (e.online != (pass == 0))
+                continue;
+            if (blips.size() >= kMaxRadarBlips)
+                break;
+            blips.append(RelayRadarWidget::Blip{e.name, e.online, false, false});
+        }
+    }
+    static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips(blips);
+}
+
 // Measure the round-trip latency to the active relay and feed it to the radar
 // readout. We GET the relay's lightweight /api/version endpoint (small JSON, no
 // Durable-Object fan-out) and time the request; a transport error or timeout
@@ -10515,6 +10542,12 @@ void MainWindow::refreshNodesTable()
     // switcher list: every chat user account, world-chat guest and repo owner in
     // it was counted as a node, so a mesh of four nodes badged "21" (adhoc #26).
     updateNetworkCounts(-1, visible.size(), -1);
+    // Same filtered list feeds the relay radar's blips, so the dish shows the
+    // mesh from launch instead of only while a repo's Mirror-nodes tab is open
+    // (adhoc #79). Also runs before the page is built, for the same reason the
+    // count above does.
+    m_radarNodes = visible;
+    updateRelayRadarNodes();
     if (!m_nodesTable)
         return; // page not built yet — the count above is all that's on screen
 
