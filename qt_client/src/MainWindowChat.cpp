@@ -12967,12 +12967,20 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     layout->addWidget(buttons);
 
+    // The password can change mid-dialog: a host that only accepts password
+    // login rejects the key-only first attempt, and the scan then asks for one
+    // and retries with it (see the finished handler below).
+    const QString identityFile = savedHostIdentityFile(node, ip, user);
+    const QString credentialKey =
+        forkmesh::control::savedHostCredentialKey(node, ip, user);
+    auto sessionPass = std::make_shared<QString>(pass);
+
     auto currentPath = std::make_shared<QString>(QStringLiteral("/"));
     auto loadPath = std::make_shared<std::function<void(const QString &)>>();
     *loadPath = [this, dialog, table, pathEdit, status, totalLabel, upButton,
                  openButton, refreshButton, currentPath, mountCardsLayout,
-                 mountStatus, loadPath, ip, user, pass,
-                 node](const QString &requested) {
+                 mountStatus, loadPath, ip, user, sessionPass, identityFile,
+                 credentialKey, node](const QString &requested) {
         if (m_hostDiskProcess &&
             m_hostDiskProcess->state() != QProcess::NotRunning) {
             status->setText(QStringLiteral(
@@ -12995,8 +13003,8 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         QString sshError;
         const forkmesh::control::HostSshCommand ssh =
             forkmesh::control::buildHostSshCommand(
-                ip, user, pass, remoteCommand, &sshError,
-                savedHostIdentityFile(node, ip, user));
+                ip, user, *sessionPass, remoteCommand, &sshError,
+                identityFile);
         if (ssh.program.isEmpty()) {
             status->setText(sshError);
             return;
@@ -13024,8 +13032,9 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         connect(proc, &QProcess::readyReadStandardOutput, dialog,
                 [proc, output] { output->append(proc->readAllStandardOutput()); });
         connect(proc, &QProcess::finished, dialog,
-                [this, proc, output, table, status, totalLabel, navWidgets,
-                 path, ip, user, mountCardsLayout, mountStatus, loadPath](
+                [this, dialog, proc, output, table, status, totalLabel,
+                 navWidgets, path, ip, user, mountCardsLayout, mountStatus,
+                 loadPath, sessionPass, identityFile, credentialKey](
                     int code, QProcess::ExitStatus exitStatus) {
                     if (m_hostDiskProcess == proc)
                         m_hostDiskProcess = nullptr;
@@ -13136,6 +13145,64 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                                 tail, ip);
                         if (!sshHint.isEmpty())
                             message += QLatin1Char(' ') + sshHint;
+                        // Without a password ssh runs BatchMode/publickey-only,
+                        // so a password-login host can never finish this scan:
+                        // ask for the one credential that would, then retry the
+                        // same folder. Hosts pinned to a ForkMesh-managed key
+                        // never fall back to a password, so they are left alone.
+                        const int sshExit =
+                            exitStatus == QProcess::NormalExit ? code : 255;
+                        if (identityFile.isEmpty() &&
+                            forkmesh::control::sshFailureNeedsPassword(sshExit,
+                                                                       tail)) {
+                            status->setText(
+                                message +
+                                QString::fromUtf8(
+                                    " Asking for this host's SSH password "
+                                    "\xE2\x80\xA6"));
+                            // Prompting has to leave this finished handler
+                            // first: a modal dialog run inside a QProcess
+                            // signal would pump the event loop under it.
+                            QTimer::singleShot(
+                                0, dialog,
+                                [this, dialog, status, loadPath, sessionPass,
+                                 credentialKey, path, ip, user] {
+                                    bool accepted = false;
+                                    const QString entered =
+                                        QInputDialog::getText(
+                                            dialog,
+                                            QStringLiteral(
+                                                "SSH password needed"),
+                                            QString::fromUtf8(
+                                                "%1@%2 rejected the login "
+                                                "ForkMesh tried. Enter that "
+                                                "host's SSH password to "
+                                                "measure its disk \xE2\x80\x94 "
+                                                "it is kept in memory for this "
+                                                "session only and is never "
+                                                "written to settings.")
+                                                .arg(user, ip),
+                                            QLineEdit::Password, *sessionPass,
+                                            &accepted);
+                                    if (!accepted || entered.isEmpty()) {
+                                        status->setText(QString::fromUtf8(
+                                            "The size map needs an SSH "
+                                            "password (or a working key) for "
+                                            "%1@%2. Press Refresh to try "
+                                            "again.")
+                                                            .arg(user, ip));
+                                        return;
+                                    }
+                                    *sessionPass = entered;
+                                    // Remember it for the rest of this session
+                                    // so drilling into folders — and every
+                                    // other host action — stops re-asking.
+                                    m_hostSessionPasswords.insert(credentialKey,
+                                                                  entered);
+                                    (*loadPath)(path);
+                                });
+                            return;
+                        }
                         status->setText(message);
                         return;
                     }
