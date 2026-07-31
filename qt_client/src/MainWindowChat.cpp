@@ -4637,13 +4637,18 @@ QWidget *MainWindow::buildBreadcrumb()
     // utilisation so it renders immediately; from there it only updates when the
     // user hovers the chart to check it (adhoc #20) — no background poll and no
     // other trigger keeps it current between those.
-    auto *tokenUsage = new TokenUsageMiniChart;
+    // Three bars: 5-hour, weekly, and the account's Fable weekly window
+    // (adhoc #96).
+    auto *tokenUsage = new TokenUsageMiniChart(
+        QStringLiteral("Claude Code usage"), /*remainingMode=*/false,
+        /*windows=*/3);
     m_navTokenUsage = tokenUsage;
     // This hover is also the only place that re-fetches the live claude-code
     // model list (GET /v1/models, adhoc #41) — everywhere else that touches a
-    // model combo just applies whatever's already cached.
+    // model combo just applies whatever's already cached. The refresh flashes a
+    // green/red box around the chart when it lands (adhoc #96).
     tokenUsage->onHover = [this] {
-        refreshClaudeCodeUsage();
+        refreshClaudeCodeUsage(/*fromHover=*/true);
         refreshClaudeModelCombo();
     };
     {
@@ -4654,26 +4659,38 @@ QWidget *MainWindow::buildBreadcrumb()
         };
         restore(false, kClaudeUsage5hPctSetting);
         restore(true, kClaudeUsageWeekPctSetting);
+        if (settings.contains(kClaudeUsageFablePctSetting))
+            tokenUsage->setUsage(TokenUsageMiniChart::Fable,
+                                 settings.value(kClaudeUsageFablePctSetting).toInt());
         // Reset countdown (issue #50): the cached instant is wall-clock, so derive
         // the remaining time relative to now; a window that already elapsed shows
         // no countdown until the next poll refreshes it.
-        auto restoreReset = [&](bool weekly, const QString &key) {
+        auto restoreReset = [&](TokenUsageMiniChart::Window window,
+                                const QString &key) {
             if (!settings.contains(key))
                 return;
             const qint64 remaining = settings.value(key).toLongLong() -
                                      QDateTime::currentMSecsSinceEpoch();
             if (remaining > 0)
-                tokenUsage->setReset(weekly, humanizeRemaining(remaining));
+                tokenUsage->setReset(window, humanizeRemaining(remaining));
         };
-        restoreReset(false, kClaudeUsage5hResetSetting);
-        restoreReset(true, kClaudeUsageWeekResetSetting);
+        restoreReset(TokenUsageMiniChart::FiveHour, kClaudeUsage5hResetSetting);
+        restoreReset(TokenUsageMiniChart::Weekly, kClaudeUsageWeekResetSetting);
+        restoreReset(TokenUsageMiniChart::Fable, kClaudeUsageFableResetSetting);
     }
     // Codex rides beside Claude Code. App-server updates replace the local
     // countdown estimate with the account's live utilization and reset time.
+    // Two bars only — Codex has no per-model weekly window.
     auto *codexUsage = new TokenUsageMiniChart(
-        QStringLiteral("Codex usage remaining"), /*remainingMode=*/true);
+        QStringLiteral("Codex usage remaining"), /*remainingMode=*/true,
+        /*windows=*/2);
     m_navCodexUsage = codexUsage;
-    codexUsage->onHover = [this] { refreshCodexUsageRemaining(); };
+    // The Codex figures are computed locally, so the hover always "succeeds";
+    // the green box still confirms the reading is fresh (adhoc #96).
+    codexUsage->onHover = [this] {
+        refreshCodexUsageRemaining();
+        flashUsageChart(m_navCodexUsage, true);
+    };
     refreshCodexUsageRemaining();
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
