@@ -1336,9 +1336,7 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (repoIndex < 0 || repoIndex >= m_repositories.size())
         return;
     ensureRepoDetailSectionBuilt();
-    const int defaultTab = defaultRepoTabIndex();
-    const int landingTab = defaultTab == 1 ? 0 : defaultTab;
-    ensureRepoDetailTabBuilt(landingTab);
+    ensureRepoDetailTabBuilt(kRepoLandingTab);
     // Agent rows and notification paths share PR controls/menus even when the
     // Pulls tab is not the landing page. Build that comparatively small page as
     // part of the first repo transition, still within the click budget.
@@ -1426,24 +1424,22 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (m_issueTable)
         m_issueTable->setRowCount(0);
     updateRepoIssueCount();
-    if (defaultTab == 3)
-        reloadAgents();
     m_currentDiscussions.clear();
     if (m_discussionTable)
         m_discussionTable->setRowCount(0);
     updateRepoDiscussionCount();
-    if (defaultTab == 5)
-        reloadDiscussions();
     logStartup(QStringLiteral("  openRepo: selected metadata scheduled"));
 
-    // Land on the user's preferred default tab (Settings → General; Agents by
-    // default). Reset the editor tabs/tree for the new repo.
-    // "Commits" (1) lives inside the Code overview now, under the latest-commit
-    // bar — land on Code and swap the overview body to the commits panel below.
-    if (m_repoDetailTabs && m_repoDetailTabs->button(landingTab))
-        m_repoDetailTabs->button(landingTab)->setChecked(true);
+    // Land on Code — the repo's overview (adhoc #119; there's no preferred-tab
+    // setting to consult any more, and the Issues/Agents/Discussions metadata the
+    // old default tabs needed up front is now loaded by whichever tab the user
+    // opens). A relaunch re-applies the tab last viewed on top of this, and its
+    // data comes with it (see runDeferredStartup / applyNavDetailTab). Reset the
+    // editor tabs/tree for the new repo.
+    if (m_repoDetailTabs && m_repoDetailTabs->button(kRepoLandingTab))
+        m_repoDetailTabs->button(kRepoLandingTab)->setChecked(true);
     if (m_repoDetailStack)
-        m_repoDetailStack->setCurrentIndex(landingTab);
+        m_repoDetailStack->setCurrentIndex(kRepoLandingTab);
     if (m_repoFileTabs) {
         m_repoFileTabs->clear();
         m_openFileTabs.clear();
@@ -1478,27 +1474,21 @@ void MainWindow::openRepoDetail(int repoIndex)
     });
     nodeSwitchStep(QStringLiteral("Loading commit history…"));
     // Building the commit table is the single heaviest piece of per-open UI work
-    // (up to 300 rows, each with cell widgets, plus several git reads). Most opens
-    // land on Agents/Code and never show it, so only build it when Commits is the
-    // landing tab; otherwise just refresh the cheap "Commits (N)" badge and let
-    // the tab-click handler build the table on demand. The previous repo's rows
-    // and cached tip are cleared so commitsListIsCurrent() forces a rebuild for
-    // this repo when its Commits tab is first opened.
-    if (defaultTab == 1) {
-        loadCommits();
-        showOverviewCommits();
-    } else {
-        // A previously open repo may have left the commits panel showing.
-        showOverviewFiles();
-        updateRepoCommitCount();
-        if (m_commitsTable)
-            m_commitsTable->setRowCount(0);
-        m_commitsLoadedTip.clear();
-        // Invalidate any still-pending stat fill from the repo we just left, so it
-        // doesn't run a --numstat read against this repo and write into rows we
-        // just cleared.
-        ++m_commitsLoadGen;
-    }
+    // (up to 300 rows, each with cell widgets, plus several git reads). An open
+    // lands on the Code overview and never shows it, so just refresh the cheap
+    // "Commits (N)" badge and let the tab-click handler build the table on demand.
+    // The previous repo's rows and cached tip are cleared so commitsListIsCurrent()
+    // forces a rebuild for this repo when its Commits tab is first opened.
+    // A previously open repo may have left the commits panel showing.
+    showOverviewFiles();
+    updateRepoCommitCount();
+    if (m_commitsTable)
+        m_commitsTable->setRowCount(0);
+    m_commitsLoadedTip.clear();
+    // Invalidate any still-pending stat fill from the repo we just left, so it
+    // doesn't run a --numstat read against this repo and write into rows we just
+    // cleared.
+    ++m_commitsLoadGen;
     logStartup(QStringLiteral("  openRepo: commits loaded"));
     // Insights (contributor stats, git shortlog) are computed lazily when the
     // Insights tab is opened — see the tab-switch handler — so opening a repo
@@ -1508,23 +1498,19 @@ void MainWindow::openRepoDetail(int repoIndex)
     m_overviewLoadedKey.clear();
     if (m_overviewList)
         m_overviewList->clear();
-    if (landingTab == 0) {
-        nodeSwitchStep(QStringLiteral("Rendering overview…"));
-        loadRepoOverview(QString());
-        logStartup(QStringLiteral("  openRepo: overview loaded"));
-    }
+    nodeSwitchStep(QStringLiteral("Rendering overview…"));
+    loadRepoOverview(QString());
+    logStartup(QStringLiteral("  openRepo: overview loaded"));
     showRepoOverview();
     // The detail panel lives inside Home next to the columns now, so just make
     // sure Home is the active section and refresh the breadcrumb.
     showSection(0);
     updateBreadcrumb();
-    // Workflow discovery shells Git and scans YAML. Only build the panel when
-    // Actions is actually the landing page; other tabs load it on click.
+    // Workflow discovery shells Git and scans YAML, and Actions is never the
+    // landing page (kRepoLandingTab is Code) — its tab loads it on click.
     m_repoWorkflows.clear();
     if (m_actionsTable)
         m_actionsTable->setRowCount(0);
-    if (landingTab == 6)
-        refreshRepoActions();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
     // Every lazily-loaded badge above has just been reset to its empty value.
     // Fill them in so the tab row is right without each tab having to be clicked
@@ -5160,7 +5146,7 @@ void MainWindow::recordNavLocation()
 
     // Remember the tab actually being viewed so a relaunch can restore it
     // (see kLastRepoDetailTabSetting / runDeferredStartup) instead of always
-    // landing on Settings -> General's "open repositories on tab" default.
+    // landing on the Code overview a fresh open lands on.
     if (here.detailTab >= 0)
         QSettings().setValue(kLastRepoDetailTabSetting, here.detailTab);
 

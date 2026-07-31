@@ -3572,6 +3572,77 @@ void MainWindow::updateIssueActionState()
 
 void MainWindow::promptNewIssue()
 {
+    composeNewIssue(QString(), QString());
+}
+
+// Chat -> issue (MessageRow's "Create issue..."). A bug reported in chat should
+// not have to be retyped on the Issues tab: the first line seeds the title, the
+// whole message becomes the description, and an attribution line records who
+// said it and where. The wording matches the web/World chats (chat-issue-filing.js)
+// so an issue reads the same whichever client filed it.
+void MainWindow::promptIssueFromChatMessage(const QString &text,
+                                            const QString &senderName,
+                                            qint64 timestampMs)
+{
+    const QString message = text.trimmed();
+    if (message.isEmpty())
+        return;
+    if (m_repositories.isEmpty()) {
+        flashMessage("Open a repository before filing an issue from chat.");
+        return;
+    }
+
+    // Default to whatever repository is already open; ask when there is a
+    // choice, because chat is not scoped to one repository.
+    int repoIndex = m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()
+                        ? m_repoDetailIndex
+                        : 0;
+    if (m_repositories.size() > 1) {
+        QStringList labels;
+        labels.reserve(m_repositories.size());
+        for (const RepositoryRecord &repo : std::as_const(m_repositories))
+            labels << repo.owner + "/" + repo.name;
+        bool ok = false;
+        const QString pick = QInputDialog::getItem(
+            this, QStringLiteral("Create issue from message"),
+            QStringLiteral("File this message as an issue in:"), labels,
+            repoIndex, false, &ok);
+        if (!ok || pick.isEmpty())
+            return;
+        repoIndex = labels.indexOf(pick);
+        if (repoIndex < 0)
+            return;
+    }
+
+    QString title = message.section('\n', 0, 0).simplified();
+    if (title.size() > 200)
+        title = title.left(199) + QString::fromUtf8("\xE2\x80\xA6");
+    const QString when =
+        QDateTime::fromMSecsSinceEpoch(timestampMs > 0
+                                           ? timestampMs
+                                           : QDateTime::currentMSecsSinceEpoch())
+            .toUTC()
+            .toString(Qt::ISODate);
+    const QString channel = m_currentConversation.trimmed();
+    const QString body =
+        message + "\n\n---\nFiled from a " +
+        (channel.isEmpty() ? QString() : channel + " ") + "chat message by " +
+        (senderName.trimmed().isEmpty() ? QStringLiteral("someone")
+                                        : senderName.trimmed()) +
+        " at " + when + ".";
+
+    if (repoIndex != m_repoDetailIndex)
+        openRepoDetail(repoIndex);
+    showSection(0);
+    // Tab 2 is Issues (same index the global search uses to jump to an issue).
+    if (m_repoDetailTabs && m_repoDetailTabs->button(2))
+        m_repoDetailTabs->button(2)->click();
+    composeNewIssue(title, body);
+}
+
+void MainWindow::composeNewIssue(const QString &prefillTitle,
+                                 const QString &prefillBody)
+{
     // Owners write straight to .forkmesh/issues/; mirror nodes compose the same page but
     // submit to the source of truth's inbox (handled in the create button). Only
     // block when there is no repo selected at all.
@@ -3586,6 +3657,7 @@ void MainWindow::promptNewIssue()
     titleLabel->setObjectName("sectionLabel");
     auto *titleEdit = new QLineEdit(page);
     titleEdit->setPlaceholderText("Title");
+    titleEdit->setText(prefillTitle);
     auto *bodyEdit = new MarkdownEditor(page);
     bodyEdit->setMentionCandidates(mentionCandidateNames());
     // A modest minimum keeps the window shrinkable on small screens; the editor
@@ -3593,6 +3665,8 @@ void MainWindow::promptNewIssue()
     // and the compose page scrolls when the window is shorter than this.
     bodyEdit->setMinimumHeight(200);
     bodyEdit->setPlaceholderText("Type your description here...");
+    if (!prefillBody.isEmpty())
+        bodyEdit->setMarkdown(prefillBody);
 
     auto *left = new QWidget(page);
     auto *leftLayout = new QVBoxLayout(left);

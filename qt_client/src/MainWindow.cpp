@@ -623,20 +623,19 @@ void MainWindow::runDeferredStartup()
         m_selectedNode = m_repositories.at(index).owner;
         refreshRepositoryList();
         openRepoDetail(index);
-        // Land back on whichever tab was actually open last (adhoc #101) rather
-        // than Settings -> General's "open repositories on tab" default (Agents
-        // unless changed) — a relaunch should stay on whatever page it's on, not
-        // detour through Agents every time.
+        // Land back on whichever tab was actually open last (adhoc #101) — a
+        // relaunch should stay on whatever page it's on. Nothing overrides that
+        // any more: openRepoDetail() above lands on the Code overview, and the
+        // preferred-tab setting that used to detour every launch through Agents
+        // is gone (adhoc #119).
         const int savedTab =
             QSettings().value(kLastRepoDetailTabSetting, -1).toInt();
         if (savedTab >= 0) {
             // applyNavDetailTab()'s Agents (tab 3) branch sets the stack index
             // directly rather than driving it through a button click, so — unlike
-            // every other tab — it never lazily builds the real page itself. That
-            // is normally masked by Agents also being the default landing tab
-            // (already built above by openRepoDetail()); build it explicitly here
-            // so landing on a saved tab that differs from the configured default
-            // cannot leave the Agents tab showing its unbuilt placeholder.
+            // every other tab — it never lazily builds the real page itself. Build
+            // it explicitly here so restoring the Agents tab can't leave it showing
+            // its unbuilt placeholder.
             ensureRepoDetailTabBuilt(savedTab);
             NavPlace target;
             target.section = 0;
@@ -696,8 +695,9 @@ void MainWindow::runDeferredStartup()
     refreshClaudeCodeUsage();
 
     // Hourly snapshot of the live database to the local drive (Settings -> Data
-    // -> Automatic backups). Armed for every launch, headless included — an
-    // unattended mirror is exactly where a lost identity key hurts most.
+    // -> Automatic backups). Armed for every launch, headless included, but it
+    // only starts a timer where backups are actually on: control nodes by
+    // default, anyone who ticked the box.
     startAutoBackups();
 
     // A provisioned direct HTTPS mirror (hostname configured + owner-only
