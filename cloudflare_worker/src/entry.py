@@ -12980,6 +12980,16 @@ async def catalog_handler(env, request):
             return limited
 
         key_bi = await blind_index(env, owner + "/" + record["name"])
+        # The owner deleted this repository from the website, but the node that
+        # hosts it still republishes on every heartbeat. Refuse those automatic
+        # publishes so the delete sticks (adhoc #91). The signature above has
+        # already proven this is the owner's key, so an explicit user-initiated
+        # publish from the desktop is allowed to lift the tombstone.
+        if await _repo_delete_tombstone_active(env, key_bi):
+            if clean_string(data.get("publishIntent", ""), 16) != "user":
+                return json_response(
+                    {"error": "repository_deleted"}, status=410)
+            await _clear_repo_delete_tombstone(env, key_bi)
         # Per-owner record cap (an update to an existing repo is always allowed).
         prior_row = await d1_first(
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
@@ -13173,6 +13183,12 @@ async def catalog_handler(env, request):
                 audit_target, "failed", {"reason": "storage_error"})
             raise
         if not row:
+            # No catalog row right now, but the owner node may still be about
+            # to republish one (that race is exactly what makes a web delete
+            # look like it did nothing). Tombstone it anyway.
+            if session_authorized:
+                await _record_repo_delete_tombstone(
+                    env, key_bi, await blind_index(env, owner))
             return json_response({"ok": True, "deleted": False})
         try:
             existing = await decrypt_row(env, row["data"])
@@ -13223,6 +13239,15 @@ async def catalog_handler(env, request):
         # host presence, agent state, bounties, chat history) keeps the repo
         # alive in practice even though its catalog row is gone.
         try:
+            # A delete made from the website has to outlive the owner node's
+            # next heartbeat: that node still holds the mirror and republishes
+            # automatically, which used to re-create the row within a minute
+            # (adhoc #91). The desktop's own owner-signed delete needs no
+            # tombstone — it is the publisher, and it also uses this endpoint
+            # to move a repo to a renamed owner.
+            if session_authorized:
+                await _record_repo_delete_tombstone(
+                    env, key_bi, await blind_index(env, owner))
             await _delete_repo_scoped_state(env, key_bi)
             await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
             await _delete_bounties_namespace(env, owner, name)
@@ -14921,6 +14946,48 @@ async def _delete_bounties_namespace(env, owner, repo):
             await d1_run(
                 env, "DELETE FROM issue_bounty WHERE bounty_bi=?",
                 row.get("bounty_bi"))
+
+
+# A repository deleted from the website stays deleted. The owner's node keeps
+# the local mirror and republishes its catalog record on every heartbeat, so
+# without a tombstone the row reappeared within a minute and the web delete
+# looked like it had silently done nothing (adhoc #91). The tombstone refuses
+# automatic republishes; an explicit user-initiated publish from the desktop
+# clears it, so the owner can always share the repo again.
+REPO_DELETE_TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000
+
+
+async def _repo_delete_tombstone_active(env, repo_bi):
+    try:
+        row = await d1_first(
+            env,
+            "SELECT repo_bi FROM repo_deletions WHERE repo_bi=? AND "
+            "expires_at>?",
+            repo_bi, int(Date.now()))
+    except Exception:
+        # An unreadable tombstone table must never block publishing; the
+        # website delete degrades to its old behaviour instead.
+        return False
+    return bool(row)
+
+
+async def _record_repo_delete_tombstone(env, repo_bi, owner_bi):
+    now = int(Date.now())
+    await d1_run(env, "DELETE FROM repo_deletions WHERE expires_at<=?", now)
+    await d1_run(
+        env,
+        "INSERT INTO repo_deletions (repo_bi, owner_bi, deleted_at, "
+        "expires_at) VALUES (?,?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET "
+        "owner_bi=excluded.owner_bi, deleted_at=excluded.deleted_at, "
+        "expires_at=excluded.expires_at",
+        repo_bi, owner_bi, now, now + REPO_DELETE_TOMBSTONE_TTL_MS)
+
+
+async def _clear_repo_delete_tombstone(env, repo_bi):
+    try:
+        await d1_run(env, "DELETE FROM repo_deletions WHERE repo_bi=?", repo_bi)
+    except Exception:
+        pass
 
 
 async def _delete_repo_scoped_state(env, repo_bi):

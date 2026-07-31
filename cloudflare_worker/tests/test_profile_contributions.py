@@ -1240,6 +1240,11 @@ def test_ingest_catalog_handler_keeps_repository_write_on_optional_failure():
         "blind_index": lambda _env, value: asyncio.sleep(0, result=_blind(value)),
         "touch_registered_node": noop,
         "catalog_rate_check": noop,
+        # No website deletion is pending for these repos, so every publish is
+        # accepted (see test_repo_delete_tombstone.py for the refusal path).
+        "_repo_delete_tombstone_active": (
+            lambda _env, _repo_bi: asyncio.sleep(0, result=False)),
+        "_clear_repo_delete_tombstone": noop,
         "d1_first": d1_first,
         "d1_all": d1_all,
         "d1_run": d1_run,
