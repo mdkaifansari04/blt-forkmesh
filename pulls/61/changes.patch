@@ -1,0 +1,134 @@
+diff --git a/qt_client/src/MainWindowChat.cpp b/qt_client/src/MainWindowChat.cpp
+index b3ba55ff9..cbf6d6483 100644
+--- a/qt_client/src/MainWindowChat.cpp
++++ b/qt_client/src/MainWindowChat.cpp
+@@ -729,8 +729,8 @@ QWidget *MainWindow::buildNetworkLogDock()
+         "What picks this prompt up: CC (Claude Code) or Codex run the CLI agents, "
+         "OpenAI/Claude API run the headless API agents, and Manual files an issue "
+         "instead of starting one.");
+-    m_quickAddAgentProvider->setMinimumWidth(74);
+-    m_quickAddAgentProvider->setMaximumWidth(112);
++    // No fixed width band (adhoc #72): FullPopupComboBox sizes itself to the
++    // label it is showing, so the four dropdowns take only the room they need.
+     // Show the whole list at once rather than a scrollable popup (adhoc #99).
+     m_quickAddAgentProvider->setMaxVisibleItems(30);
+     m_quickAddAgentProvider->view()->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+@@ -738,11 +738,6 @@ QWidget *MainWindow::buildNetworkLogDock()
+     // list; Codex uses the ChatGPT-backed Codex CLI's supported model list.
+     m_quickAddClaudeModel = new FullPopupComboBox; // no scroll arrows (issue #348)
+     m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
+-    m_quickAddClaudeModel->setMinimumWidth(94);
+-    m_quickAddClaudeModel->setMaximumWidth(150);
+-    m_quickAddClaudeModel->setMinimumContentsLength(8);
+-    m_quickAddClaudeModel->setSizeAdjustPolicy(
+-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+     // Show the whole model list at once rather than a scrollable popup, even
+     // once the live provider list-up fills in more than a handful (adhoc #99).
+     m_quickAddClaudeModel->setMaxVisibleItems(30);
+@@ -800,11 +795,6 @@ QWidget *MainWindow::buildNetworkLogDock()
+     // a distinct approval policy and sandbox, including interactive requests.
+     m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+     m_quickAddModeSelector->setObjectName("quickAddModeSelector");
+-    m_quickAddModeSelector->setMinimumWidth(66);
+-    m_quickAddModeSelector->setMaximumWidth(104);
+-    m_quickAddModeSelector->setMinimumContentsLength(5);
+-    m_quickAddModeSelector->setSizeAdjustPolicy(
+-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+     m_quickAddModeSelector->addItem(kAgentAskModeLabel, false);
+     m_quickAddModeSelector->addItem(QStringLiteral("Edit"), false);
+     m_quickAddModeSelector->addItem(QStringLiteral("Plan"), false);
+@@ -837,11 +827,6 @@ QWidget *MainWindow::buildNetworkLogDock()
+     // refreshQuickAddSpeedSelector() and re-runs whenever either changes.
+     m_quickAddSpeedSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+     m_quickAddSpeedSelector->setObjectName("quickAddSpeedSelector");
+-    m_quickAddSpeedSelector->setMinimumWidth(74);
+-    m_quickAddSpeedSelector->setMaximumWidth(112);
+-    m_quickAddSpeedSelector->setMinimumContentsLength(6);
+-    m_quickAddSpeedSelector->setSizeAdjustPolicy(
+-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+     m_quickAddSpeedSelector->setMaxVisibleItems(30);
+     m_quickAddSpeedSelector->setToolTip(
+         "Speed: how hard the model thinks about each turn (the CLI's reasoning "
+diff --git a/qt_client/src/MainWindowInternal.h b/qt_client/src/MainWindowInternal.h
+index 21d67f959..f191fcbf4 100644
+--- a/qt_client/src/MainWindowInternal.h
++++ b/qt_client/src/MainWindowInternal.h
+@@ -147,6 +147,7 @@
+ #include <QStyle>
+ #include <QStyledItemDelegate>
+ #include <QStyleHints>
++#include <QStyleOptionComboBox>
+ #include <QSyntaxHighlighter>
+ #include <QAbstractItemView>
+ #include <QHeaderView>
+@@ -3121,11 +3122,40 @@ inline void selectQuickAddAgentProvider(QComboBox *combo)
+ // reliable workaround: given room for every row plus the container's scroller
+ // chrome, nothing needs scrolling so Qt hides the arrows. When the list is
+ // genuinely taller than the screen the arrows correctly stay (we cap there).
++// It also sizes itself to the item that is actually showing rather than to the
++// widest item in its list (adhoc #72). Qt's own hint measures every entry, so a
++// single long label — "GPT-5.5 Codex" in the model picker, "Claude API" in the
++// provider one — padded all four composer dropdowns with dead space even while
++// short labels like "CC" or "Auto" were selected.
+ class FullPopupComboBox : public QComboBox {
+ public:
+-    using QComboBox::QComboBox;
++    explicit FullPopupComboBox(QWidget *parent = nullptr) : QComboBox(parent)
++    {
++        // Never wider than the selected label needs; the row's stretches take
++        // the leftover space instead of the dropdowns.
++        setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
++    }
++
++    QSize sizeHint() const override { return currentTextSizeHint(); }
++    QSize minimumSizeHint() const override { return currentTextSizeHint(); }
+ 
+ protected:
++    void paintEvent(QPaintEvent *event) override
++    {
++        // The hint follows the selection, and the pickers are repopulated with
++        // signals blocked (refreshQuickAddSpeedSelector, the model refresh,
++        // applyLiveClaudeModelsToCombos), so currentIndexChanged is not a
++        // reliable place to re-ask for space. A repaint always follows a
++        // selection change: if the text about to be painted is not the one the
++        // last hint was measured from, relayout first. This settles after one
++        // extra layout pass — the next paint sees a matching label.
++        if (m_hintedText != currentText()) {
++            m_hintedText = currentText();
++            updateGeometry();
++        }
++        QComboBox::paintEvent(event);
++    }
++
+     void showPopup() override
+     {
+         setMaxVisibleItems(qMax(maxVisibleItems(), count()));
+@@ -3187,6 +3217,28 @@ protected:
+             geo.moveTop(avail.top());
+         popup->setGeometry(geo);
+     }
++
++private:
++    // Same shape as QComboBox's own hint (font metrics for the contents, then
++    // the style adds frame and drop-down arrow) but measured from the current
++    // text alone instead of the widest item in the model.
++    QSize currentTextSizeHint() const
++    {
++        const QFontMetrics fm = fontMetrics();
++        const QString text = currentText();
++        QSize contents(fm.horizontalAdvance(text.isEmpty() ? QStringLiteral("XX") : text),
++                       qMax(fm.height(), 14) + 2);
++        const QIcon icon = currentIndex() >= 0 ? itemIcon(currentIndex()) : QIcon();
++        if (!icon.isNull()) {
++            contents.setWidth(contents.width() + iconSize().width() + 4);
++            contents.setHeight(qMax(contents.height(), iconSize().height()));
++        }
++        QStyleOptionComboBox opt;
++        initStyleOption(&opt);
++        return style()->sizeFromContents(QStyle::CT_ComboBox, &opt, contents, this);
++    }
++
++    QString m_hintedText;
+ };
+ 
+ // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
