@@ -25,12 +25,14 @@
 #include <QCryptographicHash>
 #include <QDialog>
 #include <QGraphicsDropShadowEffect>
+#include <QGuiApplication>
 #include <QInputDialog>
 #include <QNetworkInformation>
 #include <QPlainTextEdit>
 #include <QPointer>
 #include <QProcess>
 #include <QProcessEnvironment>
+#include <QScreen>
 #include <QSharedPointer>
 #include <QStandardPaths>
 #include <QTabWidget>
@@ -3747,6 +3749,15 @@ void MainWindow::showDiagnosticsDialog()
     dlg.exec();
 }
 
+// Column layout of the "High memory usage" table; adhoc #98 added the trend
+// square and the command line, so the indexes are worth naming.
+static constexpr int kHighMemoryTrendColumn = 1;
+static constexpr int kHighMemoryCommandColumn = 6;
+static constexpr int kHighMemoryActionColumn = 7;
+// How many rows carry a trend square. One per row for all 30 would be mostly
+// noise; the top ten are the ones worth watching grow.
+static constexpr int kHighMemoryTrendRows = 10;
+
 void MainWindow::showHighMemoryProcessPanel()
 {
     if (m_highMemoryDialog) {
@@ -3763,14 +3774,22 @@ void MainWindow::showHighMemoryProcessPanel()
     dialog->setWindowModality(Qt::NonModal);
     dialog->setModal(false);
     dialog->setWindowTitle(QStringLiteral("High memory usage"));
-    dialog->resize(820, 560);
+    // Wide enough for the command-line column to be worth reading (adhoc #98),
+    // clamped to the screen so it still fits on smaller displays.
+    QSize preferred(1280, 620);
+    if (QScreen *screen = QGuiApplication::primaryScreen())
+        preferred =
+            preferred.boundedTo(screen->availableGeometry().size() * 0.92);
+    dialog->resize(preferred);
     auto *layout = new QVBoxLayout(dialog);
 
     auto *heading = new QLabel(QStringLiteral(
         "<b>Host memory is above 85%</b><br>"
-        "Processes are sorted by resident memory. “Kill” requests a normal "
-        "termination and “Kill all” does the same for every listed process "
-        "sharing that name; ForkMesh and PID 1 are protected."));
+        "Processes are sorted by resident memory, and the top ten carry a "
+        "trend square showing how their memory has moved since this panel "
+        "opened. “Kill” requests a normal termination and “Kill all” does the "
+        "same for every listed process sharing that name; ForkMesh and PID 1 "
+        "are protected."));
     heading->setTextFormat(Qt::RichText);
     heading->setWordWrap(true);
     layout->addWidget(heading);
@@ -3780,11 +3799,12 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessStatus->setObjectName(QStringLiteral("statusLine"));
     layout->addWidget(m_highMemoryProcessStatus);
 
-    m_highMemoryProcessTable = new QTableWidget(0, 6);
+    m_highMemoryProcessTable = new QTableWidget(0, 8);
     m_highMemoryProcessTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Process"), QStringLiteral("PID"),
-         QStringLiteral("Owner"), QStringLiteral("Memory"),
-         QStringLiteral("Host %"), QStringLiteral("Action")});
+        {QStringLiteral("Process"), QStringLiteral("Trend"),
+         QStringLiteral("PID"), QStringLiteral("Owner"),
+         QStringLiteral("Memory"), QStringLiteral("Host %"),
+         QStringLiteral("Command line"), QStringLiteral("Action")});
     m_highMemoryProcessTable->verticalHeader()->setVisible(false);
     m_highMemoryProcessTable->setSelectionBehavior(
         QAbstractItemView::SelectRows);
@@ -3792,16 +3812,24 @@ void MainWindow::showHighMemoryProcessPanel()
         QAbstractItemView::NoEditTriggers);
     m_highMemoryProcessTable->setSortingEnabled(false);
     m_highMemoryProcessTable->setAlternatingRowColors(true);
-    m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::Stretch);
-    for (int column = 1; column < 6; ++column)
+    m_highMemoryProcessTable->setWordWrap(false);
+    m_highMemoryProcessTable->setTextElideMode(Qt::ElideRight);
+    // The command line takes every spare pixel now that it is the widest cell;
+    // the rest stay at fixed, content-sized widths.
+    for (int column = 0; column < 8; ++column)
         m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
-            column, QHeaderView::Fixed);
-    m_highMemoryProcessTable->setColumnWidth(1, 72);
-    m_highMemoryProcessTable->setColumnWidth(2, 110);
-    m_highMemoryProcessTable->setColumnWidth(3, 105);
-    m_highMemoryProcessTable->setColumnWidth(4, 72);
-    m_highMemoryProcessTable->setColumnWidth(5, 160); // Kill + Kill all
+            column, column == kHighMemoryCommandColumn ? QHeaderView::Stretch
+                                                       : QHeaderView::Fixed);
+    m_highMemoryProcessTable->setColumnWidth(0, 180);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryTrendColumn, 46);
+    m_highMemoryProcessTable->setColumnWidth(2, 72);
+    m_highMemoryProcessTable->setColumnWidth(3, 110);
+    m_highMemoryProcessTable->setColumnWidth(4, 105);
+    m_highMemoryProcessTable->setColumnWidth(5, 72);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryActionColumn,
+                                            160); // Kill + Kill all
+    // Tall enough for a trend square to sit inside a row.
+    m_highMemoryProcessTable->verticalHeader()->setDefaultSectionSize(38);
     layout->addWidget(m_highMemoryProcessTable, 1);
 
     auto *refresh = new QPushButton(QStringLiteral("Refresh"));
@@ -3821,6 +3849,7 @@ void MainWindow::showHighMemoryProcessPanel()
         m_highMemoryProcessTable = nullptr;
         m_highMemoryProcessStatus = nullptr;
         m_highMemoryProcessQuery = nullptr;
+        m_highMemoryRssHistory.clear();
     });
     auto *autoRefresh = new QTimer(dialog);
     autoRefresh->setInterval(5000);
@@ -3871,6 +3900,7 @@ void MainWindow::refreshHighMemoryProcessTable()
                     qint64 rssKb = 0;
                     double percent = 0.0;
                     QString name;
+                    QString commandLine;
                 };
                 QVector<ProcessRow> rows;
                 rows.reserve(30);
@@ -3888,19 +3918,47 @@ void MainWindow::refreshHighMemoryProcessTable()
                     const qint64 rssKb = fields.at(2).toLongLong(&rssOk);
                     const QString percent =
                         QString::fromLocal8Bit(fields.at(3));
-                    const QString name =
+                    // `args` (not `comm`) so the arguments have something to
+                    // show (adhoc #98); the Process column keeps reading like
+                    // the old command name by taking argv[0]'s basename.
+                    const QString commandLine =
                         QString::fromLocal8Bit(
                             QByteArrayList(fields.mid(4)).join(' '));
-                    if (!pidOk || !rssOk || pid <= 0 || name.isEmpty())
+                    if (!pidOk || !rssOk || pid <= 0 || commandLine.isEmpty())
                         continue;
+                    QString name = commandLine.section(QLatin1Char(' '), 0, 0);
+                    const int slash = name.lastIndexOf(QLatin1Char('/'));
+                    if (slash >= 0)
+                        name = name.mid(slash + 1);
+                    if (name.isEmpty())
+                        name = commandLine;
                     ++validProcesses;
                     // `ps` is already RSS-sorted. Only materialize the top
                     // culprits: hundreds of cell widgets and repeated
                     // ResizeToContents passes were what made the old alert
                     // appear frozen under memory pressure.
                     if (rows.size() < 30)
-                        rows.append({pid, owner, rssKb, percent.toDouble(), name});
+                        rows.append({pid, owner, rssKb, percent.toDouble(),
+                                     name, commandLine});
                 }
+
+                // Per-PID resident history, so the top rows can each carry a
+                // trend square. Only PIDs still on the list are kept, which
+                // bounds the map to the table's own size.
+                QHash<qint64, QVector<double>> history;
+                history.reserve(rows.size());
+                double historyMaxKb = 1.0;
+                for (const ProcessRow &process : rows) {
+                    QVector<double> samples =
+                        m_highMemoryRssHistory.value(process.pid);
+                    samples.append(double(process.rssKb));
+                    while (samples.size() > ProcessMemorySparkline::kMaxPoints)
+                        samples.removeFirst();
+                    for (double sample : samples)
+                        historyMaxKb = qMax(historyMaxKb, sample);
+                    history.insert(process.pid, samples);
+                }
+                m_highMemoryRssHistory = history;
 
                 // Which listed PIDs share each command name, so a row's "Kill
                 // all" can act on the whole family (the `killall` shape) without
@@ -3924,21 +3982,55 @@ void MainWindow::refreshHighMemoryProcessTable()
                         m_highMemoryProcessTable->setItem(row, column, item);
                     };
                     put(0, process.name);
-                    put(1, QString::number(process.pid), process.pid);
-                    put(2, process.owner);
-                    put(3, SystemStats::formatBytes(process.rssKb * 1024),
+                    put(2, QString::number(process.pid), process.pid);
+                    put(3, process.owner);
+                    put(4, SystemStats::formatBytes(process.rssKb * 1024),
                         process.rssKb);
-                    put(4, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
+                    put(5, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
                         process.percent);
+                    // The full command line outgrows any sane column, so the
+                    // cell elides and the tooltip carries the whole thing.
+                    put(kHighMemoryCommandColumn, process.commandLine);
+                    if (QTableWidgetItem *command =
+                            m_highMemoryProcessTable->item(
+                                row, kHighMemoryCommandColumn))
+                        command->setToolTip(process.commandLine);
                     if (row < 5) {
-                        for (int column = 0; column < 5; ++column) {
+                        for (int column = 0; column <= kHighMemoryCommandColumn;
+                             ++column) {
                             QTableWidgetItem *item =
                                 m_highMemoryProcessTable->item(row, column);
+                            if (!item) // the trend column holds a widget, not an item
+                                continue;
                             QFont font = item->font();
                             font.setBold(true);
                             item->setFont(font);
                             item->setForeground(QColor(QStringLiteral("#cf222e")));
                         }
+                    }
+
+                    // Trend square for the top ten: the footer sparkline shape,
+                    // on a scale shared by every row so the squares compare
+                    // against each other.
+                    if (row < kHighMemoryTrendRows) {
+                        const QVector<double> samples =
+                            history.value(process.pid);
+                        auto *chart = new ProcessMemorySparkline;
+                        chart->setHistory(samples, historyMaxKb);
+                        auto *cell = new QWidget;
+                        // The square ignores mouse events, so its tooltip has
+                        // to live on the cell around it.
+                        cell->setToolTip(
+                            QStringLiteral("Resident memory for %1 (PID %2) "
+                                           "over the last %3 refreshes")
+                                .arg(process.name)
+                                .arg(process.pid)
+                                .arg(samples.size()));
+                        auto *cellRow = new QHBoxLayout(cell);
+                        cellRow->setContentsMargins(0, 0, 0, 0);
+                        cellRow->addWidget(chart, 0, Qt::AlignCenter);
+                        m_highMemoryProcessTable->setCellWidget(
+                            row, kHighMemoryTrendColumn, cell);
                     }
 
                     auto *kill = new QPushButton(QStringLiteral("Kill"));
@@ -3992,7 +4084,8 @@ void MainWindow::refreshHighMemoryProcessTable()
                     actionRow->setSpacing(4);
                     actionRow->addWidget(kill);
                     actionRow->addWidget(killAll);
-                    m_highMemoryProcessTable->setCellWidget(row, 5, actions);
+                    m_highMemoryProcessTable->setCellWidget(
+                        row, kHighMemoryActionColumn, actions);
                 }
                 m_highMemoryProcessTable->setUpdatesEnabled(true);
                 m_highMemoryProcessTable->viewport()->update();
@@ -4020,7 +4113,7 @@ void MainWindow::refreshHighMemoryProcessTable()
             });
     query->start(QStringLiteral("ps"),
                  {QStringLiteral("-eo"),
-                  QStringLiteral("pid=,user=,rss=,%mem=,comm="),
+                  QStringLiteral("pid=,user=,rss=,%mem=,args="),
                   QStringLiteral("--sort=-rss")});
     // A broken or heavily starved `ps` must not leave the panel looking busy
     // forever. Killing this helper is safe and does not affect listed processes.
@@ -12942,12 +13035,20 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
     connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
     layout->addWidget(buttons);
 
+    // The password can change mid-dialog: a host that only accepts password
+    // login rejects the key-only first attempt, and the scan then asks for one
+    // and retries with it (see the finished handler below).
+    const QString identityFile = savedHostIdentityFile(node, ip, user);
+    const QString credentialKey =
+        forkmesh::control::savedHostCredentialKey(node, ip, user);
+    auto sessionPass = std::make_shared<QString>(pass);
+
     auto currentPath = std::make_shared<QString>(QStringLiteral("/"));
     auto loadPath = std::make_shared<std::function<void(const QString &)>>();
     *loadPath = [this, dialog, table, pathEdit, status, totalLabel, upButton,
                  openButton, refreshButton, currentPath, mountCardsLayout,
-                 mountStatus, loadPath, ip, user, pass,
-                 node](const QString &requested) {
+                 mountStatus, loadPath, ip, user, sessionPass, identityFile,
+                 credentialKey, node](const QString &requested) {
         if (m_hostDiskProcess &&
             m_hostDiskProcess->state() != QProcess::NotRunning) {
             status->setText(QStringLiteral(
@@ -12970,8 +13071,8 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         QString sshError;
         const forkmesh::control::HostSshCommand ssh =
             forkmesh::control::buildHostSshCommand(
-                ip, user, pass, remoteCommand, &sshError,
-                savedHostIdentityFile(node, ip, user));
+                ip, user, *sessionPass, remoteCommand, &sshError,
+                identityFile);
         if (ssh.program.isEmpty()) {
             status->setText(sshError);
             return;
@@ -12999,8 +13100,9 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
         connect(proc, &QProcess::readyReadStandardOutput, dialog,
                 [proc, output] { output->append(proc->readAllStandardOutput()); });
         connect(proc, &QProcess::finished, dialog,
-                [this, proc, output, table, status, totalLabel, navWidgets,
-                 path, ip, user, mountCardsLayout, mountStatus, loadPath](
+                [this, dialog, proc, output, table, status, totalLabel,
+                 navWidgets, path, ip, user, mountCardsLayout, mountStatus,
+                 loadPath, sessionPass, identityFile, credentialKey](
                     int code, QProcess::ExitStatus exitStatus) {
                     if (m_hostDiskProcess == proc)
                         m_hostDiskProcess = nullptr;
@@ -13111,6 +13213,73 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                                 tail, ip);
                         if (!sshHint.isEmpty())
                             message += QLatin1Char(' ') + sshHint;
+                        // Without a password ssh runs BatchMode/publickey-only,
+                        // so a password-login host can never finish this scan:
+                        // ask for the one credential that would, then retry the
+                        // same folder. Hosts pinned to a ForkMesh-managed key
+                        // never fall back to a password, so they are left alone.
+                        const int sshExit =
+                            exitStatus == QProcess::NormalExit ? code : 255;
+                        if (identityFile.isEmpty() &&
+                            forkmesh::control::sshFailureNeedsPassword(sshExit,
+                                                                       tail)) {
+                            status->setText(
+                                message +
+                                QString::fromUtf8(
+                                    " Asking for this host's SSH password "
+                                    "\xE2\x80\xA6"));
+                            // Prompting has to leave this finished handler
+                            // first: a modal dialog run inside a QProcess
+                            // signal would pump the event loop under it.
+                            QTimer::singleShot(
+                                0, dialog,
+                                [this, guard = QPointer<QDialog>(dialog),
+                                 status, loadPath, sessionPass, credentialKey,
+                                 path, ip, user] {
+                                    QDialog *dialog = guard.data();
+                                    if (!dialog)
+                                        return;
+                                    bool accepted = false;
+                                    const QString entered =
+                                        QInputDialog::getText(
+                                            dialog,
+                                            QStringLiteral(
+                                                "SSH password needed"),
+                                            QString::fromUtf8(
+                                                "%1@%2 rejected the login "
+                                                "ForkMesh tried. Enter that "
+                                                "host's SSH password to "
+                                                "measure its disk \xE2\x80\x94 "
+                                                "it is kept in memory for this "
+                                                "session only and is never "
+                                                "written to settings.")
+                                                .arg(user, ip),
+                                            QLineEdit::Password, *sessionPass,
+                                            &accepted);
+                                    // getText ran a nested event loop, so the
+                                    // size map (and its status label) may be
+                                    // gone by the time it returns.
+                                    if (!guard)
+                                        return;
+                                    if (!accepted || entered.isEmpty()) {
+                                        status->setText(QString::fromUtf8(
+                                            "The size map needs an SSH "
+                                            "password (or a working key) for "
+                                            "%1@%2. Press Refresh to try "
+                                            "again.")
+                                                            .arg(user, ip));
+                                        return;
+                                    }
+                                    *sessionPass = entered;
+                                    // Remember it for the rest of this session
+                                    // so drilling into folders — and every
+                                    // other host action — stops re-asking.
+                                    m_hostSessionPasswords.insert(credentialKey,
+                                                                  entered);
+                                    (*loadPath)(path);
+                                });
+                            return;
+                        }
                         status->setText(message);
                         return;
                     }
