@@ -98,10 +98,6 @@ SCHEMA_STATEMENTS = [
         mirrored_by_bi TEXT NOT NULL DEFAULT '',
         mirrored_at INTEGER NOT NULL DEFAULT 0)""",
     "CREATE INDEX IF NOT EXISTS idx_pull_inbox_repo ON pull_inbox(repo_bi)",
-    """CREATE TABLE IF NOT EXISTS commit_inbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
-        data TEXT NOT NULL)""",
-    "CREATE INDEX IF NOT EXISTS idx_commit_inbox_repo ON commit_inbox(repo_bi)",
     """CREATE TABLE IF NOT EXISTS discussion_inbox (
         id INTEGER PRIMARY KEY AUTOINCREMENT, repo_bi TEXT NOT NULL,
         data TEXT NOT NULL, submitter_bi TEXT,
