@@ -6708,7 +6708,7 @@ void MainWindow::syncRepository(int index, bool quiet)
 // A fresh install's first sync of the flagship repo (flagged by
 // ensureFlagshipRepo, adhoc #113): select it now that the clone landed, instead
 // of leaving the user on an empty repo list. Returns true when this repo was the
-// one being waited on, so the caller skips its own refresh.
+// one being waited on.
 //
 // Every sync path has to call this, not just the preview one: a brand-new
 // install mirrors the flagship as a normal public repo, so it lands in
@@ -6719,10 +6719,13 @@ bool MainWindow::completePendingRepoAutoOpen(int index)
     if (index < 0 || index >= m_repositories.size() ||
         m_pendingAutoOpenRepoKey.isEmpty())
         return false;
-    const RepositoryRecord &repo = m_repositories.at(index);
-    if (repo.previewOnly ||
-        m_pendingAutoOpenRepoKey.compare(repo.owner + "/" + repo.name,
-                                         Qt::CaseInsensitive) != 0)
+    // By value: the loaders below pump the event loop, and a reference into
+    // m_repositories cannot be held across that (git-pump UAF family).
+    const bool previewOnly = m_repositories.at(index).previewOnly;
+    const QString key =
+        m_repositories.at(index).owner + "/" + m_repositories.at(index).name;
+    if (previewOnly ||
+        m_pendingAutoOpenRepoKey.compare(key, Qt::CaseInsensitive) != 0)
         return false;
     m_pendingAutoOpenRepoKey.clear();
     // On a fresh install, land on the welcome chat, not the Code view. Just

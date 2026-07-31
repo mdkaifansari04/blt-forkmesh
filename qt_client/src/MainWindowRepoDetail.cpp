@@ -1604,8 +1604,11 @@ void MainWindow::updateRepoPullCount()
 // repo with hundreds of issues advertised "Issues (0)" — and "Discussions (0)",
 // and "Actions (0)" — until each tab was clicked. On a fresh install, where the
 // first clone lands after the view is already up, every one of them was wrong at
-// once (adhoc #116). All three reads are worker-backed and only write a label:
-// no hidden panel is built and the GUI thread does no git work.
+// once (adhoc #116). All three reads happen on worker threads, and the
+// Discussions and Actions ones only write their label — neither builds its
+// (still lazy) panel. Issues rides its existing background loader, which does
+// also fill the issue table; that is the same work the startup restore path has
+// always done, and it lands on a queued callback, not in the open itself.
 void MainWindow::refreshRepoTabCounts()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
