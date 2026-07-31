@@ -2477,18 +2477,48 @@ private:
     void onRunLog(int runId, const QString &text);
     void notifyActionEvent(const QString &title, const QString &body,
                            bool warning); // tray alert gated by the run-alert setting
+    // Defined further down with the rest of the actions state; declared here so
+    // the ping funnel below can take one.
+    struct AppNotification;
     void addNotification(const QString &title, const QString &body,
                          bool warning = false, int runId = -1);
     // Overload that records where a notification's row should jump to when its
-    // row is double-clicked on the Notifications page (issue #292).
+    // row is clicked on the Pings page (issue #292).
     void addNotification(const QString &title, const QString &body, bool warning,
                          const NotificationLink &link);
+    // Overload that also records the classification columns the Pings page
+    // shows (kind / who it came from), matching the website inbox's own fields
+    // so both sides of the page carry the same information (adhoc #77).
+    void addNotification(const QString &title, const QString &body, bool warning,
+                         const NotificationLink &link, const QString &kind,
+                         const QString &actor);
+    // The single funnel every in-app event goes through: it files the event on
+    // the Pings page and raises it in the message area above the footer log
+    // (adhoc #77).
+    void recordNotification(AppNotification item);
+    // Raise one ping in the toast pill that sits above the footer's mini-log,
+    // so new events are visible without opening a page. An error ping shows
+    // immediately (preempting a routine toast) and flashes the red app border.
+    void flashNotification(const AppNotification &item);
+    // Flash a red border around the whole window for a moment — the desktop
+    // twin of the World's world-admin-error-arrival effect (adhoc #77).
+    void flashErrorBorder();
     // Open the screen/item a notification points at (issue/PR/discussion/commit).
     void openNotificationLink(const NotificationLink &link);
     void showNotifications();
     // Notifications live in their own top-level section: a sortable table
     // (buildNotificationsSection is declared with the other section builders).
     void refreshNotificationsTable();
+    // Repaint the compact ping feed that sits above the network log.
+    void refreshLogEventList();
+    // Row-level removal on that page: a local event is simply forgotten, while
+    // a mirrored website ping is deleted from the account's inbox too.
+    void deleteSelectedNotifications();
+    void deleteWebAlert(const QString &alertId);
+    // Open whatever a Pings row points at (run, in-app screen, or the website
+    // page behind an alert about a repo this node doesn't mirror).
+    void openNotificationRow(int row);
+    static QString notificationLinkLabel(const NotificationLink &link);
     void updateNotificationButton();
     // Mirror the website's alert inbox (/api/notifications) onto that page, so
     // an alert raised on the site is readable — and openable — in the desktop
@@ -3816,7 +3846,9 @@ private:
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
-    void advanceTopMessageQueue(); // show the next queued error, or dismiss if none left
+    void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
+    void queueTopMessage(const QString &text, bool error); // park one behind the current toast
+    bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
@@ -4254,12 +4286,18 @@ private:
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
-    // Pending error messages that arrived while another error toast was already
-    // counting down. A burst of quick failures (e.g. retries) would otherwise
-    // stomp each other before any could be read; queuing gives each its own
-    // full countdown once the current one finishes (see advanceTopMessageQueue).
-    QStringList m_topMessageQueue;
+    // Pending messages that arrived while another toast was already counting
+    // down. A burst (retries, or the run of events the Pings page now mirrors
+    // here) would otherwise stomp each other before any could be read; queuing
+    // gives each its own full countdown once the current one finishes (see
+    // advanceTopMessageQueue). Each entry carries its own error flag so a
+    // queued event keeps its colour.
+    QList<QPair<QString, bool>> m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
+    // Red border flashed around the whole window while an error ping arrives —
+    // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
+    QWidget *m_errorBorderOverlay = nullptr;
+    QTimer *m_errorBorderTimer = nullptr;
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
     bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
@@ -4700,6 +4738,9 @@ private:
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QTextBrowser *m_settingsLog = nullptr;
+    // Compact feed of the newest pings, shown above the network log so every
+    // new event is visible on that page too (adhoc #77).
+    QListWidget *m_logEventList = nullptr;
     QPushButton *m_logScrollLockButton = nullptr;
     bool m_logScrollLocked = false;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
@@ -5773,7 +5814,14 @@ private:
         qint64 timestampMs = 0;
         bool warning = false;
         int runId = -1;
-        NotificationLink link; // double-click destination (issue #292)
+        NotificationLink link; // click destination (issue #292)
+        // Columns the Pings page shows for every row, named after the website
+        // inbox's own fields so a local event and a mirrored website ping read
+        // the same way (adhoc #77).
+        QString kind;   // "issue" | "chat" | "action" | … (defaults from link)
+        QString actor;  // who caused it, when known
+        QString repo;   // "owner/name", when it is about a repository
+        qint64 id = 0;  // stable row identity, so one row can be deleted
     };
     ActionStore *m_actionStore = nullptr;
     // A pool of runners so independent workflows (e.g. the Android build, the CI
@@ -5802,6 +5850,10 @@ private:
     qint64 m_mirrorActionsSummaryAttemptedAtMs = 0;
     qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
+    qint64 m_nextNotificationId = 1; // row identity for delete (adhoc #77)
+    // Website ping ids already surfaced as immediate error pings, so a poll
+    // that returns the same inbox again never re-flashes them (adhoc #77).
+    QSet<QString> m_flashedWebAlertIds;
     QPushButton *m_notificationButton = nullptr;
     QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page

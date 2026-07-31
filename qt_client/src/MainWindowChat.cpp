@@ -4499,6 +4499,11 @@ void MainWindow::showTreasuryDonateDialog()
     dialog.exec();
 }
 
+// The ping feed above the network log: how many lines it shows, and how tall
+// it is (adhoc #77). Deliberately small — it is a glance, not a second page.
+static constexpr int kLogEventStripLimit = 8;
+static constexpr int kLogEventStripRows = 5;
+
 QWidget *MainWindow::buildLogSection()
 {
     auto *page = new QWidget;
@@ -4607,13 +4612,68 @@ QWidget *MainWindow::buildLogSection()
     headerRow->addWidget(cloudflareButton);
     headerRow->addWidget(clearButton);
 
+    // Every ping this window raises also lands in a compact feed directly
+    // above the log, so "what just happened?" is answered without leaving the
+    // page or waiting for the toast to reappear (adhoc #77). Double-clicking a
+    // line opens the full Pings page.
+    auto *eventsLabel = new QLabel(QStringLiteral("RECENT PINGS"));
+    eventsLabel->setObjectName("sectionLabel");
+    m_logEventList = new QListWidget;
+    m_logEventList->setObjectName("logEventList");
+    m_logEventList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_logEventList->setUniformItemSizes(true);
+    m_logEventList->setFixedHeight(kLogEventStripRows *
+                                       m_logEventList->fontMetrics().height() +
+                                   12);
+    m_logEventList->setToolTip(
+        QStringLiteral("The newest pings. Double-click to open the Pings "
+                       "page."));
+    connect(m_logEventList, &QListWidget::itemDoubleClicked, this,
+            [this](QListWidgetItem *) { showNotifications(); });
+
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(18, 14, 18, 14);
     layout->setSpacing(8);
     layout->addLayout(headerRow);
+    layout->addWidget(eventsLabel);
+    layout->addWidget(m_logEventList);
     layout->addWidget(filterScroll);
     layout->addWidget(m_settingsLog, 1);
+    refreshLogEventList();
     return page;
+}
+
+// Repaint the compact ping feed above the network log from the same list the
+// Pings page shows, newest first (adhoc #77).
+void MainWindow::refreshLogEventList()
+{
+    if (!m_logEventList)
+        return;
+    m_logEventList->clear();
+    if (m_notifications.isEmpty()) {
+        auto *empty = new QListWidgetItem(
+            QStringLiteral("No pings yet in this session."));
+        empty->setForeground(QColor("#6e7681"));
+        empty->setFlags(Qt::NoItemFlags);
+        m_logEventList->addItem(empty);
+        return;
+    }
+    const int shown = qMin(int(m_notifications.size()), kLogEventStripLimit);
+    for (int index = 0; index < shown; ++index) {
+        const AppNotification &notice = m_notifications.at(index);
+        QString text =
+            QDateTime::fromMSecsSinceEpoch(notice.timestampMs)
+                .toString(QStringLiteral("HH:mm:ss")) +
+            QStringLiteral("  ") + notice.title.simplified();
+        const QString detail = notice.body.simplified();
+        if (!detail.isEmpty())
+            text += QString::fromUtf8(" \xE2\x80\x94 ") + detail;
+        auto *item = new QListWidgetItem(text);
+        item->setToolTip(text);
+        if (notice.warning)
+            item->setForeground(QColor("#f85149"));
+        m_logEventList->addItem(item);
+    }
 }
 
 void MainWindow::showCloudflareWorkerLogs()

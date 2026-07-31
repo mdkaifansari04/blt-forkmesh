@@ -810,6 +810,11 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #010409; border: none;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
+/* Compact ping feed above the network log (adhoc #77). */
+#logEventList {
+    background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
+    color: #8b949e; font-family: monospace; font-size: 12px;
+}
 #logDock { background-color: #010409; border-top: 1px solid #30363d; }
 #logDock QLabel { background: transparent; }
 #composerBar { background-color: #0d1117; border-top: 1px solid #30363d; }
@@ -940,6 +945,11 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     color: #8b949e;
     font-family: monospace;
     font-size: 12px;
+}
+/* Compact ping feed above the network log (adhoc #77). */
+#logEventList {
+    background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
+    color: #8b949e; font-family: monospace; font-size: 12px;
 }
 #logDock { background-color: #010409; border-top: 1px solid #30363d; }
 #issueQuickAdd {
@@ -2074,6 +2084,11 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 }
 #networkLog {
     background-color: #ffffff; border: none;
+    color: #1f2328; font-family: monospace; font-size: 12px;
+}
+/* Compact ping feed above the network log (adhoc #77). */
+#logEventList {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }

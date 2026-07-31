@@ -274,6 +274,24 @@ void MainWindow::onMessage(const ChatMessage &message)
                                   : "in " + conversation;
         const QString preview =
             message.hasFile() ? "File: " + message.fileName : message.text;
+        // Chat is an event like any other: file it on the Pings page and raise
+        // it in the area above the log, with a row that opens the conversation
+        // it came from (adhoc #77). The desktop toast below stays gated by its
+        // own setting; this in-app record is not. Only messages that just
+        // arrived qualify — a peer replaying days of history this node has
+        // never seen must not land as hundreds of "new events" — and #welcome
+        // already raised its own ping above.
+        constexpr qint64 kChatPingFreshMs = 10 * 60 * 1000;
+        if (conversation != kWelcomeChannel &&
+            message.timestampMs >
+                QDateTime::currentMSecsSinceEpoch() - kChatPingFreshMs) {
+            NotificationLink link;
+            link.kind = QStringLiteral("chat");
+            link.ref = conversation;
+            addNotification(message.senderName + QLatin1Char(' ') + where,
+                            preview.simplified(), false, link,
+                            QStringLiteral("chat"), message.senderName);
+        }
         if (textMentionsNodeName(message.text, m_userName)) {
             if (notifyEnabled(kMentionAlertSetting)) {
                 QApplication::alert(this, 0);
