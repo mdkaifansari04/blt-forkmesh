@@ -19,7 +19,6 @@
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
 #include "ScrollJumpButtons.h"
-#include "CommitCommentStore.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
@@ -2681,6 +2680,11 @@ const QString kEmailNotifyHostOfflineSetting = QStringLiteral("notifications/ema
 // whose email is verified — plain nodes and unverified users stay silent, so
 // #welcome reads as a genuine roll-call of real people.
 const QString kWelcomeChannel = QStringLiteral("#welcome");
+// A #welcome greeting only raises a "new user joined" ping while it is this
+// fresh — peers replay their in-session history on every reconnect, and a
+// replayed greeting that fell out of the id-dedupe set must not re-ping for a
+// join the user already saw.
+const qint64 kWelcomePingFreshMs = 5 * 60 * 1000;
 // Legacy QSettings migration prefix retained for installs that already posted to
 // an older welcome room.
 const QString kLegacyWelcomeAnnouncedSettingPrefix =
@@ -3092,6 +3096,11 @@ const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
 // the point is that prompted work is visible to the organization, not just to
 // the desktop that typed it — and turned off per-run for throwaway prompts.
 const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// Last known number of open organization tasks, mirrored into settings so the
+// Tasks rail badge is on screen from the first frame after a restart instead of
+// staying blank until someone opens the Tasks page (adhoc #79).
+const QString kOrganizationTaskOpenCountSetting =
+    QStringLiteral("tasks/openCount");
 // Canonical prefixes this desktop signs with its account key to open and close
 // an organization task when it has no account session token to present (the
 // authenticateSilently path holds keys, not sessions). Must stay byte-identical

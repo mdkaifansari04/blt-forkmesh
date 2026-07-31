@@ -333,8 +333,6 @@ class RecordingInboxService extends InboxService {
   String discussionCategory = '';
   int discussionCommentNumber = 0;
   String discussionCommentBody = '';
-  String commitSha = '';
-  String commitBody = '';
   String subscriptionNode = '';
   String subscriptionSource = '';
   int subscriptionNumber = 0;
@@ -396,17 +394,6 @@ class RecordingInboxService extends InboxService {
   ) async {
     discussionCommentNumber = number;
     discussionCommentBody = body;
-  }
-
-  @override
-  Future<void> commentOnCommit(
-    String owner,
-    String name,
-    String sha,
-    String body,
-  ) async {
-    commitSha = sha;
-    commitBody = body;
   }
 
   @override
@@ -1012,48 +999,6 @@ void main() {
       inbox.discussionCommentBody,
       'Replies go through the discussion inbox.',
     );
-  });
-
-  testWidgets('commit comment composer submits signed commit comment', (
-    tester,
-  ) async {
-    SharedPreferences.setMockInitialValues({});
-    final settings = await SettingsService.create();
-    final identity = await Identity.loadOrCreate();
-    final auth = await AuthService.create(settings, identity);
-    await auth.authenticatePreview();
-    final inbox = RecordingInboxService(settings, identity);
-    await _pumpRepo(
-      tester,
-      CollaborationApiService(settings),
-      inbox: inbox,
-      identity: identity,
-      auth: auth,
-    );
-
-    await tester.tap(find.text('Commits'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Wire signed commit comments'));
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Comment on commit'));
-    await tester.pumpAndSettle();
-
-    expect(find.text('Signed commit comment'), findsOneWidget);
-    expect(
-      find.textContaining(
-        'Commit comments are signed and sent to the commit inbox',
-      ),
-      findsOneWidget,
-    );
-    await tester.enterText(
-      find.bySemanticsLabel('Comment'),
-      'This commit is ready for mobile review.',
-    );
-    await tester.tap(find.text('Submit comment'));
-    await tester.pumpAndSettle();
-
-    expect(inbox.commitSha, 'abcdef1234567890');
-    expect(inbox.commitBody, 'This commit is ready for mobile review.');
   });
 
   testWidgets('approve review composer submits approve state', (tester) async {

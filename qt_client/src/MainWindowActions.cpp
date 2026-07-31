@@ -1551,12 +1551,20 @@ void MainWindow::addNotification(const QString &title, const QString &body,
         refreshNotificationsTable();
 }
 
-// Jump to the screen/item a notification points at: open the owning repo, switch
+// Jump to the screen/item a ping points at: open the owning repo, switch
 // to the right tab and select the issue / PR / discussion / commit (issue #292).
 void MainWindow::openNotificationLink(const NotificationLink &link)
 {
     if (!link.isValid())
         return;
+    if (link.kind == QLatin1String("chat")) {
+        // Chat pings (e.g. a new user greeting #welcome) carry the channel in
+        // ref and have no repository to open.
+        showChatView();
+        if (!link.ref.isEmpty())
+            switchConversation(link.ref);
+        return;
+    }
     const int index = repoIndexFor(link.owner, link.name);
     if (index < 0) {
         flashMessage(QStringLiteral("That repository isn't on this node anymore."),
@@ -1587,7 +1595,12 @@ void MainWindow::openNotificationLink(const NotificationLink &link)
         showOverviewCommits(); // the commits panel inside the Code overview
         if (!link.ref.isEmpty())
             showCommit(link.ref);
+    } else if (link.kind == QLatin1String("release")) {
+        if (m_releasesTabIndex >= 0)
+            selectTab(m_releasesTabIndex);
     }
+    // "repo" (host status, shares, mirror requests, pending inbox…) needs no
+    // tab switch: openRepoDetail() above already landed on the repository.
 }
 
 int MainWindow::pendingActionCount() const
@@ -1657,9 +1670,9 @@ void MainWindow::updateNotificationButton()
     if (approvals > 0)
         tips << QStringLiteral("%1 action(s) waiting for approval").arg(approvals);
     if (m_webAlertsUnread > 0)
-        tips << QStringLiteral("%1 unread website alert(s)").arg(m_webAlertsUnread);
+        tips << QStringLiteral("%1 unread website ping(s)").arg(m_webAlertsUnread);
     m_notificationButton->setToolTip(
-        tips.isEmpty() ? QStringLiteral("Notifications")
+        tips.isEmpty() ? QStringLiteral("Pings")
                        : tips.join(QString::fromUtf8(" \xC2\xB7 ")));
     // The button keeps its "topNavButton" identity (so it stays uniform and
     // shows its checked state); the pending-approval accent rides on a dynamic
@@ -1742,12 +1755,12 @@ public:
     }
 };
 
-// Where a website alert points inside this desktop. The relay's notification
+// Where a website ping points inside this desktop. The relay's notification
 // payload names the repository and the item's source/number, which is exactly
-// what openNotificationLink() needs — so an alert raised on the site opens the
-// issue, pull request or discussion here rather than only in a browser
-// (adhoc #59). Invalid when the alert isn't about a numbered repo item; the
-// row then falls back to its website address.
+// what openNotificationLink() needs — so a ping raised on the site opens the
+// issue, pull request, discussion, release or repository here rather than only
+// in a browser (adhoc #59). Invalid when the ping isn't about a repo this
+// mapping understands; the row then falls back to its website address.
 NotificationLink webAlertLink(const QJsonObject &alert)
 {
     const QString repo =
@@ -1757,29 +1770,70 @@ NotificationLink webAlertLink(const QJsonObject &alert)
         return {};
     const QJsonObject meta = alert.value(QStringLiteral("meta")).toObject();
     const int number = meta.value(QStringLiteral("number")).toInt();
-    if (number <= 0)
-        return {};
-    // "source" is the relay's own item kind; a thread alert carries the
+    // "source" is the relay's own item kind; a thread ping carries the
     // originating one on meta instead, so honour that first.
     QString source = meta.value(QStringLiteral("source")).toString().trimmed();
     if (source.isEmpty())
         source = alert.value(QStringLiteral("source")).toString().trimmed();
-    QString kind;
-    if (source == QLatin1String("issue") ||
-        source == QLatin1String("issue_assigned"))
-        kind = QStringLiteral("issue");
-    else if (source == QLatin1String("pull"))
-        kind = QStringLiteral("pull");
-    else if (source == QLatin1String("discussion"))
-        kind = QStringLiteral("discussion");
-    else
-        return {};
+    const QString kind =
+        alert.value(QStringLiteral("kind")).toString().trimmed();
     NotificationLink link;
-    link.kind = kind;
     link.owner = repo.left(slash);
     link.name = repo.mid(slash + 1);
     link.number = number;
-    return link;
+    if (number > 0 &&
+        (source == QLatin1String("issue") ||
+         source == QLatin1String("issue_assigned") ||
+         source == QLatin1String("bounty"))) {
+        // Bounty pings ride the funded/paid issue's number.
+        link.kind = QStringLiteral("issue");
+    } else if (number > 0 && source == QLatin1String("pull")) {
+        link.kind = QStringLiteral("pull");
+    } else if (number > 0 && source == QLatin1String("discussion")) {
+        link.kind = QStringLiteral("discussion");
+    } else if (source == QLatin1String("release") ||
+               kind == QLatin1String("release_published")) {
+        link.kind = QStringLiteral("release");
+    } else if (source == QLatin1String("host") ||
+               source == QLatin1String("repository_import") ||
+               kind == QLatin1String("repo_shared") ||
+               kind == QLatin1String("mirror_request") ||
+               kind == QLatin1String("pending_inbox") ||
+               kind == QLatin1String("pull_submitted")) {
+        // Repo-scoped pings without a numbered item land on the repository
+        // itself (host status, hosted imports, shares, mirror requests and
+        // pending inbox items the desktop drains from the repo view).
+        link.kind = QStringLiteral("repo");
+    }
+    return link; // invalid (no kind) when nothing above matched
+}
+
+// The Type column names every kind of ping the relay can raise
+// (NOTIFICATION_KINDS in the worker), so the table reads as a typed feed
+// instead of a generic "Web" bucket.
+QString webPingKindLabel(const QString &kind)
+{
+    static const QHash<QString, QString> labels = {
+        {QStringLiteral("mention"), QStringLiteral("Mention")},
+        {QStringLiteral("subscribed"), QStringLiteral("Thread reply")},
+        {QStringLiteral("pull_submitted"), QStringLiteral("Pull request")},
+        {QStringLiteral("issue_assigned"), QStringLiteral("Issue assigned")},
+        {QStringLiteral("repo_shared"), QStringLiteral("Repo shared")},
+        {QStringLiteral("bounty_funded"), QStringLiteral("Bounty funded")},
+        {QStringLiteral("bounty_paid"), QStringLiteral("Bounty paid")},
+        {QStringLiteral("release_published"), QStringLiteral("Release")},
+        {QStringLiteral("host_online"), QStringLiteral("Host online")},
+        {QStringLiteral("host_offline"), QStringLiteral("Host offline")},
+        {QStringLiteral("credits_refilled"), QStringLiteral("Credits")},
+        {QStringLiteral("pending_inbox"), QStringLiteral("Inbox item")},
+        {QStringLiteral("mirror_request"), QStringLiteral("Mirror request")},
+        {QStringLiteral("pending_reward"), QStringLiteral("Reward")},
+        {QStringLiteral("org_succession"), QStringLiteral("Org succession")},
+        {QStringLiteral("repository_hosted"), QStringLiteral("Repo hosted")},
+        {QStringLiteral("organization_task_started"), QStringLiteral("Org task")},
+        {QStringLiteral("organization_task_activity"), QStringLiteral("Org task")},
+    };
+    return labels.value(kind, QStringLiteral("Web"));
 }
 } // namespace
 
@@ -1787,7 +1841,7 @@ QWidget *MainWindow::buildNotificationsSection()
 {
     auto *page = new QWidget;
 
-    auto *title = new QLabel(QStringLiteral("Notifications"));
+    auto *title = new QLabel(QStringLiteral("Pings"));
     title->setObjectName("settingsTitle");
 
     auto *refreshButton = new QPushButton(QStringLiteral("Refresh"));
@@ -1810,13 +1864,13 @@ QWidget *MainWindow::buildNotificationsSection()
     testButton->setCursor(Qt::PointingHandCursor);
     setOcticon(testButton, "bell", 16);
     testButton->setToolTip(
-        QStringLiteral("Send a test desktop notification"));
+        QStringLiteral("Send a test desktop ping"));
     connect(testButton, &QPushButton::clicked, this, [this] {
         const QString body = QStringLiteral(
-            "This is a test notification from ForkMesh — "
-            "desktop alerts are working.");
-        addNotification(QStringLiteral("Test notification"), body, false);
-        postNotification(QStringLiteral("Test notification"), body, false,
+            "This is a test ping from ForkMesh — "
+            "desktop pings are working.");
+        addNotification(QStringLiteral("Test ping"), body, false);
+        postNotification(QStringLiteral("Test ping"), body, false,
                          QStringLiteral("emblem-default"));
     });
 
@@ -1825,7 +1879,7 @@ QWidget *MainWindow::buildNotificationsSection()
     clearButton->setCursor(Qt::PointingHandCursor);
     setOcticon(clearButton, "trash", 16);
     clearButton->setToolTip(QStringLiteral(
-        "Dismiss all past notifications and mark website alerts read"));
+        "Dismiss all past pings and mark website pings read"));
     connect(clearButton, &QPushButton::clicked, this, [this] {
         m_notifications.clear();
         markWebAlertsRead();
@@ -1866,9 +1920,12 @@ QWidget *MainWindow::buildNotificationsSection()
     m_notificationsTable->horizontalHeader()->setSortIndicator(
         3, Qt::DescendingOrder); // newest first by default
     m_notificationsTable->setToolTip(
-        QStringLiteral("Double-click a row to open the related issue, pull "
-                       "request, discussion, commit or action."));
-    connect(m_notificationsTable, &QTableWidget::itemDoubleClicked, this,
+        QStringLiteral("Click a row to open the related issue, pull "
+                       "request, discussion, commit, chat or action."));
+    // A single click is enough to jump to what the ping is about (adhoc #88);
+    // itemClicked also fires on the first half of a double-click, so no
+    // separate double-click handler is needed.
+    connect(m_notificationsTable, &QTableWidget::itemClicked, this,
             [this](QTableWidgetItem *item) {
                 if (!item)
                     return;
@@ -1888,7 +1945,7 @@ QWidget *MainWindow::buildNotificationsSection()
                     openNotificationLink(qvariant_cast<NotificationLink>(nav));
                     return;
                 }
-                // A website alert about something this node doesn't mirror
+                // A website ping about something this node doesn't mirror
                 // still has somewhere to go: its page on the site (adhoc #59).
                 const QString href =
                     first->data(Qt::UserRole + 2).toString();
@@ -1963,7 +2020,7 @@ void MainWindow::refreshNotificationsTable()
                notice.title, notice.body, notice.timestampMs, notice.runId,
                notice.warning, notice.link);
     }
-    // The website's alert inbox, listed alongside the local events so one page
+    // The website's ping inbox, listed alongside the local events so one page
     // answers "what happened?" whichever side raised it (adhoc #59).
     for (const QJsonValue &value : std::as_const(m_webAlerts)) {
         const QJsonObject alert = value.toObject();
@@ -1981,11 +2038,12 @@ void MainWindow::refreshNotificationsTable()
             href.startsWith(QLatin1Char('/'))
                 ? catalogApiUrl().resolved(QUrl(href)).toString()
                 : QString();
-        addRow(QStringLiteral("Web"),
-               // Unread alerts are dotted the way the site's bell marks them;
-               // the column is otherwise identical to a local notification.
+        addRow(webPingKindLabel(
+                   alert.value(QStringLiteral("kind")).toString().trimmed()),
+               // Unread pings are dotted the way the site's bell marks them;
+               // the column is otherwise identical to a local ping.
                (unread ? QString::fromUtf8("\xE2\x97\x8F ") : QString()) +
-                   (title.isEmpty() ? QStringLiteral("Website alert") : title),
+                   (title.isEmpty() ? QStringLiteral("Website ping") : title),
                body.isEmpty() ? repo : body,
                qint64(alert.value(QStringLiteral("ts")).toDouble()), -1, false,
                webAlertLink(alert), webUrl);

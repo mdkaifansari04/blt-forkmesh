@@ -648,6 +648,19 @@ function badgeActiveDurationLabel(value) {
 
 // "FIRST SEEN 14 MINUTES AGO". The exact reading only exists while the visitor
 // shares generalized activity; the coarse bucket label remains the fallback.
+// Minutes-since-join quantized to the unit firstSeenAgoLabel displays. The
+// raw minute count feeds cached badge keys, and un-quantized it ticked for
+// every member on the same minute boundary — repainting every avatar badge
+// canvas in a single frame once a minute.
+function firstSeenMinutesBucket(joinedAt) {
+  if (!(Number(joinedAt) > 0)) return 0;
+  const total = Math.max(0, Math.floor((Date.now() - joinedAt) / 60_000));
+  for (const size of [365 * 24 * 60, 30 * 24 * 60, 7 * 24 * 60, 24 * 60, 60]) {
+    if (total >= size) return Math.floor(total / size) * size;
+  }
+  return total;
+}
+
 function firstSeenAgoLabel(minutes) {
   const total = Number(minutes);
   if (!Number.isFinite(total) || total < 0) return "";
@@ -5816,7 +5829,9 @@ function mirrorNodeVisualState(node) {
 }
 
 function syncOperatorBelt(THREE, avatar, nodesOrCount) {
-  const previous = avatar.getObjectByName("forkmesh-operator-belt");
+  const previous =
+    avatar.userData?.operatorBeltLights?.[0]?.parent ||
+    avatar.getObjectByName("forkmesh-operator-belt");
   if (previous) {
     avatar.remove(previous);
     previous.traverse((child) => {
@@ -5824,6 +5839,7 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
       child.material?.dispose?.();
     });
   }
+  if (avatar.userData) avatar.userData.operatorBeltLights = null;
   const nodes = Array.isArray(nodesOrCount)
     ? nodesOrCount.slice(0, 6)
     : Array.from({
@@ -5863,7 +5879,14 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
     beltGroup.add(light);
   }
   avatar.add(beltGroup);
-  if (avatar.userData) avatar.userData.nodeCount = count;
+  if (avatar.userData) {
+    avatar.userData.nodeCount = count;
+    // Cached for the per-frame blink pass — a recursive getObjectByName over
+    // every avatar subtree each frame was measurably expensive.
+    avatar.userData.operatorBeltLights = beltGroup.children.filter(
+      (child) => child.userData?.mirrorStatusLight,
+    );
+  }
 }
 
 function createAvatarJetpack(THREE) {
@@ -6529,15 +6552,18 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
         : 0.72 + Math.sin(time * 0.004 + avatar.userData.phase) * 0.23
       : 0.58;
   }
-  avatar.getObjectByName("forkmesh-operator-belt")?.traverse((child) => {
-    if (!child.userData?.mirrorStatusLight || !child.userData.blink) return;
-    const lit =
-      reducedMotion ||
-      Math.sin(time * 0.008 + child.userData.phase) >= 0;
-    child.material.opacity = lit ? 1 : 0.18;
-    child.material.transparent = true;
-    child.material.emissiveIntensity = lit ? 1.8 : 0.12;
-  });
+  const beltLights = avatar.userData.operatorBeltLights;
+  if (beltLights) {
+    for (const child of beltLights) {
+      if (!child.userData.blink) continue;
+      const lit =
+        reducedMotion ||
+        Math.sin(time * 0.008 + child.userData.phase) >= 0;
+      child.material.opacity = lit ? 1 : 0.18;
+      child.material.transparent = true;
+      child.material.emissiveIntensity = lit ? 1.8 : 0.12;
+    }
+  }
   const hudAction = avatar.userData.hudAction;
   if (hudAction) {
     const duration = reducedMotion ? 360 : 1800;
@@ -15157,11 +15183,18 @@ function updateScreenLabel(
   position.y += yOffset;
   position.project(camera);
   const visible = position.z > -1 && position.z < 1 && Math.abs(position.x) < 1.25 && Math.abs(position.y) < 1.25;
-  element.style.opacity = visible ? "1" : "0";
-  element.style.visibility = visible ? "visible" : "hidden";
+  // Equality-guarded writes: labels run at ~30 Hz for every avatar, and
+  // unconditional style writes dirty layout even when nothing moved.
+  const visibility = visible ? "visible" : "hidden";
+  if (element.style.visibility !== visibility) {
+    element.style.opacity = visible ? "1" : "0";
+    element.style.visibility = visibility;
+  }
   if (!visible) return;
-  element.style.left = `${(position.x * 0.5 + 0.5) * width}px`;
-  element.style.top = `${(-position.y * 0.5 + 0.5) * height}px`;
+  const left = `${Math.round((position.x * 0.5 + 0.5) * width)}px`;
+  const top = `${Math.round((-position.y * 0.5 + 0.5) * height)}px`;
+  if (element.style.left !== left) element.style.left = left;
+  if (element.style.top !== top) element.style.top = top;
 }
 
 export function officeAttendanceDurationLabel(value) {
@@ -15263,6 +15296,7 @@ export function createWorldScene({
   initialSpawn = null,
   initialWorldLayout = [],
   reducedMotion = false,
+  forceCompactRenderer = false,
   onLandmarkSelect = () => {},
   onOfficeProximity = () => {},
   onOfficeEnter = () => {},
@@ -15327,9 +15361,11 @@ export function createWorldScene({
   // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
   // buffers that can make WebGL context creation fail outright on those
   // devices.  Coarse pointer is capability-based, so a small desktop window
-  // keeps its full renderer.
+  // keeps its full renderer.  The embedder also forces this mode when the
+  // previous session in this tab crashed, so a GPU that just died is not
+  // asked for the same multisample and shadow allocations again.
   const compactRenderer = Boolean(
-    window.matchMedia?.("(pointer: coarse)")?.matches,
+    forceCompactRenderer || window.matchMedia?.("(pointer: coarse)")?.matches,
   );
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(DAYLIGHT_ENVIRONMENT.background);
@@ -25469,17 +25505,24 @@ export function createWorldScene({
     wasWalking = walking;
   }
 
+  // Scratch vectors reused across frames — this is the hottest loop in the
+  // scene and fresh allocations here turn straight into GC pressure.
+  const swingRestScratch = [];
+  const swingSeatScratch = new THREE.Vector3();
+
   function updateRemotePlayers(delta, time) {
     // Swing occupancy is re-derived every frame from where visitors stand: a
     // remote visitor parked on a seat's rest spot is riding that swing, which
     // is what caps the ride at three people and lets a local click on a taken
     // seat be refused.
-    swingStates.forEach((swing) => {
+    const swingRestPoints = swingRestScratch;
+    swingStates.forEach((swing, seatIndex) => {
       swing.remoteId = "";
+      swingRestPoints[seatIndex] = swing.anchor.getWorldPosition(
+        swingRestPoints[seatIndex] || new THREE.Vector3(),
+      );
     });
-    const swingRestPoints = swingStates.map((swing) =>
-      swing.anchor.getWorldPosition(new THREE.Vector3()),
-    );
+    swingRestPoints.length = swingStates.length;
     remotePlayers.forEach((avatar, remoteId) => {
       avatar.position.lerp(avatar.userData.targetPosition, 1 - Math.pow(0.002, delta));
       let headingDelta = avatar.userData.targetHeading - avatar.rotation.y;
@@ -25503,7 +25546,7 @@ export function createWorldScene({
       }
       if (riddenSwing >= 0) {
         const swing = swingStates[riddenSwing];
-        const seatTop = swing.seat.getWorldPosition(new THREE.Vector3());
+        const seatTop = swing.seat.getWorldPosition(swingSeatScratch);
         avatar.position.set(
           seatTop.x,
           seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, avatar.scale.x),
@@ -27140,10 +27183,7 @@ export function createWorldScene({
           (countryCode ? flagEmoji(countryCode) : "◌"),
         browser: String(member?.browser || ""),
         os: String(member?.os || ""),
-        firstSeenMinutes:
-          joinedAt > 0
-            ? Math.max(0, Math.floor((Date.now() - joinedAt) / 60_000))
-            : 0,
+        firstSeenMinutes: firstSeenMinutesBucket(joinedAt),
         firstVisitAge: joinedAt > 0 ? "this-session" : "hidden",
         visitCount: Math.max(
           0,
@@ -27236,10 +27276,7 @@ export function createWorldScene({
             Math.min(999, Number(member.visitCount) || 0),
           ),
           firstVisitAge: joinedAt > 0 ? "this-session" : "hidden",
-          firstSeenMinutes:
-            joinedAt > 0
-              ? Math.max(0, Math.floor((Date.now() - joinedAt) / 60_000))
-              : 0,
+          firstSeenMinutes: firstSeenMinutesBucket(joinedAt),
           joinedAt,
           totalActiveMs: Math.max(
             0,
@@ -28992,6 +29029,10 @@ export function createWorldScene({
           0.08,
         );
         face.add(orbitMarker);
+        // Direct references for the per-frame pulse — animate() must not run
+        // a recursive name lookup over every portal subtree each frame.
+        node.userData.repositoryHalo = selectedHalo;
+        node.userData.repositoryOrbitMarker = orbitMarker;
       }
       node.add(face);
 
@@ -32888,8 +32929,8 @@ export function createWorldScene({
     }
     if (!reducedMotion) {
       repositoryPortals.forEach(({ group }) => {
-        const halo = group.getObjectByName("repository-selected-halo");
-        const marker = group.getObjectByName("repository-live-orbit-marker");
+        const halo = group.userData.repositoryHalo;
+        const marker = group.userData.repositoryOrbitMarker;
         if (halo?.userData?.repositoryHaloScale) {
           const pulse =
             halo.userData.repositoryHaloScale *
@@ -33216,15 +33257,21 @@ export function createWorldScene({
           );
         });
         officeParticipantLabels.forEach((element) => {
-          element.style.visibility = "hidden";
+          if (element.style.visibility !== "hidden") {
+            element.style.visibility = "hidden";
+          }
         });
         officeBubbles.forEach((element) => {
-          element.style.visibility = "hidden";
+          if (element.style.visibility !== "hidden") {
+            element.style.visibility = "hidden";
+          }
         });
       } else {
         playerLabel.style.visibility = "hidden";
         remoteLabels.forEach((element) => {
-          element.style.visibility = "hidden";
+          if (element.style.visibility !== "hidden") {
+            element.style.visibility = "hidden";
+          }
         });
         officeParticipants.forEach((avatar, id) => {
           const participantFloorId =

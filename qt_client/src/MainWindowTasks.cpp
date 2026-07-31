@@ -61,6 +61,23 @@ QString organizationTaskProof(const QByteArray &method, const QString &path,
     return kOrgTaskCompleteProof;
 }
 
+// Tasks that are not finished — the number the rail badge shows. Counted
+// exactly the way applyOrganizationTasks counts it while filling the table, so
+// a badge refreshed without the page built agrees with one refreshed with it.
+int openOrganizationTaskCount(const QJsonArray &tasks)
+{
+    int open = 0;
+    for (const QJsonValue &value : tasks) {
+        const QJsonObject task = value.toObject();
+        const bool done =
+            task.value(QStringLiteral("completedAt")).toDouble() > 0 ||
+            taskText(task, QStringLiteral("status")) == QLatin1String("done");
+        if (!done)
+            ++open;
+    }
+    return open;
+}
+
 QString taskTimestamp(qint64 milliseconds)
 {
     if (milliseconds <= 0)
@@ -519,6 +536,49 @@ void MainWindow::refreshOrganizationTasks()
         });
 }
 
+// Paint the open-task count onto the Tasks rail button and remember it, so the
+// next launch has a number to show before the relay has answered anything.
+void MainWindow::setOrganizationTaskBadge(int openCount)
+{
+    QSettings().setValue(kOrganizationTaskOpenCountSetting, openCount);
+    if (auto *button = dynamic_cast<ActivityRailButton *>(m_tasksNavButton))
+        button->setBadgeCount(openCount);
+}
+
+// Launch-time counterpart: show the last count we knew about immediately. The
+// background refresh below replaces it as soon as the relay answers.
+void MainWindow::restoreOrganizationTaskBadge()
+{
+    if (auto *button = dynamic_cast<ActivityRailButton *>(m_tasksNavButton)) {
+        button->setBadgeCount(
+            QSettings().value(kOrganizationTaskOpenCountSetting, 0).toInt());
+    }
+}
+
+// Refresh the count without requiring a visit to the Tasks page. The page is
+// built lazily, so on a fresh launch there is no status label and no table to
+// fill — count the payload directly then. A failed read (offline, or an account
+// with no private catalog) deliberately leaves the restored badge alone.
+void MainWindow::refreshOrganizationTaskBadge()
+{
+    if (m_organizationTasksLoading)
+        return;
+    if (m_organizationTasksStatus && m_organizationTasksTable) {
+        refreshOrganizationTasks(); // page exists: keep table and badge in step
+        return;
+    }
+    m_organizationTasksLoading = true;
+    requestOrganizationTasks(
+        QByteArrayLiteral("GET"), QStringLiteral("/api/tasks"), {},
+        [this](bool ok, const QJsonObject &payload, const QString &) {
+            m_organizationTasksLoading = false;
+            if (!ok)
+                return;
+            setOrganizationTaskBadge(openOrganizationTaskCount(
+                payload.value(QStringLiteral("tasks")).toArray()));
+        });
+}
+
 void MainWindow::applyOrganizationTasks(const QJsonObject &payload)
 {
     if (!m_organizationTasksTable)
@@ -669,9 +729,7 @@ void MainWindow::applyOrganizationTasks(const QJsonObject &payload)
                          ? QStringLiteral(" \xC2\xB7 manager")
                          : QString()));
     }
-    if (auto *button =
-            dynamic_cast<ActivityRailButton *>(m_tasksNavButton))
-        button->setBadgeCount(openCount);
+    setOrganizationTaskBadge(openCount);
     if (selectedRow >= 0)
         m_organizationTasksTable->selectRow(selectedRow);
     else if (!m_organizationTasks.isEmpty())
