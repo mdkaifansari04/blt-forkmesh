@@ -3422,11 +3422,26 @@ void MainWindow::loadRepoOverview(const QString &path)
     }
     QString historyText = QStringLiteral("Commits");
     if (m_historyButton) {
-        QByteArray countOut;
-        QString count;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut, nullptr))
-            count = QString::fromUtf8(countOut).trimmed();
+        // `rev-list --count` walks the entire history, so on a large repo it is
+        // one of the slowest reads here — the watchdog caught the GUI thread
+        // inside it (adhoc #90). The answer can only change when the ref's tip
+        // moves, and the tip is already resolved above, so memoize per
+        // checkout+commit: browsing into a directory re-runs this rebuild but
+        // does not re-count.
+        static QHash<QString, QString> countCache;
+        const QString countKey = dir + QLatin1Char('|') + head;
+        QString count = head.isEmpty() ? QString() : countCache.value(countKey);
+        if (count.isEmpty() && !dir.isEmpty()) {
+            QByteArray countOut;
+            if (runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut,
+                              nullptr))
+                count = QString::fromUtf8(countOut).trimmed();
+            if (!count.isEmpty() && !head.isEmpty()) {
+                if (countCache.size() > 64)
+                    countCache.clear(); // bounded; every entry is re-derivable
+                countCache.insert(countKey, count);
+            }
+        }
         if (!count.isEmpty())
             historyText = QStringLiteral("%1 Commits").arg(formatCount(count.toLongLong()));
     }

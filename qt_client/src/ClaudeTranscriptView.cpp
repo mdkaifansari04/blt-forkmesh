@@ -6,7 +6,12 @@
 #include <QDateTime>
 #include <QEasingCurve>
 #include <QEvent>
+#include <QFileInfo>
 #include <QFontDatabase>
+#include <QFutureWatcher>
+#include <QImageReader>
+#include <QPixmapCache>
+#include <QtConcurrentRun>
 #include <functional>
 #include <QButtonGroup>
 #include <QFrame>
@@ -425,18 +430,43 @@ private:
     bool m_first;
 };
 
+// Decode an attachment already scaled to the width the view will show it at.
+// Runs on a worker thread (see ThumbImage): a full-resolution decode plus a
+// smooth downscale of a 4K screenshot costs hundreds of milliseconds, and doing
+// it on the GUI thread froze the window while a transcript rendered (adhoc #90).
+// setScaledSize lets the reader skip most of that work where the format allows.
+QImage decodeScaledAttachment(const QString &path, int cap)
+{
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    const QSize src = reader.size(); // header only, no pixel decode
+    if (src.isValid() && src.width() > cap)
+        reader.setScaledSize(
+            QSize(cap, qMax(1, qRound(double(cap) * src.height() / src.width()))));
+    QImage img = reader.read();
+    if (!img.isNull() && img.width() > cap)
+        img = img.scaledToWidth(cap, Qt::SmoothTransformation);
+    return img;
+}
+
 // An image attached to a user turn, shown as a small thumbnail; clicking it
 // toggles between a thumbnail and a larger preview (issue #56).
+//
+// The decode happens off the GUI thread and the result is kept in the shared
+// QPixmapCache, so re-rendering a transcript (every reloadAgents() does) costs
+// a cache hit instead of a fresh decode + smooth scale of the original file.
 class ThumbImage : public QLabel
 {
 public:
-    ThumbImage(const QPixmap &full, const QString &border, QWidget *parent = nullptr)
-        : QLabel(parent), m_full(full)
+    ThumbImage(const QString &path, const QString &border, QWidget *parent = nullptr)
+        : QLabel(parent), m_path(path)
     {
         setCursor(Qt::PointingHandCursor);
         setToolTip(QStringLiteral("Click to expand"));
         setStyleSheet(
             QStringLiteral("border:1px solid %1;border-radius:6px;").arg(border));
+        m_srcSize = QImageReader(path).size(); // header read; reserves the box
+        m_stamp = QFileInfo(path).lastModified().toMSecsSinceEpoch();
         applyScale();
     }
 
@@ -453,10 +483,46 @@ private:
     void applyScale()
     {
         const int cap = m_expanded ? 560 : 160;
-        const int w = qMin(m_full.width(), cap);
-        setPixmap(m_full.scaledToWidth(w, Qt::SmoothTransformation));
+        m_wanted = cap;
+        const QString key =
+            QStringLiteral("fm-thumb:%1:%2:%3").arg(m_path).arg(m_stamp).arg(cap);
+        QPixmap cached;
+        if (QPixmapCache::find(key, &cached)) {
+            showScaled(cached);
+            return;
+        }
+        // Hold the row at the height the finished thumbnail will take, so the
+        // transcript does not jump when the decode lands.
+        if (m_srcSize.isValid() && m_srcSize.width() > 0) {
+            const int w = qMin(m_srcSize.width(), cap);
+            setMinimumSize(w, qMax(1, qRound(double(w) * m_srcSize.height() /
+                                             m_srcSize.width())));
+        }
+        auto *watcher = new QFutureWatcher<QImage>(this);
+        connect(watcher, &QFutureWatcher<QImage>::finished, this,
+                [this, watcher, cap, key] {
+                    watcher->deleteLater();
+                    const QImage img = watcher->result();
+                    if (img.isNull())
+                        return;
+                    const QPixmap pm = QPixmap::fromImage(img);
+                    QPixmapCache::insert(key, pm);
+                    if (m_wanted == cap) // a later toggle already superseded this
+                        showScaled(pm);
+                });
+        watcher->setFuture(QtConcurrent::run(decodeScaledAttachment, m_path, cap));
     }
-    QPixmap m_full;
+
+    void showScaled(const QPixmap &pm)
+    {
+        setMinimumSize(0, 0); // the pixmap now drives the size hint
+        setPixmap(pm);
+    }
+
+    QString m_path;
+    QSize m_srcSize;
+    qint64 m_stamp = 0;
+    int m_wanted = 0;
     bool m_expanded = false;
 };
 
@@ -1352,7 +1418,10 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
         const QRegularExpressionMatch m = imgLine.match(line);
         const QString path =
             m.hasMatch() ? AgentPromptImages::resolve(m.captured(1)) : QString();
-        if (!path.isEmpty() && !QPixmap(path).isNull())
+        // canRead() sniffs the header only: deciding "this line is an image"
+        // must not decode the file on the GUI thread (ThumbImage does that on a
+        // worker), or a transcript with screenshots freezes the window.
+        if (!path.isEmpty() && QImageReader(path).canRead())
             images << path;
         else
             prose << line;
@@ -1367,7 +1436,7 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
         v->addWidget(body);
     }
     for (const QString &path : images)
-        v->addWidget(new ThumbImage(QPixmap(path), m_p.border), 0, Qt::AlignLeft);
+        v->addWidget(new ThumbImage(path, m_p.border), 0, Qt::AlignLeft);
     addRow(frame, m_p.accent);
 }
 
