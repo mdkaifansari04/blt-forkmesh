@@ -3805,6 +3805,9 @@ private:
     // composer at the caret.
     void showEmojiPicker(QWidget *anchor);
     void insertEmojiIntoComposer(const QString &emoji);
+    // "Send to Composer" message-menu action: replace the compose box's
+    // contents with an existing message's text so it can be reused/resent.
+    void sendMessageToComposer(const QString &text);
     // Re-create the private rooms we own/were invited to after a fresh connect,
     // since the backend clears its channel set each session.
     void restorePrivateChannels();
