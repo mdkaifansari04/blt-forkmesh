@@ -306,19 +306,17 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #appNavigationRail, #appNavigationRailContent {
     background-color: #0d1117; border-right: 1px solid #30363d;
 }
+/* The rail reserves exactly this much width beside its items (kRailWidth =
+   kRailItemWidth + 6), so keep the slim bar in lockstep with that constant. */
+#appNavigationRail QScrollBar:vertical { width: 6px; }
+#appNavigationRail QScrollBar::handle:vertical { border-radius: 3px; }
 QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
     background-color: #21262d; color: #e6edf3;
 }
-QPushButton[railUtility="true"] {
-    background: transparent; border: 1px solid transparent; border-radius: 6px;
-    color: #8b949e; padding: 0;
-}
-QPushButton[railUtility="true"]:hover,
-QPushButton[railUtility="true"]:checked {
-    background-color: #161b22; color: #e6edf3; border-color: #30363d;
-}
+/* Caption under the rail's Account avatar — same 10px demi-bold as the
+   captions ActivityRailButton paints, so every rail word matches. */
 #railItemLabel {
-    background: transparent; color: #8b949e; font-size: 8px; font-weight: 600;
+    background: transparent; color: #8b949e; font-size: 10px; font-weight: 600;
 }
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
@@ -353,8 +351,8 @@ QPushButton#serverAddButton:pressed { background-color: #238636; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #8b949e; font-size: 18px;
     /* Circular: the account avatar it carries is a circle, so the hover
-       highlight has to be one too. */
-    border-radius: 20px;
+       highlight has to be one too (radius = half the 26px rail avatar). */
+    border-radius: 13px;
 }
 QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3; }
 
@@ -374,11 +372,6 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #connectionStatus { background: transparent; font-size: 13px; font-weight: 600; }
 /* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
 #connectionDot { border: 2px solid #0d1117; }
-/* Red unread-count badge on the chat button. */
-#chatUnreadBadge {
-    background-color: #da3633; color: #ffffff; border: 1px solid #0d1117;
-    border-radius: 7px; font-size: 9px; font-weight: 700;
-}
 /* Count label on the agents button (no red styling). */
 #agentsNavBadge {
     color: #656d76; font-size: 13px; font-weight: 600;
@@ -394,15 +387,6 @@ QPushButton#topNavButton {
 QPushButton#topNavButton:hover { background-color: #161b22; color: #e6edf3; }
 QPushButton#topNavButton:checked {
     background-color: #21262d; color: #e6edf3; border-color: #30363d;
-}
-QPushButton#topNavButton[railUtility="true"]:checked {
-    border-left: 2px solid #2ea043;
-}
-/* No alert border: the amber glyph plus the corner count badge already read as
-   "pending", and an extra outline boxed the rail's Alerts bell on its own. */
-QPushButton#topNavButton[alert="true"] { color: #d29922; }
-QPushButton#topNavButton[alert="true"]:checked {
-    background-color: #1c1908; color: #f0b72f;
 }
 QPushButton#floatingLogButton {
     background-color: #21262d; border: 1px solid #30363d; border-radius: 6px;
@@ -1568,19 +1552,15 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #appNavigationRail, #appNavigationRailContent {
     background-color: #ffffff; border-right: 1px solid #d0d7de;
 }
+/* Slim rail scrollbar, matching kRailWidth = kRailItemWidth + 6. */
+#appNavigationRail QScrollBar:vertical { width: 6px; }
+#appNavigationRail QScrollBar::handle:vertical { border-radius: 3px; }
 QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
     background-color: #eaeef2; color: #1f2328;
 }
-QPushButton[railUtility="true"] {
-    background: transparent; border: 1px solid transparent; border-radius: 6px;
-    color: #656d76; padding: 0;
-}
-QPushButton[railUtility="true"]:hover,
-QPushButton[railUtility="true"]:checked {
-    background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
-}
+/* Caption under the rail's Account avatar — matches the painted captions. */
 #railItemLabel {
-    background: transparent; color: #656d76; font-size: 8px; font-weight: 600;
+    background: transparent; color: #656d76; font-size: 10px; font-weight: 600;
 }
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
@@ -1613,8 +1593,8 @@ QPushButton#serverAddButton:hover { background-color: #1f883d; color: #ffffff; }
 QPushButton#serverAddButton:pressed { background-color: #1a7f37; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #656d76; font-size: 18px;
-    /* Circular: matches the round account avatar it carries. */
-    border-radius: 20px;
+    /* Circular: matches the round 26px rail account avatar it carries. */
+    border-radius: 13px;
 }
 QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328; }
 
@@ -1662,11 +1642,6 @@ QPushButton#windowChromeCloseButton:hover {
 #connectionStatus { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
 /* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
 #connectionDot { border: 2px solid #ffffff; }
-/* Red unread-count badge on the chat button. */
-#chatUnreadBadge {
-    background-color: #cf222e; color: #ffffff; border: 1px solid #ffffff;
-    border-radius: 7px; font-size: 9px; font-weight: 700;
-}
 /* Count label on the agents button (no red styling). */
 #agentsNavBadge {
     color: #8b949e; font-size: 13px; font-weight: 600;
@@ -1682,14 +1657,6 @@ QPushButton#topNavButton {
 QPushButton#topNavButton:hover { background-color: #eaeef2; color: #1f2328; }
 QPushButton#topNavButton:checked {
     background-color: #eaeef2; color: #1f2328; border-color: #d0d7de;
-}
-QPushButton#topNavButton[railUtility="true"]:checked {
-    border-left: 2px solid #2ea043;
-}
-/* Border-less for the same reason as the dark sheet: glyph tint + count badge. */
-QPushButton#topNavButton[alert="true"] { color: #9a6700; }
-QPushButton#topNavButton[alert="true"]:checked {
-    background-color: #fff8c5; color: #7d4e00;
 }
 QPushButton#floatingLogButton {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;

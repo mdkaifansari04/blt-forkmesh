@@ -6,6 +6,7 @@
 // .forkmesh/coves/<slug>.cove format and the AES-256-GCM crypto.
 
 #include "MainWindow.h"
+#include "MainWindowInternal.h"
 
 #include "CoveCrypto.h"
 #include "CoveStore.h"
@@ -650,15 +651,17 @@ void MainWindow::rebuildRepoCovesList()
     for (Cove &cove : coves) {
         QString pw;
         const bool unlocked = tryUnlockCove(cove, idx, &pw);
-        const QString lock = unlocked ? QString::fromUtf8("\xF0\x9F\x94\x93")
-                                      : QString::fromUtf8("\xF0\x9F\x94\x92");
         const QString mine =
             cove.createdByMe(&m_profileIdentity) ? QStringLiteral("  (yours)") : QString();
         // A locked cove keeps its name encrypted; show a neutral label until unlock.
         const QString label =
             cove.name.isEmpty() ? QStringLiteral("Locked cove") : cove.name;
         auto *item = new QListWidgetItem(
-            QStringLiteral("%1  %2%3").arg(lock, label, mine), m_coveList);
+            QStringLiteral("%1%2").arg(label, mine), m_coveList);
+        // Lock state as a tinted octicon (green once open), not an emoji glyph.
+        item->setIcon(QIcon(tintedOcticonPixmap(
+            unlocked ? QStringLiteral("unlock") : QStringLiteral("lock"),
+            QColor(unlocked ? "#3fb950" : "#8b949e"), 14)));
         item->setData(Qt::UserRole, cove.relPath);
         item->setToolTip(unlocked ? QStringLiteral("Double-click to open")
                                   : QStringLiteral("Locked — enter the password to unlock"));

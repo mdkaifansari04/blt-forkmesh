@@ -4195,7 +4195,6 @@ private:
     QString m_organizationTaskActor;
     bool m_organizationTasksCanManage = false;
     bool m_organizationTasksLoading = false;
-    QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     // "Agents" heads the app navigation rail (adhoc #70), badged with the number
     // of running sessions. Its live fleet matrix stays on the window-chrome
     // line, followed there by the recent action-run strip.
@@ -5775,7 +5774,6 @@ private:
     qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
     QPushButton *m_notificationButton = nullptr;
-    QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     // The website's alert inbox, mirrored onto that page (adhoc #59).
     QJsonArray m_webAlerts;
