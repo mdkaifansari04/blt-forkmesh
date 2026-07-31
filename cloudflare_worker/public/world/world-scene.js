@@ -8138,7 +8138,7 @@ function createWorkerComponentDisplay(THREE) {
   return display;
 }
 
-function engineeringDebugTexture(THREE, snapshot = {}) {
+function drawEngineeringDebug(context, snapshot = {}) {
   const metrics = Array.isArray(snapshot.metrics) ? snapshot.metrics : [];
   const colorFor = (status) =>
     status === "critical"
@@ -8146,7 +8146,7 @@ function engineeringDebugTexture(THREE, snapshot = {}) {
       : status === "warning"
         ? "#f7c96b"
         : "#4bbf73";
-  return canvasTexture(THREE, 1600, 1000, (context) => {
+  {
     context.fillStyle = "#06110e";
     context.fillRect(0, 0, 1600, 1000);
     context.strokeStyle = colorFor(snapshot.overall);
@@ -8212,7 +8212,13 @@ function engineeringDebugTexture(THREE, snapshot = {}) {
       54,
       944,
     );
-  });
+  }
+}
+
+function engineeringDebugTexture(THREE, snapshot = {}) {
+  return canvasTexture(THREE, 1600, 1000, (context) =>
+    drawEngineeringDebug(context, snapshot),
+  );
 }
 
 function createEngineeringDebugPanel(THREE) {
@@ -18850,18 +18856,20 @@ export function createWorldScene({
         ? "warning"
         : "ok";
     const face = engineeringDebugPanel.userData.face;
-    const previous = face.material.map;
-    face.material.map = engineeringDebugTexture(THREE, {
-      overall,
-      metrics,
-      sampledAt: new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-        second: "2-digit",
+    // A 1600×1000 monitor rebuilt from a fresh canvas every second was the
+    // World's largest recurring texture churn; redraw the resident canvas
+    // instead so the tick is one raster plus a same-size upload.
+    repaintCanvasTexture(face.material, (context) =>
+      drawEngineeringDebug(context, {
+        overall,
+        metrics,
+        sampledAt: new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+        }),
       }),
-    });
-    face.material.needsUpdate = true;
-    previous?.dispose?.();
+    );
     engineeringDebugSampleAt = time;
     engineeringDebugFrames = 0;
     engineeringDebugLongestFrameMs = 0;
