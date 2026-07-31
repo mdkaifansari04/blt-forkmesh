@@ -7387,21 +7387,44 @@ async def office_attendance_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
+    visit_id = str(data.get("visitId") or "").strip().lower()
+    if visit_id and not re.fullmatch(r"[0-9a-f]{32}", visit_id):
+        return json_response(
+            {"error": "invalid_visit"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
 
     await ensure_schema(env)
     now = int(Date.now())
     floor_id = _office_attendance_floor(data.get("floor"))
     initial_floor_id = floor_id or "lobby"
     if action == "in":
-        # The partial unique index on open visits makes repeated/concurrent
-        # background authorization requests converge on the same visit.
+        # A page/physical entry owns one visit id. Retrying that same IN remains
+        # idempotent, while a new page entry closes an abandoned open punch at
+        # its last heartbeat instead of inheriting its elapsed time.
+        if visit_id:
+            await d1_run(
+                env,
+                "UPDATE world_office_attendance "
+                "SET out_at=MAX(in_at,COALESCE(NULLIF(last_seen_at,0),in_at)), "
+                "floor_id='' "
+                "WHERE account_bi=? AND out_at IS NULL AND visit_id<>? "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM world_office_attendance WHERE visit_id=?"
+                ")",
+                str(account_bi),
+                visit_id,
+                visit_id,
+            )
         await d1_run(
             env,
             "INSERT OR IGNORE INTO world_office_attendance "
             "(visit_id, account_bi, account_name, in_at, out_at, "
             "last_seen_at, floor_id, visit_scope) "
             "VALUES (?, ?, ?, ?, NULL, ?, ?, 'office')",
-            new_world_peer_id(),
+            visit_id or new_world_peer_id(),
             str(account_bi),
             world_protocol.clean_display_name(
                 account.get("name"), "Contributor"),
@@ -7414,21 +7437,27 @@ async def office_attendance_handler(env, request):
             "UPDATE world_office_attendance "
             "SET last_seen_at=?, "
             "floor_id=CASE WHEN ?<>'' THEN ? ELSE floor_id END "
-            "WHERE account_bi=? AND out_at IS NULL",
+            "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?)",
             now,
             floor_id,
             floor_id,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     elif action == "heartbeat":
         await d1_run(
             env,
             "UPDATE world_office_attendance "
             "SET last_seen_at=?, floor_id=? "
-            "WHERE account_bi=? AND out_at IS NULL",
+            "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?)",
             now,
             initial_floor_id,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     else:
         # Close, in place, only this account's newest open visit. Repeated OUT
@@ -7440,11 +7469,14 @@ async def office_attendance_handler(env, request):
             "WHERE visit_id=("
             "SELECT visit_id FROM world_office_attendance "
             "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?) "
             "ORDER BY in_at DESC, visit_id DESC LIMIT 1"
             ") AND out_at IS NULL",
             now,
             now,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     visits = await _office_attendance_recent(env, now)
     return json_response(
