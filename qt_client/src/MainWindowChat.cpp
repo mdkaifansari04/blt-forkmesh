@@ -893,35 +893,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddVoiceAutoSubmit, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kVoiceAutoSubmitSetting, on);
     });
-    // YOLO toggle beside it (adhoc #12): when checked, an agent started from the
-    // prompt bar merges its own branch into the default branch as soon as its run
-    // finishes successfully — no PR review, no manual "Merge into main" click.
-    // Persisted across launches like the Auto toggle, and off by default: it
-    // rewrites the default branch without asking.
-    m_quickAddYolo = new QCheckBox("YOLO");
-    m_quickAddYolo->setObjectName("quickAddAutoCheck");
-    m_quickAddYolo->setToolTip(
-        "Auto-merge: when an agent finishes its task, merge its branch straight "
-        "into the default branch (no review), then delete its worktree and "
-        "branch.");
-    m_quickAddYolo->setChecked(QSettings().value(kQuickAddYoloSetting, false).toBool());
-    connect(m_quickAddYolo, &QCheckBox::toggled, this, [](bool on) {
-        QSettings().setValue(kQuickAddYoloSetting, on);
-    });
-    // "Task" toggle beside YOLO (adhoc #18): when checked, starting an agent from
-    // the prompt bar also opens an organization task for the run, stamped with the
-    // bot that launched it and the model/mode/strength it was given, and closed out
-    // with the bot that finished it. On by default — prompted work should be
-    // visible to the organization — and unticked for throwaway prompts.
-    m_quickAddTask = new QCheckBox("Task");
-    m_quickAddTask->setObjectName("quickAddAutoCheck");
-    m_quickAddTask->setToolTip(
-        "Open an organization task for this run, recording which bot started "
-        "and finished it and the model, mode, and strength it used.");
-    m_quickAddTask->setChecked(QSettings().value(kQuickAddTaskSetting, true).toBool());
-    connect(m_quickAddTask, &QCheckBox::toggled, this, [](bool on) {
-        QSettings().setValue(kQuickAddTaskSetting, on);
-    });
+    // The "YOLO" (adhoc #12) and "Task" (adhoc #18) toggles that used to sit
+    // beside the Auto checkbox are gone from the composer (adhoc #120): the
+    // prompt bar keeps only the controls that describe the prompt itself. Every
+    // prompted run now takes the defaults those toggles carried — no unattended
+    // auto-merge, and an organization task opened for the run — see
+    // startAgentForIssue()/startAdHocAgentForRepo() in MainWindowAgents.cpp.
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
@@ -982,18 +959,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     connect(m_quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
-    // Green "Enter" badge (adhoc #89): shown on whichever of the two send
-    // buttons Enter currently activates, kept in sync by
-    // updateQuickAddEnterTarget(). Parented to the button so it rides along
-    // without needing its own layout slot; both buttons are fixed-size so a
-    // one-time corner position is enough.
-    m_quickAddSendEnterBadge = new QLabel(QStringLiteral("⏎"), m_quickAddSendButton);
-    m_quickAddSendEnterBadge->setObjectName("quickAddEnterBadge");
-    m_quickAddSendEnterBadge->setAlignment(Qt::AlignCenter);
-    m_quickAddSendEnterBadge->setFixedSize(14, 14);
-    m_quickAddSendEnterBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_quickAddSendEnterBadge->move(m_quickAddSendButton->width() - 12, -5);
-    m_quickAddSendEnterBadge->hide();
+    // No corner glyph on the button any more (adhoc #120): the little green "⏎"
+    // badge (adhoc #89) that rode the top-right corner of "new" while Enter
+    // targeted it is gone. The button's own green outline, applied by
+    // updateQuickAddEnterTarget(), still marks which send Enter activates.
 
     // Second paper airplane, rotated to point straight up, stacked above the
     // regular send icon (adhoc #99): sends the typed prompt as a follow-up
@@ -1044,21 +1013,24 @@ QWidget *MainWindow::buildNetworkLogDock()
         sendPromptToSelectedAgent(prompt);
     });
 
-    // Third button, stacked above "add" and "new" (adhoc #42): "genie" doesn't
+    // Third button, stacked above "add" and "new" (adhoc #42): "task" doesn't
     // send the typed prompt at all — it starts an agent wired to the remote MCP
     // server configured on the website, so the agent picks its own work off the
     // organization's shared task list and reports back through the same tools.
     // Anything typed in the box rides along as extra guidance for that run.
-    m_quickAddGenieButton = new QPushButton(QStringLiteral("genie"));
+    // Labelled "task" rather than "genie" (adhoc #120), after what it actually
+    // does; the widget/QSS name stays the genie one the rest of the run plumbing
+    // (AgentSession::genie, startGenieAgent) is keyed to.
+    m_quickAddGenieButton = new QPushButton(QStringLiteral("task"));
     m_quickAddGenieButton->setObjectName("quickAddGenieButton");
     m_quickAddGenieButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_quickAddGenieButton, "sparkle", 15);
+    setOcticon(m_quickAddGenieButton, "list-unordered", 15);
     m_quickAddGenieButton->setFixedWidth(58);
     m_quickAddGenieButton->setMinimumHeight(24);
     m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
                                          QSizePolicy::Expanding);
     m_quickAddGenieButton->setToolTip(
-        QString::fromUtf8("Genie \xE2\x80\x94 start a running agent session that "
+        QString::fromUtf8("Task \xE2\x80\x94 start a running agent session that "
                           "picks its own work off the organization's shared task "
                           "list. No setup: the first press mints this node's own "
                           "task credential from the account you are signed in "
@@ -1077,7 +1049,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Three buttons stacked in a full-height column down the prompt's right edge
     // (adhoc #115): each stretches to take its share of the frame height, so the
     // text area to their left ends flush against them and the whole prompt box is
-    // just as tall as the genie/add/new stack. "genie" sits on top (adhoc #42).
+    // just as tall as the task/add/new stack. "task" sits on top (adhoc #42).
     auto *sendColumn = new QVBoxLayout;
     sendColumn->setContentsMargins(0, 0, 0, 0);
     sendColumn->setSpacing(2);
@@ -1125,8 +1097,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_voiceLevelMeter, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddAttachStrip, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddVoiceAutoSubmit, 0, Qt::AlignBottom);
-    bottomBar->addWidget(m_quickAddYolo, 0, Qt::AlignBottom);
-    bottomBar->addWidget(m_quickAddTask, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     // The "/" actions box sits immediately left of the agent box (adhoc #116),
     // matching where the Claude Code extension keeps its actions menu.
@@ -4462,6 +4432,11 @@ void MainWindow::showTreasuryDonateDialog()
     dialog.exec();
 }
 
+// The ping feed above the network log: how many lines it shows, and how tall
+// it is (adhoc #77). Deliberately small — it is a glance, not a second page.
+static constexpr int kLogEventStripLimit = 8;
+static constexpr int kLogEventStripRows = 5;
+
 QWidget *MainWindow::buildLogSection()
 {
     auto *page = new QWidget;
@@ -4494,6 +4469,10 @@ QWidget *MainWindow::buildLogSection()
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
     m_settingsLog->setOpenExternalLinks(true);
+    // Clicks on the leading "add to prompt" plus of an entry are handled in
+    // MainWindow::eventFilter before the browser's own anchor activation sees
+    // them (adhoc #114); http(s) links in the message body still open normally.
+    m_settingsLog->viewport()->installEventFilter(this);
     // No setMaximumBlockCount here: that trims blocks from the *top* of the
     // document, which would silently discard the older segments this view now
     // loads on demand when the user scrolls up (adhoc #15). m_networkLog
@@ -4566,13 +4545,68 @@ QWidget *MainWindow::buildLogSection()
     headerRow->addWidget(cloudflareButton);
     headerRow->addWidget(clearButton);
 
+    // Every ping this window raises also lands in a compact feed directly
+    // above the log, so "what just happened?" is answered without leaving the
+    // page or waiting for the toast to reappear (adhoc #77). Double-clicking a
+    // line opens the full Pings page.
+    auto *eventsLabel = new QLabel(QStringLiteral("RECENT PINGS"));
+    eventsLabel->setObjectName("sectionLabel");
+    m_logEventList = new QListWidget;
+    m_logEventList->setObjectName("logEventList");
+    m_logEventList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_logEventList->setUniformItemSizes(true);
+    m_logEventList->setFixedHeight(kLogEventStripRows *
+                                       m_logEventList->fontMetrics().height() +
+                                   12);
+    m_logEventList->setToolTip(
+        QStringLiteral("The newest pings. Double-click to open the Pings "
+                       "page."));
+    connect(m_logEventList, &QListWidget::itemDoubleClicked, this,
+            [this](QListWidgetItem *) { showNotifications(); });
+
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(18, 14, 18, 14);
     layout->setSpacing(8);
     layout->addLayout(headerRow);
+    layout->addWidget(eventsLabel);
+    layout->addWidget(m_logEventList);
     layout->addWidget(filterScroll);
     layout->addWidget(m_settingsLog, 1);
+    refreshLogEventList();
     return page;
+}
+
+// Repaint the compact ping feed above the network log from the same list the
+// Pings page shows, newest first (adhoc #77).
+void MainWindow::refreshLogEventList()
+{
+    if (!m_logEventList)
+        return;
+    m_logEventList->clear();
+    if (m_notifications.isEmpty()) {
+        auto *empty = new QListWidgetItem(
+            QStringLiteral("No pings yet in this session."));
+        empty->setForeground(QColor("#6e7681"));
+        empty->setFlags(Qt::NoItemFlags);
+        m_logEventList->addItem(empty);
+        return;
+    }
+    const int shown = qMin(int(m_notifications.size()), kLogEventStripLimit);
+    for (int index = 0; index < shown; ++index) {
+        const AppNotification &notice = m_notifications.at(index);
+        QString text =
+            QDateTime::fromMSecsSinceEpoch(notice.timestampMs)
+                .toString(QStringLiteral("HH:mm:ss")) +
+            QStringLiteral("  ") + notice.title.simplified();
+        const QString detail = notice.body.simplified();
+        if (!detail.isEmpty())
+            text += QString::fromUtf8(" \xE2\x80\x94 ") + detail;
+        auto *item = new QListWidgetItem(text);
+        item->setToolTip(text);
+        if (notice.warning)
+            item->setForeground(QColor("#f85149"));
+        m_logEventList->addItem(item);
+    }
 }
 
 void MainWindow::showCloudflareWorkerLogs()
@@ -4783,6 +4817,23 @@ QWidget *MainWindow::buildBreadcrumb()
     m_relayMenuButton->setToolTip("Switch, search, or add relays");
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
+
+    // Red dot pinned over the favicon while a freshly launched instance waits
+    // to be linked (adhoc #97), with the Approve button that opens the join
+    // dialog right beside it. Both stay hidden until the signed heartbeat
+    // reply reports a pending join request for this admin.
+    m_relayJoinDot = new QLabel(m_relayMenuButton);
+    m_relayJoinDot->setObjectName(QStringLiteral("relayJoinDot"));
+    m_relayJoinDot->setAttribute(Qt::WA_TransparentForMouseEvents);
+    m_relayJoinDot->setFixedSize(10, 10);
+    m_relayJoinDot->hide();
+    m_relayJoinApproveButton = new QPushButton(QStringLiteral("Approve"));
+    m_relayJoinApproveButton->setObjectName(
+        QStringLiteral("relayJoinApproveButton"));
+    m_relayJoinApproveButton->setCursor(Qt::PointingHandCursor);
+    m_relayJoinApproveButton->hide();
+    connect(m_relayJoinApproveButton, &QPushButton::clicked, this,
+            &MainWindow::showRelayJoinApprovalDialog);
 
     // Spinning radar + once-a-minute latency readout, sitting just left of the
     // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
@@ -5299,6 +5350,21 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
 
+    // "Log in / Sign up" pill (adhoc #115). The old first-run screen that asked
+    // for a username and a relay host is gone — the app opens straight into the
+    // shell — so this is what a user who hasn't attached a forkmesh.com account
+    // clicks. updateSignInButton() hides it the moment one is attached.
+    m_navSignInButton = new QPushButton(QStringLiteral("Log in / Sign up"));
+    m_navSignInButton->setObjectName("primaryButton");
+    m_navSignInButton->setCursor(Qt::PointingHandCursor);
+    m_navSignInButton->setToolTip(
+        QStringLiteral("Attach this machine to your ForkMesh account, or create "
+                       "one on forkmesh.com"));
+    setOcticon(m_navSignInButton, "sign-in", 14);
+    m_navSignInButton->hide();
+    connect(m_navSignInButton, &QPushButton::clicked, this,
+            &MainWindow::showSignInMenu);
+
     // Screenshot rail item: drag a region anywhere on screen and it lands in
     // the prompt as an attachment. A one-shot action, so it never stays checked.
     m_navScreenshotButton = new ActivityRailButton(QStringLiteral("screen-full"),
@@ -5390,6 +5456,11 @@ QWidget *MainWindow::buildBreadcrumb()
     // runs follow it (adhoc #70). The Agents button that used to head this group
     // is now a regular rail entry.
     chromeRow->addWidget(m_relayMenuButton);
+    // Logged-out only: the sign-in pill sits immediately after the relay switcher
+    // so it is the first thing on the bar that isn't chrome, and it lives in the
+    // left-hand group because that group never scrolls out of a narrow window.
+    chromeRow->addWidget(m_navSignInButton);
+    chromeRow->addWidget(m_relayJoinApproveButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
@@ -5497,6 +5568,7 @@ QWidget *MainWindow::buildBreadcrumb()
     refreshRepoSyncIndicators();
     updateNavRebuildButton();
     updateNodeOnlineControls();
+    updateSignInButton();
     return bar;
 }
 
@@ -5506,6 +5578,58 @@ void MainWindow::updateNavRebuildButton()
         QSettings().value(kShowRebuildButtonSetting, false).toBool();
     if (m_navRebuildButton)
         m_navRebuildButton->setVisible(visible);
+}
+
+// The top-bar "Log in / Sign up" pill replaces the retired first-run screen
+// (adhoc #115), so it must be honest about state rather than eager: it stays
+// hidden until the deferred startup has actually resolved who this machine is.
+// Silent auth runs a few seconds after launch and is what fills
+// nodeOwnerDisplayName() on a signed-in machine — offering "Log in" before then
+// would flash the pill on every start for a user who is already logged in. A
+// headless mirror authenticates with its node key and has nobody at the
+// keyboard, so it never gets the pill at all.
+void MainWindow::updateSignInButton()
+{
+    if (!m_navSignInButton)
+        return;
+    const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
+    m_navSignInButton->setVisible(!m_headless && m_deferredStartupRun && !signedIn);
+}
+
+void MainWindow::showSignInMenu()
+{
+    QMenu menu(this);
+    // In-app email/password login: this is the path that attaches this machine
+    // to an existing forkmesh.com account (runLoginFlow registers the desktop
+    // key with the relay and hands back a real website session).
+    QAction *login = menu.addAction(QStringLiteral("Log in to your account\xE2\x80\xA6"));
+    // Linking through the browser needs a registered, key-bound node — the relay
+    // links by node name + this node's key — so only offer it once that holds.
+    QAction *browser = nullptr;
+    if (!accountOwner().isEmpty() && hasOwnerSigningCapability(accountOwner()))
+        browser = menu.addAction(
+            QStringLiteral("Link this node in your browser\xE2\x80\xA6"));
+    QAction *signup = menu.addAction(QStringLiteral("Create an account\xE2\x80\xA6"));
+
+    QAction *chosen = menu.exec(m_navSignInButton->mapToGlobal(
+        QPoint(0, m_navSignInButton->height())));
+    if (!chosen)
+        return;
+    if (chosen == login) {
+        loginToUserAccount();
+        updateUserSwitcher();
+        return;
+    }
+    if (browser && chosen == browser) {
+        openLinkNodeInBrowser();
+        return;
+    }
+    if (chosen == signup) {
+        QUrl url = catalogApiUrl(); // http(s) on the mainnode host
+        url.setPath(QStringLiteral("/signup"));
+        QDesktopServices::openUrl(url);
+        logSystem("Account: opened the browser to create a ForkMesh account.");
+    }
 }
 
 // Pin the floating "Log" button to the bottom-right corner of the live-log
@@ -6159,6 +6283,9 @@ void MainWindow::updateUserSwitcher()
     }
     updateUserAvatarButton();
     updateChatIdentity();
+    // Every profile-hydration path lands here, so this is also where the top-bar
+    // "Log in / Sign up" pill learns that an account just arrived (or went away).
+    updateSignInButton();
     // The top-right node-name label folds in the user account name
     // ("user/node"), so keep it in step with the user identity too.
     refreshWebUserSolanaAddress();

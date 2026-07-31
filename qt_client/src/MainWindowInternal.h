@@ -2738,9 +2738,8 @@ const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
 // Last repo-detail tab actually viewed (updated by recordNavLocation()); a
-// restart restores this instead of Settings -> General's "open repositories
-// on tab" preference, which is meant for switching repos mid-session, not for
-// where the app happens to relaunch (adhoc #101).
+// restart restores this rather than landing wherever a fresh open would
+// (adhoc #101) — the app comes back on the page it was left on.
 const QString kLastRepoDetailTabSetting =
     QStringLiteral("repositories/lastOpenDetailTab");
 // Issue looper (adhoc #125): persist the running state so a restart resumes the
@@ -2921,11 +2920,10 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
-// backups). On by default on the desktop — the snapshot is the only thing
-// standing between a corrupted store and a lost account key — but OFF by
-// default headless: a rolling day of ~1GB tarballs filled several small VPS
-// disks (see forkmesh::autoBackupDefault). An explicit true still enables
-// backups on a headless node.
+// backups). OFF by default everywhere except control nodes — the installs that
+// hold a Cloudflare API token (see forkmesh::autoBackupDefault) — because a
+// rolling day of ~1GB tarballs filled several small VPS disks. An explicit
+// true turns backups on for any node.
 const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
 // How many hourly snapshots are kept before the oldest is pruned.
 const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");
@@ -3240,16 +3238,10 @@ inline int maxRunningAgents()
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
-// Footer quick-add "YOLO" toggle (adhoc #12): true => every agent started from
-// here merges its own branch into the default branch the moment its run
-// finishes successfully, skipping the pull-request review step.
-const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
-// Footer quick-add "Task" toggle (adhoc #18): true => every agent started from
-// here also opens an organization task recording which bot launched the run,
-// which bot finished it, and the model/mode/strength it used. On by default —
-// the point is that prompted work is visible to the organization, not just to
-// the desktop that typed it — and turned off per-run for throwaway prompts.
-const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// The footer quick-add "YOLO" (adhoc #12) and "Task" (adhoc #18) toggles were
+// dropped from the composer in adhoc #120, so agents/quickAddYolo and
+// agents/quickAddTask are no longer read or written: a prompted run never
+// auto-merges and always opens an organization task.
 // Last known number of open organization tasks, mirrored into settings so the
 // Tasks rail badge is on screen from the first frame after a restart instead of
 // staying blank until someone opens the Tasks page (adhoc #79).
@@ -3280,6 +3272,11 @@ const QString kAccountAlertListProof =
     QStringLiteral("forkmesh-account-alert-list-v1");
 const QString kAccountAlertReadProof =
     QStringLiteral("forkmesh-account-alert-read-v1");
+// Deleting one ping from that inbox signs the row's id as well, so a captured
+// delete cannot be replayed against a different notification (adhoc #77). Must
+// stay byte-identical to ACCOUNT_ALERT_DELETE_PROOF in entry.py.
+const QString kAccountAlertDeleteProof =
+    QStringLiteral("forkmesh-account-alert-delete-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -3876,20 +3873,13 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
     combo->setCurrentIndex(idx >= 0 ? idx : fallback);
 }
 
-// User's preferred tab a repository opens on (Settings → General). Stored as
-// the m_repoDetailStack / m_repoDetailTabs index. Restricted to the tabs whose
-// data is eagerly loaded when a repo opens — Code(0), Commits(1), Issues(2),
-// Agents(3), Pull requests(4), Discussions(5) — so landing there shows content
-// without a manual click. Defaults to the Agents tab.
-const QString kDefaultRepoTabSetting = QStringLiteral("ui/defaultRepoTab");
-constexpr int kFallbackRepoTab = 3; // Agents
-
-inline int defaultRepoTabIndex()
-{
-    const int value =
-        QSettings().value(kDefaultRepoTabSetting, kFallbackRepoTab).toInt();
-    return (value >= 0 && value <= 5) ? value : kFallbackRepoTab;
-}
+// The tab a repository opens on: Code(0), the repo's own front page. Was a
+// Settings → General preference defaulting to Agents, which meant every launch
+// and every repo switch detoured through the Agents tab; adhoc #119 dropped both
+// the setting and the detour, so a repo just opens where the app opens — its
+// overview — and a relaunch restores the tab last viewed
+// (kLastRepoDetailTabSetting).
+constexpr int kRepoLandingTab = 0; // Code
 
 // Live claude.ai OAuth access token the Claude Code CLI stores in
 // ~/.claude/.credentials.json. Empty when the user logged in with an API key
@@ -7971,6 +7961,51 @@ inline QString octiconMarkup(const QString &name, int size,
                "<img src='data:image/png;base64,%1' width='%2' height='%2'>")
         .arg(QString::fromLatin1(png.toBase64()))
         .arg(size);
+}
+
+// "Add to prompt" affordance for the log views (adhoc #114): a tiny plus glyph
+// pinned at the very left of every entry, wrapped in an anchor that carries the
+// entry's own text. Clicking it appends that line to the footer prompt box (see
+// MainWindow::eventFilter), so a line worth asking an agent about takes one
+// click instead of a select-copy-paste round trip.
+const QString kLogPromptAnchorPrefix = QStringLiteral("fmlogprompt:");
+// The document-resource URL the glyph is registered under, one copy per log
+// document (the same trick the site favicons use — far cheaper than a base64
+// data URI repeated on every one of a few hundred rendered lines).
+const QString kLogPromptIconResource = QStringLiteral("logprompt://add");
+
+inline QString logPromptAnchorHref(const QString &storedLine)
+{
+    // Percent-encoded, so the line's own quotes and ampersands can't break out
+    // of the href attribute.
+    return kLogPromptAnchorPrefix +
+           QString::fromLatin1(QUrl::toPercentEncoding(storedLine.trimmed()));
+}
+
+// The log line an anchor href carries, or an empty string when the href is not
+// one of ours (a plain http(s) link in the message body, most often).
+inline QString logPromptAnchorLine(const QString &href)
+{
+    if (!href.startsWith(kLogPromptAnchorPrefix))
+        return QString();
+    return QUrl::fromPercentEncoding(
+        href.mid(kLogPromptAnchorPrefix.size()).toLatin1());
+}
+
+// The leading icon markup for one log entry, registering the glyph on `view`'s
+// document so the <img> resolves there. Grey enough to read on both the Log
+// view's themed canvas and the footer strip's forced-white one.
+inline QString logPromptIconTag(QTextEdit *view, const QString &storedLine)
+{
+    if (!view || storedLine.trimmed().isEmpty())
+        return QString();
+    view->document()->addResource(
+        QTextDocument::ImageResource, QUrl(kLogPromptIconResource),
+        tintedOcticonPixmap(QStringLiteral("plus"), QColor("#8b949e"), 12));
+    return QStringLiteral(
+               "<a href='%1' style='text-decoration:none'><img src='%2' "
+               "width='11' height='11' style='vertical-align:middle'></a>&nbsp;")
+        .arg(logPromptAnchorHref(storedLine), kLogPromptIconResource);
 }
 
 inline QString serverHost(const QString &serverUrl)

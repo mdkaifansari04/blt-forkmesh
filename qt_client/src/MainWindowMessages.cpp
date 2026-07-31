@@ -90,6 +90,8 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
                     m_backend->sendReaction(m_currentConversation, messageId, emoji);
             });
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
+    connect(row, &MessageRow::createIssueRequested, this,
+            &MainWindow::promptIssueFromChatMessage);
     connect(row, &MessageRow::sendToPromptRequested, this,
             &MainWindow::sendMessageToPrompt);
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
@@ -274,6 +276,24 @@ void MainWindow::onMessage(const ChatMessage &message)
                                   : "in " + conversation;
         const QString preview =
             message.hasFile() ? "File: " + message.fileName : message.text;
+        // Chat is an event like any other: file it on the Pings page and raise
+        // it in the area above the log, with a row that opens the conversation
+        // it came from (adhoc #77). The desktop toast below stays gated by its
+        // own setting; this in-app record is not. Only messages that just
+        // arrived qualify — a peer replaying days of history this node has
+        // never seen must not land as hundreds of "new events" — and #welcome
+        // already raised its own ping above.
+        constexpr qint64 kChatPingFreshMs = 10 * 60 * 1000;
+        if (conversation != kWelcomeChannel &&
+            message.timestampMs >
+                QDateTime::currentMSecsSinceEpoch() - kChatPingFreshMs) {
+            NotificationLink link;
+            link.kind = QStringLiteral("chat");
+            link.ref = conversation;
+            addNotification(message.senderName + QLatin1Char(' ') + where,
+                            preview.simplified(), false, link,
+                            QStringLiteral("chat"), message.senderName);
+        }
         if (textMentionsNodeName(message.text, m_userName)) {
             if (notifyEnabled(kMentionAlertSetting)) {
                 QApplication::alert(this, 0);
@@ -619,6 +639,14 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             if (!ownId.isEmpty() && m.id == ownId)
                 continue;
             if (!ownName.isEmpty() && m.name.compare(ownName, Qt::CaseInsensitive) == 0)
+                continue;
+            // A plain user account (accountKind "user") is a person, not a
+            // serving node — e.g. a desktop signed in as a user rather than a
+            // linked node, or ForkBot's relayed chat identity. Announcing it as
+            // "Node connected" is misleading (adhoc #37 hit this same mix-up in
+            // the node switcher); missing accountKind (older peers) still
+            // counts as a node for backward compatibility.
+            if (m.accountKind == QLatin1String("user"))
                 continue;
             if (!previouslyOnline.contains(m.id)) {
                 const QString displayName =

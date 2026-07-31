@@ -903,6 +903,40 @@
         color: var(--primary-fg);
       }
 
+      .chat-edit-actions button[disabled] {
+        opacity: 0.55;
+        cursor: default;
+      }
+
+      /* "Turn this message into an issue": a one-line title over the
+         repository picker, so the form stays as compact as the edit box. */
+      .chat-issue-form {
+        gap: 5px;
+      }
+
+      .chat-issue-title {
+        min-height: 0;
+        resize: none;
+      }
+
+      .chat-issue-repo {
+        width: 100%;
+        padding: 6px 10px;
+        border: 1px solid var(--border);
+        border-radius: 7px;
+        background: var(--surface2);
+        color: var(--fg);
+        font: inherit;
+        font-size: 12px;
+      }
+
+      .chat-issue-status {
+        font-size: 11px;
+        color: var(--muted);
+      }
+
+      .chat-issue-status.is-bad { color: var(--danger); }
+
       .chat-emoji-picker {
         position: absolute;
         z-index: 1000;

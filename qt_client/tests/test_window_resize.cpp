@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QFileInfo>
 #include <QPointer>
 #include <QProcess>
@@ -416,6 +417,17 @@ int main(int argc, char *argv[])
                          QStringLiteral("wallet"));
 
     MainWindow window;
+
+    // adhoc #115: the first-run screen that asked for a username and a relay
+    // host is retired — it only ever loaded straight into the app — so a freshly
+    // constructed window is already on the app shell, before any session starts.
+    check(window.testStackIndex() == 1,
+          QStringLiteral("the app opens on the app shell, not a setup screen"));
+    // Its replacement is the top-bar "Log in / Sign up" pill, which stays hidden
+    // until the deferred startup has resolved whether a user account is attached
+    // (otherwise every launch would flash it at an already-signed-in user).
+    check(!window.testSignInButtonVisible(),
+          QStringLiteral("the sign-in pill waits for silent auth to resolve"));
 
     // Opening Chat from its unread badge should land directly on the unread
     // conversation carrying the newest message, while preserving the already
@@ -992,6 +1004,13 @@ int main(int argc, char *argv[])
 
     window.testEnableSessionStartBypass(true);
 
+    // adhoc #115: startup has resolved now (the bypass marks it done) and this
+    // node has no user account, so the pill appears — it is the only way in that
+    // the retired setup screen left behind.
+    window.testRefreshSignInButton();
+    check(window.testSignInButtonVisible(),
+          QStringLiteral("the sign-in pill offers a way in once no account is found"));
+
     // No wallet, no signup: starting a node needs only a valid name. The core
     // flow never invokes the (opt-in) account/signup flow, and a fresh node drops
     // straight into the app shell without an account or a verified wallet.
@@ -1085,7 +1104,7 @@ int main(int argc, char *argv[])
           QStringLiteral("reward settings cannot reserve or activate an account"));
 
     QCheckBox *nodeConnectAlertCheck =
-        findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));
+        findCheckBox(window, QStringLiteral("Show a system ping when a node connects"));
     check(nodeConnectAlertCheck != nullptr,
           QStringLiteral("node-connect system alert checkbox exists"));
     if (nodeConnectAlertCheck) {
@@ -1115,6 +1134,19 @@ int main(int argc, char *argv[])
     check(networkLog.contains(QStringLiteral("Node connected")) &&
               networkLog.contains(QStringLiteral("New Peer")),
           QStringLiteral("newly online peer is logged when node-connect alerts are disabled"));
+
+    // adhoc #121: a plain user account (accountKind "user" — e.g. ForkBot's
+    // relayed chat identity, or a desktop signed in as a user rather than a
+    // linked node) coming online must not be announced as "Node connected":
+    // it isn't a node.
+    window.testResetNetworkLog();
+    QList<MemberInfo> withUserPeer = initialRoster;
+    MemberInfo userPeer = testMember(QStringLiteral("user-peer"), QStringLiteral("jett"));
+    userPeer.accountKind = QStringLiteral("user");
+    withUserPeer.append(userPeer);
+    window.testSetRoster(withUserPeer);
+    check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(QStringLiteral("jett")),
+          QStringLiteral("a plain user account online is not logged as a node connecting"));
 
     // adhoc #404: a browser guest / World visitor that stops sending presence is
     // forgotten after ten idle minutes, while a real node keeps its offline row
@@ -1286,6 +1318,27 @@ int main(int argc, char *argv[])
     check(prFixMenuFound,
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code after repository navigation"));
+    // The Agents tab is built when it's first opened, and a repo no longer opens
+    // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
+    // before reading its list back. This also proves that route works for a repo
+    // with no sessions yet.
+    window.testOpenAgentsOverview();
+    // The page is laid out on its first show, so its column widths only settle
+    // once that reaches the event loop — pump until they do (bounded) rather than
+    // reading a half-laid-out header below.
+    {
+        QElapsedTimer agentLayoutTimer;
+        agentLayoutTimer.start();
+        while (agentLayoutTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            const QStringList span =
+                window.testAgentColumnLayout().section(QLatin1Char('|'), 1)
+                    .split(QLatin1Char('/'));
+            if (span.size() == 2 && span.at(1).toInt() > 0 &&
+                span.at(0).toInt() == span.at(1).toInt())
+                break;
+        }
+    }
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
@@ -1767,6 +1820,48 @@ int main(int argc, char *argv[])
         check(after.contains(QStringLiteral("feature/keep-selected")),
               QStringLiteral("the background refresh rebuilds the rows after the "
                              "click (adhoc #420)"));
+
+        // adhoc #119: merging from the review ends the review — the branch's work
+        // is in main, so leaving its diff open only shows the user something
+        // they're finished with. Re-open the range pane, then let its "Merge to
+        // main" button run: the Git view must go back to the working tree exactly
+        // as if the pane's ✕ had been clicked.
+        //
+        // This fixture's linked worktree lives inside the parent checkout, so git
+        // reports it as untracked content and the merge would refuse ("the checkout
+        // has uncommitted changes"). Exclude it locally — the tracked tree is clean,
+        // which is the state that check is really about.
+        QFile excludeFile(wtRepo.path() + QStringLiteral("/.git/info/exclude"));
+        if (excludeFile.open(QIODevice::WriteOnly | QIODevice::Append)) {
+            excludeFile.write("wt-keep/\n");
+            excludeFile.close();
+        }
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        check(window.testCommitWorkspacePage() == 2,
+              QString("re-opening the branch review lands on the range pane again "
+                      "(adhoc #119 setup, page = %1)")
+                  .arg(window.testCommitWorkspacePage()));
+        const bool mergeClicked = window.testClickBranchReviewMerge(false);
+        QApplication::processEvents();
+        const QString mainTip =
+            gitOutput(wtRepo.path(), {"log", "--oneline", "-1", "main"});
+        check(mergeClicked && window.testCommitWorkspacePage() == 0 &&
+                  window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("merging from the branch review closes it and hands the Git "
+                      "view back to the working tree (adhoc #119, clicked = %1, "
+                      "page = %2, files slot = %3, history slot = %4, main tip = "
+                      "%5)")
+                  .arg(mergeClicked ? QStringLiteral("yes") : QStringLiteral("no"))
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage())
+                  .arg(mainTip.trimmed()));
+        check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),
+              QString("the review's merge button really merged the branch (adhoc "
+                      "#119, main tip = %1)").arg(mainTip.trimmed()));
     }
 
     // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
@@ -1911,13 +2006,31 @@ int main(int argc, char *argv[])
                   QStringLiteral("picking a speed persists the effort the next run "
                                  "is launched with"));
         }
-        // The genie button is the top of the send column, above "add" and "new"
-        // (adhoc #42/#38), and the strip of session dots that used to sit above
-        // the prompt is gone (adhoc #38) — its state lives in the top bar now.
+        // The pick-your-own-work button is the top of the send column, above
+        // "add" and "new" (adhoc #42/#38), and reads "task" rather than "genie"
+        // (adhoc #120). The strip of session dots that used to sit above the
+        // prompt is gone (adhoc #38) — its state lives in the top bar now.
         auto *genieButton =
             seeded.findChild<QPushButton *>(QStringLiteral("quickAddGenieButton"));
-        check(genieButton && genieButton->isVisible(),
-              QStringLiteral("the composer offers the genie button"));
+        check(genieButton && genieButton->isVisible() &&
+                  genieButton->text() == QStringLiteral("task"),
+              QStringLiteral("the composer offers the task button"));
+        // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
+        // the composer (adhoc #120): the only Enter indicator is the green
+        // outline on whichever send button Enter activates.
+        auto *composerDock = seeded.findChild<QWidget *>(QStringLiteral("logDock"));
+        QStringList composerChecks;
+        if (composerDock) {
+            for (auto *box : composerDock->findChildren<QCheckBox *>())
+                composerChecks << box->text();
+        }
+        check(composerDock && !composerChecks.contains(QStringLiteral("YOLO")) &&
+                  !composerChecks.contains(QStringLiteral("Task")),
+              QString("the composer has no YOLO/Task toggles (%1)")
+                  .arg(composerChecks.join(QStringLiteral(", "))));
+        check(seeded.findChild<QLabel *>(QStringLiteral("quickAddEnterBadge")) ==
+                  nullptr,
+              QStringLiteral("no corner Enter badge on the send buttons"));
         check(seeded.findChild<QWidget *>(QStringLiteral("agentStatusRow")) == nullptr &&
                   seeded.findChild<QPushButton *>(
                       QStringLiteral("agentStatusMore")) == nullptr,
@@ -2532,6 +2645,97 @@ int main(int argc, char *argv[])
         check(leadsWithIcon(window.testFooterLogView()),
               QStringLiteral("the footer live-log strip renders the site favicon "
                              "inline too (adhoc #436)"));
+    }
+
+    // adhoc #114: every log entry leads, furthest left, with a plus that hands
+    // that entry to the footer prompt box — one click instead of a
+    // select-copy-paste round trip. Covered in both log surfaces.
+    {
+        window.testResetNetworkLog();
+        const QString entry = QStringLiteral("Pushed 3 commits to origin/main");
+        window.testLogSystem(entry);
+        window.testShowLogSection();
+        window.testRebuildNetworkLogView();
+        QApplication::processEvents();
+
+        const QString prefix = QStringLiteral("fmlogprompt:");
+        // The anchor carries the entry's own dated line, so a click needs no
+        // lookup back into the log buffer.
+        auto firstPromptHref = [&prefix](QTextEdit *view) {
+            if (!view)
+                return QString();
+            for (QTextBlock b = view->document()->firstBlock(); b.isValid();
+                 b = b.next()) {
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
+                    const QString href =
+                        it.fragment().charFormat().anchorHref();
+                    if (href.startsWith(prefix))
+                        return href;
+                }
+            }
+            return QString();
+        };
+        const QString logHref = firstPromptHref(window.testNetworkLogView());
+        check(!logHref.isEmpty(),
+              QStringLiteral("the full Log view leads every entry with an "
+                             "add-to-prompt icon"));
+        check(!firstPromptHref(window.testFooterLogView()).isEmpty(),
+              QStringLiteral("the footer live-log strip leads every entry with "
+                             "one too"));
+        check(QUrl::fromPercentEncoding(logHref.mid(prefix.size()).toLatin1())
+                  .endsWith(entry),
+              QStringLiteral("the icon's anchor carries the log entry itself"));
+
+        // Click it where it actually paints (the leftmost strip of a row), not
+        // through a test-only shortcut, so the event-filter wiring is covered.
+        // Hit-testing is by anchor content, not by "first icon in the viewport":
+        // the footer strip keeps the lines it has already streamed, so its top
+        // visible row is some older entry, not the one logged just above.
+        auto clickPromptIcon = [&prefix, &entry](QTextEdit *view) {
+            if (!view)
+                return false;
+            for (int y = 0; y < view->viewport()->height(); ++y) {
+                for (int x = 0; x < 40; ++x) {
+                    const QPoint pos(x, y);
+                    const QString href = view->anchorAt(pos);
+                    if (!href.startsWith(prefix) ||
+                        !QUrl::fromPercentEncoding(
+                             href.mid(prefix.size()).toLatin1())
+                             .endsWith(entry))
+                        continue;
+                    const QPointF global = view->viewport()->mapToGlobal(pos);
+                    QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos),
+                                      global, Qt::LeftButton, Qt::LeftButton,
+                                      Qt::NoModifier);
+                    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(pos),
+                                        global, Qt::LeftButton, Qt::NoButton,
+                                        Qt::NoModifier);
+                    QApplication::sendEvent(view->viewport(), &press);
+                    QApplication::sendEvent(view->viewport(), &release);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const QString beforeClick = window.testQuickAddText();
+        if (clickPromptIcon(window.testNetworkLogView())) {
+            const QString afterClick = window.testQuickAddText();
+            check(afterClick.endsWith(entry) && afterClick != beforeClick,
+                  QStringLiteral("clicking a Log entry's icon appends that entry "
+                                 "to the footer prompt"));
+        } else {
+            check(false, QStringLiteral("the Log entry's add-to-prompt icon is "
+                                        "hit-testable in the view"));
+        }
+        if (clickPromptIcon(window.testFooterLogView())) {
+            const QString afterFooter = window.testQuickAddText();
+            check(afterFooter.endsWith(entry) &&
+                      afterFooter.count(entry) == 2,
+                  QStringLiteral("the footer strip's icon appends to the prompt "
+                                 "instead of opening the full Log"));
+        }
+        window.testResetNetworkLog();
     }
 
     stopChildProcesses(window);

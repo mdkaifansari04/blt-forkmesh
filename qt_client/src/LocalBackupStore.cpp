@@ -16,6 +16,11 @@ const QString kBackupStampFormat = QStringLiteral("yyyyMMdd-HHmmss");
 
 namespace forkmesh {
 
+bool autoBackupDefault(const QString &cloudflareApiToken)
+{
+    return !cloudflareApiToken.trimmed().isEmpty();
+}
+
 QString defaultBackupRoot()
 {
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
