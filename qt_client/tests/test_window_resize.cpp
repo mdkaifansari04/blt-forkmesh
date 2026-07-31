@@ -1305,7 +1305,22 @@ int main(int argc, char *argv[])
     // before reading its list back. This also proves that route works for a repo
     // with no sessions yet.
     window.testOpenAgentsOverview();
-    QApplication::processEvents();
+    // The page is laid out on its first show, so its column widths only settle
+    // once that reaches the event loop — pump until they do (bounded) rather than
+    // reading a half-laid-out header below.
+    {
+        QElapsedTimer agentLayoutTimer;
+        agentLayoutTimer.start();
+        while (agentLayoutTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            const QStringList span =
+                window.testAgentColumnLayout().section(QLatin1Char('|'), 1)
+                    .split(QLatin1Char('/'));
+            if (span.size() == 2 && span.at(1).toInt() > 0 &&
+                span.at(0).toInt() == span.at(1).toInt())
+                break;
+        }
+    }
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
