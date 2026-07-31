@@ -881,6 +881,16 @@ private:
     bool isOfficeConversation(const QString &conversation) const;
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
+    // Pending federated-instance join requests (adhoc #97): a freshly launched
+    // instance pings the main relay asking to join; for admins the pending
+    // count rides the signed heartbeat reply, a red dot over the top-left
+    // relay favicon flags it, and the Approve button beside it opens the link
+    // dialog. Approving marks the relay approved upstream, which adds it to
+    // /api/world/instances — the World then runs its firework show for the
+    // newly joined instance.
+    void setPendingRelayJoins(int count);
+    void showRelayJoinApprovalDialog();
+    bool adminRelayApprove(const QString &pubkey, const QString &action);
     void verifyWallet();
     QUrl accountsApiUrl(const QString &leaf) const;
     QJsonObject postAccountSync(const QString &leaf, const QJsonObject &body,
@@ -1729,7 +1739,11 @@ private:
     // sizes. refreshSizeMapTab scans on a worker thread; force=false is the
     // lazy tab-click path that reuses the last scan of the same repo.
     QWidget *buildSizeMapTab();
-    void refreshSizeMapTab(bool force);
+    // allowElevation marks the refreshes a click asked for (Rescan, a new
+    // folder, a filesystem card): those may go straight to the password prompt
+    // when the folder needs root, rather than drawing a half-empty map first
+    // (adhoc #112). Automatic refreshes never prompt.
+    void refreshSizeMapTab(bool force, bool allowElevation = false);
     // Folder the size map scans: m_sizeMapRootOverride when the user picked one
     // with "Choose folder…", otherwise this repository's working copy.
     QString sizeMapRoot() const;
@@ -1747,7 +1761,14 @@ private:
     // were skipped (adhoc #76). pkexec — or a password prompt feeding
     // `sudo -S` where pkexec is missing — runs this same binary in its
     // --size-map-scan helper mode and streams the tree back.
-    void rescanSizeMapElevated();
+    // upfront distinguishes the prompt raised the moment a root-only folder is
+    // selected from the one behind the button: if that prompt is dismissed the
+    // map falls back to an unprivileged scan, so the tab is never left blank.
+    void rescanSizeMapElevated(bool upfront = false);
+    // Live "scanning <folder> · N files · M so far" line, driven from the walk
+    // itself (adhoc #112).
+    void showSizeMapScanProgress(const QString &current, qint64 bytes,
+                                 int files, bool elevated);
     void applySizeMapResult(const QString &path,
                             forkmesh::DirectorySizeScanResult result,
                             bool hideIgnored, bool elevated);
@@ -4106,6 +4127,13 @@ private:
     // Top-bar relay switcher: a "favicon  domain ▾ count" dropdown button
     // (search/switch/add relays).
     QPushButton *m_relayMenuButton = nullptr;
+    // Red dot pinned to the relay favicon's corner while a freshly launched
+    // instance waits to be linked, plus the Approve button beside it that
+    // opens the join dialog. Hidden unless this account is an admin with at
+    // least one pending join request (adhoc #97).
+    QLabel *m_relayJoinDot = nullptr;
+    QPushButton *m_relayJoinApproveButton = nullptr;
+    int m_pendingRelayJoins = 0;
     // Spinning-radar + latency readout sitting on the window-chrome line just
     // left of the CPU/MEM/DISK sparklines: probes the active relay once a
     // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
