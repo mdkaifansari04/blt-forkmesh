@@ -3519,8 +3519,11 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
     const QString badge = logBadgeFor(clean);
     const QString accent = logAccentFor(clean);
     QString html;
-    // Same leading site icon the full Log view uses (adhoc #436), registered on
-    // this document too so the <img> resolves here.
+    // The "add this entry to the prompt" plus sits furthest left, ahead of the
+    // site icon, so the column of affordances lines up down the strip (adhoc
+    // #114). Same leading site icon the full Log view uses (adhoc #436),
+    // registered on this document too so the <img> resolves here.
+    html += logPromptIconTag(m_footerUpdateLog, clean);
     html += logFaviconTag(message, m_footerUpdateLog);
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")

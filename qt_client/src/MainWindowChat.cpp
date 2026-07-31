@@ -4531,6 +4531,10 @@ QWidget *MainWindow::buildLogSection()
     m_settingsLog->setReadOnly(true);
     m_settingsLog->setObjectName("networkLog");
     m_settingsLog->setOpenExternalLinks(true);
+    // Clicks on the leading "add to prompt" plus of an entry are handled in
+    // MainWindow::eventFilter before the browser's own anchor activation sees
+    // them (adhoc #114); http(s) links in the message body still open normally.
+    m_settingsLog->viewport()->installEventFilter(this);
     // No setMaximumBlockCount here: that trims blocks from the *top* of the
     // document, which would silently discard the older segments this view now
     // loads on demand when the user scrolls up (adhoc #15). m_networkLog
