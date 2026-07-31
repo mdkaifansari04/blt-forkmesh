@@ -1966,14 +1966,15 @@ provision_cloudflare_tunnel() {
       { warn "runuser is required to bootstrap the tunnel as $service_user; skipping."; return 1; }
     state_home="$SYSTEMD_STATE_DIR"
     conf="$state_home/.config/ForkMesh/ForkMesh.conf"
-    appdata="$state_home/.local/share/ForkMesh"
+    # Qt's AppDataLocation nests organization/application: .../ForkMesh/ForkMesh.
+    appdata="$state_home/.local/share/ForkMesh/ForkMesh"
     node_binary="$SYSTEMD_BIN"
     tools_dir="/usr/local/share/forkmesh/tools"
     cfd_dest="/usr/local/bin/cloudflared"
   else
     state_home="$HOME"
     conf="${XDG_CONFIG_HOME:-$HOME/.config}/ForkMesh/ForkMesh.conf"
-    appdata="${XDG_DATA_HOME:-$HOME/.local/share}/ForkMesh"
+    appdata="${XDG_DATA_HOME:-$HOME/.local/share}/ForkMesh/ForkMesh"
     node_binary="$BIN"
     tools_dir="$(dirname "$BIN_DIR")/share/forkmesh/tools"
     cfd_dest="$appdata/mirror-gateway/bin/cloudflared"
