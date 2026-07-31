@@ -60,19 +60,16 @@ void MainWindow::loadCachedAvatars()
     const QString dir = QStandardPaths::writableLocation(
                             QStandardPaths::AppDataLocation) +
                         "/avatars";
-    QDir d(dir);
-    if (!d.exists())
-        return;
-    QStringList paths;
-    const QFileInfoList files = d.entryInfoList({"*.png"}, QDir::Files);
-    for (const QFileInfo &fi : files)
-        paths.append(fi.absoluteFilePath());
-    if (paths.isEmpty())
+    if (!QDir(dir).exists())
         return;
     // Reading and PNG-decoding the whole cache inline blocked startup for ~1s
     // once a few dozen avatars accumulated (stall log: loadCachedAvatars ←
     // startSession). Decode to QImages on the thread pool; only the cheap
     // QImage→QPixmap hop runs back on the GUI thread.
+    // *Listing* the directory belongs on that worker too: entryInfoList stats
+    // every file, and on a cold cache dir with a few hundred avatars the
+    // readdir+stat sweep alone froze startup for ~860 ms (stall log:
+    // loadCachedAvatars → QDir::entryInfoList → getdents64) (adhoc #93).
     auto *watcher = new QFutureWatcher<QList<QPair<QString, QImage>>>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
         watcher->deleteLater();
@@ -92,13 +89,16 @@ void MainWindow::loadCachedAvatars()
         }
         refreshChatMembers();
     });
-    watcher->setFuture(QtConcurrent::run([paths] {
+    watcher->setFuture(QtConcurrent::run([dir] {
         const forkmesh::BackgroundScope activity(
             QStringLiteral("avatars"),
-            QStringLiteral("Decoding %1 avatar image(s)").arg(paths.size()));
+            QStringLiteral("Decoding cached avatar image(s)"));
         QList<QPair<QString, QImage>> decoded;
-        for (const QString &path : paths) {
-            QFile f(path);
+        // Names only (no QFileInfo stat per entry) — we open each file anyway.
+        const QStringList names =
+            QDir(dir).entryList({QStringLiteral("*.png")}, QDir::Files);
+        for (const QString &name : names) {
+            QFile f(QDir(dir).filePath(name));
             if (!f.open(QIODevice::ReadOnly))
                 continue;
             const QByteArray data = f.readAll();
@@ -676,15 +676,16 @@ bool MainWindow::testSpreadsheetResizeAfterMove()
     return draggedGrew && neighborUntouched && movedColumnUntouched;
 }
 
-bool MainWindow::testAgentColumnsMovable() const
+bool MainWindow::testAgentListChromeHidden() const
 {
-    return m_agentTable && m_agentTable->horizontalHeader()->sectionsMovable();
+    return m_agentTable && m_agentTable->horizontalHeader()->isHidden() &&
+           m_agentTable->frameShape() == QFrame::NoFrame;
 }
 
 // adhoc #35: read back the agents list's column labels plus how far the last
 // column reaches, so a test can prove the trimmed layout is what ships — the
-// title column absorbing the spare width, with Updated and Diff pushed against
-// the list's right edge rather than leaving a dead gap after them.
+// title column absorbing the spare width rather than leaving a dead gap after
+// it (adhoc #92 dropped the last column that competed with it).
 QString MainWindow::testAgentColumnLayout() const
 {
     if (!m_agentTable)
@@ -1046,8 +1047,7 @@ int MainWindow::testTopNavTrailingGap() const
     }
     int rightEdge = -1;
     for (QWidget *widget :
-         {static_cast<QWidget *>(m_navDrawButton),
-          static_cast<QWidget *>(m_navScreenshotButton),
+         {static_cast<QWidget *>(m_navScreenshotButton),
           static_cast<QWidget *>(m_navResizeButton),
           static_cast<QWidget *>(m_navRebuildButton)}) {
         if (!widget || !widget->isVisibleTo(const_cast<MainWindow *>(this)))
@@ -2439,6 +2439,19 @@ QString MainWindow::hostedCloneUrl(const QString &owner, const QString &name) co
     return url.toString();
 }
 
+bool MainWindow::serviceManagedCheckout(const QString &localPath) const
+{
+    const QString canonical =
+        QFileInfo(localPath.trimmed()).canonicalFilePath();
+    const QString serviceHome =
+        QFileInfo(QDir::homePath()).canonicalFilePath();
+    return !canonical.isEmpty() && !serviceHome.isEmpty() &&
+           (canonical == serviceHome ||
+            canonical.startsWith(serviceHome + QLatin1Char('/'))) &&
+           QFileInfo(QDir(canonical).filePath(QStringLiteral(".git")))
+               .exists();
+}
+
 void MainWindow::ensureFlagshipRepo()
 {
     if (!m_networkAccess)
@@ -2488,19 +2501,9 @@ void MainWindow::ensureFlagshipRepo()
                 // installed provider CLIs unable to claim any job. Preserve a
                 // private checkout beneath the service account's home, while
                 // still rejecting stale, external, or missing paths copied
-                // from another machine.
-                const QString localPath =
-                    QFileInfo(repo.localPath).canonicalFilePath();
-                const QString serviceHome =
-                    QFileInfo(QDir::homePath()).canonicalFilePath();
-                const bool serviceManagedCheckout =
-                    !localPath.isEmpty() && !serviceHome.isEmpty() &&
-                    (localPath == serviceHome ||
-                     localPath.startsWith(serviceHome + QLatin1Char('/'))) &&
-                    QFileInfo(QDir(localPath).filePath(
-                                  QStringLiteral(".git")))
-                        .exists();
-                if (!serviceManagedCheckout) {
+                // from another machine. (The sealing sync keeps a preserved
+                // checkout tracking the relay — see UpstreamCheckoutSync.)
+                if (!serviceManagedCheckout(repo.localPath)) {
                     repo.localPath.clear();
                     changed = true;
                 }
@@ -3474,10 +3477,31 @@ void MainWindow::styleFooterUpdateLog()
     // Log view regardless of theme (adhoc #19). Per-line severity/category colour
     // comes from the HTML badge that setFooterUpdateLine() renders; the base text
     // stays black so plain messages don't wash out on white.
+    // No border of its own (adhoc #92): the panel it sits in already draws the
+    // rounded green outline, and the extra grey hairline 2px inside it read as a
+    // doubled edge. The right padding is trimmed to a hair as well — for a styled
+    // QAbstractScrollArea the padding pushes the *scrollbar* in too, which parked
+    // the scroll handle a dozen pixels off the panel edge with dead white between
+    // them; now it sits right against the border.
+    // The scrollbar rides the same white canvas: with the app-wide (transparent)
+    // track it painted the dark theme's window colour in a column hard against
+    // the green border, which read as a second, darker edge inside it.
     m_footerUpdateLog->setStyleSheet(
         QStringLiteral("QTextEdit#footerUpdateLog{color:#1f2328;border:none;"
-                       "border-right:1px solid #d0d7de;background:#ffffff;"
-                       "font-family:monospace;font-size:11px;padding:3px 12px;}"));
+                       "background:#ffffff;font-family:monospace;font-size:11px;"
+                       "padding:3px 1px 3px 12px;}"
+                       "QTextEdit#footerUpdateLog QScrollBar:vertical{"
+                       "background:#ffffff;width:9px;margin:0;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::handle:vertical{"
+                       "background:#d0d7de;border-radius:4px;min-height:24px;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::handle:vertical:"
+                       "hover{background:#afb8c1;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::add-line:vertical,"
+                       "QTextEdit#footerUpdateLog QScrollBar::sub-line:vertical{"
+                       "height:0;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::add-page:vertical,"
+                       "QTextEdit#footerUpdateLog QScrollBar::sub-page:vertical{"
+                       "background:#ffffff;}"));
 }
 
 // Render the same colored category badge the Log view uses so the always-on
@@ -3517,27 +3541,38 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     if (clean.isEmpty())
         return;
     const QString html = footerLogLineHtml(clean);
-    // Only auto-scroll to the new line if the view was already at (or very near)
-    // the bottom — otherwise a user who scrolled up to search back through
-    // history would get yanked back down by every new event.
+    // The strip follows the newest line by default, so a glance at the footer is
+    // always a glance at what just happened (adhoc #92). Scrolling back through
+    // history is what the corner pause toggle is for: while it's held down the
+    // view stays exactly where it was parked.
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
-    const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
+    const bool follow = !m_footerLogScrollPaused;
     m_footerUpdateLog->append(html);
     // QTextEdit has no setMaximumBlockCount: trim the oldest lines by hand so a
     // long-running session can't grow the strip without bound.
+    // Drop them in ONE edit: removing a block at a time made QTextDocument
+    // re-lay-out the whole 300-line rich-text document per removed line, and the
+    // stall watchdog caught that quadratic loop freezing the GUI thread for
+    // ~520 ms when flushBackgroundOutcomes() flushed a burst of lines at once
+    // (stall log: setFooterUpdateLine → QTextCursor::deleteChar →
+    // QTextDocumentLayout::doLayout, adhoc #93). Selecting from the start of the
+    // document to the start of the first block we keep also swallows the
+    // separators the old per-block deleteChar() had to clean up.
     QTextDocument *doc = m_footerUpdateLog->document();
-    while (doc->blockCount() > kFooterLogSeedLines) {
-        QTextCursor trim(doc->firstBlock());
-        trim.select(QTextCursor::BlockUnderCursor);
+    if (const int excess = doc->blockCount() - kFooterLogSeedLines; excess > 0) {
+        QTextCursor trim(doc);
+        trim.beginEditBlock();
+        trim.movePosition(QTextCursor::Start);
+        trim.movePosition(QTextCursor::NextBlock, QTextCursor::KeepAnchor, excess);
         trim.removeSelectedText();
-        trim.deleteChar(); // the block separator left behind by the selection
+        trim.endEditBlock();
     }
     // Remember the full, untruncated line on the block just appended so the
     // no-wrap strip can still show it on hover and open the full Log at it on
     // click (adhoc #133), even though the visible text is clipped at the edge.
     if (QTextBlock last = m_footerUpdateLog->document()->lastBlock(); last.isValid())
         last.setUserData(new FooterLogLineData(clean));
-    if (wasAtBottom && bar)
+    if (follow && bar)
         bar->setValue(bar->maximum());
 }
 
@@ -3715,16 +3750,9 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
     runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
         setUpdateStatus("Rebuilding...");
-        // Cap parallelism by RAM, not just cores: cc1plus peaks well past
-        // 1 GB on the big Qt translation units, and an OOM kill during an
-        // in-place update can take out the RUNNING node — which nothing
-        // restarts (the fleet daemons run under nohup, no supervisor).
-        int jobs = QThread::idealThreadCount();
-        const qint64 totalRam = SystemStats::totalMemoryBytes();
-        if (totalRam > 0)
-            jobs = qBound(1, int(totalRam / (1536LL * 1024 * 1024)), jobs);
         runUpdateStepUser("cmake",
-                          {"--build", buildDir, "-j", QString::number(jobs)},
+                          {"--build", buildDir, "-j",
+                           QString::number(ramCappedBuildJobs())},
                           buildDir, [this, buildDir, appPath] {
             const QString built = builtExecutablePath(buildDir);
             installAndRelaunch(built, appPath);

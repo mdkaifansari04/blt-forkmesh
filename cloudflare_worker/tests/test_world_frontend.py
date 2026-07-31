@@ -545,9 +545,47 @@ def test_presence_pongs_do_not_trigger_full_avatar_or_capacity_rebuilds():
         APP.index("\n  setupBroadcastChannel()", APP.index("  receivePresence(message) {"))
     ]
     assert "let peersChanged = false" in receiver
-    assert "if (peersChanged) this.renderPeers()" in receiver
+    # Roster changes coalesce into one deferred renderPeers() pass instead of
+    # a full member-directory rebuild per inbound movement frame.
+    assert "if (peersChanged) this.schedulePeerRender()" in receiver
     assert 'message.type === "move"' in receiver
     assert 'message.type === "ping"' not in receiver
+
+
+def test_handshakes_are_offered_from_one_profile_and_answered_by_the_peer():
+    # The greeting is offered from the visitor's own profile panel, so it is
+    # always addressed at exactly the avatar the visitor selected.
+    assert "data-world-handshake-offer" in APP
+    assert "data-world-handshake-accept" in APP
+    assert "data-world-handshake-decline" in APP
+    assert "offerWorldHandshake(peerId)" in APP
+    assert "answerWorldHandshake(peerId, accepted)" in APP
+    assert '"handshake-offer",\n        "handshake-accept",' in APP
+    # Offers are live-socket state on both ends: they expire, and a peer who
+    # leaves takes their open greeting with them.
+    assert "WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000" in APP
+    assert "this.pendingHandshakes = new Map()" in APP
+    assert "this.sentHandshakeOffers = new Map()" in APP
+    assert "pruneWorldHandshakes()" in APP
+    receiver = APP[
+        APP.index("  receivePresence(message) {"):
+        APP.index(
+            "\n  setupBroadcastChannel()",
+            APP.index("  receivePresence(message) {"),
+        )
+    ]
+    assert "this.pendingHandshakes.delete(departed)" in receiver
+    assert 'message.kind === "handshake-offer"' in receiver
+    assert 'message.kind === "handshake-decline"' in receiver
+    # Only an accepted handshake animates for everyone, and it names both
+    # halves of the pair so each browser poses the same two avatars.
+    assert 'message.kind === "handshake" &&' in receiver
+    assert "this.playWorldHandshake(accepterId, offererId)" in receiver
+    assert "function playHandshake(peerId, partnerId)" in SCENE
+    assert "function startAvatarHandshake(avatar" in SCENE
+    assert "function poseHandshakingArm(arm, rest, angle)" in SCENE
+    assert "AVATAR_HANDSHAKE_DURATION_MS = 2200" in SCENE
+    assert "playHandshake," in SCENE
 
 
 def test_world_hud_omits_the_redundant_repository_node_and_player_counts():
@@ -1134,10 +1172,10 @@ def test_world_receives_private_notifications_and_global_announcements():
     assert 'this.postJSON("/api/notifications"' in APP
     assert "data-world-notification-count" in APP
     assert "data-world-notifications-open" in APP
-    assert "Show global and personal notifications" in APP
+    assert "Show global and personal pings" in APP
     assert 'this.openLandmark("events")' in APP
     assert 'id === "events"' in APP
-    assert 'label: "Notifications"' in APP
+    assert 'label: "Pings"' in APP
     assert "data-world-notifications-refresh" in APP
     assert "data-world-notifications-read" in APP
     assert "World announcement:" in APP
@@ -2775,16 +2813,18 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         "    return Date.now() >= this.activityNoticesEnabledAt;\n"
         "  }"
     ) in APP
-    # Native chat already owns both message and system rows. The World accepts
-    # those signals for avatar/unread state without drawing a second overlay.
+    # Native chat owns the transcript rows; the floating bubble stack renders
+    # each signal at most once, only after the join grace, and system activity
+    # re-entering from the transcript never bounces back into it.
     handler = APP[
         APP.index("  handleWorldChatMessage = (event) => {"):
         APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
     ]
-    assert (
-        'if (data.type === "forkmesh:world-activity") return;' in handler
+    assert "transcript: false," in handler
+    assert handler.count("if (this.activityNoticesSettled()) {") == 2
+    assert handler.index("if (data.history === true) return;") < handler.index(
+        '{ kind: "chat", sender },'
     )
-    assert "this.activityNotice(" not in handler
     # The first notification/event reads still seed the seen sets, so nothing
     # already waiting at load is announced on a later poll either.
     announce = APP[
@@ -2795,9 +2835,7 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         "globalEvents.forEach((item) => this.seenWorldEvents.add(item.id));"
         in announce
     )
-    assert (
-        "if (announcements.length && this.activityNoticesSettled()) {" in announce
-    )
+    assert "if (!this.activityNoticesSettled()) return;" in announce
     # A mirror doorbell during the grace still arms the scene effect and the
     # catalog refresh; only its narration is held back.
     push = APP[

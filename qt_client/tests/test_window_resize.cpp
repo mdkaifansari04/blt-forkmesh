@@ -718,6 +718,44 @@ int main(int argc, char *argv[])
     check(cloudflareToken &&
               cloudflareToken->echoMode() == QLineEdit::Password,
           QStringLiteral("Cloudflare token control masks the session-only secret"));
+
+    // adhoc #108: every control-node area is a tab at the top of the page, and
+    // the API token tab states what the deploy path requires before any call is
+    // made. The token input masks its value like every other credential field.
+    QTabWidget *controlTabs =
+        window.findChild<QTabWidget *>(QStringLiteral("controlNodeTabs"));
+    QStringList controlTabNames;
+    for (int index = 0; controlTabs && index < controlTabs->count(); ++index)
+        controlTabNames << controlTabs->tabText(index);
+    check(controlTabs && controlTabs->count() >= 8 &&
+              controlTabNames.contains(QStringLiteral("Mirror services")) &&
+              controlTabNames.contains(QStringLiteral("API token")) &&
+              controlTabNames.contains(QStringLiteral("Site deployment")),
+          QStringLiteral("control node groups each section under a top tab"));
+    QLineEdit *controlTokenValue =
+        window.findChild<QLineEdit *>(QStringLiteral("controlTokenValue"));
+    QTableWidget *controlTokenTable = window.findChild<QTableWidget *>(
+        QStringLiteral("controlTokenPermissionsTable"));
+    check(controlTokenValue &&
+              controlTokenValue->echoMode() == QLineEdit::Password &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenTestButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenGenerateButton")) != nullptr,
+          QStringLiteral("API token tab exposes a masked token, a check and a "
+                         "rotate button"));
+    QStringList requiredPermissionLabels;
+    for (int row = 0; controlTokenTable && row < controlTokenTable->rowCount();
+         ++row) {
+        const QTableWidgetItem *label = controlTokenTable->item(row, 0);
+        const QTableWidgetItem *need = controlTokenTable->item(row, 1);
+        if (label && need && need->text() == QStringLiteral("Required"))
+            requiredPermissionLabels << label->text();
+    }
+    check(requiredPermissionLabels.contains(QStringLiteral("Workers Scripts: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("D1: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("DNS: Edit")),
+          QStringLiteral("API token tab lists the required permissions up front"));
     window.testShowLogSection();
     QApplication::processEvents();
     check(window.findChild<QPushButton *>(
@@ -1211,6 +1249,18 @@ int main(int argc, char *argv[])
               QStringLiteral("status bar shows the open branch's commit "
                              "(date, message, author): ") +
                   commitText);
+
+        // adhoc #65: the strip only fits one elided line, so hovering it pops
+        // up the rest — full hash, author identity and the diffstat.
+        const QString tip = commitInfo ? commitInfo->toolTip() : QString();
+        check(tip.startsWith(QStringLiteral("<table")) &&
+                  tip.contains(QStringLiteral("Commit: ")) &&
+                  tip.contains(QStringLiteral("a@b.c")) &&
+                  tip.contains(QStringLiteral("Changes: ")) &&
+                  tip.contains(QStringLiteral("init")),
+              QStringLiteral("hovering the status bar commit pops up its full "
+                             "details (hash, author, changes): ") +
+                  tip);
     }
 
     // Repository detail is intentionally built on first navigation. Verify the
@@ -1224,9 +1274,11 @@ int main(int argc, char *argv[])
         QStringList labels;
         for (QAction *action : fixButton->menu()->actions())
             labels << action->text();
+        // "CC" is Claude Code, shortened with the rest of the provider labels
+        // (adhoc #38).
         if (labels == QStringList({QStringLiteral("Claude API"),
                                    QStringLiteral("OpenAI API"),
-                                   QStringLiteral("Claude Code")})) {
+                                   QStringLiteral("CC")})) {
             prFixMenuFound = true;
             break;
         }
@@ -1234,25 +1286,26 @@ int main(int argc, char *argv[])
     check(prFixMenuFound,
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code after repository navigation"));
-    check(window.testAgentColumnsMovable(),
-          QStringLiteral("agents list column headers are draggable/reorderable "
-                         "after repository navigation"));
-    // adhoc #35: the list is down to id / title / Updated / Diff, and the title
-    // column is the one that flexes — so the columns always span the full list
-    // width with Updated and Diff sitting against its right edge, leaving the
-    // title everything in between rather than a fixed 320px slice.
+    check(window.testAgentListChromeHidden(),
+          QStringLiteral("agents list ships with no column header and no frame "
+                         "border (adhoc #92)"));
+    // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
+    // with its conflict alert, the churn bar and the age that used to have its
+    // own "Updated" column) and the title, which is the column that flexes — so
+    // the two always span the full list width with the title running to the
+    // list's right edge rather than a fixed 320px slice.
     const QString agentColumns = window.testAgentColumnLayout();
     const QStringList agentColumnParts =
         agentColumns.split(QLatin1Char('|'));
     const QStringList agentSpan =
         agentColumnParts.size() == 2 ? agentColumnParts.at(1).split(QLatin1Char('/'))
                                      : QStringList();
-    check(agentColumnParts.value(0) == QStringLiteral("#,Issue,Updated,Diff") &&
+    check(agentColumnParts.value(0) == QStringLiteral("#,Issue") &&
               agentSpan.size() == 2 &&
               agentSpan.at(0).toInt() == agentSpan.at(1).toInt() &&
               agentSpan.at(1).toInt() > 0,
-          QStringLiteral("agents list is #/Issue/Updated/Diff with the title column "
-                         "absorbing the spare width (adhoc #35, layout = %1)")
+          QStringLiteral("agents list is #/Issue with the title column absorbing "
+                         "the spare width (adhoc #35/#84/#92, layout = %1)")
               .arg(agentColumns));
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
@@ -1782,11 +1835,12 @@ int main(int argc, char *argv[])
             for (int i = 0; i < quickProvider->count(); ++i)
                 providerLabels << quickProvider->itemText(i);
         }
-        check(providerLabels == QStringList({QStringLiteral("Manual (create issue)"),
+        // Short labels (adhoc #38) so all four composer dropdowns fit one row.
+        check(providerLabels == QStringList({QStringLiteral("Manual"),
                                              QStringLiteral("Codex"),
-                                             QStringLiteral("OpenAI API"),
+                                             QStringLiteral("OpenAI"),
                                              QStringLiteral("Claude API"),
-                                             QStringLiteral("Claude Code")}),
+                                             QStringLiteral("CC")}),
               QStringLiteral("quick-add agent dropdown offers Manual plus the agent providers"));
         check(quickProvider && quickProvider->maxVisibleItems() >= quickProvider->count() &&
                   quickProvider->view() &&
@@ -1795,6 +1849,49 @@ int main(int argc, char *argv[])
               QStringLiteral("quick-add agent dropdown is configured as a full non-scrolling list"));
         check(seeded.testQuickAddModelVisible() && !seeded.testQuickAddModelEditable(),
               QStringLiteral("Claude Code prompt picker shows the Claude model dropdown"));
+
+        // adhoc #38: the composer's speed (reasoning-effort) picker sits next to
+        // the mode selector, offers the CLI's ladder with "Ultra" for xhigh, and
+        // writes the same setting the "/" popup's effort dots do — so a pick here
+        // is what the next run is actually launched with.
+        QComboBox *quickSpeed =
+            seeded.findChild<QComboBox *>(QStringLiteral("quickAddSpeedSelector"));
+        QStringList speedLabels;
+        if (quickSpeed) {
+            for (int i = 0; i < quickSpeed->count(); ++i)
+                speedLabels << quickSpeed->itemText(i);
+        }
+        check(quickSpeed && quickSpeed->isVisible() &&
+                  speedLabels == QStringList({QStringLiteral("Low"),
+                                              QStringLiteral("Medium"),
+                                              QStringLiteral("High"),
+                                              QStringLiteral("Ultra"),
+                                              QStringLiteral("Max")}),
+              QString("composer speed picker offers the effort ladder (%1)")
+                  .arg(speedLabels.join(QStringLiteral(", "))));
+        if (quickSpeed) {
+            const int ultra = quickSpeed->findData(QStringLiteral("xhigh"));
+            quickSpeed->setCurrentIndex(ultra);
+            QApplication::processEvents();
+            check(ultra >= 0 &&
+                      QSettings()
+                              .value(QStringLiteral("agents/claudeEffort"))
+                              .toString() == QStringLiteral("xhigh"),
+                  QStringLiteral("picking a speed persists the effort the next run "
+                                 "is launched with"));
+        }
+        // The genie button is the top of the send column, above "add" and "new"
+        // (adhoc #42/#38), and the strip of session dots that used to sit above
+        // the prompt is gone (adhoc #38) — its state lives in the top bar now.
+        auto *genieButton =
+            seeded.findChild<QPushButton *>(QStringLiteral("quickAddGenieButton"));
+        check(genieButton && genieButton->isVisible(),
+              QStringLiteral("the composer offers the genie button"));
+        check(seeded.findChild<QWidget *>(QStringLiteral("agentStatusRow")) == nullptr &&
+                  seeded.findChild<QPushButton *>(
+                      QStringLiteral("agentStatusMore")) == nullptr,
+              QStringLiteral("the agent dot strip and its More button are gone from "
+                             "above the composer"));
 
         seeded.testSetQuickAddAgentProvider(QStringLiteral("codex"));
         QApplication::processEvents();
@@ -2317,6 +2414,53 @@ int main(int argc, char *argv[])
         if (logView)
             check(logView->toPlainText().contains(QStringLiteral("Pushed 2 commits")),
                   QStringLiteral("clearing the filter restores every log line"));
+
+        // adhoc #64: each chip carries how many buffered lines it covers, and
+        // All counts the whole buffer.
+        {
+            const QStringList labels = window.testLogFilterChipLabels();
+            check(labels.contains(QStringLiteral("All 2")) &&
+                      labels.contains(QStringLiteral("STALL 1")) &&
+                      labels.contains(QStringLiteral("GIT 1")),
+                  QStringLiteral("log filter chips show the event count for each "
+                                 "category"));
+        }
+        window.testResetNetworkLog();
+        check(window.testLogFilterChipLabels().contains(QStringLiteral("STALL")),
+              QStringLiteral("an empty category's chip shows no count at all"));
+    }
+
+    // adhoc #73: clicking the footer stall badge drafts a "fix these stalls"
+    // prompt (with the log locations) into the quick-add composer, and every
+    // stall also lands in the main app log rather than only the dialog.
+    {
+        window.testResetNetworkLog();
+        window.testRecordUiStall(2100, QStringLiteral("git ls-tree"),
+                                 QStringLiteral("#0 ForkMesh::renderAgentDiff()"));
+        const QStringList logged = window.testNetworkLog();
+        check(!logged.isEmpty() &&
+                  logged.last().contains(QStringLiteral("UI stalled ~2100 ms")) &&
+                  logged.last().contains(QStringLiteral("git ls-tree")),
+              QStringLiteral("a recorded stall is written to the main app log"));
+
+        if (window.testDraftStallPromptInComposer()) {
+            const QString drafted = window.testQuickAddText();
+            check(drafted.contains(QStringLiteral("Please fix these UI stalls")),
+                  QStringLiteral("the stall badge fills the composer with a fix-it prompt"));
+            check(drafted.contains(QStringLiteral("App log:")) &&
+                      drafted.contains(QStringLiteral("network_log.txt")),
+                  QStringLiteral("the drafted prompt names where the log file lives"));
+            check(drafted.contains(QStringLiteral("renderAgentDiff")),
+                  QStringLiteral("the drafted prompt carries the recorded backtrace"));
+            // adhoc #90: the sampled frames only name the call that happened to
+            // be on the stack, so the prompt also asks for a sweep of the logs.
+            check(drafted.contains(QStringLiteral("never got backgrounded")),
+                  QStringLiteral("the drafted prompt asks for un-backgrounded work too"));
+            check(drafted.size() <= 16000,
+                  QStringLiteral("the drafted prompt fits the composer's length cap"));
+            check(drafted == window.testStallFixPrompt(),
+                  QStringLiteral("the composer holds exactly the stall fix-it prompt"));
+        }
         window.testResetNetworkLog();
     }
 

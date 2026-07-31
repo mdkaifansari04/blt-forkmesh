@@ -90,6 +90,8 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
                     m_backend->sendReaction(m_currentConversation, messageId, emoji);
             });
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
+    connect(row, &MessageRow::sendToComposerRequested, this,
+            &MainWindow::sendMessageToComposer);
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
     connect(row, &MessageRow::moderateDeleteRequested, this,
             &MainWindow::confirmAdminDeleteMessage);
@@ -248,6 +250,23 @@ void MainWindow::onMessage(const ChatMessage &message)
         refreshDmList();
     }
     updateChatButton();
+
+    // #welcome traffic is the new-user roll-call (maybeAnnounceWelcome), so a
+    // fresh line there raises a "New user joined" ping whose link brings the
+    // reader straight to the channel (adhoc #88).
+    if (!ownMessage && conversation == kWelcomeChannel &&
+        message.timestampMs >
+            QDateTime::currentMSecsSinceEpoch() - kWelcomePingFreshMs) {
+        NotificationLink link;
+        link.kind = QStringLiteral("chat");
+        link.ref = kWelcomeChannel;
+        const QString who = message.senderName.trimmed();
+        addNotification(QStringLiteral("New user joined"),
+                        who.isEmpty()
+                            ? QStringLiteral("Someone new said hello in #welcome")
+                            : who + QStringLiteral(" said hello in #welcome"),
+                        false, link);
+    }
 
     if (!ownMessage) {
         const QString where = isDirectConversation(conversation)
@@ -1827,6 +1846,15 @@ void MainWindow::insertEmojiIntoComposer(const QString &emoji)
         return;
     m_messageInput->insert(emoji);
     m_messageInput->setFocus();
+}
+
+void MainWindow::sendMessageToComposer(const QString &text)
+{
+    if (!m_messageInput || text.isEmpty())
+        return;
+    m_messageInput->setText(text);
+    m_messageInput->setFocus();
+    m_messageInput->setCursorPosition(text.length());
 }
 
 void MainWindow::showEmojiPicker(QWidget *anchor)

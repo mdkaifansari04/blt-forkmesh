@@ -1,4 +1,5 @@
 #include "ForkMeshVersion.h"
+#include "AgentPromptImages.h"
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"
@@ -469,6 +470,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // offline/online the moment the link changes, instead of lagging the
     // minute cadence (adhoc #41).
     initRelayReachabilityWatch();
+    // Tasks rail badge: the count is only produced by the Tasks page, which is
+    // built lazily, so before this a restart left the rail blank until someone
+    // opened it (adhoc #79). Paint the persisted count right away and re-read
+    // the board once the account session has had time to come up.
+    restoreOrganizationTaskBadge();
+    QTimer::singleShot(25000, this, &MainWindow::refreshOrganizationTaskBadge);
     // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
     // installed client shows the project repo without manual setup.
     QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
@@ -537,7 +544,78 @@ void MainWindow::runDeferredStartup()
     if (QWindow *handle = windowHandle())
         handle->removeEventFilter(this);
 
-    // Restore the last open repository first (matches the old scheduling order).
+    bool headlessBootstrapQueued = false;
+    auto runHeadlessBootstrap = [this, &headlessBootstrapQueued] {
+        if (!m_headless)
+            return;
+        headlessBootstrapQueued = true;
+        logSystem(QStringLiteral(
+            "Startup: checking forkmesh/forkmesh mirror bootstrap."));
+        ensureFlagshipRepo();
+        QTimer::singleShot(10000, this, [this] {
+            logSystem(QStringLiteral(
+                "Startup: rechecking forkmesh/forkmesh mirror bootstrap."));
+            ensureFlagshipRepo();
+        });
+    };
+
+    // Auto-enter the app whenever this machine has a node name — which now
+    // includes a first run, since one was generated for it above if needed.
+    // No account is required: the node drops straight into the app shell.
+    // Silent auth is best-effort — it restores an existing active account's
+    // hosting/payout state when this key owns one, but its absence no longer
+    // keeps the node on the welcome screen. The empty-name branch below is now
+    // just a safety net (e.g. name-generation somehow failed).
+    auto startNetworking = [&] {
+        if (m_pendingSilentAuth) {
+            m_pendingSilentAuth = false;
+            const QString name = m_nameEdit
+                                     ? m_nameEdit->text().trimmed().toLower()
+                                     : QString();
+            if (!name.isEmpty() && isValidNodeName(name)) {
+                authenticateSilently(name);
+                if (m_stack)
+                    m_stack->setCurrentIndex(1); // app shell
+                startSession();
+                runHeadlessBootstrap();
+            } else if (m_stack) {
+                m_stack->setCurrentIndex(0); // first run / no name: show setup
+            }
+        }
+
+        // Headless/offscreen launches should never depend on the setup-page
+        // widgets or a GUI label existing. If the normal pending-silent-auth
+        // path did not run for any reason, use the persisted node name directly
+        // and still start the backend + flagship mirror bootstrap.
+        if (m_headless && !headlessBootstrapQueued) {
+            const QString name =
+                accountNameFromInput(savedProfileName(), QString());
+            if (!name.isEmpty() && isValidNodeName(name)) {
+                if (!m_backend) {
+                    if (m_nameEdit)
+                        m_nameEdit->setText(name);
+                    authenticateSilently(name);
+                    if (m_stack)
+                        m_stack->setCurrentIndex(1);
+                    startSession();
+                }
+                runHeadlessBootstrap();
+            }
+        }
+    };
+
+    // An unattended node must publish/host no matter what the restore below
+    // does: openRepoDetail() pumps the event loop while it waits on git and can
+    // park there indefinitely (a wedged fetch, an agent modal), and mirror6 sat
+    // exactly like that for a day — content fully repaired yet its catalog
+    // lease dead because startSession() was sequenced after the restore. A
+    // desktop keeps the restore-first order so silent auth never competes with
+    // the user's first navigation.
+    if (m_headless)
+        startNetworking();
+
+    // Restore the last open repository (for a desktop this comes first,
+    // matching the old scheduling order).
     if (m_pendingRestoreRepoIndex >= 0 &&
         m_pendingRestoreRepoIndex < m_repositories.size()) {
         const int index = m_pendingRestoreRepoIndex;
@@ -545,6 +623,27 @@ void MainWindow::runDeferredStartup()
         m_selectedNode = m_repositories.at(index).owner;
         refreshRepositoryList();
         openRepoDetail(index);
+        // Land back on whichever tab was actually open last (adhoc #101) rather
+        // than Settings -> General's "open repositories on tab" default (Agents
+        // unless changed) — a relaunch should stay on whatever page it's on, not
+        // detour through Agents every time.
+        const int savedTab =
+            QSettings().value(kLastRepoDetailTabSetting, -1).toInt();
+        if (savedTab >= 0) {
+            // applyNavDetailTab()'s Agents (tab 3) branch sets the stack index
+            // directly rather than driving it through a button click, so — unlike
+            // every other tab — it never lazily builds the real page itself. That
+            // is normally masked by Agents also being the default landing tab
+            // (already built above by openRepoDetail()); build it explicitly here
+            // so landing on a saved tab that differs from the configured default
+            // cannot leave the Agents tab showing its unbuilt placeholder.
+            ensureRepoDetailTabBuilt(savedTab);
+            NavPlace target;
+            target.section = 0;
+            target.repoIndex = index;
+            target.detailTab = savedTab;
+            applyNavDetailTab(target);
+        }
         logStartup(QStringLiteral("last repository detail loaded"));
         // Issue metadata is worker-loaded; applyLoadedIssues resumes the looper
         // only after its backlog has arrived.
@@ -563,6 +662,12 @@ void MainWindow::runDeferredStartup()
     }
     m_pendingRestoreRepoIndex = -1;
 
+    // Rescue screenshot attachments still sitting in the old temp directory so
+    // the transcripts that reference them keep their thumbnails past the next
+    // reboot (adhoc #66). Deferred: it touches the disk and nothing on screen
+    // needs it before the first frame.
+    AgentPromptImages::migrateLegacy();
+
     // Resume the agent sessions initAgents() re-queued after the restart, only
     // now that the first frame is up and the last repository is restored.
     // Draining inside the constructor started each resumed Claude transcript
@@ -576,61 +681,10 @@ void MainWindow::runDeferredStartup()
         logStartup(QStringLiteral("agent sessions resumed (deferred)"));
     }
 
-    bool headlessBootstrapQueued = false;
-    auto runHeadlessBootstrap = [this, &headlessBootstrapQueued] {
-        if (!m_headless)
-            return;
-        headlessBootstrapQueued = true;
-        logSystem(QStringLiteral(
-            "Startup: checking forkmesh/forkmesh mirror bootstrap."));
-        ensureFlagshipRepo();
-        QTimer::singleShot(10000, this, [this] {
-            logSystem(QStringLiteral(
-                "Startup: rechecking forkmesh/forkmesh mirror bootstrap."));
-            ensureFlagshipRepo();
-        });
-    };
-
-    // Then auto-enter the app whenever this machine has a node name — which now
-    // includes a first run, since one was generated for it above if needed.
-    // No account is required: the node drops straight into the app shell.
-    // Silent auth is best-effort — it restores an existing active account's
-    // hosting/payout state when this key owns one, but its absence no longer
-    // keeps the node on the welcome screen. The empty-name branch below is now
-    // just a safety net (e.g. name-generation somehow failed).
-    if (m_pendingSilentAuth) {
-        m_pendingSilentAuth = false;
-        const QString name = m_nameEdit ? m_nameEdit->text().trimmed().toLower()
-                                        : QString();
-        if (!name.isEmpty() && isValidNodeName(name)) {
-            authenticateSilently(name);
-            if (m_stack)
-                m_stack->setCurrentIndex(1); // app shell
-            startSession();
-            runHeadlessBootstrap();
-        } else if (m_stack) {
-            m_stack->setCurrentIndex(0); // first run / no saved name: show setup
-        }
-    }
-
-    // Headless/offscreen launches should never depend on the setup-page widgets
-    // or a GUI label existing. If the normal pending-silent-auth path did not run
-    // for any reason, use the persisted node name directly and still start the
-    // backend + flagship mirror bootstrap.
-    if (m_headless && !headlessBootstrapQueued) {
-        const QString name = accountNameFromInput(savedProfileName(), QString());
-        if (!name.isEmpty() && isValidNodeName(name)) {
-            if (!m_backend) {
-                if (m_nameEdit)
-                    m_nameEdit->setText(name);
-                authenticateSilently(name);
-                if (m_stack)
-                    m_stack->setCurrentIndex(1);
-                startSession();
-            }
-            runHeadlessBootstrap();
-        }
-    }
+    // Desktop: connect only now, after the restore, so silent auth never
+    // collides with the user's first repository/tab navigation. (On headless
+    // this already ran above and is a no-op here.)
+    startNetworking();
 
     // adhoc #73: adhoc #20 dropped every launch-time trigger for the top-bar
     // usage charts in favour of hover-only refreshes, so a restart kept showing
@@ -645,6 +699,16 @@ void MainWindow::runDeferredStartup()
     // -> Automatic backups). Armed for every launch, headless included — an
     // unattended mirror is exactly where a lost identity key hurts most.
     startAutoBackups();
+
+    // A provisioned direct HTTPS mirror (hostname configured + owner-only
+    // connector token on disk) used to stay dark after every restart until
+    // someone clicked "Start mirror services" — a headless VPS has nobody to
+    // click it, so its Cloudflare Tunnel never came back. Auto-start the
+    // gateway/Tunnel/registration chain, deferred a further beat so spawning
+    // the gateway and cloudflared doesn't compete with the startup sync burst
+    // (autoSyncMirrors/performRelaySync fire in this same window).
+    QTimer::singleShot(10000, this,
+                       &MainWindow::maybeAutoStartDirectMirrorServices);
 }
 
 void MainWindow::applyTheme()

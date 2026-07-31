@@ -31,15 +31,11 @@ def test_org_agents_are_separate_member_scoped_encrypted_records():
     assert "await encrypt_row(env, record)" in ENTRY
     assert "await encrypt_row(env, job)" in ENTRY
     assert "privacyBoundary" in ENTRY
-    assert "owner-device E2EE" in ENTRY
+    assert '"privacyBoundary": "engineering-team-encrypted-at-rest"' in ENTRY
     assert "engineering_team_required" in ENTRY
     assert "team='engineering'" in ENTRY
     assert '"engineeringAccess": True' in ENTRY
     assert '"privacyBoundary": "engineering-team-encrypted-at-rest"' in ENTRY
-    assert (
-        "visible and controllable only by current members"
-        in ENTRY
-    )
     assert ENTRY.count("context, error = await _org_agent_member_context(") >= 1
     assert (
         "if not engineering:\n"

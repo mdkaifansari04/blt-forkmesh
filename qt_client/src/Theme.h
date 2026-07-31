@@ -18,6 +18,11 @@ inline const char *kTextTertiary = "#8b949e";
 // borrowing success-green or the amber used for queued/waiting.
 inline const char *kRunning = "#58a6ff";
 
+// "Genie" (adhoc #38): a long-running run launched with the ForkMesh MCP
+// connector attached. Its own violet so a genie run's sparkle glyph never reads
+// as the orange "ordinary agent working" or the purple "merged" state.
+inline const char *kGenie = "#bc8cff";
+
 // Sender name colors, hashed per user (GitHub label-ish accents).
 inline const char *kSenderPalette[] = {"#f85149", "#e3b341", "#3fb950",
                                        "#58a6ff", "#bc8cff", "#db61a2",
@@ -37,6 +42,10 @@ inline const char *iconColorForButton(const QString &objectName, bool dark)
         return dark ? "#c084fc" : "#7c3aed";
     if (objectName == QStringLiteral("dangerButton"))
         return dark ? "#f85149" : "#cf222e";
+    // Outlined-green actions (the agent header's Branch/Worktree, adhoc #84):
+    // the danger button's twin, in the go colour.
+    if (objectName == QStringLiteral("successButton"))
+        return dark ? "#3fb950" : "#1a7f37";
     if (objectName == QStringLiteral("repoTab") ||
         objectName == QStringLiteral("socialIconButton"))
         return dark ? "#8b949e" : "#656d76";
@@ -103,20 +112,20 @@ QComboBox QAbstractItemView {
     selection-background-color: #1f6feb; selection-color: #0d1117; color: #e6edf3;
 }
 QComboBox QAbstractItemView::item:selected { color: #0d1117; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(88, 166, 255, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
@@ -510,6 +519,14 @@ QPushButton#dangerButton {
 }
 QPushButton#dangerButton:hover { background-color: #da3633; color: #ffffff; }
 
+/* --- Success button: the danger button's outlined twin, in green (adhoc #84,
+   the agent detail header's Branch / Worktree actions) --- */
+QPushButton#successButton {
+    background: transparent; border: 1px solid #2ea043; border-radius: 6px;
+    color: #3fb950; font-weight: 600;
+}
+QPushButton#successButton:hover { background-color: #2ea043; color: #ffffff; }
+
 /* --- Sidebar --- */
 #sidebar { background-color: #0d1117; border-right: 1px solid #30363d; }
 #sidebar QLabel { background: transparent; }
@@ -563,7 +580,6 @@ QPushButton#memberDeleteButton:hover {
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 6px;
 }
-#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -935,7 +951,6 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 8px;
 }
-#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
@@ -1391,20 +1406,20 @@ QComboBox QAbstractItemView {
     selection-background-color: #0969da; selection-color: #1f2328; color: #1f2328;
 }
 QComboBox QAbstractItemView::item:selected { color: #1f2328; }
-QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector {
+QComboBox#quickAddAgentSelector, QComboBox#quickAddModelSelector, QComboBox#quickAddModeSelector, QComboBox#quickAddSpeedSelector {
     border: none;
     background-color: transparent;
     padding: 0px 4px 0px 8px;
 }
-QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus {
+QComboBox#quickAddAgentSelector:focus, QComboBox#quickAddModelSelector:focus, QComboBox#quickAddModeSelector:focus, QComboBox#quickAddSpeedSelector:focus {
     border: none;
     background-color: rgba(9, 105, 218, 0.08);
 }
-QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down {
+QComboBox#quickAddAgentSelector::drop-down, QComboBox#quickAddModelSelector::drop-down, QComboBox#quickAddModeSelector::drop-down, QComboBox#quickAddSpeedSelector::drop-down {
     border: none;
     width: 20px;
 }
-QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow {
+QComboBox#quickAddAgentSelector::down-arrow, QComboBox#quickAddModelSelector::down-arrow, QComboBox#quickAddModeSelector::down-arrow, QComboBox#quickAddSpeedSelector::down-arrow {
     image: url(:/icons/octicons/chevron-down.svg);
     width: 16px;
     height: 16px;
@@ -1780,6 +1795,14 @@ QPushButton#dangerButton {
 }
 QPushButton#dangerButton:hover { background-color: #cf222e; color: #ffffff; }
 
+/* --- Success button: the danger button's outlined twin, in green (adhoc #84,
+   the agent detail header's Branch / Worktree actions) --- */
+QPushButton#successButton {
+    background: transparent; border: 1px solid #1a7f37; border-radius: 6px;
+    color: #1a7f37; font-weight: 600;
+}
+QPushButton#successButton:hover { background-color: #1a7f37; color: #ffffff; }
+
 /* --- Sidebar --- */
 #sidebar { background-color: #ffffff; border-right: 1px solid #d0d7de; }
 #sidebar QLabel { background: transparent; }
@@ -1833,7 +1856,6 @@ QPushButton#memberDeleteButton:hover {
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 6px;
 }
-#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -2197,7 +2219,6 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 8px;
 }
-#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;

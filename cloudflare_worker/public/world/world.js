@@ -123,6 +123,17 @@ const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
 const SAVED_VIEWS_MAX = 5;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
+// A tab that dies abruptly (GPU reset, renderer out-of-memory kill, browser
+// tab discard) never fires pagehide, so a per-tab marker that survives into
+// the next load proves the previous world session crashed and this load is
+// the automatic reload. The marker carries a rolling heartbeat of
+// renderer/socket diagnostics so the crash report describes the moments
+// before the crash, and a per-tab crash counter reboots repeat offenders
+// into the low-memory compact renderer to break GPU crash loops.
+const CRASH_GUARD_KEY = "forkmesh.world.crash-guard.v1";
+const CRASH_COUNT_KEY = "forkmesh.world.crash-count.v1";
+const CRASH_COUNT_MAX = 9;
+const CRASH_GUARD_SNAPSHOT_STALE_MS = 4000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
 // timer on the billboard counts the same window down.
@@ -142,6 +153,10 @@ const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
 const WORLD_LAYOUT_ECHO_KEY = "forkmesh.world.layout.echo.v1";
 const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
 const ADMIN_ERROR_POLL_MS = 15_000;
+// Element ids an administrator switched off in the Elements tab. Kept on the
+// device (never in account preferences) so a perf experiment on one machine
+// cannot dim the world on every other signed-in device.
+const DISABLED_ELEMENTS_KEY = "forkmesh.world.disabledElements.v1";
 const WORLD_LAYOUT_ECHO_TTL_MS = 10 * 60 * 1000;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
@@ -210,6 +225,10 @@ const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
 // One broadcast wave per pose; the local arm still replays on every click.
 const WORLD_WAVE_COOLDOWN_MS = 2000;
+// A handshake offer is a greeting, not a standing request: it stops being
+// offerable (and stops being answerable) a couple of minutes later, so nobody
+// finds a stale hand extended from someone who has long since walked off.
+const WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000;
 // The status Worker records one sample per minute. Poll on that same cadence;
 // the board's lightweight stand texture counts down every second in between.
 const WORLD_STATUS_POLL_MS = 60 * 1000;
@@ -291,6 +310,152 @@ function diagnosticStateLevel(state) {
   return ["connecting", "handshaking", "reconnecting"].includes(state)
     ? "caution"
     : "high";
+}
+
+function compactCountLabel(value) {
+  const count = Math.max(0, Number(value) || 0);
+  if (count >= 1_000_000) return `${(count / 1_000_000).toFixed(1)}m`;
+  if (count >= 1_000) return `${(count / 1_000).toFixed(1)}k`;
+  return `${Math.round(count)}`;
+}
+
+// Chromium-only heap reading; NaN elsewhere and the caller omits the figure.
+function heapUsedMB() {
+  const bytes = Number(performance?.memory?.usedJSHeapSize);
+  return Number.isFinite(bytes) && bytes > 0 ? bytes / (1024 * 1024) : NaN;
+}
+
+// Turn one diagnostics sample into concrete, ranked advice. Every suggestion
+// names the reading that triggered it and, where the Elements tab can prove
+// the theory, the heaviest currently-enabled candidates to switch off first.
+function worldDebugSuggestions(snapshot, { isAdmin = false, elements = [] } = {}) {
+  const suggestions = [];
+  const renderer = snapshot?.renderer;
+  const connection = snapshot?.connection || {};
+  const traffic = snapshot?.traffic || {};
+  const queues = snapshot?.queues || {};
+  if (!renderer) {
+    return [
+      {
+        level: "high",
+        text: "The WebGL renderer is unavailable. Reload the page; if it persists, this device or browser is refusing 3D contexts.",
+      },
+    ];
+  }
+  const heaviest = (metric) =>
+    elements
+      .filter((element) => element.enabled && element[metric] > 0)
+      .sort((a, b) => b[metric] - a[metric])
+      .slice(0, 3)
+      .map(
+        (element) =>
+          `${element.label} (${compactCountLabel(element[metric])})`,
+      )
+      .join(", ");
+  const elementsHint = (metric) => {
+    if (!isAdmin) return "";
+    const top = heaviest(metric);
+    return top
+      ? ` Heaviest enabled elements: ${top} — switch them off in the Elements tab to confirm.`
+      : "";
+  };
+  if (renderer.paused) {
+    suggestions.push({
+      level: "caution",
+      text: "The renderer is paused (tab hidden or crash guard). Readings resume with the next visible frame.",
+    });
+    return suggestions;
+  }
+  if (diagnosticLevel("fps", renderer.fps) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("fps", renderer.fps),
+      text: `Rendering at ${renderer.fps.toFixed(0)} FPS (${renderer.frameTimeMs.toFixed(1)} ms/frame). Work down the suggestions below in order; each removed cost shows up here within a second.`,
+    });
+  }
+  if (diagnosticLevel("calls", renderer.calls) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("calls", renderer.calls),
+      text: `${Math.round(renderer.calls).toLocaleString()} draw calls per frame is high — every mesh is a separate GPU submission.${elementsHint("drawables")}`,
+    });
+  }
+  if (diagnosticLevel("triangles", renderer.triangles) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("triangles", renderer.triangles),
+      text: `${compactCountLabel(renderer.triangles)} triangles per frame strains integrated GPUs.${elementsHint("triangles")}`,
+    });
+  }
+  if (
+    renderer.shadowsEnabled &&
+    diagnosticLevel("fps", renderer.fps) !== "good"
+  ) {
+    suggestions.push({
+      level: "caution",
+      text: isAdmin
+        ? "Shadow maps re-render every caster on refresh. Toggle Shadow maps off in the Elements tab: if long frames disappear, shadows are your stall."
+        : "Shadow maps are enabled; on integrated GPUs they are a common source of periodic long frames.",
+    });
+  }
+  if (
+    diagnosticLevel("longFrames", renderer.longFrames) !== "good" ||
+    diagnosticLevel("longestFrameMs", renderer.longestFrameMs) !== "good"
+  ) {
+    suggestions.push({
+      level: "caution",
+      text: `${Math.round(renderer.longFrames)} long frames (worst ${renderer.longestFrameMs.toFixed(0)} ms) in the last sample. One-off spikes are usually garbage collection or a background tab; steady repeats point at scene cost or shadow refreshes.`,
+    });
+  }
+  if (renderer.pixelRatio >= 2 && diagnosticLevel("fps", renderer.fps) !== "good") {
+    suggestions.push({
+      level: "caution",
+      text: `Device pixel ratio ${renderer.pixelRatio.toFixed(1)} multiplies fragment work ~${Math.round(renderer.pixelRatio ** 2)}×. Lowering browser zoom (or OS scaling) shrinks the canvas the renderer must fill.`,
+    });
+  }
+  if (renderer.animations >= 150) {
+    suggestions.push({
+      level: "caution",
+      text: `${Math.round(renderer.animations)} ambient animation callbacks run per visual tick.${isAdmin ? " Toggle Ambient animations off in the Elements tab to measure their main-thread share." : ""}`,
+    });
+  }
+  if (renderer.remoteAvatars >= 8) {
+    suggestions.push({
+      level: "caution",
+      text: `${renderer.remoteAvatars} remote avatars are being simulated.${isAdmin ? " Toggle Remote visitor avatars off in the Elements tab to see their cost." : ""}`,
+    });
+  }
+  if (diagnosticLevel("movementInputMs", renderer.worstInputResponseMs) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("movementInputMs", renderer.worstInputResponseMs),
+      text: `Worst movement input took ${renderer.worstInputResponseMs.toFixed(0)} ms to reach a frame — the main thread is blocking. Close other tabs and heavy extensions; if it tracks the scene readings above, reduce scene cost first.`,
+    });
+  }
+  if (diagnosticStateLevel(connection.state) !== "good") {
+    suggestions.push({
+      level: diagnosticStateLevel(connection.state),
+      text: `The world socket is ${connection.state}. Presence and chat degrade gracefully, but reconnect churn costs main-thread time.`,
+    });
+  }
+  if (diagnosticLevel("backpressure", queues.backpressureEvents) !== "good") {
+    suggestions.push({
+      level: diagnosticLevel("backpressure", queues.backpressureEvents),
+      text: `${queues.backpressureEvents} socket backpressure events — the relay or this connection cannot drain frames as fast as they are produced. The client already coalesces; a calmer network or fewer peers helps.`,
+    });
+  }
+  if (
+    diagnosticLevel("frameRate", traffic.inboundRate) !== "good" ||
+    diagnosticLevel("frameRate", traffic.outboundRate) !== "good"
+  ) {
+    suggestions.push({
+      level: "caution",
+      text: `Socket traffic is running at ${(Number(traffic.inboundRate) || 0).toFixed(0)}/s inbound, ${(Number(traffic.outboundRate) || 0).toFixed(0)}/s outbound. Each frame is parsed on the main thread, so busy hours show up as input jitter.`,
+    });
+  }
+  if (!suggestions.length) {
+    suggestions.push({
+      level: "good",
+      text: "All readings are healthy. If it still feels slow, the cost is outside this tab — check the operating system's GPU/CPU monitors.",
+    });
+  }
+  return suggestions.slice(0, 8);
 }
 const WORLD_PULL_MERGE_MAX_REQUESTS = 6;
 const WORLD_PULL_MERGE_POLL_MS = 400;
@@ -549,6 +714,14 @@ function writeJSON(storage, key, value) {
   } catch (_) {}
 }
 
+function storedDisabledWorldElements() {
+  const stored = readJSON(localStorage, DISABLED_ELEMENTS_KEY, []);
+  return (Array.isArray(stored) ? stored : [])
+    .map((id) => String(id || "").slice(0, 64))
+    .filter((id) => /^[a-z0-9-]+$/.test(id))
+    .slice(0, 200);
+}
+
 function positionIdentityToken(value) {
   let first = 0x811c9dc5;
   let second = 0x9e3779b9;
@@ -800,8 +973,30 @@ function randomId() {
   }
 }
 
+// The stored session carries the account's avatarPng (tens of KB of base64)
+// and hot paths consult the session several times a second, so re-parsing the
+// blob on every read allocated tens of KB per call in heap profiling. Parse
+// once per distinct stored string: writers go through storeWorldSession and
+// cross-tab edits both change the raw string, which misses the memo and
+// re-parses. Callers treat the parsed session as read-only.
+let readSessionMemoRaw;
+let readSessionMemoValue = null;
 function readSession() {
-  return readJSON(localStorage, "forkmesh.session", null);
+  let raw = null;
+  try {
+    raw = localStorage.getItem("forkmesh.session");
+  } catch (_) {
+    return null;
+  }
+  if (raw === readSessionMemoRaw) return readSessionMemoValue;
+  readSessionMemoRaw = raw;
+  try {
+    const value = JSON.parse(raw || "null");
+    readSessionMemoValue = value && typeof value === "object" ? value : null;
+  } catch (_) {
+    readSessionMemoValue = null;
+  }
+  return readSessionMemoValue;
 }
 
 function validWorldSession() {
@@ -3939,7 +4134,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </span>
             <span class="world-prompt-label">Prompt</span>
           </button>
-          <button class="world-notification-button" type="button" data-world-notifications-open aria-label="Open notifications" title="Show global and personal notifications">
+          <button class="world-notification-button" type="button" data-world-notifications-open aria-label="Open pings" title="Show global and personal pings">
             <span class="world-status-action-icon" aria-hidden="true">🔔</span>
             <span class="world-tool-count" data-world-notification-count>0</span>
           </button>
@@ -4110,7 +4305,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
-          <summary aria-label="Open quick chat or task composer">
+          <summary aria-label="Open World chat">
             <span class="world-chat-terminal-avatar" data-world-chat-terminal-avatar aria-hidden="true">
               <img data-world-chat-terminal-avatar-image alt="" hidden>
               <span data-world-chat-terminal-avatar-initial>#</span>
@@ -4137,15 +4332,21 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             class="world-chat-terminal-body world-native-chat"
             data-world-native-chat
             data-world-default-repository="forkmesh/forkmesh"
+            role="region"
+            aria-labelledby="world-quick-chat-title"
           >
-            <nav class="world-quick-channels" data-world-quick-channels aria-label="Composer channels">
-              <button type="button" data-world-quick-channel="general" aria-pressed="true"><span>#</span> general</button>
-              <button type="button" data-world-quick-channel="private"><span>▣</span> Private</button>
-              <button type="button" data-world-quick-channel="direct"><span>●</span> Direct messages</button>
-              <button type="button" data-world-quick-channel="errors"><span>△</span> Errors <output data-world-admin-error-count hidden>0</output></button>
-              <button type="button" data-world-quick-channel="tasks"><span>✓</span> Tasks <output data-world-task-count hidden>0</output></button>
-              <button type="button" data-world-quick-channel="notifications"><span>◇</span> Notifications <output data-world-notification-count hidden>0</output></button>
-            </nav>
+            <h2 class="world-visually-hidden" id="world-quick-chat-title">World chat</h2>
+            <header class="world-quick-chat-header">
+              <nav class="world-quick-channels" data-world-quick-channels aria-label="Chat destinations">
+                <button type="button" data-world-quick-channel="general" aria-pressed="true"><span>#</span> general</button>
+                <button type="button" data-world-quick-channel="private" aria-label="Open private channels in a new tab"><span>▣</span> Private</button>
+                <button type="button" data-world-quick-channel="direct" aria-label="Open direct messages in a new tab"><span>●</span> Direct messages</button>
+                <button type="button" data-world-quick-channel="errors"><span>△</span> Errors <output data-world-admin-error-count hidden>0</output></button>
+                <button type="button" data-world-quick-channel="tasks"><span>✓</span> Tasks <output data-world-task-count hidden>0</output></button>
+                <button type="button" data-world-quick-channel="notifications"><span>◇</span> Pings <output data-world-notification-count hidden>0</output></button>
+              </nav>
+              <button class="world-quick-chat-close" type="button" data-world-chat-terminal-close aria-label="Close World chat">×</button>
+            </header>
             <div class="world-quick-chat-feed" data-world-quick-chat-feed>
               <div id="fullChatMessages" role="log" aria-live="polite" aria-label="Live World activity"></div>
               <div data-dashboard-chat-scroll-rail aria-label="Chat scroll controls">
@@ -4154,13 +4355,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <button type="button" data-dashboard-chat-scroll="down" aria-label="Scroll to newest message">↓</button>
               </div>
             </div>
-            <nav data-dashboard-chat-context-rail aria-label="Selected chat context">
-              <button type="button" data-dashboard-chat-context-channel># general</button>
-              <button type="button" data-dashboard-chat-context-source>forkmesh/forkmesh · Organization</button>
-            </nav>
             <div data-dashboard-chat-composer data-world-simple-composer>
               <div>
-                <div data-dashboard-chat-composer-toolbar>
+                <div data-dashboard-chat-composer-toolbar hidden inert aria-hidden="true">
                   <label class="world-visually-hidden" for="fullChatChannel">Channel</label>
                   <select id="fullChatChannel"><option value=""># general</option></select>
                   <label class="world-visually-hidden" for="fullChatRepo">Repository</label>
@@ -4193,8 +4390,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                       Array.from(signedInName || identity?.name || "?")[0]?.toUpperCase() || "?",
                     )}</span>
                   </span>
-                  <textarea id="fullChatInput" rows="2" maxlength="16000" enterkeyhint="send" aria-label="Message #general" placeholder="Message #general…"></textarea>
-                  <span class="world-quick-attachment-slot" data-world-quick-attachment></span>
+                  <span class="world-quick-input-shell">
+                    <textarea id="fullChatInput" rows="2" maxlength="16000" enterkeyhint="send" aria-label="Message #general" placeholder="Message #general…"></textarea>
+                    <span class="world-quick-attachment-slot" data-world-quick-attachment></span>
+                  </span>
                   <span class="world-quick-actions" role="group" aria-label="Enter key action">
                     <button id="fullChatSend" type="button" title="Enter will send to #general" aria-pressed="true"><span data-dashboard-chat-send-label>Chat</span></button>
                     <button id="fullChatTaskSend" type="button" title="Enter will send this task to the bot" aria-pressed="false">Task</button>
@@ -4206,6 +4405,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
+        <div class="world-activity-stream" data-world-activity-stream role="log" aria-live="polite" aria-label="Recent World chat, notifications, and status changes"></div>
         <div class="world-swing-panel" data-world-swing-panel hidden>
           <span>
             <strong>Swing speed</strong>
@@ -4628,6 +4828,8 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <button type="button" role="tab" aria-selected="true" data-world-settings-tab="view">View</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="work">Work</button>
             <button type="button" role="tab" aria-selected="false" data-world-settings-tab="security">Security</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="debug">Debug</button>
+            <button type="button" role="tab" aria-selected="false" data-world-settings-tab="elements" data-world-elements-tab hidden>Elements</button>
           </div>
 
           <div class="world-settings-pane" data-world-settings-pane="work" hidden>
@@ -4751,6 +4953,66 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             </fieldset>
           </div>
 
+          <div class="world-settings-pane" data-world-settings-pane="debug" hidden>
+            <fieldset class="world-setting-group">
+              <legend>Live debug · sampled locally every second</legend>
+              <p class="world-setting-note">
+                This panel stays open while you walk, ride, and fly: click or
+                move in the world and the readings keep updating in place.
+                Everything is measured in this browser only — nothing here is
+                transmitted.
+              </p>
+              <label class="world-privacy-option">
+                <span>Show floating debug pill over the world</span>
+                <input
+                  type="checkbox"
+                  data-world-debug-panel
+                  ${settings.debugPanel ? "checked" : ""}
+                />
+              </label>
+              <dl class="world-debug-live" data-world-debug-live aria-live="off">
+                <div><dt>Renderer</dt><dd data-world-debug-renderer>Starting…</dd></div>
+                <div><dt>Frame health</dt><dd data-world-debug-frame-health>Sampling…</dd></div>
+                <div><dt>Input / scene</dt><dd data-world-debug-input>Sampling…</dd></div>
+                <div><dt>GPU memory</dt><dd data-world-debug-memory>Sampling…</dd></div>
+                <div><dt>World state</dt><dd data-world-debug-world-state>Sampling…</dd></div>
+                <div><dt>Music</dt><dd data-world-debug-music>Nothing playing</dd></div>
+                <div><dt>Connection</dt><dd data-world-debug-connection>Connecting…</dd></div>
+                <div><dt>Socket frames</dt><dd data-world-debug-traffic>Inbound 0 · outbound 0</dd></div>
+                <div><dt>Coalescing</dt><dd data-world-debug-queues>Movement idle · profile idle</dd></div>
+                <div><dt>Build</dt><dd data-world-debug-build>Loading current version…</dd></div>
+              </dl>
+            </fieldset>
+            <fieldset class="world-setting-group">
+              <legend>Suggestions</legend>
+              <ol class="world-debug-suggestions" data-world-debug-suggestions>
+                <li data-level="caution">Collecting the first sample…</li>
+              </ol>
+            </fieldset>
+          </div>
+
+          <div class="world-settings-pane" data-world-settings-pane="elements" hidden>
+            <fieldset class="world-setting-group">
+              <legend>World elements · administrator, this device only</legend>
+              <p class="world-setting-note">
+                Switch any element off to remove it completely from the game —
+                its geometry leaves the scene, its raycast targets are dropped,
+                and its per-frame work stops — then watch the Debug tab to see
+                what it was costing. Switch it back on to restore it. Choices
+                apply to this browser only; every other visitor still sees the
+                full world.
+              </p>
+              <div class="world-element-master">
+                <button type="button" data-world-element-master="on">Everything on</button>
+                <button type="button" data-world-element-master="off">Everything off</button>
+              </div>
+              <div class="world-element-list" data-world-element-list>
+                <p class="world-setting-note">Sign in as an administrator to control world elements.</p>
+              </div>
+              <p class="world-office-panel-status" data-world-element-status role="status" aria-live="polite"></p>
+            </fieldset>
+          </div>
+
           <div class="world-settings-pane" data-world-settings-pane="view">
           <fieldset class="world-setting-group">
             <legend>Personal environment · synced to your account</legend>
@@ -4796,14 +5058,6 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 data-world-light-level
               />
               <small>Full daylight is the default. Signed-in preferences follow you across devices and never change the shared world for anyone else.</small>
-            </label>
-            <label class="world-privacy-option">
-              <span>Show debug panel</span>
-              <input
-                type="checkbox"
-                data-world-debug-panel
-                ${settings.debugPanel ? "checked" : ""}
-              />
             </label>
           </fieldset>
 
@@ -5096,6 +5350,11 @@ class ForkMeshWorld extends HTMLElement {
     this.worldSessionsLoadedAt = 0;
     this.settingsTab = "view";
     this.pendingKnocks = new Map();
+    // Handshake offers waiting on this visitor (peer id → offer) and the ones
+    // this visitor has extended (peer id → sent-at). Both are live-socket
+    // state only: leaving the World forgets every open greeting.
+    this.pendingHandshakes = new Map();
+    this.sentHandshakeOffers = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
     this.mirrorActionRunsByNode = new Map();
@@ -5109,6 +5368,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
+    this.worldActivityLoungeRenderedMinute = -1;
     this.accountReturnFocus = null;
     this.settingsReturnFocus = null;
     this.officeMeeting = null;
@@ -5189,6 +5449,10 @@ class ForkMeshWorld extends HTMLElement {
     this.worldLayoutFingerprint = "";
     this.pendingWorldShare = null;
     this.savedViews = [];
+    // Element ids an administrator switched off on this device. Applied to
+    // the scene at construction and edited live from the Elements tab.
+    this.disabledWorldElements = storedDisabledWorldElements();
+    this.worldTicketResolved = false;
     this.settingsUpdatedAt = 0;
     this.worldPreferencesLoaded = false;
     this.worldPreferencesLoading = null;
@@ -5202,6 +5466,9 @@ class ForkMeshWorld extends HTMLElement {
     this.profilePresenceTimer = 0;
     this.profilePresencePending = false;
     this.movementSendTimer = 0;
+    this.peerRenderTimer = 0;
+    this.viewportMetricsFrame = 0;
+    this.lastChatViewportMetricsKey = "";
     this.pendingMovement = null;
     this.lastMovementSentAt = 0;
     this.positionWriteTimer = 0;
@@ -5306,6 +5573,11 @@ class ForkMeshWorld extends HTMLElement {
     // If the module arrived after the index watchdog already surfaced the
     // load error, retract it — the world is taking over the page now.
     document.querySelector("[data-world-load-error]")?.remove();
+    // Surface an abrupt end of the previous world session in this tab (the
+    // crash guard is only cleared by pagehide) before anything below can
+    // throw, then decide whether this boot needs the safe-mode renderer.
+    this.reportPreviousWorldCrash();
+    this.rendererSafeMode = this.worldCrashCount() > 0;
     this.mode = this.dataset.worldMode || "public";
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
@@ -5364,6 +5636,7 @@ class ForkMeshWorld extends HTMLElement {
     this.renderSavedViews();
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
+    window.visualViewport?.addEventListener("scroll", this.syncViewportHeight);
     window.addEventListener("orientationchange", this.syncViewportHeight);
     window.addEventListener("storage", this.handleStorage);
     window.addEventListener("pointerdown", this.handlePublicInputActivity, {
@@ -5377,6 +5650,7 @@ class ForkMeshWorld extends HTMLElement {
       capture: true,
     });
     window.addEventListener("keydown", this.handlePublicInputActivity);
+    window.addEventListener("keydown", this.handleQuickChatEscape);
     window.addEventListener("message", this.handleWorldChatMessage);
     window.addEventListener(
       "forkmesh:world-chat-native",
@@ -5405,6 +5679,7 @@ class ForkMeshWorld extends HTMLElement {
       },
     );
     this.startClock();
+    this.armCrashGuard();
     this.startDiagnostics();
     this.bootstrap();
     this.startWorldTicketRefresh();
@@ -5549,8 +5824,18 @@ class ForkMeshWorld extends HTMLElement {
       this.sendWorldEmote(data.emote);
       return;
     }
-    // System activity is already appended by the native chat controller.
-    if (data.type === "forkmesh:world-activity") return;
+    // The native chat controller already appends system activity to the
+    // transcript; here it only feeds the floating bubble stack.
+    if (data.type === "forkmesh:world-activity") {
+      if (this.activityNoticesSettled()) {
+        this.activityNotice(String(data.text || ""), {
+          kind: String(data.kind || "status"),
+          sender: "ForkMesh",
+          transcript: false,
+        });
+      }
+      return;
+    }
     if (data.type !== "forkmesh:world-chat") return;
     const text = String(data.text || "")
       .replace(/\s+/g, " ")
@@ -5637,6 +5922,12 @@ class ForkMeshWorld extends HTMLElement {
     // The relay also re-sends the tail of the room as ordinary live frames when
     // the embedded chat connects, so the join grace — not just the history
     // flag — is what keeps a fresh load from opening on a wall of old lines.
+    if (this.activityNoticesSettled()) {
+      this.activityNotice(
+        `${sender}: ${text || `Shared ${attachmentName}`}`,
+        { kind: "chat", sender },
+      );
+    }
     // Own lines never count as unread — `self` is this browser, `own` also
     // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
@@ -6141,7 +6432,14 @@ class ForkMeshWorld extends HTMLElement {
             ? FRESH_ARRIVAL_CAMPFIRE_PREVIEW
             : null),
         initialWorldLayout: mergedInitialLayout,
+        // Applied before the admin ticket resolves; a device whose session
+        // turns out not to be an administrator is restored to the full world
+        // by applyWorldLayoutEditor the moment that answer arrives.
+        initialDisabledElements: this.disabledWorldElements,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        // After a detected crash the same GPU or memory pressure would likely
+        // kill this reload too; boot the low-memory compact renderer instead.
+        forceCompactRenderer: this.rendererSafeMode === true,
         onLandmarkSelect: (id, meta = {}) => {
           if (id === "office") {
             this.closeLandmark();
@@ -6433,13 +6731,7 @@ class ForkMeshWorld extends HTMLElement {
       );
       this.syncRecentIssueAssignments();
       this.applyWorldLayoutEditor();
-      this.world.updateNetworkNodes(
-        liveNodeRecordsWithActions(
-          this.network,
-          this.mirrorCatalogs,
-          this.mirrorActionRunsByNode,
-        ),
-      );
+      this.pushLiveMirrorNodes();
       this.world.updateFederatedInstances?.(this.federatedInstances);
       this.celebrateRecentInstance(this.federatedInstances);
       if (this.visitorStats) {
@@ -7452,17 +7744,97 @@ class ForkMeshWorld extends HTMLElement {
     }
   };
 
+  handleQuickChatEscape = (event) => {
+    if (event.code !== "Escape" || event.defaultPrevented) return;
+    const terminal = this.$("[data-world-chat-terminal]");
+    if (!terminal?.open) return;
+    this.chatHoverSuppressed = true;
+    terminal.removeAttribute("open");
+    window.requestAnimationFrame(() => {
+      terminal.querySelector(":scope > summary")?.focus();
+    });
+  };
+
   syncViewportHeight = (event = null) => {
+    // visualViewport scroll/resize fire continuously while mobile browser
+    // chrome slides or the keyboard animates. Coalesce event-driven calls to
+    // one layout read per animation frame; direct calls stay synchronous.
+    if (event?.type) {
+      if (this.viewportMetricsFrame) return;
+      this.viewportMetricsFrame = window.requestAnimationFrame(() => {
+        this.viewportMetricsFrame = 0;
+        if (!this.destroyed) this.applyViewportMetrics(event);
+      });
+      return;
+    }
+    this.applyViewportMetrics(event);
+  };
+
+  applyViewportMetrics = (event = null) => {
+    const visualViewport = window.visualViewport;
+    const visualHeight = Math.max(
+      160,
+      Math.round(visualViewport?.height || window.innerHeight || 0),
+    );
+    const visualOffsetTop = Math.max(
+      0,
+      Math.round(visualViewport?.offsetTop || 0),
+    );
+    const currentViewportWidth = Math.max(
+      240,
+      Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
+    );
+    const stableLayoutHeight =
+      this.coarsePointerViewport &&
+      this.lastStableViewportWidth > 0 &&
+      Math.abs(currentViewportWidth - this.lastStableViewportWidth) < 2
+        ? this.lastStableViewportHeight
+        : 0;
+    const layoutHeight = Math.max(
+      // The renderer deliberately keeps a 240px minimum layout surface. Chat
+      // is positioned inside that surface, so account for the covered slice
+      // even when the page first loads into a shorter landscape viewport.
+      240,
+      visualHeight,
+      stableLayoutHeight,
+      Math.round(window.innerHeight || document.documentElement.clientHeight || 0),
+    );
+    // The 3D renderer deliberately stays stable while mobile browser chrome
+    // or a software keyboard changes only the visual viewport. Chat still has
+    // to follow the actually visible area, so it owns separate live metrics.
+    // Style writes on the host invalidate the whole HUD subtree, so only
+    // write when a value actually changed.
+    const coveredBottom = Math.max(
+      0,
+      layoutHeight - visualOffsetTop - visualHeight,
+    );
+    const chatMetricsKey = `${visualHeight}|${coveredBottom}`;
+    if (this.lastChatViewportMetricsKey !== chatMetricsKey) {
+      this.lastChatViewportMetricsKey = chatMetricsKey;
+      this.style.setProperty(
+        "--world-chat-viewport-height",
+        `${visualHeight}px`,
+      );
+      this.style.setProperty(
+        "--world-chat-covered-bottom",
+        `${coveredBottom}px`,
+      );
+    }
+    const compact = String(visualHeight <= 360);
+    const micro = String(visualHeight <= 240);
+    if (this.dataset.worldChatCompact !== compact) {
+      this.dataset.worldChatCompact = compact;
+    }
+    if (this.dataset.worldChatMicro !== micro) {
+      this.dataset.worldChatMicro = micro;
+    }
     // Mobile browser chrome can resize visualViewport continuously while a
     // thumbstick drag is in progress. Resizing the WebGL canvas on every one
     // of those samples looks like the whole World is refreshing mid-walk.
     // Hold the last stable viewport until the gesture ends, then reconcile it
     // once without interrupting movement.
     if (this.mobileMovementActive) return;
-    const width = Math.max(
-      240,
-      Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
-    );
+    const width = currentViewportWidth;
     // On touch devices, address-bar expansion and contraction changes only
     // the visual viewport height. Resizing the WebGL buffer for that browser
     // chrome animation clears the frame and looks like a full World refresh.
@@ -7511,6 +7883,10 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   handlePageHide = (event) => {
+    // Every orderly exit (navigation, reload, bfcache entry, tab close)
+    // passes through pagehide; a session that ends while the guard is still
+    // armed therefore crashed.
+    this.disarmCrashGuard();
     this.pauseWorldActivity();
     this.captureWorldPosition(true);
     if (event?.persisted === true) {
@@ -7525,6 +7901,7 @@ class ForkMeshWorld extends HTMLElement {
 
   handlePageShow = (event) => {
     if (event?.persisted !== true || this.destroyed) return;
+    this.armCrashGuard();
     this.syncViewportHeight();
     this.world?.setPaused(document.hidden);
     if (document.hidden) return;
@@ -7533,7 +7910,165 @@ class ForkMeshWorld extends HTMLElement {
     void this.refreshMirrorCatalogs();
   };
 
+  worldCrashCount() {
+    try {
+      return Math.max(
+        0,
+        Math.min(
+          CRASH_COUNT_MAX,
+          Number(sessionStorage.getItem(CRASH_COUNT_KEY)) || 0,
+        ),
+      );
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  recordWorldCrash() {
+    try {
+      sessionStorage.setItem(
+        CRASH_COUNT_KEY,
+        String(Math.min(CRASH_COUNT_MAX, this.worldCrashCount() + 1)),
+      );
+    } catch (_) {}
+  }
+
+  armCrashGuard() {
+    if (!this.crashGuardStartedAt) this.crashGuardStartedAt = Date.now();
+    this.beatCrashGuard();
+  }
+
+  disarmCrashGuard() {
+    try {
+      sessionStorage.removeItem(CRASH_GUARD_KEY);
+    } catch (_) {}
+  }
+
+  rendererGpuLabel() {
+    // The unmasked GPU string pins "crashed on which hardware" reports to a
+    // driver family. It is stable for the page's lifetime, so resolve it once
+    // the renderer exists and reuse it afterwards.
+    if (this.cachedGpuLabel) return this.cachedGpuLabel;
+    let label = "";
+    try {
+      const gl = this.world?.renderer?.getContext?.();
+      const info = gl?.getExtension?.("WEBGL_debug_renderer_info");
+      if (gl && info) {
+        label = String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL) || "");
+      }
+    } catch (_) {}
+    this.cachedGpuLabel = label.replace(/[^\w ().,-]+/g, " ").slice(0, 120);
+    return this.cachedGpuLabel;
+  }
+
+  beatCrashGuard() {
+    if (this.destroyed) return;
+    const now = Date.now();
+    let snapshot = this.lastDiagnosticsSnapshot;
+    if (
+      !snapshot ||
+      now - (this.lastDiagnosticsSnapshotAt || 0) > CRASH_GUARD_SNAPSHOT_STALE_MS
+    ) {
+      snapshot = this.collectDiagnostics();
+    }
+    const renderer = snapshot?.renderer;
+    const memory =
+      typeof performance.memory === "object" ? performance.memory : null;
+    const record = {
+      startedAt: this.crashGuardStartedAt || now,
+      beatAt: now,
+      visibility: String(document.visibilityState || "unknown").slice(0, 16),
+      socket: String(snapshot?.connection?.state || "unknown").slice(0, 16),
+      peers: Math.max(0, Number(snapshot?.connection?.peers) || 0),
+      fps: renderer ? Math.round(renderer.fps) : -1,
+      frameTimeMs: renderer ? Math.round(renderer.frameTimeMs) : -1,
+      longestFrameMs: renderer ? Math.round(renderer.longestFrameMs) : -1,
+      triangles: renderer ? Math.round(renderer.triangles) : -1,
+      pixelRatio: renderer ? Number(renderer.pixelRatio) || 0 : 0,
+      heapUsedMb: memory
+        ? Math.round(Number(memory.usedJSHeapSize) / 1048576)
+        : -1,
+      heapLimitMb: memory
+        ? Math.round(Number(memory.jsHeapSizeLimit) / 1048576)
+        : -1,
+      contextLosses: Math.max(0, Number(this.rendererContextLosses) || 0),
+      safeMode: this.rendererSafeMode === true,
+      gpu: this.rendererGpuLabel(),
+    };
+    try {
+      sessionStorage.setItem(CRASH_GUARD_KEY, JSON.stringify(record));
+    } catch (_) {}
+  }
+
+  reportPreviousWorldCrash() {
+    let record = null;
+    try {
+      record = JSON.parse(sessionStorage.getItem(CRASH_GUARD_KEY) || "null");
+    } catch (_) {}
+    this.disarmCrashGuard();
+    const beatAt = Number(record?.beatAt);
+    if (!record || typeof record !== "object" || !(beatAt > 0)) return;
+    // A browser-initiated discard (memory pressure on a background tab) also
+    // skips pagehide. Report it for visibility, but only real crashes count
+    // toward the safe-mode reboot.
+    const discarded = document.wasDiscarded === true;
+    if (!discarded) this.recordWorldCrash();
+    const describe = (value, unit = "") =>
+      Number.isFinite(Number(value)) && Number(value) >= 0
+        ? `${Math.round(Number(value))}${unit}`
+        : "unknown";
+    const navigation = String(
+      performance.getEntriesByType?.("navigation")?.[0]?.type || "unknown",
+    ).slice(0, 16);
+    const parts = [
+      discarded
+        ? "World reloaded after the browser discarded the tab"
+        : "World crashed and reloaded; previous session ended without pagehide",
+      `uptime ${describe((beatAt - Number(record.startedAt)) / 1000, "s")}`,
+      `heartbeat gap ${describe((Date.now() - beatAt) / 1000, "s")}`,
+      `navigation ${navigation}`,
+      `visibility ${String(record.visibility || "unknown").slice(0, 16)}`,
+      `tab crashes ${this.worldCrashCount()}`,
+      `socket ${String(record.socket || "unknown").slice(0, 16)} with ${describe(record.peers)} peers`,
+      `fps ${describe(record.fps)}`,
+      `frame ${describe(record.frameTimeMs, "ms")} worst ${describe(record.longestFrameMs, "ms")}`,
+      `triangles ${describe(record.triangles)}`,
+      `dpr ${Number(record.pixelRatio) || 0}`,
+      `heap ${describe(record.heapUsedMb, "MB")} of ${describe(record.heapLimitMb, "MB")}`,
+      `context losses ${describe(record.contextLosses)}`,
+      `safe mode ${record.safeMode === true ? "on" : "off"}`,
+    ];
+    const gpu = String(record.gpu || "").slice(0, 120);
+    if (gpu) parts.push(`gpu ${gpu}`);
+    this.reportWorldClientError(parts.join("; "));
+  }
+
+  reportWorldClientError(message) {
+    // Same private operational collector as uncaught exceptions; the Worker
+    // redacts, rate-limits, and stores the row for the admin error HUD.
+    try {
+      fetch("/api/client-errors", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "crash",
+          surface: "world",
+          message: String(message || "").slice(0, 500),
+          stack: "",
+          source: "world.js",
+          line: 0,
+          column: 0,
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
   reloadForRendererRecovery = () => {
+    // The context never restored, so this GPU could not sustain the full
+    // renderer; count it like a crash so the reload boots into safe mode.
+    this.recordWorldCrash();
     this.preserveWorldPositionForRefresh();
     location.reload();
   };
@@ -7558,6 +8093,28 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     if (state !== "lost") return;
+    this.rendererContextLosses = (this.rendererContextLosses || 0) + 1;
+    if (!this.reportedRendererContextLoss) {
+      // One report per page instance: repeated losses in the same session
+      // add noise, and the rolling crash-guard heartbeat already counts them.
+      this.reportedRendererContextLoss = true;
+      const renderer = this.lastDiagnosticsSnapshot?.renderer;
+      const uptimeS = Math.max(
+        0,
+        Math.round((Date.now() - (this.crashGuardStartedAt || Date.now())) / 1000),
+      );
+      const parts = [
+        `World renderer crashed; WebGL context lost after ${uptimeS}s`,
+        `fps ${renderer ? Math.round(renderer.fps) : "unknown"}`,
+        `triangles ${renderer ? Math.round(renderer.triangles) : "unknown"}`,
+        `dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
+        `safe mode ${this.rendererSafeMode === true ? "on" : "off"}`,
+      ];
+      const gpu = this.rendererGpuLabel();
+      if (gpu) parts.push(`gpu ${gpu}`);
+      this.reportWorldClientError(parts.join("; "));
+    }
+    this.beatCrashGuard();
     recovery.hidden = false;
     const title = recovery.querySelector(
       "[data-world-renderer-recovery-title]",
@@ -7778,6 +8335,9 @@ class ForkMeshWorld extends HTMLElement {
     } else {
       this.clearWorldTicketIdentity();
     }
+    // Only an answered ticket request may demote element toggles: until now
+    // isAdmin === false just means "not verified yet".
+    this.worldTicketResolved = true;
     const country = String(context?.country || context?.countryCode || "")
       .trim()
       .toUpperCase()
@@ -8249,12 +8809,6 @@ class ForkMeshWorld extends HTMLElement {
     if (statusResult.status === "fulfilled") {
       this.applySystemStatusBoard(statusResult.value);
     }
-    const liveMirrors = liveNodeRecordsWithActions(
-      this.network,
-      this.mirrorCatalogs,
-      this.mirrorActionRunsByNode,
-    );
-    this.liveMirrorNodes = liveMirrors;
     const rewardAddress = String(this.rewardState?.address || "").trim();
     this.landmarkCapabilities.fountain = {
       live:
@@ -8293,9 +8847,7 @@ class ForkMeshWorld extends HTMLElement {
       reason: LANDMARK_CONSTRUCTION_REASONS.events,
     };
     this.syncConstructionMarkers();
-    this.world?.updateNetworkNodes(
-      liveMirrors,
-    );
+    this.pushLiveMirrorNodes();
     this.world?.updateFederatedInstances?.(this.federatedInstances);
     this.world?.updateBots(this.botDirectory);
     this.world?.updateOrganizations(this.organizations);
@@ -9241,7 +9793,17 @@ class ForkMeshWorld extends HTMLElement {
 
   bindUI() {
     const chatTerminal = this.$("[data-world-chat-terminal]");
+    const chatSummary = chatTerminal?.querySelector(":scope > summary");
     const diagnostics = this.$("[data-world-diagnostics]");
+    let focusChatComposerOnOpen = false;
+    const closeChatTerminal = (restoreFocus = false) => {
+      if (!chatTerminal?.open) return;
+      this.chatHoverSuppressed = true;
+      chatTerminal.removeAttribute("open");
+      if (restoreFocus) {
+        window.requestAnimationFrame(() => chatSummary?.focus());
+      }
+    };
     this.$$("[data-world-jetpack-direction]").forEach((button) => {
       const direction = button.dataset.worldJetpackDirection;
       const stop = (event) => {
@@ -9276,15 +9838,50 @@ class ForkMeshWorld extends HTMLElement {
     });
     if (chatTerminal && hoverCapable) {
       chatTerminal.addEventListener("pointerenter", () => {
+        if (this.chatHoverSuppressed) return;
         chatTerminal.open = true;
         diagnostics?.removeAttribute("open");
         this.loadNativeWorldChat();
       });
+      chatTerminal.addEventListener("pointerleave", () => {
+        this.chatHoverSuppressed = false;
+      });
     }
-    chatTerminal?.addEventListener("focusin", () => {
-      chatTerminal.open = true;
-      diagnostics?.removeAttribute("open");
+    chatSummary?.addEventListener("click", (event) => {
+      focusChatComposerOnOpen = !hoverCapable || event.detail === 0;
+    });
+    chatSummary?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        focusChatComposerOnOpen = true;
+      }
+    });
+    this.$("[data-world-chat-terminal-close]")?.addEventListener(
+      "click",
+      () => closeChatTerminal(true),
+    );
+    this.$("[data-world-quick-channels]")?.addEventListener(
+      "focusin",
+      (event) => {
+        event.target
+          .closest?.("[data-world-quick-channel]")
+          ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      },
+    );
+    chatTerminal?.addEventListener("toggle", () => {
+      if (!chatTerminal.open) {
+        focusChatComposerOnOpen = false;
+        return;
+      }
+      this.$("[data-world-diagnostics]")?.removeAttribute("open");
       this.loadNativeWorldChat();
+      this.clearChatTerminalUnread();
+      this.restoreQuickComposerChannel();
+      if (focusChatComposerOnOpen) {
+        focusChatComposerOnOpen = false;
+        window.requestAnimationFrame(() => {
+          this.$("#fullChatInput")?.focus();
+        });
+      }
     });
     // The account portrait is the World HUD launcher.  It keeps the World
     // quiet while walking, then fans the fixed-size controls out on hover,
@@ -9302,14 +9899,6 @@ class ForkMeshWorld extends HTMLElement {
     }
     hudHoverTargets.forEach((target) => {
       target.addEventListener("focusin", openHud);
-    });
-    chatTerminal?.addEventListener("toggle", () => {
-      if (chatTerminal.open) {
-        this.$("[data-world-diagnostics]")?.removeAttribute("open");
-        this.loadNativeWorldChat();
-        this.clearChatTerminalUnread();
-        this.restoreQuickComposerChannel();
-      }
     });
     // Load the chat frame immediately so the collapsed CHAT bar always shows
     // the most recent global #general message, not a static placeholder.
@@ -9332,6 +9921,10 @@ class ForkMeshWorld extends HTMLElement {
       const settingsPanel = this.$("[data-world-settings]");
       if (
         settingsPanel?.dataset.open === "true" &&
+        // The Debug and Elements tabs exist to be watched while playing, so
+        // clicking back into the world must not dismiss them. They close only
+        // from their × button or Escape.
+        !["debug", "elements"].includes(this.settingsTab || "") &&
         !event.target.closest("[data-world-settings]") &&
         !event.target.closest(
           "[data-world-settings-open], [data-world-tasks-open]",
@@ -9540,10 +10133,8 @@ class ForkMeshWorld extends HTMLElement {
         const nodeName = String(
           mirrorNodeButton.dataset.worldMirrorNode || "",
         ).toLowerCase();
-        const node = liveNodeRecordsWithActions(
-          this.network,
-          this.mirrorCatalogs,
-          this.mirrorActionRunsByNode,
+        const node = (
+          Array.isArray(this.liveMirrorNodes) ? this.liveMirrorNodes : []
         ).find((candidate) => candidate.name.toLowerCase() === nodeName);
         if (node) {
           this.openMirrorNodeDetail(node, {
@@ -9573,6 +10164,15 @@ class ForkMeshWorld extends HTMLElement {
       const settingsTab = event.target.closest("[data-world-settings-tab]");
       if (settingsTab) {
         this.selectSettingsTab(settingsTab.dataset.worldSettingsTab);
+        return;
+      }
+      const elementMaster = event.target.closest(
+        "[data-world-element-master]",
+      );
+      if (elementMaster) {
+        this.setAllWorldElementsEnabled(
+          elementMaster.dataset.worldElementMaster !== "off",
+        );
         return;
       }
       const sessionRevoke = event.target.closest("[data-world-session-revoke]");
@@ -9952,6 +10552,33 @@ class ForkMeshWorld extends HTMLElement {
         this.enterNeighborhoodHome(enterHome.dataset.worldEnterHome, false);
         return;
       }
+      const handshakeOffer = event.target.closest(
+        "[data-world-handshake-offer]",
+      );
+      if (handshakeOffer) {
+        this.offerWorldHandshake(handshakeOffer.dataset.worldHandshakeOffer);
+        return;
+      }
+      const handshakeAccept = event.target.closest(
+        "[data-world-handshake-accept]",
+      );
+      if (handshakeAccept) {
+        this.answerWorldHandshake(
+          handshakeAccept.dataset.worldHandshakeAccept,
+          true,
+        );
+        return;
+      }
+      const handshakeDecline = event.target.closest(
+        "[data-world-handshake-decline]",
+      );
+      if (handshakeDecline) {
+        this.answerWorldHandshake(
+          handshakeDecline.dataset.worldHandshakeDecline,
+          false,
+        );
+        return;
+      }
       if (event.target.closest("[data-world-knock]")) {
         const target = event.target.closest("[data-world-knock]")?.dataset
           .worldKnock;
@@ -10046,6 +10673,16 @@ class ForkMeshWorld extends HTMLElement {
             !debugPanel.checked,
           );
         }
+        return;
+      }
+      const elementToggle = event.target.closest(
+        "[data-world-element-toggle]",
+      );
+      if (elementToggle) {
+        this.setWorldElementEnabled(
+          elementToggle.dataset.worldElementToggle,
+          elementToggle.checked,
+        );
         return;
       }
       const emojiCategory = event.target.closest(
@@ -10267,6 +10904,7 @@ class ForkMeshWorld extends HTMLElement {
 
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
+      if (this.$("[data-world-chat-terminal]")?.open) return;
       if (
         this.$("[data-world-instance-launcher]")?.dataset.open === "true"
       ) {
@@ -11396,6 +12034,26 @@ class ForkMeshWorld extends HTMLElement {
   applyWorldLayoutEditor() {
     const enabled = this.identity?.isAdmin === true;
     this.world?.setLayoutEditor?.(enabled);
+    const elementsTab = this.$("[data-world-elements-tab]");
+    if (elementsTab) elementsTab.hidden = !enabled;
+    if (
+      !enabled &&
+      this.worldTicketResolved &&
+      this.disabledWorldElements.length
+    ) {
+      // A stored experiment from an admin session must never dim the world
+      // for whoever is signed in (or signed out) on this device now.
+      this.disabledWorldElements = [];
+      writeJSON(localStorage, DISABLED_ELEMENTS_KEY, []);
+      (this.world?.listWorldElements?.() || [])
+        .filter((element) => !element.enabled)
+        .forEach((element) =>
+          this.world.setWorldElementEnabled(element.id, true),
+        );
+    }
+    if (!enabled && this.settingsTab === "elements") {
+      this.selectSettingsTab("view");
+    }
     if (!enabled || this.layoutEditorAnnounced) return;
     // Selection is handle-free and preserves the camera's drag/wheel gestures.
     this.layoutEditorAnnounced = true;
@@ -12225,6 +12883,22 @@ class ForkMeshWorld extends HTMLElement {
     return this.statusBoardLoad;
   }
 
+  // Normalizing the mirror catalog into live node records walks every
+  // payload, sorts and slices every node's repositories, and clones every
+  // action run — expensive enough that read-only consumers (the activity
+  // ticker, the lounge's mirror lookup) must never trigger it themselves.
+  // Build once here, cache for those readers, and push to the scene.
+  pushLiveMirrorNodes() {
+    const liveMirrors = liveNodeRecordsWithActions(
+      this.network,
+      this.mirrorCatalogs,
+      this.mirrorActionRunsByNode,
+    );
+    this.liveMirrorNodes = liveMirrors;
+    this.world?.updateNetworkNodes(liveMirrors);
+    return liveMirrors;
+  }
+
   async refreshMirrorCatalogs({ force = false } = {}) {
     const payload = await this.fetchMirrorCatalog({ force });
     this.mirrorCatalogs = [
@@ -12234,12 +12908,7 @@ class ForkMeshWorld extends HTMLElement {
         requestedRepo: FLAGSHIP_REPOSITORY.repo,
       },
     ];
-    const liveMirrors = liveNodeRecordsWithActions(
-      this.network,
-      this.mirrorCatalogs,
-      this.mirrorActionRunsByNode,
-    );
-    this.world?.updateNetworkNodes(liveMirrors);
+    this.pushLiveMirrorNodes();
   }
 
   startMirrorPolling() {
@@ -12260,13 +12929,7 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       if (this.mirrorActionRunsByNode.size) {
         this.mirrorActionRunsByNode.clear();
-        this.world?.updateNetworkNodes(
-          liveNodeRecordsWithActions(
-            this.network,
-            this.mirrorCatalogs,
-            this.mirrorActionRunsByNode,
-          ),
-        );
+        this.pushLiveMirrorNodes();
       }
       return false;
     }
@@ -12289,13 +12952,7 @@ class ForkMeshWorld extends HTMLElement {
     if (!normalized) return false;
     this.mirrorActionRunsByNode.clear();
     this.mirrorActionRunsByNode.set(normalized.node, normalized.runs);
-    this.world?.updateNetworkNodes(
-      liveNodeRecordsWithActions(
-        this.network,
-        this.mirrorCatalogs,
-        this.mirrorActionRunsByNode,
-      ),
-    );
+    this.pushLiveMirrorNodes();
     return true;
   }
 
@@ -12442,13 +13099,25 @@ class ForkMeshWorld extends HTMLElement {
   updateDistances() {
     const position = this.world?.getPosition?.();
     if (!position) return;
+    // The badge elements are static template output; cache them once instead
+    // of running one querySelector per landmark every second.
+    if (!this.distanceElements) {
+      this.distanceElements = new Map(
+        LANDMARKS.map((landmark) => [
+          landmark.id,
+          this.$(`[data-world-distance="${landmark.id}"]`),
+        ]),
+      );
+    }
     LANDMARKS.forEach((landmark) => {
       const distance = Math.hypot(
         position.x - landmark.position[0],
         position.z - landmark.position[2],
       );
-      const element = this.$(`[data-world-distance="${landmark.id}"]`);
-      if (element) element.textContent = distance < 1 ? "here" : `${Math.round(distance)}m`;
+      const element = this.distanceElements.get(landmark.id);
+      if (!element) return;
+      const label = distance < 1 ? "here" : `${Math.round(distance)}m`;
+      if (element.textContent !== label) element.textContent = label;
     });
   }
 
@@ -12494,17 +13163,17 @@ class ForkMeshWorld extends HTMLElement {
         ? {
             id: "events",
             color: "#77d9ff",
-            eyebrow: "WORLD NOTIFICATIONS",
-            label: "Notifications",
+            eyebrow: "WORLD PINGS",
+            label: "Pings",
             summary:
               "Your private account updates and public World announcements in one place.",
             status: "LIVE · PERSONAL + GLOBAL",
             metaphor:
               "A shared bulletin beside a private inbox that only you can open.",
             reality:
-              "Personal notifications use your signed-in session. Global announcements are public UTC event records.",
+              "Personal pings use your signed-in session. Global announcements are public UTC event records.",
             bullets: [
-              "Your notifications are account-scoped and never sent through multiplayer presence.",
+              "Your pings are account-scoped and never sent through multiplayer presence.",
               "Global announcements are visible to everyone in the World.",
             ],
             primary: null,
@@ -13365,6 +14034,16 @@ class ForkMeshWorld extends HTMLElement {
         name.trim().toLowerCase(),
     );
     const record = { ...(directory || {}), ...member };
+    // Handshakes are offered from this panel, so the freshest greeting state
+    // for this peer is resolved every time it renders.
+    this.pruneWorldHandshakes();
+    const peerId = String(record.peerId || "").slice(0, 96);
+    const livePeer =
+      peerId && peerId !== this.serverPeerId && record.self !== true
+        ? this.remotePlayers.get(peerId)
+        : null;
+    const handshakeOffer = this.pendingHandshakes.get(peerId);
+    const handshakeOffered = this.sentHandshakeOffers.has(peerId);
     const status = [record.statusEmoji, record.status]
       .map((value) => String(value || "").trim())
       .filter(Boolean)
@@ -13423,6 +14102,8 @@ class ForkMeshWorld extends HTMLElement {
       }
     }
     detail.dataset.openLandmark = "world-member";
+    detail.dataset.worldMemberPeer = peerId;
+    this.worldMemberDetailRecord = record;
     detail.style.setProperty("--detail-color", "#77d9ff");
     detail.innerHTML = `
       <header class="world-detail-header">
@@ -13456,6 +14137,40 @@ class ForkMeshWorld extends HTMLElement {
               : ""
           }
         </div>
+        ${
+          livePeer
+            ? `<section class="world-detail-section" data-world-handshake>
+                <h3>Handshake</h3>
+                <p>${escapeHTML(
+                  handshakeOffer
+                    ? `${handshakeOffer.name} offered you a handshake. Shaking back plays the greeting for both of you where you are standing.`
+                    : handshakeOffered
+                      ? `Handshake offered. ${name} sees it until they answer or leave the World.`
+                      : `Greet ${name} in person. Only they see the offer; the World sees the handshake itself only if they shake back, and it changes no permissions.`,
+                )}</p>
+                <div class="world-detail-actions">
+                  ${
+                    handshakeOffer
+                      ? `<button type="button" class="world-primary-action" data-world-handshake-accept="${escapeHTML(
+                          peerId,
+                        )}">Shake hands back</button>
+                        <button type="button" class="world-link-action" data-world-handshake-decline="${escapeHTML(
+                          peerId,
+                        )}">Decline</button>`
+                      : `<button type="button" class="world-primary-action" data-world-handshake-offer="${escapeHTML(
+                          peerId,
+                        )}"${
+                          handshakeOffered ? " disabled" : ""
+                        }>${
+                          handshakeOffered
+                            ? "Handshake offered"
+                            : "Offer handshake"
+                        }</button>`
+                  }
+                </div>
+              </section>`
+            : ""
+        }
         <div class="world-truth-grid">
           <section class="world-truth-block">
             <h3>Member</h3>
@@ -15878,30 +16593,30 @@ class ForkMeshWorld extends HTMLElement {
     const unreadCount = this.notifications.filter((item) => !item.readAt).length;
     return `
       <div data-world-events-panel-content>
-      <section class="world-activity-board world-activity-board--notifications" aria-label="Notifications and announcements">
+      <section class="world-activity-board world-activity-board--notifications" aria-label="Pings and announcements">
         <header class="world-activity-board-heading">
           <div>
             <p class="world-eyebrow">YOUR SIGNAL</p>
-            <h3>Notifications</h3>
+            <h3>Pings</h3>
             <span>${session?.sessionToken ? `${unreadCount} unread` : "Sign in for private updates"} · ${globalCount} global</span>
           </div>
           <div class="world-activity-tools">
-            <label><span class="world-visually-hidden">Search notifications</span><input type="search" value="${escapeHTML(
+            <label><span class="world-visually-hidden">Search pings</span><input type="search" value="${escapeHTML(
               this.notificationBoardSearch,
-            )}" placeholder="Search notifications…" data-world-activity-search="notifications" /></label>
-            <label><span class="world-visually-hidden">Filter notifications</span><select data-world-activity-filter="notifications" aria-label="Filter notifications">
+            )}" placeholder="Search pings…" data-world-activity-search="notifications" /></label>
+            <label><span class="world-visually-hidden">Filter pings</span><select data-world-activity-filter="notifications" aria-label="Filter pings">
               <option value="all"${filter === "all" ? " selected" : ""}>All activity</option>
               <option value="unread"${filter === "unread" ? " selected" : ""}>Unread</option>
               <option value="personal"${filter === "personal" ? " selected" : ""}>Personal</option>
               <option value="global"${filter === "global" ? " selected" : ""}>Global</option>
             </select></label>
-            <label><span class="world-visually-hidden">Sort notifications</span><select data-world-activity-sort="notifications" aria-label="Sort notifications">
+            <label><span class="world-visually-hidden">Sort pings</span><select data-world-activity-sort="notifications" aria-label="Sort pings">
               <option value="newest"${this.notificationBoardSort === "newest" ? " selected" : ""}>Newest</option>
               <option value="oldest"${this.notificationBoardSort === "oldest" ? " selected" : ""}>Oldest</option>
               <option value="title"${this.notificationBoardSort === "title" ? " selected" : ""}>Title</option>
               <option value="kind"${this.notificationBoardSort === "kind" ? " selected" : ""}>Type</option>
             </select></label>
-            <button type="button" data-world-notifications-refresh aria-label="Refresh notifications" title="Refresh notifications">↻</button>
+            <button type="button" data-world-notifications-refresh aria-label="Refresh pings" title="Refresh pings">↻</button>
           </div>
         </header>
         <div class="world-activity-stats">
@@ -15914,10 +16629,11 @@ class ForkMeshWorld extends HTMLElement {
           <span>Scope</span><span>Destination</span><span>Reference</span>
           <span>When</span><span>State</span><span>Actions</span>
         </div>
-        <ol class="world-activity-table world-notification-table" aria-label="Sortable notification table">
+        <ol class="world-activity-table world-notification-table" aria-label="Sortable ping table">
           ${
-            ["loading"].includes(this.notificationsState) &&
-            this.eventsState === "loading"
+            !rows.length &&
+            (this.notificationsState === "loading" ||
+              this.eventsState === "loading")
               ? '<li class="world-activity-loading"><i aria-hidden="true"></i><strong>Loading your activity…</strong></li>'
               : rows.length
                 ? rows
@@ -15954,20 +16670,20 @@ class ForkMeshWorld extends HTMLElement {
                         <span>${item.unread ? "Unread" : item.source === "global" ? `Ends ${escapeHTML(item.endsAt ? new Date(item.endsAt).toLocaleString() : "—")}` : `Read ${escapeHTML(item.readAt ? new Date(item.readAt).toLocaleString() : "—")}`}</span>
                         <span class="world-activity-row-actions">
                           ${item.href ? `<a href="${escapeHTML(item.href)}" rel="noopener noreferrer">Open</a>` : ""}
-                          ${item.source === "personal" ? `<button type="button" data-world-notification-delete="${escapeHTML(item.id)}">Delete</button>` : ""}
+                          ${item.source === "personal" ? `<button type="button" data-world-notification-delete="${escapeHTML(item.id)}" aria-label="Delete notification" title="Delete notification">🗑</button>` : ""}
                         </span>
                       </li>`;
                     })
                     .join("")
                 : `<li class="world-activity-empty"><span aria-hidden="true">✦</span><strong>${
                     query || filter !== "all"
-                      ? "No notifications match these controls."
+                      ? "No pings match these controls."
                       : this.eventsState === "unavailable" &&
                           this.notificationsState === "unavailable"
                         ? "Activity is temporarily unavailable. No seeded or demo announcement is being presented as scheduled."
                       : this.notificationsState === "signed-out" && !globalCount
-                        ? "Sign in to receive private notifications."
-                        : "No notification activity yet."
+                        ? "Sign in to receive private pings."
+                        : "No ping activity yet."
                   }</strong></li>`
           }
         </ol>
@@ -16060,8 +16776,8 @@ class ForkMeshWorld extends HTMLElement {
       button.setAttribute(
         "aria-label",
         count
-          ? `Open World notifications, ${count} active`
-          : "Open World notifications",
+          ? `Open World pings, ${count} active`
+          : "Open World pings",
       );
     });
   }
@@ -16081,27 +16797,24 @@ class ForkMeshWorld extends HTMLElement {
     personalNotifications.forEach((item) =>
       this.seenNotifications.add(item.id),
     );
-    const announcements = [];
-    if (globalEvents.length) {
-      announcements.push(
-        `World announcement: ${globalEvents[0].title}${
-          globalEvents.length > 1 ? ` (+${globalEvents.length - 1})` : ""
-        }`,
-      );
-    }
-    if (personalNotifications.length) {
-      announcements.push(
-        `New notification: ${personalNotifications[0].title}${
-          personalNotifications.length > 1
-            ? ` (+${personalNotifications.length - 1})`
-            : ""
-        }`,
-      );
-    }
     // The first reads seed the seen sets so nothing already waiting at load is
-    // announced; only what arrives on a later poll reaches the stream.
-    if (announcements.length && this.activityNoticesSettled()) {
-      this.toast(announcements.join(" · "));
+    // announced; only what arrives on a later poll reaches the stream. Each
+    // announcement gets its own bubble so the stack reads like a feed; the
+    // per-poll cap keeps a backlog burst from wiping out the chat stream.
+    if (!this.activityNoticesSettled()) return;
+    globalEvents.slice(0, 3).forEach((item) => {
+      this.toast(`World announcement: ${item.title}`);
+    });
+    if (globalEvents.length > 3) {
+      this.toast(`World announcement: +${globalEvents.length - 3} more events`);
+    }
+    personalNotifications.slice(0, 3).forEach((item) => {
+      this.toast(`New ping: ${item.title}`);
+    });
+    if (personalNotifications.length > 3) {
+      this.toast(
+        `New ping: +${personalNotifications.length - 3} more`,
+      );
     }
   }
 
@@ -16233,9 +16946,9 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = this.notifications.length ? "ready" : "empty";
       this.updateNotificationBadge();
       this.refreshOpenEventsPanel();
-      this.toast("World notifications marked read.");
+      this.toast("World pings marked read.");
     } catch (_) {
-      this.toast("World notifications could not be marked read.");
+      this.toast("World pings could not be marked read.");
     }
   }
 
@@ -16262,9 +16975,9 @@ class ForkMeshWorld extends HTMLElement {
       this.notificationsState = this.notifications.length ? "ready" : "empty";
       this.updateNotificationBadge();
       this.refreshOpenEventsPanel();
-      this.toast("Notification deleted.");
+      this.toast("Ping deleted.");
     } catch (_) {
-      this.toast("Notification could not be deleted.");
+      this.toast("Ping could not be deleted.");
     }
   }
 
@@ -16378,12 +17091,22 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   sendWorldInteraction(kind, target = "") {
-    if (!["knock", "home-grant", "home-decline"].includes(kind) || !target) {
-      return;
+    if (
+      ![
+        "knock",
+        "home-grant",
+        "home-decline",
+        "handshake-offer",
+        "handshake-accept",
+        "handshake-decline",
+      ].includes(kind) ||
+      !target
+    ) {
+      return false;
     }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       this.toast("Realtime is offline; use the public lobby link instead.");
-      return;
+      return false;
     }
     try {
       this.socket.send(
@@ -16393,7 +17116,101 @@ class ForkMeshWorld extends HTMLElement {
           target: String(target).slice(0, 32),
         }),
       );
+      return true;
     } catch (_) {}
+    return false;
+  }
+
+  // A handshake is the two-person greeting: one visitor offers, the other
+  // shakes back. Only the offered peer is told about the offer, and only an
+  // accepted handshake becomes visible to the rest of the room.
+  offerWorldHandshake(peerId) {
+    const target = String(peerId || "");
+    const peer = this.remotePlayers.get(target);
+    if (!target || !peer || target === this.serverPeerId) {
+      this.toast("That visitor is no longer in the World.");
+      return;
+    }
+    // Their hand is already out: offering back is the same thing as accepting,
+    // so the two never end up holding mirrored offers of each other.
+    if (this.pendingHandshakes.has(target)) {
+      this.answerWorldHandshake(target, true);
+      return;
+    }
+    if (!this.sendWorldInteraction("handshake-offer", target)) return;
+    this.sentHandshakeOffers.set(target, Date.now());
+    this.refreshWorldMemberDetail(target);
+    this.toast(
+      `Handshake offered to ${peer.name || "that visitor"}. Nothing is shared with the rest of the World unless they shake back.`,
+    );
+  }
+
+  answerWorldHandshake(peerId, accepted) {
+    const target = String(peerId || "");
+    const offer = this.pendingHandshakes.get(target);
+    if (!target || !offer) return;
+    if (
+      !this.sendWorldInteraction(
+        accepted ? "handshake-accept" : "handshake-decline",
+        target,
+      )
+    ) {
+      return;
+    }
+    this.pendingHandshakes.delete(target);
+    this.sentHandshakeOffers.delete(target);
+    if (accepted) {
+      // The relay broadcasts the accepted pair to everyone else; this browser
+      // is excluded from its own frame, so it plays the pose itself.
+      this.playWorldHandshake(this.serverPeerId, target);
+    }
+    this.refreshWorldMemberDetail(target);
+    this.toast(
+      accepted
+        ? `You shook hands with ${offer.name}. A handshake is a greeting only: no permissions changed.`
+        : "Handshake declined. No reason was shared.",
+    );
+  }
+
+  // The scene knows this browser's own avatar by its local identity id, while
+  // the relay speaks in the peer id it assigned this socket. Translate before
+  // handing the pair over so an accepted handshake animates both halves.
+  playWorldHandshake(firstId, secondId) {
+    const own = String(this.serverPeerId || "");
+    const localId = String(this.identity?.id || "");
+    const resolve = (id) =>
+      own && String(id || "") === own ? localId : String(id || "");
+    this.world?.playHandshake?.(resolve(firstId), resolve(secondId));
+  }
+
+  // Drops offers that timed out, plus anything from a peer who has left, so a
+  // stale greeting cannot linger behind an avatar that is already gone.
+  pruneWorldHandshakes() {
+    const cutoff = Date.now() - WORLD_HANDSHAKE_TTL_MS;
+    this.pendingHandshakes.forEach((offer, id) => {
+      if (offer.at < cutoff || !this.remotePlayers.has(id)) {
+        this.pendingHandshakes.delete(id);
+      }
+    });
+    this.sentHandshakeOffers.forEach((at, id) => {
+      if (at < cutoff || !this.remotePlayers.has(id)) {
+        this.sentHandshakeOffers.delete(id);
+      }
+    });
+  }
+
+  // Re-renders the open member profile when its handshake state changed. Any
+  // other panel (or none) is left exactly as it is.
+  refreshWorldMemberDetail(peerId) {
+    const detail = this.$("[data-world-detail]");
+    if (
+      detail?.dataset.open !== "true" ||
+      detail.dataset.openLandmark !== "world-member" ||
+      detail.dataset.worldMemberPeer !== String(peerId || "")
+    ) {
+      return;
+    }
+    this.openWorldMemberDetail(this.worldMemberDetailRecord || {});
   }
 
   // A wave is the text-free "emote" gesture the relay already broadcasts: the
@@ -22137,7 +22954,14 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   selectSettingsTab(tab) {
-    const selected = ["view", "work", "security"].includes(tab) ? tab : "view";
+    let selected = ["view", "work", "security", "debug", "elements"].includes(
+      tab,
+    )
+      ? tab
+      : "view";
+    if (selected === "elements" && this.identity?.isAdmin !== true) {
+      selected = "view";
+    }
     this.settingsTab = selected;
     const panel = this.$("[data-world-settings]");
     if (panel) panel.dataset.activeTab = selected;
@@ -22155,7 +22979,133 @@ class ForkMeshWorld extends HTMLElement {
       // re-read on entry rather than polled while the panel sits open.
       void this.loadWorldSessions();
     }
-    if (selected === "work") void this.officeTasks?.refresh?.({ quiet: true });
+    if (selected === "debug") {
+      // Paint the readings immediately instead of waiting out the 1s tick.
+      this.renderDiagnostics();
+    }
+    if (selected === "elements") {
+      this.renderWorldElementsPane();
+    }
+    if (selected === "work") {
+      void this.ensureOfficeRuntime({ userInitiated: true }).then(() => {
+        if (this.destroyed || this.settingsTab !== "work") return;
+        const currentPanel = this.$("[data-world-settings]");
+        if (currentPanel?.dataset.open !== "true") return;
+        this.officeTasks?.setPersonalView?.(true);
+        void this.officeTasks?.refresh?.({ quiet: true });
+      });
+    }
+  }
+
+  setWorldElementEnabled(id, enabled) {
+    const elementId = String(id || "");
+    if (
+      this.identity?.isAdmin !== true ||
+      !this.world?.setWorldElementEnabled?.(elementId, enabled)
+    ) {
+      return;
+    }
+    const disabled = new Set(this.disabledWorldElements);
+    if (enabled) disabled.delete(elementId);
+    else disabled.add(elementId);
+    this.disabledWorldElements = [...disabled];
+    writeJSON(localStorage, DISABLED_ELEMENTS_KEY, this.disabledWorldElements);
+    const element = (this.world.listWorldElements?.() || []).find(
+      (entry) => entry.id === elementId,
+    );
+    this.renderWorldElementsPane(
+      element
+        ? `${element.label} ${enabled ? "restored" : "removed"} — watch the Debug tab for the effect.`
+        : "",
+    );
+  }
+
+  setAllWorldElementsEnabled(enabled) {
+    if (this.identity?.isAdmin !== true) return;
+    const elements = this.world?.listWorldElements?.() || [];
+    elements.forEach((element) =>
+      this.world.setWorldElementEnabled(element.id, enabled),
+    );
+    this.disabledWorldElements = enabled
+      ? []
+      : elements.map((element) => element.id);
+    writeJSON(localStorage, DISABLED_ELEMENTS_KEY, this.disabledWorldElements);
+    this.renderWorldElementsPane(
+      enabled
+        ? "Every element is back in the game."
+        : "Every element removed — an empty scene is your renderer baseline.",
+    );
+  }
+
+  renderWorldElementsPane(statusMessage = "") {
+    const list = this.$("[data-world-element-list]");
+    if (!list) return;
+    const status = this.$("[data-world-element-status]");
+    if (status) status.textContent = String(statusMessage || "").slice(0, 200);
+    if (this.identity?.isAdmin !== true) {
+      list.innerHTML =
+        '<p class="world-setting-note">Sign in as an administrator to control world elements.</p>';
+      return;
+    }
+    const elements = this.world?.listWorldElements?.() || [];
+    if (!elements.length) {
+      list.innerHTML =
+        '<p class="world-setting-note">The world is still loading — element controls appear once the scene is built.</p>';
+      return;
+    }
+    const categoryOrder = [
+      "Systems",
+      "Terrain",
+      "Districts",
+      "Boards & kiosks",
+      "Scenery",
+      "Recreation",
+      "Vehicles & rides",
+      "Avatars & bots",
+      "Infrastructure",
+    ];
+    const grouped = new Map();
+    elements.forEach((element) => {
+      const category = String(element.category || "Other");
+      if (!grouped.has(category)) grouped.set(category, []);
+      grouped.get(category).push(element);
+    });
+    const orderedCategories = [
+      ...categoryOrder.filter((category) => grouped.has(category)),
+      ...[...grouped.keys()].filter(
+        (category) => !categoryOrder.includes(category),
+      ),
+    ];
+    list.innerHTML = orderedCategories
+      .map((category) => {
+        const rows = grouped
+          .get(category)
+          .sort((a, b) => a.label.localeCompare(b.label))
+          .map((element) => {
+            const stats = element.system
+              ? "per-frame system"
+              : `${compactCountLabel(element.drawables)} drawn · ${compactCountLabel(element.triangles)} tri · ${compactCountLabel(element.interactives)} click`;
+            return `
+            <label class="world-element-row" data-enabled="${element.enabled}">
+              <input
+                type="checkbox"
+                data-world-element-toggle="${escapeHTML(element.id)}"
+                ${element.enabled ? "checked" : ""}
+              />
+              <span class="world-element-copy">
+                <strong>${escapeHTML(element.label)}</strong>
+                <small>${escapeHTML(stats)}</small>
+              </span>
+            </label>`;
+          })
+          .join("");
+        return `
+        <section class="world-element-category">
+          <h4>${escapeHTML(category)}</h4>
+          ${rows}
+        </section>`;
+      })
+      .join("");
   }
 
   renderWorldSessions(message = "", tone = "") {
@@ -22436,7 +23386,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=f802fd40287d";
+    script.src = "/dashboard-chat.js?v=1c8ecaa6d4ac";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {
@@ -23975,13 +24925,51 @@ class ForkMeshWorld extends HTMLElement {
     return Date.now() >= this.activityNoticesEnabledAt;
   }
 
-  activityNotice(message, { kind = "status", sender = "" } = {}) {
+  activityNotice(message, { kind = "status", sender = "", transcript = true } = {}) {
     const copy = String(message || "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 280);
-    if (!copy || kind === "chat") return;
-    this.notifyChatArea(copy, kind);
+    if (!copy) return;
+    // Chat lines already land in the native transcript straight from the
+    // relay socket (and `transcript: false` marks lines that started there),
+    // so forwarding those again would duplicate every message.
+    if (kind !== "chat" && transcript) this.notifyChatArea(copy, kind);
+    const terminal = this.$("[data-world-chat-terminal]");
+    const stream = this.$("[data-world-activity-stream]");
+    // With the chat panel open the transcript is already on screen and the
+    // panel covers the bubble corner, so skip the floating card entirely.
+    if (!stream || terminal?.open) return;
+    const article = document.createElement("article");
+    article.dataset.kind = ["chat", "error", "success"].includes(kind)
+      ? kind
+      : "status";
+    const icon = document.createElement("span");
+    icon.className = "world-activity-icon";
+    const cleanSender = String(sender || "ForkMesh").trim().slice(0, 64);
+    const member = this.memberDirectory.find(
+      (entry) =>
+        String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
+    );
+    const publicAvatar = safeHTTPURL(member?.avatar || "");
+    if (publicAvatar) {
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = publicAvatar;
+      image.onerror = () => {
+        image.remove();
+        icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+      };
+      icon.append(image);
+    } else {
+      icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+    }
+    const body = document.createElement("p");
+    body.textContent = copy;
+    article.append(icon, body);
+    stream.prepend(article);
+    while (stream.childElementCount > 6) stream.lastElementChild?.remove();
+    window.setTimeout(() => article.remove(), 10_100);
   }
 
   startTour() {
@@ -24176,7 +25164,10 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.diagnosticsTimer);
     this.renderDiagnostics();
     this.diagnosticsTimer = window.setInterval(
-      () => this.renderDiagnostics(),
+      () => {
+        this.renderDiagnostics();
+        this.beatCrashGuard();
+      },
       WORLD_DIAGNOSTICS_INTERVAL_MS,
     );
   }
@@ -24268,6 +25259,27 @@ class ForkMeshWorld extends HTMLElement {
               0,
               Math.min(1_000_000, Number(scene.animations) || 0),
             ),
+            geometries: Math.max(
+              0,
+              Math.min(1_000_000, Number(scene.geometries) || 0),
+            ),
+            textures: Math.max(
+              0,
+              Math.min(1_000_000, Number(scene.textures) || 0),
+            ),
+            programs: Math.max(
+              0,
+              Math.min(100_000, Number(scene.programs) || 0),
+            ),
+            remoteAvatars: Math.max(
+              0,
+              Math.min(10_000, Number(scene.remoteAvatars) || 0),
+            ),
+            disabledElements: Math.max(
+              0,
+              Math.min(1_000, Number(scene.disabledElements) || 0),
+            ),
+            shadowsEnabled: scene.shadowsEnabled === true,
             pixelRatio: Math.max(0, Math.min(8, Number(scene.pixelRatio) || 0)),
             cameraMode: String(scene.cameraMode || "unknown").slice(0, 32),
             space: String(scene.space || "unknown").slice(0, 64),
@@ -24351,13 +25363,20 @@ class ForkMeshWorld extends HTMLElement {
       })(),
     };
     this.lastDiagnosticsSnapshot = snapshot;
+    this.lastDiagnosticsSnapshotAt = Date.now();
     return snapshot;
   }
 
   renderDiagnostics() {
     const root = this.$("[data-world-diagnostics]");
-    if (!root) return;
+    const floatingVisible = Boolean(root && !root.hidden);
+    const debugPane = this.settingsDebugPaneElement();
+    // With the floating pill hidden and the Debug tab closed there is nothing
+    // to paint; rebuilding readouts every second would be pure waste.
+    if (!floatingVisible && !debugPane) return;
     const snapshot = this.collectDiagnostics();
+    if (debugPane) this.renderDebugSettingsPane(debugPane, snapshot);
+    if (!floatingVisible) return;
     const { renderer, connection, traffic, queues, build, music } = snapshot;
     const formatRate = (value) =>
       `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
@@ -24511,66 +25530,121 @@ class ForkMeshWorld extends HTMLElement {
         level === "high" ? "needs attention" : level === "caution" ? "watch" : "healthy"
       }`;
     }
-    const rendererDetail = this.$("[data-world-diagnostics-renderer]");
-    if (rendererDetail) {
-      rendererDetail.innerHTML = renderer
-        ? `${renderer.paused ? diagnosticReading("Paused", "caution") : `${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(1)} FPS`)} · ${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms/frame`)}`} · ${diagnosticMetric("calls", renderer.calls, `${Math.round(renderer.calls).toLocaleString()} calls`)} · ${diagnosticMetric("triangles", renderer.triangles, `${Math.round(renderer.triangles).toLocaleString()} triangles`)}`
-        : unavailable("WebGL renderer unavailable");
-    }
-    const frameHealth = this.$("[data-world-diagnostics-frame-health]");
-    if (frameHealth) {
-      frameHealth.innerHTML = renderer
-        ? `${diagnosticMetric("longFrames", renderer.longFrames, `${Math.round(renderer.longFrames).toLocaleString()} long frames`)} · ${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(1)} ms worst`)} in the last sample`
-        : unavailable("WebGL renderer unavailable");
-    }
-    const inputDetail = this.$("[data-world-diagnostics-input]");
-    if (inputDetail) {
-      inputDetail.innerHTML = renderer
-        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${diagnosticMetric("movementInputMs", renderer.inputResponseMs, `${renderer.inputResponseMs.toFixed(1)} ms movement response`)} · ${diagnosticMetric("movementInputMs", renderer.worstInputResponseMs, `${renderer.worstInputResponseMs.toFixed(1)} ms worst movement response`)} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
-        : unavailable("WebGL renderer unavailable");
-    }
-    const worldState = this.$("[data-world-diagnostics-world-state]");
-    if (worldState) {
-      worldState.innerHTML = renderer
-        ? escapeHTML(
-            `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}`,
-          )
-        : unavailable("World state unavailable");
+    // Everything below lives in the expanded body; while the panel is
+    // collapsed only the summary readouts above are visible, so skip the
+    // nine per-second innerHTML rebuilds until it opens.
+    if (!root.open) return;
+    const readouts = this.diagnosticsDetailReadouts(snapshot);
+    for (const [slot, html] of Object.entries({
+      renderer: readouts.renderer,
+      "frame-health": readouts.frameHealth,
+      input: readouts.input,
+      "world-state": readouts.worldState,
+      connection: readouts.connection,
+      traffic: readouts.traffic,
+      queues: readouts.queues,
+      build: readouts.build,
+    })) {
+      const detail = this.$(`[data-world-diagnostics-${slot}]`);
+      if (detail) detail.innerHTML = html;
     }
     const musicDetail = this.$("[data-world-diagnostics-music]");
-    if (musicDetail) {
-      musicDetail.textContent =
+    if (musicDetail) musicDetail.textContent = readouts.music;
+  }
+
+  // The nine detailed one-second readouts, shared verbatim by the floating
+  // debug pill's expanded body and the settings panel's Debug tab.
+  diagnosticsDetailReadouts(snapshot) {
+    const { renderer, connection, traffic, queues, build, music } = snapshot;
+    const formatRate = (value) =>
+      `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
+    const unavailable = (label) => diagnosticReading(label, "high");
+    const version = build.version
+      ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
+      : "build pending";
+    return {
+      renderer: renderer
+        ? `${renderer.paused ? diagnosticReading("Paused", "caution") : `${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(1)} FPS`)} · ${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms/frame`)}`} · ${diagnosticMetric("calls", renderer.calls, `${Math.round(renderer.calls).toLocaleString()} calls`)} · ${diagnosticMetric("triangles", renderer.triangles, `${Math.round(renderer.triangles).toLocaleString()} triangles`)}`
+        : unavailable("WebGL renderer unavailable"),
+      frameHealth: renderer
+        ? `${diagnosticMetric("longFrames", renderer.longFrames, `${Math.round(renderer.longFrames).toLocaleString()} long frames`)} · ${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(1)} ms worst`)} in the last sample`
+        : unavailable("WebGL renderer unavailable"),
+      input: renderer
+        ? `${renderer.dragging ? "Dragging" : "Idle"} · ${diagnosticMetric("movementInputMs", renderer.inputResponseMs, `${renderer.inputResponseMs.toFixed(1)} ms movement response`)} · ${diagnosticMetric("movementInputMs", renderer.worstInputResponseMs, `${renderer.worstInputResponseMs.toFixed(1)} ms worst movement response`)} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
+        : unavailable("WebGL renderer unavailable"),
+      memory: renderer
+        ? escapeHTML(
+            `${Math.round(renderer.geometries).toLocaleString()} geometries · ${Math.round(renderer.textures).toLocaleString()} textures · ${Math.round(renderer.programs).toLocaleString()} GPU programs${Number.isFinite(heapUsedMB()) ? ` · ${heapUsedMB().toFixed(0)} MB JS heap` : ""}`,
+          )
+        : unavailable("WebGL renderer unavailable"),
+      worldState: renderer
+        ? escapeHTML(
+            `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}${renderer.remoteAvatars ? ` · ${renderer.remoteAvatars} remote avatars` : ""}${renderer.disabledElements ? ` · ${renderer.disabledElements} elements off` : ""}`,
+          )
+        : unavailable("World state unavailable"),
+      music:
         music.state === "playing" || music.state === "paused"
           ? `${music.title} · ${formatMediaPosition(music.positionMs)}${music.durationMs ? ` / ${formatMediaPosition(music.durationMs)}` : ""} · ${music.state}`
-          : "Nothing playing";
-    }
-    const connectionDetail = this.$(
-      "[data-world-diagnostics-connection]",
-    );
-    if (connectionDetail) {
-      connectionDetail.innerHTML = `${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects} reconnect attempts`)} · ${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`)}`;
-    }
-    const trafficDetail = this.$("[data-world-diagnostics-traffic]");
-    if (trafficDetail) {
-      trafficDetail.innerHTML = `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))})`;
-    }
-    const queueDetail = this.$("[data-world-diagnostics-queues]");
-    if (queueDetail) {
-      queueDetail.innerHTML = `Movement ${escapeHTML(queues.movement)} (${diagnosticMetric("coalesced", queues.movementCoalesced, `${queues.movementCoalesced} coalesced`)}) · profile ${escapeHTML(queues.profile)} (${diagnosticMetric("coalesced", queues.profileCoalesced, `${queues.profileCoalesced} coalesced`)}) · ${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents} backpressure events`)}`;
-    }
-    const buildDetail = this.$("[data-world-diagnostics-build]");
-    if (buildDetail) {
-      buildDetail.innerHTML = build.version
+          : "Nothing playing",
+      connection: `${diagnosticReading(connection.state, diagnosticStateLevel(connection.state))} · ${connection.peers} ${connection.peers === 1 ? "peer" : "peers"} · ${diagnosticMetric("reconnects", connection.reconnects, `${connection.reconnects} reconnect attempts`)} · ${diagnosticMetric("bufferedBytes", connection.bufferedBytes, `${Math.round(connection.bufferedBytes).toLocaleString()} buffered bytes`)}`,
+      traffic: `Inbound ${Math.round(traffic.inboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.inboundRate, formatRate(traffic.inboundRate))}) · outbound ${Math.round(traffic.outboundFrames).toLocaleString()} (${diagnosticMetric("frameRate", traffic.outboundRate, formatRate(traffic.outboundRate))})`,
+      queues: `Movement ${escapeHTML(queues.movement)} (${diagnosticMetric("coalesced", queues.movementCoalesced, `${queues.movementCoalesced} coalesced`)}) · profile ${escapeHTML(queues.profile)} (${diagnosticMetric("coalesced", queues.profileCoalesced, `${queues.profileCoalesced} coalesced`)}) · ${diagnosticMetric("backpressure", queues.backpressureEvents, `${queues.backpressureEvents} backpressure events`)}`,
+      build: build.version
         ? escapeHTML(
             `${version}${build.revision ? ` · ${build.revision.slice(0, 12)}` : " · revision unavailable"}`,
           )
-        : unavailable("Version endpoint unavailable");
+        : unavailable("Version endpoint unavailable"),
+    };
+  }
+
+  // The settings panel's Debug tab is live while it is open: this repaints
+  // every diagnostics tick, whether or not the floating pill is shown.
+  settingsDebugPaneElement() {
+    if (this.settingsTab !== "debug") return null;
+    if (this.$("[data-world-settings]")?.dataset.open !== "true") return null;
+    return this.$("[data-world-debug-live]");
+  }
+
+  renderDebugSettingsPane(pane, snapshot) {
+    const readouts = this.diagnosticsDetailReadouts(snapshot);
+    for (const [slot, html] of Object.entries({
+      renderer: readouts.renderer,
+      "frame-health": readouts.frameHealth,
+      input: readouts.input,
+      memory: readouts.memory,
+      "world-state": readouts.worldState,
+      connection: readouts.connection,
+      traffic: readouts.traffic,
+      queues: readouts.queues,
+      build: readouts.build,
+    })) {
+      const detail = pane.querySelector(`[data-world-debug-${slot}]`);
+      if (detail) detail.innerHTML = html;
     }
+    const musicDetail = pane.querySelector("[data-world-debug-music]");
+    if (musicDetail) musicDetail.textContent = readouts.music;
+    const suggestionList = this.$("[data-world-debug-suggestions]");
+    if (!suggestionList) return;
+    const isAdmin = this.identity?.isAdmin === true;
+    const suggestions = worldDebugSuggestions(snapshot, {
+      isAdmin,
+      elements: isAdmin ? this.world?.listWorldElements?.() || [] : [],
+    });
+    suggestionList.innerHTML = suggestions
+      .map(
+        (suggestion) =>
+          `<li data-level="${suggestion.level}">${escapeHTML(suggestion.text)}</li>`,
+      )
+      .join("");
   }
 
   startActivityTicker() {
     const messages = () => {
-      const nodes = liveNodeRecords(this.network, this.mirrorCatalogs);
+      // Read the cached records: rebuilding the normalized mirror catalog
+      // every 6.5s tick just to name one node dominated idle allocations.
+      const nodes = Array.isArray(this.liveMirrorNodes)
+        ? this.liveMirrorNodes
+        : [];
       const repos = this.repositories;
       const output = [
         nodes.length
@@ -24801,6 +25875,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
+    this.worldActivityLoungeRenderedMinute = -1;
     // Signing out drops the account's active-time row off the player's own
     // chest instead of freezing the last reading there.
     if (this.identity) this.identity.totalActiveMs = null;
@@ -24823,6 +25898,7 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
+    const wasAuthenticated = this.sessionAuthenticated;
     this.sessionAuthenticated = true;
     this.identity.name = sanitizePresenceText(
       ticket.name,
@@ -24845,6 +25921,12 @@ class ForkMeshWorld extends HTMLElement {
     this.worldTicketExpires = Number(ticket.expiresAt || 0);
     void this.loadWorldPreferences();
     this.startAdminErrorPolling();
+    // The ticket usually authenticates after the initial loadContext() already
+    // gave up on personal pings ("signed-out"), which stranded the board empty
+    // until the next 60s poll. Fetch them the moment the session proves out.
+    if (!wasAuthenticated || this.notificationsState === "signed-out") {
+      void this.refreshPersonalNotifications(this.isEventsPanelOpen());
+    }
     return true;
   }
 
@@ -24890,6 +25972,7 @@ class ForkMeshWorld extends HTMLElement {
       : String(ticket.ticket || "");
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
+    this.worldActivityLoungeRenderedMinute = -1;
     this.syncCurrentWorldActivity();
     return true;
   }
@@ -24902,7 +25985,11 @@ class ForkMeshWorld extends HTMLElement {
       this.sessionAuthenticated &&
       Boolean(this.worldActivityBaseAt) &&
       !document.hidden;
-    const currentTotal = this.currentWorldActivityMs();
+    // Quantized to whole minutes: the live counter otherwise changes on every
+    // call, which made the leaderboard repaint (a 2048px canvas + GPU texture
+    // upload) on every peer frame instead of only when a row really moved.
+    const currentTotal =
+      Math.floor(this.currentWorldActivityMs() / 60_000) * 60_000;
     return this.memberDirectory.map((member) => {
       if (
         !ownName ||
@@ -24933,7 +26020,18 @@ class ForkMeshWorld extends HTMLElement {
     const renderedSecond = Math.floor(this.currentWorldActivityMs() / 1000);
     if (renderedSecond === this.worldActivityRenderedSecond) return;
     this.worldActivityRenderedSecond = renderedSecond;
-    this.syncMemberLounge();
+    // The lounge renders whole-minute activity (leaderboardMembers quantizes
+    // totals), yet this one-second tick was rebuilding it on every call:
+    // hundreds of member-fact derivations, per-avatar badge keys, and the
+    // leaderboard repaint key stringify each second for output that could
+    // not have changed. Membership and presence changes reach the lounge
+    // through their own syncMemberLounge call sites, so this path only needs
+    // to fire when the rendered minute advances.
+    const renderedLoungeMinute = Math.floor(renderedSecond / 60);
+    if (renderedLoungeMinute !== this.worldActivityLoungeRenderedMinute) {
+      this.worldActivityLoungeRenderedMinute = renderedLoungeMinute;
+      this.syncMemberLounge();
+    }
     this.syncOwnBadgeActivity();
   }
 
@@ -24964,6 +26062,7 @@ class ForkMeshWorld extends HTMLElement {
     this.worldActivityContinuation = "";
     this.worldActivityRenderedSecond = -1;
     this.worldActivityRenderedMinute = -1;
+    this.worldActivityLoungeRenderedMinute = -1;
     this.syncMemberLounge();
 
     const session = validWorldSession();
@@ -25511,6 +26610,8 @@ class ForkMeshWorld extends HTMLElement {
       const departed = String(message.id || "");
       peersChanged = this.remotePlayers.delete(departed);
       this.pendingKnocks.delete(departed);
+      this.pendingHandshakes.delete(departed);
+      this.sentHandshakeOffers.delete(departed);
     } else if (
       message.type === "interaction" &&
       message.kind === "knock" &&
@@ -25530,6 +26631,53 @@ class ForkMeshWorld extends HTMLElement {
         this.$("#world-detail-title")?.textContent?.includes("Neighborhood")
       ) {
         this.openLandmark("neighborhood");
+      }
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "handshake-offer" &&
+      message.from
+    ) {
+      const offererId = String(message.from);
+      const offerer = this.remotePlayers.get(offererId);
+      this.pendingHandshakes.set(offererId, {
+        id: offererId,
+        name: offerer?.name || "A visitor",
+        at: Date.now(),
+      });
+      this.toast(
+        `${offerer?.name || "A visitor"} offered you a handshake. Select their avatar to shake back or decline; a handshake is a greeting and changes nothing else.`,
+      );
+      this.refreshWorldMemberDetail(offererId);
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "handshake-decline" &&
+      message.from
+    ) {
+      const peer = this.remotePlayers.get(String(message.from));
+      this.sentHandshakeOffers.delete(String(message.from));
+      this.toast(
+        `${peer?.name || "That visitor"} did not shake hands. No reason was shared.`,
+      );
+      this.refreshWorldMemberDetail(String(message.from));
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "handshake" &&
+      message.from &&
+      message.with
+    ) {
+      // An accepted handshake is public: every browser in the room animates
+      // the same pair, including the visitor who offered it.
+      const accepterId = String(message.from);
+      const offererId = String(message.with);
+      this.playWorldHandshake(accepterId, offererId);
+      if (offererId === this.serverPeerId) {
+        const accepter = this.remotePlayers.get(accepterId);
+        this.sentHandshakeOffers.delete(accepterId);
+        this.pendingHandshakes.delete(accepterId);
+        this.toast(
+          `${accepter?.name || "A visitor"} shook your hand.`,
+        );
+        this.refreshWorldMemberDetail(accepterId);
       }
     } else if (
       message.type === "interaction" &&
@@ -25570,7 +26718,20 @@ class ForkMeshWorld extends HTMLElement {
     // Pongs and targeted interactions do not change the public roster. Avoid
     // re-walking every avatar and rebuilding unrelated scene metrics for those
     // high-frequency frames.
-    if (peersChanged) this.renderPeers();
+    if (peersChanged) this.schedulePeerRender();
+  }
+
+  // A full renderPeers() pass walks the entire member directory (badges,
+  // lounge, aquarium, capacity tables), so running it once per inbound peer
+  // frame scaled O(peers × members) each second. One coalesced pass shortly
+  // after the first frame of a burst keeps avatars fresh — peers only publish
+  // movement about once a second and the scene interpolates between targets.
+  schedulePeerRender() {
+    if (this.peerRenderTimer) return;
+    this.peerRenderTimer = window.setTimeout(() => {
+      this.peerRenderTimer = 0;
+      this.renderPeers();
+    }, 180);
   }
 
   handleMirrorPush(message) {
@@ -26711,11 +27872,16 @@ class ForkMeshWorld extends HTMLElement {
     if (this.destroyed) return;
     if (this.spawnSelected) this.captureWorldPosition(true);
     this.destroyed = true;
+    this.disarmCrashGuard();
     this.closeScreenshotUI();
     this.clearPullReviewScrollTracking();
     document.removeEventListener("visibilitychange", this.handleVisibility);
     window.visualViewport?.removeEventListener(
       "resize",
+      this.syncViewportHeight,
+    );
+    window.visualViewport?.removeEventListener(
+      "scroll",
       this.syncViewportHeight,
     );
     window.removeEventListener("orientationchange", this.syncViewportHeight);
@@ -26728,6 +27894,7 @@ class ForkMeshWorld extends HTMLElement {
       true,
     );
     window.removeEventListener("keydown", this.handlePublicInputActivity);
+    window.removeEventListener("keydown", this.handleQuickChatEscape);
     window.removeEventListener("message", this.handleWorldChatMessage);
     window.removeEventListener(
       "forkmesh:world-chat-native",
@@ -26752,6 +27919,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearTimeout(this.peerGraceTimer);
     window.clearTimeout(this.profilePresenceTimer);
     window.clearTimeout(this.movementSendTimer);
+    window.clearTimeout(this.peerRenderTimer);
+    window.cancelAnimationFrame(this.viewportMetricsFrame);
     window.clearTimeout(this.positionWriteTimer);
     window.clearTimeout(this.toastTimer);
     window.clearTimeout(this.inactiveSyncTimer);
