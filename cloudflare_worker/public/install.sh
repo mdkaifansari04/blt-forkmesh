@@ -16,7 +16,7 @@ set -euo pipefail
 # Installer script version. Bump on every change to install.sh so a user can
 # confirm — from the banner printed at startup — that they are running the
 # freshly deployed script and not a cached/older copy from the CDN edge.
-INSTALLER_VERSION="0.14.1 (2026-07-28)"
+INSTALLER_VERSION="0.15.0 (2026-07-31)"
 
 # ForkMesh is self-hosted: the same server that serves this script also serves
 # the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
@@ -1852,6 +1852,288 @@ launch_forkmesh() {
   return 1
 }
 
+# --- automatic Cloudflare Tunnel provisioning (opt-in) -----------------------
+# When FORKMESH_TUNNEL_HOSTNAME (e.g. mirror9.forkmesh.com) and
+# CLOUDFLARE_API_TOKEN are both set, a fresh headless node provisions its own
+# direct-HTTPS mirror endpoint right after install: the pinned cloudflared and
+# mirror tools are installed, the relay's mirror-router public key is
+# discovered, tools/cloudflare_tunnel_bootstrap.py runs AS THE SERVICE USER
+# (the API token only ever travels through the child environment — never argv,
+# never logged), and the node is restarted so its startup auto-start
+# (control/autoStartMirrorServices) brings up the gateway, Tunnel connector,
+# and signed endpoint registration. Optional knobs:
+#   FORKMESH_TUNNEL_ZONE            Cloudflare zone (default: hostname minus
+#                                   its first label, e.g. forkmesh.com)
+#   FORKMESH_CLOUDFLARE_ACCOUNT_ID  passed as --account-id when set
+#   FORKMESH_RELAY_HOSTNAME         relay Worker host (default: $FORKMESH_HOST)
+# Every failure here is soft: a tunnel that cannot be provisioned must never
+# break the plain install that already succeeded.
+FORKMESH_TUNNEL_HOSTNAME="${FORKMESH_TUNNEL_HOSTNAME:-}"
+FORKMESH_TUNNEL_ZONE="${FORKMESH_TUNNEL_ZONE:-}"
+FORKMESH_CLOUDFLARE_ACCOUNT_ID="${FORKMESH_CLOUDFLARE_ACCOUNT_ID:-}"
+FORKMESH_RELAY_HOSTNAME="${FORKMESH_RELAY_HOSTNAME:-}"
+
+# Copy the pinned mirror tools into <prefix>/share/forkmesh/tools — one of the
+# exact locations the app's findPinnedTool() probes relative to its binary — so
+# the daemon can find mirror_gateway.py / cloudflared_install.py at runtime.
+# Source order: an installer source checkout, the root service's seeded
+# flagship checkout, else a sparse fetch from the resolved mirrors (the same
+# way the binary's release manifest is fetched).
+_tunnel_stage_tools() {
+  local tools_dir="$1" tmp="" src="" f
+  local wanted="cloudflared_install.py cloudflare_tunnel_bootstrap.py mirror_gateway.py"
+  for src in "$SRC/tools" "$SYSTEMD_STATE_DIR/repositories/forkmesh/tools" ""; do
+    [ -n "$src" ] && [ -f "$src/cloudflare_tunnel_bootstrap.py" ] && break
+  done
+  if [ -z "$src" ]; then
+    # Mirrors were already resolved for the binary download; a direct-upload
+    # install that never resolved any must not hard-fail this soft path.
+    [ "${#REPO_CANDIDATES[@]}" -gt 0 ] || return 1
+    tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-tools.XXXXXX" 2>/dev/null)" || return 1
+    local repo fetched=1
+    for repo in "${REPO_CANDIDATES[@]}"; do
+      # shellcheck disable=SC2086
+      if _sparse_fetch_file "$repo" "$tmp" \
+           tools/cloudflare_tunnel_bootstrap.py \
+           tools/cloudflared_install.py \
+           tools/mirror_gateway.py; then
+        fetched=0
+        break
+      fi
+    done
+    if [ "$fetched" -ne 0 ]; then
+      rm -rf "$tmp"
+      return 1
+    fi
+    src="$tmp/tools"
+  fi
+  mkdir -p "$tools_dir" || { [ -n "$tmp" ] && rm -rf "$tmp"; return 1; }
+  for f in $wanted; do
+    [ -f "$src/$f" ] || continue
+    install -m 0644 "$src/$f" "$tools_dir/$f" || { [ -n "$tmp" ] && rm -rf "$tmp"; return 1; }
+  done
+  [ -n "$tmp" ] && rm -rf "$tmp"
+  [ -f "$tools_dir/cloudflare_tunnel_bootstrap.py" ]
+}
+
+# Merge the [control] keys the daemon's mirror services read into the service
+# user's QSettings conf. Idempotent: existing values for these keys are
+# replaced, everything else in the file is preserved.
+_tunnel_write_control_settings() {
+  local conf="$1" relay="$2" mirror="$3" node="$4" rkey="$5"
+  local staged="$conf.tunnel.$$"
+  mkdir -p "$(dirname "$conf")" || return 1
+  [ -f "$conf" ] || : > "$conf"
+  awk -v relay="$relay" -v mirror="$mirror" -v node="$node" -v rkey="$rkey" '
+    function emit() {
+      print "cloudflareHostname=" relay
+      print "cloudflareMirrorHostname=" mirror
+      print "cloudflareNodeName=" node
+      print "directMirrorRouterPublicKey=" rkey
+    }
+    /^\[control\]$/ { print; emit(); inserted = 1; incontrol = 1; next }
+    /^\[/ { incontrol = 0 }
+    incontrol && (/^cloudflareHostname=/ || /^cloudflareMirrorHostname=/ ||
+                  /^cloudflareNodeName=/ || /^directMirrorRouterPublicKey=/) { next }
+    { print }
+    END { if (!inserted) { print "[control]"; emit() } }
+  ' "$conf" > "$staged" || { rm -f "$staged"; return 1; }
+  mv "$staged" "$conf"
+}
+
+provision_cloudflare_tunnel() {
+  CURRENT_STEP="tunnel"
+  local hostname zone relay_host node_name account
+  local state_home conf appdata gw_root node_binary tools_dir cfd_dest
+  local service_user="forkmesh-node" as_service=0
+  hostname="$(printf '%s' "$FORKMESH_TUNNEL_HOSTNAME" | tr 'A-Z' 'a-z')"
+  printf '%s' "$hostname" | grep -Eq '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$' ||
+    { warn "FORKMESH_TUNNEL_HOSTNAME is not a DNS hostname; skipping tunnel provisioning."; return 1; }
+  zone="$(printf '%s' "${FORKMESH_TUNNEL_ZONE:-${hostname#*.}}" | tr 'A-Z' 'a-z')"
+  relay_host="${FORKMESH_RELAY_HOSTNAME:-${FORKMESH_HOST#*://}}"
+  relay_host="${relay_host%%/*}"
+  case "$LAUNCH_MODE" in
+    service) as_service=1 ;;
+    daemon)  as_service=0 ;;
+    *) warn "Tunnel provisioning targets headless nodes; skipping (launch mode: ${LAUNCH_MODE:-none})."; return 1 ;;
+  esac
+  command -v python3 >/dev/null 2>&1 ||
+    { warn "python3 is required for tunnel provisioning; skipping."; return 1; }
+  command -v openssl >/dev/null 2>&1 ||
+    { warn "openssl is required to derive the node public key; skipping tunnel provisioning."; return 1; }
+  if [ "$as_service" -eq 1 ]; then
+    command -v runuser >/dev/null 2>&1 ||
+      { warn "runuser is required to bootstrap the tunnel as $service_user; skipping."; return 1; }
+    state_home="$SYSTEMD_STATE_DIR"
+    conf="$state_home/.config/ForkMesh/ForkMesh.conf"
+    appdata="$state_home/.local/share/ForkMesh"
+    node_binary="$SYSTEMD_BIN"
+    tools_dir="/usr/local/share/forkmesh/tools"
+    cfd_dest="/usr/local/bin/cloudflared"
+  else
+    state_home="$HOME"
+    conf="${XDG_CONFIG_HOME:-$HOME/.config}/ForkMesh/ForkMesh.conf"
+    appdata="${XDG_DATA_HOME:-$HOME/.local/share}/ForkMesh"
+    node_binary="$BIN"
+    tools_dir="$(dirname "$BIN_DIR")/share/forkmesh/tools"
+    cfd_dest="$appdata/mirror-gateway/bin/cloudflared"
+  fi
+  gw_root="$appdata/mirror-gateway"
+  # Node name for the manifest/registration: the operator's chosen name when it
+  # fits the relay's node-name shape, else the hostname's first label.
+  node_name="$(printf '%s' "$FORKMESH_NODE_NAME" | tr 'A-Z' 'a-z')"
+  printf '%s' "$node_name" | grep -Eq '^[a-z][a-z0-9-]{0,62}$' ||
+    node_name="${hostname%%.*}"
+  printf '%s' "$node_name" | grep -Eq '^[a-z][a-z0-9-]{0,62}$' ||
+    { warn "Could not derive a valid node name for the tunnel; skipping."; return 1; }
+
+  say "Provisioning the direct HTTPS mirror endpoint $hostname (zone $zone)…"
+
+  if ! _tunnel_stage_tools "$tools_dir"; then
+    warn "Could not stage the pinned mirror tools into $tools_dir; skipping tunnel provisioning."
+    return 1
+  fi
+  say "  Pinned mirror tools staged in $tools_dir"
+
+  # Pinned cloudflared connector. A system cloudflared on the PATH wins (same
+  # preference the app applies); otherwise install the exact SHA-256-pinned
+  # release with the bundled verifier — no shell pipeline.
+  if command -v cloudflared >/dev/null 2>&1; then
+    say "  cloudflared: already present ($(command -v cloudflared))"
+  else
+    if [ "$as_service" -eq 0 ]; then
+      mkdir -p "$gw_root/bin" && chmod 0700 "$gw_root" "$gw_root/bin" || true
+    fi
+    if python3 "$tools_dir/cloudflared_install.py" \
+         --destination "$cfd_dest" --json-stdout >/dev/null 2>&1; then
+      say "  Installed the SHA-256-pinned cloudflared connector to $cfd_dest"
+    else
+      # The daemon can install its own managed copy on first start, so this is
+      # a warning, not a dead end.
+      warn "Could not install the pinned cloudflared now; the node will retry with its own verified installer."
+    fi
+  fi
+
+  # The Worker's mirror-router public key — the same discovery endpoint the
+  # desktop uses before registering a direct endpoint.
+  local router_body router_key
+  router_body="$(curl -fsS -m 20 "https://$relay_host/api/mirrors/https" 2>/dev/null || true)"
+  router_key="$(printf '%s\n' "$router_body" |
+    sed -n 's/.*"routerPublicKey"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  if ! printf '%s' "$router_key" | grep -Eq '^[A-Za-z0-9_-]{43}$'; then
+    warn "Could not discover a valid mirror-router public key from https://$relay_host/api/mirrors/https; skipping tunnel provisioning."
+    return 1
+  fi
+
+  # The daemon launched above generates the node identity on first start; wait
+  # (bounded) for the key to exist so the manifest can be signed with it.
+  local identity_pem="$appdata/identity/ed25519.pem" waited=0
+  say "  Waiting for the node identity key (up to 90s)…"
+  while [ ! -s "$identity_pem" ] && [ "$waited" -lt 90 ]; do
+    sleep 2
+    waited=$((waited + 2))
+  done
+  if [ ! -s "$identity_pem" ]; then
+    warn "The node identity key never appeared at $identity_pem; skipping tunnel provisioning."
+    return 1
+  fi
+  # base64url (no padding) of the raw 32-byte Ed25519 public key — the same
+  # encoding the app publishes.
+  local node_pubkey
+  node_pubkey="$(openssl pkey -in "$identity_pem" -pubout -outform DER 2>/dev/null |
+    tail -c 32 | base64 | tr '+/' '-_' | tr -d '=')"
+  if ! printf '%s' "$node_pubkey" | grep -Eq '^[A-Za-z0-9_-]{43}$'; then
+    warn "Could not derive the node public key from $identity_pem; skipping tunnel provisioning."
+    return 1
+  fi
+
+  # Stop the node before rewriting its QSettings: the running app syncs the
+  # whole conf file and would clobber keys written underneath it.
+  if [ "$as_service" -eq 1 ]; then
+    systemctl stop forkmesh-node.service ||
+      { warn "Could not stop forkmesh-node.service for tunnel provisioning."; return 1; }
+  else
+    stop_forkmesh_daemons "tunnel provisioning"
+  fi
+  # Restart the node no matter how the bootstrap below fares — a failed tunnel
+  # must leave a working plain node behind.
+  _tunnel_restart_node() {
+    if [ "$as_service" -eq 1 ]; then
+      systemctl start forkmesh-node.service ||
+        warn "Could not restart forkmesh-node.service; start it manually."
+    else
+      launch_forkmesh || warn "Could not relaunch the ForkMesh daemon; start it manually with: $BIN"
+    fi
+  }
+
+  if ! _tunnel_write_control_settings "$conf" "$relay_host" "$hostname" "$node_name" "$router_key"; then
+    warn "Could not write the [control] mirror settings to $conf."
+    _tunnel_restart_node
+    return 1
+  fi
+  chmod 0600 "$conf" 2>/dev/null || true
+  if [ "$as_service" -eq 1 ]; then
+    chown "$service_user:$service_user" "$conf" 2>/dev/null || true
+  fi
+
+  # Provision tunnel + DNS + signed manifest + connector token. Exactly the
+  # argument list the desktop's Control Node page builds
+  # (ControlNode.cpp buildCloudflareTunnelBootstrapCommand); the Cloudflare API
+  # token travels only in the child environment.
+  if [ "$as_service" -eq 1 ]; then
+    say "  Running the pinned Cloudflare Tunnel bootstrap as $service_user…"
+  else
+    say "  Running the pinned Cloudflare Tunnel bootstrap…"
+  fi
+  set -- \
+    "$tools_dir/cloudflare_tunnel_bootstrap.py" \
+    --hostname "$hostname" \
+    --zone "$zone" \
+    --node-name "$node_name" \
+    --origin-host 127.0.0.1 \
+    --origin-port 8790 \
+    --gateway-config "$gw_root/config.json" \
+    --mirror-public-key "$node_pubkey" \
+    --manifest-signer-command "'$node_binary' --sign-mirror-manifest" \
+    --manifest-output "$gw_root/forkmesh-mirror.json" \
+    --tunnel-token-file "$gw_root/connector.token"
+  if [ -n "$FORKMESH_CLOUDFLARE_ACCOUNT_ID" ]; then
+    set -- "$@" --account-id "$FORKMESH_CLOUDFLARE_ACCOUNT_ID"
+  fi
+  local bootstrap_rc=0
+  if [ "$as_service" -eq 1 ]; then
+    CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" \
+    HOME="$state_home" \
+    XDG_DATA_HOME="$state_home/.local/share" \
+    TMPDIR="$state_home/tmp" \
+    PYTHONUNBUFFERED=1 \
+      runuser -u "$service_user" -- python3 "$@" </dev/null || bootstrap_rc=$?
+  else
+    CLOUDFLARE_API_TOKEN="$CLOUDFLARE_API_TOKEN" \
+    PYTHONUNBUFFERED=1 \
+      python3 "$@" </dev/null || bootstrap_rc=$?
+  fi
+  if [ "$bootstrap_rc" -ne 0 ]; then
+    warn "Cloudflare Tunnel bootstrap failed (exit $bootstrap_rc); the node keeps running without a tunnel."
+    _tunnel_restart_node
+    return 1
+  fi
+  if [ ! -s "$gw_root/connector.token" ]; then
+    warn "The Tunnel bootstrap wrote no connector token; the node keeps running without a tunnel."
+    _tunnel_restart_node
+    return 1
+  fi
+
+  _tunnel_restart_node
+  say "Direct HTTPS mirror endpoint provisioned:"
+  say "  Hostname:  https://$hostname  (tunnel + proxied DNS in zone $zone)"
+  say "  Node name: $node_name    Relay: $relay_host"
+  say "  The restarted node auto-starts its gateway, Tunnel connector, and"
+  say "  signed endpoint registration (Settings key control/autoStartMirrorServices)."
+  diag tunnel 1
+  return 0
+}
+
 CURRENT_STEP="launch"
 LOG_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
 # Update-in-place restart (adhoc): the binary/build output has just been
@@ -1920,6 +2202,16 @@ else
   say "  Type 'help' once it starts. Headless nodes should run under a dedicated"
   say "  unprivileged account; this installer configures that automatically when run as root."
   diag launch 1 "manual"
+fi
+
+# Opt-in automatic Cloudflare Tunnel provisioning for the fresh headless node
+# (see provision_cloudflare_tunnel above). Every failure is soft: the plain
+# install above already succeeded and stays that way.
+if [ -n "$FORKMESH_TUNNEL_HOSTNAME" ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+  provision_cloudflare_tunnel ||
+    warn "Automatic tunnel provisioning did not complete; the node is installed and running without a direct HTTPS endpoint."
+elif [ -n "$FORKMESH_TUNNEL_HOSTNAME" ]; then
+  warn "FORKMESH_TUNNEL_HOSTNAME is set but CLOUDFLARE_API_TOKEN is not; skipping automatic tunnel provisioning."
 fi
 
 # Whole install finished successfully; the EXIT trap only fires on failure.
