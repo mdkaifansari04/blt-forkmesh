@@ -83,7 +83,10 @@ def test_world_notification_table_has_owner_scoped_direct_delete():
             "async def notifications_handler"))
         :ENTRY_TEXT.index("async def mirror_requests_handler")
     ]
-    assert "_authed_account_name(env, request, data) != node" in delete_block
+    # The owner is proven either by a session (browser) or by an account-key
+    # signature that names this exact row (desktop, adhoc #77).
+    assert "_alert_inbox_account_name(" in delete_block
+    assert "resource=item_id) != node" in delete_block
     assert "recipient_bi=? AND dedupe_bi=?" in delete_block
 
 
