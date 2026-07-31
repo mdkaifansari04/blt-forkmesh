@@ -782,7 +782,7 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=acb09d937175" defer></script>
+    <script src="/dashboard.js?v=fb93966d1db2" defer></script>
     <script src="/dashboard-chat.js?v=34d300c62b26" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="network">
@@ -862,7 +862,7 @@
             <button
               id="notificationToggle"
               type="button"
-              aria-label="Open notifications"
+              aria-label="Open pings"
               aria-expanded="false"
               class="relative flex h-9 w-9 items-center justify-center rounded-md border border-border bg-background text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
             >
@@ -874,13 +874,13 @@
               class="hidden absolute right-0 top-full mt-2 w-80 rounded-lg border border-border bg-card shadow-2xl shadow-background/40 overflow-hidden z-50"
             >
               <div class="px-3 py-2 border-b border-border flex items-center justify-between">
-                <span class="text-xs font-medium text-foreground">Notifications</span>
+                <span class="text-xs font-medium text-foreground">Pings</span>
                 <span data-notification-count class="text-[10px] text-muted-foreground font-mono">0 new</span>
               </div>
               <div data-notification-preview-list class="py-1"></div>
               <div class="border-t border-border p-2">
                 <button data-show-all-notifications type="button" class="w-full rounded-md px-3 py-2 text-center text-xs font-medium text-primary hover:bg-secondary transition-colors">
-                  Show all notifications
+                  Show all pings
                 </button>
               </div>
             </div>
@@ -1287,14 +1287,14 @@
       aria-modal="true"
       aria-labelledby="notificationModalTitle"
     >
-      <button data-notification-modal-backdrop type="button" aria-label="Close notifications" class="absolute inset-0 cursor-default"></button>
+      <button data-notification-modal-backdrop type="button" aria-label="Close pings" class="absolute inset-0 cursor-default"></button>
       <div class="relative z-10 flex max-h-[min(760px,calc(100vh-3rem))] w-full max-w-4xl flex-col overflow-hidden rounded-lg border border-border bg-card shadow-2xl shadow-background/60">
         <div class="flex items-center justify-between border-b border-border px-4 py-3">
           <div class="min-w-0">
-            <h2 id="notificationModalTitle" class="text-sm font-semibold text-foreground">Notifications</h2>
+            <h2 id="notificationModalTitle" class="text-sm font-semibold text-foreground">Pings</h2>
             <p class="mt-0.5 text-xs text-muted-foreground">Read node, repository, and network updates.</p>
           </div>
-          <button data-close-notification-modal type="button" aria-label="Close notifications" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
+          <button data-close-notification-modal type="button" aria-label="Close pings" class="rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">
             <i data-lucide="x" class="h-4 w-4"></i>
           </button>
         </div>

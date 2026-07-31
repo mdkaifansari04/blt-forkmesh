@@ -243,11 +243,12 @@ struct RepositoryRecord {
 // related screen/item when double-clicked (issue #292). An empty kind means the
 // notification carries no destination and the row is inert.
 struct NotificationLink {
-    QString kind;    // "issue" | "pull" | "discussion" | "commit"
+    // "issue" | "pull" | "discussion" | "commit" | "release" | "repo" | "chat"
+    QString kind;
     QString owner;   // repo owner
     QString name;    // repo name
     int number = -1; // issue / PR / discussion number
-    QString ref;     // commit hash, when kind == "commit"
+    QString ref;     // commit hash ("commit") or chat channel ("chat")
 
     bool isValid() const { return !kind.isEmpty(); }
 };

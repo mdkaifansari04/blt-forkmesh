@@ -4766,7 +4766,7 @@ void MainWindow::rebuildGlobalSearchResults()
     static const Sec kSections[] = {
         {"Home / Repositories", "home", 0},
         {"Chat", "comment", 2},
-        {"Notifications", "bell", 3},
+        {"Pings", "bell", 3},
         {"Network log", "list-unordered", 4},
         {"Hosts", "server", 7},
         {"Relays", "broadcast", 8},
@@ -8137,7 +8137,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *notifyButton = new QPushButton("Notify");
     m_notifyButton = notifyButton;
     notifyButton->setObjectName("repoAction");
-    notifyButton->setToolTip("Notifications");
+    notifyButton->setToolTip("Pings");
     setOcticon(notifyButton, "bell", 16);
     m_forkButton = new QPushButton("Fork 0");
     m_mirrorButton = new QPushButton("Mirror 1");

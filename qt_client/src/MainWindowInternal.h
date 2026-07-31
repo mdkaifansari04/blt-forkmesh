@@ -2569,6 +2569,11 @@ const QString kEmailNotifyHostOfflineSetting = QStringLiteral("notifications/ema
 // whose email is verified — plain nodes and unverified users stay silent, so
 // #welcome reads as a genuine roll-call of real people.
 const QString kWelcomeChannel = QStringLiteral("#welcome");
+// A #welcome greeting only raises a "new user joined" ping while it is this
+// fresh — peers replay their in-session history on every reconnect, and a
+// replayed greeting that fell out of the id-dedupe set must not re-ping for a
+// join the user already saw.
+const qint64 kWelcomePingFreshMs = 5 * 60 * 1000;
 // Legacy QSettings migration prefix retained for installs that already posted to
 // an older welcome room.
 const QString kLegacyWelcomeAnnouncedSettingPrefix =
