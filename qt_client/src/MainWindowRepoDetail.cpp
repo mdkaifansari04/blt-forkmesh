@@ -4115,19 +4115,36 @@ void MainWindow::fillCommitStats(int loadGen)
     // the same cap, or no cap while a search is showing every commit.
     GitKeepAlive keepAlive;
     QStringList args{"log", "--numstat", "--format=%x1e%H"};
+    // Without this a merge diffs against no parent at all and reads as "0 files
+    // changed" even when it brought in hundreds (adhoc #74). --diff-merges is
+    // git >= 2.31, so fall back to the plain read if this git doesn't know it —
+    // merges stay blank there, but everything else still fills.
+    args << "--diff-merges=first-parent";
     args << "-n"
          << QString::number(m_commitsShowingAll ? kCommitSearchDepth
                                                 : m_commitsLimit);
     args << currentRef();
     QByteArray out;
-    if (!runGitCapture(dir, args, &out, nullptr))
-        return;
+    if (!runGitCapture(dir, args, &out, nullptr)) {
+        args.removeAll(QStringLiteral("--diff-merges=first-parent"));
+        if (!runGitCapture(dir, args, &out, nullptr))
+            return;
+    }
     // The event-loop pump above can run another load while git worked; if so its
     // rows are different and these stats no longer line up. Drop them.
     if (loadGen != m_commitsLoadGen || !m_commitsTable)
         return;
 
-    struct CommitStat { int files = 0; int adds = 0; int dels = 0; };
+    // The hover box previews the paths, so keep the first few per commit
+    // ("path\tadds\tdels"); a merge can touch hundreds, and holding every one of
+    // them for 300 rows is memory the tooltip would never show.
+    constexpr int kHoverFilePreview = 12;
+    struct CommitStat {
+        int files = 0;
+        int adds = 0;
+        int dels = 0;
+        QStringList preview;
+    };
     QHash<QString, CommitStat> stats;
     for (const QByteArray &record : out.split('\x1e')) {
         const QStringList lines =
@@ -4147,6 +4164,10 @@ void MainWindow::fillCommitStats(int loadGen)
             const int delCount = cols.at(1).toInt(&ok);
             if (ok)
                 s.dels += delCount;
+            if (s.preview.size() < kHoverFilePreview)
+                s.preview << QStringLiteral("%1\t%2\t%3")
+                                 .arg(cols.mid(2).join(QLatin1Char('\t')),
+                                      cols.at(0), cols.at(1));
         }
         stats.insert(lines.first(), s); // full hash (%H) is the record's first line
     }
@@ -4158,13 +4179,14 @@ void MainWindow::fillCommitStats(int loadGen)
     const bool wasSorting = m_commitsTable->isSortingEnabled();
     m_commitsTable->setSortingEnabled(false);
     for (int row = 0; row < m_commitsTable->rowCount(); ++row) {
-        const QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
+        QTableWidgetItem *sum = m_commitsTable->item(row, kCommitSummaryCol);
         if (!sum || sum->data(kCommitRowKindRole).toInt() != 0)
             continue; // expanded file rows share the hash — commits only
         const auto it = stats.constFind(sum->data(Qt::UserRole).toString());
         if (it == stats.constEnd())
             continue;
         const CommitStat &s = it.value();
+        sum->setData(kCommitFilesRole, s.preview);
         if (QTableWidgetItem *f = m_commitsTable->item(row, 3)) {
             f->setText(QString::number(s.files));
             f->setData(kTableSortRole, s.files);
@@ -4209,14 +4231,24 @@ static QList<CommitFileStat> commitFileStats(const QString &dir,
 {
     QList<CommitFileStat> files;
     QByteArray out;
-    // --root so a repository's first commit lists its files too.
+    // --root so a repository's first commit lists its files too; --diff-merges
+    // so a merge lists what it brought in (against its first parent) instead of
+    // the empty diff git shows for merges by default (adhoc #74). That flag is
+    // git >= 2.31 — on older git the read fails or comes back empty, so retry
+    // without it rather than losing the file list for ordinary commits.
+    const QStringList base{QStringLiteral("diff-tree"), QStringLiteral("--root"),
+                           QStringLiteral("--no-commit-id"),
+                           QStringLiteral("--numstat"), QStringLiteral("-r"),
+                           QStringLiteral("-M")};
     if (!runGitCapture(dir,
-                       {QStringLiteral("diff-tree"), QStringLiteral("--root"),
-                        QStringLiteral("--no-commit-id"),
-                        QStringLiteral("--numstat"), QStringLiteral("-r"),
-                        QStringLiteral("-M"), hash},
-                       &out, nullptr))
-        return files;
+                       base + QStringList{
+                                  QStringLiteral("--diff-merges=first-parent"),
+                                  hash},
+                       &out, nullptr) ||
+        out.isEmpty()) {
+        if (!runGitCapture(dir, base + QStringList{hash}, &out, nullptr))
+            return files;
+    }
     const QStringList lines =
         QString::fromUtf8(out).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
     for (const QString &line : lines) {
@@ -4352,13 +4384,35 @@ void MainWindow::updateCommitRowHover(int row)
     // Files / adds / dels arrive from the deferred stat fill; before that the
     // cells hold the "·" pending dot.
     const QString filesTxt = filesIt ? filesIt->text() : QString();
-    if (!filesTxt.isEmpty() && filesTxt != QString::fromUtf8("\xC2\xB7"))
+    if (!filesTxt.isEmpty() && filesTxt != QString::fromUtf8("\xC2\xB7")) {
         html += QString::fromUtf8("<br>%1 file%2 changed \xC2\xB7 "
                                   "<span style='color:#3fb950'>%3</span> "
                                   "<span style='color:#f85149'>%4</span>")
                     .arg(filesTxt, filesTxt == QStringLiteral("1") ? "" : "s",
                          addsIt ? addsIt->text() : QString(),
                          delsIt ? delsIt->text() : QString());
+        // …and which files, the way a desktop git client's commit box does
+        // (adhoc #74). The stat fill keeps the first few paths per commit; the
+        // rest are summarised by a trailing count.
+        const QStringList preview = sum->data(kCommitFilesRole).toStringList();
+        for (const QString &entry : preview) {
+            const QStringList cols = entry.split(QLatin1Char('\t'));
+            if (cols.isEmpty())
+                continue;
+            html += QString::fromUtf8(
+                        "<br><span style='color:#8b949e'>%1</span> "
+                        "<span style='color:#3fb950'>+%2</span> "
+                        "<span style='color:#f85149'>\xE2\x88\x92%3</span>")
+                        .arg(cols.first().toHtmlEscaped())
+                        .arg(cols.value(1).toInt())  // "-" for binary → 0
+                        .arg(cols.value(2).toInt());
+        }
+        const int total = filesTxt.toInt();
+        if (total > preview.size() && !preview.isEmpty())
+            html += QString::fromUtf8("<br><span style='color:#8b949e'>"
+                                      "and %1 more\xE2\x80\xA6</span>")
+                        .arg(total - preview.size());
+    }
     switch (commitStatusCode(hash)) {
     case 1:
         html += QString::fromUtf8(
@@ -7550,8 +7604,17 @@ void MainWindow::refreshCommitsBranchButton()
     // What the list below actually shows: the explicitly browsed branch, or the
     // checked-out HEAD when none is pinned (currentRef() resolves to "HEAD" then).
     const QString browsed = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
-    m_commitsBranchButton->setText(
-        browsed.isEmpty() ? QStringLiteral("(detached)") : browsed);
+    const QString label =
+        browsed.isEmpty() ? QStringLiteral("(detached)") : browsed;
+    // The button elides, so the untruncated ref belongs on the tooltip.
+    if (auto *elider = dynamic_cast<ElidingPushButton *>(m_commitsBranchButton))
+        elider->setFullText(label);
+    else
+        m_commitsBranchButton->setText(label);
+    m_commitsBranchButton->setToolTip(
+        QString::fromUtf8("%1 \xE2\x80\x94 click to browse another branch's "
+                          "history or create one")
+            .arg(label));
 
     auto *menu = new QMenu(m_commitsBranchButton);
     QAction *create =
@@ -8675,6 +8738,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitSearch->setClearButtonEnabled(true);
     m_commitSearch->setPlaceholderText(
         "Search commits by hash, message, or author\xE2\x80\xA6");
+    // A line edit's own minimum is sized for a sensible amount of text; here it
+    // would be one more thing holding the left column open (adhoc #74). It still
+    // takes every spare pixel in the row via the stretch below.
+    m_commitSearch->setMinimumWidth(72);
     connect(m_commitSearch, &QLineEdit::textChanged, this,
             &MainWindow::filterCommits);
 
@@ -8704,7 +8771,11 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // Current-branch indicator + switcher: shows the checked-out branch and opens
     // a dropdown to check out another branch (or create one), like a git client.
-    m_commitsBranchButton = new QPushButton("main");
+    // Eliding: agent branch names run to 60+ characters, and a plain button
+    // would carry all of that into the left column's minimum width (adhoc #74).
+    auto *branchButton = new ElidingPushButton;
+    branchButton->setFullText(QStringLiteral("main"));
+    m_commitsBranchButton = branchButton;
     m_commitsBranchButton->setObjectName("ghostButton");
     m_commitsBranchButton->setCursor(Qt::PointingHandCursor);
     m_commitsBranchButton->setToolTip(
