@@ -17,7 +17,6 @@
 #include "RepoSecurity.h"
 #include "RewardPoolSigner.h"
 #include "ScreenCaptureOverlay.h"
-#include "ScreenDrawOverlay.h"
 #include "ScreenshotMarkupWindow.h"
 #include "TerminalWidget.h"
 #include "WorldSpeechBridge.h"
@@ -463,9 +462,10 @@ QWidget *MainWindow::buildChatPage()
     // badged with the running-session count. Only its fleet matrix stayed on the
     // window-chrome line (see buildBreadcrumb). The contextual Code and Git
     // entries are inserted directly below it by buildRepoDetail().
-    // Log lives in the bottom utility group, under Settings, instead of here.
+    // Log and Tasks live in the bottom utility group instead of here; Tasks sits
+    // directly above Pings there (adhoc #97).
     for (QPushButton *button :
-         {m_agentsNavButton, m_reposNavButton, m_tasksNavButton, m_chatButton,
+         {m_agentsNavButton, m_reposNavButton, m_chatButton,
           m_controlNodeNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
             railButton->setCompact(false);
@@ -505,9 +505,17 @@ QWidget *MainWindow::buildChatPage()
         logRailButton->setFixedSize(kRailItemWidth, 40);
     }
     m_appNavigationRailLayout->addWidget(m_logNavButton, 0, Qt::AlignLeft);
-    addUtility(m_navDrawButton, QStringLiteral("Draw"));
     addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
     addUtility(m_navResizeButton, QStringLiteral("Resize"));
+    // Tasks sits immediately above Pings (adhoc #97). It keeps the full rail
+    // treatment rather than the tiny utility wrapper so its open-task badge
+    // (setOrganizationTaskBadge) still has room to paint.
+    if (auto *tasksRailButton =
+            dynamic_cast<ActivityRailButton *>(m_tasksNavButton)) {
+        tasksRailButton->setCompact(false);
+        tasksRailButton->setFixedSize(kRailItemWidth, 40);
+    }
+    m_appNavigationRailLayout->addWidget(m_tasksNavButton, 0, Qt::AlignLeft);
     addUtility(m_notificationButton, QStringLiteral("Pings"));
 
     // Pending approvals use the same corner-count language as Chat and Agents:
@@ -5196,19 +5204,7 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navScreenshotButton, &QPushButton::clicked, this,
             &MainWindow::captureScreenRegion);
 
-    // Pencil button beside the screenshot button: drop a transparent overlay you
-    // can scribble on freehand anywhere on screen — handy for pointing things out.
-    m_navDrawButton = new QPushButton;
-    m_navDrawButton->setObjectName("topNavButton");
-    m_navDrawButton->setCursor(Qt::PointingHandCursor);
-    m_navDrawButton->setToolTip(
-        QString::fromUtf8("Draw on the screen \xE2\x80\x94 scribble freehand "
-                          "anywhere; Esc to clear it away"));
-    setOcticon(m_navDrawButton, "pencil", 14);
-    connect(m_navDrawButton, &QPushButton::clicked, this,
-            &MainWindow::startScreenDraw);
-
-    // Resize button beside the draw/screenshot buttons: snap the window down to
+    // Resize button beside the screenshot button: snap the window down to
     // a common minimal screen size (1280x720), so it's quick to preview how
     // ForkMesh looks on a smaller display before filing a UI bug.
     m_navResizeButton = new QPushButton;
@@ -5433,44 +5429,6 @@ void MainWindow::captureScreenRegion()
         return;
     }
     connect(overlay, &ScreenCaptureOverlay::captured, this,
-            [this](const QImage &image) {
-                auto *markup = new ScreenshotMarkupWindow(image, this);
-                connect(markup, &ScreenshotMarkupWindow::imageAccepted, this,
-                        [this](const QImage &annotated) {
-                            const QString path = saveNewAgentPromptImage(annotated);
-                            if (path.isEmpty()) {
-                                logSystem("Couldn't save the screenshot.");
-                                return;
-                            }
-                            queueQuickAddImage(path);
-                            if (m_issueQuickAdd)
-                                m_issueQuickAdd->setFocus();
-                        });
-                markup->show();
-                markup->raise();
-                markup->activateWindow();
-            });
-}
-
-// Pencil button: drop a transparent overlay over the whole desktop (the live
-// screen stays visible) that you can scribble on freehand with the pointer, to
-// point things out on screen. Esc / right-click clears the ink and dismisses it.
-// The overlay also carries a "Screenshot" button: clicking it grabs a region with
-// the drawn ink baked in and queues it as the next attachment.
-void MainWindow::startScreenDraw()
-{
-    ScreenDrawOverlay *overlay = ScreenDrawOverlay::begin();
-    if (!overlay) {
-        logSystem("Couldn't open the on-screen drawing overlay.");
-        return;
-    }
-    // Let clicks on the nav screenshot button open the capture selector rather than draw.
-    if (m_navScreenshotButton) {
-        const QRect globalRect(m_navScreenshotButton->mapToGlobal(QPoint(0, 0)),
-                               m_navScreenshotButton->size());
-        overlay->setScreenshotHotzone(globalRect);
-    }
-    connect(overlay, &ScreenDrawOverlay::captured, this,
             [this](const QImage &image) {
                 auto *markup = new ScreenshotMarkupWindow(image, this);
                 connect(markup, &ScreenshotMarkupWindow::imageAccepted, this,

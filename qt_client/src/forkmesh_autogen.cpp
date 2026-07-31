@@ -24,7 +24,6 @@
 #include "moc_OfficeChannelMirror.cpp"
 #include "moc_RepoHost.cpp"
 #include "moc_ScreenCaptureOverlay.cpp"
-#include "moc_ScreenDrawOverlay.cpp"
 #include "moc_ScreenshotMarkupWindow.cpp"
 #include "moc_ScrollJumpButtons.cpp"
 #include "moc_ServerNode.cpp"

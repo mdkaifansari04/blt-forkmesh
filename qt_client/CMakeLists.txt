@@ -227,8 +227,6 @@ set(FORKMESH_APP_SOURCES
     src/ScrollJumpButtons.cpp
     src/ScreenCaptureOverlay.h
     src/ScreenCaptureOverlay.cpp
-    src/ScreenDrawOverlay.h
-    src/ScreenDrawOverlay.cpp
     src/ScreenshotMarkupWindow.h
     src/ScreenshotMarkupWindow.cpp
     src/StallWatchdog.h
@@ -304,7 +302,6 @@ qt_wrap_cpp(FORKMESH_MOC_SOURCES
     src/OfficeChannelMirror.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
-    src/ScreenDrawOverlay.h
     src/ScreenshotMarkupWindow.h
     src/ScrollJumpButtons.h
     src/ServerNode.h
@@ -368,7 +365,6 @@ set_source_files_properties(
     src/OfficeChannelMirror.h
     src/RepoHost.h
     src/ScreenCaptureOverlay.h
-    src/ScreenDrawOverlay.h
     src/ScreenshotMarkupWindow.h
     src/ScrollJumpButtons.h
     src/ServerNode.h

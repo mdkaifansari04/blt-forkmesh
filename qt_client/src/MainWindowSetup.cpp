@@ -1047,8 +1047,7 @@ int MainWindow::testTopNavTrailingGap() const
     }
     int rightEdge = -1;
     for (QWidget *widget :
-         {static_cast<QWidget *>(m_navDrawButton),
-          static_cast<QWidget *>(m_navScreenshotButton),
+         {static_cast<QWidget *>(m_navScreenshotButton),
           static_cast<QWidget *>(m_navResizeButton),
           static_cast<QWidget *>(m_navRebuildButton)}) {
         if (!widget || !widget->isVisibleTo(const_cast<MainWindow *>(this)))
