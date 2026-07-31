@@ -171,6 +171,48 @@ def test_top_nav_task_count_and_sortable_catalog_include_departments():
     assert "world-task-row-metadata" in tasks
 
 
+def test_organization_catalog_is_a_dense_sortable_table_with_row_bubbles():
+    tasks = source(TASKS)
+    world = source(WORLD)
+    css = source(CSS)
+    for contract in (
+        'class="world-task-table-header" role="row"',
+        "data-world-task-column-sort",
+        'class="world-task-row-summary"',
+        'class="world-task-chat-bubble"',
+        'role="table"',
+        '<option value="repository">Repository</option>',
+        '<option value="tracked">Tracked time</option>',
+        '<option value="qa">QA</option>',
+    ):
+        assert contract in tasks or contract in world
+    for column in (
+        "world-task-cell-title",
+        "world-task-cell-status",
+        "world-task-cell-priority",
+        "world-task-cell-owner",
+        "world-task-cell-route",
+        "world-task-cell-updated",
+        "world-task-cell-time",
+        "world-task-cell-qa",
+        "world-task-cell-actions",
+    ):
+        assert column in tasks
+    for styled_column in (
+        "world-task-cell-title",
+        "world-task-cell-status",
+        "world-task-cell-priority",
+        "world-task-cell-owner",
+        "world-task-cell-route",
+        "world-task-cell-time",
+        "world-task-cell-qa",
+        "world-task-cell-actions",
+    ):
+        assert styled_column in css
+    assert "grid-template-columns:" in css
+    assert "min-height: 34px" in css
+
+
 def test_work_tab_expands_and_active_tasks_have_readable_spinner_status():
     tasks = source(TASKS)
     world = source(WORLD)

@@ -24927,6 +24927,7 @@ async def world_relay_instances_handler(env, request):
                 row.get("label") or "ForkMesh instance", 80),
             "origin": origin,
             "approved": True,
+            "joinedAt": max(0, int(row.get("approved_at") or 0)),
             "health": health,
             "online": verified_online,
             "healthEvidence": (

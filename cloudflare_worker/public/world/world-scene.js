@@ -74,6 +74,7 @@ const WORLD_PATH_SURFACE_Y = 0.105;
 const WORLD_PATH_CENTER_Y =
   WORLD_PATH_SURFACE_Y - WORLD_PATH_HEIGHT / 2;
 const DISTRICT_GROUND_RADIUS = 48;
+const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
 // Base (from-rest) speed. Raised so keyboard movement leaves standstill with
 // more pace by default; multiplied by the per-device move-speed control.
 const PLAYER_SPEED = 6.4;
@@ -7485,7 +7486,9 @@ function concreteBrickMaterial(THREE) {
 function districtGroundMaterial(THREE, kind) {
   const repository = kind === "repositories";
   return new THREE.MeshStandardMaterial({
-    color: repository ? "#8099a0" : "#8a829b",
+    // Repository portals now sit on a neutral concrete apron. The former
+    // blue-gray circle read as a second, disconnected repository district.
+    color: repository ? "#c1bbb0" : "#8a829b",
     map: projectAssetTexture(
       THREE,
       "/world/assets/concrete-brick-path-v1.webp",
@@ -7500,9 +7503,13 @@ function districtGroundMaterial(THREE, kind) {
   });
 }
 
-function createDistrictGroundCircle(THREE, kind) {
+function createDistrictGroundCircle(
+  THREE,
+  kind,
+  radius = DISTRICT_GROUND_RADIUS,
+) {
   const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(DISTRICT_GROUND_RADIUS, 96),
+    new THREE.CircleGeometry(radius, 96),
     districtGroundMaterial(THREE, kind),
   );
   ground.name = `forkmesh-${kind}-textured-ground`;
@@ -9111,11 +9118,31 @@ function repositoryFollowerFollowedLabel(followedAt) {
   return `FOLLOWING SINCE ${date.toISOString().slice(0, 10)}`;
 }
 
+function canvasReadableImageURL(value) {
+  const raw = String(value || "").trim();
+  if (!raw || raw.length > 120_000) return "";
+  try {
+    const url = new URL(raw, window.location.href);
+    // Canvas/WebGL may only sample same-origin or embedded images unless the
+    // remote response explicitly opts into CORS. Mastodon media commonly does
+    // not, and browsers provide no preflight-free way to discover that without
+    // logging a CORS failure. Keep the generated fallback for those URLs.
+    if (
+      url.origin !== window.location.origin &&
+      url.protocol !== "data:" &&
+      url.protocol !== "blob:"
+    ) {
+      return "";
+    }
+    return url.href;
+  } catch (_) {
+    return "";
+  }
+}
+
 function loadRepositoryFollowerAvatar(url, onLoad) {
-  // The follower's published avatar, fetched anonymously (no cookies, no
-  // referrer) and only used once it decodes. A server without CORS headers
-  // simply fails here and the card keeps its generated initials plate.
-  if (!url) return;
+  const readableURL = canvasReadableImageURL(url);
+  if (!readableURL) return;
   const image = new Image();
   image.crossOrigin = "anonymous";
   image.referrerPolicy = "no-referrer";
@@ -9124,7 +9151,7 @@ function loadRepositoryFollowerAvatar(url, onLoad) {
     if (image.naturalWidth > 0 && image.naturalHeight > 0) onLoad(image);
   };
   image.onerror = () => {};
-  image.src = url;
+  image.src = readableURL;
 }
 
 function drawRepositoryFollowerAvatar(
@@ -9645,7 +9672,15 @@ function repositoryWedgeGeometry(
 
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
-  group.add(createDistrictGroundCircle(THREE, "repositories"));
+  // Match the concrete apron to the live repository ring instead of leaving
+  // an oversized blue foundation behind at the former landmark position.
+  group.add(
+    createDistrictGroundCircle(
+      THREE,
+      "repositories",
+      REPOSITORY_GROUND_RADIUS,
+    ),
+  );
   const ringMaterial = makeMaterial(THREE, "#77d9ff", {
     metalness: 0.2,
     roughness: 0.28,
@@ -14300,6 +14335,8 @@ export function createWorldScene({
   onMastodonOpenLink = () => {},
   onReferralBoardSelect = () => {},
   onSiteReferrerOpen = () => {},
+  onInstanceBoothSelect = () => {},
+  onFederatedWorldTravel = () => {},
   onLobbyLinkKioskSelect = () => {},
   onLobbyFeedbackKioskSelect = () => {},
   onLobbyTaskBidKioskSelect = () => {},
@@ -14378,6 +14415,11 @@ export function createWorldScene({
   renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = !compactRenderer;
   renderer.shadowMap.type = THREE.PCFShadowMap;
+  // The sun and almost all shadow casters are static. Rebuilding the complete
+  // atlas on every display frame nearly doubles town-square draw calls, so
+  // refresh it at a bounded cadence while retaining live shadows.
+  renderer.shadowMap.autoUpdate = false;
+  renderer.shadowMap.needsUpdate = !compactRenderer;
   renderer.domElement.className = "world-canvas";
   renderer.domElement.setAttribute("aria-hidden", "true");
   // The canvas is purely visual; leaving a tabindex (even -1) lets a pointer
@@ -15485,12 +15527,9 @@ export function createWorldScene({
     );
     landmarkObjects.set(landmark.id, object);
     world.add(object);
-    // The tower, island, bridge, admission boundary, and floor colliders form
-    // one structural campus. Letting the layout editor move only the tower
-    // would strand its entrance and is therefore deliberately unsupported.
-    if (landmark.id === "repositories") {
-      registerMovableObject("landmark-" + landmark.id, object);
-    }
+    // Repository portals and their import kiosk form one structural district.
+    // Keep its shared origin fixed so a stale saved landmark transform cannot
+    // split the kiosk and apron away from the live portal ring.
   });
   // Decorative landscaping lives on the Office island but owns no walkable
   // surface or collision metadata. The doorway and its full bridge-width
@@ -16318,14 +16357,17 @@ export function createWorldScene({
   );
   gymInset.position.y = 0.13;
   gym.add(gymInset);
-  const gymSign = makeLabelSprite(
+  // Keep wayfinding physically anchored to the scene. Floating labels are
+  // reserved for features that explicitly need screen-facing identification.
+  const gymSign = makeGroundPlaque(
     THREE,
     "WORLD GYM",
     "CLICK A STATION TO TRAIN",
     "#ff9b54",
   );
-  gymSign.position.set(0, 5.4, -8.15);
-  gymSign.scale.set(9.8, 3.25, 1);
+  gymSign.name = "world-gym-entrance-plaque";
+  gymSign.position.set(0, 0.14, -8.1);
+  gymSign.rotation.y = Math.PI;
   gym.add(gymSign);
   const gymSteel = makeMaterial(THREE, "#a8b3bf", {
     metalness: 0.82,
@@ -16524,16 +16566,17 @@ export function createWorldScene({
   gym.add(punchingStation);
 
   [
-    ["BENCH PRESS", "WEIGHT + REPS", -7.6, 4.15, -1.4],
-    ["TREADMILL", "CLICK TO RUN", 0, 3.45, -3.7],
-    ["EXERCISE BIKE", "CLICK TO RIDE", 6.9, 3.75, -3.4],
-    ["ROWER", "CLICK TO ROW", 6.6, 2.65, 3.7],
-    ["PUNCHING BAG", "CLICK TO TRAIN", -0.4, 5.15, 4.8],
-  ].forEach(([title, subtitle, x, y, z]) => {
-    const label = makeLabelSprite(THREE, title, subtitle, "#ffad8f");
-    label.position.set(x, y, z);
-    label.scale.set(5.1, 1.7, 1);
-    gym.add(label);
+    ["BENCH PRESS", "WEIGHT + REPS", -10.7, 0.14, -3.7, Math.PI / 2],
+    ["TREADMILL", "CLICK TO RUN", -3.35, 0.14, -6.35, Math.PI],
+    ["EXERCISE BIKE", "CLICK TO RIDE", 8.8, 0.14, -6.35, Math.PI],
+    ["ROWER", "CLICK TO ROW", 10.65, 0.14, 5.7, -Math.PI / 2],
+    ["PUNCHING BAG", "CLICK TO TRAIN", -3.35, 0.14, 7.0, 0],
+  ].forEach(([title, subtitle, x, y, z, rotation]) => {
+    const plaque = makeGroundPlaque(THREE, title, subtitle, "#ffad8f");
+    plaque.name = `world-gym-station-plaque:${worldLayoutId("", title)}`;
+    plaque.position.set(x, y, z);
+    plaque.rotation.y = rotation;
+    gym.add(plaque);
   });
 
   const gymState = {
@@ -18710,6 +18753,105 @@ export function createWorldScene({
   });
   officeInterior.add(officeFloorWarpHub);
 
+  // Enclosed walk-in deployment booth. Three opaque walls and a roof shield
+  // the operator's screen from casual sight lines inside the lobby; the form
+  // itself remains device-local and never enters scene state or presence.
+  const instanceBooth = new THREE.Group();
+  instanceBooth.name = "forkmesh-instance-launch-booth";
+  instanceBooth.position.set(-62, 0, 39);
+  const instanceBoothDark = makeMaterial(THREE, "#111923", {
+    metalness: 0.42,
+    roughness: 0.48,
+  });
+  const instanceBoothBlue = makeMaterial(THREE, "#1f6feb", {
+    emissive: "#123c72",
+    emissiveIntensity: 0.42,
+    metalness: 0.35,
+    roughness: 0.38,
+  });
+  const boothFloor = new THREE.Mesh(
+    new THREE.BoxGeometry(21, 0.16, 18),
+    makeMaterial(THREE, "#182431", { roughness: 0.76 }),
+  );
+  boothFloor.position.set(0, 0.08, 0);
+  instanceBooth.add(boothFloor);
+  for (const [name, width, height, depth, x, y, z] of [
+    ["back", 21, 9.6, 0.42, 0, 4.8, 8.8],
+    ["left", 0.42, 9.6, 18, -10.3, 4.8, 0],
+    ["right", 0.42, 9.6, 18, 10.3, 4.8, 0],
+    ["roof", 21, 0.34, 18, 0, 9.6, 0],
+    ["entry-left", 4.2, 9.6, 0.42, -8.35, 4.8, -8.8],
+    ["entry-right", 4.2, 9.6, 0.42, 8.35, 4.8, -8.8],
+  ]) {
+    const wall = new THREE.Mesh(
+      new THREE.BoxGeometry(width, height, depth),
+      instanceBoothDark,
+    );
+    wall.name = `forkmesh-instance-booth-${name}`;
+    wall.position.set(x, y, z);
+    instanceBooth.add(wall);
+  }
+  for (const x of [-5.75, 5.75]) {
+    const entryLight = new THREE.Mesh(
+      new THREE.BoxGeometry(0.24, 8.4, 0.2),
+      instanceBoothBlue,
+    );
+    entryLight.position.set(x, 4.8, -9.05);
+    instanceBooth.add(entryLight);
+  }
+  const boothPrivacySign = makeOfficeWallPlacard(
+    THREE,
+    "NEW INSTANCE",
+    "WALK IN · PRIVATE SETUP",
+    "#58a6ff",
+    11.1,
+    1.65,
+  );
+  boothPrivacySign.name = "forkmesh-instance-booth-entry-sign";
+  boothPrivacySign.position.set(0, 8.35, -9.08);
+  boothPrivacySign.userData.officeFloorId = "lobby";
+  boothPrivacySign.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(boothPrivacySign);
+  interactive.push(boothPrivacySign);
+  const instanceBoothScreen = new THREE.Mesh(
+    new THREE.PlaneGeometry(15.8, 6.5),
+    new THREE.MeshBasicMaterial({
+      map: canvasTexture(THREE, 1580, 650, (context) => {
+        context.fillStyle = "#080d13";
+        context.fillRect(0, 0, 1580, 650);
+        context.strokeStyle = "#58a6ff";
+        context.lineWidth = 18;
+        context.strokeRect(12, 12, 1556, 626);
+        context.fillStyle = "#79c0ff";
+        context.font = '900 58px "ForkMesh Mono", ui-monospace, monospace';
+        context.textAlign = "left";
+        context.fillText("LAUNCH A FORKMESH WORLD", 74, 112);
+        context.fillStyle = "#e6edf3";
+        context.font = '760 34px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("WORKER + D1 + DNS + TUNNEL", 74, 212);
+        context.fillText("FIRST MIRROR + FEDERATION BRIDGE", 74, 268);
+        context.fillStyle = "#8b9aaa";
+        context.font = '620 27px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CREDENTIALS STAY ON YOUR DEVICE", 74, 366);
+        context.fillText("SETUP CARD EXCLUDES ALL SECRETS", 74, 410);
+        context.fillStyle = "#7ee787";
+        context.font = '900 42px "ForkMesh Mono", ui-monospace, monospace';
+        context.fillText("CLICK TO CONFIGURE", 74, 540);
+      }),
+      toneMapped: false,
+    }),
+  );
+  instanceBoothScreen.name = "forkmesh-instance-launch-booth-screen";
+  instanceBoothScreen.position.set(0, 5.1, 8.55);
+  instanceBoothScreen.rotation.y = Math.PI;
+  instanceBoothScreen.userData.officeFloorId = "lobby";
+  instanceBoothScreen.userData.interactive = "instance-launch-booth";
+  instanceBooth.add(instanceBoothScreen);
+  interactive.push(instanceBoothScreen);
+  officeInterior.add(instanceBooth);
+  const instanceBoothLocalPosition = new THREE.Vector3();
+  let instanceBoothOccupied = false;
+
   // Public lobby Link Lab: a physical, accessible entry point for members to
   // submit public campaign/community links and inspect the transparent reach
   // estimate. The browser dialog owns input and disclosure; this mesh never
@@ -20268,6 +20410,7 @@ export function createWorldScene({
   let localDaylightMinute = -1;
   let nextEnvironmentCheckAt = 0;
   let nextSceneLodAt = 0;
+  let nextShadowMapUpdateAt = 0;
   let farSceneDetail = null;
   let nextAvatarHighlightAt = 0;
   let nextProximityUpdateAt = 0;
@@ -21798,7 +21941,7 @@ export function createWorldScene({
   // reach the board texture when they load CORS-clean; otherwise the board
   // keeps its text-only rendering (a tainted canvas cannot feed WebGL).
   function mastodonKioskImage(url) {
-    const key = String(url || "");
+    const key = canvasReadableImageURL(url);
     if (!key) return null;
     const cached = mastodonKioskImages.get(key);
     if (cached) return cached.image;
@@ -26323,6 +26466,8 @@ export function createWorldScene({
     if (existing) {
       district.remove(existing);
       existing.traverse((child) => {
+        const interactiveIndex = interactive.indexOf(child);
+        if (interactiveIndex >= 0) interactive.splice(interactiveIndex, 1);
         child.geometry?.dispose?.();
         child.material?.map?.dispose?.();
         child.material?.dispose?.();
@@ -26348,7 +26493,13 @@ export function createWorldScene({
           online ? 0.75 : 0.5,
           Math.sin(angle) * 4.3,
         );
+        tower.userData.interactive = "federated-world-portal";
+        tower.userData.origin = String(instance?.origin || "");
+        tower.userData.label = String(
+          instance?.label || "ForkMesh instance",
+        ).slice(0, 80);
         layer.add(tower);
+        interactive.push(tower);
         const label = makeLabelSprite(
           THREE,
           String(instance?.label || "ForkMesh instance").slice(0, 22),
@@ -26359,7 +26510,13 @@ export function createWorldScene({
         label.position.copy(tower.position).add(
           new THREE.Vector3(0, online ? 1.05 : 0.78, 0),
         );
+        label.userData.interactive = "federated-world-portal";
+        label.userData.origin = String(instance?.origin || "");
+        label.userData.label = String(
+          instance?.label || "ForkMesh instance",
+        ).slice(0, 80);
         layer.add(label);
+        interactive.push(label);
       });
     district.add(layer);
     district.userData.federatedInstanceLayer = layer;
@@ -30187,6 +30344,17 @@ export function createWorldScene({
       onStartNodeDownload();
       return;
     }
+    if (hit?.object?.userData?.interactive === "instance-launch-booth") {
+      onInstanceBoothSelect();
+      return;
+    }
+    if (hit?.object?.userData?.interactive === "federated-world-portal") {
+      onFederatedWorldTravel({
+        origin: String(hit.object.userData.origin || ""),
+        label: String(hit.object.userData.label || "ForkMesh instance"),
+      });
+      return;
+    }
     if (hit?.object?.userData?.interactive === "office-link-kiosk") {
       onLobbyLinkKioskSelect();
       return;
@@ -31207,6 +31375,7 @@ export function createWorldScene({
 
   function animate(time) {
     if (!running || disposed) return;
+    const frameWorkStartedAt = performance.now();
     if (time >= nextEnvironmentCheckAt) {
       nextEnvironmentCheckAt = time + 15_000;
       const localNow = new Date();
@@ -31253,22 +31422,9 @@ export function createWorldScene({
     }
     diagnosticsLongestFrameMs = Math.max(diagnosticsLongestFrameMs, rawFrameMs);
     if (rawFrameMs > 34) diagnosticsLongFrames += 1;
-    // Report genuine visible-tab stalls without flooding DevTools during a
-    // prolonged hitch. Ordinary 30–60fps variance remains in diagnostics but
-    // does not produce console noise.
-    if (
-      rawFrameMs >= RENDER_STALL_THRESHOLD_MS &&
-      document.visibilityState === "visible"
-    ) {
-      if (
-        time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS
-      ) {
-        lastRenderStallLogAt = time;
-        scheduleRenderStallWarning(rawFrameMs);
-      } else {
-        suppressedRenderStalls += 1;
-      }
-    }
+    // rawFrameMs includes time spent waiting for requestAnimationFrame and is
+    // useful for FPS diagnostics, but it cannot identify renderer work. Stall
+    // attribution is performed after render from actual main-thread work time.
     updateOfficeElevator(time);
     if (officeSceneMode === "town") {
       walkPlayer(delta, time);
@@ -31276,6 +31432,21 @@ export function createWorldScene({
       walkOfficeLobbyPlayer(delta, time);
     } else if (officeSceneMode === "meeting") {
       walkOfficeParticipant(delta, time);
+    }
+    if (
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby"
+    ) {
+      officeAvatarLocalPosition(player, instanceBoothLocalPosition);
+      const insideInstanceBooth =
+        Math.abs(instanceBoothLocalPosition.x - instanceBooth.position.x) < 9.7 &&
+        Math.abs(instanceBoothLocalPosition.z - instanceBooth.position.z) < 8.3;
+      if (insideInstanceBooth && !instanceBoothOccupied) {
+        onInstanceBoothSelect();
+      }
+      instanceBoothOccupied = insideInstanceBooth;
+    } else {
+      instanceBoothOccupied = false;
     }
     updateOfficeReceptionGuide(time);
     updateOfficeAttendanceClock(time);
@@ -31683,7 +31854,23 @@ export function createWorldScene({
         });
       }
     }
+    if (renderer.shadowMap.enabled && time >= nextShadowMapUpdateAt) {
+      nextShadowMapUpdateAt = time + 500;
+      renderer.shadowMap.needsUpdate = true;
+    }
     renderer.render(scene, camera);
+    const frameWorkMs = Math.max(0, performance.now() - frameWorkStartedAt);
+    if (
+      frameWorkMs >= RENDER_STALL_THRESHOLD_MS &&
+      document.visibilityState === "visible"
+    ) {
+      if (time - lastRenderStallLogAt >= RENDER_STALL_LOG_COOLDOWN_MS) {
+        lastRenderStallLogAt = time;
+        scheduleRenderStallWarning(frameWorkMs);
+      } else {
+        suppressedRenderStalls += 1;
+      }
+    }
     diagnosticsFrameCount = Math.min(
       1_000_000,
       diagnosticsFrameCount + 1,

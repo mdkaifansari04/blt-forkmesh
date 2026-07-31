@@ -150,7 +150,7 @@ def test_landmarks_use_stable_positions_inside_the_world_and_office_campus():
     positions = {
         "fountain": (0, 0),
         "campfire": (0, 130),
-        "repositories": (35, 38),
+        "repositories": (130, 0),
         "office": (0, -215),
     }
     for landmark, (x, z) in positions.items():
@@ -1438,6 +1438,15 @@ def test_render_stalls_include_bounded_likely_component_attribution():
     assert 'component = "Three.js renderer workload";' in SCENE
     assert 'component = `office ${officeSceneMode} scene`;' in SCENE
     assert 'codeArea = "renderer.render(scene, camera)";' in SCENE
+    assert "const frameWorkStartedAt = performance.now();" in SCENE
+    assert "performance.now() - frameWorkStartedAt" in SCENE
+    assert "scheduleRenderStallWarning(frameWorkMs);" in SCENE
+    assert "scheduleRenderStallWarning(rawFrameMs);" not in SCENE
+    assert "renderer.shadowMap.autoUpdate = false;" in SCENE
+    assert "nextShadowMapUpdateAt = time + 500;" in SCENE
+    assert "function canvasReadableImageURL(value)" in SCENE
+    assert "url.origin !== window.location.origin" in SCENE
+    assert "const key = canvasReadableImageURL(url);" in SCENE
 
 
 def test_world_first_person_zoom_out_falls_back_to_third_person():
@@ -2557,14 +2566,18 @@ def test_approved_federated_instances_render_without_private_relay_material():
 
 
 def test_cloudflare_setup_deep_link_carries_no_cloudflare_secret():
-    exact = "forkmesh://control/cloudflare"
-    assert exact in QT_MAIN
-    assert "target == QLatin1String" in QT_MAIN
+    assert 'url.scheme() != QLatin1String("forkmesh")' in QT_MAIN
+    assert 'url.host() != QLatin1String("control")' in QT_MAIN
+    assert 'url.path() != QLatin1String("/cloudflare")' in QT_MAIN
+    assert "isCloudflareSetupLink" in QT_MAIN
+    assert "prohibited.match(item.first)" in QT_MAIN
     assert "openCloudflareSetupFromSystemLink" in QT_CONTROL
     assert "m_cloudflareTokenEdit->setFocus" in QT_CONTROL
+    assert 'query.queryItemValue(name, QUrl::FullyDecoded)' in QT_CONTROL
     assert "activationTarget.toUtf8()" in QT_SINGLE_INSTANCE
     assert '<h2 id="cloudflare">Cloudflare setup stays local</h2>' in QT_DOCS
-    assert "carries no token or other secret in its URL" in QT_DOCS
+    assert "bounded public topology only" in QT_DOCS
+    assert "token-, password-, key-, and" in QT_DOCS
     assert 'Exec="$BIN" %u' in LINUX_DESKTOP_INSTALLER
     assert "MimeType=x-scheme-handler/forkmesh;" in LINUX_DESKTOP_INSTALLER
     assert "Exec=forkmesh %u" in APPIMAGE_PACKAGER
