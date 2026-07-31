@@ -4210,6 +4210,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </div>
         </details>
 
+        <div class="world-activity-stream" data-world-activity-stream role="log" aria-live="polite" aria-label="Recent World chat, notifications, and status changes"></div>
         <div class="world-swing-panel" data-world-swing-panel hidden>
           <span>
             <strong>Swing speed</strong>
@@ -5206,6 +5207,9 @@ class ForkMeshWorld extends HTMLElement {
     this.profilePresenceTimer = 0;
     this.profilePresencePending = false;
     this.movementSendTimer = 0;
+    this.peerRenderTimer = 0;
+    this.viewportMetricsFrame = 0;
+    this.lastChatViewportMetricsKey = "";
     this.pendingMovement = null;
     this.lastMovementSentAt = 0;
     this.positionWriteTimer = 0;
@@ -5555,8 +5559,18 @@ class ForkMeshWorld extends HTMLElement {
       this.sendWorldEmote(data.emote);
       return;
     }
-    // System activity is already appended by the native chat controller.
-    if (data.type === "forkmesh:world-activity") return;
+    // The native chat controller already appends system activity to the
+    // transcript; here it only feeds the floating bubble stack.
+    if (data.type === "forkmesh:world-activity") {
+      if (this.activityNoticesSettled()) {
+        this.activityNotice(String(data.text || ""), {
+          kind: String(data.kind || "status"),
+          sender: "ForkMesh",
+          transcript: false,
+        });
+      }
+      return;
+    }
     if (data.type !== "forkmesh:world-chat") return;
     const text = String(data.text || "")
       .replace(/\s+/g, " ")
@@ -5643,6 +5657,12 @@ class ForkMeshWorld extends HTMLElement {
     // The relay also re-sends the tail of the room as ordinary live frames when
     // the embedded chat connects, so the join grace — not just the history
     // flag — is what keeps a fresh load from opening on a wall of old lines.
+    if (this.activityNoticesSettled()) {
+      this.activityNotice(
+        `${sender}: ${text || `Shared ${attachmentName}`}`,
+        { kind: "chat", sender },
+      );
+    }
     // Own lines never count as unread — `self` is this browser, `own` also
     // covers the signed-in account talking from another tab or device.
     if (data.self !== true && data.own !== true) this.bumpChatTerminalUnread();
@@ -7470,6 +7490,21 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   syncViewportHeight = (event = null) => {
+    // visualViewport scroll/resize fire continuously while mobile browser
+    // chrome slides or the keyboard animates. Coalesce event-driven calls to
+    // one layout read per animation frame; direct calls stay synchronous.
+    if (event?.type) {
+      if (this.viewportMetricsFrame) return;
+      this.viewportMetricsFrame = window.requestAnimationFrame(() => {
+        this.viewportMetricsFrame = 0;
+        if (!this.destroyed) this.applyViewportMetrics(event);
+      });
+      return;
+    }
+    this.applyViewportMetrics(event);
+  };
+
+  applyViewportMetrics = (event = null) => {
     const visualViewport = window.visualViewport;
     const visualHeight = Math.max(
       160,
@@ -7501,19 +7536,32 @@ class ForkMeshWorld extends HTMLElement {
     // The 3D renderer deliberately stays stable while mobile browser chrome
     // or a software keyboard changes only the visual viewport. Chat still has
     // to follow the actually visible area, so it owns separate live metrics.
-    this.style.setProperty(
-      "--world-chat-viewport-height",
-      `${visualHeight}px`,
+    // Style writes on the host invalidate the whole HUD subtree, so only
+    // write when a value actually changed.
+    const coveredBottom = Math.max(
+      0,
+      layoutHeight - visualOffsetTop - visualHeight,
     );
-    this.style.setProperty(
-      "--world-chat-covered-bottom",
-      `${Math.max(
-        0,
-        layoutHeight - visualOffsetTop - visualHeight,
-      )}px`,
-    );
-    this.dataset.worldChatCompact = String(visualHeight <= 360);
-    this.dataset.worldChatMicro = String(visualHeight <= 240);
+    const chatMetricsKey = `${visualHeight}|${coveredBottom}`;
+    if (this.lastChatViewportMetricsKey !== chatMetricsKey) {
+      this.lastChatViewportMetricsKey = chatMetricsKey;
+      this.style.setProperty(
+        "--world-chat-viewport-height",
+        `${visualHeight}px`,
+      );
+      this.style.setProperty(
+        "--world-chat-covered-bottom",
+        `${coveredBottom}px`,
+      );
+    }
+    const compact = String(visualHeight <= 360);
+    const micro = String(visualHeight <= 240);
+    if (this.dataset.worldChatCompact !== compact) {
+      this.dataset.worldChatCompact = compact;
+    }
+    if (this.dataset.worldChatMicro !== micro) {
+      this.dataset.worldChatMicro = micro;
+    }
     // Mobile browser chrome can resize visualViewport continuously while a
     // thumbstick drag is in progress. Resizing the WebGL canvas on every one
     // of those samples looks like the whole World is refreshing mid-walk.
@@ -12538,13 +12586,25 @@ class ForkMeshWorld extends HTMLElement {
   updateDistances() {
     const position = this.world?.getPosition?.();
     if (!position) return;
+    // The badge elements are static template output; cache them once instead
+    // of running one querySelector per landmark every second.
+    if (!this.distanceElements) {
+      this.distanceElements = new Map(
+        LANDMARKS.map((landmark) => [
+          landmark.id,
+          this.$(`[data-world-distance="${landmark.id}"]`),
+        ]),
+      );
+    }
     LANDMARKS.forEach((landmark) => {
       const distance = Math.hypot(
         position.x - landmark.position[0],
         position.z - landmark.position[2],
       );
-      const element = this.$(`[data-world-distance="${landmark.id}"]`);
-      if (element) element.textContent = distance < 1 ? "here" : `${Math.round(distance)}m`;
+      const element = this.distanceElements.get(landmark.id);
+      if (!element) return;
+      const label = distance < 1 ? "here" : `${Math.round(distance)}m`;
+      if (element.textContent !== label) element.textContent = label;
     });
   }
 
@@ -16155,27 +16215,24 @@ class ForkMeshWorld extends HTMLElement {
     personalNotifications.forEach((item) =>
       this.seenNotifications.add(item.id),
     );
-    const announcements = [];
-    if (globalEvents.length) {
-      announcements.push(
-        `World announcement: ${globalEvents[0].title}${
-          globalEvents.length > 1 ? ` (+${globalEvents.length - 1})` : ""
-        }`,
-      );
-    }
-    if (personalNotifications.length) {
-      announcements.push(
-        `New notification: ${personalNotifications[0].title}${
-          personalNotifications.length > 1
-            ? ` (+${personalNotifications.length - 1})`
-            : ""
-        }`,
-      );
-    }
     // The first reads seed the seen sets so nothing already waiting at load is
-    // announced; only what arrives on a later poll reaches the stream.
-    if (announcements.length && this.activityNoticesSettled()) {
-      this.toast(announcements.join(" · "));
+    // announced; only what arrives on a later poll reaches the stream. Each
+    // announcement gets its own bubble so the stack reads like a feed; the
+    // per-poll cap keeps a backlog burst from wiping out the chat stream.
+    if (!this.activityNoticesSettled()) return;
+    globalEvents.slice(0, 3).forEach((item) => {
+      this.toast(`World announcement: ${item.title}`);
+    });
+    if (globalEvents.length > 3) {
+      this.toast(`World announcement: +${globalEvents.length - 3} more events`);
+    }
+    personalNotifications.slice(0, 3).forEach((item) => {
+      this.toast(`New notification: ${item.title}`);
+    });
+    if (personalNotifications.length > 3) {
+      this.toast(
+        `New notification: +${personalNotifications.length - 3} more`,
+      );
     }
   }
 
@@ -24057,13 +24114,51 @@ class ForkMeshWorld extends HTMLElement {
     return Date.now() >= this.activityNoticesEnabledAt;
   }
 
-  activityNotice(message, { kind = "status", sender = "" } = {}) {
+  activityNotice(message, { kind = "status", sender = "", transcript = true } = {}) {
     const copy = String(message || "")
       .replace(/\s+/g, " ")
       .trim()
       .slice(0, 280);
-    if (!copy || kind === "chat") return;
-    this.notifyChatArea(copy, kind);
+    if (!copy) return;
+    // Chat lines already land in the native transcript straight from the
+    // relay socket (and `transcript: false` marks lines that started there),
+    // so forwarding those again would duplicate every message.
+    if (kind !== "chat" && transcript) this.notifyChatArea(copy, kind);
+    const terminal = this.$("[data-world-chat-terminal]");
+    const stream = this.$("[data-world-activity-stream]");
+    // With the chat panel open the transcript is already on screen and the
+    // panel covers the bubble corner, so skip the floating card entirely.
+    if (!stream || terminal?.open) return;
+    const article = document.createElement("article");
+    article.dataset.kind = ["chat", "error", "success"].includes(kind)
+      ? kind
+      : "status";
+    const icon = document.createElement("span");
+    icon.className = "world-activity-icon";
+    const cleanSender = String(sender || "ForkMesh").trim().slice(0, 64);
+    const member = this.memberDirectory.find(
+      (entry) =>
+        String(entry?.name || "").toLowerCase() === cleanSender.toLowerCase(),
+    );
+    const publicAvatar = safeHTTPURL(member?.avatar || "");
+    if (publicAvatar) {
+      const image = document.createElement("img");
+      image.alt = "";
+      image.src = publicAvatar;
+      image.onerror = () => {
+        image.remove();
+        icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+      };
+      icon.append(image);
+    } else {
+      icon.textContent = Array.from(cleanSender)[0]?.toUpperCase() || "●";
+    }
+    const body = document.createElement("p");
+    body.textContent = copy;
+    article.append(icon, body);
+    stream.prepend(article);
+    while (stream.childElementCount > 6) stream.lastElementChild?.remove();
+    window.setTimeout(() => article.remove(), 10_100);
   }
 
   startTour() {
@@ -24439,6 +24534,9 @@ class ForkMeshWorld extends HTMLElement {
   renderDiagnostics() {
     const root = this.$("[data-world-diagnostics]");
     if (!root) return;
+    // With the debug panel disabled the whole element carries `hidden`;
+    // rebuilding its readouts every second is pure waste in that state.
+    if (root.hidden) return;
     const snapshot = this.collectDiagnostics();
     const { renderer, connection, traffic, queues, build, music } = snapshot;
     const formatRate = (value) =>
@@ -24593,6 +24691,10 @@ class ForkMeshWorld extends HTMLElement {
         level === "high" ? "needs attention" : level === "caution" ? "watch" : "healthy"
       }`;
     }
+    // Everything below lives in the expanded body; while the panel is
+    // collapsed only the summary readouts above are visible, so skip the
+    // nine per-second innerHTML rebuilds until it opens.
+    if (!root.open) return;
     const rendererDetail = this.$("[data-world-diagnostics-renderer]");
     if (rendererDetail) {
       rendererDetail.innerHTML = renderer
@@ -24984,7 +25086,11 @@ class ForkMeshWorld extends HTMLElement {
       this.sessionAuthenticated &&
       Boolean(this.worldActivityBaseAt) &&
       !document.hidden;
-    const currentTotal = this.currentWorldActivityMs();
+    // Quantized to whole minutes: the live counter otherwise changes on every
+    // call, which made the leaderboard repaint (a 2048px canvas + GPU texture
+    // upload) on every peer frame instead of only when a row really moved.
+    const currentTotal =
+      Math.floor(this.currentWorldActivityMs() / 60_000) * 60_000;
     return this.memberDirectory.map((member) => {
       if (
         !ownName ||
@@ -25652,7 +25758,20 @@ class ForkMeshWorld extends HTMLElement {
     // Pongs and targeted interactions do not change the public roster. Avoid
     // re-walking every avatar and rebuilding unrelated scene metrics for those
     // high-frequency frames.
-    if (peersChanged) this.renderPeers();
+    if (peersChanged) this.schedulePeerRender();
+  }
+
+  // A full renderPeers() pass walks the entire member directory (badges,
+  // lounge, aquarium, capacity tables), so running it once per inbound peer
+  // frame scaled O(peers × members) each second. One coalesced pass shortly
+  // after the first frame of a burst keeps avatars fresh — peers only publish
+  // movement about once a second and the scene interpolates between targets.
+  schedulePeerRender() {
+    if (this.peerRenderTimer) return;
+    this.peerRenderTimer = window.setTimeout(() => {
+      this.peerRenderTimer = 0;
+      this.renderPeers();
+    }, 180);
   }
 
   handleMirrorPush(message) {
@@ -26839,6 +26958,8 @@ class ForkMeshWorld extends HTMLElement {
     window.clearTimeout(this.peerGraceTimer);
     window.clearTimeout(this.profilePresenceTimer);
     window.clearTimeout(this.movementSendTimer);
+    window.clearTimeout(this.peerRenderTimer);
+    window.cancelAnimationFrame(this.viewportMetricsFrame);
     window.clearTimeout(this.positionWriteTimer);
     window.clearTimeout(this.toastTimer);
     window.clearTimeout(this.inactiveSyncTimer);
