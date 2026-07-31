@@ -2295,9 +2295,10 @@
   }
 
   // Content-free pending-inbox tallies (GET /api/repo/o/r/pending). Plain
-  // fetch, not the caching fetchJson — the counts change as the owner node
-  // drains its inbox and must refresh on every repo open. Best-effort: a miss
-  // just leaves the badges hidden.
+  // fetch, not the caching fetchJson — the counts drop as soon as any online
+  // node (the source of truth or an approved mirror) merges the submissions,
+  // so they must refresh on every repo open. Best-effort: a miss just leaves
+  // the badges hidden.
   async function loadRepoPendingCounts(repo) {
     try {
       const response = await fetch(`${repoApiBase(repo)}/pending`, {

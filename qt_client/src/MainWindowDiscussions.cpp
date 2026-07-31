@@ -1014,9 +1014,11 @@ void MainWindow::applyDiscussionsInboxPayload(const RepositoryRecord &repo,
             mirrorIntake ? accountOwner().trimmed().toLower()
                          : repoSegment(repo.owner, QStringLiteral("owner"));
         QUrlQuery query = signedInboxQuery(ackSigner);
-        if (mirrorIntake)
+        if (mirrorIntake) {
             query.addQueryItem(
                 QStringLiteral("mirror"), QStringLiteral("1"));
+            appendMirrorStateAttestation(&query, repo, ackSigner);
+        }
         query.addQueryItem(QStringLiteral("ids"),
                            drainedIds.join(QStringLiteral(",")));
         ackUrl.setQuery(query);
