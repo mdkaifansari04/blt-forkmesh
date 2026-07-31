@@ -4110,7 +4110,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
         </details>
 
         <details class="world-diagnostics world-chat-terminal${settings.debugPanel ? "" : " world-chat-terminal--debug-hidden"}" data-world-chat-terminal>
-          <summary aria-label="Open quick chat or task composer">
+          <summary aria-label="Open World chat">
             <span class="world-chat-terminal-avatar" data-world-chat-terminal-avatar aria-hidden="true">
               <img data-world-chat-terminal-avatar-image alt="" hidden>
               <span data-world-chat-terminal-avatar-initial>#</span>
@@ -4137,15 +4137,21 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             class="world-chat-terminal-body world-native-chat"
             data-world-native-chat
             data-world-default-repository="forkmesh/forkmesh"
+            role="region"
+            aria-labelledby="world-quick-chat-title"
           >
-            <nav class="world-quick-channels" data-world-quick-channels aria-label="Composer channels">
-              <button type="button" data-world-quick-channel="general" aria-pressed="true"><span>#</span> general</button>
-              <button type="button" data-world-quick-channel="private"><span>▣</span> Private</button>
-              <button type="button" data-world-quick-channel="direct"><span>●</span> Direct messages</button>
-              <button type="button" data-world-quick-channel="errors"><span>△</span> Errors <output data-world-admin-error-count hidden>0</output></button>
-              <button type="button" data-world-quick-channel="tasks"><span>✓</span> Tasks <output data-world-task-count hidden>0</output></button>
-              <button type="button" data-world-quick-channel="notifications"><span>◇</span> Notifications <output data-world-notification-count hidden>0</output></button>
-            </nav>
+            <h2 class="world-visually-hidden" id="world-quick-chat-title">World chat</h2>
+            <header class="world-quick-chat-header">
+              <nav class="world-quick-channels" data-world-quick-channels aria-label="Chat destinations">
+                <button type="button" data-world-quick-channel="general" aria-pressed="true"><span>#</span> general</button>
+                <button type="button" data-world-quick-channel="private" aria-label="Open private channels in a new tab"><span>▣</span> Private</button>
+                <button type="button" data-world-quick-channel="direct" aria-label="Open direct messages in a new tab"><span>●</span> Direct messages</button>
+                <button type="button" data-world-quick-channel="errors"><span>△</span> Errors <output data-world-admin-error-count hidden>0</output></button>
+                <button type="button" data-world-quick-channel="tasks"><span>✓</span> Tasks <output data-world-task-count hidden>0</output></button>
+                <button type="button" data-world-quick-channel="notifications"><span>◇</span> Notifications <output data-world-notification-count hidden>0</output></button>
+              </nav>
+              <button class="world-quick-chat-close" type="button" data-world-chat-terminal-close aria-label="Close World chat">×</button>
+            </header>
             <div class="world-quick-chat-feed" data-world-quick-chat-feed>
               <div id="fullChatMessages" role="log" aria-live="polite" aria-label="Live World activity"></div>
               <div data-dashboard-chat-scroll-rail aria-label="Chat scroll controls">
@@ -4154,13 +4160,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <button type="button" data-dashboard-chat-scroll="down" aria-label="Scroll to newest message">↓</button>
               </div>
             </div>
-            <nav data-dashboard-chat-context-rail aria-label="Selected chat context">
-              <button type="button" data-dashboard-chat-context-channel># general</button>
-              <button type="button" data-dashboard-chat-context-source>forkmesh/forkmesh · Organization</button>
-            </nav>
             <div data-dashboard-chat-composer data-world-simple-composer>
               <div>
-                <div data-dashboard-chat-composer-toolbar>
+                <div data-dashboard-chat-composer-toolbar hidden inert aria-hidden="true">
                   <label class="world-visually-hidden" for="fullChatChannel">Channel</label>
                   <select id="fullChatChannel"><option value=""># general</option></select>
                   <label class="world-visually-hidden" for="fullChatRepo">Repository</label>
@@ -4193,8 +4195,10 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                       Array.from(signedInName || identity?.name || "?")[0]?.toUpperCase() || "?",
                     )}</span>
                   </span>
-                  <textarea id="fullChatInput" rows="2" maxlength="16000" enterkeyhint="send" aria-label="Message #general" placeholder="Message #general…"></textarea>
-                  <span class="world-quick-attachment-slot" data-world-quick-attachment></span>
+                  <span class="world-quick-input-shell">
+                    <textarea id="fullChatInput" rows="2" maxlength="16000" enterkeyhint="send" aria-label="Message #general" placeholder="Message #general…"></textarea>
+                    <span class="world-quick-attachment-slot" data-world-quick-attachment></span>
+                  </span>
                   <span class="world-quick-actions" role="group" aria-label="Enter key action">
                     <button id="fullChatSend" type="button" title="Enter will send to #general" aria-pressed="true"><span data-dashboard-chat-send-label>Chat</span></button>
                     <button id="fullChatTaskSend" type="button" title="Enter will send this task to the bot" aria-pressed="false">Task</button>
@@ -5364,6 +5368,7 @@ class ForkMeshWorld extends HTMLElement {
     this.renderSavedViews();
     this.syncViewportHeight();
     window.visualViewport?.addEventListener("resize", this.syncViewportHeight);
+    window.visualViewport?.addEventListener("scroll", this.syncViewportHeight);
     window.addEventListener("orientationchange", this.syncViewportHeight);
     window.addEventListener("storage", this.handleStorage);
     window.addEventListener("pointerdown", this.handlePublicInputActivity, {
@@ -5377,6 +5382,7 @@ class ForkMeshWorld extends HTMLElement {
       capture: true,
     });
     window.addEventListener("keydown", this.handlePublicInputActivity);
+    window.addEventListener("keydown", this.handleQuickChatEscape);
     window.addEventListener("message", this.handleWorldChatMessage);
     window.addEventListener(
       "forkmesh:world-chat-native",
@@ -7452,17 +7458,69 @@ class ForkMeshWorld extends HTMLElement {
     }
   };
 
+  handleQuickChatEscape = (event) => {
+    if (event.code !== "Escape" || event.defaultPrevented) return;
+    const terminal = this.$("[data-world-chat-terminal]");
+    if (!terminal?.open) return;
+    this.chatHoverSuppressed = true;
+    terminal.removeAttribute("open");
+    window.requestAnimationFrame(() => {
+      terminal.querySelector(":scope > summary")?.focus();
+    });
+  };
+
   syncViewportHeight = (event = null) => {
+    const visualViewport = window.visualViewport;
+    const visualHeight = Math.max(
+      160,
+      Math.round(visualViewport?.height || window.innerHeight || 0),
+    );
+    const visualOffsetTop = Math.max(
+      0,
+      Math.round(visualViewport?.offsetTop || 0),
+    );
+    const currentViewportWidth = Math.max(
+      240,
+      Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
+    );
+    const stableLayoutHeight =
+      this.coarsePointerViewport &&
+      this.lastStableViewportWidth > 0 &&
+      Math.abs(currentViewportWidth - this.lastStableViewportWidth) < 2
+        ? this.lastStableViewportHeight
+        : 0;
+    const layoutHeight = Math.max(
+      // The renderer deliberately keeps a 240px minimum layout surface. Chat
+      // is positioned inside that surface, so account for the covered slice
+      // even when the page first loads into a shorter landscape viewport.
+      240,
+      visualHeight,
+      stableLayoutHeight,
+      Math.round(window.innerHeight || document.documentElement.clientHeight || 0),
+    );
+    // The 3D renderer deliberately stays stable while mobile browser chrome
+    // or a software keyboard changes only the visual viewport. Chat still has
+    // to follow the actually visible area, so it owns separate live metrics.
+    this.style.setProperty(
+      "--world-chat-viewport-height",
+      `${visualHeight}px`,
+    );
+    this.style.setProperty(
+      "--world-chat-covered-bottom",
+      `${Math.max(
+        0,
+        layoutHeight - visualOffsetTop - visualHeight,
+      )}px`,
+    );
+    this.dataset.worldChatCompact = String(visualHeight <= 360);
+    this.dataset.worldChatMicro = String(visualHeight <= 240);
     // Mobile browser chrome can resize visualViewport continuously while a
     // thumbstick drag is in progress. Resizing the WebGL canvas on every one
     // of those samples looks like the whole World is refreshing mid-walk.
     // Hold the last stable viewport until the gesture ends, then reconcile it
     // once without interrupting movement.
     if (this.mobileMovementActive) return;
-    const width = Math.max(
-      240,
-      Math.round(window.innerWidth || document.documentElement.clientWidth || 0),
-    );
+    const width = currentViewportWidth;
     // On touch devices, address-bar expansion and contraction changes only
     // the visual viewport height. Resizing the WebGL buffer for that browser
     // chrome animation clears the frame and looks like a full World refresh.
@@ -9241,7 +9299,17 @@ class ForkMeshWorld extends HTMLElement {
 
   bindUI() {
     const chatTerminal = this.$("[data-world-chat-terminal]");
+    const chatSummary = chatTerminal?.querySelector(":scope > summary");
     const diagnostics = this.$("[data-world-diagnostics]");
+    let focusChatComposerOnOpen = false;
+    const closeChatTerminal = (restoreFocus = false) => {
+      if (!chatTerminal?.open) return;
+      this.chatHoverSuppressed = true;
+      chatTerminal.removeAttribute("open");
+      if (restoreFocus) {
+        window.requestAnimationFrame(() => chatSummary?.focus());
+      }
+    };
     this.$$("[data-world-jetpack-direction]").forEach((button) => {
       const direction = button.dataset.worldJetpackDirection;
       const stop = (event) => {
@@ -9276,15 +9344,50 @@ class ForkMeshWorld extends HTMLElement {
     });
     if (chatTerminal && hoverCapable) {
       chatTerminal.addEventListener("pointerenter", () => {
+        if (this.chatHoverSuppressed) return;
         chatTerminal.open = true;
         diagnostics?.removeAttribute("open");
         this.loadNativeWorldChat();
       });
+      chatTerminal.addEventListener("pointerleave", () => {
+        this.chatHoverSuppressed = false;
+      });
     }
-    chatTerminal?.addEventListener("focusin", () => {
-      chatTerminal.open = true;
-      diagnostics?.removeAttribute("open");
+    chatSummary?.addEventListener("click", (event) => {
+      focusChatComposerOnOpen = !hoverCapable || event.detail === 0;
+    });
+    chatSummary?.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        focusChatComposerOnOpen = true;
+      }
+    });
+    this.$("[data-world-chat-terminal-close]")?.addEventListener(
+      "click",
+      () => closeChatTerminal(true),
+    );
+    this.$("[data-world-quick-channels]")?.addEventListener(
+      "focusin",
+      (event) => {
+        event.target
+          .closest?.("[data-world-quick-channel]")
+          ?.scrollIntoView({ block: "nearest", inline: "nearest" });
+      },
+    );
+    chatTerminal?.addEventListener("toggle", () => {
+      if (!chatTerminal.open) {
+        focusChatComposerOnOpen = false;
+        return;
+      }
+      this.$("[data-world-diagnostics]")?.removeAttribute("open");
       this.loadNativeWorldChat();
+      this.clearChatTerminalUnread();
+      this.restoreQuickComposerChannel();
+      if (focusChatComposerOnOpen) {
+        focusChatComposerOnOpen = false;
+        window.requestAnimationFrame(() => {
+          this.$("#fullChatInput")?.focus();
+        });
+      }
     });
     // The account portrait is the World HUD launcher.  It keeps the World
     // quiet while walking, then fans the fixed-size controls out on hover,
@@ -9302,14 +9405,6 @@ class ForkMeshWorld extends HTMLElement {
     }
     hudHoverTargets.forEach((target) => {
       target.addEventListener("focusin", openHud);
-    });
-    chatTerminal?.addEventListener("toggle", () => {
-      if (chatTerminal.open) {
-        this.$("[data-world-diagnostics]")?.removeAttribute("open");
-        this.loadNativeWorldChat();
-        this.clearChatTerminalUnread();
-        this.restoreQuickComposerChannel();
-      }
     });
     // Load the chat frame immediately so the collapsed CHAT bar always shows
     // the most recent global #general message, not a static placeholder.
@@ -10267,6 +10362,7 @@ class ForkMeshWorld extends HTMLElement {
 
     this.addEventListener("keydown", (event) => {
       if (event.code !== "Escape") return;
+      if (this.$("[data-world-chat-terminal]")?.open) return;
       if (
         this.$("[data-world-instance-launcher]")?.dataset.open === "true"
       ) {
@@ -22133,7 +22229,15 @@ class ForkMeshWorld extends HTMLElement {
       // re-read on entry rather than polled while the panel sits open.
       void this.loadWorldSessions();
     }
-    if (selected === "work") void this.officeTasks?.refresh?.({ quiet: true });
+    if (selected === "work") {
+      void this.ensureOfficeRuntime({ userInitiated: true }).then(() => {
+        if (this.destroyed || this.settingsTab !== "work") return;
+        const currentPanel = this.$("[data-world-settings]");
+        if (currentPanel?.dataset.open !== "true") return;
+        this.officeTasks?.setPersonalView?.(true);
+        void this.officeTasks?.refresh?.({ quiet: true });
+      });
+    }
   }
 
   renderWorldSessions(message = "", tone = "") {
@@ -22414,7 +22518,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=f802fd40287d";
+    script.src = "/dashboard-chat.js?v=42714502d0a3";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {
@@ -26696,6 +26800,10 @@ class ForkMeshWorld extends HTMLElement {
       "resize",
       this.syncViewportHeight,
     );
+    window.visualViewport?.removeEventListener(
+      "scroll",
+      this.syncViewportHeight,
+    );
     window.removeEventListener("orientationchange", this.syncViewportHeight);
     window.removeEventListener("storage", this.handleStorage);
     window.removeEventListener("pointerdown", this.handlePublicInputActivity);
@@ -26706,6 +26814,7 @@ class ForkMeshWorld extends HTMLElement {
       true,
     );
     window.removeEventListener("keydown", this.handlePublicInputActivity);
+    window.removeEventListener("keydown", this.handleQuickChatEscape);
     window.removeEventListener("message", this.handleWorldChatMessage);
     window.removeEventListener(
       "forkmesh:world-chat-native",
