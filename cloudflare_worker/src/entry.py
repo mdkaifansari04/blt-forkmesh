@@ -146,7 +146,10 @@ CLIENT_ERROR_SURFACES = frozenset({
     "home", "world", "dashboard", "documentation", "blog", "network",
     "chat", "account", "repository", "public-page",
 })
-CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection"})
+# "crash" rows come from the world's crash guard: a page instance that ended
+# without pagehide (GPU/OOM kill, tab discard) or a lost WebGL context, with
+# the last heartbeat's diagnostics in the message.
+CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection", "crash"})
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
