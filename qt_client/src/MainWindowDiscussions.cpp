@@ -203,10 +203,39 @@ DiscussionStore MainWindow::discussionStoreForCurrentRepo() const
                            chatDisplayName());
 }
 
+// The "Discussions (N)" badge without building or rendering the Discussions
+// panel. reloadDiscussions() below is the panel's loader: it bails out entirely
+// until the tab has been built, and reads the store on the GUI thread — so a
+// repo whose landing tab isn't Discussions sat on "Discussions (0)" however many
+// it really had, until the tab was clicked (adhoc #116). Read the same store on
+// a worker (the mirror path shells `git show` per discussion) and apply only the
+// count. The list it loads is what reloadDiscussions() would have loaded, so
+// keeping it is safe: opening the tab reloads and re-renders from scratch.
+void MainWindow::reloadDiscussionCountInBackground()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int repoIndex = m_repoDetailIndex;
+    const int generation = ++m_discussionCountLoadGen;
+    // By value: the worker must touch nothing the GUI thread owns.
+    const DiscussionStore store = discussionStoreForCurrentRepo();
+    runOffThread<QList<Discussion>>(
+        [store] { return store.loadAll(nullptr); },
+        [this, repoIndex, generation](QList<Discussion> loaded) {
+            if (generation != m_discussionCountLoadGen ||
+                repoIndex != m_repoDetailIndex)
+                return; // superseded, or the user moved to another repo
+            m_currentDiscussions = std::move(loaded);
+            updateRepoDiscussionCount();
+        });
+}
+
 void MainWindow::reloadDiscussions()
 {
     if (!m_discussionTable)
         return;
+    // A panel load is authoritative over any count load still in flight.
+    ++m_discussionCountLoadGen;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         m_currentDiscussions.clear();
         m_currentDiscussionNumber = -1;

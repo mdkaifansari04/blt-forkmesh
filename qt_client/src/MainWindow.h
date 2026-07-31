@@ -1757,6 +1757,9 @@ private:
     QWidget *buildDiscussionsTab();
     DiscussionStore discussionStoreForCurrentRepo() const;
     void reloadDiscussions();
+    // The "Discussions (N)" badge alone, loaded off-thread, so the count is right
+    // without building the (lazy) Discussions panel — see refreshRepoTabCounts().
+    void reloadDiscussionCountInBackground();
     void showDiscussion(int number);
     void renderDiscussionThread(const Discussion &discussion);
     void updateDiscussionActionState();
@@ -2347,6 +2350,9 @@ private:
     void refreshRepoActions();           // workflows column + runs for the open repo
     QList<ActionWorkflow> availableWorkflowsForRepo(
         const RepositoryRecord &repo) const;
+    // The "Actions (N)" badge alone, discovered off-thread, so the count is right
+    // without building the (lazy) Actions panel — see refreshRepoTabCounts().
+    void reloadWorkflowCountInBackground();
     // Show/populate the manual-run bar for the selected workflow (branches from
     // the repo's mirror, default "main"); hidden unless it allows manual runs.
     void updateManualRunBar();
@@ -2539,6 +2545,10 @@ private:
     void updateRepoIssueCount();
     void updateRepoDiscussionCount();
     void updateRepoPullCount();
+    // Fill in every repo-tab badge whose panel loads lazily (Issues, Discussions,
+    // Actions) from worker threads, so the tab row is right on the first frame
+    // rather than only after each tab is clicked (adhoc #116).
+    void refreshRepoTabCounts();
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
     void showRepoEditor();
@@ -3964,6 +3974,9 @@ private:
     void startSyncFetch(int index, bool quiet, bool hasMirror,
                         const QStringList &args, const QString &beforeDigest,
                         const QString &beforeHeadCommit);
+    // Select (and prime) the repo a fresh install has been waiting on, once its
+    // first clone lands. Returns true when this index was the one awaited.
+    bool completePendingRepoAutoOpen(int index);
     void autoSyncMirrors();
     // Periodic-timer wrapper for autoSyncMirrors(): skips the round while the
     // relay host sits in BackoffNetworkAccessManager's 429/5xx cooldown, since
@@ -5519,6 +5532,8 @@ private:
     QPushButton *m_discussionCommentButton = nullptr;
     QLabel *m_discussionCategorySummary = nullptr;
     QList<Discussion> m_currentDiscussions;
+    // Same guard as m_workflowCountLoadGen, for the badge-only discussions load.
+    int m_discussionCountLoadGen = 0;
     int m_currentDiscussionNumber = -1;
     DiscussionInboxBackoff m_discussionInboxBackoff;
     // Exponential backoff for the app's periodic network pollers (owner-inbox
@@ -5788,6 +5803,10 @@ private:
     QLabel *m_actionNodeLabel = nullptr;         // caption above that dropdown
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
+    // Bumped by every workflow discovery (panel or badge-only): a background
+    // count that lands after a newer load — or after the panel loaded the real
+    // list — drops its result instead of overwriting it.
+    int m_workflowCountLoadGen = 0;
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,

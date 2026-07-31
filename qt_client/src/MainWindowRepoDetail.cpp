@@ -1426,8 +1426,6 @@ void MainWindow::openRepoDetail(int repoIndex)
     if (m_issueTable)
         m_issueTable->setRowCount(0);
     updateRepoIssueCount();
-    if (defaultTab == 2)
-        reloadIssuesInBackground();
     if (defaultTab == 3)
         reloadAgents();
     m_currentDiscussions.clear();
@@ -1520,14 +1518,21 @@ void MainWindow::openRepoDetail(int repoIndex)
     // sure Home is the active section and refresh the breadcrumb.
     showSection(0);
     updateBreadcrumb();
-    // Workflow discovery shells Git and scans YAML. Only do it when Actions is
-    // actually the landing page; other tabs load it on click.
+    // Workflow discovery shells Git and scans YAML. Only build the panel when
+    // Actions is actually the landing page; other tabs load it on click.
     m_repoWorkflows.clear();
     if (m_actionsTable)
         m_actionsTable->setRowCount(0);
     if (landingTab == 6)
         refreshRepoActions();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
+    // Every lazily-loaded badge above has just been reset to its empty value.
+    // Fill them in from worker threads so the tab row is right on the first
+    // frame instead of only after each tab is clicked (adhoc #116) — including
+    // on a fresh install, whose first clone lands after this ran. Placed after
+    // the resets above so nothing here is clobbered by them, and it subsumes the
+    // Issues landing-tab load (reloadIssuesInBackground populates the table too).
+    refreshRepoTabCounts();
     refreshRepoPinBanner();      // warn if the relay's integrity pin is stale
     // The rail's Git badge is visible from the first paint, so give it this
     // repo's uncommitted count now instead of leaving the previous repo's
@@ -1592,6 +1597,22 @@ void MainWindow::updateRepoPullCount()
     if (m_repoPullsTab)
         m_repoPullsTab->setText(
             QStringLiteral("PRs (%1)").arg(formatCount(m_currentPulls.size())));
+}
+
+// Fill in the repo-tab badges whose panels load lazily. Opening a repo resets
+// every count to its empty value but only loads the landing tab's data, so a
+// repo with hundreds of issues advertised "Issues (0)" — and "Discussions (0)",
+// and "Actions (0)" — until each tab was clicked. On a fresh install, where the
+// first clone lands after the view is already up, every one of them was wrong at
+// once (adhoc #116). All three reads are worker-backed and only write a label:
+// no hidden panel is built and the GUI thread does no git work.
+void MainWindow::refreshRepoTabCounts()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    reloadIssuesInBackground();
+    reloadDiscussionCountInBackground();
+    reloadWorkflowCountInBackground();
 }
 
 void MainWindow::loadRepoFileTree()

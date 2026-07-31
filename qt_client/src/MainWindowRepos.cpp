@@ -6318,6 +6318,11 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
             // Propagate the freshly sealed state to the SSH-fed headless
             // mirrors too — they don't hear the relay's mirror-update frames.
             pushToSshMirrorRemotes(index);
+            // A fresh install mirrors the flagship as a normal public repo, so
+            // this is the path its very first clone finishes on. Last, because
+            // it reads the mirror and pumps the event loop while `current` is
+            // still a reference into m_repositories.
+            completePendingRepoAutoOpen(index);
         });
     worker->start();
 }
@@ -6605,6 +6610,52 @@ void MainWindow::syncRepository(int index, bool quiet)
     prep->start();
 }
 
+// A fresh install's first sync of the flagship repo (flagged by
+// ensureFlagshipRepo, adhoc #113): select it now that the clone landed, instead
+// of leaving the user on an empty repo list. Returns true when this repo was the
+// one being waited on, so the caller skips its own refresh.
+//
+// Every sync path has to call this, not just the preview one: a brand-new
+// install mirrors the flagship as a normal public repo, so it lands in
+// syncPublicEncryptedRepository and the auto-select never fired at all
+// (adhoc #116).
+bool MainWindow::completePendingRepoAutoOpen(int index)
+{
+    if (index < 0 || index >= m_repositories.size() ||
+        m_pendingAutoOpenRepoKey.isEmpty())
+        return false;
+    const RepositoryRecord &repo = m_repositories.at(index);
+    if (repo.previewOnly ||
+        m_pendingAutoOpenRepoKey.compare(repo.owner + "/" + repo.name,
+                                         Qt::CaseInsensitive) != 0)
+        return false;
+    m_pendingAutoOpenRepoKey.clear();
+    // On a fresh install, land on the welcome chat, not the Code view. Just
+    // select the repo internally (so the repo switcher shows "forkmesh") and
+    // refresh the UI; don't open the detail view, which would navigate away from
+    // the chat and onto the Agents tab.
+    m_repoDetailIndex = index;
+    refreshRepositoryList();
+    // Because the detail view is deliberately not opened, nothing has read this
+    // repo's refs yet — the status strip's bottom-left button would sit on its
+    // "main" placeholder whatever the clone actually holds, and every repo tab
+    // would keep the empty count it was built with. Prime them from the mirror
+    // that just landed (adhoc #116), in openRepoDetail's order: the info file
+    // names the default branch the branch button then resolves against.
+    m_repoInfo = RepoInfo();
+    m_repoBranch.clear();
+    loadRepoInfo();
+    loadBranchesAndTags();
+    updateFooterGitIdentity();
+    updateFooterCommitInfo();
+    refreshRepoTabCounts();
+    QTimer::singleShot(0, this, [this] {
+        showChatView();
+        switchConversation(welcomeChannelForIdentity());
+    });
+    return true;
+}
+
 void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                                 const QStringList &args,
                                 const QString &beforeDigest,
@@ -6680,24 +6731,6 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // hook so local pushes are detected (actions + refresh).
                         if (!stillPreview)
                             ensurePushHook(repo);
-                        // A fresh install's first sync of the flagship repo (flagged
-                        // by ensureFlagshipRepo, adhoc #113): open it now that the
-                        // clone landed, instead of leaving the user on an empty list.
-                        if (!stillPreview && !m_pendingAutoOpenRepoKey.isEmpty() &&
-                            m_pendingAutoOpenRepoKey.compare(
-                                repo.owner + "/" + repo.name, Qt::CaseInsensitive) == 0) {
-                            m_pendingAutoOpenRepoKey.clear();
-                            // On a fresh install, land on the welcome chat, not the
-                            // Code view. Just select the repo internally (so the repo
-                            // switcher shows "forkmesh") and refresh the UI; don't open
-                            // the detail view which would load and show the Agents tab.
-                            m_repoDetailIndex = index;
-                            refreshRepositoryList();
-                            QTimer::singleShot(0, this, [this] {
-                                showChatView();
-                                switchConversation(welcomeChannelForIdentity());
-                            });
-                        }
                         if (changed && hasMirror && !stillPreview &&
                             m_actionStore && !headBranch->isEmpty() &&
                             !headCommit->isEmpty() &&
@@ -6760,6 +6793,11 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // auto-syncs don't re-scan an up-to-date store every tick.
                         if (!stillPreview && hasMirror && (changed || !quiet))
                             replicateReleaseArtifacts(index);
+                        // Last, because it reads the freshly landed mirror and so
+                        // pumps the event loop: `repo` above is a reference into
+                        // m_repositories and must not be held across it
+                        // (git-pump UAF family).
+                        completePendingRepoAutoOpen(index);
                     });
                     worker->start();
                 } else {
