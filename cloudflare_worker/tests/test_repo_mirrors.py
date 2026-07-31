@@ -510,6 +510,36 @@ def test_payload_names_the_latest_commit_of_each_mirror():
     assert legacy["lastCommitAt"] is None
 
 
+def test_payload_stamps_when_each_mirror_last_served_a_clone_or_web_read():
+    # The serve counters on the Mirror node cards each carry "when, and to what
+    # kind of client". A node that has served none of a kind, or predates the
+    # stamps, stays None instead of borrowing its publication time.
+    now = 1_000_000
+    rows = [
+        _row("a", "mainnode", "forkmesh", root="abc", synced="990000"),
+        _row("b", "legacy", "forkmesh", root="abc", synced="980000"),
+    ]
+    rows[0]["data"].update({
+        "cloneServedAt": "1750000000000",
+        "cloneServedAgent": "git-client",
+        "websiteServedAt": "1750000900000",
+        "websiteServedAgent": "browser",
+    })
+    payload = build_repo_mirrors_payload(
+        "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
+    )
+    rich = payload["mirrors"][0]
+    assert rich["cloneServedAt"] == 1_750_000_000_000
+    assert rich["cloneServedAgent"] == "git-client"
+    assert rich["websiteServedAt"] == 1_750_000_900_000
+    assert rich["websiteServedAgent"] == "browser"
+    legacy = payload["mirrors"][1]
+    assert legacy["cloneServedAt"] is None
+    assert legacy["cloneServedAgent"] is None
+    assert legacy["websiteServedAt"] is None
+    assert legacy["websiteServedAgent"] is None
+
+
 def test_payload_defensively_bounds_or_hides_invalid_host_telemetry():
     now = 1_000_000
     rows = [

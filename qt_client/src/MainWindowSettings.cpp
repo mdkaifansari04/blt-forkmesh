@@ -341,10 +341,10 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kPublishAgentsToWebSetting, enabled);
     });
 
-    auto *notifyLabel = new QLabel("NOTIFICATIONS");
+    auto *notifyLabel = new QLabel("PINGS");
     notifyLabel->setObjectName("sectionLabel");
     auto *pushAlertCheck =
-        new QCheckBox("Show a system alert when a push reaches a mirror");
+        new QCheckBox("Show a system ping when a push reaches a mirror");
     pushAlertCheck->setChecked(
         QSettings().value(kPushAlertSetting, false).toBool());
     pushAlertCheck->setToolTip(
@@ -354,14 +354,14 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kPushAlertSetting, enabled);
     });
     auto *actionAlertCombo = new QComboBox;
-    actionAlertCombo->addItem("Action alerts: all runs", QStringLiteral("all"));
-    actionAlertCombo->addItem("Action alerts: failures only",
+    actionAlertCombo->addItem("Action pings: all runs", QStringLiteral("all"));
+    actionAlertCombo->addItem("Action pings: failures only",
                               QStringLiteral("failed"));
-    actionAlertCombo->addItem("Action alerts: off", QStringLiteral("none"));
+    actionAlertCombo->addItem("Action pings: off", QStringLiteral("none"));
     actionAlertCombo->setToolTip(
         "Desktop notifications for .forkmesh/ workflows: pop one for every run "
         "(start and finish), only when a run fails, or never. The in-app "
-        "Notifications page logs every run regardless.");
+        "Pings page logs every run regardless.");
     {
         const int idx = actionAlertCombo->findData(actionAlertMode());
         actionAlertCombo->setCurrentIndex(idx < 0 ? 0 : idx);
@@ -372,7 +372,7 @@ QWidget *MainWindow::buildSettingsSection()
                                      actionAlertCombo->currentData().toString());
             });
     auto *nodeConnectAlertCheck =
-        new QCheckBox("Show a system alert when a node connects");
+        new QCheckBox("Show a system ping when a node connects");
     nodeConnectAlertCheck->setChecked(
         QSettings().value(kNodeConnectAlertSetting, false).toBool());
     nodeConnectAlertCheck->setToolTip(
@@ -383,7 +383,7 @@ QWidget *MainWindow::buildSettingsSection()
     });
     auto *disbursementAlertCheck =
         new QCheckBox(
-            "Show a system alert when your public wallet balance increases");
+            "Show a system ping when your public wallet balance increases");
     disbursementAlertCheck->setChecked(
         QSettings().value(kDisbursementAlertSetting, false).toBool());
     disbursementAlertCheck->setToolTip(
@@ -405,35 +405,35 @@ QWidget *MainWindow::buildSettingsSection()
         return box;
     };
     auto *chatMessageAlertCheck = alertCheck(
-        "Show a system alert for new chat messages", kChatMessageAlertSetting,
+        "Show a system ping for new chat messages", kChatMessageAlertSetting,
         "Pop up a desktop notification when a chat message arrives while ForkMesh "
         "isn't the active window.");
     auto *mentionAlertCheck = alertCheck(
-        "Show a system alert when you're @mentioned", kMentionAlertSetting,
+        "Show a system ping when you're @mentioned", kMentionAlertSetting,
         "Pop up a desktop notification when your node name is mentioned in chat or "
         "in an issue/pull request.");
     auto *issueAlertCheck = alertCheck(
-        "Show a system alert for new issues", kIssueAlertSetting,
+        "Show a system ping for new issues", kIssueAlertSetting,
         "Pop up a desktop notification when another node files an issue on one of "
         "your repositories.");
     auto *pullAlertCheck = alertCheck(
-        "Show a system alert for new pull requests", kPullAlertSetting,
+        "Show a system ping for new pull requests", kPullAlertSetting,
         "Pop up a desktop notification when another node opens a pull request on "
         "one of your repositories.");
     auto *commentAlertCheck = alertCheck(
-        "Show a system alert for new issue comments", kCommentAlertSetting,
+        "Show a system ping for new issue comments", kCommentAlertSetting,
         "Pop up a desktop notification when someone comments on one of your "
         "issues.");
     auto *mirrorUpdateAlertCheck = alertCheck(
-        "Show a system alert when a mirror updates", kMirrorUpdateAlertSetting,
+        "Show a system ping when a mirror updates", kMirrorUpdateAlertSetting,
         "Pop up a desktop notification when a peer refreshes the mirror of a repo "
         "you also mirror.");
     auto *coveOpenAlertCheck = alertCheck(
-        "Show a system alert when a cove is opened", kCoveOpenAlertSetting,
+        "Show a system ping when a cove is opened", kCoveOpenAlertSetting,
         "Pop up a desktop notification when someone opens an encrypted cove you "
         "created with notifications enabled.");
     auto *newUserAlertCheck = alertCheck(
-        "Show a system alert when a new user joins", kNewUserAlertSetting,
+        "Show a system ping when a new user joins", kNewUserAlertSetting,
         "Admin: pop up a desktop notification when a new user signs up and needs "
         "email verification.");
 
@@ -1786,7 +1786,7 @@ QWidget *MainWindow::buildSettingsSection()
     notifyCol->addWidget(emailHostOnlineCheck);
     notifyCol->addWidget(emailHostOfflineCheck);
     notifyCol->addStretch();
-    addTab(notifyTab, "Notifications");
+    addTab(notifyTab, "Pings");
 
     // Agents & IDE: model keys/commands and editor integration.
     auto *agentsTab = new QWidget;
@@ -3971,7 +3971,10 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         m_settingsLog->append(formatDayDividerHtml(date, dark));
     }
 
-    m_settingsLog->append(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+    m_settingsLog->append(formatLogLineHtml(
+        time, message, dark,
+        logPromptIconTag(m_settingsLog, storedLine) +
+            logFaviconTag(message, m_settingsLog)));
     if (lockedPosition >= 0)
         scrollBar->setValue(lockedPosition);
 }
@@ -4015,7 +4018,10 @@ void MainWindow::loadOlderNetworkLogSegment()
             html += QStringLiteral("<div>%1</div>").arg(formatDayDividerHtml(date, dark));
         }
         html += QStringLiteral("<div>%1</div>")
-                    .arg(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+                    .arg(formatLogLineHtml(
+                        time, message, dark,
+                        logPromptIconTag(m_settingsLog, storedLine) +
+                            logFaviconTag(message, m_settingsLog)));
     }
 
     QScrollBar *sb = m_settingsLog->verticalScrollBar();

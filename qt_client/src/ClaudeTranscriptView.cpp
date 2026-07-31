@@ -6,7 +6,12 @@
 #include <QDateTime>
 #include <QEasingCurve>
 #include <QEvent>
+#include <QFileInfo>
 #include <QFontDatabase>
+#include <QFutureWatcher>
+#include <QImageReader>
+#include <QPixmapCache>
+#include <QtConcurrentRun>
 #include <functional>
 #include <QButtonGroup>
 #include <QFrame>
@@ -40,6 +45,10 @@
 
 namespace {
 QString esc(const QString &s) { return s.toHtmlEscaped(); }
+
+// The transcript renders in the system monospace face throughout, like the
+// terminal the CLI actually runs in.
+QFont monoFont() { return QFontDatabase::systemFont(QFontDatabase::FixedFont); }
 
 // Search-match highlight colours, fixed rather than theme-derived so they read
 // clearly on both light and dark canvases (dark text on a warm fill). The
@@ -86,46 +95,41 @@ int countMatchesIn(const QString &orig, Qt::TextFormat fmt, const QString &query
 
 static QString capLabelText(const QString &text, bool collapseLines);
 
-// A foldable section: a clickable header (▸/▾) over a body. Instead of a heavy
-// grey card it draws as an open section with a coloured accent bar down the left,
-// so the transcript reads as a lively timeline rather than a stack of boxes. The
-// body folds open/shut with a height animation, and a section can softly pulse
-// while it is live (the streaming "Thinking…" card).
+// A foldable thinking section, CLI style: a muted italic header ("Thought for
+// 6s") that folds its body open/shut on click (▸/▾), with the body indented
+// under it. The body folds with a height animation, and a section can softly
+// pulse while it is live (the streaming "Thinking…" card).
 class Collapsible : public QFrame
 {
 public:
     Collapsible(const QString &header, bool expanded,
-                const ClaudeTranscriptView::Palette &p, const QString &accent,
+                const ClaudeTranscriptView::Palette &p,
                 QWidget *parent = nullptr)
         : QFrame(parent), m_open(expanded), m_label(header)
     {
-        const QString bar = accent.isEmpty() ? p.border : accent;
-        const QString hdr = accent.isEmpty() ? p.text : accent;
         setObjectName(QStringLiteral("xscript_section"));
-        // Transparent body, just an accent stripe on the left — no boxed-in grey.
         setStyleSheet(QStringLiteral(
-                          "QFrame#xscript_section{background:transparent;border:none;"
-                          "border-left:3px solid %1;border-top-left-radius:0;"
-                          "border-bottom-left-radius:0;border-radius:6px;}")
-                          .arg(bar));
+            "QFrame#xscript_section{background:transparent;border:none;}"));
         auto *v = new QVBoxLayout(this);
-        v->setContentsMargins(12, 6, 6, 6);
-        v->setSpacing(6);
+        v->setContentsMargins(0, 0, 0, 0);
+        v->setSpacing(4);
         m_btn = new QPushButton(this);
         m_btn->setCursor(Qt::PointingHandCursor);
+        m_btn->setFont(monoFont());
         m_btn->setStyleSheet(QStringLiteral(
             "QPushButton{border:none;background:transparent;text-align:left;"
-            "color:%1;font-weight:600;padding:0;}"
-            "QPushButton:hover{color:%2;}").arg(hdr, p.accent));
+            "color:%1;font-style:italic;padding:0;}"
+            "QPushButton:hover{color:%2;}").arg(p.muted, p.accent));
         v->addWidget(m_btn);
         m_bodyWidget = new QWidget(this);
         m_bodyWidget->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
         m_bodyLayout = new QVBoxLayout(m_bodyWidget);
-        m_bodyLayout->setContentsMargins(0, 2, 0, 0);
+        m_bodyLayout->setContentsMargins(14, 2, 0, 0); // indent under the header
         m_bodyLayout->setSpacing(6);
         v->addWidget(m_bodyWidget);
-        // Sections no longer collapse/expand
         m_bodyWidget->setVisible(m_open);
+        QObject::connect(m_btn, &QPushButton::clicked, m_btn,
+                         [this] { setExpanded(!m_open); });
         updateHeaderText();
     }
     QVBoxLayout *body() { return m_bodyLayout; }
@@ -170,7 +174,8 @@ public:
 private:
     void updateHeaderText()
     {
-        m_btn->setText(m_label);
+        m_btn->setText((m_open ? QStringLiteral("▾ ") : QStringLiteral("▸ "))
+                       + m_label);
     }
     void animateBody()
     {
@@ -362,19 +367,20 @@ private:
     bool m_open = false;
 };
 
-// One row on the transcript's timeline: a left rail (a vertical connecting line
-// with a coloured node dot) beside the item's content. Consecutive rows abut, so
-// their rails join into one continuous thread.
+// One transcript row: a narrow glyph gutter (the CLI's ● / > / ✻ marker) beside
+// the row's content. A user turn additionally paints a full-width background
+// band — gutter included — the way the CLI shades the whole prompt line.
 class RailItem : public QWidget
 {
 public:
     static constexpr int kRailW = 22;
     static constexpr int kGap = 12;          // vertical space between items
-    static constexpr int kNodeY = kGap + 9;  // node aligned to the first text line
+    static constexpr int kNodeY = kGap + 9;  // glyph aligned to the first text line
 
-    RailItem(QWidget *content, const QString &nodeColor, const QString &lineColor,
-             bool first, QWidget *parent = nullptr)
-        : QWidget(parent), m_node(nodeColor), m_line(lineColor), m_first(first)
+    RailItem(QWidget *content, ClaudeTranscriptView::RowGlyph glyph,
+             const QString &glyphColor, const QString &bandColor,
+             QWidget *parent = nullptr)
+        : QWidget(parent), m_glyph(glyph), m_color(glyphColor), m_band(bandColor)
     {
         setAttribute(Qt::WA_StyledBackground, false);
         auto *h = new QHBoxLayout(this);
@@ -395,48 +401,82 @@ public:
         h->addWidget(holder, 1);
     }
 
-    // A prepended batch can displace this item from the top of the timeline —
-    // flatten its rail line so the spine reads as continuous (see addRow()).
-    void setFirst(bool first)
-    {
-        if (m_first == first)
-            return;
-        m_first = first;
-        update();
-    }
-
 protected:
     void paintEvent(QPaintEvent *) override
     {
         QPainter g(this);
         g.setRenderHint(QPainter::Antialiasing);
+        if (!m_band.isEmpty()) {
+            g.setPen(Qt::NoPen);
+            g.setBrush(QColor(m_band));
+            g.drawRoundedRect(QRectF(0, kGap, width(), height() - kGap), 6, 6);
+        }
         const double cx = kRailW / 2.0;
-        // The connecting line: from the node down for the first item, full height
-        // otherwise, so abutting rows form one unbroken spine.
-        g.setPen(QPen(QColor(m_line), 2));
-        g.drawLine(QPointF(cx, m_first ? kNodeY : 0), QPointF(cx, height()));
-        g.setPen(Qt::NoPen);
-        g.setBrush(QColor(m_node));
-        g.drawEllipse(QPointF(cx, kNodeY), 4.0, 4.0);
+        switch (m_glyph) {
+        case ClaudeTranscriptView::GlyphDot:
+            g.setPen(Qt::NoPen);
+            g.setBrush(QColor(m_color));
+            g.drawEllipse(QPointF(cx, kNodeY), 4.0, 4.0);
+            break;
+        case ClaudeTranscriptView::GlyphChevron:
+        case ClaudeTranscriptView::GlyphStar: {
+            QFont f = monoFont();
+            f.setBold(true);
+            g.setFont(f);
+            g.setPen(QColor(m_color));
+            g.drawText(QRect(0, kGap, kRailW, 18), Qt::AlignCenter,
+                       m_glyph == ClaudeTranscriptView::GlyphChevron
+                           ? QStringLiteral(">")
+                           : QStringLiteral("✻"));
+            break;
+        }
+        case ClaudeTranscriptView::GlyphNone:
+            break;
+        }
     }
 
 private:
-    QString m_node, m_line;
-    bool m_first;
+    ClaudeTranscriptView::RowGlyph m_glyph;
+    QString m_color, m_band;
 };
+
+// Decode an attachment already scaled to the width the view will show it at.
+// Runs on a worker thread (see ThumbImage): a full-resolution decode plus a
+// smooth downscale of a 4K screenshot costs hundreds of milliseconds, and doing
+// it on the GUI thread froze the window while a transcript rendered (adhoc #90).
+// setScaledSize lets the reader skip most of that work where the format allows.
+QImage decodeScaledAttachment(const QString &path, int cap)
+{
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    const QSize src = reader.size(); // header only, no pixel decode
+    if (src.isValid() && src.width() > cap)
+        reader.setScaledSize(
+            QSize(cap, qMax(1, qRound(double(cap) * src.height() / src.width()))));
+    QImage img = reader.read();
+    if (!img.isNull() && img.width() > cap)
+        img = img.scaledToWidth(cap, Qt::SmoothTransformation);
+    return img;
+}
 
 // An image attached to a user turn, shown as a small thumbnail; clicking it
 // toggles between a thumbnail and a larger preview (issue #56).
+//
+// The decode happens off the GUI thread and the result is kept in the shared
+// QPixmapCache, so re-rendering a transcript (every reloadAgents() does) costs
+// a cache hit instead of a fresh decode + smooth scale of the original file.
 class ThumbImage : public QLabel
 {
 public:
-    ThumbImage(const QPixmap &full, const QString &border, QWidget *parent = nullptr)
-        : QLabel(parent), m_full(full)
+    ThumbImage(const QString &path, const QString &border, QWidget *parent = nullptr)
+        : QLabel(parent), m_path(path)
     {
         setCursor(Qt::PointingHandCursor);
         setToolTip(QStringLiteral("Click to expand"));
         setStyleSheet(
             QStringLiteral("border:1px solid %1;border-radius:6px;").arg(border));
+        m_srcSize = QImageReader(path).size(); // header read; reserves the box
+        m_stamp = QFileInfo(path).lastModified().toMSecsSinceEpoch();
         applyScale();
     }
 
@@ -453,10 +493,46 @@ private:
     void applyScale()
     {
         const int cap = m_expanded ? 560 : 160;
-        const int w = qMin(m_full.width(), cap);
-        setPixmap(m_full.scaledToWidth(w, Qt::SmoothTransformation));
+        m_wanted = cap;
+        const QString key =
+            QStringLiteral("fm-thumb:%1:%2:%3").arg(m_path).arg(m_stamp).arg(cap);
+        QPixmap cached;
+        if (QPixmapCache::find(key, &cached)) {
+            showScaled(cached);
+            return;
+        }
+        // Hold the row at the height the finished thumbnail will take, so the
+        // transcript does not jump when the decode lands.
+        if (m_srcSize.isValid() && m_srcSize.width() > 0) {
+            const int w = qMin(m_srcSize.width(), cap);
+            setMinimumSize(w, qMax(1, qRound(double(w) * m_srcSize.height() /
+                                             m_srcSize.width())));
+        }
+        auto *watcher = new QFutureWatcher<QImage>(this);
+        connect(watcher, &QFutureWatcher<QImage>::finished, this,
+                [this, watcher, cap, key] {
+                    watcher->deleteLater();
+                    const QImage img = watcher->result();
+                    if (img.isNull())
+                        return;
+                    const QPixmap pm = QPixmap::fromImage(img);
+                    QPixmapCache::insert(key, pm);
+                    if (m_wanted == cap) // a later toggle already superseded this
+                        showScaled(pm);
+                });
+        watcher->setFuture(QtConcurrent::run(decodeScaledAttachment, m_path, cap));
     }
-    QPixmap m_full;
+
+    void showScaled(const QPixmap &pm)
+    {
+        setMinimumSize(0, 0); // the pixmap now drives the size hint
+        setPixmap(pm);
+    }
+
+    QString m_path;
+    QSize m_srcSize;
+    qint64 m_stamp = 0;
+    int m_wanted = 0;
     bool m_expanded = false;
 };
 
@@ -604,10 +680,12 @@ void ClaudeTranscriptView::ensureActivity()
     if (m_activity || m_liveThinking)
         return; // the thinking card is its own live indicator
     m_activityLabel = new QLabel;
-    m_activityLabel->setStyleSheet(
-        QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.muted));
+    m_activityLabel->setFont(monoFont());
+    m_activityLabel->setStyleSheet(QStringLiteral(
+        "color:%1;background:transparent;border:none;font-style:italic;")
+        .arg(m_p.muted));
     cycleActivityWord();
-    m_activity = addRow(m_activityLabel, m_p.accent);
+    m_activity = addRow(m_activityLabel, m_p.accent, GlyphStar);
     if (!m_activityTimer) {
         m_activityTimer = new QTimer(this);
         connect(m_activityTimer, &QTimer::timeout, this,
@@ -670,7 +748,6 @@ void ClaudeTranscriptView::clear()
     m_loadEarlierPending = false;
     m_prependCompensationPending = false;
     m_prependAt = -1;
-    m_priorFirstRow = nullptr;
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
     m_thinkingText.clear();
@@ -708,7 +785,8 @@ QString ClaudeTranscriptView::accentFor(const QString &name) const
     return m_p.accent;
 }
 
-QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor)
+QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor,
+                                      RowGlyph glyph, const QString &bandColor)
 {
     int pos;
     if (m_prependAt >= 0) {
@@ -726,18 +804,10 @@ QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor)
                 pos = ai;
         }
     }
-    const bool first = pos == 0; // truly the top row of the timeline
-    auto *item = new RailItem(card, nodeColor.isEmpty() ? m_p.muted : nodeColor,
-                              m_p.border, first);
+    auto *item = new RailItem(card, glyph,
+                              nodeColor.isEmpty() ? m_p.muted : nodeColor,
+                              bandColor);
     m_col->insertWidget(pos, item);
-    if (first) {
-        // A row that used to be first (its rail line starts at the node, not
-        // the top) may have just been displaced by a prepended batch — flatten
-        // its line to the top so the spine reads as continuous.
-        if (auto *old = dynamic_cast<RailItem *>(m_priorFirstRow.data()))
-            old->setFirst(false);
-        m_priorFirstRow = item;
-    }
     fadeIn(item);
     // Follow mode does the scrolling: the scrollbar's rangeChanged handler pins
     // the view to the bottom as the new row expands the content; ScrollJumpButtons
@@ -779,6 +849,7 @@ void ClaudeTranscriptView::addSkippedNotice(int count)
             .arg(count)
             .arg(count == 1 ? QString() : QStringLiteral("s")));
     btn->setCursor(Qt::PointingHandCursor);
+    btn->setFont(monoFont());
     btn->setStyleSheet(QStringLiteral(
         "QPushButton{border:none;background:transparent;text-align:left;"
         "color:%1;padding:0;}QPushButton:hover{color:%2;}")
@@ -789,7 +860,7 @@ void ClaudeTranscriptView::addSkippedNotice(int count)
         m_loadEarlierPending = true;
         emit loadEarlierRequested();
     });
-    m_skippedNotice = addRow(btn);
+    m_skippedNotice = addRow(btn, QString(), GlyphNone);
     emit statsChanged(m_totalTokens, m_totalCost);
 }
 
@@ -929,8 +1000,9 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
             auto *l = new QLabel(QStringLiteral("session started %1 %2")
                                      .arg(esc(ev.value(QStringLiteral("model")).toString()),
                                           esc(ev.value(QStringLiteral("cwd")).toString())));
+            l->setFont(monoFont());
             l->setStyleSheet(QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
-            addRow(l);
+            addRow(l, QString(), GlyphNone);
         } else if (sub == QLatin1String("thinking_tokens")) {
             ensureLiveThinking();
             setThinkingTokens(ev.value(QStringLiteral("estimated_tokens")).toInt());
@@ -982,10 +1054,18 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         const double u = info.value(QStringLiteral("utilization")).toDouble();
         const int pct = qRound(u <= 1.0 ? u * 100.0 : u);
         const QString rlt = info.value(QStringLiteral("rateLimitType")).toString();
+        // The premium per-model weekly window (adhoc #96) is its own bar, so it
+        // must be recognised before the plain weekly test below — its type name
+        // carries "seven_day" too.
+        const bool fable = rlt.contains(QStringLiteral("fable"))
+                           || rlt.contains(QStringLiteral("opus"))
+                           || rlt.contains(QStringLiteral("premium"));
         const bool weekly = rlt.contains(QStringLiteral("seven"))
                             || rlt.contains(QStringLiteral("week"));
-        emit usageChanged(weekly ? QStringLiteral("weekly") : QStringLiteral("5h"),
-                          QStringLiteral("%1%").arg(pct), pct);
+        const QString kind = fable ? QStringLiteral("fable")
+                                   : (weekly ? QStringLiteral("weekly")
+                                             : QStringLiteral("5h"));
+        emit usageChanged(kind, QStringLiteral("%1%").arg(pct), pct);
     } else if (type == QLatin1String("result")) {
         finalizeThinking(QString());
         clearActivity(); // the turn is done
@@ -1026,13 +1106,13 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         // Synthetic, host-injected status row — e.g. the auto model router
         // explaining which model it picked and why (adhoc #91). Muted, like
         // the "session started" divider; persists and replays with the stream.
-        auto *l = new QLabel(QStringLiteral("● ")
-                             + ev.value(QStringLiteral("text")).toString());
+        auto *l = new QLabel(ev.value(QStringLiteral("text")).toString());
         l->setTextFormat(Qt::PlainText);
         l->setWordWrap(true);
+        l->setFont(monoFont());
         l->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;").arg(m_p.muted));
-        addRow(l);
+        addRow(l, QString(), GlyphNone);
     }
 }
 
@@ -1048,10 +1128,11 @@ void ClaudeTranscriptView::appendAgentText(const QString &id, const QString &tex
         created->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                          Qt::LinksAccessibleByMouse);
         created->setOpenExternalLinks(true);
+        created->setFont(monoFont());
         created->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;border:none;")
                 .arg(m_p.text));
-        addRow(created);
+        addRow(created, m_p.text);
         label = created;
         m_liveAgentText.insert(id, label);
     }
@@ -1138,10 +1219,11 @@ void ClaudeTranscriptView::ensureLiveThinking()
     m_thinkingBody = new CacheLabel(QStringLiteral("…"));
     m_thinkingBody->setWordWrap(true);
     m_thinkingBody->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    m_thinkingBody->setFont(monoFont());
     m_thinkingBody->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.muted));
     m_liveThinking = makeCollapsible(QStringLiteral("Thinking…"), m_thinkingBody, false);
     m_liveThinking->setPulsing(true);
-    addRow(m_liveThinking, m_p.accent);
+    addRow(m_liveThinking, m_p.accent, GlyphStar);
 }
 
 void ClaudeTranscriptView::setThinkingTokens(int tokens)
@@ -1175,10 +1257,12 @@ void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
         auto *body = new CacheLabel(completed);
         body->setWordWrap(true);
         body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        body->setFont(monoFont());
         body->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;border:none;")
                 .arg(m_p.muted));
-        addRow(makeCollapsible(QStringLiteral("Thought"), body, false), m_p.accent);
+        addRow(makeCollapsible(QStringLiteral("Thought"), body, false), m_p.accent,
+               GlyphStar);
         m_lastFinalizedThinkingText = completed;
         return;
     }
@@ -1208,34 +1292,10 @@ void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
 Collapsible *ClaudeTranscriptView::makeCollapsible(const QString &header,
                                                   QWidget *body, bool expanded)
 {
-    auto *c = new Collapsible(header, expanded, m_p, QString());
+    auto *c = new Collapsible(header, expanded, m_p);
     if (body)
         c->body()->addWidget(body);
     return c;
-}
-
-QWidget *ClaudeTranscriptView::makeBubble(const QString &title, const QString &markdown,
-                                          const QString &accent)
-{
-    auto *frame = new QFrame;
-    frame->setStyleSheet(QStringLiteral("QFrame{background:%1;border:1px solid %2;border-radius:8px;}")
-                             .arg(m_p.surface, m_p.border));
-    auto *v = new QVBoxLayout(frame);
-    v->setContentsMargins(12, 10, 12, 10);
-    v->setSpacing(4);
-    if (!title.isEmpty()) {
-        auto *h = new QLabel(title);
-        h->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;border:none;").arg(accent));
-        v->addWidget(h);
-    }
-    auto *body = new CacheLabel(markdown);
-    body->setTextFormat(Qt::MarkdownText);
-    body->setWordWrap(true);
-    body->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
-    body->setOpenExternalLinks(true);
-    body->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
-    v->addWidget(body);
-    return frame;
 }
 
 // Assistant prose renders as plain, full-width text (no card), matching the
@@ -1294,6 +1354,7 @@ bool ClaudeTranscriptView::addAssistantText(const QString &markdown)
     l->setWordWrap(true);
     l->setTextInteractionFlags(Qt::TextSelectableByMouse | Qt::LinksAccessibleByMouse);
     l->setOpenExternalLinks(true);
+    l->setFont(monoFont());
     l->setStyleSheet(
         QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
 
@@ -1311,7 +1372,9 @@ bool ClaudeTranscriptView::addAssistantText(const QString &markdown)
         addRow(wrap, m_p.accent);
         return true;
     }
-    addRow(l);
+    // The CLI's assistant bullet is the plain foreground colour; tools get the
+    // tinted dots.
+    addRow(l, m_p.text);
     return false;
 }
 
@@ -1320,16 +1383,13 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
     if (m_openInlineChoices)
         lockInlineChoices(m_openInlineChoices); // a reply arrived; stop offering it
 
-    auto *frame = new QFrame;
-    frame->setStyleSheet(QStringLiteral("QFrame{background:%1;border:1px solid %2;"
-                                        "border-left:3px solid %3;border-radius:8px;}")
-                             .arg(m_p.userBg, m_p.border, m_p.accent));
+    // The CLI's prompt line: a full-width grey band with a ">" in the gutter
+    // (the band itself is painted by the row — see RailItem).
+    auto *frame = new QWidget;
+    frame->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *v = new QVBoxLayout(frame);
-    v->setContentsMargins(12, 10, 12, 10);
-    v->setSpacing(4);
-    auto *h = new QLabel(QStringLiteral("you"));
-    h->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;border:none;").arg(m_p.accent));
-    v->addWidget(h);
+    v->setContentsMargins(0, 7, 10, 7);
+    v->setSpacing(6);
 
     // Lift any "Attached image: <path>" lines out of the prose and show each as a
     // small clickable thumbnail (issue #56); the rest renders as plain text.
@@ -1344,7 +1404,10 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
         const QRegularExpressionMatch m = imgLine.match(line);
         const QString path =
             m.hasMatch() ? AgentPromptImages::resolve(m.captured(1)) : QString();
-        if (!path.isEmpty() && !QPixmap(path).isNull())
+        // canRead() sniffs the header only: deciding "this line is an image"
+        // must not decode the file on the GUI thread (ThumbImage does that on a
+        // worker), or a transcript with screenshots freezes the window.
+        if (!path.isEmpty() && QImageReader(path).canRead())
             images << path;
         else
             prose << line;
@@ -1355,41 +1418,48 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
         auto *body = new CacheLabel(bodyText);
         body->setWordWrap(true);
         body->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        body->setFont(monoFont());
         body->setStyleSheet(QStringLiteral("color:%1;background:transparent;border:none;").arg(m_p.text));
         v->addWidget(body);
     }
     for (const QString &path : images)
-        v->addWidget(new ThumbImage(QPixmap(path), m_p.border), 0, Qt::AlignLeft);
-    addRow(frame, m_p.accent);
+        v->addWidget(new ThumbImage(path, m_p.border), 0, Qt::AlignLeft);
+    addRow(frame, m_p.muted, GlyphChevron, m_p.userBg);
 }
 
-// A tool call: a "Name  subtitle" header over a bordered box whose first row is
-// the input (IN); the result lands later as an OUT row in the same box.
+// A tool call, CLI style: a "Name(args)" header with the input and any output
+// hanging below it off ⎿ connectors — a flat indented column, no boxes.
 void ClaudeTranscriptView::addToolUse(const QString &id, const QString &name,
                                       const QJsonObject &input)
 {
+    // The CLI titles a subagent by its agent type — "Explore(Find the…)" — and
+    // a todo update as "Update Todos".
+    QString shown = name;
+    if (name == QLatin1String("Task")) {
+        const QString sub =
+            input.value(QStringLiteral("subagent_type")).toString().trimmed();
+        if (!sub.isEmpty())
+            shown = sub;
+    } else if (name == QLatin1String("TodoWrite")) {
+        shown = QStringLiteral("Update Todos");
+    }
+
     auto *card = new QFrame;
     card->setStyleSheet(QStringLiteral("QFrame{background:transparent;border:none;}"));
     auto *v = new QVBoxLayout(card);
     v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(6);
-    v->addWidget(dotHeader(name, toolSubtitle(name, input)));
+    v->setSpacing(4);
+    v->addWidget(dotHeader(shown, toolSubtitle(name, input)));
 
-    if (QWidget *inBody = toolBody(name, input)) {
-        auto *box = new QFrame;
-        box->setStyleSheet(QStringLiteral(
-            "QFrame{background:%1;border:1px solid %2;border-radius:8px;}")
-            .arg(m_p.surface, m_p.border));
-        auto *io = new QVBoxLayout(box);
-        io->setContentsMargins(0, 0, 0, 0);
-        io->setSpacing(0);
-        io->addWidget(ioRow(QStringLiteral("IN"), inBody));
-        v->addWidget(box);
-        m_toolCards.insert(id, ToolCard{box, io, false});
-    } else {
-        // Header-only tools (Read/Grep/Glob): the subtitle says it all.
-        m_toolCards.insert(id, ToolCard{nullptr, nullptr, false});
-    }
+    if (QWidget *inBody = toolBody(name, input))
+        v->addWidget(connectorRow(inBody));
+
+    ToolCard tc;
+    tc.io = v;
+    tc.summarizeResult = name == QLatin1String("Read")
+        || name == QLatin1String("Grep") || name == QLatin1String("Glob");
+    tc.suppressResult = name == QLatin1String("TodoWrite");
+    m_toolCards.insert(id, tc);
     addRow(card, accentFor(name));
 }
 
@@ -1400,23 +1470,44 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
     if (it == m_toolCards.end() || text.trimmed().isEmpty())
         return;
     ToolCard &tc = it.value();
-    if (!tc.box || !tc.io || tc.hasResult)
-        return; // header-only tool, or a result already attached
+    if (!tc.io || tc.hasResult)
+        return; // a result already attached
+    if (tc.suppressResult) {
+        tc.hasResult = true;
+        return;
+    }
     if (tc.liveOutput) {
-        tc.liveOutput->setText(text);
+        tc.liveOutput->setText(capLabelText(text, true));
         tc.liveOutputText = text;
         tc.hasResult = true;
         return;
     }
-    auto *divider = new QFrame;
-    divider->setFixedHeight(1);
-    divider->setStyleSheet(QStringLiteral("background:%1;border:none;").arg(m_p.border));
-    tc.io->addWidget(divider);
-    // Peek the output: first/last two lines visible, the middle behind a toggle
-    // that says how many lines it hides (errors tinted red).
-    QWidget *out = new OutputPeek(text, isError ? m_p.del : m_p.text, m_p);
-    tc.io->addWidget(ioRow(isError ? QStringLiteral("ERR") : QStringLiteral("OUT"), out));
     tc.hasResult = true;
+    if (tc.summarizeResult && !isError) {
+        // The header already names the file/pattern; the raw dump folds down to
+        // the CLI's "⎿ N lines" note (a single short line shows as itself).
+        const QStringList lines = text.trimmed().split(QLatin1Char('\n'));
+        QString summary;
+        if (lines.size() > 1)
+            summary = QStringLiteral("%1 lines")
+                          .arg(QLocale().toString(qint64(lines.size())));
+        else {
+            summary = lines.value(0).trimmed();
+            if (summary.size() > 160)
+                summary = summary.left(160) + QStringLiteral("…");
+        }
+        auto *l = new QLabel(summary);
+        l->setFont(monoFont());
+        l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        l->setStyleSheet(QStringLiteral(
+            "color:%1;background:transparent;border:none;").arg(m_p.muted));
+        tc.io->addWidget(connectorRow(l));
+        return;
+    }
+    // Peek the output: first/last two lines visible, the middle behind a toggle
+    // that says how many lines it hides (dimmed like the CLI; errors tinted red).
+    QWidget *out = new OutputPeek(text, isError ? m_p.del : m_p.muted, m_p);
+    tc.io->addWidget(connectorRow(out));
 }
 
 void ClaudeTranscriptView::appendToolOutput(const QString &id,
@@ -1426,23 +1517,18 @@ void ClaudeTranscriptView::appendToolOutput(const QString &id,
     if (it == m_toolCards.end() || text.isEmpty())
         return;
     ToolCard &tc = it.value();
-    if (!tc.box || !tc.io || tc.hasResult)
+    if (!tc.io || tc.hasResult)
         return;
     if (!tc.liveOutput) {
-        auto *divider = new QFrame;
-        divider->setFixedHeight(1);
-        divider->setStyleSheet(
-            QStringLiteral("background:%1;border:none;").arg(m_p.border));
-        tc.io->addWidget(divider);
         auto *label = new CacheLabel;
         label->setTextFormat(Qt::PlainText);
         label->setWordWrap(true);
         label->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        label->setFont(QFontDatabase::systemFont(QFontDatabase::FixedFont));
+        label->setFont(monoFont());
         label->setStyleSheet(
             QStringLiteral("color:%1;background:transparent;border:none;")
-                .arg(m_p.text));
-        tc.io->addWidget(ioRow(QStringLiteral("OUT"), label));
+                .arg(m_p.muted));
+        tc.io->addWidget(connectorRow(label));
         tc.liveOutput = label;
     }
     tc.liveOutputText += text;
@@ -1729,6 +1815,7 @@ void ClaudeTranscriptView::addResult(const QJsonObject &ev)
     if (!details.isEmpty())
         label += QStringLiteral(" · ") + details.join(QStringLiteral(" · "));
     auto *l = new QLabel(label);
+    l->setFont(monoFont());
     l->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;")
                          .arg(err ? m_p.del : m_p.add));
     addRow(l, err ? m_p.del : m_p.add);
@@ -1757,6 +1844,8 @@ QString ClaudeTranscriptView::toolSubtitle(const QString &name,
         return input.value(QStringLiteral("description")).toString();
     if (name == QLatin1String("Grep"))
         return input.value(QStringLiteral("pattern")).toString();
+    if (name == QLatin1String("WebSearch"))
+        return input.value(QStringLiteral("query")).toString();
     if (name == QLatin1String("FileChange")) {
         QStringList paths;
         for (const QJsonValue &value : input.value(QStringLiteral("changes")).toArray()) {
@@ -1771,8 +1860,13 @@ QString ClaudeTranscriptView::toolSubtitle(const QString &name,
 
 QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &input)
 {
-    if (name == QLatin1String("Bash"))
-        return makeMono(input.value(QStringLiteral("command")).toString(), false);
+    if (name == QLatin1String("Bash")) {
+        // "$ command", the way the CLI previews shell commands.
+        const QString cmd =
+            input.value(QStringLiteral("command")).toString().trimmed();
+        return cmd.isEmpty() ? nullptr
+                             : makeMono(QStringLiteral("$ ") + cmd, false);
+    }
     if (name == QLatin1String("Edit"))
         return makeDiff(input.value(QStringLiteral("old_string")).toString(),
                         input.value(QStringLiteral("new_string")).toString());
@@ -1792,17 +1886,39 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
         return holder;
     }
     if (name == QLatin1String("TodoWrite")) {
-        QString text;
+        // The CLI's checklist: done items struck through and dimmed, the item in
+        // progress bold behind a filled marker, pending items plain.
+        QStringList rows;
         for (const QJsonValue &tv : input.value(QStringLiteral("todos")).toArray()) {
             const QJsonObject t = tv.toObject();
             const QString st = t.value(QStringLiteral("status")).toString();
-            const QString mark = st == QLatin1String("completed") ? QStringLiteral("☑")
-                                : st == QLatin1String("in_progress") ? QStringLiteral("◐")
-                                                                     : QStringLiteral("☐");
-            text += mark + QLatin1Char(' ') + t.value(QStringLiteral("content")).toString()
-                    + QLatin1Char('\n');
+            const QString item = esc(t.value(QStringLiteral("content")).toString());
+            if (st == QLatin1String("completed"))
+                rows << QStringLiteral("<span style='color:%1'>☒ <s>%2</s></span>")
+                            .arg(m_p.muted, item);
+            else if (st == QLatin1String("in_progress"))
+                rows << QStringLiteral(
+                            "<span style='color:%1'>■</span> <b>%2</b>")
+                            .arg(accentFor(name), item);
+            else
+                rows << QStringLiteral("☐ %1").arg(item);
         }
-        return makeMono(text.trimmed(), false);
+        if (rows.isEmpty())
+            return nullptr;
+        auto *l = new CacheLabel;
+        l->setTextFormat(Qt::RichText);
+        l->setText(QStringLiteral("<div style='color:%1'>%2</div>")
+                       .arg(m_p.text, rows.join(QStringLiteral("<br>"))));
+        l->setWordWrap(true);
+        l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        l->setFont(monoFont());
+        l->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
+        return l;
+    }
+    if (name == QLatin1String("Task")) {
+        const QString prompt =
+            input.value(QStringLiteral("prompt")).toString().trimmed();
+        return prompt.isEmpty() ? nullptr : makeMono(prompt, true);
     }
     if (name == QLatin1String("FileChange")) {
         auto *holder = new QWidget;
@@ -1823,44 +1939,48 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
         return holder;
     }
     if (name == QLatin1String("Read") || name == QLatin1String("Grep")
-        || name == QLatin1String("Glob"))
-        return nullptr; // the subtitle already says the file/pattern
+        || name == QLatin1String("Glob") || name == QLatin1String("WebSearch"))
+        return nullptr; // the subtitle already says the file/pattern/query
     if (!input.isEmpty())
-        return makeMono(QString::fromUtf8(QJsonDocument(input).toJson(QJsonDocument::Compact)), true);
+        return makeMono(QString::fromUtf8(
+                            QJsonDocument(input).toJson(QJsonDocument::Indented))
+                            .trimmed(),
+                        true);
     return nullptr;
 }
 
-// "Name  subtitle" — the timeline rail supplies the coloured node dot.
+// "Name(args)" — bold tool name with the muted argument in parens, the way the
+// CLI titles a tool call; the row's gutter supplies the ● glyph.
 QWidget *ClaudeTranscriptView::dotHeader(const QString &name, const QString &subtitle)
 {
     auto *l = new CacheLabel;
     l->setTextFormat(Qt::RichText);
     l->setWordWrap(true);
     l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    l->setFont(monoFont());
     QString html = QStringLiteral("<span style='color:%1;font-weight:700'>%2</span>")
                        .arg(m_p.text, esc(name));
     if (!subtitle.trimmed().isEmpty())
-        html += QStringLiteral("&nbsp;&nbsp;<span style='color:%1'>%2</span>")
+        html += QStringLiteral("<span style='color:%1'>(%2)</span>")
                     .arg(m_p.muted, esc(subtitle.trimmed()));
     l->setText(html);
     l->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
     return l;
 }
 
-// One labelled row inside a tool box: a small uppercase "IN"/"OUT" gutter label
-// on the left and the monospace content on the right.
-QWidget *ClaudeTranscriptView::ioRow(const QString &label, QWidget *content)
+// The CLI's "  ⎿  result" shape: a muted L-connector in a small gutter with the
+// content hanging beside it.
+QWidget *ClaudeTranscriptView::connectorRow(QWidget *content)
 {
     auto *row = new QWidget;
     row->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *h = new QHBoxLayout(row);
-    h->setContentsMargins(10, 8, 10, 8);
-    h->setSpacing(10);
-    auto *lab = new QLabel(label);
-    lab->setFixedWidth(28);
+    h->setContentsMargins(2, 0, 0, 0);
+    h->setSpacing(8);
+    auto *lab = new QLabel(QStringLiteral("⎿"));
+    lab->setFont(monoFont());
     lab->setStyleSheet(QStringLiteral(
-        "color:%1;background:transparent;border:none;font-weight:700;font-size:10px;")
-        .arg(m_p.muted));
+        "color:%1;background:transparent;border:none;").arg(m_p.muted));
     h->addWidget(lab, 0, Qt::AlignTop);
     content->setParent(row);
     h->addWidget(content, 1);

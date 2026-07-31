@@ -13,15 +13,22 @@
 #include <QAbstractTextDocumentLayout>
 #include <QCheckBox>
 #include <QFileDialog>
+#include <QFontMetrics>
 #include <QLayout>
 #include <QFutureWatcher>
 #include <QGraphicsOpacityEffect>
+#include <QInputDialog>
+#include <QLineEdit>
 #include <QMenu>
 #include <QPlainTextEdit>
+#include <QPointer>
+#include <QProcess>
 #include <QPropertyAnimation>
 #include <QScrollArea>
 #include <QScrollBar>
+#include <QStandardPaths>
 #include <QStorageInfo>
+#include <QTemporaryFile>
 #include <QTextBlock>
 #include <QTimer>
 #include <QUrl>
@@ -29,6 +36,7 @@
 #include <QtConcurrent/QtConcurrentRun>
 
 #include <algorithm>
+#include <memory>
 
 using namespace forkmesh::ui;
 
@@ -112,8 +120,8 @@ private:
 
 // Compact source-control row: the filename stays prominent, its directory is a
 // muted suffix, and potentially destructive actions only appear while the row
-// is under the pointer. The row paints its own neutral hover because a
-// QTreeWidget item delegate is behind setItemWidget() children.
+// is under the pointer. No hover highlight is drawn; only the selected (current)
+// row gets a thin green outline.
 class ScmFileRow : public QWidget
 {
 public:
@@ -172,23 +180,14 @@ protected:
 private:
     void applyStyle()
     {
-        const bool dark =
-            palette().color(QPalette::Base).lightness() < 128;
-        const QString background =
-            m_selected
-                ? (dark ? QStringLiteral("#15251a")
-                        : QStringLiteral("#eef8f0"))
-                : (m_hovered
-                       ? (dark ? QStringLiteral("#21262d")
-                               : QStringLiteral("#f1f3f5"))
-                       : QStringLiteral("transparent"));
+        // Current file: a thin green outline only, no fill and no hover tint
+        // (issue #252 style, but without the background wash other lists use).
         const QString border =
-            (m_selected || m_hovered) ? QStringLiteral("#2da44e")
-                                      : QStringLiteral("transparent");
+            m_selected ? QStringLiteral("#2da44e") : QStringLiteral("transparent");
         setStyleSheet(
-            QStringLiteral("QWidget#scmFileRow{background:%1;"
-                           "border:1px solid %2;border-radius:4px;}")
-                .arg(background, border));
+            QStringLiteral("QWidget#scmFileRow{background:transparent;"
+                           "border:1px solid %1;border-radius:4px;}")
+                .arg(border));
         if (m_actions)
             m_actions->setVisible(m_hovered);
     }
@@ -492,6 +491,10 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmTree->setMinimumWidth(160);
     m_scmTree->setRootIsDecorated(true);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    // ScmFileRow (via setItemWidget) draws its own thin green selection
+    // outline; blank the app-wide #fileTree::item:selected solid fill so it
+    // doesn't paint underneath the row widget (issue #252 pattern).
+    blankSelectionBand(m_scmTree);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *item, QTreeWidgetItem *previous) {
                 if (previous) {
@@ -840,7 +843,16 @@ void MainWindow::refreshSourceControl(bool force)
             actionsLayout->addWidget(open);
             h->addWidget(actions);
             w->setActionsWidget(actions);
-            w->onClicked = [this, item] { m_scmTree->setCurrentItem(item); };
+            // setCurrentItem() alone only shows the diff via currentItemChanged,
+            // which Qt does not emit when this row is already the current item
+            // (e.g. the user switched the right pane to a branch/PR view, then
+            // clicked back on the still-selected file). Show the diff directly
+            // so a click always does, regardless of prior selection state.
+            const bool staged = r.staged;
+            w->onClicked = [this, item, path, staged, untracked] {
+                m_scmTree->setCurrentItem(item);
+                showScmDiff(path, staged, untracked);
+            };
             m_scmTree->setItemWidget(item, 0, w);
         }
         group->setExpanded(true);
@@ -1092,8 +1104,7 @@ void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
     Q_UNUSED(untracked);
     if (!m_scmDiff || m_scmSuppressFileScroll)
         return; // suppressed: the selection is following the scroll, not driving it
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     if (m_scmSectionKeys.isEmpty())
         renderScmCombinedDiff();
     scrollScmDiffToFile(path, staged);
@@ -1105,8 +1116,7 @@ void MainWindow::showScmDiffAll(bool staged)
 {
     if (!m_scmDiff)
         return;
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     if (m_scmSectionKeys.isEmpty())
         renderScmCombinedDiff();
     const QString prefix = staged ? QStringLiteral("s|") : QStringLiteral("u|");
@@ -3152,56 +3162,10 @@ void MainWindow::refreshRepoQuality()
 }
 
 namespace {
-// Working-tree scan for the Size map tab (adhoc #189): raw on-disk bytes,
-// .git excluded, symlinks skipped so link cycles can't loop or inflate the
-// totals. Files become leaf children alongside subdirectories (adhoc #262),
-// so zooming into a directory that holds only files still shows a ring of
-// its individual files — matching the website's size map. Depth is capped —
-// deeper entries still count toward every ancestor's size, they just stop
-// producing children of their own. Runs on a QtConcurrent thread, so nothing
-// here may touch widgets or MainWindow state. `ignored` holds absolute paths
-// to prune (the .gitignore hide toggle, adhoc #197); it is empty when the
-// toggle is off.
-constexpr int kSizeMapMaxDepth = 8;
-
-SunburstNode scanDirectorySizes(const QString &path, int depth,
-                                const QSet<QString> &ignored)
-{
-    SunburstNode node;
-    node.name = QFileInfo(path).fileName();
-    const QFileInfoList entries = QDir(path).entryInfoList(
-        QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden |
-        QDir::System | QDir::NoSymLinks);
-    for (const QFileInfo &info : entries) {
-        if (!ignored.isEmpty() && ignored.contains(info.absoluteFilePath()))
-            continue;
-        if (info.isDir()) {
-            if (info.fileName() == QLatin1String(".git"))
-                continue;
-            SunburstNode child =
-                scanDirectorySizes(info.absoluteFilePath(), depth + 1, ignored);
-            node.size += child.size;
-            node.fileCount += child.fileCount;
-            if (depth < kSizeMapMaxDepth && child.size > 0)
-                node.children.append(std::move(child));
-        } else {
-            node.size += info.size();
-            node.fileCount += 1;
-            if (depth < kSizeMapMaxDepth && info.size() > 0) {
-                SunburstNode leaf;
-                leaf.name = info.fileName();
-                leaf.size = info.size();
-                leaf.fileCount = 1;
-                node.children.append(std::move(leaf));
-            }
-        }
-    }
-    std::sort(node.children.begin(), node.children.end(),
-              [](const SunburstNode &a, const SunburstNode &b) {
-                  return a.size > b.size;
-              });
-    return node;
-}
+// The scan itself lives in DirectorySizeScan.cpp so the elevated helper
+// process can run the identical walk (adhoc #76).
+using forkmesh::DirectorySizeScanOptions;
+using forkmesh::DirectorySizeScanResult;
 
 // Mount points offered as size-map shortcuts (adhoc #21) — everything `df`
 // lists, minus the read-only squashfs images snap piles up by the dozen,
@@ -3245,7 +3209,9 @@ QWidget *MainWindow::buildSizeMapTab()
         "(.git excluded). Click a directory to zoom in, the centre to zoom "
         "back out; slices with no further subdivision are individual files. "
         "It starts on this repository's working copy — pick any other folder "
-        "on disk, or a filesystem on the right, to size that instead.");
+        "on disk, or a filesystem on the right, to size that instead. Folders "
+        "holding directories this user cannot read — \"/\" above all — ask for "
+        "the root password first, so the map covers everything.");
     subtitle->setObjectName("statusLine");
     subtitle->setWordWrap(true);
 
@@ -3255,7 +3221,7 @@ QWidget *MainWindow::buildSizeMapTab()
     refresh->setCursor(Qt::PointingHandCursor);
     setOcticon(refresh, "sync", 16);
     connect(refresh, &QPushButton::clicked, this,
-            [this] { refreshSizeMapTab(true); });
+            [this] { refreshSizeMapTab(true, true); });
     addRefreshSpin(refresh);
 
     auto *headingCol = new QVBoxLayout;
@@ -3312,13 +3278,35 @@ QWidget *MainWindow::buildSizeMapTab()
         "map, so only tracked and un-ignored files count toward the sizes.");
     m_sizeMapHideIgnored = hideIgnored;
     connect(hideIgnored, &QCheckBox::toggled, this,
-            [this] { refreshSizeMapTab(true); });
+            [this] { refreshSizeMapTab(true, true); });
     layout->addWidget(hideIgnored);
 
     m_sizeMapStatus = new QLabel;
     m_sizeMapStatus->setObjectName("statusLine");
     m_sizeMapStatus->setWordWrap(true);
-    layout->addWidget(m_sizeMapStatus);
+
+    // Only appears once a scan actually hit directories this user cannot list
+    // (adhoc #76) — sizing "/" as a normal user misses /root, /var/lib and the
+    // rest, so the map looks empty next to whatever pseudo-file survived.
+    auto *elevate = new QPushButton("Scan as administrator");
+    elevate->setObjectName("ghostButton");
+    elevate->setProperty("buttonSize", "sm");
+    elevate->setCursor(Qt::PointingHandCursor);
+    setOcticon(elevate, "lock", 16);
+    elevate->setToolTip(
+        "Ask for the administrator (root) password and measure the folders this "
+        "user cannot read.");
+    elevate->setVisible(false);
+    m_sizeMapElevate = elevate;
+    connect(elevate, &QPushButton::clicked, this,
+            [this] { rescanSizeMapElevated(); });
+
+    auto *statusRow = new QHBoxLayout;
+    statusRow->setContentsMargins(0, 0, 0, 0);
+    statusRow->setSpacing(8);
+    statusRow->addWidget(m_sizeMapStatus, 1);
+    statusRow->addWidget(elevate, 0, Qt::AlignTop);
+    layout->addLayout(statusRow);
 
     auto *chart = new RepoSunburstChart;
     m_sizeMapChart = chart;
@@ -3445,10 +3433,13 @@ void MainWindow::setSizeMapRootOverride(const QString &path)
     if (m_sizeMapRootOverride == path)
         return;
     m_sizeMapRootOverride = path;
-    refreshSizeMapTab(true);
+    // Picking a folder is a click, so this is allowed to ask for the root
+    // password when that folder needs it — clicking "/" is the whole reason the
+    // prompt moved to the front (adhoc #112).
+    refreshSizeMapTab(true, true);
 }
 
-void MainWindow::refreshSizeMapTab(bool force)
+void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
 {
     auto *chart = static_cast<RepoSunburstChart *>(m_sizeMapChart);
     if (!chart || !m_sizeMapStatus)
@@ -3473,6 +3464,8 @@ void MainWindow::refreshSizeMapTab(bool force)
     if (path.isEmpty() || !QDir(path).exists()) {
         chart->clear();
         m_sizeMapScannedPath.clear();
+        if (m_sizeMapElevate)
+            m_sizeMapElevate->setVisible(false);
         m_sizeMapStatus->setText(
             overridden ? "That folder no longer exists — choose another one."
                        : "No local working copy to scan for this repository.");
@@ -3482,14 +3475,114 @@ void MainWindow::refreshSizeMapTab(bool force)
         return; // the chart already shows this folder
     if (m_sizeMapScanning)
         return; // its finish handler notices the root changed and rescans
+    // Every plain rescan starts unprivileged again; the button comes back if
+    // this folder still holds directories the user cannot list.
+    if (m_sizeMapElevate)
+        m_sizeMapElevate->setVisible(false);
+    const bool hideIgnored =
+        m_sizeMapHideIgnored && m_sizeMapHideIgnored->isChecked();
+    DirectorySizeScanOptions options;
+    options.pruned = sizeMapPrunedPaths(path);
+    // Folders this user cannot fully read — "/" above all — used to be scanned
+    // twice: once unprivileged into a map missing /root, /var/lib and the rest,
+    // then again after clicking the button. Ask for the password on the click
+    // that chose the folder instead (adhoc #112).
+    if (allowElevation && forkmesh::scanNeedsElevation(path, options.pruned)) {
+        // Off the click's own stack: where pkexec is missing the prompt is a
+        // modal dialog, and pumping the event loop from inside a filesystem
+        // card's click handler would run the deleteLater() refreshSizeMapVolumes
+        // just queued for that very card. The epoch also collapses a second
+        // click into one prompt.
+        const int pending = ++m_sizeMapScanEpoch;
+        m_sizeMapStatus->setText(
+            QStringLiteral("Asking for administrator access to size %1 …")
+                .arg(QDir::toNativeSeparators(path)));
+        QTimer::singleShot(0, this, [this, pending] {
+            if (pending == m_sizeMapScanEpoch)
+                rescanSizeMapElevated(true);
+        });
+        return;
+    }
+    m_sizeMapScanning = true;
+    const int epoch = ++m_sizeMapScanEpoch;
+    m_sizeMapStatus->setText(
+        QStringLiteral("Scanning %1 …").arg(QDir::toNativeSeparators(path)));
+    // The walk reports the folder it is in from the worker thread; the hop
+    // through invokeMethod() is what keeps the label on the GUI thread. The
+    // QPointer matters because the pool thread outlives a window closed
+    // mid-scan.
+    const QPointer<MainWindow> guard(this);
+    const forkmesh::DirectorySizeScanProgress progress =
+        [this, guard, epoch](const QString &current, qint64 bytes, int files) {
+            if (!guard)
+                return;
+            QMetaObject::invokeMethod(
+                this,
+                [this, epoch, current, bytes, files] {
+                    if (epoch != m_sizeMapScanEpoch)
+                        return; // a newer scan owns the label now
+                    showSizeMapScanProgress(current, bytes, files, false);
+                },
+                Qt::QueuedConnection);
+        };
+    auto *watcher = new QFutureWatcher<DirectorySizeScanResult>(this);
+    connect(watcher, &QFutureWatcher<DirectorySizeScanResult>::finished, this,
+            [this, watcher, path, epoch, hideIgnored] {
+                watcher->deleteLater();
+                m_sizeMapScanning = false;
+                if (epoch != m_sizeMapScanEpoch)
+                    return; // a newer scan superseded this one
+                DirectorySizeScanResult result = watcher->result();
+                // The user may have opened another repo (or picked another
+                // folder) while the scan ran — a stale tree would mislabel the
+                // chart, so rescan instead.
+                if (sizeMapRoot() != path) {
+                    refreshSizeMapTab(false);
+                    return;
+                }
+                applySizeMapResult(path, std::move(result), hideIgnored, false);
+            });
+    watcher->setFuture(QtConcurrent::run([path, options, progress] {
+        const forkmesh::BackgroundScope activity(
+            QStringLiteral("scan"), QStringLiteral("Sizing %1").arg(path));
+        return forkmesh::scanDirectorySizes(path, options, progress);
+    }));
+}
+
+// Live status line while a scan runs: the folder being walked right now, with
+// the totals counted so far (adhoc #112). The path is elided rather than
+// wrapped, so a deep tree cannot rewrap the row on every update.
+void MainWindow::showSizeMapScanProgress(const QString &current, qint64 bytes,
+                                         int files, bool elevated)
+{
+    if (!m_sizeMapStatus)
+        return;
+    const QString suffix =
+        QStringLiteral("  ·  %1 files · %2 so far")
+            .arg(QLocale().toString(files),
+                 QLocale().formattedDataSize(bytes));
+    const QString prefix = elevated
+                               ? QStringLiteral("Scanning as administrator: ")
+                               : QStringLiteral("Scanning: ");
+    const QFontMetrics metrics(m_sizeMapStatus->font());
+    const int budget = qMax(220, m_sizeMapStatus->width() -
+                                    metrics.horizontalAdvance(prefix + suffix) -
+                                    16);
+    m_sizeMapStatus->setText(
+        prefix +
+        metrics.elidedText(QDir::toNativeSeparators(current), Qt::ElideMiddle,
+                           budget) +
+        suffix);
+}
+
+QSet<QString> MainWindow::sizeMapPrunedPaths(const QString &path) const
+{
+    QSet<QString> pruned;
     // Resolve the .gitignore prune set on the GUI thread (git via QProcess is
     // awkward from a QtConcurrent worker), then hand it to the scan. Using
     // --directory keeps wholly-ignored trees to a single entry instead of every
     // file inside them.
-    const bool hideIgnored =
-        m_sizeMapHideIgnored && m_sizeMapHideIgnored->isChecked();
-    QSet<QString> ignored;
-    if (hideIgnored) {
+    if (m_sizeMapHideIgnored && m_sizeMapHideIgnored->isChecked()) {
         QByteArray out;
         if (runGitCapture(path,
                           {"ls-files", "--others", "--ignored",
@@ -3502,60 +3595,238 @@ void MainWindow::refreshSizeMapTab(bool force)
                 QString rel = QString::fromUtf8(raw);
                 if (rel.endsWith(QLatin1Char('/')))
                     rel.chop(1);
-                ignored.insert(root.absoluteFilePath(rel));
+                pruned.insert(root.absoluteFilePath(rel));
             }
         }
     }
     // Stay on one filesystem, like `du -x`: pseudo mounts under the scanned
-    // root report fiction (/proc/kcore alone claims terabytes) and real mounts
-    // would be counted twice, once here and once from their own card. Reading
-    // the mount table needs the GUI thread's QStorageInfo, so it folds into
-    // the same prune set the scan already honours.
+    // root report fiction and real mounts would be counted twice, once here and
+    // once from their own card. QStorageInfo alone is not enough — it hides the
+    // pseudo filesystems, which is how /proc/kcore's 128 TiB used to swallow a
+    // scan of "/" whole (adhoc #76) — so the kernel's mount table is read too.
     const QString ownMount = QDir::cleanPath(QStorageInfo(path).rootPath());
-    for (const QStorageInfo &volume : QStorageInfo::mountedVolumes()) {
-        const QString mount = QDir::cleanPath(volume.rootPath());
+    QSet<QString> mounts = forkmesh::systemMountPoints();
+    for (const QStorageInfo &volume : QStorageInfo::mountedVolumes())
+        mounts.insert(QDir::cleanPath(volume.rootPath()));
+    for (const QString &mount : std::as_const(mounts)) {
         if (mount.isEmpty() || mount == ownMount)
             continue;
-        ignored.insert(mount); // only matches if it sits inside the scan
+        pruned.insert(mount); // only matches if it sits inside the scan
     }
+    return pruned;
+}
+
+// Shared tail of both scans: label the chart, then decide whether to offer the
+// elevated rescan (adhoc #76).
+void MainWindow::applySizeMapResult(const QString &path,
+                                    DirectorySizeScanResult result,
+                                    bool hideIgnored, bool elevated)
+{
+    if (!m_sizeMapStatus)
+        return;
+    m_sizeMapScannedPath = path;
+    QString status =
+        QStringLiteral("%1 files · %2 on disk (%3)")
+            .arg(QLocale().toString(result.root.fileCount),
+                 QLocale().formattedDataSize(result.root.size),
+                 hideIgnored ? QStringLiteral(".git & .gitignored excluded")
+                             : QStringLiteral(".git excluded"));
+    const bool blocked = result.unreadableDirs > 0;
+    if (blocked) {
+        status += QStringLiteral(" · %1 folder%2 could not be read (%3%4)")
+                      .arg(QLocale().toString(result.unreadableDirs),
+                           result.unreadableDirs == 1 ? QString()
+                                                      : QStringLiteral("s"),
+                           result.unreadableSample.join(QStringLiteral(", ")),
+                           result.unreadableSample.size() < result.unreadableDirs
+                               ? QStringLiteral(", …")
+                               : QString());
+        status += elevated || forkmesh::runningAsRoot()
+                      ? QStringLiteral(" — their contents are not counted.")
+                      : QStringLiteral(
+                            " — scan as administrator to include them.");
+    } else if (elevated) {
+        status += QStringLiteral(" · measured with administrator access");
+    }
+    m_sizeMapStatus->setText(status);
+    if (m_sizeMapElevate)
+        m_sizeMapElevate->setVisible(blocked && !elevated &&
+                                     !forkmesh::runningAsRoot());
+    if (auto *liveChart = static_cast<RepoSunburstChart *>(m_sizeMapChart)) {
+        liveChart->setBasePath(path);
+        liveChart->setRoot(std::move(result.root));
+    }
+}
+
+void MainWindow::rescanSizeMapElevated(bool upfront)
+{
+    if (m_sizeMapScanning || !m_sizeMapStatus)
+        return;
+    const QString path = sizeMapRoot();
+    if (path.isEmpty() || !QDir(path).exists())
+        return;
+    const bool hideIgnored =
+        m_sizeMapHideIgnored && m_sizeMapHideIgnored->isChecked();
+
+    // The helper is this very binary in its --size-map-scan mode, so root runs
+    // the identical walk and streams the tree back. The request goes through a
+    // file rather than stdin, which stays free for `sudo -S`'s password.
+    DirectorySizeScanOptions options;
+    options.pruned = sizeMapPrunedPaths(path);
+    auto *request = new QTemporaryFile(
+        QDir::temp().filePath(QStringLiteral("forkmesh-sizemap-XXXXXX.json")));
+    if (!request->open()) {
+        delete request;
+        m_sizeMapStatus->setText(
+            QStringLiteral("Could not prepare the elevated scan (no writable "
+                           "temporary directory)."));
+        if (upfront)
+            refreshSizeMapTab(true); // still size what this user can read
+        return;
+    }
+    request->write(forkmesh::encodeScanRequest(path, options));
+    request->flush();
+    const QString requestPath = request->fileName();
+
+    const QString helper = QCoreApplication::applicationFilePath();
+    const QString pkexec =
+        QStandardPaths::findExecutable(QStringLiteral("pkexec"));
+    QString program;
+    QStringList arguments;
+    QByteArray stdinPayload;
+    if (!pkexec.isEmpty()) {
+        // pkexec raises the desktop's own password dialog; nothing to type here.
+        program = pkexec;
+        arguments = {helper, QStringLiteral("--size-map-scan"), requestPath};
+    } else {
+        bool accepted = false;
+        const QString password = QInputDialog::getText(
+            this, QStringLiteral("Administrator password"),
+            QStringLiteral("Enter the root password for sudo, so %1 can be "
+                           "measured in full — including the folders this user "
+                           "cannot read:")
+                .arg(QDir::toNativeSeparators(path)),
+            QLineEdit::Password, QString(), &accepted);
+        if (!accepted) {
+            delete request;
+            // Dismissed before anything was drawn: size what this user can read
+            // rather than leaving the tab empty. That scan's own status ends in
+            // "scan as administrator to include them", so the decline is not
+            // silent.
+            if (upfront)
+                refreshSizeMapTab(true);
+            return;
+        }
+        program = QStringLiteral("sudo");
+        arguments = {QStringLiteral("-S"), QStringLiteral("-p"), QString(),
+                     QStringLiteral("--"), helper,
+                     QStringLiteral("--size-map-scan"), requestPath};
+        stdinPayload = password.toUtf8() + '\n';
+    }
+
     m_sizeMapScanning = true;
     const int epoch = ++m_sizeMapScanEpoch;
+    if (m_sizeMapElevate)
+        m_sizeMapElevate->setVisible(false);
     m_sizeMapStatus->setText(
-        QStringLiteral("Scanning %1 …").arg(QDir::toNativeSeparators(path)));
-    auto *watcher = new QFutureWatcher<SunburstNode>(this);
-    connect(watcher, &QFutureWatcher<SunburstNode>::finished, this,
-            [this, watcher, path, epoch, hideIgnored] {
-                watcher->deleteLater();
+        QStringLiteral("Scanning %1 with administrator access …")
+            .arg(QDir::toNativeSeparators(path)));
+
+    auto *process = new QProcess(this);
+    request->setParent(process); // the temp file dies with the process
+    process->setProgram(program);
+    process->setArguments(arguments);
+    // Root's walk reports itself on stderr, one line per update, so the same
+    // live folder name appears whether the scan runs here or in the helper
+    // (adhoc #112). Whole lines only: a read can land mid-line.
+    auto pending = std::make_shared<QByteArray>();
+    connect(process, &QProcess::readyReadStandardError, this,
+            [this, process, pending, epoch] {
+                pending->append(process->readAllStandardError());
+                for (int cut = pending->indexOf('\n'); cut >= 0;
+                     cut = pending->indexOf('\n')) {
+                    const QByteArray line = pending->left(cut);
+                    pending->remove(0, cut + 1);
+                    QString current;
+                    qint64 bytes = 0;
+                    int files = 0;
+                    // Anything else on stderr is pkexec's or sudo's own chatter.
+                    if (!forkmesh::decodeScanProgress(line, &current, &bytes,
+                                                      &files))
+                        continue;
+                    if (epoch != m_sizeMapScanEpoch)
+                        continue;
+                    showSizeMapScanProgress(current, bytes, files, true);
+                }
+                // A helper that never emits a newline must not grow the buffer
+                // for the length of a scan of "/".
+                if (pending->size() > 64 * 1024)
+                    pending->clear();
+            });
+    connect(process, &QProcess::finished, this,
+            [this, process, path, epoch, hideIgnored, upfront](
+                int exitCode, QProcess::ExitStatus) {
+                process->deleteLater();
                 m_sizeMapScanning = false;
                 if (epoch != m_sizeMapScanEpoch)
                     return; // a newer scan superseded this one
-                SunburstNode root = watcher->result();
-                // The user may have opened another repo (or picked another
-                // folder) while the scan ran — a stale tree would mislabel the
-                // chart, so rescan instead.
+                const QByteArray payload = process->readAllStandardOutput();
+                DirectorySizeScanResult result;
+                if (exitCode != 0 ||
+                    !forkmesh::decodeScanResult(payload, &result)) {
+                    // Nothing has been drawn yet when the prompt came first, so
+                    // fall back to the unprivileged walk rather than leaving an
+                    // empty tab behind a dismissed password box. Its status
+                    // offers the rescan again.
+                    if (upfront) {
+                        refreshSizeMapTab(true);
+                        return;
+                    }
+                    // 126/127 is pkexec's "dismissed / not authorised".
+                    m_sizeMapStatus->setText(
+                        exitCode == 126 || exitCode == 127
+                            ? QStringLiteral(
+                                  "Administrator access was declined — the map "
+                                  "still shows only the readable folders.")
+                            : QStringLiteral(
+                                  "The elevated scan failed — the map still "
+                                  "shows only the readable folders."));
+                    if (m_sizeMapElevate)
+                        m_sizeMapElevate->setVisible(true);
+                    return;
+                }
                 if (sizeMapRoot() != path) {
                     refreshSizeMapTab(false);
                     return;
                 }
-                m_sizeMapScannedPath = path;
-                m_sizeMapStatus->setText(
-                    QStringLiteral("%1 files · %2 on disk (%3)")
-                        .arg(QLocale().toString(root.fileCount),
-                             QLocale().formattedDataSize(root.size),
-                             hideIgnored
-                                 ? QStringLiteral(".git & .gitignored excluded")
-                                 : QStringLiteral(".git excluded")));
-                if (auto *liveChart =
-                        static_cast<RepoSunburstChart *>(m_sizeMapChart)) {
-                    liveChart->setBasePath(path);
-                    liveChart->setRoot(std::move(root));
-                }
+                applySizeMapResult(path, std::move(result), hideIgnored, true);
             });
-    watcher->setFuture(QtConcurrent::run([path, ignored] {
-        const forkmesh::BackgroundScope activity(
-            QStringLiteral("scan"), QStringLiteral("Sizing %1").arg(path));
-        return scanDirectorySizes(path, 0, ignored);
-    }));
+    // A missing pkexec/sudo never emits finished(), so the scanning flag would
+    // stay set and block every later rescan.
+    connect(process, &QProcess::errorOccurred, this,
+            [this, process, epoch, upfront](QProcess::ProcessError error) {
+                if (error != QProcess::FailedToStart)
+                    return;
+                process->deleteLater();
+                m_sizeMapScanning = false;
+                if (epoch != m_sizeMapScanEpoch || !m_sizeMapStatus)
+                    return;
+                // Same fallback as a declined prompt: a map of the readable
+                // folders beats an empty tab.
+                if (upfront) {
+                    refreshSizeMapTab(true);
+                    return;
+                }
+                m_sizeMapStatus->setText(QStringLiteral(
+                    "No way to ask for administrator access on this machine "
+                    "(neither pkexec nor sudo could be started)."));
+            });
+    process->start();
+    if (!stdinPayload.isEmpty()) {
+        process->write(stdinPayload);
+        stdinPayload.fill('\0');
+    }
+    process->closeWriteChannel();
 }
 
 QWidget *MainWindow::buildInsightsTab()

@@ -37,6 +37,9 @@ signals:
     // chat as a repository issue instead of retyping it on the Issues tab.
     void createIssueRequested(const QString &text, const QString &senderName,
                               qint64 timestampMs);
+    // "Send to Prompt" — copy this message's text into the footer's prompt box
+    // instead of the clipboard, so it can be handed straight to an agent.
+    void sendToPromptRequested(const QString &text);
     void deleteRequested(const QString &messageId);
     // Admin moderation delete of someone else's message.
     void moderateDeleteRequested(const QString &messageId);

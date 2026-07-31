@@ -92,6 +92,8 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
     connect(row, &MessageRow::createIssueRequested, this,
             &MainWindow::promptIssueFromChatMessage);
+    connect(row, &MessageRow::sendToPromptRequested, this,
+            &MainWindow::sendMessageToPrompt);
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
     connect(row, &MessageRow::moderateDeleteRequested, this,
             &MainWindow::confirmAdminDeleteMessage);
@@ -250,6 +252,23 @@ void MainWindow::onMessage(const ChatMessage &message)
         refreshDmList();
     }
     updateChatButton();
+
+    // #welcome traffic is the new-user roll-call (maybeAnnounceWelcome), so a
+    // fresh line there raises a "New user joined" ping whose link brings the
+    // reader straight to the channel (adhoc #88).
+    if (!ownMessage && conversation == kWelcomeChannel &&
+        message.timestampMs >
+            QDateTime::currentMSecsSinceEpoch() - kWelcomePingFreshMs) {
+        NotificationLink link;
+        link.kind = QStringLiteral("chat");
+        link.ref = kWelcomeChannel;
+        const QString who = message.senderName.trimmed();
+        addNotification(QStringLiteral("New user joined"),
+                        who.isEmpty()
+                            ? QStringLiteral("Someone new said hello in #welcome")
+                            : who + QStringLiteral(" said hello in #welcome"),
+                        false, link);
+    }
 
     if (!ownMessage) {
         const QString where = isDirectConversation(conversation)
@@ -1829,6 +1848,16 @@ void MainWindow::insertEmojiIntoComposer(const QString &emoji)
         return;
     m_messageInput->insert(emoji);
     m_messageInput->setFocus();
+}
+
+void MainWindow::sendMessageToPrompt(const QString &text)
+{
+    if (text.isEmpty())
+        return;
+    // The footer's bottom-right prompt box, not the chat input: a message worth
+    // reusing is almost always a task for an agent, so it lands where the
+    // app-wide "Send to Prompt" selection action puts text (adhoc #108).
+    appendTextToActivePrompt(text);
 }
 
 void MainWindow::showEmojiPicker(QWidget *anchor)

@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QFileInfo>
 #include <QPointer>
 #include <QProcess>
@@ -718,6 +719,44 @@ int main(int argc, char *argv[])
     check(cloudflareToken &&
               cloudflareToken->echoMode() == QLineEdit::Password,
           QStringLiteral("Cloudflare token control masks the session-only secret"));
+
+    // adhoc #108: every control-node area is a tab at the top of the page, and
+    // the API token tab states what the deploy path requires before any call is
+    // made. The token input masks its value like every other credential field.
+    QTabWidget *controlTabs =
+        window.findChild<QTabWidget *>(QStringLiteral("controlNodeTabs"));
+    QStringList controlTabNames;
+    for (int index = 0; controlTabs && index < controlTabs->count(); ++index)
+        controlTabNames << controlTabs->tabText(index);
+    check(controlTabs && controlTabs->count() >= 8 &&
+              controlTabNames.contains(QStringLiteral("Mirror services")) &&
+              controlTabNames.contains(QStringLiteral("API token")) &&
+              controlTabNames.contains(QStringLiteral("Site deployment")),
+          QStringLiteral("control node groups each section under a top tab"));
+    QLineEdit *controlTokenValue =
+        window.findChild<QLineEdit *>(QStringLiteral("controlTokenValue"));
+    QTableWidget *controlTokenTable = window.findChild<QTableWidget *>(
+        QStringLiteral("controlTokenPermissionsTable"));
+    check(controlTokenValue &&
+              controlTokenValue->echoMode() == QLineEdit::Password &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenTestButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenGenerateButton")) != nullptr,
+          QStringLiteral("API token tab exposes a masked token, a check and a "
+                         "rotate button"));
+    QStringList requiredPermissionLabels;
+    for (int row = 0; controlTokenTable && row < controlTokenTable->rowCount();
+         ++row) {
+        const QTableWidgetItem *label = controlTokenTable->item(row, 0);
+        const QTableWidgetItem *need = controlTokenTable->item(row, 1);
+        if (label && need && need->text() == QStringLiteral("Required"))
+            requiredPermissionLabels << label->text();
+    }
+    check(requiredPermissionLabels.contains(QStringLiteral("Workers Scripts: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("D1: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("DNS: Edit")),
+          QStringLiteral("API token tab lists the required permissions up front"));
     window.testShowLogSection();
     QApplication::processEvents();
     check(window.findChild<QPushButton *>(
@@ -1047,7 +1086,7 @@ int main(int argc, char *argv[])
           QStringLiteral("reward settings cannot reserve or activate an account"));
 
     QCheckBox *nodeConnectAlertCheck =
-        findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));
+        findCheckBox(window, QStringLiteral("Show a system ping when a node connects"));
     check(nodeConnectAlertCheck != nullptr,
           QStringLiteral("node-connect system alert checkbox exists"));
     if (nodeConnectAlertCheck) {
@@ -1211,6 +1250,18 @@ int main(int argc, char *argv[])
               QStringLiteral("status bar shows the open branch's commit "
                              "(date, message, author): ") +
                   commitText);
+
+        // adhoc #65: the strip only fits one elided line, so hovering it pops
+        // up the rest — full hash, author identity and the diffstat.
+        const QString tip = commitInfo ? commitInfo->toolTip() : QString();
+        check(tip.startsWith(QStringLiteral("<table")) &&
+                  tip.contains(QStringLiteral("Commit: ")) &&
+                  tip.contains(QStringLiteral("a@b.c")) &&
+                  tip.contains(QStringLiteral("Changes: ")) &&
+                  tip.contains(QStringLiteral("init")),
+              QStringLiteral("hovering the status bar commit pops up its full "
+                             "details (hash, author, changes): ") +
+                  tip);
     }
 
     // Repository detail is intentionally built on first navigation. Verify the
@@ -1236,25 +1287,26 @@ int main(int argc, char *argv[])
     check(prFixMenuFound,
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code after repository navigation"));
-    check(window.testAgentColumnsMovable(),
-          QStringLiteral("agents list column headers are draggable/reorderable "
-                         "after repository navigation"));
-    // adhoc #35: the list is down to id / title / Updated / Diff, and the title
-    // column is the one that flexes — so the columns always span the full list
-    // width with Updated and Diff sitting against its right edge, leaving the
-    // title everything in between rather than a fixed 320px slice.
+    check(window.testAgentListChromeHidden(),
+          QStringLiteral("agents list ships with no column header and no frame "
+                         "border (adhoc #92)"));
+    // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
+    // with its conflict alert, the churn bar and the age that used to have its
+    // own "Updated" column) and the title, which is the column that flexes — so
+    // the two always span the full list width with the title running to the
+    // list's right edge rather than a fixed 320px slice.
     const QString agentColumns = window.testAgentColumnLayout();
     const QStringList agentColumnParts =
         agentColumns.split(QLatin1Char('|'));
     const QStringList agentSpan =
         agentColumnParts.size() == 2 ? agentColumnParts.at(1).split(QLatin1Char('/'))
                                      : QStringList();
-    check(agentColumnParts.value(0) == QStringLiteral("#,Issue,Updated,Diff") &&
+    check(agentColumnParts.value(0) == QStringLiteral("#,Issue") &&
               agentSpan.size() == 2 &&
               agentSpan.at(0).toInt() == agentSpan.at(1).toInt() &&
               agentSpan.at(1).toInt() > 0,
-          QStringLiteral("agents list is #/Issue/Updated/Diff with the title column "
-                         "absorbing the spare width (adhoc #35, layout = %1)")
+          QStringLiteral("agents list is #/Issue with the title column absorbing "
+                         "the spare width (adhoc #35/#84/#92, layout = %1)")
               .arg(agentColumns));
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
@@ -1678,6 +1730,37 @@ int main(int argc, char *argv[])
               QString("clicking a branch link selects the branch without waiting "
                       "for the panel's git reads (adhoc #420, landed on %1)")
                   .arg(landed.isEmpty() ? QStringLiteral("<none>") : landed));
+        // adhoc #107: the branch diff viewer lives in the Git view now — the
+        // same click must land the commits workspace on the range review pane
+        // with that branch under review.
+        check(window.testCommitWorkspacePage() == 2 &&
+                  window.testBranchDiffBranch() ==
+                      QStringLiteral("feature/keep-selected"),
+              QString("a branch link opens the branch's diff in the Git view's "
+                      "range pane (adhoc #107, page = %1, branch = %2)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBranchDiffBranch()));
+        // adhoc #110: the review borrows the left column's existing slots — the
+        // range's changed files where the working-tree changes sit, its commits
+        // where the history sits — instead of opening a column of its own.
+        check(window.testGitFilesSlotPage() == 1 &&
+                  window.testGitHistorySlotPage() == 1,
+              QString("the range's files and commits take over the Git view's "
+                      "left column (adhoc #110, files slot = %1, history slot "
+                      "= %2)")
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
+        // And closing the review hands both halves back to the working tree.
+        window.testCloseBranchRange();
+        check(window.testCommitWorkspacePage() == 0 &&
+                  window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("closing the range review restores the working-tree "
+                      "changes and commit history (adhoc #110, page = %1, files "
+                      "slot = %2, history slot = %3)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();
@@ -2401,6 +2484,10 @@ int main(int argc, char *argv[])
                   QStringLiteral("the drafted prompt names where the log file lives"));
             check(drafted.contains(QStringLiteral("renderAgentDiff")),
                   QStringLiteral("the drafted prompt carries the recorded backtrace"));
+            // adhoc #90: the sampled frames only name the call that happened to
+            // be on the stack, so the prompt also asks for a sweep of the logs.
+            check(drafted.contains(QStringLiteral("never got backgrounded")),
+                  QStringLiteral("the drafted prompt asks for un-backgrounded work too"));
             check(drafted.size() <= 16000,
                   QStringLiteral("the drafted prompt fits the composer's length cap"));
             check(drafted == window.testStallFixPrompt(),
@@ -2446,6 +2533,97 @@ int main(int argc, char *argv[])
         check(leadsWithIcon(window.testFooterLogView()),
               QStringLiteral("the footer live-log strip renders the site favicon "
                              "inline too (adhoc #436)"));
+    }
+
+    // adhoc #114: every log entry leads, furthest left, with a plus that hands
+    // that entry to the footer prompt box — one click instead of a
+    // select-copy-paste round trip. Covered in both log surfaces.
+    {
+        window.testResetNetworkLog();
+        const QString entry = QStringLiteral("Pushed 3 commits to origin/main");
+        window.testLogSystem(entry);
+        window.testShowLogSection();
+        window.testRebuildNetworkLogView();
+        QApplication::processEvents();
+
+        const QString prefix = QStringLiteral("fmlogprompt:");
+        // The anchor carries the entry's own dated line, so a click needs no
+        // lookup back into the log buffer.
+        auto firstPromptHref = [&prefix](QTextEdit *view) {
+            if (!view)
+                return QString();
+            for (QTextBlock b = view->document()->firstBlock(); b.isValid();
+                 b = b.next()) {
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
+                    const QString href =
+                        it.fragment().charFormat().anchorHref();
+                    if (href.startsWith(prefix))
+                        return href;
+                }
+            }
+            return QString();
+        };
+        const QString logHref = firstPromptHref(window.testNetworkLogView());
+        check(!logHref.isEmpty(),
+              QStringLiteral("the full Log view leads every entry with an "
+                             "add-to-prompt icon"));
+        check(!firstPromptHref(window.testFooterLogView()).isEmpty(),
+              QStringLiteral("the footer live-log strip leads every entry with "
+                             "one too"));
+        check(QUrl::fromPercentEncoding(logHref.mid(prefix.size()).toLatin1())
+                  .endsWith(entry),
+              QStringLiteral("the icon's anchor carries the log entry itself"));
+
+        // Click it where it actually paints (the leftmost strip of a row), not
+        // through a test-only shortcut, so the event-filter wiring is covered.
+        // Hit-testing is by anchor content, not by "first icon in the viewport":
+        // the footer strip keeps the lines it has already streamed, so its top
+        // visible row is some older entry, not the one logged just above.
+        auto clickPromptIcon = [&prefix, &entry](QTextEdit *view) {
+            if (!view)
+                return false;
+            for (int y = 0; y < view->viewport()->height(); ++y) {
+                for (int x = 0; x < 40; ++x) {
+                    const QPoint pos(x, y);
+                    const QString href = view->anchorAt(pos);
+                    if (!href.startsWith(prefix) ||
+                        !QUrl::fromPercentEncoding(
+                             href.mid(prefix.size()).toLatin1())
+                             .endsWith(entry))
+                        continue;
+                    const QPointF global = view->viewport()->mapToGlobal(pos);
+                    QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos),
+                                      global, Qt::LeftButton, Qt::LeftButton,
+                                      Qt::NoModifier);
+                    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(pos),
+                                        global, Qt::LeftButton, Qt::NoButton,
+                                        Qt::NoModifier);
+                    QApplication::sendEvent(view->viewport(), &press);
+                    QApplication::sendEvent(view->viewport(), &release);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const QString beforeClick = window.testQuickAddText();
+        if (clickPromptIcon(window.testNetworkLogView())) {
+            const QString afterClick = window.testQuickAddText();
+            check(afterClick.endsWith(entry) && afterClick != beforeClick,
+                  QStringLiteral("clicking a Log entry's icon appends that entry "
+                                 "to the footer prompt"));
+        } else {
+            check(false, QStringLiteral("the Log entry's add-to-prompt icon is "
+                                        "hit-testable in the view"));
+        }
+        if (clickPromptIcon(window.testFooterLogView())) {
+            const QString afterFooter = window.testQuickAddText();
+            check(afterFooter.endsWith(entry) &&
+                      afterFooter.count(entry) == 2,
+                  QStringLiteral("the footer strip's icon appends to the prompt "
+                                 "instead of opening the full Log"));
+        }
+        window.testResetNetworkLog();
     }
 
     stopChildProcesses(window);

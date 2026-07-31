@@ -1000,7 +1000,7 @@ QWidget *MainWindow::buildIssuesSection()
     connect(m_issueLinkPullButton, &QPushButton::clicked, this,
             &MainWindow::linkPullToIssueFromIssuePage);
     addMetaSection("Development", m_issueDevelopmentValue, m_issueLinkPullButton);
-    addMetaSection("Notifications", makeValue("You are receiving notifications because you're subscribed to this thread."));
+    addMetaSection("Pings", makeValue("You are receiving pings because you're subscribed to this thread."));
     addMetaSection("Participants", makeValue("No participants"));
     auto *transferIssue = makeAction("Transfer issue", "arrow-left");
     auto *cloneIssue = makeAction("Clone issue", "copy");
@@ -4886,8 +4886,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     // Keep the floating "Log" button pinned to the live-log strip's bottom-right
     // corner as the strip resizes (adhoc #137). Don't consume — the strip still
     // needs the resize.
-    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog)
+    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog) {
         positionFloatingLogButton();
+        // Same corner, same reason: the pause-scroll toggle rides on top of the
+        // strip rather than in its layout (adhoc #92).
+        positionFooterLogPauseButton();
+    }
     // Right-click on selected text anywhere in the app: offer "Send to
     // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
     if (event->type() == QEvent::ContextMenu) {
@@ -5059,6 +5063,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         };
         if (event->type() == QEvent::ToolTip) {
             auto *he = static_cast<QHelpEvent *>(event);
+            // The leading plus is its own affordance (adhoc #114), so say what it
+            // does rather than repeating the line the rest of the row shows.
+            if (!logPromptAnchorLine(m_footerUpdateLog->anchorAt(he->pos()))
+                     .isEmpty()) {
+                QToolTip::showText(he->globalPos(),
+                                   QStringLiteral("Add this log entry to the prompt"),
+                                   m_footerUpdateLog->viewport());
+                return true;
+            }
             const QString line = lineAt(he->pos());
             if (!line.isEmpty()) {
                 QToolTip::showText(he->globalPos(), line,
@@ -5068,9 +5081,47 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         } else { // MouseButtonRelease
             auto *me = static_cast<QMouseEvent *>(event);
             if (me->button() == Qt::LeftButton) {
-                const QString line = lineAt(me->position().toPoint());
+                const QPoint pos = me->position().toPoint();
+                // The plus at the far left hands the entry to the prompt box; the
+                // rest of the row keeps opening the full Log at that entry.
+                const QString promptLine =
+                    logPromptAnchorLine(m_footerUpdateLog->anchorAt(pos));
+                if (!promptLine.isEmpty()) {
+                    appendTextToActivePrompt(promptLine);
+                    return true;
+                }
+                const QString line = lineAt(pos);
                 if (!line.isEmpty()) {
                     openFullLogAtFooterLine(line);
+                    return true;
+                }
+            }
+        }
+    }
+    // Same plus in the full Log view (adhoc #114). Its QTextBrowser opens real
+    // links itself, so both the press and the release are swallowed here — left
+    // to QTextBrowser, the release would activate the anchor and hand
+    // "fmlogprompt:…" to the system browser.
+    if (m_settingsLog && obj == m_settingsLog->viewport() &&
+        (event->type() == QEvent::MouseButtonPress ||
+         event->type() == QEvent::MouseButtonRelease ||
+         event->type() == QEvent::ToolTip)) {
+        if (event->type() == QEvent::ToolTip) {
+            auto *he = static_cast<QHelpEvent *>(event);
+            if (!logPromptAnchorLine(m_settingsLog->anchorAt(he->pos())).isEmpty()) {
+                QToolTip::showText(he->globalPos(),
+                                   QStringLiteral("Add this log entry to the prompt"),
+                                   m_settingsLog->viewport());
+                return true;
+            }
+        } else {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                const QString promptLine = logPromptAnchorLine(
+                    m_settingsLog->anchorAt(me->position().toPoint()));
+                if (!promptLine.isEmpty()) {
+                    if (event->type() == QEvent::MouseButtonRelease)
+                        appendTextToActivePrompt(promptLine);
                     return true;
                 }
             }

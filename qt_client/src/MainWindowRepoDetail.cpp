@@ -541,7 +541,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_branchesButton->setObjectName("ghostButton");
     m_branchesButton->setCursor(Qt::PointingHandCursor);
     m_branchesButton->setToolTip(
-        "Open the Branches panel to view, compare, switch and delete branches");
+        "Open the Branches panel to manage branches \xE2\x80\x94 click one to "
+        "review its commits and diff in the Git view");
     setOcticon(m_branchesButton, "git-branch", 16);
     connect(m_branchesButton, &QPushButton::clicked, this, [this] {
         // Branches has no top-level tab anymore: its panel lives inside the Code
@@ -3422,11 +3423,26 @@ void MainWindow::loadRepoOverview(const QString &path)
     }
     QString historyText = QStringLiteral("Commits");
     if (m_historyButton) {
-        QByteArray countOut;
-        QString count;
-        if (!dir.isEmpty() &&
-            runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut, nullptr))
-            count = QString::fromUtf8(countOut).trimmed();
+        // `rev-list --count` walks the entire history, so on a large repo it is
+        // one of the slowest reads here — the watchdog caught the GUI thread
+        // inside it (adhoc #90). The answer can only change when the ref's tip
+        // moves, and the tip is already resolved above, so memoize per
+        // checkout+commit: browsing into a directory re-runs this rebuild but
+        // does not re-count.
+        static QHash<QString, QString> countCache;
+        const QString countKey = dir + QLatin1Char('|') + head;
+        QString count = head.isEmpty() ? QString() : countCache.value(countKey);
+        if (count.isEmpty() && !dir.isEmpty()) {
+            QByteArray countOut;
+            if (runGitCapture(dir, {"rev-list", "--count", currentRef()}, &countOut,
+                              nullptr))
+                count = QString::fromUtf8(countOut).trimmed();
+            if (!count.isEmpty() && !head.isEmpty()) {
+                if (countCache.size() > 64)
+                    countCache.clear(); // bounded; every entry is re-derivable
+                countCache.insert(countKey, count);
+            }
+        }
         if (!count.isEmpty())
             historyText = QStringLiteral("%1 Commits").arg(formatCount(count.toLongLong()));
     }
@@ -4766,7 +4782,7 @@ void MainWindow::rebuildGlobalSearchResults()
     static const Sec kSections[] = {
         {"Home / Repositories", "home", 0},
         {"Chat", "comment", 2},
-        {"Notifications", "bell", 3},
+        {"Pings", "bell", 3},
         {"Network log", "list-unordered", 4},
         {"Hosts", "server", 7},
         {"Relays", "broadcast", 8},
@@ -5112,6 +5128,12 @@ void MainWindow::recordNavLocation()
     here.detailTab = (here.repoIndex >= 0 && m_repoDetailStack)
                          ? m_repoDetailStack->currentIndex()
                          : -1;
+
+    // Remember the tab actually being viewed so a relaunch can restore it
+    // (see kLastRepoDetailTabSetting / runDeferredStartup) instead of always
+    // landing on Settings -> General's "open repositories on tab" default.
+    if (here.detailTab >= 0)
+        QSettings().setValue(kLastRepoDetailTabSetting, here.detailTab);
 
     if (m_navHistoryIndex >= 0 && m_navHistoryIndex < m_navHistory.size() &&
         m_navHistory.at(m_navHistoryIndex) == here)
@@ -5545,10 +5567,31 @@ void MainWindow::updateSearchStatus()
 }
 
 
+// Switch the Git view's right pane, keeping its left column in step (adhoc
+// #110). Reviewing a branch/PR range lends the left column's two slots to that
+// range's changed files and commits; every other page hands them back to the
+// working-tree changes and the commit history.
+void MainWindow::setCommitWorkspacePage(int page)
+{
+    if (!m_commitsStack)
+        return;
+    m_commitsStack->setCurrentIndex(page);
+    const int slot = page == kCommitWorkspaceRangePage ? 1 : 0;
+    for (QStackedWidget *stack : {m_gitFilesSlot, m_gitHistorySlot})
+        if (stack && stack->count() > slot)
+            stack->setCurrentIndex(slot);
+}
+
 void MainWindow::showCommitList()
 {
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    if (!m_commitsStack)
+        return;
+    // A branch/PR review parked on the range page survives commit-list reloads
+    // (adhoc #107): it re-renders itself, so only the single-commit page needs
+    // resetting to the working-tree changes.
+    if (m_commitsStack->currentIndex() == kCommitWorkspaceRangePage)
+        return;
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
 }
 
 // Select the newest commit (row 0 — the table sorts Date-descending) and open
@@ -6303,12 +6346,10 @@ void MainWindow::showCommit(const QString &hash)
 
     // Land on the diff page and paint a spinner straight away; all git below is
     // asynchronous, so the click itself never blocks the GUI thread.
-    m_commitsStack->setCurrentIndex(kCommitWorkspaceCommitPage);
+    setCommitWorkspacePage(kCommitWorkspaceCommitPage);
     startCommitDiffSpin();
 
     m_currentCommitHash = hash; // refined to the full hash when metadata lands
-    if (m_commitComposer)
-        m_commitComposer->setMentionCandidates(mentionCandidateNames());
     if (m_commitDownloadButton)
         m_commitDownloadButton->setEnabled(true);
     if (m_commitDeleteButton || m_commitRevertButton) {
@@ -6494,91 +6535,8 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
         m_pendingCommitFileScroll.clear();
     }
 
-    renderCommitThread(m_currentCommitHash);
     stopCommitDiffSpin();
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceCommitPage);
-}
-
-void MainWindow::renderCommitThread(const QString &sha)
-{
-    if (!m_commitThreadLayout)
-        return;
-    while (QLayoutItem *item = m_commitThreadLayout->takeAt(0)) {
-        if (QWidget *w = item->widget())
-            w->deleteLater();
-        delete item;
-    }
-    // Trailing stretch first so cards flow top to bottom (see renderPullThread).
-    m_commitThreadLayout->addStretch();
-    if (sha.isEmpty())
-        return;
-    QString linkOwner = QStringLiteral("repo");
-    QString linkRepo = QStringLiteral("commit");
-    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
-        linkOwner = m_repositories.at(m_repoDetailIndex).owner;
-        linkRepo = m_repositories.at(m_repoDetailIndex).name;
-    }
-    const QString commitLink =
-        QStringLiteral("forkmesh://commit/%1/%2/%3").arg(linkOwner, linkRepo, sha);
-    const RepositoryRecord rec =
-        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
-            ? writableRecordFor(m_repositories.at(m_repoDetailIndex))
-            : RepositoryRecord();
-    CommitCommentStore store(rec.localPath, rec.mirrorPath, &m_profileIdentity,
-                             m_userName);
-    for (const CommitComment &c : store.loadFor(sha)) {
-        const QString who = c.authorName.isEmpty() ? c.author.left(10) : c.authorName;
-        addConversationCard(
-            m_commitThreadLayout, who,
-            QStringLiteral("<b>%1</b> <span style='color:#8b949e'>commented %2</span>")
-                .arg(who.toHtmlEscaped(), formatIssueRelativeTime(c.ts)),
-            c.body, QString(),
-            commitLink + QStringLiteral("#%1")
-                             .arg(c.id.isEmpty() ? QString::number(c.ts) : c.id),
-            c.author);
-    }
-}
-
-void MainWindow::submitCommitComment()
-{
-    if (m_currentCommitHash.isEmpty() || !m_commitComposer)
-        return;
-    const QString body = m_commitComposer->markdown().trimmed();
-    if (body.isEmpty()) {
-        flashMessage(QStringLiteral("Write a comment first."));
-        return;
-    }
-    const RepositoryRecord rec =
-        (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size())
-            ? writableRecordFor(m_repositories.at(m_repoDetailIndex))
-            : RepositoryRecord();
-    CommitCommentStore store(rec.localPath, rec.mirrorPath, &m_profileIdentity,
-                             m_userName);
-    if (store.canWrite()) {
-        QString error;
-        if (!store.addComment(m_currentCommitHash, body, &error)) {
-            QMessageBox::warning(this, "Comment", error);
-            return;
-        }
-        // Push the new comment into the bare mirror and tell mirroring peers
-        // right away (like issue/PR comments do) so it converges in seconds
-        // instead of at the next three-minute auto-sync. Resolve the writable
-        // repo's own index — the open detail may be a read-only preview of a
-        // repo we actually host under a different entry.
-        const int srcIndex = repoIndexFor(rec.owner, rec.name);
-        propagateRepoUpdate(srcIndex >= 0 ? srcIndex : m_repoDetailIndex);
-    } else {
-        const CommitComment c =
-            store.makeSignedComment(m_currentCommitHash, [&] {
-                CommitComment x;
-                x.body = body;
-                return x;
-            }());
-        submitCommitCommentToInbox(m_currentCommitHash, c);
-    }
-    m_commitComposer->setMarkdown(QString());
-    renderCommitThread(m_currentCommitHash);
+    setCommitWorkspacePage(kCommitWorkspaceCommitPage);
 }
 
 void MainWindow::loadRepoInsights()
@@ -7786,18 +7744,67 @@ QString MainWindow::repoDefaultBranchFast() const
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return QString();
+    // Short-lived cache mirroring repoBranches()'s: this runs on every
+    // agent-session selection, and even the cheap for-each-ref spawn showed up
+    // in the stall log when a transcript stream was being pumped at the same
+    // time (adhoc #82). The unconfigured default branch only moves on branch
+    // create/delete, so 5 s of staleness is harmless.
+    // Past 5 s the cache is still good as long as the ref store hasn't been
+    // touched: a filesystem-only fingerprint (refs/heads + packed-refs + HEAD)
+    // decides that without spawning anything. The 5 s expiry alone meant every
+    // agent-session selection past it paid the subprocess again, and the stall
+    // watchdog caught that spawn blocking the GUI thread for ~1.2 s while a
+    // transcript was streaming (adhoc #93).
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    auto stamp = [&dir](const QString &leaf) {
+        return QString::number(QFileInfo(QDir(dir).filePath(leaf))
+                                   .lastModified()
+                                   .toMSecsSinceEpoch());
+    };
+    const QString fingerprint = stamp(QStringLiteral("refs/heads")) +
+                                QLatin1Char('|') +
+                                stamp(QStringLiteral("packed-refs")) +
+                                QLatin1Char('|') + stamp(QStringLiteral("HEAD"));
+    if (dir == m_defaultBranchFastCacheDir &&
+        !m_defaultBranchFastCache.isEmpty() &&
+        (now - m_defaultBranchFastCacheTime < 5 ||
+         fingerprint == m_defaultBranchFastCacheSig)) {
+        return m_defaultBranchFastCache;
+    }
+    // On a miss, ask only about the two names that decide the answer in every
+    // normal repo. repoDefaultBranch() below picks main, then master, ahead of
+    // anything else, so when either exists the full refs/heads/ enumeration —
+    // hundreds of entries once a repo accumulates agent branches — is wasted work.
     QStringList branches;
-    QByteArray out;
+    QByteArray probe;
     if (runGitCapture(dir,
-                      {"for-each-ref", "--format=%(refname:short)", "refs/heads/"},
-                      &out, nullptr)) {
-        for (const QString &line : QString::fromUtf8(out).split('\n')) {
-            const QString branch = line.trimmed();
-            if (!branch.isEmpty() && !branches.contains(branch))
-                branches.append(branch);
+                      {"for-each-ref", "--format=%(refname:short)",
+                       "refs/heads/main", "refs/heads/master"},
+                      &probe, nullptr)) {
+        for (const QString &line :
+             QString::fromUtf8(probe).split('\n', Qt::SkipEmptyParts))
+            branches.append(line.trimmed());
+    }
+    if (!branches.contains(QStringLiteral("main")) &&
+        !branches.contains(QStringLiteral("master"))) {
+        branches.clear();
+        QByteArray out;
+        if (runGitCapture(dir,
+                          {"for-each-ref", "--format=%(refname:short)", "refs/heads/"},
+                          &out, nullptr)) {
+            for (const QString &line : QString::fromUtf8(out).split('\n')) {
+                const QString branch = line.trimmed();
+                if (!branch.isEmpty() && !branches.contains(branch))
+                    branches.append(branch);
+            }
         }
     }
-    return repoDefaultBranch(branches);
+    const QString base = repoDefaultBranch(branches);
+    m_defaultBranchFastCacheDir = dir;
+    m_defaultBranchFastCache = base;
+    m_defaultBranchFastCacheTime = now;
+    m_defaultBranchFastCacheSig = fingerprint;
+    return base;
 }
 
 void MainWindow::loadBranchesAndTags()
@@ -8134,21 +8141,27 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoHeaderTitle->setTextFormat(Qt::RichText);
     m_repoHeaderTitle->hide();
 
-    auto *notifyButton = new QPushButton("Notify");
+    // Icon-over-caption pills (adhoc #91), the same form as the activity rail,
+    // so the right-hand action cluster reads compact. "repoActionStack" keeps
+    // them clear of #repoAction's QSS max-height, which would squash the stack.
+    auto *notifyButton =
+        new VerticalIconButton("Notify", VerticalIconButton::Action);
     m_notifyButton = notifyButton;
-    notifyButton->setObjectName("repoAction");
-    notifyButton->setToolTip("Notifications");
+    notifyButton->setToolTip("Pings");
     setOcticon(notifyButton, "bell", 16);
-    m_forkButton = new QPushButton("Fork 0");
-    m_mirrorButton = new QPushButton("Mirror 1");
-    m_sourceButton = new QPushButton("Source");
+    m_forkButton = new VerticalIconButton("Fork 0", VerticalIconButton::Action);
+    m_mirrorButton =
+        new VerticalIconButton("Mirror 1", VerticalIconButton::Action);
+    m_sourceButton =
+        new VerticalIconButton("Source", VerticalIconButton::Action);
     // Open-in-browser link, mirroring the relay switcher's open button: takes
     // the active repo to its page on the mainnode website.
-    m_repoOpenButton = new QPushButton("Open");
+    m_repoOpenButton =
+        new VerticalIconButton("Open", VerticalIconButton::Action);
     for (QPushButton *b :
-         {notifyButton, m_forkButton, m_mirrorButton, m_sourceButton,
-          m_repoOpenButton}) {
-        b->setObjectName("repoAction");
+         {static_cast<QPushButton *>(notifyButton), m_forkButton,
+          m_mirrorButton, m_sourceButton, m_repoOpenButton}) {
+        b->setObjectName("repoActionStack");
         b->setCursor(Qt::PointingHandCursor);
     }
     setOcticon(m_forkButton, "repo-forked", 16);
@@ -8267,9 +8280,15 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 1 || i == 3 || i == 10 || i == 11)
             continue;
         const TabDef tab = tabs.at(i);
-        auto *b = new QPushButton(QString::fromLatin1(tab.label));
         // Releases (id 12) is styled like a toolbar button, not a tab: it lives in
         // the Code overview toolbar next to Tags (adhoc #180), not the tab row.
+        // Every real tab stacks its icon over a small caption (adhoc #91), the
+        // same form as the activity rail, so the row reads compact.
+        QPushButton *b =
+            i == 12 ? new QPushButton(QString::fromLatin1(tab.label))
+                    : static_cast<QPushButton *>(new VerticalIconButton(
+                          QString::fromLatin1(tab.label),
+                          VerticalIconButton::Tab));
         b->setObjectName(i == 12 ? "ghostButton" : "repoTab");
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
@@ -8341,7 +8360,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     tabBarScroll->setMinimumWidth(0);
-    tabBarScroll->setFixedHeight(48);
+    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91)
+    // plus the horizontal scrollbar a narrow window needs.
+    tabBarScroll->setFixedHeight(56);
 
     // The integrity-pin warning ("clones are being rejected — reset the pin")
     // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
@@ -8581,10 +8602,17 @@ QWidget *MainWindow::buildRepoDetailSection()
         updateRepoActivityRail();
     });
     if (m_appNavigationRailLayout) {
+        // Directly below the global Agents entry, which heads the rail (adhoc
+        // #70). indexOf() rather than a literal 1/2 so the pair still lands at
+        // the top if the rail hasn't been built with Agents yet.
+        const int after =
+            m_agentsNavButton
+                ? m_appNavigationRailLayout->indexOf(m_agentsNavButton) + 1
+                : 0;
         m_appNavigationRailLayout->insertWidget(
-            0, m_railCodeButton, 0, Qt::AlignLeft);
+            after, m_railCodeButton, 0, Qt::AlignLeft);
         m_appNavigationRailLayout->insertWidget(
-            1, m_railGitButton, 0, Qt::AlignLeft);
+            after + 1, m_railGitButton, 0, Qt::AlignLeft);
     }
     // The checked states mirror the visible view (Code tab, and which body the
     // overview shows), so track every stack the navigation helpers drive.
@@ -8970,9 +8998,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
     connect(m_commitSplitButton, &QPushButton::clicked, this, [this](bool on) {
         setDiffSplitPref(on);
         updateDiffSplitButton(m_commitSplitButton);
-        updateDiffSplitButton(m_pullSplitButton);
-        if (m_pullSplitButton)
-            m_pullSplitButton->setChecked(on);
+        for (QPushButton *b : {m_pullSplitButton, m_branchSplitButton}) {
+            if (b) {
+                b->setChecked(on);
+                updateDiffSplitButton(b);
+            }
+        }
         if (!m_currentCommitHash.isEmpty())
             showCommit(m_currentCommitHash);
     });
@@ -9073,6 +9104,8 @@ QWidget *MainWindow::buildRepoCommitsTab()
     diffSpinRow->addStretch();
     diffSpinRow->addWidget(m_commitDiffSpinner);
 
+    // Commit commenting was removed (line-level review comments live in the
+    // pull-request view), so the diff owns the rest of the page.
     auto *split = new QWidget;
     auto *splitLayout = new QVBoxLayout(split);
     splitLayout->setContentsMargins(0, 0, 0, 0);
@@ -9080,66 +9113,31 @@ QWidget *MainWindow::buildRepoCommitsTab()
     splitLayout->addLayout(diffSpinRow);
     splitLayout->addWidget(m_commitDiffView, 1);
 
-    // --- Per-commit conversation: comment thread + composer.
-    m_commitThreadContainer = new QWidget;
-    m_commitThreadLayout = new QVBoxLayout(m_commitThreadContainer);
-    m_commitThreadLayout->setContentsMargins(0, 0, 0, 0);
-    m_commitThreadLayout->setSpacing(10);
-    m_commitThreadLayout->addStretch();
-    auto *commitThreadScroll = new QScrollArea;
-    commitThreadScroll->setWidgetResizable(true);
-    commitThreadScroll->setWidget(m_commitThreadContainer);
-    commitThreadScroll->setObjectName("issuePageScroll");
-    commitThreadScroll->setFrameShape(QFrame::NoFrame);
-    m_commitComposer = new MarkdownEditor;
-    m_commitComposer->setPlaceholderText("Leave a comment on this commit\xE2\x80\xA6");
-    m_commitComposer->setMinimumHeight(80);
-    m_commitCommentButton = new QPushButton("Comment");
-    m_commitCommentButton->setObjectName("ghostButton");
-    m_commitCommentButton->setProperty("buttonSize", "sm");
-    m_commitCommentButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitCommentButton, "comment", 16);
-    connect(m_commitCommentButton, &QPushButton::clicked, this,
-            &MainWindow::submitCommitComment);
-    auto *commitComposerButtons = new QHBoxLayout;
-    commitComposerButtons->setContentsMargins(0, 0, 0, 0);
-    // Speak the comment with the voice engine, just like the footer prompt mic.
-    commitComposerButtons->addWidget(makeVoiceButton(m_commitComposer), 0, Qt::AlignLeft);
-    commitComposerButtons->addStretch();
-    commitComposerButtons->addWidget(m_commitCommentButton);
-    auto *commitConversation = new QWidget;
-    auto *commitConversationLayout = new QVBoxLayout(commitConversation);
-    commitConversationLayout->setContentsMargins(0, 0, 0, 0);
-    commitConversationLayout->setSpacing(8);
-    commitConversationLayout->addWidget(commitThreadScroll, 1);
-    commitConversationLayout->addWidget(makeComposerIdentity(nullptr, QStringLiteral("Commenting")));
-    commitConversationLayout->addWidget(m_commitComposer);
-    commitConversationLayout->addLayout(commitComposerButtons);
-
-    auto *commitVSplit = new QSplitter(Qt::Vertical);
-    commitVSplit->setChildrenCollapsible(false);
-    commitVSplit->addWidget(split);
-    commitVSplit->addWidget(commitConversation);
-    commitVSplit->setStretchFactor(0, 3);
-    commitVSplit->setStretchFactor(1, 2);
-    commitVSplit->setSizes({440, 240});
-
     auto *detailLayout = new QVBoxLayout(detailPage);
     detailLayout->setContentsMargins(16, 12, 16, 16);
     detailLayout->setSpacing(8);
     detailLayout->addLayout(headerRow);
     detailLayout->addWidget(m_commitMessage);
     detailLayout->addWidget(m_commitMeta);
-    detailLayout->addWidget(commitVSplit, 1);
+    detailLayout->addWidget(split, 1);
 
     // Left column: working-tree changes above commit history. The column is one
     // resizable splitter pane, so the user can give lists just enough room and
     // keep the right side dedicated to the active diff/detail view.
+    //
+    // Each half is a stack (adhoc #110): while a branch/PR range is under review
+    // the same two slots show that range's changed files and its commits, so the
+    // review reuses the places files and commits already live instead of opening
+    // a third column beside the diff. setCommitWorkspacePage() does the swap.
     auto *scmPanel = buildSourceControlPanel();
+    m_gitFilesSlot = new QStackedWidget;
+    m_gitFilesSlot->addWidget(scmPanel); // 0: working-tree CHANGES
+    m_gitHistorySlot = new QStackedWidget;
+    m_gitHistorySlot->addWidget(listPage); // 0: commit history
     auto *leftSplit = new QSplitter(Qt::Vertical);
     leftSplit->setChildrenCollapsible(false);
-    leftSplit->addWidget(scmPanel);
-    leftSplit->addWidget(listPage);
+    leftSplit->addWidget(m_gitFilesSlot);
+    leftSplit->addWidget(m_gitHistorySlot);
     leftSplit->setStretchFactor(0, 2);
     leftSplit->setStretchFactor(1, 3);
     leftSplit->setSizes({320, 520});
@@ -9162,7 +9160,17 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     m_commitsStack->addWidget(changesPage); // kCommitWorkspaceChangesPage
     m_commitsStack->addWidget(detailPage);  // kCommitWorkspaceCommitPage
+    // The branch/PR range review pane (adhoc #107): the branch diff viewer moved
+    // in from the Branches panel, so a branch or PR opens its commits, files and
+    // diff right here in the Git view.
+    m_commitsStack->addWidget(buildBranchRangePane()); // kCommitWorkspaceRangePage
     m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    // Page 1 of each left slot: the range's files and commits (adhoc #110). Built
+    // by buildBranchRangePane() just above, parked here until a range opens.
+    if (m_branchFilesPane)
+        m_gitFilesSlot->addWidget(m_branchFilesPane);
+    if (m_branchScopePane)
+        m_gitHistorySlot->addWidget(m_branchScopePane);
 
     auto *workspaceSplit = new QSplitter(Qt::Horizontal);
     workspaceSplit->setChildrenCollapsible(false);

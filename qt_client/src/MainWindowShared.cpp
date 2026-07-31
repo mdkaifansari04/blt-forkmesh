@@ -1613,6 +1613,39 @@ void setAutoMarkViewedOnScrollPref(bool on)
     QSettings().setValue(QStringLiteral("view/autoMarkViewedOnScroll"), on);
 }
 
+// Rebuild a diff view's extra selections from its find-bar matches, painting
+// the active match in a brighter color than the rest, and update the "n/m"
+// count label. Shared by the PR and branch/PR-range find bars (adhoc #107).
+void applyDiffSearchHighlights(QTextBrowser *diff,
+                               const QList<QTextCursor> &matches, int activeIndex,
+                               QLabel *countLabel, bool termEmpty)
+{
+    QList<QTextEdit::ExtraSelection> sels;
+    QTextCharFormat matchFmt;
+    matchFmt.setBackground(QColor("#e3b341"));
+    matchFmt.setForeground(QColor("#0d1117"));
+    QTextCharFormat currentFmt;
+    currentFmt.setBackground(QColor("#f78166"));
+    currentFmt.setForeground(QColor("#0d1117"));
+    for (int i = 0; i < matches.size(); ++i) {
+        QTextEdit::ExtraSelection sel;
+        sel.cursor = matches.at(i);
+        sel.format = (i == activeIndex) ? currentFmt : matchFmt;
+        sels.append(sel);
+    }
+    diff->setExtraSelections(sels);
+
+    if (!countLabel)
+        return;
+    countLabel->setText(termEmpty
+                            ? QString()
+                            : matches.isEmpty()
+                                  ? QStringLiteral("No results")
+                                  : QStringLiteral("%1/%2")
+                                        .arg(activeIndex + 1)
+                                        .arg(matches.size()));
+}
+
 // Dispatch to the split or unified renderer based on the current preference.
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QString &dir, const QString &base, const QString &head,

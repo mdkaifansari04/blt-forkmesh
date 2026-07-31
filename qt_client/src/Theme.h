@@ -42,6 +42,10 @@ inline const char *iconColorForButton(const QString &objectName, bool dark)
         return dark ? "#c084fc" : "#7c3aed";
     if (objectName == QStringLiteral("dangerButton"))
         return dark ? "#f85149" : "#cf222e";
+    // Outlined-green actions (the agent header's Branch/Worktree, adhoc #84):
+    // the danger button's twin, in the go colour.
+    if (objectName == QStringLiteral("successButton"))
+        return dark ? "#3fb950" : "#1a7f37";
     if (objectName == QStringLiteral("repoTab") ||
         objectName == QStringLiteral("socialIconButton"))
         return dark ? "#8b949e" : "#656d76";
@@ -375,6 +379,16 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
     background-color: #da3633; color: #ffffff; border: 1px solid #0d1117;
     border-radius: 7px; font-size: 9px; font-weight: 700;
 }
+/* Red "instance waiting to be linked" dot on the relay favicon (adhoc #97),
+   with the Approve button that sits beside it. */
+#relayJoinDot {
+    background-color: #da3633; border: 1px solid #0d1117; border-radius: 5px;
+}
+QPushButton#relayJoinApproveButton {
+    background-color: #da3633; color: #ffffff; border: none;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700;
+}
+QPushButton#relayJoinApproveButton:hover { background-color: #f85149; }
 /* Count label on the agents button (no red styling). */
 #agentsNavBadge {
     color: #656d76; font-size: 13px; font-weight: 600;
@@ -515,6 +529,14 @@ QPushButton#dangerButton {
 }
 QPushButton#dangerButton:hover { background-color: #da3633; color: #ffffff; }
 
+/* --- Success button: the danger button's outlined twin, in green (adhoc #84,
+   the agent detail header's Branch / Worktree actions) --- */
+QPushButton#successButton {
+    background: transparent; border: 1px solid #2ea043; border-radius: 6px;
+    color: #3fb950; font-weight: 600;
+}
+QPushButton#successButton:hover { background-color: #2ea043; color: #ffffff; }
+
 /* --- Sidebar --- */
 #sidebar { background-color: #0d1117; border-right: 1px solid #30363d; }
 #sidebar QLabel { background: transparent; }
@@ -568,7 +590,6 @@ QPushButton#memberDeleteButton:hover {
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 6px;
 }
-#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -940,7 +961,6 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     border: 1px solid rgba(57,211,83,0.55);
     border-radius: 8px;
 }
-#footerDivider { background-color: #30363d; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;
@@ -1657,6 +1677,16 @@ QPushButton#windowChromeCloseButton:hover {
     background-color: #cf222e; color: #ffffff; border: 1px solid #ffffff;
     border-radius: 7px; font-size: 9px; font-weight: 700;
 }
+/* Red "instance waiting to be linked" dot on the relay favicon (adhoc #97),
+   with the Approve button that sits beside it. */
+#relayJoinDot {
+    background-color: #cf222e; border: 1px solid #ffffff; border-radius: 5px;
+}
+QPushButton#relayJoinApproveButton {
+    background-color: #cf222e; color: #ffffff; border: none;
+    border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700;
+}
+QPushButton#relayJoinApproveButton:hover { background-color: #a40e26; }
 /* Count label on the agents button (no red styling). */
 #agentsNavBadge {
     color: #8b949e; font-size: 13px; font-weight: 600;
@@ -1785,6 +1815,14 @@ QPushButton#dangerButton {
 }
 QPushButton#dangerButton:hover { background-color: #cf222e; color: #ffffff; }
 
+/* --- Success button: the danger button's outlined twin, in green (adhoc #84,
+   the agent detail header's Branch / Worktree actions) --- */
+QPushButton#successButton {
+    background: transparent; border: 1px solid #1a7f37; border-radius: 6px;
+    color: #1a7f37; font-weight: 600;
+}
+QPushButton#successButton:hover { background-color: #1a7f37; color: #ffffff; }
+
 /* --- Sidebar --- */
 #sidebar { background-color: #ffffff; border-right: 1px solid #d0d7de; }
 #sidebar QLabel { background: transparent; }
@@ -1838,7 +1876,6 @@ QPushButton#memberDeleteButton:hover {
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 6px;
 }
-#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
 }
@@ -2202,7 +2239,6 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     border: 1px solid rgba(26,127,55,0.5);
     border-radius: 8px;
 }
-#footerDivider { background-color: #d0d7de; border: none; }
 #promptWrapper #issueQuickAdd {
     background: transparent; border: none; border-radius: 0;
     min-height: 38px; max-height: 38px;

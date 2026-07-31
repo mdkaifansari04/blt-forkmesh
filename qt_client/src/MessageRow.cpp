@@ -318,6 +318,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
                 QAction *copyAction = menu->addAction("Copy");
                 connect(copyAction, &QAction::triggered, this,
                         [this] { QApplication::clipboard()->setText(m_message.text); });
+                QAction *sendToPromptAction = menu->addAction("Send to Prompt");
+                connect(sendToPromptAction, &QAction::triggered, this,
+                        [this] { emit sendToPromptRequested(m_message.text); });
             }
             if (showCreateIssue) {
                 QAction *issueAction = menu->addAction("Create issue\xE2\x80\xA6");

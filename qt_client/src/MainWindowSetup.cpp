@@ -60,19 +60,16 @@ void MainWindow::loadCachedAvatars()
     const QString dir = QStandardPaths::writableLocation(
                             QStandardPaths::AppDataLocation) +
                         "/avatars";
-    QDir d(dir);
-    if (!d.exists())
-        return;
-    QStringList paths;
-    const QFileInfoList files = d.entryInfoList({"*.png"}, QDir::Files);
-    for (const QFileInfo &fi : files)
-        paths.append(fi.absoluteFilePath());
-    if (paths.isEmpty())
+    if (!QDir(dir).exists())
         return;
     // Reading and PNG-decoding the whole cache inline blocked startup for ~1s
     // once a few dozen avatars accumulated (stall log: loadCachedAvatars ←
     // startSession). Decode to QImages on the thread pool; only the cheap
     // QImage→QPixmap hop runs back on the GUI thread.
+    // *Listing* the directory belongs on that worker too: entryInfoList stats
+    // every file, and on a cold cache dir with a few hundred avatars the
+    // readdir+stat sweep alone froze startup for ~860 ms (stall log:
+    // loadCachedAvatars → QDir::entryInfoList → getdents64) (adhoc #93).
     auto *watcher = new QFutureWatcher<QList<QPair<QString, QImage>>>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
         watcher->deleteLater();
@@ -92,13 +89,16 @@ void MainWindow::loadCachedAvatars()
         }
         refreshChatMembers();
     });
-    watcher->setFuture(QtConcurrent::run([paths] {
+    watcher->setFuture(QtConcurrent::run([dir] {
         const forkmesh::BackgroundScope activity(
             QStringLiteral("avatars"),
-            QStringLiteral("Decoding %1 avatar image(s)").arg(paths.size()));
+            QStringLiteral("Decoding cached avatar image(s)"));
         QList<QPair<QString, QImage>> decoded;
-        for (const QString &path : paths) {
-            QFile f(path);
+        // Names only (no QFileInfo stat per entry) — we open each file anyway.
+        const QStringList names =
+            QDir(dir).entryList({QStringLiteral("*.png")}, QDir::Files);
+        for (const QString &name : names) {
+            QFile f(QDir(dir).filePath(name));
             if (!f.open(QIODevice::ReadOnly))
                 continue;
             const QByteArray data = f.readAll();
@@ -676,15 +676,16 @@ bool MainWindow::testSpreadsheetResizeAfterMove()
     return draggedGrew && neighborUntouched && movedColumnUntouched;
 }
 
-bool MainWindow::testAgentColumnsMovable() const
+bool MainWindow::testAgentListChromeHidden() const
 {
-    return m_agentTable && m_agentTable->horizontalHeader()->sectionsMovable();
+    return m_agentTable && m_agentTable->horizontalHeader()->isHidden() &&
+           m_agentTable->frameShape() == QFrame::NoFrame;
 }
 
 // adhoc #35: read back the agents list's column labels plus how far the last
 // column reaches, so a test can prove the trimmed layout is what ships — the
-// title column absorbing the spare width, with Updated and Diff pushed against
-// the list's right edge rather than leaving a dead gap after them.
+// title column absorbing the spare width rather than leaving a dead gap after
+// it (adhoc #92 dropped the last column that competed with it).
 QString MainWindow::testAgentColumnLayout() const
 {
     if (!m_agentTable)
@@ -1046,8 +1047,7 @@ int MainWindow::testTopNavTrailingGap() const
     }
     int rightEdge = -1;
     for (QWidget *widget :
-         {static_cast<QWidget *>(m_navDrawButton),
-          static_cast<QWidget *>(m_navScreenshotButton),
+         {static_cast<QWidget *>(m_navScreenshotButton),
           static_cast<QWidget *>(m_navResizeButton),
           static_cast<QWidget *>(m_navRebuildButton)}) {
         if (!widget || !widget->isVisibleTo(const_cast<MainWindow *>(this)))
@@ -1548,6 +1548,12 @@ void MainWindow::sendNodeHeartbeat()
         // avatar crown badge once when it flips.
         if (m_isAdmin != wasAdmin)
             updateAdminCrownBadge();
+        // A freshly launched instance's request to join rides the same signed
+        // heartbeat reply for admins (adhoc #97): light the red dot over the
+        // relay favicon and show the Approve button beside it.
+        setPendingRelayJoins(
+            m_isAdmin ? resp.value(QStringLiteral("pendingRelays")).toInt()
+                      : 0);
         // Fetch the shared room-chat key once the account identity is available,
         // so it's cached before the user opens chat (no-op once fetched).
         fetchRoomPassphrase();
@@ -2024,6 +2030,181 @@ bool MainWindow::adminVerifyEmail(const QString &target)
     return false;
 }
 
+void MainWindow::setPendingRelayJoins(int count)
+{
+    count = qMax(0, count);
+    const int previous = m_pendingRelayJoins;
+    m_pendingRelayJoins = count;
+    if (m_relayJoinDot && m_relayMenuButton) {
+        if (count > 0) {
+            // Pin to the favicon's top-right corner, the same treatment as the
+            // chat button's unread badge.
+            m_relayJoinDot->move(
+                qMax(0, m_relayMenuButton->width() - m_relayJoinDot->width() -
+                            2),
+                2);
+            m_relayJoinDot->show();
+            m_relayJoinDot->raise();
+        } else {
+            m_relayJoinDot->hide();
+        }
+    }
+    if (m_relayJoinApproveButton) {
+        m_relayJoinApproveButton->setText(
+            count > 1 ? QStringLiteral("Approve (%1)").arg(count)
+                      : QStringLiteral("Approve"));
+        m_relayJoinApproveButton->setToolTip(
+            count > 1
+                ? QStringLiteral(
+                      "%1 newly launched ForkMesh instances pinged this relay "
+                      "asking to join. Approve to link them — each joins the "
+                      "Worlds and starts the firework show.")
+                      .arg(count)
+                : QStringLiteral(
+                      "A newly launched ForkMesh instance pinged this relay "
+                      "asking to join. Approve to link it — it joins the "
+                      "Worlds and the firework show starts."));
+        m_relayJoinApproveButton->setVisible(count > 0);
+    }
+    if (count > previous)
+        logSystem(QStringLiteral(
+            "A new ForkMesh instance is ready to be linked — click Approve "
+            "beside the relay favicon to let it join."));
+}
+
+void MainWindow::showRelayJoinApprovalDialog()
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-relays-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = accountsApiUrl("admin-relays");
+    QUrlQuery query;
+    query.addQueryItem("node", node);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Link new instances");
+    dialog.resize(560, 420);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *intro = new QLabel(
+        "Newly launched ForkMesh instances that pinged this relay asking to "
+        "join the federation. Approving links an instance into the Worlds — "
+        "and the firework show starts.");
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    auto *inner = new QWidget;
+    auto *rows = new QVBoxLayout(inner);
+    int pendingShown = 0;
+    for (const QJsonValue &v : resp.value("relays").toArray()) {
+        const QJsonObject obj = v.toObject();
+        if (obj.value("status").toString() != QStringLiteral("pending"))
+            continue;
+        const QString pubkey = obj.value("pubkey").toString();
+        if (pubkey.isEmpty())
+            continue;
+        ++pendingShown;
+        const QString label = obj.value("label").toString();
+        const QString baseUrl = obj.value("baseUrl").toString();
+        auto *row = new QHBoxLayout;
+        auto *info = new QLabel(
+            QStringLiteral("<b>%1</b><br><span style='color:#8b949e'>%2</span>")
+                .arg((label.isEmpty() ? QStringLiteral("Unnamed instance")
+                                      : label)
+                         .toHtmlEscaped(),
+                     baseUrl.toHtmlEscaped()));
+        info->setTextFormat(Qt::RichText);
+        row->addWidget(info, 1);
+        auto *blockBtn = new QPushButton("Block");
+        blockBtn->setObjectName("ghostButton");
+        blockBtn->setCursor(Qt::PointingHandCursor);
+        row->addWidget(blockBtn);
+        auto *approveBtn = new QPushButton("Approve && link");
+        approveBtn->setObjectName("primaryButton");
+        approveBtn->setCursor(Qt::PointingHandCursor);
+        row->addWidget(approveBtn);
+        rows->addLayout(row);
+        connect(approveBtn, &QPushButton::clicked, &dialog,
+                [this, pubkey, approveBtn, blockBtn]() {
+                    approveBtn->setEnabled(false);
+                    blockBtn->setEnabled(false);
+                    if (adminRelayApprove(pubkey, QStringLiteral("approve"))) {
+                        approveBtn->setText("Linked \xE2\x9C\x93");
+                    } else {
+                        approveBtn->setText("Failed");
+                        approveBtn->setEnabled(true);
+                        blockBtn->setEnabled(true);
+                    }
+                });
+        connect(blockBtn, &QPushButton::clicked, &dialog,
+                [this, pubkey, approveBtn, blockBtn]() {
+                    approveBtn->setEnabled(false);
+                    blockBtn->setEnabled(false);
+                    if (adminRelayApprove(pubkey, QStringLiteral("block"))) {
+                        blockBtn->setText("Blocked");
+                    } else {
+                        blockBtn->setText("Failed");
+                        approveBtn->setEnabled(true);
+                        blockBtn->setEnabled(true);
+                    }
+                });
+    }
+    if (!pendingShown)
+        rows->addWidget(
+            new QLabel("<i>No instances waiting to be linked.</i>"));
+    rows->addStretch();
+    scroll->setWidget(inner);
+    layout->addWidget(scroll, 1);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    dialog.exec();
+}
+
+bool MainWindow::adminRelayApprove(const QString &pubkey, const QString &action)
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || pubkey.isEmpty() ||
+        !hasOwnerSigningCapability(node) || !m_profileIdentity.isValid())
+        return false;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-relay-approve-v1\n" + node + "\n" + pubkey + "\n" +
+         action + "\n" + ts)
+            .toUtf8();
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "admin-relay-approve",
+        QJsonObject{{"node", node}, {"ts", ts},
+                    {"sig", m_profileIdentity.signData(canonical)},
+                    {"pubkey", pubkey}, {"action", action}},
+        &status);
+    if (status != 200 || !resp.value("ok").toBool())
+        return false;
+    setPendingRelayJoins(m_pendingRelayJoins - 1);
+    logSystem(action == QStringLiteral("approve")
+                  ? QStringLiteral(
+                        "\xF0\x9F\x8E\x86 Instance linked: it joined the "
+                        "federation and the World is running its firework "
+                        "show.")
+                  : QStringLiteral("Instance join request blocked."));
+    return true;
+}
+
 QString MainWindow::accountOwner() const
 {
     if (!m_accountName.isEmpty())
@@ -2439,6 +2620,19 @@ QString MainWindow::hostedCloneUrl(const QString &owner, const QString &name) co
     return url.toString();
 }
 
+bool MainWindow::serviceManagedCheckout(const QString &localPath) const
+{
+    const QString canonical =
+        QFileInfo(localPath.trimmed()).canonicalFilePath();
+    const QString serviceHome =
+        QFileInfo(QDir::homePath()).canonicalFilePath();
+    return !canonical.isEmpty() && !serviceHome.isEmpty() &&
+           (canonical == serviceHome ||
+            canonical.startsWith(serviceHome + QLatin1Char('/'))) &&
+           QFileInfo(QDir(canonical).filePath(QStringLiteral(".git")))
+               .exists();
+}
+
 void MainWindow::ensureFlagshipRepo()
 {
     if (!m_networkAccess)
@@ -2488,19 +2682,9 @@ void MainWindow::ensureFlagshipRepo()
                 // installed provider CLIs unable to claim any job. Preserve a
                 // private checkout beneath the service account's home, while
                 // still rejecting stale, external, or missing paths copied
-                // from another machine.
-                const QString localPath =
-                    QFileInfo(repo.localPath).canonicalFilePath();
-                const QString serviceHome =
-                    QFileInfo(QDir::homePath()).canonicalFilePath();
-                const bool serviceManagedCheckout =
-                    !localPath.isEmpty() && !serviceHome.isEmpty() &&
-                    (localPath == serviceHome ||
-                     localPath.startsWith(serviceHome + QLatin1Char('/'))) &&
-                    QFileInfo(QDir(localPath).filePath(
-                                  QStringLiteral(".git")))
-                        .exists();
-                if (!serviceManagedCheckout) {
+                // from another machine. (The sealing sync keeps a preserved
+                // checkout tracking the relay — see UpstreamCheckoutSync.)
+                if (!serviceManagedCheckout(repo.localPath)) {
                     repo.localPath.clear();
                     changed = true;
                 }
@@ -3474,10 +3658,31 @@ void MainWindow::styleFooterUpdateLog()
     // Log view regardless of theme (adhoc #19). Per-line severity/category colour
     // comes from the HTML badge that setFooterUpdateLine() renders; the base text
     // stays black so plain messages don't wash out on white.
+    // No border of its own (adhoc #92): the panel it sits in already draws the
+    // rounded green outline, and the extra grey hairline 2px inside it read as a
+    // doubled edge. The right padding is trimmed to a hair as well — for a styled
+    // QAbstractScrollArea the padding pushes the *scrollbar* in too, which parked
+    // the scroll handle a dozen pixels off the panel edge with dead white between
+    // them; now it sits right against the border.
+    // The scrollbar rides the same white canvas: with the app-wide (transparent)
+    // track it painted the dark theme's window colour in a column hard against
+    // the green border, which read as a second, darker edge inside it.
     m_footerUpdateLog->setStyleSheet(
         QStringLiteral("QTextEdit#footerUpdateLog{color:#1f2328;border:none;"
-                       "border-right:1px solid #d0d7de;background:#ffffff;"
-                       "font-family:monospace;font-size:11px;padding:3px 12px;}"));
+                       "background:#ffffff;font-family:monospace;font-size:11px;"
+                       "padding:3px 1px 3px 12px;}"
+                       "QTextEdit#footerUpdateLog QScrollBar:vertical{"
+                       "background:#ffffff;width:9px;margin:0;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::handle:vertical{"
+                       "background:#d0d7de;border-radius:4px;min-height:24px;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::handle:vertical:"
+                       "hover{background:#afb8c1;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::add-line:vertical,"
+                       "QTextEdit#footerUpdateLog QScrollBar::sub-line:vertical{"
+                       "height:0;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::add-page:vertical,"
+                       "QTextEdit#footerUpdateLog QScrollBar::sub-page:vertical{"
+                       "background:#ffffff;}"));
 }
 
 // Render the same colored category badge the Log view uses so the always-on
@@ -3495,8 +3700,11 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
     const QString badge = logBadgeFor(clean);
     const QString accent = logAccentFor(clean);
     QString html;
-    // Same leading site icon the full Log view uses (adhoc #436), registered on
-    // this document too so the <img> resolves here.
+    // The "add this entry to the prompt" plus sits furthest left, ahead of the
+    // site icon, so the column of affordances lines up down the strip (adhoc
+    // #114). Same leading site icon the full Log view uses (adhoc #436),
+    // registered on this document too so the <img> resolves here.
+    html += logPromptIconTag(m_footerUpdateLog, clean);
     html += logFaviconTag(message, m_footerUpdateLog);
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
@@ -3517,27 +3725,38 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     if (clean.isEmpty())
         return;
     const QString html = footerLogLineHtml(clean);
-    // Only auto-scroll to the new line if the view was already at (or very near)
-    // the bottom — otherwise a user who scrolled up to search back through
-    // history would get yanked back down by every new event.
+    // The strip follows the newest line by default, so a glance at the footer is
+    // always a glance at what just happened (adhoc #92). Scrolling back through
+    // history is what the corner pause toggle is for: while it's held down the
+    // view stays exactly where it was parked.
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
-    const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
+    const bool follow = !m_footerLogScrollPaused;
     m_footerUpdateLog->append(html);
     // QTextEdit has no setMaximumBlockCount: trim the oldest lines by hand so a
     // long-running session can't grow the strip without bound.
+    // Drop them in ONE edit: removing a block at a time made QTextDocument
+    // re-lay-out the whole 300-line rich-text document per removed line, and the
+    // stall watchdog caught that quadratic loop freezing the GUI thread for
+    // ~520 ms when flushBackgroundOutcomes() flushed a burst of lines at once
+    // (stall log: setFooterUpdateLine → QTextCursor::deleteChar →
+    // QTextDocumentLayout::doLayout, adhoc #93). Selecting from the start of the
+    // document to the start of the first block we keep also swallows the
+    // separators the old per-block deleteChar() had to clean up.
     QTextDocument *doc = m_footerUpdateLog->document();
-    while (doc->blockCount() > kFooterLogSeedLines) {
-        QTextCursor trim(doc->firstBlock());
-        trim.select(QTextCursor::BlockUnderCursor);
+    if (const int excess = doc->blockCount() - kFooterLogSeedLines; excess > 0) {
+        QTextCursor trim(doc);
+        trim.beginEditBlock();
+        trim.movePosition(QTextCursor::Start);
+        trim.movePosition(QTextCursor::NextBlock, QTextCursor::KeepAnchor, excess);
         trim.removeSelectedText();
-        trim.deleteChar(); // the block separator left behind by the selection
+        trim.endEditBlock();
     }
     // Remember the full, untruncated line on the block just appended so the
     // no-wrap strip can still show it on hover and open the full Log at it on
     // click (adhoc #133), even though the visible text is clipped at the edge.
     if (QTextBlock last = m_footerUpdateLog->document()->lastBlock(); last.isValid())
         last.setUserData(new FooterLogLineData(clean));
-    if (wasAtBottom && bar)
+    if (follow && bar)
         bar->setValue(bar->maximum());
 }
 
@@ -3715,16 +3934,9 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
     runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
         setUpdateStatus("Rebuilding...");
-        // Cap parallelism by RAM, not just cores: cc1plus peaks well past
-        // 1 GB on the big Qt translation units, and an OOM kill during an
-        // in-place update can take out the RUNNING node — which nothing
-        // restarts (the fleet daemons run under nohup, no supervisor).
-        int jobs = QThread::idealThreadCount();
-        const qint64 totalRam = SystemStats::totalMemoryBytes();
-        if (totalRam > 0)
-            jobs = qBound(1, int(totalRam / (1536LL * 1024 * 1024)), jobs);
         runUpdateStepUser("cmake",
-                          {"--build", buildDir, "-j", QString::number(jobs)},
+                          {"--build", buildDir, "-j",
+                           QString::number(ramCappedBuildJobs())},
                           buildDir, [this, buildDir, appPath] {
             const QString built = builtExecutablePath(buildDir);
             installAndRelaunch(built, appPath);
