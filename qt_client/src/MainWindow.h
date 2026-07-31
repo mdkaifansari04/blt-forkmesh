@@ -3693,6 +3693,13 @@ private:
     // owner/ts/sig query params carrying the forkmesh-issues-pull-v1 drain
     // token — the shared auth for inbox GET/DELETE and /api/sync.
     QUrlQuery signedInboxQuery(const QString &owner) const;
+    // On a mirror-intake ack, attach this node's fresh signed refs
+    // attestation (state/stateTs/stateSig) so the relay pins the state the
+    // mirror now serves — without it, the merged submissions would knock the
+    // mirror out of the clone integrity gate while the source is offline.
+    void appendMirrorStateAttestation(QUrlQuery *query,
+                                      const RepositoryRecord &repo,
+                                      const QString &signer) const;
     // #368: identity key backup/export/import UI + first-run "back up" nag.
     void backUpIdentityKey();
     void refreshIdentityBackupNag();
@@ -3999,6 +4006,13 @@ private:
     // hello (adhoc #82).
     bool mirrorHasCommit(const QString &mirrorPath, const QString &commit);
     QSet<QString> m_mirrorCommitsPresent; // "<mirrorPath>\x1f<commit>" seen present
+    // Source-of-truth catch-up: online mirrors merge (and drain) web-submitted
+    // issues/PRs/discussions directly into the branches they serve, so when a
+    // peer advertises commits this node's OWN repo lacks, fast-forward the
+    // bare mirror and working copy from the mesh instead of skipping "because
+    // we are upstream". Strictly additive — local-only work is never touched.
+    void convergeSourceRepoFromMesh(int index);
+    QHash<QString, qint64> m_sourceConvergeAttemptMs; // owner/name -> last try
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
     // for the three-minute auto-sync, so counts and content converge right away.

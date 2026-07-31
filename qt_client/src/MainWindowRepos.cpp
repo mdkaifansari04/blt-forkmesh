@@ -4970,12 +4970,22 @@ void MainWindow::syncMirrorsBehindRoster()
     // Release artifact blobs are advertised separately from git refs; if a peer
     // has more CAS blobs than we do, pull those bytes even when the git mirror is
     // already current.
+    const QString selfAccount = accountOwner().trimmed().toLower();
     for (int i = 0; i < m_repositories.size(); ++i) {
         const RepositoryRecord &repo = m_repositories.at(i);
         if (repo.previewOnly || m_syncingRepos.contains(i))
             continue;
-        if (repositorySource(repo).isEmpty())
-            continue; // we are the source — nothing upstream to pull
+        // Holding the source of truth used to end the story here ("nothing
+        // upstream to pull"). Online mirrors now merge web-submitted
+        // issues/PRs/discussions directly into the branches they serve and
+        // drain the relay queue, so those commits exist only in the mesh
+        // until this node converges on them — skipping would let our next
+        // publish clobber them.
+        const bool sourceOfTruth =
+            !repo.isPrivate && repo.publishToNetwork &&
+            repo.owner.trimmed().toLower() == selfAccount;
+        if (repositorySource(repo).isEmpty() && !sourceOfTruth)
+            continue; // not ours and no upstream route — nothing to pull
         if (repo.mirrorPath.trimmed().isEmpty() || !QDir(repo.mirrorPath).exists())
             continue; // no local mirror yet; the periodic clone handles the first
         // Group every node's mirror of this repo by its shared upstream identity
@@ -5008,11 +5018,96 @@ void MainWindow::syncMirrorsBehindRoster()
             if (behind || artifactsBehind)
                 break;
         }
-        if (behind)
-            syncRepository(i, /*quiet=*/true);
-        else if (artifactsBehind)
+        if (behind) {
+            if (sourceOfTruth)
+                convergeSourceRepoFromMesh(i);
+            else
+                syncRepository(i, /*quiet=*/true);
+        } else if (artifactsBehind)
             replicateReleaseArtifacts(i);
     }
+}
+
+// A peer advertises commits this source-of-truth node's mirror lacks —
+// typically submissions an online mirror merged (and drained from the relay
+// queue) while this node was offline. Converge instead of clobbering:
+// fast-forward the bare mirror from the public clone route (non-forced fetch,
+// so a stale gateway answer can never rewind what we serve), then fast-forward
+// the working copy's clean checkouts from the same route. A diverged local
+// branch is left untouched; this node's next publish then supersedes the mesh
+// and peers converge back onto its lineage.
+void MainWindow::convergeSourceRepoFromMesh(int index)
+{
+    if (index < 0 || index >= m_repositories.size() ||
+        m_syncingRepos.contains(index))
+        return;
+    const RepositoryRecord repo = m_repositories.at(index);
+    const QString mirrorPath = repo.mirrorPath.trimmed();
+    if (mirrorPath.isEmpty() || !QDir(mirrorPath).exists())
+        return;
+    // Roster hellos arrive continuously and the converge shells several git
+    // subprocesses; keep a per-repo cooldown between attempts.
+    const QString key = repo.owner.trimmed().toLower() + QLatin1Char('/') +
+                        repo.name.trimmed().toLower();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (nowMs - m_sourceConvergeAttemptMs.value(key, 0) < 60 * 1000)
+        return;
+    m_sourceConvergeAttemptMs.insert(key, nowMs);
+    const QString meshUrl = repositoryNetworkCloneUrl(repo.owner, repo.name);
+    const QString workTree = repo.localPath.trimmed();
+    m_syncingRepos.insert(index, /*quiet=*/true);
+    refreshRepositoryList();
+    auto mirrorMoved = std::make_shared<bool>(false);
+    auto checkoutSummary = std::make_shared<QString>();
+    QThread *worker = QThread::create(
+        [mirrorPath, meshUrl, workTree, mirrorMoved, checkoutSummary] {
+            // Non-forced heads+tags refspecs: git fast-forwards each served
+            // ref or leaves it alone, never rewinds; no --prune, so a branch
+            // missing from whichever mirror answered the gateway can't vanish
+            // from what this node serves. The exit code is deliberately
+            // ignored — per-ref non-fast-forward rejections still let every
+            // other ref advance, and the digest comparison decides whether
+            // anything actually moved.
+            const QString before = mirrorRefsDigest(mirrorPath);
+            runGitCapture(mirrorPath,
+                          {QStringLiteral("fetch"), QStringLiteral("--quiet"),
+                           meshUrl,
+                           QStringLiteral("refs/heads/*:refs/heads/*"),
+                           QStringLiteral("refs/tags/*:refs/tags/*")},
+                          nullptr, nullptr);
+            *mirrorMoved = mirrorRefsDigest(mirrorPath) != before;
+            if (!workTree.isEmpty())
+                *checkoutSummary =
+                    forkmesh::upstream::convergeSourceCheckoutFromMesh(
+                        workTree, meshUrl)
+                        .summary();
+        });
+    connect(worker, &QThread::finished, this,
+            [this, worker, index, key, mirrorMoved, checkoutSummary] {
+                worker->deleteLater();
+                m_syncingRepos.remove(index);
+                refreshRepositoryList();
+                if (!checkoutSummary->isEmpty())
+                    logSystem(QStringLiteral("Mesh converge %1: %2")
+                                  .arg(key, *checkoutSummary));
+                if (!*mirrorMoved && checkoutSummary->isEmpty())
+                    return;
+                // The served refs and/or working copy advanced onto the
+                // mirror-merged submissions. Republish so this node attests
+                // the converged state as its own pin and peers/web readers see
+                // one consistent tip; reload the on-screen lists if this repo
+                // is open.
+                m_mirrorAdvertSig.clear();
+                refreshMirrorAdverts();
+                if (index >= 0 && index < m_repositories.size())
+                    publishRepository(index, /*showDialogOnError=*/false);
+                if (index == m_repoDetailIndex) {
+                    reloadIssues();
+                    reloadPulls();
+                    reloadDiscussions();
+                }
+            });
+    worker->start();
 }
 
 void MainWindow::propagateRepoUpdate(int index)
