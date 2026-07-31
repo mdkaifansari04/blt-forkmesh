@@ -7786,6 +7786,17 @@ QString MainWindow::repoDefaultBranchFast() const
     const QString dir = repoGitDir();
     if (dir.isEmpty())
         return QString();
+    // Short-lived cache mirroring repoBranches()'s: this runs on every
+    // agent-session selection, and even the cheap for-each-ref spawn showed up
+    // in the stall log when a transcript stream was being pumped at the same
+    // time (adhoc #82). The unconfigured default branch only moves on branch
+    // create/delete, so 5 s of staleness is harmless.
+    const qint64 now = QDateTime::currentSecsSinceEpoch();
+    if (dir == m_defaultBranchFastCacheDir &&
+        !m_defaultBranchFastCache.isEmpty() &&
+        now - m_defaultBranchFastCacheTime < 5) {
+        return m_defaultBranchFastCache;
+    }
     QStringList branches;
     QByteArray out;
     if (runGitCapture(dir,
@@ -7797,7 +7808,11 @@ QString MainWindow::repoDefaultBranchFast() const
                 branches.append(branch);
         }
     }
-    return repoDefaultBranch(branches);
+    const QString base = repoDefaultBranch(branches);
+    m_defaultBranchFastCacheDir = dir;
+    m_defaultBranchFastCache = base;
+    m_defaultBranchFastCacheTime = now;
+    return base;
 }
 
 void MainWindow::loadBranchesAndTags()
