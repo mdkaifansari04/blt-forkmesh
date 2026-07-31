@@ -7778,20 +7778,20 @@ void MainWindow::loadBranchesAndTags()
 {
     const QString dir = repoGitDir();
 
-    // Current branch / default ref.
-    QString branch = m_repoInfo.defaultBranch;
-    if (branch.isEmpty() && !dir.isEmpty()) {
-        QByteArray head;
-        if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &head, nullptr))
-            branch = QString::fromUtf8(head).trimmed();
-    }
-    if (branch.isEmpty() || branch == "HEAD")
-        branch = QStringLiteral("HEAD");
-    m_repoBranch = branch == "HEAD" ? QString() : branch;
+    // The browsed ref — and with it the status strip's bottom-left branch button
+    // — is pinned to the repo's default branch. It used to follow HEAD whenever no
+    // default was configured, and every merge path transiently checks some other
+    // branch out in this checkout ("Update from main", the merge editor, worktree
+    // teardown), so a refresh landing mid-merge parked the button on that branch
+    // and left it there (adhoc #80). repoDefaultBranch() is stable: the configured
+    // default, then main/master, and only when neither exists does it fall back to
+    // HEAD. Nothing moves the browsed ref off it automatically now — only an
+    // explicit branch pick (setRepoBranch) does.
+    const QStringList branches = repoBranches();
+    m_repoBranch = repoDefaultBranch(branches);
     if (m_branchButton)
         m_branchButton->setText(m_repoBranch.isEmpty() ? "HEAD" : m_repoBranch);
 
-    const QStringList branches = repoBranches();
     if (m_branchesButton) {
         m_branchesButton->setText(
             QStringLiteral("%1 %2")

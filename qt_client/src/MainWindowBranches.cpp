@@ -880,7 +880,11 @@ void MainWindow::mergeWorktreeIntoMain(const QString &branchArg,
         setRepoDetailNotice("Read-only mirror — nothing to merge into here.", true);
         return;
     }
-    const QString current = m_repoBranch.isEmpty() ? base : m_repoBranch;
+    // Ask git which branch is checked out rather than reading the browsed ref:
+    // that ref is pinned to the default branch now (adhoc #80), so it can no
+    // longer stand in for HEAD in this "base must be checked out" gate.
+    const QString head = repoHeadBranch();
+    const QString current = head.isEmpty() ? base : head;
     if (current != base) {
         setRepoDetailNotice(
             QStringLiteral("Switch the repo to %1 first (it's on %2), or use Create PR.")
@@ -4402,10 +4406,9 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
         setRepoDetailNotice(
             QString::fromUtf8("Updated %1 with %2 \xE2\x80\x94 no conflicts.")
                 .arg(branch, base));
-        const QString browsed = m_repoBranch;
+        // Just refresh the counts: the browsed ref stays on the default branch,
+        // so there is nothing to re-apply after a merge (adhoc #80).
         loadBranchesAndTags();
-        if (!browsed.isEmpty() && repoBranches().contains(browsed))
-            setRepoBranch(browsed);
         return;
     }
 
@@ -4433,10 +4436,7 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
     logSystem(QStringLiteral("Git: merged %1 into %2 (conflicts resolved).")
                   .arg(base, branch));
     setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
-    const QString browsed = m_repoBranch;
     loadBranchesAndTags();
-    if (!browsed.isEmpty() && repoBranches().contains(browsed))
-        setRepoBranch(browsed);
 }
 
 // Would merging `base` into `branch` conflict? Answered with an in-memory merge
@@ -4649,11 +4649,8 @@ void MainWindow::pullBaseIntoAllBranches()
                   .arg(base)
                   .arg(updated)
                   .arg(conflicts.size()));
-    const QString browsed = m_repoBranch;
     loadBranchesAndTags();
     loadBranchesPanel();
-    if (!browsed.isEmpty() && repoBranches().contains(browsed))
-        setRepoBranch(browsed);
 
     QString summary =
         QStringLiteral("Pulled %1 into %2 branch(es).").arg(base).arg(updated);
