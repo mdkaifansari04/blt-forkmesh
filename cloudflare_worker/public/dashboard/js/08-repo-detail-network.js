@@ -751,6 +751,7 @@
       host_offline: "wifi-off",
       pending_inbox: "inbox",
       mirror_request: "radio",
+      account_email_sent: "mail-check",
     })[kind] || "bell";
   }
 
@@ -1549,8 +1550,17 @@
       return;
     }
 
-    if (event.target.closest("[data-profile-verify-email]")) {
+    if (event.target.closest("[data-email-verification-resend]")) {
       resendVerification();
+      return;
+    }
+
+    if (event.target.closest("[data-profile-verify-email]")) {
+      resendVerification({
+        hintSelector: "[data-profile-hint]",
+        buttonSelector: "[data-profile-verify-email]",
+        buttonText: "Send link",
+      });
       return;
     }
 
@@ -1577,9 +1587,9 @@
 
     if (event.target.closest("[data-profile-page-verify-email]")) {
       resendVerification({
-        passwordSelector: "[data-profile-page-password]",
         hintSelector: "[data-profile-page-hint]",
         buttonSelector: "[data-profile-page-verify-email]",
+        buttonText: "Send link",
       });
       return;
     }
@@ -2404,7 +2414,9 @@
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-save]")?.addEventListener("click", saveProfile);
-  $("[data-profile-verify-email]")?.addEventListener("click", resendVerification);
+  // No direct [data-profile-verify-email] listener: the delegated document
+  // click handler above already routes it, and a second listener would fire a
+  // duplicate send that the resend cooldown then rejects.
   $("[data-profile-rename-input]")?.addEventListener("input", () => {
     window.clearTimeout(state.nodeNameAvailability.timer);
     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);

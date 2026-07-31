@@ -277,7 +277,14 @@ NOTIFICATION_KINDS = frozenset({
     "repository_hosted",
     "organization_task_started",
     "organization_task_activity",
+    "account_email_sent",
 })
+# Transactional account mail an administrator is pinged about, coarse kind ->
+# human label. Kinds absent here (cron digests) are counted but never pinged.
+ACCOUNT_EMAIL_PING_LABELS = {
+    "verification": "Verification",
+    "password_reset": "Password reset",
+}
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
     "subscribed",
@@ -23890,19 +23897,57 @@ async def _send_email(env, to_email, subject, text, html=None,
 # land?" without a second log table. Subject and body are never stored here, and
 # the stamp is private to the account: it rides the authenticated sessions read,
 # not the public profile lookup.
+#
+# The stamp also carries a running total plus a short bounded history of the
+# most recent sends. That history is what the "send it again" verification
+# button rate-limits itself against — a send that the provider rejected still
+# counts, so a failing mail provider can't be hammered from the dashboard.
 
 ACCOUNT_EMAIL_STATUS_DELIVERED = "delivered"
 ACCOUNT_EMAIL_STATUS_FAILED = "failed"
+ACCOUNT_EMAIL_HISTORY = 12
 
 
 def _stamp_account_email(rec, kind, ok, now=None):
     """Stamp the last account-directed email onto an already-loaded record."""
     if not isinstance(rec, dict):
         return rec
-    rec["last_email_ts"] = int(now if now is not None else Date.now())
-    rec["last_email_kind"] = clean_string(kind or "", 40)
+    ts = int(now if now is not None else Date.now())
+    kind = clean_string(kind or "", 40)
+    rec["last_email_ts"] = ts
+    rec["last_email_kind"] = kind
     rec["last_email_ok"] = bool(ok)
+    try:
+        rec["email_send_count"] = int(rec.get("email_send_count") or 0) + 1
+    except (TypeError, ValueError):
+        rec["email_send_count"] = 1
+    history = [item for item in (rec.get("email_sends") or [])
+               if isinstance(item, dict)]
+    history.append({"ts": ts, "kind": kind, "ok": bool(ok)})
+    rec["email_sends"] = history[-ACCOUNT_EMAIL_HISTORY:]
     return rec
+
+
+def _account_email_sends(rec, kind="", since=0):
+    """Bounded send history off a record, newest last, optionally narrowed."""
+    kind = clean_string(kind or "", 40)
+    sends = []
+    for item in ((rec or {}).get("email_sends") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            ts = int(item.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts <= 0 or ts < int(since or 0):
+            continue
+        if kind and clean_string(item.get("kind", ""), 40) != kind:
+            continue
+        sends.append({"ts": ts,
+                      "kind": clean_string(item.get("kind", ""), 40),
+                      "ok": bool(item.get("ok"))})
+    sends.sort(key=lambda item: item["ts"])
+    return sends
 
 
 async def _record_account_email(env, name, kind, ok):
@@ -23917,6 +23962,53 @@ async def _record_account_email(env, name, kind, ok):
         await _save_account(env, name_bi, _stamp_account_email(rec, kind, ok))
     except Exception:
         pass
+    await _notify_admins_account_email(env, name, kind, ok)
+
+
+async def _notify_admins_account_email(env, name, kind, ok):
+    """Ping every platform administrator when transactional mail goes out.
+
+    Only the account-directed sends that route through _record_account_email —
+    verification links and password resets — are pinged. They are the ones an
+    administrator may have to follow up by hand (a rejected verification lands
+    in the manual queue). Cron digest mail is still counted on the recipient's
+    record but never pinged, so an hourly digest run over every account cannot
+    fan out into a notification storm.
+    """
+    try:
+        kind = clean_string(kind or "", 40)
+        label = ACCOUNT_EMAIL_PING_LABELS.get(kind)
+        if not label:
+            return
+        rows = await d1_all(
+            env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+        ts = int(Date.now())
+        body = (label + " email delivered to the mail provider for " + name
+                if ok else
+                label + " email was rejected by the mail provider for " + name
+                + ". It is queued for manual follow-up.")
+        for row in rows or []:
+            try:
+                record = await decrypt_row(env, row.get("data", "")) or {}
+            except Exception:
+                continue
+            admin = clean_string(
+                record.get("name", ""), MAX_NODE_NAME).strip().lower()
+            if not valid_node_name(admin):
+                continue
+            await enqueue_notification(
+                env, admin, "account_email_sent",
+                label + " email sent to " + name,
+                body=body,
+                href="/dashboard/settings",
+                actor=name,
+                source="account-email",
+                dedupe="account-email:" + name + ":" + kind + ":" + str(ts),
+                ts=ts,
+                meta={"emailKind": kind, "delivered": bool(ok),
+                      "account": name})
+    except Exception:
+        pass
 
 
 def _account_email_activity(rec):
@@ -23925,14 +24017,21 @@ def _account_email_activity(rec):
         ts = int((rec or {}).get("last_email_ts") or 0)
     except (TypeError, ValueError):
         ts = 0
+    try:
+        count = int((rec or {}).get("email_send_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
     if ts <= 0:
-        return {"lastEmailAt": 0, "lastEmailStatus": "", "lastEmailKind": ""}
+        return {"lastEmailAt": 0, "lastEmailStatus": "", "lastEmailKind": "",
+                "emailSendCount": max(0, count)}
     return {
         "lastEmailAt": ts,
         "lastEmailStatus": (
             ACCOUNT_EMAIL_STATUS_DELIVERED if rec.get("last_email_ok")
             else ACCOUNT_EMAIL_STATUS_FAILED),
         "lastEmailKind": clean_string(rec.get("last_email_kind", ""), 40),
+        # Older records predate the counter; one stamped send is the floor.
+        "emailSendCount": max(1, count),
     }
 
 
@@ -24247,6 +24346,72 @@ async def _send_verification_email(env, request, name, email):
     ok = await _send_email(env, email, subject, text, html)
     await _record_account_email(env, name, "verification", ok)
     return ok
+
+
+# --- "Send it again" for an unverified email ---------------------------------
+#
+# The profile POST is the privileged write path, so it demands the account
+# password — reasonable for a payout address, pure friction for re-sending a
+# confirmation link, and accounts were staying unverified because of it. This
+# endpoint takes the signed-in session and nothing else. The account's own send
+# history (see _stamp_account_email) is what bounds the retry rate: a queued
+# send counts exactly like a delivered one, so a failing provider cannot be
+# hammered from the dashboard.
+
+VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000
+VERIFICATION_RESEND_WINDOW_MS = 24 * 60 * 60 * 1000
+VERIFICATION_RESEND_WINDOW_LIMIT = 5
+
+
+async def _account_resend_verification(env, request):
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        data = {}
+    name_bi, rec = await _account_session_record(env, request, data)
+    if not name_bi or not rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).strip().lower()
+    email = clean_string(rec.get("email", ""), 254).strip()
+    if not valid_node_name(name) or "@" not in email:
+        return json_response({"error": "no_email"}, status=400)
+    if rec.get("email_verified"):
+        return json_response({"error": "already_verified"}, status=409)
+
+    now = int(Date.now())
+    recent = _account_email_sends(
+        rec, kind="verification", since=now - VERIFICATION_RESEND_WINDOW_MS)
+    if recent and now - recent[-1]["ts"] < VERIFICATION_RESEND_COOLDOWN_MS:
+        return json_response(
+            {"error": "resend_too_soon",
+             "retryAfterMs": (VERIFICATION_RESEND_COOLDOWN_MS
+                              - (now - recent[-1]["ts"]))},
+            status=429, cache_control="no-store, max-age=0, must-revalidate")
+    if len(recent) >= VERIFICATION_RESEND_WINDOW_LIMIT:
+        return json_response(
+            {"error": "resend_limit_reached",
+             "retryAfterMs": max(
+                 0, VERIFICATION_RESEND_WINDOW_MS - (now - recent[0]["ts"]))},
+            status=429, cache_control="no-store, max-age=0, must-revalidate")
+
+    sent = await _send_verification_email(env, request, name, email)
+    if not sent:
+        await _enqueue_verification(env, name_bi, name, email)
+    # _send_verification_email already stamped (and pinged the admins about) a
+    # freshly loaded copy of this record. Mirror the stamp onto the stale copy
+    # held here purely to shape the response — it is never saved, so the
+    # persisted counter stays authoritative.
+    payload = {
+        "ok": True,
+        "verificationSent": bool(sent),
+        "verificationQueued": not sent,
+        "cooldownMs": VERIFICATION_RESEND_COOLDOWN_MS,
+        "remaining": max(0, VERIFICATION_RESEND_WINDOW_LIMIT - len(recent) - 1),
+    }
+    payload.update(_account_email_activity(
+        _stamp_account_email(rec, "verification", sent, now)))
+    return json_response(
+        payload, cache_control="no-store, max-age=0, must-revalidate")
 
 
 # --- "How are we doing?" founder feedback email -------------------------------
@@ -26358,6 +26523,8 @@ async def accounts_handler(env, request):
         return await _account_heartbeat(env, request)
     if url.path == "/api/accounts/verify-email" and method == "GET":
         return await _verify_email(env, request)
+    if url.path == "/api/accounts/resend-verification" and method == "POST":
+        return await _account_resend_verification(env, request)
     if url.path == "/api/accounts/admin-pending" and method == "GET":
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
