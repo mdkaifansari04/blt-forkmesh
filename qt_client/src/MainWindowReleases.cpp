@@ -1268,44 +1268,42 @@ void MainWindow::loadMirrorNodesPanel()
 
     // For our own row, read the primary branch tip locally so it always reflects
     // main/default-branch freshness without waiting for a roster round-trip.
-    MirrorAdvert selfAdvert;
+    // Gathering it costs ~12 synchronous git subprocesses (tip, commit identity,
+    // repo size, five counts, worktrees, pending-push), and this panel is rebuilt
+    // on every roster update — the stall log is full of 800ms+ GUI freezes inside
+    // mirrorCommitIdentity()/mirrorIssueCount() from exactly here (adhoc #93).
+    // Serve the last snapshot and re-gather it on a worker when the mirror or the
+    // working tree has actually moved, the same way refreshMirrorAdverts() feeds
+    // the catalog advert; the first look at a repo still gathers inline so the row
+    // is never blank on open.
+    const QString selfKey = mirrorSelfSnapshotKey(repo);
+    const auto cached = m_mirrorSelfSnapshots.constFind(repo.mirrorPath);
+    MirrorSelfSnapshot snapshot;
+    if (cached == m_mirrorSelfSnapshots.constEnd()) {
+        snapshot = gatherMirrorSelfSnapshot(repo, selfKey, repoHasWorkingTree());
+        m_mirrorSelfSnapshots.insert(repo.mirrorPath, snapshot);
+    } else {
+        snapshot = *cached;
+        // Floor the re-read rate: while a mirror sync is running the fingerprint
+        // moves again before each gather lands, and an unthrottled loop would
+        // keep a worker busy for the whole sync.
+        constexpr qint64 kSelfSnapshotFloorMs = 2000;
+        if (snapshot.key != selfKey &&
+            QDateTime::currentMSecsSinceEpoch() - snapshot.gatheredMs >
+                kSelfSnapshotFloorMs)
+            refreshMirrorSelfSnapshot(repo, selfKey);
+    }
+    MirrorAdvert selfAdvert = snapshot.advert;
     selfAdvert.ownerName = canonical;
     selfAdvert.source = source;
-    const MirrorBranchTip selfTip =
-        mirrorPrimaryBranchTip(localMirror, repo.localPath);
-    selfAdvert.branch = selfTip.branch;
-    selfAdvert.commit = selfTip.commit;
-    selfAdvert.commitIdentity =
-        mirrorCommitIdentity(localMirror, repo.localPath, selfTip.commit);
-    const QString servedBranch = selfAdvert.branch;
-    const QString servedCommit = mirrorBranchCommit(localMirror, servedBranch);
     selfAdvert.updatedMs = repo.lastSyncMs;
-    selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
-    selfAdvert.issueCount = mirrorIssueCount(localMirror, selfAdvert.branch);
-    selfAdvert.commitCount = mirrorCommitCount(localMirror, selfAdvert.branch);
-    selfAdvert.branchCount = mirrorBranchCount(localMirror);
-    selfAdvert.pullCount = mirrorPullCount(localMirror, selfAdvert.branch);
-    selfAdvert.discussionCount = mirrorDiscussionCount(localMirror, selfAdvert.branch);
-    selfAdvert.worktreeCount = mirrorWorktreeCount(repo.localPath);
-    selfAdvert.artifactCount = mirrorArtifactCount(localMirror);
-
+    const QString servedBranch = selfAdvert.branch;
+    const QString servedCommit = snapshot.servedCommit;
     // If we are the source of truth, our working copy can be ahead of the bare
     // mirror we serve (e.g. a comment was just committed and the mirror fetch
-    // hasn't run/finished). Count those un-mirrored commits so the self row can
-    // show a live "↑N to push" badge the moment a change is made.
-    int pendingPush = 0;
-    if (repoHasWorkingTree() && !repo.localPath.trimmed().isEmpty() &&
-        !servedCommit.isEmpty()) {
-        QByteArray out;
-        const QString pushTarget = servedBranch.isEmpty()
-                                       ? QStringLiteral("HEAD")
-                                       : servedBranch;
-        if (runGitCapture(repo.localPath,
-                          {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                           servedCommit + QStringLiteral("..") + pushTarget},
-                          &out, nullptr))
-            pendingPush = QString::fromUtf8(out).trimmed().toInt();
-    }
+    // hasn't run/finished). Those un-mirrored commits give the self row its live
+    // "↑N to push" badge; counted with the rest of the snapshot.
+    const int pendingPush = snapshot.pendingPush;
 
     // Resolve a node's advert for this repo: the shared source identity groups
     // every mirror, with a clone-name fallback for older peers, and our own row
