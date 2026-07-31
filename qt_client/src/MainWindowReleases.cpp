@@ -1211,6 +1211,93 @@ void MainWindow::onMirrorRefreshRequested(const QString &source,
                            : QStringLiteral(" to %1").arg(requesterName.trimmed())));
 }
 
+// Read this node's own Mirror-nodes row in one pass. Pure (touches no MainWindow
+// state) so the identical call can run on a worker thread — every helper it uses
+// is the same one refreshMirrorAdverts() runs off-thread for the catalog advert.
+static MirrorSelfSnapshot gatherMirrorSelfSnapshot(const RepositoryRecord &repo,
+                                                   const QString &key,
+                                                   bool hasWorkingTree)
+{
+    MirrorSelfSnapshot snapshot;
+    snapshot.key = key;
+    snapshot.gatheredMs = QDateTime::currentMSecsSinceEpoch();
+    const QString mirror = repo.mirrorPath;
+    MirrorAdvert &advert = snapshot.advert;
+    const MirrorBranchTip tip = mirrorPrimaryBranchTip(mirror, repo.localPath);
+    advert.branch = tip.branch;
+    advert.commit = tip.commit;
+    advert.commitIdentity = mirrorCommitIdentity(mirror, repo.localPath, tip.commit);
+    advert.updatedMs = repo.lastSyncMs;
+    advert.sizeBytes = mirrorRepoSizeBytes(mirror);
+    advert.issueCount = mirrorIssueCount(mirror, advert.branch);
+    advert.commitCount = mirrorCommitCount(mirror, advert.branch);
+    advert.branchCount = mirrorBranchCount(mirror);
+    advert.pullCount = mirrorPullCount(mirror, advert.branch);
+    advert.discussionCount = mirrorDiscussionCount(mirror, advert.branch);
+    advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
+    advert.artifactCount = mirrorArtifactCount(mirror);
+    snapshot.servedCommit = mirrorBranchCommit(mirror, advert.branch);
+    if (hasWorkingTree && !repo.localPath.trimmed().isEmpty() &&
+        !snapshot.servedCommit.isEmpty()) {
+        QByteArray out;
+        const QString pushTarget =
+            advert.branch.isEmpty() ? QStringLiteral("HEAD") : advert.branch;
+        if (runGitCapture(repo.localPath,
+                          {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                           snapshot.servedCommit + QStringLiteral("..") + pushTarget},
+                          &out, nullptr))
+            snapshot.pendingPush = QString::fromUtf8(out).trimmed().toInt();
+    }
+    return snapshot;
+}
+
+QString MainWindow::mirrorSelfSnapshotKey(const RepositoryRecord &repo) const
+{
+    // Filesystem-only, like refreshMirrorAdverts()'s input signature: asking git
+    // whether git has anything new would cost exactly what we are trying to skip.
+    auto stamp = [](const QString &base, const QString &leaf) {
+        return QString::number(QFileInfo(QDir(base).filePath(leaf))
+                                   .lastModified()
+                                   .toMSecsSinceEpoch());
+    };
+    return repo.mirrorPath + QLatin1Char('|') + repo.localPath + QLatin1Char('|') +
+           QString::number(repo.lastSyncMs) + QLatin1Char('|') +
+           stamp(repo.mirrorPath, QStringLiteral("HEAD")) + QLatin1Char('|') +
+           stamp(repo.mirrorPath, QStringLiteral("refs")) + QLatin1Char('|') +
+           stamp(repo.mirrorPath, QStringLiteral("packed-refs")) + QLatin1Char('|') +
+           stamp(repo.localPath, QStringLiteral(".git/HEAD")) + QLatin1Char('|') +
+           stamp(repo.localPath, QStringLiteral(".git/refs")) + QLatin1Char('|') +
+           stamp(repo.localPath, QStringLiteral(".git/packed-refs")) +
+           QLatin1Char('|') +
+           stamp(repo.localPath, QStringLiteral(".git/worktrees"));
+}
+
+void MainWindow::refreshMirrorSelfSnapshot(const RepositoryRecord &repo,
+                                           const QString &key)
+{
+    if (m_mirrorSelfSnapshotsInFlight.contains(repo.mirrorPath))
+        return; // a gather is already running; its result carries the newer key
+    m_mirrorSelfSnapshotsInFlight.insert(repo.mirrorPath);
+    const RepositoryRecord snapshotRepo = repo; // by value: the worker outlives it
+    const bool hasWorkingTree = repoHasWorkingTree();
+    auto result = std::make_shared<MirrorSelfSnapshot>();
+    QThread *worker = QThread::create([snapshotRepo, key, hasWorkingTree, result] {
+        const forkmesh::BackgroundScope activity(
+            QStringLiteral("mirrors"),
+            QStringLiteral("read mirror row for %1").arg(snapshotRepo.name),
+            forkmesh::ActionTelemetry::Execution::Worker);
+        *result = gatherMirrorSelfSnapshot(snapshotRepo, key, hasWorkingTree);
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    connect(worker, &QThread::finished, this,
+            [this, mirror = repo.mirrorPath, result] {
+                m_mirrorSelfSnapshotsInFlight.remove(mirror);
+                m_mirrorSelfSnapshots.insert(mirror, *result);
+                loadMirrorNodesPanel(); // one rebuild with the fresh figures
+            });
+    worker->start();
+}
+
 void MainWindow::loadMirrorNodesPanel()
 {
     if (!m_mirrorNodesTable)
@@ -1268,44 +1355,42 @@ void MainWindow::loadMirrorNodesPanel()
 
     // For our own row, read the primary branch tip locally so it always reflects
     // main/default-branch freshness without waiting for a roster round-trip.
-    MirrorAdvert selfAdvert;
+    // Gathering it costs ~12 synchronous git subprocesses (tip, commit identity,
+    // repo size, five counts, worktrees, pending-push), and this panel is rebuilt
+    // on every roster update — the stall log is full of 800ms+ GUI freezes inside
+    // mirrorCommitIdentity()/mirrorIssueCount() from exactly here (adhoc #93).
+    // Serve the last snapshot and re-gather it on a worker when the mirror or the
+    // working tree has actually moved, the same way refreshMirrorAdverts() feeds
+    // the catalog advert; the first look at a repo still gathers inline so the row
+    // is never blank on open.
+    const QString selfKey = mirrorSelfSnapshotKey(repo);
+    const auto cached = m_mirrorSelfSnapshots.constFind(repo.mirrorPath);
+    MirrorSelfSnapshot snapshot;
+    if (cached == m_mirrorSelfSnapshots.constEnd()) {
+        snapshot = gatherMirrorSelfSnapshot(repo, selfKey, repoHasWorkingTree());
+        m_mirrorSelfSnapshots.insert(repo.mirrorPath, snapshot);
+    } else {
+        snapshot = *cached;
+        // Floor the re-read rate: while a mirror sync is running the fingerprint
+        // moves again before each gather lands, and an unthrottled loop would
+        // keep a worker busy for the whole sync.
+        constexpr qint64 kSelfSnapshotFloorMs = 2000;
+        if (snapshot.key != selfKey &&
+            QDateTime::currentMSecsSinceEpoch() - snapshot.gatheredMs >
+                kSelfSnapshotFloorMs)
+            refreshMirrorSelfSnapshot(repo, selfKey);
+    }
+    MirrorAdvert selfAdvert = snapshot.advert;
     selfAdvert.ownerName = canonical;
     selfAdvert.source = source;
-    const MirrorBranchTip selfTip =
-        mirrorPrimaryBranchTip(localMirror, repo.localPath);
-    selfAdvert.branch = selfTip.branch;
-    selfAdvert.commit = selfTip.commit;
-    selfAdvert.commitIdentity =
-        mirrorCommitIdentity(localMirror, repo.localPath, selfTip.commit);
-    const QString servedBranch = selfAdvert.branch;
-    const QString servedCommit = mirrorBranchCommit(localMirror, servedBranch);
     selfAdvert.updatedMs = repo.lastSyncMs;
-    selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
-    selfAdvert.issueCount = mirrorIssueCount(localMirror, selfAdvert.branch);
-    selfAdvert.commitCount = mirrorCommitCount(localMirror, selfAdvert.branch);
-    selfAdvert.branchCount = mirrorBranchCount(localMirror);
-    selfAdvert.pullCount = mirrorPullCount(localMirror, selfAdvert.branch);
-    selfAdvert.discussionCount = mirrorDiscussionCount(localMirror, selfAdvert.branch);
-    selfAdvert.worktreeCount = mirrorWorktreeCount(repo.localPath);
-    selfAdvert.artifactCount = mirrorArtifactCount(localMirror);
-
+    const QString servedBranch = selfAdvert.branch;
+    const QString servedCommit = snapshot.servedCommit;
     // If we are the source of truth, our working copy can be ahead of the bare
     // mirror we serve (e.g. a comment was just committed and the mirror fetch
-    // hasn't run/finished). Count those un-mirrored commits so the self row can
-    // show a live "↑N to push" badge the moment a change is made.
-    int pendingPush = 0;
-    if (repoHasWorkingTree() && !repo.localPath.trimmed().isEmpty() &&
-        !servedCommit.isEmpty()) {
-        QByteArray out;
-        const QString pushTarget = servedBranch.isEmpty()
-                                       ? QStringLiteral("HEAD")
-                                       : servedBranch;
-        if (runGitCapture(repo.localPath,
-                          {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                           servedCommit + QStringLiteral("..") + pushTarget},
-                          &out, nullptr))
-            pendingPush = QString::fromUtf8(out).trimmed().toInt();
-    }
+    // hasn't run/finished). Those un-mirrored commits give the self row its live
+    // "↑N to push" badge; counted with the rest of the snapshot.
+    const int pendingPush = snapshot.pendingPush;
 
     // Resolve a node's advert for this repo: the shared source identity groups
     // every mirror, with a clone-name fallback for older peers, and our own row

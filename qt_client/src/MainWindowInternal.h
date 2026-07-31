@@ -970,9 +970,10 @@ private:
     QColor m_color;
 };
 
-// A super-tiny two-row usage meter for the top bar, sized to tuck in next to the
-// node's public-wallet balance/avatar (issue #266). The top row is the rolling 5-hour window,
-// the bottom row the weekly window; each draws a horizontal track that fills
+// A super-tiny usage meter for the top bar, sized to tuck in next to the
+// node's public-wallet balance/avatar (issue #266). One thin vertical bar per
+// rolling window — 5-hour, weekly, and (Claude only, adhoc #96) the premium
+// per-model weekly window we label "Fable" — each an empty track that fills
 // 0..100% of that window's utilisation and is tinted green/amber/red as it nears
 // the cap. Values are fed from Claude Code rate-limit events (see usageChanged);
 // a value of -1 means "unknown" and leaves an empty track. Stored as a plain
@@ -980,24 +981,32 @@ private:
 class TokenUsageMiniChart : public QWidget
 {
 public:
+    // Which rolling window a figure belongs to. Fable is the per-model weekly
+    // allowance the provider reports alongside the plan-wide one; charts built
+    // with `windows == 2` (Codex) simply never show it.
+    enum Window { FiveHour = 0, Weekly = 1, Fable = 2, WindowCount = 3 };
+
     explicit TokenUsageMiniChart(const QString &title =
                                      QStringLiteral("Claude Code usage"),
                                  bool remainingMode = false,
+                                 int windows = 2,
                                  QWidget *parent = nullptr)
-        : QWidget(parent), m_title(title), m_remainingMode(remainingMode)
+        : QWidget(parent), m_title(title), m_remainingMode(remainingMode),
+          m_windows(qBound(1, windows, int(WindowCount)))
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        // Two thin vertical bars (5h + weekly) that ride in the prompt toolbar
-        // (adhoc #47). No inline text — the label/figures live in the hover
-        // tooltip only, so the strip stays tiny next to the send buttons.
-        setFixedSize(15, 22);
+        // Thin vertical bars that ride in the prompt toolbar (adhoc #47). No
+        // inline text — the label/figures live in the hover tooltip only, so the
+        // strip stays tiny next to the send buttons. The 3px padding around the
+        // bars is what the hover refresh box is drawn in (adhoc #96).
+        setFixedSize(qRound(m_windows * kBarW + (m_windows - 1) * kGap) + 6, 24);
         refreshTooltip();
     }
 
     // Update one window's utilisation (0..100); pass -1 to mark it unknown.
-    void setUsage(bool weekly, int percent)
+    void setUsage(Window window, int percent)
     {
-        int &slot = weekly ? m_weekly : m_fiveHour;
+        int &slot = m_pct[window];
         const int clamped = percent < 0 ? -1 : qBound(0, percent, 100);
         if (slot == clamped)
             return;
@@ -1005,25 +1014,37 @@ public:
         refreshTooltip();
         update();
     }
+    void setUsage(bool weekly, int percent)
+    {
+        setUsage(weekly ? Weekly : FiveHour, percent);
+    }
 
     // Update one window's "resets in ..." text (e.g. "2h 13m"), shown next to its
     // utilisation in the tooltip so the user can see how long until the limit
     // clears (issue #50). Pass an empty string to mark it unknown.
-    void setReset(bool weekly, const QString &remaining)
+    void setReset(Window window, const QString &remaining)
     {
-        setWindowNote(weekly,
+        setWindowNote(window,
                       remaining.isEmpty()
                           ? QString()
                           : QStringLiteral("resets in %1").arg(remaining));
     }
-
-    void setWindowNote(bool weekly, const QString &note)
+    void setReset(bool weekly, const QString &remaining)
     {
-        QString &slot = weekly ? m_weeklyNote : m_fiveHourNote;
+        setReset(weekly ? Weekly : FiveHour, remaining);
+    }
+
+    void setWindowNote(Window window, const QString &note)
+    {
+        QString &slot = m_note[window];
         if (slot == note)
             return;
         slot = note;
         refreshTooltip();
+    }
+    void setWindowNote(bool weekly, const QString &note)
+    {
+        setWindowNote(weekly ? Weekly : FiveHour, note);
     }
 
     // For Codex we do not get a live utilization percentage from the CLI today,
@@ -1033,6 +1054,22 @@ public:
     {
         setUsage(weekly, percent);
         setWindowNote(weekly, note);
+    }
+
+    // Hover feedback (adhoc #96): flash a box around the bars — green when the
+    // hover pulled a fresh reading, red when the refresh failed — so a hover
+    // that leaves the figures unchanged still says whether it worked.
+    void flashRefresh(bool ok)
+    {
+        m_flash = ok ? 1 : -1;
+        update();
+        const int token = ++m_flashToken;
+        QTimer::singleShot(kFlashMs, this, [this, token] {
+            if (token != m_flashToken) // a newer flash owns the box now
+                return;
+            m_flash = 0;
+            update();
+        });
     }
 
     // The per-session token/cost detail that used to live on the agent detail
@@ -1063,28 +1100,36 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
 
-        // Two vertical gauges side by side: 5-hour on the left, weekly on the
-        // right. Each is an empty track filling from the bottom to its
-        // utilisation and tinted by barColor(); -1 (unknown) leaves it empty.
-        const int vals[2] = {m_fiveHour, m_weekly};
-        const qreal barW = 4.0;
-        const qreal gap = 3.0;
-        const qreal totalW = 2 * barW + gap;
+        // Vertical gauges side by side, in Window order: 5-hour, weekly, Fable.
+        // Each is an empty track filling from the bottom to its utilisation and
+        // tinted by barColor(); -1 (unknown) leaves it empty.
+        const qreal totalW = m_windows * kBarW + (m_windows - 1) * kGap;
         qreal x = (width() - totalW) / 2.0;
-        const qreal top = 1.0;
-        const qreal trackH = height() - 2.0;
-        for (int i = 0; i < 2; ++i) {
-            const QRectF track(x, top, barW, trackH);
+        const qreal top = 3.0;
+        const qreal trackH = height() - 6.0;
+        for (int i = 0; i < m_windows; ++i) {
+            const QRectF track(x, top, kBarW, trackH);
             p.setPen(Qt::NoPen);
             p.setBrush(textColor(38));
-            p.drawRoundedRect(track, barW / 2.0, barW / 2.0);
-            if (vals[i] > 0) {
-                const qreal fillH = trackH * qBound(0, vals[i], 100) / 100.0;
-                const QRectF fill(x, top + trackH - fillH, barW, fillH);
-                p.setBrush(barColor(vals[i]));
-                p.drawRoundedRect(fill, barW / 2.0, barW / 2.0);
+            p.drawRoundedRect(track, kBarW / 2.0, kBarW / 2.0);
+            if (m_pct[i] > 0) {
+                const qreal fillH = trackH * qBound(0, m_pct[i], 100) / 100.0;
+                const QRectF fill(x, top + trackH - fillH, kBarW, fillH);
+                p.setBrush(barColor(m_pct[i]));
+                p.drawRoundedRect(fill, kBarW / 2.0, kBarW / 2.0);
             }
-            x += barW + gap;
+            x += kBarW + kGap;
+        }
+
+        // The refresh-result box (adhoc #96) rides in the padding around the
+        // bars, so it never overdraws a gauge.
+        if (m_flash != 0) {
+            QPen pen(m_flash > 0 ? QColor("#3fb950") : QColor("#f85149"));
+            pen.setWidthF(1.5);
+            p.setPen(pen);
+            p.setBrush(Qt::NoBrush);
+            p.drawRoundedRect(QRectF(rect()).adjusted(0.75, 0.75, -0.75, -0.75),
+                              4.0, 4.0);
         }
     }
 
@@ -1123,24 +1168,28 @@ private:
                 s += QString::fromUtf8(" \xC2\xB7 ") + note; // ·
             return s;
         };
-        QString tip = QStringLiteral("%1\n%2\n%3")
-                          .arg(m_title,
-                               line(QStringLiteral("5-hour"), m_fiveHour,
-                                    m_fiveHourNote),
-                               line(QStringLiteral("Weekly"), m_weekly,
-                                    m_weeklyNote));
+        static const char *labels[WindowCount] = {"5-hour", "Weekly", "Fable"};
+        QString tip = m_title;
+        for (int i = 0; i < m_windows; ++i)
+            tip += QLatin1Char('\n')
+                   + line(QString::fromLatin1(labels[i]), m_pct[i], m_note[i]);
         if (!m_stats.isEmpty())
             tip += QStringLiteral("\n\n") + m_stats;
         setToolTip(tip);
     }
 
+    static constexpr qreal kBarW = 4.0;
+    static constexpr qreal kGap = 3.0;
+    static constexpr int kFlashMs = 900; // how long the hover box stays up
+
     QString m_title;
     bool m_remainingMode = false;
-    int m_fiveHour = -1;
-    int m_weekly = -1;
-    QString m_fiveHourNote; // extra tooltip text for the 5-hour window
-    QString m_weeklyNote;   // extra tooltip text for the weekly window
+    int m_windows = 2;              // how many of the Window slots are drawn
+    int m_pct[WindowCount] = {-1, -1, -1};
+    QString m_note[WindowCount];    // extra tooltip text per window
     QString m_stats; // per-session token/cost line, shown under the gauges
+    int m_flash = 0;     // 0 = none, 1 = refreshed (green), -1 = failed (red)
+    int m_flashToken = 0; // guards against an older flash clearing a newer one
 };
 
 // A tiny moving line chart for one system resource (CPU, memory or disk). New
@@ -2979,6 +3028,10 @@ const QString kClaudeUsageWeekPctSetting = QStringLiteral("agents/claudeUsageWee
 // away on the first frame after a restart (issue #50).
 const QString kClaudeUsage5hResetSetting = QStringLiteral("agents/claudeUsage5hReset");
 const QString kClaudeUsageWeekResetSetting = QStringLiteral("agents/claudeUsageWeekReset");
+// Same pair for the premium per-model weekly window the OAuth usage endpoint
+// reports next to the plan-wide one — the third bar on the chart (adhoc #96).
+const QString kClaudeUsageFablePctSetting = QStringLiteral("agents/claudeUsageFablePct");
+const QString kClaudeUsageFableResetSetting = QStringLiteral("agents/claudeUsageFableReset");
 constexpr qint64 kAgentLimit5hMs = 5LL * 60 * 60 * 1000;
 constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 // Issue #346: whether either window has been seen maxed out (>=99%) since it
