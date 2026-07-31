@@ -3371,11 +3371,18 @@ function worldTaskBulletinSeed(value) {
 }
 
 function worldTaskBulletinTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
+  return canvasTexture(THREE, 1800, 1120, worldTaskBulletinPainter(source));
+}
+
+// Returns the 2D draw callback separately so repaintBuildBoards can redraw
+// the existing board canvas in place instead of allocating a fresh 1800px
+// canvas, context, and CanvasTexture on every refresh.
+function worldTaskBulletinPainter(source = WORLD_TASK_BULLETIN_ITEMS) {
   const pending = (Array.isArray(source) ? source : [])
     .filter((item) => !item.done)
     .slice(0, 12);
   const cardAccents = ["#58a6ff", "#3fb950", "#d29922", "#a371f7"];
-  return canvasTexture(THREE, 1800, 1120, (context) => {
+  return (context) => {
     context.fillStyle = "#0d1117";
     context.fillRect(0, 0, 1800, 1120);
     context.strokeStyle = "#30363d";
@@ -3479,7 +3486,7 @@ function worldTaskBulletinTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
     pending.forEach((item, index) => {
       drawNote(item, index);
     });
-  });
+  };
 }
 
 function worldQaCardTexture(THREE, snapshot = {}) {
@@ -3964,10 +3971,14 @@ function worldHumanTodoTexture(THREE, sessions = [], systemItems = []) {
 }
 
 function worldTaskDoneTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
+  return canvasTexture(THREE, 1800, 220, worldTaskDonePainter(source));
+}
+
+function worldTaskDonePainter(source = WORLD_TASK_BULLETIN_ITEMS) {
   const completed = (Array.isArray(source) ? source : [])
     .filter((item) => item.done)
     .slice(-5);
-  return canvasTexture(THREE, 1800, 220, (context) => {
+  return (context) => {
     context.fillStyle = "#eff3dc";
     context.fillRect(0, 0, 1800, 220);
     context.fillStyle = "#2c3328";
@@ -3981,7 +3992,7 @@ function worldTaskDoneTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
       const y = 94 + Math.floor(index / 3) * 58;
       context.fillText(`✕ ${item.task}`, x, y, 545);
     });
-  });
+  };
 }
 
 function chatBubbleTexture(THREE, name, text) {
@@ -4450,6 +4461,17 @@ function makeMaterial(THREE, color, options = {}) {
   // Three.js warns for explicitly supplied `undefined` enum values. Omit the
   // option entirely unless a caller intentionally selected a rendering side.
   if (options.side !== undefined) parameters.side = options.side;
+  // three r152+ draws every transparent double-sided material in two passes
+  // (back faces, then front faces) and sets material.needsUpdate before each
+  // pass. That version bump re-resolves the shader program and re-uploads the
+  // material's entire uniform block on every draw of every frame — profiled
+  // at multiple GB/minute of allocation churn plus a doubled draw call for
+  // each such mesh. Every World use is a flat card, open shell, or additive
+  // glow that reads identically single-pass, so opt back into the pre-r152
+  // single-pass path. (Direct `new THREE.*Material` sites set the same flag.)
+  if (parameters.transparent && parameters.side === THREE.DoubleSide) {
+    parameters.forceSinglePass = true;
+  }
   if (options.depthWrite !== undefined) {
     parameters.depthWrite = options.depthWrite;
   }
@@ -4792,6 +4814,7 @@ function createProceduralCampfireEffect(THREE) {
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
+      forceSinglePass: true,
       blending: THREE.AdditiveBlending,
       toneMapped: false,
     });
@@ -4921,6 +4944,7 @@ function createProceduralCampfireEffect(THREE) {
       transparent: true,
       depthWrite: false,
       side: THREE.DoubleSide,
+      forceSinglePass: true,
       blending: THREE.NormalBlending,
       toneMapped: false,
     });
@@ -6056,6 +6080,7 @@ function createAvatar(THREE, identity, options = {}) {
       depthWrite: false,
       toneMapped: false,
       side: THREE.DoubleSide,
+      forceSinglePass: true,
     }),
   );
   activityRing.name = "avatar-activity-ring";
@@ -7646,6 +7671,7 @@ function createMirrorServerCabinet(THREE, node, id) {
       blending: THREE.AdditiveBlending,
       depthWrite: false,
       side: THREE.DoubleSide,
+      forceSinglePass: true,
     });
     for (const thetaStart of [0, Math.PI]) {
       const lobe = new THREE.Mesh(
@@ -9470,6 +9496,7 @@ function createRepositoryAgentTerminal(THREE, task = {}) {
     new THREE.MeshBasicMaterial({
       map: repositoryAgentTerminalTexture(THREE, task),
       side: THREE.DoubleSide,
+      forceSinglePass: true,
       toneMapped: false,
     }),
   );
@@ -10359,6 +10386,7 @@ function makeRepositoryFollowerIcon(THREE, follower) {
       depthTest: false,
       depthWrite: false,
       side: THREE.DoubleSide,
+      forceSinglePass: true,
       toneMapped: false,
     }),
   );
@@ -10431,6 +10459,7 @@ function makeRepositoryContributorIcon(THREE, contributor) {
       depthTest: false,
       depthWrite: false,
       side: THREE.DoubleSide,
+      forceSinglePass: true,
       toneMapped: false,
     }),
   );
@@ -13227,6 +13256,7 @@ function createOfficeMarineAquarium(THREE, animated) {
       clearcoat: 0.32,
       clearcoatRoughness: 0.2,
       side: THREE.DoubleSide,
+      forceSinglePass: true,
       depthWrite: false,
     });
     const body = new THREE.Mesh(
@@ -14293,6 +14323,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     clearcoat: 1,
     clearcoatRoughness: 0.06,
     side: THREE.DoubleSide,
+    forceSinglePass: true,
     depthWrite: false,
   });
   const waterSurface = new THREE.Mesh(surfaceGeometry, surfaceMaterial);
@@ -14338,6 +14369,7 @@ function createOfficeMarineAquarium(THREE, animated) {
     transparent: true,
     opacity: 0.18,
     side: THREE.DoubleSide,
+    forceSinglePass: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,
   });
@@ -15728,6 +15760,15 @@ export function createWorldScene({
       };
       worldElements.set(id, element);
     }
+    // Dynamic roots churn: node cabinets rebuild on every changed poll
+    // record, visitor avatars despawn, the portal ring is replaced per
+    // catalog reload. Pruning used to happen only from the diagnostics
+    // panel, so every replaced root — with its canvases and liveness
+    // closure — stayed in this registry for the life of the page (heap
+    // profiling showed 13 dead cabinets per mirror node and ~200MB of
+    // retained canvas backing stores). Every registration is a churn
+    // point, so sweep the element's dead roots here.
+    pruneDeadElementRoots(element);
     (Array.isArray(roots) ? roots : [roots])
       .filter(Boolean)
       .forEach((root) => {
@@ -19013,6 +19054,7 @@ export function createWorldScene({
         transparent: true,
         opacity: 0.52,
         side: THREE.DoubleSide,
+        forceSinglePass: true,
         depthWrite: false,
       }),
     );
@@ -20108,6 +20150,7 @@ export function createWorldScene({
         transparent: true,
         opacity: 0.22,
         side: THREE.DoubleSide,
+        forceSinglePass: true,
         depthWrite: false,
         toneMapped: false,
       }),
@@ -20447,6 +20490,7 @@ export function createWorldScene({
     transparent: true,
     opacity: 0.78,
     side: THREE.DoubleSide,
+    forceSinglePass: true,
     depthWrite: false,
   });
   const cascades = [];
@@ -20907,20 +20951,35 @@ export function createWorldScene({
   }
 
   function repaintBuildBoards() {
-    const previousTasks = officeTaskBulletinFace.material.map;
-    officeTaskBulletinFace.material.map = worldTaskBulletinTexture(
-      THREE,
-      buildBoardState.items,
-    );
-    officeTaskBulletinFace.material.needsUpdate = true;
-    previousTasks?.dispose?.();
-    const previousDone = officeTaskDoneFace.material.map;
-    officeTaskDoneFace.material.map = worldTaskDoneTexture(
-      THREE,
-      buildBoardState.completed,
-    );
-    officeTaskDoneFace.material.needsUpdate = true;
-    previousDone?.dispose?.();
+    // Redraw the resident board canvases in place. Swapping in a fresh
+    // 1800px canvas + CanvasTexture per refresh left the old context and
+    // backing store to the GC and re-validated the material each time.
+    if (
+      !repaintCanvasTexture(
+        officeTaskBulletinFace.material,
+        worldTaskBulletinPainter(buildBoardState.items),
+      )
+    ) {
+      officeTaskBulletinFace.material.map?.dispose?.();
+      officeTaskBulletinFace.material.map = worldTaskBulletinTexture(
+        THREE,
+        buildBoardState.items,
+      );
+      officeTaskBulletinFace.material.needsUpdate = true;
+    }
+    if (
+      !repaintCanvasTexture(
+        officeTaskDoneFace.material,
+        worldTaskDonePainter(buildBoardState.completed),
+      )
+    ) {
+      officeTaskDoneFace.material.map?.dispose?.();
+      officeTaskDoneFace.material.map = worldTaskDoneTexture(
+        THREE,
+        buildBoardState.completed,
+      );
+      officeTaskDoneFace.material.needsUpdate = true;
+    }
   }
 
   function updateBuildBoard(payload = {}) {
@@ -23980,6 +24039,7 @@ export function createWorldScene({
         roughness: 0.62,
         metalness: 0,
         side: THREE.DoubleSide,
+        forceSinglePass: true,
       }),
     );
     canopy.name = "forkmesh-mini-roof-parachute-canopy";
@@ -27888,6 +27948,7 @@ export function createWorldScene({
           opacity: 0.92,
           depthWrite: false,
           side: THREE.DoubleSide,
+          forceSinglePass: true,
         }),
       );
       shockwave.name = `forkmesh-node-delete-effect:${matchId}`;
@@ -28502,6 +28563,7 @@ export function createWorldScene({
             transparent: true,
             toneMapped: false,
             side: THREE.DoubleSide,
+            forceSinglePass: true,
             depthWrite: false,
           }),
         );
@@ -29422,6 +29484,7 @@ export function createWorldScene({
               transparent: segment.type === "summary",
               opacity: segment.type === "summary" ? 0.62 : 0.98,
               side: THREE.DoubleSide,
+              forceSinglePass: true,
               toneMapped: false,
             }),
           );
@@ -29514,6 +29577,7 @@ export function createWorldScene({
             ),
             transparent: true,
             side: THREE.DoubleSide,
+            forceSinglePass: true,
             depthWrite: false,
             toneMapped: false,
           }),
@@ -29607,6 +29671,7 @@ export function createWorldScene({
               depthTest: false,
               depthWrite: false,
               side: THREE.DoubleSide,
+              forceSinglePass: true,
               toneMapped: false,
             }),
           );
@@ -29748,6 +29813,7 @@ export function createWorldScene({
           { runningAgents, fediverseFollowers },
         ),
         side: THREE.DoubleSide,
+        forceSinglePass: true,
         toneMapped: false,
       }),
     );
@@ -29890,6 +29956,7 @@ export function createWorldScene({
         transparent: segment.type === "summary",
         opacity: segment.type === "summary" ? 0.58 : 0.98,
         side: THREE.DoubleSide,
+        forceSinglePass: true,
         toneMapped: false,
       });
       const sideColor = new THREE.Color(segment.color).multiplyScalar(0.55);
@@ -30571,6 +30638,7 @@ export function createWorldScene({
             repositoryName,
           ),
           side: THREE.DoubleSide,
+          forceSinglePass: true,
           toneMapped: false,
         }),
       );
@@ -31147,6 +31215,7 @@ export function createWorldScene({
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
+        forceSinglePass: true,
       }),
     );
     beam.position.y = 28;
@@ -31161,6 +31230,7 @@ export function createWorldScene({
         blending: THREE.AdditiveBlending,
         depthWrite: false,
         side: THREE.DoubleSide,
+        forceSinglePass: true,
       }),
     );
     ring.rotation.x = -Math.PI / 2;
@@ -31252,6 +31322,7 @@ export function createWorldScene({
           opacity: 1,
           toneMapped: false,
           side: THREE.DoubleSide,
+          forceSinglePass: true,
           depthWrite: false,
         }),
       );
@@ -31285,6 +31356,7 @@ export function createWorldScene({
           opacity: 0.34,
           depthWrite: false,
           side: THREE.DoubleSide,
+          forceSinglePass: true,
         }),
       );
       shadow.name = `repository-file-shadow:${path}`;
