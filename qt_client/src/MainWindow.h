@@ -627,6 +627,9 @@ public:
     {
         m_agentSessions.append(session);
     }
+    // Take the nav strip's route to the Agents tab, so a test can read that
+    // lazily-built list back the way a user reaches it (adhoc #119).
+    void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
@@ -655,6 +658,10 @@ public:
     // Click the range pane's close button, so a test can prove the left column
     // goes back to the working tree when the review is dismissed (adhoc #110).
     void testCloseBranchRange();
+    // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
+    // all" button once it's live, so a test can prove merging from the review
+    // closes it (adhoc #119). False when the button never became clickable.
+    bool testClickBranchReviewMerge(bool deleteAll);
     // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
     // session the app navigated to (m_selectedAgentSessionId), so a test can prove
     // clicking the cell jumps to that branch's agent (adhoc #258).
@@ -2725,10 +2732,16 @@ private:
     // Merge a worktree's branch into the default branch. On success the now-merged
     // worktree and its branch are removed (the work is preserved in the merge
     // commit); pass its folder so it can be. deleteAgent=true additionally tears
-    // down the agent session(s) that produced the branch.
-    void mergeWorktreeIntoMain(const QString &branch,
+    // down the agent session(s) that produced the branch. Returns true only when
+    // the branch's commits provably landed in the base branch — callers that tidy
+    // up after themselves (closing the branch diff, adhoc #119) must leave the
+    // review open when the merge was refused or conflicted.
+    bool mergeWorktreeIntoMain(const QString &branch,
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
+    // Leave the branch review after one of its merge buttons landed the branch,
+    // returning the Git view to the working tree (adhoc #119).
+    void closeBranchDiffAfterMerge();
     // The same merge for an agent session's branch, but bound to that session's
     // repository first — the Agents tab is global, so the repo the detail view
     // holds is often not the session's. False when the bind didn't take.
