@@ -1688,7 +1688,10 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentTranscript, &ClaudeTranscriptView::usageChanged, this,
             [this](const QString &kind, const QString &text, int percent) {
                 Q_UNUSED(text);
-                applyClaudeUsage(kind != QLatin1String("5h"), percent);
+                if (kind == QLatin1String("fable"))
+                    applyClaudeFableUsage(percent);
+                else
+                    applyClaudeUsage(kind != QLatin1String("5h"), percent);
             });
     // "Load earlier events" (button click or scroll-near-top) — don't truncate
     // the transcript (adhoc #115): the tail-capped initial render keeps opening
@@ -4009,6 +4012,32 @@ void MainWindow::maybeEmailCreditsRefilled(bool weekly)
     sendNodeHeartbeat();
 }
 
+void MainWindow::applyClaudeFableUsage(int percent)
+{
+    const int pct = qBound(0, percent, 100);
+    if (m_navTokenUsage)
+        static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
+            ->setUsage(TokenUsageMiniChart::Fable, pct);
+    QSettings().setValue(kClaudeUsageFablePctSetting, pct);
+}
+
+void MainWindow::applyClaudeFableReset(qint64 resetMs)
+{
+    QSettings().setValue(kClaudeUsageFableResetSetting, resetMs);
+    if (!m_navTokenUsage)
+        return;
+    const qint64 remaining = resetMs - QDateTime::currentMSecsSinceEpoch();
+    static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
+        ->setReset(TokenUsageMiniChart::Fable,
+                   remaining > 0 ? humanizeRemaining(remaining) : QString());
+}
+
+void MainWindow::flashUsageChart(QWidget *chart, bool ok)
+{
+    if (chart)
+        static_cast<TokenUsageMiniChart *>(chart)->flashRefresh(ok);
+}
+
 void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
 {
     QSettings().setValue(weekly ? kClaudeUsageWeekResetSetting
@@ -4023,23 +4052,37 @@ void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
                                          : QString());
 }
 
-void MainWindow::refreshClaudeCodeUsage()
+void MainWindow::refreshClaudeCodeUsage(bool fromHover)
 {
-    if (!m_networkAccess)
+    // A hover that can't reach the endpoint at all still owes the user an
+    // answer, so every early return flashes the red box (adhoc #96).
+    auto giveUp = [this, fromHover] {
+        if (fromHover)
+            flashUsageChart(m_navTokenUsage, false);
+    };
+    if (!m_networkAccess) {
+        giveUp();
         return;
+    }
     // Claude Code authenticates with a claude.ai OAuth token, kept in
     // ~/.claude/.credentials.json. Read the access token fresh every poll so a
     // token the CLI has since rotated is picked up automatically; if it is
     // absent (API-key login, or not signed in) there is nothing to query and the
     // rate-limit-event path remains the only feed.
     const QString token = claudeCodeOAuthToken();
-    if (token.isEmpty())
+    if (token.isEmpty()) {
+        giveUp();
         return;
+    }
     // Back off exponentially while the usage endpoint is failing (offline /
     // HTTP 429) so a burst of prompt-send / hover refreshes doesn't hammer it.
+    // Being inside the backoff means the last attempt failed, so the hover box
+    // stays red rather than claiming a refresh that never left the app.
     if (!m_pollBackoff.ready(QStringLiteral("claude-usage"),
-                             QDateTime::currentMSecsSinceEpoch()))
+                             QDateTime::currentMSecsSinceEpoch())) {
+        giveUp();
         return;
+    }
 
     QNetworkRequest req(
         QUrl(QStringLiteral("https://api.anthropic.com/api/oauth/usage")));
@@ -4048,7 +4091,7 @@ void MainWindow::refreshClaudeCodeUsage()
     req.setRawHeader("Accept", "application/json");
 
     QNetworkReply *reply = m_networkAccess->get(req);
-    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, fromHover] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
         // On any error (expired token, offline) keep the last-known figures
@@ -4057,9 +4100,13 @@ void MainWindow::refreshClaudeCodeUsage()
         if (reply->error() != QNetworkReply::NoError) {
             m_pollBackoff.noteFailure(QStringLiteral("claude-usage"),
                                       QDateTime::currentMSecsSinceEpoch());
+            if (fromHover)
+                flashUsageChart(m_navTokenUsage, false);
             return;
         }
         m_pollBackoff.noteSuccess(QStringLiteral("claude-usage"));
+        if (fromHover)
+            flashUsageChart(m_navTokenUsage, true);
         const QJsonObject root = QJsonDocument::fromJson(body).object();
         // This endpoint has shipped utilization in two shapes — a 0..1 fraction
         // (0.42) and an already-scaled 0..100 percentage (42.0). Multiplying a
@@ -4104,6 +4151,21 @@ void MainWindow::refreshClaudeCodeUsage()
             applyClaudeUsage(true, pctOf(QStringLiteral("seven_day")));
             if (const qint64 r = resetMsOf(QStringLiteral("seven_day")))
                 applyClaudeReset(true, r);
+        }
+        // The premium per-model weekly window — the account's Fable allowance,
+        // separate from the plan-wide one (adhoc #96). The endpoint has spelled
+        // this key differently as the top model changed, so take the first
+        // spelling that's actually present rather than pinning one.
+        const QStringList fableKeys = {QStringLiteral("seven_day_fable"),
+                                       QStringLiteral("seven_day_opus"),
+                                       QStringLiteral("seven_day_premium")};
+        for (const QString &key : fableKeys) {
+            if (!root.contains(key))
+                continue;
+            applyClaudeFableUsage(pctOf(key));
+            if (const qint64 r = resetMsOf(key))
+                applyClaudeFableReset(r);
+            break;
         }
     });
 }
