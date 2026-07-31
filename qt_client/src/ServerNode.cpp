@@ -1152,7 +1152,8 @@ void ServerNode::notifyMirrorSynced(const QString &ownerName,
 }
 
 void ServerNode::requestMirrorRefresh(const QString &source,
-                                      const QString &ownerName)
+                                      const QString &ownerName,
+                                      const QString &toNodeId, bool sync)
 {
     if (!m_wsReady)
         return;
@@ -1165,6 +1166,15 @@ void ServerNode::requestMirrorRefresh(const QString &source,
         message.insert("source", cleanSource);
     if (!cleanOwnerName.isEmpty())
         message.insert("repo", cleanOwnerName);
+    // Address one node: receivers already drop mirror-refresh frames whose "to"
+    // isn't their own id, so a targeted "Sync now" doesn't stampede the group.
+    const QString cleanTo = toNodeId.trimmed().left(120);
+    if (!cleanTo.isEmpty())
+        message.insert("to", cleanTo);
+    // Ask for an actual re-sync of the mirror copy, not just fresh metadata.
+    // Pre-sync receivers ignore the flag and still re-advertise — harmless.
+    if (sync)
+        message.insert("sync", true);
     // Pre-mark our own id so the relay's echo back to us doesn't make this node
     // rebuild and reply to its own request.
     markSeen(message.value("id").toString());
@@ -1730,7 +1740,8 @@ void ServerNode::handlePlain(const QJsonObject &message)
             }
         }
         if (relevant)
-            emit mirrorRefreshRequested(source.isEmpty() ? repo : source, sender);
+            emit mirrorRefreshRequested(source.isEmpty() ? repo : source, sender,
+                                        message.value("sync").toBool());
     } else if (type == "cove-open") {
         const QString creator = message.value("creator").toString().left(120);
         if (!creator.isEmpty())

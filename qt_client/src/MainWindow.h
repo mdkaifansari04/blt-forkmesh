@@ -2894,7 +2894,13 @@ private:
     void updateMirrorNodeLightTimer();
     void requestMirrorNodesRefresh();
     void onMirrorRefreshRequested(const QString &source,
-                                  const QString &requesterName);
+                                  const QString &requesterName,
+                                  bool sync = false);
+    // Per-row "Sync now" button on the Mirror nodes table (adhoc #103): make
+    // exactly that node bring its copy up to date right now — ourselves via a
+    // local sync, a live peer via a targeted relay frame, an SSH-fed/offline
+    // catalog mirror via the source of truth's push.
+    void syncMirrorNodeNow(int row);
     // Fetch the worker's catalog mirror list for a repo group so the owner sees
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,

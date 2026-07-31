@@ -1552,16 +1552,20 @@ int main(int argc, char *argv[])
                           "(got id %1)").arg(mirror1Id));
             check(!sawOffline,
                   QStringLiteral("offline mirror nodes are hidden while Online only is checked"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 2) ==
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-            // Columns: Node, Owner, Latest commit, Message, Author, Synced,
-            // Size, Issues, Commits, Branches, Pulls, Discussions, CPU, RAM,
-            // Disk, Platform, … — Message/Author pushed Disk/Platform to 14/15.
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 14)
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 1) ==
+                      QStringLiteral("Sync now"),
+                  QStringLiteral("Mirror nodes Sync column offers a per-row Sync now button"));
+            // Columns: Node, Sync, Owner, Latest commit, Message, Author,
+            // Synced, Size, Issues, Commits, Branches, Pulls, Discussions,
+            // CPU, RAM, Disk, Platform, … — the Sync button column (adhoc
+            // #103) pushed Disk/Platform to 15/16.
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 15)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 15) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 16) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);

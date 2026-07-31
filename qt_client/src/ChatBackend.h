@@ -226,10 +226,18 @@ public:
     // Ask online peers mirroring a repo group to immediately re-advertise their
     // current mirror metadata. `source` is the shared source identity; `ownerName`
     // is the caller's clone/catalog identity for compatibility with older adverts.
+    // `toNodeId` addresses the request to one node (empty = the whole group), and
+    // `sync` asks receivers to actually re-sync their mirror copy before
+    // re-advertising — the per-row "Sync now" button. Older receivers ignore
+    // both fields and treat the frame as a plain metadata refresh.
     virtual void requestMirrorRefresh(const QString &source,
-                                      const QString &ownerName) {
+                                      const QString &ownerName,
+                                      const QString &toNodeId = QString(),
+                                      bool sync = false) {
         Q_UNUSED(source);
         Q_UNUSED(ownerName);
+        Q_UNUSED(toNodeId);
+        Q_UNUSED(sync);
     }
     // Force this backend to broadcast its currently cached mirror adverts now,
     // bypassing normal hello coalescing/rate limits.
@@ -321,7 +329,10 @@ signals:
     void mirrorSynced(const QString &ownerName, const QString &peerName,
                       const QString &commit);
     // A peer asked nodes mirroring `source` to refresh and re-advertise now.
-    void mirrorRefreshRequested(const QString &source, const QString &requesterName);
+    // `sync` = it wants an actual mirror re-sync first, not just fresh metadata
+    // (the Mirror nodes table's per-row "Sync now" button).
+    void mirrorRefreshRequested(const QString &source, const QString &requesterName,
+                                bool sync);
     // A peer opened an encrypted cove. The UI verifies the opener's signature and,
     // if this node created the cove (creatorKey), raises an "opened" notification.
     void coveOpened(const QString &creatorKey, const QString &coveId,

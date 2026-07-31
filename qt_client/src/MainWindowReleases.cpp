@@ -17,6 +17,7 @@ namespace {
 
 enum MirrorNodeColumn {
     MirrorNodeColNode = 0,
+    MirrorNodeColSync,
     MirrorNodeColOwner,
     MirrorNodeColCommit,
     MirrorNodeColMessage,
@@ -40,6 +41,13 @@ enum MirrorNodeColumn {
     MirrorNodeColArtifacts,
     MirrorNodeColumnCount,
 };
+
+// Data roles on the Sync column's cells (adhoc #103), telling syncMirrorNodeNow
+// what kind of row was clicked and how to address the node. Local to this
+// column, so plain UserRole offsets can't collide with the shared table roles.
+constexpr int kMirrorSyncKindRole = Qt::UserRole;      // "self" | "peer" | "catalog"
+constexpr int kMirrorSyncNodeIdRole = Qt::UserRole + 1; // relay node id ("" = none)
+constexpr int kMirrorSyncLabelRole = Qt::UserRole + 2;  // display name for messages
 
 // Bake a release tag's version into the Qt client's source version — the
 // project(ForkMesh VERSION X.Y.Z ...) line in qt_client/CMakeLists.txt that
@@ -1025,8 +1033,14 @@ QWidget *MainWindow::buildMirrorNodesTab()
     refreshButton->setCursor(Qt::PointingHandCursor);
     refreshButton->setToolTip(QStringLiteral("Reload the local mirror nodes table"));
     setOcticon(refreshButton, "sync", 16);
-    connect(refreshButton, &QPushButton::clicked, this,
-            &MainWindow::loadMirrorNodesPanel);
+    connect(refreshButton, &QPushButton::clicked, this, [this] {
+        // An explicit reload also re-pulls the relay's /mirrors payload — the
+        // only carrier of the Clones/Website tallies, tunnel state and lease
+        // times — instead of resting on the 5-minute pace the roster-flicker
+        // rebuilds are throttled to (adhoc #103: the counts looked stuck).
+        m_catalogMirrorsFetchedMs = 0;
+        loadMirrorNodesPanel();
+    });
     addRefreshSpin(refreshButton);
     auto *refreshNodesButton = new QPushButton;
     refreshNodesButton->setObjectName("ghostButton");
@@ -1067,10 +1081,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Size",
-         "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU", "RAM",
-         "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
-         "Artifacts"});
+        {"Node", "Sync", "Owner", "Latest commit", "Message", "Author", "Synced",
+         "Size", "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU",
+         "RAM", "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones",
+         "Website", "Artifacts"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1083,6 +1097,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     QHeaderView *mh = m_mirrorNodesTable->horizontalHeader();
     mh->setHighlightSections(false);
     mh->setSectionResizeMode(MirrorNodeColNode, QHeaderView::Stretch);
+    mh->setSectionResizeMode(MirrorNodeColSync, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColOwner, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColCommit, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColMessage, QHeaderView::ResizeToContents);
@@ -1130,6 +1145,14 @@ QWidget *MainWindow::buildMirrorNodesTab()
         }
     });
     pacmanTick->start();
+    // The per-row "Sync now" button (adhoc #103). A cell-click "button" rather
+    // than a setCellWidget QPushButton: this table sorts and is rebuilt on
+    // every roster flicker, and items follow both while cell widgets don't.
+    connect(m_mirrorNodesTable, &QTableWidget::cellClicked, this,
+            [this](int row, int column) {
+                if (column == MirrorNodeColSync)
+                    syncMirrorNodeNow(row);
+            });
     // Double-click a node row to open its profile.
     // itemActivated (rather than cellDoubleClicked) so Enter opens the selected
     // node's profile, matching the tab's arrow-key navigation (adhoc #183).
@@ -1175,17 +1198,91 @@ void MainWindow::requestMirrorNodesRefresh()
     logSystem(QStringLiteral("Mirror nodes: requested live refresh for %1.")
                   .arg(source));
     flashMessage(QStringLiteral("Asked online mirror nodes to refresh."));
+    // The nodes' answers land in their catalog records; re-pull /mirrors on the
+    // next rebuild too so serve tallies / tunnel state / leases move with them.
+    m_catalogMirrorsFetchedMs = 0;
+    loadMirrorNodesPanel();
+}
+
+void MainWindow::syncMirrorNodeNow(int row)
+{
+    if (!m_mirrorNodesTable || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size())
+        return;
+    const QTableWidgetItem *cell =
+        m_mirrorNodesTable->item(row, MirrorNodeColSync);
+    if (!cell)
+        return; // the empty-state filler row carries no sync cell
+    const QString kind = cell->data(kMirrorSyncKindRole).toString();
+    const QString nodeId = cell->data(kMirrorSyncNodeIdRole).toString();
+    QString label = cell->data(kMirrorSyncLabelRole).toString().trimmed();
+    if (label.isEmpty())
+        label = QStringLiteral("the node");
+
+    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    const QString name = repoSegment(repo.name, QStringLiteral("repository"));
+    const QString source =
+        repoSegment(repo.owner, QStringLiteral("owner")) + "/" + name;
+    const QString ownerName = catalogOwner(repo) + "/" + name;
+
+    if (kind == QLatin1String("self")) {
+        // Our own row: run the full local sync — refresh the served bare mirror
+        // from its source (broadcasting mirror-update and pushing the SSH-fed
+        // fleet on a change) and republish the catalog record.
+        logSystem(QStringLiteral("Mirror nodes: syncing this node now."));
+        flashMessage(QStringLiteral("Syncing this node now."));
+        syncRepository(m_repoDetailIndex, /*quiet=*/false);
+        m_catalogMirrorsFetchedMs = 0; // next rebuild re-pulls /mirrors
+        return;
+    }
+
+    const bool weAreSource = repoHasWorkingTree() && !repo.previewOnly &&
+                             !repo.localPath.trimmed().isEmpty();
+    if (!m_backend && !weAreSource) {
+        flashMessage(QStringLiteral(
+                         "Connect to the mainnode before asking a node to sync."),
+                     true);
+        return;
+    }
+
+    if (m_backend) {
+        // A live peer gets the request addressed to it alone; a catalog-only
+        // row (a node outside the relay room — offline, or an SSH-fed headless
+        // mirror that never joins it) can't hear a frame, so ask the whole
+        // group: the source of truth's re-sync is what advances those mirrors.
+        const bool targeted = kind == QLatin1String("peer") && !nodeId.isEmpty();
+        m_backend->requestMirrorRefresh(source, ownerName,
+                                        targeted ? nodeId : QString(),
+                                        /*sync=*/true);
+    }
+    if (weAreSource) {
+        // The SSH-fed mirrors advance only when the source pushes its refs;
+        // fire that push now instead of waiting for the next changed sync to.
+        if (kind != QLatin1String("peer"))
+            pushToSshMirrorRemotes(m_repoDetailIndex);
+        // And freshen the mirror we serve so what everyone pulls is current.
+        syncRepository(m_repoDetailIndex, /*quiet=*/true);
+    }
+    // Serve tallies, tunnel state and lease times all ride /mirrors; force the
+    // next rebuild to re-pull it rather than resting on the 5-minute pace.
+    m_catalogMirrorsFetchedMs = 0;
+    logSystem(QStringLiteral("Mirror nodes: asked %1 to sync %2 now.")
+                  .arg(label, source));
+    flashMessage(QStringLiteral("Asked %1 to sync now.").arg(label));
     loadMirrorNodesPanel();
 }
 
 void MainWindow::onMirrorRefreshRequested(const QString &source,
-                                          const QString &requesterName)
+                                          const QString &requesterName,
+                                          bool sync)
 {
     if (!m_backend)
         return;
     const QString requested = source.trimmed();
     bool mirrorsRequestedSource = requested.isEmpty();
-    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+    int matchedIndex = -1;
+    for (int i = 0; i < m_repositories.size(); ++i) {
+        const RepositoryRecord &repo = m_repositories.at(i);
         if (repo.previewOnly)
             continue;
         const QString name = repoSegment(repo.name, QStringLiteral("repository"));
@@ -1195,11 +1292,20 @@ void MainWindow::onMirrorRefreshRequested(const QString &source,
         if (requested.compare(repoSource, Qt::CaseInsensitive) == 0 ||
             requested.compare(ownerName, Qt::CaseInsensitive) == 0) {
             mirrorsRequestedSource = true;
+            matchedIndex = i;
             break;
         }
     }
     if (!mirrorsRequestedSource)
         return;
+
+    // A "Sync now" request (the per-row button on a peer's Mirror nodes panel,
+    // adhoc #103): actually bring the copy up to date first — the source of
+    // truth refreshes the bare mirror it serves (its sync also pushes the
+    // SSH-fed fleet and broadcasts mirror-update on a change), a plain mirror
+    // pulls the source's advance — then re-advertise below.
+    if (sync && matchedIndex >= 0 && !m_syncingRepos.contains(matchedIndex))
+        syncRepository(matchedIndex, /*quiet=*/true);
 
     // The request is explicit, so bypass the advert-signature cache and the
     // backend hello throttle: peers asked for the freshest commit/count/resource
@@ -1664,8 +1770,11 @@ void MainWindow::loadMirrorNodesPanel()
     auto makeTunnelCell = [](const TunnelInfo &tunnel) -> SortTableWidgetItem * {
         QString text = QString::fromUtf8("\xE2\x80\x94"); // — (no tunnel)
         double sortValue = 0;
-        QString tip = QStringLiteral("No direct-HTTPS tunnel endpoint registered; "
-                                     "this node serves through relay sync only.");
+        QString tip = QStringLiteral(
+            "No direct-HTTPS tunnel endpoint registered; this node serves "
+            "through relay sync only.\nRun the node's Cloudflare tunnel "
+            "(Control node \xE2\x86\x92 Cloudflare relay deployment) and it "
+            "registers one automatically.");
         if (tunnel.abuseBlocked) {
             text = QStringLiteral("blocked");
             sortValue = 1;
@@ -1718,6 +1827,38 @@ void MainWindow::loadMirrorNodesPanel()
         return QString::fromUtf8("Served the website %1 time%2")
             .arg(n)
             .arg(n == 1 ? "" : "s");
+    };
+    // The Sync column's per-row "Sync now" button (adhoc #103): one click asks
+    // exactly that node to bring its copy up to date right now. An item acting
+    // as the button rather than a setCellWidget QPushButton, because this table
+    // sorts and is rebuilt on every roster flicker — items follow both, cell
+    // widgets don't. syncMirrorNodeNow() reads the roles back on click.
+    auto makeSyncCell = [](const QString &kind, const QString &nodeId,
+                           const QString &label) -> QTableWidgetItem * {
+        auto *item = new QTableWidgetItem(QStringLiteral("Sync now"));
+        item->setIcon(themedOcticon(QStringLiteral("sync"), QColor("#58a6ff"), 14));
+        item->setForeground(QColor("#58a6ff"));
+        item->setData(kMirrorSyncKindRole, kind);
+        item->setData(kMirrorSyncNodeIdRole, nodeId);
+        item->setData(kMirrorSyncLabelRole, label);
+        if (kind == QLatin1String("self"))
+            item->setToolTip(QStringLiteral(
+                "Sync this node now: refresh the mirror copy it serves from its "
+                "source and republish its catalog record."));
+        else if (kind == QLatin1String("peer"))
+            item->setToolTip(QStringLiteral(
+                                 "Ask %1 to re-sync its mirror from the source "
+                                 "of truth now.")
+                                 .arg(label));
+        else
+            item->setToolTip(QStringLiteral(
+                                 "Ask %1 to sync now. A mirror outside the live "
+                                 "relay room (e.g. an SSH-fed headless mirror) "
+                                 "advances when the source of truth pushes its "
+                                 "refs; clicking here runs that push when this "
+                                 "node holds the working copy.")
+                                 .arg(label));
+        return item;
     };
 
     int count = 0;
@@ -1915,6 +2056,11 @@ void MainWindow::loadMirrorNodesPanel()
         if (integrityFailing)
             markPinRejected(nameItem, node.self);
         m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColSync,
+            makeSyncCell(node.self ? QStringLiteral("self")
+                                   : QStringLiteral("peer"),
+                         node.id, nodeLabel));
         m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
                                     makeOwnerCell(ownerDisplay));
 
@@ -2197,6 +2343,9 @@ void MainWindow::loadMirrorNodesPanel()
             if (integrityFailing)
                 markPinRejected(nameItem, false);
             m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColSync,
+                makeSyncCell(QStringLiteral("catalog"), catalogId, nodeName));
             m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
                                         makeOwnerCell(ownerUser));
             // Latest commit: the publishing node mirrors its served HEAD into the

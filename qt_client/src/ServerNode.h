@@ -92,7 +92,9 @@ public:
     void notifyMirrorSynced(const QString &ownerName,
                             const QString &commit = QString()) override;
     void requestMirrorRefresh(const QString &source,
-                              const QString &ownerName) override;
+                              const QString &ownerName,
+                              const QString &toNodeId = QString(),
+                              bool sync = false) override;
     void advertiseMirrorsNow() override;
     void notifyCoveOpened(const QString &creatorKey, const QString &coveId,
                           const QString &coveName, const QString &openerKey,
