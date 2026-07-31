@@ -449,6 +449,11 @@ public:
     void testEnablePaidMirroring() { enablePaidMirroring(); }
     int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
     int testStackIndex() const;
+    // adhoc #115: state of the top-bar "Log in / Sign up" pill. Reported from
+    // isHidden() rather than isVisible() so it means "this widget wants to show"
+    // even in a test window that is never actually shown.
+    bool testSignInButtonVisible() const;
+    void testRefreshSignInButton() { updateSignInButton(); }
     QString testUserName() const { return m_userName; }
     QString testAccountName() const { return m_accountName; }
     QString testSavedSolanaAddress() const;
