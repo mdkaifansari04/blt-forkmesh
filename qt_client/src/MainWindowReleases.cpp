@@ -1219,7 +1219,10 @@ void MainWindow::syncMirrorNodeNow(int row)
     if (label.isEmpty())
         label = QStringLiteral("the node");
 
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+    // By value: pushToSshMirrorRemotes/syncRepository below pump the event
+    // loop, and a reference into m_repositories can dangle across that
+    // (git-pump UAF family, adhoc #106).
+    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     const QString name = repoSegment(repo.name, QStringLiteral("repository"));
     const QString source =
         repoSegment(repo.owner, QStringLiteral("owner")) + "/" + name;
