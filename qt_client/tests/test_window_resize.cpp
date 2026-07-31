@@ -1086,7 +1086,7 @@ int main(int argc, char *argv[])
           QStringLiteral("reward settings cannot reserve or activate an account"));
 
     QCheckBox *nodeConnectAlertCheck =
-        findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));
+        findCheckBox(window, QStringLiteral("Show a system ping when a node connects"));
     check(nodeConnectAlertCheck != nullptr,
           QStringLiteral("node-connect system alert checkbox exists"));
     if (nodeConnectAlertCheck) {
@@ -2576,13 +2576,20 @@ int main(int argc, char *argv[])
 
         // Click it where it actually paints (the leftmost strip of a row), not
         // through a test-only shortcut, so the event-filter wiring is covered.
-        auto clickPromptIcon = [&prefix](QTextEdit *view) {
+        // Hit-testing is by anchor content, not by "first icon in the viewport":
+        // the footer strip keeps the lines it has already streamed, so its top
+        // visible row is some older entry, not the one logged just above.
+        auto clickPromptIcon = [&prefix, &entry](QTextEdit *view) {
             if (!view)
                 return false;
             for (int y = 0; y < view->viewport()->height(); ++y) {
                 for (int x = 0; x < 40; ++x) {
                     const QPoint pos(x, y);
-                    if (!view->anchorAt(pos).startsWith(prefix))
+                    const QString href = view->anchorAt(pos);
+                    if (!href.startsWith(prefix) ||
+                        !QUrl::fromPercentEncoding(
+                             href.mid(prefix.size()).toLatin1())
+                             .endsWith(entry))
                         continue;
                     const QPointF global = view->viewport()->mapToGlobal(pos);
                     QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos),
