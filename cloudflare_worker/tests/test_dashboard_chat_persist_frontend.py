@@ -70,7 +70,7 @@ def test_dashboard_history_starts_at_five_and_reveals_five_per_scroll():
     assert "handlePlain(plain, true)" in CHAT
     assert 'if (plain.type === "chat") handlePlain(plain, true);' in CHAT
     assert 'if (plain.type !== "chat") handlePlain(plain, true);' in CHAT
-    assert '"scroll up"} to load ${Math.min(' in CHAT
+    assert "scroll up to load ${Math.min(" in CHAT
     assert "Beginning of conversation" in CHAT
     assert "fullLog.scrollTop += Math.max(" in CHAT
     assert "function hasHiddenHistory()" in CHAT
@@ -82,6 +82,17 @@ def test_dashboard_history_starts_at_five_and_reveals_five_per_scroll():
         CHAT.index('} else if (type === "reaction")')
     ]
     assert "finishHistoryReplay();" in history
+
+
+def test_world_embed_chat_reads_oldest_first_newest_last():
+    # adhoc #93: the world embed rendered its feed newest-first (history sorted
+    # descending, indicator appended, scroll parked at the top), so the latest
+    # line sat above older ones. Both modes now read like every other chat.
+    assert "records.sort((left, right) => left.tsMs - right.tsMs)" in CHAT
+    assert "fullLog.prepend(historyIndicator);" in CHAT
+    assert "Number(candidate.dataset.chatTimestamp || 0) > record.tsMs" in CHAT
+    assert "simpleWorldComposer ? 0 : fullLog.scrollHeight" not in CHAT
+    assert "index < visibleCount" not in CHAT
 
 
 def test_durable_type_set_matches_the_node():

@@ -90,6 +90,8 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
                     m_backend->sendReaction(m_currentConversation, messageId, emoji);
             });
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
+    connect(row, &MessageRow::sendToPromptRequested, this,
+            &MainWindow::sendMessageToPrompt);
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
     connect(row, &MessageRow::moderateDeleteRequested, this,
             &MainWindow::confirmAdminDeleteMessage);
@@ -1844,6 +1846,16 @@ void MainWindow::insertEmojiIntoComposer(const QString &emoji)
         return;
     m_messageInput->insert(emoji);
     m_messageInput->setFocus();
+}
+
+void MainWindow::sendMessageToPrompt(const QString &text)
+{
+    if (text.isEmpty())
+        return;
+    // The footer's bottom-right prompt box, not the chat input: a message worth
+    // reusing is almost always a task for an agent, so it lands where the
+    // app-wide "Send to Prompt" selection action puts text (adhoc #108).
+    appendTextToActivePrompt(text);
 }
 
 void MainWindow::showEmojiPicker(QWidget *anchor)

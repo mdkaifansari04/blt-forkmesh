@@ -718,6 +718,44 @@ int main(int argc, char *argv[])
     check(cloudflareToken &&
               cloudflareToken->echoMode() == QLineEdit::Password,
           QStringLiteral("Cloudflare token control masks the session-only secret"));
+
+    // adhoc #108: every control-node area is a tab at the top of the page, and
+    // the API token tab states what the deploy path requires before any call is
+    // made. The token input masks its value like every other credential field.
+    QTabWidget *controlTabs =
+        window.findChild<QTabWidget *>(QStringLiteral("controlNodeTabs"));
+    QStringList controlTabNames;
+    for (int index = 0; controlTabs && index < controlTabs->count(); ++index)
+        controlTabNames << controlTabs->tabText(index);
+    check(controlTabs && controlTabs->count() >= 8 &&
+              controlTabNames.contains(QStringLiteral("Mirror services")) &&
+              controlTabNames.contains(QStringLiteral("API token")) &&
+              controlTabNames.contains(QStringLiteral("Site deployment")),
+          QStringLiteral("control node groups each section under a top tab"));
+    QLineEdit *controlTokenValue =
+        window.findChild<QLineEdit *>(QStringLiteral("controlTokenValue"));
+    QTableWidget *controlTokenTable = window.findChild<QTableWidget *>(
+        QStringLiteral("controlTokenPermissionsTable"));
+    check(controlTokenValue &&
+              controlTokenValue->echoMode() == QLineEdit::Password &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenTestButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenGenerateButton")) != nullptr,
+          QStringLiteral("API token tab exposes a masked token, a check and a "
+                         "rotate button"));
+    QStringList requiredPermissionLabels;
+    for (int row = 0; controlTokenTable && row < controlTokenTable->rowCount();
+         ++row) {
+        const QTableWidgetItem *label = controlTokenTable->item(row, 0);
+        const QTableWidgetItem *need = controlTokenTable->item(row, 1);
+        if (label && need && need->text() == QStringLiteral("Required"))
+            requiredPermissionLabels << label->text();
+    }
+    check(requiredPermissionLabels.contains(QStringLiteral("Workers Scripts: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("D1: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("DNS: Edit")),
+          QStringLiteral("API token tab lists the required permissions up front"));
     window.testShowLogSection();
     QApplication::processEvents();
     check(window.findChild<QPushButton *>(
@@ -1691,6 +1729,37 @@ int main(int argc, char *argv[])
               QString("clicking a branch link selects the branch without waiting "
                       "for the panel's git reads (adhoc #420, landed on %1)")
                   .arg(landed.isEmpty() ? QStringLiteral("<none>") : landed));
+        // adhoc #107: the branch diff viewer lives in the Git view now — the
+        // same click must land the commits workspace on the range review pane
+        // with that branch under review.
+        check(window.testCommitWorkspacePage() == 2 &&
+                  window.testBranchDiffBranch() ==
+                      QStringLiteral("feature/keep-selected"),
+              QString("a branch link opens the branch's diff in the Git view's "
+                      "range pane (adhoc #107, page = %1, branch = %2)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBranchDiffBranch()));
+        // adhoc #110: the review borrows the left column's existing slots — the
+        // range's changed files where the working-tree changes sit, its commits
+        // where the history sits — instead of opening a column of its own.
+        check(window.testGitFilesSlotPage() == 1 &&
+                  window.testGitHistorySlotPage() == 1,
+              QString("the range's files and commits take over the Git view's "
+                      "left column (adhoc #110, files slot = %1, history slot "
+                      "= %2)")
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
+        // And closing the review hands both halves back to the working tree.
+        window.testCloseBranchRange();
+        check(window.testCommitWorkspacePage() == 0 &&
+                  window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("closing the range review restores the working-tree "
+                      "changes and commit history (adhoc #110, page = %1, files "
+                      "slot = %2, history slot = %3)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();

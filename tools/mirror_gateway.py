@@ -87,6 +87,23 @@ WEBSITE_COUNTER_OPERATIONS = frozenset({
     "sizes",
     "release-blob",
 })
+SERVICE_COUNTER_ROW_FIELDS = ("clonesServed", "websiteServed", "updatedAt")
+# Optional per-row extension: when the last clone / website request was served
+# and which class of client it was. Only the generalized class below is stored,
+# never the raw User-Agent, so no request fingerprint reaches a public record.
+SERVICE_COUNTER_STAMP_FIELDS = (
+    "cloneServedAt",
+    "cloneServedAgent",
+    "websiteServedAt",
+    "websiteServedAgent",
+)
+SERVICE_COUNTER_AGENT_CLASSES = frozenset({
+    "forkmesh-node",
+    "git-client",
+    "bot-tool",
+    "browser",
+    "client",
+})
 MAX_ACTIONS_SUMMARY_CLOCK_SKEW_MS = 60 * 1000
 SYSTEM_ACTIONS_SUMMARY_PATH = Path(
     "/var/lib/forkmesh-mirror/gateway/actions-summary.json"
@@ -3091,6 +3108,32 @@ class ReplayCache:
             return True
 
 
+def service_counter_agent_class(user_agent: str) -> str:
+    """Reduce a request User-Agent to one bounded, non-identifying class.
+
+    The raw header is never stored or published: it is a fingerprint. The
+    coarse class below is enough to say whether the last served clone went to
+    a git client, a browser, another mesh node, or a crawler, and it matches
+    the desktop's own generalized request log vocabulary.
+    """
+    value = str(user_agent or "").lower()
+    if "forkmesh" in value:
+        return "forkmesh-node"
+    if "git/" in value or "libgit2" in value or "jgit" in value:
+        return "git-client"
+    if any(
+        token in value
+        for token in ("bot", "crawl", "curl", "wget", "python-requests")
+    ):
+        return "bot-tool"
+    if any(
+        token in value
+        for token in ("mozilla", "chrome", "safari", "firefox")
+    ):
+        return "browser"
+    return "client"
+
+
 class GatewayServiceCounters:
     """Persist content-free clone and website totals beside gateway config."""
 
@@ -3130,15 +3173,18 @@ class GatewayServiceCounters:
             or not isinstance(value.get("repositories"), dict)
         ):
             return
-        loaded: dict[str, dict[str, int]] = {}
+        loaded: dict[str, dict[str, int | str]] = {}
         for key, row in list(value["repositories"].items())[:4096]:
+            # The last-served stamps are an optional extension: a row written
+            # by an older gateway carries the three core fields only.
             if (
                 not isinstance(key, str)
                 or len(key) > 220
                 or key.count("/") != 1
                 or not isinstance(row, dict)
-                or set(row)
-                != {"clonesServed", "websiteServed", "updatedAt"}
+                or not set(SERVICE_COUNTER_ROW_FIELDS) <= set(row)
+                or not set(row)
+                <= set(SERVICE_COUNTER_ROW_FIELDS + SERVICE_COUNTER_STAMP_FIELDS)
             ):
                 continue
             owner, repository = key.split("/", 1)
@@ -3147,9 +3193,9 @@ class GatewayServiceCounters:
                 or not REPO_RE.fullmatch(repository)
             ):
                 continue
-            fields: dict[str, int] = {}
+            fields: dict[str, int | str] = {}
             valid = True
-            for field in ("clonesServed", "websiteServed", "updatedAt"):
+            for field in SERVICE_COUNTER_ROW_FIELDS:
                 raw = row.get(field)
                 if isinstance(raw, bool):
                     valid = False
@@ -3166,6 +3212,21 @@ class GatewayServiceCounters:
                 or not 0 <= fields["updatedAt"] <= MAX_SAFE_JSON_INTEGER
             ):
                 continue
+            for field in SERVICE_COUNTER_STAMP_FIELDS:
+                if field not in row:
+                    continue
+                raw = row[field]
+                if field.endswith("At"):
+                    if isinstance(raw, bool):
+                        continue
+                    try:
+                        stamp = int(raw)
+                    except (TypeError, ValueError, OverflowError):
+                        continue
+                    if 0 < stamp <= MAX_SAFE_JSON_INTEGER:
+                        fields[field] = stamp
+                elif raw in SERVICE_COUNTER_AGENT_CLASSES:
+                    fields[field] = raw
             loaded[key] = fields
         self._repositories = loaded
 
@@ -3207,11 +3268,14 @@ class GatewayServiceCounters:
         owner: str,
         repository: str,
         operation: str,
+        user_agent: str = "",
     ) -> bool:
         if operation == "git-upload-pack":
             field = "clonesServed"
+            stamp_field, agent_field = "cloneServedAt", "cloneServedAgent"
         elif operation in WEBSITE_COUNTER_OPERATIONS:
             field = "websiteServed"
+            stamp_field, agent_field = "websiteServedAt", "websiteServedAgent"
         else:
             return False
         key = owner.lower() + "/" + repository.lower()
@@ -3230,10 +3294,17 @@ class GatewayServiceCounters:
                 MAX_SERVICE_COUNTER,
                 previous[field] + 1,
             )
-            previous["updatedAt"] = min(
+            served_at = min(
                 MAX_SAFE_JSON_INTEGER,
                 max(0, int(self.clock_ms())),
             )
+            previous["updatedAt"] = served_at
+            # "When did this node last serve a clone / a website read, and to
+            # what kind of client" -- the pair the Mirror node cards show
+            # beside each total.
+            if served_at > 0:
+                previous[stamp_field] = served_at
+                previous[agent_field] = service_counter_agent_class(user_agent)
             self._repositories[key] = previous
             self._dirty = True
             if self._flush_timer is None:
@@ -3671,6 +3742,7 @@ class GatewayApplication:
         status: int,
         *,
         delivered: bool,
+        user_agent: str = "",
     ) -> bool:
         if not delivered or not 200 <= int(status) < 300:
             return False
@@ -3692,6 +3764,7 @@ class GatewayApplication:
             owner,
             repository,
             operation,
+            user_agent,
         )
 
     def _authorize(
@@ -4165,6 +4238,7 @@ class MirrorGatewayHandler(BaseHTTPRequestHandler):
                 operation,
                 response.status,
                 delivered=delivered,
+                user_agent=self.headers.get("User-Agent", ""),
             )
 
     def _send_headers(

@@ -270,6 +270,20 @@ SCHEMA_STATEMENTS = [
     # when the pin expires. The owner name is public catalog data.
     "CREATE TABLE IF NOT EXISTS clone_sticky ("
     "repo_bi TEXT PRIMARY KEY, owner TEXT NOT NULL, ts INTEGER NOT NULL)",
+    # Per-node serve tallies, counted at the router. The Worker is the only
+    # component that sees every public read it routes to a mirror endpoint —
+    # nodes stopped seeing per-request traffic when the per-repository
+    # WebSocket transport (RepoHost) was retired — so it owns the Clones /
+    # Website counters the Mirror nodes view shows. Names are public catalog
+    # identities, already listed on the repository's Mirrors tab.
+    """CREATE TABLE IF NOT EXISTS mirror_serve_counters (
+        node_name TEXT NOT NULL,
+        owner TEXT NOT NULL,
+        repo TEXT NOT NULL,
+        clones INTEGER NOT NULL DEFAULT 0,
+        website INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (node_name, owner, repo))""",
     # Recent owner-attested repo-state pins (sha256 of the canonical heads+tags
     # advertisement), appended on every catalog publish by a working-copy holder
     # ("local-node"). Mirrors are integrity-checked against the SOURCE's pins —
@@ -615,6 +629,18 @@ SCHEMA_STATEMENTS = [
         ok INTEGER NOT NULL DEFAULT 1, reason TEXT,
         PRIMARY KEY (minute_ts, system))""",
     "CREATE INDEX IF NOT EXISTS idx_system_status_minute_ts ON system_status_minute(minute_ts)",
+    # At-most-once ownership of each minute's status sample. Two independent
+    # schedulers may call record_status_sample for the same minute — the
+    # platform Cron Trigger directly (so /status keeps its samples even while
+    # Durable Objects are failing) and the ForkMeshCronRunner alarm batch.
+    # The daily/hourly rollups are checks-counter increments, so whichever
+    # caller INSERTs this minute's row first owns the sample; the loser skips
+    # it instead of double-counting the hour. `claim` is a random token the
+    # winner reads back to recognize itself (D1's Python client exposes no
+    # reliable changes() count). Pruned alongside system_status_minute.
+    """CREATE TABLE IF NOT EXISTS system_status_sample_claim (
+        minute_ts INTEGER PRIMARY KEY, claim TEXT NOT NULL,
+        claimed_at INTEGER NOT NULL)""",
     # Edge repository-render monitor state. One row is enough to deduplicate
     # outage/recovery mail while the normal status tables retain the public
     # minute/hour/day history.
@@ -2230,17 +2256,10 @@ SCHEMA_STATEMENTS = [
     "CREATE INDEX IF NOT EXISTS idx_world_manual_blocks_active "
     "ON world_manual_blocks(target_type, subject_token, expires_at) "
     "WHERE revoked_at=0",
-    # Shared, administrator-curated placement overrides for the fixed Town
-    # Square scene objects. One row per scene object id holding only ground
-    # coordinates and a heading offset in radians (migration 0082); no
-    # visitor, account, or session data is stored here.
-    """CREATE TABLE IF NOT EXISTS world_object_layout (
-        object_id TEXT PRIMARY KEY,
-        x REAL NOT NULL,
-        z REAL NOT NULL,
-        rotation REAL NOT NULL DEFAULT 0,
-        updated_by_bi TEXT NOT NULL,
-        updated_at INTEGER NOT NULL)""",
+    # The administrator-curated Town Square placement overrides (migrations
+    # 0080/0082) were retired with the layout editor by migration 0115; make
+    # sure lazily-ensured DBs lose the table too.
+    "DROP TABLE IF EXISTS world_object_layout",
     # One public, last-known-good CelesTrak VISUAL OMM snapshot. A scheduled
     # refresh owns all upstream traffic; visitor reads never fetch CelesTrak.
     # This row contains no visitor location, account, session, or wallet data.

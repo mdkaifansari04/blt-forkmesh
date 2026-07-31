@@ -19,6 +19,7 @@
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
 #include "ScrollJumpButtons.h"
+#include "DirectorySizeScan.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
@@ -146,6 +147,7 @@
 #include <QStyle>
 #include <QStyledItemDelegate>
 #include <QStyleHints>
+#include <QStyleOptionComboBox>
 #include <QSyntaxHighlighter>
 #include <QAbstractItemView>
 #include <QHeaderView>
@@ -300,6 +302,11 @@ void flushDiffStream(QTextEdit *view);
 void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook);
 bool autoMarkViewedOnScrollPref();
 void setAutoMarkViewedOnScrollPref(bool on);
+// Paint find-in-diff matches as extra selections (active match brighter) and
+// update the "n/m" count label. Shared by the PR and branch/PR-range find bars.
+void applyDiffSearchHighlights(QTextBrowser *diff,
+                               const QList<QTextCursor> &matches, int activeIndex,
+                               QLabel *countLabel, bool termEmpty);
 QString diffStickyStyleSheet(int fontPt);
 QString diffStickyPathHtml(const QString &path);
 QString agentCostText(double usd);
@@ -2730,6 +2737,12 @@ const QString kDefaultRoomName = forkmesh::mainnode::kDefaultRoomName;
 const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
+// Last repo-detail tab actually viewed (updated by recordNavLocation()); a
+// restart restores this instead of Settings -> General's "open repositories
+// on tab" preference, which is meant for switching repos mid-session, not for
+// where the app happens to relaunch (adhoc #101).
+const QString kLastRepoDetailTabSetting =
+    QStringLiteral("repositories/lastOpenDetailTab");
 // Issue looper (adhoc #125): persist the running state so a restart resumes the
 // loop on the same repo with the same provider instead of silently dropping it.
 const QString kLooperActiveSetting = QStringLiteral("looper/active");
@@ -2908,9 +2921,11 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
-// backups). On by default: the snapshot is small (identity, account and every
-// local store, minus the re-downloadable mirrors) and it is the only thing
-// standing between a corrupted store and a lost account key.
+// backups). On by default on the desktop — the snapshot is the only thing
+// standing between a corrupted store and a lost account key — but OFF by
+// default headless: a rolling day of ~1GB tarballs filled several small VPS
+// disks (see forkmesh::autoBackupDefault). An explicit true still enables
+// backups on a headless node.
 const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
 // How many hourly snapshots are kept before the oldest is pruned.
 const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");
@@ -3384,11 +3399,40 @@ inline void selectQuickAddAgentProvider(QComboBox *combo)
 // reliable workaround: given room for every row plus the container's scroller
 // chrome, nothing needs scrolling so Qt hides the arrows. When the list is
 // genuinely taller than the screen the arrows correctly stay (we cap there).
+// It also sizes itself to the item that is actually showing rather than to the
+// widest item in its list (adhoc #72). Qt's own hint measures every entry, so a
+// single long label — "GPT-5.5 Codex" in the model picker, "Claude API" in the
+// provider one — padded all four composer dropdowns with dead space even while
+// short labels like "CC" or "Auto" were selected.
 class FullPopupComboBox : public QComboBox {
 public:
-    using QComboBox::QComboBox;
+    explicit FullPopupComboBox(QWidget *parent = nullptr) : QComboBox(parent)
+    {
+        // Never wider than the selected label needs; the row's stretches take
+        // the leftover space instead of the dropdowns.
+        setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+    }
+
+    QSize sizeHint() const override { return currentTextSizeHint(); }
+    QSize minimumSizeHint() const override { return currentTextSizeHint(); }
 
 protected:
+    void paintEvent(QPaintEvent *event) override
+    {
+        // The hint follows the selection, and the pickers are repopulated with
+        // signals blocked (refreshQuickAddSpeedSelector, the model refresh,
+        // applyLiveClaudeModelsToCombos), so currentIndexChanged is not a
+        // reliable place to re-ask for space. A repaint always follows a
+        // selection change: if the text about to be painted is not the one the
+        // last hint was measured from, relayout first. This settles after one
+        // extra layout pass — the next paint sees a matching label.
+        if (m_hintedText != currentText()) {
+            m_hintedText = currentText();
+            updateGeometry();
+        }
+        QComboBox::paintEvent(event);
+    }
+
     void showPopup() override
     {
         setMaxVisibleItems(qMax(maxVisibleItems(), count()));
@@ -3450,6 +3494,28 @@ protected:
             geo.moveTop(avail.top());
         popup->setGeometry(geo);
     }
+
+private:
+    // Same shape as QComboBox's own hint (font metrics for the contents, then
+    // the style adds frame and drop-down arrow) but measured from the current
+    // text alone instead of the widest item in the model.
+    QSize currentTextSizeHint() const
+    {
+        const QFontMetrics fm = fontMetrics();
+        const QString text = currentText();
+        QSize contents(fm.horizontalAdvance(text.isEmpty() ? QStringLiteral("XX") : text),
+                       qMax(fm.height(), 14) + 2);
+        const QIcon icon = currentIndex() >= 0 ? itemIcon(currentIndex()) : QIcon();
+        if (!icon.isNull()) {
+            contents.setWidth(contents.width() + iconSize().width() + 4);
+            contents.setHeight(qMax(contents.height(), iconSize().height()));
+        }
+        QStyleOptionComboBox opt;
+        initStyleOption(&opt);
+        return style()->sizeFromContents(QStyle::CT_ComboBox, &opt, contents, this);
+    }
+
+    QString m_hintedText;
 };
 
 // "Auto" model sentinel (adhoc #91). Instead of a fixed model, the transcript
@@ -4116,6 +4182,24 @@ inline QString brewPrefix(const QString &formula)
 }
 #endif
 
+// How many parallel jobs a local qt_client build may use. cc1plus peaks
+// between 0.6 GB and 1.6 GB on the big MainWindow*.cpp translation units, so a
+// plain -j<cores> on a many-core box swamps physical RAM and shoves the whole
+// machine into swap — and an OOM kill during an in-place update can take out
+// the RUNNING node, which nothing restarts (the fleet daemons run under nohup,
+// no supervisor). Budget ~3 GiB of RAM per job, never exceeding the core
+// count. The Ninja-generator builds additionally gate the heavy targets'
+// compiles behind the forkmesh_heavy job pool (see qt_client/CMakeLists.txt);
+// this cap is what protects Makefile-generator builds, which ignore pools.
+inline int ramCappedBuildJobs()
+{
+    int jobs = QThread::idealThreadCount();
+    const qint64 totalRam = SystemStats::totalMemoryBytes();
+    if (totalRam > 0)
+        jobs = qBound(1, int(totalRam / (3LL * 1024 * 1024 * 1024)), jobs);
+    return jobs;
+}
+
 inline QStringList cmakeConfigureArgs(const QString &clientDir, const QString &buildDir,
                                const QString &buildType)
 {
@@ -4576,17 +4660,10 @@ private:
     QList<IssueBurnupPoint> m_series;
 };
 
-// One entry in the Size map tab's tree: total bytes of everything beneath
-// it, with subdirectories and direct files as children (largest first,
-// adhoc #189/#262). A file is a leaf — no children — so the chart offers
-// zoom only on directories, and zooming into a files-only directory shows
-// one slice per file, matching the website's size map.
-struct SunburstNode {
-    QString name;
-    qint64 size = 0;
-    int fileCount = 0;
-    QList<SunburstNode> children;
-};
+// One entry in the Size map tab's tree. It lives in DirectorySizeScan.h so
+// the scan can also run from the elevated helper process, which links none of
+// the widget code (adhoc #76).
+using forkmesh::SunburstNode;
 
 // The Size map tab's multi-level pie (adhoc #189): ring 1 is the working
 // tree's top-level directories and files, each deeper ring subdivides its
@@ -8513,11 +8590,8 @@ inline QString mirrorReleaseBlobPath(const QString &mirrorPath, const QString &h
 // artifacts a node can serve. Advertised to peers for the Mirror nodes view.
 // Returns -1 when the mirror path can't be read, so "unknown" (older peer) stays
 // distinct from a genuine zero; a store with no blobs yet counts as zero.
-inline int mirrorArtifactCount(const QString &mirrorPath)
+inline int releaseCasBlobCount(const QDir &casDir)
 {
-    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
-        return -1;
-    const QDir casDir(mirrorReleaseCasRoot(mirrorPath));
     if (!casDir.exists())
         return 0; // no artifacts stored yet
     int count = 0;
@@ -8533,6 +8607,24 @@ inline int mirrorArtifactCount(const QString &mirrorPath)
                 ++count;
     }
     return count;
+}
+inline int mirrorArtifactCount(const QString &mirrorPath)
+{
+    if (mirrorPath.trimmed().isEmpty() || !QDir(mirrorPath).exists())
+        return -1;
+    return releaseCasBlobCount(QDir(mirrorReleaseCasRoot(mirrorPath)));
+}
+// The same tally for a working copy: the standalone release publisher's
+// default CAS lives inside the checkout at .forkmesh/release-blobs (gitignored;
+// see .forkmesh/release.yml), not at <mirror>/forkmesh-releases. Lets the
+// source of truth — which may serve straight from its working copy with no
+// bare mirror at all — still report the artifacts it hosts.
+inline int checkoutArtifactCount(const QString &localPath)
+{
+    if (localPath.trimmed().isEmpty() || !QDir(localPath).exists())
+        return -1;
+    return releaseCasBlobCount(QDir(
+        QDir(localPath).filePath(QStringLiteral(".forkmesh/release-blobs/sha256"))));
 }
 
 // One release artifact blob physically stored in a node's mirror CAS, resolved

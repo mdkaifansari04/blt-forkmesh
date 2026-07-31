@@ -623,6 +623,27 @@ void MainWindow::runDeferredStartup()
         m_selectedNode = m_repositories.at(index).owner;
         refreshRepositoryList();
         openRepoDetail(index);
+        // Land back on whichever tab was actually open last (adhoc #101) rather
+        // than Settings -> General's "open repositories on tab" default (Agents
+        // unless changed) — a relaunch should stay on whatever page it's on, not
+        // detour through Agents every time.
+        const int savedTab =
+            QSettings().value(kLastRepoDetailTabSetting, -1).toInt();
+        if (savedTab >= 0) {
+            // applyNavDetailTab()'s Agents (tab 3) branch sets the stack index
+            // directly rather than driving it through a button click, so — unlike
+            // every other tab — it never lazily builds the real page itself. That
+            // is normally masked by Agents also being the default landing tab
+            // (already built above by openRepoDetail()); build it explicitly here
+            // so landing on a saved tab that differs from the configured default
+            // cannot leave the Agents tab showing its unbuilt placeholder.
+            ensureRepoDetailTabBuilt(savedTab);
+            NavPlace target;
+            target.section = 0;
+            target.repoIndex = index;
+            target.detailTab = savedTab;
+            applyNavDetailTab(target);
+        }
         logStartup(QStringLiteral("last repository detail loaded"));
         // Issue metadata is worker-loaded; applyLoadedIssues resumes the looper
         // only after its backlog has arrived.
@@ -678,6 +699,16 @@ void MainWindow::runDeferredStartup()
     // -> Automatic backups). Armed for every launch, headless included — an
     // unattended mirror is exactly where a lost identity key hurts most.
     startAutoBackups();
+
+    // A provisioned direct HTTPS mirror (hostname configured + owner-only
+    // connector token on disk) used to stay dark after every restart until
+    // someone clicked "Start mirror services" — a headless VPS has nobody to
+    // click it, so its Cloudflare Tunnel never came back. Auto-start the
+    // gateway/Tunnel/registration chain, deferred a further beat so spawning
+    // the gateway and cloudflared doesn't compete with the startup sync burst
+    // (autoSyncMirrors/performRelaySync fire in this same window).
+    QTimer::singleShot(10000, this,
+                       &MainWindow::maybeAutoStartDirectMirrorServices);
 }
 
 void MainWindow::applyTheme()

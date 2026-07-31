@@ -2,6 +2,7 @@
 // permissions, local identity and public wallet connection, Cloudflare relay
 // bootstrap, remote hosts, and logs.
 
+#include "ActionStore.h"
 #include "ControlNode.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -10,6 +11,7 @@
 
 #include <QApplication>
 #include <QClipboard>
+#include <QDateTime>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QHeaderView>
@@ -23,6 +25,7 @@
 #include <QScrollArea>
 #include <QStandardPaths>
 #include <QSaveFile>
+#include <QTabWidget>
 #include <QTextDocument>
 #include <QTimer>
 
@@ -136,6 +139,20 @@ bool prepareOwnerDirectory(const QString &path, QString *error)
     return true;
 }
 
+// Current bytes of an owner-only file, or empty when it is absent or is not a
+// plain file. Used to tell a rewritten-but-identical configuration from a real
+// change, so a running gateway is only restarted when it must be.
+QByteArray readOwnerFileIfPresent(const QString &path)
+{
+    const QFileInfo info(path);
+    if (!info.isFile() || info.isSymLink())
+        return {};
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly))
+        return {};
+    return file.readAll();
+}
+
 bool writeOwnerJson(const QString &path, const QJsonObject &object,
                     QString *error)
 {
@@ -168,6 +185,51 @@ bool writeOwnerJson(const QString &path, const QJsonObject &object,
                 "Could not commit the mirror-gateway configuration.");
         return false;
     }
+    return true;
+}
+
+// Rewrite the CLOUDFLARE_* assignments in cloudflare_worker/.env.production in
+// place, keeping every other production secret and comment. The file is the
+// deploy machine's own credential store, so it is written owner-only and is
+// never created through a symlink.
+bool writeEnvAssignments(const QString &path,
+                         const QMap<QString, QString> &values,
+                         QString *error)
+{
+    const auto fail = [error](const QString &message) {
+        if (error)
+            *error = message;
+        return false;
+    };
+    const QFileInfo info(path);
+    QString contents;
+    if (info.exists()) {
+        if (info.isSymLink() || !info.isFile())
+            return fail(QStringLiteral("%1 is not a regular file.").arg(path));
+        // A .env is a handful of lines; anything larger is not the file this
+        // rotation should be rewriting, and truncating it would lose secrets.
+        if (info.size() > 512 * 1024)
+            return fail(QStringLiteral("%1 is unexpectedly large.").arg(path));
+        QFile existing(path);
+        if (!existing.open(QIODevice::ReadOnly))
+            return fail(QStringLiteral("Could not read %1.").arg(path));
+        contents = QString::fromUtf8(existing.readAll());
+    }
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
+        contents = forkmesh::control::updatedEnvAssignment(contents, it.key(),
+                                                           it.value());
+    }
+    QSaveFile file(path);
+    file.setDirectWriteFallback(false);
+    if (!file.open(QIODevice::WriteOnly) ||
+        !file.setPermissions(QFileDevice::ReadOwner |
+                             QFileDevice::WriteOwner)) {
+        file.cancelWriting();
+        return fail(QStringLiteral("Could not write %1.").arg(path));
+    }
+    const QByteArray bytes = contents.toUtf8();
+    if (file.write(bytes) != bytes.size() || !file.commit())
+        return fail(QStringLiteral("Could not commit %1.").arg(path));
     return true;
 }
 
@@ -258,14 +320,28 @@ QWidget *MainWindow::buildControlNodeSection()
             "remain on devices you control; the relay receives only signed public "
             "metadata and ordinary repository traffic.")));
 
-    auto *scroll = new QScrollArea;
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setWidgetResizable(true);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    auto *body = new QWidget;
-    auto *bodyCol = new QVBoxLayout(body);
-    bodyCol->setContentsMargins(0, 0, 0, 0);
-    bodyCol->setSpacing(14);
+    // One tab per operational area instead of one very long scroll (adhoc
+    // #108). Each tab scrolls on its own; the title and the privacy note above
+    // stay pinned so they are readable from any tab.
+    auto *tabs = new QTabWidget;
+    tabs->setObjectName(QStringLiteral("controlNodeTabs"));
+    tabs->setDocumentMode(true);
+    m_controlNodeTabs = tabs;
+    const auto addTab = [tabs](QWidget *card, const QString &name) {
+        auto *body = new QWidget;
+        auto *bodyCol = new QVBoxLayout(body);
+        bodyCol->setContentsMargins(2, 12, 2, 12);
+        bodyCol->setSpacing(14);
+        bodyCol->addWidget(card);
+        bodyCol->addStretch();
+        auto *scroll = new QScrollArea;
+        scroll->setObjectName(QStringLiteral("controlNodeTabScroll"));
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidgetResizable(true);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidget(body);
+        tabs->addTab(scroll, name);
+    };
 
     // --- Local service lifecycle ------------------------------------------
     QVBoxLayout *serviceCol = nullptr;
@@ -319,7 +395,7 @@ QWidget *MainWindow::buildControlNodeSection()
     serviceButtons->addWidget(logsButton);
     serviceButtons->addStretch();
     serviceCol->addLayout(serviceButtons);
-    bodyCol->addWidget(serviceCard);
+    addTab(serviceCard, QStringLiteral("Mirror services"));
 
     // --- Per-repository permissions ---------------------------------------
     QVBoxLayout *permissionCol = nullptr;
@@ -351,7 +427,7 @@ QWidget *MainWindow::buildControlNodeSection()
     connect(m_controlPermissionsTable, &QTableWidget::itemChanged, this,
             &MainWindow::updateControlRepositoryPermission);
     permissionCol->addWidget(m_controlPermissionsTable);
-    bodyCol->addWidget(permissionCard);
+    addTab(permissionCard, QStringLiteral("Repository permissions"));
 
     // --- Local key + wallet public address --------------------------------
     QVBoxLayout *identityCol = nullptr;
@@ -414,10 +490,10 @@ QWidget *MainWindow::buildControlNodeSection()
             "ledger allocations; Completed on-chain transfers include a "
             "confirmed transaction signature. ForkMesh never stores a user's "
             "wallet private key.")));
-    bodyCol->addWidget(identityCard);
+    addTab(identityCard, QStringLiteral("Keys and wallet"));
 
     // --- First-instance-owner community reward-pool signer ----------------
-    bodyCol->addWidget(buildRewardPoolControlCard());
+    addTab(buildRewardPoolControlCard(), QStringLiteral("Reward pool"));
 
     // --- Cloudflare one-click relay bootstrap -----------------------------
     QVBoxLayout *cloudflareCol = nullptr;
@@ -598,10 +674,14 @@ QWidget *MainWindow::buildControlNodeSection()
     mono.setStyleHint(QFont::Monospace);
     m_controlNodeOutput->setFont(mono);
     cloudflareCol->addWidget(m_controlNodeOutput);
-    bodyCol->addWidget(cloudflareCard);
+    m_controlCloudflareTabIndex = tabs->count();
+    addTab(cloudflareCard, QStringLiteral("Cloudflare relay"));
+
+    // --- Cloudflare API token: what it can do vs. what ForkMesh needs ------
+    addTab(buildCloudflareTokenCard(), QStringLiteral("API token"));
 
     // --- Ship this checkout with cloudflare_worker/deploy.sh ---------------
-    bodyCol->addWidget(buildSiteDeployCard());
+    addTab(buildSiteDeployCard(), QStringLiteral("Site deployment"));
 
     // --- Remote hosts ------------------------------------------------------
     QVBoxLayout *hostsCol = nullptr;
@@ -635,11 +715,9 @@ QWidget *MainWindow::buildControlNodeSection()
     hostButtons->addWidget(deployHosts);
     hostButtons->addStretch();
     hostsCol->addLayout(hostButtons);
-    bodyCol->addWidget(hostsCard);
-    bodyCol->addStretch();
+    addTab(hostsCard, QStringLiteral("Connected hosts"));
 
-    scroll->setWidget(body);
-    outer->addWidget(scroll, 1);
+    outer->addWidget(tabs, 1);
 
     m_controlNodeRefreshTimer = new QTimer(page);
     // Process/gateway labels are cheap, but the mirror readiness snapshot is
@@ -654,7 +732,15 @@ QWidget *MainWindow::buildControlNodeSection()
         }
     });
     m_controlNodeRefreshTimer->start();
-    m_directMirrorRegistrationTimer = new QTimer(page);
+    ensureDirectMirrorRegistrationTimer(page);
+    return page;
+}
+
+void MainWindow::ensureDirectMirrorRegistrationTimer(QObject *parent)
+{
+    if (m_directMirrorRegistrationTimer)
+        return;
+    m_directMirrorRegistrationTimer = new QTimer(parent);
     m_directMirrorRegistrationTimer->setInterval(5 * 60 * 1000);
     connect(m_directMirrorRegistrationTimer, &QTimer::timeout, this,
             [this] {
@@ -662,12 +748,15 @@ QWidget *MainWindow::buildControlNodeSection()
                 registerDirectMirrorEndpoint();
             });
     m_directMirrorRegistrationTimer->start();
-    return page;
 }
 
 void MainWindow::openCloudflareSetupFromSystemLink(const QString &target)
 {
     showSection(kControlNodeSectionIndex);
+    // The relay fields this link fills live on their own tab now, so raise it
+    // rather than filling a form the operator cannot see.
+    if (m_controlNodeTabs && m_controlCloudflareTabIndex >= 0)
+        m_controlNodeTabs->setCurrentIndex(m_controlCloudflareTabIndex);
     const QUrl url(target);
     if (url.isValid() && url.scheme() == QLatin1String("forkmesh") &&
         url.host() == QLatin1String("control") &&
@@ -1186,6 +1275,49 @@ void MainWindow::startControlNodeServing()
     refreshControlNode();
 }
 
+void MainWindow::maybeAutoStartDirectMirrorServices()
+{
+    QSettings settings;
+    if (!settings
+             .value(QStringLiteral("control/autoStartMirrorServices"), true)
+             .toBool())
+        return;
+    // Respect an explicitly parked node — the desktop's "Start mirror
+    // services" button is the deliberate un-park. Headless nodes are forced
+    // online in setHeadlessMode, so this never strands an unattended mirror.
+    if (m_nodeOffline)
+        return;
+    const QString hostname =
+        settings.value(QStringLiteral("control/cloudflareMirrorHostname"))
+            .toString()
+            .trimmed()
+            .toLower();
+    if (hostname.isEmpty())
+        return;
+    // Only a fully provisioned endpoint qualifies: the owner-only connector
+    // token proves provisionDirectMirrorEndpoint (or the installer) already
+    // ran here. Same regular-file/owner-only test the Tunnel launch applies.
+    const QFileInfo tokenInfo(directGatewayConnectorTokenPath());
+    const auto forbiddenPermissions =
+        QFileDevice::ReadGroup | QFileDevice::WriteGroup |
+        QFileDevice::ExeGroup | QFileDevice::ReadOther |
+        QFileDevice::WriteOther | QFileDevice::ExeOther;
+    if (!tokenInfo.isFile() || tokenInfo.isSymLink() ||
+        (tokenInfo.permissions() & forbiddenPermissions))
+        return;
+    if ((m_mirrorGatewayProcess &&
+         m_mirrorGatewayProcess->state() != QProcess::NotRunning) ||
+        (m_cloudflaredProcess &&
+         m_cloudflaredProcess->state() != QProcess::NotRunning))
+        return;
+    logSystem(QStringLiteral(
+                  "Control node: auto-starting direct HTTPS mirror services "
+                  "for %1.")
+                  .arg(hostname));
+    ensureDirectMirrorRegistrationTimer(this);
+    startDirectMirrorServices();
+}
+
 void MainWindow::stopControlNodeServing()
 {
     stopDirectMirrorServices();
@@ -1505,8 +1637,20 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         config.insert(QStringLiteral("privateReplicaStore"),
                       privateStoreInfo.absoluteFilePath());
     }
+    // Compare against what the gateway is already serving before rewriting it:
+    // every successful encrypted-mirror seal calls this with
+    // restartRunningGateway, and a seal happens every few minutes on an
+    // unattended mirror. Restarting unconditionally left the loopback origin
+    // down for a beat that often, so the relay's endpoint validation and health
+    // probes kept landing in the gap (502 -> invalid_manifest -> the node never
+    // registered a tunnel at all). An unchanged configuration needs no restart.
+    const QByteArray previousConfig = readOwnerFileIfPresent(
+        directGatewayConfigPath());
     if (!writeOwnerJson(directGatewayConfigPath(), config, error))
         return false;
+    const bool configChanged =
+        previousConfig !=
+        readOwnerFileIfPresent(directGatewayConfigPath());
 
     m_directMirrorHostname = hostname;
     m_directMirrorRouterPublicKey = routerKey;
@@ -1515,7 +1659,7 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
     settings.setValue(
         QStringLiteral("control/directMirrorRouterPublicKey"), routerKey);
 
-    if (restartRunningGateway &&
+    if (restartRunningGateway && configChanged &&
         ((m_mirrorGatewayProcess &&
           m_mirrorGatewayProcess->state() !=
               QProcess::NotRunning) ||
@@ -1882,11 +2026,22 @@ void MainWindow::checkDirectMirrorGatewayHealth()
 
 void MainWindow::registerDirectMirrorEndpoint()
 {
-    if (!m_networkAccess ||
-        !m_directMirrorGatewayHealthy ||
-        !m_cloudflaredProcess ||
-        m_cloudflaredProcess->state() ==
-            QProcess::NotRunning ||
+    // A connector this process spawned is one way to know a Tunnel is in front
+    // of the loopback gateway; an owner-only connector token on disk is the
+    // other, and it is the only one a packaged deployment can offer — those run
+    // cloudflared under its own supervised unit (see
+    // packaging/systemd/cloudflared-forkmesh.service), so m_cloudflaredProcess
+    // is legitimately null there and requiring it silently disabled
+    // registration for every externally supervised mirror. The Worker
+    // revalidates proxied DNS and the signed manifest before accepting either
+    // way, so a node whose Tunnel is actually down still cannot register.
+    const QFileInfo connectorTokenInfo(directGatewayConnectorTokenPath());
+    const bool connectorProvisioned =
+        (m_cloudflaredProcess &&
+         m_cloudflaredProcess->state() != QProcess::NotRunning) ||
+        (connectorTokenInfo.isFile() && !connectorTokenInfo.isSymLink());
+    if (!m_networkAccess || !m_directMirrorGatewayHealthy ||
+        !connectorProvisioned ||
         (!m_profileIdentity.isValid() &&
          !m_profileIdentity.load()))
         return;
@@ -2924,6 +3079,725 @@ void MainWindow::appendSiteDeployOutput(const QString &text)
     m_siteDeployOutput->insertPlainText(safe);
     m_siteDeployOutput->moveCursor(QTextCursor::End);
     m_siteDeployOutput->ensureCursorVisible();
+}
+
+QWidget *MainWindow::buildCloudflareTokenCard()
+{
+    QVBoxLayout *col = nullptr;
+    QFrame *card =
+        controlCard(QStringLiteral("Cloudflare API token"), &col);
+    col->addWidget(controlHint(
+        QStringLiteral(
+            "Checks a Cloudflare API token against the exact permissions this "
+            "checkout's deploy path needs. The token's own policy is read when "
+            "it may read itself; otherwise each capability is confirmed with a "
+            "read-only probe, which proves reach but never edit rights. "
+            "Generating a replacement mints a token scoped to the table below "
+            "and stores it in this device's CLOUDFLARE_API_TOKEN variable and in "
+            "cloudflare_worker/.env.production — the two places deploys read it "
+            "from. Token values are shown only as their last four characters "
+            "and are redacted from the output below; the previous token stays "
+            "valid until you delete it in the Cloudflare dashboard.")));
+
+    auto *form = new QFormLayout;
+    form->setLabelAlignment(Qt::AlignRight);
+    m_controlTokenEdit = new QLineEdit(
+        forkmesh::control::cloudflareApiTokenFromVariables(
+            ActionStore::variables()));
+    m_controlTokenEdit->setObjectName(QStringLiteral("controlTokenValue"));
+    m_controlTokenEdit->setEchoMode(QLineEdit::Password);
+    m_controlTokenEdit->setClearButtonEnabled(true);
+    m_controlTokenEdit->setPlaceholderText(
+        QStringLiteral("empty: use this device's saved CLOUDFLARE_API_TOKEN"));
+    form->addRow(QStringLiteral("API token"), m_controlTokenEdit);
+    col->addLayout(form);
+
+    auto *buttons = new QHBoxLayout;
+    m_controlTokenTestButton =
+        new QPushButton(QStringLiteral("Check token permissions"));
+    m_controlTokenTestButton->setObjectName(
+        QStringLiteral("controlTokenTestButton"));
+    m_controlTokenTestButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_controlTokenTestButton, QStringLiteral("shield-check"), 14);
+    connect(m_controlTokenTestButton, &QPushButton::clicked, this,
+            &MainWindow::testCloudflareApiToken);
+    buttons->addWidget(m_controlTokenTestButton);
+    m_controlTokenGenerateButton =
+        new QPushButton(QStringLiteral("Generate and install a new token"));
+    m_controlTokenGenerateButton->setObjectName(
+        QStringLiteral("controlTokenGenerateButton"));
+    m_controlTokenGenerateButton->setProperty("buttonSize", "primary");
+    m_controlTokenGenerateButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_controlTokenGenerateButton, QStringLiteral("key"), 14);
+    connect(m_controlTokenGenerateButton, &QPushButton::clicked, this,
+            &MainWindow::generateCloudflareApiToken);
+    buttons->addWidget(m_controlTokenGenerateButton);
+    buttons->addStretch();
+    col->addLayout(buttons);
+
+    m_controlTokenStatus = new QLabel(
+        QStringLiteral("No token has been checked in this session."));
+    m_controlTokenStatus->setObjectName(QStringLiteral("controlTokenStatus"));
+    m_controlTokenStatus->setWordWrap(true);
+    m_controlTokenStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    col->addWidget(m_controlTokenStatus);
+
+    m_controlTokenTable = new QTableWidget(0, 5);
+    m_controlTokenTable->setObjectName(
+        QStringLiteral("controlTokenPermissionsTable"));
+    m_controlTokenTable->setHorizontalHeaderLabels(
+        {QStringLiteral("Cloudflare permission"), QStringLiteral("ForkMesh needs"),
+         QStringLiteral("Token policy"), QStringLiteral("Live check"),
+         QStringLiteral("Used for")});
+    m_controlTokenTable->verticalHeader()->setVisible(false);
+    m_controlTokenTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    m_controlTokenTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    m_controlTokenTable->setShowGrid(false);
+    m_controlTokenTable->setWordWrap(true);
+    for (int column = 0; column < 4; ++column) {
+        m_controlTokenTable->horizontalHeader()->setSectionResizeMode(
+            column, QHeaderView::ResizeToContents);
+    }
+    m_controlTokenTable->horizontalHeader()->setSectionResizeMode(
+        4, QHeaderView::Stretch);
+    // The tab already scrolls; a second scrollbar inside the table would hide
+    // half the requirement list.
+    m_controlTokenTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    col->addWidget(m_controlTokenTable);
+
+    m_controlTokenTargets = new QLabel;
+    m_controlTokenTargets->setObjectName(QStringLiteral("mutedLabel"));
+    m_controlTokenTargets->setWordWrap(true);
+    const QString envPath = forkmesh::control::siteDeployEnvFilePath(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    m_controlTokenTargets->setText(
+        envPath.isEmpty()
+            ? QStringLiteral(
+                  "A new token is written to this device's CLOUDFLARE_API_TOKEN "
+                  "variable. cloudflare_worker/.env.production was not found "
+                  "next to this build's Worker bundle, so no file is rewritten.")
+            : QStringLiteral(
+                  "A new token replaces CLOUDFLARE_API_TOKEN in this device's "
+                  "variables and in %1.")
+                  .arg(envPath));
+    col->addWidget(m_controlTokenTargets);
+
+    m_controlTokenOutput = new QPlainTextEdit;
+    m_controlTokenOutput->setObjectName(QStringLiteral("controlTokenOutput"));
+    m_controlTokenOutput->setReadOnly(true);
+    m_controlTokenOutput->setLineWrapMode(QPlainTextEdit::NoWrap);
+    m_controlTokenOutput->setMinimumHeight(120);
+    m_controlTokenOutput->document()->setMaximumBlockCount(500);
+    m_controlTokenOutput->setPlaceholderText(
+        QStringLiteral("Cloudflare API calls made by this tab appear here; "
+                       "credentials are redacted."));
+    QFont mono(QStringLiteral("monospace"));
+    mono.setStyleHint(QFont::Monospace);
+    m_controlTokenOutput->setFont(mono);
+    col->addWidget(m_controlTokenOutput);
+
+    // Show the requirement table before anything is checked, so the tab answers
+    // "what is required" on its own.
+    renderCloudflareTokenReport();
+    return card;
+}
+
+QString MainWindow::resolvedCloudflareApiToken() const
+{
+    if (m_controlTokenEdit) {
+        const QString typed = m_controlTokenEdit->text().trimmed();
+        if (!typed.isEmpty())
+            return typed;
+    }
+    if (m_cloudflareTokenEdit) {
+        const QString deployToken = m_cloudflareTokenEdit->text().trimmed();
+        if (!deployToken.isEmpty())
+            return deployToken;
+    }
+    return forkmesh::control::cloudflareApiTokenFromVariables(
+        ActionStore::variables());
+}
+
+void MainWindow::setCloudflareTokenBusy(bool busy)
+{
+    m_controlTokenBusy = busy;
+    if (m_controlTokenTestButton)
+        m_controlTokenTestButton->setEnabled(!busy);
+    if (m_controlTokenGenerateButton)
+        m_controlTokenGenerateButton->setEnabled(!busy);
+}
+
+void MainWindow::endCloudflareTokenRun()
+{
+    // Re-enable the buttons and drop the redaction copy together: every exit
+    // from a check or a rotation, successful or not, ends here.
+    setCloudflareTokenBusy(false);
+    m_controlTokenSecret.clear();
+}
+
+void MainWindow::appendCloudflareTokenOutput(const QString &text)
+{
+    if (!m_controlTokenOutput || text.isEmpty())
+        return;
+    const QString safe = forkmesh::control::redactProcessOutput(
+        text, {m_controlTokenSecret, m_cloudflareActiveSecret});
+    m_controlTokenOutput->moveCursor(QTextCursor::End);
+    m_controlTokenOutput->insertPlainText(safe);
+    m_controlTokenOutput->moveCursor(QTextCursor::End);
+    m_controlTokenOutput->ensureCursorVisible();
+}
+
+void MainWindow::testCloudflareApiToken()
+{
+    if (m_controlTokenBusy)
+        return;
+    const QString token = resolvedCloudflareApiToken();
+    if (token.isEmpty()) {
+        if (m_controlTokenStatus)
+            m_controlTokenStatus->setText(QStringLiteral(
+                "No Cloudflare API token: paste one above, or save "
+                "CLOUDFLARE_API_TOKEN in Settings > Secrets & Coves."));
+        return;
+    }
+    if (!forkmesh::control::isPlausibleCloudflareApiToken(token)) {
+        if (m_controlTokenStatus)
+            m_controlTokenStatus->setText(QStringLiteral(
+                "That value does not look like a Cloudflare API token (40 "
+                "characters, no spaces). Nothing was sent."));
+        return;
+    }
+
+    m_controlTokenSecret = token;
+    m_controlTokenGrantedGroups.clear();
+    m_controlTokenProbeResults.clear();
+    m_controlTokenPolicyReadable = false;
+    m_controlTokenUserResource.clear();
+    m_controlTokenZoneId.clear();
+    m_controlTokenAccountId =
+        m_cloudflareAccountEdit ? m_cloudflareAccountEdit->text().trimmed()
+                                : QString();
+    if (m_controlTokenAccountId.isEmpty()) {
+        m_controlTokenAccountId =
+            forkmesh::control::cloudflareAccountIdFromVariables(
+                ActionStore::variables());
+    }
+    setCloudflareTokenBusy(true);
+    if (m_controlTokenOutput)
+        m_controlTokenOutput->clear();
+    const QString masked = forkmesh::control::maskedTokenSuffix(token);
+    if (m_controlTokenStatus) {
+        m_controlTokenStatus->setText(
+            QStringLiteral("Checking token %1 against Cloudflare…").arg(masked));
+    }
+    appendCloudflareTokenOutput(
+        QStringLiteral("GET /user/tokens/verify (token %1)\n").arg(masked));
+    renderCloudflareTokenReport();
+
+    cloudflareApiCall(
+        token, QStringLiteral("/user/tokens/verify"),
+        QByteArrayLiteral("GET"), {},
+        [this, token, masked](const QJsonObject &response,
+                              const QString &error) {
+            if (!error.isEmpty()) {
+                appendCloudflareTokenOutput(error + QLatin1Char('\n'));
+                if (m_controlTokenStatus) {
+                    m_controlTokenStatus->setText(
+                        QStringLiteral("Token %1 was rejected by Cloudflare: %2")
+                            .arg(masked, error));
+                }
+                endCloudflareTokenRun();
+                return;
+            }
+            const QString status =
+                forkmesh::control::cloudflareTokenVerifyStatus(response);
+            appendCloudflareTokenOutput(
+                QStringLiteral("Token status: %1\n")
+                    .arg(status.isEmpty() ? QStringLiteral("unknown") : status));
+            if (status != QLatin1String("active")) {
+                if (m_controlTokenStatus) {
+                    m_controlTokenStatus->setText(
+                        QStringLiteral(
+                            "Token %1 is %2, so no permission can be used. "
+                            "Generate a replacement below or re-enable it in the "
+                            "Cloudflare dashboard.")
+                            .arg(masked, status.isEmpty()
+                                             ? QStringLiteral("not active")
+                                             : status));
+                }
+                endCloudflareTokenRun();
+                return;
+            }
+            checkCloudflareTokenPolicies(
+                token, forkmesh::control::cloudflareTokenVerifyId(response));
+        });
+}
+
+void MainWindow::checkCloudflareTokenPolicies(const QString &token,
+                                              const QString &tokenId)
+{
+    if (tokenId.isEmpty()) {
+        appendCloudflareTokenOutput(QStringLiteral(
+            "Cloudflare did not return this token's id, so its policy cannot be "
+            "read; falling back to read-only probes.\n"));
+        resolveCloudflareTokenTopology(token);
+        return;
+    }
+    appendCloudflareTokenOutput(
+        QStringLiteral("GET /user/tokens/%1\n").arg(tokenId));
+    cloudflareApiCall(
+        token, QStringLiteral("/user/tokens/") + tokenId,
+        QByteArrayLiteral("GET"), {},
+        [this, token](const QJsonObject &response, const QString &error) {
+            if (error.isEmpty()) {
+                m_controlTokenPolicyReadable = true;
+                m_controlTokenGrantedGroups =
+                    forkmesh::control::cloudflareTokenPermissionGroupNames(
+                        response);
+                m_controlTokenUserResource =
+                    forkmesh::control::cloudflareTokenUserResourceKey(response);
+                const QStringList accounts =
+                    forkmesh::control::cloudflareTokenAccountIds(response);
+                if (m_controlTokenAccountId.isEmpty() && accounts.size() == 1)
+                    m_controlTokenAccountId = accounts.first();
+                appendCloudflareTokenOutput(
+                    QStringLiteral("Token policy grants: %1\n")
+                        .arg(m_controlTokenGrantedGroups.isEmpty()
+                                 ? QStringLiteral("(no permission group)")
+                                 : m_controlTokenGrantedGroups.join(
+                                       QStringLiteral(", "))));
+            } else {
+                appendCloudflareTokenOutput(
+                    QStringLiteral(
+                        "Token policy is not readable (%1); using read-only "
+                        "probes instead.\n")
+                        .arg(error));
+            }
+            resolveCloudflareTokenTopology(token);
+        });
+}
+
+void MainWindow::resolveCloudflareTokenTopology(const QString &token)
+{
+    // Probing an account- or zone-scoped capability needs the id of the
+    // resource to probe. Prefer what the page and this device already know, then
+    // ask Cloudflare — and only accept an answer that is unambiguous, so a
+    // multi-account token never gets checked against a stranger's account.
+    if (m_controlTokenAccountId.isEmpty()) {
+        appendCloudflareTokenOutput(QStringLiteral("GET /accounts\n"));
+        cloudflareApiCall(
+            token, QStringLiteral("/accounts?per_page=2"),
+            QByteArrayLiteral("GET"), {},
+            [this, token](const QJsonObject &response, const QString &error) {
+                const QJsonArray accounts =
+                    response.value(QStringLiteral("result")).toArray();
+                if (error.isEmpty() && accounts.size() == 1) {
+                    m_controlTokenAccountId = accounts.first()
+                                                  .toObject()
+                                                  .value(QStringLiteral("id"))
+                                                  .toString()
+                                                  .trimmed();
+                    appendCloudflareTokenOutput(
+                        QStringLiteral("Account: %1\n")
+                            .arg(m_controlTokenAccountId));
+                } else if (error.isEmpty()) {
+                    appendCloudflareTokenOutput(QStringLiteral(
+                        "The token reaches %1 accounts; set Account ID on the "
+                        "Cloudflare relay tab so checks are unambiguous.\n")
+                            .arg(accounts.size()));
+                } else {
+                    appendCloudflareTokenOutput(
+                        QStringLiteral("Accounts are not listable (%1).\n")
+                            .arg(error));
+                }
+                // Mark the lookup done even when it answered nothing usable, or
+                // this pass would ask again forever.
+                if (m_controlTokenAccountId.isEmpty())
+                    m_controlTokenAccountId = QStringLiteral("-");
+                resolveCloudflareTokenTopology(token);
+            });
+        return;
+    }
+
+    if (m_controlTokenZoneId.isEmpty()) {
+        QString zoneName = m_cloudflareZoneEdit
+                               ? m_cloudflareZoneEdit->text().trimmed().toLower()
+                               : QString();
+        if (zoneName.isEmpty()) {
+            zoneName = forkmesh::control::cloudflareZoneNameFromVariables(
+                ActionStore::variables());
+        }
+        appendCloudflareTokenOutput(
+            zoneName.isEmpty()
+                ? QStringLiteral("GET /zones\n")
+                : QStringLiteral("GET /zones?name=%1\n").arg(zoneName));
+        const QString path =
+            zoneName.isEmpty()
+                ? QStringLiteral("/zones?per_page=2")
+                : QStringLiteral("/zones?name=") +
+                      QString::fromLatin1(
+                          QUrl::toPercentEncoding(zoneName));
+        cloudflareApiCall(
+            token, path, QByteArrayLiteral("GET"), {},
+            [this, token, zoneName](const QJsonObject &response,
+                                    const QString &error) {
+                const QJsonArray zones =
+                    response.value(QStringLiteral("result")).toArray();
+                if (error.isEmpty() && !zoneName.isEmpty()) {
+                    m_controlTokenZoneId =
+                        forkmesh::control::cloudflareZoneId(zones, zoneName);
+                } else if (error.isEmpty() && zones.size() == 1) {
+                    m_controlTokenZoneId = zones.first()
+                                               .toObject()
+                                               .value(QStringLiteral("id"))
+                                               .toString()
+                                               .trimmed();
+                }
+                if (!m_controlTokenZoneId.isEmpty()) {
+                    appendCloudflareTokenOutput(
+                        QStringLiteral("Zone: %1\n").arg(m_controlTokenZoneId));
+                } else if (error.isEmpty()) {
+                    appendCloudflareTokenOutput(QStringLiteral(
+                        "No single zone matched; set Cloudflare zone on the "
+                        "relay tab to check the DNS permission.\n"));
+                } else {
+                    appendCloudflareTokenOutput(
+                        QStringLiteral("Zones are not listable (%1).\n")
+                            .arg(error));
+                }
+                // Guard against a second lookup when the zone stays unknown.
+                if (m_controlTokenZoneId.isEmpty())
+                    m_controlTokenZoneId = QStringLiteral("-");
+                resolveCloudflareTokenTopology(token);
+            });
+        return;
+    }
+
+    runCloudflareTokenProbe(token, 0);
+}
+
+void MainWindow::runCloudflareTokenProbe(const QString &token, int index)
+{
+    const QList<forkmesh::control::CloudflareTokenRequirement> requirements =
+        forkmesh::control::cloudflareTokenRequirements();
+    if (index >= requirements.size()) {
+        endCloudflareTokenRun();
+        renderCloudflareTokenReport();
+        return;
+    }
+    const forkmesh::control::CloudflareTokenRequirement requirement =
+        requirements.at(index);
+    const QString path = forkmesh::control::cloudflareTokenProbePath(
+        requirement, m_controlTokenAccountId, m_controlTokenZoneId);
+    if (path.isEmpty()) {
+        m_controlTokenProbeResults.insert(
+            requirement.key,
+            requirement.probePath.isEmpty()
+                ? QStringLiteral("no read-only probe")
+                : QStringLiteral("skipped: id unknown"));
+        runCloudflareTokenProbe(token, index + 1);
+        return;
+    }
+    appendCloudflareTokenOutput(QStringLiteral("GET %1\n").arg(path));
+    cloudflareApiCall(
+        token, path, QByteArrayLiteral("GET"), {},
+        [this, token, index, requirement](const QJsonObject &,
+                                          const QString &error) {
+            m_controlTokenProbeResults.insert(
+                requirement.key,
+                error.isEmpty()
+                    ? QStringLiteral("read access confirmed")
+                    : QStringLiteral("denied"));
+            if (!error.isEmpty())
+                appendCloudflareTokenOutput(error + QLatin1Char('\n'));
+            runCloudflareTokenProbe(token, index + 1);
+        });
+}
+
+void MainWindow::renderCloudflareTokenReport()
+{
+    if (!m_controlTokenTable)
+        return;
+    const QList<forkmesh::control::CloudflareTokenRequirement> requirements =
+        forkmesh::control::cloudflareTokenRequirements();
+    m_controlTokenTable->setRowCount(requirements.size());
+    QStringList missing;
+    QStringList denied;
+    int requiredCount = 0;
+    int grantedCount = 0;
+    for (int row = 0; row < requirements.size(); ++row) {
+        const forkmesh::control::CloudflareTokenRequirement requirement =
+            requirements.at(row);
+        const bool granted = forkmesh::control::cloudflareTokenGrantsRequirement(
+            requirement, m_controlTokenGrantedGroups);
+        const QString probe = m_controlTokenProbeResults.value(requirement.key);
+        if (requirement.required) {
+            ++requiredCount;
+            if (m_controlTokenPolicyReadable && granted)
+                ++grantedCount;
+            if (m_controlTokenPolicyReadable && !granted)
+                missing.append(requirement.label);
+            if (probe == QLatin1String("denied"))
+                denied.append(requirement.label);
+        }
+        const auto cell = [](const QString &text) {
+            auto *item = new QTableWidgetItem(text);
+            item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+            return item;
+        };
+        m_controlTokenTable->setItem(row, 0, cell(requirement.label));
+        m_controlTokenTable->setItem(
+            row, 1,
+            cell(requirement.required ? QStringLiteral("Required")
+                                      : QStringLiteral("Optional")));
+        m_controlTokenTable->setItem(
+            row, 2,
+            cell(!m_controlTokenPolicyReadable
+                     ? QStringLiteral("not readable")
+                     : granted ? QStringLiteral("granted")
+                               : QStringLiteral("missing")));
+        m_controlTokenTable->setItem(
+            row, 3, cell(probe.isEmpty() ? QStringLiteral("not checked") : probe));
+        m_controlTokenTable->setItem(row, 4, cell(requirement.purpose));
+    }
+    m_controlTokenTable->resizeRowsToContents();
+    int tableHeight = m_controlTokenTable->horizontalHeader()->height() + 6;
+    for (int row = 0; row < m_controlTokenTable->rowCount(); ++row)
+        tableHeight += m_controlTokenTable->rowHeight(row);
+    m_controlTokenTable->setMinimumHeight(tableHeight);
+
+    if (!m_controlTokenStatus || m_controlTokenBusy)
+        return;
+    if (m_controlTokenSecret.isEmpty() && m_controlTokenProbeResults.isEmpty() &&
+        !m_controlTokenPolicyReadable) {
+        return; // never checked in this session: keep the initial hint
+    }
+    QStringList lines;
+    if (m_controlTokenPolicyReadable) {
+        lines << QStringLiteral("Token policy: %1 of %2 required permissions "
+                                "granted.")
+                     .arg(grantedCount)
+                     .arg(requiredCount);
+        if (!missing.isEmpty()) {
+            lines << QStringLiteral("Missing: %1.")
+                         .arg(missing.join(QStringLiteral(", ")));
+        }
+    } else {
+        lines << QStringLiteral(
+            "The token cannot read its own policy (that needs API Tokens: "
+            "Read), so the live checks below are what ForkMesh can confirm.");
+    }
+    if (!denied.isEmpty()) {
+        lines << QStringLiteral("Live checks denied: %1.")
+                     .arg(denied.join(QStringLiteral(", ")));
+    } else {
+        lines << QStringLiteral(
+            "Every probed capability answered; edit rights cannot be probed "
+            "without writing, so a deploy is still the final proof.");
+    }
+    m_controlTokenStatus->setText(lines.join(QLatin1Char(' ')));
+}
+
+void MainWindow::generateCloudflareApiToken()
+{
+    if (m_controlTokenBusy)
+        return;
+    const QString token = resolvedCloudflareApiToken();
+    if (token.isEmpty() ||
+        !forkmesh::control::isPlausibleCloudflareApiToken(token)) {
+        if (m_controlTokenStatus)
+            m_controlTokenStatus->setText(QStringLiteral(
+                "Minting a token needs a current Cloudflare token with API "
+                "Tokens: Edit. Paste one above first."));
+        return;
+    }
+    const QString account = m_controlTokenAccountId;
+    const QString zone = m_controlTokenZoneId;
+    static const QRegularExpression idPattern(
+        QStringLiteral("^[A-Za-z0-9]{1,64}$"));
+    if (!idPattern.match(account).hasMatch() ||
+        !idPattern.match(zone).hasMatch()) {
+        if (m_controlTokenStatus)
+            m_controlTokenStatus->setText(QStringLiteral(
+                "Run \"Check token permissions\" first (and set Account ID / "
+                "Cloudflare zone on the relay tab if they stay unknown): a new "
+                "token has to be scoped to one account and one zone."));
+        return;
+    }
+    const QString envPath = forkmesh::control::siteDeployEnvFilePath(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    if (QMessageBox::question(
+            this, QStringLiteral("Generate a Cloudflare API token"),
+            QStringLiteral(
+                "Create a new Cloudflare API token on account %1, scoped to the "
+                "permissions this page lists, and store it as this device's "
+                "CLOUDFLARE_API_TOKEN variable%2?\n\nThe token you are using now "
+                "stays valid until you delete it in the Cloudflare dashboard.")
+                .arg(account,
+                     envPath.isEmpty()
+                         ? QString()
+                         : QStringLiteral(" and in %1").arg(envPath)),
+            QMessageBox::Yes | QMessageBox::Cancel,
+            QMessageBox::Cancel) != QMessageBox::Yes) {
+        return;
+    }
+
+    m_controlTokenSecret = token;
+    setCloudflareTokenBusy(true);
+    appendCloudflareTokenOutput(
+        QStringLiteral("GET /user/tokens/permission_groups\n"));
+    // No per_page bound: this endpoint answers with the complete catalog, and a
+    // truncated page would look like a missing permission group.
+    cloudflareApiCall(
+        token, QStringLiteral("/user/tokens/permission_groups"),
+        QByteArrayLiteral("GET"), {},
+        [this, token, account, zone](const QJsonObject &response,
+                                     const QString &error) {
+            if (!error.isEmpty()) {
+                appendCloudflareTokenOutput(error + QLatin1Char('\n'));
+                if (m_controlTokenStatus) {
+                    m_controlTokenStatus->setText(QStringLiteral(
+                        "Cloudflare would not list its permission groups (%1). "
+                        "The current token needs API Tokens: Read and API "
+                        "Tokens: Edit to mint a replacement.").arg(error));
+                }
+                endCloudflareTokenRun();
+                return;
+            }
+            // Cloudflare only accepts a narrow character set in a token name,
+            // and a node name is operator-supplied.
+            static const QRegularExpression unsafeName(
+                QStringLiteral("[^A-Za-z0-9._-]"));
+            QString node = machineNodeName();
+            node.remove(unsafeName);
+            if (node.isEmpty())
+                node = QStringLiteral("node");
+            const QString name =
+                QStringLiteral("ForkMesh %1 %2")
+                    .arg(node.left(48),
+                         QDateTime::currentDateTimeUtc().toString(
+                             QStringLiteral("yyyyMMdd-HHmmss")));
+            QString payloadError;
+            const QJsonObject payload =
+                forkmesh::control::cloudflareTokenCreatePayload(
+                    name, account, zone, m_controlTokenUserResource,
+                    response.value(QStringLiteral("result")).toArray(),
+                    &payloadError);
+            if (payload.isEmpty()) {
+                appendCloudflareTokenOutput(payloadError + QLatin1Char('\n'));
+                if (m_controlTokenStatus)
+                    m_controlTokenStatus->setText(payloadError);
+                endCloudflareTokenRun();
+                return;
+            }
+            appendCloudflareTokenOutput(
+                QStringLiteral("POST /user/tokens (%1)\n").arg(name));
+            cloudflareApiCall(
+                token, QStringLiteral("/user/tokens"),
+                QByteArrayLiteral("POST"), payload,
+                [this](const QJsonObject &created, const QString &createError) {
+                    if (!createError.isEmpty()) {
+                        appendCloudflareTokenOutput(createError +
+                                                    QLatin1Char('\n'));
+                        if (m_controlTokenStatus) {
+                            m_controlTokenStatus->setText(
+                                QStringLiteral("Cloudflare refused to create the "
+                                               "token: %1")
+                                    .arg(createError));
+                        }
+                        endCloudflareTokenRun();
+                        return;
+                    }
+                    const QString value =
+                        forkmesh::control::cloudflareCreatedTokenValue(created);
+                    if (value.isEmpty()) {
+                        appendCloudflareTokenOutput(QStringLiteral(
+                            "Cloudflare created a token but returned no usable "
+                            "value; nothing was stored.\n"));
+                        if (m_controlTokenStatus) {
+                            m_controlTokenStatus->setText(QStringLiteral(
+                                "Cloudflare created a token but returned no "
+                                "usable value; nothing was stored."));
+                        }
+                        endCloudflareTokenRun();
+                        return;
+                    }
+                    adoptRotatedCloudflareToken(value);
+                });
+        });
+}
+
+void MainWindow::adoptRotatedCloudflareToken(const QString &token)
+{
+    // Redact the new secret from this tab's own output before anything else can
+    // print it.
+    m_controlTokenSecret = token;
+    const QString masked = forkmesh::control::maskedTokenSuffix(token);
+
+    QMap<QString, QString> variables = ActionStore::variables();
+    variables.insert(QStringLiteral("CLOUDFLARE_API_TOKEN"), token);
+    if (!m_controlTokenAccountId.isEmpty() &&
+        forkmesh::control::cloudflareAccountIdFromVariables(variables)
+            .isEmpty()) {
+        variables.insert(QStringLiteral("CLOUDFLARE_ACCOUNT_ID"),
+                         m_controlTokenAccountId);
+    }
+    ActionStore::setVariables(variables);
+    QStringList applied;
+    applied << QStringLiteral("this device's CLOUDFLARE_API_TOKEN variable");
+
+    const QString envPath = forkmesh::control::siteDeployEnvFilePath(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    QString envError;
+    if (envPath.isEmpty()) {
+        envError = QStringLiteral(
+            "cloudflare_worker/.env.production was not found next to this "
+            "build's Worker bundle, so no file was rewritten.");
+    } else {
+        QMap<QString, QString> assignments;
+        assignments.insert(QStringLiteral("CLOUDFLARE_API_TOKEN"), token);
+        if (!m_controlTokenAccountId.isEmpty()) {
+            assignments.insert(QStringLiteral("CLOUDFLARE_ACCOUNT_ID"),
+                               m_controlTokenAccountId);
+        }
+        if (writeEnvAssignments(envPath, assignments, &envError))
+            applied << envPath;
+    }
+
+    // Both deployment paths in this session pick the new token up without a
+    // restart: the relay bootstrap reads its own field, the site deploy reads
+    // .env.production.
+    if (m_controlTokenEdit)
+        m_controlTokenEdit->setText(token);
+    if (m_cloudflareTokenEdit)
+        m_cloudflareTokenEdit->setText(token);
+
+    appendCloudflareTokenOutput(
+        QStringLiteral("Created token %1; stored in %2.\n")
+            .arg(masked, applied.join(QStringLiteral(" and "))));
+    if (!envError.isEmpty())
+        appendCloudflareTokenOutput(envError + QLatin1Char('\n'));
+    logSystem(QStringLiteral(
+                  "Control node: created a scoped Cloudflare API token (%1) and "
+                  "replaced the stored deployment credential.")
+                  .arg(masked));
+    flashMessage(
+        QStringLiteral("New Cloudflare API token %1 stored.").arg(masked),
+        false);
+    if (m_controlTokenStatus) {
+        m_controlTokenStatus->setText(
+            QStringLiteral("Created token %1 and replaced %2. %3Re-checking it "
+                           "now…")
+                .arg(masked, applied.join(QStringLiteral(" and ")),
+                     envError.isEmpty() ? QString()
+                                        : envError + QLatin1Char(' ')));
+    }
+
+    // Verify the replacement the same way the operator would.
+    endCloudflareTokenRun();
+    QTimer::singleShot(0, this, &MainWindow::testCloudflareApiToken);
 }
 
 void MainWindow::connectToDeployedRelay(const QString &hostname)

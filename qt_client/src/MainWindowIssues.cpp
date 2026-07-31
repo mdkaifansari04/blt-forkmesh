@@ -4812,8 +4812,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     // Keep the floating "Log" button pinned to the live-log strip's bottom-right
     // corner as the strip resizes (adhoc #137). Don't consume — the strip still
     // needs the resize.
-    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog)
+    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog) {
         positionFloatingLogButton();
+        // Same corner, same reason: the pause-scroll toggle rides on top of the
+        // strip rather than in its layout (adhoc #92).
+        positionFooterLogPauseButton();
+    }
     // Right-click on selected text anywhere in the app: offer "Send to
     // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
     if (event->type() == QEvent::ContextMenu) {

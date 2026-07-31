@@ -3658,10 +3658,31 @@ void MainWindow::styleFooterUpdateLog()
     // Log view regardless of theme (adhoc #19). Per-line severity/category colour
     // comes from the HTML badge that setFooterUpdateLine() renders; the base text
     // stays black so plain messages don't wash out on white.
+    // No border of its own (adhoc #92): the panel it sits in already draws the
+    // rounded green outline, and the extra grey hairline 2px inside it read as a
+    // doubled edge. The right padding is trimmed to a hair as well — for a styled
+    // QAbstractScrollArea the padding pushes the *scrollbar* in too, which parked
+    // the scroll handle a dozen pixels off the panel edge with dead white between
+    // them; now it sits right against the border.
+    // The scrollbar rides the same white canvas: with the app-wide (transparent)
+    // track it painted the dark theme's window colour in a column hard against
+    // the green border, which read as a second, darker edge inside it.
     m_footerUpdateLog->setStyleSheet(
         QStringLiteral("QTextEdit#footerUpdateLog{color:#1f2328;border:none;"
-                       "border-right:1px solid #d0d7de;background:#ffffff;"
-                       "font-family:monospace;font-size:11px;padding:3px 12px;}"));
+                       "background:#ffffff;font-family:monospace;font-size:11px;"
+                       "padding:3px 1px 3px 12px;}"
+                       "QTextEdit#footerUpdateLog QScrollBar:vertical{"
+                       "background:#ffffff;width:9px;margin:0;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::handle:vertical{"
+                       "background:#d0d7de;border-radius:4px;min-height:24px;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::handle:vertical:"
+                       "hover{background:#afb8c1;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::add-line:vertical,"
+                       "QTextEdit#footerUpdateLog QScrollBar::sub-line:vertical{"
+                       "height:0;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::add-page:vertical,"
+                       "QTextEdit#footerUpdateLog QScrollBar::sub-page:vertical{"
+                       "background:#ffffff;}"));
 }
 
 // Render the same colored category badge the Log view uses so the always-on
@@ -3701,11 +3722,12 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     if (clean.isEmpty())
         return;
     const QString html = footerLogLineHtml(clean);
-    // Only auto-scroll to the new line if the view was already at (or very near)
-    // the bottom — otherwise a user who scrolled up to search back through
-    // history would get yanked back down by every new event.
+    // The strip follows the newest line by default, so a glance at the footer is
+    // always a glance at what just happened (adhoc #92). Scrolling back through
+    // history is what the corner pause toggle is for: while it's held down the
+    // view stays exactly where it was parked.
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
-    const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
+    const bool follow = !m_footerLogScrollPaused;
     m_footerUpdateLog->append(html);
     // QTextEdit has no setMaximumBlockCount: trim the oldest lines by hand so a
     // long-running session can't grow the strip without bound.
@@ -3731,7 +3753,7 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     // click (adhoc #133), even though the visible text is clipped at the edge.
     if (QTextBlock last = m_footerUpdateLog->document()->lastBlock(); last.isValid())
         last.setUserData(new FooterLogLineData(clean));
-    if (wasAtBottom && bar)
+    if (follow && bar)
         bar->setValue(bar->maximum());
 }
 
@@ -3909,16 +3931,9 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
     runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
         setUpdateStatus("Rebuilding...");
-        // Cap parallelism by RAM, not just cores: cc1plus peaks well past
-        // 1 GB on the big Qt translation units, and an OOM kill during an
-        // in-place update can take out the RUNNING node — which nothing
-        // restarts (the fleet daemons run under nohup, no supervisor).
-        int jobs = QThread::idealThreadCount();
-        const qint64 totalRam = SystemStats::totalMemoryBytes();
-        if (totalRam > 0)
-            jobs = qBound(1, int(totalRam / (1536LL * 1024 * 1024)), jobs);
         runUpdateStepUser("cmake",
-                          {"--build", buildDir, "-j", QString::number(jobs)},
+                          {"--build", buildDir, "-j",
+                           QString::number(ramCappedBuildJobs())},
                           buildDir, [this, buildDir, appPath] {
             const QString built = builtExecutablePath(buildDir);
             installAndRelaunch(built, appPath);

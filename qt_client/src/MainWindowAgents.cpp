@@ -512,7 +512,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
                                       .toString(QStringLiteral("MMM d  hh:mm")))
                             : QString());
     if (!s.branchName.isEmpty()) {
-        tip << QStringLiteral("Click the branch button to open %1").arg(s.branchName);
+        tip << QStringLiteral("Click the branch button to review %1 in the Git view")
+                   .arg(s.branchName);
         if (stat.files >= 0)
             tip << QStringLiteral("%1 file%2 changed")
                        .arg(stat.files)
@@ -677,14 +678,14 @@ public:
 
     // Reserve the chip's and the churn bar's slots in the column's width so
     // ResizeToContents never sizes the column so tight that either sits on top of
-    // the session's age.
+    // the session's age. Both slots are held open on every row, whether or not
+    // that row has a branch or any measured churn (adhoc #94): the slots are what
+    // keep every row's chip on one vertical line, so a row that leaves one empty
+    // has to leave the gap rather than let its chip slide into it.
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
-        if (!idx.data(kAgentBranchRole).toString().isEmpty())
-            s.rwidth() += chipWidth(opt, idx) + 2 * kButtonMargin;
-        if (barsWidth(idx) > 0)
-            s.rwidth() += barsWidth(idx) + kButtonMargin;
+        s.rwidth() += chipWidth(opt) + 2 * kButtonMargin + kBarWidth + kButtonMargin;
         s.rheight() = qMax(s.height(), kBarHeight + 6);
         return s;
     }
@@ -744,20 +745,20 @@ public:
         QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
                     kGlyphSize, kGlyphSize);
         themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
-        // Files the session's patch touched, in small type beside the glyph.
+        // Files the session's patch touched, in small type beside the glyph. The
+        // count field runs from the glyph to the alert's slot, which is reserved
+        // whether or not this row conflicts (adhoc #94), and the digits are
+        // right-aligned in it — so a "3" and a "15" end on the same edge instead
+        // of drifting apart down the list.
         const QString files = filesText(index);
         if (!files.isEmpty()) {
             const int textLeft = glyph.right() + 1 + kChipGap;
-            // The alert glyph, when there is one, owns the chip's trailing slot,
-            // so the count stops short of it.
-            const int textRight = conflicted
-                                      ? conflictRect(option, index).left() - kChipGap
-                                      : r.right() - kChipPadding;
+            const int textRight = conflictRect(option, index).left() - kChipGap;
             painter->setPen(ink);
             painter->setFont(chipFont(option));
             painter->drawText(QRect(textLeft, r.top(), textRight - textLeft + 1,
                                     r.height()),
-                              Qt::AlignVCenter | Qt::AlignLeft, files);
+                              Qt::AlignVCenter | Qt::AlignRight, files);
         }
         // Conflict alert, inside the chip rather than a button of its own in a
         // column of its own (adhoc #92): the orange glyph at the chip's trailing
@@ -849,38 +850,27 @@ private:
         return v.isValid() ? v.toInt() : -1;
     }
 
-    static int chipWidth(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    // One width for every chip in the column (adhoc #94), rather than one that
+    // grew and shrank with the row's own count and conflict flag: the widest
+    // count the cell can print ("99+") and the alert glyph's slot are budgeted on
+    // every row, so the chips read as a single column of identical buttons
+    // instead of an edge that steps in and out with each row's contents.
+    static int chipWidth(const QStyleOptionViewItem &opt)
     {
-        int w = 2 * kChipPadding + kGlyphSize;
-        const QString files = filesText(idx);
-        if (!files.isEmpty())
-            w += kChipGap + QFontMetrics(chipFont(opt)).horizontalAdvance(files);
-        if (idx.data(kAgentConflictRole).toBool())
-            w += kChipGap + kGlyphSize;
-        return w;
+        return 2 * kChipPadding + kGlyphSize + kChipGap +
+               QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+")) +
+               kChipGap + kGlyphSize;
     }
 
-    // Width the churn bars claim at the cell's trailing edge — nothing at all for
-    // a session with no measured change, so an untouched row leaves the title
-    // that much more room.
-    static int barsWidth(const QModelIndex &idx)
-    {
-        return idx.data(kAgentAddedRole).toInt() > 0 ||
-                       idx.data(kAgentRemovedRole).toInt() > 0
-                   ? kBarWidth
-                   : 0;
-    }
-
-    static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &)
     {
         const QRect cell = opt.rect;
         const int h = qMin(kButtonSize, cell.height() - 2);
-        // The bars sit outermost (right up against the title), so the chip stops
-        // short of them.
-        const int bars = barsWidth(idx);
-        const int right = cell.right() - (bars > 0 ? bars + kButtonMargin : 0);
-        const int w =
-            qMin(chipWidth(opt, idx), qMax(0, cell.width() - 2 * kButtonMargin));
+        // The bars sit outermost (right up against the title) and their slot is
+        // held open on every row, churn or not, so the chip's trailing edge lands
+        // in the same place all the way down the list.
+        const int right = cell.right() - kBarWidth - kButtonMargin;
+        const int w = qMin(chipWidth(opt), qMax(0, cell.width() - 2 * kButtonMargin));
         return QRect(right - kButtonMargin - w + 1, cell.center().y() - h / 2 + 1, w,
                      h);
     }
@@ -1366,7 +1356,9 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentMeta->setWordWrap(true);
     connect(m_agentMeta, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(kPullLinkScheme))
-            switchToPullTab(href.mid(kPullLinkScheme.size()).toInt());
+            // The PR's commits/files/diff open in the Git view's range pane
+            // (adhoc #107); its "PR #N" button goes on to the full PR page.
+            openPullDiffInGitView(href.mid(kPullLinkScheme.size()).toInt());
         else if (href.startsWith(kIssueLinkScheme)) {
             // Open the issue in its own repo's Issues tab (the session may belong to
             // a repo other than the one currently shown), reusing the notification
@@ -1496,7 +1488,9 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentViewPrButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
         if (s && s->prNumber > 0)
-            switchToPullTab(s->prNumber);
+            // Land on the PR's commits/files/diff in the Git view (adhoc #107);
+            // the pane's "PR #N" button goes on to the full PR page.
+            openPullDiffInGitView(s->prNumber);
     });
 
     // "Create linked issue" — for ad-hoc sessions (no issue) it files a tracked
@@ -5361,7 +5355,9 @@ void MainWindow::refreshAgentDetailMeta(int sessionId)
         m_agentBranchButton->setToolTip(
             session->branchName.isEmpty()
                 ? QString()
-                : QStringLiteral("Open branch %1").arg(session->branchName));
+                : QStringLiteral("Review %1's commits, files and diff in the "
+                                 "Git view")
+                      .arg(session->branchName));
     }
     if (m_agentWorktreeButton) {
         m_agentWorktreeButton->setVisible(!worktreePath.isEmpty());
@@ -5637,9 +5633,14 @@ void MainWindow::showAgentSession(int sessionId)
     // View PR button appears once a pull request exists for this session.
     if (m_agentViewPrButton) {
         m_agentViewPrButton->setVisible(session->prNumber > 0);
-        if (session->prNumber > 0)
+        if (session->prNumber > 0) {
             m_agentViewPrButton->setText(
                 QStringLiteral("View PR #%1").arg(session->prNumber));
+            m_agentViewPrButton->setToolTip(
+                QStringLiteral("Review PR #%1's commits, files and diff in the "
+                               "Git view")
+                    .arg(session->prNumber));
+        }
     }
     // "Create linked issue" only makes sense for an ad-hoc, owner-side session
     // that isn't already tracked by one. External (watch-only) sessions and

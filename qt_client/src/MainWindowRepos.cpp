@@ -415,6 +415,26 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         cleanCatalogString(data, QStringLiteral("commitAt"), 16);
     if (!commitAt.isEmpty())
         record.insert(QStringLiteral("commitAt"), commitAt);
+    // When this node last served a clone / a website read for the repo, and the
+    // bounded class of client it served (never a raw User-Agent). Optional
+    // extension fields, kept in lockstep with the Worker's catalog normalizer.
+    for (const QString &key : {QStringLiteral("cloneServedAt"),
+                               QStringLiteral("websiteServedAt")}) {
+        const QString servedAt = cleanCatalogString(data, key, 16);
+        bool numeric = false;
+        if (servedAt.toLongLong(&numeric) > 0 && numeric)
+            record.insert(key, servedAt);
+    }
+    static const QStringList serveAgentClasses{
+        QStringLiteral("forkmesh-node"), QStringLiteral("git-client"),
+        QStringLiteral("bot-tool"), QStringLiteral("browser"),
+        QStringLiteral("client")};
+    for (const QString &key : {QStringLiteral("cloneServedAgent"),
+                               QStringLiteral("websiteServedAgent")}) {
+        const QString agent = cleanCatalogString(data, key, 16);
+        if (serveAgentClasses.contains(agent))
+            record.insert(key, agent);
+    }
     return record;
 }
 
@@ -6321,8 +6341,19 @@ void MainWindow::pushToSshMirrorRemotes(int index)
     // mirrors and previews just pull, and private repos travel as sealed
     // replicas, never over a public mirror gateway.
     if (repo.previewOnly || repo.isPrivate ||
-        repo.localPath.trimmed().isEmpty() ||
-        repo.mirrorPath.trimmed().isEmpty() || !QDir(repo.mirrorPath).exists())
+        repo.localPath.trimmed().isEmpty())
+        return;
+    // A source-of-truth repository has no on-disk served mirror: it publishes
+    // through the sealed encrypted archive, and its record keeps mirrorPath
+    // empty. Requiring one silently disabled every SSH-fed gateway for exactly
+    // the repository that feeds them, so mirror2/mirror3 froze at whatever
+    // commit the last manual push left while their catalog lease stayed fresh.
+    // Fall back to the working copy, which holds the same heads and tags.
+    const QString pushSource =
+        (!repo.mirrorPath.trimmed().isEmpty() && QDir(repo.mirrorPath).exists())
+            ? repo.mirrorPath
+            : repo.localPath;
+    if (!QDir(pushSource).exists())
         return;
     const QString repoKey = repo.owner + "/" + repo.name;
     if (m_sshMirrorPushing.contains(repoKey)) {
@@ -6430,19 +6461,20 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                                              "push %1 to SSH mirror %2.")
                                   .arg(repoKey, gatewayHost));
                 });
-        // Push from the served bare mirror, but never let an unattended desktop
-        // rewind or delete a branch that advanced on the gateway while this
-        // checkout was offline. Automatic propagation therefore uses ordinary
-        // fast-forward refspecs and explicitly disables force and prune, even
-        // when a machine carries old push configuration. An intentional rewrite
-        // or branch deletion must go through an explicit, reviewed Git
-        // operation; otherwise one stale three-minute sync can undo a clean main
-        // merge on every headless mirror.
+        // Push from the served bare mirror (or the working copy when this is the
+        // source of truth), but never let an unattended desktop rewind or delete
+        // a branch that advanced on the gateway while this checkout was offline.
+        // Automatic propagation therefore uses ordinary fast-forward refspecs
+        // and explicitly disables force and prune, even when a machine carries
+        // old push configuration. An intentional rewrite or branch deletion must
+        // go through an explicit, reviewed Git operation; otherwise one stale
+        // three-minute sync can undo a clean main merge on every headless
+        // mirror.
         trackProcessActivity(process, QStringLiteral("push"),
                              QStringLiteral("Pushing %1/%2 to %3")
                                  .arg(repo.owner, repo.name, url));
         process->start(QStringLiteral("git"),
-                       {QStringLiteral("-C"), repo.mirrorPath,
+                       {QStringLiteral("-C"), pushSource,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
                         QStringLiteral("--atomic"),
                         QStringLiteral("--no-force"),

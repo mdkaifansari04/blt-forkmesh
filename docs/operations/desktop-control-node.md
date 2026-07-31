@@ -4,6 +4,11 @@ The Qt desktop client includes a **Control** page in its main navigation. It is
 the operator surface for the current device; it does not turn ForkMesh into a
 custodian.
 
+Each area below is a tab at the top of the page — Mirror services, Repository
+permissions, Keys and wallet, Reward pool, Cloudflare relay, API token, Site
+deployment, Connected hosts — and each tab scrolls on its own. The page title and
+the privacy note stay pinned above the tab bar.
+
 ## Local mirror operations
 
 The status card shows the relay connection, tracked mirror paths, repositories
@@ -71,7 +76,9 @@ The release flow therefore does not depend on the build machine's source path.
 
 Credential boundaries:
 
-- The Cloudflare token is never written to `QSettings`.
+- The token typed into this card is never written to `QSettings`. Storing a
+  credential is only ever the explicit result of the API token tab's rotation
+  (see below) or of Settings → Quick Setup.
 - The token is never included in process arguments.
 - The token is passed only as `CLOUDFLARE_API_TOKEN` in the local child process
   environment.
@@ -99,6 +106,56 @@ public canonical manifest on standard input, validates its type, target public
 key, encoding, and SHA-256 digest, signs with the existing local Ed25519
 identity, and emits only the public key and detached signature. The private key
 never leaves the desktop process.
+
+## API token
+
+The **API token** tab answers two questions without leaving the desktop: what an
+existing Cloudflare API token can do, and how to replace it with one scoped to
+exactly what ForkMesh needs.
+
+**Check token permissions** uses the token in the field, else the token in the
+Cloudflare relay tab, else this device's saved `CLOUDFLARE_API_TOKEN` variable.
+It calls `GET /user/tokens/verify`, then reads the token's own policy
+(`GET /user/tokens/<id>`) when the token may read itself, and finally probes each
+capability with one read-only request. The table reports, per permission, whether
+ForkMesh requires it, whether the token's policy grants it, and what the live
+probe answered. Two honest limits are stated on the page: a token without
+**API Tokens: Read** cannot report its own policy, and a read-only probe can
+never prove *edit* rights — only a deploy does.
+
+Required permissions:
+
+| Cloudflare permission | Used for |
+| --- | --- |
+| Account Settings: Read | discovering the account that owns the Worker, D1 and Tunnel |
+| Workers Scripts: Edit | uploading the Worker, its assets, Durable Objects, cron triggers and secrets |
+| D1: Edit | creating and migrating the `forkmesh` database |
+| Zone: Read | finding the zone the relay/mirror hostnames derive from |
+| DNS: Edit | the proxied relay and mirror records, plus each one-click mirror's A record |
+| Cloudflare Tunnel: Edit | the direct-HTTPS mirror gateway's Tunnel and connector credential |
+
+Optional: **Workers Tail: Read** (the live Worker log in Network → Logs), and
+**API Tokens: Read** / **API Tokens: Edit**, which this tab itself needs to
+report an exact policy and to mint a replacement.
+
+**Generate and install a new token** requires a current token with API Tokens:
+Edit, and an unambiguous account and zone (run the check first; set them on the
+Cloudflare relay tab if they stay unknown). It resolves permission-group ids from
+the account's own `GET /user/tokens/permission_groups` — no id is hardcoded —
+mints one token scoped to that account, that zone and this user, and then:
+
+1. replaces `CLOUDFLARE_API_TOKEN` in this device's variables (the value every
+   Actions run and the deploy workflow read), adding `CLOUDFLARE_ACCOUNT_ID` when
+   it is known and unset;
+2. replaces `CLOUDFLARE_API_TOKEN` in `cloudflare_worker/.env.production` in
+   place, keeping every other production secret, comment and ordering, dropping a
+   later stale duplicate of the same name, and writing the file owner-only;
+3. re-runs the permission check against the new token.
+
+The minted token is never displayed: the page names it by its last four
+characters only, and it is redacted from the tab's output pane. The token used to
+mint it stays valid until it is deleted in the Cloudflare dashboard, so an
+operator can roll back by pasting the old value back into the field.
 
 ## Connected hosts
 

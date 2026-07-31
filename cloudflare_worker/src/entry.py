@@ -277,7 +277,14 @@ NOTIFICATION_KINDS = frozenset({
     "repository_hosted",
     "organization_task_started",
     "organization_task_activity",
+    "account_email_sent",
 })
+# Transactional account mail an administrator is pinged about, coarse kind ->
+# human label. Kinds absent here (cron digests) are counted but never pinged.
+ACCOUNT_EMAIL_PING_LABELS = {
+    "verification": "Verification",
+    "password_reset": "Password reset",
+}
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
     "subscribed",
@@ -3070,11 +3077,56 @@ async def _record_status_deploy_sample(env, now):
     )
 
 
+async def _claim_status_sample_minute(env, now):
+    """At-most-once gate for this minute's /status health sample.
+
+    Two independent schedulers call record_status_sample: the platform Cron
+    Trigger directly (the only per-minute schedule the platform itself
+    guarantees, so /status keeps landing samples even while Durable Objects
+    are wedged or over their free-tier quota) and the ForkMeshCronRunner
+    alarm batch. The daily/hourly rollups are checks-counter increments, so
+    a doubly-recorded minute would inflate an hour's coverage; whichever
+    caller INSERTs the minute's claim row first owns the sample and the
+    other returns without probing. D1's Python client exposes no reliable
+    changes() count, so the winner recognizes itself by reading back a
+    random token. Fails open on a claim-infrastructure error: a duplicated
+    minute costs one extra check count, while a skipped minute paints
+    public fake downtime.
+    """
+    minute_ts = (int(now) // STATUS_SAMPLE_WINDOW_MS) * STATUS_SAMPLE_WINDOW_MS
+    try:
+        rnd = js_crypto.getRandomValues(Uint8Array.new(16))
+        claim = "".join("%02x" % int(rnd[i]) for i in range(16))
+    except Exception:
+        claim = ("%032x" % int(Date.now()))[-32:]
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO system_status_sample_claim "
+            "(minute_ts, claim, claimed_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(minute_ts) DO NOTHING",
+            minute_ts, claim, int(now),
+        )
+        row = await d1_first(
+            env,
+            "SELECT claim FROM system_status_sample_claim WHERE minute_ts=?",
+            minute_ts,
+        )
+    except Exception:
+        return True
+    winner = str((row or {}).get("claim") or "")
+    return (not winner) or winner == claim
+
+
 async def record_status_sample(env):
-    # Called once a minute by the scheduled (cron) handler. Best-effort per
-    # system so one failing check can't blank the rest of the page.
+    # Called once a minute by the platform Cron Trigger (scheduled()) and by
+    # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
+    # exactly one of them record each minute. Best-effort per system so one
+    # failing check can't blank the rest of the page.
     await ensure_schema(env)
     now = int(Date.now())
+    if not await _claim_status_sample_minute(env, now):
+        return
     if await _status_deploy_semaphore_active(env, now):
         await _record_status_deploy_sample(env, now)
         return
@@ -3281,9 +3333,17 @@ async def record_status_sample(env):
     except Exception as exc:
         # The aggregate Git-hosting row already reports a registry query
         # failure. Do not fabricate per-node identities when the authoritative
-        # registry itself could not be read.
-        console.warn(
-            "status mirror registry query failed: " + _safe_error_text(exc))
+        # registry itself could not be read. Workers Logs stays off, so the
+        # failure goes straight to Sentry (best-effort — never let telemetry
+        # sink the sample; an error_log row here would also turn a registry
+        # hiccup into a red "errors" minute).
+        try:
+            await capture_sentry_error(
+                env, 500, "scheduled", "/cron/record-status-sample",
+                "status mirror registry query failed: "
+                + _safe_error_text(exc), error=exc)
+        except BaseException:
+            pass
 
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
@@ -3339,9 +3399,15 @@ async def record_status_sample(env):
         await _record_status_monitor_transitions(
             env, ok, reason, now, status_systems)
     except Exception as exc:
-        console.warn(
-            "record_status_monitor_transitions failed: " +
-            _safe_error_text(exc))
+        # Same reasoning as the registry read above: Sentry-only visibility,
+        # never an error_log row and never a raised sample.
+        try:
+            await capture_sentry_error(
+                env, 500, "scheduled", "/cron/record-status-sample",
+                "record_status_monitor_transitions failed: "
+                + _safe_error_text(exc), error=exc)
+        except BaseException:
+            pass
     # Retention prunes only need to run occasionally, not 60x/hour: sweep on
     # the first sample of each hour.
     if now - hour_ts < STATUS_SAMPLE_WINDOW_MS:
@@ -3355,6 +3421,11 @@ async def record_status_sample(env):
         )
         await d1_run(
             env, "DELETE FROM system_status_minute WHERE minute_ts < ?",
+            minute_ts - STATUS_MINUTE_RETAIN_MS,
+        )
+        await d1_run(
+            env,
+            "DELETE FROM system_status_sample_claim WHERE minute_ts < ?",
             minute_ts - STATUS_MINUTE_RETAIN_MS,
         )
 
@@ -3843,6 +3914,8 @@ async def network_leaderboards(env):
             "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
             "_recordCount": 0,
             "_reportedCounterCounts": {},
+            "cloneServedAt": None, "cloneServedAgent": None,
+            "websiteServedAt": None, "websiteServedAgent": None,
         })
         detail["_recordCount"] += 1
         detail["sizeBytes"] += size_bytes
@@ -3860,6 +3933,24 @@ async def network_leaderboards(env):
             detail[field] = int(detail.get(field) or 0) + counter
             reported_counts = detail["_reportedCounterCounts"]
             reported_counts[field] = int(reported_counts.get(field) or 0) + 1
+        # When this node last served a clone / website read, across all of its
+        # repositories, with the client class reported alongside that serve.
+        # A point in time is carried as the newest one, never summed.
+        for stamp_field, agent_field in (
+            ("cloneServedAt", "cloneServedAgent"),
+            ("websiteServedAt", "websiteServedAgent"),
+        ):
+            raw_stamp = rec.get(stamp_field)
+            if raw_stamp is None or isinstance(raw_stamp, bool):
+                continue
+            try:
+                stamp = int(raw_stamp)
+            except (TypeError, ValueError):
+                continue
+            if stamp > 0 and stamp > int(detail.get(stamp_field) or 0):
+                detail[stamp_field] = stamp
+                detail[agent_field] = clean_string(
+                    rec.get(agent_field, ""), 16) or None
         updated_ms = _catalog_updated_ms(rec)
         if updated_ms > detail["_updatedMs"]:
             detail["_updatedMs"] = updated_ms
@@ -5888,20 +5979,6 @@ WORLD_VISIT_BUCKET_MS = 10 * 60 * 1000
 WORLD_VISIT_RETAIN_MS = 50 * 60 * 60 * 1000
 WORLD_VISITORS_CACHE_KEY = "https://forkmesh.internal/api/world/visitors"
 WORLD_VISITORS_TTL = 60
-# Administrator-locked Town Square object placement. The public GET is edge
-# cached so every world load reads one tiny cached JSON document; the cache is
-# purged the moment an administrator locks an object into a new place.
-WORLD_LAYOUT_CACHE_KEY = "https://forkmesh.internal/api/world/layout"
-WORLD_LAYOUT_TTL = 60
-WORLD_LAYOUT_MAX_OBJECTS = 200
-WORLD_LAYOUT_MAX_COORDINATE = 500
-# One full turn in radians. Locked headings are stored wrapped into [0, TURN);
-# anything further from zero than a handful of turns is a broken client.
-WORLD_LAYOUT_TURN = 6.283185307179586
-WORLD_LAYOUT_MAX_ROTATION = 1000
-WORLD_LAYOUT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
-
-
 async def _world_unique_visitor_tokens(env, request, now):
     """Derive stable/all-time and UTC-day digests without retaining inputs."""
     try:
@@ -7310,21 +7387,44 @@ async def office_attendance_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
+    visit_id = str(data.get("visitId") or "").strip().lower()
+    if visit_id and not re.fullmatch(r"[0-9a-f]{32}", visit_id):
+        return json_response(
+            {"error": "invalid_visit"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
 
     await ensure_schema(env)
     now = int(Date.now())
     floor_id = _office_attendance_floor(data.get("floor"))
     initial_floor_id = floor_id or "lobby"
     if action == "in":
-        # The partial unique index on open visits makes repeated/concurrent
-        # background authorization requests converge on the same visit.
+        # A page/physical entry owns one visit id. Retrying that same IN remains
+        # idempotent, while a new page entry closes an abandoned open punch at
+        # its last heartbeat instead of inheriting its elapsed time.
+        if visit_id:
+            await d1_run(
+                env,
+                "UPDATE world_office_attendance "
+                "SET out_at=MAX(in_at,COALESCE(NULLIF(last_seen_at,0),in_at)), "
+                "floor_id='' "
+                "WHERE account_bi=? AND out_at IS NULL AND visit_id<>? "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM world_office_attendance WHERE visit_id=?"
+                ")",
+                str(account_bi),
+                visit_id,
+                visit_id,
+            )
         await d1_run(
             env,
             "INSERT OR IGNORE INTO world_office_attendance "
             "(visit_id, account_bi, account_name, in_at, out_at, "
             "last_seen_at, floor_id, visit_scope) "
             "VALUES (?, ?, ?, ?, NULL, ?, ?, 'office')",
-            new_world_peer_id(),
+            visit_id or new_world_peer_id(),
             str(account_bi),
             world_protocol.clean_display_name(
                 account.get("name"), "Contributor"),
@@ -7337,21 +7437,27 @@ async def office_attendance_handler(env, request):
             "UPDATE world_office_attendance "
             "SET last_seen_at=?, "
             "floor_id=CASE WHEN ?<>'' THEN ? ELSE floor_id END "
-            "WHERE account_bi=? AND out_at IS NULL",
+            "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?)",
             now,
             floor_id,
             floor_id,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     elif action == "heartbeat":
         await d1_run(
             env,
             "UPDATE world_office_attendance "
             "SET last_seen_at=?, floor_id=? "
-            "WHERE account_bi=? AND out_at IS NULL",
+            "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?)",
             now,
             initial_floor_id,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     else:
         # Close, in place, only this account's newest open visit. Repeated OUT
@@ -7363,11 +7469,14 @@ async def office_attendance_handler(env, request):
             "WHERE visit_id=("
             "SELECT visit_id FROM world_office_attendance "
             "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?) "
             "ORDER BY in_at DESC, visit_id DESC LIMIT 1"
             ") AND out_at IS NULL",
             now,
             now,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     visits = await _office_attendance_recent(env, now)
     return json_response(
@@ -9203,13 +9312,6 @@ WORLD_QA_CARDS = (
      "confirm one compact 45-degree robot screen appears in front with its "
      "provider, live state, task snapshot, and target node; confirm a "
      "non-Engineering member sees no agent terminal."),
-    ("world-object-click-keyboard-layout", "Click-selected World object editing",
-     "Click a movable Town object and confirm a restrained mint outline appears "
-     "while its related information opens in the side panel. As an is_admin "
-     "user, use all four arrow keys and confirm they nudge the selected object "
-     "relative to the camera; press R and Shift+R to rotate both ways. Confirm "
-     "the placement persists in a second browser. Drag the camera and use the "
-     "mouse wheel to confirm neither gesture moves or rotates the object."),
     ("world-member-click-detail", "Clickable World member information",
      "Click the body or chest of your own avatar and two other visible users, "
      "including one inside the Office. Confirm a subtle blue outline follows "
@@ -10766,9 +10868,6 @@ SCHEMA_ALTER_STATEMENTS = [
     # trusting a mutable forkmesh_active boolean.
     """ALTER TABLE mirror_https_endpoints
        ADD COLUMN forkmesh_operations_json TEXT NOT NULL DEFAULT '[]'""",
-    # Heading offset in radians for an administrator-locked scene object
-    # (migration 0082). 0 keeps the object's authored rotation.
-    "ALTER TABLE world_object_layout ADD COLUMN rotation REAL NOT NULL DEFAULT 0",
     # Edge-observed sign-in address of each account session, shown only to the
     # owner of that account in the World security tab and account settings.
     "ALTER TABLE account_sessions ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''",
@@ -14023,6 +14122,31 @@ async def repo_mirrors_handler(env, request, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     payload["owner"] = public_owner
     payload["repo"] = public_repo
+    # Router-counted serve tallies (mirror_serve_counters). Nodes stopped
+    # seeing per-request traffic when the per-repository WebSocket transport
+    # was retired, so records they publish carry only pre-retirement legacy
+    # tallies (or 0/-1). The Worker counts every read it routes in
+    # _https_mirror_route_advance; overlay those counts on top of whatever
+    # legacy figure the node still publishes — the two eras never overlap, so
+    # the sum is the node's true lifetime contribution.
+    serve_counts = {}
+    try:
+        count_rows = await d1_all(
+            env,
+            "SELECT node_name, clones, website FROM mirror_serve_counters"
+            " WHERE owner=? AND repo=?",
+            str(owner or "").strip().lower(),
+            str(repo or "").strip().lower(),
+        )
+        for row in count_rows:
+            name = str(row.get("node_name") or "").strip().lower()
+            if name:
+                serve_counts[name] = (
+                    max(0, int(row.get("clones") or 0)),
+                    max(0, int(row.get("website") or 0)),
+                )
+    except Exception:
+        serve_counts = {}
     # Owner column: a headless mirror's catalog record carries no ownerUser of
     # its own, but the node account may be claim-linked to a user (adhoc #53:
     # the node record's `owner` field names the linked user). Resolve that link
@@ -14030,6 +14154,16 @@ async def repo_mirrors_handler(env, request, owner, repo):
     # shows the human owner without each publisher having to know it.
     for mirror in payload.get("mirrors", []):
         node_name = str(mirror.get("node") or "").strip().lower()
+        counted = serve_counts.get(node_name)
+        if counted:
+            legacy_clones = mirror.get("clonesServed")
+            legacy_website = mirror.get("websiteServed")
+            mirror["clonesServed"] = (
+                legacy_clones if isinstance(legacy_clones, int)
+                and legacy_clones > 0 else 0) + counted[0]
+            mirror["websiteServed"] = (
+                legacy_website if isinstance(legacy_website, int)
+                and legacy_website > 0 else 0) + counted[1]
         endpoint = endpoint_by_node.get(node_name) or {}
         try:
             operations = json.loads(
@@ -16350,145 +16484,6 @@ async def world_admin_delete_node_handler(env, request):
             "alreadyAbsent": not bool(node_row),
         },
         cache_control="no-store, max-age=0, must-revalidate")
-
-
-async def _world_layout_objects(env):
-    """Project the bounded shared-object placement table for the browser."""
-    rows = await d1_all(
-        env,
-        "SELECT object_id,x,z,rotation,updated_at FROM world_object_layout "
-        "ORDER BY object_id LIMIT ?",
-        WORLD_LAYOUT_MAX_OBJECTS,
-    )
-    objects = []
-    for row in rows or []:
-        objects.append({
-            "id": str(row.get("object_id") or ""),
-            "x": float(row.get("x") or 0),
-            "z": float(row.get("z") or 0),
-            "rotation": float(row.get("rotation") or 0),
-            "updatedAt": int(row.get("updated_at") or 0),
-        })
-    return objects
-
-
-def _world_layout_coordinate(value):
-    """Return a bounded, rounded ground coordinate or None."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    # NaN fails both comparisons, so this also rejects non-finite input.
-    if not (-WORLD_LAYOUT_MAX_COORDINATE <= value <= WORLD_LAYOUT_MAX_COORDINATE):
-        return None
-    return round(float(value), 2)
-
-
-def _world_layout_rotation(value):
-    """Return a heading offset in radians wrapped to [0, 2π), or None.
-
-    The offset is relative to the object's authored rotation, so an absent or
-    zero value leaves the scene facing the way it was built.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    # Reject non-finite input before the modulo, which propagates NaN.
-    if not (-WORLD_LAYOUT_MAX_ROTATION <= value <= WORLD_LAYOUT_MAX_ROTATION):
-        return None
-    return round(float(value) % WORLD_LAYOUT_TURN, 4)
-
-
-async def world_layout_handler(env, request):
-    """Serve and admin-update the shared placement of Town Square objects."""
-    if method_name(request) == "GET":
-        cached = await edge_cache_match(WORLD_LAYOUT_CACHE_KEY)
-        if cached is not None:
-            return cached
-        await ensure_schema(env)
-        payload = {"ok": True, "objects": await _world_layout_objects(env)}
-        resp = json_response(payload, cache_seconds=WORLD_LAYOUT_TTL)
-        await edge_cache_put(WORLD_LAYOUT_CACHE_KEY, resp)
-        return resp
-    if method_name(request) != "POST":
-        return json_response(
-            {"error": "method_not_allowed"}, status=405,
-            cache_control="no-store, max-age=0, must-revalidate",
-            extra_headers={"allow": "GET, POST"})
-    try:
-        data = await bounded_json_request(request)
-    except Exception:
-        data = None
-    if not isinstance(data, dict):
-        return json_response(
-            {"error": "invalid_json"}, status=400,
-            cache_control="no-store, max-age=0, must-revalidate")
-    account_bi, rec = await _account_session_record(env, request, data)
-    actor = clean_string(
-        rec.get("name", "") if rec else "", MAX_NODE_NAME).strip().lower()
-    if not actor:
-        return json_response(
-            {"error": "invalid_session"}, status=401,
-            cache_control="no-store, max-age=0, must-revalidate")
-    if not await _has_role(env, actor, "platform_administrator"):
-        await _audit_sensitive_action(
-            env, actor, "world.layout.move", "world_object", "", "denied",
-            {"reason": "platform_administrator_required"})
-        return json_response(
-            {"error": "forbidden"}, status=403,
-            cache_control="no-store, max-age=0, must-revalidate")
-
-    object_id = str(data.get("id") or "").strip().lower()
-    if not WORLD_LAYOUT_ID_RE.fullmatch(object_id):
-        return json_response(
-            {"error": "invalid_object_id"}, status=400,
-            cache_control="no-store, max-age=0, must-revalidate")
-    x = _world_layout_coordinate(data.get("x"))
-    z = _world_layout_coordinate(data.get("z"))
-    if x is None or z is None:
-        return json_response(
-            {"error": "invalid_position"}, status=400,
-            cache_control="no-store, max-age=0, must-revalidate")
-
-    now = int(Date.now())
-    await ensure_schema(env)
-    existing = await d1_first(
-        env,
-        "SELECT object_id,rotation FROM world_object_layout WHERE object_id=?",
-        object_id)
-    # A client that only drags (and never rotates) omits the heading; keep the
-    # locked one instead of silently snapping the object back to square.
-    if data.get("rotation") is None:
-        rotation = float((existing or {}).get("rotation") or 0.0)
-    else:
-        rotation = _world_layout_rotation(data.get("rotation"))
-        if rotation is None:
-            return json_response(
-                {"error": "invalid_rotation"}, status=400,
-                cache_control="no-store, max-age=0, must-revalidate")
-    if not existing:
-        count = await d1_first(
-            env, "SELECT COUNT(*) AS n FROM world_object_layout")
-        if int((count or {}).get("n") or 0) >= WORLD_LAYOUT_MAX_OBJECTS:
-            return json_response(
-                {"error": "layout_limit"}, status=409,
-                cache_control="no-store, max-age=0, must-revalidate")
-    await d1_run(
-        env,
-        "INSERT INTO world_object_layout "
-        "(object_id,x,z,rotation,updated_by_bi,updated_at) "
-        "VALUES (?,?,?,?,?,?) "
-        "ON CONFLICT(object_id) DO UPDATE SET x=excluded.x,z=excluded.z,"
-        "rotation=excluded.rotation,"
-        "updated_by_bi=excluded.updated_by_bi,updated_at=excluded.updated_at",
-        object_id, x, z, rotation, account_bi, now,
-    )
-    await edge_cache_delete(WORLD_LAYOUT_CACHE_KEY)
-    await _audit_sensitive_action(
-        env, actor, "world.layout.move", "world_object", object_id,
-        "success", {"x": x, "z": z, "rotation": rotation})
-    return json_response(
-        {"ok": True, "objects": await _world_layout_objects(env)},
-        cache_control="no-store, max-age=0, must-revalidate",
-        extra_headers={"x-content-type-options": "nosniff"},
-    )
 
 
 # Simple web signup: create an active account from node name + email + password.
@@ -23863,19 +23858,57 @@ async def _send_email(env, to_email, subject, text, html=None,
 # land?" without a second log table. Subject and body are never stored here, and
 # the stamp is private to the account: it rides the authenticated sessions read,
 # not the public profile lookup.
+#
+# The stamp also carries a running total plus a short bounded history of the
+# most recent sends. That history is what the "send it again" verification
+# button rate-limits itself against — a send that the provider rejected still
+# counts, so a failing mail provider can't be hammered from the dashboard.
 
 ACCOUNT_EMAIL_STATUS_DELIVERED = "delivered"
 ACCOUNT_EMAIL_STATUS_FAILED = "failed"
+ACCOUNT_EMAIL_HISTORY = 12
 
 
 def _stamp_account_email(rec, kind, ok, now=None):
     """Stamp the last account-directed email onto an already-loaded record."""
     if not isinstance(rec, dict):
         return rec
-    rec["last_email_ts"] = int(now if now is not None else Date.now())
-    rec["last_email_kind"] = clean_string(kind or "", 40)
+    ts = int(now if now is not None else Date.now())
+    kind = clean_string(kind or "", 40)
+    rec["last_email_ts"] = ts
+    rec["last_email_kind"] = kind
     rec["last_email_ok"] = bool(ok)
+    try:
+        rec["email_send_count"] = int(rec.get("email_send_count") or 0) + 1
+    except (TypeError, ValueError):
+        rec["email_send_count"] = 1
+    history = [item for item in (rec.get("email_sends") or [])
+               if isinstance(item, dict)]
+    history.append({"ts": ts, "kind": kind, "ok": bool(ok)})
+    rec["email_sends"] = history[-ACCOUNT_EMAIL_HISTORY:]
     return rec
+
+
+def _account_email_sends(rec, kind="", since=0):
+    """Bounded send history off a record, newest last, optionally narrowed."""
+    kind = clean_string(kind or "", 40)
+    sends = []
+    for item in ((rec or {}).get("email_sends") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            ts = int(item.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts <= 0 or ts < int(since or 0):
+            continue
+        if kind and clean_string(item.get("kind", ""), 40) != kind:
+            continue
+        sends.append({"ts": ts,
+                      "kind": clean_string(item.get("kind", ""), 40),
+                      "ok": bool(item.get("ok"))})
+    sends.sort(key=lambda item: item["ts"])
+    return sends
 
 
 async def _record_account_email(env, name, kind, ok):
@@ -23890,6 +23923,53 @@ async def _record_account_email(env, name, kind, ok):
         await _save_account(env, name_bi, _stamp_account_email(rec, kind, ok))
     except Exception:
         pass
+    await _notify_admins_account_email(env, name, kind, ok)
+
+
+async def _notify_admins_account_email(env, name, kind, ok):
+    """Ping every platform administrator when transactional mail goes out.
+
+    Only the account-directed sends that route through _record_account_email —
+    verification links and password resets — are pinged. They are the ones an
+    administrator may have to follow up by hand (a rejected verification lands
+    in the manual queue). Cron digest mail is still counted on the recipient's
+    record but never pinged, so an hourly digest run over every account cannot
+    fan out into a notification storm.
+    """
+    try:
+        kind = clean_string(kind or "", 40)
+        label = ACCOUNT_EMAIL_PING_LABELS.get(kind)
+        if not label:
+            return
+        rows = await d1_all(
+            env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+        ts = int(Date.now())
+        body = (label + " email delivered to the mail provider for " + name
+                if ok else
+                label + " email was rejected by the mail provider for " + name
+                + ". It is queued for manual follow-up.")
+        for row in rows or []:
+            try:
+                record = await decrypt_row(env, row.get("data", "")) or {}
+            except Exception:
+                continue
+            admin = clean_string(
+                record.get("name", ""), MAX_NODE_NAME).strip().lower()
+            if not valid_node_name(admin):
+                continue
+            await enqueue_notification(
+                env, admin, "account_email_sent",
+                label + " email sent to " + name,
+                body=body,
+                href="/dashboard/settings",
+                actor=name,
+                source="account-email",
+                dedupe="account-email:" + name + ":" + kind + ":" + str(ts),
+                ts=ts,
+                meta={"emailKind": kind, "delivered": bool(ok),
+                      "account": name})
+    except Exception:
+        pass
 
 
 def _account_email_activity(rec):
@@ -23898,14 +23978,21 @@ def _account_email_activity(rec):
         ts = int((rec or {}).get("last_email_ts") or 0)
     except (TypeError, ValueError):
         ts = 0
+    try:
+        count = int((rec or {}).get("email_send_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
     if ts <= 0:
-        return {"lastEmailAt": 0, "lastEmailStatus": "", "lastEmailKind": ""}
+        return {"lastEmailAt": 0, "lastEmailStatus": "", "lastEmailKind": "",
+                "emailSendCount": max(0, count)}
     return {
         "lastEmailAt": ts,
         "lastEmailStatus": (
             ACCOUNT_EMAIL_STATUS_DELIVERED if rec.get("last_email_ok")
             else ACCOUNT_EMAIL_STATUS_FAILED),
         "lastEmailKind": clean_string(rec.get("last_email_kind", ""), 40),
+        # Older records predate the counter; one stamped send is the floor.
+        "emailSendCount": max(1, count),
     }
 
 
@@ -24220,6 +24307,72 @@ async def _send_verification_email(env, request, name, email):
     ok = await _send_email(env, email, subject, text, html)
     await _record_account_email(env, name, "verification", ok)
     return ok
+
+
+# --- "Send it again" for an unverified email ---------------------------------
+#
+# The profile POST is the privileged write path, so it demands the account
+# password — reasonable for a payout address, pure friction for re-sending a
+# confirmation link, and accounts were staying unverified because of it. This
+# endpoint takes the signed-in session and nothing else. The account's own send
+# history (see _stamp_account_email) is what bounds the retry rate: a queued
+# send counts exactly like a delivered one, so a failing provider cannot be
+# hammered from the dashboard.
+
+VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000
+VERIFICATION_RESEND_WINDOW_MS = 24 * 60 * 60 * 1000
+VERIFICATION_RESEND_WINDOW_LIMIT = 5
+
+
+async def _account_resend_verification(env, request):
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        data = {}
+    name_bi, rec = await _account_session_record(env, request, data)
+    if not name_bi or not rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).strip().lower()
+    email = clean_string(rec.get("email", ""), 254).strip()
+    if not valid_node_name(name) or "@" not in email:
+        return json_response({"error": "no_email"}, status=400)
+    if rec.get("email_verified"):
+        return json_response({"error": "already_verified"}, status=409)
+
+    now = int(Date.now())
+    recent = _account_email_sends(
+        rec, kind="verification", since=now - VERIFICATION_RESEND_WINDOW_MS)
+    if recent and now - recent[-1]["ts"] < VERIFICATION_RESEND_COOLDOWN_MS:
+        return json_response(
+            {"error": "resend_too_soon",
+             "retryAfterMs": (VERIFICATION_RESEND_COOLDOWN_MS
+                              - (now - recent[-1]["ts"]))},
+            status=429, cache_control="no-store, max-age=0, must-revalidate")
+    if len(recent) >= VERIFICATION_RESEND_WINDOW_LIMIT:
+        return json_response(
+            {"error": "resend_limit_reached",
+             "retryAfterMs": max(
+                 0, VERIFICATION_RESEND_WINDOW_MS - (now - recent[0]["ts"]))},
+            status=429, cache_control="no-store, max-age=0, must-revalidate")
+
+    sent = await _send_verification_email(env, request, name, email)
+    if not sent:
+        await _enqueue_verification(env, name_bi, name, email)
+    # _send_verification_email already stamped (and pinged the admins about) a
+    # freshly loaded copy of this record. Mirror the stamp onto the stale copy
+    # held here purely to shape the response — it is never saved, so the
+    # persisted counter stays authoritative.
+    payload = {
+        "ok": True,
+        "verificationSent": bool(sent),
+        "verificationQueued": not sent,
+        "cooldownMs": VERIFICATION_RESEND_COOLDOWN_MS,
+        "remaining": max(0, VERIFICATION_RESEND_WINDOW_LIMIT - len(recent) - 1),
+    }
+    payload.update(_account_email_activity(
+        _stamp_account_email(rec, "verification", sent, now)))
+    return json_response(
+        payload, cache_control="no-store, max-age=0, must-revalidate")
 
 
 # --- "How are we doing?" founder feedback email -------------------------------
@@ -26371,6 +26524,8 @@ async def accounts_handler(env, request):
         return await _account_heartbeat(env, request)
     if url.path == "/api/accounts/verify-email" and method == "GET":
         return await _verify_email(env, request)
+    if url.path == "/api/accounts/resend-verification" and method == "POST":
+        return await _account_resend_verification(env, request)
     if url.path == "/api/accounts/admin-pending" and method == "GET":
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
@@ -40155,6 +40310,7 @@ async def https_mirror_health_cron(env):
         """SELECT node_bi,node_name,base_url,public_key
              FROM mirror_https_endpoints
             ORDER BY
+              CASE WHEN checked_at = 0 THEN 0 ELSE 1 END ASC,
               CASE WHEN updated_at > checked_at
                    THEN updated_at ELSE checked_at END ASC,
               node_name ASC
@@ -40681,6 +40837,34 @@ async def _https_mirror_route_advance(env, context, served_node, operation):
                    owner=excluded.owner,ts=excluded.ts""",
             context["repoBi"], served_node, now,
         )
+    # Serve tallies for the Mirror nodes view (Clones / Website columns). One
+    # git clone is two requests: info/refs (counted above only as the sticky
+    # pin) and the upload-pack POST — count the pack transfer so the pair
+    # lands as one clone. Every other read routed here is a website/browse
+    # fetch backed by this node's copy (tree/blob/raw/history/…/release-blob),
+    # the same classification the retired local gateway used. Keyed by the
+    # canonical catalog owner so org-alias routes tally onto one row.
+    if operation == "git-info-refs":
+        return
+    field = "clones" if operation == "git-upload-pack" else "website"
+    try:
+        await d1_run(
+            env,
+            """INSERT INTO mirror_serve_counters(
+                   node_name,owner,repo,{field},updated_at)
+                 VALUES (?,?,?,1,?)
+                 ON CONFLICT(node_name,owner,repo) DO UPDATE SET
+                   {field}=mirror_serve_counters.{field}+1,
+                   updated_at=excluded.updated_at""".format(field=field),
+            str(served_node or "").strip().lower(),
+            str(context["owner"] or "").strip().lower(),
+            str(context["repo"] or "").strip().lower(),
+            now,
+        )
+    except Exception:
+        # Best-effort display counter; a D1 hiccup must never fail the read
+        # that was just served.
+        pass
 
 
 def _https_mirror_request_query(url, operation, release_sha=""):
@@ -41724,11 +41908,45 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
-        # Keep the platform Cron Trigger deliberately tiny. It starts (and then
-        # once a minute reconciles) a singleton Durable Object alarm. The alarm
-        # re-arms itself before work, so a stateless Python wrapper poisoned by
-        # another request or a killed maintenance batch cannot stop the runner.
-        await _cron_runner_kick(self.env)
+        # The platform Cron Trigger does two things, cheapest and most public
+        # first.
+        #
+        # (1) It records the /status health sample DIRECTLY. The trigger is
+        # the only per-minute schedule the platform itself guarantees, so the
+        # public minute strip must not depend on the Durable Object subsystem
+        # being healthy: a wedged runner isolate or exhausted free-tier DO
+        # allowance left multi-hour "no health sample was recorded" gaps that
+        # read as fake downtime. The per-minute claim inside
+        # record_status_sample keeps this sample and the runner's own from
+        # double-counting an hour's checks — whichever lands first wins.
+        try:
+            await record_status_sample(self.env)
+        except BaseException as error:
+            try:
+                await log_cron_error(
+                    self.env, "/cron/record-status-sample",
+                    "record_status_sample failed: " + _safe_error_text(error),
+                    error=error)
+            except BaseException:
+                pass
+        # (2) It starts (and then once a minute reconciles) the singleton
+        # Durable Object alarm that owns every other maintenance job. The
+        # alarm re-arms itself before work, so a stateless Python wrapper
+        # poisoned by another request or a killed maintenance batch cannot
+        # stop the runner. A failed kick must not erase the sample above or
+        # hide behind it: it is captured to Sentry only (an error_log row
+        # would paint the "errors" system red for a DO-plan-limit condition
+        # the independent watchdog already emails about).
+        try:
+            await _cron_runner_kick(self.env)
+        except BaseException as error:
+            try:
+                await capture_sentry_error(
+                    self.env, 500, "scheduled", "/cron/runner-kick",
+                    "cron runner kick failed: " + _safe_error_text(error),
+                    error=error)
+            except BaseException:
+                pass
 
     async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
         # Cron trigger (every minute, see [triggers] in wrangler.toml).
@@ -42655,9 +42873,6 @@ class Default(WorkerEntrypoint):
         if url.path in (
                 "/api/world/satellites", "/api/world/satellites/"):
             return await world_satellites_handler(self.env, request)
-
-        if url.path in ("/api/world/layout", "/api/world/layout/"):
-            return await world_layout_handler(self.env, request)
 
         if url.path in (
                 "/api/world/admin/errors",
@@ -44502,8 +44717,15 @@ class ForkMeshCronRunner(DurableObject):
                 _safe_error_text(error)[:1000],
             )
             await self.ctx.storage.put("last_failure_at", int(Date.now()))
+            # Workers Logs stays off, so a swallowed batch failure would
+            # otherwise be invisible: send it straight to Sentry. Best-effort
+            # — the already-armed successor alarm must survive a Sentry
+            # outage too.
             try:
-                print("cron runner alarm failed: " + _safe_error_text(error))
+                await capture_sentry_error(
+                    self.env, 500, "alarm", "/cron-runner/alarm",
+                    "cron runner alarm failed: " + _safe_error_text(error),
+                    error=error)
             except BaseException:
                 pass
             return
@@ -44819,7 +45041,8 @@ class ForkMeshWorld(DurableObject):
                          trusted_name=None, trusted_node_count=None,
                          pending_knocks=None, arrival_slot=None, is_admin=None,
                          ip_token=None, agent_token=None, ticket_nonce=None,
-                         client_ip=None, client_user_agent=None):
+                         client_ip=None, client_user_agent=None,
+                         pending_handshakes=None):
         if country_source is None:
             country_source = _ws_attr(ws, "country_source", "")
         if trusted_name is None:
@@ -44828,6 +45051,8 @@ class ForkMeshWorld(DurableObject):
             trusted_node_count = _ws_attr(ws, "trusted_node_count", 0)
         if pending_knocks is None:
             pending_knocks = _ws_attr(ws, "pending_knocks", [])
+        if pending_handshakes is None:
+            pending_handshakes = _ws_attr(ws, "pending_handshakes", [])
         if arrival_slot is None:
             arrival_slot = _ws_attr(ws, "arrival_slot", -1)
         if is_admin is None:
@@ -44845,6 +45070,11 @@ class ForkMeshWorld(DurableObject):
         pending_knocks = [
             str(peer_id)
             for peer_id in list(pending_knocks or [])[-8:]
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(peer_id or ""))
+        ]
+        pending_handshakes = [
+            str(peer_id)
+            for peer_id in list(pending_handshakes or [])[-8:]
             if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(peer_id or ""))
         ]
         trusted_fields = world_protocol.trusted_presence_claim(
@@ -44894,6 +45124,10 @@ class ForkMeshWorld(DurableObject):
             # One-use, live-socket-only consent requests. They are never
             # persisted, broadcast, or exposed in the public presence record.
             "pending_knocks": pending_knocks,
+            # The same one-use shape for handshake offers this socket has
+            # received: only an offer parked here can be shaken back or
+            # declined, so nobody can answer a greeting they were never sent.
+            "pending_handshakes": pending_handshakes,
             # A room-local collision-avoidance index. It is never broadcast,
             # persisted, or derived from an account/network identifier.
             "arrival_slot": int(arrival_slot),
@@ -45071,10 +45305,11 @@ class ForkMeshWorld(DurableObject):
             return
         interaction = world_protocol.sanitize_interaction(payload, state)
         if interaction is not None:
-            # Home interactions are targeted, text-free consent frames. The
-            # server keeps at most eight one-use knocks inside the live socket
-            # attachment; hibernation/disconnect naturally expires them.
-            # Sender identity always comes from the attachment, never JSON.
+            # Home and handshake interactions are targeted, text-free consent
+            # frames. The server keeps at most eight one-use knocks and eight
+            # one-use handshake offers inside the live socket attachment;
+            # hibernation/disconnect naturally expires them. Sender identity
+            # always comes from the attachment, never JSON.
             self._save_attachment(
                 ws, state, last=now,
                 rate_start=rate_start, rate_count=rate_count)
@@ -45102,6 +45337,64 @@ class ForkMeshWorld(DurableObject):
                             "from": state.get("id"),
                         })
                         break
+            elif interaction["kind"] == "handshake-offer":
+                # A handshake offer reaches one live peer and nobody else, so
+                # an unanswered greeting stays between the two of them.
+                for peer in self._live_sockets(cleanup=True):
+                    if _ws_attr(peer, "id") == interaction["target"]:
+                        pending = list(
+                            _ws_attr(peer, "pending_handshakes", []) or [])
+                        if state.get("id") not in pending:
+                            pending.append(state.get("id"))
+                        self._save_attachment(
+                            peer,
+                            self._socket_state(peer),
+                            last=_ws_attr(peer, "last", now),
+                            rate_start=_ws_attr(peer, "rl_start", now),
+                            rate_count=_ws_attr(peer, "rl_count", 0),
+                            pending_handshakes=pending[-8:],
+                        )
+                        self._safe_send(peer, {
+                            "type": "interaction",
+                            "kind": "handshake-offer",
+                            "from": state.get("id"),
+                        })
+                        break
+            elif interaction["kind"] in (
+                "handshake-accept", "handshake-decline",
+            ):
+                pending = list(
+                    _ws_attr(ws, "pending_handshakes", []) or [])
+                if interaction["target"] not in pending:
+                    return
+                pending = [
+                    peer_id for peer_id in pending
+                    if peer_id != interaction["target"]
+                ]
+                self._save_attachment(
+                    ws, state, last=now,
+                    rate_start=rate_start, rate_count=rate_count,
+                    pending_handshakes=pending,
+                )
+                if interaction["kind"] == "handshake-decline":
+                    for peer in self._live_sockets(cleanup=True):
+                        if _ws_attr(peer, "id") == interaction["target"]:
+                            self._safe_send(peer, {
+                                "type": "interaction",
+                                "kind": "handshake-decline",
+                                "from": state.get("id"),
+                            })
+                            break
+                else:
+                    # Two people shaking hands is a public gesture: the room
+                    # animates the pair the same way it animates an emote. The
+                    # frame carries the two peer ids and nothing else.
+                    self._broadcast({
+                        "type": "interaction",
+                        "kind": "handshake",
+                        "from": state.get("id"),
+                        "with": interaction["target"],
+                    }, exclude_id=state.get("id"), budgeted=True)
             elif interaction["kind"] in ("home-grant", "home-decline"):
                 pending = list(
                     _ws_attr(ws, "pending_knocks", []) or [])

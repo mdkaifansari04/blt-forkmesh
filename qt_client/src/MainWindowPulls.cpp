@@ -193,9 +193,12 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullSplitButton, &QPushButton::clicked, this, [this](bool on) {
         setDiffSplitPref(on);
         updateDiffSplitButton(m_pullSplitButton);
-        updateDiffSplitButton(m_commitSplitButton);
-        if (m_commitSplitButton)
-            m_commitSplitButton->setChecked(on);
+        for (QPushButton *b : {m_commitSplitButton, m_branchSplitButton}) {
+            if (b) {
+                b->setChecked(on);
+                updateDiffSplitButton(b);
+            }
+        }
         if (m_pullFiles && m_pullFiles->count() > 0)
             renderPullDiff();
     });
@@ -653,7 +656,13 @@ QWidget *MainWindow::buildPullsTab()
     filesPageLayout->addWidget(m_pullDiffSearchBar);
     filesPageLayout->addWidget(diffSplit);
 
+    // Scoped to this pane (WidgetWithChildren): the Git view's range pane has
+    // its own find bar on the same key, and two window-wide Ctrl+F shortcuts
+    // would be ambiguous — Qt would then fire neither (adhoc #107). Selecting
+    // the Files sub-tab focuses the diff (see the sub-tab wiring) so the key
+    // works straight away.
     auto *findShortcut = new QShortcut(QKeySequence::Find, filesPage);
+    findShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(findShortcut, &QShortcut::activated, this,
             [this] { togglePullDiffSearch(true); });
     auto *closeSearchShortcut = new QShortcut(QKeySequence(Qt::Key_Escape),
@@ -967,10 +976,15 @@ QWidget *MainWindow::buildPullsTab()
             if (current.number > 0)
                 renderPullChecks(current);
         }
-        if (id == 3) // Files changed brought forward: show the sticky header now,
+        if (id == 3) { // Files changed brought forward: show the sticky header now,
             // not only after the first scroll (adhoc #56). Defer so the diff
             // viewport has laid out at its shown size before we measure it.
             QTimer::singleShot(0, this, &MainWindow::updatePullDiffScrollState);
+            // The pane's Ctrl+F is widget-scoped now (adhoc #107); focusing the
+            // diff makes it live from the first key.
+            if (m_pullDiff)
+                m_pullDiff->setFocus();
+        }
     });
 
     auto *detailLayout = new QVBoxLayout(m_pullDetail);
@@ -1822,6 +1836,90 @@ void MainWindow::switchToPullTab(int pullNumber)
     showPull(pullNumber);
 }
 
+// Open a pull request's commits, changed files and diff in the Git view's range
+// pane (adhoc #107): the PR counterpart of switchToBranch. The pane renders the
+// PR's review threads and comment gutters (see renderBranchDiffPatch) and its
+// "PR #N" button jumps on to the full pull request page. A PR whose head branch
+// still exists locally gets the live scope list (all changes / uncommitted /
+// per-commit); one whose branch is gone (merged & pruned, or cross-node) shows
+// its stored patch.
+void MainWindow::openPullDiffInGitView(int pullNumber)
+{
+    // The PR widgets and state (m_currentPulls, m_currentPullNumber) live in the
+    // Pulls tab; make sure it exists and is anchored on this PR so the comment /
+    // thread / viewed plumbing all acts on the right one.
+    ensureRepoDetailTabBuilt(4);
+    m_currentPullNumber = pullNumber;
+    reloadPulls();
+    bool rowSelected = false;
+    if (m_pullTable) {
+        for (int row = 0; row < m_pullTable->rowCount(); ++row) {
+            QTableWidgetItem *number = m_pullTable->item(row, 0);
+            if (number && number->data(Qt::UserRole).toInt() == pullNumber) {
+                m_pullTable->selectRow(row); // fires showPull(pullNumber)
+                rowSelected = true;
+                break;
+            }
+        }
+    }
+    if (!rowSelected)
+        showPull(pullNumber);
+
+    // Copy the PR out of m_currentPulls before any git call below:
+    // localBranchExists pumps the event loop, which can reload the pulls list
+    // and dangle a held reference (the adhoc #106/#119 UAF family).
+    PullRequest pr;
+    for (const PullRequest &p : std::as_const(m_currentPulls))
+        if (p.number == pullNumber)
+            pr = p;
+    if (pr.number != pullNumber) {
+        // Nothing to review here (e.g. the PR vanished); fall back to the PR
+        // page, which explains itself.
+        switchToPullTab(pullNumber);
+        return;
+    }
+
+    m_branchDiffPullNumber = pullNumber;
+    showOverviewCommits();
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
+    const QString dir = repoGitDir();
+    if (!pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head)) {
+        // Live branch: the full range pane (scope list, uncommitted changes,
+        // per-commit diffs) against the repo's refs.
+        showBranchDiff(pr.head);
+    } else {
+        // Branch gone: render the PR's stored patch directly. Mirror the reset
+        // showBranchDiff does, minus the git reads that need the branch.
+        m_branchDiffBranch = pr.head;
+        updateBranchDetailActions(pr.head);
+        if (m_branchScopeList) {
+            QSignalBlocker block(m_branchScopeList);
+            m_branchScopeList->clear();
+            auto *all = new QListWidgetItem(QStringLiteral("All changes"));
+            all->setIcon(themedOcticon("git-compare", QColor("#58a6ff"), 14));
+            all->setData(Qt::UserRole, QStringLiteral("all"));
+            all->setToolTip(QStringLiteral("The pull request's recorded changes"));
+            m_branchScopeList->addItem(all);
+            m_branchScopeList->setCurrentRow(0);
+        }
+        m_branchDiffLastPatch = pr.patch.toUtf8();
+        m_branchDiffLastEmpty = QStringLiteral("This pull request has no changes.");
+        m_branchDiffLastValid = true;
+        ++m_branchScopeDiffGen; // orphan any in-flight scope render
+        renderBranchDiffPatch(pr.patch, m_branchDiffLastEmpty,
+                              QStringLiteral("pull/") + QString::number(pullNumber));
+    }
+    if (m_branchDiffView)
+        m_branchDiffView->setFocus();
+    // Fill the Git view's left rail the same deferred way switchToBranch does.
+    QTimer::singleShot(0, this, [this] {
+        if (commitsListIsCurrent())
+            refreshSourceControl();
+        else
+            loadCommits();
+    });
+}
+
 // Property holding a diff view's last-set source HTML, so a font-size change can
 // re-render it in place at the new size without re-running its renderer (#254).
 static const char *kDiffSourceProp = "fm_diffSource";
@@ -1887,7 +1985,11 @@ void MainWindow::onDiffStreamFinished(QTextEdit *view)
             pullDiffSearchRecompute();
         updatePullDiffScrollState();
     } else if (view == m_branchDiffView) {
+        m_branchFileTops.clear(); // file positions moved as the rest landed
+        m_branchStickyFile.clear();
         rebuildBranchDiffSpans();
+        if (m_branchDiffSearchBar && m_branchDiffSearchBar->isVisible())
+            branchDiffSearchRecompute();
     }
 }
 
@@ -1920,25 +2022,21 @@ void MainWindow::adjustDiffFont(int delta)
     m_pullDiffRenderKey.clear(); // the pull view's skip-relayout cache is now stale
     m_scmDiffRenderKey.clear();  // ditto for the working-tree changes diff
     // The re-scaled m_pullDiff got a fresh document too; rescan an open find
-    // bar's matches against it (issue #333).
+    // bar's matches against it (issue #333). Same for the range pane's bar.
     if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
         pullDiffSearchRecompute();
+    if (m_branchDiffSearchBar && m_branchDiffSearchBar->isVisible())
+        branchDiffSearchRecompute();
 }
 
-void MainWindow::renderPullDiff()
+// Collect a PR's already-posted review threads for every file, keyed by
+// path\x1fside:line, so a diff renderer can drop each beneath the line it
+// annotates even though every file shares one rendered view (#250). Shared by
+// the PR Files-changed page and the Git view's range pane (adhoc #107).
+QHash<QString, QString> MainWindow::buildPullLineNotes(const PullRequest &pr)
 {
-    if (!m_pullDiff)
-        return;
-
-    // Collect already-posted review threads for every file, keyed by
-    // path\x1fside:line, so the renderer can drop each beneath the line it
-    // annotates even though every file now shares one rendered view (#250).
     QHash<QString, QString> notes;
-    const PullRequest *pr = nullptr;
-    for (const PullRequest &p : m_currentPulls)
-        if (p.number == m_currentPullNumber)
-            pr = &p;
-    if (pr) {
+    {
         const auto htmlBody = [](QString text) {
             text = text.toHtmlEscaped();
             text.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
@@ -1947,9 +2045,9 @@ void MainWindow::renderPullDiff()
         // Whether this node can take a thread's one-click fix right now: the
         // apply commits to the PR's branch, so it needs an open PR and a
         // working tree (adhoc #82).
-        const bool canApplyFixes = pr->status == QLatin1String("open") &&
+        const bool canApplyFixes = pr.status == QLatin1String("open") &&
                                    pullStoreForCurrentRepo().canWrite();
-        const PullReviewSnapshot snapshot = buildPullReviewSnapshot(*pr);
+        const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
         for (const PullReviewThread &thread : snapshot.threads) {
             if (thread.lineStart <= 0)
                 continue;
@@ -2036,6 +2134,21 @@ void MainWindow::renderPullDiff()
             notes[key] += note;
         }
     }
+    return notes;
+}
+
+void MainWindow::renderPullDiff()
+{
+    if (!m_pullDiff)
+        return;
+
+    QHash<QString, QString> notes;
+    const PullRequest *pr = nullptr;
+    for (const PullRequest &p : m_currentPulls)
+        if (p.number == m_currentPullNumber)
+            pr = &p;
+    if (pr)
+        notes = buildPullLineNotes(*pr);
 
     // Render the whole PR — every changed file — into one scrollable view. The
     // PR patch carries no git object context for image previews, so pass empty
@@ -2402,40 +2515,6 @@ void MainWindow::togglePullDiffSearch(bool show)
     }
 }
 
-// Rebuild m_pullDiff's extra selections from m_pullDiffSearchMatches, painting
-// the active match in a brighter color than the rest, and update the "n/m"
-// count label.
-static void applyPullDiffSearchHighlights(QTextBrowser *diff,
-                                          const QList<QTextCursor> &matches,
-                                          int activeIndex, QLabel *countLabel,
-                                          bool termEmpty)
-{
-    QList<QTextEdit::ExtraSelection> sels;
-    QTextCharFormat matchFmt;
-    matchFmt.setBackground(QColor("#e3b341"));
-    matchFmt.setForeground(QColor("#0d1117"));
-    QTextCharFormat currentFmt;
-    currentFmt.setBackground(QColor("#f78166"));
-    currentFmt.setForeground(QColor("#0d1117"));
-    for (int i = 0; i < matches.size(); ++i) {
-        QTextEdit::ExtraSelection sel;
-        sel.cursor = matches.at(i);
-        sel.format = (i == activeIndex) ? currentFmt : matchFmt;
-        sels.append(sel);
-    }
-    diff->setExtraSelections(sels);
-
-    if (!countLabel)
-        return;
-    countLabel->setText(termEmpty
-                            ? QString()
-                            : matches.isEmpty()
-                                  ? QStringLiteral("No results")
-                                  : QStringLiteral("%1/%2")
-                                        .arg(activeIndex + 1)
-                                        .arg(matches.size()));
-}
-
 // Re-scan the combined diff for the current search text and highlight every
 // match. Called on every keystroke and after each re-render, since a
 // re-render replaces the document and invalidates previously-found cursors.
@@ -2462,7 +2541,7 @@ void MainWindow::pullDiffSearchRecompute()
             m_pullDiffSearchIndex = 0;
     }
 
-    applyPullDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
+    applyDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
                                   m_pullDiffSearchIndex, m_pullDiffSearchCount,
                                   term.isEmpty());
     if (m_pullDiffSearchIndex >= 0)
@@ -2483,7 +2562,7 @@ void MainWindow::pullDiffSearchGoTo(int delta)
     const int count = m_pullDiffSearchMatches.size();
     m_pullDiffSearchIndex =
         ((m_pullDiffSearchIndex + delta) % count + count) % count;
-    applyPullDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
+    applyDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
                                   m_pullDiffSearchIndex, m_pullDiffSearchCount,
                                   false);
 
@@ -3515,7 +3594,7 @@ void MainWindow::buildAndPreviewCurrentPull()
     // recursive lambda so each step starts the next only on success.
     auto steps = std::make_shared<QList<PullPreviewStep>>(
         pullPreviewSteps(gitDir, previewDir, clientDir, buildDir, commit,
-                         haveWorktree, QThread::idealThreadCount()));
+                         haveWorktree, ramCappedBuildJobs()));
 
     auto runNext = std::make_shared<std::function<void(int)>>();
     *runNext = [this, steps, runNext, dlg, statusPtr, appendLog,

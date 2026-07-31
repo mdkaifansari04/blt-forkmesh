@@ -782,8 +782,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=8f973399d601" defer></script>
-    <script src="/dashboard-chat.js?v=34d300c62b26" defer></script>
+    <script src="/dashboard.js?v=5cff672d7dfd" defer></script>
+    <script src="/dashboard-chat.js?v=1c8ecaa6d4ac" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="home">
     <div data-dashboard-root data-dashboard-section="home" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
@@ -982,6 +982,27 @@
           </div>
         </div>
       </header>
+
+      <div
+        data-email-verification-banner
+        role="status"
+        class="hidden shrink-0 flex-col gap-2 border-b border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-200 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div class="flex min-w-0 items-start gap-2 sm:items-center">
+          <i data-lucide="mail-warning" class="mt-0.5 h-4 w-4 shrink-0"></i>
+          <p class="min-w-0">
+            <span data-email-verification-message class="font-medium">Your email is not verified yet.</span>
+            <span data-email-verification-hint class="text-amber-300"></span>
+          </p>
+        </div>
+        <button
+          data-email-verification-resend
+          type="button"
+          class="shrink-0 self-start rounded-md border border-amber-500/50 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-200 hover:bg-amber-500/20 transition-colors"
+        >
+          Resend verification email
+        </button>
+      </div>
 
 
       <button data-mobile-sidebar-backdrop type="button" aria-label="Close dashboard menu"></button>
