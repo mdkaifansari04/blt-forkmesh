@@ -677,14 +677,14 @@ public:
 
     // Reserve the chip's and the churn bar's slots in the column's width so
     // ResizeToContents never sizes the column so tight that either sits on top of
-    // the session's age.
+    // the session's age. Both slots are held open on every row, whether or not
+    // that row has a branch or any measured churn (adhoc #94): the slots are what
+    // keep every row's chip on one vertical line, so a row that leaves one empty
+    // has to leave the gap rather than let its chip slide into it.
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         QSize s = SelectionBorderRowDelegate::sizeHint(opt, idx);
-        if (!idx.data(kAgentBranchRole).toString().isEmpty())
-            s.rwidth() += chipWidth(opt, idx) + 2 * kButtonMargin;
-        if (barsWidth(idx) > 0)
-            s.rwidth() += barsWidth(idx) + kButtonMargin;
+        s.rwidth() += chipWidth(opt) + 2 * kButtonMargin + kBarWidth + kButtonMargin;
         s.rheight() = qMax(s.height(), kBarHeight + 6);
         return s;
     }
@@ -744,20 +744,20 @@ public:
         QRect glyph(r.left() + kChipPadding, r.center().y() - kGlyphSize / 2,
                     kGlyphSize, kGlyphSize);
         themedOcticon("git-branch", ink, kGlyphSize).paint(painter, glyph);
-        // Files the session's patch touched, in small type beside the glyph.
+        // Files the session's patch touched, in small type beside the glyph. The
+        // count field runs from the glyph to the alert's slot, which is reserved
+        // whether or not this row conflicts (adhoc #94), and the digits are
+        // right-aligned in it — so a "3" and a "15" end on the same edge instead
+        // of drifting apart down the list.
         const QString files = filesText(index);
         if (!files.isEmpty()) {
             const int textLeft = glyph.right() + 1 + kChipGap;
-            // The alert glyph, when there is one, owns the chip's trailing slot,
-            // so the count stops short of it.
-            const int textRight = conflicted
-                                      ? conflictRect(option, index).left() - kChipGap
-                                      : r.right() - kChipPadding;
+            const int textRight = conflictRect(option, index).left() - kChipGap;
             painter->setPen(ink);
             painter->setFont(chipFont(option));
             painter->drawText(QRect(textLeft, r.top(), textRight - textLeft + 1,
                                     r.height()),
-                              Qt::AlignVCenter | Qt::AlignLeft, files);
+                              Qt::AlignVCenter | Qt::AlignRight, files);
         }
         // Conflict alert, inside the chip rather than a button of its own in a
         // column of its own (adhoc #92): the orange glyph at the chip's trailing
@@ -849,38 +849,27 @@ private:
         return v.isValid() ? v.toInt() : -1;
     }
 
-    static int chipWidth(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    // One width for every chip in the column (adhoc #94), rather than one that
+    // grew and shrank with the row's own count and conflict flag: the widest
+    // count the cell can print ("99+") and the alert glyph's slot are budgeted on
+    // every row, so the chips read as a single column of identical buttons
+    // instead of an edge that steps in and out with each row's contents.
+    static int chipWidth(const QStyleOptionViewItem &opt)
     {
-        int w = 2 * kChipPadding + kGlyphSize;
-        const QString files = filesText(idx);
-        if (!files.isEmpty())
-            w += kChipGap + QFontMetrics(chipFont(opt)).horizontalAdvance(files);
-        if (idx.data(kAgentConflictRole).toBool())
-            w += kChipGap + kGlyphSize;
-        return w;
+        return 2 * kChipPadding + kGlyphSize + kChipGap +
+               QFontMetrics(chipFont(opt)).horizontalAdvance(QStringLiteral("99+")) +
+               kChipGap + kGlyphSize;
     }
 
-    // Width the churn bars claim at the cell's trailing edge — nothing at all for
-    // a session with no measured change, so an untouched row leaves the title
-    // that much more room.
-    static int barsWidth(const QModelIndex &idx)
-    {
-        return idx.data(kAgentAddedRole).toInt() > 0 ||
-                       idx.data(kAgentRemovedRole).toInt() > 0
-                   ? kBarWidth
-                   : 0;
-    }
-
-    static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &idx)
+    static QRect buttonRect(const QStyleOptionViewItem &opt, const QModelIndex &)
     {
         const QRect cell = opt.rect;
         const int h = qMin(kButtonSize, cell.height() - 2);
-        // The bars sit outermost (right up against the title), so the chip stops
-        // short of them.
-        const int bars = barsWidth(idx);
-        const int right = cell.right() - (bars > 0 ? bars + kButtonMargin : 0);
-        const int w =
-            qMin(chipWidth(opt, idx), qMax(0, cell.width() - 2 * kButtonMargin));
+        // The bars sit outermost (right up against the title) and their slot is
+        // held open on every row, churn or not, so the chip's trailing edge lands
+        // in the same place all the way down the list.
+        const int right = cell.right() - kBarWidth - kButtonMargin;
+        const int w = qMin(chipWidth(opt), qMax(0, cell.width() - 2 * kButtonMargin));
         return QRect(right - kButtonMargin - w + 1, cell.center().y() - h / 2 + 1, w,
                      h);
     }

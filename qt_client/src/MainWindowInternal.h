@@ -19,7 +19,6 @@
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
 #include "ScrollJumpButtons.h"
-#include "CommitCommentStore.h"
 #include "DirectorySizeScan.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
