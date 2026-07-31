@@ -2000,11 +2000,22 @@ void MainWindow::checkDirectMirrorGatewayHealth()
 
 void MainWindow::registerDirectMirrorEndpoint()
 {
-    if (!m_networkAccess ||
-        !m_directMirrorGatewayHealthy ||
-        !m_cloudflaredProcess ||
-        m_cloudflaredProcess->state() ==
-            QProcess::NotRunning ||
+    // A connector this process spawned is one way to know a Tunnel is in front
+    // of the loopback gateway; an owner-only connector token on disk is the
+    // other, and it is the only one a packaged deployment can offer — those run
+    // cloudflared under its own supervised unit (see
+    // packaging/systemd/cloudflared-forkmesh.service), so m_cloudflaredProcess
+    // is legitimately null there and requiring it silently disabled
+    // registration for every externally supervised mirror. The Worker
+    // revalidates proxied DNS and the signed manifest before accepting either
+    // way, so a node whose Tunnel is actually down still cannot register.
+    const QFileInfo connectorTokenInfo(directGatewayConnectorTokenPath());
+    const bool connectorProvisioned =
+        (m_cloudflaredProcess &&
+         m_cloudflaredProcess->state() != QProcess::NotRunning) ||
+        (connectorTokenInfo.isFile() && !connectorTokenInfo.isSymLink());
+    if (!m_networkAccess || !m_directMirrorGatewayHealthy ||
+        !connectorProvisioned ||
         (!m_profileIdentity.isValid() &&
          !m_profileIdentity.load()))
         return;
