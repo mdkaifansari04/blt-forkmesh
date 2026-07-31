@@ -1548,6 +1548,12 @@ void MainWindow::sendNodeHeartbeat()
         // avatar crown badge once when it flips.
         if (m_isAdmin != wasAdmin)
             updateAdminCrownBadge();
+        // A freshly launched instance's request to join rides the same signed
+        // heartbeat reply for admins (adhoc #97): light the red dot over the
+        // relay favicon and show the Approve button beside it.
+        setPendingRelayJoins(
+            m_isAdmin ? resp.value(QStringLiteral("pendingRelays")).toInt()
+                      : 0);
         // Fetch the shared room-chat key once the account identity is available,
         // so it's cached before the user opens chat (no-op once fetched).
         fetchRoomPassphrase();
@@ -2022,6 +2028,181 @@ bool MainWindow::adminVerifyEmail(const QString &target)
         return true;
     }
     return false;
+}
+
+void MainWindow::setPendingRelayJoins(int count)
+{
+    count = qMax(0, count);
+    const int previous = m_pendingRelayJoins;
+    m_pendingRelayJoins = count;
+    if (m_relayJoinDot && m_relayMenuButton) {
+        if (count > 0) {
+            // Pin to the favicon's top-right corner, the same treatment as the
+            // chat button's unread badge.
+            m_relayJoinDot->move(
+                qMax(0, m_relayMenuButton->width() - m_relayJoinDot->width() -
+                            2),
+                2);
+            m_relayJoinDot->show();
+            m_relayJoinDot->raise();
+        } else {
+            m_relayJoinDot->hide();
+        }
+    }
+    if (m_relayJoinApproveButton) {
+        m_relayJoinApproveButton->setText(
+            count > 1 ? QStringLiteral("Approve (%1)").arg(count)
+                      : QStringLiteral("Approve"));
+        m_relayJoinApproveButton->setToolTip(
+            count > 1
+                ? QStringLiteral(
+                      "%1 newly launched ForkMesh instances pinged this relay "
+                      "asking to join. Approve to link them — each joins the "
+                      "Worlds and starts the firework show.")
+                      .arg(count)
+                : QStringLiteral(
+                      "A newly launched ForkMesh instance pinged this relay "
+                      "asking to join. Approve to link it — it joins the "
+                      "Worlds and the firework show starts."));
+        m_relayJoinApproveButton->setVisible(count > 0);
+    }
+    if (count > previous)
+        logSystem(QStringLiteral(
+            "A new ForkMesh instance is ready to be linked — click Approve "
+            "beside the relay favicon to let it join."));
+}
+
+void MainWindow::showRelayJoinApprovalDialog()
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-relays-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = accountsApiUrl("admin-relays");
+    QUrlQuery query;
+    query.addQueryItem("node", node);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Link new instances");
+    dialog.resize(560, 420);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *intro = new QLabel(
+        "Newly launched ForkMesh instances that pinged this relay asking to "
+        "join the federation. Approving links an instance into the Worlds — "
+        "and the firework show starts.");
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    auto *inner = new QWidget;
+    auto *rows = new QVBoxLayout(inner);
+    int pendingShown = 0;
+    for (const QJsonValue &v : resp.value("relays").toArray()) {
+        const QJsonObject obj = v.toObject();
+        if (obj.value("status").toString() != QStringLiteral("pending"))
+            continue;
+        const QString pubkey = obj.value("pubkey").toString();
+        if (pubkey.isEmpty())
+            continue;
+        ++pendingShown;
+        const QString label = obj.value("label").toString();
+        const QString baseUrl = obj.value("baseUrl").toString();
+        auto *row = new QHBoxLayout;
+        auto *info = new QLabel(
+            QStringLiteral("<b>%1</b><br><span style='color:#8b949e'>%2</span>")
+                .arg((label.isEmpty() ? QStringLiteral("Unnamed instance")
+                                      : label)
+                         .toHtmlEscaped(),
+                     baseUrl.toHtmlEscaped()));
+        info->setTextFormat(Qt::RichText);
+        row->addWidget(info, 1);
+        auto *blockBtn = new QPushButton("Block");
+        blockBtn->setObjectName("ghostButton");
+        blockBtn->setCursor(Qt::PointingHandCursor);
+        row->addWidget(blockBtn);
+        auto *approveBtn = new QPushButton("Approve && link");
+        approveBtn->setObjectName("primaryButton");
+        approveBtn->setCursor(Qt::PointingHandCursor);
+        row->addWidget(approveBtn);
+        rows->addLayout(row);
+        connect(approveBtn, &QPushButton::clicked, &dialog,
+                [this, pubkey, approveBtn, blockBtn]() {
+                    approveBtn->setEnabled(false);
+                    blockBtn->setEnabled(false);
+                    if (adminRelayApprove(pubkey, QStringLiteral("approve"))) {
+                        approveBtn->setText("Linked \xE2\x9C\x93");
+                    } else {
+                        approveBtn->setText("Failed");
+                        approveBtn->setEnabled(true);
+                        blockBtn->setEnabled(true);
+                    }
+                });
+        connect(blockBtn, &QPushButton::clicked, &dialog,
+                [this, pubkey, approveBtn, blockBtn]() {
+                    approveBtn->setEnabled(false);
+                    blockBtn->setEnabled(false);
+                    if (adminRelayApprove(pubkey, QStringLiteral("block"))) {
+                        blockBtn->setText("Blocked");
+                    } else {
+                        blockBtn->setText("Failed");
+                        approveBtn->setEnabled(true);
+                        blockBtn->setEnabled(true);
+                    }
+                });
+    }
+    if (!pendingShown)
+        rows->addWidget(
+            new QLabel("<i>No instances waiting to be linked.</i>"));
+    rows->addStretch();
+    scroll->setWidget(inner);
+    layout->addWidget(scroll, 1);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    dialog.exec();
+}
+
+bool MainWindow::adminRelayApprove(const QString &pubkey, const QString &action)
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || pubkey.isEmpty() ||
+        !hasOwnerSigningCapability(node) || !m_profileIdentity.isValid())
+        return false;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-relay-approve-v1\n" + node + "\n" + pubkey + "\n" +
+         action + "\n" + ts)
+            .toUtf8();
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "admin-relay-approve",
+        QJsonObject{{"node", node}, {"ts", ts},
+                    {"sig", m_profileIdentity.signData(canonical)},
+                    {"pubkey", pubkey}, {"action", action}},
+        &status);
+    if (status != 200 || !resp.value("ok").toBool())
+        return false;
+    setPendingRelayJoins(m_pendingRelayJoins - 1);
+    logSystem(action == QStringLiteral("approve")
+                  ? QStringLiteral(
+                        "\xF0\x9F\x8E\x86 Instance linked: it joined the "
+                        "federation and the World is running its firework "
+                        "show.")
+                  : QStringLiteral("Instance join request blocked."));
+    return true;
 }
 
 QString MainWindow::accountOwner() const
@@ -3519,8 +3700,11 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
     const QString badge = logBadgeFor(clean);
     const QString accent = logAccentFor(clean);
     QString html;
-    // Same leading site icon the full Log view uses (adhoc #436), registered on
-    // this document too so the <img> resolves here.
+    // The "add this entry to the prompt" plus sits furthest left, ahead of the
+    // site icon, so the column of affordances lines up down the strip (adhoc
+    // #114). Same leading site icon the full Log view uses (adhoc #436),
+    // registered on this document too so the <img> resolves here.
+    html += logPromptIconTag(m_footerUpdateLog, clean);
     html += logFaviconTag(message, m_footerUpdateLog);
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
