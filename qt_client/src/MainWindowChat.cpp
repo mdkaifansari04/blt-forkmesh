@@ -1326,6 +1326,43 @@ QWidget *MainWindow::buildNetworkLogDock()
 
     m_footerUpdateLog->installEventFilter(this);
 
+    // Tiny pause-scroll toggle floating over the strip's bottom-right corner
+    // (adhoc #92). It rides on top of the log instead of taking a layout row so
+    // the fixed-height footer doesn't lose a line of history to it. The log
+    // otherwise always follows the newest line; this parks that follow.
+    m_footerLogPauseButton = new QPushButton(m_footerUpdateLog);
+    m_footerLogPauseButton->setObjectName("footerLogPauseButton");
+    m_footerLogPauseButton->setCheckable(true);
+    m_footerLogPauseButton->setFocusPolicy(Qt::NoFocus);
+    m_footerLogPauseButton->setCursor(Qt::PointingHandCursor);
+    m_footerLogPauseButton->setFixedSize(18, 14);
+    m_footerLogPauseButton->setIconSize(QSize(8, 8));
+    // The strip's canvas is forced white in both themes (styleFooterUpdateLog),
+    // so the toggle carries its own light-on-white look rather than a theme rule.
+    m_footerLogPauseButton->setStyleSheet(QStringLiteral(
+        "QPushButton#footerLogPauseButton{background:#f6f8fa;border:1px solid "
+        "#d0d7de;border-radius:4px;color:#57606a;font-size:8px;padding:0;}"
+        "QPushButton#footerLogPauseButton:hover{background:#eaeef2;color:#1f2328;}"
+        "QPushButton#footerLogPauseButton:checked{background:#ddf4e4;"
+        "border-color:#1a7f37;color:#1a7f37;}"));
+    connect(m_footerLogPauseButton, &QPushButton::toggled, this,
+            [this](bool paused) {
+                m_footerLogScrollPaused = paused;
+                updateFooterLogPauseButton();
+                // Un-pausing catches up immediately: the point of resuming is to
+                // be back on the newest line, not wherever the view was parked.
+                if (!paused && m_footerUpdateLog)
+                    if (QScrollBar *bar = m_footerUpdateLog->verticalScrollBar())
+                        bar->setValue(bar->maximum());
+            });
+    updateFooterLogPauseButton();
+    positionFooterLogPauseButton();
+    // The strip's own resize event doesn't fire when the scrollbar appears or
+    // goes away (that only changes the viewport), so re-park the toggle whenever
+    // the scroll range flips between "fits" and "scrolls".
+    connect(m_footerUpdateLog->verticalScrollBar(), &QScrollBar::rangeChanged,
+            this, [this] { positionFooterLogPauseButton(); });
+
     // Background work is visible without taking over the app: this narrow strip
     // sits exactly between the live log and the agent prompt and lists one
     // spinner plus one-word tag per kind of job in flight. Five tags fit; past
@@ -1423,10 +1460,11 @@ QWidget *MainWindow::buildNetworkLogDock()
     leftRegion->setObjectName(QStringLiteral("footerLeftRegion"));
     auto *leftRegionLayout = new QHBoxLayout(leftRegion);
     leftRegionLayout->setContentsMargins(0, 0, 0, 0);
-    // No gap between the log and the Background panel (adhoc #84): they are one
-    // region, and the strip of empty footer between their two borders only read
-    // as a seam.
-    leftRegionLayout->setSpacing(0);
+    // The log and the Background panel are separated by exactly the gap the row
+    // uses everywhere else — the same 8px as the dock's own margins and the gap
+    // to the prompt (adhoc #92). Butting them together (adhoc #84) left their two
+    // rounded borders touching as one 2px line that pinched apart at the corners.
+    leftRegionLayout->setSpacing(8);
     leftRegionLayout->addWidget(logPanel, 1);
     leftRegionLayout->addWidget(m_backgroundQueue, 0);
 
@@ -4685,12 +4723,13 @@ QWidget *MainWindow::buildBreadcrumb()
     auto *bar = new QWidget;
     bar->setObjectName("breadcrumbBar");
 
-    // --- Relay switcher: a "favicon  domain ▾ count" dropdown (search / switch
-    // / add). -----------------------------------------------------------------
+    // --- Relay switcher: just the active relay's favicon (adhoc #91) — the
+    // domain and relay count moved into the dropdown it opens (search / switch
+    // / add). ----------------------------------------------------------------
     m_relayMenuButton = new QPushButton;
     m_relayMenuButton->setObjectName("relayMenuButton");
     m_relayMenuButton->setCursor(Qt::PointingHandCursor);
-    m_relayMenuButton->setIconSize(QSize(18, 18));
+    m_relayMenuButton->setIconSize(QSize(28, 28));
     m_relayMenuButton->setToolTip("Switch, search, or add relays");
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
@@ -5294,7 +5333,8 @@ QWidget *MainWindow::buildBreadcrumb()
 
     auto *chrome = new WindowChromeBar;
     auto *chromeRow = new QHBoxLayout(chrome);
-    chromeRow->setContentsMargins(14, 0, 8, 0);
+    // 24px on the left nudges the favicon in off the window edge (adhoc #91).
+    chromeRow->setContentsMargins(24, 0, 8, 0);
     chromeRow->setSpacing(8);
     // The instance/relay switcher heads the edge-to-edge chrome, with the public
     // SOL balance immediately to its right. The live fleet matrix sits in this
@@ -5438,6 +5478,44 @@ void MainWindow::positionFloatingLogButton()
         m_footerUpdateLog->width() - sz.width() - kMargin - scrollbarW,
         m_footerUpdateLog->height() - sz.height() - kMargin);
     m_floatingLogButton->raise();
+}
+
+// Park the pause-scroll toggle in the live-log strip's bottom-right corner, just
+// clear of the scrollbar so it never sits under the handle. Called on creation
+// and on every strip resize (see eventFilter).
+void MainWindow::positionFooterLogPauseButton()
+{
+    if (!m_footerLogPauseButton || !m_footerUpdateLog)
+        return;
+    constexpr int kMargin = 3;
+    const QSize sz = m_footerLogPauseButton->size();
+    int scrollbarW = 0;
+    if (QScrollBar *sb = m_footerUpdateLog->verticalScrollBar(); sb && sb->isVisible())
+        scrollbarW = sb->width();
+    m_footerLogPauseButton->move(
+        qMax(0, m_footerUpdateLog->width() - sz.width() - kMargin - scrollbarW),
+        qMax(0, m_footerUpdateLog->height() - sz.height() - kMargin));
+    m_footerLogPauseButton->raise();
+}
+
+// Two states, two icons: pause bars while the strip is following the newest
+// line, a down-arrow while it's parked (click to catch back up). Both come from
+// the style's own icon set rather than Unicode glyphs, which render as tofu in
+// the strip's monospace font.
+void MainWindow::updateFooterLogPauseButton()
+{
+    if (!m_footerLogPauseButton)
+        return;
+    const bool paused = m_footerLogScrollPaused;
+    m_footerLogPauseButton->setIcon(style()->standardIcon(
+        paused ? QStyle::SP_ArrowDown : QStyle::SP_MediaPause));
+    m_footerLogPauseButton->setToolTip(
+        paused ? QStringLiteral(
+                     "Auto-scroll paused \xE2\x80\x94 click to follow new log "
+                     "lines again")
+               : QStringLiteral(
+                     "Following new log lines \xE2\x80\x94 click to pause "
+                     "auto-scroll"));
 }
 
 // Screenshot button: drop a transparent overlay (the live desktop stays visible),
@@ -5654,11 +5732,14 @@ void MainWindow::updateRelaySwitcher()
                                                  : host)));
     if (host.isEmpty())
         host = QStringLiteral("ForkMesh");
-    // "domain ▾ count": the caret signals it drops down; the count is the
-    // number of configured relays.
-    const QString caret = QString::fromUtf8("\xE2\x96\xBE");
-    m_relayMenuButton->setText(host + "  " + caret + "  " +
-                               QString::number(m_servers.size()));
+    // The button is favicon-only (adhoc #91): the domain and relay count moved
+    // into the dropdown itself, so here they only ride the hover tooltip.
+    m_relayMenuButton->setToolTip(
+        QStringLiteral("%1 — %2 %3 configured. Switch, search, or add relays.")
+            .arg(host)
+            .arg(m_servers.size())
+            .arg(m_servers.size() == 1 ? QStringLiteral("relay")
+                                       : QStringLiteral("relays")));
 }
 
 // The room socket's keepalive pong carries the relay round trip for free every
@@ -5872,9 +5953,16 @@ void MainWindow::showRelayMenu()
         return;
     QMenu menu(this);
 
-    // Header showing the relay count.
-    QAction *header =
-        menu.addAction(QStringLiteral("Relays (%1)").arg(formatCount(m_servers.size())));
+    // Header: the active relay's domain plus the relay count — the readout
+    // that used to sit on the chrome-line button label itself (adhoc #91).
+    QString activeHost;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        activeHost = serverHost(m_servers.at(m_activeServer).url);
+    QAction *header = menu.addAction(
+        activeHost.isEmpty()
+            ? QStringLiteral("Relays (%1)").arg(formatCount(m_servers.size()))
+            : QStringLiteral("%1 — Relays (%2)")
+                  .arg(activeHost, formatCount(m_servers.size())));
     header->setEnabled(false);
 
     // Search box at the top; filters the relay list live.

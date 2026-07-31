@@ -15,6 +15,7 @@
 #include "AgentStore.h"
 #include "AgentRunner.h"
 #include "ClaudeSessionScan.h"
+#include "DirectorySizeScan.h"
 #include "RepoSecurity.h"
 #include "RepoContributionSnapshot.h"
 #include "MirrorCrypto.h"
@@ -1699,6 +1700,18 @@ private:
     // per mount point, clicking one re-roots the full scan there.
     QWidget *buildSizeMapVolumesPanel();
     void refreshSizeMapVolumes();
+    // Paths the scan must not descend into: every mount point nested under the
+    // scanned folder (so the totals stay on one filesystem, `du -x` style) plus
+    // the .gitignored set when that toggle is on.
+    QSet<QString> sizeMapPrunedPaths(const QString &path) const;
+    // Rescan the current folder as root when directories the user cannot read
+    // were skipped (adhoc #76). pkexec — or a password prompt feeding
+    // `sudo -S` where pkexec is missing — runs this same binary in its
+    // --size-map-scan helper mode and streams the tree back.
+    void rescanSizeMapElevated();
+    void applySizeMapResult(const QString &path,
+                            forkmesh::DirectorySizeScanResult result,
+                            bool hideIgnored, bool elevated);
     QWidget *buildPlaceholderTab(const QString &name);
 
     // Discussions tab (signed repository discussions with inbox fallback).
@@ -2419,6 +2432,10 @@ private:
     void updateNavRebuildButton();
     // Reposition the floating "Log" button to the live-log strip's corner.
     void positionFloatingLogButton();
+    // Keep the pause-scroll toggle in the live-log strip's bottom-right corner,
+    // clear of the scrollbar, and repaint its glyph for the current state.
+    void positionFooterLogPauseButton();
+    void updateFooterLogPauseButton();
     int pendingActionCount() const;
     void openActionRunFromNotification(int runId);
     // Show a desktop notification with both a title and body, using notify-send
@@ -4175,6 +4192,11 @@ private:
     // variant) so each line can lead with the site favicon <img> the full Log
     // view uses — QPlainTextEdit drops images (adhoc #436).
     QTextEdit *m_footerUpdateLog = nullptr;
+    // Tiny toggle floating in the strip's bottom-right corner: normally the log
+    // pins itself to the newest line, and this parks that follow so a line can
+    // be read while events keep streaming in (adhoc #92).
+    QPushButton *m_footerLogPauseButton = nullptr;
+    bool m_footerLogScrollPaused = false;
     // Whole mini-log/background/agent-prompt footer. The focused Git workspace
     // hides it to give the changes list and diff the full window height.
     QWidget *m_footerDock = nullptr;
@@ -4918,6 +4940,10 @@ private:
     QString m_sizeMapScannedPath;
     bool m_sizeMapScanning = false;
     int m_sizeMapScanEpoch = 0;
+    // "Scan as administrator" (adhoc #76): shown only once a scan reported
+    // directories this user cannot list, hidden again once the elevated rescan
+    // has produced the complete tree for that folder.
+    QPushButton *m_sizeMapElevate = nullptr;
     // Container holding one StorageMiniMap per mounted filesystem; refilled on
     // every rescan so mounts appearing or vanishing are picked up.
     QWidget *m_sizeMapVolumesBox = nullptr;

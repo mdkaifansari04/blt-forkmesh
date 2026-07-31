@@ -19,6 +19,8 @@
 #include "ClaudeStreamSession.h"
 #include "ClaudeTranscriptView.h"
 #include "ScrollJumpButtons.h"
+#include "CommitCommentStore.h"
+#include "DirectorySizeScan.h"
 #include "StallWatchdog.h"
 #include "IssueBurnup.h"
 #include "QrCode.h"
@@ -4576,17 +4578,10 @@ private:
     QList<IssueBurnupPoint> m_series;
 };
 
-// One entry in the Size map tab's tree: total bytes of everything beneath
-// it, with subdirectories and direct files as children (largest first,
-// adhoc #189/#262). A file is a leaf — no children — so the chart offers
-// zoom only on directories, and zooming into a files-only directory shows
-// one slice per file, matching the website's size map.
-struct SunburstNode {
-    QString name;
-    qint64 size = 0;
-    int fileCount = 0;
-    QList<SunburstNode> children;
-};
+// One entry in the Size map tab's tree. It lives in DirectorySizeScan.h so
+// the scan can also run from the elevated helper process, which links none of
+// the widget code (adhoc #76).
+using forkmesh::SunburstNode;
 
 // The Size map tab's multi-level pie (adhoc #189): ring 1 is the working
 // tree's top-level directories and files, each deeper ring subdivides its
@@ -7083,6 +7078,83 @@ private:
     }
 
     QString m_fullText;
+};
+
+// A push button that stacks its octicon above a small caption — the same
+// icon-over-words form as the activity rail's entries (adhoc #91) — but driven
+// by the button's live text(), so the existing "Issues (60)" / "Fork 0" count
+// updates keep working. Two forms: Tab paints the repo tabs' checked underline,
+// Action paints the repoAction pill's fill and border. Fully custom-painted
+// (like ActivityRailButton), so the QPushButton QSS box — including
+// #repoAction's max-height, which would squash the stacked layout — never
+// shapes what's drawn.
+class VerticalIconButton : public QPushButton
+{
+public:
+    enum Form { Action, Tab };
+    explicit VerticalIconButton(const QString &text, Form form,
+                                QWidget *parent = nullptr)
+        : QPushButton(text, parent), m_form(form)
+    {
+        setCursor(Qt::PointingHandCursor);
+    }
+
+    QSize sizeHint() const override
+    {
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const int textW = QFontMetrics(f).horizontalAdvance(text());
+        return QSize(qMax(44, qMax(kIconPx, textW) + 16), kHeight);
+    }
+    QSize minimumSizeHint() const override { return sizeHint(); }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        const bool dark = currentThemeIsDark();
+        const bool hovered = isEnabled() && underMouse();
+        QColor fg;
+        if (m_form == Tab)
+            fg = dark ? QColor(isChecked() || hovered ? "#e6edf3" : "#8b949e")
+                      : QColor(isChecked() || hovered ? "#1f2328" : "#656d76");
+        else
+            fg = dark ? QColor("#e6edf3") : QColor("#1f2328");
+        if (!isEnabled())
+            fg = QColor("#6e7681");
+
+        if (m_form == Action) {
+            p.setPen(QColor(dark ? "#30363d" : "#d0d7de"));
+            p.setBrush(QColor(dark ? (hovered ? "#30363d" : "#21262d")
+                                   : (hovered ? "#d0d7de" : "#eaeef2")));
+            p.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 6,
+                              6);
+        } else if (isChecked()) {
+            p.fillRect(QRect(0, height() - 2, width(), 2),
+                       QColor(dark ? "#2ea043" : "#1f883d"));
+        }
+
+        const QRect iconRect((width() - kIconPx) / 2, 6, kIconPx, kIconPx);
+        icon().paint(&p, iconRect, Qt::AlignCenter,
+                     isEnabled() ? QIcon::Normal : QIcon::Disabled);
+
+        QFont f = font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        p.setFont(f);
+        p.setPen(fg);
+        p.drawText(QRect(2, iconRect.bottom() + 2, width() - 4, 14),
+                   Qt::AlignHCenter | Qt::AlignTop,
+                   QFontMetrics(f).elidedText(text(), Qt::ElideRight,
+                                              width() - 4));
+    }
+
+private:
+    static constexpr int kIconPx = 16;
+    static constexpr int kHeight = 44;
+    Form m_form;
 };
 
 // Width of one activity-rail entry, and of the rail (scroll area) itself. Every
