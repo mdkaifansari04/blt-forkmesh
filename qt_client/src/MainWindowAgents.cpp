@@ -585,8 +585,9 @@ double agentSpinStepDegrees(const AgentSession &s, qint64 tokens)
 // What an agent changed, as words — the number of files its patch touched, the
 // lines it added and removed, and how far its branch sits ahead of / behind base
 // (issue #170). The Diff *cell* no longer prints any of this: adhoc #84 replaced
-// the figures with the churn bar AgentDiffCellDelegate paints, so this text is
-// the cell's tooltip only. Reads "-" until a finished run has a patch and/or a
+// the figures with the churn bar AgentDiffCellDelegate paints, so the words are
+// left to the cell's tooltip and the detail header's Info popup, which lists the
+// same "Diff" figure. Reads "-" until a finished run has a patch and/or a
 // still-existing branch to measure.
 QString agentDiffSummaryText(const AgentDiffStat &stat)
 {
