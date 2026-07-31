@@ -8099,21 +8099,27 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_repoHeaderTitle->setTextFormat(Qt::RichText);
     m_repoHeaderTitle->hide();
 
-    auto *notifyButton = new QPushButton("Notify");
+    // Icon-over-caption pills (adhoc #91), the same form as the activity rail,
+    // so the right-hand action cluster reads compact. "repoActionStack" keeps
+    // them clear of #repoAction's QSS max-height, which would squash the stack.
+    auto *notifyButton =
+        new VerticalIconButton("Notify", VerticalIconButton::Action);
     m_notifyButton = notifyButton;
-    notifyButton->setObjectName("repoAction");
     notifyButton->setToolTip("Pings");
     setOcticon(notifyButton, "bell", 16);
-    m_forkButton = new QPushButton("Fork 0");
-    m_mirrorButton = new QPushButton("Mirror 1");
-    m_sourceButton = new QPushButton("Source");
+    m_forkButton = new VerticalIconButton("Fork 0", VerticalIconButton::Action);
+    m_mirrorButton =
+        new VerticalIconButton("Mirror 1", VerticalIconButton::Action);
+    m_sourceButton =
+        new VerticalIconButton("Source", VerticalIconButton::Action);
     // Open-in-browser link, mirroring the relay switcher's open button: takes
     // the active repo to its page on the mainnode website.
-    m_repoOpenButton = new QPushButton("Open");
+    m_repoOpenButton =
+        new VerticalIconButton("Open", VerticalIconButton::Action);
     for (QPushButton *b :
-         {notifyButton, m_forkButton, m_mirrorButton, m_sourceButton,
-          m_repoOpenButton}) {
-        b->setObjectName("repoAction");
+         {static_cast<QPushButton *>(notifyButton), m_forkButton,
+          m_mirrorButton, m_sourceButton, m_repoOpenButton}) {
+        b->setObjectName("repoActionStack");
         b->setCursor(Qt::PointingHandCursor);
     }
     setOcticon(m_forkButton, "repo-forked", 16);
@@ -8232,9 +8238,15 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 1 || i == 3 || i == 10 || i == 11)
             continue;
         const TabDef tab = tabs.at(i);
-        auto *b = new QPushButton(QString::fromLatin1(tab.label));
         // Releases (id 12) is styled like a toolbar button, not a tab: it lives in
         // the Code overview toolbar next to Tags (adhoc #180), not the tab row.
+        // Every real tab stacks its icon over a small caption (adhoc #91), the
+        // same form as the activity rail, so the row reads compact.
+        QPushButton *b =
+            i == 12 ? new QPushButton(QString::fromLatin1(tab.label))
+                    : static_cast<QPushButton *>(new VerticalIconButton(
+                          QString::fromLatin1(tab.label),
+                          VerticalIconButton::Tab));
         b->setObjectName(i == 12 ? "ghostButton" : "repoTab");
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
@@ -8306,7 +8318,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     tabBarScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     tabBarScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     tabBarScroll->setMinimumWidth(0);
-    tabBarScroll->setFixedHeight(48);
+    // Tall enough for the stacked icon-over-caption tabs (44px, adhoc #91)
+    // plus the horizontal scrollbar a narrow window needs.
+    tabBarScroll->setFixedHeight(56);
 
     // The integrity-pin warning ("clones are being rejected — reset the pin")
     // doesn't live in an in-page banner here; refreshRepoPinBanner surfaces it as
