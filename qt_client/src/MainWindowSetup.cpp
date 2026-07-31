@@ -676,15 +676,16 @@ bool MainWindow::testSpreadsheetResizeAfterMove()
     return draggedGrew && neighborUntouched && movedColumnUntouched;
 }
 
-bool MainWindow::testAgentColumnsMovable() const
+bool MainWindow::testAgentListChromeHidden() const
 {
-    return m_agentTable && m_agentTable->horizontalHeader()->sectionsMovable();
+    return m_agentTable && m_agentTable->horizontalHeader()->isHidden() &&
+           m_agentTable->frameShape() == QFrame::NoFrame;
 }
 
 // adhoc #35: read back the agents list's column labels plus how far the last
 // column reaches, so a test can prove the trimmed layout is what ships — the
-// title column absorbing the spare width, with Updated and Diff pushed against
-// the list's right edge rather than leaving a dead gap after them.
+// title column absorbing the spare width rather than leaving a dead gap after
+// it (adhoc #92 dropped the last column that competed with it).
 QString MainWindow::testAgentColumnLayout() const
 {
     if (!m_agentTable)
