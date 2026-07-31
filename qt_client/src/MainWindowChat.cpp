@@ -3772,10 +3772,13 @@ void MainWindow::showDiagnosticsDialog()
 }
 
 // Column layout of the "High memory usage" table; adhoc #98 added the trend
-// square and the command line, so the indexes are worth naming.
+// square and the command line and adhoc #96 the agent attribution, so the
+// indexes are worth naming.
 static constexpr int kHighMemoryTrendColumn = 1;
-static constexpr int kHighMemoryCommandColumn = 6;
-static constexpr int kHighMemoryActionColumn = 7;
+static constexpr int kHighMemoryAgentColumn = 6;
+static constexpr int kHighMemoryCommandColumn = 7;
+static constexpr int kHighMemoryActionColumn = 8;
+static constexpr int kHighMemoryColumnCount = 9;
 // How many rows carry a trend square. One per row for all 30 would be mostly
 // noise; the top ten are the ones worth watching grow.
 static constexpr int kHighMemoryTrendRows = 10;
@@ -3796,9 +3799,10 @@ void MainWindow::showHighMemoryProcessPanel()
     dialog->setWindowModality(Qt::NonModal);
     dialog->setModal(false);
     dialog->setWindowTitle(QStringLiteral("High memory usage"));
-    // Wide enough for the command-line column to be worth reading (adhoc #98),
-    // clamped to the screen so it still fits on smaller displays.
-    QSize preferred(1280, 620);
+    // Wide enough for the command-line column to be worth reading (adhoc #98)
+    // beside the agent column (adhoc #96), clamped to the screen so it still
+    // fits on smaller displays.
+    QSize preferred(1420, 620);
     if (QScreen *screen = QGuiApplication::primaryScreen())
         preferred =
             preferred.boundedTo(screen->availableGeometry().size() * 0.92);
@@ -3809,7 +3813,9 @@ void MainWindow::showHighMemoryProcessPanel()
         "<b>Host memory is above 85%</b><br>"
         "Processes are sorted by resident memory, and the top ten carry a "
         "trend square showing how their memory has moved since this panel "
-        "opened. “Kill” requests a normal termination and “Kill all” does the "
+        "opened. Anything an agent run started — the agent itself and every "
+        "build, test or tool below it — names that run in the Agent column. "
+        "“Kill” requests a normal termination and “Kill all” does the "
         "same for every listed process sharing that name; ForkMesh and PID 1 "
         "are protected."));
     heading->setTextFormat(Qt::RichText);
@@ -3821,12 +3827,13 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessStatus->setObjectName(QStringLiteral("statusLine"));
     layout->addWidget(m_highMemoryProcessStatus);
 
-    m_highMemoryProcessTable = new QTableWidget(0, 8);
+    m_highMemoryProcessTable = new QTableWidget(0, kHighMemoryColumnCount);
     m_highMemoryProcessTable->setHorizontalHeaderLabels(
         {QStringLiteral("Process"), QStringLiteral("Trend"),
          QStringLiteral("PID"), QStringLiteral("Owner"),
          QStringLiteral("Memory"), QStringLiteral("Host %"),
-         QStringLiteral("Command line"), QStringLiteral("Action")});
+         QStringLiteral("Agent"), QStringLiteral("Command line"),
+         QStringLiteral("Action")});
     m_highMemoryProcessTable->verticalHeader()->setVisible(false);
     m_highMemoryProcessTable->setSelectionBehavior(
         QAbstractItemView::SelectRows);
@@ -3838,7 +3845,7 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessTable->setTextElideMode(Qt::ElideRight);
     // The command line takes every spare pixel now that it is the widest cell;
     // the rest stay at fixed, content-sized widths.
-    for (int column = 0; column < 8; ++column)
+    for (int column = 0; column < kHighMemoryColumnCount; ++column)
         m_highMemoryProcessTable->horizontalHeader()->setSectionResizeMode(
             column, column == kHighMemoryCommandColumn ? QHeaderView::Stretch
                                                        : QHeaderView::Fixed);
@@ -3848,6 +3855,7 @@ void MainWindow::showHighMemoryProcessPanel()
     m_highMemoryProcessTable->setColumnWidth(3, 110);
     m_highMemoryProcessTable->setColumnWidth(4, 105);
     m_highMemoryProcessTable->setColumnWidth(5, 72);
+    m_highMemoryProcessTable->setColumnWidth(kHighMemoryAgentColumn, 190);
     m_highMemoryProcessTable->setColumnWidth(kHighMemoryActionColumn,
                                             160); // Kill + Kill all
     // Tall enough for a trend square to sit inside a row.
@@ -3926,28 +3934,36 @@ void MainWindow::refreshHighMemoryProcessTable()
                 };
                 QVector<ProcessRow> rows;
                 rows.reserve(30);
+                // Parent of every process on the host, so a listed row can be
+                // walked back to the agent run that spawned it (adhoc #96).
+                // `ps` already reports it, which keeps the attribution free of
+                // a second /proc pass.
+                QHash<qint64, qint64> parentOf;
                 const QList<QByteArray> lines = output.split('\n');
                 int validProcesses = 0;
                 for (const QByteArray &raw : lines) {
                     const QList<QByteArray> fields =
                         raw.simplified().split(' ');
-                    if (fields.size() < 5)
+                    if (fields.size() < 6)
                         continue;
                     bool pidOk = false;
                     bool rssOk = false;
                     const qint64 pid = fields.at(0).toLongLong(&pidOk);
-                    const QString owner = QString::fromLocal8Bit(fields.at(1));
-                    const qint64 rssKb = fields.at(2).toLongLong(&rssOk);
+                    const qint64 ppid = fields.at(1).toLongLong();
+                    const QString owner = QString::fromLocal8Bit(fields.at(2));
+                    const qint64 rssKb = fields.at(3).toLongLong(&rssOk);
                     const QString percent =
-                        QString::fromLocal8Bit(fields.at(3));
+                        QString::fromLocal8Bit(fields.at(4));
                     // `args` (not `comm`) so the arguments have something to
                     // show (adhoc #98); the Process column keeps reading like
                     // the old command name by taking argv[0]'s basename.
                     const QString commandLine =
                         QString::fromLocal8Bit(
-                            QByteArrayList(fields.mid(4)).join(' '));
+                            QByteArrayList(fields.mid(5)).join(' '));
                     if (!pidOk || !rssOk || pid <= 0 || commandLine.isEmpty())
                         continue;
+                    if (ppid > 0)
+                        parentOf.insert(pid, ppid);
                     QString name = commandLine.section(QLatin1Char(' '), 0, 0);
                     const int slash = name.lastIndexOf(QLatin1Char('/'));
                     if (slash >= 0)
@@ -3989,10 +4005,68 @@ void MainWindow::refreshHighMemoryProcessTable()
                 for (const ProcessRow &process : rows)
                     pidsByName[process.name].append(process.pid);
 
+                // Agent attribution (adhoc #96): the process driving each live
+                // session, keyed by PID. A row is that session's if it is the
+                // process itself or sits anywhere below it, so the pytest run
+                // and the cc1plus swarm an agent kicked off say whose they are.
+                struct AgentOwner {
+                    qint64 rootPid = 0;
+                    QString label;
+                    QString detail;
+                };
+                QHash<qint64, AgentOwner> agentRoots;
+                for (const AgentSession &session : std::as_const(m_agentSessions)) {
+                    const qint64 rootPid = agentSessionProcessId(session.id);
+                    if (rootPid <= 0)
+                        continue;
+                    QString title = session.issueTitle.trimmed();
+                    if (title.isEmpty())
+                        title = session.prompt.section(QLatin1Char('\n'), 0, 0)
+                                    .trimmed();
+                    if (title.isEmpty())
+                        title = QStringLiteral("Agent run #%1").arg(session.id);
+                    AgentOwner owner;
+                    owner.rootPid = rootPid;
+                    owner.label =
+                        session.issueNumber > 0
+                            ? QStringLiteral("#%1 %2").arg(session.issueNumber).arg(title)
+                            : title;
+                    QStringList detail{owner.label};
+                    if (!session.owner.isEmpty() && !session.name.isEmpty())
+                        detail << QStringLiteral("Repository: %1/%2")
+                                      .arg(session.owner, session.name);
+                    if (!session.branchName.isEmpty())
+                        detail << QStringLiteral("Branch: %1").arg(session.branchName);
+                    QString provider = agentProviderName(session.provider);
+                    if (!session.model.isEmpty())
+                        provider += QStringLiteral(" · %1").arg(session.model);
+                    detail << QStringLiteral("Agent: %1").arg(provider)
+                           << QStringLiteral("Status: %1").arg(session.status);
+                    owner.detail = detail.join(QLatin1Char('\n'));
+                    agentRoots.insert(rootPid, owner);
+                }
+                // Walk a listed PID up to init looking for one of those roots.
+                // The hop cap is belt and braces: a `ps` snapshot taken while
+                // processes exit can hand back an inconsistent parent chain.
+                auto agentOwnerFor =
+                    [&agentRoots, &parentOf](qint64 pid) -> const AgentOwner * {
+                    for (int hops = 0; pid > 1 && hops < 64; ++hops) {
+                        const auto found = agentRoots.constFind(pid);
+                        if (found != agentRoots.constEnd())
+                            return &found.value();
+                        const qint64 parent = parentOf.value(pid, 0);
+                        if (parent <= 0 || parent == pid)
+                            break;
+                        pid = parent;
+                    }
+                    return nullptr;
+                };
+
                 m_highMemoryProcessTable->setUpdatesEnabled(false);
                 m_highMemoryProcessTable->clearContents();
                 m_highMemoryProcessTable->setRowCount(rows.size());
                 qint64 shownRssKb = 0;
+                int agentRows = 0;
                 for (int row = 0; row < rows.size(); ++row) {
                     const ProcessRow &process = rows.at(row);
                     shownRssKb += process.rssKb;
@@ -4010,6 +4084,30 @@ void MainWindow::refreshHighMemoryProcessTable()
                         process.rssKb);
                     put(5, QStringLiteral("%1%").arg(process.percent, 0, 'f', 1),
                         process.percent);
+                    // Whose run this is, if any (adhoc #96). The agent's own
+                    // process names the session outright; anything it started
+                    // is marked with "↳" so the tree reads at a glance.
+                    const AgentOwner *agent = agentOwnerFor(process.pid);
+                    if (agent) {
+                        ++agentRows;
+                        const bool isAgentItself = process.pid == agent->rootPid;
+                        put(kHighMemoryAgentColumn,
+                            isAgentItself
+                                ? agent->label
+                                : QStringLiteral("↳ %1").arg(agent->label));
+                        if (QTableWidgetItem *cell =
+                                m_highMemoryProcessTable->item(
+                                    row, kHighMemoryAgentColumn))
+                            cell->setToolTip(
+                                isAgentItself
+                                    ? QStringLiteral("%1\n\nThis is the agent's "
+                                                     "own process.")
+                                          .arg(agent->detail)
+                                    : QStringLiteral("%1\n\nStarted by that "
+                                                     "agent run (PID %2).")
+                                          .arg(agent->detail)
+                                          .arg(agent->rootPid));
+                    }
                     // The full command line outgrows any sane column, so the
                     // cell elides and the tooltip carries the whole thing.
                     put(kHighMemoryCommandColumn, process.commandLine);
@@ -4113,10 +4211,14 @@ void MainWindow::refreshHighMemoryProcessTable()
                 m_highMemoryProcessTable->viewport()->update();
                 m_highMemoryProcessStatus->setText(
                     QStringLiteral(
-                        "Top %1 of %2 processes · %3 resident · refreshed %4")
+                        "Top %1 of %2 processes · %3 resident%4 · refreshed %5")
                         .arg(rows.size())
                         .arg(validProcesses)
                         .arg(SystemStats::formatBytes(shownRssKb * 1024))
+                        .arg(agentRows > 0
+                                 ? QStringLiteral(" · %1 from agent runs")
+                                       .arg(agentRows)
+                                 : QString())
                         .arg(QTime::currentTime().toString(
                             QStringLiteral("h:mm:ss AP"))));
             });
@@ -4135,7 +4237,7 @@ void MainWindow::refreshHighMemoryProcessTable()
             });
     query->start(QStringLiteral("ps"),
                  {QStringLiteral("-eo"),
-                  QStringLiteral("pid=,user=,rss=,%mem=,args="),
+                  QStringLiteral("pid=,ppid=,user=,rss=,%mem=,args="),
                   QStringLiteral("--sort=-rss")});
     // A broken or heavily starved `ps` must not leave the panel looking busy
     // forever. Killing this helper is safe and does not affect listed processes.
