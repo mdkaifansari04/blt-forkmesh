@@ -8512,10 +8512,17 @@ QWidget *MainWindow::buildRepoDetailSection()
         updateRepoActivityRail();
     });
     if (m_appNavigationRailLayout) {
+        // Directly below the global Agents entry, which heads the rail (adhoc
+        // #70). indexOf() rather than a literal 1/2 so the pair still lands at
+        // the top if the rail hasn't been built with Agents yet.
+        const int after =
+            m_agentsNavButton
+                ? m_appNavigationRailLayout->indexOf(m_agentsNavButton) + 1
+                : 0;
         m_appNavigationRailLayout->insertWidget(
-            0, m_railCodeButton, 0, Qt::AlignLeft);
+            after, m_railCodeButton, 0, Qt::AlignLeft);
         m_appNavigationRailLayout->insertWidget(
-            1, m_railGitButton, 0, Qt::AlignLeft);
+            after + 1, m_railGitButton, 0, Qt::AlignLeft);
     }
     // The checked states mirror the visible view (Code tab, and which body the
     // overview shows), so track every stack the navigation helpers drive.
