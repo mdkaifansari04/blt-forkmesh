@@ -2127,8 +2127,13 @@ private:
     // 5-hour + weekly figures the CLI's /usage shows) straight from the claude.ai
     // OAuth usage endpoint. No background timer drives this (adhoc #76), and
     // adhoc #20 dropped every other trigger too — this now only runs when the
-    // user hovers the top-bar chart to check the current figures.
-    void refreshClaudeCodeUsage();
+    // user hovers the top-bar chart to check the current figures. `fromHover`
+    // asks for the green/red result box on the chart (adhoc #96) — background
+    // callers leave it off so the box only ever answers a hover.
+    void refreshClaudeCodeUsage(bool fromHover = false);
+    // Flash the green (refreshed) / red (refresh failed) box on one of the
+    // top-bar usage charts. `chart` is a TokenUsageMiniChart* held as QWidget*.
+    void flashUsageChart(QWidget *chart, bool ok);
     // Ask the provider which models this account can drive right now
     // (GET /v1/models) and merge them into the composer's per-session model
     // picker, so the dropdown reflects the live line-up (new releases appear
@@ -2160,6 +2165,11 @@ private:
     // endpoint's resets_at) into the top-bar mini chart's tooltip as a "resets in
     // Xh / Xd" countdown, and cache it so the figure survives a restart.
     void applyClaudeReset(bool weekly, qint64 resetMs);
+    // Same pair for the premium per-model weekly window shown as the chart's
+    // third bar (adhoc #96). Kept separate from the bool-keyed calls above so
+    // MainWindow.h doesn't need the chart's Window enum.
+    void applyClaudeFableUsage(int percent);
+    void applyClaudeFableReset(qint64 resetMs);
     // Issue #346: when a Claude Code usage window that was previously maxed out
     // (>=99%) drops back down, optionally tell the node's owner by email — the
     // only useful signal for a headless node that has no one watching its
