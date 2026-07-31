@@ -1036,14 +1036,26 @@ int main(int argc, char *argv[])
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-a")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
                     {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Never shown in the grid")},
+                    {QStringLiteral("branch"), QStringLiteral("main")},
+                    {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"), QStringLiteral("local-node")}},
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-b")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
                     {QStringLiteral("rootCommit"), rootA},
                     {QStringLiteral("source"), QStringLiteral("remote-clone")}},
+        // The relay's public alias is a copy of the record above, so it carries
+        // the same published facts under the organization's name.
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("acme")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
                     {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Never shown in the grid")},
+                    {QStringLiteral("branch"), QStringLiteral("main")},
+                    {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"),
                      QStringLiteral("organization-alias")},
                     {QStringLiteral("servingOwner"),
@@ -1065,6 +1077,37 @@ int main(int argc, char *argv[])
           QStringLiteral("Repos uses a compact mirror-count column"));
     check(window.testNetworkRepoActionText(0) == QStringLiteral("Switch"),
           QStringLiteral("Repos provides an explicit Switch button"));
+
+    // adhoc #118: the page shows the full catalog record per repository -- every
+    // published field gets its own column, except the description.
+    const QStringList repoColumns = window.testNetworkRepoColumns();
+    const QStringList expectedRepoColumns{
+        QStringLiteral("Visibility"), QStringLiteral("Live host"),
+        QStringLiteral("Branch"),     QStringLiteral("Commits"),
+        QStringLiteral("Platform"),   QStringLiteral("Size"),
+        QStringLiteral("Clone URL"),  QStringLiteral("Maintainer")};
+    bool allRepoColumnsPresent = true;
+    for (const QString &column : expectedRepoColumns)
+        allRepoColumnsPresent =
+            allRepoColumnsPresent && repoColumns.contains(column);
+    check(allRepoColumnsPresent,
+          QStringLiteral("Repos gives every catalog field its own column"));
+    check(!repoColumns.contains(QStringLiteral("Description")),
+          QStringLiteral("Repos leaves the repository description out of the grid"));
+    check(window.testNetworkRepoCellText(0, QStringLiteral("Branch")) ==
+                  QStringLiteral("main") &&
+              window.testNetworkRepoCellText(0, QStringLiteral("Issues")) ==
+                  QStringLiteral("7") &&
+              window.testNetworkRepoCellText(0, QStringLiteral("Platform")) ==
+                  QStringLiteral("linux"),
+          QStringLiteral("Repos rows carry the published catalog values"));
+    check(!window.testNetworkRepoCellText(0, QStringLiteral("Repository"))
+               .contains(QStringLiteral("Never shown")),
+          QStringLiteral("Repos rows never print the repository description"));
+    // The rail badge counts what this page lists (two grouped repositories),
+    // not the machine's own copies.
+    check(window.testReposNavBadgeCount() == 2,
+          QStringLiteral("Repos rail badge counts the repositories on the network"));
 
     // Reward settings must never launch the former reserve/donation/finalize
     // account funnel. A mock account flow is installed specifically to prove it
