@@ -1881,8 +1881,7 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
 
     m_branchDiffPullNumber = pullNumber;
     showOverviewCommits();
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceRangePage);
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
     const QString dir = repoGitDir();
     if (!pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head)) {
         // Live branch: the full range pane (scope list, uncommitted changes,

@@ -660,8 +660,7 @@ void MainWindow::switchToBranch(const QString &branch)
 {
     m_branchDiffPullNumber = -1; // plain branch mode
     showOverviewCommits();
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceRangePage);
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
     showBranchDiff(branch);
     // Ctrl+F and the scroll-driven tools act on the diff from the first key.
     if (m_branchDiffView)
@@ -747,6 +746,22 @@ QString MainWindow::testSwitchToBranchImmediateSelection(const QString &branch)
 int MainWindow::testCommitWorkspacePage() const
 {
     return m_commitsStack ? m_commitsStack->currentIndex() : -1;
+}
+
+int MainWindow::testGitFilesSlotPage() const
+{
+    return m_gitFilesSlot ? m_gitFilesSlot->currentIndex() : -1;
+}
+
+int MainWindow::testGitHistorySlotPage() const
+{
+    return m_gitHistorySlot ? m_gitHistorySlot->currentIndex() : -1;
+}
+
+void MainWindow::testCloseBranchRange()
+{
+    if (m_branchCloseButton)
+        m_branchCloseButton->click();
 }
 #endif
 
@@ -2151,18 +2166,26 @@ QWidget *MainWindow::buildBranchRangePane()
     // Scope selector: pick what the diff pane shows for the selected branch —
     // every change it adds over base, its uncommitted working-tree changes, or a
     // single commit. Selecting a row re-renders the diff for that scope.
-    m_branchScopeLabel = new QLabel(QStringLiteral("Scope"));
+    // It lives in the Git view's own commit-history slot while a branch/PR is
+    // under review (adhoc #110): the range's commits show up where commits
+    // always show up, instead of in a third column beside the diff.
+    m_branchScopeLabel = new QLabel(QStringLiteral("SCOPE"));
     m_branchScopeLabel->setObjectName("sectionLabel");
     m_branchScopeLabel->setTextFormat(Qt::RichText);
     m_branchScopeList = new QListWidget;
     m_branchScopeList->setObjectName("overviewList");
     enableHoverRowHighlight(m_branchScopeList); // green outline selection (issue #252)
     m_branchScopeList->setMinimumWidth(180);
+    m_branchScopeList->setToolTip(
+        QStringLiteral("What the diff shows: the whole range, the branch's "
+                       "uncommitted changes, or a single commit"));
     connect(m_branchScopeList, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *, QListWidgetItem *) { renderBranchScopeDiff(); });
 
-    // Diff tools on the scope header row (brought over from the PR viewer):
-    // text-size zoom, unified <-> side-by-side, and prev/next change.
+    // Diff tools (brought over from the PR viewer): text-size zoom, unified <->
+    // side-by-side, and prev/next change. They sit on the pane's top bar beside
+    // the branch actions (adhoc #110) — the scope column that used to carry them
+    // is gone.
     auto *diffZoomOut = new QPushButton(QString::fromUtf8("\xE2\x88\x92")); // −
     diffZoomOut->setToolTip("Smaller diff text");
     connect(diffZoomOut, &QPushButton::clicked, this, [this] { adjustDiffFont(-1); });
@@ -2210,15 +2233,21 @@ QWidget *MainWindow::buildBranchRangePane()
     scopeHeader->setContentsMargins(0, 0, 0, 0);
     scopeHeader->addWidget(m_branchScopeLabel);
     scopeHeader->addStretch();
-    scopeHeader->addWidget(diffZoomOut);
-    scopeHeader->addWidget(diffZoomIn);
-    scopeHeader->addWidget(m_branchSplitButton);
-    scopeHeader->addWidget(prevChange);
-    scopeHeader->addWidget(nextChange);
 
-    // Changed-files list beside the diff (same pattern as the commit/PR viewers):
-    // click a file to scroll the diff straight to it; the selection follows the
-    // scroll (see updateBranchDiffSticky).
+    // The scope list as its own pane, so the Git view can host it in the slot
+    // its commit history normally occupies (see buildRepoCommitsTab). Margins
+    // match that slot's page so the swap doesn't shift the column.
+    m_branchScopePane = new QWidget;
+    auto *scopeLayout = new QVBoxLayout(m_branchScopePane);
+    scopeLayout->setContentsMargins(16, 12, 16, 16);
+    scopeLayout->setSpacing(6);
+    scopeLayout->addLayout(scopeHeader);
+    scopeLayout->addWidget(m_branchScopeList, 1);
+
+    // Changed-files list (same pattern as the commit/PR viewers): click a file to
+    // scroll the diff straight to it; the selection follows the scroll (see
+    // updateBranchDiffSticky). Hosted in the Git view's working-tree CHANGES slot
+    // while the range is under review (adhoc #110).
     m_branchFilesSummary = new QLabel;
     m_branchFilesSummary->setObjectName("sectionLabel");
     m_branchFilesSummary->setTextFormat(Qt::RichText);
@@ -2235,12 +2264,10 @@ QWidget *MainWindow::buildBranchRangePane()
                         item->data(Qt::UserRole).toString());
                 }
             });
-    auto *filesPane = new QWidget;
-    auto *filesLayout = new QVBoxLayout(filesPane);
-    filesLayout->setContentsMargins(0, 0, 0, 0);
+    m_branchFilesPane = new QWidget;
+    auto *filesLayout = new QVBoxLayout(m_branchFilesPane);
+    filesLayout->setContentsMargins(16, 10, 16, 6);
     filesLayout->setSpacing(6);
-    filesLayout->addLayout(scopeHeader);
-    filesLayout->addWidget(m_branchScopeList, 1);
     filesLayout->addWidget(m_branchFilesSummary);
     filesLayout->addWidget(m_branchFileList, 1);
 
@@ -2252,6 +2279,19 @@ QWidget *MainWindow::buildBranchRangePane()
     m_branchDetailLabel = new QLabel;
     m_branchDetailLabel->setObjectName("sectionLabel");
     m_branchDetailLabel->setTextFormat(Qt::RichText);
+
+    // Leaving the review: the range takes over the Git view's left column while
+    // it's open (adhoc #110), so it needs a way back to the working tree — the
+    // commit composer and history live behind this button.
+    m_branchCloseButton = new QPushButton;
+    m_branchCloseButton->setObjectName("ghostButton");
+    m_branchCloseButton->setProperty("buttonSize", "sm");
+    m_branchCloseButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_branchCloseButton, "x", 14);
+    m_branchCloseButton->setToolTip(
+        QStringLiteral("Close this diff and go back to the working tree"));
+    connect(m_branchCloseButton, &QPushButton::clicked, this,
+            [this] { setCommitWorkspacePage(kCommitWorkspaceChangesPage); });
 
     // "PR #N": shown while the pane reviews a pull request (adhoc #107) — jumps
     // to the full PR page (conversation, checks, merge controls).
@@ -2420,8 +2460,17 @@ QWidget *MainWindow::buildBranchRangePane()
 
     auto *detailBar = new QHBoxLayout;
     detailBar->setContentsMargins(0, 0, 0, 0);
+    detailBar->addWidget(m_branchCloseButton);
     detailBar->addWidget(m_branchDetailLabel);
     detailBar->addStretch();
+    // Diff tools moved up here from the old scope column's header (adhoc #110):
+    // one top bar carries everything that acts on what's being reviewed.
+    detailBar->addWidget(diffZoomOut);
+    detailBar->addWidget(diffZoomIn);
+    detailBar->addWidget(m_branchSplitButton);
+    detailBar->addWidget(prevChange);
+    detailBar->addWidget(nextChange);
+    detailBar->addSpacing(12);
     detailBar->addWidget(m_branchOpenPullButton);
     detailBar->addWidget(m_branchOpenCodiumButton);
     detailBar->addWidget(m_branchMergeEditorButton);
@@ -2478,14 +2527,9 @@ QWidget *MainWindow::buildBranchRangePane()
     searchBarLayout->addWidget(searchClose);
     m_branchDiffSearchBar->setVisible(false);
 
-    auto *split = new QSplitter(Qt::Horizontal);
-    split->setChildrenCollapsible(false);
-    split->addWidget(filesPane);
-    split->addWidget(m_branchDiffView);
-    split->setStretchFactor(0, 0);
-    split->setStretchFactor(1, 1);
-    split->setSizes({260, 900});
-
+    // The pane itself is just the toolbar over the diff: the scope and
+    // changed-files lists are hosted in the Git view's left column while a range
+    // is under review (adhoc #110), so the diff gets the full width here.
     auto *page = new QWidget;
     auto *layout = new QVBoxLayout(page);
     // Match the sibling workspace pages (working-tree changes / commit detail).
@@ -2493,7 +2537,7 @@ QWidget *MainWindow::buildBranchRangePane()
     layout->setSpacing(8);
     layout->addLayout(detailBar);
     layout->addWidget(m_branchDiffSearchBar);
-    layout->addWidget(split, 1);
+    layout->addWidget(m_branchDiffView, 1);
 
     // Ctrl+F / Escape scoped to this pane only (WidgetWithChildren): a
     // window-wide Find here would collide with the PR viewer's find bar.
@@ -3643,26 +3687,38 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
     const bool counted = behind >= 0 && ahead >= 0;
 
     if (m_branchDetailLabel) {
+        // Name both ends of the comparison, not just the branch (adhoc #110):
+        // the diff below is everything <branch> adds over <base>, and the merge
+        // actions to the right act in that same direction.
+        const QString pair =
+            base.isEmpty() || branch == base
+                ? QStringLiteral("<b>%1</b>").arg(branch.toHtmlEscaped())
+                : QString::fromUtf8("<b>%1</b> \xE2\x86\x92 <b>%2</b>")
+                      .arg(branch.toHtmlEscaped(), base.toHtmlEscaped());
         QString text;
         if (branch.isEmpty())
             text.clear();
         else if (branch == base)
-            text = QString::fromUtf8("<b>%1</b> \xC2\xB7 default branch")
-                       .arg(branch.toHtmlEscaped());
+            text = QString::fromUtf8("%1 \xC2\xB7 default branch").arg(pair);
         else if (!counted) {
-            // Counts still being read off-thread (adhoc #420): name the branch
+            // Counts still being read off-thread (adhoc #420): name the branches
             // rather than claiming a divergence we don't know yet.
-            text = QString::fromUtf8("<b>%1</b> \xC2\xB7 checking\xE2\x80\xA6")
-                       .arg(branch.toHtmlEscaped());
+            text = QString::fromUtf8("%1 \xC2\xB7 checking\xE2\x80\xA6").arg(pair);
         } else {
-            text = QString::fromUtf8("<b>%1</b> \xC2\xB7 %2 behind \xC2\xB7 %3 ahead")
-                       .arg(branch.toHtmlEscaped())
+            text = QString::fromUtf8("%1 \xC2\xB7 %2 behind \xC2\xB7 %3 ahead")
+                       .arg(pair)
                        .arg(behind)
                        .arg(ahead);
             if (hasConflict)
                 text += QString::fromUtf8(
                     " \xC2\xB7 <span style='color:#f85149'>conflicts</span>");
         }
+        m_branchDetailLabel->setToolTip(
+            branch.isEmpty() || base.isEmpty() || branch == base
+                ? QString()
+                : QStringLiteral("Showing what %1 changes compared with %2 "
+                                 "(git diff %2...%1)")
+                      .arg(branch, base));
         // Reviewing a pull request (adhoc #107): lead with its number and state
         // so the pane reads as that PR's changes, not just a branch.
         if (m_branchDiffPullNumber >= 0 && !text.isEmpty()) {
@@ -3942,14 +3998,14 @@ void MainWindow::showBranchDiff(const QString &branch)
         QSignalBlocker block(m_branchScopeList);
         m_branchScopeList->clear();
     }
-    if (m_branchScopeLabel)
-        m_branchScopeLabel->clear();
     if (m_branchFileList) {
         QSignalBlocker block(m_branchFileList);
         m_branchFileList->clear();
     }
+    // The headers stay put (they title the Git view's left column now — adhoc
+    // #110); only the counts they carry are provisional.
     if (m_branchFilesSummary)
-        m_branchFilesSummary->clear();
+        m_branchFilesSummary->setText(QStringLiteral("CHANGED FILES"));
     const QString dir = repoGitDir();
     if (branch.isEmpty() || dir.isEmpty()) {
         m_branchDiffView->clear();
@@ -3983,8 +4039,6 @@ void MainWindow::showBranchDiff(const QString &branch)
         m_branchScopeList->addItem(all);
         m_branchScopeList->setCurrentRow(0);
     }
-    if (m_branchScopeLabel)
-        m_branchScopeLabel->setText(QStringLiteral("Scope"));
     // Render the whole-branch diff right away (also async — see below); the extra
     // scope rows only add selectable entries, they don't change the default view.
     renderBranchScopeDiff();
@@ -4204,9 +4258,8 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
     // Changed-files list: a status-coloured row per file; click to scroll the
     // diff to it (mirrors the commit/PR diff viewers).
     if (m_branchFilesSummary)
-        m_branchFilesSummary->setText(QStringLiteral("%1 file%2 changed")
-                                          .arg(files.size())
-                                          .arg(files.size() == 1 ? "" : "s"));
+        m_branchFilesSummary->setText(QString::fromUtf8("CHANGED FILES \xC2\xB7 %1")
+                                          .arg(files.size()));
     if (m_branchFileList) {
         QSignalBlocker block(m_branchFileList);
         for (const DiffFileEntry &f : files) {

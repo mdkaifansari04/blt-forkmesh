@@ -1101,8 +1101,7 @@ void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
     Q_UNUSED(untracked);
     if (!m_scmDiff || m_scmSuppressFileScroll)
         return; // suppressed: the selection is following the scroll, not driving it
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     if (m_scmSectionKeys.isEmpty())
         renderScmCombinedDiff();
     scrollScmDiffToFile(path, staged);
@@ -1114,8 +1113,7 @@ void MainWindow::showScmDiffAll(bool staged)
 {
     if (!m_scmDiff)
         return;
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     if (m_scmSectionKeys.isEmpty())
         renderScmCombinedDiff();
     const QString prefix = staged ? QStringLiteral("s|") : QStringLiteral("u|");

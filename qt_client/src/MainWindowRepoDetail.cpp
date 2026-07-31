@@ -5567,6 +5567,21 @@ void MainWindow::updateSearchStatus()
 }
 
 
+// Switch the Git view's right pane, keeping its left column in step (adhoc
+// #110). Reviewing a branch/PR range lends the left column's two slots to that
+// range's changed files and commits; every other page hands them back to the
+// working-tree changes and the commit history.
+void MainWindow::setCommitWorkspacePage(int page)
+{
+    if (!m_commitsStack)
+        return;
+    m_commitsStack->setCurrentIndex(page);
+    const int slot = page == kCommitWorkspaceRangePage ? 1 : 0;
+    for (QStackedWidget *stack : {m_gitFilesSlot, m_gitHistorySlot})
+        if (stack && stack->count() > slot)
+            stack->setCurrentIndex(slot);
+}
+
 void MainWindow::showCommitList()
 {
     if (!m_commitsStack)
@@ -5576,7 +5591,7 @@ void MainWindow::showCommitList()
     // resetting to the working-tree changes.
     if (m_commitsStack->currentIndex() == kCommitWorkspaceRangePage)
         return;
-    m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
 }
 
 // Select the newest commit (row 0 — the table sorts Date-descending) and open
@@ -6331,7 +6346,7 @@ void MainWindow::showCommit(const QString &hash)
 
     // Land on the diff page and paint a spinner straight away; all git below is
     // asynchronous, so the click itself never blocks the GUI thread.
-    m_commitsStack->setCurrentIndex(kCommitWorkspaceCommitPage);
+    setCommitWorkspacePage(kCommitWorkspaceCommitPage);
     startCommitDiffSpin();
 
     m_currentCommitHash = hash; // refined to the full hash when metadata lands
@@ -6521,8 +6536,7 @@ void MainWindow::renderCommitDetail(const QString &dir, const QString &hash,
     }
 
     stopCommitDiffSpin();
-    if (m_commitsStack)
-        m_commitsStack->setCurrentIndex(kCommitWorkspaceCommitPage);
+    setCommitWorkspacePage(kCommitWorkspaceCommitPage);
 }
 
 void MainWindow::loadRepoInsights()
@@ -9110,11 +9124,20 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // Left column: working-tree changes above commit history. The column is one
     // resizable splitter pane, so the user can give lists just enough room and
     // keep the right side dedicated to the active diff/detail view.
+    //
+    // Each half is a stack (adhoc #110): while a branch/PR range is under review
+    // the same two slots show that range's changed files and its commits, so the
+    // review reuses the places files and commits already live instead of opening
+    // a third column beside the diff. setCommitWorkspacePage() does the swap.
     auto *scmPanel = buildSourceControlPanel();
+    m_gitFilesSlot = new QStackedWidget;
+    m_gitFilesSlot->addWidget(scmPanel); // 0: working-tree CHANGES
+    m_gitHistorySlot = new QStackedWidget;
+    m_gitHistorySlot->addWidget(listPage); // 0: commit history
     auto *leftSplit = new QSplitter(Qt::Vertical);
     leftSplit->setChildrenCollapsible(false);
-    leftSplit->addWidget(scmPanel);
-    leftSplit->addWidget(listPage);
+    leftSplit->addWidget(m_gitFilesSlot);
+    leftSplit->addWidget(m_gitHistorySlot);
     leftSplit->setStretchFactor(0, 2);
     leftSplit->setStretchFactor(1, 3);
     leftSplit->setSizes({320, 520});
@@ -9142,6 +9165,12 @@ QWidget *MainWindow::buildRepoCommitsTab()
     // diff right here in the Git view.
     m_commitsStack->addWidget(buildBranchRangePane()); // kCommitWorkspaceRangePage
     m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
+    // Page 1 of each left slot: the range's files and commits (adhoc #110). Built
+    // by buildBranchRangePane() just above, parked here until a range opens.
+    if (m_branchFilesPane)
+        m_gitFilesSlot->addWidget(m_branchFilesPane);
+    if (m_branchScopePane)
+        m_gitHistorySlot->addWidget(m_branchScopePane);
 
     auto *workspaceSplit = new QSplitter(Qt::Horizontal);
     workspaceSplit->setChildrenCollapsible(false);
