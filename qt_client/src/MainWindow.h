@@ -19,8 +19,6 @@
 #include "RepoContributionSnapshot.h"
 #include "MirrorCrypto.h"
 
-struct CommitComment; // CommitCommentStore.h
-
 // Per-session live-output state behind the top bar's blinking fleet lights.
 // lastActivityMs is bumped on every raw-output chunk so the light keeps blinking
 // while the agent is actively producing output. intensity is a smoothed
@@ -1642,8 +1640,6 @@ private:
     // Filter the commit list by the search box (matches hash or summary).
     void filterCommits(const QString &query);
     void downloadCommitPatch();           // save the open commit as a .patch file
-    void renderCommitThread(const QString &sha); // per-commit conversation
-    void submitCommitComment();                  // post a comment on the open commit
     // Sync a diff split/unified toggle button's label+tooltip to the preference.
     void updateDiffSplitButton(QPushButton *button);
     // Append one conversation card (avatar + header + markdown body) to a thread
@@ -1915,11 +1911,6 @@ private:
     // Submit a signed PR conversation event (comment/review) to the relay inbox
     // for repos this node can't write directly.
     void submitPullEventToInbox(int number, const PullEvent &ev);
-    // Submit a signed commit comment to the relay inbox.
-    void submitCommitCommentToInbox(const QString &sha, const CommitComment &c);
-    // Drain a repo's commit-comment inbox (owner-only); apply + commit.
-    void drainCommitInboxFor(RepositoryRecord repo, bool interactive);
-    QUrl commitsApiUrl(const RepositoryRecord &repo) const;
     void updatePullActionState();
     QUrl pullsApiUrl(const RepositoryRecord &repo) const;
     // Agent sessions tab: local OpenAI API / Claude API runs assigned from issues.
@@ -3510,13 +3501,12 @@ private:
     // user's node is what alerts them. Deduped and seeded via QSettings so we
     // never repeat an alert or backfill a freshly-cloned repo's history.
     void scanRepoMentionsFor(const RepositoryRecord &repo);
-    // Match @mentions against issues/PRs/commit-comments already loaded off the UI
-    // thread (see scanRepoMentionsFor) and raise notifications. Runs on the main
-    // thread so it can touch QSettings and the notification UI.
-    void applyRepoMentions(
-        const RepositoryRecord &repo, const QList<Issue> &allIssues,
-        const QList<PullRequest> &allPulls,
-        const QList<QPair<QString, QList<CommitComment>>> &allCommitComments);
+    // Match @mentions against issues/PRs already loaded off the UI thread (see
+    // scanRepoMentionsFor) and raise notifications. Runs on the main thread so
+    // it can touch QSettings and the notification UI.
+    void applyRepoMentions(const RepositoryRecord &repo,
+                           const QList<Issue> &allIssues,
+                           const QList<PullRequest> &allPulls);
     // Periodically pull every owned repo's inboxes so the source of truth picks
     // up issues/PRs/comments filed by other nodes without a manual sync.
     void pollOwnedInboxes();
@@ -3539,8 +3529,6 @@ private:
                                       const QJsonArray &pending,
                                       bool interactive,
                                       bool mirrorIntake = false);
-    void applyCommitInboxPayload(const RepositoryRecord &repo,
-                                 const QJsonArray &pending, bool interactive);
     void applyAgentPromptsPayload(const RepositoryRecord &repo,
                                   const QJsonArray &prompts);
     void acknowledgeAgentPrompts(const RepositoryRecord &repo,
@@ -5224,11 +5212,6 @@ private:
     QPushButton *m_commitSplitButton = nullptr; // toggle unified <-> side-by-side
     QString m_currentCommitHash; // full hash shown in the detail view
     int m_currentCommitRow = -1; // row in m_commitsTable the detail view is showing
-    // Per-commit conversation (comment thread + composer).
-    QWidget *m_commitThreadContainer = nullptr;
-    QVBoxLayout *m_commitThreadLayout = nullptr;
-    MarkdownEditor *m_commitComposer = nullptr;
-    QPushButton *m_commitCommentButton = nullptr;
     // Files view: a GitHub-style overview (latest commit + file list + README)
     // that switches to an explorer-tree + editor-tabs view when a file is open.
     QStackedWidget *m_filesStack = nullptr; // 0 overview, 1 editor

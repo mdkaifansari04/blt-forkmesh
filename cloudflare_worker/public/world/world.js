@@ -123,6 +123,17 @@ const FRESH_ARRIVAL_CAMPFIRE_PREVIEW = Object.freeze({
 const SAVED_VIEWS_KEY_PREFIX = "forkmesh.world.savedViews.v1.";
 const SAVED_VIEWS_MAX = 5;
 const RENDERER_RECOVERY_DELAY_MS = 1500;
+// A tab that dies abruptly (GPU reset, renderer out-of-memory kill, browser
+// tab discard) never fires pagehide, so a per-tab marker that survives into
+// the next load proves the previous world session crashed and this load is
+// the automatic reload. The marker carries a rolling heartbeat of
+// renderer/socket diagnostics so the crash report describes the moments
+// before the crash, and a per-tab crash counter reboots repeat offenders
+// into the low-memory compact renderer to break GPU crash loops.
+const CRASH_GUARD_KEY = "forkmesh.world.crash-guard.v1";
+const CRASH_COUNT_KEY = "forkmesh.world.crash-count.v1";
+const CRASH_COUNT_MAX = 9;
+const CRASH_GUARD_SNAPSHOT_STALE_MS = 4000;
 const POSITION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 // The Mastodon kiosk refetches the public profile on this cadence; the MM:SS
 // timer on the billboard counts the same window down.
@@ -5314,6 +5325,11 @@ class ForkMeshWorld extends HTMLElement {
     // If the module arrived after the index watchdog already surfaced the
     // load error, retract it — the world is taking over the page now.
     document.querySelector("[data-world-load-error]")?.remove();
+    // Surface an abrupt end of the previous world session in this tab (the
+    // crash guard is only cleared by pagehide) before anything below can
+    // throw, then decide whether this boot needs the safe-mode renderer.
+    this.reportPreviousWorldCrash();
+    this.rendererSafeMode = this.worldCrashCount() > 0;
     this.mode = this.dataset.worldMode || "public";
     if (this.mode === "public") document.body.classList.add("world-active");
     this.identity = accountIdentity(readSession());
@@ -5415,6 +5431,7 @@ class ForkMeshWorld extends HTMLElement {
       },
     );
     this.startClock();
+    this.armCrashGuard();
     this.startDiagnostics();
     this.bootstrap();
     this.startWorldTicketRefresh();
@@ -6168,6 +6185,9 @@ class ForkMeshWorld extends HTMLElement {
             : null),
         initialWorldLayout: mergedInitialLayout,
         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+        // After a detected crash the same GPU or memory pressure would likely
+        // kill this reload too; boot the low-memory compact renderer instead.
+        forceCompactRenderer: this.rendererSafeMode === true,
         onLandmarkSelect: (id, meta = {}) => {
           if (id === "office") {
             this.closeLandmark();
@@ -7617,6 +7637,10 @@ class ForkMeshWorld extends HTMLElement {
   };
 
   handlePageHide = (event) => {
+    // Every orderly exit (navigation, reload, bfcache entry, tab close)
+    // passes through pagehide; a session that ends while the guard is still
+    // armed therefore crashed.
+    this.disarmCrashGuard();
     this.pauseWorldActivity();
     this.captureWorldPosition(true);
     if (event?.persisted === true) {
@@ -7631,6 +7655,7 @@ class ForkMeshWorld extends HTMLElement {
 
   handlePageShow = (event) => {
     if (event?.persisted !== true || this.destroyed) return;
+    this.armCrashGuard();
     this.syncViewportHeight();
     this.world?.setPaused(document.hidden);
     if (document.hidden) return;
@@ -7639,7 +7664,165 @@ class ForkMeshWorld extends HTMLElement {
     void this.refreshMirrorCatalogs();
   };
 
+  worldCrashCount() {
+    try {
+      return Math.max(
+        0,
+        Math.min(
+          CRASH_COUNT_MAX,
+          Number(sessionStorage.getItem(CRASH_COUNT_KEY)) || 0,
+        ),
+      );
+    } catch (_) {
+      return 0;
+    }
+  }
+
+  recordWorldCrash() {
+    try {
+      sessionStorage.setItem(
+        CRASH_COUNT_KEY,
+        String(Math.min(CRASH_COUNT_MAX, this.worldCrashCount() + 1)),
+      );
+    } catch (_) {}
+  }
+
+  armCrashGuard() {
+    if (!this.crashGuardStartedAt) this.crashGuardStartedAt = Date.now();
+    this.beatCrashGuard();
+  }
+
+  disarmCrashGuard() {
+    try {
+      sessionStorage.removeItem(CRASH_GUARD_KEY);
+    } catch (_) {}
+  }
+
+  rendererGpuLabel() {
+    // The unmasked GPU string pins "crashed on which hardware" reports to a
+    // driver family. It is stable for the page's lifetime, so resolve it once
+    // the renderer exists and reuse it afterwards.
+    if (this.cachedGpuLabel) return this.cachedGpuLabel;
+    let label = "";
+    try {
+      const gl = this.world?.renderer?.getContext?.();
+      const info = gl?.getExtension?.("WEBGL_debug_renderer_info");
+      if (gl && info) {
+        label = String(gl.getParameter(info.UNMASKED_RENDERER_WEBGL) || "");
+      }
+    } catch (_) {}
+    this.cachedGpuLabel = label.replace(/[^\w ().,-]+/g, " ").slice(0, 120);
+    return this.cachedGpuLabel;
+  }
+
+  beatCrashGuard() {
+    if (this.destroyed) return;
+    const now = Date.now();
+    let snapshot = this.lastDiagnosticsSnapshot;
+    if (
+      !snapshot ||
+      now - (this.lastDiagnosticsSnapshotAt || 0) > CRASH_GUARD_SNAPSHOT_STALE_MS
+    ) {
+      snapshot = this.collectDiagnostics();
+    }
+    const renderer = snapshot?.renderer;
+    const memory =
+      typeof performance.memory === "object" ? performance.memory : null;
+    const record = {
+      startedAt: this.crashGuardStartedAt || now,
+      beatAt: now,
+      visibility: String(document.visibilityState || "unknown").slice(0, 16),
+      socket: String(snapshot?.connection?.state || "unknown").slice(0, 16),
+      peers: Math.max(0, Number(snapshot?.connection?.peers) || 0),
+      fps: renderer ? Math.round(renderer.fps) : -1,
+      frameTimeMs: renderer ? Math.round(renderer.frameTimeMs) : -1,
+      longestFrameMs: renderer ? Math.round(renderer.longestFrameMs) : -1,
+      triangles: renderer ? Math.round(renderer.triangles) : -1,
+      pixelRatio: renderer ? Number(renderer.pixelRatio) || 0 : 0,
+      heapUsedMb: memory
+        ? Math.round(Number(memory.usedJSHeapSize) / 1048576)
+        : -1,
+      heapLimitMb: memory
+        ? Math.round(Number(memory.jsHeapSizeLimit) / 1048576)
+        : -1,
+      contextLosses: Math.max(0, Number(this.rendererContextLosses) || 0),
+      safeMode: this.rendererSafeMode === true,
+      gpu: this.rendererGpuLabel(),
+    };
+    try {
+      sessionStorage.setItem(CRASH_GUARD_KEY, JSON.stringify(record));
+    } catch (_) {}
+  }
+
+  reportPreviousWorldCrash() {
+    let record = null;
+    try {
+      record = JSON.parse(sessionStorage.getItem(CRASH_GUARD_KEY) || "null");
+    } catch (_) {}
+    this.disarmCrashGuard();
+    const beatAt = Number(record?.beatAt);
+    if (!record || typeof record !== "object" || !(beatAt > 0)) return;
+    // A browser-initiated discard (memory pressure on a background tab) also
+    // skips pagehide. Report it for visibility, but only real crashes count
+    // toward the safe-mode reboot.
+    const discarded = document.wasDiscarded === true;
+    if (!discarded) this.recordWorldCrash();
+    const describe = (value, unit = "") =>
+      Number.isFinite(Number(value)) && Number(value) >= 0
+        ? `${Math.round(Number(value))}${unit}`
+        : "unknown";
+    const navigation = String(
+      performance.getEntriesByType?.("navigation")?.[0]?.type || "unknown",
+    ).slice(0, 16);
+    const parts = [
+      discarded
+        ? "World reloaded after the browser discarded the tab"
+        : "World crashed and reloaded; previous session ended without pagehide",
+      `uptime ${describe((beatAt - Number(record.startedAt)) / 1000, "s")}`,
+      `heartbeat gap ${describe((Date.now() - beatAt) / 1000, "s")}`,
+      `navigation ${navigation}`,
+      `visibility ${String(record.visibility || "unknown").slice(0, 16)}`,
+      `tab crashes ${this.worldCrashCount()}`,
+      `socket ${String(record.socket || "unknown").slice(0, 16)} with ${describe(record.peers)} peers`,
+      `fps ${describe(record.fps)}`,
+      `frame ${describe(record.frameTimeMs, "ms")} worst ${describe(record.longestFrameMs, "ms")}`,
+      `triangles ${describe(record.triangles)}`,
+      `dpr ${Number(record.pixelRatio) || 0}`,
+      `heap ${describe(record.heapUsedMb, "MB")} of ${describe(record.heapLimitMb, "MB")}`,
+      `context losses ${describe(record.contextLosses)}`,
+      `safe mode ${record.safeMode === true ? "on" : "off"}`,
+    ];
+    const gpu = String(record.gpu || "").slice(0, 120);
+    if (gpu) parts.push(`gpu ${gpu}`);
+    this.reportWorldClientError(parts.join("; "));
+  }
+
+  reportWorldClientError(message) {
+    // Same private operational collector as uncaught exceptions; the Worker
+    // redacts, rate-limits, and stores the row for the admin error HUD.
+    try {
+      fetch("/api/client-errors", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          kind: "crash",
+          surface: "world",
+          message: String(message || "").slice(0, 500),
+          stack: "",
+          source: "world.js",
+          line: 0,
+          column: 0,
+        }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
   reloadForRendererRecovery = () => {
+    // The context never restored, so this GPU could not sustain the full
+    // renderer; count it like a crash so the reload boots into safe mode.
+    this.recordWorldCrash();
     this.preserveWorldPositionForRefresh();
     location.reload();
   };
@@ -7664,6 +7847,28 @@ class ForkMeshWorld extends HTMLElement {
       return;
     }
     if (state !== "lost") return;
+    this.rendererContextLosses = (this.rendererContextLosses || 0) + 1;
+    if (!this.reportedRendererContextLoss) {
+      // One report per page instance: repeated losses in the same session
+      // add noise, and the rolling crash-guard heartbeat already counts them.
+      this.reportedRendererContextLoss = true;
+      const renderer = this.lastDiagnosticsSnapshot?.renderer;
+      const uptimeS = Math.max(
+        0,
+        Math.round((Date.now() - (this.crashGuardStartedAt || Date.now())) / 1000),
+      );
+      const parts = [
+        `World renderer crashed; WebGL context lost after ${uptimeS}s`,
+        `fps ${renderer ? Math.round(renderer.fps) : "unknown"}`,
+        `triangles ${renderer ? Math.round(renderer.triangles) : "unknown"}`,
+        `dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
+        `safe mode ${this.rendererSafeMode === true ? "on" : "off"}`,
+      ];
+      const gpu = this.rendererGpuLabel();
+      if (gpu) parts.push(`gpu ${gpu}`);
+      this.reportWorldClientError(parts.join("; "));
+    }
+    this.beatCrashGuard();
     recovery.hidden = false;
     const title = recovery.querySelector(
       "[data-world-renderer-recovery-title]",
@@ -16089,7 +16294,7 @@ class ForkMeshWorld extends HTMLElement {
                         <span>${item.unread ? "Unread" : item.source === "global" ? `Ends ${escapeHTML(item.endsAt ? new Date(item.endsAt).toLocaleString() : "—")}` : `Read ${escapeHTML(item.readAt ? new Date(item.readAt).toLocaleString() : "—")}`}</span>
                         <span class="world-activity-row-actions">
                           ${item.href ? `<a href="${escapeHTML(item.href)}" rel="noopener noreferrer">Open</a>` : ""}
-                          ${item.source === "personal" ? `<button type="button" data-world-notification-delete="${escapeHTML(item.id)}">Delete</button>` : ""}
+                          ${item.source === "personal" ? `<button type="button" data-world-notification-delete="${escapeHTML(item.id)}" aria-label="Delete notification" title="Delete notification">🗑</button>` : ""}
                         </span>
                       </li>`;
                     })
@@ -24354,7 +24559,10 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.diagnosticsTimer);
     this.renderDiagnostics();
     this.diagnosticsTimer = window.setInterval(
-      () => this.renderDiagnostics(),
+      () => {
+        this.renderDiagnostics();
+        this.beatCrashGuard();
+      },
       WORLD_DIAGNOSTICS_INTERVAL_MS,
     );
   }
@@ -24529,6 +24737,7 @@ class ForkMeshWorld extends HTMLElement {
       })(),
     };
     this.lastDiagnosticsSnapshot = snapshot;
+    this.lastDiagnosticsSnapshotAt = Date.now();
     return snapshot;
   }
 
@@ -26920,6 +27129,7 @@ class ForkMeshWorld extends HTMLElement {
     if (this.destroyed) return;
     if (this.spawnSelected) this.captureWorldPosition(true);
     this.destroyed = true;
+    this.disarmCrashGuard();
     this.closeScreenshotUI();
     this.clearPullReviewScrollTracking();
     document.removeEventListener("visibilitychange", this.handleVisibility);
