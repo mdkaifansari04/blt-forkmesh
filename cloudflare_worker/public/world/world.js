@@ -13056,6 +13056,22 @@ class ForkMeshWorld extends HTMLElement {
         ? "Not reported"
         : parsed.toLocaleString();
     };
+    // When the node last answered a clone / repository web request, and the
+    // bounded class of client it answered. "Not reported" covers both a node
+    // that has served none yet and one that never published the stamp.
+    const agentLabels = {
+      "forkmesh-node": "mesh node",
+      "git-client": "git client",
+      "bot-tool": "bot / tool",
+      browser: "browser",
+      client: "client",
+    };
+    const served = (value, agent) => {
+      const stamp = date(value);
+      if (stamp === "Not reported") return stamp;
+      const label = agentLabels[String(agent || "").toLowerCase()];
+      return label ? `${stamp} · ${label}` : stamp;
+    };
     const syncAge = known(node?.syncAgeMs);
     const syncAgeLabel =
       syncAge === null
@@ -13195,8 +13211,14 @@ class ForkMeshWorld extends HTMLElement {
           <div><dt>Clones served</dt><dd>${escapeHTML(
             count(node?.clonesServed),
           )}</dd></div>
+          <div><dt>Last clone served</dt><dd>${escapeHTML(
+            served(node?.cloneServedAt, node?.cloneServedAgent),
+          )}</dd></div>
           <div><dt>Web requests served</dt><dd>${escapeHTML(
             count(node?.websiteServed),
+          )}</dd></div>
+          <div><dt>Last web request served</dt><dd>${escapeHTML(
+            served(node?.websiteServedAt, node?.websiteServedAgent),
           )}</dd></div>
         </dl>
         <h3>Public mirrored repositories</h3>

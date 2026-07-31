@@ -3845,6 +3845,8 @@ async def network_leaderboards(env):
             "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
             "_recordCount": 0,
             "_reportedCounterCounts": {},
+            "cloneServedAt": None, "cloneServedAgent": None,
+            "websiteServedAt": None, "websiteServedAgent": None,
         })
         detail["_recordCount"] += 1
         detail["sizeBytes"] += size_bytes
@@ -3862,6 +3864,24 @@ async def network_leaderboards(env):
             detail[field] = int(detail.get(field) or 0) + counter
             reported_counts = detail["_reportedCounterCounts"]
             reported_counts[field] = int(reported_counts.get(field) or 0) + 1
+        # When this node last served a clone / website read, across all of its
+        # repositories, with the client class reported alongside that serve.
+        # A point in time is carried as the newest one, never summed.
+        for stamp_field, agent_field in (
+            ("cloneServedAt", "cloneServedAgent"),
+            ("websiteServedAt", "websiteServedAgent"),
+        ):
+            raw_stamp = rec.get(stamp_field)
+            if raw_stamp is None or isinstance(raw_stamp, bool):
+                continue
+            try:
+                stamp = int(raw_stamp)
+            except (TypeError, ValueError):
+                continue
+            if stamp > 0 and stamp > int(detail.get(stamp_field) or 0):
+                detail[stamp_field] = stamp
+                detail[agent_field] = clean_string(
+                    rec.get(agent_field, ""), 16) or None
         updated_ms = _catalog_updated_ms(rec)
         if updated_ms > detail["_updatedMs"]:
             detail["_updatedMs"] = updated_ms

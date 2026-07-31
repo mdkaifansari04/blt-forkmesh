@@ -6714,6 +6714,10 @@ function nodeDataKey(node) {
     artifactCount: node?.artifactCount,
     clonesServed: node?.clonesServed,
     websiteServed: node?.websiteServed,
+    cloneServedAt: node?.cloneServedAt,
+    cloneServedAgent: node?.cloneServedAgent,
+    websiteServedAt: node?.websiteServedAt,
+    websiteServedAgent: node?.websiteServedAgent,
     cpuPercent: node?.cpuPercent,
     memoryUsedBytes: node?.memoryUsedBytes,
     memoryTotalBytes: node?.memoryTotalBytes,
@@ -6742,6 +6746,31 @@ function mirrorCommitAgeLabel(ageMs) {
   if (age < month) return `${Math.floor(age / week)}w ago`;
   if (age < year) return `${Math.floor(age / month)}mo ago`;
   return `${Math.floor(age / year)}y ago`;
+}
+
+// How the bounded client classes a node publishes for its last served clone /
+// website read are spelled on the cabinet. Anything else is treated as
+// unreported rather than printed raw.
+const MIRROR_SERVE_AGENT_LABELS = Object.freeze({
+  "forkmesh-node": "MESH NODE",
+  "git-client": "GIT",
+  "bot-tool": "BOT/TOOL",
+  browser: "BROWSER",
+  client: "CLIENT",
+});
+
+// "17h ago · GIT" for the two serve counters: when this node last answered
+// that kind of request and who it answered. Null (no second line at all) when
+// the node has served none yet or runs a build that never reported it — an
+// unserved counter must not borrow the record's publish age.
+function mirrorServeStamp(servedAt, agent, now = Date.now()) {
+  const stamp = Number(servedAt);
+  if (!Number.isFinite(stamp) || stamp <= 0 || stamp > now + 60 * 1000) {
+    return null;
+  }
+  const label = MIRROR_SERVE_AGENT_LABELS[String(agent || "").toLowerCase()];
+  const age = mirrorCommitAgeLabel(Math.max(0, now - stamp));
+  return label ? `${age} · ${label}` : age;
 }
 
 function mirrorCommitSnapshot(node, repo) {
@@ -7027,8 +7056,16 @@ function serverPanelTexture(THREE, node) {
       ["DISCUSSIONS", node?.discussionCount, null],
       ["ARTIFACTS", node?.artifactCount, null],
       ["WORKTREES", node?.worktreeCount, null],
-      ["CLONES SERVED", node?.clonesServed, null],
-      ["WEB SERVED", node?.websiteServed, null],
+      [
+        "CLONES SERVED",
+        node?.clonesServed,
+        mirrorServeStamp(node?.cloneServedAt, node?.cloneServedAgent),
+      ],
+      [
+        "WEB SERVED",
+        node?.websiteServed,
+        mirrorServeStamp(node?.websiteServedAt, node?.websiteServedAgent),
+      ],
       ["REPO BYTES", compactMirrorBytes(node?.sizeBytes), null],
     ];
     rows.forEach(([label, value, age], index) => {

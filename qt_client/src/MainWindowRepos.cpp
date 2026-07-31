@@ -413,6 +413,26 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         cleanCatalogString(data, QStringLiteral("commitAt"), 16);
     if (!commitAt.isEmpty())
         record.insert(QStringLiteral("commitAt"), commitAt);
+    // When this node last served a clone / a website read for the repo, and the
+    // bounded class of client it served (never a raw User-Agent). Optional
+    // extension fields, kept in lockstep with the Worker's catalog normalizer.
+    for (const QString &key : {QStringLiteral("cloneServedAt"),
+                               QStringLiteral("websiteServedAt")}) {
+        const QString servedAt = cleanCatalogString(data, key, 16);
+        bool numeric = false;
+        if (servedAt.toLongLong(&numeric) > 0 && numeric)
+            record.insert(key, servedAt);
+    }
+    static const QStringList serveAgentClasses{
+        QStringLiteral("forkmesh-node"), QStringLiteral("git-client"),
+        QStringLiteral("bot-tool"), QStringLiteral("browser"),
+        QStringLiteral("client")};
+    for (const QString &key : {QStringLiteral("cloneServedAgent"),
+                               QStringLiteral("websiteServedAgent")}) {
+        const QString agent = cleanCatalogString(data, key, 16);
+        if (serveAgentClasses.contains(agent))
+            record.insert(key, agent);
+    }
     return record;
 }
 
