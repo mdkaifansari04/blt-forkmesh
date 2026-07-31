@@ -622,6 +622,14 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
                 continue;
             if (!ownName.isEmpty() && m.name.compare(ownName, Qt::CaseInsensitive) == 0)
                 continue;
+            // A plain user account (accountKind "user") is a person, not a
+            // serving node — e.g. a desktop signed in as a user rather than a
+            // linked node, or ForkBot's relayed chat identity. Announcing it as
+            // "Node connected" is misleading (adhoc #37 hit this same mix-up in
+            // the node switcher); missing accountKind (older peers) still
+            // counts as a node for backward compatibility.
+            if (m.accountKind == QLatin1String("user"))
+                continue;
             if (!previouslyOnline.contains(m.id)) {
                 const QString displayName =
                     m.name.trimmed().isEmpty() ? m.id : m.name.trimmed();
