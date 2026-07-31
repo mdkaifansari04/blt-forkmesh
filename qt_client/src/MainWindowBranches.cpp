@@ -743,6 +743,11 @@ QString MainWindow::testSwitchToBranchImmediateSelection(const QString &branch)
     const QTableWidgetItem *it = m_branchesTable->item(m_branchesTable->currentRow(), 0);
     return it ? it->text() : QString();
 }
+
+int MainWindow::testCommitWorkspacePage() const
+{
+    return m_commitsStack ? m_commitsStack->currentIndex() : -1;
+}
 #endif
 
 bool MainWindow::selectWorktreeRow(const QString &branch)

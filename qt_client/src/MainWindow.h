@@ -642,6 +642,11 @@ public:
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
     QString testSwitchToBranchImmediateSelection(const QString &branch);
+    // Which page the Git view's right pane shows (kCommitWorkspace*Page), and
+    // the branch the range pane is reviewing — so a test can prove a branch link
+    // lands on the range review pane in the Git view (adhoc #107).
+    int testCommitWorkspacePage() const;
+    QString testBranchDiffBranch() const { return m_branchDiffBranch; }
     // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
     // session the app navigated to (m_selectedAgentSessionId), so a test can prove
     // clicking the cell jumps to that branch's agent (adhoc #258).
