@@ -1067,6 +1067,10 @@ private:
     void updateFooterCommitInfo();
     // Live CPU/memory readout + UI-stall watchdog (footer diagnostics).
     void startDiagnostics();
+    // Where the watchdog appends stall backtraces. Empty in test builds (which
+    // stall on purpose and must not pollute the user's log) — callers that show
+    // the path to the user check for that.
+    static QString stallLogPath();
     void updateFooterDiagnostics();
     void onUiStall(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
     // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
@@ -1082,6 +1086,10 @@ private:
     // Hand every recorded UI stall to a fresh coding agent as one task. Returns
     // true if an agent was started. Backs the dialog's "Send to a new agent" button.
     bool sendStallLogToAgent();
+    // Where the stall log and the app log live, plus the ask to fix anything
+    // else in them that never got moved off the GUI thread. Shared by both
+    // stall-to-agent prompts.
+    QString stallLogLocationsBlock() const;
     // The ready-to-send "please fix these stalls" prompt: what happened, where
     // the durable stall log and the app log live, and the recorded reports
     // themselves (newest first, trimmed to the composer's length cap).
