@@ -1527,12 +1527,17 @@ void MainWindow::openRepoDetail(int repoIndex)
         refreshRepoActions();
     updateActionsTabIndicator(); // reflect any in-flight runs for this repo
     // Every lazily-loaded badge above has just been reset to its empty value.
-    // Fill them in from worker threads so the tab row is right on the first
-    // frame instead of only after each tab is clicked (adhoc #116) — including
-    // on a fresh install, whose first clone lands after this ran. Placed after
-    // the resets above so nothing here is clobbered by them, and it subsumes the
-    // Issues landing-tab load (reloadIssuesInBackground populates the table too).
-    refreshRepoTabCounts();
+    // Fill them in so the tab row is right without each tab having to be clicked
+    // (adhoc #116). Deferred one event-loop turn, like the file-search index
+    // above: the loads themselves are worker-backed, but the issue load applies
+    // its result straight into the table, and starting it inside the open would
+    // let that land in the same turn and count against first paint. Re-check the
+    // index so a fast follow-up switch doesn't count the repo we just left.
+    const int countsFor = m_repoDetailIndex;
+    QTimer::singleShot(0, this, [this, countsFor] {
+        if (m_repoDetailIndex == countsFor)
+            refreshRepoTabCounts();
+    });
     refreshRepoPinBanner();      // warn if the relay's integrity pin is stale
     // The rail's Git badge is visible from the first paint, so give it this
     // repo's uncommitted count now instead of leaving the previous repo's
