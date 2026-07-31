@@ -876,6 +876,17 @@ QString sshConnectionFailureHint(int exitCode, const QString &outputTail,
     return {};
 }
 
+bool sshFailureNeedsPassword(int exitCode, const QString &outputTail)
+{
+    if (exitCode != 255)
+        return false;
+    const QString tail = outputTail.toLower();
+    return tail.contains(QStringLiteral("permission denied")) ||
+           tail.contains(QStringLiteral("authentication failed")) ||
+           tail.contains(
+               QStringLiteral("no supported authentication methods"));
+}
+
 QJsonArray loadSavedHosts(QSettings &settings, const QString &settingsKey,
                           QHash<QString, QString> *sessionPasswords)
 {
