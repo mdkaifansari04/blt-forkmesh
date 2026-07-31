@@ -457,12 +457,13 @@ QWidget *MainWindow::buildChatPage()
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
-    // Agents is deliberately absent here: it lives on the window-chrome line
-    // beside its live fleet matrix (see buildBreadcrumb). Listing it would
-    // re-parent the button into the rail and silently undo that placement.
+    // Agents heads the rail (adhoc #70) — a regular destination like the rest,
+    // badged with the running-session count. Only its fleet matrix stayed on the
+    // window-chrome line (see buildBreadcrumb). The contextual Code and Git
+    // entries are inserted directly below it by buildRepoDetail().
     // Log lives in the bottom utility group, under Settings, instead of here.
     for (QPushButton *button :
-         {m_reposNavButton, m_tasksNavButton, m_chatButton,
+         {m_agentsNavButton, m_reposNavButton, m_tasksNavButton, m_chatButton,
           m_controlNodeNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
             railButton->setCompact(false);
@@ -505,7 +506,7 @@ QWidget *MainWindow::buildChatPage()
     addUtility(m_navDrawButton, QStringLiteral("Draw"));
     addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
     addUtility(m_navResizeButton, QStringLiteral("Resize"));
-    addUtility(m_notificationButton, QStringLiteral("Alerts"));
+    addUtility(m_notificationButton, QStringLiteral("Pings"));
 
     // Pending approvals use the same corner-count language as Chat and Agents:
     // the count rides the bell's own top-right corner (updateNotificationButton
@@ -3134,6 +3135,11 @@ void MainWindow::updateFooterGitIdentity()
 // author, so the strip says where that branch actually sits (adhoc #55). Read
 // detached for the same reason the identity above is — this runs from
 // openRepoDetail, where a synchronous git call blocks the GUI thread.
+//
+// The strip only has room for one elided line, so the same read also pulls the
+// fields nobody can see there — full hash, decorations, author email, committer,
+// message body, diffstat — and hovering the label pops the lot up as a rich
+// tooltip (adhoc #65).
 void MainWindow::updateFooterCommitInfo()
 {
     if (!m_footerCommitInfo)
@@ -3146,20 +3152,24 @@ void MainWindow::updateFooterCommitInfo()
     const QString ref = currentRef();
     runGitDetached(
         dir,
-        {QStringLiteral("log"), QStringLiteral("-1"),
+        // Separators are git's own %x1f/%x1e placeholders rather than literal
+        // escapes so the body (which is last, and may contain anything) stays
+        // unambiguous. --root so the initial commit still reports a diffstat.
+        {QStringLiteral("log"), QStringLiteral("-1"), QStringLiteral("--root"),
+         QStringLiteral("--shortstat"),
          QStringLiteral("--date=format:%Y-%m-%d %H:%M"),
-         QStringLiteral("--pretty=%H\x1f%h\x1f%ad\x1f%s\x1f%an\x1f%ct"), ref,
-         QStringLiteral("--")},
+         QStringLiteral("--pretty=%H%x1f%h%x1f%ad%x1f%s%x1f%an%x1f%ct%x1f%ae"
+                        "%x1f%cn%x1f%cd%x1f%D%x1f%b%x1e"),
+         ref, QStringLiteral("--")},
         [this, dir, ref](bool ok, const QByteArray &out) {
             if (!m_footerCommitInfo)
                 return;
             // Repo or branch switched (or closed) while the read was in flight.
             if (repoGitDir() != dir || currentRef() != ref)
                 return;
-            const QStringList f = QString::fromUtf8(out)
-                                      .split(QLatin1Char('\n'))
-                                      .value(0)
-                                      .split(QLatin1Char('\x1f'));
+            const QString raw = QString::fromUtf8(out);
+            const QStringList f =
+                raw.section(QLatin1Char('\x1e'), 0, 0).split(QLatin1Char('\x1f'));
             // No commits yet (fresh repo), or the ref doesn't resolve.
             if (!ok || f.size() < 5) {
                 m_footerCommitInfo->clear();
@@ -3177,11 +3187,61 @@ void MainWindow::updateFooterCommitInfo()
             m_footerCommitInfo->setText(
                 QString::fromUtf8("\xC2\xB7 %1 \xC2\xB7 %2 \xC2\xB7 %3 \xC2\xB7 %4")
                     .arg(f.at(1), date, shortSubject, author));
-            QString tip = QStringLiteral("%1\n%2\n%3 committed %4")
-                              .arg(f.at(0), subject, author, date);
-            if (!rel.isEmpty())
-                tip += QString::fromUtf8(" (%1 ago)").arg(rel);
-            m_footerCommitInfo->setToolTip(tip);
+
+            // Everything the one-line strip had to drop, laid out for hover.
+            const QString email = f.value(6).trimmed();
+            const QString committer = f.value(7).trimmed();
+            const QString commitDate = f.value(8).trimmed();
+            const QString refs = f.value(9).trimmed();
+            // Rejoin past field 10: a message body may legitimately contain the
+            // separator, and losing the tail would be worse than keeping it.
+            QString body = f.mid(10).join(QLatin1Char('\x1f')).trimmed();
+            const QString stat = raw.section(QLatin1Char('\x1e'), 1)
+                                     .trimmed()
+                                     .section(QLatin1Char('\n'), 0, 0);
+
+            const QString muted = QStringLiteral("#8b949e");
+            QStringList lines;
+            lines << QStringLiteral("<b>%1</b>").arg(subject.toHtmlEscaped());
+            if (!body.isEmpty()) {
+                // A long body is trimmed here, not scrolled: a tooltip taller
+                // than the window is worse than a truncated one.
+                if (body.size() > 800)
+                    body = body.left(800) + QString::fromUtf8("\xE2\x80\xA6");
+                lines << QStringLiteral("<span style='color:%1'>%2</span>")
+                             .arg(muted, body.toHtmlEscaped().replace(
+                                             QLatin1Char('\n'),
+                                             QStringLiteral("<br>")));
+            }
+            QStringList meta;
+            meta << QStringLiteral("Commit: %1").arg(f.at(0).toHtmlEscaped());
+            if (!refs.isEmpty())
+                meta << QStringLiteral("Refs: %1").arg(refs.toHtmlEscaped());
+            meta << QStringLiteral("Author: %1")
+                        .arg((email.isEmpty()
+                                  ? author
+                                  : QStringLiteral("%1 <%2>").arg(author, email))
+                                 .toHtmlEscaped());
+            if (!committer.isEmpty() && committer != author)
+                meta << QStringLiteral("Committer: %1").arg(committer.toHtmlEscaped());
+            meta << QStringLiteral("Authored: %1%2")
+                        .arg(date.toHtmlEscaped(),
+                             rel.isEmpty()
+                                 ? QString()
+                                 : QString::fromUtf8(" (%1 ago)").arg(rel));
+            if (!commitDate.isEmpty() && commitDate != date)
+                meta << QStringLiteral("Committed: %1").arg(commitDate.toHtmlEscaped());
+            if (!stat.isEmpty())
+                meta << QStringLiteral("Changes: %1").arg(stat.toHtmlEscaped());
+            lines << QStringLiteral("<span style='color:%1'>%2</span>")
+                         .arg(muted, meta.join(QStringLiteral("<br>")));
+
+            // A width attribute, not CSS: Qt's rich text ignores the latter, and
+            // without it the hash and body lines lay out as one endless row.
+            m_footerCommitInfo->setToolTip(
+                QStringLiteral("<table cellspacing='0' cellpadding='0'><tr>"
+                               "<td width='460'>%1</td></tr></table>")
+                    .arg(lines.join(QStringLiteral("<br><br>"))));
         });
 }
 
@@ -4690,7 +4750,7 @@ QWidget *MainWindow::buildBreadcrumb()
     m_notificationButton->setCheckable(true);
     m_notificationButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_notificationButton, "bell", kNotificationBellIconPx);
-    m_notificationButton->setToolTip("Notifications");
+    m_notificationButton->setToolTip("Pings");
     m_navGroup->addButton(m_notificationButton, 3); // section 3: Notifications
     connect(m_notificationButton, &QPushButton::clicked, this,
             &MainWindow::showNotifications);
@@ -4881,34 +4941,24 @@ QWidget *MainWindow::buildBreadcrumb()
     // Agents: a shortcut into the current repo's Agents tab (adhoc #194), not a
     // section of its own — it just jumps via openAgentsOverview() the same way
     // the footer "Agents:" label does. Checkable to show when the Agents tab is
-    // active (adhoc #201). Unlike its neighbours it is NOT an ActivityRailButton
-    // and does not live in the app navigation rail: it heads the window-chrome
-    // line's search cluster, immediately left of Back/Forward, so the live agent
-    // matrix can ride beside it along the horizontal top bar.
-    m_agentsNavButton = new QPushButton(QStringLiteral("Agents"));
-    // Not a plain #topNavButton any more (adhoc #42): the fleet gets a
-    // "magical" violet-to-cyan gradient pill with a soft glow, so the one
-    // control that opens the running agents stands out from the rest of the
-    // chrome. The glow is a real drop shadow rather than a QSS trick, which
-    // Qt's stylesheets can't render.
-    m_agentsNavButton->setObjectName("agentsMagicButton");
+    // active (adhoc #201). It used to be a "magical" gradient pill on the
+    // window-chrome line; adhoc #70 made it a regular entry heading the app
+    // navigation rail, badged with the number of *running* sessions, so it
+    // reads like every other destination. Its fleet matrix stays on the chrome
+    // line, where the horizontal room for it is.
+    m_agentsNavButton = new ActivityRailButton(QStringLiteral("star"),
+                                               QStringLiteral("Agents"));
+    m_agentsNavButton->setObjectName("topNavButton");
     m_agentsNavButton->setCheckable(true);
     m_agentsNavButton->setCursor(Qt::PointingHandCursor);
     m_agentsNavButton->setToolTip(QStringLiteral("Agents"));
     setOcticon(m_agentsNavButton, "star", 16);
-    {
-        auto *glow = new QGraphicsDropShadowEffect(m_agentsNavButton);
-        glow->setBlurRadius(18);
-        glow->setOffset(0, 0);
-        glow->setColor(QColor(167, 110, 255, 170));
-        m_agentsNavButton->setGraphicsEffect(glow);
-    }
     connect(m_agentsNavButton, &QPushButton::clicked, this,
             &MainWindow::openAgentsOverview);
 
-    // One tiny square per agent session, right of the button: the whole fleet's
-    // status as a matrix, with running sessions sweeping in time with their live
-    // output. Populated (and kept current) by refreshAgentDotMatrix().
+    // One tiny square per agent session: the whole fleet's status as a matrix,
+    // with running sessions sweeping in time with their live output. Populated
+    // (and kept current) by refreshAgentDotMatrix().
     m_agentDotMatrix = new AgentDotMatrix;
     m_agentDotMatrix->onDotClicked = [this](int sessionId) {
         if (sessionId > 0)
@@ -4916,6 +4966,22 @@ QWidget *MainWindow::buildBreadcrumb()
         else
             openAgentsOverview();
     };
+
+    // Immediately right of the fleet: the most recent action runs and their
+    // status (adhoc #70), so CI reads on the same line as the agents. Kept
+    // current by refreshActionRunStrip().
+    m_actionRunStrip = new ActionRunStrip;
+    m_actionRunStrip->onCellClicked = [this](int runId) {
+        // Past the last square there is nothing specific to open, so fall back
+        // to the newest run — which is what the strip is about.
+        if (runId <= 0 && !m_actionRuns.isEmpty())
+            runId = m_actionRuns.first().id;
+        if (runId > 0)
+            openActionRunFromNotification(runId);
+    };
+    // Runs are loaded before the chrome exists, so paint the strip once here
+    // rather than waiting for the next run-state change to reach it.
+    refreshActionRunStrip();
 
     // Chat: its own top-level section (m_sectionStack index 2).
     m_chatButton = new ActivityRailButton(QStringLiteral("comment"),
@@ -5103,17 +5169,18 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->setContentsMargins(14, 0, 8, 0);
     chromeRow->setSpacing(8);
     // The instance/relay switcher heads the edge-to-edge chrome, with the public
-    // SOL balance immediately to its right. The Agents button and its live fleet
-    // matrix moved out of the centred search cluster to sit in this same
-    // left-hand group (adhoc #42), so the fleet reads on the same left edge as
-    // the balance instead of drifting with the search box.
+    // SOL balance immediately to its right. The live fleet matrix sits in this
+    // same left-hand group (adhoc #42), so it reads on the same left edge as the
+    // balance instead of drifting with the search box, and the recent action
+    // runs follow it (adhoc #70). The Agents button that used to head this group
+    // is now a regular rail entry.
     chromeRow->addWidget(m_relayMenuButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
     identityBalanceRow->addWidget(m_navSolanaBalance);
-    identityBalanceRow->addWidget(m_agentsNavButton);
     identityBalanceRow->addWidget(m_agentDotMatrix);
+    identityBalanceRow->addWidget(m_actionRunStrip);
     chromeRow->addLayout(identityBalanceRow);
     chromeRow->addStretch();
 
@@ -7699,7 +7766,7 @@ void MainWindow::showSection(int index)
         // Entering Chat clears the unread marker for the open conversation.
         clearActiveConversationUnread();
     } else if (index == 3) {
-        // Opening Alerts is the moment the website inbox has to be current
+        // Opening Pings is the moment the website inbox has to be current
         // (adhoc #59); refreshWebAlerts() repaints the table when it lands.
         refreshWebAlerts();
         refreshNotificationsTable();

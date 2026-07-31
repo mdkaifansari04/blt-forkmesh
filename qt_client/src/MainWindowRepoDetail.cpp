@@ -4766,7 +4766,7 @@ void MainWindow::rebuildGlobalSearchResults()
     static const Sec kSections[] = {
         {"Home / Repositories", "home", 0},
         {"Chat", "comment", 2},
-        {"Notifications", "bell", 3},
+        {"Pings", "bell", 3},
         {"Network log", "list-unordered", 4},
         {"Hosts", "server", 7},
         {"Relays", "broadcast", 8},
@@ -8068,7 +8068,7 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *notifyButton = new QPushButton("Notify");
     m_notifyButton = notifyButton;
     notifyButton->setObjectName("repoAction");
-    notifyButton->setToolTip("Notifications");
+    notifyButton->setToolTip("Pings");
     setOcticon(notifyButton, "bell", 16);
     m_forkButton = new QPushButton("Fork 0");
     m_mirrorButton = new QPushButton("Mirror 1");
@@ -8512,10 +8512,17 @@ QWidget *MainWindow::buildRepoDetailSection()
         updateRepoActivityRail();
     });
     if (m_appNavigationRailLayout) {
+        // Directly below the global Agents entry, which heads the rail (adhoc
+        // #70). indexOf() rather than a literal 1/2 so the pair still lands at
+        // the top if the rail hasn't been built with Agents yet.
+        const int after =
+            m_agentsNavButton
+                ? m_appNavigationRailLayout->indexOf(m_agentsNavButton) + 1
+                : 0;
         m_appNavigationRailLayout->insertWidget(
-            0, m_railCodeButton, 0, Qt::AlignLeft);
+            after, m_railCodeButton, 0, Qt::AlignLeft);
         m_appNavigationRailLayout->insertWidget(
-            1, m_railGitButton, 0, Qt::AlignLeft);
+            after + 1, m_railGitButton, 0, Qt::AlignLeft);
     }
     // The checked states mirror the visible view (Code tab, and which body the
     // overview shows), so track every stack the navigation helpers drive.

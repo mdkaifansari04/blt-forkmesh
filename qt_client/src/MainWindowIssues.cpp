@@ -1000,7 +1000,7 @@ QWidget *MainWindow::buildIssuesSection()
     connect(m_issueLinkPullButton, &QPushButton::clicked, this,
             &MainWindow::linkPullToIssueFromIssuePage);
     addMetaSection("Development", m_issueDevelopmentValue, m_issueLinkPullButton);
-    addMetaSection("Notifications", makeValue("You are receiving notifications because you're subscribed to this thread."));
+    addMetaSection("Pings", makeValue("You are receiving pings because you're subscribed to this thread."));
     addMetaSection("Participants", makeValue("No participants"));
     auto *transferIssue = makeAction("Transfer issue", "arrow-left");
     auto *cloneIssue = makeAction("Clone issue", "copy");

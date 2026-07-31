@@ -544,7 +544,78 @@ void MainWindow::runDeferredStartup()
     if (QWindow *handle = windowHandle())
         handle->removeEventFilter(this);
 
-    // Restore the last open repository first (matches the old scheduling order).
+    bool headlessBootstrapQueued = false;
+    auto runHeadlessBootstrap = [this, &headlessBootstrapQueued] {
+        if (!m_headless)
+            return;
+        headlessBootstrapQueued = true;
+        logSystem(QStringLiteral(
+            "Startup: checking forkmesh/forkmesh mirror bootstrap."));
+        ensureFlagshipRepo();
+        QTimer::singleShot(10000, this, [this] {
+            logSystem(QStringLiteral(
+                "Startup: rechecking forkmesh/forkmesh mirror bootstrap."));
+            ensureFlagshipRepo();
+        });
+    };
+
+    // Auto-enter the app whenever this machine has a node name — which now
+    // includes a first run, since one was generated for it above if needed.
+    // No account is required: the node drops straight into the app shell.
+    // Silent auth is best-effort — it restores an existing active account's
+    // hosting/payout state when this key owns one, but its absence no longer
+    // keeps the node on the welcome screen. The empty-name branch below is now
+    // just a safety net (e.g. name-generation somehow failed).
+    auto startNetworking = [&] {
+        if (m_pendingSilentAuth) {
+            m_pendingSilentAuth = false;
+            const QString name = m_nameEdit
+                                     ? m_nameEdit->text().trimmed().toLower()
+                                     : QString();
+            if (!name.isEmpty() && isValidNodeName(name)) {
+                authenticateSilently(name);
+                if (m_stack)
+                    m_stack->setCurrentIndex(1); // app shell
+                startSession();
+                runHeadlessBootstrap();
+            } else if (m_stack) {
+                m_stack->setCurrentIndex(0); // first run / no name: show setup
+            }
+        }
+
+        // Headless/offscreen launches should never depend on the setup-page
+        // widgets or a GUI label existing. If the normal pending-silent-auth
+        // path did not run for any reason, use the persisted node name directly
+        // and still start the backend + flagship mirror bootstrap.
+        if (m_headless && !headlessBootstrapQueued) {
+            const QString name =
+                accountNameFromInput(savedProfileName(), QString());
+            if (!name.isEmpty() && isValidNodeName(name)) {
+                if (!m_backend) {
+                    if (m_nameEdit)
+                        m_nameEdit->setText(name);
+                    authenticateSilently(name);
+                    if (m_stack)
+                        m_stack->setCurrentIndex(1);
+                    startSession();
+                }
+                runHeadlessBootstrap();
+            }
+        }
+    };
+
+    // An unattended node must publish/host no matter what the restore below
+    // does: openRepoDetail() pumps the event loop while it waits on git and can
+    // park there indefinitely (a wedged fetch, an agent modal), and mirror6 sat
+    // exactly like that for a day — content fully repaired yet its catalog
+    // lease dead because startSession() was sequenced after the restore. A
+    // desktop keeps the restore-first order so silent auth never competes with
+    // the user's first navigation.
+    if (m_headless)
+        startNetworking();
+
+    // Restore the last open repository (for a desktop this comes first,
+    // matching the old scheduling order).
     if (m_pendingRestoreRepoIndex >= 0 &&
         m_pendingRestoreRepoIndex < m_repositories.size()) {
         const int index = m_pendingRestoreRepoIndex;
@@ -589,61 +660,10 @@ void MainWindow::runDeferredStartup()
         logStartup(QStringLiteral("agent sessions resumed (deferred)"));
     }
 
-    bool headlessBootstrapQueued = false;
-    auto runHeadlessBootstrap = [this, &headlessBootstrapQueued] {
-        if (!m_headless)
-            return;
-        headlessBootstrapQueued = true;
-        logSystem(QStringLiteral(
-            "Startup: checking forkmesh/forkmesh mirror bootstrap."));
-        ensureFlagshipRepo();
-        QTimer::singleShot(10000, this, [this] {
-            logSystem(QStringLiteral(
-                "Startup: rechecking forkmesh/forkmesh mirror bootstrap."));
-            ensureFlagshipRepo();
-        });
-    };
-
-    // Then auto-enter the app whenever this machine has a node name — which now
-    // includes a first run, since one was generated for it above if needed.
-    // No account is required: the node drops straight into the app shell.
-    // Silent auth is best-effort — it restores an existing active account's
-    // hosting/payout state when this key owns one, but its absence no longer
-    // keeps the node on the welcome screen. The empty-name branch below is now
-    // just a safety net (e.g. name-generation somehow failed).
-    if (m_pendingSilentAuth) {
-        m_pendingSilentAuth = false;
-        const QString name = m_nameEdit ? m_nameEdit->text().trimmed().toLower()
-                                        : QString();
-        if (!name.isEmpty() && isValidNodeName(name)) {
-            authenticateSilently(name);
-            if (m_stack)
-                m_stack->setCurrentIndex(1); // app shell
-            startSession();
-            runHeadlessBootstrap();
-        } else if (m_stack) {
-            m_stack->setCurrentIndex(0); // first run / no saved name: show setup
-        }
-    }
-
-    // Headless/offscreen launches should never depend on the setup-page widgets
-    // or a GUI label existing. If the normal pending-silent-auth path did not run
-    // for any reason, use the persisted node name directly and still start the
-    // backend + flagship mirror bootstrap.
-    if (m_headless && !headlessBootstrapQueued) {
-        const QString name = accountNameFromInput(savedProfileName(), QString());
-        if (!name.isEmpty() && isValidNodeName(name)) {
-            if (!m_backend) {
-                if (m_nameEdit)
-                    m_nameEdit->setText(name);
-                authenticateSilently(name);
-                if (m_stack)
-                    m_stack->setCurrentIndex(1);
-                startSession();
-            }
-            runHeadlessBootstrap();
-        }
-    }
+    // Desktop: connect only now, after the restore, so silent auth never
+    // collides with the user's first repository/tab navigation. (On headless
+    // this already ran above and is a no-op here.)
+    startNetworking();
 
     // adhoc #73: adhoc #20 dropped every launch-time trigger for the top-bar
     // usage charts in favour of hover-only refreshes, so a restart kept showing
