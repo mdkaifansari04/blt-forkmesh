@@ -183,7 +183,7 @@ QWidget *MainWindow::buildIssuesSection()
                                          QStringLiteral("openai"));
     m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Claude API"),
                                          QStringLiteral("claude-api"));
-    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Claude Code"),
+    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("CC"),
                                          QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
     m_issuePrioritizeAgentCombo->setToolTip(

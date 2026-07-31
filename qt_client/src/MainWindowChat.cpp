@@ -460,9 +460,10 @@ QWidget *MainWindow::buildChatPage()
     // Agents is deliberately absent here: it lives on the window-chrome line
     // beside its live fleet matrix (see buildBreadcrumb). Listing it would
     // re-parent the button into the rail and silently undo that placement.
+    // Log lives in the bottom utility group, under Settings, instead of here.
     for (QPushButton *button :
          {m_reposNavButton, m_tasksNavButton, m_chatButton,
-          m_controlNodeNavButton, m_logNavButton, m_networkNavButton}) {
+          m_controlNodeNavButton, m_networkNavButton}) {
         if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
             railButton->setCompact(false);
             railButton->setFixedSize(kRailItemWidth, 40);
@@ -494,6 +495,13 @@ QWidget *MainWindow::buildChatPage()
         m_appNavigationRailLayout->addWidget(host, 0, Qt::AlignHCenter);
     };
     addUtility(m_settingsNavButton, QStringLiteral("Settings"));
+    // Log sits directly under Settings in the bottom utility group rather than
+    // among the primary destinations above the stretch.
+    if (auto *logRailButton = dynamic_cast<ActivityRailButton *>(m_logNavButton)) {
+        logRailButton->setCompact(false);
+        logRailButton->setFixedSize(kRailItemWidth, 40);
+    }
+    m_appNavigationRailLayout->addWidget(m_logNavButton, 0, Qt::AlignLeft);
     addUtility(m_navDrawButton, QStringLiteral("Draw"));
     addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
     addUtility(m_navResizeButton, QStringLiteral("Resize"));
@@ -708,24 +716,29 @@ QWidget *MainWindow::buildNetworkLogDock()
 
     m_quickAddAgentProvider = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddAgentProvider->setObjectName("quickAddAgentSelector");
-    // "Manual (create issue)" (adhoc #29): the no-agent choice that replaces the
-    // old Agent / Create-issue checkboxes — picking it files an issue from the
-    // typed prompt instead of starting a coding agent.
-    m_quickAddAgentProvider->addItem(QStringLiteral("Manual (create issue)"),
+    // "Manual" (adhoc #29): the no-agent choice that replaces the old Agent /
+    // Create-issue checkboxes — picking it files an issue from the typed prompt
+    // instead of starting a coding agent. Every item is short (adhoc #38) so the
+    // four dropdowns fit the composer row side by side; the tooltip carries what
+    // the labels no longer spell out.
+    m_quickAddAgentProvider->addItem(QStringLiteral("Manual"),
                                      QStringLiteral("manual"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Codex"), kCodexProvider);
-    m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI API"),
+    m_quickAddAgentProvider->addItem(QStringLiteral("OpenAI"),
                                      QStringLiteral("openai"));
     m_quickAddAgentProvider->addItem(QStringLiteral("Claude API"),
                                      QStringLiteral("claude-api"));
     // "Claude Code" drives the real `claude` CLI headlessly (no input) in a
     // tracked agent session, working until ForkMesh can open a PR from its diff.
-    m_quickAddAgentProvider->addItem(QStringLiteral("Claude Code"),
+    m_quickAddAgentProvider->addItem(QStringLiteral("CC"),
                                      QStringLiteral("claude-code"));
     selectQuickAddAgentProvider(m_quickAddAgentProvider);
-    m_quickAddAgentProvider->setToolTip("Agent provider for quick-add assignment");
-    m_quickAddAgentProvider->setMinimumWidth(112);
-    m_quickAddAgentProvider->setMaximumWidth(150);
+    m_quickAddAgentProvider->setToolTip(
+        "What picks this prompt up: CC (Claude Code) or Codex run the CLI agents, "
+        "OpenAI/Claude API run the headless API agents, and Manual files an issue "
+        "instead of starting one.");
+    m_quickAddAgentProvider->setMinimumWidth(74);
+    m_quickAddAgentProvider->setMaximumWidth(112);
     // Show the whole list at once rather than a scrollable popup (adhoc #99).
     m_quickAddAgentProvider->setMaxVisibleItems(30);
     m_quickAddAgentProvider->view()->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
@@ -733,9 +746,9 @@ QWidget *MainWindow::buildNetworkLogDock()
     // list; Codex uses the ChatGPT-backed Codex CLI's supported model list.
     m_quickAddClaudeModel = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddClaudeModel->setObjectName("quickAddModelSelector");
-    m_quickAddClaudeModel->setMinimumWidth(130);
-    m_quickAddClaudeModel->setMaximumWidth(180);
-    m_quickAddClaudeModel->setMinimumContentsLength(10);
+    m_quickAddClaudeModel->setMinimumWidth(94);
+    m_quickAddClaudeModel->setMaximumWidth(150);
+    m_quickAddClaudeModel->setMinimumContentsLength(8);
     m_quickAddClaudeModel->setSizeAdjustPolicy(
         QComboBox::AdjustToMinimumContentsLengthWithIcon);
     // Show the whole model list at once rather than a scrollable popup, even
@@ -771,6 +784,8 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddClaudeModel->view()->installEventFilter(this);
     refreshQuickAddModelPicker();
     auto persistQuickAddModel = [this]() {
+        // A Codex model change can change the effort ladder itself (adhoc #38).
+        refreshQuickAddSpeedSelector();
         if (!m_quickAddAgentProvider || !m_quickAddClaudeModel)
             return;
         const QString provider = m_quickAddAgentProvider->currentData().toString();
@@ -793,14 +808,14 @@ QWidget *MainWindow::buildNetworkLogDock()
     // a distinct approval policy and sandbox, including interactive requests.
     m_quickAddModeSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
     m_quickAddModeSelector->setObjectName("quickAddModeSelector");
-    m_quickAddModeSelector->setMinimumWidth(118);
-    m_quickAddModeSelector->setMaximumWidth(170);
-    m_quickAddModeSelector->setMinimumContentsLength(10);
+    m_quickAddModeSelector->setMinimumWidth(66);
+    m_quickAddModeSelector->setMaximumWidth(104);
+    m_quickAddModeSelector->setMinimumContentsLength(5);
     m_quickAddModeSelector->setSizeAdjustPolicy(
         QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    m_quickAddModeSelector->addItem(QStringLiteral("Ask before edits"), false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Edit automatically"), false);
-    m_quickAddModeSelector->addItem(QStringLiteral("Plan mode"), false);
+    m_quickAddModeSelector->addItem(kAgentAskModeLabel, false);
+    m_quickAddModeSelector->addItem(QStringLiteral("Edit"), false);
+    m_quickAddModeSelector->addItem(QStringLiteral("Plan"), false);
     m_quickAddModeSelector->addItem(kClaudeAutoModeLabel, true);
     m_quickAddModeSelector->setMaxVisibleItems(30);
     m_quickAddModeSelector->setToolTip(
@@ -822,6 +837,39 @@ QWidget *MainWindow::buildNetworkLogDock()
                 QSettings().setValue(kAgentModeSetting,
                                      m_quickAddModeSelector->currentText());
             });
+    // Speed (reasoning effort) beside the mode selector (adhoc #38): the same
+    // setting the "/" popup's effort dots write, promoted to the composer so the
+    // choice is visible where prompts are launched. The item list is per
+    // provider — Codex reports supportedReasoningEfforts per model, the `claude`
+    // CLI is probed for what it accepts — so filling it lives in
+    // refreshQuickAddSpeedSelector() and re-runs whenever either changes.
+    m_quickAddSpeedSelector = new FullPopupComboBox; // no scroll arrows (issue #348)
+    m_quickAddSpeedSelector->setObjectName("quickAddSpeedSelector");
+    m_quickAddSpeedSelector->setMinimumWidth(74);
+    m_quickAddSpeedSelector->setMaximumWidth(112);
+    m_quickAddSpeedSelector->setMinimumContentsLength(6);
+    m_quickAddSpeedSelector->setSizeAdjustPolicy(
+        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    m_quickAddSpeedSelector->setMaxVisibleItems(30);
+    m_quickAddSpeedSelector->setToolTip(
+        "Speed: how hard the model thinks about each turn (the CLI's reasoning "
+        "effort). Higher is slower and more thorough.");
+    connect(m_quickAddSpeedSelector, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) {
+                const QString level =
+                    m_quickAddSpeedSelector->currentData().toString();
+                if (level.isEmpty())
+                    return;
+                QSettings().setValue(kClaudeEffortSetting, level);
+                // The "/" popup shows the same setting; keep it truthful if it
+                // happens to be open.
+                if (m_slashActionsPopup && m_slashActionsPopup->isVisible())
+                    populateSlashActionsList();
+            });
+    refreshQuickAddSpeedSelector();
+    // Ask the installed CLI what it actually accepts; the picker repopulates
+    // when the answer lands.
+    refreshClaudeEffortLevels();
     m_quickAddCreatePr = new QCheckBox("Create PR");
     m_quickAddCreatePr->setToolTip(
         "When quick-add assigns an agent, create a pull request from its patch.");
@@ -929,6 +977,12 @@ QWidget *MainWindow::buildNetworkLogDock()
         const bool codex = agentIsCodexProvider(provider);
         m_quickAddClaudeModel->setVisible(claudeCode || codex);
         m_quickAddModeSelector->setVisible(claudeCode || codex);
+        if (m_quickAddSpeedSelector) {
+            m_quickAddSpeedSelector->setVisible(claudeCode || codex);
+            // Codex's ladder is per model, so the items themselves change with
+            // the provider — not just whether the picker is shown.
+            refreshQuickAddSpeedSelector();
+        }
     };
     connect(m_quickAddAgentProvider, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this, syncQuickAddAgentControls, refreshQuickAddModelPicker](int) {
@@ -1039,7 +1093,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddGenieButton = new QPushButton(QStringLiteral("genie"));
     m_quickAddGenieButton->setObjectName("quickAddGenieButton");
     m_quickAddGenieButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_quickAddGenieButton, "star", 15);
+    setOcticon(m_quickAddGenieButton, "sparkle", 15);
     m_quickAddGenieButton->setFixedWidth(58);
     m_quickAddGenieButton->setMinimumHeight(24);
     m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
@@ -1087,6 +1141,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     agentBoxRow->addWidget(m_quickAddAgentProvider);
     agentBoxRow->addWidget(m_quickAddClaudeModel);
     agentBoxRow->addWidget(m_quickAddModeSelector);
+    agentBoxRow->addWidget(m_quickAddSpeedSelector);
     // Apply initial visibility only after the controls have their real parent.
     // Showing a parentless combo and then reparenting it can leave it hidden,
     // which made the Claude model picker depend on event-loop timing at startup.
@@ -1804,47 +1859,12 @@ void MainWindow::populateSlashActionsList()
     const bool codexProvider =
         m_quickAddAgentProvider &&
         agentIsCodexProvider(m_quickAddAgentProvider->currentData().toString());
-    QStringList effortLevels{QStringLiteral("low"), QStringLiteral("medium"),
-                             QStringLiteral("high"), QStringLiteral("xhigh"),
-                             QStringLiteral("max")};
-    QStringList effortLabels{QStringLiteral("Low"), QStringLiteral("Medium"),
-                             QStringLiteral("High"), QStringLiteral("Extra high"),
-                             QStringLiteral("Max")};
-    if (codexProvider && m_quickAddClaudeModel) {
-        const QString selectedModel = selectedModelComboValue(m_quickAddClaudeModel);
-        const QJsonArray models = QJsonDocument::fromJson(
-                                      QSettings()
-                                          .value(kCodexModelsCacheSetting)
-                                          .toByteArray())
-                                      .array();
-        for (const QJsonValue &value : models) {
-            const QJsonObject model = value.toObject();
-            QString id = model.value(QStringLiteral("model")).toString();
-            if (id.isEmpty())
-                id = model.value(QStringLiteral("id")).toString();
-            if (id != selectedModel)
-                continue;
-            QStringList liveLevels, liveLabels;
-            for (const QJsonValue &effortValue :
-                 model.value(QStringLiteral("supportedReasoningEfforts")).toArray()) {
-                const QJsonObject effort = effortValue.toObject();
-                const QString id =
-                    effort.value(QStringLiteral("reasoningEffort")).toString();
-                if (id.isEmpty())
-                    continue;
-                liveLevels << id;
-                QString label = id;
-                if (!label.isEmpty())
-                    label[0] = label[0].toUpper();
-                liveLabels << label;
-            }
-            if (!liveLevels.isEmpty()) {
-                effortLevels = liveLevels;
-                effortLabels = liveLabels;
-            }
-            break;
-        }
-    }
+    // What the current provider actually accepts (adhoc #38): shared with the
+    // composer's speed picker, which writes the same setting these dots do.
+    const QStringList effortLevels = agentEffortLevels();
+    QStringList effortLabels;
+    for (const QString &level : effortLevels)
+        effortLabels << agentEffortLabel(level);
     const QString currentEffort =
         QSettings().value(kClaudeEffortSetting, QStringLiteral("high")).toString();
     int effortIdx = effortLevels.indexOf(currentEffort);
@@ -2004,6 +2024,8 @@ void MainWindow::activateSlashActionRow(QWidget *row)
         }
     } else if (kind == QLatin1String("effortLevel")) {
         QSettings().setValue(kClaudeEffortSetting, value);
+        // The composer's speed picker shows the same setting (adhoc #38).
+        refreshQuickAddSpeedSelector();
         populateSlashActionsList();
     } else if (kind == QLatin1String("toggleThinking")) {
         QSettings().setValue(kClaudeThinkingSetting,
@@ -2031,6 +2053,151 @@ void MainWindow::activateSlashActionRow(QWidget *row)
         if (m_issueQuickAdd)
             m_issueQuickAdd->setFocus();
     }
+}
+
+// The reasoning-effort ladder the composer's provider actually accepts (adhoc
+// #38). Codex publishes supportedReasoningEfforts per model in the app-server
+// catalog, so a model that only does low/medium never offers "max"; Claude Code
+// is probed for what its installed CLI takes (refreshClaudeEffortLevels), since
+// the ladder has grown over releases. Neither known yet => the default ladder.
+QStringList MainWindow::agentEffortLevels() const
+{
+    const QString provider =
+        m_quickAddAgentProvider ? m_quickAddAgentProvider->currentData().toString()
+                                : QString();
+    if (agentIsCodexProvider(provider) && m_quickAddClaudeModel) {
+        const QString selectedModel = selectedModelComboValue(m_quickAddClaudeModel);
+        const QJsonArray models =
+            QJsonDocument::fromJson(
+                QSettings().value(kCodexModelsCacheSetting).toByteArray())
+                .array();
+        for (const QJsonValue &value : models) {
+            const QJsonObject model = value.toObject();
+            QString id = model.value(QStringLiteral("model")).toString();
+            if (id.isEmpty())
+                id = model.value(QStringLiteral("id")).toString();
+            if (id != selectedModel)
+                continue;
+            QStringList levels;
+            for (const QJsonValue &effortValue :
+                 model.value(QStringLiteral("supportedReasoningEfforts")).toArray()) {
+                const QString level = effortValue.toObject()
+                                          .value(QStringLiteral("reasoningEffort"))
+                                          .toString();
+                if (!level.isEmpty())
+                    levels << level;
+            }
+            if (!levels.isEmpty())
+                return levels;
+            break;
+        }
+        return defaultAgentEffortLevels();
+    }
+    const QStringList probed =
+        QSettings().value(kClaudeEffortLevelsCacheSetting).toStringList();
+    return probed.isEmpty() ? defaultAgentEffortLevels() : probed;
+}
+
+// Rebuild the composer's speed picker from agentEffortLevels() and select the
+// live kClaudeEffortSetting. A stored level the current provider doesn't offer
+// (switching to a Codex model with a shorter ladder) falls back to "high", or to
+// the top of the ladder, and is written back so the launch and this picker never
+// disagree about what the run will use.
+void MainWindow::refreshQuickAddSpeedSelector()
+{
+    if (!m_quickAddSpeedSelector)
+        return;
+    const QStringList levels = agentEffortLevels();
+    if (levels.isEmpty())
+        return;
+    QString current = QSettings()
+                          .value(kClaudeEffortSetting, QStringLiteral("high"))
+                          .toString()
+                          .trimmed()
+                          .toLower();
+    if (!levels.contains(current)) {
+        current = levels.contains(QStringLiteral("high")) ? QStringLiteral("high")
+                                                          : levels.last();
+        QSettings().setValue(kClaudeEffortSetting, current);
+    }
+    const QSignalBlocker block(m_quickAddSpeedSelector);
+    m_quickAddSpeedSelector->clear();
+    for (const QString &level : levels)
+        m_quickAddSpeedSelector->addItem(agentEffortLabel(level), level);
+    const int idx = m_quickAddSpeedSelector->findData(current);
+    m_quickAddSpeedSelector->setCurrentIndex(idx >= 0 ? idx : 0);
+}
+
+// Ask the installed `claude` CLI which --effort values it accepts (adhoc #38)
+// instead of hard-coding a ladder that drifts with the CLI. `claude --help`
+// prints the flag with its choices, e.g.
+//   --effort <level>   Reasoning effort (choices: "low", "medium", "high")
+// so the levels are read off that line and cached
+// (kClaudeEffortLevelsCacheSetting). Once per app run; anything unparseable
+// leaves the cached/default ladder in place.
+void MainWindow::refreshClaudeEffortLevels()
+{
+    if (m_claudeEffortProbe)
+        return;
+    auto *proc = new QProcess(this);
+    m_claudeEffortProbe = proc;
+    m_claudeEffortProbeBuf.clear();
+    connect(proc, &QProcess::readyReadStandardOutput, this, [this, proc] {
+        m_claudeEffortProbeBuf += proc->readAllStandardOutput();
+    });
+    connect(proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            [this, proc](int, QProcess::ExitStatus) {
+                if (m_claudeEffortProbe == proc)
+                    m_claudeEffortProbe = nullptr;
+                const QString help = QString::fromUtf8(m_claudeEffortProbeBuf);
+                m_claudeEffortProbeBuf.clear();
+                proc->deleteLater();
+                static const QRegularExpression effortLine(
+                    QStringLiteral("--effort[^\\n]*"));
+                const QRegularExpressionMatch line = effortLine.match(help);
+                if (!line.hasMatch())
+                    return;
+                // Quoted choices on that line, in the order the CLI lists them.
+                static const QRegularExpression choice(
+                    QStringLiteral("\"([A-Za-z][A-Za-z0-9_-]*)\""));
+                QStringList levels;
+                QRegularExpressionMatchIterator it =
+                    choice.globalMatch(line.captured(0));
+                while (it.hasNext()) {
+                    const QString level = it.next().captured(1).toLower();
+                    if (!levels.contains(level))
+                        levels << level;
+                }
+                if (levels.isEmpty()) {
+                    // Plainer help text lists them unquoted: "(choices: low,
+                    // medium, high)".
+                    static const QRegularExpression bare(
+                        QStringLiteral("choices:\\s*([^)]+)"));
+                    const QRegularExpressionMatch list = bare.match(line.captured(0));
+                    if (!list.hasMatch())
+                        return;
+                    static const QRegularExpression separator(
+                        QStringLiteral("[,\\s]+"));
+                    static const QRegularExpression wordOnly(
+                        QStringLiteral("^[a-z][a-z0-9_-]*$"));
+                    for (const QString &part :
+                         list.captured(1).split(separator, Qt::SkipEmptyParts)) {
+                        const QString level = part.trimmed().toLower();
+                        if (wordOnly.match(level).hasMatch() && !levels.contains(level))
+                            levels << level;
+                    }
+                }
+                if (levels.isEmpty())
+                    return;
+                QSettings().setValue(kClaudeEffortLevelsCacheSetting, levels);
+                refreshQuickAddSpeedSelector();
+                if (m_slashActionsPopup && m_slashActionsPopup->isVisible())
+                    populateSlashActionsList();
+            });
+    // A login shell so a `claude` in ~/.local/bin resolves exactly as it does for
+    // the real launches.
+    proc->start(QStringLiteral("bash"),
+                {QStringLiteral("-lc"), QStringLiteral("claude --help 2>/dev/null")});
 }
 
 // Probes the live `claude` CLI for its slash-command list via the same
@@ -3051,6 +3218,12 @@ void MainWindow::startDiagnostics()
         // old threshold let real (but shorter) click-freezes go unrecorded. Every
         // report names the blocking operation via the BlockingCallScope crumbs.
         m_stallWatchdog->start(/*stallThresholdMs=*/500, logPath, buildInfo);
+        // Name the durable log in the main app log once per run, so where the
+        // full backtraces live is discoverable from the Log view alone and not
+        // only from the diagnostics dialog (adhoc #73).
+        if (!logPath.isEmpty())
+            logSystem(QStringLiteral("UI-stall watchdog armed; reports append to %1")
+                          .arg(QDir::toNativeSeparators(logPath)));
     }
     if (!m_diagTimer) {
         m_diagTimer = new QTimer(this);
@@ -3189,8 +3362,13 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
         head += QStringLiteral(" while %1").arg(blockingCall);
     // Shows up in the app's Log view under its own STALL badge (filterable from
     // the chip row); logSystem stamps the time itself, so the dialog's copy is
-    // the one that carries it.
-    logSystem(head);
+    // the one that carries it. The main-log copy also names the durable report
+    // file so the full backtrace is findable from the Log view (adhoc #73).
+    QString logLine = head;
+    if (!m_stallLogPath.isEmpty())
+        logLine += QStringLiteral(" - full backtrace in %1")
+                       .arg(QDir::toNativeSeparators(m_stallLogPath));
+    logSystem(logLine);
     QString entry = QStringLiteral("[%1] %2").arg(when, head);
     if (!backtrace.isEmpty())
         entry += QLatin1Char('\n') + backtrace;
@@ -3199,7 +3377,8 @@ void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
         m_stallLog.removeFirst();
     if (m_footerDiagnostics)
         m_footerDiagnostics->setToolTip(
-            QStringLiteral("Last UI stall: ~%1 ms at %2%3. Click for details (%4 logged).")
+            QStringLiteral("Last UI stall: ~%1 ms at %2%3 (%4 logged). Click to draft a "
+                           "fix-it prompt in the composer; right-click for details.")
                 .arg(peakMs)
                 .arg(when)
                 .arg(blockingCall.isEmpty() ? QString()
@@ -3295,7 +3474,8 @@ void MainWindow::clearStallLog()
     if (m_footerDiagnostics)
         m_footerDiagnostics->setToolTip(
             QStringLiteral("UI-stall diagnostics: any freezes long enough to trip the "
-                           "Wait/Kill prompt land here. Click for the recorded stall "
+                           "Wait/Kill prompt land here. Click to draft a fix-it prompt "
+                           "in the composer; right-click for the recorded stall "
                            "details."));
     updateFooterDiagnostics();
 }
@@ -3339,6 +3519,92 @@ bool MainWindow::sendStallLogToAgent()
     return true;
 }
 
+// Keep the drafted prompt inside the quick-add composer's 16000-char cap. The
+// composer trims overflow off the *end*, which would cut a backtrace mid-frame,
+// so build the text to fit instead and say so where reports were dropped.
+static constexpr int kStallPromptMaxChars = 15500;
+
+// The "please fix these stalls" prompt the footer badge drafts: the ask, where
+// both logs live, and the recorded reports newest-first (the freshest freeze is
+// the one most likely still reproducible).
+QString MainWindow::stallFixPrompt() const
+{
+    QString head =
+        QStringLiteral(
+            "Please fix these UI stalls. ForkMesh's GUI thread was blocked %1 "
+            "time(s) this session, which freezes the window. For each report "
+            "below, find the blocking call in the backtrace and fix it so the UI "
+            "stays responsive (move the slow work off the main thread, or skip it "
+            "when nothing changed).\n\n")
+            .arg(m_stallCount);
+    if (!m_stallLogPath.isEmpty())
+        head += QStringLiteral("Stall log: %1\n")
+                    .arg(QDir::toNativeSeparators(m_stallLogPath));
+    head += QStringLiteral("App log: %1\n")
+                .arg(QDir::toNativeSeparators(networkLogPath()));
+    head += QStringLiteral("\nRecorded stalls (newest first):\n\n");
+
+    QString body;
+    const QString separator = QStringLiteral("\n\n---\n\n");
+    for (int i = m_stallLog.size() - 1; i >= 0; --i) {
+        const QString entry = m_stallLog.at(i);
+        if (!body.isEmpty() &&
+            head.size() + body.size() + separator.size() + entry.size() >
+                kStallPromptMaxChars) {
+            body += QStringLiteral(
+                "\n\n(older reports omitted - the full history is in the stall log above)");
+            break;
+        }
+        if (!body.isEmpty())
+            body += separator;
+        body += entry;
+    }
+    if (body.isEmpty())
+        body = QStringLiteral("(nothing recorded yet)");
+    // A single oversized backtrace can still overrun the budget; clamp so the
+    // composer never has to trim (and never silently drops the trailing text).
+    return (head + body).left(kStallPromptMaxChars);
+}
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testQuickAddText() const
+{
+    return m_issueQuickAdd ? m_issueQuickAdd->toPlainText() : QString();
+}
+
+bool MainWindow::testDraftStallPromptInComposer()
+{
+    if (!m_issueQuickAdd)
+        return false;
+    sendStallReportToComposer();
+    return true;
+}
+#endif
+
+// Footer stall badge click (adhoc #73): rather than only showing the read-only
+// dialog, draft the fix-it prompt straight into the quick-add composer so the
+// recorded freezes are one Enter away from an agent run. The detail dialog is
+// still one right-click away (and is the fallback when nothing was recorded).
+void MainWindow::sendStallReportToComposer()
+{
+    if (!m_issueQuickAdd || m_stallLog.isEmpty()) {
+        showDiagnosticsDialog();
+        return;
+    }
+    // Anything half-typed goes into the recall history first, so overwriting the
+    // box with the draft never loses a prompt — Up brings it straight back.
+    recordQuickAddHistory(m_issueQuickAdd->toPlainText());
+    m_issueQuickAdd->setPlainText(stallFixPrompt());
+    m_issueQuickAdd->moveCursor(QTextCursor::End);
+    m_issueQuickAdd->setFocus();
+    logSystem(QStringLiteral("Drafted a fix-it prompt for the %1 recorded UI stall(s); "
+                             "details in %2")
+                  .arg(m_stallLog.size())
+                  .arg(m_stallLogPath.isEmpty()
+                           ? QStringLiteral("this session's diagnostics")
+                           : QDir::toNativeSeparators(m_stallLogPath)));
+}
+
 // Detail view for the diagnostics readout: the recorded UI stalls (with the
 // captured backtraces) plus where the durable log lives.
 void MainWindow::showDiagnosticsDialog()
@@ -3372,20 +3638,31 @@ void MainWindow::showDiagnosticsDialog()
     auto *clearBtn = new QPushButton(QStringLiteral("Clear"));
     clearBtn->setToolTip(QStringLiteral("Forget every recorded stall (and its durable log)"));
     clearBtn->setEnabled(haveStalls);
+    auto *draftBtn = new QPushButton(QStringLiteral("Draft in composer"));
+    draftBtn->setToolTip(
+        QStringLiteral("Fill the footer composer with a \"fix these stalls\" prompt "
+                       "(with the log locations) so it can be reviewed before sending"));
+    draftBtn->setEnabled(haveStalls);
     auto *sendBtn = new QPushButton(QStringLiteral("Send to a new agent"));
     sendBtn->setToolTip(
         QStringLiteral("Hand all recorded stalls to a coding agent to investigate and fix"));
     sendBtn->setEnabled(haveStalls);
     auto *close = new QPushButton(QStringLiteral("Close"));
 
-    connect(clearBtn, &QPushButton::clicked, &dlg, [this, summary, view, clearBtn, sendBtn] {
-        clearStallLog();
-        summary->setText(
-            QStringLiteral("No UI stalls detected this session. The app watches the "
-                           "GUI thread and records any freeze longer than 1.5s here."));
-        view->setPlainText(QStringLiteral("(nothing recorded yet)"));
-        clearBtn->setEnabled(false);
-        sendBtn->setEnabled(false);
+    connect(clearBtn, &QPushButton::clicked, &dlg,
+            [this, summary, view, clearBtn, sendBtn, draftBtn] {
+                clearStallLog();
+                summary->setText(QStringLiteral(
+                    "No UI stalls detected this session. The app watches the "
+                    "GUI thread and records any freeze longer than 1.5s here."));
+                view->setPlainText(QStringLiteral("(nothing recorded yet)"));
+                clearBtn->setEnabled(false);
+                sendBtn->setEnabled(false);
+                draftBtn->setEnabled(false);
+            });
+    connect(draftBtn, &QPushButton::clicked, &dlg, [this, &dlg] {
+        sendStallReportToComposer();
+        dlg.accept();
     });
     connect(sendBtn, &QPushButton::clicked, &dlg, [this, &dlg] {
         if (sendStallLogToAgent())
@@ -3396,6 +3673,7 @@ void MainWindow::showDiagnosticsDialog()
     auto *row = new QHBoxLayout;
     row->addWidget(clearBtn);
     row->addStretch(1);
+    row->addWidget(draftBtn);
     row->addWidget(sendBtn);
     row->addWidget(close);
     v->addLayout(row);
@@ -3991,9 +4269,9 @@ QWidget *MainWindow::buildLogSection()
     // view most launches never open. Live logSystem() lines still append to
     // the (empty) view immediately; the first visit's rebuild re-renders the
     // latest segment in order, history included.
-    m_logFilterCategories.clear();
+    m_logFilterCounts.clear();
     for (const QString &line : std::as_const(m_networkLog))
-        m_logFilterCategories.insert(logBadgeFor(line));
+        ++m_logFilterCounts[logBadgeFor(line)];
     rebuildLogFilterButtons();
     m_networkLogViewStale = !m_networkLog.isEmpty();
 
@@ -4001,7 +4279,7 @@ QWidget *MainWindow::buildLogSection()
         m_networkLog.clear();
         m_lastLogRenderDate.clear();
         m_logFilter.clear();
-        m_logFilterCategories.clear();
+        m_logFilterCounts.clear();
         m_logRenderFrom = 0; // nothing left to page back into once cleared
         m_logFilterEmptyNotice = false;
         if (m_settingsLog)
@@ -4774,14 +5052,16 @@ QWidget *MainWindow::buildBreadcrumb()
 
     // UI-stall indicator (adhoc #117/#145): an octicon that sits beside the
     // CPU/MEM/DISK sparklines on the window-chrome line and shows the count of
-    // detected UI stalls. Click to see the stall details.
+    // detected UI stalls. Click drafts a "fix these stalls" prompt in the
+    // composer (adhoc #73); right-click still opens the read-only details.
     m_footerDiagnostics = new QPushButton;
     m_footerDiagnostics->setObjectName("footerDiagnostics");
     m_footerDiagnostics->setFlat(true);
     m_footerDiagnostics->setCursor(Qt::PointingHandCursor);
     m_footerDiagnostics->setToolTip(
         "UI-stall diagnostics: any freezes long enough to trip the Wait/Kill "
-        "prompt land here. Click for the recorded stall details.");
+        "prompt land here. Click to draft a fix-it prompt in the composer; "
+        "right-click for the recorded stall details.");
     m_footerDiagnostics->setStyleSheet(
         "QPushButton#footerDiagnostics{color:#d29922;border:none;background:transparent;"
         "font-size:10px;padding:0 3px;spacing:2px;}"
@@ -4789,7 +5069,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_footerDiagnostics->setFixedHeight(18);
     setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
     connect(m_footerDiagnostics, &QPushButton::clicked, this,
-            &MainWindow::showDiagnosticsDialog);
+            &MainWindow::sendStallReportToComposer);
+    m_footerDiagnostics->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_footerDiagnostics, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &) { showDiagnosticsDialog(); });
 
     // Three little button-sized squares on the window-chrome line, each plotting
     // one resource — this app's CPU, the host's memory and its disk — as a moving
@@ -5231,6 +5514,33 @@ void MainWindow::onRelayLatencySampled(int ms)
     m_relayProbeFailures = 0;
     if (m_relayRadar)
         static_cast<RelayRadarWidget *>(m_relayRadar)->setLatency(ms);
+}
+
+// Echo the mesh's serving nodes into the radar dish as blips (adhoc #79). The
+// repo-detail Mirror-nodes panel paints a repo-scoped set of blips (per-node
+// sync/integrity state, which only that panel knows) and wins while it is on
+// screen; everywhere else — including a freshly launched app that has never
+// opened a repo — the dish shows the node roster, so it no longer sweeps empty.
+// The ring only fits so many dots before they touch, so cap the fan-out and
+// keep the online nodes when the mesh is bigger than that.
+void MainWindow::updateRelayRadarNodes(bool force)
+{
+    if (!m_relayRadar)
+        return;
+    if (!force && m_mirrorNodesTable && m_mirrorNodesTable->isVisible())
+        return;
+    constexpr int kMaxRadarBlips = 16; // dots of ~5.6px around the r*0.8 ring
+    QVector<RelayRadarWidget::Blip> blips;
+    for (int pass = 0; pass < 2 && blips.size() < kMaxRadarBlips; ++pass) {
+        for (const NodeMenuEntry &e : std::as_const(m_radarNodes)) {
+            if (e.online != (pass == 0))
+                continue;
+            if (blips.size() >= kMaxRadarBlips)
+                break;
+            blips.append(RelayRadarWidget::Blip{e.name, e.online, false, false});
+        }
+    }
+    static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips(blips);
 }
 
 // Measure the round-trip latency to the active relay and feed it to the radar
@@ -6326,12 +6636,15 @@ void MainWindow::refreshRepoSyncIndicators()
     refreshCommitMarkersIfStale();
 
     // The activity rail's Git icon spins while the open repo is pushing or
-    // publishing (adhoc #357).
+    // publishing (adhoc #357). A quiet background auto-sync (the periodic
+    // mirror refresh) must not light this up — it isn't something the user
+    // did, so a spinner tied to it reads as unexplained (adhoc #81).
     const int index = m_repoDetailIndex;
     if (m_railGitButton)
-        m_railGitButton->setSyncing(index >= 0 &&
-                                    (m_pushingRepos.contains(index) ||
-                                     m_syncingRepos.contains(index)));
+        m_railGitButton->setSyncing(
+            index >= 0 &&
+            (m_pushingRepos.contains(index) ||
+             (m_syncingRepos.contains(index) && !m_syncingRepos.value(index))));
 }
 
 // Canonicalize and hash the stdout of `git for-each-ref
@@ -10348,6 +10661,12 @@ void MainWindow::refreshNodesTable()
     // switcher list: every chat user account, world-chat guest and repo owner in
     // it was counted as a node, so a mesh of four nodes badged "21" (adhoc #26).
     updateNetworkCounts(-1, visible.size(), -1);
+    // Same filtered list feeds the relay radar's blips, so the dish shows the
+    // mesh from launch instead of only while a repo's Mirror-nodes tab is open
+    // (adhoc #79). Also runs before the page is built, for the same reason the
+    // count above does.
+    m_radarNodes = visible;
+    updateRelayRadarNodes();
     if (!m_nodesTable)
         return; // page not built yet — the count above is all that's on screen
 
@@ -15773,8 +16092,17 @@ QWidget *MainWindow::buildNodeProfilePanel()
                                                         "Open settings");
     connect(selfSettingsButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
-    auto *selfLogoutButton = makeProfileActionButton("sign-out", "Logout",
-                                                      "Log out on this machine");
+    // Two buttons in the app said only "Logout"/"Log out" while doing very
+    // different things. This one disconnects the mesh session and goes back to
+    // the setup screen; the account stays signed in on this machine. Settings
+    // holds the other one, which signs the account out. Name each for what it
+    // actually does (adhoc #63).
+    auto *selfLogoutButton = makeProfileActionButton(
+        "sign-out", "Disconnect",
+        "Disconnect this machine from the mesh and return to the setup "
+        "screen. Your ForkMesh account stays signed in here \xE2\x80\x94 to "
+        "sign the account out, use Settings \xE2\x80\xBA \"Log out of "
+        "account\".");
     connect(selfLogoutButton, &QPushButton::clicked, this,
             [this] { leaveSession(); });
     auto *actionRow = new QHBoxLayout;

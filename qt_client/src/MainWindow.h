@@ -348,6 +348,18 @@ public:
     QStringList testNetworkLog() const { return m_networkLog; }
     void testResetNetworkLog();
     void testLogSystem(const QString &text) { logSystem(text); }
+    // adhoc #73: record a UI stall the way the watchdog does, then read back the
+    // fix-it prompt the footer badge drafts into the quick-add composer.
+    void testRecordUiStall(qint64 peakMs, const QString &blockingCall,
+                           const QString &backtrace)
+    {
+        onUiStall(peakMs, blockingCall, backtrace);
+    }
+    QString testStallFixPrompt() const { return stallFixPrompt(); }
+    // False (without opening the modal fallback dialog, which would block a test
+    // run) when this window has no footer composer to draft into.
+    bool testDraftStallPromptInComposer();
+    QString testQuickAddText() const;
     // Drives the network log's segmented-render + scroll-to-top-loads-more path
     // (adhoc #15) without needing real scroll-wheel input.
     void testShowSettingsSection() { showSection(1); }
@@ -1065,6 +1077,14 @@ private:
     // Hand every recorded UI stall to a fresh coding agent as one task. Returns
     // true if an agent was started. Backs the dialog's "Send to a new agent" button.
     bool sendStallLogToAgent();
+    // The ready-to-send "please fix these stalls" prompt: what happened, where
+    // the durable stall log and the app log live, and the recorded reports
+    // themselves (newest first, trimmed to the composer's length cap).
+    QString stallFixPrompt() const;
+    // Footer stall badge click (adhoc #73): drop stallFixPrompt() into the
+    // quick-add composer so the recorded freezes are one Enter from a fix.
+    // Falls back to the detail dialog when nothing has been recorded.
+    void sendStallReportToComposer();
     void showDiagnosticsDialog();
     void showHighMemoryProcessPanel();
     void refreshHighMemoryProcessTable();
@@ -1132,6 +1152,12 @@ private:
     QWidget *buildOrganizationTasksSection();
     void refreshOrganizationTasks();
     void applyOrganizationTasks(const QJsonObject &payload);
+    // Tasks rail badge (adhoc #79). The open count is persisted, painted back
+    // onto the rail at launch, and refreshed in the background so it no longer
+    // takes a visit to the Tasks page to show a number.
+    void setOrganizationTaskBadge(int openCount);
+    void restoreOrganizationTaskBadge();
+    void refreshOrganizationTaskBadge();
     void renderOrganizationTaskDetail();
     void updateOrganizationTaskActions();
     void createOrganizationTask();
@@ -2381,6 +2407,10 @@ private:
     void persistVariablesFromTable();
 
     void openRepoDetail(int repoIndex);
+    // Point the detail view at `repoIndex` so the repo-scoped git helpers
+    // (repoGitDir/repoBranches/repoDefaultBranch) resolve against it. False when
+    // the bind didn't take — callers must not touch git then.
+    bool bindRepoDetailToRepo(int repoIndex);
     // Open a repo from the top-bar switcher: paint a spinner, then run the heavy
     // (synchronous) load on the next event-loop turn so the menu closes snappily.
     void openRepoDetailDeferred(int repoIndex);
@@ -2567,6 +2597,11 @@ private:
     void mergeWorktreeIntoMain(const QString &branch,
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
+    // The same merge for an agent session's branch, but bound to that session's
+    // repository first — the Agents tab is global, so the repo the detail view
+    // holds is often not the session's. False when the bind didn't take.
+    bool mergeAgentBranchIntoBase(int repoIndex, const QString &branch,
+                                  bool deleteAgent);
     // Merge the default branch into a worktree's branch, run inside that worktree,
     // so it picks up the latest from main without leaving its folder. baseArg lets a
     // caller name the base branch explicitly; callers that leave it empty fall back
@@ -3244,6 +3279,21 @@ private:
     void moveSlashActionsSelection(int delta);
     void activateSlashActionRow(QWidget *row);
     void refreshClaudeSlashCommands();
+    // Composer speed picker (adhoc #38): the reasoning-effort dropdown next to
+    // the mode selector, so Low/High/Ultra is a visible choice in the composer
+    // instead of being buried in the "/" popup. Both write the same
+    // kClaudeEffortSetting, so the two surfaces stay in step.
+    //
+    // agentEffortLevels() answers what the *current* composer provider accepts:
+    // Codex's live supportedReasoningEfforts for the selected model, the probed
+    // `claude --help` list for Claude Code, and defaultAgentEffortLevels() when
+    // neither is known yet.
+    QStringList agentEffortLevels() const;
+    void refreshQuickAddSpeedSelector();
+    // Probe the installed `claude` CLI for the effort levels it accepts and
+    // cache them (kClaudeEffortLevelsCacheSetting). Cheap (`claude --help`),
+    // once per app run, and a no-op while a probe is already in flight.
+    void refreshClaudeEffortLevels();
     void mentionProjectFileInQuickAdd();
     // Show the transparent public community reward pool. The pool key is not
     // available to the Worker and user wallets always remain self-custodial.
@@ -3585,6 +3635,9 @@ private:
     QString logBadgeFor(const QString &storedLine) const; // category of a line
     QString logAccentFor(const QString &storedLine) const; // badge colour of a line
     void rebuildLogFilterButtons(); // (re)build the category chip row
+    // "GIT 42" — chip text for a category, count included once it has one.
+    QString logFilterChipLabel(const QString &name, const QString &category) const;
+    void updateLogFilterChipCounts(); // refresh the counts without rebuilding
     void rebuildNetworkLogView();   // re-render the log honoring m_logFilter
     QString networkLogPath() const; // on-disk path for the persisted log
     void loadNetworkLog();          // restore log history at startup
@@ -3916,6 +3969,10 @@ private:
     // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
     // MainWindow.cpp).
     QWidget *m_relayRadar = nullptr;
+    // Echoes the mesh's serving nodes into the dish as blips (m_radarNodes).
+    // `force` overrides the repo-scoped Mirror-nodes panel's claim on the dish,
+    // for the case where that panel has no repo to show.
+    void updateRelayRadarNodes(bool force = false);
     QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
     bool m_relayProbeInFlight = false;     // guard against overlapping probes
     qint64 m_lastWsLatencySampleMs = 0;    // when the room socket last ponged
@@ -4121,6 +4178,11 @@ private:
         int repoCount = 0;
     };
     QList<NodeMenuEntry> m_nodeMenuEntries;
+    // The mesh's real serving nodes (refreshNodesTable's filtered list), echoed
+    // as blips inside the relay radar. Without this the radar only ever showed
+    // nodes while the repo-detail Mirror-nodes tab happened to be open, so it
+    // swept an empty dish from launch (adhoc #79).
+    QList<NodeMenuEntry> m_radarNodes;
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
@@ -4527,6 +4589,11 @@ private:
     // Plan mode/Auto mode, styled like the provider/model combos beside it and
     // backed by the same kClaudeAutoModeSetting as the agent composer's toggle.
     QComboBox *m_quickAddModeSelector = nullptr;
+    // Speed (reasoning effort) chooser beside it (adhoc #38): Low/Medium/High/
+    // Ultra/Max for Claude Code, or whatever the Codex app-server says the
+    // selected model supports. Backed by the same kClaudeEffortSetting the "/"
+    // popup's effort dots write, so both surfaces show one setting.
+    QComboBox *m_quickAddSpeedSelector = nullptr;
     QCheckBox *m_quickAddCreatePr = nullptr;    // request PR from quick-add agent
     // Up-pointing paper-airplane stacked above the normal send icon (adhoc #99):
     // sends the typed prompt as a follow-up message to the currently-selected
@@ -4570,6 +4637,9 @@ private:
     bool m_claudeSlashCommandsLoaded = false;
     QProcess *m_claudeSlashProbe = nullptr;
     QByteArray m_claudeSlashProbeBuf;
+    // `claude --help` probe for the CLI's supported --effort levels (adhoc #38).
+    QProcess *m_claudeEffortProbe = nullptr;
+    QByteArray m_claudeEffortProbeBuf;
     // Voice input (whisper.cpp): the mic button is hidden until whisper.cpp is
     // installed. While recording, m_voiceRecordProc captures a temp WAV which
     // m_voiceTranscribeProc transcribes — once when recording stops, and live on
@@ -6065,11 +6135,13 @@ private:
     // (>0) or 0 if it could not start. titleOverride names the run in the
     // session list and its branch when the prompt's first line would be
     // meaningless there — a genie run's opening line is MCP setup, not a task
-    // (adhoc #49).
+    // (adhoc #49). genie marks the run as a genie (adhoc #38), so it keeps its
+    // own sparkle status glyph for as long as it is working.
     int startAdHocAgentForRepo(int repoIndex, const QString &task,
                                const QString &provider, bool createPr,
                                const QString &model = QString(),
-                               const QString &titleOverride = QString());
+                               const QString &titleOverride = QString(),
+                               bool genie = false);
     // Save a clipboard image to a stable temp file so a launched agent can read it
     // by path. Used by the quick-add image paste/attach path (issue #79).
     QString saveNewAgentPromptImage(const QImage &image);
@@ -6523,7 +6595,11 @@ private:
     qint64 m_releaseDownloadsFetchedMs = 0; // throttle: last fetch kick time
     // "owner/name" -> { times served through the mainnode, clones }.
     QHash<QString, QPair<int, int>> m_repoStats;
-    QSet<int> m_syncingRepos;
+    // value: true when this sync was started quietly (a background auto-sync,
+    // not a user-driven click) — refreshRepoSyncIndicators keeps those out of
+    // the rail's Git spinner so the icon only spins for activity the user
+    // actually cares about (adhoc #81).
+    QHash<int, bool> m_syncingRepos;
     QSet<int> m_pushingRepos;
     // "owner/name" repos with an SSH mirror push in flight (pushToSshMirrorRemotes),
     // so overlapping sync completions can't stack pushes to the same gateway.
@@ -6549,7 +6625,9 @@ private:
     QHash<QString, QString> m_dmNames;          // peerId -> display name
     QHash<QString, QHash<QString, QString>> m_typing; // conversation -> peerId -> name
     QStringList m_networkLog;
-    QSet<QString> m_logFilterCategories;        // badges that currently have a chip
+    // Badges that currently have a chip -> how many buffered lines carry them,
+    // so each chip can show its own count (adhoc #64).
+    QHash<QString, int> m_logFilterCounts;
     int m_networkLogDiskLines = 0;              // lines written to the on-disk log
     QStringList m_openDms;                      // peerIds in sidebar order
     QSet<QString> m_unread;

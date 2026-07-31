@@ -1,4 +1,5 @@
 #include "ForkMeshVersion.h"
+#include "AgentPromptImages.h"
 #include "MainWindow.h"
 #include "CrashHandler.h"
 #include "MainWindowInternal.h"
@@ -469,6 +470,12 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // offline/online the moment the link changes, instead of lagging the
     // minute cadence (adhoc #41).
     initRelayReachabilityWatch();
+    // Tasks rail badge: the count is only produced by the Tasks page, which is
+    // built lazily, so before this a restart left the rail blank until someone
+    // opened it (adhoc #79). Paint the persisted count right away and re-read
+    // the board once the account session has had time to come up.
+    restoreOrganizationTaskBadge();
+    QTimer::singleShot(25000, this, &MainWindow::refreshOrganizationTaskBadge);
     // Bootstrap the flagship ForkMesh mirror shortly after launch so a freshly
     // installed client shows the project repo without manual setup.
     QTimer::singleShot(3000, this, &MainWindow::ensureFlagshipRepo);
@@ -562,6 +569,12 @@ void MainWindow::runDeferredStartup()
             openRepoDetail(firstRepo);
     }
     m_pendingRestoreRepoIndex = -1;
+
+    // Rescue screenshot attachments still sitting in the old temp directory so
+    // the transcripts that reference them keep their thumbnails past the next
+    // reboot (adhoc #66). Deferred: it touches the disk and nothing on screen
+    // needs it before the first frame.
+    AgentPromptImages::migrateLegacy();
 
     // Resume the agent sessions initAgents() re-queued after the restart, only
     // now that the first frame is up and the last repository is restored.

@@ -5831,6 +5831,36 @@ int main(int argc, char *argv[])
         legacy.remove("yolo");
         check(!AgentSession::fromJson(legacy).yolo,
               "a session JSON without the yolo key never auto-merges");
+
+        // Genie (adhoc #38) is stamped the same way: the launch attaches the MCP
+        // connector because the run was started as a genie, so the flag has to
+        // survive a restart (a resumed genie must get its tools back) and an
+        // older session file must not read as one.
+        check(!AgentSession::fromJson(legacy).genie,
+              "a session JSON without the genie key is not a genie run");
+        session.genie = true;
+        check(store.saveSession(session), "saving a genie session succeeds");
+        AgentStore genieReopened(tmp.path());
+        const QList<AgentSession> genieSessions = genieReopened.loadAllSessions();
+        check(genieSessions.size() == 1 && genieSessions.first().genie,
+              "the genie flag reloads intact after a restart");
+        // The sparkle glyph marks a genie only while it is still in flight; a
+        // finished or merged one reads exactly like every other run.
+        AgentSession live = genieSessions.first();
+        live.status = AgentStatus::Running;
+        check(live.genieInFlight(), "a running genie is drawn with the genie glyph");
+        live.status = AgentStatus::Success;
+        check(!live.genieInFlight(),
+              "a finished genie falls back to the ordinary status glyph");
+        live.status = AgentStatus::Running;
+        live.merged = true;
+        check(!live.genieInFlight(),
+              "a merged genie shows the merge glyph, not the genie one");
+        AgentSession ordinary = live;
+        ordinary.genie = false;
+        ordinary.merged = false;
+        check(!ordinary.genieInFlight(),
+              "an ordinary run never shows the genie glyph");
     }
 
     {

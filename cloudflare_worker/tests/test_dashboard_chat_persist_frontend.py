@@ -70,7 +70,7 @@ def test_dashboard_history_starts_at_five_and_reveals_five_per_scroll():
     assert "handlePlain(plain, true)" in CHAT
     assert 'if (plain.type === "chat") handlePlain(plain, true);' in CHAT
     assert 'if (plain.type !== "chat") handlePlain(plain, true);' in CHAT
-    assert "scroll up to load" in CHAT
+    assert '"scroll up"} to load ${Math.min(' in CHAT
     assert "Beginning of conversation" in CHAT
     assert "fullLog.scrollTop += Math.max(" in CHAT
     assert "function hasHiddenHistory()" in CHAT
@@ -224,7 +224,9 @@ def test_dashboard_picker_and_paste_attachments_send_without_an_extra_click():
         CHAT.index('inputEl.addEventListener("keydown"')
     ]
     assert "void sendDashboardDraft(control);" in picker
-    assert "void sendDashboardDraft(attachmentControl);" in paste
+    # Returning the upload promise keeps the paste chain ordered while still
+    # sending immediately after staging, with no second user action.
+    assert "return sendDashboardDraft(attachmentControl);" in paste
 
 
 def test_chat_mention_styles_are_available_on_all_chat_surfaces():
