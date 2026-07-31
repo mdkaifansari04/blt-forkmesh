@@ -3951,7 +3951,10 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         m_settingsLog->append(formatDayDividerHtml(date, dark));
     }
 
-    m_settingsLog->append(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+    m_settingsLog->append(formatLogLineHtml(
+        time, message, dark,
+        logPromptIconTag(m_settingsLog, storedLine) +
+            logFaviconTag(message, m_settingsLog)));
     if (lockedPosition >= 0)
         scrollBar->setValue(lockedPosition);
 }
@@ -3995,7 +3998,10 @@ void MainWindow::loadOlderNetworkLogSegment()
             html += QStringLiteral("<div>%1</div>").arg(formatDayDividerHtml(date, dark));
         }
         html += QStringLiteral("<div>%1</div>")
-                    .arg(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+                    .arg(formatLogLineHtml(
+                        time, message, dark,
+                        logPromptIconTag(m_settingsLog, storedLine) +
+                            logFaviconTag(message, m_settingsLog)));
     }
 
     QScrollBar *sb = m_settingsLog->verticalScrollBar();
