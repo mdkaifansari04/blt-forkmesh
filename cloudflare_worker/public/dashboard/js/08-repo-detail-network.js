@@ -192,8 +192,10 @@
                   ? 'data-lucide="git-pull-request"'
                   : `data-lucide="${meta.icon}"`;
               // Inbox-backed tabs get a second (hidden until filled) badge for
-              // items still sitting in the relay's inbox awaiting the owner
-              // node's next sync — see loadRepoPendingCounts.
+              // items still sitting in the relay's inbox that no online node
+              // (source of truth or an approved mirror) has merged yet — see
+              // loadRepoPendingCounts. Any online mirror drains the queue by
+              // committing submissions straight into the repo it serves.
               const pendingBadge = ["issues", "pulls", "discussions"].includes(tab)
                 ? `<span data-dashboard-repo-tab-pending="${tab}" class="hidden rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-mono text-yellow-500"></span>`
                 : "";
