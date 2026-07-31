@@ -16,7 +16,7 @@ APP = (
 def test_town_square_has_a_scene_native_progress_bulletin():
     assert 'officeTaskBulletin.name = "forkmesh-office-task-bulletin"' in SCENE
     assert "world.add(officeTaskBulletin)" in SCENE
-    assert 'registerMovableObject("office-task-bulletin"' in SCENE
+    assert "placeBillboardOnIsland(officeTaskBulletin);" in SCENE
     assert "worldTaskBulletinTexture(THREE" in SCENE
     assert "officeTaskBulletin.position.set(34, 3.1, -17.5)" in SCENE
     assert "directly beside" in SCENE
