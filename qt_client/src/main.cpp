@@ -178,8 +178,17 @@ int runSizeMapScan(const QString &requestPath)
         std::fprintf(stderr, "size-map-scan: not a directory\n");
         return 2;
     }
-    const QByteArray result =
-        forkmesh::encodeScanResult(forkmesh::scanDirectorySizes(path, options));
+    // Progress goes to stderr, one line per update, so the GUI can name the
+    // folder root is inside right now while stdout stays reserved for the tree
+    // (adhoc #112).
+    const auto progress = [](const QString &current, qint64 bytes, int files) {
+        const QByteArray line =
+            forkmesh::encodeScanProgress(current, bytes, files);
+        std::fwrite(line.constData(), 1, std::size_t(line.size()), stderr);
+        std::fflush(stderr);
+    };
+    const QByteArray result = forkmesh::encodeScanResult(
+        forkmesh::scanDirectorySizes(path, options, progress));
     std::fwrite(result.constData(), 1, std::size_t(result.size()), stdout);
     std::fflush(stdout);
     return 0;
