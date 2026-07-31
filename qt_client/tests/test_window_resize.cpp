@@ -472,6 +472,10 @@ int main(int argc, char *argv[])
             check(statusBar->findChild<QLabel *>(
                       QStringLiteral("footerGitIdentity")) != nullptr,
                   QStringLiteral("git identity sits in the status bar"));
+            // adhoc #55: the strip also names the commit the branch is on.
+            check(statusBar->findChild<QLabel *>(
+                      QStringLiteral("footerCommitInfo")) != nullptr,
+                  QStringLiteral("branch commit info sits in the status bar"));
             QLabel *appPath =
                 statusBar->findChild<QLabel *>(QStringLiteral("statusAppPath"));
             check(appPath && !appPath->text().isEmpty() &&
@@ -1187,6 +1191,27 @@ int main(int argc, char *argv[])
     const int repoIdx = window.testAddLocalRepository("me", "r", repoDir.path());
     window.testOpenRepository(repoIdx);
     QApplication::processEvents();
+
+    // adhoc #55: the status strip names the commit the open branch is on —
+    // short SHA, date, subject and author. The read is detached (it must not
+    // block the GUI thread), so pump the loop until it lands.
+    {
+        QLabel *commitInfo =
+            window.findChild<QLabel *>(QStringLiteral("footerCommitInfo"));
+        QElapsedTimer commitTimer;
+        commitTimer.start();
+        while (commitInfo && commitInfo->text().isEmpty() &&
+               commitTimer.elapsed() < 5000)
+            QApplication::processEvents(QEventLoop::AllEvents, 10);
+        const QString commitText = commitInfo ? commitInfo->text() : QString();
+        check(commitText.contains(QStringLiteral("init")) &&
+                  commitText.contains(QStringLiteral("t")) &&
+                  commitText.contains(QRegularExpression(
+                      QStringLiteral("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}"))),
+              QStringLiteral("status bar shows the open branch's commit "
+                             "(date, message, author): ") +
+                  commitText);
+    }
 
     // Repository detail is intentionally built on first navigation. Verify the
     // real PR and Agents controls only after taking that user-visible path,

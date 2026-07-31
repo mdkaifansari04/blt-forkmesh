@@ -1048,6 +1048,8 @@ private:
     static QString backgroundTaskWord(const QString &kind);
     // Refresh the footer's centered git-identity label for the open repo.
     void updateFooterGitIdentity();
+    // Refresh the footer's "commit the branch is on" label for the open repo.
+    void updateFooterCommitInfo();
     // Live CPU/memory readout + UI-stall watchdog (footer diagnostics).
     void startDiagnostics();
     void updateFooterDiagnostics();
@@ -4693,6 +4695,10 @@ private:
     // In the bottom status bar: the git identity (name <email>) configured for
     // the repo currently open in the detail view. Updated by openRepoDetail.
     QLabel *m_footerGitIdentity = nullptr;
+    // Next to it: the commit the browsed branch currently points at (date,
+    // subject and author), so the strip says where the branch sits, not just
+    // which branch is open.
+    QLabel *m_footerCommitInfo = nullptr;
     // Right of the status bar: where the running executable lives on disk, so
     // it is obvious which build/checkout the open window came from.
     QLabel *m_statusAppPath = nullptr;
