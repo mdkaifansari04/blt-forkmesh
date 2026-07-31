@@ -1,5 +1,6 @@
 #include "ClaudeTranscriptView.h"
 
+#include "AgentPromptImages.h"
 #include "ScrollJumpButtons.h"
 
 #include <QDateTime>
@@ -1332,6 +1333,8 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
 
     // Lift any "Attached image: <path>" lines out of the prose and show each as a
     // small clickable thumbnail (issue #56); the rest renders as plain text.
+    // The path is resolved through AgentPromptImages so an attachment written
+    // to the old temp directory still renders after a restart (adhoc #66).
     static const QRegularExpression imgLine(
         QStringLiteral("^Attached image:\\s*(.+?)\\s*$"));
     QStringList prose;
@@ -1339,8 +1342,10 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
     const QStringList lines = text.split(QLatin1Char('\n'));
     for (const QString &line : lines) {
         const QRegularExpressionMatch m = imgLine.match(line);
-        if (m.hasMatch() && !QPixmap(m.captured(1)).isNull())
-            images << m.captured(1);
+        const QString path =
+            m.hasMatch() ? AgentPromptImages::resolve(m.captured(1)) : QString();
+        if (!path.isEmpty() && !QPixmap(path).isNull())
+            images << path;
         else
             prose << line;
     }
