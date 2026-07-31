@@ -225,6 +225,10 @@ const WORLD_MEDIA_PLAYBACK_POLL_MS = 15 * 1000;
 const WORLD_SOCKET_PING_MS = 40 * 1000;
 // One broadcast wave per pose; the local arm still replays on every click.
 const WORLD_WAVE_COOLDOWN_MS = 2000;
+// A handshake offer is a greeting, not a standing request: it stops being
+// offerable (and stops being answerable) a couple of minutes later, so nobody
+// finds a stale hand extended from someone who has long since walked off.
+const WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000;
 // The status Worker records one sample per minute. Poll on that same cadence;
 // the board's lightweight stand texture counts down every second in between.
 const WORLD_STATUS_POLL_MS = 60 * 1000;
@@ -5324,6 +5328,11 @@ class ForkMeshWorld extends HTMLElement {
     this.worldSessionsLoadedAt = 0;
     this.settingsTab = "view";
     this.pendingKnocks = new Map();
+    // Handshake offers waiting on this visitor (peer id → offer) and the ones
+    // this visitor has extended (peer id → sent-at). Both are live-socket
+    // state only: leaving the World forgets every open greeting.
+    this.pendingHandshakes = new Map();
+    this.sentHandshakeOffers = new Map();
     this.serverPeerId = "";
     this.sessionAuthenticated = false;
     this.mirrorActionRunsByNode = new Map();
@@ -10536,6 +10545,33 @@ class ForkMeshWorld extends HTMLElement {
         this.enterNeighborhoodHome(enterHome.dataset.worldEnterHome, false);
         return;
       }
+      const handshakeOffer = event.target.closest(
+        "[data-world-handshake-offer]",
+      );
+      if (handshakeOffer) {
+        this.offerWorldHandshake(handshakeOffer.dataset.worldHandshakeOffer);
+        return;
+      }
+      const handshakeAccept = event.target.closest(
+        "[data-world-handshake-accept]",
+      );
+      if (handshakeAccept) {
+        this.answerWorldHandshake(
+          handshakeAccept.dataset.worldHandshakeAccept,
+          true,
+        );
+        return;
+      }
+      const handshakeDecline = event.target.closest(
+        "[data-world-handshake-decline]",
+      );
+      if (handshakeDecline) {
+        this.answerWorldHandshake(
+          handshakeDecline.dataset.worldHandshakeDecline,
+          false,
+        );
+        return;
+      }
       if (event.target.closest("[data-world-knock]")) {
         const target = event.target.closest("[data-world-knock]")?.dataset
           .worldKnock;
@@ -13970,6 +14006,16 @@ class ForkMeshWorld extends HTMLElement {
         name.trim().toLowerCase(),
     );
     const record = { ...(directory || {}), ...member };
+    // Handshakes are offered from this panel, so the freshest greeting state
+    // for this peer is resolved every time it renders.
+    this.pruneWorldHandshakes();
+    const peerId = String(record.peerId || "").slice(0, 96);
+    const livePeer =
+      peerId && peerId !== this.serverPeerId && record.self !== true
+        ? this.remotePlayers.get(peerId)
+        : null;
+    const handshakeOffer = this.pendingHandshakes.get(peerId);
+    const handshakeOffered = this.sentHandshakeOffers.has(peerId);
     const status = [record.statusEmoji, record.status]
       .map((value) => String(value || "").trim())
       .filter(Boolean)
@@ -14028,6 +14074,8 @@ class ForkMeshWorld extends HTMLElement {
       }
     }
     detail.dataset.openLandmark = "world-member";
+    detail.dataset.worldMemberPeer = peerId;
+    this.worldMemberDetailRecord = record;
     detail.style.setProperty("--detail-color", "#77d9ff");
     detail.innerHTML = `
       <header class="world-detail-header">
@@ -14061,6 +14109,40 @@ class ForkMeshWorld extends HTMLElement {
               : ""
           }
         </div>
+        ${
+          livePeer
+            ? `<section class="world-detail-section" data-world-handshake>
+                <h3>Handshake</h3>
+                <p>${escapeHTML(
+                  handshakeOffer
+                    ? `${handshakeOffer.name} offered you a handshake. Shaking back plays the greeting for both of you where you are standing.`
+                    : handshakeOffered
+                      ? `Handshake offered. ${name} sees it until they answer or leave the World.`
+                      : `Greet ${name} in person. Only they see the offer; the World sees the handshake itself only if they shake back, and it changes no permissions.`,
+                )}</p>
+                <div class="world-detail-actions">
+                  ${
+                    handshakeOffer
+                      ? `<button type="button" class="world-primary-action" data-world-handshake-accept="${escapeHTML(
+                          peerId,
+                        )}">Shake hands back</button>
+                        <button type="button" class="world-link-action" data-world-handshake-decline="${escapeHTML(
+                          peerId,
+                        )}">Decline</button>`
+                      : `<button type="button" class="world-primary-action" data-world-handshake-offer="${escapeHTML(
+                          peerId,
+                        )}"${
+                          handshakeOffered ? " disabled" : ""
+                        }>${
+                          handshakeOffered
+                            ? "Handshake offered"
+                            : "Offer handshake"
+                        }</button>`
+                  }
+                </div>
+              </section>`
+            : ""
+        }
         <div class="world-truth-grid">
           <section class="world-truth-block">
             <h3>Member</h3>
@@ -16981,12 +17063,22 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   sendWorldInteraction(kind, target = "") {
-    if (!["knock", "home-grant", "home-decline"].includes(kind) || !target) {
-      return;
+    if (
+      ![
+        "knock",
+        "home-grant",
+        "home-decline",
+        "handshake-offer",
+        "handshake-accept",
+        "handshake-decline",
+      ].includes(kind) ||
+      !target
+    ) {
+      return false;
     }
     if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
       this.toast("Realtime is offline; use the public lobby link instead.");
-      return;
+      return false;
     }
     try {
       this.socket.send(
@@ -16996,7 +17088,101 @@ class ForkMeshWorld extends HTMLElement {
           target: String(target).slice(0, 32),
         }),
       );
+      return true;
     } catch (_) {}
+    return false;
+  }
+
+  // A handshake is the two-person greeting: one visitor offers, the other
+  // shakes back. Only the offered peer is told about the offer, and only an
+  // accepted handshake becomes visible to the rest of the room.
+  offerWorldHandshake(peerId) {
+    const target = String(peerId || "");
+    const peer = this.remotePlayers.get(target);
+    if (!target || !peer || target === this.serverPeerId) {
+      this.toast("That visitor is no longer in the World.");
+      return;
+    }
+    // Their hand is already out: offering back is the same thing as accepting,
+    // so the two never end up holding mirrored offers of each other.
+    if (this.pendingHandshakes.has(target)) {
+      this.answerWorldHandshake(target, true);
+      return;
+    }
+    if (!this.sendWorldInteraction("handshake-offer", target)) return;
+    this.sentHandshakeOffers.set(target, Date.now());
+    this.refreshWorldMemberDetail(target);
+    this.toast(
+      `Handshake offered to ${peer.name || "that visitor"}. Nothing is shared with the rest of the World unless they shake back.`,
+    );
+  }
+
+  answerWorldHandshake(peerId, accepted) {
+    const target = String(peerId || "");
+    const offer = this.pendingHandshakes.get(target);
+    if (!target || !offer) return;
+    if (
+      !this.sendWorldInteraction(
+        accepted ? "handshake-accept" : "handshake-decline",
+        target,
+      )
+    ) {
+      return;
+    }
+    this.pendingHandshakes.delete(target);
+    this.sentHandshakeOffers.delete(target);
+    if (accepted) {
+      // The relay broadcasts the accepted pair to everyone else; this browser
+      // is excluded from its own frame, so it plays the pose itself.
+      this.playWorldHandshake(this.serverPeerId, target);
+    }
+    this.refreshWorldMemberDetail(target);
+    this.toast(
+      accepted
+        ? `You shook hands with ${offer.name}. A handshake is a greeting only: no permissions changed.`
+        : "Handshake declined. No reason was shared.",
+    );
+  }
+
+  // The scene knows this browser's own avatar by its local identity id, while
+  // the relay speaks in the peer id it assigned this socket. Translate before
+  // handing the pair over so an accepted handshake animates both halves.
+  playWorldHandshake(firstId, secondId) {
+    const own = String(this.serverPeerId || "");
+    const localId = String(this.identity?.id || "");
+    const resolve = (id) =>
+      own && String(id || "") === own ? localId : String(id || "");
+    this.world?.playHandshake?.(resolve(firstId), resolve(secondId));
+  }
+
+  // Drops offers that timed out, plus anything from a peer who has left, so a
+  // stale greeting cannot linger behind an avatar that is already gone.
+  pruneWorldHandshakes() {
+    const cutoff = Date.now() - WORLD_HANDSHAKE_TTL_MS;
+    this.pendingHandshakes.forEach((offer, id) => {
+      if (offer.at < cutoff || !this.remotePlayers.has(id)) {
+        this.pendingHandshakes.delete(id);
+      }
+    });
+    this.sentHandshakeOffers.forEach((at, id) => {
+      if (at < cutoff || !this.remotePlayers.has(id)) {
+        this.sentHandshakeOffers.delete(id);
+      }
+    });
+  }
+
+  // Re-renders the open member profile when its handshake state changed. Any
+  // other panel (or none) is left exactly as it is.
+  refreshWorldMemberDetail(peerId) {
+    const detail = this.$("[data-world-detail]");
+    if (
+      detail?.dataset.open !== "true" ||
+      detail.dataset.openLandmark !== "world-member" ||
+      detail.dataset.worldMemberPeer !== String(peerId || "")
+    ) {
+      return;
+    }
+    this.openWorldMemberDetail(this.worldMemberDetailRecord || {});
   }
 
   // A wave is the text-free "emote" gesture the relay already broadcasts: the
@@ -26378,6 +26564,8 @@ class ForkMeshWorld extends HTMLElement {
       const departed = String(message.id || "");
       peersChanged = this.remotePlayers.delete(departed);
       this.pendingKnocks.delete(departed);
+      this.pendingHandshakes.delete(departed);
+      this.sentHandshakeOffers.delete(departed);
     } else if (
       message.type === "interaction" &&
       message.kind === "knock" &&
@@ -26397,6 +26585,53 @@ class ForkMeshWorld extends HTMLElement {
         this.$("#world-detail-title")?.textContent?.includes("Neighborhood")
       ) {
         this.openLandmark("neighborhood");
+      }
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "handshake-offer" &&
+      message.from
+    ) {
+      const offererId = String(message.from);
+      const offerer = this.remotePlayers.get(offererId);
+      this.pendingHandshakes.set(offererId, {
+        id: offererId,
+        name: offerer?.name || "A visitor",
+        at: Date.now(),
+      });
+      this.toast(
+        `${offerer?.name || "A visitor"} offered you a handshake. Select their avatar to shake back or decline; a handshake is a greeting and changes nothing else.`,
+      );
+      this.refreshWorldMemberDetail(offererId);
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "handshake-decline" &&
+      message.from
+    ) {
+      const peer = this.remotePlayers.get(String(message.from));
+      this.sentHandshakeOffers.delete(String(message.from));
+      this.toast(
+        `${peer?.name || "That visitor"} did not shake hands. No reason was shared.`,
+      );
+      this.refreshWorldMemberDetail(String(message.from));
+    } else if (
+      message.type === "interaction" &&
+      message.kind === "handshake" &&
+      message.from &&
+      message.with
+    ) {
+      // An accepted handshake is public: every browser in the room animates
+      // the same pair, including the visitor who offered it.
+      const accepterId = String(message.from);
+      const offererId = String(message.with);
+      this.playWorldHandshake(accepterId, offererId);
+      if (offererId === this.serverPeerId) {
+        const accepter = this.remotePlayers.get(accepterId);
+        this.sentHandshakeOffers.delete(accepterId);
+        this.pendingHandshakes.delete(accepterId);
+        this.toast(
+          `${accepter?.name || "A visitor"} shook your hand.`,
+        );
+        this.refreshWorldMemberDetail(accepterId);
       }
     } else if (
       message.type === "interaction" &&

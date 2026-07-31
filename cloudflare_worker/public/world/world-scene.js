@@ -5432,6 +5432,15 @@ const AVATAR_WAVE_LIFT = 2.35;
 const AVATAR_WAVE_SWEEP = 0.34;
 const AVATAR_WAVE_SHAKE_RATE = 0.014;
 
+// A handshake is the two-person greeting. Both avatars reach the same right
+// arm out in front of them — forward rather than up, which is what makes the
+// pair read as one shared gesture instead of two simultaneous waves — hold
+// while the pump rides on top, and lower again.
+const AVATAR_HANDSHAKE_DURATION_MS = 2200;
+const AVATAR_HANDSHAKE_REACH = 1.5;
+const AVATAR_HANDSHAKE_PUMP = 0.26;
+const AVATAR_HANDSHAKE_PUMP_RATE = 0.012;
+
 // Unified-card border: one darker, node-light-style colour per coarse
 // account-recency bucket from the server ("active within …").
 const ACTIVITY_LIGHT_COLORS = Object.freeze({
@@ -6523,7 +6532,26 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
 // has written the arm rotations for the frame.
 function startAvatarWave(avatar, startedAt = performance.now()) {
   if (!avatar?.userData?.rightArm) return false;
+  // The wave and the handshake pose the same arm, so the newer gesture takes
+  // it over cleanly instead of the two fighting over the shoulder each frame.
+  if (avatar.userData.handshakeStartedAt) {
+    avatar.userData.handshakeStartedAt = 0;
+    avatar.userData.rightArm.rotation.x = 0;
+  }
   avatar.userData.waveStartedAt = startedAt;
+  return true;
+}
+
+// Starts (or restarts) the handshake pose on one avatar. Like the wave it
+// rides on top of whatever the avatar is otherwise doing, so two visitors can
+// shake hands while walking, sitting, or riding a swing.
+function startAvatarHandshake(avatar, startedAt = performance.now()) {
+  if (!avatar?.userData?.rightArm) return false;
+  if (avatar.userData.waveStartedAt) {
+    avatar.userData.waveStartedAt = 0;
+    avatar.userData.rightArm.rotation.z = 0;
+  }
+  avatar.userData.handshakeStartedAt = startedAt;
   return true;
 }
 
@@ -6560,6 +6588,20 @@ function poseWavingArm(arm, rest, angle) {
     rest.x + halfLength * Math.sin(angle),
     rest.y + halfLength * (1 - Math.cos(angle)),
     rest.z,
+  );
+}
+
+// The same shoulder-pinning arc as the wave, swung forward instead of out.
+// Avatar fronts face -Z, so a positive angle reaches the hand out ahead of
+// the body, where the other half of the handshake is standing.
+function poseHandshakingArm(arm, rest, angle) {
+  const halfLength = (arm.geometry?.parameters?.height || 1.25) / 2;
+  arm.rotation.z = 0;
+  arm.rotation.x = angle;
+  arm.position.set(
+    rest.x,
+    rest.y + halfLength * (1 - Math.cos(angle)),
+    rest.z - halfLength * Math.sin(angle),
   );
 }
 
@@ -6646,6 +6688,36 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
         ? 0
         : Math.sin(elapsed * AVATAR_WAVE_SHAKE_RATE) * AVATAR_WAVE_SWEEP;
       poseWavingArm(waveArm, rest, lift * (AVATAR_WAVE_LIFT + shake));
+    }
+  }
+  const handshakeStartedAt = avatar.userData.handshakeStartedAt || 0;
+  const handshakeArm = handshakeStartedAt ? avatar.userData.rightArm : null;
+  if (handshakeArm) {
+    const rest =
+      avatar.userData.rightArmRest ||
+      (avatar.userData.rightArmRest = handshakeArm.position.clone());
+    // A gesture that started between two frames is younger than the frame
+    // timestamp animating it, so the age is clamped rather than treated as a
+    // finished pose: a throttled tab must not swallow the handshake outright.
+    const elapsed = Math.max(0, time - handshakeStartedAt);
+    const progress = elapsed / AVATAR_HANDSHAKE_DURATION_MS;
+    if (!(progress >= 0) || progress >= 1) {
+      avatar.userData.handshakeStartedAt = 0;
+      handshakeArm.rotation.x = 0;
+      handshakeArm.position.copy(rest);
+    } else {
+      // The reach saturates early and stays out for most of the gesture, so
+      // the two hands meet and hold rather than passing each other mid-swing.
+      const reach = Math.min(1, Math.sin(Math.PI * progress) * 1.8);
+      const pump = reducedMotion
+        ? 0
+        : Math.sin(elapsed * AVATAR_HANDSHAKE_PUMP_RATE) *
+          AVATAR_HANDSHAKE_PUMP;
+      poseHandshakingArm(
+        handshakeArm,
+        rest,
+        reach * (AVATAR_HANDSHAKE_REACH + pump),
+      );
     }
   }
   const antenna = avatar.userData.antenna;
@@ -30903,6 +30975,41 @@ export function createWorldScene({
     });
   }
 
+  function avatarForPeerId(peerId) {
+    const id = String(peerId || "");
+    if (!id) return null;
+    return remotePlayers.get(id) || (id === identity.id ? player : null);
+  }
+
+  // An accepted handshake: both avatars start the same pose on the same frame
+  // and one glyph floats over the pair, so the greeting reads as a single
+  // shared event rather than two unrelated gestures. Either half may be
+  // missing here — a peer can be out of the room or not yet rendered — and the
+  // visible half still shakes.
+  function playHandshake(peerId, partnerId) {
+    const first = avatarForPeerId(peerId);
+    const second = avatarForPeerId(partnerId);
+    if (!first && !second) return false;
+    const startedAt = performance.now();
+    if (first) startAvatarHandshake(first, startedAt);
+    if (second) startAvatarHandshake(second, startedAt);
+    const sprite = makeLabelSprite(
+      THREE,
+      "HANDSHAKE",
+      "public greeting",
+      "#9ef7c6",
+    );
+    sprite.scale.set(1.9, 0.6, 1);
+    world.add(sprite);
+    emoteSprites.push({
+      sprite,
+      avatar: first || second,
+      startedAt,
+      duration: AVATAR_HANDSHAKE_DURATION_MS,
+    });
+    return true;
+  }
+
   function showAvatarChatBubble(avatar, text, options = {}) {
     const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 140);
     if (!avatar || !message) return false;
@@ -34037,6 +34144,7 @@ export function createWorldScene({
     applyWorldLayout,
     setLayoutEditor,
     playEmote,
+    playHandshake,
     showChatBubble,
     showMemberChatBubble,
     greetForkbot,
