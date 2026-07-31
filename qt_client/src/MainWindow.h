@@ -647,6 +647,14 @@ public:
     // lands on the range review pane in the Git view (adhoc #107).
     int testCommitWorkspacePage() const;
     QString testBranchDiffBranch() const { return m_branchDiffBranch; }
+    // Which page each half of the Git view's left column shows: 0 = the working
+    // tree's changes / commit history, 1 = the reviewed range's changed files /
+    // commits (adhoc #110). Returns -1 when that half doesn't exist yet.
+    int testGitFilesSlotPage() const;
+    int testGitHistorySlotPage() const;
+    // Click the range pane's close button, so a test can prove the left column
+    // goes back to the working tree when the review is dismissed (adhoc #110).
+    void testCloseBranchRange();
     // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
     // session the app navigated to (m_selectedAgentSessionId), so a test can prove
     // clicking the cell jumps to that branch's agent (adhoc #258).

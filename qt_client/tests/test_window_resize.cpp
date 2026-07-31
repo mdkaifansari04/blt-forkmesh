@@ -1739,6 +1739,27 @@ int main(int argc, char *argv[])
                       "range pane (adhoc #107, page = %1, branch = %2)")
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testBranchDiffBranch()));
+        // adhoc #110: the review borrows the left column's existing slots — the
+        // range's changed files where the working-tree changes sit, its commits
+        // where the history sits — instead of opening a column of its own.
+        check(window.testGitFilesSlotPage() == 1 &&
+                  window.testGitHistorySlotPage() == 1,
+              QString("the range's files and commits take over the Git view's "
+                      "left column (adhoc #110, files slot = %1, history slot "
+                      "= %2)")
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
+        // And closing the review hands both halves back to the working tree.
+        window.testCloseBranchRange();
+        check(window.testCommitWorkspacePage() == 0 &&
+                  window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("closing the range review restores the working-tree "
+                      "changes and commit history (adhoc #110, page = %1, files "
+                      "slot = %2, history slot = %3)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();

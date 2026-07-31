@@ -747,6 +747,22 @@ int MainWindow::testCommitWorkspacePage() const
 {
     return m_commitsStack ? m_commitsStack->currentIndex() : -1;
 }
+
+int MainWindow::testGitFilesSlotPage() const
+{
+    return m_gitFilesSlot ? m_gitFilesSlot->currentIndex() : -1;
+}
+
+int MainWindow::testGitHistorySlotPage() const
+{
+    return m_gitHistorySlot ? m_gitHistorySlot->currentIndex() : -1;
+}
+
+void MainWindow::testCloseBranchRange()
+{
+    if (m_branchCloseButton)
+        m_branchCloseButton->click();
+}
 #endif
 
 bool MainWindow::selectWorktreeRow(const QString &branch)
