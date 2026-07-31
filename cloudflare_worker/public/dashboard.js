@@ -1729,10 +1729,12 @@
     if (detail) {
       const status = String(account.lastEmailStatus || "");
       const kind = ACCOUNT_EMAIL_KIND_LABELS[String(account.lastEmailKind || "")] || "Email";
+      const sent = Number(account.emailSendCount || 0);
       detail.textContent = !emailedAt ? "" : kind + " · " + (
         status === "delivered" ? "Delivered to the mail provider"
           : status === "failed" ? "The mail provider rejected it"
-            : "Delivery status unknown");
+            : "Delivery status unknown") + (
+        sent > 0 ? ` · ${sent} email${sent === 1 ? "" : "s"} sent to this account` : "");
       detail.className = "mt-1 text-xs " + (
         status === "delivered" && emailedAt ? "text-emerald-400"
           : status === "failed" && emailedAt ? "text-red-400"
@@ -3164,6 +3166,38 @@
     return Array.isArray(session.nodes) && session.nodes.length === 0;
   }
 
+  function setEmailVerificationHint(message, kind = "") {
+    const hint = $("[data-email-verification-hint]");
+    if (!hint) return;
+    hint.textContent = message ? " " + message : "";
+    hint.className = kind === "bad" ? "text-red-300"
+      : kind === "good" ? "text-emerald-300"
+        : "text-amber-200/80";
+  }
+
+  // An unverified address blocks node renames and every account email, and the
+  // resend control used to be buried in the profile modal behind a password
+  // prompt. Surface it on every dashboard page until the address is confirmed.
+  function renderEmailVerificationBanner(session) {
+    const banner = $("[data-email-verification-banner]");
+    if (!banner) return;
+    const email = session?.email || "";
+    const signedIn = Boolean(session && (session.nodeName || email));
+    const show = signedIn && Boolean(email) && !session?.emailVerified;
+    banner.classList.toggle("hidden", !show);
+    banner.classList.toggle("flex", show);
+    if (!show) {
+      setEmailVerificationHint("");
+      return;
+    }
+    const message = $("[data-email-verification-message]");
+    if (message) {
+      message.textContent =
+        `${email} is not verified yet. Confirm it to rename your node and receive account email.`;
+    }
+    window.lucide?.createIcons();
+  }
+
   function renderProfile(session) {
     const name = session?.nodeName || session?.email || "My Profile";
     const nameEl = $("[data-dashboard-profile-name]");
@@ -3214,6 +3248,7 @@
     if (reconnect) {
       reconnect.classList.toggle("hidden", !nodeNeedsReconnect(session));
     }
+    renderEmailVerificationBanner(session);
     renderProfileModal(session);
     renderProfilePage(session);
     renderProfileAbout(session);
@@ -4792,40 +4827,63 @@
     }
   }
 
-  async function resendVerification(options = {}) {
-    const passwordSelector = options.passwordSelector || "[data-profile-password]";
-    const hintSelector = options.hintSelector || "[data-profile-hint]";
-    const buttonSelector = options.buttonSelector || "[data-profile-verify-email]";
-    const password = profilePassword(passwordSelector);
-    if (!password) {
-      const message = "Enter your current password first, then send a verification link.";
-      if (hintSelector === "[data-profile-hint]") {
-        setProfileHint(message, "bad");
-      } else {
-        setProfilePageHint(hintSelector, message, "bad");
-      }
-      return;
+  function verificationResendMessage(error, retryAfterMs) {
+    const minutes = Math.ceil((Number(retryAfterMs) || 0) / 60000);
+    if (error === "resend_too_soon") {
+      return "A verification email just went out. Check your inbox and spam folder, then try again in a minute.";
     }
+    if (error === "resend_limit_reached") {
+      return `Too many verification emails today. Try again in ${minutes > 60 ? `${Math.ceil(minutes / 60)} hours` : `${Math.max(1, minutes)} minutes`}, or ask an administrator to verify you by hand.`;
+    }
+    if (error === "already_verified") return "This email is already verified.";
+    if (error === "no_email") return "Add an email address to your account first.";
+    if (error === "unauthorized") return "Sign in again, then resend the verification email.";
+    return "Could not send the verification email. Try again in a moment.";
+  }
+
+  // Re-sending a confirmation link only needs the signed-in session, so it goes
+  // to /api/accounts/resend-verification rather than the password-gated profile
+  // POST. The Worker records every send on the account and pings administrators.
+  async function resendVerification(options = {}) {
+    const hintSelector = options.hintSelector || "";
+    const buttonSelector = options.buttonSelector || "[data-email-verification-resend]";
+    const buttonText = options.buttonText || "Resend verification email";
+    const showHint = (message, kind) => {
+      setEmailVerificationHint(message, kind);
+      if (!hintSelector) return;
+      if (hintSelector === "[data-profile-hint]") {
+        setProfileHint(message, kind);
+      } else {
+        setProfilePageHint(hintSelector, message, kind);
+      }
+    };
     const button = $(buttonSelector);
     if (button) { button.disabled = true; button.textContent = "Sending…"; }
     try {
-      const body = await postProfile({ resendVerification: true }, password);
-      const message = body.verificationSent
-        ? "Verification email sent."
-        : "Verification request queued for manual follow-up.";
-      if (hintSelector === "[data-profile-hint]") {
-        setProfileHint(message, "good");
-      } else {
-        setProfilePageHint(hintSelector, message, "good");
+      const response = await fetch("/api/accounts/resend-verification", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          ...(state.session?.sessionToken
+            ? { authorization: "Bearer " + state.session.sessionToken }
+            : {}),
+        },
+        body: JSON.stringify({ sessionToken: state.session?.sessionToken || "" }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) {
+        showHint(verificationResendMessage(body.error, body.retryAfterMs), "bad");
+        return;
       }
+      showHint(body.verificationSent
+        ? "Verification email sent. Check your inbox and spam folder."
+        : "Mail provider unavailable — an administrator was pinged to verify you by hand.",
+        body.verificationSent ? "good" : "");
     } catch (_) {
-      const message = "Could not send verification. Check your password and try again.";
-      if (hintSelector === "[data-profile-hint]") {
-        setProfileHint(message, "bad");
-      } else {
-        setProfilePageHint(hintSelector, message, "bad");
-      }
+      showHint(verificationResendMessage(""), "bad");
     } finally {
+      if (button) { button.disabled = false; button.textContent = buttonText; }
       renderProfileModal(state.session);
       renderProfilePage(state.session);
     }
@@ -14400,6 +14458,7 @@
       host_offline: "wifi-off",
       pending_inbox: "inbox",
       mirror_request: "radio",
+      account_email_sent: "mail-check",
     })[kind] || "bell";
   }
 
@@ -15198,8 +15257,17 @@
       return;
     }
 
-    if (event.target.closest("[data-profile-verify-email]")) {
+    if (event.target.closest("[data-email-verification-resend]")) {
       resendVerification();
+      return;
+    }
+
+    if (event.target.closest("[data-profile-verify-email]")) {
+      resendVerification({
+        hintSelector: "[data-profile-hint]",
+        buttonSelector: "[data-profile-verify-email]",
+        buttonText: "Send link",
+      });
       return;
     }
 
@@ -15226,9 +15294,9 @@
 
     if (event.target.closest("[data-profile-page-verify-email]")) {
       resendVerification({
-        passwordSelector: "[data-profile-page-password]",
         hintSelector: "[data-profile-page-hint]",
         buttonSelector: "[data-profile-page-verify-email]",
+        buttonText: "Send link",
       });
       return;
     }
@@ -16053,7 +16121,9 @@
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-save]")?.addEventListener("click", saveProfile);
-  $("[data-profile-verify-email]")?.addEventListener("click", resendVerification);
+  // No direct [data-profile-verify-email] listener: the delegated document
+  // click handler above already routes it, and a second listener would fire a
+  // duplicate send that the resend cooldown then rejects.
   $("[data-profile-rename-input]")?.addEventListener("input", () => {
     window.clearTimeout(state.nodeNameAvailability.timer);
     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);
