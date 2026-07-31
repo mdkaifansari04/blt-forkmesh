@@ -455,6 +455,11 @@ public:
     void testEnablePaidMirroring() { enablePaidMirroring(); }
     int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
     int testStackIndex() const;
+    // adhoc #115: state of the top-bar "Log in / Sign up" pill. Reported from
+    // isHidden() rather than isVisible() so it means "this widget wants to show"
+    // even in a test window that is never actually shown.
+    bool testSignInButtonVisible() const;
+    void testRefreshSignInButton() { updateSignInButton(); }
     QString testUserName() const { return m_userName; }
     QString testAccountName() const { return m_accountName; }
     QString testSavedSolanaAddress() const;
@@ -2494,18 +2499,48 @@ private:
     void onRunLog(int runId, const QString &text);
     void notifyActionEvent(const QString &title, const QString &body,
                            bool warning); // tray alert gated by the run-alert setting
+    // Defined further down with the rest of the actions state; declared here so
+    // the ping funnel below can take one.
+    struct AppNotification;
     void addNotification(const QString &title, const QString &body,
                          bool warning = false, int runId = -1);
     // Overload that records where a notification's row should jump to when its
-    // row is double-clicked on the Notifications page (issue #292).
+    // row is clicked on the Pings page (issue #292).
     void addNotification(const QString &title, const QString &body, bool warning,
                          const NotificationLink &link);
+    // Overload that also records the classification columns the Pings page
+    // shows (kind / who it came from), matching the website inbox's own fields
+    // so both sides of the page carry the same information (adhoc #77).
+    void addNotification(const QString &title, const QString &body, bool warning,
+                         const NotificationLink &link, const QString &kind,
+                         const QString &actor);
+    // The single funnel every in-app event goes through: it files the event on
+    // the Pings page and raises it in the message area above the footer log
+    // (adhoc #77).
+    void recordNotification(AppNotification item);
+    // Raise one ping in the toast pill that sits above the footer's mini-log,
+    // so new events are visible without opening a page. An error ping shows
+    // immediately (preempting a routine toast) and flashes the red app border.
+    void flashNotification(const AppNotification &item);
+    // Flash a red border around the whole window for a moment — the desktop
+    // twin of the World's world-admin-error-arrival effect (adhoc #77).
+    void flashErrorBorder();
     // Open the screen/item a notification points at (issue/PR/discussion/commit).
     void openNotificationLink(const NotificationLink &link);
     void showNotifications();
     // Notifications live in their own top-level section: a sortable table
     // (buildNotificationsSection is declared with the other section builders).
     void refreshNotificationsTable();
+    // Repaint the compact ping feed that sits above the network log.
+    void refreshLogEventList();
+    // Row-level removal on that page: a local event is simply forgotten, while
+    // a mirrored website ping is deleted from the account's inbox too.
+    void deleteSelectedNotifications();
+    void deleteWebAlert(const QString &alertId);
+    // Open whatever a Pings row points at (run, in-app screen, or the website
+    // page behind an alert about a repo this node doesn't mirror).
+    void openNotificationRow(int row);
+    static QString notificationLinkLabel(const NotificationLink &link);
     void updateNotificationButton();
     // Mirror the website's alert inbox (/api/notifications) onto that page, so
     // an alert raised on the site is readable — and openable — in the desktop
@@ -2515,6 +2550,11 @@ private:
     void markWebAlertsRead();
     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
     void updateNavRebuildButton();
+    // Show the top-bar "Log in / Sign up" pill only while this machine has no
+    // forkmesh.com user account attached (adhoc #115).
+    void updateSignInButton();
+    // Menu behind that pill: in-app password login, or the website's signup page.
+    void showSignInMenu();
     // Reposition the floating "Log" button to the live-log strip's corner.
     void positionFloatingLogButton();
     // Keep the pause-scroll toggle in the live-log strip's bottom-right corner,
@@ -3854,7 +3894,9 @@ private:
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
-    void advanceTopMessageQueue(); // show the next queued error, or dismiss if none left
+    void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
+    void queueTopMessage(const QString &text, bool error); // park one behind the current toast
+    bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
@@ -4299,12 +4341,18 @@ private:
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
-    // Pending error messages that arrived while another error toast was already
-    // counting down. A burst of quick failures (e.g. retries) would otherwise
-    // stomp each other before any could be read; queuing gives each its own
-    // full countdown once the current one finishes (see advanceTopMessageQueue).
-    QStringList m_topMessageQueue;
+    // Pending messages that arrived while another toast was already counting
+    // down. A burst (retries, or the run of events the Pings page now mirrors
+    // here) would otherwise stomp each other before any could be read; queuing
+    // gives each its own full countdown once the current one finishes (see
+    // advanceTopMessageQueue). Each entry carries its own error flag so a
+    // queued event keeps its colour.
+    QList<QPair<QString, bool>> m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
+    // Red border flashed around the whole window while an error ping arrives —
+    // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
+    QWidget *m_errorBorderOverlay = nullptr;
+    QTimer *m_errorBorderTimer = nullptr;
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
     bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
@@ -4417,6 +4465,11 @@ private:
     // Network button's badge.
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
+    // Top-bar "Log in / Sign up" pill. The first-run setup screen is gone (adhoc
+    // #115) — the app opens straight into the shell — so this is the only entry
+    // point for attaching this machine to a forkmesh.com user account. Hidden as
+    // soon as one is attached (see updateSignInButton).
+    QPushButton *m_navSignInButton = nullptr;
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
@@ -4748,6 +4801,9 @@ private:
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QTextBrowser *m_settingsLog = nullptr;
+    // Compact feed of the newest pings, shown above the network log so every
+    // new event is visible on that page too (adhoc #77).
+    QListWidget *m_logEventList = nullptr;
     QPushButton *m_logScrollLockButton = nullptr;
     bool m_logScrollLocked = false;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
@@ -4844,20 +4900,19 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
-    // "genie" (adhoc #42), stacked above "add" and "new": starts an agent wired
-    // to the website's remote MCP server so it picks its own work off the
-    // organization's shared task list instead of running a typed prompt.
+    // The "task" button (adhoc #42, relabelled from "genie" in adhoc #120),
+    // stacked above "add" and "new": starts an agent wired to the website's
+    // remote MCP server so it picks its own work off the organization's shared
+    // task list instead of running a typed prompt.
     QPushButton *m_quickAddGenieButton = nullptr;
     // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
     // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
     // can restyle it as the two selected/deselected agent detail changes which of
     // the two buttons Enter actually triggers.
     QPushButton *m_quickAddSendButton = nullptr;
-    // Small green "Enter" badge (adhoc #89), shown on the "new" send button
-    // when Enter currently activates it. The "add" (follow-up) button has no
-    // such badge — it's only ever the Enter target while the Agents tab
-    // itself is on screen, so the button's own green outline is enough.
-    QLabel *m_quickAddSendEnterBadge = nullptr;
+    // No corner badge on either send button (adhoc #120): the small green "⏎"
+    // glyph that used to ride the top-right corner of "new" while Enter targeted
+    // it is gone; the button's own green outline is the only Enter indicator.
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
@@ -4896,18 +4951,11 @@ private:
     // is submitted (same as Enter/Send) as soon as a voice dictation finishes its
     // final transcription, so you can dictate-and-go without reaching for the keyboard.
     QCheckBox *m_quickAddVoiceAutoSubmit = nullptr;
-    // "YOLO" toggle beside it (adhoc #12): when checked, every agent started while
-    // it is on merges its own branch into the default branch the moment its run
-    // finishes successfully, instead of waiting for a pull-request review. Read at
-    // launch time and stamped onto the session (AgentSession::yolo), so flipping it
-    // later never changes what an already-running agent will do.
-    QCheckBox *m_quickAddYolo = nullptr;
-    // "Task" toggle beside it (adhoc #18): when checked, every agent started while
-    // it is on also opens an organization task for the run. Read at launch time and
-    // stamped onto the session (AgentSession::orgTask), so unticking it later never
-    // orphans the task an already-running agent is going to close out. On by
-    // default, unlike YOLO: opening a task changes nothing about the run itself.
-    QCheckBox *m_quickAddTask = nullptr;
+    // The composer's "YOLO" (adhoc #12) and "Task" (adhoc #18) checkboxes are
+    // gone (adhoc #120). Runs launched from the prompt bar are stamped with what
+    // those toggles defaulted to — AgentSession::yolo false (never merge without
+    // review) and AgentSession::orgTask true (mirror the run as an organization
+    // task) — in startAgentForIssue()/startAdHocAgentForRepo().
     // Dictation can target any text box, not just the footer prompt: m_voiceTargetEdit
     // is the box the current capture writes into and m_voiceActiveButton the mic that
     // started it (so its icon swaps to red while recording). m_voiceIdlePlaceholder is
@@ -5821,7 +5869,14 @@ private:
         qint64 timestampMs = 0;
         bool warning = false;
         int runId = -1;
-        NotificationLink link; // double-click destination (issue #292)
+        NotificationLink link; // click destination (issue #292)
+        // Columns the Pings page shows for every row, named after the website
+        // inbox's own fields so a local event and a mirrored website ping read
+        // the same way (adhoc #77).
+        QString kind;   // "issue" | "chat" | "action" | … (defaults from link)
+        QString actor;  // who caused it, when known
+        QString repo;   // "owner/name", when it is about a repository
+        qint64 id = 0;  // stable row identity, so one row can be deleted
     };
     ActionStore *m_actionStore = nullptr;
     // A pool of runners so independent workflows (e.g. the Android build, the CI
@@ -5850,6 +5905,10 @@ private:
     qint64 m_mirrorActionsSummaryAttemptedAtMs = 0;
     qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
+    qint64 m_nextNotificationId = 1; // row identity for delete (adhoc #77)
+    // Website ping ids already surfaced as immediate error pings, so a poll
+    // that returns the same inbox again never re-flashes them (adhoc #77).
+    QSet<QString> m_flashedWebAlertIds;
     QPushButton *m_notificationButton = nullptr;
     QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page

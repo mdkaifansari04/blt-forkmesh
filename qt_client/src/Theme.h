@@ -37,7 +37,8 @@ inline const char *iconColorForButton(const QString &objectName, bool dark)
         // its glyph is white either way (adhoc #42).
         objectName == QStringLiteral("agentsMagicButton"))
         return "#ffffff";
-    // "genie" send button (adhoc #42): violet, to match its pill.
+    // The "task" send button (adhoc #42, the old "genie"): violet, to match its
+    // pill.
     if (objectName == QStringLiteral("quickAddGenieButton"))
         return dark ? "#c084fc" : "#7c3aed";
     if (objectName == QStringLiteral("dangerButton"))
@@ -604,12 +605,9 @@ QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,
 QPushButton#quickAddSendIcon[enterTarget="true"] {
     border: 1px solid #3fb950; background: rgba(63,185,80,0.08);
 }
-QLabel#quickAddEnterBadge {
-    background: #3fb950; color: #0d1117; border-radius: 7px;
-    font-size: 9px; font-weight: 600;
-}
-/* "genie" (adhoc #42), stacked above add/new: a violet pill so the
-   pick-your-own-work button reads as a different kind of send. */
+/* The "task" button (adhoc #42, relabelled in adhoc #120), stacked above
+   add/new: a violet pill so the pick-your-own-work button reads as a
+   different kind of send. */
 QPushButton#quickAddGenieButton {
     background: rgba(168,85,247,0.14); border: 1px solid rgba(192,132,252,0.55);
     color: #c084fc; padding: 4px; border-radius: 4px;
@@ -810,6 +808,11 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #010409; border: none;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
+/* Compact ping feed above the network log (adhoc #77). */
+#logEventList {
+    background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
+    color: #8b949e; font-family: monospace; font-size: 12px;
+}
 #logDock { background-color: #010409; border-top: 1px solid #30363d; }
 #logDock QLabel { background: transparent; }
 #composerBar { background-color: #0d1117; border-top: 1px solid #30363d; }
@@ -941,6 +944,11 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     font-family: monospace;
     font-size: 12px;
 }
+/* Compact ping feed above the network log (adhoc #77). */
+#logEventList {
+    background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
+    color: #8b949e; font-family: monospace; font-size: 12px;
+}
 #logDock { background-color: #010409; border-top: 1px solid #30363d; }
 #issueQuickAdd {
     background-color: #0d1117;
@@ -976,12 +984,9 @@ QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,
 QPushButton#quickAddSendIcon[enterTarget="true"] {
     border: 1px solid #3fb950; background: rgba(63,185,80,0.08);
 }
-QLabel#quickAddEnterBadge {
-    background: #3fb950; color: #0d1117; border-radius: 7px;
-    font-size: 9px; font-weight: 600;
-}
-/* "genie" (adhoc #42), stacked above add/new: a violet pill so the
-   pick-your-own-work button reads as a different kind of send. */
+/* The "task" button (adhoc #42, relabelled in adhoc #120), stacked above
+   add/new: a violet pill so the pick-your-own-work button reads as a
+   different kind of send. */
 QPushButton#quickAddGenieButton {
     background: rgba(168,85,247,0.14); border: 1px solid rgba(192,132,252,0.55);
     color: #c084fc; padding: 4px; border-radius: 4px;
@@ -1890,11 +1895,7 @@ QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,
 QPushButton#quickAddSendIcon[enterTarget="true"] {
     border: 1px solid #1a7f37; background: rgba(26,127,55,0.08);
 }
-QLabel#quickAddEnterBadge {
-    background: #1a7f37; color: #ffffff; border-radius: 7px;
-    font-size: 9px; font-weight: 600;
-}
-/* Light-theme twin of the violet "genie" pill (adhoc #42). */
+/* Light-theme twin of the violet "task" pill (adhoc #42). */
 QPushButton#quickAddGenieButton {
     background: rgba(124,58,237,0.10); border: 1px solid rgba(124,58,237,0.45);
     color: #7c3aed; padding: 4px; border-radius: 4px;
@@ -2076,6 +2077,11 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #ffffff; border: none;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
+/* Compact ping feed above the network log (adhoc #77). */
+#logEventList {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    color: #1f2328; font-family: monospace; font-size: 12px;
+}
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
 
@@ -2219,6 +2225,11 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     font-family: monospace;
     font-size: 12px;
 }
+/* Compact ping feed above the network log (adhoc #77). */
+#logEventList {
+    background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
+    color: #1f2328; font-family: monospace; font-size: 12px;
+}
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #issueQuickAdd {
     background-color: #ffffff;
@@ -2254,11 +2265,7 @@ QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,
 QPushButton#quickAddSendIcon[enterTarget="true"] {
     border: 1px solid #1a7f37; background: rgba(26,127,55,0.08);
 }
-QLabel#quickAddEnterBadge {
-    background: #1a7f37; color: #ffffff; border-radius: 7px;
-    font-size: 9px; font-weight: 600;
-}
-/* Light-theme twin of the violet "genie" pill (adhoc #42). */
+/* Light-theme twin of the violet "task" pill (adhoc #42). */
 QPushButton#quickAddGenieButton {
     background: rgba(124,58,237,0.10); border: 1px solid rgba(124,58,237,0.45);
     color: #7c3aed; padding: 4px; border-radius: 4px;

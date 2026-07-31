@@ -549,6 +549,11 @@ int MainWindow::testStackIndex() const
     return m_stack ? m_stack->currentIndex() : -1;
 }
 
+bool MainWindow::testSignInButtonVisible() const
+{
+    return m_navSignInButton && !m_navSignInButton->isHidden();
+}
+
 QString MainWindow::testSavedSolanaAddress() const
 {
     return QSettings().value(kSolanaSetting).toString().trimmed();
