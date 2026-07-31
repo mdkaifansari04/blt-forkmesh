@@ -13165,8 +13165,12 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                             // signal would pump the event loop under it.
                             QTimer::singleShot(
                                 0, dialog,
-                                [this, dialog, status, loadPath, sessionPass,
-                                 credentialKey, path, ip, user] {
+                                [this, guard = QPointer<QDialog>(dialog),
+                                 status, loadPath, sessionPass, credentialKey,
+                                 path, ip, user] {
+                                    QDialog *dialog = guard.data();
+                                    if (!dialog)
+                                        return;
                                     bool accepted = false;
                                     const QString entered =
                                         QInputDialog::getText(
@@ -13184,6 +13188,11 @@ void MainWindow::runHostDiskUsageBrowser(const QString &ip, const QString &user,
                                                 .arg(user, ip),
                                             QLineEdit::Password, *sessionPass,
                                             &accepted);
+                                    // getText ran a nested event loop, so the
+                                    // size map (and its status label) may be
+                                    // gone by the time it returns.
+                                    if (!guard)
+                                        return;
                                     if (!accepted || entered.isEmpty()) {
                                         status->setText(QString::fromUtf8(
                                             "The size map needs an SSH "
