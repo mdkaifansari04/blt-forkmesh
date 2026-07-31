@@ -1318,6 +1318,27 @@ int main(int argc, char *argv[])
     check(prFixMenuFound,
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code after repository navigation"));
+    // The Agents tab is built when it's first opened, and a repo no longer opens
+    // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
+    // before reading its list back. This also proves that route works for a repo
+    // with no sessions yet.
+    window.testOpenAgentsOverview();
+    // The page is laid out on its first show, so its column widths only settle
+    // once that reaches the event loop — pump until they do (bounded) rather than
+    // reading a half-laid-out header below.
+    {
+        QElapsedTimer agentLayoutTimer;
+        agentLayoutTimer.start();
+        while (agentLayoutTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            const QStringList span =
+                window.testAgentColumnLayout().section(QLatin1Char('|'), 1)
+                    .split(QLatin1Char('/'));
+            if (span.size() == 2 && span.at(1).toInt() > 0 &&
+                span.at(0).toInt() == span.at(1).toInt())
+                break;
+        }
+    }
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
@@ -1799,6 +1820,48 @@ int main(int argc, char *argv[])
         check(after.contains(QStringLiteral("feature/keep-selected")),
               QStringLiteral("the background refresh rebuilds the rows after the "
                              "click (adhoc #420)"));
+
+        // adhoc #119: merging from the review ends the review — the branch's work
+        // is in main, so leaving its diff open only shows the user something
+        // they're finished with. Re-open the range pane, then let its "Merge to
+        // main" button run: the Git view must go back to the working tree exactly
+        // as if the pane's ✕ had been clicked.
+        //
+        // This fixture's linked worktree lives inside the parent checkout, so git
+        // reports it as untracked content and the merge would refuse ("the checkout
+        // has uncommitted changes"). Exclude it locally — the tracked tree is clean,
+        // which is the state that check is really about.
+        QFile excludeFile(wtRepo.path() + QStringLiteral("/.git/info/exclude"));
+        if (excludeFile.open(QIODevice::WriteOnly | QIODevice::Append)) {
+            excludeFile.write("wt-keep/\n");
+            excludeFile.close();
+        }
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        check(window.testCommitWorkspacePage() == 2,
+              QString("re-opening the branch review lands on the range pane again "
+                      "(adhoc #119 setup, page = %1)")
+                  .arg(window.testCommitWorkspacePage()));
+        const bool mergeClicked = window.testClickBranchReviewMerge(false);
+        QApplication::processEvents();
+        const QString mainTip =
+            gitOutput(wtRepo.path(), {"log", "--oneline", "-1", "main"});
+        check(mergeClicked && window.testCommitWorkspacePage() == 0 &&
+                  window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("merging from the branch review closes it and hands the Git "
+                      "view back to the working tree (adhoc #119, clicked = %1, "
+                      "page = %2, files slot = %3, history slot = %4, main tip = "
+                      "%5)")
+                  .arg(mergeClicked ? QStringLiteral("yes") : QStringLiteral("no"))
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage())
+                  .arg(mainTip.trimmed()));
+        check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),
+              QString("the review's merge button really merged the branch (adhoc "
+                      "#119, main tip = %1)").arg(mainTip.trimmed()));
     }
 
     // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
@@ -1943,13 +2006,31 @@ int main(int argc, char *argv[])
                   QStringLiteral("picking a speed persists the effort the next run "
                                  "is launched with"));
         }
-        // The genie button is the top of the send column, above "add" and "new"
-        // (adhoc #42/#38), and the strip of session dots that used to sit above
-        // the prompt is gone (adhoc #38) — its state lives in the top bar now.
+        // The pick-your-own-work button is the top of the send column, above
+        // "add" and "new" (adhoc #42/#38), and reads "task" rather than "genie"
+        // (adhoc #120). The strip of session dots that used to sit above the
+        // prompt is gone (adhoc #38) — its state lives in the top bar now.
         auto *genieButton =
             seeded.findChild<QPushButton *>(QStringLiteral("quickAddGenieButton"));
-        check(genieButton && genieButton->isVisible(),
-              QStringLiteral("the composer offers the genie button"));
+        check(genieButton && genieButton->isVisible() &&
+                  genieButton->text() == QStringLiteral("task"),
+              QStringLiteral("the composer offers the task button"));
+        // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
+        // the composer (adhoc #120): the only Enter indicator is the green
+        // outline on whichever send button Enter activates.
+        auto *composerDock = seeded.findChild<QWidget *>(QStringLiteral("logDock"));
+        QStringList composerChecks;
+        if (composerDock) {
+            for (auto *box : composerDock->findChildren<QCheckBox *>())
+                composerChecks << box->text();
+        }
+        check(composerDock && !composerChecks.contains(QStringLiteral("YOLO")) &&
+                  !composerChecks.contains(QStringLiteral("Task")),
+              QString("the composer has no YOLO/Task toggles (%1)")
+                  .arg(composerChecks.join(QStringLiteral(", "))));
+        check(seeded.findChild<QLabel *>(QStringLiteral("quickAddEnterBadge")) ==
+                  nullptr,
+              QStringLiteral("no corner Enter badge on the send buttons"));
         check(seeded.findChild<QWidget *>(QStringLiteral("agentStatusRow")) == nullptr &&
                   seeded.findChild<QPushButton *>(
                       QStringLiteral("agentStatusMore")) == nullptr,
