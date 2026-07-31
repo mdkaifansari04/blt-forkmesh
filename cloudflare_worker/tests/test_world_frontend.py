@@ -431,7 +431,7 @@ def test_self_profile_has_follower_avatars_and_activitypub_selfie_composer():
             timer
             not in APP[
                 APP.index("  async loadWorldFediverseProfile(target = {}) {"):
-                APP.index("  applyWorldLayoutEditor() {")
+                APP.index("  applyAdminElementsAccess() {")
             ]
         )
 
@@ -2405,7 +2405,6 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert "system-capacity-database-tables" in SCENE
     assert 'systemCapacityPlatform.userData.officeFloorId = "infrastructure"' in SCENE
     assert "infrastructureFloor.add(systemCapacityPlatform);" in SCENE
-    assert 'registerMovableObject("system-capacity-platform"' not in SCENE
     assert "Math.log1p(table.rowCount)" in SCENE
     # Every table the Worker counted is drawn, empty ones included, up to the
     # same ceiling the Worker itself enumerates.
@@ -2965,14 +2964,11 @@ def test_world_guests_chat_under_the_name_their_avatar_wears():
     assert "`guest:${guestId()}`" in APP
 
 
-def test_world_updates_apply_layout_live_and_ask_before_code_refresh():
-    # Layout is data and can be applied to the active scene. A deployed code
-    # revision instead raises an explicit refresh action and never reloads the
-    # visitor out from under an active walk.
+def test_world_updates_ask_before_code_refresh():
+    # A deployed code revision raises an explicit refresh action and never
+    # reloads the visitor out from under an active walk.
     assert "const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;" in APP
     assert "startUpdateWatch()" in APP
-    assert "startWorldLayoutWatch()" in APP
-    assert "this.applyFetchedWorldLayout(layout);" in APP
     assert "async checkForWorldUpdate()" in APP
     update = APP[
         APP.index("  async checkForWorldUpdate()"):

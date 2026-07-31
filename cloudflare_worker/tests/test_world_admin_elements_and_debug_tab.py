@@ -127,7 +127,7 @@ def test_elements_tab_is_admin_only_device_local_and_wired_to_the_scene():
     # whose session resolves to non-admin gets the full world back.
     assert 'selected === "elements" && this.identity?.isAdmin !== true' in APP
     assert "this.worldTicketResolved = true;" in APP
-    restore = APP.split("  applyWorldLayoutEditor() {", 1)[1].split(
+    restore = APP.split("  applyAdminElementsAccess() {", 1)[1].split(
         "\n  adminErrorStorageKey", 1
     )[0]
     assert "elementsTab.hidden = !enabled;" in restore
