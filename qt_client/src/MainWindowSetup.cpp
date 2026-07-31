@@ -964,6 +964,16 @@ QString MainWindow::testRepoDefaultBranch() const
     return repoDefaultBranch(repoBranches());
 }
 
+QString MainWindow::testRepoActionsTabText() const
+{
+    return m_repoActionsTab ? m_repoActionsTab->text() : QString();
+}
+
+QString MainWindow::testRepoBranchesButtonText() const
+{
+    return m_branchesButton ? m_branchesButton->text() : QString();
+}
+
 bool MainWindow::testShowRepoIssuesTab()
 {
     if (!m_repoDetailStack || m_repoDetailStack->count() <= 2 ||

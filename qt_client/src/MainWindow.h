@@ -482,6 +482,14 @@ public:
     // The branch the open repo treats as its default/merge base, so a test can
     // prove it stays main even when the working tree is parked on a feature branch.
     Q_INVOKABLE QString testRepoDefaultBranch() const;
+    // The push-driven repo-detail refresh, so a test can land a repo's refs
+    // *after* the detail view opened — a fresh install's first clone — and prove
+    // the status strip and the tab counts catch up (adhoc #116).
+    Q_INVOKABLE void testRefreshOpenRepoDetail() { refreshOpenRepoDetail(); }
+    // Text of the "Actions (N)" tab badge, empty when the tab row isn't built.
+    Q_INVOKABLE QString testRepoActionsTabText() const;
+    // Text of the Code toolbar's "N branches" toggle, empty when not built.
+    Q_INVOKABLE QString testRepoBranchesButtonText() const;
     // Switch the open repo-detail view to its Issues sub-tab (stack index 2) so
     // the issues toolbar gets real geometry. Returns false if not built yet.
     Q_INVOKABLE bool testShowRepoIssuesTab();
