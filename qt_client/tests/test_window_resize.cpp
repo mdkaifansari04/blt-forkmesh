@@ -2230,15 +2230,18 @@ int main(int argc, char *argv[])
                   QStringLiteral("picking a speed persists the effort the next run "
                                  "is launched with"));
         }
-        // The pick-your-own-work button is the top of the send column, above
-        // "add" and "new" (adhoc #42/#38), and reads "task" rather than "genie"
-        // (adhoc #120). The strip of session dots that used to sit above the
-        // prompt is gone (adhoc #38) — its state lives in the top bar now.
+        // The task-list button is the top of the send column, above "add" and
+        // "new". It files the prompt in General instead of starting a genie
+        // agent (adhoc #151). The strip of session dots that used to sit above
+        // the prompt is gone (adhoc #38) — its state lives in the top bar now.
         auto *genieButton =
             seeded.findChild<QPushButton *>(QStringLiteral("quickAddGenieButton"));
         check(genieButton && genieButton->isVisible() &&
-                  genieButton->text() == QStringLiteral("task"),
-              QStringLiteral("the composer offers the task button"));
+                  genieButton->text() == QStringLiteral("task") &&
+                  genieButton->toolTip().contains(QStringLiteral("general task list")) &&
+                  !genieButton->toolTip().contains(QStringLiteral("agent"),
+                                                   Qt::CaseInsensitive),
+              QStringLiteral("the composer task button files a General task"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.
