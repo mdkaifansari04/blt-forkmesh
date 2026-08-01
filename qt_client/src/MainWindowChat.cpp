@@ -454,10 +454,15 @@ QWidget *MainWindow::buildChatPage()
     // the edge-to-edge header and remains visible beside every app view.
     auto *rail = new QWidget;
     rail->setObjectName(QStringLiteral("appNavigationRailContent"));
-    rail->setMinimumWidth(kRailItemWidth);
+    rail->setMinimumWidth(railItemWidth());
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
+    // Every rail destination is the same item now (adhoc #117): one
+    // ActivityRailButton — a 20px octicon SVG over a 10px caption at
+    // railItemWidth() x kRailItemHeight — so icons, words, hover and the
+    // checked accent line all read identically down the rail.
+    //
     // Agents heads the rail (adhoc #70) — a regular destination like the rest,
     // badged with the running-session count. Only its fleet matrix stayed on the
     // window-chrome line (see buildBreadcrumb). The contextual Code and Git
@@ -466,79 +471,37 @@ QWidget *MainWindow::buildChatPage()
     // directly above Pings there (adhoc #97).
     for (QPushButton *button :
          {m_agentsNavButton, m_reposNavButton, m_chatButton,
-          m_controlNodeNavButton, m_networkNavButton}) {
-        if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
-            railButton->setCompact(false);
-            railButton->setFixedSize(kRailItemWidth, 40);
-        }
+          m_controlNodeNavButton, m_networkNavButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
-    }
     // Repo is redundant with the contextual Code entry. Keep the hidden button
     // as section 0's QButtonGroup state carrier for programmatic navigation.
     m_repoViewButton->setParent(header);
     m_repoViewButton->hide();
     m_appNavigationRailLayout->addStretch();
 
-    // Settings and screen/dev tools form the bottom utility group. Their normal
-    // QPushButton icon handling (notably the rebuild spinner) is retained inside
-    // a tiny icon-over-caption wrapper so every rail destination is named.
-    auto addUtility = [this](QPushButton *button, const QString &caption) {
-        button->setProperty("railUtility", true);
-        button->setFixedSize(kRailItemWidth, 18);
-        auto *label = new QLabel(caption);
-        label->setObjectName(QStringLiteral("railItemLabel"));
-        label->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-        auto *host = new QWidget;
-        host->setFixedSize(kRailItemWidth, 28);
-        auto *hostLayout = new QVBoxLayout(host);
-        hostLayout->setContentsMargins(0, 0, 0, 0);
-        hostLayout->setSpacing(0);
-        hostLayout->addWidget(button);
-        hostLayout->addWidget(label, 0, Qt::AlignHCenter);
-        m_appNavigationRailLayout->addWidget(host, 0, Qt::AlignHCenter);
-    };
-    addUtility(m_settingsNavButton, QStringLiteral("Settings"));
-    // Log sits directly under Settings in the bottom utility group rather than
-    // among the primary destinations above the stretch.
-    if (auto *logRailButton = dynamic_cast<ActivityRailButton *>(m_logNavButton)) {
-        logRailButton->setCompact(false);
-        logRailButton->setFixedSize(kRailItemWidth, 40);
-    }
-    m_appNavigationRailLayout->addWidget(m_logNavButton, 0, Qt::AlignLeft);
-    addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
-    addUtility(m_navResizeButton, QStringLiteral("Resize"));
-    // Tasks sits immediately above Pings (adhoc #97). It keeps the full rail
-    // treatment rather than the tiny utility wrapper so its open-task badge
-    // (setOrganizationTaskBadge) still has room to paint.
-    if (auto *tasksRailButton =
-            dynamic_cast<ActivityRailButton *>(m_tasksNavButton)) {
-        tasksRailButton->setCompact(false);
-        tasksRailButton->setFixedSize(kRailItemWidth, 40);
-    }
-    m_appNavigationRailLayout->addWidget(m_tasksNavButton, 0, Qt::AlignLeft);
-    addUtility(m_notificationButton, QStringLiteral("Pings"));
+    // Settings and the screen/dev tools form the bottom utility group — the
+    // same full rail items as the primary destinations above the stretch, in
+    // the established order: Settings, Log, Capture, Resize, then Tasks
+    // directly above Pings (adhoc #97).
+    for (QPushButton *button :
+         {m_settingsNavButton, m_logNavButton, m_navScreenshotButton,
+          m_navResizeButton, m_tasksNavButton, m_notificationButton})
+        m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
 
-    // Pending approvals use the same corner-count language as Chat and Agents:
-    // the count rides the bell's own top-right corner (updateNotificationButton
-    // places it), not the item's right edge, so it stays inside the rail.
-    m_notificationRailBadge = new QLabel(m_notificationButton);
-    m_notificationRailBadge->setObjectName(QStringLiteral("chatUnreadBadge"));
-    m_notificationRailBadge->setAlignment(Qt::AlignCenter);
-    m_notificationRailBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_notificationRailBadge->hide();
-
-    // The account avatar is intentionally the bottom-most rail destination.
+    // The account avatar is intentionally the bottom-most rail destination. It
+    // keeps the round user picture (not an octicon), sized and captioned like
+    // every other item.
     auto *accountLabel = new QLabel(QStringLiteral("Account"));
     accountLabel->setObjectName(QStringLiteral("railItemLabel"));
     accountLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     auto *accountHost = new QWidget;
-    accountHost->setFixedSize(kRailItemWidth, 52);
+    accountHost->setFixedSize(railItemWidth(), kRailItemHeight);
     auto *accountLayout = new QVBoxLayout(accountHost);
-    accountLayout->setContentsMargins(0, 0, 0, 0);
-    accountLayout->setSpacing(0);
+    accountLayout->setContentsMargins(0, 2, 0, 0);
+    accountLayout->setSpacing(2);
     accountLayout->addWidget(m_userAvatarNavButton, 0, Qt::AlignHCenter);
     accountLayout->addWidget(accountLabel, 0, Qt::AlignHCenter);
-    m_appNavigationRailLayout->addWidget(accountHost);
+    m_appNavigationRailLayout->addWidget(accountHost, 0, Qt::AlignLeft);
     updateNotificationButton();
 
     // A short window can scroll the rail without forcing the whole app taller.
@@ -551,7 +514,7 @@ QWidget *MainWindow::buildChatPage()
     railScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     railScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     railScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
-    railScroll->setFixedWidth(kRailWidth);
+    railScroll->setFixedWidth(railWidth());
     railScroll->setMinimumHeight(0);
     railScroll->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Ignored);
 
@@ -5060,13 +5023,16 @@ QWidget *MainWindow::buildBreadcrumb()
     // The live connection indicator is now a small status dot painted over the
     // top-right avatar (created with the avatar below), not a separate text pill.
 
-    // Icon-only bell (adhoc #137): sits beside the user avatar in the top-right
-    // account cluster rather than as a labelled tab in the section nav.
-    m_notificationButton = new QPushButton;
+    // Pings bell: a regular rail destination (adhoc #117 made it the same
+    // icon-over-caption item as the rest). The pending count rides the bell's
+    // corner as a red "needs you" badge and the glyph tints amber while
+    // anything waits — both painted by ActivityRailButton, driven from
+    // updateNotificationButton().
+    auto *notificationRailButton =
+        new ActivityRailButton(QStringLiteral("bell"), QStringLiteral("Pings"));
+    notificationRailButton->setBadgeUrgent(true);
+    m_notificationButton = notificationRailButton;
     m_notificationButton->setObjectName("topNavButton");
-    m_notificationButton->setCheckable(true);
-    m_notificationButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_notificationButton, "bell", kNotificationBellIconPx);
     m_notificationButton->setToolTip("Pings");
     m_navGroup->addButton(m_notificationButton, 3); // section 3: Notifications
     connect(m_notificationButton, &QPushButton::clicked, this,
@@ -5130,9 +5096,11 @@ QWidget *MainWindow::buildBreadcrumb()
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
         advanceTopMessageQueue(); // move on to the next queued error, if any
     });
-    // A plain "x" to dismiss an error toast without copying it.
-    m_topMessageClose = new QPushButton(QString::fromUtf8("\xE2\x9C\x95")); // ✕
+    // A plain "x" to dismiss an error toast without copying it — the octicon
+    // SVG, like the Copy/Expand glyphs beside it, not a text glyph.
+    m_topMessageClose = new QPushButton;
     m_topMessageClose->setObjectName("ghostButton");
+    setOcticon(m_topMessageClose, "x", 14);
     m_topMessageClose->setCursor(Qt::PointingHandCursor);
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->setFocusPolicy(Qt::NoFocus);
@@ -5200,13 +5168,14 @@ QWidget *MainWindow::buildBreadcrumb()
     overlayLayout->addWidget(m_topMessageOverlayText);
     m_topMessageOverlay->hide();
 
-    // User avatar, pinned to the top-right-most of the bar. Clicking it opens
-    // Settings for the current user.
+    // User avatar, the rail's bottom-most Account item. Clicking it opens
+    // Settings for the current user. Sized to sit flush with the rail's 20px
+    // octicons (adhoc #117) rather than dwarfing them.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
-    m_userAvatarNavButton->setFixedSize(40, 40);
-    m_userAvatarNavButton->setIconSize(QSize(34, 34));
+    m_userAvatarNavButton->setFixedSize(26, 26);
+    m_userAvatarNavButton->setIconSize(QSize(24, 24));
     m_userAvatarNavButton->setToolTip("Settings");
     connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
         showSection(1);
@@ -5224,24 +5193,24 @@ QWidget *MainWindow::buildBreadcrumb()
     // live status text lives in the dot's tooltip, set by updateConnectionStatus.
     m_connectionDot = new QLabel(m_userAvatarNavButton);
     m_connectionDot->setObjectName("connectionDot");
-    m_connectionDot->setFixedSize(12, 12);
+    m_connectionDot->setFixedSize(10, 10);
     m_connectionDot->setAttribute(Qt::WA_TransparentForMouseEvents);
-    // Tucked one step further in than a square avatar needed: on the circular
-    // picture the corner is empty, so the dot has to sit on the rim to read as
-    // part of it.
-    m_connectionDot->move(40 - 12 - 3, 40 - 12 - 3);
+    // On the circular picture the corner is empty, so the dot sits on the rim
+    // to read as part of it.
+    m_connectionDot->move(26 - 10, 26 - 10);
     m_connectionDot->raise();
 
     // Admin crown badge, overlaid on the top-left of the same avatar (mirroring
-    // the connection dot's bottom-right corner). Hidden unless this node is an
-    // admin; updateAdminCrownBadge() keeps it in sync with m_isAdmin.
-    m_adminCrownBadge = new QLabel(QString::fromUtf8("\xF0\x9F\x91\x91"),
-                                   m_userAvatarNavButton);
+    // the connection dot's bottom-right corner). A gold-tinted SVG like every
+    // other glyph in the app (adhoc #117 retired the emoji). Hidden unless this
+    // node is an admin; updateAdminCrownBadge() keeps it in sync with m_isAdmin.
+    m_adminCrownBadge = new QLabel(m_userAvatarNavButton);
     m_adminCrownBadge->setObjectName("adminCrownBadge");
-    m_adminCrownBadge->setFixedSize(14, 14);
+    m_adminCrownBadge->setFixedSize(12, 12);
     m_adminCrownBadge->setAlignment(Qt::AlignCenter);
     m_adminCrownBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_adminCrownBadge->setStyleSheet(QStringLiteral("font-size:11px;"));
+    m_adminCrownBadge->setPixmap(tintedOcticonPixmap(
+        QStringLiteral("crown"), QColor(QStringLiteral("#e3b341")), 12));
     m_adminCrownBadge->move(-2, -2);
     m_adminCrownBadge->raise();
     m_adminCrownBadge->hide();
@@ -5300,34 +5269,24 @@ QWidget *MainWindow::buildBreadcrumb()
     // rather than waiting for the next run-state change to reach it.
     refreshActionRunStrip();
 
-    // Chat: its own top-level section (m_sectionStack index 2).
-    m_chatButton = new ActivityRailButton(QStringLiteral("comment"),
-                                          QStringLiteral("Chat"));
+    // Chat: its own top-level section (m_sectionStack index 2). The unread
+    // count rides the icon's corner as a red "needs you" badge, painted by
+    // ActivityRailButton itself (updateChatButton feeds it the tally).
+    auto *chatRailButton = new ActivityRailButton(QStringLiteral("comment"),
+                                                  QStringLiteral("Chat"));
+    chatRailButton->setBadgeUrgent(true);
+    m_chatButton = chatRailButton;
     m_chatButton->setObjectName("topNavButton");
-    m_chatButton->setCheckable(true);
-    m_chatButton->setCursor(Qt::PointingHandCursor);
     m_chatButton->setToolTip(QStringLiteral("Chat"));
-    setOcticon(m_chatButton, "comment", 16);
     m_navGroup->addButton(m_chatButton, 2); // section 2: Chat
     connect(m_chatButton, &QPushButton::clicked, this, &MainWindow::showChatView);
-    // Red unread-count badge pinned to the chat button's top-right corner. It's
-    // decorative (clicks fall through to the button); updateChatButton sizes,
-    // positions and shows/hides it from the unread tally.
-    m_chatUnreadBadge = new QLabel(m_chatButton);
-    m_chatUnreadBadge->setObjectName("chatUnreadBadge");
-    m_chatUnreadBadge->setAlignment(Qt::AlignCenter);
-    m_chatUnreadBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_chatUnreadBadge->hide();
 
-    // Settings: its own top-level section (m_sectionStack index 1). Icon-only
-    // (adhoc #137): it lives in the right-hand utility cluster next to the
-    // rebuild/restart button rather than as a labelled tab in the section nav.
-    m_settingsNavButton = new QPushButton;
+    // Settings: its own top-level section (m_sectionStack index 1), a regular
+    // rail destination styled like every other item (adhoc #117).
+    m_settingsNavButton = new ActivityRailButton(QStringLiteral("gear"),
+                                                 QStringLiteral("Settings"));
     m_settingsNavButton->setObjectName("topNavButton");
-    m_settingsNavButton->setCheckable(true);
-    m_settingsNavButton->setCursor(Qt::PointingHandCursor);
     m_settingsNavButton->setToolTip(QStringLiteral("Settings"));
-    setOcticon(m_settingsNavButton, "gear", 16);
     m_navGroup->addButton(m_settingsNavButton, 1); // section 1: Settings
     connect(m_settingsNavButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
@@ -5406,29 +5365,30 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navSignInButton, &QPushButton::clicked, this,
             &MainWindow::showSignInMenu);
 
-    // Square screenshot button beside the rebuild/restart button: drag a region
-    // anywhere on screen and it lands in the prompt as an attachment.
-    m_navScreenshotButton = new QPushButton;
+    // Screenshot rail item: drag a region anywhere on screen and it lands in
+    // the prompt as an attachment. A one-shot action, so it never stays checked.
+    m_navScreenshotButton = new ActivityRailButton(QStringLiteral("screen-full"),
+                                                   QStringLiteral("Capture"));
+    m_navScreenshotButton->setCheckable(false);
     m_navScreenshotButton->setObjectName("topNavButton");
-    m_navScreenshotButton->setCursor(Qt::PointingHandCursor);
     m_navScreenshotButton->setToolTip(
         QString::fromUtf8("Screenshot a region \xE2\x80\x94 drag a square anywhere on "
                           "screen and it's attached to your prompt"));
-    setOcticon(m_navScreenshotButton, "screen-full", 14);
     connect(m_navScreenshotButton, &QPushButton::clicked, this,
             &MainWindow::captureScreenRegion);
 
-    // Resize button beside the screenshot button: snap the window down to
+    // Resize rail item below the screenshot one: snap the window down to
     // a common minimal screen size (1280x720), so it's quick to preview how
-    // ForkMesh looks on a smaller display before filing a UI bug.
-    m_navResizeButton = new QPushButton;
+    // ForkMesh looks on a smaller display before filing a UI bug. Also a
+    // one-shot action, so it never stays checked.
+    m_navResizeButton = new ActivityRailButton(QStringLiteral("device-desktop"),
+                                               QStringLiteral("Resize"));
+    m_navResizeButton->setCheckable(false);
     m_navResizeButton->setObjectName("topNavButton");
-    m_navResizeButton->setCursor(Qt::PointingHandCursor);
     m_navResizeButton->setToolTip(
         QString::fromUtf8("Resize to 1280\xC3\x97" "720 \xE2\x80\x94 a common "
                           "minimal screen size, handy for previewing smaller "
                           "displays"));
-    setOcticon(m_navResizeButton, "device-desktop", 14);
     connect(m_navResizeButton, &QPushButton::clicked, this, [this] {
         if (isMaximized())
             showNormal();
@@ -5798,9 +5758,10 @@ void MainWindow::updateConnectionStatus()
         return;
     m_connectionStatusColor = color;
     // Only the fill + radius are set inline; the background-matching ring is
-    // themed via the #connectionDot rule in Theme.h so it works in light mode too.
+    // themed via the #connectionDot rule in Theme.h so it works in light mode
+    // too. Radius = half the dot's 10px fixed size.
     m_connectionDot->setStyleSheet(
-        QStringLiteral("background:%1; border-radius:6px;").arg(color));
+        QStringLiteral("background:%1; border-radius:5px;").arg(color));
 }
 
 void MainWindow::updateAdminCrownBadge()
@@ -7804,33 +7765,15 @@ void MainWindow::updateChatButton()
 {
     if (!m_chatButton)
         return;
-    // The glyph stays the themed default now; unread is shown by a red count
-    // badge instead of tinting the icon green.
-    setOcticon(m_chatButton, "comment", 16);
 
     int total = 0;
     for (const int n : std::as_const(m_unreadCounts))
         total += n;
 
-    if (m_chatUnreadBadge) {
-        if (total > 0) {
-            const QString text =
-                total > 99 ? QStringLiteral("99+") : QString::number(total);
-            m_chatUnreadBadge->setText(text);
-            // Size to the text (a circle for one digit, a pill for more) and pin
-            // to the button's top-right corner. The padding has to clear the 1px
-            // border on each side and leave a little slack so the centred digits
-            // aren't clipped on the sides.
-            const int w = qMax(15, m_chatUnreadBadge->fontMetrics()
-                                       .horizontalAdvance(text) + 12);
-            m_chatUnreadBadge->resize(w, 15);
-            m_chatUnreadBadge->move(qMax(0, m_chatButton->width() - w), 0);
-            m_chatUnreadBadge->show();
-            m_chatUnreadBadge->raise();
-        } else {
-            m_chatUnreadBadge->hide();
-        }
-    }
+    // The red unread count rides the icon's corner, painted by the rail item
+    // itself (setBadgeUrgent(true) at construction picks the red style).
+    if (auto *railButton = dynamic_cast<ActivityRailButton *>(m_chatButton))
+        railButton->setBadgeCount(total);
 
     m_chatButton->setToolTip(
         total > 0 ? QString::fromUtf8("Chat \xE2\x80\x94 %1 unread message%2")

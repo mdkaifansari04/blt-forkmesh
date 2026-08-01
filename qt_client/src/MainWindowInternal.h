@@ -7237,15 +7237,43 @@ private:
     Form m_form;
 };
 
-// Width of one activity-rail entry, and of the rail (scroll area) itself. Every
-// badge in the rail rides its own icon's corner rather than the item's outer
-// edge, so an item only has to be as wide as its icon plus its caption — the
-// rail no longer reserves a column of empty space for a count (adhoc #19).
-constexpr int kRailItemWidth = 46;
-constexpr int kRailWidth = kRailItemWidth + 8; // + room for the scrollbar
-// Size of the bell glyph on the rail's Alerts item — updateNotificationButton
-// needs it to park the pending-approval count on the glyph's corner.
-constexpr int kNotificationBellIconPx = 16;
+// Width and height of one activity-rail entry, and the width of the rail
+// (scroll area) itself. Every badge in the rail rides its own icon's corner
+// rather than the item's outer edge, so an item only has to be as wide as its
+// icon plus its caption — the rail no longer reserves a column of empty space
+// for a count (adhoc #19). Adhoc #117 slimmed the rail: every destination is
+// the same icon-over-caption item, so the item is exactly wide enough for the
+// longest caption and the rail only adds its own slim 6px scrollbar (see the
+// #appNavigationRail QScrollBar rule in Theme.h).
+constexpr int kRailItemWidth = 42;
+constexpr int kRailItemHeight = 44; // 20px icon + 10px caption + breathing room
+
+// The 42px floor fits every rail caption in each of main()'s preferred UI
+// families (Inter/SF/Segoe/Roboto/Noto/Ubuntu/Cantarell measure "Network",
+// the widest word, at <=40px in the 10px demi-bold caption font). A box that
+// has none of them can fall back to a wider face (DejaVu draws it at 48px),
+// so measure the app rail's actual caption set once in the real UI font and
+// widen just enough that no word is ever cut. Font is fixed at startup, so a
+// once-computed static is safe.
+inline int railItemWidth()
+{
+    static const int width = [] {
+        QFont f = QGuiApplication::font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const QFontMetrics metrics(f);
+        int widest = kRailItemWidth;
+        for (const char *caption :
+             {"Agents", "Code", "Git", "Repos", "Chat", "Control", "Network",
+              "Settings", "Log", "Capture", "Resize", "Tasks", "Pings",
+              "Account"})
+            widest = qMax(widest, metrics.horizontalAdvance(
+                                      QString::fromLatin1(caption)) + 4);
+        return widest;
+    }();
+    return width;
+}
+inline int railWidth() { return railItemWidth() + 6; } // + slim scrollbar
 
 // One entry in the app-wide activity rail: an octicon over an optional small
 // label, VS-Code style, with the selected state drawn as a 2px accent line along
@@ -7264,7 +7292,7 @@ public:
         setCursor(Qt::PointingHandCursor);
         setFlat(true);
         setAccessibleName(m_label);
-        setFixedSize(44, m_label.isEmpty() ? 40 : 48);
+        setFixedSize(railItemWidth(), m_label.isEmpty() ? 40 : kRailItemHeight);
         // The sync spinner's timer only runs while syncing *and* visible (see
         // show/hideEvent), so an idle or hidden item costs nothing.
         m_spinTimer = new QTimer(this);
@@ -7283,7 +7311,8 @@ public:
         if (m_compact == compact)
             return;
         m_compact = compact;
-        setFixedSize(44, m_compact ? 30 : (m_label.isEmpty() ? 40 : 48));
+        setFixedSize(railItemWidth(),
+                     m_compact ? 30 : (m_label.isEmpty() ? 40 : kRailItemHeight));
         update();
     }
 
@@ -7296,6 +7325,27 @@ public:
         update();
     }
     int badgeCount() const { return m_badge; }
+
+    // Red "needs you" badge (Chat unread, pending Pings) instead of the default
+    // blue count — the same corner geometry either way, so the two badge
+    // languages stay aligned across the rail.
+    void setBadgeUrgent(bool urgent)
+    {
+        if (m_badgeUrgent == urgent)
+            return;
+        m_badgeUrgent = urgent;
+        update();
+    }
+
+    // Amber icon+caption tint while something is waiting (the Pings bell) —
+    // the painted replacement for the old QSS [alert="true"] accent.
+    void setAlertTint(bool alert)
+    {
+        if (m_alert == alert)
+            return;
+        m_alert = alert;
+        update();
+    }
 
     void setSyncing(bool on)
     {
@@ -7327,8 +7377,13 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
         const bool dark = currentThemeIsDark();
         const bool lit = isChecked() || underMouse();
-        const QColor fg = dark ? QColor(lit ? "#e6edf3" : "#8b949e")
-                               : QColor(lit ? "#1f2328" : "#656d76");
+        // The alert tint outranks the resting grey but still brightens on
+        // hover/checked, mirroring the old QSS [alert="true"] rules.
+        const QColor fg =
+            m_alert ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
+                                  : (lit ? "#7d4e00" : "#9a6700"))
+                    : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
+                            : QColor(lit ? "#1f2328" : "#656d76"));
         const bool showLabel = !m_compact && !m_label.isEmpty();
 
         // Selection line along the left edge — same accent green as the repo
@@ -7349,8 +7404,12 @@ protected:
             f.setWeight(QFont::DemiBold);
             p.setFont(f);
             p.setPen(fg);
-            p.drawText(QRect(0, iconRect.bottom() + 2, width(), 14),
-                       Qt::AlignHCenter | Qt::AlignTop, m_label);
+            // Elide as a guard for wide fallback fonts; the item width is sized
+            // so the longest caption fits in every preferred UI family.
+            p.drawText(QRect(1, iconRect.bottom() + 2, width() - 2, 14),
+                       Qt::AlignHCenter | Qt::AlignTop,
+                       QFontMetrics(f).elidedText(m_label, Qt::ElideRight,
+                                                  width() - 2));
         }
 
         // Badge / sync spinner on the icon's upper-right corner.
@@ -7377,7 +7436,8 @@ protected:
                 qMax(0.0, double(iconRect.top() - 5)),
                 w, h);
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#1f6feb"));
+            p.setBrush(QColor(m_badgeUrgent ? (dark ? "#da3633" : "#cf222e")
+                                            : "#1f6feb"));
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
             p.setPen(QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, text);
@@ -7398,6 +7458,8 @@ private:
     QString m_iconName;
     QString m_label;
     int m_badge = 0;
+    bool m_badgeUrgent = false;
+    bool m_alert = false;
     bool m_syncing = false;
     bool m_compact = false;
     QTimer *m_spinTimer = nullptr;
