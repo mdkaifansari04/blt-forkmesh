@@ -673,6 +673,10 @@ void MainWindow::switchToBranch(const QString &branch)
     // setRepoBranch below reassigns m_repoBranch, which some callers pass in by
     // reference — copy before the string underneath us can change.
     const QString target = branch.trimmed();
+    // Every explicit branch navigation is a fresh opportunity to catch up with
+    // a base that may have advanced since this branch was last viewed. Internal
+    // rerenders keep the attempted marker, so a failed update still cannot loop.
+    m_branchAutoPullAttempted.clear();
     m_branchDiffPullNumber = -1; // plain branch mode
     showOverviewCommits();
     const QString base = branchCompareBase();
@@ -700,6 +704,9 @@ void MainWindow::switchToBranch(const QString &branch)
         if (m_branchDiffView)
             m_branchDiffView->setFocus();
     }
+    // Branch selection is a browser-style destination: Back/Forward must be
+    // able to return to the previous branch (or the main Git view).
+    scheduleNavRecord();
     if (!m_branchesTable || target.isEmpty()) {
         loadBranchesPanel();
         return;
@@ -804,6 +811,28 @@ QString MainWindow::testSwitchToBranchImmediateSelection(const QString &branch)
         return QString();
     const QTableWidgetItem *it = m_branchesTable->item(m_branchesTable->currentRow(), 0);
     return it ? it->text() : QString();
+}
+
+bool MainWindow::testClickBranchRowInOverview(const QString &branch)
+{
+    if (!m_branchesTable)
+        return false;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *item = m_branchesTable->item(row, 0);
+        if (!item || item->text() != branch)
+            continue;
+        // Emit the same signal a real non-action cell click produces.
+        emit m_branchesTable->cellClicked(row, 0);
+        return true;
+    }
+    return false;
+}
+
+bool MainWindow::testBranchesPanelOwnsDiffView() const
+{
+    return m_branchesTable && m_branchDiffView &&
+           m_branchesTable->parentWidget() &&
+           m_branchesTable->parentWidget()->isAncestorOf(m_branchDiffView);
 }
 
 int MainWindow::testCommitWorkspacePage() const
@@ -4125,10 +4154,13 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
                                         anchorFile, notes, viewed);
     m_branchDiffFilePaths.clear();
     m_branchDiffFileAnchors.clear();
+    QStringList rangeStatuses;
     for (const DiffFileEntry &f : files) {
         m_branchDiffFilePaths.append(f.path);
         m_branchDiffFileAnchors.append(f.anchor);
+        rangeStatuses.append(f.status);
     }
+    showRangeFilesInSourceControl(m_branchDiffFilePaths, rangeStatuses);
 
     // Handing an enormous diff to QTextEdit::setHtml() in one go parses, styles
     // and lays it all out on the GUI thread at once, freezing the window for
@@ -4270,6 +4302,61 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     if (behind == 0) {
         setRepoDetailNotice(
             QStringLiteral("%1 is already up to date with %2.").arg(branch, base));
+        return;
+    }
+
+    // Agent branches are normally checked out in their own linked worktree.
+    // Updating their ref from the main checkout is rejected by Git (and the old
+    // path either displayed that refusal or tried to check out an already-live
+    // branch). Merge the base in the checkout that actually owns the branch.
+    // Local edits remain in place when Git can merge safely; if they overlap the
+    // base update, Git refuses and we leave them untouched.
+    const QString linkedWorktree = worktreePathForBranch(dir, branch);
+    if (!linkedWorktree.isEmpty() &&
+        QDir(linkedWorktree).absolutePath() != QDir(dir).absolutePath()) {
+        QByteArray existingMerge;
+        if (runGitCapture(linkedWorktree,
+                          {"rev-parse", "-q", "--verify", "MERGE_HEAD"},
+                          &existingMerge, nullptr) && !existingMerge.trimmed().isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral("%1 already has a merge in progress in its worktree; "
+                               "finish or abort it before updating from %2.")
+                    .arg(branch, base),
+                true);
+            return;
+        }
+
+        QString worktreeError;
+        if (!runGitCapture(linkedWorktree, {"merge", "--no-edit", base}, nullptr,
+                           &worktreeError)) {
+            // Abort only a merge this call actually started. A refusal caused by
+            // overlapping uncommitted files has no MERGE_HEAD and needs no cleanup.
+            QByteArray startedMerge;
+            if (runGitCapture(linkedWorktree,
+                              {"rev-parse", "-q", "--verify", "MERGE_HEAD"},
+                              &startedMerge, nullptr) &&
+                !startedMerge.trimmed().isEmpty())
+                runGitCapture(linkedWorktree, {"merge", "--abort"}, nullptr,
+                              nullptr);
+            setRepoDetailNotice(
+                QStringLiteral("Couldn't update %1 from %2 in its worktree: %3. "
+                               "Its local changes were left untouched.")
+                    .arg(branch, base,
+                         worktreeError.trimmed().isEmpty()
+                             ? QStringLiteral("the merge was refused")
+                             : worktreeError.trimmed().left(240)),
+                true);
+            return;
+        }
+
+        logSystem(QStringLiteral("Git: merged %1 into %2 in its linked worktree.")
+                      .arg(base, branch));
+        setRepoDetailNotice(
+            QStringLiteral("Updated %1 with %2 in its worktree.").arg(branch, base));
+        m_branchesCache.clear();
+        if (m_branchDiffBranch == branch)
+            showBranchDiff(branch); // refreshed range + universal CHANGES list
+        loadWorktreesPanel();
         return;
     }
 
