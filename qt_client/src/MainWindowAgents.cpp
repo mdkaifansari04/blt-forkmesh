@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "RepoStatsStore.h"
 #include "AgentJail.h"
 #include "AgentPromptImages.h"
 #include "KebabHeaderView.h"
@@ -6220,6 +6221,9 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     config.promptPreamble = agentPromptPreamble();
+    const QString ratchetGuidance = RepoStatsStore::agentGuidance(repoGitDir());
+    if (!ratchetGuidance.isEmpty())
+        config.promptPreamble += QStringLiteral("\n\n") + ratchetGuidance;
     config.mode = QSettings()
                       .value(kAgentModeSetting,
                              QSettings().value(kClaudeAutoModeSetting, true).toBool()

@@ -8,6 +8,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "RepoStatsStore.h"
 #include "ActionStore.h"
 #include "ControlNode.h"
 #include "CurrentPageStack.h"
@@ -3263,6 +3264,11 @@ void MainWindow::updateFooterDiagnostics()
 {
     if (!m_footerDiagnostics)
         return;
+    const qint64 statsNow = QDateTime::currentMSecsSinceEpoch();
+    if (statsNow - m_repoStatsLastRefreshMs >= 60000) {
+        m_repoStatsLastRefreshMs = statsNow;
+        refreshRepositoryStats();
+    }
     double cpuPct = -1.0;
     long rssMb = -1;
 #if defined(__linux__)
@@ -3368,6 +3374,67 @@ void MainWindow::updateFooterDiagnostics()
         setOcticon(m_footerDiagnostics, QStringLiteral("device-desktop"), 14);
         m_footerDiagnostics->setText(QString());
     }
+}
+
+void MainWindow::refreshRepositoryStats()
+{
+    const QString dir = repoGitDir();
+    const bool available = !dir.isEmpty() && repoHasWorkingTree();
+    const QList<QWidget *> statsWidgets{m_repoSizeChart, m_repoLinesChart,
+                                        m_repoFilesChart, m_repoRatchetButton};
+    for (QWidget *widget : statsWidgets)
+        if (widget) widget->setVisible(available);
+    if (!available) return;
+
+    QString error;
+    const QVector<RepoStatsSample> days = RepoStatsStore::captureDaily(dir, &error);
+    if (days.isEmpty()) {
+        if (!error.isEmpty()) logSystem(QStringLiteral("Repository stats: %1").arg(error));
+        return;
+    }
+    QVector<double> sizes, lines, files;
+    double maxSize = 1, maxLines = 1, maxFiles = 1;
+    for (const RepoStatsSample &day : days) {
+        sizes << double(day.bytes); lines << double(day.lines); files << double(day.files);
+        maxSize = qMax(maxSize, double(day.bytes));
+        maxLines = qMax(maxLines, double(day.lines));
+        maxFiles = qMax(maxFiles, double(day.files));
+    }
+    const RepoStatsSample &latest = days.last();
+    static_cast<ResourceSparkline *>(m_repoSizeChart)->setSamples(
+        sizes, maxSize, SystemStats::formatBytes(latest.bytes));
+    static_cast<ResourceSparkline *>(m_repoLinesChart)->setSamples(
+        lines, maxLines, QString::number(latest.lines));
+    static_cast<ResourceSparkline *>(m_repoFilesChart)->setSamples(
+        files, maxFiles, QString::number(latest.files));
+    const QString span = days.size() == 1
+                             ? QStringLiteral("today")
+                             : QStringLiteral("%1 to %2").arg(days.first().day,
+                                                               days.last().day);
+    m_repoSizeChart->setToolTip(QStringLiteral("Tracked repository size, %1").arg(span));
+    m_repoLinesChart->setToolTip(QStringLiteral("Tracked lines of code, %1").arg(span));
+    m_repoFilesChart->setToolTip(QStringLiteral("Tracked files, %1").arg(span));
+    if (m_repoRatchetButton) {
+        QSignalBlocker blocker(m_repoRatchetButton);
+        m_repoRatchetButton->setChecked(RepoStatsStore::ratchetEnabled(dir));
+    }
+}
+
+void MainWindow::toggleRepositoryRatchet(bool enabled)
+{
+    const QString dir = repoGitDir();
+    QString error;
+    if (dir.isEmpty() || !RepoStatsStore::setRatchetEnabled(dir, enabled, &error)) {
+        if (m_repoRatchetButton) {
+            QSignalBlocker blocker(m_repoRatchetButton);
+            m_repoRatchetButton->setChecked(!enabled);
+        }
+        flashMessage(QStringLiteral("Could not update Ratchet Mode: %1").arg(error), true);
+        return;
+    }
+    flashMessage(enabled ? QStringLiteral("Ratchet Mode enabled: commits must shrink or stay flat.")
+                         : QStringLiteral("Ratchet Mode disabled."));
+    refreshRepositoryStats();
 }
 
 // A UI stall ended: record it, surface it in the system log, and reflect the
@@ -5463,6 +5530,27 @@ QWidget *MainWindow::buildBreadcrumb()
     m_memChart = memChart;
     m_diskChart = diskChart;
 
+    // Thirty-day repository trends are deliberately a little larger than the
+    // live host-resource squares: each point represents a day, not a second.
+    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr, 44, 30);
+    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr, 44, 30);
+    auto *repoFilesChart = new ResourceSparkline(QStringLiteral("FILES"), nullptr, 44, 30);
+    repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
+    repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
+    repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
+    m_repoSizeChart = repoSizeChart;
+    m_repoLinesChart = repoLinesChart;
+    m_repoFilesChart = repoFilesChart;
+    m_repoRatchetButton = new QToolButton;
+    m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
+    m_repoRatchetButton->setText(QStringLiteral("Ratchet mode"));
+    m_repoRatchetButton->setCheckable(true);
+    m_repoRatchetButton->setToolTip(
+        QStringLiteral("Keep each commit at or below today's tracked size and require "
+                       "at least as many removed lines as added lines."));
+    connect(m_repoRatchetButton, &QToolButton::toggled, this,
+            &MainWindow::toggleRepositoryRatchet);
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -5514,6 +5602,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
+    chromeRow->addWidget(repoSizeChart);
+    chromeRow->addWidget(repoLinesChart);
+    chromeRow->addWidget(repoFilesChart);
+    chromeRow->addWidget(m_repoRatchetButton);
     // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);

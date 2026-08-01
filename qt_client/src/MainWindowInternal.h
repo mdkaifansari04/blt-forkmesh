@@ -1209,11 +1209,12 @@ private:
 class ResourceSparkline : public QWidget
 {
 public:
-    explicit ResourceSparkline(const QString &label, QWidget *parent = nullptr)
-        : QWidget(parent), m_label(label)
+    explicit ResourceSparkline(const QString &label, QWidget *parent = nullptr,
+                               int side = 34, int maxPoints = 60)
+        : QWidget(parent), m_label(label), m_maxPoints(qMax(2, maxPoints))
     {
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(kSide, kSide); // a little button-sized square
+        setFixedSize(side, side); // a little button-sized square
         setCursor(Qt::PointingHandCursor);
     }
 
@@ -1226,8 +1227,17 @@ public:
         m_max = maxValue > 0 ? maxValue : 100.0;
         m_value = valueText;
         m_history.append(value);
-        while (m_history.size() > kMaxPoints)
+        while (m_history.size() > m_maxPoints)
             m_history.removeFirst();
+        update();
+    }
+
+    void setSamples(const QVector<double> &values, double maxValue,
+                    const QString &valueText)
+    {
+        m_max = maxValue > 0 ? maxValue : 1.0;
+        m_value = valueText;
+        m_history = values.mid(qMax(0, values.size() - m_maxPoints));
         update();
     }
 
@@ -1265,7 +1275,7 @@ protected:
             p.save();
             p.setClipPath(cardPath);
             const QColor line = gaugeColor(m_history.last() / m_max * 100.0);
-            const double step = area.width() / double(kMaxPoints - 1);
+            const double step = area.width() / double(m_maxPoints - 1);
             const int n = m_history.size();
             QPolygonF curve;
             for (int i = 0; i < n; ++i) {
@@ -1334,12 +1344,11 @@ private:
         return QColor("#3fb950");     // green: light load
     }
 
-    static constexpr int kSide = 34;      // button-sized square (w == h)
-    static constexpr int kMaxPoints = 60; // ~1 minute of history at 1 Hz
     QString m_label;
     QString m_value;
     double m_max = 100.0;
     QVector<double> m_history;
+    int m_maxPoints = 60;
 };
 
 // A row-sized memory trend square for one process in the "High memory usage"
