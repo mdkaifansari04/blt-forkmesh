@@ -2953,7 +2953,8 @@ private:
     bool selectBranchRow(const QString &branch);
     // Explain that a branch link pointed at a branch this repository doesn't have.
     void reportBranchNotFound(const QString &branch);
-    void showWorktreeDiff(const QString &branch, const QString &worktreePath);
+    void updateWorktreeSelection(const QString &branch,
+                                 const QString &worktreePath);
     // Merge a worktree's branch into the default branch. On success the now-merged
     // worktree and its branch are removed (the work is preserved in the merge
     // commit); pass its folder so it can be. deleteAgent=true additionally tears
@@ -5351,9 +5352,6 @@ private:
     QPushButton *m_repoWorktreesTab = nullptr; // handle for the Worktrees (N) badge
     QTableWidget *m_worktreesTable = nullptr;
     QLabel *m_worktreesSummary = nullptr;
-    QTextBrowser *m_worktreeDiffView = nullptr;
-    QListWidget *m_worktreeFileList = nullptr;
-    QLabel *m_worktreeFilesSummary = nullptr;
     QLabel *m_worktreeBranchLabel = nullptr; // shows which branch the open detail is on
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
     QPushButton *m_worktreeMergeDeleteAgentButton = nullptr; // merge, then delete its agent too
