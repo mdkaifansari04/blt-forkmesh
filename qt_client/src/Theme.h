@@ -307,8 +307,8 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #appNavigationRail, #appNavigationRailContent {
     background-color: #0d1117; border-right: 1px solid #30363d;
 }
-/* The rail reserves exactly this much width beside its items (kRailWidth =
-   kRailItemWidth + 6), so keep the slim bar in lockstep with that constant. */
+/* The rail reserves exactly this much width beside its items (railWidth() =
+   railItemWidth() + 6), so keep the slim bar in lockstep with that helper. */
 #appNavigationRail QScrollBar:vertical { width: 6px; }
 #appNavigationRail QScrollBar::handle:vertical { border-radius: 3px; }
 QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
@@ -1567,7 +1567,7 @@ QPushButton#repoAction::menu-indicator { width: 0; }
 #appNavigationRail, #appNavigationRailContent {
     background-color: #ffffff; border-right: 1px solid #d0d7de;
 }
-/* Slim rail scrollbar, matching kRailWidth = kRailItemWidth + 6. */
+/* Slim rail scrollbar, matching railWidth() = railItemWidth() + 6. */
 #appNavigationRail QScrollBar:vertical { width: 6px; }
 #appNavigationRail QScrollBar::handle:vertical { border-radius: 3px; }
 QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
