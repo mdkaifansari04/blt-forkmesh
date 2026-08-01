@@ -9695,7 +9695,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-29-full-catalog-28"
+WORLD_QA_DECK_REVISION = "2026-08-01-globally-unreviewed-29"
 # The physical desk paints only five cards per page, but its catalog must
 # include every bounded source: built-ins, dynamically routed QA items, and
 # the organization's encrypted QA-ready tasks. Organization tasks are capped
@@ -10293,6 +10293,29 @@ async def world_qa_handler(env, request):
                 deck_keys.add(key)
     deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
+
+    def include_private_task_reviews(global_reviews, global_stats):
+        """Fold each task's authoritative first QA result into the snapshot."""
+        for key, task in private_tasks.items():
+            reviewed_at = max(
+                0, int(task["row"].get("qa_reviewed_at") or 0))
+            if not reviewed_at:
+                continue
+            verdict = {
+                "passed": "pass",
+                "failed": "fail",
+                "unknown": "unsure",
+            }.get(str(task["row"].get("qa_status") or ""))
+            if not verdict:
+                continue
+            counts = {"pass": 0, "fail": 0, "unsure": 0, "total": 1}
+            counts[verdict] = 1
+            global_reviews[key] = counts
+            global_stats[verdict] += 1
+            global_stats["reviewed"] += 1
+        global_stats["total"] = len(deck_cards)
+
+    include_private_task_reviews(global_reviews, global_stats)
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
         if item_key not in deck_keys:
@@ -10473,6 +10496,7 @@ async def world_qa_handler(env, request):
                     account_bi, item_key, verdict, int(Date.now()),
                 )
         global_reviews, global_stats = await global_qa_snapshot()
+        include_private_task_reviews(global_reviews, global_stats)
     rows = await d1_all(
         env,
         "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
@@ -10544,6 +10568,9 @@ async def world_qa_handler(env, request):
                 "howToTest": how_to_test,
                 "global": global_reviews.get(
                     key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0}),
+                "reviewedByAnyone": (
+                    int(global_reviews.get(key, {}).get("total") or 0) > 0
+                ),
                 **reviews.get(key, {}),
                 **({
                     "organizationTask": True,

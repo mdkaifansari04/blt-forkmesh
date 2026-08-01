@@ -5560,6 +5560,7 @@ class ForkMeshWorld extends HTMLElement {
     this.qaDeck = {
       authenticated: false,
       cards: [],
+      stack: [],
       reviews: {},
       stats: { pass: 0, fail: 0, unsure: 0, reviewed: 0, total: 0 },
     };
@@ -7382,6 +7383,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   applyQaDeck(payload = {}, { afterKey = "" } = {}) {
+    const previousStackIndex = afterKey
+      ? (Array.isArray(this.qaDeck?.stack) ? this.qaDeck.stack : [])
+          .findIndex((card) => card?.key === afterKey)
+      : -1;
     const reviews =
       payload?.reviews && typeof payload.reviews === "object"
         ? payload.reviews
@@ -7415,6 +7420,8 @@ class ForkMeshWorld extends HTMLElement {
               howToTest,
               verdict,
               global,
+              reviewedByAnyone:
+                card?.reviewedByAnyone === true || global.total > 0,
               organizationTask: card?.organizationTask === true,
               department: sanitizePresenceText(
                 card?.department, "", 64),
@@ -7439,7 +7446,8 @@ class ForkMeshWorld extends HTMLElement {
           : null;
       })
       .filter(Boolean)
-      .slice(0, 64);
+      .slice(0, 4096);
+    const stack = cards.filter((card) => !card.reviewedByAnyone);
     const counts = { pass: 0, fail: 0, unsure: 0 };
     cards.forEach((card) => {
       if (card.verdict) counts[card.verdict] += 1;
@@ -7451,6 +7459,7 @@ class ForkMeshWorld extends HTMLElement {
         payload?.requiredTeam, "quality-assurance", 64),
       revision: sanitizePresenceText(payload?.revision, "", 80),
       cards,
+      stack,
       reviews,
       globalReviews:
         payload?.globalReviews && typeof payload.globalReviews === "object"
@@ -7468,20 +7477,14 @@ class ForkMeshWorld extends HTMLElement {
       stats: {
         ...counts,
         reviewed: cards.filter((card) => card.verdict).length,
-        total: cards.length,
+        total: stack.length,
       },
     };
-    const previousIndex = cards.findIndex((card) => card.key === afterKey);
-    const unreviewed = cards
-      .map((card, index) => ({ card, index }))
-      .filter(({ card }) => !card.verdict);
-    if (unreviewed.length) {
+    if (stack.length) {
       this.qaCardIndex =
-        unreviewed.find(({ index }) => index > previousIndex)?.index ??
-        unreviewed[0].index;
-    } else if (cards.length) {
-      this.qaCardIndex =
-        previousIndex >= 0 ? (previousIndex + 1) % cards.length : 0;
+        previousStackIndex >= 0
+          ? Math.min(previousStackIndex, stack.length - 1)
+          : 0;
     } else {
       this.qaCardIndex = 0;
     }
@@ -7495,7 +7498,12 @@ class ForkMeshWorld extends HTMLElement {
     return this.qaDeck.cards.filter(
       (card) =>
         (Number(card?.global?.[verdict]) || 0) > 0 ||
-        String(card?.verdict || "") === verdict,
+        String(card?.verdict || "") === verdict ||
+        (card?.organizationTask === true &&
+          Number(card?.lastReviewedAt) > 0 &&
+          ({ passed: "pass", failed: "fail", unknown: "unsure" }[
+            String(card?.taskQaStatus || "")
+          ] === verdict)),
     );
   }
 
@@ -7527,7 +7535,7 @@ class ForkMeshWorld extends HTMLElement {
               (card) => card.key === this.qaDeckSelectedKey,
             )
           : null) ||
-        this.qaDeck.cards[this.qaCardIndex] ||
+        this.qaDeck.stack[this.qaCardIndex] ||
         null,
       currentIndex: this.qaCardIndex,
       stats: this.qaDeck.stats,
@@ -7557,7 +7565,6 @@ class ForkMeshWorld extends HTMLElement {
       const index = this.qaDeck.cards.findIndex((card) => card.key === key);
       if (index < 0) return;
       this.qaDeckSelectedKey = key;
-      this.qaCardIndex = index;
       this.qaDeckView = "detail";
       this.renderQaDeck();
       return;
@@ -7803,7 +7810,12 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
-    const card = this.qaDeck.cards[this.qaCardIndex];
+    const card =
+      this.qaDeckView === "detail" && this.qaDeckSelectedKey
+        ? this.qaDeck.cards.find(
+            (entry) => entry.key === this.qaDeckSelectedKey,
+          )
+        : this.qaDeck.stack[this.qaCardIndex];
     if (!card) return false;
     if (!this.qaDeck.authenticated || !validWorldSession()) {
       this.toast("Sign in to save QA results to your account.");
@@ -7868,7 +7880,7 @@ class ForkMeshWorld extends HTMLElement {
         );
       }
       await this.refreshQaDeck({ quiet: true });
-      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      const index = this.qaDeck.stack.findIndex((card) => card.key === key);
       if (index < 0 || !this.qaDeck.authorized) {
         this.toast(
           "Join the Quality Assurance team to review completed tasks.",
