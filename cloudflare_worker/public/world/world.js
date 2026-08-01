@@ -5691,6 +5691,7 @@ class ForkMeshWorld extends HTMLElement {
     this.eventsTimer = 0;
     this.instanceDirectoryTimer = 0;
     this.instanceCelebrationTimer = 0;
+    this.installCelebrationTimer = 0;
     this.notificationsTimer = 0;
     this.adminErrorTimer = 0;
     this.adminErrorLatestId = 0;
@@ -9364,6 +9365,19 @@ class ForkMeshWorld extends HTMLElement {
       this.world?.updateFederatedInstances?.(instances);
       this.celebrateRecentInstance(instances);
     } catch (_) {}
+    try {
+      const payload = await this.fetchJSON(
+        `/api/world/installs?refresh=${Math.floor(Date.now() / 30_000)}`,
+        {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        },
+      );
+      this.celebrateRecentInstall(
+        Array.isArray(payload?.installs) ? payload.installs : [],
+      );
+    } catch (_) {}
   }
 
   startInstanceDirectoryPolling() {
@@ -9439,6 +9453,79 @@ class ForkMeshWorld extends HTMLElement {
     this.instanceCelebrationTimer = window.setTimeout(() => {
       layer.remove();
       this.instanceCelebrationTimer = 0;
+    }, remaining);
+  }
+
+  // A fresh desktop install — the one-line installer's final successful
+  // "done" report, surfaced through /api/world/installs — gets the same
+  // ten-minute firework treatment as a federated instance joining. The
+  // world-instance-* classes are reused so both celebrations share one look.
+  celebrateRecentInstall(installs = []) {
+    const now = Date.now();
+    const celebrationMs = 10 * 60 * 1000;
+    const newest = [...(Array.isArray(installs) ? installs : [])]
+      .filter(
+        (install) =>
+          install?.installedAt > 0 &&
+          now >= install.installedAt &&
+          now - install.installedAt < celebrationMs,
+      )
+      .sort((left, right) => right.installedAt - left.installedAt)[0];
+    if (!newest) return;
+    // The federated-instance celebration owns the overlay when both fire.
+    if (this.$("[data-world-instance-celebration]")) return;
+    const existing = this.$("[data-world-install-celebration]");
+    if (existing?.dataset.installId === newest.id) return;
+    existing?.remove();
+    window.clearTimeout(this.installCelebrationTimer);
+    const remaining = Math.max(
+      1000,
+      celebrationMs - (now - Number(newest.installedAt)),
+    );
+    const layer = document.createElement("section");
+    layer.className = "world-instance-celebration";
+    layer.dataset.worldInstallCelebration = "true";
+    layer.dataset.installId = newest.id;
+    layer.setAttribute("aria-label", "New ForkMesh desktop install celebration");
+    const fireworks = document.createElement("div");
+    fireworks.className = "world-instance-fireworks";
+    fireworks.setAttribute("aria-hidden", "true");
+    if (
+      !window.matchMedia("(prefers-reduced-motion: reduce)").matches
+    ) {
+      for (let index = 0; index < 54; index += 1) {
+        const particle = document.createElement("i");
+        particle.style.setProperty("--x", `${5 + Math.random() * 90}%`);
+        particle.style.setProperty("--y", `${5 + Math.random() * 62}%`);
+        particle.style.setProperty("--delay", `${Math.random() * -4}s`);
+        particle.style.setProperty("--duration", `${1.8 + Math.random() * 2.7}s`);
+        particle.style.setProperty("--hue", `${Math.floor(Math.random() * 360)}`);
+        fireworks.append(particle);
+      }
+    }
+    const announcement = document.createElement("div");
+    announcement.className = "world-instance-announcement";
+    const eyebrow = document.createElement("p");
+    eyebrow.textContent = "NEW FORKMESH DESKTOP · NODE INSTALLED";
+    const title = document.createElement("strong");
+    const platform = [newest.os, newest.arch].filter(Boolean).join(" · ");
+    title.textContent = platform || "A new ForkMesh desktop";
+    const copy = document.createElement("span");
+    copy.textContent =
+      "Someone just installed the ForkMesh desktop with the one-line installer. Fireworks run for ten minutes.";
+    const link = document.createElement("a");
+    link.href = "/desktop.html";
+    link.textContent = "Get the desktop app →";
+    announcement.append(eyebrow, title, copy, link);
+    layer.append(fireworks, announcement);
+    this.append(layer);
+    this.toast("🎆 A new ForkMesh desktop was just installed.", {
+      priority: 2,
+      lockMs: 8000,
+    });
+    this.installCelebrationTimer = window.setTimeout(() => {
+      layer.remove();
+      this.installCelebrationTimer = 0;
     }, remaining);
   }
 
@@ -28681,6 +28768,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.adminErrorTimer);
     window.clearTimeout(this.adminErrorEffectTimer);
     window.clearTimeout(this.instanceCelebrationTimer);
+    window.clearTimeout(this.installCelebrationTimer);
     window.clearInterval(this.mediaTimer);
     window.clearInterval(this.broadcastTimer);
     window.clearInterval(this.worldTicketTimer);
