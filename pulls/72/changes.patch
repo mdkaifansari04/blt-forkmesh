@@ -1,0 +1,58 @@
+diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
+index ddb7bd11a..e5c4797f5 100644
+--- a/qt_client/src/MainWindow.cpp
++++ b/qt_client/src/MainWindow.cpp
+@@ -60,18 +60,23 @@ MainWindow::~MainWindow()
+     if (m_worldSpeechBridge)
+         m_worldSpeechBridge->stop();
+ 
+-    // Deployment children may still hold a session API token or Tunnel
+-    // connector token in their private process environment. Stop all of them
+-    // before QObject teardown, drop the retained QProcess environments, and
+-    // overwrite our short-lived redaction copy. No token is persisted in
+-    // settings or argv.
+-    for (QProcess *process :
+-         {m_cloudflareBootstrapProcess,
+-          m_cloudflareTunnelBootstrapProcess,
+-          m_cloudflaredInstallProcess, m_cloudflaredProcess,
+-          m_mirrorGatewayProcess}) {
++    // QProcess::~QProcess() waits for a running child and can synchronously
++    // emit finished() while QObject is deleting MainWindow's children. At that
++    // point MainWindow's QWidget state has already been torn down, so a
++    // finished handler which repaints a view can dereference invalid state.
++    // Disconnect every child process first, then settle it while this window is
++    // still fully alive. This also covers one-shot git and setup processes, not
++    // only the long-lived deployment children below.
++    QList<QPointer<QProcess>> processes;
++    const QList<QProcess *> childProcesses = findChildren<QProcess *>();
++    processes.reserve(childProcesses.size());
++    for (QProcess *process : childProcesses)
++        processes.append(process);
++    for (const QPointer<QProcess> &guardedProcess : std::as_const(processes)) {
++        QProcess *process = guardedProcess.data();
+         if (!process)
+             continue;
++        QObject::disconnect(process, nullptr, nullptr, nullptr);
+         if (process->state() != QProcess::NotRunning) {
+             process->terminate();
+             if (!process->waitForFinished(2000)) {
+@@ -79,6 +84,19 @@ MainWindow::~MainWindow()
+                 process->waitForFinished(1000);
+             }
+         }
++    }
++
++    // Deployment children may hold a session API token or Tunnel connector
++    // token in their private process environment. Drop the retained
++    // environments and overwrite our short-lived redaction copy. No token is
++    // persisted in settings or argv.
++    for (QProcess *process :
++         {m_cloudflareBootstrapProcess,
++          m_cloudflareTunnelBootstrapProcess,
++          m_cloudflaredInstallProcess, m_cloudflaredProcess,
++          m_mirrorGatewayProcess}) {
++        if (!process)
++            continue;
+         process->setProcessEnvironment(QProcessEnvironment());
+     }
+     m_cloudflareActiveSecret.fill(QChar(u'\0'));
