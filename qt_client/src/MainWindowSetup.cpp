@@ -946,10 +946,8 @@ bool MainWindow::testBranchAttachmentHasIcon(const QString &branch) const
         return false;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
         QTableWidgetItem *name = m_branchesTable->item(row, 0);
-        if (name && name->text() == branch) {
-            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
-                return !attach->icon().isNull();
-        }
+        if (name && name->text() == branch)
+            return !name->icon().isNull();
     }
     return false;
 }
