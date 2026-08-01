@@ -1609,9 +1609,19 @@ private:
     // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
     // ForkMesh-managed SSH key, boot the instance, then hand off to the normal
     // runHostInstall flow which installs ForkMesh and auto-links the node to
-    // this account. The API key lives in memory only for the duration of the
-    // run; it is never written to QSettings or argv.
+    // this account. The API key never travels in argv; once Vultr accepts it,
+    // rememberVultrApiKey stores it so no later run has to ask for it again.
     void createVultrMirrorFromForm();
+    // Persist a Vultr API key Vultr itself has just accepted, in the two places
+    // this app reads provisioning credentials from: the canonical
+    // VULTR_API_KEY device variable (Settings > Variables / Secrets, injected
+    // into every action run) and cloudflare_worker/.env.production beside the
+    // Cloudflare deploy credentials. Returns where it was written — empty when
+    // the key is unusable or already stored everywhere — and reports a failed
+    // file write through *error without undoing the variable that succeeded
+    // (adhoc #127).
+    QStringList rememberVultrApiKey(const QString &apiKey,
+                                    QString *error = nullptr);
     void vultrApiCall(const QString &apiKey, const QString &path,
                       const QByteArray &method, const QJsonObject &body,
                       std::function<void(QJsonObject, QString)> onDone);
@@ -4678,9 +4688,12 @@ private:
     QProcess *m_hostAgentInstallProcess = nullptr; // Claude/Codex CLI install
     QProcess *m_hostDiskProcess = nullptr;    // running ssh size-map read, if any
     // One-click Vultr mirror provisioning (adhoc #315). The API key is read
-    // from the field (or a stored VULTR_API_KEY device variable) per run and
-    // deliberately has no persistent member.
+    // from the field (or a stored VULTR_API_KEY device variable) per run.
     QLineEdit *m_vultrApiKeyEdit = nullptr;
+    // Last key rememberVultrApiKey stored successfully, so a provision run's
+    // dozen API calls save it once instead of rewriting the variable store and
+    // .env.production behind every one of them (adhoc #127).
+    QString m_vultrRememberedKey;
     QLineEdit *m_vultrNameEdit = nullptr;
     // Opt-in (default on): after ForkMesh installs, also install the Claude
     // Code and Codex CLIs on the new mirror and copy this device's provider
