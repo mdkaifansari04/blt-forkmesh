@@ -486,6 +486,9 @@ constexpr int kMirrorSyncJitterPercent = 15;
 constexpr auto kActionNodeLabelsSetting = "actions/nodeLabels";
 // Defined further down; used early by MirrorSyncDelegate to pick chart colors.
 bool currentThemeIsDark();
+// Defined with the rest of the icon helpers further down; commit ref badges use
+// it before that definition while painting the graph rows.
+inline QIcon themedOcticon(const QString &name, const QColor &color, int size);
 
 // Column in the commits list that carries the Summary text + the commit hash
 // (Qt::UserRole). The metadata columns sit to its left.
@@ -520,6 +523,8 @@ constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has
 constexpr int kCommitFilesRole =
     Qt::UserRole + 33; // QStringList "path\tadds\tdels" of the files the commit
                        // touched, previewed in the summary's hover box
+constexpr int kCommitRefKindsRole =
+    Qt::UserRole + 34; // QStringList aligned with kCommitRefsRole: local/remote/tag
 
 // URL scheme for a clickable branch-name link; the percent-encoded branch name
 // follows. Clicking it opens that branch's row in the Branches tab (adhoc #123).
@@ -838,22 +843,46 @@ public:
         int rightEdge = r.right();
         // Branch / tag badges (the VS Code graph's ref pills) lead the summary.
         const QStringList refs = index.data(kCommitRefsRole).toStringList();
+        const QStringList refKinds =
+            index.data(kCommitRefKindsRole).toStringList();
         if (!refs.isEmpty()) {
             painter->setRenderHint(QPainter::Antialiasing, true);
-            for (const QString &ref : refs) {
-                const int rw = fm.horizontalAdvance(ref) + 12;
+            for (int refIndex = 0; refIndex < refs.size(); ++refIndex) {
+                const QString ref = refs.at(refIndex);
+                const QString kind = refKinds.value(refIndex);
+                const bool remote = kind == QLatin1String("remote");
+                const bool tag = kind == QLatin1String("tag");
+                const QString iconName = remote ? QStringLiteral("cloud")
+                                                : tag ? QStringLiteral("tag")
+                                                      : QStringLiteral("git-commit");
+                const QColor badgeColor =
+                    remote ? QColor("#8957e5")
+                           : tag ? QColor("#2da44e") : QColor("#1f6feb");
+                constexpr int iconSize = 12;
+                constexpr int iconGap = 4;
+                const int rw = fm.horizontalAdvance(ref) + 12 + iconSize + iconGap;
                 if (x + rw > rightEdge - 80)
                     break; // keep room for the summary itself
                 const QRect br(x, r.center().y() - fm.height() / 2 - 1, rw,
                                fm.height() + 2);
-                // Solid pill with white text, like the VS Code graph's ref
-                // badges, rounded to a full capsule.
+                // Local heads carry the target/commit glyph, remote-tracking
+                // heads carry the cloud glyph, and tags retain their own mark.
+                // Blue/purple/green match the graph/ref palette in the adjacent
+                // VS Code view and make local vs published state readable before
+                // the ref text itself is parsed.
                 painter->setPen(Qt::NoPen);
-                painter->setBrush(QColor("#1f6feb"));
+                painter->setBrush(badgeColor);
                 painter->drawRoundedRect(br, br.height() / 2.0,
                                          br.height() / 2.0);
+                const QRect iconRect(br.left() + 6,
+                                     br.center().y() - iconSize / 2,
+                                     iconSize, iconSize);
+                themedOcticon(iconName, Qt::white, iconSize)
+                    .paint(painter, iconRect);
                 painter->setPen(Qt::white);
-                painter->drawText(br, Qt::AlignCenter, ref);
+                painter->drawText(
+                    br.adjusted(6 + iconSize + iconGap, 0, -6, 0),
+                    Qt::AlignVCenter | Qt::AlignLeft, ref);
                 x += rw + 5;
             }
             painter->setBrush(Qt::NoBrush);
@@ -7203,6 +7232,18 @@ public:
     }
     QSize minimumSizeHint() const override { return sizeHint(); }
 
+    // The count riding the icon's upper-right corner as a rail-style circle
+    // badge (0 hides it), so "Fork 12" / "147 branches" style counts read the
+    // same as the activity rail's badges instead of living in the caption.
+    void setBadgeCount(qint64 count)
+    {
+        if (m_badge == count)
+            return;
+        m_badge = count;
+        update();
+    }
+    qint64 badgeCount() const { return m_badge; }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -7243,12 +7284,34 @@ protected:
                    Qt::AlignHCenter | Qt::AlignTop,
                    QFontMetrics(f).elidedText(text(), Qt::ElideRight,
                                               width() - 4));
+
+        // Count badge on the icon's upper-right corner, the same geometry and
+        // blue as ActivityRailButton's, but never capped at 99+ — a repo can
+        // legitimately advertise hundreds of branches.
+        if (m_badge > 0) {
+            const QString badgeText = formatCount(m_badge);
+            QFont bf = font();
+            bf.setPixelSize(9);
+            bf.setBold(true);
+            p.setFont(bf);
+            const int h = 14;
+            const int w =
+                qMax(h, QFontMetrics(bf).horizontalAdvance(badgeText) + 8);
+            const QRectF badge(iconRect.right() - w + h / 2.0 + 2,
+                               qMax(0.0, double(iconRect.top() - 5)), w, h);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor("#1f6feb"));
+            p.drawRoundedRect(badge, h / 2.0, h / 2.0);
+            p.setPen(QColor("#ffffff"));
+            p.drawText(badge, Qt::AlignCenter, badgeText);
+        }
     }
 
 private:
     static constexpr int kIconPx = 16;
     static constexpr int kHeight = 44;
     Form m_form;
+    qint64 m_badge = 0;
 };
 
 // Width and height of one activity-rail entry, and the width of the rail
@@ -7340,6 +7403,19 @@ public:
     }
     int badgeCount() const { return m_badge; }
 
+    // Commits that exist locally but have not reached the upstream/mirror yet.
+    // This is a separate upper-left upload marker so it can coexist with the
+    // working-tree count badge (or the in-flight sync spinner) on Git.
+    void setPendingSyncCount(int count)
+    {
+        count = qMax(0, count);
+        if (m_pendingSync == count)
+            return;
+        m_pendingSync = count;
+        update();
+    }
+    int pendingSyncCount() const { return m_pendingSync; }
+
     // Red "needs you" badge (Chat unread, pending Pings) instead of the default
     // blue count — the same corner geometry either way, so the two badge
     // languages stay aligned across the rail.
@@ -7415,6 +7491,22 @@ protected:
         p.drawPixmap(iconRect.topLeft(),
                      tintedOcticonPixmap(m_iconName, fg, iconPx));
 
+        // An amber upload arrow on the opposite corner from the ordinary count
+        // badge makes "commits waiting to sync" visible without hiding dirty
+        // file count or an active-sync spinner.
+        if (m_pendingSync > 0) {
+            const int s = 12;
+            const QPoint at(qMax(1, iconRect.left() - 5),
+                            qMax(0, iconRect.top() - 4));
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
+            p.drawEllipse(QRect(at, QSize(s, s)).adjusted(-1, -1, 1, 1));
+            p.drawPixmap(
+                at, tintedOcticonPixmap(
+                        QStringLiteral("upload"),
+                        QColor(dark ? "#d29922" : "#9a6700"), s));
+        }
+
         if (showLabel) {
             QFont f = font();
             f.setPixelSize(10);
@@ -7475,6 +7567,7 @@ private:
     QString m_iconName;
     QString m_label;
     int m_badge = 0;
+    int m_pendingSync = 0;
     bool m_badgeUrgent = false;
     bool m_alert = false;
     bool m_syncing = false;
@@ -9319,10 +9412,27 @@ inline bool buildWorkingTreeDiff(const QString &dir, const QString &base, QByteA
     env.insert(QStringLiteral("GIT_INDEX_FILE"), temp.path() + QStringLiteral("/index"));
 
     QByteArray ignored;
-    if (!runGitCaptureWithEnv(dir, {"read-tree", base}, env, &ignored, err))
-        return false;
-    if (!runGitCaptureWithEnv(dir, {"add", "-A", "--", "."}, env, &ignored, err))
-        return false;
+    auto stageSnapshot = [&] {
+        if (!runGitCaptureWithEnv(dir, {"read-tree", base}, env, &ignored, err))
+            return false;
+        return runGitCaptureWithEnv(dir, {"add", "-A", "--", "."}, env,
+                                    &ignored, err);
+    };
+    if (!stageSnapshot()) {
+        // Agent worktrees change while they are being reviewed. If a file is
+        // deleted between Git's directory scan and stat call, `git add -A` can
+        // transiently fail with "unable to stat … No such file" even though a
+        // deletion is a perfectly valid diff. Rebuild the temporary index and
+        // take one fresh snapshot; the real worktree/index remain untouched.
+        const QString firstError = err ? *err : QString();
+        const bool racedDeletion =
+            firstError.contains(QStringLiteral("unable to stat"),
+                                Qt::CaseInsensitive) ||
+            firstError.contains(QStringLiteral("No such file"),
+                                Qt::CaseInsensitive);
+        if (!racedDeletion || !stageSnapshot())
+            return false;
+    }
     return runGitCaptureWithEnv(dir, {"diff", "--binary", "--cached", base}, env, out, err);
 }
 
