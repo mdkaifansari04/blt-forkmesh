@@ -4,8 +4,8 @@
 Every registered account owns a bench around the campfire whether or not it is
 signed in, and an away member publishes no presence frame. /api/world/client
 stores the same three coarse values a live frame carries — approximate
-country, browser family, OS family — so the bench figure keeps the member's
-flag shirt and client badge instead of sitting there blank.
+country, browser family, OS family — so each bounded detailed bench figure
+keeps the member's flag shirt and client badge instead of sitting there blank.
 """
 
 import ast
@@ -147,9 +147,10 @@ def test_signed_out_visitors_keep_their_country_locally():
     assert "/^[A-Z]{2}$/.test(clean)" in remember
 
 
-def test_away_member_bench_figure_wears_the_saved_profile():
+def test_detailed_away_member_bench_figure_wears_the_saved_profile():
     lounge = SCENE.split("function updateMemberLounge", 1)[1].split(
         "campfire.userData.seatByName", 1)[0]
+    assert ".slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)" in lounge
     assert "flagEmoji(memberCountry)" in lounge
     assert "countryCode: memberCountry," in lounge
     assert 'browser: String(member.browser || "Hidden"),' in lounge
