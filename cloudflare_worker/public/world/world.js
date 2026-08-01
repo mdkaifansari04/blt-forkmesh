@@ -229,6 +229,10 @@ const WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000;
 const WORLD_STATUS_POLL_MS = 60 * 1000;
 const WORLD_STATUS_ISSUE_WINDOW_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
+// QA is a shared work queue. Keep already-open Worlds close enough to the
+// server's authoritative first-review state that two testers are not dealt the
+// same card for the rest of a long session.
+const WORLD_QA_POLL_MS = 15 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS = 15 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS = 5 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS = 30 * 60 * 1000;
@@ -5446,6 +5450,7 @@ class ForkMeshWorld extends HTMLElement {
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.buildBoardTimer = 0;
     this.buildBoardLoad = null;
+    this.qaTimer = 0;
     this.orgAgentTimer = 0;
     this.sessionWatchTimer = 0;
     this.sessionWatchActive = false;
@@ -6869,6 +6874,11 @@ class ForkMeshWorld extends HTMLElement {
         () => void this.refreshBuildBoard({ quiet: true }),
         WORLD_BUILD_BOARD_POLL_MS,
       );
+      this.qaTimer = window.setInterval(() => {
+        if (!this.destroyed && !document.hidden) {
+          void this.refreshQaDeck({ quiet: true });
+        }
+      }, WORLD_QA_POLL_MS);
       void this.refreshOrgAgentBots();
       this.orgAgentTimer = window.setInterval(
         () => void this.refreshOrgAgentBots(),
@@ -8112,6 +8122,9 @@ class ForkMeshWorld extends HTMLElement {
     // socket is closed, so no arrival can force it — and accounts signed up
     // meanwhile are missing from the fire's total. Coming back is the cue.
     void this.refreshMemberDirectory();
+    // Reviews made in another browser while this tab was hidden must be
+    // removed before the tester handles the next card.
+    void this.refreshQaDeck({ quiet: true });
     // Coming back to this tab is itself the request to bring the account's
     // one avatar here, so a takeover by another device stops holding it off.
     this.reclaimPresenceHere();
@@ -28535,6 +28548,9 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);
     window.clearInterval(this.sessionWatchTimer);
+    window.clearInterval(this.buildBoardTimer);
+    window.clearInterval(this.orgAgentTimer);
+    window.clearInterval(this.qaTimer);
     window.clearInterval(this.instanceDirectoryTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     window.clearTimeout(this.viewportSyncTimer);
