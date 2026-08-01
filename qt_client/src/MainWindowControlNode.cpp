@@ -2981,17 +2981,6 @@ void MainWindow::runSiteDeploy()
             true);
         return;
     }
-    if (QMessageBox::question(
-            this, QStringLiteral("Deploy to Cloudflare"),
-            QStringLiteral(
-                "Run %1 now? This uploads the Worker and static site to the "
-                "production Cloudflare account this machine is logged in to.")
-                .arg(script),
-            QMessageBox::Yes | QMessageBox::Cancel,
-            QMessageBox::Cancel) != QMessageBox::Yes) {
-        return;
-    }
-
     if (m_siteDeployOutput)
         m_siteDeployOutput->clear();
     appendSiteDeployOutput(

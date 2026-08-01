@@ -9404,13 +9404,37 @@
     }
   }
 
-  // The connector token is minted locally by the desktop app (Settings -> MCP)
-  // and never leaves that machine, so the website cannot look it up: it asks
-  // once, remembers it here, and from then on every copied prompt is a
-  // paste-and-run block. Shift-clicking the button replaces a rotated token.
+  // The connector token is a locally minted bearer string, so nothing has to
+  // be fetched to have one: the first copy mints it right here in the desktop's
+  // own format, remembers it, and the copied prompt carries the lines that
+  // install it on the node. Copying is one click and never opens a dialog.
+  // Shift-clicking the button still opens the paste box, which is what a node
+  // that already published a connector needs (its own token wins).
   const MCP_CONNECTOR_TOKEN_KEY = "forkmesh.mcpConnectorToken";
   const MCP_CONNECTOR_TOKEN_PLACEHOLDER =
     "PASTE_CONNECTOR_TOKEN_FROM_FORKMESH_DESKTOP_SETTINGS_MCP";
+  // Matches qt_client/src/McpConnector.cpp: "fmcp_" + 32 CSPRNG bytes,
+  // base64url, unpadded — the shape isWellFormedToken() accepts.
+  const MCP_CONNECTOR_TOKEN_BYTES = 32;
+
+  function generateMcpConnectorToken() {
+    try {
+      const bytes = new Uint8Array(MCP_CONNECTOR_TOKEN_BYTES);
+      window.crypto.getRandomValues(bytes);
+      let binary = "";
+      bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+      });
+      return (
+        "fmcp_" +
+        btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+      );
+    } catch (_) {
+      // No CSPRNG (ancient or locked-down browser): fall back to the
+      // placeholder rather than to a guessable token.
+      return "";
+    }
+  }
 
   function loadMcpConnectorToken() {
     try {
@@ -9425,6 +9449,30 @@
       if (token) localStorage.setItem(MCP_CONNECTOR_TOKEN_KEY, token);
       else localStorage.removeItem(MCP_CONNECTOR_TOKEN_KEY);
     } catch (_) {}
+  }
+
+  // The token for this copy. A plain click never asks anything: a remembered
+  // token is reused, otherwise one is generated on the spot and kept. Only a
+  // shift-click opens the paste box, for the node that already published its
+  // own connector; an empty answer there rotates to a freshly generated token
+  // rather than leaving the prompt carrying a placeholder.
+  function ensureMcpConnectorToken(options) {
+    let token = loadMcpConnectorToken();
+    if (options?.replaceToken) {
+      const entered = window.prompt(
+        "Paste the connector token this node already published (ForkMesh desktop app -> Settings -> MCP). Leave it empty to generate a fresh one instead - the copied prompt tells the agent how to install it.",
+        token,
+      );
+      if (entered === null) return token;
+      token = String(entered).trim().slice(0, 200) || generateMcpConnectorToken();
+      saveMcpConnectorToken(token);
+      return token;
+    }
+    if (!token) {
+      token = generateMcpConnectorToken();
+      saveMcpConnectorToken(token);
+    }
+    return token;
   }
 
   // "Copy MCP prompt" on the issue detail page: one paste block that points an
@@ -9446,6 +9494,10 @@
     const serverScript = "<FORKMESH_CHECKOUT>/tools/forkmesh_mcp_server.py";
     const repoCheckout = `<CHECKOUT_OF_${repoSlug}>`;
     const connectorToken = token || MCP_CONNECTOR_TOKEN_PLACEHOLDER;
+    // The same file tools/forkmesh_mcp_server.py reads (FORKMESH_MCP_CONNECTOR
+    // overrides it) and the desktop's Settings -> MCP tab writes.
+    const connectorFile =
+      "$XDG_DATA_HOME/ForkMesh/ForkMesh/mcp/connector.json (default ~/.local/share/ForkMesh/ForkMesh/mcp/connector.json)";
     const configuration = {
       mcpServers: {
         forkmesh: {
@@ -9458,8 +9510,15 @@
         },
       },
     };
+    // The token was minted in the browser, so it only unlocks the write tools
+    // once this machine's connector file holds it. An existing connector is
+    // never overwritten: that would demote every other agent config still
+    // holding the old string, and the node owner already has a token to use.
     const tokenNote = token
-      ? "FORKMESH_MCP_TOKEN above is a live connector token: keep it exactly as written. Treat it as a secret - never print it in logs, commits, pull requests, or chat."
+      ? [
+          `FORKMESH_MCP_TOKEN above is a connector token minted for this prompt. Activate it before step 1: if ${connectorFile} does not exist, create it (mode 0600) containing {"version": 1, "token": "${connectorToken}", "node": "", "label": "copied MCP prompt", "created_ms": <epoch milliseconds>} - the same record the desktop app writes. If that file already exists, leave it exactly as it is and use its own "token" value in the configuration above instead - the node already published a connector and overwriting it would revoke every other agent.`,
+          "Treat the token as a secret - never print it in logs, commits, pull requests, or chat.",
+        ].join("\n")
       : `FORKMESH_MCP_TOKEN above is a placeholder: replace ${MCP_CONNECTOR_TOKEN_PLACEHOLDER} with the connector token the ForkMesh desktop app mints under Settings -> MCP -> Generate token, otherwise the write tools stay read-only. Treat it as a secret - never print it in logs, commits, pull requests, or chat.`;
     return [
       `Work ForkMesh issue #${number} in ${repoSlug} end to end through the "forkmesh" MCP server.`,
@@ -9498,17 +9557,7 @@
       location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
       return false;
     }
-    let token = loadMcpConnectorToken();
-    if (!token || options?.replaceToken) {
-      const entered = window.prompt(
-        "Paste the ForkMesh connector token (desktop app -> Settings -> MCP -> Generate token). It is embedded in the copied prompt so the agent's write tools work, and remembered on this browser. Leave it empty to copy the prompt with a placeholder instead.",
-        token,
-      );
-      if (entered !== null) {
-        token = String(entered).trim().slice(0, 200);
-        saveMcpConnectorToken(token);
-      }
-    }
+    const token = ensureMcpConnectorToken(options);
     const prompt = issueMcpPrompt(repo, detail.number, detail.parsed?.values, token);
     const copied = await copyTextToClipboard(prompt);
     if (!copied) {
@@ -9555,7 +9604,7 @@
     // /login and returns here, so the visitor discovers the workflow either way.
     const mcpPromptAction =
       isIssues && !options.pending
-        ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and connector token included (shift-click to replace the saved token)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
+        ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and a generated connector token included (shift-click to paste a token this node already published)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
         : "";
     const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
     // Always mount the timeline container for issues so a comment posted from
@@ -15889,8 +15938,9 @@
         "[data-repo-issue-mcp-prompt]",
       );
       if (issueMcpPromptButton) {
-        // Shift-click re-asks for the connector token, so a rotated or revoked
-        // one can be replaced without clearing site storage by hand.
+        // A plain click copies straight away with a generated connector token.
+        // Shift-click opens the paste box instead, so a node that already
+        // published its own connector can hand over that token by hand.
         void copyIssueMcpPrompt(issueMcpPromptButton, {
           replaceToken: event.shiftKey === true,
         });
