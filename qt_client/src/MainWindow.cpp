@@ -310,7 +310,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // Settings afterwards.
     if (savedProfileName().isEmpty()) {
         m_freshInstall = true;
-        QSettings().setValue(kAccountNameSetting, randomFunNodeName());
+        const QString generated = randomFunNodeName();
+        QSettings().setValue(kAccountNameSetting, generated);
+        // Record that this name was handed out, not chosen. While it is still
+        // the account name (and no user account is linked), chat speaks as a
+        // guest — the generated name stays the machine's node identity, but it
+        // is not the person's username (see chatIdentityIsGuest()).
+        QSettings().setValue(kGeneratedNodeNameSetting, generated);
     }
     if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
         m_userName = saved;
