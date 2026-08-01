@@ -1707,8 +1707,20 @@ int main(int argc, char *argv[])
             baseFile.open(QIODevice::WriteOnly);
             baseFile.write("tracked on main\n");
             baseFile.close();
+
+            // Both main and the linked agent worktree will later edit this same
+            // tracked file in separate hunks. A plain merge refuses before it
+            // even considers whether the text edits overlap; Pull main must
+            // autostash, update, and restore the agent edit instead.
+            QFile shared(wtRepo.path() +
+                         QStringLiteral("/auto-stash-overlap.txt"));
+            shared.open(QIODevice::WriteOnly);
+            for (int i = 1; i <= 12; ++i)
+                shared.write(QStringLiteral("line %1\n").arg(i).toUtf8());
+            shared.close();
         }
-        runGitChecked(wtRepo.path(), {"add", "base-delete.txt"});
+        runGitChecked(wtRepo.path(),
+                      {"add", "base-delete.txt", "auto-stash-overlap.txt"});
         runGitChecked(wtRepo.path(), {"commit", "-m", "base file for deletion"});
         runGitChecked(wtRepo.path(), {"branch", "feature/keep-selected"});
         // A second branch so the compare base has somewhere else to point
@@ -2055,9 +2067,30 @@ int main(int argc, char *argv[])
         // Move main ahead immediately before opening the branch. The Git route's
         // automatic pull must merge that new main tip inside the linked agent
         // worktree, then rerender the range without losing its local file.
-        runGitChecked(wtRepo.path(),
-                      {"commit", "--allow-empty", "-m",
-                       "main advanced before branch review"});
+        {
+            QFile mainShared(wtRepo.path() +
+                             QStringLiteral("/auto-stash-overlap.txt"));
+            mainShared.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            for (int i = 1; i <= 12; ++i)
+                mainShared.write((i == 12 ? QByteArray("main changed line 12\n")
+                                          : QStringLiteral("line %1\n")
+                                                .arg(i)
+                                                .toUtf8()));
+            mainShared.close();
+            runGitChecked(wtRepo.path(), {"add", "auto-stash-overlap.txt"});
+            runGitChecked(wtRepo.path(),
+                          {"commit", "-m", "main advanced before branch review"});
+
+            QFile agentShared(wtPath +
+                              QStringLiteral("/auto-stash-overlap.txt"));
+            agentShared.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            for (int i = 1; i <= 12; ++i)
+                agentShared.write((i == 1 ? QByteArray("agent changed line 1\n")
+                                          : QStringLiteral("line %1\n")
+                                                .arg(i)
+                                                .toUtf8()));
+            agentShared.close();
+        }
         QFile liveFile(livePath);
         if (liveFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             liveFile.write("visible before commit\n");
@@ -2107,6 +2140,21 @@ int main(int argc, char *argv[])
               QString("opening a linked agent branch automatically pulls main "
                       "into its own worktree (main...branch = %1)")
                   .arg(autoPullCounts));
+        QFile restoredShared(wtPath +
+                             QStringLiteral("/auto-stash-overlap.txt"));
+        restoredShared.open(QIODevice::ReadOnly);
+        const QByteArray restoredSharedText = restoredShared.readAll();
+        const QString restoredStatus =
+            gitOutput(wtPath, {"status", "--short", "--",
+                               "auto-stash-overlap.txt"});
+        check(restoredSharedText.contains("agent changed line 1\n") &&
+                  restoredSharedText.contains("main changed line 12\n") &&
+                  restoredStatus.contains(QStringLiteral("auto-stash-overlap.txt")) &&
+                  gitOutput(wtPath, {"stash", "list"}).isEmpty(),
+              QString("Pull main protects and restores edits in files also changed "
+                      "on main (status = %1, stash = %2)")
+                  .arg(restoredStatus,
+                       gitOutput(wtPath, {"stash", "list"})));
         // Now that automatic synchronization has completed, introduce the
         // staged deletion and re-open the same branch. This isolates the diff
         // regression without making the earlier pull test reject a dirty tree.

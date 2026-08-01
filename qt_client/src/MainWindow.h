@@ -3066,7 +3066,8 @@ private:
     // Paint the branch detail bar from already-gathered counts, and let auto-pull
     // decide once the bar reflects them (the counts arrive off-thread now).
     void applyBranchDetailActions(const QString &branch, const QString &base,
-                                  int behind, int ahead, bool hasConflict);
+                                  int behind, int ahead, bool hasConflict,
+                                  bool worktreeConflict = false);
     void maybeAutoPullBranch(const QString &branch);
     // Bumped per branch selection so a detail-bar read that lands late is dropped.
     int m_branchDetailActionsGen = 0;
