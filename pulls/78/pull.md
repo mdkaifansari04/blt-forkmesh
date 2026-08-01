@@ -4,7 +4,7 @@ number: 78
 title: Agent: have a calendar feature and when your usage limit is hit it adds it to the ca…
 base: main
 head: agent/adhoc-159-have-a-calendar-feature-and-when-your-usage-limi
-status: open
+status: merged
 ts: 1785560657027
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett
