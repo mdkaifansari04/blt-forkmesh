@@ -8,6 +8,7 @@
 #include "ForkMeshVersion.h"
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "RepoStatsStore.h"
 #include "ActionStore.h"
 #include "ControlNode.h"
 #include "CurrentPageStack.h"
@@ -1013,14 +1014,10 @@ QWidget *MainWindow::buildNetworkLogDock()
         sendPromptToSelectedAgent(prompt);
     });
 
-    // Third button, stacked above "add" and "new" (adhoc #42): "task" doesn't
-    // send the typed prompt at all — it starts an agent wired to the remote MCP
-    // server configured on the website, so the agent picks its own work off the
-    // organization's shared task list and reports back through the same tools.
-    // Anything typed in the box rides along as extra guidance for that run.
-    // Labelled "task" rather than "genie" (adhoc #120), after what it actually
-    // does; the widget/QSS name stays the genie one the rest of the run plumbing
-    // (AgentSession::genie, startGenieAgent) is keyed to.
+    // Third button, stacked above "add" and "new": file the typed prompt in the
+    // organization's general task list. This used to launch a genie agent that
+    // picked some *other* shared task, which made a button labelled "task" do the
+    // opposite of what the prompt beside it described (adhoc #151).
     m_quickAddGenieButton = new QPushButton(QStringLiteral("task"));
     m_quickAddGenieButton->setObjectName("quickAddGenieButton");
     m_quickAddGenieButton->setCursor(Qt::PointingHandCursor);
@@ -1030,13 +1027,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
                                          QSizePolicy::Expanding);
     m_quickAddGenieButton->setToolTip(
-        QString::fromUtf8("Task \xE2\x80\x94 start a running agent session that "
-                          "picks its own work off the organization's shared task "
-                          "list. No setup: the first press mints this node's own "
-                          "task credential from the account you are signed in "
-                          "as."));
+        QString::fromUtf8("Task \xE2\x80\x94 add this prompt to the organization's "
+                          "general task list."));
     connect(m_quickAddGenieButton, &QPushButton::clicked, this,
-            &MainWindow::startGenieAgent);
+            &MainWindow::createQuickAddOrganizationTask);
 
     // Vertically Expanding (not Fixed) so the text area absorbs any spare height
     // in the prompt frame. With the fixed-height bottom bar below it, that keeps
@@ -3270,6 +3264,11 @@ void MainWindow::updateFooterDiagnostics()
 {
     if (!m_footerDiagnostics)
         return;
+    const qint64 statsNow = QDateTime::currentMSecsSinceEpoch();
+    if (statsNow - m_repoStatsLastRefreshMs >= 60000) {
+        m_repoStatsLastRefreshMs = statsNow;
+        refreshRepositoryStats();
+    }
     double cpuPct = -1.0;
     long rssMb = -1;
 #if defined(__linux__)
@@ -3377,6 +3376,67 @@ void MainWindow::updateFooterDiagnostics()
     }
 }
 
+void MainWindow::refreshRepositoryStats()
+{
+    const QString dir = repoGitDir();
+    const bool available = !dir.isEmpty() && repoHasWorkingTree();
+    const QList<QWidget *> statsWidgets{m_repoSizeChart, m_repoLinesChart,
+                                        m_repoFilesChart, m_repoRatchetButton};
+    for (QWidget *widget : statsWidgets)
+        if (widget) widget->setVisible(available);
+    if (!available) return;
+
+    QString error;
+    const QVector<RepoStatsSample> days = RepoStatsStore::captureDaily(dir, &error);
+    if (days.isEmpty()) {
+        if (!error.isEmpty()) logSystem(QStringLiteral("Repository stats: %1").arg(error));
+        return;
+    }
+    QVector<double> sizes, lines, files;
+    double maxSize = 1, maxLines = 1, maxFiles = 1;
+    for (const RepoStatsSample &day : days) {
+        sizes << double(day.bytes); lines << double(day.lines); files << double(day.files);
+        maxSize = qMax(maxSize, double(day.bytes));
+        maxLines = qMax(maxLines, double(day.lines));
+        maxFiles = qMax(maxFiles, double(day.files));
+    }
+    const RepoStatsSample &latest = days.last();
+    static_cast<ResourceSparkline *>(m_repoSizeChart)->setSamples(
+        sizes, maxSize, SystemStats::formatBytes(latest.bytes));
+    static_cast<ResourceSparkline *>(m_repoLinesChart)->setSamples(
+        lines, maxLines, QString::number(latest.lines));
+    static_cast<ResourceSparkline *>(m_repoFilesChart)->setSamples(
+        files, maxFiles, QString::number(latest.files));
+    const QString span = days.size() == 1
+                             ? QStringLiteral("today")
+                             : QStringLiteral("%1 to %2").arg(days.first().day,
+                                                               days.last().day);
+    m_repoSizeChart->setToolTip(QStringLiteral("Tracked repository size, %1").arg(span));
+    m_repoLinesChart->setToolTip(QStringLiteral("Tracked lines of code, %1").arg(span));
+    m_repoFilesChart->setToolTip(QStringLiteral("Tracked files, %1").arg(span));
+    if (m_repoRatchetButton) {
+        QSignalBlocker blocker(m_repoRatchetButton);
+        m_repoRatchetButton->setChecked(RepoStatsStore::ratchetEnabled(dir));
+    }
+}
+
+void MainWindow::toggleRepositoryRatchet(bool enabled)
+{
+    const QString dir = repoGitDir();
+    QString error;
+    if (dir.isEmpty() || !RepoStatsStore::setRatchetEnabled(dir, enabled, &error)) {
+        if (m_repoRatchetButton) {
+            QSignalBlocker blocker(m_repoRatchetButton);
+            m_repoRatchetButton->setChecked(!enabled);
+        }
+        flashMessage(QStringLiteral("Could not update Ratchet Mode: %1").arg(error), true);
+        return;
+    }
+    flashMessage(enabled ? QStringLiteral("Ratchet Mode enabled: commits must shrink or stay flat.")
+                         : QStringLiteral("Ratchet Mode disabled."));
+    refreshRepositoryStats();
+}
+
 // A UI stall ended: record it, surface it in the system log, and reflect the
 // running count in the footer. The full backtrace is kept for the detail dialog.
 void MainWindow::onUiStall(qint64 peakMs, const QString &blockingCall,
@@ -3431,6 +3491,13 @@ void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace
     // never turn those synthetic stalls into real CLI agent processes.
     return;
 #endif
+    // A headless mirror has no interactive GUI to repair, and its expected
+    // low-memory Git/encryption work can delay the offscreen event loop. Never
+    // turn those service-side diagnostics into coding-agent processes: doing
+    // so competes with the mirror seal for RAM/disk and can create a feedback
+    // loop where each stall launches more work and makes the next stall worse.
+    if (m_headless)
+        return;
     if (!QSettings().value(kAutoAgentOnStallSetting, true).toBool())
         return;
     // The watchdog now *records* everything past 500 ms (sub-second jank matters
@@ -4945,6 +5012,10 @@ QWidget *MainWindow::buildBreadcrumb()
         flashUsageChart(m_navCodexUsage, true);
     };
     refreshCodexUsageRemaining();
+    // Re-arm any persisted exhausted-window reminders after the shell exists.
+    // The calendar owns the alert while the app is closed; this covers a desktop
+    // kept open across the known reset time.
+    QTimer::singleShot(0, this, &MainWindow::restoreUsageLimitReminders);
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
     m_repoMenuButton = new QPushButton;
@@ -5459,6 +5530,27 @@ QWidget *MainWindow::buildBreadcrumb()
     m_memChart = memChart;
     m_diskChart = diskChart;
 
+    // Thirty-day repository trends are deliberately a little larger than the
+    // live host-resource squares: each point represents a day, not a second.
+    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr, 44, 30);
+    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr, 44, 30);
+    auto *repoFilesChart = new ResourceSparkline(QStringLiteral("FILES"), nullptr, 44, 30);
+    repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
+    repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
+    repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
+    m_repoSizeChart = repoSizeChart;
+    m_repoLinesChart = repoLinesChart;
+    m_repoFilesChart = repoFilesChart;
+    m_repoRatchetButton = new QToolButton;
+    m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
+    m_repoRatchetButton->setText(QStringLiteral("Ratchet mode"));
+    m_repoRatchetButton->setCheckable(true);
+    m_repoRatchetButton->setToolTip(
+        QStringLiteral("Keep each commit at or below today's tracked size and require "
+                       "at least as many removed lines as added lines."));
+    connect(m_repoRatchetButton, &QToolButton::toggled, this,
+            &MainWindow::toggleRepositoryRatchet);
+
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(0);
@@ -5510,6 +5602,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
+    chromeRow->addWidget(repoSizeChart);
+    chromeRow->addWidget(repoLinesChart);
+    chromeRow->addWidget(repoFilesChart);
+    chromeRow->addWidget(m_repoRatchetButton);
     // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);
@@ -5608,7 +5704,7 @@ void MainWindow::updateNavRebuildButton()
 
 // The top-bar "Log in / Sign up" pill replaces the retired first-run screen
 // (adhoc #115), so it must be honest about state rather than eager: it stays
-// hidden until the deferred startup has actually resolved who this machine is.
+// hidden until silent auth has actually resolved who this machine is.
 // Silent auth runs a few seconds after launch and is what fills
 // nodeOwnerDisplayName() on a signed-in machine — offering "Log in" before then
 // would flash the pill on every start for a user who is already logged in. A
@@ -5619,7 +5715,7 @@ void MainWindow::updateSignInButton()
     if (!m_navSignInButton)
         return;
     const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
-    m_navSignInButton->setVisible(!m_headless && m_deferredStartupRun && !signedIn);
+    m_navSignInButton->setVisible(!m_headless && m_startupAuthResolved && !signedIn);
 }
 
 void MainWindow::showSignInMenu()
@@ -11347,6 +11443,24 @@ QWidget *MainWindow::buildNodesSection()
     m_nodesStatus = new QLabel;
     m_nodesStatus->setObjectName("mutedLabel");
     controls->addWidget(m_nodesStatus, 1);
+    auto *updateAll =
+        new QPushButton(QStringLiteral("Update all from this binary"));
+    updateAll->setObjectName(QStringLiteral("nodesUpdateAllBinaryButton"));
+    updateAll->setCursor(Qt::PointingHandCursor);
+    updateAll->setToolTip(QStringLiteral(
+        "SSH to every saved host in parallel, install the current published "
+        "ForkMesh binary, and show live restart progress for each node."));
+    setOcticon(updateAll, "download", 14);
+    connect(updateAll, &QPushButton::clicked, this, [this] {
+        // Fleet progress is intentionally rendered on Hosts: each SSH target
+        // gets its own spinner/header and live log there. Switching first also
+        // makes failures (missing SSH metadata, checksum, restart) visible
+        // instead of leaving a seemingly idle button on Nodes.
+        showNetworkTab(kNetworkHostsTab);
+        QTimer::singleShot(0, this,
+                           &MainWindow::runHostInstallAllFromBinary);
+    });
+    controls->addWidget(updateAll);
     m_nodesRefreshButton = new QPushButton(QStringLiteral("Refresh"));
     m_nodesRefreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_nodesRefreshButton, "sync", 14);

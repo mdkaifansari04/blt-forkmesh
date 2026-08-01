@@ -375,6 +375,7 @@ from urls import (  # noqa: E402
     REPO_SHARES_RE,
     REPO_SECURITY_SCANS_RE,
     REPO_MIRRORS_RE,
+    REPO_MIRROR_REACHABILITY_RE,
     REPO_ABOUT_RE,
     REPO_LOGO_RE,
     REPO_LOGO_SUGGESTIONS_RE,
@@ -13282,6 +13283,14 @@ async def _catalog_logical_owners(env, repository_rows):
         record["logicalOwners"] = logical[:20]
 
 
+def _repo_publication_authority(authority_node_id, prior_node_id,
+                                incoming_node_id):
+    """Return (canonical node, is secondary) without implicit transfers."""
+    canonical = str(authority_node_id or prior_node_id or incoming_node_id or "")
+    incoming = str(incoming_node_id or "")
+    return canonical, bool(incoming and canonical and incoming != canonical)
+
+
 async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -13376,6 +13385,13 @@ async def catalog_handler(env, request):
         }
         repos = []
         repository_owner_rows = []
+        authority_rows = await d1_all(
+            env, "SELECT repo_bi,node_id FROM repo_source_authorities")
+        authority_by_repo = {
+            str(value.get("repo_bi") or ""):
+                clean_string(value.get("node_id", ""), 64)
+            for value in authority_rows or []
+        }
         ssh_gateway = _ssh_gateway_settings(env)
         for r in rows:
             rec = await decrypt_row(env, r["data"])
@@ -13415,6 +13431,13 @@ async def catalog_handler(env, request):
                 rec["liveHost"] = (
                     str(owner_bi or "") in live_endpoint_nodes
                 )
+                authority_node_id = authority_by_repo.get(
+                    str(r.get("key_bi") or ""), "")
+                if authority_node_id:
+                    rec["canonicalNodeId"] = authority_node_id
+                    rec["sourceAuthority"] = (
+                        clean_string(rec.get("nodeId", ""), 64)
+                        == authority_node_id)
                 # Plaintext flag so clients can badge private repos without
                 # re-deriving it from the visibility string.
                 rec["isPrivate"] = rec.get("visibility") == "private"
@@ -13452,6 +13475,34 @@ async def catalog_handler(env, request):
                             "/api/private-replicas/" + access_id)
                 repos.append(rec)
                 repository_owner_rows.append((rec, owner_bi))
+        # Same-account secondary devices have their own signed telemetry and
+        # serving endpoint, but never replace the canonical catalog row. Return
+        # them as explicit mirrors so node lists and failover tooling retain
+        # their capacity. Private device mirrors stay owner-only; anonymous
+        # responses include public records only.
+        mirror_rows = await d1_all(
+            env,
+            "SELECT repo_bi,node_id,data FROM repo_device_mirrors "
+            "ORDER BY updated_at DESC LIMIT ?",
+            MAX_CATALOG_REPOS,
+        )
+        for mirror_row in mirror_rows or []:
+            mirror = await decrypt_row(env, mirror_row.get("data"))
+            if not mirror:
+                continue
+            if mirror.get("visibility") != "public":
+                if not authed_viewer or mirror.get("owner") != authed_viewer:
+                    continue
+            mirror["reportedSource"] = mirror.get(
+                "reportedSource", mirror.get("source"))
+            mirror["source"] = "remote-clone"
+            mirror["sourceAuthority"] = False
+            mirror["canonicalNodeId"] = authority_by_repo.get(
+                str(mirror_row.get("repo_bi") or ""), "")
+            mirror["isPrivate"] = mirror.get("visibility") == "private"
+            mirror["liveHost"] = False
+            repos.append(mirror)
+            repository_owner_rows.append((mirror, ""))
         await _catalog_logical_owners(env, repository_owner_rows)
         # Second pass: mark each repo cloneable when its own host is offline but a
         # peer mirroring the same logical repo is online — the relay serves that
@@ -13621,6 +13672,7 @@ async def catalog_handler(env, request):
         exists = prior_row is not None
         prior_commit = ""
         prior_state_hash = ""
+        prior = {}
         # Reject rollbacks: a replayed older record must not be able to repin an
         # earlier (validly-signed) repo state and downgrade the served refs.
         if exists:
@@ -13638,6 +13690,78 @@ async def catalog_handler(env, request):
                     return json_response({"error": "stale_update"}, status=409)
             except (TypeError, ValueError):
                 pass
+        # Device-scoped source authority. Account keys intentionally authorize
+        # every device belonging to that account, but that must not mean a clone
+        # on a second computer can silently replace the original working-copy
+        # holder. Existing repositories acquire their authority lazily from the
+        # stored record's nodeId; truly legacy rows without one let the first
+        # modern, signed publisher claim it. There is deliberately no implicit
+        # transfer path: losing a device cannot turn a random checkout into the
+        # source of truth.
+        incoming_node_id = clean_string(record.get("nodeId", ""), 64)
+        incoming_machine = clean_string(
+            record.get("machineName", ""), MAX_NODE_NAME)
+        authority = await d1_first(
+            env,
+            "SELECT node_id,machine_name FROM repo_source_authorities "
+            "WHERE repo_bi=?",
+            key_bi,
+        )
+        stored_authority_node_id = clean_string(
+            (authority or {}).get("node_id", ""), 64)
+        prior_node_id = (
+            clean_string(prior.get("nodeId", ""), 64) if exists else "")
+        authority_node_id, secondary_device = _repo_publication_authority(
+            stored_authority_node_id, prior_node_id, incoming_node_id)
+        if authority_node_id:
+            now_ms = int(Date.now())
+            await d1_run(
+                env,
+                "INSERT INTO repo_source_authorities "
+                "(repo_bi,node_id,machine_name,created_at,updated_at) "
+                "VALUES (?,?,?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET "
+                "updated_at=excluded.updated_at",
+                key_bi, authority_node_id,
+                (clean_string(prior.get("machineName", ""), MAX_NODE_NAME)
+                 if exists and authority_node_id != incoming_node_id
+                 else incoming_machine),
+                now_ms, now_ms,
+            )
+        if (
+                exists
+                and incoming_node_id
+                and authority_node_id
+                and secondary_device):
+            mirror_record = dict(record)
+            # `reportedSource` preserves what the signed client asserted. The
+            # effective source is relay-derived from the durable authority row;
+            # consumers must never grant this device source pin privileges.
+            mirror_record["reportedSource"] = mirror_record.get("source")
+            mirror_record["source"] = "remote-clone"
+            mirror_record["sourceAuthority"] = False
+            mirror_record["canonicalNodeId"] = authority_node_id
+            mirror_enc = await encrypt_row(env, mirror_record)
+            await d1_run(
+                env,
+                "INSERT INTO repo_device_mirrors "
+                "(repo_bi,node_id,data,updated_at) VALUES (?,?,?,?) "
+                "ON CONFLICT(repo_bi,node_id) DO UPDATE SET "
+                "data=excluded.data,updated_at=excluded.updated_at",
+                key_bi, incoming_node_id, mirror_enc, int(Date.now()),
+            )
+            # Endpoint health is maintained by the device's signed heartbeat;
+            # unlike the canonical write below there is no authority state to
+            # activate here. Evict the shared list so this mirror appears now.
+            await edge_cache_delete(CATALOG_CACHE_KEY)
+            canonical = dict(prior)
+            canonical["sourceAuthority"] = True
+            canonical["canonicalNodeId"] = authority_node_id
+            return json_response({
+                "ok": True,
+                "mirror": True,
+                "canonicalNodeId": authority_node_id,
+                "repository": canonical,
+            }, status=202)
         if not exists:
             cnt = await d1_first(
                 env, "SELECT COUNT(*) AS c FROM repositories WHERE owner_bi=?", owner_bi)
@@ -15661,6 +15785,10 @@ async def _clear_repo_delete_tombstone(env, repo_bi):
 
 
 async def _delete_repo_scoped_state(env, repo_bi):
+    await d1_run(
+        env, "DELETE FROM repo_device_mirrors WHERE repo_bi=?", repo_bi)
+    await d1_run(
+        env, "DELETE FROM repo_source_authorities WHERE repo_bi=?", repo_bi)
     await d1_run(
         env, "DELETE FROM profile_contribution_days WHERE source_repo_bi=?",
         repo_bi)
@@ -30426,6 +30554,26 @@ async def _authorize_owner_account(env, owner, data, request=None,
     return True, None
 
 
+async def _authorize_issue_manager(env, owner, data, request=None):
+    """Authorize personal-repo owners plus organization owners/admins."""
+    ok, err = await _authorize_owner_account(env, owner, data, request)
+    if ok:
+        return True, None
+    _, rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        rec.get("name", "") if rec else "", MAX_NODE_NAME
+    ).strip().lower()
+    if not actor:
+        return False, err
+    org_bi, org = await _org_row(
+        env, clean_string(owner, MAX_NODE_NAME).lower()
+    )
+    role = await _org_role(env, org_bi, actor) if org else ""
+    if role in ("owner", "admin"):
+        return True, None
+    return False, err
+
+
 async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
     # True when this submitter already holds MAX_PENDING_PER_AUTHOR un-merged rows
     # in this repo's inbox (table is a fixed literal, safe to interpolate).
@@ -30999,6 +31147,7 @@ async def subscribe_handler(env, request, owner, repo):
         data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
+    action = clean_string(data.get("action", "set"), 20)
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
     source = clean_string(data.get("source", ""), 20)
     if source not in ("issue", "pull"):
@@ -31012,17 +31161,25 @@ async def subscribe_handler(env, request, owner, repo):
     subscribed = bool(data.get("subscribed", True))
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("sig", ""), 200)
-    if not valid_node_name(node) or not _ts_ok(ts):
+    if not valid_node_name(node):
         return json_response({"error": "unauthorized"}, status=401)
     _, rec = await _account_row(env, node)
     pubkey = rec.get("pubkey", "") if rec else ""
-    if not pubkey:
-        return json_response({"error": "unauthorized"}, status=401)
-    canonical = ("forkmesh-subscribe-v1\n" + owner + "/" + repo + "\n" + source +
-                 "\n" + str(number) + "\n" + ("1" if subscribed else "0") +
-                 "\n" + ts).encode()
-    if not await ed25519_verify(pubkey, signature, canonical):
-        return json_response({"error": "bad_signature"}, status=401)
+    _, session_rec = await _account_session_record(env, request, data)
+    session_actor = clean_string(
+        session_rec.get("name", "") if session_rec else "", MAX_NODE_NAME
+    ).lower()
+    session_authorized = bool(session_actor and session_actor == node)
+    if not session_authorized:
+        if action == "status":
+            return json_response({"error": "unauthorized"}, status=401)
+        if not pubkey or not _ts_ok(ts):
+            return json_response({"error": "unauthorized"}, status=401)
+        canonical = ("forkmesh-subscribe-v1\n" + owner + "/" + repo + "\n" + source +
+                     "\n" + str(number) + "\n" + ("1" if subscribed else "0") +
+                     "\n" + ts).encode()
+        if not await ed25519_verify(pubkey, signature, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         viewers = {
@@ -31051,6 +31208,24 @@ async def subscribe_handler(env, request, owner, repo):
                     break
         if not allowed:
             return json_response({"error": "not_found"}, status=404)
+    if action == "status":
+        thread_bi = await blind_index(
+            env, _thread_key(owner, repo, source, number)
+        )
+        subscriber_bi = await blind_index(env, node)
+        row = await d1_first(
+            env,
+            "SELECT data FROM thread_subscriptions "
+            "WHERE thread_bi=? AND subscriber_bi=?",
+            thread_bi, subscriber_bi,
+        )
+        subscription = await decrypt_row(env, row.get("data", "")) if row else None
+        return json_response({
+            "ok": True,
+            "subscribed": bool(subscription and not subscription.get("muted")),
+        })
+    if action != "set":
+        return json_response({"error": "bad_action"}, status=400)
     await subscribe_thread(env, owner, repo, source, number, node,
                            muted=not subscribed)
     return json_response({"ok": True, "subscribed": subscribed})
@@ -33075,6 +33250,7 @@ async def issues_handler(env, request, owner, repo):
         event = data.get("event")
         if not isinstance(event, dict):
             return json_response({"error": "event_required"}, status=400)
+        event_type = clean_string(event.get("type", ""), 32)
         try:
             number = int(data.get("number", 0))
         except (TypeError, ValueError):
@@ -33083,6 +33259,19 @@ async def issues_handler(env, request, owner, repo):
             return json_response({"error": "issue_too_large"}, status=413)
         if not await verify_issue_event(number, event):
             return json_response({"error": "bad_signature"}, status=401)
+        # Match the Qt client's write boundary: visitors can open, comment and
+        # vote, while edits to repository-owned issue state require the source
+        # node owner (or a network admin). A browser signature proves event
+        # integrity, not repository authority, so structural actions also carry
+        # and validate the logged-in account session.
+        owner_event_types = {
+            "edit", "title", "status", "labels", "milestone", "dates",
+            "priority", "progress", "bounty", "assignees", "agent", "delete",
+        }
+        if event_type in owner_event_types:
+            ok, err = await _authorize_issue_manager(env, owner, data, request)
+            if not ok:
+                return err
         # Screenshots the submitter had no working tree to copy in ride along as
         # base64 bytes, named to match the signed event's attachments list.
         attachment_data, attach_err = _clean_issue_attachment_data(
@@ -41026,9 +41215,8 @@ async def https_mirror_health_cron(env):
     rows = await d1_all(
         env,
         """SELECT node_bi,node_name,base_url,public_key
-             FROM mirror_https_endpoints
+            FROM mirror_https_endpoints
             ORDER BY
-              CASE WHEN checked_at = 0 THEN 0 ELSE 1 END ASC,
               CASE WHEN updated_at > checked_at
                    THEN updated_at ELSE checked_at END ASC,
               node_name ASC
@@ -41338,6 +41526,25 @@ async def _https_mirror_public_context(env, owner, repo):
                         break
             if not target_row:
                 return None
+        # Secondary devices are not catalog authorities, but their signed refs
+        # may still serve once they match the authority's pin. Fold them into
+        # this routing decision as effective remote clones without allowing
+        # their self-attestations to create a trusted pin.
+        device_rows = await d1_all(
+            env,
+            "SELECT node_id,data FROM repo_device_mirrors WHERE repo_bi=?",
+            target_row.get("key_bi"),
+        )
+        for device_row in device_rows or []:
+            device_record = await decrypt_row(env, device_row.get("data"))
+            if not isinstance(device_record, dict):
+                continue
+            device_record["reportedSource"] = device_record.get("source")
+            device_record["source"] = "remote-clone"
+            rows.append({
+                "key_bi": target_row.get("key_bi"),
+                "data": device_record,
+            })
         target = target_row["data"]
         members = [
             row for row in rows
@@ -41418,7 +41625,8 @@ async def _https_mirror_public_context(env, owner, repo):
         for row in members:
             record = row.get("data") or {}
             node = clean_string(
-                record.get("owner", ""), MAX_NODE_NAME).lower()
+                record.get("machineName") or record.get("owner", ""),
+                MAX_NODE_NAME).lower()
             state = clean_string(record.get("stateHash", ""), 64).lower()
             if not valid_node_name(node):
                 continue
@@ -41704,6 +41912,140 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     }
     endpoint["refsSha256"] = refs_digest
     return operation in set(operations)
+
+
+async def repo_mirror_reachability_handler(
+        env, request, owner, repo, requested_node):
+    """Fetch README.md from one exact eligible mirror without failover.
+
+    Ordinary public repository reads intentionally rotate and fail over, which
+    makes them unsuitable for an operator table: a successful response might
+    have come from a different node. This bounded probe selects only the named
+    endpoint, verifies its fresh repository proof, performs the same
+    router-signed blob request as a real read, and returns metadata only. README
+    contents and the endpoint origin never leave the probe.
+    """
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    node = clean_string(
+        requested_node, MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(node):
+        return json_response({"error": "not_found"}, status=404)
+    context = await _https_mirror_public_context(env, owner, repo)
+    if context is None or node not in context.get("nodes", set()):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+
+    # Organization aliases are rewritten before route matching, but the
+    # gateway stores the public organization name as a serving alias. Recover
+    # that original name from the untouched Request URL and bind it only when
+    # D1 confirms it maps to the rewritten backing node. Without this, the
+    # proof can accidentally address whichever peer record was selected as the
+    # canonical catalog source (for example mirror9), causing every other
+    # otherwise-valid mirror to fail its exact reachability check.
+    try:
+        original_url = urlparse(str(getattr(request, "url", "") or ""))
+        original_match = REPO_MIRROR_REACHABILITY_RE.match(original_url.path)
+        route_owner = (
+            safe_segment(original_match.group(1)) if original_match else "")
+        route_repo = (
+            safe_segment(original_match.group(2)) if original_match else "")
+        if (
+            route_owner
+            and route_repo.lower() == repo.lower()
+            and route_owner != owner
+            and await _org_repo_node(env, route_owner, route_repo) == owner
+        ):
+            context = dict(context)
+            context["routeOwner"] = route_owner
+    except Exception:
+        pass
+
+    row = await d1_first(
+        env,
+        """SELECT node_name,base_url,public_key,registration_sig,issued_at,
+                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked
+             FROM mirror_https_endpoints WHERE node_name=?""",
+        node,
+    )
+    endpoint = _https_mirror_endpoint_projection(row or {})
+    now = int(Date.now())
+
+    def result(reachable, reason, status=0, latency=0):
+        return json_response({
+            "ok": True,
+            "node": node,
+            "reachable": bool(reachable),
+            "readmeLoaded": bool(reachable),
+            "path": "README.md",
+            "status": int(status or 0),
+            "latencyMs": max(0, min(int(latency or 0), 60_000)),
+            "checkedAt": now,
+            "reason": clean_string(reason, 80),
+        }, cache_control="no-store, max-age=0, must-revalidate")
+
+    if not row or not https_routing.endpoint_eligible(endpoint, now):
+        return result(False, "endpoint_unavailable")
+    if not await _https_mirror_repository_proof(
+            env, endpoint, context, "blob"):
+        return result(False, "repository_proof_failed")
+    router_public_key = _https_mirror_router_public_key(env)
+    router_seed = _https_mirror_router_seed(env)
+    target = https_routing.masked_target_url(
+        endpoint["baseUrl"], context.get("routeOwner") or context["owner"],
+        context["repo"], "blob", {"path": "README.md"})
+    parsed_target = urlparse(target) if target else None
+    signed_path = (
+        parsed_target.path
+        + (("?" + parsed_target.query) if parsed_target.query else "")
+        if parsed_target else ""
+    )
+    request_id = _b64url_encode(_random_bytes(18))
+    issued_at = int(Date.now())
+    body_digest = https_routing.empty_body_sha256()
+    message = https_routing.request_message(
+        node, "GET", signed_path, body_digest, request_id, issued_at)
+    signature = (
+        await ed25519_sign(
+            router_public_key, router_seed, message.encode("utf-8"))
+        if router_public_key and router_seed and message else "")
+    if not target or not signature:
+        return result(False, "router_unavailable")
+    headers = {
+        "X-ForkMesh-Node": node,
+        "X-ForkMesh-Request-Id": request_id,
+        "X-ForkMesh-Issued-At": str(issued_at),
+        "X-ForkMesh-Body-Sha256": body_digest,
+        "X-ForkMesh-Signature": signature,
+    }
+    started = int(Date.now())
+    try:
+        upstream = await js_fetch_with_timeout(
+            target,
+            {"method": "GET", "headers": headers, "redirect": "manual"},
+            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        )
+        status = int(getattr(upstream, "status", 0) or 0)
+        latency = int(Date.now()) - started
+        announced = int(upstream.headers.get("content-length") or 0)
+        if announced > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+            return result(False, "readme_response_too_large", status, latency)
+        raw = str(await upstream.text())
+        if len(raw.encode("utf-8")) > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+            return result(False, "readme_response_too_large", status, latency)
+        value = json.loads(raw) if raw else {}
+        loaded = bool(
+            status == 200
+            and isinstance(value, dict)
+            and value.get("ok") is True
+            and isinstance(value.get("content"), str)
+        )
+        return result(
+            loaded, "readme_loaded" if loaded else "readme_unavailable",
+            status, latency)
+    except Exception:
+        return result(
+            False, "request_failed", 0, int(Date.now()) - started)
 
 
 def _https_mirror_merge_body(raw, pull_number):
@@ -44430,6 +44772,17 @@ class Default(WorkerEntrypoint):
                 repo,
                 security_scans_match.group(3),
             )
+
+        mirror_reachability_match = REPO_MIRROR_REACHABILITY_RE.match(
+            url.path)
+        if mirror_reachability_match:
+            owner = safe_segment(mirror_reachability_match.group(1))
+            repo = safe_segment(mirror_reachability_match.group(2))
+            node = safe_segment(mirror_reachability_match.group(3))
+            if not owner or not repo or not node:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_mirror_reachability_handler(
+                self.env, request, owner, repo, node)
 
         mirrors_match = REPO_MIRRORS_RE.match(url.path)
         if mirrors_match:

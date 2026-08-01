@@ -282,6 +282,28 @@ raise SystemExit(2)
               .isEmpty(),
           "gateway materialization rejects a mismatched ciphertext digest");
 
+    check(git(source,
+              {QStringLiteral("update-ref"),
+               QStringLiteral("refs/remotes/origin/main"),
+               QStringLiteral("HEAD")}) &&
+              git(source,
+                  {QStringLiteral("branch"),
+                   QStringLiteral("agent/local-only")}),
+          "managed checkout has an origin view and a local agent branch");
+    error.clear();
+    auto managed = PublicMirrorRuntime::syncManagedCheckout(
+        source, root.filePath(QStringLiteral("managed-archive")),
+        root.filePath(QStringLiteral("identity/managed-vault.json")),
+        vaultSecret, {}, tools, &error);
+    check(managed.isValid() &&
+              git(managed.materialization->repositoryPath(),
+                  {QStringLiteral("show-ref"), QStringLiteral("--verify"),
+                   QStringLiteral("refs/heads/main")}) &&
+              !git(managed.materialization->repositoryPath(),
+                   {QStringLiteral("show-ref"), QStringLiteral("--verify"),
+                    QStringLiteral("refs/heads/agent/local-only")}),
+          "managed mirror seals fetched origin branches without exposing local agent refs");
+
     const QByteArray secondPlaintext =
         QByteArrayLiteral("public-repository-content-v2");
     check(writeFile(QDir(source).filePath(QStringLiteral("README.md")),

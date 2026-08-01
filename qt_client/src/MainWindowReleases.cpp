@@ -39,6 +39,7 @@ enum MirrorNodeColumn {
     MirrorNodeColClones,
     MirrorNodeColWebsite,
     MirrorNodeColArtifacts,
+    MirrorNodeColReachability,
     MirrorNodeColumnCount,
 };
 
@@ -1075,7 +1076,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
         {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
          "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU", "RAM",
          "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
-         "Artifacts"});
+         "Artifacts", "Reachability"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1110,6 +1111,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColClones, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColWebsite, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColArtifacts, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColReachability,
+                             QHeaderView::ResizeToContents);
     makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
@@ -1750,6 +1753,50 @@ void MainWindow::loadMirrorNodesPanel()
         item->setToolTip(tip);
         return item;
     };
+    auto makeReachabilityCell = [this, &source](
+                                    const QString &nodeName)
+        -> SortTableWidgetItem * {
+        const QString key = source + QLatin1Char('|') +
+                            nodeName.trimmed().toLower();
+        const QJsonObject probe = m_mirrorReachabilityCache.value(key);
+        const bool pending = m_mirrorReachabilityInFlight.contains(key) ||
+                             probe.isEmpty();
+        const bool loaded = probe.value(QStringLiteral("readmeLoaded")).toBool();
+        QString text;
+        QString tip;
+        double sortValue = 0;
+        if (pending) {
+            text = QStringLiteral("Checking\u2026");
+            tip = QStringLiteral(
+                "Requesting README.md from this exact mirror; failover is disabled.");
+            sortValue = 1;
+        } else if (loaded) {
+            const int latency = probe.value(QStringLiteral("latencyMs")).toInt();
+            text = latency > 0
+                       ? QStringLiteral("README \u00b7 %1 ms").arg(latency)
+                       : QStringLiteral("README loaded");
+            tip = QStringLiteral(
+                "This exact mirror returned README.md successfully (HTTP %1).")
+                      .arg(probe.value(QStringLiteral("status")).toInt(200));
+            sortValue = 3;
+        } else {
+            text = QStringLiteral("Unavailable");
+            const QString reason =
+                probe.value(QStringLiteral("reason")).toString();
+            const int status = probe.value(QStringLiteral("status")).toInt();
+            tip = QStringLiteral(
+                "This exact mirror did not return README.md; no other mirror was used.");
+            if (status > 0)
+                tip += QStringLiteral("\nHTTP %1").arg(status);
+            if (!reason.isEmpty())
+                tip += QStringLiteral("\n%1").arg(reason);
+            sortValue = 2;
+        }
+        auto *item = new SortTableWidgetItem(text);
+        item->setData(kTableSortRole, sortValue);
+        item->setToolTip(tip);
+        return item;
+    };
     // A right-aligned tally cell: em-dash when the count is unknown (-1), else the
     // (abbreviated) number, sorting on the raw value.
     auto makeServeCountCell = [](int value, const QString &tip) -> SortTableWidgetItem * {
@@ -1781,6 +1828,9 @@ void MainWindow::loadMirrorNodesPanel()
     // Node ids (keys) already shown, so a catalog record published under a node's
     // former name doesn't add a second row for the same identity (adhoc #46).
     QSet<QString> shownIds;
+    // Exact node names to probe once the table is complete. Deferring network
+    // starts keeps reply callbacks from re-entering this row-building pass.
+    QSet<QString> reachabilityNodes;
     // One activity dot per active node, fed to the live strip atop the panel.
     QVector<MirrorNodeDot> activityDots;
     // Build a right-aligned numeric count cell (Commits/Branches/Pulls/
@@ -2172,6 +2222,12 @@ void MainWindow::loadMirrorNodesPanel()
         markMismatch(artifactsItem, countMismatch(nodeArtifacts, refArtifacts),
                      QString::number(refArtifacts));
         m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts, artifactsItem);
+        const QString reachabilityNode = nodeDisplay.trimmed().toLower();
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColReachability,
+            makeReachabilityCell(reachabilityNode));
+        if (!reachabilityNode.isEmpty())
+            reachabilityNodes.insert(reachabilityNode);
         ++count;
     }
 
@@ -2426,6 +2482,11 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refArtifacts));
             m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts,
                                         catArtifactsItem);
+            const QString reachabilityNode = nodeName.trimmed().toLower();
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColReachability,
+                makeReachabilityCell(reachabilityNode));
+            reachabilityNodes.insert(reachabilityNode);
             ++count;
         }
     }
@@ -2449,6 +2510,12 @@ void MainWindow::loadMirrorNodesPanel()
                             repoSegment(repo.name, QStringLiteral("repository")),
                             source);
     }
+
+    for (const QString &nodeName : std::as_const(reachabilityNodes))
+        fetchMirrorReachability(
+            sourceOwner,
+            repoSegment(repo.name, QStringLiteral("repository")),
+            source, nodeName);
 
     m_mirrorNodesTable->setSortingEnabled(true);
 
@@ -2619,6 +2686,72 @@ void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
                 loadMirrorNodesPanel();
         }
     });
+}
+
+void MainWindow::fetchMirrorReachability(const QString &owner,
+                                         const QString &repo,
+                                         const QString &source,
+                                         const QString &node)
+{
+    if (!m_networkAccess || owner.isEmpty() || repo.isEmpty() || node.isEmpty())
+        return;
+    const QString normalizedNode = node.trimmed().toLower();
+    const QString key = source + QLatin1Char('|') + normalizedNode;
+    if (m_mirrorReachabilityInFlight.contains(key))
+        return;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const QJsonObject cached = m_mirrorReachabilityCache.value(key);
+    const qint64 clientCheckedAt =
+        qint64(cached.value(QStringLiteral("clientCheckedAt")).toDouble());
+    constexpr qint64 kReachabilityCacheMs = 60 * 1000;
+    if (clientCheckedAt > 0 && nowMs - clientCheckedAt < kReachabilityCacheMs)
+        return;
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/mirrors/%3/reachability")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(repo)),
+                         QString::fromUtf8(
+                             QUrl::toPercentEncoding(normalizedNode))));
+    m_mirrorReachabilityInFlight.insert(key);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, key, source, normalizedNode] {
+                const int httpStatus = reply->attribute(
+                    QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                const QByteArray body = reply->readAll();
+                reply->deleteLater();
+                m_mirrorReachabilityInFlight.remove(key);
+                QJsonObject result = QJsonDocument::fromJson(body).object();
+                if (!result.value(QStringLiteral("ok")).toBool() ||
+                    result.value(QStringLiteral("node")).toString().trimmed()
+                            .compare(normalizedNode, Qt::CaseInsensitive) != 0) {
+                    result = {
+                        {QStringLiteral("ok"), true},
+                        {QStringLiteral("node"), normalizedNode},
+                        {QStringLiteral("reachable"), false},
+                        {QStringLiteral("readmeLoaded"), false},
+                        {QStringLiteral("status"), httpStatus},
+                        {QStringLiteral("reason"),
+                         QStringLiteral("probe_endpoint_unavailable")},
+                    };
+                }
+                result.insert(QStringLiteral("clientCheckedAt"),
+                              double(QDateTime::currentMSecsSinceEpoch()));
+                m_mirrorReachabilityCache.insert(key, result);
+
+                if (m_repoDetailIndex < 0 ||
+                    m_repoDetailIndex >= m_repositories.size())
+                    return;
+                const RepositoryRecord &current =
+                    m_repositories.at(m_repoDetailIndex);
+                const QString currentSource =
+                    repoSegment(current.owner, QStringLiteral("owner")) +
+                    QLatin1Char('/') +
+                    repoSegment(current.name, QStringLiteral("repository"));
+                if (currentSource == source)
+                    loadMirrorNodesPanel();
+            });
 }
 
 void MainWindow::fetchReleaseDownloadCounts(const QString &owner, const QString &repo,
