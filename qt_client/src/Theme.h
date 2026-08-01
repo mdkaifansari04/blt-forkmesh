@@ -383,6 +383,8 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #relayJoinDot {
     background-color: #da3633; border: 1px solid #0d1117; border-radius: 5px;
 }
+/* Faint hairline separating the agent squares from the node dots (adhoc #124). */
+#chromeDotDivider { background-color: #30363d; }
 QPushButton#relayJoinApproveButton {
     background-color: #da3633; color: #ffffff; border: none;
     border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700;
@@ -1670,6 +1672,8 @@ QPushButton#windowChromeCloseButton:hover {
 #relayJoinDot {
     background-color: #cf222e; border: 1px solid #ffffff; border-radius: 5px;
 }
+/* Faint hairline separating the agent squares from the node dots (adhoc #124). */
+#chromeDotDivider { background-color: #d0d7de; }
 QPushButton#relayJoinApproveButton {
     background-color: #cf222e; color: #ffffff; border: none;
     border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700;
