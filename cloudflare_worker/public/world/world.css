@@ -11139,6 +11139,134 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: none !important;
 }
 
+/* Who-is-online pill. The roster drops down on hover or keyboard focus, and
+   the click pins it open so touch — which never hovers — sees the same list. */
+.world-online-menu {
+  position: relative;
+  display: inline-flex;
+}
+
+.world-online-dropdown {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 8px);
+  left: 0;
+  width: 244px;
+  max-width: calc(100vw - 24px);
+  max-height: min(52vh, 340px);
+  overflow-y: auto;
+  border: 1px solid rgb(139 148 158 / 0.55);
+  border-radius: 12px;
+  background: rgb(13 17 23 / 0.94);
+  padding: 8px;
+  box-shadow: 0 14px 34px rgb(1 4 9 / 0.5);
+  backdrop-filter: blur(14px);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-6px);
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+/* Bridges the gap under the pill so the pointer can reach the panel. */
+.world-online-dropdown::before {
+  position: absolute;
+  top: -8px;
+  right: 0;
+  left: 0;
+  height: 8px;
+  content: "";
+}
+
+.world-online-menu:hover .world-online-dropdown,
+.world-online-menu:focus-within .world-online-dropdown,
+.world-online-menu[data-open="true"] .world-online-dropdown {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.world-online-heading {
+  margin: 0 0 6px;
+  padding: 0 6px;
+  color: #8b949e;
+  font: 700 0.58rem/1.4 "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-online-people {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 2px;
+  list-style: none;
+}
+
+.world-status-actions .world-online-people button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  height: auto;
+  align-items: center;
+  justify-content: stretch;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  padding: 5px 6px;
+  gap: 0 8px;
+  grid-template-areas:
+    "flag name"
+    "flag activity";
+  grid-template-columns: 18px minmax(0, 1fr);
+  box-shadow: none;
+  text-align: left;
+}
+
+.world-status-actions .world-online-people button:hover,
+.world-status-actions .world-online-people button:focus-visible {
+  background: rgb(56 139 253 / 0.22);
+  outline: none;
+}
+
+.world-online-flag {
+  grid-area: flag;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.world-online-name {
+  overflow: hidden;
+  grid-area: name;
+  color: #f0f6fc;
+  font: 700 0.72rem/1.3 "ForkMesh Lato", system-ui, sans-serif;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-online-activity {
+  overflow: hidden;
+  grid-area: activity;
+  color: #8b949e;
+  font: 500 0.6rem/1.3 "ForkMesh Mono", ui-monospace, monospace;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.world-online-more {
+  margin: 6px 0 0;
+  padding: 0 6px;
+  color: #8b949e;
+  font: 500 0.58rem/1.4 "ForkMesh Mono", ui-monospace, monospace;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .world-online-dropdown {
+    transition: none;
+  }
+}
+
 /* Newest messages are inserted first by the controller. */
 .world-native-chat #fullChatMessages {
   align-content: start;
