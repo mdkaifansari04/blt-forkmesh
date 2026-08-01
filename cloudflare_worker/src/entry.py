@@ -7491,13 +7491,7 @@ OFFICE_ATTENDANCE_FLOOR_LABELS = {
     "lobby": "Lobby",
     "marketing": "Marketing",
     "engineering": "Engineering",
-    "product-design": "Product & Design",
-    "security": "Security",
     "infrastructure": "Infrastructure",
-    "community": "Community",
-    "partnerships": "Partnerships",
-    "operations": "Operations",
-    "executive": "Executive",
     "rooftop": "Rooftop",
 }
 
@@ -8063,27 +8057,8 @@ OFFICE_FLOOR_TEAM_ALIASES = {
         "engineering", "engineers", "development", "developers",
         "platform", "frontend", "backend",
     },
-    "product-design": {
-        "product-design", "product", "design", "ux", "ui-ux",
-    },
-    "security": {
-        "security", "security-team", "trust-safety", "trust-and-safety",
-    },
     "infrastructure": {
         "infrastructure", "infra", "devops", "site-reliability", "sre",
-    },
-    "community": {
-        "community", "community-team", "developer-relations", "devrel",
-    },
-    "partnerships": {
-        "partnerships", "partnership", "business-development", "bizdev",
-    },
-    "operations": {
-        "operations", "ops", "people-operations", "finance-operations",
-    },
-    "executive": {
-        "executive", "executives", "leadership", "organization-leadership",
-        "org-leadership",
     },
 }
 
@@ -9882,11 +9857,6 @@ WORLD_QA_CARDS = (
      "done, or error plus a bounded redacted log tail. Click the Actions face "
      "and confirm the full authorized run list opens. Repeat without write "
      "access and confirm no private run or log data appears."),
-    ("executive-office-floor", "Executive Office floor",
-     "Sign in as an Executive-team member and ride the elevator to Executive. "
-     "Confirm the strategy table, ten chairs, organization map and floor label "
-     "render without intersecting adjacent stories. Confirm a non-Executive "
-     "member cannot select the floor and attendance reports Executive."),
     ("deploy-lifecycle", "World deployment lifecycle",
      "Start a deployment while the World is open. Confirm the deploy notice "
      "appears immediately, animates while work is active, and ends with a "

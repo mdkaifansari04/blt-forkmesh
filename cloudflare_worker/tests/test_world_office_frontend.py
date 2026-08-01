@@ -679,32 +679,38 @@ def test_office_glass_uses_one_stable_non_depth_writing_envelope():
     assert "child.receiveShadow = false" in scene
 
 
-def test_tower_is_eleven_stories_and_about_ten_times_the_old_width():
+def test_tower_is_five_stories_and_about_ten_times_the_old_width():
     scene = source(SCENE_PATH)
     tower = source(TOWER_PATH)
     assert "export const OFFICE_WIDTH = 170" in tower
-    assert "export const OFFICE_FLOOR_COUNT = 11" in tower
+    assert "export const OFFICE_FLOOR_COUNT = 5" in tower
     assert "export const OFFICE_FLOOR_HEIGHT = 16" in tower
-    assert tower.count("level: ") == 11
+    assert tower.count("level: ") == 5
     for floor_id in (
         "lobby",
         "marketing",
         "engineering",
+        "infrastructure",
+        "rooftop",
+    ):
+        assert f'id: "{floor_id}"' in tower
+    # The retired department storeys keep their team names elsewhere in the
+    # product, but no longer exist as floors of the virtual office.
+    for floor_id in (
         "product-design",
         "security",
-        "infrastructure",
         "community",
         "partnerships",
         "operations",
         "executive",
-        "rooftop",
     ):
-        assert f'id: "{floor_id}"' in tower
+        assert f'id: "{floor_id}"' not in tower
+        assert f'officeFloorGroups.get("{floor_id}")' not in scene
     assert "for (let level = 1; level < OFFICE_FLOOR_COUNT; level += 1)" in scene
     assert "OFFICE_FLOORS.slice(1).forEach((floor, interiorIndex) => {" in scene
     assert "function addOfficeFunFloorProps()" in scene
-    assert 'officeFloorGroups.get("executive")' in scene
-    assert "forkmesh-office-executive-strategy-table" in scene
+    assert 'officeFloorGroups.get("infrastructure")' in scene
+    assert "forkmesh-office-executive-strategy-table" not in scene
 
 
 def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
@@ -762,17 +768,16 @@ def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
         "elevatorCutMaxX",
         "elevatorCutMinZ",
         "forkmesh-office-floor-slab-",
-        "new THREE.TorusKnotGeometry(3.8, 0.6",
-        'shield.name = "forkmesh-office-feature-security-shield"',
         "OFFICE_FLOOR_HEIGHT / 2",
-        "orbitPivot.rotation.y",
-        "forkmesh-office-feature-partnerships-orbit-",
     ):
         assert contract in scene
     # These rotations were the source of the giant pink/cyan shapes visibly
-    # slicing through adjacent floors.
+    # slicing through adjacent floors. The exhibits that used them belonged to
+    # retired storeys and are gone with their floors.
     assert "new THREE.TorusKnotGeometry(8, 1.35" not in scene
     assert "orbit.rotation.z" not in scene
+    assert "forkmesh-office-feature-partnerships-orbit-" not in scene
+    assert "forkmesh-office-feature-security-shield" not in scene
 
 
 def test_office_uses_solid_floor_finishes_and_batched_ceiling_light_grids():

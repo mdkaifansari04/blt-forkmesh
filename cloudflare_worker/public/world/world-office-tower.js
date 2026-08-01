@@ -11,7 +11,7 @@ export const OFFICE_DEPTH = 90;
 // Give every team a genuinely spacious story. The original eight-unit
 // spacing let the larger floor exhibits visually intersect the slabs above.
 export const OFFICE_FLOOR_HEIGHT = 16;
-export const OFFICE_FLOOR_COUNT = 11;
+export const OFFICE_FLOOR_COUNT = 5;
 export const OFFICE_TOWER_HEIGHT = OFFICE_FLOOR_HEIGHT * OFFICE_FLOOR_COUNT;
 export const OFFICE_FRONT_Z = OFFICE_DEPTH / 2;
 export const OFFICE_DOOR_WIDTH = 10;
@@ -58,57 +58,15 @@ export const OFFICE_FLOORS = Object.freeze([
     description: "Pairing stations and a live build runway",
   }),
   Object.freeze({
-    id: "product-design",
-    level: 3,
-    label: "Product & Design",
-    team: "product-design",
-    description: "Prototype gallery and color lab",
-  }),
-  Object.freeze({
-    id: "security",
-    level: 4,
-    label: "Security",
-    team: "security",
-    description: "Threat-model arena and shield table",
-  }),
-  Object.freeze({
     id: "infrastructure",
-    level: 5,
+    level: 3,
     label: "Infrastructure",
     team: "infrastructure",
     description: "Mirror racks and network observatory",
   }),
   Object.freeze({
-    id: "community",
-    level: 6,
-    label: "Community",
-    team: "community",
-    description: "Town hall, games, and contributor lounge",
-  }),
-  Object.freeze({
-    id: "partnerships",
-    level: 7,
-    label: "Partnerships",
-    team: "partnerships",
-    description: "Orbit table and collaboration booths",
-  }),
-  Object.freeze({
-    id: "operations",
-    level: 8,
-    label: "Operations",
-    team: "operations",
-    description: "Mission control and incident timeline",
-  }),
-  Object.freeze({
-    id: "executive",
-    level: 9,
-    label: "Executive",
-    team: "executive",
-    description: "Strategy room, organization map, and decision table",
-  }),
-  Object.freeze({
     id: "rooftop",
-    level: 10,
+    level: 4,
     label: "Rooftop Patio",
     team: "",
     publicForMembers: true,
@@ -139,50 +97,12 @@ export const OFFICE_FLOOR_TEAM_ALIASES = Object.freeze({
     "frontend",
     "backend",
   ]),
-  "product-design": Object.freeze([
-    "product-design",
-    "product",
-    "design",
-    "ux",
-    "ui-ux",
-  ]),
-  security: Object.freeze([
-    "security",
-    "security-team",
-    "trust-safety",
-    "trust-and-safety",
-  ]),
   infrastructure: Object.freeze([
     "infrastructure",
     "infra",
     "devops",
     "site-reliability",
     "sre",
-  ]),
-  community: Object.freeze([
-    "community",
-    "community-team",
-    "developer-relations",
-    "devrel",
-  ]),
-  partnerships: Object.freeze([
-    "partnerships",
-    "partnership",
-    "business-development",
-    "bizdev",
-  ]),
-  operations: Object.freeze([
-    "operations",
-    "ops",
-    "people-operations",
-    "finance-operations",
-  ]),
-  executive: Object.freeze([
-    "executive",
-    "executives",
-    "leadership",
-    "organization-leadership",
-    "org-leadership",
   ]),
 });
 
@@ -319,30 +239,9 @@ const FLOOR_OBSTACLES = Object.freeze({
       type: "rect", minX: 30.5, maxX: 41.5, minZ: -2.2, maxZ: 2.2,
     }),
   ]),
-  "product-design": Object.freeze([
-    Object.freeze({ type: "circle", x: -36, z: 0, radius: 4 }),
-    Object.freeze({ type: "circle", x: -12, z: 0, radius: 4 }),
-    Object.freeze({ type: "circle", x: 12, z: 0, radius: 4 }),
-    Object.freeze({ type: "circle", x: 36, z: 0, radius: 4 }),
-  ]),
-  security: Object.freeze([
-    Object.freeze({ type: "circle", x: 0, z: -4, radius: 9 }),
-  ]),
   infrastructure: Object.freeze([
     Object.freeze({ type: "rect", minX: -58, maxX: -42, minZ: -31, maxZ: 31 }),
     Object.freeze({ type: "rect", minX: 42, maxX: 58, minZ: -31, maxZ: 31 }),
-  ]),
-  community: Object.freeze([
-    Object.freeze({ type: "circle", x: 0, z: -3, radius: 10 }),
-  ]),
-  partnerships: Object.freeze([
-    Object.freeze({ type: "circle", x: 0, z: 0, radius: 9 }),
-  ]),
-  operations: Object.freeze([
-    Object.freeze({ type: "rect", minX: -38, maxX: 38, minZ: -8, maxZ: 8 }),
-  ]),
-  executive: Object.freeze([
-    Object.freeze({ type: "rect", minX: -27, maxX: 27, minZ: -8, maxZ: 8 }),
   ]),
   rooftop: Object.freeze([
     // Keep only the table footprints solid. The former six-unit circles also
