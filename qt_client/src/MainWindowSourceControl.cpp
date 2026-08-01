@@ -328,12 +328,10 @@ QWidget *MainWindow::buildSourceControlPanel()
             this, [updateCharCount](int) { updateCharCount(); });
     updateCharCount();
 
-    m_scmStageAllButton = new QPushButton("Stage all");
-    connect(m_scmStageAllButton, &QPushButton::clicked, this, &MainWindow::scmStageAll);
-    m_scmUnstageAllButton = new QPushButton("Unstage all");
-    connect(m_scmUnstageAllButton, &QPushButton::clicked, this, &MainWindow::scmUnstageAll);
-    m_scmDiscardAllButton = new QPushButton("Discard all");
-    connect(m_scmDiscardAllButton, &QPushButton::clicked, this, &MainWindow::scmDiscardAll);
+    // Stage all / Unstage all / Discard all no longer sit here as text buttons:
+    // they are whole-group actions, and the CHANGES group headers already carry
+    // them as the +, - and revert hover actions on the group they apply to (see
+    // addGroup below). The commit actions get this row to themselves, on one line.
     m_scmCommitButton = new QPushButton("Commit");
     m_scmCommitButton->setObjectName("primaryButton");
     connect(m_scmCommitButton, &QPushButton::clicked, this, &MainWindow::scmCommit);
@@ -344,19 +342,18 @@ QWidget *MainWindow::buildSourceControlPanel()
         "(or push to the upstream branch).");
     connect(m_scmCommitPushButton, &QPushButton::clicked, this,
             &MainWindow::scmCommitAndPush);
-    m_scmStageCommitPushButton = new QPushButton("Stage all, commit & push");
+    // Short label so all three commit actions fit on one line in this narrow
+    // column; the tooltip still spells the three steps out.
+    m_scmStageCommitPushButton = new QPushButton("Stage & push");
     m_scmStageCommitPushButton->setObjectName("primaryButton");
     m_scmStageCommitPushButton->setToolTip(
         "Stage every change, commit them, then publish to the network mirror "
         "(or push to the upstream branch) — in one click.");
     connect(m_scmStageCommitPushButton, &QPushButton::clicked, this,
             &MainWindow::scmStageAllCommitAndPush);
-    for (QPushButton *b : {m_scmCopyButton, m_scmStageAllButton,
-                           m_scmUnstageAllButton, m_scmDiscardAllButton,
-                           m_scmCommitButton, m_scmCommitPushButton,
-                           m_scmStageCommitPushButton}) {
-        if (b != m_scmCommitButton && b != m_scmCommitPushButton &&
-            b != m_scmStageCommitPushButton)
+    for (QPushButton *b : {m_scmCopyButton, m_scmCommitButton,
+                           m_scmCommitPushButton, m_scmStageCommitPushButton}) {
+        if (b == m_scmCopyButton)
             b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -405,11 +402,11 @@ QWidget *MainWindow::buildSourceControlPanel()
     composeRow->addWidget(generationMenuButton, 0, Qt::AlignTop);
     root->addLayout(composeRow);
 
+    // Three small buttons on a single line. The FlowLayout stays so a column
+    // dragged really narrow wraps instead of clipping, but at any normal width
+    // the row reads as one line of commit actions.
     m_scmControlsPanel = new QWidget;
     auto *controlsRow = new FlowLayout(m_scmControlsPanel, 0, 6, 6);
-    controlsRow->addWidget(m_scmStageAllButton);
-    controlsRow->addWidget(m_scmUnstageAllButton);
-    controlsRow->addWidget(m_scmDiscardAllButton);
     controlsRow->addWidget(m_scmCommitButton);
     controlsRow->addWidget(m_scmCommitPushButton);
     controlsRow->addWidget(m_scmStageCommitPushButton);
@@ -496,6 +493,17 @@ QWidget *MainWindow::buildSourceControlPanel()
     // outline; blank the app-wide #fileTree::item:selected solid fill so it
     // doesn't paint underneath the row widget (issue #252 pattern).
     blankSelectionBand(m_scmTree);
+    // No outline around the changes list: the CHANGES heading above already
+    // delimits it, and the box only fenced in an already-narrow column. Keyed on
+    // the object name so the per-widget rule beats the app-wide #fileTree one.
+    m_scmTree->setFrameShape(QFrame::NoFrame);
+    m_scmTree->setStyleSheet(m_scmTree->styleSheet() +
+                             QStringLiteral("#fileTree{border:none;}"));
+    // The history pane below can be dragged up over this one: a tree that
+    // insists on its own minimum height would floor that drag well above the
+    // splitter's own minimum.
+    m_scmTree->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
+    m_scmTree->setMinimumHeight(0);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
             [this](QTreeWidgetItem *item, QTreeWidgetItem *previous) {
                 if (previous) {
@@ -614,10 +622,7 @@ void MainWindow::refreshSourceControl(bool force)
     if (m_scmEmptyNote)
         m_scmEmptyNote->setVisible(!canWrite);
     for (QWidget *w : {static_cast<QWidget *>(m_scmMessage),
-                       static_cast<QWidget *>(m_scmTree),
-                       static_cast<QWidget *>(m_scmStageAllButton),
-                       static_cast<QWidget *>(m_scmUnstageAllButton),
-                       static_cast<QWidget *>(m_scmDiscardAllButton)})
+                       static_cast<QWidget *>(m_scmTree)})
         if (w)
             w->setEnabled(canWrite);
 
@@ -885,10 +890,6 @@ void MainWindow::refreshSourceControl(bool force)
             m_scmGenDuration && m_scmGenDuration->currentIndex() > 0;
         m_scmGenerateButton->setEnabled(anything || durCoversHistory);
     }
-    if (m_scmUnstageAllButton)
-        m_scmUnstageAllButton->setEnabled(!staged.isEmpty());
-    if (m_scmDiscardAllButton)
-        m_scmDiscardAllButton->setEnabled(!changes.isEmpty());
 
     // On-device drafting is free, local and instant, so when it's the selected
     // engine auto-fill the message from the changes (never the paid AI models).

@@ -517,7 +517,7 @@
 
   // Mirrors of one logical repository are grouped by root commit, so an
   // organization alias registered on any member names the whole group.
-  function groupDisplayOwner(group) {
+  function groupOrganizationAlias(group) {
     const origin = sourceOfTruth(group);
     const name = String(origin?.name || "").trim().toLowerCase();
     for (const member of [origin, ...(group?.members || [])]) {
@@ -526,7 +526,11 @@
         .find((value) => value.kind === "organization");
       if (organization) return organization.owner;
     }
-    return repoDisplayOwner(origin);
+    return "";
+  }
+
+  function groupDisplayOwner(group) {
+    return groupOrganizationAlias(group) || repoDisplayOwner(sourceOfTruth(group));
   }
 
   function normalizeRepoSegment(value) {
@@ -696,6 +700,27 @@
     const name = encodeURIComponent(repo.name || "");
     const suffix = path ? `/${kind}/${path.split("/").map(encodeURIComponent).join("/")}` : "";
     return `/${owner}/${name}${suffix}`;
+  }
+
+  // A list that reads "forkmesh/forkmesh" must also link there, not to the
+  // machine that happens to publish the bytes (adhoc #132). Organization
+  // aliases are real addresses: the Worker rewrites /<org>/<repo> and every
+  // /api/repo/<org>/<repo>/... path onto the serving node before routing, and
+  // a direct visit resolves the alias again on the repo page. User identities
+  // have no such rewrite, so a repo whose logical owner is only a user keeps
+  // the physical /<node>/<repo> route.
+  function repoLinkUrl(repo, kind = "tree", path = "") {
+    const organization = repoLogicalOwners(repo)
+      .find((value) => value.kind === "organization");
+    return repoPathUrl(
+      organization ? { ...repo, owner: organization.owner } : repo, kind, path);
+  }
+
+  function groupLinkUrl(group, kind = "tree", path = "") {
+    const origin = sourceOfTruth(group);
+    const organization = groupOrganizationAlias(group);
+    return repoPathUrl(
+      organization ? { ...origin, owner: organization } : origin, kind, path);
   }
 
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
@@ -5711,7 +5736,7 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
-      <a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-start gap-3 text-left">
+      <a href="${escapeHtml(groupLinkUrl(group))}" class="flex min-w-0 items-start gap-3 text-left">
         ${nativeRepositoryLogoMarkup(repo, "h-12 w-12")}
         <span class="block min-w-0 flex-1">
         <span class="flex min-w-0 flex-wrap items-center gap-2">
@@ -5837,7 +5862,7 @@
           // organization does not come back a second time under the node that
           // publishes it.
           key: `${groupDisplayOwner(group)}/${repo.name || ""}`,
-          href: repoPathUrl(repo),
+          href: groupLinkUrl(group),
           organization: false,
         };
       }),
@@ -5877,7 +5902,7 @@
         })),
       ...groupRepositories(state.repositories || []).map((group) => {
         const repo = sourceOfTruth(group);
-        return { repo, href: repoPathUrl(repo), organization: false };
+        return { repo, href: groupLinkUrl(group), organization: false };
       }),
     ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
       .filter((entry, index, values) =>
@@ -5934,7 +5959,7 @@
           ${nativeRepositoryLogoMarkup(repo)}
           <div class="min-w-0 flex-1">
             <p class="text-sm text-muted-foreground">
-              <a href="${escapeHtml(repoPathUrl(repo))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
+              <a href="${escapeHtml(groupLinkUrl(group))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
               ${live ? "is available on the mesh" : "is waiting for a live host"}
             </p>
             <p class="mt-2 line-clamp-2 text-sm leading-5 text-muted-foreground">${escapeHtml(description)}</p>
@@ -9404,13 +9429,37 @@
     }
   }
 
-  // The connector token is minted locally by the desktop app (Settings -> MCP)
-  // and never leaves that machine, so the website cannot look it up: it asks
-  // once, remembers it here, and from then on every copied prompt is a
-  // paste-and-run block. Shift-clicking the button replaces a rotated token.
+  // The connector token is a locally minted bearer string, so nothing has to
+  // be fetched to have one: the first copy mints it right here in the desktop's
+  // own format, remembers it, and the copied prompt carries the lines that
+  // install it on the node. Copying is one click and never opens a dialog.
+  // Shift-clicking the button still opens the paste box, which is what a node
+  // that already published a connector needs (its own token wins).
   const MCP_CONNECTOR_TOKEN_KEY = "forkmesh.mcpConnectorToken";
   const MCP_CONNECTOR_TOKEN_PLACEHOLDER =
     "PASTE_CONNECTOR_TOKEN_FROM_FORKMESH_DESKTOP_SETTINGS_MCP";
+  // Matches qt_client/src/McpConnector.cpp: "fmcp_" + 32 CSPRNG bytes,
+  // base64url, unpadded — the shape isWellFormedToken() accepts.
+  const MCP_CONNECTOR_TOKEN_BYTES = 32;
+
+  function generateMcpConnectorToken() {
+    try {
+      const bytes = new Uint8Array(MCP_CONNECTOR_TOKEN_BYTES);
+      window.crypto.getRandomValues(bytes);
+      let binary = "";
+      bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+      });
+      return (
+        "fmcp_" +
+        btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+      );
+    } catch (_) {
+      // No CSPRNG (ancient or locked-down browser): fall back to the
+      // placeholder rather than to a guessable token.
+      return "";
+    }
+  }
 
   function loadMcpConnectorToken() {
     try {
@@ -9425,6 +9474,30 @@
       if (token) localStorage.setItem(MCP_CONNECTOR_TOKEN_KEY, token);
       else localStorage.removeItem(MCP_CONNECTOR_TOKEN_KEY);
     } catch (_) {}
+  }
+
+  // The token for this copy. A plain click never asks anything: a remembered
+  // token is reused, otherwise one is generated on the spot and kept. Only a
+  // shift-click opens the paste box, for the node that already published its
+  // own connector; an empty answer there rotates to a freshly generated token
+  // rather than leaving the prompt carrying a placeholder.
+  function ensureMcpConnectorToken(options) {
+    let token = loadMcpConnectorToken();
+    if (options?.replaceToken) {
+      const entered = window.prompt(
+        "Paste the connector token this node already published (ForkMesh desktop app -> Settings -> MCP). Leave it empty to generate a fresh one instead - the copied prompt tells the agent how to install it.",
+        token,
+      );
+      if (entered === null) return token;
+      token = String(entered).trim().slice(0, 200) || generateMcpConnectorToken();
+      saveMcpConnectorToken(token);
+      return token;
+    }
+    if (!token) {
+      token = generateMcpConnectorToken();
+      saveMcpConnectorToken(token);
+    }
+    return token;
   }
 
   // "Copy MCP prompt" on the issue detail page: one paste block that points an
@@ -9446,6 +9519,10 @@
     const serverScript = "<FORKMESH_CHECKOUT>/tools/forkmesh_mcp_server.py";
     const repoCheckout = `<CHECKOUT_OF_${repoSlug}>`;
     const connectorToken = token || MCP_CONNECTOR_TOKEN_PLACEHOLDER;
+    // The same file tools/forkmesh_mcp_server.py reads (FORKMESH_MCP_CONNECTOR
+    // overrides it) and the desktop's Settings -> MCP tab writes.
+    const connectorFile =
+      "$XDG_DATA_HOME/ForkMesh/ForkMesh/mcp/connector.json (default ~/.local/share/ForkMesh/ForkMesh/mcp/connector.json)";
     const configuration = {
       mcpServers: {
         forkmesh: {
@@ -9458,8 +9535,15 @@
         },
       },
     };
+    // The token was minted in the browser, so it only unlocks the write tools
+    // once this machine's connector file holds it. An existing connector is
+    // never overwritten: that would demote every other agent config still
+    // holding the old string, and the node owner already has a token to use.
     const tokenNote = token
-      ? "FORKMESH_MCP_TOKEN above is a live connector token: keep it exactly as written. Treat it as a secret - never print it in logs, commits, pull requests, or chat."
+      ? [
+          `FORKMESH_MCP_TOKEN above is a connector token minted for this prompt. Activate it before step 1: if ${connectorFile} does not exist, create it (mode 0600) containing {"version": 1, "token": "${connectorToken}", "node": "", "label": "copied MCP prompt", "created_ms": <epoch milliseconds>} - the same record the desktop app writes. If that file already exists, leave it exactly as it is and use its own "token" value in the configuration above instead - the node already published a connector and overwriting it would revoke every other agent.`,
+          "Treat the token as a secret - never print it in logs, commits, pull requests, or chat.",
+        ].join("\n")
       : `FORKMESH_MCP_TOKEN above is a placeholder: replace ${MCP_CONNECTOR_TOKEN_PLACEHOLDER} with the connector token the ForkMesh desktop app mints under Settings -> MCP -> Generate token, otherwise the write tools stay read-only. Treat it as a secret - never print it in logs, commits, pull requests, or chat.`;
     return [
       `Work ForkMesh issue #${number} in ${repoSlug} end to end through the "forkmesh" MCP server.`,
@@ -9498,17 +9582,7 @@
       location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
       return false;
     }
-    let token = loadMcpConnectorToken();
-    if (!token || options?.replaceToken) {
-      const entered = window.prompt(
-        "Paste the ForkMesh connector token (desktop app -> Settings -> MCP -> Generate token). It is embedded in the copied prompt so the agent's write tools work, and remembered on this browser. Leave it empty to copy the prompt with a placeholder instead.",
-        token,
-      );
-      if (entered !== null) {
-        token = String(entered).trim().slice(0, 200);
-        saveMcpConnectorToken(token);
-      }
-    }
+    const token = ensureMcpConnectorToken(options);
     const prompt = issueMcpPrompt(repo, detail.number, detail.parsed?.values, token);
     const copied = await copyTextToClipboard(prompt);
     if (!copied) {
@@ -9555,7 +9629,7 @@
     // /login and returns here, so the visitor discovers the workflow either way.
     const mcpPromptAction =
       isIssues && !options.pending
-        ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and connector token included (shift-click to replace the saved token)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
+        ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and a generated connector token included (shift-click to paste a token this node already published)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
         : "";
     const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
     // Always mount the timeline container for issues so a comment posted from
@@ -14383,14 +14457,15 @@
   }
 
   // Opening a repo from any list/search control is a real page navigation now
-  // (repo pages are their own documents). Prefer the canonical origin's clean
-  // URL when the catalog already resolved the key (alias groups), falling back
-  // to the raw owner/name path — the repo page resolves it again on boot.
+  // (repo pages are their own documents). Prefer the organization address the
+  // list already displays when the catalog resolved the key (alias groups),
+  // falling back to the raw owner/name path — the repo page resolves it again
+  // on boot.
   function openRepoPage(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return;
     const repo = findRepository(wanted);
-    const url = repo ? repoPathUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
+    const url = repo ? repoLinkUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
     closeMobileDrawers();
     location.assign(url);
   }
@@ -15889,8 +15964,9 @@
         "[data-repo-issue-mcp-prompt]",
       );
       if (issueMcpPromptButton) {
-        // Shift-click re-asks for the connector token, so a rotated or revoked
-        // one can be replaced without clearing site storage by hand.
+        // A plain click copies straight away with a generated connector token.
+        // Shift-click opens the paste box instead, so a node that already
+        // published its own connector can hand over that token by hand.
         void copyIssueMcpPrompt(issueMcpPromptButton, {
           replaceToken: event.shiftKey === true,
         });

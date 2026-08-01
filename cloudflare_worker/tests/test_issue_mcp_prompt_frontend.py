@@ -33,20 +33,49 @@ def test_prompt_carries_the_full_mcp_server_configuration_and_token():
         assert contract in DASHBOARD
 
 
-def test_connector_token_is_asked_for_once_and_remembered():
-    # The desktop mints the token locally and it never reaches the website, so
-    # the browser remembers what the user pastes and reuses it on every copy;
-    # a shift-click replaces a rotated one, and a skipped prompt still copies
-    # with an obvious placeholder rather than a silently broken config.
+def test_connector_token_is_generated_on_the_spot_and_remembered():
+    # One click has to be enough, so the token is minted in the browser in the
+    # desktop's own fmcp_ format, remembered, and reused on every later copy.
     for contract in (
         '"forkmesh.mcpConnectorToken"',
         "function loadMcpConnectorToken()",
         "function saveMcpConnectorToken(token)",
-        "if (!token || options?.replaceToken) {",
-        "window.prompt(",
-        "saveMcpConnectorToken(token);",
+        "function generateMcpConnectorToken()",
+        "window.crypto.getRandomValues(bytes)",
+        '"fmcp_" +',
+        "function ensureMcpConnectorToken(options)",
+        "const token = ensureMcpConnectorToken(options);",
         "MCP_CONNECTOR_TOKEN_PLACEHOLDER",
-        "replaceToken: event.shiftKey === true,",
+    ):
+        assert contract in DASHBOARD
+
+
+def test_plain_copy_never_opens_a_dialog():
+    # The paste box hangs off the shift-click branch only, so the ordinary
+    # path from click to clipboard asks the user nothing.
+    start = DASHBOARD.index("function ensureMcpConnectorToken(options)")
+    body = DASHBOARD[start : DASHBOARD.index("function issueMcpPrompt", start)]
+    replace_branch = body.index("if (options?.replaceToken) {")
+    prompt_call = body.index("window.prompt(")
+    assert replace_branch < prompt_call
+    # ...and that branch has returned before the un-shifted path generates.
+    assert body.index("if (!token) {") > prompt_call
+    assert "replaceToken: event.shiftKey === true," in DASHBOARD
+
+
+def test_prompt_installs_the_generated_token_without_clobbering_a_connector():
+    # A browser-minted token only unlocks the write tools once this machine's
+    # connector file holds it, and an existing connector has to win: replacing
+    # it would revoke every other agent config still holding the old string.
+    for contract in (
+        "mcp/connector.json",
+        "Activate it before step 1",
+        # The record McpConnector::saveConnector writes, field for field, so
+        # the desktop's Settings -> MCP tab renders what the agent installed.
+        'create it (mode 0600) containing {"version": 1, "token"',
+        '"created_ms": <epoch milliseconds>',
+        "leave it exactly as it is and use its own",
+        "overwriting it would revoke every other agent",
     ):
         assert contract in DASHBOARD
 

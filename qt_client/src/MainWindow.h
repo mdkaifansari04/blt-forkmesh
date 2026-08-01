@@ -3172,6 +3172,10 @@ private:
     void moveGlobalSearchSelection(int delta); // keyboard up/down through results
     void activateGlobalSearchItem(QListWidgetItem *item); // navigate to a result
     void hideGlobalSearchPopup();
+    // On the Git page the same box is that page's commit search (it has none of
+    // its own): mirror what's typed into the commit-list filter, and clear the
+    // filter again when the page isn't on screen.
+    void syncGitCommitFilter();
     // --- Browser-style back / forward navigation, sat just left of the search box.
     // A history of "places" (section + open repo + repo tab) is recorded as you
     // move around; Back and Forward walk it without recording new entries.
@@ -5651,9 +5655,8 @@ private:
     QPushButton *m_scmCommitButton = nullptr;
     QPushButton *m_scmCommitPushButton = nullptr; // commit, then publish/push
     QPushButton *m_scmStageCommitPushButton = nullptr; // stage all, commit, push
-    QPushButton *m_scmStageAllButton = nullptr;
-    QPushButton *m_scmUnstageAllButton = nullptr;
-    QPushButton *m_scmDiscardAllButton = nullptr;
+    // Stage all / Unstage all / Discard all have no buttons of their own in the
+    // panel any more — the CHANGES group headers carry those three actions.
     QPushButton *m_scmRefreshButton = nullptr;
     QPushButton *m_scmPrevButton = nullptr;   // jump to previous changed file
     QPushButton *m_scmNextButton = nullptr;   // jump to next changed file

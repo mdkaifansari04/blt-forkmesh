@@ -431,10 +431,12 @@ QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
 /* The relay switcher rides the window-chrome line and reads as a title, so it
-   carries no outline of its own (adhoc #407). */
+   carries no outline of its own (adhoc #407). Slim side padding: the button is
+   pinned to railItemWidth() so its favicon lines up with the activity rail's
+   icons below, and 12px a side would squeeze the 25px icon. */
 QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
-    color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
+    color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 4px;
 }
 QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,
@@ -1710,10 +1712,12 @@ QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
 /* The relay switcher rides the window-chrome line and reads as a title, so it
-   carries no outline of its own (adhoc #407). */
+   carries no outline of its own (adhoc #407). Slim side padding: the button is
+   pinned to railItemWidth() so its favicon lines up with the activity rail's
+   icons below, and 12px a side would squeeze the 25px icon. */
 QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
-    color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
+    color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 4px;
 }
 QPushButton#relayOpenButton:hover, QPushButton#navHistoryButton:hover,
 QPushButton#relayMenuButton:hover,

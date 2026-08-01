@@ -4813,7 +4813,12 @@ QWidget *MainWindow::buildBreadcrumb()
     m_relayMenuButton = new QPushButton;
     m_relayMenuButton->setObjectName("relayMenuButton");
     m_relayMenuButton->setCursor(Qt::PointingHandCursor);
-    m_relayMenuButton->setIconSize(QSize(28, 28));
+    // A 25px favicon (a tenth smaller than the old 28) in a button exactly as
+    // wide as an activity-rail item, so the logo paints on the same vertical
+    // axis as every rail octicon underneath it. The chrome row drops its left
+    // margin to match; see chromeRow in this same function.
+    m_relayMenuButton->setIconSize(QSize(25, 25));
+    m_relayMenuButton->setFixedWidth(railItemWidth());
     m_relayMenuButton->setToolTip("Switch, search, or add relays");
     connect(m_relayMenuButton, &QPushButton::clicked, this,
             &MainWindow::showRelayMenu);
@@ -5464,8 +5469,10 @@ QWidget *MainWindow::buildBreadcrumb()
 
     auto *chrome = new WindowChromeBar;
     auto *chromeRow = new QHBoxLayout(chrome);
-    // 24px on the left nudges the favicon in off the window edge (adhoc #91).
-    chromeRow->setContentsMargins(24, 0, 8, 0);
+    // No left margin: the relay favicon is a rail-item-wide button, so starting
+    // the row at the window edge lines the logo up with the activity rail's
+    // icons directly below it (this replaces the old 24px inset from adhoc #91).
+    chromeRow->setContentsMargins(0, 0, 8, 0);
     chromeRow->setSpacing(8);
     // The instance/relay switcher heads the edge-to-edge chrome, with the public
     // SOL balance immediately to its right. The live fleet matrix sits in this
