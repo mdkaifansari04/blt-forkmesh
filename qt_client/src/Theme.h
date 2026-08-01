@@ -32,6 +32,7 @@ inline constexpr int kSenderPaletteSize = 8;
 inline const char *iconColorForButton(const QString &objectName, bool dark)
 {
     if (objectName == QStringLiteral("primaryButton") ||
+        objectName == QStringLiteral("scmSyncButton") ||
         objectName == QStringLiteral("toolbarPrimaryButton") ||
         // The magical Agents pill is a saturated gradient in both themes, so
         // its glyph is white either way (adhoc #42).
@@ -151,6 +152,15 @@ QPushButton#primaryButton {
 }
 QPushButton#primaryButton:hover { background-color: #2ea043; }
 QPushButton#primaryButton:pressed { background-color: #1f7a31; }
+QPushButton#scmSyncButton {
+    background-color: #1f6feb; border: 1px solid #388bfd; color: #ffffff;
+    padding: 6px 12px;
+}
+QPushButton#scmSyncButton:hover { background-color: #388bfd; }
+QPushButton#scmSyncButton:pressed { background-color: #1158c7; }
+QPushButton#scmSyncButton:disabled {
+    background-color: #1f4b87; border-color: #315f91; color: #c9d1d9;
+}
 QPushButton#ghostButton {
     background: transparent; border: none; color: #8b949e;
     font-weight: 500; padding: 4px 8px; text-align: left;
@@ -1438,6 +1448,15 @@ QPushButton#primaryButton {
 }
 QPushButton#primaryButton:hover { background-color: #1a7f37; }
 QPushButton#primaryButton:pressed { background-color: #187733; }
+QPushButton#scmSyncButton {
+    background-color: #0969da; border: 1px solid #0969da; color: #ffffff;
+    padding: 6px 12px;
+}
+QPushButton#scmSyncButton:hover { background-color: #0867c4; }
+QPushButton#scmSyncButton:pressed { background-color: #0759ad; }
+QPushButton#scmSyncButton:disabled {
+    background-color: #8cbae8; border-color: #8cbae8; color: #ffffff;
+}
 QPushButton#ghostButton {
     background: transparent; border: none; color: #656d76;
     font-weight: 500; padding: 4px 8px; text-align: left;
