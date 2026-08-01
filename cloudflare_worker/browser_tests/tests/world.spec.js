@@ -6647,6 +6647,94 @@ test("thumbstick motion is continuous, proportional, and recenters on release", 
   await context.close();
 });
 
+test("thumbstick recenters when its terminal event arrives outside the control", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "thumbstick-interrupted-release");
+  await waitForWorld(page);
+
+  const thumbstick = page.locator("[data-world-thumbstick]");
+  const handle = page.locator("[data-world-thumbstick-handle]");
+  const box = await thumbstick.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+  };
+  const dispatchThumbstickPointer = (type, pointerId) =>
+    thumbstick.evaluate(
+      (element, { type, pointerId, x, y }) => {
+        element.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId,
+            pointerType: "touch",
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      },
+      {
+        type,
+        pointerId,
+        x: centre.x,
+        y: centre.y - (type === "pointermove" ? box.height * 0.3 : 0),
+      },
+    );
+  await dispatchThumbstickPointer("pointerdown", 1);
+  await dispatchThumbstickPointer("pointermove", 1);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(true);
+
+  // Simulate a mobile browser delivering the terminal event at window rather
+  // than at the captured control. The element listener alone cannot see this.
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new PointerEvent("pointercancel", {
+        pointerId: 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
+
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(false);
+  await expect(thumbstick).toHaveAttribute("data-active", "false");
+  for (const property of ["--thumb-x", "--thumb-y"]) {
+    expect(
+      await handle.evaluate((element, name) =>
+        getComputedStyle(element).getPropertyValue(name).trim(),
+        property,
+      ),
+    ).toBe("0px");
+  }
+
+  // A fresh touch must be accepted instead of being blocked by stale state.
+  await dispatchThumbstickPointer("pointerdown", 2);
+  await dispatchThumbstickPointer("pointermove", 2);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(true);
+  await dispatchThumbstickPointer("pointerup", 2);
+  await context.close();
+});
+
 test("thumbstick walking defers renderer resize until release", async ({
   browser,
 }) => {
