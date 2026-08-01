@@ -16,6 +16,7 @@
         <file alias="comment.svg">icons/octicons/comment.svg</file>
         <file alias="copy.svg">icons/octicons/copy.svg</file>
         <file alias="credit-card.svg">icons/octicons/credit-card.svg</file>
+        <file alias="crown.svg">icons/octicons/crown.svg</file>
         <file alias="device-desktop.svg">icons/octicons/device-desktop.svg</file>
         <file alias="diff.svg">icons/octicons/diff.svg</file>
         <file alias="download.svg">icons/octicons/download.svg</file>
@@ -69,6 +70,7 @@
         <file alias="terminal.svg">icons/octicons/terminal.svg</file>
         <file alias="thumbsup.svg">icons/octicons/thumbsup.svg</file>
         <file alias="trash.svg">icons/octicons/trash.svg</file>
+        <file alias="unlock.svg">icons/octicons/unlock.svg</file>
         <file alias="upload.svg">icons/octicons/upload.svg</file>
         <file alias="workflow.svg">icons/octicons/workflow.svg</file>
         <file alias="x.svg">icons/octicons/x.svg</file>
