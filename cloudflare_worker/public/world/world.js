@@ -5032,6 +5032,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <div class="world-office-task-list world-task-table" data-world-organization-task-list aria-label="Sortable organization task table" role="table">
                 <div class="world-office-task-empty">Sign in to load organization tasks.</div>
               </div>
+              <nav class="world-task-pager" data-world-organization-task-pager aria-label="Task pages" hidden></nav>
               <details class="world-task-board-issues">
                 <summary>Recent issue assignments</summary>
                 <ol class="world-office-task-list" data-world-work-issue-list aria-label="Issues recently assigned to you">

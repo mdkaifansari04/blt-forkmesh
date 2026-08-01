@@ -1297,6 +1297,9 @@ private:
     QWidget *buildOrganizationTasksSection();
     void refreshOrganizationTasks();
     void applyOrganizationTasks(const QJsonObject &payload);
+    // The table paints one page of the catalog at a time (adhoc #24): search
+    // and the summary still run over every task, only the rows are bounded.
+    void renderOrganizationTaskRows(const QString &selectTaskId = QString());
     // Tasks rail badge (adhoc #79). The open count is persisted, painted back
     // onto the rail at launch, and refreshed in the background so it no longer
     // takes a visit to the Tasks page to show a number.
@@ -4511,6 +4514,10 @@ private:
     QPushButton *m_organizationTaskQaButton = nullptr;
     QPushButton *m_organizationTaskReturnButton = nullptr;
     QPushButton *m_organizationTaskDeleteButton = nullptr;
+    QPushButton *m_organizationTaskPrevPageButton = nullptr;
+    QPushButton *m_organizationTaskNextPageButton = nullptr;
+    QLabel *m_organizationTaskPageLabel = nullptr;
+    int m_organizationTasksPage = 0;
     QJsonArray m_organizationTasks;
     QStringList m_organizationTaskMembers;
     QStringList m_organizationTaskDepartments;

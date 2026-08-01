@@ -11367,6 +11367,38 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   gap: 4px;
 }
 
+/* One page of task rows at a time; the pager only appears once the filtered
+   catalog is longer than a page. */
+.world-task-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 8px 0 2px;
+  color: #8b98a7;
+  font-size: 0.68rem;
+}
+
+.world-task-pager button {
+  border: 1px solid #2c3644;
+  border-radius: 6px;
+  background: rgb(22 27 34 / 0.9);
+  padding: 4px 10px;
+  color: #c9d1d9;
+  font: inherit;
+  cursor: pointer;
+}
+
+.world-task-pager button:hover:not(:disabled) {
+  border-color: #58a6ff;
+  color: #c8e1ff;
+}
+
+.world-task-pager button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 .world-task-board-tools .world-task-quick-filters button {
   width: auto;
   min-width: 62px;
