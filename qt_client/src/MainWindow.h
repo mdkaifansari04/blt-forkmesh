@@ -708,22 +708,21 @@ public:
     // yet.
     int testGitFilesSlotPage() const;
     int testGitHistorySlotPage() const;
-    // The "Merging in <branch>" indicator above the graph's branch button, or
-    // empty while it's hidden — so a test can prove the branch under review is
-    // named there while the graph stays on the default branch (adhoc #12).
-    QString testMergingBannerText() const;
+    // The base end of the "<branch> \xE2\x86\x92 <base>" compare indicator beside
+    // the graph's branch button, or empty while it's hidden — so a test can
+    // prove browsing a branch shows what it is being compared against, and that
+    // the base is switchable (adhoc #16).
+    QString testCompareIndicatorText() const;
+    // Point the compare indicator's base dropdown at another branch, so a test
+    // can prove the range re-diffs against it (adhoc #16).
+    void testSetCompareBase(const QString &base);
     // Click the range pane's close button, so a test can prove the left column
     // goes back to the working tree when the review is dismissed (adhoc #110).
     void testCloseBranchRange();
     // Click the activity rail's Git entry, so a test can prove it always lands
     // on the default branch's working-tree view no matter which Git sub-view
-    // (a browsed branch, a range review) was left open (adhoc #1).
+    // (a browsed branch, a compare) was left open (adhoc #1/#16).
     void testClickRailGitButton();
-    // Whether the commits page's "Review" button is shown, and a click on it —
-    // the explicit route into the range-review pane now that branch links
-    // browse the graph instead (adhoc #1).
-    bool testCommitsReviewButtonVisible() const;
-    void testClickCommitsReviewButton();
     // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
@@ -2961,14 +2960,25 @@ private:
     // Open the Worktrees tab and select the row for a branch (used by the
     // clickable worktree-location link in the agent session header — issue #265).
     void switchToWorktree(const QString &branch);
-    // Browse a branch's history in the Git view's main page (adhoc #1; used by
-    // the clickable branch links in the agent session header, the PR header and
-    // the Branches panel — adhoc #123).
+    // Open a branch in the Git view (adhoc #1; used by the clickable branch
+    // links in the agent session header, the PR header, the Branches panel and
+    // the graph's branch dropdown — adhoc #123). The graph browses the branch's
+    // history and, for any branch other than the compare base, the right pane
+    // opens its range diff against that base at the same time — one combined
+    // view, "<branch> -> <base>", rather than a separate review page (adhoc
+    // #16).
     void switchToBranch(const QString &branch);
-    // Open a branch's commits/files/diff in the Git view's range pane with the
-    // branch action toolbar (adhoc #107) — reached from the commits page's
-    // "Review" button while that branch is browsed.
-    void openBranchRangeReview(const QString &branch);
+    // Base branch of the Git view's comparison. Empty means "the repo's default
+    // branch", which is where every comparison starts; the compare indicator's
+    // base dropdown sets it, and leaving the compare view clears it (adhoc #16).
+    QString m_branchCompareBase;
+    QString branchCompareBase() const;
+    // Re-diff the branch under review against `base` (the indicator's base
+    // dropdown). Empty restores the repo's default branch (adhoc #16).
+    void setBranchCompareBase(const QString &base);
+    // Leave the branch compare view: right pane back to the working-tree diff,
+    // graph back on the default branch, compare base reset (adhoc #16).
+    void closeBranchCompareView();
     // Select the worktrees-table row whose branch matches, repopulating the diff
     // pane and detail buttons. Returns false if no such row exists. Used to keep
     // the selection on the worktree being acted on after loadWorktreesPanel()
@@ -5747,13 +5757,15 @@ private:
     // range review stopped borrowing them (adhoc #12).
     QStackedWidget *m_gitFilesSlot = nullptr;
     QStackedWidget *m_gitHistorySlot = nullptr;
-    // Show a right-pane page (and keep the merging-in indicator in step).
+    // Show a right-pane page (and keep the compare indicator in step).
     void setCommitWorkspacePage(int page);
-    // The "Merging in <branch>" indicator above the graph's branch button:
-    // visible while a branch/PR range review is open on the right pane, since
-    // the graph itself stays on the default branch (adhoc #12).
-    QPushButton *m_commitsMergingButton = nullptr;
-    void updateCommitsMergingBanner();
+    // The "<branch> -> <base>" compare indicator on the graph's branch row:
+    // while a branch/PR comparison is open on the right pane, an arrow and a
+    // base button appear after the branch button, and the base button's
+    // dropdown picks which branch the range is diffed against (adhoc #16).
+    QLabel *m_commitsCompareArrow = nullptr;
+    QPushButton *m_commitsCompareBaseButton = nullptr;
+    void updateCommitsCompareIndicator();
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;
@@ -6843,10 +6855,6 @@ private:
     // the working tree) buttons, VS-Code style.
     QPushButton *m_commitsFetchButton = nullptr;
     QPushButton *m_commitsPullButton = nullptr;
-    // "Review" beside them, shown only while a non-default branch is browsed:
-    // opens the range-review pane (diff vs the default branch + the branch
-    // action toolbar), which branch links no longer open on their own.
-    QPushButton *m_commitsReviewButton = nullptr;
     // Infinite-scroll paging for the commit list: how many commits are currently
     // loaded, whether older history remains, and a re-entrancy guard.
     int m_commitsLimit = 300;
