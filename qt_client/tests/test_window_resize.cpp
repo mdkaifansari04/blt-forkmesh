@@ -1053,6 +1053,9 @@ int main(int argc, char *argv[])
     check(directoryNodes.contains(QStringLiteral("node-a")) &&
               directoryNodes.contains(QStringLiteral("node-b")),
           QStringLiteral("Nodes lists offline linked nodes from the relay directory"));
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("nodesUpdateAllBinaryButton")) != nullptr,
+          QStringLiteral("Nodes offers a fleet-wide binary update action"));
 
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the

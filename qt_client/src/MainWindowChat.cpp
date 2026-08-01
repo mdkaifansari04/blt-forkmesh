@@ -11344,6 +11344,24 @@ QWidget *MainWindow::buildNodesSection()
     m_nodesStatus = new QLabel;
     m_nodesStatus->setObjectName("mutedLabel");
     controls->addWidget(m_nodesStatus, 1);
+    auto *updateAll =
+        new QPushButton(QStringLiteral("Update all from this binary"));
+    updateAll->setObjectName(QStringLiteral("nodesUpdateAllBinaryButton"));
+    updateAll->setCursor(Qt::PointingHandCursor);
+    updateAll->setToolTip(QStringLiteral(
+        "SSH to every saved host in parallel, install the current published "
+        "ForkMesh binary, and show live restart progress for each node."));
+    setOcticon(updateAll, "download", 14);
+    connect(updateAll, &QPushButton::clicked, this, [this] {
+        // Fleet progress is intentionally rendered on Hosts: each SSH target
+        // gets its own spinner/header and live log there. Switching first also
+        // makes failures (missing SSH metadata, checksum, restart) visible
+        // instead of leaving a seemingly idle button on Nodes.
+        showNetworkTab(kNetworkHostsTab);
+        QTimer::singleShot(0, this,
+                           &MainWindow::runHostInstallAllFromBinary);
+    });
+    controls->addWidget(updateAll);
     m_nodesRefreshButton = new QPushButton(QStringLiteral("Refresh"));
     m_nodesRefreshButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_nodesRefreshButton, "sync", 14);
