@@ -11477,6 +11477,7 @@ QWidget *MainWindow::buildNodesSection()
     connect(m_nodesRefreshButton, &QPushButton::clicked, this, [this] {
         refreshChatUserDirectory();
         fetchRelayOnlineNodes(true); // refreshes the table again on reply
+        fetchNodesCatalogInfo(true);
         refreshNodesTable();
     });
     controls->addWidget(m_nodesRefreshButton);
@@ -11512,8 +11513,13 @@ QWidget *MainWindow::buildNodesSection()
             c, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_nodesTable); // spreadsheet-style draggable columns (#263)
     // CPU / RAM / disk columns render as little usage bars (details on hover),
-    // the same delegate the repo detail's Mirror nodes table uses.
+    // the same delegate the repo detail's Mirror nodes table uses. This table
+    // styles its selected row as a muted band (the nodesDirectory QSS rule), so
+    // the delegate must paint that same band itself: it strips the selected
+    // state, which otherwise let the app-wide green selection band show through
+    // on just these three columns.
     auto *resourceBars = new ResourceBarDelegate(m_nodesTable);
+    resourceBars->mutedSelectionBand = true;
     for (int col : {kNodeColCpu, kNodeColRam, kNodeColDisk})
         m_nodesTable->setItemDelegateForColumn(col, resourceBars);
     connect(m_nodesTable, &QTableWidget::cellClicked, this,
@@ -11539,6 +11545,7 @@ QWidget *MainWindow::buildNodesSection()
 
     refreshChatUserDirectory();
     fetchRelayOnlineNodes();
+    fetchNodesCatalogInfo();
     refreshNodesTable();
     return page;
 }
@@ -11591,6 +11598,154 @@ void MainWindow::fetchRelayOnlineNodes(bool force)
     });
 }
 
+void MainWindow::fetchNodesCatalogInfo(bool force)
+{
+    if (!m_networkAccess)
+        return;
+    // This is a fan-out (one request per repo group), and refreshNodesTable runs
+    // on every roster flicker, so it is throttled harder than the single-request
+    // fetchRelayOnlineNodes: the catalog records only move on a registration
+    // lease renewal, so five minutes is plenty fresh. An explicit Refresh click
+    // forces it at 15s. The per-URL backoff below keeps a failing/rate-limited
+    // relay from being re-queried on each attempt.
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    const qint64 minIntervalMs = force ? 15000 : 5 * 60000;
+    if (m_nodesCatalogFetchedMs > 0 &&
+        now - m_nodesCatalogFetchedMs < minIntervalMs)
+        return;
+    m_nodesCatalogFetchedMs = now;
+
+    // The repo groups whose mirrors we ask about. Our own hosted repos come
+    // first — the fleet mirrors those, so they name the most nodes per request —
+    // and browse-only previews of other nodes' repos fill any slots left. Capped
+    // so a long repo list can't turn one page visit into a request storm.
+    constexpr int kMaxSources = 12;
+    QStringList sources;
+    for (bool previews : {false, true}) {
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.isPrivate || repo.previewOnly != previews)
+                continue;
+            const QString owner = repo.owner.trimmed();
+            const QString name = repo.name.trimmed();
+            if (owner.isEmpty() || name.isEmpty())
+                continue;
+            const QString source = owner + QLatin1Char('/') + name;
+            if (!sources.contains(source, Qt::CaseInsensitive))
+                sources.append(source);
+            if (sources.size() >= kMaxSources)
+                break;
+        }
+        if (sources.size() >= kMaxSources)
+            break;
+    }
+    if (sources.isEmpty())
+        return;
+
+    // All requests fan out at once and accumulate into one shared map; the last
+    // reply to land commits it and re-renders the table.
+    struct Sweep {
+        int pending = 0;
+        QHash<QString, QJsonObject> nodes;
+    };
+    auto sweep = std::make_shared<Sweep>();
+    for (const QString &source : std::as_const(sources)) {
+        const int slash = source.indexOf(QLatin1Char('/'));
+        QUrl url = catalogApiUrl();
+        url.setPath(QStringLiteral("/api/repo/%1/%2/mirrors")
+                        .arg(QString::fromUtf8(QUrl::toPercentEncoding(
+                                 source.left(slash))),
+                             QString::fromUtf8(QUrl::toPercentEncoding(
+                                 source.mid(slash + 1)))));
+        const QString backoffKey =
+            QStringLiteral("nodes-catalog|") + url.toString();
+        if (!m_pollBackoff.ready(backoffKey, now))
+            continue;
+        ++sweep->pending;
+        QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+        connect(reply, &QNetworkReply::finished, this,
+                [this, reply, sweep, source, backoffKey] {
+            const QByteArray body = reply->readAll();
+            reply->deleteLater();
+            const QJsonObject resp = QJsonDocument::fromJson(body).object();
+            if (!resp.value("ok").toBool()) {
+                m_pollBackoff.noteFailure(backoffKey,
+                                          QDateTime::currentMSecsSinceEpoch());
+            } else {
+                m_pollBackoff.noteSuccess(backoffKey);
+                for (const QJsonValue &value :
+                     resp.value("mirrors").toArray()) {
+                    const QJsonObject record = value.toObject();
+                    const QString key = record.value("node")
+                                            .toString()
+                                            .trimmed()
+                                            .toLower();
+                    if (key.isEmpty())
+                        continue;
+                    QJsonObject &known = sweep->nodes[key];
+                    // Keep the freshest record as the node's identity/telemetry
+                    // card, but the mirrored-source list spans all of them.
+                    QJsonArray mirrorSources =
+                        known.value("mirrorSources").toArray();
+                    if (!mirrorSources.contains(source))
+                        mirrorSources.append(source);
+                    if (known.isEmpty() ||
+                        record.value("lastSync").toDouble() >=
+                            known.value("lastSync").toDouble())
+                        known = record;
+                    known.insert("mirrorSources", mirrorSources);
+                }
+            }
+            if (--sweep->pending > 0)
+                return;
+            m_nodesCatalogInfo = sweep->nodes;
+            refreshNodesTable();
+        });
+    }
+}
+
+void MainWindow::applyCatalogNodeInfo(MemberInfo &info,
+                                      const QString &node) const
+{
+    const QJsonObject record =
+        m_nodesCatalogInfo.value(node.trimmed().toLower());
+    if (record.isEmpty())
+        return;
+    if (info.ownerUser.trimmed().isEmpty())
+        info.ownerUser = record.value("ownerUser").toString().trimmed();
+    if (info.version.trimmed().isEmpty())
+        info.version = record.value("version").toString().trimmed();
+    if (info.platform.trimmed().isEmpty())
+        info.platform = record.value("platform").toString().trimmed();
+    if (info.id.trimmed().isEmpty())
+        info.id = record.value("id").toString().trimmed();
+    if (info.cpuPercent < 0.0)
+        info.cpuPercent = record.value("cpuPercent").toDouble(-1.0);
+    if (info.memTotalBytes <= 0) {
+        info.memUsedBytes = qint64(record.value("memUsedBytes").toDouble());
+        info.memTotalBytes = qint64(record.value("memTotalBytes").toDouble());
+    }
+    if (info.diskTotalBytes <= 0) {
+        info.diskUsedBytes = qint64(record.value("diskUsedBytes").toDouble());
+        info.diskTotalBytes =
+            qint64(record.value("diskTotalBytes").toDouble());
+    }
+    if (info.mirrors.isEmpty()) {
+        for (const QJsonValue &value :
+             record.value("mirrorSources").toArray()) {
+            const QString source = value.toString().trimmed();
+            if (source.isEmpty())
+                continue;
+            info.mirrors.append(source);
+            // Minimal advert so the detail panel's "Mirrored repositories"
+            // list names the repo; the freshest record's HEAD only describes
+            // one of them, so per-repo commit detail stays with the repo page.
+            MirrorAdvert advert;
+            advert.source = source;
+            info.mirrorDetails.append(advert);
+        }
+    }
+}
+
 void MainWindow::refreshNodesTable()
 {
     // No early return on a missing table: the Nodes page is built lazily, but the
@@ -11601,8 +11756,10 @@ void MainWindow::refreshNodesTable()
     // nodes outside this client's chat room still show online. Only while the
     // Nodes page is actually visible — this also runs on every roster tick, and
     // a hidden page must not keep polling the quota-limited relay.
-    if (m_nodesTable && m_nodesTable->isVisible())
+    if (m_nodesTable && m_nodesTable->isVisible()) {
         fetchRelayOnlineNodes();
+        fetchNodesCatalogInfo();
+    }
 
     // The roster record (version / owner / telemetry / mirrors) for a node.
     // Prefer an online entry when a reinstall left the same name in the roster
@@ -11751,6 +11908,13 @@ void MainWindow::refreshNodesTable()
         visibleRoster.append(info);
         visibleNames.insert(key);
     }
+    // A headless mirror that serves via the relay never joins the chat room, so
+    // its roster record is blank — the whole stats side of the table (version /
+    // platform / CPU / RAM / disk / mirrors) went em-dash for the entire fleet.
+    // Its signed catalog mirror records still carry all of that (renewed every
+    // registration lease), so backfill whatever the roster left empty.
+    for (int i = 0; i < visibleRoster.size(); ++i)
+        applyCatalogNodeInfo(visibleRoster[i], visible.at(i).name);
 
     // The Nodes count is the rows this page would show — real serving nodes —
     // and nothing else. It used to be re-stamped with m_nodeMenuEntries.size()
@@ -11802,12 +11966,18 @@ void MainWindow::refreshNodesTable()
         QString label = e.name.isEmpty() ? QStringLiteral("(unnamed)") : e.name;
         if (e.self)
             label += QStringLiteral("  (this machine)");
+        // The switcher entry knows the platform only for a chat-room peer; the
+        // catalog-backfilled roster record covers a headless mirror, so the OS
+        // badge stops falling back to the generic icon for the whole fleet.
+        QString platformText = e.platform.trimmed();
+        if (platformText.isEmpty())
+            platformText = mi.platform.trimmed();
         auto *nameItem =
-            new QTableWidgetItem(osBadgeIcon(e.platform, isOnline, 16), label);
+            new QTableWidgetItem(osBadgeIcon(platformText, isOnline, 16), label);
         // Stash the real node name so a row stays identifiable after re-sorting.
         nameItem->setData(Qt::UserRole, e.name);
         nameItem->setData(Qt::UserRole + 1, mi.ownerUser.trimmed());
-        nameItem->setData(Qt::UserRole + 2, e.platform.trimmed());
+        nameItem->setData(Qt::UserRole + 2, platformText);
         nameItem->setData(Qt::UserRole + 3, e.repoCount);
         nameItem->setData(Qt::UserRole + 4, int(mi.mirrors.size()));
         m_nodesTable->setItem(i, kNodeColName, nameItem);
@@ -11832,9 +12002,6 @@ void MainWindow::refreshNodesTable()
 
         // Platform / node id as text columns too, matching the repo detail's
         // Mirror nodes table (the badge on the name only hints the platform).
-        QString platformText = e.platform.trimmed();
-        if (platformText.isEmpty())
-            platformText = mi.platform.trimmed();
         m_nodesTable->setItem(i, kNodeColPlatform, new QTableWidgetItem(
             platformText.isEmpty() ? dash : platformText));
 
@@ -12412,10 +12579,15 @@ void MainWindow::showNodeDetailForRow(int row)
         }
         inRoster = true;
     }
+    // Headless mirrors outside the chat room have a blank roster record; their
+    // signed catalog mirror records still carry the identity and telemetry.
+    applyCatalogNodeInfo(mi, node);
     if (mi.ownerUser.trimmed().isEmpty() && nodeItem)
         mi.ownerUser = nodeItem->data(Qt::UserRole + 1).toString();
     if (entry.platform.trimmed().isEmpty() && nodeItem)
         entry.platform = nodeItem->data(Qt::UserRole + 2).toString();
+    if (entry.platform.trimmed().isEmpty())
+        entry.platform = mi.platform.trimmed(); // catalog/roster fallback
     if (entry.repoCount == 0 && nodeItem)
         entry.repoCount = nodeItem->data(Qt::UserRole + 3).toInt();
     // Liveness mirrors refreshNodesTable(): the relay's authoritative live set

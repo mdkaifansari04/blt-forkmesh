@@ -1807,6 +1807,14 @@ private:
     // mirror nodes serve through the relay without joining this client's chat
     // room, so room presence alone painted them offline (adhoc #27).
     void fetchRelayOnlineNodes(bool force = false);
+    // Fetch the catalog's per-node mirror records (/api/repo/<o>/<n>/mirrors) for
+    // every repo this client lists, into m_nodesCatalogInfo. Headless mirrors
+    // renew those records on every registration lease, so the Nodes page can show
+    // version/platform/telemetry/mirror counts for nodes that never join this
+    // client's chat room (whose roster entry is otherwise blank).
+    void fetchNodesCatalogInfo(bool force = false);
+    // Backfill blank MemberInfo fields for `node` from m_nodesCatalogInfo.
+    void applyCatalogNodeInfo(MemberInfo &info, const QString &node) const;
     // Firewall: whitelist-only outbound request gate for traffic created by
     // ForkMesh's shared network manager.
     QWidget *buildFirewallSection();
@@ -2123,6 +2131,10 @@ private:
     // commit the fix to the PR's own branch (no new PR). The work is surfaced as a
     // live agent session so the user can watch it. provider is "claude" | "openai".
     void fixCurrentPullConflictsWithAi(const QString &provider);
+    // The PR header's "Fix" button (adhoc #7): writes a ready-made
+    // conflict-resolution task into the footer prompt box instead of launching a
+    // provider straight away, so the user can edit it before sending.
+    void fillPromptWithPullConflictFix();
     // Continue the agent session that originally authored this PR's branch,
     // asking it to merge the base branch in and resolve conflicts itself — the
     // same flow as the agent detail view's "Fix conflicts with agent" button.
@@ -5035,6 +5047,13 @@ private:
     // reply we fall back to the encrypted roster's presence flag; after it, the
     // relay is trusted over a possibly-stale roster entry (adhoc #43).
     bool m_relayOnlineNodesFetched = false;
+    // Latest catalog mirror record per node (lowercased node name -> the
+    // /api/repo/<o>/<n>/mirrors entry with the newest lastSync, plus a
+    // "mirrorSources" array of the repo groups that node mirrors). Fills the
+    // Nodes page's version/platform/telemetry/mirror columns for headless
+    // mirrors that serve via the relay without ever joining the chat room.
+    QHash<QString, QJsonObject> m_nodesCatalogInfo;
+    qint64 m_nodesCatalogFetchedMs = 0; // throttle between catalog sweeps
     // Request firewall section: whitelist controls plus recent allow/deny
     // decisions. This is separate from m_firewallBanner, which is the older
     // inbound-peer troubleshooting banner inside Chat.
@@ -6034,14 +6053,11 @@ private:
     QPushButton *m_pullUpdateButton = nullptr;
     QPushButton *m_pullMergeButton = nullptr;
     QPushButton *m_pullResolveButton = nullptr; // opens the conflict merge editor
-    // "Fix with agent" split button: a dropdown that rolls the Claude API,
-    // OpenAI API and Claude Code conflict resolvers into one control (issue #150).
+    // "Fix": on a conflicted PR, drops a ready-made conflict-resolution task
+    // into the footer prompt box (adhoc #7 — the provider dropdown it used to
+    // carry is gone; the prompt bar picks the agent).
     QPushButton *m_pullFixButton = nullptr;
-    QMenu *m_pullFixMenu = nullptr;
-    QAction *m_pullFixClaudeAction = nullptr;   // resolve via the Claude API
-    QAction *m_pullFixOpenAiAction = nullptr;   // resolve via the OpenAI API
-    QAction *m_pullFixClaudeCodeAction = nullptr; // resolve via the Claude Code CLI
-    // Shown alongside "Fix with agent" only when an agent session authored this
+    // Shown alongside "Fix" only when an agent session authored this
     // PR's branch: continues that same session rather than spinning up a fresh,
     // isolated conflict-only run.
     QPushButton *m_pullFixConflictsButton = nullptr;
