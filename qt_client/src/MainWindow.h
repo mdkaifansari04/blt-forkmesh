@@ -2348,6 +2348,22 @@ private:
     // only useful signal for a headless node that has no one watching its
     // screen. Opt-in via kEmailOnCreditsRefillSetting; a no-op when off.
     void maybeEmailCreditsRefilled(bool weekly);
+    // When a provider reports a reset time for an exhausted usage window, make
+    // one local iCalendar reminder and arm the matching desktop ping. The
+    // calendar app owns alerts while ForkMesh is closed; the timer covers a
+    // running desktop.
+    void scheduleUsageLimitReminder(const QString &providerKey,
+                                    const QString &windowKey,
+                                    const QString &providerName,
+                                    const QString &windowName,
+                                    qint64 resetMs);
+    void restoreUsageLimitReminders();
+    void clearUsageLimitReminders();
+    void notifyUsageLimitReady(const QString &providerKey,
+                               const QString &windowKey,
+                               const QString &providerName,
+                               const QString &windowName,
+                               qint64 resetMs);
     // Issue #115: persist and restore month-to-date spend so the figures are
     // shown on restart instead of waiting for a fresh API refresh.
     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
@@ -5823,6 +5839,10 @@ private:
     // periodic heartbeat timer if the immediate send fails).
     bool m_pendingCreditsRefilled5h = false;
     bool m_pendingCreditsRefilledWeekly = false;
+    // One armed timer per provider/window; calendar reminders persist outside
+    // the process, while these timers make the desktop ping prompt when the
+    // app remains open.
+    QHash<QString, QTimer *> m_usageLimitReminderTimers;
 
     // --- Cove (encrypted vault) UI + session state ----------------------------
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
