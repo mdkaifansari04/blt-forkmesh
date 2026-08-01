@@ -1116,14 +1116,14 @@ async def edge_cache_delete(cache_key):
 # this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
 # ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
 GIT_ADVERT_CACHE_TTL = 300
-# Repository pages are an operational view, so do not let a healthy node's
-# prior branch head mask a just-synchronized commit for five minutes. The
-# attested-state cache key remains the primary invalidation mechanism; this
-# short backstop bounds freshness even if a catalog pin update is delayed.
-REPOSITORY_METADATA_CACHE_TTL = 30
+# Repository-page JSON is persisted in Workers KV and cached at the edge under
+# an owner-attested refs digest. The digest changes whenever any published ref
+# changes, so these immutable values never need a time-based expiry: a new
+# commit produces a new key and the prior generation becomes unreachable.
+REPOSITORY_METADATA_CACHE_TTL = 365 * 24 * 60 * 60
 REPOSITORY_METADATA_CACHE_MAX_BYTES = 8 * 1024 * 1024
 REPOSITORY_METADATA_CACHE_PREFIX = (
-    "https://forkmesh.internal/repository-metadata/v2/"
+    "https://forkmesh.internal/repository-metadata/v3/"
 )
 
 
@@ -1177,53 +1177,97 @@ async def git_advert_cache_put(cache_key, response, ttl=GIT_ADVERT_CACHE_TTL):
 
 
 def repository_metadata_cache_key(context, operation, query):
-    """Key a small public metadata read by its attested repository state.
+    """Key public repo-page JSON by the current owner-attested refs state.
 
-    Only the fixed World/bootstrap surface is admitted. Source blobs, raw
-    files, private routes, moving un-attested refs, and arbitrary path queries
-    never enter the edge cache. The refs digest in ``context["pins"]`` changes
-    the key whenever any published head changes, including forkmesh/pulls.
+    This deliberately admits only the repository overview and collaboration
+    records rendered by the web UI. Arbitrary source files, raw downloads,
+    private routes, and write operations never enter KV. Named branches are
+    safe here because ``currentPins`` authenticates the complete refs set and
+    therefore changes the key before a moved branch can reuse old content.
     """
     if not isinstance(context, dict) or not isinstance(query, dict):
         return ""
     pins = sorted({
         str(pin).lower()
-        for pin in context.get("pins", set())
+        for pin in context.get("currentPins", set())
         if re.fullmatch(r"[0-9a-f]{64}", str(pin).lower())
     })
     repo_bi = str(context.get("repoBi") or "")
     if not pins or not repo_bi:
         return ""
-    ref = str(query.get("ref") or "").lower()
-    exact_ref = bool(re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", ref))
+    # Git refs are case-sensitive; preserve their spelling in the key.
+    ref = str(query.get("ref") or "").strip()
+    if (
+        ref
+        and (
+            len(ref) > 200
+            or ref.startswith("-")
+            or ".." in ref
+            or "@{" in ref
+            or ref.endswith(".")
+            or not re.fullmatch(r"[A-Za-z0-9._/-]+", ref)
+        )
+    ):
+        return ""
+
+    def cacheable_tree_path(path):
+        return path in {
+            "", "pulls", ".forkmesh/issues",
+            ".forkmesh/issues/open", ".forkmesh/issues/closed",
+            ".forkmesh/discussions", ".forkmesh/releases",
+        } or bool(re.fullmatch(
+            r"(?:pulls|\.forkmesh/discussions)/[1-9][0-9]{0,8}",
+            path,
+        ))
+
+    def cacheable_blob_path(path):
+        return bool(
+            re.fullmatch(r"(?i:readme(?:\.(?:md|txt|rst))?)", path)
+            or path == ".forkmesh/info.json"
+            or re.fullmatch(
+                r"\.forkmesh/issues/(?:open/|closed/)?"
+                r"[1-9][0-9]{0,8}/issue-[1-9][0-9]{0,8}\.json",
+                path,
+            )
+            or re.fullmatch(
+                r"\.forkmesh/discussions/[1-9][0-9]{0,8}/"
+                r"(?:discussion\.md|[0-9]{1,12}-comment\.md)",
+                path,
+            )
+            or re.fullmatch(
+                r"pulls/[1-9][0-9]{0,8}/"
+                r"(?:pull\.md|changes\.patch|[0-9]{1,12}-[^/]{1,180})",
+                path,
+            )
+            or re.fullmatch(
+                r"\.forkmesh/releases/[A-Za-z0-9._-]{1,100}/release\.json",
+                path,
+            )
+        )
+
     canonical_query = {}
     if operation == "branches" and not query:
         pass
     elif operation == "tree":
         path = str(query.get("path") or "")
-        if path not in {
-            "", "pulls", ".forkmesh/issues",
-            ".forkmesh/issues/open", ".forkmesh/issues/closed",
-        }:
-            return ""
-        if ref and not exact_ref:
+        if not cacheable_tree_path(path):
             return ""
         canonical_query = {"path": path, "ref": ref}
-    elif operation in {"sizes", "stats"} and exact_ref:
+    elif operation in {"sizes", "stats", "history"} and ref:
         canonical_query = {"ref": ref}
-    elif operation == "blobs" and exact_ref:
+    elif operation == "blob" and ref:
+        path = str(query.get("path") or "")
+        if not cacheable_blob_path(path):
+            return ""
+        canonical_query = {"path": path, "ref": ref}
+    elif operation == "blobs" and ref:
         paths = query.get("path")
         if not isinstance(paths, list) or not 1 <= len(paths) <= MAX_BLOB_BATCH:
             return ""
         normalized_paths = sorted(set(str(path) for path in paths))
         if (
             len(normalized_paths) != len(paths)
-            or any(
-                not re.fullmatch(
-                    r"pulls/[1-9][0-9]{0,8}/pull\.md", path
-                )
-                for path in normalized_paths
-            )
+            or any(not cacheable_blob_path(path) for path in normalized_paths)
         ):
             return ""
         canonical_query = {"path": normalized_paths, "ref": ref}
@@ -1242,57 +1286,103 @@ def repository_metadata_cache_key(context, operation, query):
     return REPOSITORY_METADATA_CACHE_PREFIX + digest
 
 
-async def repository_metadata_cache_get(cache_key):
-    """Return an edge-held public metadata body with browser no-store policy."""
+async def repository_metadata_cache_get(env, cache_key):
+    """Return immutable public metadata from the edge, then global KV."""
     if not cache_key:
         return None
     try:
         hit = await js_caches.default.match(cache_key)
     except Exception:
         hit = None
-    if hit is None:
+    if hit is not None:
+        try:
+            content_type = hit.headers.get("content-type")
+        except Exception:
+            content_type = None
+        return JsResponse.new(hit.body, to_js({
+            "status": 200,
+            "headers": {
+                "content-type": (
+                    content_type or "application/json; charset=utf-8"
+                ),
+                "cache-control": "no-store, max-age=0, must-revalidate",
+            },
+        }))
+    namespace = getattr(env, "REPOSITORY_METADATA", None)
+    if namespace is None:
         return None
     try:
-        content_type = hit.headers.get("content-type")
+        raw = await namespace.get(cache_key)
     except Exception:
-        content_type = None
-    return JsResponse.new(hit.body, to_js({
-        "status": 200,
-        "headers": {
-            "content-type": (
-                content_type or "application/json; charset=utf-8"
-            ),
+        raw = None
+    if raw is None:
+        return None
+    raw = str(raw)
+    try:
+        json.loads(raw)
+    except Exception:
+        return None
+    # Refill this colo's fastest cache from the persistent global copy. Both
+    # layers use the same state-addressed key and may therefore live forever.
+    try:
+        cacheable = JsResponse.new(raw, to_js({
+            "status": 200,
+            "headers": {
+                "content-type": "application/json; charset=utf-8",
+                "cache-control": (
+                    "public, max-age=%d, immutable"
+                    % REPOSITORY_METADATA_CACHE_TTL
+                ),
+            },
+        }))
+        await js_caches.default.put(cache_key, cacheable)
+    except Exception:
+        pass
+    return Response(
+        raw,
+        status=200,
+        headers={
+            "content-type": "application/json; charset=utf-8",
             "cache-control": "no-store, max-age=0, must-revalidate",
         },
-    }))
+    )
 
 
-async def repository_metadata_cache_put(cache_key, response, status):
-    """Best-effort edge copy of one bounded public metadata response."""
+async def repository_metadata_cache_put(env, cache_key, response, status):
+    """Persist one bounded state-addressed JSON response in KV and the edge."""
     if not cache_key or int(status or 0) != 200:
         return
     try:
         js_resp = getattr(response, "js_object", None) or response
         clone = js_resp.clone()
         content_type = clone.headers.get("content-type")
-        content_length = int(clone.headers.get("content-length") or 0)
         if not str(content_type or "").lower().startswith("application/json"):
             return
+        raw = str(await clone.text())
+        content_length = len(raw.encode("utf-8"))
         if (
             content_length <= 0
             or content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES
         ):
             return
-        cacheable = JsResponse.new(clone.body, to_js({
+        # Validate before a mirror response can become a durable shared value.
+        json.loads(raw)
+        cacheable = JsResponse.new(raw, to_js({
             "status": 200,
             "headers": {
                 "content-type": content_type,
                 "cache-control": (
-                    "public, max-age=%d" % REPOSITORY_METADATA_CACHE_TTL
+                    "public, max-age=%d, immutable"
+                    % REPOSITORY_METADATA_CACHE_TTL
                 ),
             },
         }))
-        await js_caches.default.put(cache_key, cacheable)
+        namespace = getattr(env, "REPOSITORY_METADATA", None)
+        writes = [js_caches.default.put(cache_key, cacheable)]
+        if namespace is not None:
+            # No expiration: commit/ref changes address a brand-new key.
+            writes.append(namespace.put(cache_key, raw))
+        await asyncio.gather(*writes, return_exceptions=True)
     except Exception:
         pass
 
@@ -41066,6 +41156,10 @@ async def _https_mirror_public_context(env, owner, repo):
             # their nodes converge.
             "currentNodes": current_nodes,
             "pins": set(pins),
+            # KV entries are addressed only by the current source-attested
+            # refs state. Historical pins may serve as temporary failover but
+            # can never populate a current-generation immutable cache entry.
+            "currentPins": set(current_pins),
             "repoBi": await blind_index(
                 env, canonical_owner + "/" + canonical_repo.lower()),
         }
@@ -41233,6 +41327,7 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
         endpoint["node"], route_owner, context["repo"], pins_key)
     memo = _HTTPS_MIRROR_REPO_PROOF_MEMO.get(memo_key)
     if memo and now - memo["checkedAt"] <= HTTPS_MIRROR_REPO_PROOF_TTL_MS:
+        endpoint["refsSha256"] = memo.get("refsSha256", "")
         return operation in memo["operations"]
     nonce = _b64url_encode(_random_bytes(18))
     target = (
@@ -41307,7 +41402,9 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     _HTTPS_MIRROR_REPO_PROOF_MEMO[memo_key] = {
         "checkedAt": now,
         "operations": frozenset(operations),
+        "refsSha256": refs_digest,
     }
+    endpoint["refsSha256"] = refs_digest
     return operation in set(operations)
 
 
@@ -42082,7 +42179,7 @@ async def _https_mirror_proxy(
         if method == "GET" else ""
     )
     cached_metadata = (
-        await repository_metadata_cache_get(metadata_cache_key)
+        await repository_metadata_cache_get(env, metadata_cache_key)
         if not bypass_cache else None)
     if cached_metadata is not None:
         return cached_metadata
@@ -42220,9 +42317,13 @@ async def _https_mirror_proxy(
         response_headers["X-ForkMesh-Served-By"] = endpoint["node"]
         await _https_mirror_route_advance(
             env, context, endpoint["node"], operation)
-        if not bypass_cache:
+        if (
+            not bypass_cache
+            and str(endpoint.get("refsSha256") or "").lower()
+            in context.get("currentPins", set())
+        ):
             await repository_metadata_cache_put(
-                metadata_cache_key, upstream, status)
+                env, metadata_cache_key, upstream, status)
         # The private endpoint origin remains masked. The public node identity
         # above is bounded routing provenance; repository bytes still stream
         # without being materialized by the Worker.
