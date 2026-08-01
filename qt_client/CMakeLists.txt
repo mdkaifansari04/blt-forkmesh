@@ -575,10 +575,7 @@ if(FORKMESH_BUILD_TESTS)
         src/SystemStats.h
         src/SystemStats.cpp
     )
-    # Qt6::Concurrent for DirectorySizeScan's QtConcurrent::blockingMappedReduced
-    # (added to this target's sources above; without it the link fails).
-    target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent
-        OpenSSL::Crypto)
+    target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
     if(APPLE)
         set_target_properties(forkmesh-tests PROPERTIES MACOSX_BUNDLE FALSE)
     endif()

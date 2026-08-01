@@ -683,13 +683,16 @@ public:
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
     QString testSwitchToBranchImmediateSelection(const QString &branch);
-    // Take the worktree route and expose the branch bound to the universal Git
-    // range viewer, proving worktrees no longer open a second diff surface.
+    // Take the worktree route and expose the branch the Git view is browsing,
+    // proving worktrees no longer open a second diff surface.
     QString testSwitchToWorktreeGitBranch(const QString &branch)
     {
         switchToWorktree(branch);
-        return m_branchDiffBranch;
+        return m_repoBranch;
     }
+    // The branch whose history the Git view's graph is browsing (empty = HEAD),
+    // so a test can prove a branch link lands the graph on that branch.
+    QString testBrowsedBranch() const { return m_repoBranch; }
     // Take the agent detail page's "Branch" route, so a test can prove it binds
     // the Git view to that session's own repository before opening its branch
     // there — the sessions list is global (adhoc #131).
@@ -707,6 +710,15 @@ public:
     // Click the range pane's close button, so a test can prove the left column
     // goes back to the working tree when the review is dismissed (adhoc #110).
     void testCloseBranchRange();
+    // Click the activity rail's Git entry, so a test can prove it always lands
+    // on the default branch's working-tree view no matter which Git sub-view
+    // (a browsed branch, a range review) was left open (adhoc #1).
+    void testClickRailGitButton();
+    // Whether the commits page's "Review" button is shown, and a click on it —
+    // the explicit route into the range-review pane now that branch links
+    // browse the graph instead (adhoc #1).
+    bool testCommitsReviewButtonVisible() const;
+    void testClickCommitsReviewButton();
     // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
@@ -2907,10 +2919,14 @@ private:
     // Open the Worktrees tab and select the row for a branch (used by the
     // clickable worktree-location link in the agent session header — issue #265).
     void switchToWorktree(const QString &branch);
-    // Open a branch's commits/files/diff in the Git view's range pane (adhoc
-    // #107; used by the clickable branch links in the agent session header, the
-    // PR header and the Branches panel — adhoc #123).
+    // Browse a branch's history in the Git view's main page (adhoc #1; used by
+    // the clickable branch links in the agent session header, the PR header and
+    // the Branches panel — adhoc #123).
     void switchToBranch(const QString &branch);
+    // Open a branch's commits/files/diff in the Git view's range pane with the
+    // branch action toolbar (adhoc #107) — reached from the commits page's
+    // "Review" button while that branch is browsed.
+    void openBranchRangeReview(const QString &branch);
     // Select the worktrees-table row whose branch matches, repopulating the diff
     // pane and detail buttons. Returns false if no such row exists. Used to keep
     // the selection on the worktree being acted on after loadWorktreesPanel()
@@ -6793,6 +6809,10 @@ private:
     // the working tree) buttons, VS-Code style.
     QPushButton *m_commitsFetchButton = nullptr;
     QPushButton *m_commitsPullButton = nullptr;
+    // "Review" beside them, shown only while a non-default branch is browsed:
+    // opens the range-review pane (diff vs the default branch + the branch
+    // action toolbar), which branch links no longer open on their own.
+    QPushButton *m_commitsReviewButton = nullptr;
     // Infinite-scroll paging for the commit list: how many commits are currently
     // loaded, whether older history remains, and a re-entrancy guard.
     int m_commitsLimit = 300;
