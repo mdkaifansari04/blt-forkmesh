@@ -19015,9 +19015,20 @@ export function createWorldScene({
     "Aquarium controls",
   );
   aquariumControlPanel.hidden = true;
-  const aquariumControlTitle = document.createElement("span");
-  aquariumControlTitle.className = "world-aquarium-control-title";
-  aquariumControlTitle.textContent = "REEF CONTROL";
+  const aquariumControlToggle = document.createElement("button");
+  aquariumControlToggle.type = "button";
+  aquariumControlToggle.className = "world-aquarium-control-toggle";
+  aquariumControlToggle.dataset.worldAquariumControlToggle = "";
+  aquariumControlToggle.textContent = "REEF CONTROL";
+  aquariumControlToggle.setAttribute("aria-expanded", "false");
+  aquariumControlToggle.setAttribute(
+    "aria-controls",
+    "world-aquarium-control-actions",
+  );
+  const aquariumControlActions = document.createElement("div");
+  aquariumControlActions.id = "world-aquarium-control-actions";
+  aquariumControlActions.className = "world-aquarium-control-actions";
+  aquariumControlActions.hidden = true;
   const aquariumFeedAction = document.createElement("button");
   aquariumFeedAction.type = "button";
   aquariumFeedAction.className = "world-aquarium-control-button";
@@ -19042,14 +19053,39 @@ export function createWorldScene({
   aquariumLightAction.type = "button";
   aquariumLightAction.className = "world-aquarium-control-button";
   aquariumLightAction.dataset.worldAquariumLight = "";
-  aquariumControlPanel.append(
-    aquariumControlTitle,
+  aquariumControlActions.append(
     aquariumFeedAction,
     aquariumTapAction,
     aquariumBackdropAction,
     aquariumLightAction,
   );
+  aquariumControlPanel.append(
+    aquariumControlToggle,
+    aquariumControlActions,
+  );
   labelLayer.appendChild(aquariumControlPanel);
+
+  function setAquariumControlsExpanded(expanded) {
+    const nextExpanded = expanded === true;
+    aquariumControlPanel.dataset.expanded = String(nextExpanded);
+    aquariumControlToggle.setAttribute(
+      "aria-expanded",
+      String(nextExpanded),
+    );
+    aquariumControlActions.hidden = !nextExpanded;
+  }
+
+  function handleAquariumControlToggle(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    setAquariumControlsExpanded(
+      aquariumControlToggle.getAttribute("aria-expanded") !== "true",
+    );
+  }
+  aquariumControlToggle.addEventListener(
+    "click",
+    handleAquariumControlToggle,
+  );
 
   function aquariumSavedToggle(key, fallback) {
     try {
@@ -19206,12 +19242,13 @@ export function createWorldScene({
     if (!aquariumControlsNearby) {
       aquariumControlPanel.hidden = true;
       aquariumControlPanel.style.visibility = "hidden";
+      setAquariumControlsExpanded(false);
       return;
     }
     syncAquariumControlButtons(time);
     aquariumControlPanel.hidden = false;
-    // Anchor the always-available lobby controls to the lower-right corner of
-    // the tank instead of floating at the bottom of the viewport.
+    // Mount the compact disclosure at the tank's lower-right corner. Its
+    // actions open upward only while requested, leaving the reef visible.
     updateScreenLabel(
       THREE,
       officeAquarium.controlAnchor,
@@ -34289,6 +34326,10 @@ export function createWorldScene({
     window.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener("blur", handleWindowBlur);
     aquariumFeedAction.removeEventListener("click", handleAquariumFeed);
+    aquariumControlToggle.removeEventListener(
+      "click",
+      handleAquariumControlToggle,
+    );
     aquariumTapAction.removeEventListener("click", handleAquariumTap);
     aquariumBackdropAction.removeEventListener(
       "click",
