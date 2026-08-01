@@ -933,6 +933,30 @@ int main(int argc, char **argv)
                    .isEmpty(),
           "Vultr validation rejects malformed keys and node names");
 
+    // A key saved anywhere is the key every page resolves (adhoc #127): the
+    // canonical name wins, the Quick setup alias is honoured, and a value that
+    // could not survive an environment or .env line is skipped.
+    check(forkmesh::control::vultrApiKeyVariableNames().constFirst() ==
+                  QStringLiteral("VULTR_API_KEY") &&
+              forkmesh::control::vultrApiKeyVariableNames().contains(
+                  QStringLiteral("VULTR_API_TOKEN")),
+          "VULTR_API_KEY is canonical and the Quick setup alias resolves too");
+    check(forkmesh::control::vultrApiKeyFromVariables(
+              {{QStringLiteral("VULTR_API_TOKEN"),
+                QStringLiteral("from-quick-setup")}}) ==
+                  QStringLiteral("from-quick-setup"),
+          "a Vultr key saved by Quick setup alone still provisions mirrors");
+    check(forkmesh::control::vultrApiKeyFromVariables(
+              {{QStringLiteral("VULTR_API_KEY"), QStringLiteral("canonical")},
+               {QStringLiteral("VULTR_API_TOKEN"), QStringLiteral("older")}}) ==
+                  QStringLiteral("canonical"),
+          "the canonical Vultr variable outranks a stale alias");
+    check(forkmesh::control::vultrApiKeyFromVariables(
+              {{QStringLiteral("VULTR_API_KEY"), QStringLiteral(" \n")},
+               {QStringLiteral("VULTR_TOKEN"), QStringLiteral("usable")}}) ==
+                  QStringLiteral("usable"),
+          "an empty or multi-line Vultr variable never shadows a usable one");
+
     const QJsonArray vultrPlans{
         QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-2c-4gb")},
                     {QStringLiteral("monthly_cost"), 20},

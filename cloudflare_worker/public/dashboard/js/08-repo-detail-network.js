@@ -2051,7 +2051,11 @@
         "[data-repo-issue-mcp-prompt]",
       );
       if (issueMcpPromptButton) {
-        void copyIssueMcpPrompt(issueMcpPromptButton);
+        // Shift-click re-asks for the connector token, so a rotated or revoked
+        // one can be replaced without clearing site storage by hand.
+        void copyIssueMcpPrompt(issueMcpPromptButton, {
+          replaceToken: event.shiftKey === true,
+        });
         return;
       }
 

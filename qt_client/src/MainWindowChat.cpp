@@ -4835,18 +4835,11 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_relayJoinApproveButton, &QPushButton::clicked, this,
             &MainWindow::showRelayJoinApprovalDialog);
 
-    // Spinning radar + once-a-minute latency readout, sitting just left of the
-    // relay name (issue #144). The probe itself is driven by m_relayLatencyTimer.
-    m_relayRadar = new RelayRadarWidget;
-    static_cast<RelayRadarWidget *>(m_relayRadar)->onClicked = [this] {
-        if (!m_repoDetailStack || m_mirrorNodesTabIndex < 0 ||
-            !m_repoDetailTabs)
-            return;
-        showSection(0);
-        if (QAbstractButton *button =
-                m_repoDetailTabs->button(m_mirrorNodesTabIndex))
-            button->click();
-    };
+    // Connection speed as a colour, pinned above the instance logo (adhoc
+    // #124): the radar dish that used to carry this on the right of the chrome
+    // line is gone, so the link's health now rides the instance it belongs to.
+    // The probe itself is still driven by m_relayLatencyTimer.
+    m_relaySpeedDot = new RelaySpeedDot(m_relayMenuButton);
 
     // Node switcher, to the right of the relay switcher: "node ▾ count".
     m_nodeMenuButton = new QPushButton;
@@ -5253,7 +5246,32 @@ QWidget *MainWindow::buildBreadcrumb()
             openAgentsOverview();
     };
 
-    // Immediately right of the fleet: the most recent action runs and their
+    // Immediately right of the fleet, behind a faint divider: one dot per node
+    // on the network (adhoc #124), so the machines read on the same line as the
+    // agents. Kept current by refreshNodeDotMatrix().
+    m_chromeDotDivider = new QWidget;
+    m_chromeDotDivider->setObjectName(QStringLiteral("chromeDotDivider"));
+    // A bare QWidget ignores a stylesheet background unless it opts in.
+    m_chromeDotDivider->setAttribute(Qt::WA_StyledBackground, true);
+    m_chromeDotDivider->setFixedWidth(1);
+    m_chromeDotDivider->setFixedHeight(15); // a hairline inside the 21px grids
+    m_chromeDotDivider->hide();
+    m_nodeDotMatrix = new NodeDotMatrix;
+    m_nodeDotMatrix->onDotClicked = [this](const QString &node) {
+        showNetworkTab(kNetworkNodesTab);
+        if (node.isEmpty() || !m_nodesTable)
+            return; // past the last dot: the Nodes list itself is the answer
+        for (int row = 0; row < m_nodesTable->rowCount(); ++row) {
+            const QTableWidgetItem *item = m_nodesTable->item(row, 0);
+            if (!item || item->data(Qt::UserRole).toString() != node)
+                continue;
+            m_nodesTable->selectRow(row);
+            showNodeDetailForRow(row);
+            break;
+        }
+    };
+
+    // Immediately right of the node dots: the most recent action runs and their
     // status (adhoc #70), so CI reads on the same line as the agents. Kept
     // current by refreshActionRunStrip().
     m_actionRunStrip = new ActionRunStrip;
@@ -5466,6 +5484,8 @@ QWidget *MainWindow::buildBreadcrumb()
     identityBalanceRow->setSpacing(8);
     identityBalanceRow->addWidget(m_navSolanaBalance);
     identityBalanceRow->addWidget(m_agentDotMatrix);
+    identityBalanceRow->addWidget(m_chromeDotDivider, 0, Qt::AlignVCenter);
+    identityBalanceRow->addWidget(m_nodeDotMatrix);
     identityBalanceRow->addWidget(m_actionRunStrip);
     chromeRow->addLayout(identityBalanceRow);
     chromeRow->addStretch();
@@ -5480,10 +5500,9 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeRow->addStretch();
     // The toast used to sit here; it now docks at the top of the footer's
     // mini-log panel (buildNetworkLogDock), beside the lines it explains.
-    // Relay radar, moved up onto the window-chrome line just left of the
-    // CPU/MEM/DISK sparklines so its latency readout reads the same way as
-    // theirs (adhoc #87).
-    chromeRow->addWidget(m_relayRadar);
+    // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
+    // #124) — its colour moved to the dot above the instance logo and its
+    // node blips to the node dots beside the agent fleet.
     // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);
@@ -5905,71 +5924,242 @@ void MainWindow::updateRelaySwitcher()
     if (host.isEmpty())
         host = QStringLiteral("ForkMesh");
     // The button is favicon-only (adhoc #91): the domain and relay count moved
-    // into the dropdown itself, so here they only ride the hover tooltip.
+    // into the dropdown itself, so here they only ride the hover tooltip —
+    // together with the link speed the dot above the logo is showing.
+    refreshRelayMenuTooltip();
+}
+
+// The instance button's hover text: which relay is active, how many are
+// configured, and what the speed dot above the logo currently means.
+void MainWindow::refreshRelayMenuTooltip()
+{
+    if (!m_relayMenuButton)
+        return;
+    QString host;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        host = serverHost(m_servers.at(m_activeServer).url);
+    if (host.isEmpty())
+        host = QStringLiteral("ForkMesh");
     m_relayMenuButton->setToolTip(
-        QStringLiteral("%1 — %2 %3 configured. Switch, search, or add relays.")
+        QStringLiteral("%1 — %2 %3 configured. Switch, search, or add relays.\n"
+                       "Connection speed: %4")
             .arg(host)
             .arg(m_servers.size())
             .arg(m_servers.size() == 1 ? QStringLiteral("relay")
-                                       : QStringLiteral("relays")));
+                                       : QStringLiteral("relays"),
+                 relaySpeedText(host)));
+}
+
+// Apply one round-trip measurement (ms < 0 = the relay didn't answer) to the
+// per-relay speed cache, and — when it is the relay we are actually connected
+// to — to the dot above the instance logo and that button's tooltip.
+void MainWindow::setRelayLinkSpeed(const QString &host, int ms)
+{
+    const QString key = host.trimmed().toLower();
+    if (!key.isEmpty()) {
+        m_relayHostLatency.insert(
+            key, RelayLatencySample{ms, QDateTime::currentMSecsSinceEpoch()});
+    }
+    QString activeHost;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        activeHost = serverHost(m_servers.at(m_activeServer).url).toLower();
+    if (!key.isEmpty() && !activeHost.isEmpty() && key != activeHost)
+        return; // another relay's sample: the cache is all it feeds
+    if (m_relaySpeedDot) {
+        if (ms < 0)
+            m_relaySpeedDot->setUnreachable();
+        else
+            m_relaySpeedDot->setLatency(ms);
+    }
+    refreshRelayMenuTooltip();
+}
+
+// "30 ms" / "no answer" / "measuring…" for one relay host, as shown in the
+// relay dropdown and the instance tooltip (adhoc #124).
+QString MainWindow::relaySpeedText(const QString &host) const
+{
+    const RelayLatencySample sample =
+        m_relayHostLatency.value(host.trimmed().toLower());
+    if (sample.stampMs <= 0)
+        return QString::fromUtf8("measuring\xE2\x80\xA6");
+    if (sample.ms < 0)
+        return QStringLiteral("no answer");
+    return QStringLiteral("%1 ms").arg(sample.ms);
+}
+
+// One line of the relay dropdown: "forkmesh.com  ·  30 ms".
+QString MainWindow::relayMenuEntryText(const QString &host) const
+{
+    return QString::fromUtf8("%1  \xC2\xB7  %2").arg(host, relaySpeedText(host));
 }
 
 // The room socket's keepalive pong carries the relay round trip for free every
-// ~25s; feed it straight to the radar so no HTTP probe is needed while the
+// ~25s; feed it straight to the speed dot so no HTTP probe is needed while the
 // socket is up (probeRelayLatency below skips itself when this is fresh).
 void MainWindow::onRelayLatencySampled(int ms)
 {
     m_lastWsLatencySampleMs = QDateTime::currentMSecsSinceEpoch();
     m_relayProbeFailures = 0;
-    if (m_relayRadar)
-        static_cast<RelayRadarWidget *>(m_relayRadar)->setLatency(ms);
+    QString host;
+    if (m_activeServer >= 0 && m_activeServer < m_servers.size())
+        host = serverHost(m_servers.at(m_activeServer).url);
+    setRelayLinkSpeed(host, ms);
 }
 
-// Echo the mesh's serving nodes into the radar dish as blips (adhoc #79). The
-// repo-detail Mirror-nodes panel paints a repo-scoped set of blips (per-node
-// sync/integrity state, which only that panel knows) and wins while it is on
-// screen; everywhere else — including a freshly launched app that has never
-// opened a repo — the dish shows the node roster, so it no longer sweeps empty.
-// The ring only fits so many dots before they touch, so cap the fan-out and
-// keep the online nodes when the mesh is bigger than that.
-void MainWindow::updateRelayRadarNodes(bool force)
+// Measure one relay's round-trip the same way probeRelayLatency measures the
+// active one (GET /api/version), cache it, and hand the milliseconds (-1 when
+// it didn't answer) to `done`. Feeds the per-instance speed in the relay
+// dropdown; one probe per host at a time, so re-opening the menu while a probe
+// is out doesn't stack a second one.
+void MainWindow::probeRelayHostSpeed(const QString &serverUrl,
+                                     std::function<void(int)> done)
 {
-    if (!m_relayRadar)
+    QUrl url(serverUrl);
+    if (url.scheme() == "ws")
+        url.setScheme(QStringLiteral("http"));
+    else if (url.scheme() == "wss")
+        url.setScheme(QStringLiteral("https"));
+    url.setPath(QStringLiteral("/api/version"));
+    url.setQuery(QString());
+    url.setFragment(QString());
+
+    const QString host = serverHost(serverUrl);
+    if (!m_networkAccess || !url.isValid() || url.host().isEmpty()) {
+        setRelayLinkSpeed(host, -1);
+        if (done)
+            done(-1);
         return;
-    if (!force && m_mirrorNodesTable && m_mirrorNodesTable->isVisible())
+    }
+    if (m_relaySpeedProbes.contains(host))
         return;
-    constexpr int kMaxRadarBlips = 16; // dots of ~5.6px around the r*0.8 ring
-    QVector<RelayRadarWidget::Blip> blips;
-    for (int pass = 0; pass < 2 && blips.size() < kMaxRadarBlips; ++pass) {
-        for (const NodeMenuEntry &e : std::as_const(m_radarNodes)) {
+    m_relaySpeedProbes.insert(host);
+
+    QNetworkRequest request(url);
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute,
+                         QNetworkRequest::AlwaysNetwork);
+    request.setRawHeader("accept", "application/json");
+    request.setTransferTimeout(10000); // no answer within 10s counts as down
+
+    auto *clock = new QElapsedTimer;
+    clock->start();
+    QNetworkReply *reply = m_networkAccess->get(request);
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, clock, host, done = std::move(done)] {
+                const qint64 elapsed = clock->elapsed();
+                delete clock;
+                reply->deleteLater();
+                m_relaySpeedProbes.remove(host);
+                const int ms = reply->error() == QNetworkReply::NoError
+                                   ? static_cast<int>(elapsed)
+                                   : -1;
+                setRelayLinkSpeed(host, ms);
+                if (done)
+                    done(ms);
+            });
+}
+
+// One dot per node on the network, three rows deep beside the agent fleet
+// (adhoc #124). This is where the retired radar dish's blips went, and it keeps
+// that widget's roster: refreshNodesTable's filtered list, so the mesh shows
+// from launch rather than only while a repo's Mirror-nodes tab is open (adhoc
+// #79). Unlike the dish, the dots are always the whole network — the open
+// repo's per-node sync/integrity state only tints them (m_nodeDotRepoStates).
+// The grid is bounded, so online nodes go in first and a bigger mesh loses its
+// offline tail to the tooltip rather than its live nodes.
+void MainWindow::refreshNodeDotMatrix()
+{
+    if (!m_nodeDotMatrix)
+        return;
+    QVector<NodeDotMatrix::Dot> dots;
+    dots.reserve(m_nodeDotEntries.size());
+    int online = 0;
+    int caution = 0;
+    for (int pass = 0; pass < 2; ++pass) {
+        for (const NodeMenuEntry &e : std::as_const(m_nodeDotEntries)) {
             if (e.online != (pass == 0))
                 continue;
-            if (blips.size() >= kMaxRadarBlips)
-                break;
-            blips.append(RelayRadarWidget::Blip{e.name, e.online, false, false});
+            const NodeDotRepoState repo =
+                m_nodeDotRepoStates.value(e.name.trimmed().toLower());
+            NodeDotMatrix::Dot dot;
+            dot.name = e.name;
+            dot.self = e.self;
+            if (repo.integrityFailing || (e.online && repo.behind)) {
+                dot.color = QColor("#d29922"); // amber caution, as on the strip
+                ++caution;
+            } else if (e.online) {
+                dot.color = QColor("#3fb950"); // green: serving
+            } else {
+                dot.color = QColor("#484f58"); // grey: offline
+            }
+            if (e.online)
+                ++online;
+            dots.append(dot);
         }
     }
-    static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips(blips);
+    m_nodeDotMatrix->setDots(dots);
+    m_nodeDotMatrix->setVisible(!dots.isEmpty());
+    updateChromeDotDivider();
+    if (dots.isEmpty())
+        return;
+
+    QString tip = QStringLiteral("%1 node%2 on the network \xE2\x80\x94 "
+                                 "%3 online, %4 offline")
+                      .arg(dots.size())
+                      .arg(dots.size() == 1 ? QString() : QStringLiteral("s"))
+                      .arg(online)
+                      .arg(dots.size() - online);
+    if (caution > 0)
+        tip += QStringLiteral(", %1 out of sync").arg(caution);
+    const int shown = m_nodeDotMatrix->shownCount();
+    if (shown < dots.size())
+        tip += QStringLiteral("\n(showing the first %1)").arg(shown);
+    tip += QStringLiteral("\nClick a dot to open that node.");
+    m_nodeDotMatrix->setToolTip(tip);
 }
 
-// Measure the round-trip latency to the active relay and feed it to the radar
-// readout. We GET the relay's lightweight /api/version endpoint (small JSON, no
-// Durable-Object fan-out) and time the request; a transport error or timeout
-// flips the radar to its red "offline" alert. Only one probe runs at a time.
-// While the room socket is connected its keepalive pong updates the radar
+// The hairline between the agent squares and the node dots only earns its place
+// when there are dots on both sides of it (adhoc #124).
+void MainWindow::updateChromeDotDivider()
+{
+    if (!m_chromeDotDivider)
+        return;
+    // isHidden(), not isVisible(): the window itself may not be up yet when the
+    // first roster lands, and the divider still needs to be laid out.
+    m_chromeDotDivider->setVisible(m_agentDotMatrix &&
+                                   !m_agentDotMatrix->isHidden() &&
+                                   m_nodeDotMatrix &&
+                                   !m_nodeDotMatrix->isHidden());
+}
+
+// Repo-scoped sync/integrity state for the node dots, published by the
+// Mirror-nodes panel (empty when it has no repo to show).
+void MainWindow::setNodeDotRepoStates(
+    const QHash<QString, NodeDotRepoState> &states)
+{
+    if (states.isEmpty() && m_nodeDotRepoStates.isEmpty())
+        return;
+    m_nodeDotRepoStates = states;
+    refreshNodeDotMatrix();
+}
+
+// Measure the round-trip latency to the active relay and feed it to the speed
+// dot above the instance logo. We GET the relay's lightweight /api/version
+// endpoint (small JSON, no Durable-Object fan-out) and time the request; a
+// transport error or timeout turns the dot red. Only one probe runs at a time.
+// While the room socket is connected its keepalive pong updates the dot
 // every ~25s (onRelayLatencySampled), so this HTTP probe only fires when that
 // signal has gone quiet — i.e. the socket is down or reconnecting.
 void MainWindow::probeRelayLatency()
 {
-    if (!m_relayRadar || !m_networkAccess || m_relayProbeInFlight)
+    if (!m_relaySpeedDot || !m_networkAccess || m_relayProbeInFlight)
         return;
     if (QDateTime::currentMSecsSinceEpoch() - m_lastWsLatencySampleMs < 90 * 1000)
         return;
-    auto *radar = static_cast<RelayRadarWidget *>(m_relayRadar);
 
     QUrl url = catalogApiUrl(); // same relay host, http(s) scheme
-    if (!url.isValid() || url.host().isEmpty()) {
-        radar->setUnreachable();
+    const QString host = url.host();
+    if (!url.isValid() || host.isEmpty()) {
+        setRelayLinkSpeed(host, -1);
         return;
     }
     url.setPath(QStringLiteral("/api/version"));
@@ -5984,16 +6174,16 @@ void MainWindow::probeRelayLatency()
     auto *clock = new QElapsedTimer;
     clock->start();
     QNetworkReply *reply = m_networkAccess->get(request);
-    connect(reply, &QNetworkReply::finished, this, [this, reply, clock, radar] {
+    connect(reply, &QNetworkReply::finished, this, [this, reply, clock, host] {
         const qint64 elapsed = clock->elapsed();
         delete clock;
         m_relayProbeInFlight = false;
         reply->deleteLater();
         if (reply->error() == QNetworkReply::NoError) {
             m_relayProbeFailures = 0;
-            radar->setLatency(static_cast<int>(elapsed));
+            setRelayLinkSpeed(host, static_cast<int>(elapsed));
             // A one-off slow sample (first request on a cold connection, a
-            // momentary hiccup) paints the dish amber/red and then sits there
+            // momentary hiccup) paints the dot amber/red and then sits there
             // unchanged for up to a minute — not "live" at all. Once the
             // reading is elevated, keep re-probing on a short leash (same
             // idea as the offline fast-retry below) so the indicator either
@@ -6016,17 +6206,17 @@ void MainWindow::probeRelayLatency()
         } else {
             // Drop any pooled keep-alive connection so the next probe dials a
             // fresh socket: otherwise QNetworkAccessManager can keep reusing a
-            // now-dead connection and the radar never clears even after we're
+            // now-dead connection and the dot never clears even after we're
             // back online.
             if (m_networkAccess)
                 m_networkAccess->clearConnectionCache();
             // A single miss is usually just a stale keep-alive socket or a
             // momentary blip (very common for the first probe right after
             // launch, before the connection is warm) — not a real outage. Don't
-            // flip the radar to red on the strength of one failure; re-probe
+            // flip the dot to red on the strength of one failure; re-probe
             // shortly on the now-clean connection and only declare "offline"
-            // once a second consecutive probe also fails. This stops the dish
-            // getting stranded on "offline" while we're genuinely online.
+            // once a second consecutive probe also fails. This stops the dot
+            // getting stranded on red while we're genuinely online.
             // Exception: when the OS itself reports the machine has no network
             // at all, the outage is real — skip the grace period and show it
             // immediately (adhoc #41).
@@ -6035,9 +6225,9 @@ void MainWindow::probeRelayLatency()
                 netInfo && netInfo->reachability() ==
                                QNetworkInformation::Reachability::Disconnected;
             if (++m_relayProbeFailures >= 2 || osOffline) {
-                radar->setUnreachable();
+                setRelayLinkSpeed(host, -1);
                 // While offline, re-probe on a short leash instead of waiting
-                // out the minute timer, so the dish flips back within seconds
+                // out the minute timer, so the dot flips back within seconds
                 // of the relay answering again (adhoc #41). But a relay that's
                 // down for minutes/hours shouldn't get hammered every 3s the
                 // whole time: back off exponentially (3s, 6s, 12s, ...) capped
@@ -6076,14 +6266,13 @@ void MainWindow::initRelayReachabilityWatch()
                     // mark the outage as established so a later probe failure
                     // doesn't get the one-blip grace period.
                     m_relayProbeFailures = 2;
-                    if (m_relayRadar)
-                        static_cast<RelayRadarWidget *>(m_relayRadar)
-                            ->setUnreachable();
+                    if (m_relaySpeedDot)
+                        setRelayLinkSpeed(catalogApiUrl().host(), -1);
                     if (m_backend)
                         m_backend->setNetworkAvailable(false);
                 } else {
                     // Link is (possibly) back: confirm with a real probe right
-                    // away. The radar stays red until the probe succeeds, so a
+                    // away. The dot stays red until the probe succeeds, so a
                     // half-up link never shows a false green.
                     probeRelayLatency();
                     if (m_backend)
@@ -6123,6 +6312,10 @@ void MainWindow::showRelayMenu()
 {
     if (!m_relayMenuButton)
         return;
+    // How long a measured speed stays good enough to show without re-probing.
+    // Wide enough that the active relay's ~25s keepalive pong normally covers
+    // it, so opening the menu doesn't re-probe the relay we're talking to.
+    constexpr qint64 kRelaySpeedFreshMs = 30 * 1000;
     QMenu menu(this);
 
     // Header: the active relay's domain plus the relay count — the readout
@@ -6148,16 +6341,33 @@ void MainWindow::showRelayMenu()
     menu.addAction(searchAction);
     menu.addSeparator();
 
-    // One checkable action per relay (active one checked).
+    // One checkable action per relay (active one checked), each labelled with
+    // that instance's connection speed (adhoc #124) — the readout the radar
+    // dish used to carry for the active relay only. Cached samples show
+    // instantly; anything stale is re-probed and the label updates in place
+    // while the menu is open.
     QList<QAction *> relayActions;
     for (int i = 0; i < m_servers.size(); ++i) {
         const ServerConfig &server = m_servers.at(i);
-        QAction *act =
-            menu.addAction(QIcon(faviconFor(server)), serverHost(server.url));
+        const QString host = serverHost(server.url);
+        QAction *act = menu.addAction(QIcon(faviconFor(server)),
+                                      relayMenuEntryText(host));
         act->setCheckable(true);
         act->setChecked(i == m_activeServer);
         connect(act, &QAction::triggered, this, [this, i] { switchToServer(i); });
         relayActions.append(act);
+
+        const RelayLatencySample sample =
+            m_relayHostLatency.value(host.trimmed().toLower());
+        if (QDateTime::currentMSecsSinceEpoch() - sample.stampMs <
+            kRelaySpeedFreshMs)
+            continue;
+        // The action dies with the menu, which the probe can easily outlive.
+        QPointer<QAction> guarded(act);
+        probeRelayHostSpeed(server.url, [this, guarded, host](int) {
+            if (guarded)
+                guarded->setText(relayMenuEntryText(host));
+        });
     }
 
     menu.addSeparator();
@@ -9644,9 +9854,12 @@ QWidget *MainWindow::buildHostsSection()
         "creates and manages the SSH key for it automatically, boots the "
         "instance, installs ForkMesh over SSH and links the new node to your "
         "account so it starts mirroring and syncing right away. The API key "
-        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is used from "
-        "memory only and never saved to disk \xE2\x80\x94 store it as a "
-        "VULTR_API_KEY device variable to prefill it. When a "
+        "(Vultr panel \xE2\x86\x92 Account \xE2\x86\x92 API) is saved once "
+        "Vultr accepts it \xE2\x80\x94 into this device's VULTR_API_KEY "
+        "variable (Settings \xE2\x86\x92 Variables / Secrets) and into "
+        "cloudflare_worker/.env.production \xE2\x80\x94 so you never have to "
+        "enter it again; it travels only in the Authorization header of this "
+        "app's HTTPS calls to Vultr, never in a command line. When a "
         "CLOUDFLARE_API_TOKEN device variable and a Cloudflare zone are "
         "configured, the new node also gets a <node>.<zone> DNS record so it "
         "joins the mesh under a stable name like your other mirrors. The "
@@ -9662,7 +9875,12 @@ QWidget *MainWindow::buildHostsSection()
     m_vultrApiKeyEdit = new QLineEdit;
     m_vultrApiKeyEdit->setEchoMode(QLineEdit::Password);
     m_vultrApiKeyEdit->setPlaceholderText(
-        QStringLiteral("Vultr API key — kept in memory only"));
+        QStringLiteral("Vultr API key — saved after the first successful run"));
+    // Prefill from whatever this device already stores (this page's own saves,
+    // Settings > Quick setup, or a hand-added variable), so a returning
+    // operator only has to press the button (adhoc #127).
+    m_vultrApiKeyEdit->setText(
+        forkmesh::control::vultrApiKeyFromVariables(ActionStore::variables()));
     vultrForm->addRow(QStringLiteral("Vultr API key"), m_vultrApiKeyEdit);
     m_vultrNameEdit = new QLineEdit;
     m_vultrNameEdit->setPlaceholderText(QString::fromUtf8(
@@ -11400,12 +11618,12 @@ void MainWindow::refreshNodesTable()
     // switcher list: every chat user account, world-chat guest and repo owner in
     // it was counted as a node, so a mesh of four nodes badged "21" (adhoc #26).
     updateNetworkCounts(-1, visible.size(), -1);
-    // Same filtered list feeds the relay radar's blips, so the dish shows the
+    // Same filtered list feeds the chrome line's node dots, so they show the
     // mesh from launch instead of only while a repo's Mirror-nodes tab is open
     // (adhoc #79). Also runs before the page is built, for the same reason the
     // count above does.
-    m_radarNodes = visible;
-    updateRelayRadarNodes();
+    m_nodeDotEntries = visible;
+    refreshNodeDotMatrix();
     if (!m_nodesTable)
         return; // page not built yet — the count above is all that's on screen
 
@@ -11980,6 +12198,11 @@ void MainWindow::probeRelayRow(int row)
         const qint64 elapsed = clock->elapsed();
         delete clock;
         reply->deleteLater();
+        // Same measurement the relay dropdown wants, so keep its cache warm
+        // (adhoc #124) rather than re-probing the host a second time.
+        setRelayLinkSpeed(host, reply->error() == QNetworkReply::NoError
+                                    ? static_cast<int>(elapsed)
+                                    : -1);
         const int r = rowForHost(host);
         if (r >= 0 && m_relaysTable) {
             QTableWidgetItem *status = m_relaysTable->item(r, 1);
@@ -14401,7 +14624,8 @@ void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
                 ? QByteArray()
                 : QJsonDocument(body).toJson(QJsonDocument::Compact));
     }
-    connect(reply, &QNetworkReply::finished, this, [reply, onDone] {
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, apiKey, onDone] {
         reply->deleteLater();
         const int status =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute)
@@ -14418,6 +14642,20 @@ void MainWindow::vultrApiCall(const QString &apiKey, const QString &path,
                            .arg(status)
                            .arg(detail));
             return;
+        }
+        // Vultr just authenticated this key, so it is worth keeping: every
+        // flow on this page (create, destroy) then resolves it from the store
+        // instead of asking for it again. Later calls in the same run are a
+        // no-op (adhoc #127).
+        QString rememberError;
+        const QStringList remembered =
+            rememberVultrApiKey(apiKey, &rememberError);
+        if (!remembered.isEmpty()) {
+            appendHostInstallLog(
+                QStringLiteral("Saved your Vultr API key to %1.\n")
+                    .arg(remembered.join(QStringLiteral(" and "))));
+            if (!rememberError.isEmpty())
+                appendHostInstallLog(rememberError + QLatin1Char('\n'));
         }
         onDone(object, QString());
     });
