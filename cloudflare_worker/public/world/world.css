@@ -6552,7 +6552,10 @@ forkmesh-world.world-office-active .world-quick-dock {
   z-index: 21;
   top: var(--safe-top);
   right: var(--safe-right);
-  width: min(360px, calc(100vw - 28px));
+  width: min(
+    var(--world-settings-user-width, 360px),
+    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
+  );
   max-height: calc(100svh - var(--safe-top) - var(--safe-bottom));
   overflow-y: auto;
   border: 1px solid var(--world-line-strong);
@@ -6569,13 +6572,6 @@ forkmesh-world.world-office-active .world-quick-dock {
   transform: translateY(0);
   opacity: 1;
   visibility: visible;
-}
-
-.world-settings[data-active-tab="work"] {
-  width: min(
-    920px,
-    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
-  );
 }
 
 .world-settings-heading {
@@ -6786,6 +6782,26 @@ forkmesh-world.world-office-active .world-quick-dock {
   background: #12332a;
   color: var(--world-mint);
   outline: none;
+}
+
+.world-element-sort {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin: 10px 0;
+  color: var(--world-muted);
+  font: 0.62rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-element-sort select {
+  border: 1px solid var(--world-line);
+  background: #0a1915;
+  color: var(--world-copy);
+  padding: 7px 9px;
+  font: inherit;
 }
 
 .world-element-category {
