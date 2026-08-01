@@ -1071,19 +1071,17 @@ void rememberAcceptedAgentPrompt(const QString &token)
                       tokens);
 }
 
-// The agent detail header's title (adhoc #84). A plain QLabel either wraps a
-// long ad-hoc title down the whole pane or, pinned to one line, shows a
-// truncated "…" tail — and the header can spare exactly two lines. This keeps
-// the full string and lays it out itself: wrap at the label's current width,
-// stop after two lines, and elide only if the text still runs past them. The
-// full title is always in the tooltip.
+// The agent detail header's title. It stays on one full, unelided line and lets
+// the pane's actual right edge clip it. That matches the Agents list: widening
+// the detail pane always reveals more text instead of preserving a manual ….
 class WrappedTitleLabel : public QLabel
 {
 public:
     explicit WrappedTitleLabel(const QString &text, QWidget *parent = nullptr)
         : QLabel(parent)
     {
-        setWordWrap(true);
+        setWordWrap(false);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         setFullText(text);
     }
 
@@ -1091,11 +1089,11 @@ public:
     {
         m_full = text.simplified();
         setToolTip(m_full);
-        applyLayout();
+        QLabel::setText(m_full);
     }
 
-    // The pane is free to be narrower than the title — that is what the wrapping
-    // is for — so don't let the label's own minimum widen the splitter.
+    // The pane is free to be narrower than the title, so don't let the label's
+    // own minimum widen the splitter.
     QSize minimumSizeHint() const override
     {
         QSize s = QLabel::minimumSizeHint();
@@ -1103,59 +1101,13 @@ public:
         return s;
     }
 
-protected:
-    void resizeEvent(QResizeEvent *event) override
-    {
-        QLabel::resizeEvent(event);
-        applyLayout();
-    }
-
 private:
-    static constexpr int kMaxLines = 2;
-
-    void applyLayout()
-    {
-        const int usable = width() - 2; // breathing room against the pane edge
-        // QLabel::setText() is a no-op when the string is unchanged, so the
-        // setText -> relayout -> resize -> setText path settles immediately.
-        QLabel::setText(usable > 0 ? elidedToLines(m_full, usable) : m_full);
-    }
-
-    QString elidedToLines(const QString &text, int lineWidth) const
-    {
-        if (text.isEmpty())
-            return text;
-        QTextLayout layout(text, font());
-        QTextOption option;
-        option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-        layout.setTextOption(option);
-        int lastLineStart = 0;
-        int consumed = 0;
-        layout.beginLayout();
-        for (int line = 0; line < kMaxLines; ++line) {
-            QTextLine textLine = layout.createLine();
-            if (!textLine.isValid())
-                break;
-            textLine.setLineWidth(lineWidth);
-            lastLineStart = textLine.textStart();
-            consumed = textLine.textStart() + textLine.textLength();
-        }
-        layout.endLayout();
-        if (consumed >= text.size())
-            return text; // fits in two lines as-is
-        // It doesn't: keep the first line whole and elide what is left onto the
-        // second, so the "…" lands at the end of the title rather than the top.
-        return text.left(lastLineStart) +
-               fontMetrics().elidedText(text.mid(lastLineStart), Qt::ElideRight,
-                                        lineWidth);
-    }
-
     QString m_full;
 };
 
-// Set the detail header's title through the wrapping label's own setter, so the
-// full string is what gets laid out (and what the tooltip carries). m_agentTitle
-// is typed QLabel* in the header; this is the one place that knows better.
+// Set the detail header's title through the full-title label's own setter, so its
+// complete string reaches both the clipped display and tooltip. m_agentTitle is
+// typed QLabel* in the header; this is the one place that knows better.
 void setAgentTitleText(QLabel *label, const QString &text)
 {
     if (auto *wrapped = dynamic_cast<WrappedTitleLabel *>(label))
@@ -1414,8 +1366,8 @@ QWidget *MainWindow::buildAgentsTab()
     listLayout->addWidget(m_agentTable, 1);
 
     auto *detailPane = new QWidget;
-    // Wraps onto a second line and elides only past that (adhoc #84): an ad-hoc
-    // session's title is a whole sentence, and a one-line header cut it off.
+    // Keep the whole title on one line; the detail pane's actual right edge is
+    // the only clipping boundary, and widening it reveals the remaining text.
     m_agentTitle = new WrappedTitleLabel(QStringLiteral("Select a session"));
     m_agentTitle->setObjectName("channelTitle");
     // The session's field list (Agent/Model/Repo/Status/Issue/PR/… plus Branch
@@ -1680,8 +1632,8 @@ QWidget *MainWindow::buildAgentsTab()
     actionRow->addWidget(m_agentWorktreeButton);
 
     // The title still owns its row outright (adhoc #35): sharing it with the mode
-    // selector left a long, prompt-derived ad-hoc title wrapping inside a narrow
-    // column with acres of unused space beside it. The header reads title, then
+    // selector left a long, prompt-derived ad-hoc title inside a narrow column
+    // with acres of unused space beside it. The header reads title, then
     // the status pill with the session's actions beside it, then the meta table.
     auto *topRow = new QVBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
@@ -5216,6 +5168,22 @@ AgentSession *MainWindow::findAgentSession(int sessionId)
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testAgentDetailTitleText() const
+{
+    return m_agentTitle ? m_agentTitle->text() : QString();
+}
+
+bool MainWindow::testAgentDetailTitleWraps() const
+{
+    return m_agentTitle && m_agentTitle->wordWrap();
+}
+
+QString MainWindow::testRenderAgentDetailTitle(const QString &text)
+{
+    setAgentTitleText(m_agentTitle, text);
+    return testAgentDetailTitleText();
+}
+
 // issue #291: read back the run-state word the agent list renders for a
 // session — "merged" once its worktree/PR lands in the base branch, otherwise the
 // run status — so a window test can prove the merge note reaches the list. Goes
@@ -5967,11 +5935,9 @@ void MainWindow::showAgentSession(int sessionId)
                 m_agentTitle,
                 QStringLiteral("External Claude Code · %1").arg(label));
         } else {
-            // An ad-hoc session's stored issueTitle is the prompt's first line
-            // capped at 80 characters, so the header used to end in a "…" that
-            // no amount of pane width would fill in. Take the first line of the
-            // prompt itself when there is one and let the label wrap it over two
-            // lines (adhoc #84).
+            // Older ad-hoc sessions may still carry a historically shortened
+            // issueTitle, so prefer the prompt's complete first line when it is
+            // available. New sessions persist that complete line directly.
             QString adHocTitle = session->issueTitle;
             if (session->issueNumber <= 0 && !session->prompt.trimmed().isEmpty())
                 adHocTitle =
@@ -6059,6 +6025,30 @@ void MainWindow::showAgentSession(int sessionId)
                 if (wantLogSurface)
                     setAgentLogText(sessionId, scan.log);
             });
+    }
+    // Feed the transcript's "session started" divider the run context the CLI
+    // itself never reports — branch, permission mode, reasoning strength (adhoc
+    // #9). Set before any rebuild below so the divider renders with it; external
+    // sessions keep whatever their own init event says.
+    if (m_agentTranscript) {
+        QString ctxMode, ctxStrength;
+        // Only the CLI providers run under a permission mode; the API ones have
+        // no such notion (the same rule the detail meta table uses).
+        if (!external && (session->provider == QLatin1String("claude-code") ||
+                          agentIsCodexProvider(session->provider))) {
+            ctxMode = session->mode;
+            if (ctxMode.isEmpty()) // pre-adhoc-#38 sessions: the resume default
+                ctxMode = QSettings()
+                              .value(kAgentModeSetting,
+                                     QSettings().value(kClaudeAutoModeSetting, true).toBool()
+                                         ? kClaudeAutoModeLabel
+                                         : kAgentAskModeLabel)
+                              .toString();
+        }
+        if (!external)
+            ctxStrength = session->strength.isEmpty() ? composerAgentStrength()
+                                                      : session->strength;
+        m_agentTranscript->setSessionContext(session->branchName, ctxMode, ctxStrength);
     }
     if (external) {
         // Skip the full tail re-read/rebuild when this session is already on
@@ -6835,8 +6825,6 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     QString title = titleOverride.trimmed().isEmpty()
                         ? task.section(QLatin1Char('\n'), 0, 0).simplified()
                         : titleOverride.trimmed();
-    if (title.size() > 80)
-        title = title.left(77) + QString::fromUtf8("\xE2\x80\xA6");
     session.issueTitle =
         title.isEmpty() ? QStringLiteral("Ad-hoc agent run") : title;
     session = m_agentStore->createSession(session);
