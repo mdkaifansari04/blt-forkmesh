@@ -156,18 +156,6 @@ QPushButton#ghostButton {
     font-weight: 500; padding: 4px 8px; text-align: left;
 }
 QPushButton#ghostButton:hover { color: #e6edf3; }
-/* The commit strip's "N Commits" toggle: ghost-button look, plus a lit
-   checked state while the commits panel is showing under the commit bar. */
-QPushButton#commitsToggle {
-    background: transparent; border: 1px solid transparent; color: #8b949e;
-    font-weight: 500; padding: 4px 8px; text-align: left; border-radius: 6px;
-}
-QPushButton#commitsToggle:hover { color: #e6edf3; }
-QPushButton#commitsToggle:checked {
-    color: #e6edf3; background: rgba(46,160,67,0.18);
-    border: 1px solid #2ea043;
-}
-
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
@@ -246,14 +234,14 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
-#settingsTabs::pane, #networkTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane, #repoSettingsTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab, #repoSettingsTabs QTabBar::tab {
     background: #0d1117; color: #8b949e; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #e6edf3; }
-#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover, #repoSettingsTabs QTabBar::tab:hover { color: #e6edf3; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected, #repoSettingsTabs QTabBar::tab:selected {
     background: #161b22; color: #e6edf3; border-color: #30363d; border-bottom-color: #161b22;
 }
 #codeEditor {
@@ -1455,18 +1443,6 @@ QPushButton#ghostButton {
     font-weight: 500; padding: 4px 8px; text-align: left;
 }
 QPushButton#ghostButton:hover { color: #1f2328; }
-/* The commit strip's "N Commits" toggle: ghost-button look, plus a lit
-   checked state while the commits panel is showing under the commit bar. */
-QPushButton#commitsToggle {
-    background: transparent; border: 1px solid transparent; color: #656d76;
-    font-weight: 500; padding: 4px 8px; text-align: left; border-radius: 6px;
-}
-QPushButton#commitsToggle:hover { color: #1f2328; }
-QPushButton#commitsToggle:checked {
-    color: #1f2328; background: rgba(31,136,61,0.14);
-    border: 1px solid #1f883d;
-}
-
 /* --- Network-log quick-filter chips --- */
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
@@ -1514,14 +1490,14 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #fileTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
-#settingsTabs::pane, #networkTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
-#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab {
+#settingsTabs::pane, #networkTabs::pane, #repoSettingsTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
+#settingsTabs QTabBar::tab, #networkTabs QTabBar::tab, #repoSettingsTabs QTabBar::tab {
     background: #ffffff; color: #656d76; padding: 7px 16px;
     border: 1px solid transparent; border-top-left-radius: 6px;
     border-top-right-radius: 6px;
 }
-#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover { color: #1f2328; }
-#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected {
+#settingsTabs QTabBar::tab:hover, #networkTabs QTabBar::tab:hover, #repoSettingsTabs QTabBar::tab:hover { color: #1f2328; }
+#settingsTabs QTabBar::tab:selected, #networkTabs QTabBar::tab:selected, #repoSettingsTabs QTabBar::tab:selected {
     background: #f6f8fa; color: #1f2328; border-color: #d0d7de; border-bottom-color: #f6f8fa;
 }
 #codeEditor {
