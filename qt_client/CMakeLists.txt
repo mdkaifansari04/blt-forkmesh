@@ -576,6 +576,7 @@ if(FORKMESH_BUILD_TESTS)
         src/SystemStats.h
         src/SystemStats.cpp
     )
+    # Qt6::Concurrent: DirectorySizeScan scans top-level trees in parallel.
     target_link_libraries(forkmesh-tests PRIVATE Qt6::Core Qt6::Network Qt6::Concurrent OpenSSL::Crypto)
     if(APPLE)
         set_target_properties(forkmesh-tests PROPERTIES MACOSX_BUNDLE FALSE)
