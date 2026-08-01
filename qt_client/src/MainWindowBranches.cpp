@@ -116,46 +116,37 @@ QWidget *MainWindow::buildWorktreesTab()
                 if (QTableWidgetItem *it = m_worktreesTable->item(row, 1))
                     QDesktopServices::openUrl(QUrl::fromLocalFile(it->text()));
             });
-    // Selecting a worktree previews its changes vs the default branch.
+    // Selecting a worktree records it, so the action toolbar below (and the row
+    // buttons) act on it. It does NOT render a diff here any more: the branch's
+    // changes belong in the Git view's one compare pane (adhoc #16), which the
+    // click handler below opens.
     connect(m_worktreesTable, &QTableWidget::currentCellChanged, this,
             [this](int row, int, int, int) {
                 QTableWidgetItem *b = m_worktreesTable->item(row, 0);
                 QTableWidgetItem *p = m_worktreesTable->item(row, 1);
-                showWorktreeDiff(b ? b->data(Qt::UserRole).toString() : QString(),
-                                 p ? p->text() : QString());
+                updateWorktreeSelection(
+                    b ? b->data(Qt::UserRole).toString() : QString(),
+                    p ? p->text() : QString());
+            });
+    // Clicking a worktree opens its branch in the Git view — its graph plus its
+    // diff against the base — exactly as clicking a row in the Branches panel
+    // does. There is only one place a branch's changes are shown (adhoc #16).
+    // Selection alone (an arrow key, or the re-select after a rebuild) must not
+    // navigate, so this rides cellClicked rather than currentCellChanged.
+    connect(m_worktreesTable, &QTableWidget::cellClicked, this,
+            [this](int row, int column) {
+                if (column >= 4)
+                    return; // action column: its cell widgets own their clicks
+                QTableWidgetItem *b = m_worktreesTable->item(row, 0);
+                const QString branch =
+                    b ? b->data(Qt::UserRole).toString() : QString();
+                if (!branch.isEmpty())
+                    switchToBranch(branch);
             });
 
-    // File-change list + diff viewer beside the table (same pattern as Branches).
-    m_worktreeFilesSummary = new QLabel;
-    m_worktreeFilesSummary->setObjectName("sectionLabel");
-    m_worktreeFilesSummary->setTextFormat(Qt::RichText);
-    m_worktreeFileList = new QListWidget;
-    m_worktreeFileList->setObjectName("overviewList");
-    enableHoverRowHighlight(m_worktreeFileList); // green outline selection (issue #252)
-    m_worktreeFileList->setMinimumWidth(170);
-    connect(m_worktreeFileList, &QListWidget::currentItemChanged, this,
-            [this](QListWidgetItem *item, QListWidgetItem *) {
-                if (item && m_worktreeDiffView) {
-                    // The file may still be queued behind the visible window.
-                    flushDiffStream(m_worktreeDiffView);
-                    m_worktreeDiffView->scrollToAnchor(item->data(Qt::UserRole).toString());
-                }
-            });
-    auto *filesPane = new QWidget;
-    auto *filesLayout = new QVBoxLayout(filesPane);
-    filesLayout->setContentsMargins(0, 0, 0, 0);
-    filesLayout->setSpacing(6);
-    filesLayout->addWidget(m_worktreeFilesSummary);
-    filesLayout->addWidget(m_worktreeFileList, 1);
-
-    m_worktreeDiffView = new QTextBrowser;
-    m_worktreeDiffView->setObjectName("diffView");
-    m_worktreeDiffView->setOpenExternalLinks(false);
-    registerDiffView(m_worktreeDiffView);
-
-    // Detail pane: a toolbar with a prominent "Merge into main" for the selected
-    // worktree, over its diff. Mirrors the per-row button but is reachable while
-    // reviewing the changes here (it merges whichever worktree is selected).
+    // Action bar: a prominent "Merge into main" for the selected worktree, plus
+    // the rest of what can be done to it. Mirrors the per-row buttons but always
+    // acts on whichever worktree is selected.
     m_worktreeMergeButton = new QPushButton("Merge into main");
     m_worktreeMergeButton->setObjectName("primaryButton");
     m_worktreeMergeButton->setProperty("buttonSize", "sm");
@@ -202,7 +193,7 @@ QWidget *MainWindow::buildWorktreesTab()
     // user can resolve and commit a merge that left conflict markers (e.g. an
     // "Update from main" or an agent merge that didn't apply cleanly). Hidden
     // unless the selected worktree actually has unmerged files (set in
-    // showWorktreeDiff).
+    // updateWorktreeSelection).
     m_worktreeResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
     m_worktreeResolveButton->setObjectName("primaryButton");
     m_worktreeResolveButton->setProperty("buttonSize", "sm");
@@ -250,6 +241,11 @@ QWidget *MainWindow::buildWorktreesTab()
     m_worktreeBranchLabel->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                                    Qt::LinksAccessibleByMouse);
     m_worktreeBranchLabel->setOpenExternalLinks(true);
+    // Action bar for the selected worktree, under the table. The changed-files
+    // list and diff viewer that used to sit beside it are gone (adhoc #16):
+    // reviewing a branch's changes happens in the Git view's compare pane and
+    // nowhere else, so this panel is the worktree list plus what you can do to
+    // the selected one.
     auto *detailBar = new QHBoxLayout;
     detailBar->setContentsMargins(0, 0, 0, 0);
     detailBar->addWidget(m_worktreeBranchLabel);
@@ -260,25 +256,9 @@ QWidget *MainWindow::buildWorktreesTab()
     detailBar->addWidget(m_worktreeMergeButton);
     detailBar->addWidget(m_worktreeMergeDeleteAgentButton);
     detailBar->addWidget(m_worktreeRemoveButton);
-    auto *diffPane = new QWidget;
-    auto *diffPaneLayout = new QVBoxLayout(diffPane);
-    diffPaneLayout->setContentsMargins(0, 0, 0, 0);
-    diffPaneLayout->setSpacing(6);
-    diffPaneLayout->addLayout(detailBar);
-    diffPaneLayout->addWidget(m_worktreeDiffView, 1);
 
-    auto *split = new QSplitter(Qt::Horizontal);
-    split->setChildrenCollapsible(false);
-    split->addWidget(m_worktreesTable);
-    split->addWidget(filesPane);
-    split->addWidget(diffPane);
-    split->setStretchFactor(0, 0);
-    split->setStretchFactor(1, 0);
-    split->setStretchFactor(2, 1);
-    // Open with the worktrees table taking ~50% of the width and the two detail
-    // panes (file list + diff) sharing the other ~50%.
-    split->setSizes({500, 150, 350});
-    layout->addWidget(split, 1);
+    layout->addWidget(m_worktreesTable, 1);
+    layout->addLayout(detailBar);
     return page;
 }
 
@@ -678,24 +658,24 @@ void MainWindow::switchToWorktree(const QString &branch)
     loadWorktreesPanel();
 }
 
-// View a branch in the Git view's main page — clicking a branch name in the
-// agent session header, the PR header or the Branches panel lands here. The
-// graph list browses the branch's history with the branch indicator tracking
-// it, the same read-only ref switch the graph's branch button does; the
-// separate range-review pane stays one explicit click away (the commits
-// page's "Review" button — openBranchRangeReview) and keeps opening directly
-// for pull requests (openPullDiffInGitView). The Branches panel's refresh
-// below keeps its rows in step and reports a branch that doesn't exist
-// (adhoc #185/#420).
+// Open a branch in the Git view — clicking a branch name in the agent session
+// header, the PR header, the Branches panel or the graph's branch dropdown
+// lands here. There is no separate branch view any more (adhoc #16): the graph
+// browses the branch's history exactly as before, and for any branch other than
+// the compare base the right pane opens that branch's range diff against the
+// base at the same time, with the "<branch> -> <base>" indicator on the branch
+// row naming the comparison. The base starts at the repo's default branch and
+// both ends are switchable (the branch button's dropdown, the base button's).
+// The Branches panel's refresh below keeps its rows in step and reports a
+// branch that doesn't exist (adhoc #185/#420).
 void MainWindow::switchToBranch(const QString &branch)
 {
-    m_branchDiffPullNumber = -1; // plain branch mode
-    // A range review or commit detail left on the workspace hands the right
-    // pane and the left column's slots back to the working tree first, so the
-    // graph the branch loads into is what's actually on screen.
-    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
-    showOverviewCommits();
+    // setRepoBranch below reassigns m_repoBranch, which some callers pass in by
+    // reference — copy before the string underneath us can change.
     const QString target = branch.trimmed();
+    m_branchDiffPullNumber = -1; // plain branch mode
+    showOverviewCommits();
+    const QString base = branchCompareBase();
     if (!target.isEmpty() && target != m_repoBranch) {
         setRepoBranch(target); // rebuilds the graph + branch button for the ref
     } else {
@@ -708,7 +688,19 @@ void MainWindow::switchToBranch(const QString &branch)
                 loadCommits();
         });
     }
-    if (!m_branchesTable || branch.isEmpty()) {
+    if (target.isEmpty() || target == base) {
+        // The base has no range against itself: plain working-tree view.
+        setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+    } else {
+        // Compare against the base on the right pane (merge/PR toolbar
+        // included), with the left column's CHANGES + graph staying put.
+        setCommitWorkspacePage(kCommitWorkspaceRangePage);
+        showBranchDiff(target);
+        // Ctrl+F and the scroll-driven tools act on the diff from the first key.
+        if (m_branchDiffView)
+            m_branchDiffView->setFocus();
+    }
+    if (!m_branchesTable || target.isEmpty()) {
         loadBranchesPanel();
         return;
     }
@@ -717,45 +709,49 @@ void MainWindow::switchToBranch(const QString &branch)
     // when it doesn't exist here at all — adhoc #185/#420).
     const bool fresh = !m_branchesPanelDir.isEmpty() &&
                        m_branchesPanelDir == repoGitDir();
-    if (fresh && selectBranchRow(branch))
+    if (fresh && selectBranchRow(target))
         m_branchesPanelPendingSelect.clear();
     else
-        m_branchesPanelPendingSelect = branch;
+        m_branchesPanelPendingSelect = target;
     loadBranchesPanel();
 }
 
-// Open a branch's range diff in the Git view's right pane (adhoc #107), with
-// the branch action toolbar (Merge to main / Create PR / Pull / Merge editor —
-// issue #116). Branch links land on the graph view now (switchToBranch); this
-// deeper review is the commits page's "Review" button. The review borrows only
-// the right pane (adhoc #12): the left column keeps the working-tree CHANGES
-// and the commit graph, and the graph goes back to the default branch — the
-// branch being merged in is named above its branch button instead (see
-// updateCommitsMergingBanner).
-void MainWindow::openBranchRangeReview(const QString &branch)
+// Base branch of the Git view's comparison: whatever the compare indicator's
+// base dropdown picked, or the repo's default branch until then (adhoc #16).
+QString MainWindow::branchCompareBase() const
 {
-    // The Review button passes m_repoBranch, which setRepoBranch below
-    // reassigns — copy before the reference underneath us can change.
-    const QString target = branch;
-    m_branchDiffPullNumber = -1; // plain branch mode
-    showOverviewCommits();
+    return m_branchCompareBase.isEmpty() ? repoDefaultBranchFast()
+                                         : m_branchCompareBase;
+}
+
+// Re-diff the branch on screen against another base (adhoc #16). Picking the
+// branch's own name as the base would leave an empty range, so that collapses
+// back to the plain working-tree view the base branch always shows.
+void MainWindow::setBranchCompareBase(const QString &base)
+{
+    const QString target = base.trimmed();
+    m_branchCompareBase =
+        target == repoDefaultBranchFast() ? QString() : target;
+    const QString branch = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
+    if (branch.isEmpty() || branch == branchCompareBase()) {
+        setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+        return;
+    }
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
+    m_branchDiffPullNumber = -1; // a base change leaves PR mode
+    showBranchDiff(branch);
+}
+
+// Leave the compare view entirely: working-tree diff on the right pane, graph
+// back on the default branch, and the base reset so the next branch opens
+// against main again (adhoc #16).
+void MainWindow::closeBranchCompareView()
+{
+    m_branchCompareBase.clear();
+    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     const QString base = repoDefaultBranchFast();
     if (!base.isEmpty() && m_repoBranch != base)
-        setRepoBranch(base); // keep the graph + branch button on main
-    setCommitWorkspacePage(kCommitWorkspaceRangePage);
-    showBranchDiff(target);
-    // Ctrl+F and the scroll-driven tools act on the diff from the first key.
-    if (m_branchDiffView)
-        m_branchDiffView->setFocus();
-    // Keep the branches table's selection in step so its detail/action state
-    // (and a later panel refresh) describe this branch.
-    if (m_branchesTable && !target.isEmpty()) {
-        const bool fresh = !m_branchesPanelDir.isEmpty() &&
-                           m_branchesPanelDir == repoGitDir();
-        if (!fresh || !selectBranchRow(target))
-            m_branchesPanelPendingSelect = target;
-        loadBranchesPanel();
-    }
+        setRepoBranch(base);
 }
 
 bool MainWindow::selectBranchRow(const QString &branch)
@@ -837,24 +833,19 @@ void MainWindow::testClickRailGitButton()
         m_railGitButton->click();
 }
 
-bool MainWindow::testCommitsReviewButtonVisible() const
+QString MainWindow::testCompareIndicatorText() const
 {
-    return m_commitsReviewButton && !m_commitsReviewButton->isHidden();
-}
-
-void MainWindow::testClickCommitsReviewButton()
-{
-    if (m_commitsReviewButton)
-        m_commitsReviewButton->click();
-}
-
-QString MainWindow::testMergingBannerText() const
-{
-    if (!m_commitsMergingButton || m_commitsMergingButton->isHidden())
+    if (!m_commitsCompareBaseButton || m_commitsCompareBaseButton->isHidden())
         return QString();
-    if (auto *elider = dynamic_cast<ElidingPushButton *>(m_commitsMergingButton))
+    if (auto *elider =
+            dynamic_cast<ElidingPushButton *>(m_commitsCompareBaseButton))
         return elider->fullText();
-    return m_commitsMergingButton->text();
+    return m_commitsCompareBaseButton->text();
+}
+
+void MainWindow::testSetCompareBase(const QString &base)
+{
+    setBranchCompareBase(base);
 }
 
 bool MainWindow::testClickBranchReviewMerge(bool deleteAll)
@@ -882,26 +873,22 @@ bool MainWindow::selectWorktreeRow(const QString &branch)
     for (int row = 0; row < m_worktreesTable->rowCount(); ++row) {
         QTableWidgetItem *b = m_worktreesTable->item(row, 0);
         if (b && b->data(Qt::UserRole).toString() == branch) {
-            m_worktreesTable->selectRow(row); // fires currentCellChanged -> diff
+            m_worktreesTable->selectRow(row); // fires currentCellChanged -> selection
             return true;
         }
     }
     return false;
 }
 
-// Show a worktree's changes vs the default branch: everything in the worktree
-// (committed + uncommitted) when its folder is present, else the branch's commits.
-void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktreePath)
+// Record which worktree is selected and gate the action bar's buttons on it.
+// This used to render the worktree's diff vs the default branch beside the
+// table; that view is gone (adhoc #16) — a branch's changes are shown in the
+// Git view's compare pane and nowhere else, so clicking a row navigates there
+// instead. Dropping the render also takes a synchronous `git diff` off the GUI
+// thread on every selection change.
+void MainWindow::updateWorktreeSelection(const QString &branch,
+                                         const QString &worktreePath)
 {
-    if (!m_worktreeDiffView)
-        return;
-    if (m_worktreeFileList) {
-        QSignalBlocker block(m_worktreeFileList);
-        m_worktreeFileList->clear();
-    }
-    if (m_worktreeFilesSummary)
-        m_worktreeFilesSummary->clear();
-
     const QString base = repoDefaultBranch(repoBranches());
     // Remember the selected worktree and (de)activate the detail buttons: only a
     // real feature branch (not the default branch) can be merged either way, and
@@ -961,48 +948,6 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
         }
         m_worktreeResolveButton->setVisible(conflicted);
     }
-    QByteArray out;
-    bool ok = false;
-    if (!worktreePath.isEmpty() && QDir(worktreePath).exists())
-        ok = runGitCapture(worktreePath, {"diff", base}, &out, nullptr);
-    else if (!branch.isEmpty())
-        ok = runGitCapture(repoGitDir(), {"diff", base + ".." + branch}, &out, nullptr);
-    if (!ok) {
-        m_worktreeDiffView->clear();
-        return;
-    }
-
-    QList<DiffFileEntry> files;
-    const QString html =
-        renderDiffHtml(QString::fromUtf8(out), files, repoGitDir(), base, branch,
-                       QString(), QHash<QString, QString>(), QSet<QString>());
-    setDiffHtml(m_worktreeDiffView,
-                html.isEmpty()
-                    ? QStringLiteral("<p style='color:#8b949e'>No changes vs %1.</p>")
-                          .arg(base.toHtmlEscaped())
-                    : html);
-    if (m_worktreeFilesSummary)
-        m_worktreeFilesSummary->setText(QStringLiteral("%1 file%2 changed")
-                                            .arg(files.size())
-                                            .arg(files.size() == 1 ? "" : "s"));
-    if (m_worktreeFileList) {
-        QSignalBlocker block(m_worktreeFileList);
-        for (const DiffFileEntry &f : files) {
-            const QString name = f.path.section(QLatin1Char('/'), -1);
-            auto *item = new QListWidgetItem(
-                QString::fromUtf8("%1   +%2 \xE2\x88\x92%3")
-                    .arg(name, QString::number(f.adds), QString::number(f.dels)));
-            QColor tint("#d29922");
-            QString icon = "file-diff";
-            if (f.status == QLatin1String("added")) { icon = "diff"; tint = QColor("#3fb950"); }
-            else if (f.status == QLatin1String("deleted")) { icon = "trash"; tint = QColor("#f85149"); }
-            item->setIcon(themedOcticon(icon, tint, 14));
-            item->setData(Qt::UserRole, f.anchor);
-            item->setToolTip(QString::fromUtf8("%1 \xC2\xB7 %2").arg(f.status, f.path));
-            m_worktreeFileList->addItem(item);
-        }
-        fitFileListToWidestEntry(m_worktreeFileList);
-    }
 }
 
 // A merge started from the branch review ends that review (adhoc #119): the
@@ -1012,7 +957,7 @@ void MainWindow::showWorktreeDiff(const QString &branch, const QString &worktree
 // like the pane's own ✕ does, instead of leaving a finished diff open.
 void MainWindow::closeBranchDiffAfterMerge()
 {
-    setCommitWorkspacePage(kCommitWorkspaceChangesPage);
+    closeBranchCompareView();
 }
 
 // Merge a worktree's branch into the repo's default branch. Direct + safe: only
@@ -2211,10 +2156,10 @@ QWidget *MainWindow::buildBranchesTab()
 // (adhoc #107): the branch detail viewer that used to sit inside the Branches
 // panel, moved beside the working-tree and commit pages and upgraded with the PR
 // viewer's diff tools (find bar, prev/next change, split toggle, Pac-Man sticky
-// header, auto-mark-viewed on scroll). openBranchRangeReview()/
-// openPullDiffInGitView() land here. It swaps in for the working-tree diff on
-// the right pane only (adhoc #12) — the separate scope / changed-files columns
-// it used to bring along are gone, so the rest of the git tab stays put.
+// header, auto-mark-viewed on scroll). switchToBranch()/openPullDiffInGitView()
+// land here. It swaps in for the working-tree diff on the right pane only
+// (adhoc #12) — the separate scope / changed-files columns it used to bring
+// along are gone, so the rest of the git tab stays put.
 QWidget *MainWindow::buildBranchRangePane()
 {
     m_branchDiffView = new QTextBrowser;
@@ -2341,17 +2286,17 @@ QWidget *MainWindow::buildBranchRangePane()
     m_branchDetailLabel->setObjectName("sectionLabel");
     m_branchDetailLabel->setTextFormat(Qt::RichText);
 
-    // Leaving the review: hands the right pane back to the working-tree diff
-    // (and hides the merging-in indicator above the graph's branch button).
+    // Leaving the comparison: right pane back to the working-tree diff, graph
+    // back on the default branch, compare base reset (adhoc #16).
     m_branchCloseButton = new QPushButton;
     m_branchCloseButton->setObjectName("ghostButton");
     m_branchCloseButton->setProperty("buttonSize", "sm");
     m_branchCloseButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_branchCloseButton, "x", 14);
     m_branchCloseButton->setToolTip(
-        QStringLiteral("Close this diff and go back to the working tree"));
+        QStringLiteral("Close this comparison and go back to the working tree"));
     connect(m_branchCloseButton, &QPushButton::clicked, this,
-            [this] { setCommitWorkspacePage(kCommitWorkspaceChangesPage); });
+            [this] { closeBranchCompareView(); });
 
     // "PR #N": shown while the pane reviews a pull request (adhoc #107) — jumps
     // to the full PR page (conversation, checks, merge controls).
@@ -4041,7 +3986,7 @@ void MainWindow::showBranchDiff(const QString &branch)
     if (!m_branchDiffView)
         return;
     m_branchDiffBranch = branch;
-    updateCommitsMergingBanner(); // names the branch above the graph's branch button
+    updateCommitsCompareIndicator(); // "<branch> -> <base>" on the branch row
     // Fills in the detail bar (and, once it knows the branch is behind and
     // conflict-free, kicks off the auto-pull) from a worker thread — see
     // updateBranchDetailActions / maybeAutoPullBranch.
@@ -4061,10 +4006,13 @@ void MainWindow::showBranchDiff(const QString &branch)
         m_branchDiffView->clear();
         return;
     }
-    const QString base = repoDefaultBranch(repoBranches());
+    // The range is against the compare base, which the base dropdown can move
+    // off the default branch (adhoc #16).
+    const QString base = branchCompareBase();
     if (branch == base) {
         setDiffHtml(m_branchDiffView,
-            QStringLiteral("<p style='color:#8b949e'>%1 is the default branch.</p>")
+            QStringLiteral("<p style='color:#8b949e'>%1 is the branch being "
+                           "compared against.</p>")
                 .arg(branch.toHtmlEscaped()));
         return;
     }
@@ -4082,7 +4030,7 @@ void MainWindow::renderBranchScopeDiff()
     const QString dir = repoGitDir();
     if (branch.isEmpty() || dir.isEmpty())
         return;
-    const QString base = repoDefaultBranch(repoBranches());
+    const QString base = branchCompareBase();
 
     // The diff read below can take seconds on a large branch — it was a
     // recurring StallWatchdog offender freezing the GUI thread (issue #353). Run
