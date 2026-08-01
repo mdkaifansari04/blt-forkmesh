@@ -974,9 +974,8 @@ void MainWindow::loadReleasesPanel()
             m_releasesSummary->setText(
                 QStringLiteral("%1 (%2)").arg(currentTag).arg(count));
     }
-    if (m_repoReleasesTab)
-        m_repoReleasesTab->setText(
-            QStringLiteral("Releases (%1)").arg(formatCount(count)));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoReleasesTab))
+        b->setBadgeCount(count);
     if (count == 0) {
         m_releasesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
@@ -2716,8 +2715,8 @@ void MainWindow::loadMirrorNodesPanel()
     if (m_mirrorResetPinButton)
         m_mirrorResetPinButton->setVisible(weAreSource && repoHasWorkingTree());
 
-    if (m_repoMirrorsTab)
-        m_repoMirrorsTab->setText(QStringLiteral("Mirror nodes (%1)").arg(formatCount(count)));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoMirrorsTab))
+        b->setBadgeCount(count);
     if (count == 0) {
         m_mirrorNodesTable->insertRow(0);
         auto *empty = new QTableWidgetItem(
