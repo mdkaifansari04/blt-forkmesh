@@ -2404,6 +2404,16 @@ class ResourceBarDelegate : public HoverRowDelegate
 public:
     using HoverRowDelegate::HoverRowDelegate;
 
+    // Views whose selected row is a muted band from a per-widget QSS rule (the
+    // Nodes directory) rather than the issue #252 green outline set this. The
+    // base strips State_Selected, so without it the view's app-wide green
+    // selection band showed through on just the delegate's columns while every
+    // other column painted the muted band — a solid green bar across CPU/RAM/
+    // Disk on the selected row. Painting the band here covers the view's band
+    // and keeps the whole row one colour; stripping the state before the base
+    // runs also skips the outline, which that design doesn't use.
+    bool mutedSelectionBand = false;
+
     QSize sizeHint(const QStyleOptionViewItem &option,
                    const QModelIndex &index) const override
     {
@@ -2414,7 +2424,15 @@ public:
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
-        HoverRowDelegate::paint(painter, option, index);
+        QStyleOptionViewItem opt(option);
+        if (mutedSelectionBand && (option.state & QStyle::State_Selected)) {
+            // Same colours as the nodesDirectory ::item:selected QSS rules.
+            painter->fillRect(option.rect, currentThemeIsDark()
+                                               ? QColor("#21262d")
+                                               : QColor("#eaeef2"));
+            opt.state &= ~QStyle::State_Selected;
+        }
+        HoverRowDelegate::paint(painter, opt, index);
         const QVariant value = index.data(kProgressBarRole);
         paintResourceBar(painter, option.rect,
                          value.isValid() ? value.toInt() : -1,
