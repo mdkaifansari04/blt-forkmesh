@@ -1885,6 +1885,12 @@ int main(int argc, char *argv[])
                       "= %2)")
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
+        check(window.testSwitchToWorktreeGitBranch(
+                  QStringLiteral("feature/keep-selected")) ==
+                  QStringLiteral("feature/keep-selected") &&
+                  window.testCommitWorkspacePage() == 2,
+              QStringLiteral("a named worktree opens in the universal Git range "
+                             "viewer instead of a separate diff pane"));
         // And closing the review hands both halves back to the working tree.
         window.testCloseBranchRange();
         check(window.testCommitWorkspacePage() == 0 &&

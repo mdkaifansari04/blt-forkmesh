@@ -675,6 +675,13 @@ public:
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
     QString testSwitchToBranchImmediateSelection(const QString &branch);
+    // Take the worktree route and expose the branch bound to the universal Git
+    // range viewer, proving worktrees no longer open a second diff surface.
+    QString testSwitchToWorktreeGitBranch(const QString &branch)
+    {
+        switchToWorktree(branch);
+        return m_branchDiffBranch;
+    }
     // Take the agent detail page's "Branch" route, so a test can prove it binds
     // the Git view to that session's own repository before opening its branch
     // there — the sessions list is global (adhoc #131).
