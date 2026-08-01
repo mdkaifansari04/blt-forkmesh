@@ -3581,8 +3581,8 @@ function worldQaCardTexture(THREE, snapshot = {}) {
             ? "QA RESULT DETAIL · REVIEW OR RETURN"
             : `CARD ${Math.min(total, currentIndex + 1)} OF ${total} · ONE AT A TIME`
           : authorized
-              ? "NO QA TASKS ARE WAITING"
-              : "QUALITY-ASSURANCE TEAM ACCESS REQUIRED"
+            ? "NO QA TASKS ARE WAITING"
+            : "SIGN IN TO WORK ON QA"
         : `${view.toUpperCase()} HISTORY · PAGE ${page + 1}/${pages}`,
       600,
       174,

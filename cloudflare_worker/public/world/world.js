@@ -7527,7 +7527,7 @@ class ForkMeshWorld extends HTMLElement {
       authenticated: payload?.authenticated === true,
       authorized: payload?.authorized === true,
       requiredTeam: sanitizePresenceText(
-        payload?.requiredTeam, "quality-assurance", 64),
+        payload?.requiredTeam, "", 64),
       revision: sanitizePresenceText(payload?.revision, "", 80),
       cards,
       stack,
