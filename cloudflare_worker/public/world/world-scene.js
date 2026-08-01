@@ -22043,8 +22043,19 @@ export function createWorldScene({
   let diagnosticsFrameCount = 0;
   let diagnosticsRendererCalls = 0;
   let diagnosticsRendererTriangles = 0;
+  let diagnosticsRendererLines = 0;
+  let diagnosticsRendererPoints = 0;
   let diagnosticsLongestFrameMs = 0;
   let diagnosticsLongFrames = 0;
+  // Raw per-frame durations for the current one-second sample so the debug
+  // panel can report a p95 alongside the average. Bounded: the buffer clears
+  // on every diagnostics read and truncates itself when nothing is polling.
+  const diagnosticsFrameTimes = [];
+  let diagnosticsFrameWorkTotalMs = 0;
+  let diagnosticsWorstFrameSinceLoadMs = 0;
+  let diagnosticsSceneStats = null;
+  let diagnosticsSceneStatsAt = -Infinity;
+  let diagnosticsContextInfo = null;
   let lastRenderStallLogAt = -Infinity;
   let suppressedRenderStalls = 0;
   let renderStallWarningTimer = 0;
@@ -33017,7 +33028,16 @@ export function createWorldScene({
       movementInputStartedAt = 0;
     }
     diagnosticsLongestFrameMs = Math.max(diagnosticsLongestFrameMs, rawFrameMs);
+    diagnosticsWorstFrameSinceLoadMs = Math.max(
+      diagnosticsWorstFrameSinceLoadMs,
+      rawFrameMs,
+    );
     if (rawFrameMs > 34) diagnosticsLongFrames += 1;
+    // Per-frame duration samples for the p95 reading. When no debug surface
+    // is polling getDiagnostics the buffer is recycled in place instead of
+    // growing without bound.
+    if (diagnosticsFrameTimes.length >= 600) diagnosticsFrameTimes.length = 0;
+    diagnosticsFrameTimes.push(rawFrameMs);
     // rawFrameMs includes time spent waiting for requestAnimationFrame and is
     // useful for FPS diagnostics, but it cannot identify renderer work. Stall
     // attribution is performed after render from actual main-thread work time.
@@ -33516,6 +33536,10 @@ export function createWorldScene({
       1_000_000,
       diagnosticsFrameCount + 1,
     );
+    diagnosticsFrameWorkTotalMs = Math.min(
+      3_600_000,
+      diagnosticsFrameWorkTotalMs + frameWorkMs,
+    );
     diagnosticsRendererCalls = Math.max(
       0,
       Math.min(10_000_000, Number(renderer.info?.render?.calls) || 0),
@@ -33523,6 +33547,14 @@ export function createWorldScene({
     diagnosticsRendererTriangles = Math.max(
       0,
       Math.min(1_000_000_000, Number(renderer.info?.render?.triangles) || 0),
+    );
+    diagnosticsRendererLines = Math.max(
+      0,
+      Math.min(100_000_000, Number(renderer.info?.render?.lines) || 0),
+    );
+    diagnosticsRendererPoints = Math.max(
+      0,
+      Math.min(100_000_000, Number(renderer.info?.render?.points) || 0),
     );
   }
 
@@ -33538,6 +33570,201 @@ export function createWorldScene({
     }
   }
 
+  // GPU name, antialias, and WebGL tier are immutable per context, so they
+  // are probed once. Privacy-hardened browsers may refuse the debug-renderer
+  // extension entirely; the panel then simply reports no GPU name.
+  function rendererContextInfo() {
+    if (diagnosticsContextInfo) return diagnosticsContextInfo;
+    const info = {
+      gpu: "",
+      antialias: !compactRenderer,
+      webgl2: renderer.capabilities?.isWebGL2 === true,
+    };
+    try {
+      const gl = renderer.getContext();
+      const attributes = gl?.getContextAttributes?.();
+      if (attributes) info.antialias = attributes.antialias === true;
+      const debugInfo = gl?.getExtension?.("WEBGL_debug_renderer_info");
+      if (debugInfo) {
+        info.gpu = String(
+          gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL) || "",
+        ).slice(0, 96);
+      }
+    } catch {
+      diagnosticsContextInfo = info;
+      return info;
+    }
+    diagnosticsContextInfo = info;
+    return info;
+  }
+
+  function toneMappingName(value) {
+    if (value === THREE.ACESFilmicToneMapping) return "ACES filmic";
+    if (value === THREE.ReinhardToneMapping) return "Reinhard";
+    if (value === THREE.CineonToneMapping) return "Cineon";
+    if (value === THREE.LinearToneMapping) return "linear";
+    if (value === THREE.NoToneMapping) return "off";
+    return `#${value}`;
+  }
+
+  function shadowMapTypeName(value) {
+    if (value === THREE.PCFSoftShadowMap) return "PCF soft";
+    if (value === THREE.PCFShadowMap) return "PCF";
+    if (value === THREE.VSMShadowMap) return "VSM";
+    if (value === THREE.BasicShadowMap) return "basic";
+    return `#${value}`;
+  }
+
+  // RGBA8 plus a third for mipmaps — a display heuristic for spotting
+  // disproportionately large assets, not an exact meter.
+  function estimateTextureBytes(texture) {
+    const image = texture?.isCubeTexture
+      ? texture.image?.[0]
+      : texture?.image;
+    const faces = texture?.isCubeTexture ? 6 : 1;
+    const width = Number(image?.width) || 0;
+    const height = Number(image?.height) || 0;
+    if (!width || !height) return 0;
+    return Math.round(width * height * 4 * 1.33) * faces;
+  }
+
+  const TEXTURE_SLOTS = [
+    "map",
+    "normalMap",
+    "roughnessMap",
+    "metalnessMap",
+    "aoMap",
+    "emissiveMap",
+    "bumpMap",
+    "alphaMap",
+    "envMap",
+    "lightMap",
+    "displacementMap",
+    "specularMap",
+    "matcap",
+    "gradientMap",
+  ];
+
+  // One walk of the live scene graph, covering everything renderer.info
+  // cannot see: per-category object counts, transparency and shadow load,
+  // uniqueness of materials/geometries/textures, and approximate GPU memory.
+  // Throttled by getDiagnostics to at most one walk every five seconds, and
+  // only while a debug surface is actually polling.
+  function collectSceneComplexity() {
+    const stats = {
+      objects: 0,
+      hiddenObjects: 0,
+      meshes: 0,
+      instancedMeshes: 0,
+      instancedInstances: 0,
+      skinnedMeshes: 0,
+      sprites: 0,
+      pointsObjects: 0,
+      lineObjects: 0,
+      lights: 0,
+      shadowLights: 0,
+      shadowCasters: 0,
+      transparentDrawables: 0,
+      doubleSidedDrawables: 0,
+      cullingOff: 0,
+      uniqueGeometries: 0,
+      uniqueMaterials: 0,
+      uniqueTextures: 0,
+      geometryBytes: 0,
+      textureBytes: 0,
+      renderTargetBytes: 0,
+      topElements: [],
+    };
+    const geometries = new Set();
+    const materials = new Set();
+    const textures = new Set();
+    scene.traverse((child) => {
+      stats.objects += 1;
+      if (child.visible === false) stats.hiddenObjects += 1;
+      if (child.isLight) {
+        stats.lights += 1;
+        if (child.castShadow) {
+          stats.shadowLights += 1;
+          const size = child.shadow?.mapSize;
+          stats.renderTargetBytes +=
+            Math.max(0, Number(size?.x) || 0) *
+            Math.max(0, Number(size?.y) || 0) *
+            4;
+        }
+        return;
+      }
+      const drawable =
+        child.isMesh || child.isPoints || child.isLine || child.isSprite;
+      if (!drawable) return;
+      if (child.isMesh) {
+        stats.meshes += 1;
+        if (child.castShadow) stats.shadowCasters += 1;
+      }
+      if (child.isInstancedMesh) {
+        stats.instancedMeshes += 1;
+        stats.instancedInstances += Math.max(0, Number(child.count) || 0);
+      }
+      if (child.isSkinnedMesh) stats.skinnedMeshes += 1;
+      if (child.isSprite) stats.sprites += 1;
+      if (child.isPoints) stats.pointsObjects += 1;
+      if (child.isLine) stats.lineObjects += 1;
+      if (child.frustumCulled === false) stats.cullingOff += 1;
+      const geometry = child.geometry;
+      if (geometry && !geometries.has(geometry)) {
+        geometries.add(geometry);
+        let bytes = 0;
+        for (const attribute of Object.values(geometry.attributes || {})) {
+          bytes += attribute?.array?.byteLength || 0;
+        }
+        bytes += geometry.index?.array?.byteLength || 0;
+        stats.geometryBytes += bytes;
+      }
+      const childMaterials = Array.isArray(child.material)
+        ? child.material
+        : child.material
+          ? [child.material]
+          : [];
+      let transparent = false;
+      let doubleSided = false;
+      for (const material of childMaterials) {
+        if (!material) continue;
+        if (material.transparent === true) transparent = true;
+        if (material.side === THREE.DoubleSide) doubleSided = true;
+        if (materials.has(material)) continue;
+        materials.add(material);
+        for (const slot of TEXTURE_SLOTS) {
+          const texture = material[slot];
+          if (!texture?.isTexture || textures.has(texture)) continue;
+          textures.add(texture);
+          stats.textureBytes += estimateTextureBytes(texture);
+        }
+      }
+      if (transparent) stats.transparentDrawables += 1;
+      if (doubleSided) stats.doubleSidedDrawables += 1;
+    });
+    stats.uniqueGeometries = geometries.size;
+    stats.uniqueMaterials = materials.size;
+    stats.uniqueTextures = textures.size;
+    // The lounge mirror renders the world into a cube target every frame.
+    stats.renderTargetBytes +=
+      Math.max(0, Number(reflectionTarget?.width) || 0) *
+      Math.max(0, Number(reflectionTarget?.height) || 0) *
+      4 *
+      6;
+    // Name the heaviest enabled world elements so "what is costing me
+    // triangles" is answered with friendly labels, not Object3D numbers.
+    stats.topElements = listWorldElements()
+      .filter((element) => element.enabled && element.triangles > 0)
+      .sort((a, b) => b.triangles - a.triangles)
+      .slice(0, 3)
+      .map((element) => ({
+        label: element.label,
+        triangles: element.triangles,
+        drawables: element.drawables,
+      }));
+    return stats;
+  }
+
   function getDiagnostics(now = performance.now()) {
     const sampleNow = Number.isFinite(Number(now))
       ? Number(now)
@@ -33551,6 +33778,26 @@ export function createWorldScene({
       running && frames
         ? Math.max(0, Math.min(60_000, elapsedMs / frames))
         : 0;
+    // Average main-thread work per frame over the same window. The gap
+    // between it and the wall-clock frame time is what separates "the CPU is
+    // busy" from "we are waiting on the GPU or vsync".
+    const cpuFrameMs =
+      running && frames
+        ? Math.max(0, Math.min(60_000, diagnosticsFrameWorkTotalMs / frames))
+        : 0;
+    diagnosticsFrameWorkTotalMs = 0;
+    let frameTimeP95Ms = 0;
+    if (diagnosticsFrameTimes.length) {
+      const sorted = [...diagnosticsFrameTimes].sort((a, b) => a - b);
+      frameTimeP95Ms =
+        sorted[
+          Math.min(
+            sorted.length - 1,
+            Math.floor(sorted.length * 0.95),
+          )
+        ];
+      diagnosticsFrameTimes.length = 0;
+    }
     diagnosticsSampleAt = sampleNow;
     diagnosticsFrameCount = 0;
     const longestFrameMs = diagnosticsLongestFrameMs;
@@ -33563,11 +33810,26 @@ export function createWorldScene({
     diagnosticsPointerMoves = 0;
     diagnosticsPointerWorstGapMs = 0;
     diagnosticsWorstMovementInputMs = 0;
+    // The full scene walk is the one genuinely heavy reading, so it is
+    // recomputed at most every five seconds and only while something polls.
+    if (sampleNow - diagnosticsSceneStatsAt >= 5000) {
+      diagnosticsSceneStatsAt = sampleNow;
+      diagnosticsSceneStats = collectSceneComplexity();
+    }
+    const contextInfo = rendererContextInfo();
+    const drawingBuffer = renderer.getDrawingBufferSize(
+      diagnosticsDrawingBuffer,
+    );
     return {
       fps,
       frameTimeMs,
+      frameTimeP95Ms,
+      cpuFrameMs,
+      worstFrameSinceLoadMs: diagnosticsWorstFrameSinceLoadMs,
       rendererCalls: diagnosticsRendererCalls,
       rendererTriangles: diagnosticsRendererTriangles,
+      rendererLines: diagnosticsRendererLines,
+      rendererPoints: diagnosticsRendererPoints,
       longestFrameMs,
       longFrames,
       pointerMoves,
@@ -33598,6 +33860,27 @@ export function createWorldScene({
       zoom: cameraMode === "first-person" ? firstPersonZoom : cameraZoom,
       paused: !running,
       sky: worldSky.getState(),
+      sceneStats: diagnosticsSceneStats,
+      output: {
+        drawingBufferWidth: drawingBuffer.x,
+        drawingBufferHeight: drawingBuffer.y,
+        cssWidth: Math.round(viewportRect.width),
+        cssHeight: Math.round(viewportRect.height),
+        webgl2: contextInfo.webgl2,
+        antialias: contextInfo.antialias,
+        gpu: contextInfo.gpu,
+        compactRenderer,
+        threeRevision: String(THREE.REVISION || ""),
+        toneMapping: toneMappingName(renderer.toneMapping),
+        exposure: renderer.toneMappingExposure,
+        colorSpace: String(renderer.outputColorSpace || ""),
+        shadowMapType: shadowMapTypeName(renderer.shadowMap.type),
+        shadowMapSize: Math.max(0, Number(sun.shadow?.mapSize?.x) || 0),
+        shadowAutoUpdate: renderer.shadowMap.autoUpdate === true,
+        cameraFov: camera.fov,
+        cameraNear: camera.near,
+        cameraFar: camera.far,
+      },
     };
   }
 

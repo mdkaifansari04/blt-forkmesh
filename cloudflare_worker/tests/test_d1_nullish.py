@@ -10,13 +10,21 @@ import asyncio
 from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-_WANT_FUNCS = ("js_nullish", "d1_row_to_dict", "d1_all", "d1_first")
+# d1_all/d1_first issue their query through _d1_read, which replays a transient
+# D1 platform fault (see test_d1_transient_errors.py), so its helper chain has
+# to come along for these conversion tests to execute the real code path.
+_WANT_FUNCS = ("js_nullish", "d1_row_to_dict", "d1_all", "d1_first",
+               "_d1_read", "_is_transient_d1_error", "_safe_error_text")
+_WANT_CONSTS = ("_D1_TRANSIENT_MARKERS", "_D1_SUSTAINED_MARKERS")
 
 
 def _load():
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
     body = []
     for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+                getattr(t, "id", "") in _WANT_CONSTS for t in node.targets):
+            body.append(node)
         if isinstance(node, ast.FunctionDef) and node.name in _WANT_FUNCS:
             body.append(node)
         if isinstance(node, ast.AsyncFunctionDef) and node.name in _WANT_FUNCS:

@@ -11006,11 +11006,52 @@ def d1_row_to_dict(row):
     return dict(row)
 
 
+# D1 occasionally fails a single query with an opaque backend fault —
+# "D1_ERROR: internal error; reference = <id>" — the same one-off platform blip
+# shape Durable Objects raise (see log_durable_object_abort). It is not a state
+# the database stays in, so replaying the query once clears it. Letting it
+# escape instead turned a single hiccup on the public profile read into a
+# Worker 1101/500 error group (GET /api/accounts/<name>).
+#
+# Overload is deliberately excluded: "D1 DB is overloaded" IS a sustained
+# state, and replaying reads into it is exactly the amplification that made the
+# 2026-07-11 free-plan incident a death spiral (the same reasoning keeps
+# _apply_schema from re-running its DDL on a struggling database). Those still
+# fail fast, and the router below turns them into a backpressure 503.
+_D1_TRANSIENT_MARKERS = ("internal error", "network connection lost")
+_D1_SUSTAINED_MARKERS = ("overload", "too many")
+
+
+def _is_transient_d1_error(error):
+    text = _safe_error_text(error).lower()
+    if any(marker in text for marker in _D1_SUSTAINED_MARKERS):
+        return False
+    return any(marker in text for marker in _D1_TRANSIENT_MARKERS)
+
+
+async def _d1_read(env, sql, args, first):
+    """Await one D1 read, replaying a single transient platform fault.
+
+    The statement is rebuilt per attempt: one that already failed is not
+    guaranteed to be re-awaitable. Reads only — d1_run's writes are not all
+    idempotent, so they keep failing fast.
+    """
+    last_error = None
+    for attempt in range(2):
+        stmt = env.DB.prepare(sql)
+        if args:
+            stmt = stmt.bind(*args)
+        try:
+            return await (stmt.first() if first else stmt.all())
+        except Exception as error:
+            if attempt or not _is_transient_d1_error(error):
+                raise
+            last_error = error
+    raise last_error
+
+
 async def d1_all(env, sql, *args):
-    stmt = env.DB.prepare(sql)
-    if args:
-        stmt = stmt.bind(*args)
-    result = await stmt.all()
+    result = await _d1_read(env, sql, args, False)
     out = []
     results = getattr(result, "results", None)
     if js_nullish(results):
@@ -11023,11 +11064,7 @@ async def d1_all(env, sql, *args):
 
 
 async def d1_first(env, sql, *args):
-    stmt = env.DB.prepare(sql)
-    if args:
-        stmt = stmt.bind(*args)
-    row = await stmt.first()
-    return d1_row_to_dict(row)
+    return d1_row_to_dict(await _d1_read(env, sql, args, True))
 
 
 async def d1_run(env, sql, *args):
@@ -36575,6 +36612,52 @@ async def log_durable_object_abort(env, request, path, error):
         actor)
 
 
+def _is_d1_platform_error(error):
+    """Is this D1 itself failing, rather than our query being wrong?
+
+    Only the platform's own fault envelope counts. A bad statement (no such
+    table, constraint violation, syntax error) is our bug and must keep
+    surfacing as a 500 with a Sentry stack trace.
+    """
+    text = _safe_error_text(error).lower()
+    if "d1_error" not in text:
+        return False
+    return bool(
+        _is_transient_d1_error(error)
+        or any(marker in text for marker in _D1_SUSTAINED_MARKERS))
+
+
+async def log_d1_unavailable(env, request, path, error):
+    """Record a request D1 failed to serve, the same way a DO abort is logged.
+
+    _d1_read has already replayed the query once, so reaching here means the
+    database — not the worker — is down or overloaded. Same doctrine as
+    log_durable_object_abort: keep the D1 error_log row (its raw text is what
+    lets /status separate platform outages from real bugs) but raise no Sentry
+    event, and answer 503 so clients back off instead of retrying into it.
+    Best-effort: _write_error_log never raises.
+    """
+    privacy_filter = globals().get("_privacy_safe_log_path")
+    try:
+        safe_path = (
+            await privacy_filter(env, path)
+            if callable(privacy_filter) else path
+        )
+    except BaseException:
+        safe_path = "/repository-route-redacted"
+    try:
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
+    try:
+        ray = request.headers.get("cf-ray") or ""
+    except BaseException:
+        ray = ""
+    await _write_error_log(
+        env, 503, method_name(request), safe_path,
+        "d1 unavailable: " + _safe_error_text(error)[:400], ray, actor)
+
+
 async def log_cron_error(env, path, message, error=None, failures=None):
     try:
         if failures is not None:
@@ -42424,6 +42507,25 @@ class Default(WorkerEntrypoint):
         except Exception as error:
             if str(error) == "legacy_custody_migration_required":
                 return _legacy_custody_not_ready_response()
+            # D1 being down or overloaded is a dependency outage, not a worker
+            # bug: _d1_read already replayed the one-off "internal error;
+            # reference = …" fault, so anything still escaping means the
+            # database cannot serve this request. Answer 503 (marked degraded,
+            # so the 5xx logger below does not double-log it) instead of
+            # re-raising into a Cloudflare 1101 that clients read as a 500.
+            if _is_d1_platform_error(error):
+                try:
+                    await log_d1_unavailable(
+                        self.env, request, getattr(url, "path", ""), error)
+                except BaseException:
+                    pass
+                return json_response(
+                    {"error": "database_unavailable"}, status=503,
+                    cache_control="no-store",
+                    extra_headers={
+                        **EXPECTED_DEGRADED_HEADERS,
+                        "Retry-After": "2",
+                    })
             try:
                 await capture_worker_exception(self.env, request, url, error)
             except BaseException:

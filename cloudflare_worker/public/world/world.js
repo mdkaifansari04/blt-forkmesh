@@ -262,6 +262,8 @@ const WORLD_DIAGNOSTICS_COUNTER_MAX = 1_000_000_000;
 const WORLD_DIAGNOSTICS_THRESHOLDS = {
   fps: { caution: 50, high: 30, lowerIsWorse: true },
   frameTimeMs: { caution: 20, high: 34 },
+  frameTimeP95Ms: { caution: 24, high: 40 },
+  cpuFrameMs: { caution: 10, high: 20 },
   calls: { caution: 600, high: 1500 },
   triangles: { caution: 400_000, high: 1_200_000 },
   longFrames: { caution: 1, high: 5 },
@@ -273,6 +275,10 @@ const WORLD_DIAGNOSTICS_THRESHOLDS = {
   frameRate: { caution: 30, high: 90 },
   coalesced: { caution: 30, high: 120 },
   backpressure: { caution: 1, high: 5 },
+  transparentDrawables: { caution: 250, high: 800 },
+  shadowCasters: { caution: 500, high: 1500 },
+  textureMB: { caution: 256, high: 512 },
+  heapTrendMBPerMin: { caution: 6, high: 24 },
 };
 
 // "good" | "caution" | "high" for one reading against its threshold pair.
@@ -331,6 +337,35 @@ function coarseCrashReading(value) {
 function heapUsedMB() {
   const bytes = Number(performance?.memory?.usedJSHeapSize);
   return Number.isFinite(bytes) && bytes > 0 ? bytes / (1024 * 1024) : NaN;
+}
+
+// Bounded non-negative integer copy for diagnostics pass-through values.
+function clampCount(value, max = 100_000_000) {
+  return Math.max(0, Math.min(max, Math.round(Number(value) || 0)));
+}
+
+function formatEstimatedMB(bytes) {
+  const mb = Math.max(0, Number(bytes) || 0) / (1024 * 1024);
+  return mb >= 100 ? `${Math.round(mb)}` : mb.toFixed(1);
+}
+
+const WORLD_SPARKLINE_GLYPHS = "▁▂▃▄▅▆▇█";
+
+// Text sparkline over the retained one-second frame-time averages, oldest to
+// newest. The scale is fixed (a full block is 50 ms or worse, ~20 FPS) so two
+// screenshots taken minutes apart stay directly comparable.
+function frameHistorySparkline(history) {
+  return history
+    .map((sample) => {
+      const scale = Math.min(
+        1,
+        Math.max(0, Number(sample.frameTimeMs) || 0) / 50,
+      );
+      return WORLD_SPARKLINE_GLYPHS[
+        Math.round(scale * (WORLD_SPARKLINE_GLYPHS.length - 1))
+      ];
+    })
+    .join("");
 }
 
 // Turn one diagnostics sample into concrete, ranked advice. Every suggestion
@@ -455,6 +490,40 @@ function worldDebugSuggestions(snapshot, { isAdmin = false, elements = [] } = {}
     suggestions.push({
       level: "caution",
       text: `Socket traffic is running at ${(Number(traffic.inboundRate) || 0).toFixed(0)}/s inbound, ${(Number(traffic.outboundRate) || 0).toFixed(0)}/s outbound. Each frame is parsed on the main thread, so busy hours show up as input jitter.`,
+    });
+  }
+  const complexity = snapshot?.complexity;
+  if (complexity) {
+    if (
+      diagnosticLevel(
+        "transparentDrawables",
+        complexity.transparentDrawables,
+      ) !== "good"
+    ) {
+      suggestions.push({
+        level: diagnosticLevel(
+          "transparentDrawables",
+          complexity.transparentDrawables,
+        ),
+        text: `${complexity.transparentDrawables.toLocaleString()} transparent drawables force sorted, blended overdraw every frame — a classic fill-rate cost on integrated GPUs.${elementsHint("drawables")}`,
+      });
+    }
+    const textureMB = complexity.textureBytes / (1024 * 1024);
+    if (diagnosticLevel("textureMB", textureMB) !== "good") {
+      suggestions.push({
+        level: diagnosticLevel("textureMB", textureMB),
+        text: `Textures hold an estimated ${Math.round(textureMB)} MB of GPU memory across ${complexity.uniqueTextures.toLocaleString()} unique textures — enough to cause eviction stutter on low-memory GPUs.`,
+      });
+    }
+  }
+  const heapTrend = Number(snapshot?.memory?.heapTrendMBPerMin);
+  if (
+    Number.isFinite(heapTrend) &&
+    diagnosticLevel("heapTrendMBPerMin", heapTrend) !== "good"
+  ) {
+    suggestions.push({
+      level: diagnosticLevel("heapTrendMBPerMin", heapTrend),
+      text: `The JS heap is growing ~${heapTrend.toFixed(1)} MB/min. Growth that never flattens usually means a leak — watch the geometry/texture counts in the GPU memory row while it climbs.`,
     });
   }
   if (!suggestions.length) {
@@ -4967,8 +5036,11 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <p class="world-setting-note">
                 This panel stays open while you walk, ride, and fly: click or
                 move in the world and the readings keep updating in place.
-                Everything is measured in this browser only — nothing here is
-                transmitted.
+                Timings refresh every second; the scene-graph, memory-estimate,
+                and top-cost rows re-walk the scene every five seconds. Use
+                “Copy diagnostics JSON” to attach the whole snapshot to an
+                issue. Everything is measured in this browser only — nothing
+                here is transmitted.
               </p>
               <label class="world-privacy-option">
                 <span>Show floating debug pill over the world</span>
@@ -4981,8 +5053,13 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               <dl class="world-debug-live" data-world-debug-live aria-live="off">
                 <div><dt>Renderer</dt><dd data-world-debug-renderer>Starting…</dd></div>
                 <div><dt>Frame health</dt><dd data-world-debug-frame-health>Sampling…</dd></div>
+                <div><dt>Frame history</dt><dd data-world-debug-frame-history>Collecting the first samples…</dd></div>
                 <div><dt>Input / scene</dt><dd data-world-debug-input>Sampling…</dd></div>
                 <div><dt>GPU memory</dt><dd data-world-debug-memory>Sampling…</dd></div>
+                <div><dt>Scene graph</dt><dd data-world-debug-scene-graph>Waiting for the first scene walk…</dd></div>
+                <div><dt>Lights / shadows</dt><dd data-world-debug-shadows>Sampling…</dd></div>
+                <div><dt>Top costs</dt><dd data-world-debug-top-costs>Waiting for the first scene walk…</dd></div>
+                <div><dt>Output</dt><dd data-world-debug-output>Sampling…</dd></div>
                 <div><dt>World state</dt><dd data-world-debug-world-state>Sampling…</dd></div>
                 <div><dt>Music</dt><dd data-world-debug-music>Nothing playing</dd></div>
                 <div><dt>Connection</dt><dd data-world-debug-connection>Connecting…</dd></div>
@@ -4990,6 +5067,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
                 <div><dt>Coalescing</dt><dd data-world-debug-queues>Movement idle · profile idle</dd></div>
                 <div><dt>Build</dt><dd data-world-debug-build>Loading current version…</dd></div>
               </dl>
+              <div class="world-debug-actions">
+                <button type="button" data-world-debug-copy>Copy diagnostics JSON</button>
+              </div>
             </fieldset>
             <fieldset class="world-setting-group">
               <legend>Suggestions</legend>
@@ -5430,6 +5510,10 @@ class ForkMeshWorld extends HTMLElement {
     this.diagnosticsInboundSample = 0;
     this.diagnosticsOutboundSample = 0;
     this.lastDiagnosticsSnapshot = null;
+    // Rolling one-second samples for the Debug tab's frame-history sparkline
+    // and the heap-growth trend; both stay small and device-local.
+    this.diagnosticsFrameHistory = [];
+    this.diagnosticsHeapHistory = [];
     this.rendererRecoveryTimer = 0;
     this.viewportSyncTimer = 0;
     this.lastStableViewportHeight = 0;
@@ -10212,6 +10296,10 @@ class ForkMeshWorld extends HTMLElement {
         this.setAllWorldElementsEnabled(
           elementMaster.dataset.worldElementMaster !== "off",
         );
+        return;
+      }
+      if (event.target.closest("[data-world-debug-copy]")) {
+        void this.copyDiagnosticsSnapshot();
         return;
       }
       const sessionRevoke = event.target.closest("[data-world-session-revoke]");
@@ -25094,6 +25182,28 @@ class ForkMeshWorld extends HTMLElement {
       this.remotePlayers.size +
       (socketOnline ? 0 : this.localPeers.size);
     const scene = this.world?.getDiagnostics?.(sampleNow) || null;
+    // Heap growth per minute over up to five minutes of retained samples —
+    // the reading that makes a leak visible long before a crash.
+    const heapMB = heapUsedMB();
+    if (Number.isFinite(heapMB)) {
+      this.diagnosticsHeapHistory.push({ at: sampleNow, mb: heapMB });
+      if (this.diagnosticsHeapHistory.length > 300) {
+        this.diagnosticsHeapHistory.shift();
+      }
+    }
+    let heapTrendMBPerMin = NaN;
+    if (this.diagnosticsHeapHistory.length >= 30) {
+      const oldest = this.diagnosticsHeapHistory[0];
+      const newest =
+        this.diagnosticsHeapHistory[this.diagnosticsHeapHistory.length - 1];
+      const minutes = (newest.at - oldest.at) / 60_000;
+      if (minutes >= 0.5) {
+        heapTrendMBPerMin = (newest.mb - oldest.mb) / minutes;
+      }
+    }
+    const playerPosition = this.world?.getPosition?.() || null;
+    const sceneStats = scene?.sceneStats || null;
+    const sceneOutput = scene?.output || null;
     const snapshot = {
       renderer: scene
         ? {
@@ -25101,6 +25211,18 @@ class ForkMeshWorld extends HTMLElement {
             frameTimeMs: Math.max(
               0,
               Math.min(60_000, Number(scene.frameTimeMs) || 0),
+            ),
+            frameTimeP95Ms: Math.max(
+              0,
+              Math.min(60_000, Number(scene.frameTimeP95Ms) || 0),
+            ),
+            cpuFrameMs: Math.max(
+              0,
+              Math.min(60_000, Number(scene.cpuFrameMs) || 0),
+            ),
+            worstFrameSinceLoadMs: Math.max(
+              0,
+              Math.min(60_000, Number(scene.worstFrameSinceLoadMs) || 0),
             ),
             calls: Math.max(
               0,
@@ -25110,6 +25232,8 @@ class ForkMeshWorld extends HTMLElement {
               0,
               Math.min(1_000_000_000, Number(scene.rendererTriangles) || 0),
             ),
+            lines: clampCount(scene.rendererLines),
+            points: clampCount(scene.rendererPoints),
             longestFrameMs: Math.max(
               0,
               Math.min(60_000, Number(scene.longestFrameMs) || 0),
@@ -25179,6 +25303,118 @@ class ForkMeshWorld extends HTMLElement {
             moving: scene.moving === true,
             zoom: Math.max(0, Math.min(100, Number(scene.zoom) || 0)),
             paused: scene.paused === true,
+          }
+        : null,
+      complexity: sceneStats
+        ? {
+            objects: clampCount(sceneStats.objects),
+            hiddenObjects: clampCount(sceneStats.hiddenObjects),
+            meshes: clampCount(sceneStats.meshes),
+            instancedMeshes: clampCount(sceneStats.instancedMeshes),
+            instancedInstances: clampCount(sceneStats.instancedInstances),
+            skinnedMeshes: clampCount(sceneStats.skinnedMeshes),
+            sprites: clampCount(sceneStats.sprites),
+            pointsObjects: clampCount(sceneStats.pointsObjects),
+            lineObjects: clampCount(sceneStats.lineObjects),
+            lights: clampCount(sceneStats.lights, 10_000),
+            shadowLights: clampCount(sceneStats.shadowLights, 10_000),
+            shadowCasters: clampCount(sceneStats.shadowCasters),
+            transparentDrawables: clampCount(
+              sceneStats.transparentDrawables,
+            ),
+            doubleSidedDrawables: clampCount(
+              sceneStats.doubleSidedDrawables,
+            ),
+            cullingOff: clampCount(sceneStats.cullingOff),
+            uniqueGeometries: clampCount(sceneStats.uniqueGeometries),
+            uniqueMaterials: clampCount(sceneStats.uniqueMaterials),
+            uniqueTextures: clampCount(sceneStats.uniqueTextures),
+            geometryBytes: clampCount(
+              sceneStats.geometryBytes,
+              1_000_000_000_000,
+            ),
+            textureBytes: clampCount(
+              sceneStats.textureBytes,
+              1_000_000_000_000,
+            ),
+            renderTargetBytes: clampCount(
+              sceneStats.renderTargetBytes,
+              1_000_000_000_000,
+            ),
+            topElements: (Array.isArray(sceneStats.topElements)
+              ? sceneStats.topElements
+              : []
+            )
+              .slice(0, 3)
+              .map((element) => ({
+                label: String(element?.label || "").slice(0, 48),
+                triangles: clampCount(element?.triangles, 1_000_000_000),
+                drawables: clampCount(element?.drawables),
+              })),
+          }
+        : null,
+      output: sceneOutput
+        ? {
+            drawingBufferWidth: clampCount(
+              sceneOutput.drawingBufferWidth,
+              32_768,
+            ),
+            drawingBufferHeight: clampCount(
+              sceneOutput.drawingBufferHeight,
+              32_768,
+            ),
+            cssWidth: clampCount(sceneOutput.cssWidth, 32_768),
+            cssHeight: clampCount(sceneOutput.cssHeight, 32_768),
+            webgl2: sceneOutput.webgl2 === true,
+            antialias: sceneOutput.antialias === true,
+            compactRenderer: sceneOutput.compactRenderer === true,
+            gpu: String(sceneOutput.gpu || "").slice(0, 96),
+            threeRevision: String(sceneOutput.threeRevision || "").slice(
+              0,
+              12,
+            ),
+            toneMapping: String(sceneOutput.toneMapping || "").slice(0, 24),
+            exposure: Math.max(
+              0,
+              Math.min(64, Number(sceneOutput.exposure) || 0),
+            ),
+            colorSpace: String(sceneOutput.colorSpace || "").slice(0, 24),
+            shadowMapType: String(sceneOutput.shadowMapType || "").slice(
+              0,
+              24,
+            ),
+            shadowMapSize: clampCount(sceneOutput.shadowMapSize, 16_384),
+            shadowAutoUpdate: sceneOutput.shadowAutoUpdate === true,
+            cameraFov: Math.max(
+              1,
+              Math.min(179, Number(sceneOutput.cameraFov) || 1),
+            ),
+            cameraNear: Math.max(
+              0,
+              Math.min(1_000_000, Number(sceneOutput.cameraNear) || 0),
+            ),
+            cameraFar: Math.max(
+              0,
+              Math.min(10_000_000, Number(sceneOutput.cameraFar) || 0),
+            ),
+          }
+        : null,
+      memory: {
+        heapUsedMB: Number.isFinite(heapMB)
+          ? Math.max(0, Math.min(1_000_000, heapMB))
+          : NaN,
+        heapTrendMBPerMin: Number.isFinite(heapTrendMBPerMin)
+          ? Math.max(-100_000, Math.min(100_000, heapTrendMBPerMin))
+          : NaN,
+      },
+      position: playerPosition
+        ? {
+            x: Math.max(-100_000, Math.min(100_000, Number(playerPosition.x) || 0)),
+            y: Math.max(-100_000, Math.min(100_000, Number(playerPosition.y) || 0)),
+            z: Math.max(-100_000, Math.min(100_000, Number(playerPosition.z) || 0)),
+            headingDeg: Math.round(
+              ((Number(playerPosition.heading) || 0) * 180) / Math.PI,
+            ),
           }
         : null,
       connection: {
@@ -25255,6 +25491,18 @@ class ForkMeshWorld extends HTMLElement {
         };
       })(),
     };
+    // Sixty seconds of one-second frame samples back the history sparkline.
+    if (snapshot.renderer && !snapshot.renderer.paused) {
+      this.diagnosticsFrameHistory.push({
+        frameTimeMs: snapshot.renderer.frameTimeMs,
+        longestFrameMs: snapshot.renderer.longestFrameMs,
+        longFrames: snapshot.renderer.longFrames,
+      });
+      if (this.diagnosticsFrameHistory.length > 60) {
+        this.diagnosticsFrameHistory.shift();
+      }
+    }
+    snapshot.history = [...this.diagnosticsFrameHistory];
     this.lastDiagnosticsSnapshot = snapshot;
     this.lastDiagnosticsSnapshotAt = Date.now();
     return snapshot;
@@ -25445,34 +25693,85 @@ class ForkMeshWorld extends HTMLElement {
     if (musicDetail) musicDetail.textContent = readouts.music;
   }
 
-  // The nine detailed one-second readouts, shared verbatim by the floating
-  // debug pill's expanded body and the settings panel's Debug tab.
+  // The detailed one-second readouts, shared verbatim by the floating debug
+  // pill's expanded body and the settings panel's Debug tab. The Debug tab
+  // additionally renders the scene-walk rows (frame history, scene graph,
+  // lights/shadows, top costs, and output) that the compact pill omits.
   diagnosticsDetailReadouts(snapshot) {
-    const { renderer, connection, traffic, queues, build, music } = snapshot;
+    const {
+      renderer,
+      complexity,
+      output,
+      memory,
+      history,
+      position,
+      connection,
+      traffic,
+      queues,
+      build,
+      music,
+    } = snapshot;
     const formatRate = (value) =>
       `${Math.max(0, Number(value) || 0).toFixed(1)}/s`;
     const unavailable = (label) => diagnosticReading(label, "high");
     const version = build.version
       ? `${/^v/i.test(build.version) ? "" : "v"}${build.version}`
       : "build pending";
+    const samples = Array.isArray(history) ? history : [];
+    const spikeSeconds = samples.filter(
+      (sample) => sample.longFrames > 0,
+    ).length;
+    const peakFrameMs = samples.reduce(
+      (peak, sample) => Math.max(peak, Number(sample.longestFrameMs) || 0),
+      0,
+    );
     return {
       renderer: renderer
-        ? `${renderer.paused ? diagnosticReading("Paused", "caution") : `${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(1)} FPS`)} · ${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms/frame`)}`} · ${diagnosticMetric("calls", renderer.calls, `${Math.round(renderer.calls).toLocaleString()} calls`)} · ${diagnosticMetric("triangles", renderer.triangles, `${Math.round(renderer.triangles).toLocaleString()} triangles`)}`
+        ? `${renderer.paused ? diagnosticReading("Paused", "caution") : `${diagnosticMetric("fps", renderer.fps, `${renderer.fps.toFixed(1)} FPS`)} · ${diagnosticMetric("frameTimeMs", renderer.frameTimeMs, `${renderer.frameTimeMs.toFixed(1)} ms/frame`)}`} · ${diagnosticMetric("cpuFrameMs", renderer.cpuFrameMs, `${renderer.cpuFrameMs.toFixed(1)} ms main-thread work`)} · ${diagnosticMetric("calls", renderer.calls, `${Math.round(renderer.calls).toLocaleString()} calls`)} · ${diagnosticMetric("triangles", renderer.triangles, `${Math.round(renderer.triangles).toLocaleString()} triangles`)}${renderer.lines || renderer.points ? escapeHTML(` · ${compactCountLabel(renderer.lines)} lines · ${compactCountLabel(renderer.points)} points`) : ""}`
         : unavailable("WebGL renderer unavailable"),
       frameHealth: renderer
-        ? `${diagnosticMetric("longFrames", renderer.longFrames, `${Math.round(renderer.longFrames).toLocaleString()} long frames`)} · ${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(1)} ms worst`)} in the last sample`
+        ? `${diagnosticMetric("longFrames", renderer.longFrames, `${Math.round(renderer.longFrames).toLocaleString()} long frames`)} · ${diagnosticMetric("longestFrameMs", renderer.longestFrameMs, `${renderer.longestFrameMs.toFixed(1)} ms worst`)} · ${diagnosticMetric("frameTimeP95Ms", renderer.frameTimeP95Ms, `${renderer.frameTimeP95Ms.toFixed(1)} ms p95`)} in the last sample · ${escapeHTML(`${renderer.worstFrameSinceLoadMs.toFixed(0)} ms worst since load`)}`
         : unavailable("WebGL renderer unavailable"),
+      history: samples.length
+        ? `<span class="world-debug-sparkline" title="One-second frame-time averages, oldest to newest. A full block is 50 ms (~20 FPS) or worse.">${frameHistorySparkline(samples)}</span> ${escapeHTML(`${samples.length}s`)} · ${diagnosticMetric("longFrames", spikeSeconds, `${spikeSeconds} spike ${spikeSeconds === 1 ? "second" : "seconds"}`)} · ${escapeHTML(`${peakFrameMs.toFixed(0)} ms peak`)}`
+        : "Collecting the first samples…",
       input: renderer
         ? `${renderer.dragging ? "Dragging" : "Idle"} · ${diagnosticMetric("movementInputMs", renderer.inputResponseMs, `${renderer.inputResponseMs.toFixed(1)} ms movement response`)} · ${diagnosticMetric("movementInputMs", renderer.worstInputResponseMs, `${renderer.worstInputResponseMs.toFixed(1)} ms worst movement response`)} · ${Math.round(renderer.pointerMoves).toLocaleString()} pointer moves/s · ${diagnosticMetric("pointerGapMs", renderer.pointerWorstGapMs, `${renderer.pointerWorstGapMs.toFixed(1)} ms worst input gap`)} · ${Math.round(renderer.interactiveObjects).toLocaleString()} interactives · ${Math.round(renderer.animations).toLocaleString()} animations · DPR ${renderer.pixelRatio.toFixed(2)}`
         : unavailable("WebGL renderer unavailable"),
       memory: renderer
-        ? escapeHTML(
-            `${Math.round(renderer.geometries).toLocaleString()} geometries · ${Math.round(renderer.textures).toLocaleString()} textures · ${Math.round(renderer.programs).toLocaleString()} GPU programs${Number.isFinite(heapUsedMB()) ? ` · ${heapUsedMB().toFixed(0)} MB JS heap` : ""}`,
-          )
+        ? `${escapeHTML(`${Math.round(renderer.geometries).toLocaleString()} geometries${complexity ? ` (~${formatEstimatedMB(complexity.geometryBytes)} MB)` : ""} · ${Math.round(renderer.textures).toLocaleString()} textures`)}${complexity ? ` (${diagnosticMetric("textureMB", complexity.textureBytes / (1024 * 1024), `~${formatEstimatedMB(complexity.textureBytes)} MB`)})` : ""}${escapeHTML(` · ${Math.round(renderer.programs).toLocaleString()} GPU programs${complexity ? ` · ~${formatEstimatedMB(complexity.renderTargetBytes)} MB render targets` : ""}${Number.isFinite(memory?.heapUsedMB) ? ` · ${memory.heapUsedMB.toFixed(0)} MB JS heap` : ""}`)}${Number.isFinite(memory?.heapTrendMBPerMin) ? ` (${diagnosticMetric("heapTrendMBPerMin", memory.heapTrendMBPerMin, `${memory.heapTrendMBPerMin >= 0 ? "+" : ""}${memory.heapTrendMBPerMin.toFixed(1)} MB/min`)})` : ""}`
         : unavailable("WebGL renderer unavailable"),
+      sceneGraph: complexity
+        ? `${escapeHTML(`${complexity.objects.toLocaleString()} objects (${complexity.hiddenObjects.toLocaleString()} hidden) · ${complexity.meshes.toLocaleString()} meshes · ${complexity.instancedMeshes.toLocaleString()} instanced carrying ${compactCountLabel(complexity.instancedInstances)} instances · ${complexity.skinnedMeshes.toLocaleString()} skinned · ${complexity.sprites.toLocaleString()} sprites · `)}${diagnosticMetric("transparentDrawables", complexity.transparentDrawables, `${complexity.transparentDrawables.toLocaleString()} transparent`)}${escapeHTML(` · ${complexity.doubleSidedDrawables.toLocaleString()} double-sided · ${complexity.uniqueGeometries.toLocaleString()}/${complexity.uniqueMaterials.toLocaleString()}/${complexity.uniqueTextures.toLocaleString()} unique geometries/materials/textures · ${complexity.cullingOff.toLocaleString()} culling off`)}`
+        : "Waiting for the first scene walk (refreshed every 5 s while this panel is open)…",
+      shadows: renderer
+        ? renderer.shadowsEnabled && output
+          ? `${escapeHTML(`On · ${output.shadowMapType} ${output.shadowMapSize}×${output.shadowMapSize} map · ${output.shadowAutoUpdate ? "rebuilt every frame" : "throttled refresh"}`)}${complexity ? ` · ${escapeHTML(`${complexity.lights.toLocaleString()} lights (${complexity.shadowLights.toLocaleString()} shadowed)`)} · ${diagnosticMetric("shadowCasters", complexity.shadowCasters, `${complexity.shadowCasters.toLocaleString()} casters`)}` : ""}`
+          : escapeHTML(
+              `Off${complexity ? ` · ${complexity.lights.toLocaleString()} lights` : ""}`,
+            )
+        : unavailable("WebGL renderer unavailable"),
+      topCosts: complexity
+        ? complexity.topElements.length
+          ? complexity.topElements
+              .map(
+                (element, index) =>
+                  escapeHTML(
+                    `${index + 1}. ${element.label} — ${compactCountLabel(element.triangles)} triangles / ${compactCountLabel(element.drawables)} drawables`,
+                  ),
+              )
+              .join(" · ")
+          : "No enabled elements are contributing triangles."
+        : "Waiting for the first scene walk…",
+      output:
+        renderer && output
+          ? escapeHTML(
+              `${output.drawingBufferWidth}×${output.drawingBufferHeight} buffer (${output.cssWidth}×${output.cssHeight} CSS @ DPR ${renderer.pixelRatio.toFixed(2)}) · WebGL${output.webgl2 ? "2" : "1"} · AA ${output.antialias ? "on" : "off"}${output.compactRenderer ? " · compact renderer" : ""} · ${output.toneMapping} tone mapping @ ${output.exposure.toFixed(2)} · ${output.colorSpace} · camera ${Math.round(output.cameraFov)}° fov, near ${output.cameraNear} far ${output.cameraFar} · three r${output.threeRevision}${output.gpu ? ` · ${output.gpu}` : " · GPU name withheld by browser"}`,
+            )
+          : unavailable("WebGL renderer unavailable"),
       worldState: renderer
         ? escapeHTML(
-            `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}${renderer.remoteAvatars ? ` · ${renderer.remoteAvatars} remote avatars` : ""}${renderer.disabledElements ? ` · ${renderer.disabledElements} elements off` : ""}`,
+            `${renderer.moving ? "Moving" : "Still"} · ${renderer.cameraMode} · ${renderer.space} · zoom ${renderer.zoom.toFixed(2)}${position ? ` · at ${position.x.toFixed(1)}, ${position.y.toFixed(1)}, ${position.z.toFixed(1)} facing ${position.headingDeg}°` : ""}${renderer.remoteAvatars ? ` · ${renderer.remoteAvatars} remote avatars` : ""}${renderer.disabledElements ? ` · ${renderer.disabledElements} elements off` : ""}`,
           )
         : unavailable("World state unavailable"),
       music:
@@ -25503,8 +25802,13 @@ class ForkMeshWorld extends HTMLElement {
     for (const [slot, html] of Object.entries({
       renderer: readouts.renderer,
       "frame-health": readouts.frameHealth,
+      "frame-history": readouts.history,
       input: readouts.input,
       memory: readouts.memory,
+      "scene-graph": readouts.sceneGraph,
+      shadows: readouts.shadows,
+      "top-costs": readouts.topCosts,
+      output: readouts.output,
       "world-state": readouts.worldState,
       connection: readouts.connection,
       traffic: readouts.traffic,
@@ -25529,6 +25833,33 @@ class ForkMeshWorld extends HTMLElement {
           `<li data-level="${suggestion.level}">${escapeHTML(suggestion.text)}</li>`,
       )
       .join("");
+  }
+
+  // One-click capture for bug reports and agent handoffs: the exact snapshot
+  // the readouts render, as pretty-printed JSON on the clipboard, stamped
+  // with wall-clock capture time. Nothing is transmitted.
+  async copyDiagnosticsSnapshot() {
+    const fresh =
+      this.lastDiagnosticsSnapshot &&
+      Date.now() - (this.lastDiagnosticsSnapshotAt || 0) <
+        2 * WORLD_DIAGNOSTICS_INTERVAL_MS;
+    const snapshot = fresh
+      ? this.lastDiagnosticsSnapshot
+      : this.collectDiagnostics();
+    const text = JSON.stringify(
+      { capturedAt: new Date().toISOString(), ...snapshot },
+      null,
+      2,
+    );
+    try {
+      await navigator.clipboard.writeText(text);
+      this.toast("📋 Diagnostics JSON copied — paste it into an issue.");
+    } catch {
+      console.info("[ForkMesh World] diagnostics snapshot", text);
+      this.toast(
+        "Clipboard unavailable — the snapshot was printed to the console instead.",
+      );
+    }
   }
 
   startActivityTicker() {

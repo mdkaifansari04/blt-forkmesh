@@ -74,6 +74,7 @@ struct MirrorSelfSnapshot {
 };
 
 #include <QElapsedTimer>
+#include <QFutureWatcher>
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -111,11 +112,15 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
+class NodeDotMatrix;
+class RelaySpeedDot;
 class ActionRunStrip;
 }
 using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
+using forkmesh::ui::NodeDotMatrix;
+using forkmesh::ui::RelaySpeedDot;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -392,10 +397,19 @@ public:
                                    const QStringList &nodes);
     void testShowNodesSection();
     QStringList testNodeDirectoryNames() const;
+    // The chat header's users popup: rebuild it for `conversation` and read back
+    // the names it lists (adhoc #129).
+    QStringList testChatMemberNames(const QString &conversation);
     void testRenderNetworkRepos(const QJsonArray &repos);
     QStringList testNetworkRepoNames() const;
     QString testNetworkRepoActionText(int row) const;
     QString testNetworkRepoMirrorHeader() const;
+    // Every Repos column label, and one row's value under a named column, so a
+    // test can pin the full catalog field set the page shows (adhoc #118).
+    QStringList testNetworkRepoColumns() const;
+    QString testNetworkRepoCellText(int row, const QString &header) const;
+    // Badge riding the activity rail's Repos icon.
+    int testReposNavBadgeCount() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
     // Quick log filter (the chip row above the log): the chips currently offered,
     // and clicking one by category ("" = All).
@@ -1048,6 +1062,7 @@ private:
     void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
+    void updateReposNavBadge();    // rail badge = repos the Repos page lists
     // Keep the open repo's sync-derived indicators in step (adhoc #374 removed the
     // floating "Sync" pill that used to hover above the Code tab; the activity
     // rail's Git glyph and the commit list's "waiting to sync" markers remain).
@@ -1333,6 +1348,9 @@ private:
     QWidget *buildNetworkReposSection();
     void refreshNetworkReposPage();
     void renderNetworkRepos(const QJsonArray &repos);
+    // Fills a Repos row's catalog-data columns (everything the relay publishes
+    // about the repository except its description).
+    void fillNetworkRepoDataCells(int row, const QJsonObject &repo);
     void fetchNetworkRepoMirrors(const QString &owner, const QString &name,
                                  int row, int generation);
     int findNetworkRepoIndex(const QString &owner, const QString &name,
@@ -1595,9 +1613,19 @@ private:
     // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
     // ForkMesh-managed SSH key, boot the instance, then hand off to the normal
     // runHostInstall flow which installs ForkMesh and auto-links the node to
-    // this account. The API key lives in memory only for the duration of the
-    // run; it is never written to QSettings or argv.
+    // this account. The API key never travels in argv; once Vultr accepts it,
+    // rememberVultrApiKey stores it so no later run has to ask for it again.
     void createVultrMirrorFromForm();
+    // Persist a Vultr API key Vultr itself has just accepted, in the two places
+    // this app reads provisioning credentials from: the canonical
+    // VULTR_API_KEY device variable (Settings > Variables / Secrets, injected
+    // into every action run) and cloudflare_worker/.env.production beside the
+    // Cloudflare deploy credentials. Returns where it was written — empty when
+    // the key is unusable or already stored everywhere — and reports a failed
+    // file write through *error without undoing the variable that succeeded
+    // (adhoc #127).
+    QStringList rememberVultrApiKey(const QString &apiKey,
+                                    QString *error = nullptr);
     void vultrApiCall(const QString &apiKey, const QString &path,
                       const QByteArray &method, const QJsonObject &body,
                       std::function<void(QJsonObject, QString)> onDone);
@@ -1794,6 +1822,10 @@ private:
     // selected from the one behind the button: if that prompt is dismissed the
     // map falls back to an unprivileged scan, so the tab is never left blank.
     void rescanSizeMapElevated(bool upfront = false);
+    // Stop button: cancels whichever scan is currently running, worker-thread
+    // walk or elevated helper process, the same disconnect-before-kill pattern
+    // as stopSearch().
+    void stopSizeMapScan();
     // Live "scanning <folder> · N files · M so far" line, driven from the walk
     // itself (adhoc #112).
     void showSizeMapScanProgress(const QString &current, qint64 bytes,
@@ -4236,17 +4268,31 @@ private:
     QLabel *m_relayJoinDot = nullptr;
     QPushButton *m_relayJoinApproveButton = nullptr;
     int m_pendingRelayJoins = 0;
-    // Spinning-radar + latency readout sitting on the window-chrome line just
-    // left of the CPU/MEM/DISK sparklines: probes the active relay once a
-    // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
-    // turning into a red alert when the relay doesn't answer. Held as a
-    // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
-    // MainWindow.cpp).
-    QWidget *m_relayRadar = nullptr;
-    // Echoes the mesh's serving nodes into the dish as blips (m_radarNodes).
-    // `force` overrides the repo-scoped Mirror-nodes panel's claim on the dish,
-    // for the case where that panel has no repo to show.
-    void updateRelayRadarNodes(bool force = false);
+    // Connection-speed dot pinned above the instance logo (adhoc #124): probes
+    // the active relay once a minute and colours itself green/amber/red by the
+    // round-trip time, red when the relay doesn't answer at all. It replaced
+    // the spinning radar dish that used to sit beside the CPU/MEM/DISK
+    // sparklines; the dish's node blips are now the chrome line's node dots.
+    RelaySpeedDot *m_relaySpeedDot = nullptr;
+    // Applies a measured (or failed, ms < 0) probe to that dot, the per-relay
+    // speed cache and the instance button's tooltip.
+    void setRelayLinkSpeed(const QString &host, int ms);
+    void refreshRelayMenuTooltip();
+    // Round-trip milliseconds per relay host, so the relay dropdown can show
+    // each instance's connection speed the moment it opens (adhoc #124). ms < 0
+    // means the last probe went unanswered; stampMs dates the sample.
+    struct RelayLatencySample {
+        int ms = -1;
+        qint64 stampMs = 0;
+    };
+    QHash<QString, RelayLatencySample> m_relayHostLatency;
+    QSet<QString> m_relaySpeedProbes; // hosts with a dropdown probe in flight
+    void probeRelayHostSpeed(const QString &serverUrl,
+                             std::function<void(int)> done);
+    // "30 ms" / "no answer" / "measuring…" for one relay host, and that same
+    // figure as a relay-dropdown entry ("forkmesh.com  ·  30 ms").
+    QString relaySpeedText(const QString &host) const;
+    QString relayMenuEntryText(const QString &host) const;
     QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
     bool m_relayProbeInFlight = false;     // guard against overlapping probes
     qint64 m_lastWsLatencySampleMs = 0;    // when the room socket last ponged
@@ -4330,12 +4376,17 @@ private:
     QString m_organizationTaskActor;
     bool m_organizationTasksCanManage = false;
     bool m_organizationTasksLoading = false;
-    QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     // "Agents" heads the app navigation rail (adhoc #70), badged with the number
     // of running sessions. Its live fleet matrix stays on the window-chrome
     // line, followed there by the recent action-run strip.
     QPushButton *m_agentsNavButton = nullptr;
     AgentDotMatrix *m_agentDotMatrix = nullptr;
+    // One dot per node on the network, immediately right of the agent squares
+    // with a faint divider between the two groups (adhoc #124).
+    NodeDotMatrix *m_nodeDotMatrix = nullptr;
+    QWidget *m_chromeDotDivider = nullptr;
+    void refreshNodeDotMatrix();
+    void updateChromeDotDivider();
     ActionRunStrip *m_actionRunStrip = nullptr;
     // Last status tally rendered into the matrix's tooltip, so the scanner tick
     // can skip rebuilding an unchanged string ~20x a second.
@@ -4467,11 +4518,21 @@ private:
         int repoCount = 0;
     };
     QList<NodeMenuEntry> m_nodeMenuEntries;
-    // The mesh's real serving nodes (refreshNodesTable's filtered list), echoed
-    // as blips inside the relay radar. Without this the radar only ever showed
-    // nodes while the repo-detail Mirror-nodes tab happened to be open, so it
-    // swept an empty dish from launch (adhoc #79).
-    QList<NodeMenuEntry> m_radarNodes;
+    // The mesh's real serving nodes (refreshNodesTable's filtered list), drawn
+    // as the chrome line's node dots. Without this the dots would only ever
+    // show nodes while the repo-detail Mirror-nodes tab happened to be open,
+    // rather than the whole network from launch (adhoc #79 / #124).
+    QList<NodeMenuEntry> m_nodeDotEntries;
+    // Sync/integrity state for the repo the Mirror-nodes panel is showing,
+    // keyed by lower-cased node name: a node that is behind or failing that
+    // repo's integrity gate is tinted amber in the dots while the panel has a
+    // repo (adhoc #124). Empty whenever no repo is open.
+    struct NodeDotRepoState {
+        bool behind = false;
+        bool integrityFailing = false;
+    };
+    QHash<QString, NodeDotRepoState> m_nodeDotRepoStates;
+    void setNodeDotRepoStates(const QHash<QString, NodeDotRepoState> &states);
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
@@ -4505,6 +4566,9 @@ private:
     QPushButton *m_networkReposRefreshButton = nullptr;
     int m_networkReposLoadGen = 0;
     QJsonArray m_networkReposLastPayload; // regroup when user/node ownership arrives
+    // Repositories the Repos page last listed, which is what its rail badge
+    // counts; -1 until the catalog has been rendered once (adhoc #118).
+    int m_networkRepoRowCount = -1;
     // Opaque private archive ids are delivered only in an authenticated,
     // ACL-filtered catalog response. They let the client use a name-free
     // /api/private-replicas/<id> URL; no private owner/repository identity is
@@ -4658,9 +4722,12 @@ private:
     QProcess *m_hostAgentInstallProcess = nullptr; // Claude/Codex CLI install
     QProcess *m_hostDiskProcess = nullptr;    // running ssh size-map read, if any
     // One-click Vultr mirror provisioning (adhoc #315). The API key is read
-    // from the field (or a stored VULTR_API_KEY device variable) per run and
-    // deliberately has no persistent member.
+    // from the field (or a stored VULTR_API_KEY device variable) per run.
     QLineEdit *m_vultrApiKeyEdit = nullptr;
+    // Last key rememberVultrApiKey stored successfully, so a provision run's
+    // dozen API calls save it once instead of rewriting the variable store and
+    // .env.production behind every one of them (adhoc #127).
+    QString m_vultrRememberedKey;
     QLineEdit *m_vultrNameEdit = nullptr;
     // Opt-in (default on): after ForkMesh installs, also install the Claude
     // Code and Codex CLIs on the new mirror and copy this device's provider
@@ -5176,6 +5243,14 @@ private:
     // directories this user cannot list, hidden again once the elevated rescan
     // has produced the complete tree for that folder.
     QPushButton *m_sizeMapElevate = nullptr;
+    // "Stop": shown only while a scan is running; stopSizeMapScan() hides it.
+    QPushButton *m_sizeMapStop = nullptr;
+    // The in-flight unprivileged scan's watcher, so Stop can cancel it. Null
+    // once the scan finishes or is stopped.
+    QFutureWatcher<forkmesh::DirectorySizeScanResult> *m_sizeMapWatcher = nullptr;
+    // The in-flight elevated helper process, so Stop can kill it. Null once
+    // the scan finishes or is stopped.
+    QProcess *m_sizeMapElevatedProcess = nullptr;
     // Container holding one StorageMiniMap per mounted filesystem; refilled on
     // every rescan so mounts appearing or vanishing are picked up.
     QWidget *m_sizeMapVolumesBox = nullptr;
@@ -5929,7 +6004,6 @@ private:
     // that returns the same inbox again never re-flashes them (adhoc #77).
     QSet<QString> m_flashedWebAlertIds;
     QPushButton *m_notificationButton = nullptr;
-    QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     // The website's alert inbox, mirrored onto that page (adhoc #59).
     QJsonArray m_webAlerts;
