@@ -1003,6 +1003,14 @@ int main(int argc, char *argv[])
     check(window.testSpreadsheetResizeAfterMove(),
           QStringLiteral("column drag leaves others untouched after a move"));
 
+    // Deferred startup can begin while restoring the previous view, before the
+    // silent account lookup runs. That intermediate state must not flash a
+    // login prompt for an already-signed-in user.
+    window.testMarkDeferredStartupRunning();
+    window.testRefreshSignInButton();
+    check(!window.testSignInButtonVisible(),
+          QStringLiteral("the sign-in pill waits for silent auth after startup begins"));
+
     window.testEnableSessionStartBypass(true);
 
     // adhoc #115: startup has resolved now (the bypass marks it done) and this
@@ -1045,6 +1053,9 @@ int main(int argc, char *argv[])
     check(directoryNodes.contains(QStringLiteral("node-a")) &&
               directoryNodes.contains(QStringLiteral("node-b")),
           QStringLiteral("Nodes lists offline linked nodes from the relay directory"));
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("nodesUpdateAllBinaryButton")) != nullptr,
+          QStringLiteral("Nodes offers a fleet-wide binary update action"));
 
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the
@@ -1424,6 +1435,36 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
+    // The fleet toolbar shows the live queue plus concurrent-agent limit beside
+    // Start all, and lets the common capacity adjustment happen in one click.
+    {
+        QLabel *queueStatus = window.findChild<QLabel *>(
+            QStringLiteral("agentQueueStatusLabel"));
+        QPushButton *decrease = window.findChild<QPushButton *>(
+            QStringLiteral("agentQueueLimitDecreaseButton"));
+        QPushButton *increase = window.findChild<QPushButton *>(
+            QStringLiteral("agentQueueLimitIncreaseButton"));
+        QLineEdit *settingsLimit = window.findChild<QLineEdit *>(
+            QStringLiteral("maxRunningAgentsEdit"));
+        check(queueStatus && decrease && increase && settingsLimit &&
+                  queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
+              QStringLiteral("Agents toolbar shows the queued count and run limit "
+                             "beside Start all"));
+        if (queueStatus && decrease && increase && settingsLimit) {
+            increase->click();
+            check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 6 &&
+                      queueStatus->text() == QStringLiteral("Queue: 0 / 6") &&
+                      settingsLimit->text() == QStringLiteral("6"),
+                  QStringLiteral("one click raises the queue's concurrent-agent "
+                                 "limit and syncs Settings"));
+            decrease->click();
+            check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 5 &&
+                      queueStatus->text() == QStringLiteral("Queue: 0 / 5") &&
+                      settingsLimit->text() == QStringLiteral("5"),
+                  QStringLiteral("one click lowers the queue's concurrent-agent "
+                                 "limit and syncs Settings"));
+        }
+    }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
     // own "Updated" column) and the title, which is the column that flexes — so
@@ -2200,15 +2241,18 @@ int main(int argc, char *argv[])
                   QStringLiteral("picking a speed persists the effort the next run "
                                  "is launched with"));
         }
-        // The pick-your-own-work button is the top of the send column, above
-        // "add" and "new" (adhoc #42/#38), and reads "task" rather than "genie"
-        // (adhoc #120). The strip of session dots that used to sit above the
-        // prompt is gone (adhoc #38) — its state lives in the top bar now.
+        // The task-list button is the top of the send column, above "add" and
+        // "new". It files the prompt in General instead of starting a genie
+        // agent (adhoc #151). The strip of session dots that used to sit above
+        // the prompt is gone (adhoc #38) — its state lives in the top bar now.
         auto *genieButton =
             seeded.findChild<QPushButton *>(QStringLiteral("quickAddGenieButton"));
         check(genieButton && genieButton->isVisible() &&
-                  genieButton->text() == QStringLiteral("task"),
-              QStringLiteral("the composer offers the task button"));
+                  genieButton->text() == QStringLiteral("task") &&
+                  genieButton->toolTip().contains(QStringLiteral("general task list")) &&
+                  !genieButton->toolTip().contains(QStringLiteral("agent"),
+                                                   Qt::CaseInsensitive),
+              QStringLiteral("the composer task button files a General task"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.

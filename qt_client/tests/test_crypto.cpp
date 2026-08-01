@@ -32,6 +32,7 @@
 #include "../src/RoomCrypto.h"
 #include "../src/StrictGitReader.h"
 #include "../src/SystemStats.h"
+#include "../src/UsageLimitCalendar.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -356,6 +357,40 @@ int main(int argc, char *argv[])
         const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
         check(linked == input,
               "reference linker skips existing links, URLs, inline code, and code blocks");
+    }
+
+    {
+        const qint64 resetMs = QDateTime::fromString(
+                                   QStringLiteral("2026-08-01T12:30:00Z"),
+                                   Qt::ISODate)
+                                   .toMSecsSinceEpoch();
+        const QString calendar = UsageLimitCalendar::eventText(
+            QStringLiteral("claude"), QStringLiteral("5h"),
+            QStringLiteral("Claude Code"), QStringLiteral("5-hour"), resetMs,
+            resetMs - 60 * 1000);
+        check(calendar.contains(QStringLiteral("BEGIN:VCALENDAR\r\n")) &&
+                  calendar.contains(QStringLiteral("METHOD:PUBLISH\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "UID:forkmesh-usage-claude-5h-1785587400000@local\r\n")) &&
+                  calendar.contains(QStringLiteral("DTSTART:20260801T123000Z\r\n")) &&
+                  calendar.contains(QStringLiteral("TRIGGER:PT0M\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "SUMMARY:ForkMesh: Claude Code usage is ready\r\n")),
+              "usage-limit calendar export is a timed iCalendar event with an alarm");
+        check(UsageLimitCalendar::eventText(
+                  QStringLiteral("claude"), QStringLiteral("5h"),
+                  QStringLiteral("Claude Code"), QStringLiteral("5-hour"), 0)
+                  .isEmpty(),
+              "usage-limit calendar export rejects a missing reset time");
+
+        const QString path = UsageLimitCalendar::writeEvent(
+            QStringLiteral("codex"), QStringLiteral("weekly"),
+            QStringLiteral("Codex"), QStringLiteral("weekly"), resetMs);
+        QFile file(path);
+        check(!path.isEmpty() && file.open(QIODevice::ReadOnly) &&
+                  QString::fromUtf8(file.readAll()).contains(
+                      QStringLiteral("ForkMesh: Codex usage is ready")),
+              "usage-limit calendar event is written atomically under app data");
     }
 
     {
