@@ -149,13 +149,13 @@ QWidget *MainWindow::buildReleasesTab()
     headerRow->addWidget(newButton);
     layout->addLayout(headerRow);
 
-    m_releasesTable = new QTableWidget(0, 10);
+    m_releasesTable = new QTableWidget(0, 11);
     installColumnHeaderMenu(m_releasesTable); // 3-dots per-column menu (issue #318)
     m_releasesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_releasesTable);
     m_releasesTable->setHorizontalHeaderLabels(
         {"Tag", "Commit", "Released", "Release notes", "Compare", "Artifacts",
-         "Size", "SHA-256", "Downloads", ""});
+         "Size", "SHA-256", "Downloads", "Mirrors", ""});
     m_releasesTable->verticalHeader()->setVisible(false);
     m_releasesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_releasesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -174,6 +174,7 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setSectionResizeMode(7, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(8, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(9, QHeaderView::ResizeToContents);
+    rh->setSectionResizeMode(10, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_releasesTable);
     // itemActivated (rather than cellDoubleClicked) so pressing Enter on the
     // keyboard-focused row opens the release too, matching the arrow-key
@@ -572,6 +573,12 @@ void MainWindow::loadReleasesPanel()
     m_releasesTable->setRowCount(0);
     const QString dir = repoGitDir();
     const bool writable = repoHasWorkingTree();
+    bool canPushToMirrors = false;
+    if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
+        canPushToMirrors = writable && !repo.previewOnly && !repo.isPrivate &&
+                           !repo.localPath.trimmed().isEmpty();
+    }
 
     // Release artifacts are published under .forkmesh/releases/<channel>/release.json (the
     // channel is usually "latest", NOT the tag name — see .forkmesh/releases/README.md and
@@ -941,6 +948,21 @@ void MainWindow::loadReleasesPanel()
             downloadsItem->setForeground(QColor("#8b949e"));
             m_releasesTable->setItem(row, 8, downloadsItem);
 
+            auto *pushMirrors = new QPushButton("Push to mirrors");
+            pushMirrors->setObjectName("ghostButton");
+            pushMirrors->setCursor(Qt::PointingHandCursor);
+            setOcticon(pushMirrors, "broadcast", 14);
+            pushMirrors->setToolTip(
+                QStringLiteral(
+                    "Push %1 to configured SSH mirror gateways and notify "
+                    "online peer mirrors. Release artifacts are transferred "
+                    "through the existing SHA-256-verified mirror path.")
+                    .arg(tag));
+            pushMirrors->setEnabled(canPushToMirrors);
+            connect(pushMirrors, &QPushButton::clicked, this,
+                    [this, tag] { pushReleaseToMirrors(tag); });
+            m_releasesTable->setCellWidget(row, 9, pushMirrors);
+
             auto *del = new QPushButton;
             del->setObjectName("issueIconButton");
             del->setFlat(true);
@@ -950,7 +972,7 @@ void MainWindow::loadReleasesPanel()
             del->setToolTip(QStringLiteral("Delete tag %1").arg(tag));
             del->setEnabled(writable);
             connect(del, &QPushButton::clicked, this, [this, tag] { deleteTag(tag); });
-            m_releasesTable->setCellWidget(row, 9, del);
+            m_releasesTable->setCellWidget(row, 10, del);
             ++count;
         }
     }
@@ -2834,6 +2856,67 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
                 // panel load picks up the newly-hosted artifacts' count.
                 downloadNextReleaseBlob(index, mirrorPath, pending);
             });
+}
+
+void MainWindow::pushReleaseToMirrors(const QString &tag)
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int index = m_repoDetailIndex;
+    const RepositoryRecord repo = m_repositories.at(index);
+    if (repo.previewOnly || repo.localPath.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            "Only the repository's source working copy can push releases.", true);
+        return;
+    }
+    if (repo.isPrivate) {
+        setRepoDetailNotice(
+            "Private repositories use sealed replica synchronization, not SSH "
+            "mirror pushes.",
+            true);
+        return;
+    }
+
+    QByteArray commitOut;
+    const QString tagRef = QStringLiteral("refs/tags/") + tag;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("rev-parse"), QStringLiteral("--verify"),
+                        tagRef + QStringLiteral("^{commit}")},
+                       &commitOut, nullptr)) {
+        setRepoDetailNotice(
+            QStringLiteral("Release %1 no longer resolves to a commit.").arg(tag),
+            true);
+        return;
+    }
+    const QString commit = QString::fromUtf8(commitOut).trimmed();
+    if (commit.isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("Release %1 has no commit to push.").arg(tag), true);
+        return;
+    }
+
+    if (m_backend)
+        m_backend->notifyMirrorUpdated(
+            catalogOwner(repo) + QLatin1Char('/') +
+                repoSegment(repo.name, QStringLiteral("repository")),
+            commit);
+
+    propagateRepoUpdate(index);
+    const int sshRemotes =
+        pushToSshMirrorRemotes(index, /*userInitiated=*/true, tag);
+    if (sshRemotes == 0) {
+        setRepoDetailNotice(
+            QStringLiteral(
+                "Notified online mirrors about %1, but this working copy has no "
+                "SSH push remotes configured.")
+                .arg(tag),
+            true);
+        return;
+    }
+    logSystem(QStringLiteral("Release: fanning %1 out to %2 SSH mirror%3.")
+                  .arg(tag)
+                  .arg(sshRemotes)
+                  .arg(sshRemotes == 1 ? QString() : QStringLiteral("s")));
 }
 
 void MainWindow::promptNewRelease()

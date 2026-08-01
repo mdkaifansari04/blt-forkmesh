@@ -6432,8 +6432,14 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
 // one-minute auto-sync doubles as the self-heal for a push a gateway missed.
 void MainWindow::pushToSshMirrorRemotes(int index)
 {
+    (void)pushToSshMirrorRemotes(index, /*userInitiated=*/false, QString());
+}
+
+int MainWindow::pushToSshMirrorRemotes(int index, bool userInitiated,
+                                       const QString &releaseTag)
+{
     if (index < 0 || index >= m_repositories.size())
-        return;
+        return 0;
     // By value: runGitCapture below pumps the event loop, and a reference into
     // m_repositories can dangle across it (git-pump UAF family, adhoc #106).
     const RepositoryRecord repo = m_repositories.at(index);
@@ -6442,30 +6448,29 @@ void MainWindow::pushToSshMirrorRemotes(int index)
     // replicas, never over a public mirror gateway.
     if (repo.previewOnly || repo.isPrivate ||
         repo.localPath.trimmed().isEmpty())
-        return;
+        return 0;
     // A source-of-truth repository has no on-disk served mirror: it publishes
     // through the sealed encrypted archive, and its record keeps mirrorPath
     // empty. Requiring one silently disabled every SSH-fed gateway for exactly
     // the repository that feeds them, so mirror2/mirror3 froze at whatever
     // commit the last manual push left while their catalog lease stayed fresh.
     // Fall back to the working copy, which holds the same heads and tags.
+    const bool releaseFanout = userInitiated && !releaseTag.trimmed().isEmpty();
     const QString pushSource =
-        (!repo.mirrorPath.trimmed().isEmpty() && QDir(repo.mirrorPath).exists())
-            ? repo.mirrorPath
-            : repo.localPath;
+        releaseFanout
+            ? repo.localPath
+            : ((!repo.mirrorPath.trimmed().isEmpty() &&
+                QDir(repo.mirrorPath).exists())
+                   ? repo.mirrorPath
+                   : repo.localPath);
     if (!QDir(pushSource).exists())
-        return;
+        return 0;
     const QString repoKey = repo.owner + "/" + repo.name;
-    if (m_sshMirrorPushing.contains(repoKey)) {
-        m_sshMirrorPushPending.insert(repoKey);
-        return;
-    }
-
     QByteArray remotesOut;
     if (!runGitCapture(repo.localPath,
                        {QStringLiteral("remote"), QStringLiteral("-v")},
                        &remotesOut, nullptr))
-        return;
+        return 0;
     QStringList urls;
     for (const QString &line :
          QString::fromUtf8(remotesOut).split(QLatin1Char('\n'))) {
@@ -6480,14 +6485,51 @@ void MainWindow::pushToSshMirrorRemotes(int index)
             urls.append(url);
     }
     if (urls.isEmpty())
-        return;
+        return 0;
+    if (m_sshMirrorPushing.contains(repoKey)) {
+        m_sshMirrorPushPending.insert(repoKey);
+        if (userInitiated)
+            flashMessage(
+                QStringLiteral(
+                    "A mirror push is already running for %1; the newest "
+                    "release state is queued next.")
+                    .arg(repoKey));
+        return urls.size();
+    }
 
     m_sshMirrorPushing.insert(repoKey);
     auto remaining = std::make_shared<int>(urls.size());
-    const auto finishPush = [this, repoKey, remaining]() {
+    auto failures = std::make_shared<int>(0);
+    const auto finishPush =
+        [this, repoKey, remaining, failures, userInitiated, releaseTag,
+         remoteCount = urls.size()](bool ok) {
+        if (!ok)
+            ++*failures;
         if (--*remaining > 0)
             return;
         m_sshMirrorPushing.remove(repoKey);
+        if (userInitiated) {
+            const QString subject =
+                releaseTag.trimmed().isEmpty() ? repoKey : releaseTag;
+            if (*failures == 0) {
+                flashMessage(
+                    QStringLiteral("Pushed %1 to %2 SSH mirror%3.")
+                        .arg(subject)
+                        .arg(remoteCount)
+                        .arg(remoteCount == 1 ? QString()
+                                              : QStringLiteral("s")));
+            } else {
+                flashMessage(
+                    QStringLiteral(
+                        "Pushed %1 to %2 of %3 SSH mirrors; %4 failed. Check "
+                        "the network log for details.")
+                        .arg(subject)
+                        .arg(remoteCount - *failures)
+                        .arg(remoteCount)
+                        .arg(*failures),
+                    true);
+            }
+        }
         if (!m_sshMirrorPushPending.remove(repoKey))
             return;
         // Repository rows may have moved while the asynchronous processes ran;
@@ -6502,6 +6544,12 @@ void MainWindow::pushToSshMirrorRemotes(int index)
             }
         });
     };
+    if (userInitiated)
+        flashMessage(
+            QStringLiteral("Pushing %1 to %2 SSH mirror%3\xE2\x80\xA6")
+                .arg(releaseTag.trimmed().isEmpty() ? repoKey : releaseTag)
+                .arg(urls.size())
+                .arg(urls.size() == 1 ? QString() : QStringLiteral("s")));
     for (const QString &url : urls) {
         auto *process = new QProcess(this);
         // Never let an unreachable/unauthorized gateway hang the push on an
@@ -6522,13 +6570,13 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                         QString::fromUtf8(process->readAllStandardError())
                             .trimmed();
                     process->deleteLater();
-                    finishPush();
                     if (exitCode != 0) {
                         logSystem(QStringLiteral(
                                       "Mirror: SSH mirror push of %1 to %2 "
                                       "failed: %3")
                                       .arg(repoKey, gatewayHost,
                                            errors.right(300)));
+                        finishPush(false);
                         return;
                     }
                     // --porcelain: one status line per ref; '=' means already
@@ -6546,6 +6594,7 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                         logSystem(QStringLiteral(
                                       "Mirror: pushed %1 to SSH mirror %2.")
                                       .arg(repoKey, gatewayHost));
+                    finishPush(true);
                 });
         connect(process, &QProcess::errorOccurred, this,
                 [this, process, repoKey, finishPush,
@@ -6556,10 +6605,10 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                     if (error != QProcess::FailedToStart)
                         return;
                     process->deleteLater();
-                    finishPush();
                     logSystem(QStringLiteral("Mirror: could not run git to "
                                              "push %1 to SSH mirror %2.")
                                   .arg(repoKey, gatewayHost));
+                    finishPush(false);
                 });
         // Push from the served bare mirror (or the working copy when this is the
         // source of truth), but never let an unattended desktop rewind or delete
@@ -6582,6 +6631,7 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                         url, QStringLiteral("refs/heads/*:refs/heads/*"),
                         QStringLiteral("refs/tags/*:refs/tags/*")});
     }
+    return urls.size();
 }
 
 void MainWindow::syncRepository(int index, bool quiet)
