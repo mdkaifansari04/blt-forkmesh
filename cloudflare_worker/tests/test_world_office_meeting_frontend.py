@@ -22,9 +22,9 @@ def source(path):
 
 def test_native_office_meeting_module_and_world_wiring_exist():
     assert MEETING.exists()
-    assert 'from "./world-office-meeting.js"' in source(WORLD)
+    assert 'import("./world-office-meeting.js")' in source(WORLD)
     assert "createWorldOfficeMeeting" in source(WORLD)
-    assert "meeting:" in source(WORLD)
+    assert "meeting," in source(WORLD)
 
 
 def test_meeting_controller_exposes_room_and_seat_lifecycle():
@@ -144,7 +144,10 @@ def test_office_task_board_is_authorization_gated_and_selected_before_chairs():
     assert '!authorized || requestedState === "locked"' in normalizer
     assert "authorized, state, tasks" in normalizer
     pointer = scene[
-        scene.index("const hit = raycaster", scene.index("function finishPointer")):
+        scene.index(
+            "const hit = avatarHit || firstHit",
+            scene.index("function finishPointer"),
+        ):
         scene.index("const moderationAction", scene.index("function finishPointer"))
     ]
     assert pointer.index("onOfficeTaskBoardSelect") < pointer.index(

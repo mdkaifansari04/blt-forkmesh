@@ -252,7 +252,8 @@ def test_attendance_has_member_leaderboard_and_individual_punch_clock():
     for contract in (
         "OFFICE_ATTENDANCE_HEARTBEAT_MS = 30_000",
         'direction === "heartbeat"',
-        "{ action, floor: attendanceFloorId }",
+        "{ action, floor: attendanceFloorId, visitId }",
+        "attendanceVisitId = newOfficeAttendanceVisitId()",
         "startAttendanceHeartbeat()",
         "stopAttendanceHeartbeat()",
     ):
@@ -336,6 +337,58 @@ def test_attendance_leaderboard_deduplicates_sorts_and_ticks_active_stays():
     ]
 
 
+def test_a_tabbed_away_member_resumes_attendance_as_a_new_visit():
+    office = source(OFFICE_PATH)
+    # The tick, not the interval callback, owns the punch decision, so returning
+    # to a hidden tab resumes immediately instead of one heartbeat later.
+    for contract in (
+        "const OFFICE_ATTENDANCE_LIVE_TTL_MS = 75_000",
+        "export function officeAttendanceVisitExpired(seenAt, now)",
+        'if (action !== "out") attendanceSeenAt = Date.now()',
+        'document.addEventListener("visibilitychange", onVisibilityChange)',
+        'document.removeEventListener("visibilitychange", onVisibilityChange)',
+        "punchAttendanceTick,",
+    ):
+        assert contract in office
+    tick = function_body(office, "punchAttendanceTick")
+    assert "officeAttendanceVisitExpired(attendanceSeenAt, Date.now())" in tick
+    assert "attendanceVisitId = newOfficeAttendanceVisitId()" in tick
+    assert 'void recordAttendance("in")' in tick
+    visibility = function_body(office, "onVisibilityChange")
+    assert "document.hidden" in visibility
+    assert "punchAttendanceTick()" in visibility
+    # A still-open visit keeps riding the interval instead of posting on every
+    # tab switch.
+    assert (
+        "if (!officeAttendanceVisitExpired(attendanceSeenAt, Date.now())) return;"
+        in visibility
+    )
+
+    script = f"""
+      import {{ officeAttendanceVisitExpired }} from {
+          json.dumps(OFFICE_PATH.as_uri())
+      };
+      process.stdout.write(JSON.stringify([
+        officeAttendanceVisitExpired(0, 10_000_000),
+        officeAttendanceVisitExpired(1_000_000, 0),
+        officeAttendanceVisitExpired(1_000_000, 1_074_999),
+        officeAttendanceVisitExpired(1_000_000, 1_075_000),
+        officeAttendanceVisitExpired(1_000_000, 9_000_000),
+        officeAttendanceVisitExpired(null, 9_000_000),
+        officeAttendanceVisitExpired("nope", 9_000_000),
+      ]));
+    """
+    result = subprocess.run(
+        ["node", "--input-type=module", "-e", script],
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+    assert json.loads(result.stdout) == [
+        False, False, False, True, True, False, False,
+    ]
+
+
 def test_floor_access_is_loaded_once_and_only_server_grants_unlock_buttons():
     office = source(OFFICE_PATH)
     scene = source(SCENE_PATH)
@@ -368,6 +421,11 @@ def test_explicit_floor_refresh_updates_access_without_attendance_or_polling():
         setTimeout,
         clearTimeout,
         requestAnimationFrame(callback) {{ callback(); }},
+        addEventListener() {{}},
+        removeEventListener() {{}},
+      }};
+      globalThis.document = {{
+        hidden: false,
         addEventListener() {{}},
         removeEventListener() {{}},
       }};
@@ -660,7 +718,8 @@ def test_aerial_lod_never_removes_world_sections_and_sol_sign_is_attached():
     assert "const showOfficeInterior" not in scene
     assert "floorGroup.visible = true;" in scene
     assert "group.add(treasurySign);" in scene
-    assert "treasurySign.position.set(0, 0, 0);" in scene
+    assert "treasurySign.position.set(0, 1, 0);" in scene
+    assert '["TOWN", 0, 0, "#9ef7c6"]' not in scene
     assert '["MEMBERS", 0, MEMBER_ISLAND_CENTER_Z, "#f7c96b"]' in scene
     assert "MEMBER_CIRCLE_CENTER_Z" not in scene
     assert "let aerialLandmarkMarkersUnavailable = false;" in scene

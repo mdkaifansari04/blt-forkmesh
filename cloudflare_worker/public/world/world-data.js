@@ -55,7 +55,9 @@ export const LANDMARKS = [
     eyebrow: "CODE DISTRICT / 03",
     icon: "{ }",
     color: "#77d9ff",
-    position: [35, 0, 38],
+    // The repository landmark, import kiosk, concrete apron, and live portal
+    // ring share one east-district origin.
+    position: [130, 0, 0],
     summary: "Authorized repositories form distinct perimeter portals with size-weighted file rings.",
     metaphor: "Each repository opens as its own three-dimensional sunburst around the city perimeter.",
     reality:
@@ -425,10 +427,21 @@ export function detectClient() {
   return { browser, os, touch: navigator.maxTouchPoints > 0 };
 }
 
+// Derived per directory member on every lounge/badge refresh; the two-letter
+// input space is tiny and the composed string is immutable, so memoize
+// instead of re-running the spread + fromCodePoint on each call.
+const FLAG_EMOJI_MEMO = new Map();
 export function flagEmoji(code) {
   const normalized = String(code || "").trim().toUpperCase();
   if (!/^[A-Z]{2}$/.test(normalized)) return "◌";
-  return String.fromCodePoint(...[...normalized].map((char) => 127397 + char.charCodeAt(0)));
+  let flag = FLAG_EMOJI_MEMO.get(normalized);
+  if (!flag) {
+    flag = String.fromCodePoint(
+      ...[...normalized].map((char) => 127397 + char.charCodeAt(0)),
+    );
+    FLAG_EMOJI_MEMO.set(normalized, flag);
+  }
+  return flag;
 }
 
 export function sanitizePresenceText(value, fallback, max = 28) {

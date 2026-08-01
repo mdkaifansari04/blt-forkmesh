@@ -16,10 +16,12 @@ class QResizeEvent;
 class Collapsible;
 class ScrollJumpButtons;
 
-// Renders a CLI coding-agent session as a native, extension-style transcript.
-// Claude stream-json events and the normalized Codex app-server events share
-// this surface: assistant text, live reasoning, tool cards and output, diffs,
-// questions, usage, and final results.
+// Renders a CLI coding-agent session as a native transcript styled after the
+// Claude Code CLI itself: "> prompt" bands for user turns, ●-bulleted assistant
+// and tool rows, ⎿-connected results, ✻ thinking rows — flat monospace columns
+// rather than boxed cards. Claude stream-json events and the normalized Codex
+// app-server events share this surface: assistant text, live reasoning, tool
+// headers and output, diffs, questions, usage, and final results.
 class ClaudeTranscriptView : public QScrollArea
 {
     Q_OBJECT
@@ -40,6 +42,11 @@ public:
         QString canvas, surface, border, text, muted, accent, add, del, addBg,
             delBg, userBg;
     };
+
+    // The CLI-style marker a row leads with: a coloured ● (assistant text and
+    // tools), the user turn's >, the thinking ✻, or nothing (muted meta lines).
+    // Public so the embedded row helper can paint it.
+    enum RowGlyph { GlyphDot, GlyphChevron, GlyphStar, GlyphNone };
 
 signals:
     // kind is "5h" or "weekly"; from rate_limit_event.
@@ -82,6 +89,16 @@ public:
     void jumpToBottom();
     // Render Edit/MultiEdit diffs side-by-side (old | new) instead of unified.
     void setSplitDiffs(bool on);
+
+    // Host-supplied context for the "session started" divider (adhoc #9): the
+    // worktree branch the run works on, the permission mode it was launched
+    // under ("Auto" / "Plan" / …) and its reasoning strength ("high" / "low").
+    // Only the CLI's own model and cwd ride in the init event, so the host sets
+    // this from the AgentSession before the session's events are replayed or
+    // streamed. Empty parts are omitted; an empty mode falls back to the
+    // permissionMode the event itself reports (surfaced external sessions).
+    void setSessionContext(const QString &branch, const QString &mode,
+                           const QString &strength);
 
     // ---- bulk rebuild support (replaying a stored session) -----------------
     // While on, addRow() skips the per-row fade-in animation: replaying hundreds
@@ -132,9 +149,13 @@ signals:
 
 private:
     void applyScheme();
-    // Add a row to the timeline. nodeColor tints the connecting-line node dot.
-    // Returns the row wrapper so live rows (the activity ticker) can be removed.
-    QWidget *addRow(QWidget *card, const QString &nodeColor = QString());
+    // Add a row to the transcript. nodeColor tints the leading glyph; bandColor,
+    // when set, paints a full-width background band behind the row (the user
+    // turn's grey prompt band). Returns the row wrapper so live rows (the
+    // activity ticker) can be removed.
+    QWidget *addRow(QWidget *card, const QString &nodeColor = QString(),
+                    RowGlyph glyph = GlyphDot,
+                    const QString &bandColor = QString());
     // The whimsical "what it's doing" ticker shown while the agent is working.
     void ensureActivity();
     void clearActivity();
@@ -143,8 +164,6 @@ private:
     void fadeIn(QWidget *card);
     QString accentFor(const QString &toolName) const;
 
-    QWidget *makeBubble(const QString &title, const QString &markdown,
-                        const QString &accent);
     Collapsible *makeCollapsible(const QString &header, QWidget *body,
                                  bool expanded);
     void addAssistantBlocks(const QJsonObject &message);
@@ -153,11 +172,11 @@ private:
     // parseInlineChoices), so the caller can treat the turn the same as a real
     // AskUserQuestion for the activity-ticker state.
     bool addAssistantText(const QString &markdown);
-    // A "Name  subtitle" tool header line (the timeline rail supplies the dot).
+    // A "Name(args)" tool header line (the row's gutter supplies the ● glyph).
     QWidget *dotHeader(const QString &name, const QString &subtitle);
-    // One labelled row ("IN"/"OUT") inside a tool card's box.
-    QWidget *ioRow(const QString &label, QWidget *content);
-    // Monospace content with no panel background (it lives inside a card box).
+    // The CLI's "  ⎿  result" shape: an L-connector gutter beside the content.
+    QWidget *connectorRow(QWidget *content);
+    // Monospace content with no panel background (it hangs off a tool header).
     QWidget *makeMono(const QString &text, bool collapsedIfLong);
 
     // Live "thinking" lifecycle.
@@ -215,9 +234,6 @@ private:
     // usual append-before-the-spacer position, and advances it — so a batch of
     // earlier events lands, in order, above whatever was previously first.
     int m_prependAt = -1;
-    // The row currently at column index 0, so a newly-prepended row landing
-    // there can flatten the old one's rail line (RailItem::setFirst).
-    QPointer<QWidget> m_priorFirstRow;
     QPointer<QWidget> m_skippedNotice; // the "Load N earlier events" row, if any
     int m_skippedCount = 0;
     bool m_loadEarlierPending = false; // a request is in flight; don't re-emit
@@ -230,9 +246,14 @@ private:
     int m_prependOldValue = 0;
 
     struct ToolCard {
-        QFrame *box = nullptr;       // the bordered IN/OUT box
-        QVBoxLayout *io = nullptr;   // rows: IN, then OUT once the result lands
-        bool hasResult = false;      // an OUT row was appended
+        QVBoxLayout *io = nullptr;   // column: header, body, then ⎿ result rows
+        bool hasResult = false;      // a result row was appended
+        // Read/Grep/Glob: the header already names the file or pattern, so the
+        // (often huge) raw result folds down to a muted "N lines" note.
+        bool summarizeResult = false;
+        // TodoWrite: the "Todos have been modified successfully" ack is noise —
+        // the rendered checklist is the content.
+        bool suppressResult = false;
         QPointer<QLabel> liveOutput; // incrementally streamed command output
         QString liveOutputText;
     };
@@ -264,6 +285,8 @@ private:
     qint64 m_totalTokens = 0;
     double m_totalCost = 0.0;
     bool m_bulkPopulate = false; // see setBulkPopulate()
+    // see setSessionContext(); folded into the "session started" divider
+    QString m_ctxBranch, m_ctxMode, m_ctxStrength;
 
     // ---- transcript search state ------------------------------------------
     // Each label that contains at least one match, in top-to-bottom order, with

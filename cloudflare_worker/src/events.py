@@ -30,6 +30,13 @@ from releases import (
 )
 
 
+ISSUE_EVENT_TYPES = frozenset({
+    "open", "comment", "edit", "title", "status", "labels", "milestone",
+    "dates", "priority", "progress", "bounty", "assignees", "agent",
+    "delete", "vote",
+})
+
+
 def to_js(value):
     return _to_js(value, dict_converter=Object.fromEntries)
 
@@ -115,6 +122,17 @@ def issue_event_content(ev):
                             ev.get("bountyStatus", "") or ""])
     if t == "assignees":
         return ",".join(ev.get("assignees") or [])
+    if t == "agent":
+        try:
+            session_id = str(int(ev.get("agentSessionId", 0) or 0))
+        except (TypeError, ValueError):
+            session_id = "0"
+        return "\x00".join([
+            ev.get("agentProvider", "") or "",
+            session_id,
+            ev.get("agentStatus", "") or "",
+            "pr" if ev.get("agentCreatePr") else "no-pr",
+        ])
     if t == "delete":
         return ev.get("target", "")
     if t == "vote":
@@ -126,8 +144,28 @@ async def verify_issue_event(number, ev):
     author = ev.get("author", "")
     signature = ev.get("sig", "")
     event_type = ev.get("type", "")
-    if not author or not signature or not event_type:
+    if not author or not signature or event_type not in ISSUE_EVENT_TYPES:
         return False
+    try:
+        event_number = int(number)
+    except (TypeError, ValueError):
+        return False
+    if event_type == "open" and event_number != 0:
+        return False
+    if event_type != "open" and event_number <= 0:
+        return False
+    if event_type == "status" and ev.get("status") not in ("open", "closed"):
+        return False
+    if event_type in ("labels", "assignees"):
+        values = ev.get(event_type)
+        if not isinstance(values, list) or any(
+            not isinstance(value, str) for value in values
+        ):
+            return False
+    if event_type in ("edit", "delete"):
+        target = ev.get("target")
+        if not isinstance(target, str) or not target:
+            return False
     if event_type == "priority":
         try:
             priority = int(ev.get("priority", 0))
@@ -148,7 +186,7 @@ async def verify_issue_event(number, ev):
         return False
     content_hash = await sha256_hex(issue_event_content(ev))
     canonical = (
-        "forkmesh-issue-event-v1\n" + event_type + "\n" + str(int(number)) + "\n" +
+        "forkmesh-issue-event-v1\n" + event_type + "\n" + str(event_number) + "\n" +
         author + "\n" + str(ts) + "\n" + content_hash
     ).encode()
     return await ed25519_verify(author, signature, canonical)
@@ -298,24 +336,6 @@ async def verify_pull_comment_event(number, ev):
     canonical = (
         "forkmesh-pull-comment-v1\n" + event_type + "\n" + str(int(number)) + "\n" +
         author + "\n" + str(ts) + "\n" + content_hash
-    ).encode()
-    return await ed25519_verify(author, signature, canonical)
-
-
-async def verify_commit_comment_event(sha, c):
-    # Mirrors CommitCommentStore::canonicalString(sha, c).
-    author = c.get("author", "")
-    signature = c.get("sig", "")
-    if not author or not signature or not sha:
-        return False
-    try:
-        ts = int(c.get("ts", 0))
-    except (TypeError, ValueError):
-        return False
-    content_hash = await sha256_hex(c.get("body", ""))
-    canonical = (
-        "forkmesh-commit-comment-v1\n" + sha + "\n" + author + "\n" + str(ts) +
-        "\n" + content_hash
     ).encode()
     return await ed25519_verify(author, signature, canonical)
 

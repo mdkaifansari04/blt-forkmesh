@@ -60,7 +60,7 @@ def test_security_tab_lists_sessions_with_addresses_and_logout_controls():
 
 def test_work_tab_shows_assigned_task_stats_with_start_stop():
     for contract in (
-        "data-world-work-list",
+        "data-world-organization-task-list",
         "data-world-work-total",
         "data-world-work-active",
         "data-world-work-tracked",
@@ -69,8 +69,10 @@ def test_work_tab_shows_assigned_task_stats_with_start_stop():
         "syncRecentIssueAssignments()",
     ):
         assert contract in WORLD
-    assert "this.officeTasks?.setPersonalView?.(open === true)" in WORLD
-    assert "this.officeTasks?.prime?.()" in WORLD
+    assert "this.officeTasks?.setPersonalView?.(true)" in WORLD
+    assert "this.officeTasks?.setPersonalView?.(false)" in WORLD
+    assert "this.ensureOfficeRuntime({ userInitiated: true }).then(" in WORLD
+    assert 'this.settingsTab !== "work"' in WORLD
     for contract in (
         "function renderWorkPane()",
         "function normalizedRecentIssue(issue)",
@@ -81,6 +83,8 @@ def test_work_tab_shows_assigned_task_stats_with_start_stop():
         "setRecentIssues,",
         "ownTasks()",
         'data-world-office-task-action="${activeTask ? "stop" : "start"}"',
+        "function visibleWorkTasks()",
+        "function taskBoardHTML(task)",
     ):
         assert contract in TASKS
     # Issue assignment data reuses the already-loaded private notification

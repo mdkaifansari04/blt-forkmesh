@@ -81,6 +81,7 @@ def _run_catalog_get(count):
     namespace = _load(
         "catalog_handler", "method_name", "safe_segment", "clean_string",
         "served_mirror_groups", "repo_clone_online", "repo_mirror_group_key",
+        "_catalog_logical_owners",
         extra_globals={
             "Date": type("D", (), {"now": staticmethod(lambda: NOW)}),
             "HOST_PRESENCE_STALE_MS": 600_000,
@@ -99,6 +100,7 @@ def _run_catalog_get(count):
             "edge_cache_put": noop,
             "decrypt_row": identity,
             "_is_blocked_catalog_identity": lambda _env, _o, _n: False,
+            "valid_node_name": lambda value: bool(str(value or "").strip()),
             "_admin_query": lambda value: "admin=" + value if value else "",
             "_ssh_gateway_settings": lambda _env: {
                 "configured": False, "host": "", "port": 0,

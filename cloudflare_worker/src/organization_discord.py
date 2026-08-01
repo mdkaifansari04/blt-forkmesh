@@ -1220,14 +1220,34 @@ def _message_projection(payload, channel_id):
     if not message_id:
         return None
     author = payload.get("author") if isinstance(payload.get("author"), dict) else {}
+    author_id = _snowflake(author.get("id"))
+    avatar_hash = _text(author.get("avatar"), 128)
+    avatar_url = ""
+    if (
+        author_id
+        and avatar_hash
+        and re.fullmatch(r"[A-Za-z0-9_-]{2,128}", avatar_hash)
+    ):
+        avatar_url = (
+            f"https://cdn.discordapp.com/avatars/{author_id}/"
+            f"{avatar_hash}.webp?size=64"
+        )
+    elif author_id:
+        avatar_url = (
+            "https://cdn.discordapp.com/embed/avatars/"
+            f"{(int(author_id) >> 22) % 6}.png"
+        )
+    projected_author = {
+        "name": _text(
+            author.get("global_name") or author.get("username"), 100),
+        "bot": bool(author.get("bot")),
+    }
+    if avatar_url:
+        projected_author["avatarUrl"] = avatar_url
     return {
         "id": message_id,
         "channelId": channel_id,
-        "author": {
-            "name": _text(
-                author.get("global_name") or author.get("username"), 100),
-            "bot": bool(author.get("bot")),
-        },
+        "author": projected_author,
         "content": _text(payload.get("content"), MAX_MESSAGE_CONTENT, multiline=True),
         "createdAt": _text(payload.get("timestamp"), 40),
         "editedAt": _text(payload.get("edited_timestamp"), 40),

@@ -28,17 +28,67 @@ def test_debug_bar_is_a_logo_sized_orb_with_graded_metric_dots():
     assert "const dotLevels = {" in WORLD
 
 
-def test_chat_orb_shows_last_speaker_and_expands_on_hover_or_focus():
+def test_chat_orb_becomes_an_idle_prompt_and_opens_accessibly():
     assert "data-world-chat-terminal-avatar" in WORLD
     assert "data-world-chat-terminal-avatar-image" in WORLD
     assert "data-world-chat-terminal-avatar-initial" in WORLD
+    assert "world-chat-terminal-prompt-icon" in WORLD
+    assert "scheduleQuickComposerIdle()" in WORLD
+    assert "5 * 60 * 1000" in WORLD
     assert 'chatTerminal.addEventListener("pointerenter"' in WORLD
-    assert 'chatTerminal?.addEventListener("focusin"' in WORLD
+    assert 'chatSummary?.addEventListener("keydown"' in WORLD
+    assert '"[data-world-chat-terminal-close]"' in WORLD
+    assert "handleQuickChatEscape" in WORLD
+    assert 'window.addEventListener("keydown", this.handleQuickChatEscape)' in WORLD
     assert '!event.target.closest("[data-world-chat-terminal]")' in WORLD
     assert 'this.$("[data-world-chat-terminal]")?.removeAttribute("open")' in WORLD
     assert "setChatTerminalLastMessage(sender, text)" in WORLD
-    assert ".world-chat-terminal:is([open], :hover, :focus-within)" in CSS
+    assert ".world-chat-terminal--idle .world-chat-terminal-prompt-icon" in CSS
+    assert ".world-chat-terminal:not([open])" in CSS
     assert "this.memberDirectory.find(" in WORLD
+
+
+def test_quick_composer_keeps_feed_channels_and_enter_action_independent():
+    for channel in (
+        "general",
+        "private",
+        "direct",
+        "errors",
+        "tasks",
+        "notifications",
+    ):
+        assert f'data-world-quick-channel="{channel}"' in WORLD
+    assert 'data-world-quick-composer-avatar' in WORLD
+    assert 'data-world-quick-attachment' in WORLD
+    assert 'class="world-quick-input-shell"' in WORLD
+    assert 'class="world-quick-actions"' in WORLD
+    assert 'data-world-chat-terminal-close' in WORLD
+    assert 'terminal.dataset.showFeed = String(selected === "general")' in WORLD
+    assert 'const selected = "general";' in WORLD
+    assert "forkmesh.worldComposer.selectedChannel" in WORLD
+    terminal = WORLD[
+        WORLD.index('<details class="world-diagnostics world-chat-terminal'):
+        WORLD.index("</details>", WORLD.index("data-world-chat-terminal"))
+    ]
+    assert terminal.index("data-world-quick-channels") < terminal.index(
+        "data-world-quick-chat-feed",
+    )
+    assert "justify-content: flex-start;" in CSS
+    assert "justify-self: stretch;" in CSS
+    assert "text-align: left;" in CSS
+    assert "grid-template-columns: minmax(0, 1fr);" in CSS
+    assert ".world-quick-channels {\n  display: flex;\n  width: 100%;" in CSS
+    assert "Hovering the chat orb opens only the composer" not in CSS
+    assert 'fullAction.value = "chat";' in CHAT
+    keydown = CHAT.split('inputEl.addEventListener("keydown"', 1)[1].split(
+        'inputEl.addEventListener("input"', 1
+    )[0]
+    assert 'fullAction.value = "chat"' not in keydown
+    assert "pulseWorldQuickComposer(fullAction?.value || \"chat\")" in CHAT
+    assert "fullComposerStatus.classList.remove(" in CHAT
+    assert "fullComposerStatus.className =" not in CHAT
+    assert 'sourceLabel:' in CHAT
+    assert '[data-just-sent="task"]' in CSS
 
 
 def test_hud_popouts_keep_close_controls_sticky_and_dismiss_outside():
@@ -100,12 +150,19 @@ def test_world_embed_has_separate_chat_and_task_buttons_and_routing_step():
 
 
 def test_chat_and_status_updates_share_the_native_transcript():
-    assert "data-world-activity-stream" not in WORLD
+    # Non-chat notices still land in the native transcript, and every event a
+    # visitor may see also raises a floating bubble right above the chat icon.
+    assert "data-world-activity-stream" in WORLD
     assert 'data.type === "forkmesh:world-activity"' in WORLD
-    assert "this.notifyChatArea(copy, kind)" in WORLD
+    assert 'if (kind !== "chat" && transcript) this.notifyChatArea(copy, kind)' in WORLD
     assert 'type: "forkmesh:chat-notification"' in WORLD
     assert "emitWorldActivity(text, \"status\")" in CHAT
     assert "appendSystem(text, false)" in CHAT
+    # Bubbles stack bottom-up from just above the chat launcher; chat lines
+    # are never forwarded to the transcript twice.
+    assert "stream.prepend(article)" in WORLD
+    assert '{ kind: "chat", sender }' in WORLD
+    assert "flex-direction: column-reverse" in CSS
 
 
 def test_native_chat_starts_closed_and_floats_without_open_launcher_shell():
@@ -114,12 +171,14 @@ def test_native_chat_starts_closed_and_floats_without_open_launcher_shell():
         WORLD.index("</details>", WORLD.index("data-world-chat-terminal"))
     ]
     assert "data-world-chat-terminal open" not in terminal
-    assert terminal.index('id="fullChatMessages"') < terminal.index(
-        "data-dashboard-chat-context-rail",
+    assert terminal.index("world-quick-chat-header") < terminal.index(
+        'id="fullChatMessages"',
     )
-    assert terminal.index("data-dashboard-chat-context-rail") < terminal.index(
+    assert terminal.index('id="fullChatMessages"') < terminal.index(
         "data-dashboard-chat-composer",
     )
+    assert "data-dashboard-chat-context-rail" not in terminal
+    assert "data-dashboard-chat-composer-toolbar hidden inert" in terminal
     assert ".world-chat-terminal[open] > summary" in CSS
     assert "display: none;" in CSS
     assert "border: 0 !important;" in CSS
@@ -132,6 +191,11 @@ def test_open_native_chat_uses_lower_viewport_and_keeps_composer_at_bottom():
     assert "bottom: max(12px, env(safe-area-inset-bottom));" in CSS
     assert "height: min(58dvh, 680px);" in CSS
     assert "var(--world-viewport-height, 100dvh)" in CSS
+    assert "var(--world-chat-viewport-height, 100dvh)" in CSS
+    assert "var(--world-chat-covered-bottom, 0px)" in CSS
+    assert '"--world-chat-viewport-height"' in WORLD
+    assert '"--world-chat-covered-bottom"' in WORLD
+    assert "dataset.worldChatCompact" in WORLD
     assert 'grid-template-areas:\n    "transcript"' in CSS
     assert "grid-template-rows: minmax(0, 1fr) auto auto auto;" in CSS
     assert CSS.count("grid-area: transcript;") == 2
@@ -144,6 +208,8 @@ def test_open_native_chat_uses_lower_viewport_and_keeps_composer_at_bottom():
     assert "align-self: end;" in CSS
     assert "world-chat-composer-rise 360ms" in CSS
     assert ".world-chat-terminal:not([open])" in CSS
+    assert "grid-template-areas:\n    \"header\"\n    \"feed\"\n    \"composer\";" in CSS
+    assert "grid-template-rows: auto minmax(80px, 1fr) auto;" in CSS
     assert "@media (prefers-reduced-motion: reduce)" in CSS
 
 

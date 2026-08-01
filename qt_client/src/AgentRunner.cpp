@@ -194,6 +194,16 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
     m_issue = issue;
     m_repoPath = repoPath;
     m_config = config;
+    if (m_config.mode.trimmed().isEmpty())
+        m_config.mode = m_session.mode;
+    if (m_config.strength.trimmed().isEmpty())
+        m_config.strength = m_session.strength;
+    if (m_session.mode.trimmed().isEmpty())
+        m_session.mode = m_config.mode;
+    if (m_session.strength.trimmed().isEmpty())
+        m_session.strength = m_config.strength;
+    if (m_session.model.trimmed().isEmpty())
+        m_session.model = m_config.model;
     m_prompt = buildPrompt();
 
     m_session.status = AgentStatus::Running;
@@ -217,6 +227,9 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
                 .arg(m_config.maxOutputTokens));
     if (!m_config.model.trimmed().isEmpty())
         emitLog(QStringLiteral("==> Model: %1").arg(m_config.model.trimmed()));
+    emitLog(QStringLiteral("==> %1")
+                .arg(launchIdentityInstruction(m_session.provider, m_config.model,
+                                               m_config.mode, m_config.strength)));
 
     if (m_config.command.trimmed().isEmpty()) {
         complete(false, AgentStatus::Waiting,
@@ -306,6 +319,13 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
              << m_session.baseRef;
     }
     launch(Phase::Worktree, QStringLiteral("git"), args);
+}
+
+qint64 AgentRunner::processId() const
+{
+    return m_process && m_process->state() != QProcess::NotRunning
+               ? m_process->processId()
+               : 0;
 }
 
 void AgentRunner::stop()
@@ -739,6 +759,33 @@ QString AgentRunner::defaultPromptPreamble()
         "Do not commit, push, or open network resources unless the issue explicitly requires it.");
 }
 
+QString AgentRunner::providerDisplayName(const QString &provider)
+{
+    if (provider == QLatin1String("claude-code"))
+        return QStringLiteral("CC");
+    if (provider == QLatin1String("codex"))
+        return QStringLiteral("Codex");
+    if (provider.startsWith(QLatin1String("claude")))
+        return QStringLiteral("Claude API");
+    return QStringLiteral("OpenAI API");
+}
+
+QString AgentRunner::launchIdentityInstruction(const QString &provider,
+                                                const QString &model,
+                                                const QString &mode,
+                                                const QString &strength)
+{
+    return QStringLiteral("Agent launch identity: provider display name: %1; "
+                          "resolved model: %2; permission mode: %3; "
+                          "reasoning speed: %4.")
+        .arg(providerDisplayName(provider),
+             model.trimmed().isEmpty() ? QStringLiteral("provider default")
+                                       : model.trimmed(),
+             mode.trimmed().isEmpty() ? QStringLiteral("Ask") : mode.trimmed(),
+             strength.trimmed().isEmpty() ? QStringLiteral("high")
+                                           : strength.trimmed());
+}
+
 QString AgentRunner::buildPrompt() const
 {
     QStringList prompt;
@@ -747,6 +794,8 @@ QString AgentRunner::buildPrompt() const
     QString preamble = m_config.promptPreamble.trimmed();
     if (preamble.isEmpty())
         preamble = defaultPromptPreamble();
+    prompt << launchIdentityInstruction(m_session.provider, m_config.model,
+                                        m_config.mode, m_config.strength);
     prompt << preamble;
     prompt << QStringLiteral("");
     prompt << QStringLiteral("Repository: %1/%2").arg(m_session.owner, m_session.name);

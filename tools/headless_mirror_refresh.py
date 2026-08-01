@@ -69,6 +69,24 @@ SERVICE_COUNTERS_FILE = "service-counters.json"
 SERVICE_COUNTERS_TYPE = "forkmesh.mirror-service-counters"
 MAX_SERVICE_COUNTERS_BYTES = 1024 * 1024
 MAX_SERVICE_COUNTER = 999_999_999_999
+# Gateway counters row: the three totals fields plus the optional last-served
+# stamps (see GatewayServiceCounters in mirror_gateway.py).
+SERVICE_COUNTER_FIELDS = frozenset({
+    "clonesServed",
+    "websiteServed",
+    "updatedAt",
+    "cloneServedAt",
+    "cloneServedAgent",
+    "websiteServedAt",
+    "websiteServedAgent",
+})
+SERVICE_COUNTER_AGENT_CLASSES = frozenset({
+    "forkmesh-node",
+    "git-client",
+    "bot-tool",
+    "browser",
+    "client",
+})
 MAX_MERGE_QUARANTINE_OBJECTS = 100_000
 MAX_MERGE_QUARANTINE_BYTES = 2 * 1024 * 1024 * 1024
 MAX_LOCAL_MERGE_JOBS = 10_000
@@ -1648,7 +1666,8 @@ def _sample_gateway_service_counters(
     row = value["repositories"].get(key)
     if (
         not isinstance(row, dict)
-        or set(row) != {"clonesServed", "websiteServed", "updatedAt"}
+        or not {"clonesServed", "websiteServed", "updatedAt"} <= set(row)
+        or not set(row) <= SERVICE_COUNTER_FIELDS
     ):
         return {}
     result: dict[str, str] = {}
@@ -1663,6 +1682,23 @@ def _sample_gateway_service_counters(
         if not 0 <= count <= MAX_SERVICE_COUNTER:
             return {}
         result[field] = str(count)
+    # When the last clone / website read was served, and to which class of
+    # client. Optional: an older gateway's counters file carries totals only,
+    # and those stay unknown rather than being back-dated to the totals' row.
+    for field in ("cloneServedAt", "websiteServedAt"):
+        raw = row.get(field)
+        if raw is None or isinstance(raw, bool):
+            continue
+        try:
+            stamp = int(raw)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if 0 < stamp <= MAX_SAFE_JSON_INTEGER:
+            result[field] = str(stamp)
+    for field in ("cloneServedAgent", "websiteServedAgent"):
+        raw = row.get(field)
+        if isinstance(raw, str) and raw in SERVICE_COUNTER_AGENT_CLASSES:
+            result[field] = raw
     return result
 
 

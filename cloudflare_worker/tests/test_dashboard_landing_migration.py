@@ -1725,21 +1725,21 @@ def test_dashboard_formats_catalog_millisecond_timestamps():
     assert "function formatTimeAgo(value) {" in formatter
 
 
-def test_worker_routes_public_history_through_direct_https_not_commit_inbox():
+def test_worker_routes_public_history_through_direct_https():
     route = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _route")
         : ENTRY_TEXT.index("async def _git_host")
     ]
-    public_history_dispatch = route.index("host_match = REPO_HOST_RE.match")
-    owner_inbox_dispatch = route.index("commits_match = REPO_COMMITS_RE.match")
-
-    assert owner_inbox_dispatch < public_history_dispatch
+    assert "host_match = REPO_HOST_RE.match" in route
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
     assert "return await _https_mirror_proxy(" in route
 
 
-def test_worker_keeps_commit_inbox_route_separate_from_public_history_route():
-    assert 'REPO_COMMITS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/commits$")' in URLS_TEXT
+def test_worker_dropped_commit_comment_inbox_route():
+    # Commit commenting was removed; the /commits inbox endpoint is gone and
+    # public history still routes through the direct HTTPS mirror proxy.
+    assert "REPO_COMMITS_RE" not in URLS_TEXT
+    assert "commits_handler" not in ENTRY_TEXT
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
     assert REPO_DIRECT_BROWSE_GATE in ENTRY_TEXT
     assert '"history", "commit"' in ENTRY_TEXT

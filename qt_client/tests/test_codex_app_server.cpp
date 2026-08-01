@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -868,8 +869,12 @@ void runFreshProtocolTest(const QString &executable)
     QObject::connect(&session, &CodexAppServerSession::modelsListed,
                      [&](const QJsonArray &listed) { models = listed; });
 
-    session.start(temp.path(), {QStringLiteral("CODEX_STUB_ENV=present")},
-                  QStringLiteral("describe this\nAttached image: /tmp/example.png"),
+    const QString initialTask =
+        QStringLiteral("Agent launch identity: provider display name: Codex; "
+                       "resolved model: gpt-test; permission mode: Auto mode; "
+                       "reasoning speed: high.\n\n"
+                       "describe this\nAttached image: /tmp/example.png");
+    session.start(temp.path(), {QStringLiteral("CODEX_STUB_ENV=present")}, initialTask,
                   QString(), QStringLiteral("gpt-test"), QStringLiteral("Auto mode"),
                   QStringLiteral("high"));
     check(pump([&] { return started; }), "app-server process starts");
@@ -927,14 +932,16 @@ void runFreshProtocolTest(const QString &executable)
                                        .value(QStringLiteral("params"))
                                        .toObject();
     const QJsonArray input = turnParams.value(QStringLiteral("input")).toArray();
+    const QString expectedText =
+        initialTask.left(initialTask.indexOf(QStringLiteral("\nAttached image:")));
     check(input.size() == 2 &&
               input.first().toObject().value(QStringLiteral("text")).toString() ==
-                  QStringLiteral("describe this") &&
+                  expectedText &&
               input.last().toObject().value(QStringLiteral("type")).toString() ==
                   QStringLiteral("localImage") &&
               input.last().toObject().value(QStringLiteral("path")).toString() ==
                   QStringLiteral("/tmp/example.png"),
-          "attached image lines become localImage turn inputs");
+          "identity instruction and attached image reach turn/start");
     check(turnParams.value(QStringLiteral("model")).toString() ==
                   QStringLiteral("gpt-test") &&
               turnParams.value(QStringLiteral("effort")).toString() ==
@@ -1138,6 +1145,49 @@ void runModeMappingTest(const QString &executable, const QString &mode,
               params.value(QStringLiteral("sandbox")).toString() == sandbox,
           qPrintable(QStringLiteral("%1 maps to %2/%3")
                          .arg(mode, approval, sandbox)));
+}
+
+void runWorktreeMetadataSandboxTest(const QString &executable)
+{
+    QTemporaryDir temp;
+    check(temp.isValid(), "worktree sandbox temp dir created");
+    const QString repo = temp.filePath(QStringLiteral("repo"));
+    const QString metadata = temp.filePath(QStringLiteral("metadata"));
+    QDir().mkpath(repo);
+    QDir().mkpath(metadata + QStringLiteral("/worktree"));
+    QDir().mkpath(metadata + QStringLiteral("/common"));
+    QFile dotGit(repo + QStringLiteral("/.git"));
+    check(dotGit.open(QIODevice::WriteOnly | QIODevice::Text),
+          "worktree git file can be created");
+    dotGit.write("gitdir: ../metadata/worktree\n");
+    dotGit.close();
+    QFile commonDir(metadata + QStringLiteral("/worktree/commondir"));
+    check(commonDir.open(QIODevice::WriteOnly | QIODevice::Text),
+          "worktree common-dir file can be created");
+    commonDir.write("../common\n");
+    commonDir.close();
+
+    const QString logPath = temp.filePath(QStringLiteral("worktree.jsonl"));
+    CodexAppServerSession session;
+    session.setAppServerCommand(executable,
+                                {QStringLiteral("--codex-stub"),
+                                 QStringLiteral("mode"), logPath});
+    bool finished = false;
+    QObject::connect(&session, &CodexAppServerSession::finished,
+                     [&](int) { finished = true; });
+    session.start(repo, QStringList(), QStringLiteral("commit"), QString(),
+                  QStringLiteral("gpt-test"), QStringLiteral("Auto"), QString());
+    check(pump([&] { return finished; }), "worktree sandbox stub completes");
+    const QJsonObject policy =
+        firstMethod(readMessages(logPath), QStringLiteral("turn/start"))
+            .value(QStringLiteral("params"))
+            .toObject()
+            .value(QStringLiteral("sandboxPolicy"))
+            .toObject();
+    const QJsonArray roots = policy.value(QStringLiteral("writableRoots")).toArray();
+    check(roots.contains(QDir(metadata + QStringLiteral("/worktree")).absolutePath()) &&
+              roots.contains(QDir(metadata + QStringLiteral("/common")).absolutePath()),
+          "Auto mode permits linked-worktree Git metadata writes");
 }
 
 void runInterruptedTurnTest(const QString &executable)
@@ -1415,6 +1465,7 @@ int main(int argc, char *argv[])
     runModeMappingTest(executable, QStringLiteral("Edit automatically"),
                        QStringLiteral("on-request"),
                        QStringLiteral("workspace-write"));
+    runWorktreeMetadataSandboxTest(executable);
     runInterruptedTurnTest(executable);
     runRejectedSteerTest(executable);
     runResumeFailureTest(executable);

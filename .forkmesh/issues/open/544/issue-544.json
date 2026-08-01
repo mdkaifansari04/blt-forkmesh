@@ -1,0 +1,49 @@
+{
+    "assignees": [
+    ],
+    "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+    "authorName": "jett",
+    "bountyAddress": "",
+    "bountyStatus": "",
+    "bountyUsd": 0,
+    "createdAt": 1785562688530,
+    "endDate": 0,
+    "events": [
+        {
+            "attachments": [
+            ],
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "body": "in the game make it so that when a player pans or tilts that the other players can see them move too (keep it performant)",
+            "id": "open-544",
+            "sig": "3oWZ82Gebsb7X7hLaHJKhcDv0_-p9SxKbK7chST6eixJtDS0VG30H4jBDzpq3vYptnkJJK-wZfDatlIYOpXyBA",
+            "title": "in the game make it so that when a player pans or tilts that the other player…",
+            "ts": 1785562688530,
+            "type": "open"
+        },
+        {
+            "agentCreatePr": true,
+            "agentProvider": "codex",
+            "agentSessionId": 71,
+            "agentStatus": "success",
+            "author": "w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4",
+            "authorName": "jett",
+            "id": "6078cf7a-de66-42b6-97da-f97cf0f126fb",
+            "sig": "WNXSPAa3lrv8TIlqk5v_LkqOJadxUawrdbEWIsKwyVGRjPIljjFNIgBSPO__7xFs7fFTnmZN--VQ6PXDANx8Bg",
+            "ts": 1785562688616,
+            "type": "agent"
+        }
+    ],
+    "labels": [
+    ],
+    "milestone": "",
+    "number": 544,
+    "priority": 0,
+    "progress": 0,
+    "schema": "forkmesh-issue-v1",
+    "startDate": 0,
+    "status": "open",
+    "title": "in the game make it so that when a player pans or tilts that the other player…",
+    "updatedAt": 1785562688616,
+    "votes": 0
+}

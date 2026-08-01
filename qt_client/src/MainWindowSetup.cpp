@@ -60,19 +60,16 @@ void MainWindow::loadCachedAvatars()
     const QString dir = QStandardPaths::writableLocation(
                             QStandardPaths::AppDataLocation) +
                         "/avatars";
-    QDir d(dir);
-    if (!d.exists())
-        return;
-    QStringList paths;
-    const QFileInfoList files = d.entryInfoList({"*.png"}, QDir::Files);
-    for (const QFileInfo &fi : files)
-        paths.append(fi.absoluteFilePath());
-    if (paths.isEmpty())
+    if (!QDir(dir).exists())
         return;
     // Reading and PNG-decoding the whole cache inline blocked startup for ~1s
     // once a few dozen avatars accumulated (stall log: loadCachedAvatars ←
     // startSession). Decode to QImages on the thread pool; only the cheap
     // QImage→QPixmap hop runs back on the GUI thread.
+    // *Listing* the directory belongs on that worker too: entryInfoList stats
+    // every file, and on a cold cache dir with a few hundred avatars the
+    // readdir+stat sweep alone froze startup for ~860 ms (stall log:
+    // loadCachedAvatars → QDir::entryInfoList → getdents64) (adhoc #93).
     auto *watcher = new QFutureWatcher<QList<QPair<QString, QImage>>>(this);
     connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher] {
         watcher->deleteLater();
@@ -92,13 +89,16 @@ void MainWindow::loadCachedAvatars()
         }
         refreshChatMembers();
     });
-    watcher->setFuture(QtConcurrent::run([paths] {
+    watcher->setFuture(QtConcurrent::run([dir] {
         const forkmesh::BackgroundScope activity(
             QStringLiteral("avatars"),
-            QStringLiteral("Decoding %1 avatar image(s)").arg(paths.size()));
+            QStringLiteral("Decoding cached avatar image(s)"));
         QList<QPair<QString, QImage>> decoded;
-        for (const QString &path : paths) {
-            QFile f(path);
+        // Names only (no QFileInfo stat per entry) — we open each file anyway.
+        const QStringList names =
+            QDir(dir).entryList({QStringLiteral("*.png")}, QDir::Files);
+        for (const QString &name : names) {
+            QFile f(QDir(dir).filePath(name));
             if (!f.open(QIODevice::ReadOnly))
                 continue;
             const QByteArray data = f.readAll();
@@ -131,6 +131,7 @@ void MainWindow::saveChatHistory()
         for (int i = first; i < msgs.size(); ++i) {
             const ChatMessage &m = msgs.at(i);
             QJsonObject obj{{"id", m.id},
+                            {"threadRootId", m.threadRootId},
                             {"senderId", m.senderId},
                             {"senderName", m.senderName},
                             {"text", m.text},
@@ -199,6 +200,7 @@ void MainWindow::loadChatHistory()
             ChatMessage m;
             m.id = obj.value("id").toString();
             m.conversation = conversation;
+            m.threadRootId = obj.value("threadRootId").toString().left(96);
             m.senderId = obj.value("senderId").toString();
             m.senderName = obj.value("senderName").toString();
             m.text = obj.value("text").toString();
@@ -454,7 +456,19 @@ QWidget *MainWindow::buildSetupPage()
     auto *setupContent = new QWidget;
     auto *setupContentLayout = new QVBoxLayout(setupContent);
     setupContentLayout->addStretch();
-    setupContentLayout->addWidget(card, 0, Qt::AlignHCenter);
+    // Centre the card with stretches, not Qt::AlignHCenter: the card wraps its
+    // subtitle (heightForWidth), and an aligned widget's height gets computed
+    // at the full row width rather than the card's fixed 420px. The taller,
+    // narrower reality was then squeezed by ~32px, which half-clipped the
+    // subtitle's second line and cut the descenders off the generated node
+    // name in the username field (adhoc #113: "the node name is a bit cut
+    // off"). Inside this row the card's cell is exactly its own width, so its
+    // wrapped height is computed correctly.
+    auto *cardRow = new QHBoxLayout;
+    cardRow->addStretch();
+    cardRow->addWidget(card);
+    cardRow->addStretch();
+    setupContentLayout->addLayout(cardRow);
     setupContentLayout->addStretch();
 
     auto *setupScroll = new QScrollArea;
@@ -547,6 +561,11 @@ void MainWindow::testSetSetupInputs(const QString &name, const QString &solana)
 int MainWindow::testStackIndex() const
 {
     return m_stack ? m_stack->currentIndex() : -1;
+}
+
+bool MainWindow::testSignInButtonVisible() const
+{
+    return m_navSignInButton && !m_navSignInButton->isHidden();
 }
 
 QString MainWindow::testSavedSolanaAddress() const
@@ -676,9 +695,30 @@ bool MainWindow::testSpreadsheetResizeAfterMove()
     return draggedGrew && neighborUntouched && movedColumnUntouched;
 }
 
-bool MainWindow::testAgentColumnsMovable() const
+bool MainWindow::testAgentListChromeHidden() const
 {
-    return m_agentTable && m_agentTable->horizontalHeader()->sectionsMovable();
+    return m_agentTable && m_agentTable->horizontalHeader()->isHidden() &&
+           m_agentTable->frameShape() == QFrame::NoFrame;
+}
+
+// adhoc #35: read back the agents list's column labels plus how far the last
+// column reaches, so a test can prove the trimmed layout is what ships — the
+// title column absorbing the spare width rather than leaving a dead gap after
+// it (adhoc #92 dropped the last column that competed with it).
+QString MainWindow::testAgentColumnLayout() const
+{
+    if (!m_agentTable)
+        return QString();
+    QHeaderView *header = m_agentTable->horizontalHeader();
+    QStringList labels;
+    for (int c = 0; c < m_agentTable->columnCount(); ++c)
+        labels << m_agentTable->horizontalHeaderItem(c)->text();
+    // The header's used width vs the width it has to fill: equal means the
+    // columns span the list with nothing left over on the right.
+    return QStringLiteral("%1|%2/%3")
+        .arg(labels.join(QLatin1Char(',')))
+        .arg(header->length())
+        .arg(m_agentTable->viewport()->width());
 }
 
 QString MainWindow::testQuickAddAgentProvider() const
@@ -752,6 +792,49 @@ QString MainWindow::testWorktreeBranchLabel() const
     return m_worktreeBranchLabel ? m_worktreeBranchLabel->text() : QString();
 }
 
+int MainWindow::testOverviewBodyPage() const
+{
+    return m_overviewBodyStack ? m_overviewBodyStack->currentIndex() : -1;
+}
+
+QStringList MainWindow::testSourceControlPaths() const
+{
+    QStringList paths;
+    if (!m_scmTree)
+        return paths;
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        for (int i = 0; group && i < group->childCount(); ++i) {
+            const QString path =
+                group->child(i)->data(0, Qt::UserRole).toString();
+            if (!path.isEmpty())
+                paths.append(path);
+        }
+    }
+    return paths;
+}
+
+bool MainWindow::testClickSourceControlPath(const QString &path)
+{
+    if (!m_scmTree)
+        return false;
+    m_lastSourceControlDiffPath.clear();
+    for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+        QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+        for (int i = 0; group && i < group->childCount(); ++i) {
+            QTreeWidgetItem *item = group->child(i);
+            if (item->data(0, Qt::UserRole).toString() != path)
+                continue;
+            // Clear first so currentItemChanged fires even when the requested
+            // row was already selected by scroll-following logic.
+            m_scmTree->setCurrentItem(nullptr);
+            m_scmTree->setCurrentItem(item);
+            return m_lastSourceControlDiffPath == path;
+        }
+    }
+    return false;
+}
+
 QString MainWindow::testArrowOnWorktrees(bool down)
 {
     if (!m_worktreesTable)
@@ -771,11 +854,10 @@ QString MainWindow::testArrowOnWorktrees(bool down)
 void MainWindow::testClickRepoDetailTab(int id)
 {
     if (id == 1) {
-        // Commits has no top-bar tab anymore: drive the commit strip's
-        // "N Commits" toggle instead, the same path a real click takes
-        // (no-op when the panel is already showing — click would hide it).
-        if (m_historyButton && !m_historyButton->isChecked())
-            m_historyButton->click();
+        // Commit history has one entry point: drive the Git activity-rail
+        // destination exactly as a real click does.
+        if (m_railGitButton)
+            m_railGitButton->click();
         return;
     }
     if (id == m_worktreesTabIndex) {
@@ -783,6 +865,14 @@ void MainWindow::testClickRepoDetailTab(int id)
         // toolbar's "N worktrees" toggle path a real click now takes.
         showOverviewWorktrees();
         loadWorktreesPanel();
+        focusRepoDetailTable(id);
+        return;
+    }
+    if (id == m_branchesTabIndex) {
+        // Branches also lives inside Code overview rather than in the top tab
+        // row; drive its toolbar destination directly.
+        showOverviewBranches();
+        loadBranchesPanel();
         focusRepoDetailTable(id);
         return;
     }
@@ -827,24 +917,12 @@ QString MainWindow::testBranchWorktreePath(const QString &branch) const
     if (!m_branchesTable)
         return QString();
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        QTableWidgetItem *name =
+            m_branchesTable->item(row, kBranchesNameColumn);
         if (name && name->text() == branch) {
-            if (QTableWidgetItem *wt = m_branchesTable->item(row, 3))
+            if (QTableWidgetItem *wt =
+                    m_branchesTable->item(row, kBranchesWorktreeColumn))
                 return wt->text();
-        }
-    }
-    return QString();
-}
-
-QString MainWindow::testBranchAttachmentText(const QString &branch) const
-{
-    if (!m_branchesTable)
-        return QString();
-    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
-        if (name && name->text() == branch) {
-            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
-                return attach->text();
         }
     }
     return QString();
@@ -855,29 +933,12 @@ bool MainWindow::testBranchAttachmentHasIcon(const QString &branch) const
     if (!m_branchesTable)
         return false;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
-        if (name && name->text() == branch) {
-            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
-                return !attach->icon().isNull();
-        }
+        QTableWidgetItem *name =
+            m_branchesTable->item(row, kBranchesNameColumn);
+        if (name && name->text() == branch)
+            return !name->icon().isNull();
     }
     return false;
-}
-
-int MainWindow::testClickBranchAgentCell(const QString &branch)
-{
-    if (!m_branchesTable)
-        return -1;
-    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
-        if (name && name->text() == branch) {
-            // Fire the same signal a real click on the Issue / Agent cell would,
-            // so the production cellClicked handler runs (adhoc #258).
-            emit m_branchesTable->cellClicked(row, 4);
-            break;
-        }
-    }
-    return m_selectedAgentSessionId;
 }
 
 QStringList MainWindow::testBranchRowOrder() const
@@ -886,7 +947,8 @@ QStringList MainWindow::testBranchRowOrder() const
     if (!m_branchesTable)
         return names;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        if (QTableWidgetItem *name = m_branchesTable->item(row, 0))
+        if (QTableWidgetItem *name =
+                m_branchesTable->item(row, kBranchesNameColumn))
             names << name->text();
     }
     return names;
@@ -941,6 +1003,31 @@ bool MainWindow::testOpenRepository(int index)
 QString MainWindow::testRepoDefaultBranch() const
 {
     return repoDefaultBranch(repoBranches());
+}
+
+QString MainWindow::testRepoActionsTabText() const
+{
+    // The count rides the icon as a corner badge now (adhoc #6); recompose the
+    // old "Actions (N)" text so callers keep asserting caption and count as one.
+    if (!m_repoActionsTab)
+        return QString();
+    const auto *badged = dynamic_cast<VerticalIconButton *>(m_repoActionsTab);
+    return QStringLiteral("%1 (%2)")
+        .arg(m_repoActionsTab->text(),
+             formatCount(badged ? badged->badgeCount() : 0));
+}
+
+QString MainWindow::testRepoBranchesButtonText() const
+{
+    // Same recomposition as testRepoActionsTabText: the visible "N" is a
+    // corner badge on a fixed "Branches" caption since adhoc #6.
+    if (!m_branchesButton)
+        return QString();
+    const auto *badged = dynamic_cast<VerticalIconButton *>(m_branchesButton);
+    const qint64 count = badged ? badged->badgeCount() : 0;
+    return QStringLiteral("%1 %2")
+        .arg(formatCount(count),
+             count == 1 ? QStringLiteral("branch") : QStringLiteral("branches"));
 }
 
 bool MainWindow::testShowRepoIssuesTab()
@@ -1026,8 +1113,7 @@ int MainWindow::testTopNavTrailingGap() const
     }
     int rightEdge = -1;
     for (QWidget *widget :
-         {static_cast<QWidget *>(m_navDrawButton),
-          static_cast<QWidget *>(m_navScreenshotButton),
+         {static_cast<QWidget *>(m_navScreenshotButton),
           static_cast<QWidget *>(m_navResizeButton),
           static_cast<QWidget *>(m_navRebuildButton)}) {
         if (!widget || !widget->isVisibleTo(const_cast<MainWindow *>(this)))
@@ -1067,6 +1153,37 @@ QStringList MainWindow::testNodeDirectoryNames() const
         if (QTableWidgetItem *item = m_nodesTable->item(row, 0))
             names.append(item->data(Qt::UserRole).toString());
     }
+    names.sort(Qt::CaseInsensitive);
+    return names;
+}
+
+QStringList MainWindow::testChatMemberNames(const QString &conversation)
+{
+    const QString saved = m_currentConversation;
+    m_currentConversation = conversation;
+    refreshChatMembers();
+    QStringList names;
+    if (m_chatMembersLayout) {
+        static const QRegularExpression tag(QStringLiteral("<[^>]*>"));
+        for (int i = 0; i < m_chatMembersLayout->count(); ++i) {
+            QWidget *card = m_chatMembersLayout->itemAt(i)->widget();
+            if (!card)
+                continue;
+            // The name label is the only one carrying the presence bullet.
+            for (QLabel *label : card->findChildren<QLabel *>()) {
+                if (!label->text().contains(QString::fromUtf8("\xE2\x97\x8F")))
+                    continue;
+                names.append(label->text()
+                                 .remove(tag)
+                                 .remove(QString::fromUtf8("\xE2\x97\x8F"))
+                                 .remove(QStringLiteral("(you)"))
+                                 .trimmed());
+                break;
+            }
+        }
+    }
+    m_currentConversation = saved;
+    refreshChatMembers();
     names.sort(Qt::CaseInsensitive);
     return names;
 }
@@ -1111,6 +1228,42 @@ QString MainWindow::testNetworkRepoMirrorHeader() const
         !m_networkReposTable->horizontalHeaderItem(2))
         return QString();
     return m_networkReposTable->horizontalHeaderItem(2)->text();
+}
+
+QStringList MainWindow::testNetworkRepoColumns() const
+{
+    QStringList labels;
+    if (!m_networkReposTable)
+        return labels;
+    for (int column = 0; column < m_networkReposTable->columnCount(); ++column) {
+        if (QTableWidgetItem *item =
+                m_networkReposTable->horizontalHeaderItem(column))
+            labels.append(item->text());
+    }
+    return labels;
+}
+
+QString MainWindow::testNetworkRepoCellText(int row,
+                                            const QString &header) const
+{
+    if (!m_networkReposTable || row < 0 ||
+        row >= m_networkReposTable->rowCount())
+        return QString();
+    for (int column = 0; column < m_networkReposTable->columnCount(); ++column) {
+        QTableWidgetItem *label =
+            m_networkReposTable->horizontalHeaderItem(column);
+        if (!label || label->text() != header)
+            continue;
+        QTableWidgetItem *item = m_networkReposTable->item(row, column);
+        return item ? item->text() : QString();
+    }
+    return QString();
+}
+
+int MainWindow::testReposNavBadgeCount() const
+{
+    auto *railButton = dynamic_cast<ActivityRailButton *>(m_reposNavButton);
+    return railButton ? railButton->badgeCount() : -1;
 }
 #endif
 
@@ -1346,11 +1499,14 @@ void MainWindow::startSession()
     server->setEndpoints(endpoints);
     attachBackend(server);
     // Stamp outgoing frames with this account's kind from the first frame —
-    // updateUserSwitcher() re-applies it whenever the profile hydrates.
+    // updateUserSwitcher() re-applies it whenever the profile hydrates. A
+    // fresh install with no username yet speaks as "guest" (not "node") so its
+    // messages render on the web surfaces, which only show user/guest frames.
     server->setAccountKind(
         (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty())
             ? QStringLiteral("user")
-            : QStringLiteral("node"));
+            : chatIdentityIsGuest() ? QStringLiteral("guest")
+                                    : QStringLiteral("node"));
     if (!server->start())
         return;
 
@@ -1525,21 +1681,25 @@ void MainWindow::sendNodeHeartbeat()
         const bool wasAdmin = m_isAdmin;
         m_isAdmin = resp.value("isAdmin").toBool();
         // Admin status is learned after the initial nav render, so refresh the
-        // top-bar name once when it flips to show/hide the crown — without the
-        // balance re-query the heartbeat path otherwise avoids.
-        if (m_isAdmin != wasAdmin && m_navNodeName) {
-            const QString name = accountNameFromInput(m_userName, QString());
-            const QString crown = QString::fromUtf8(" \xF0\x9F\x91\x91");
-            m_navNodeName->setText(m_isAdmin && !name.isEmpty() ? name + crown : name);
-            m_navNodeName->setToolTip(
-                m_isAdmin && !name.isEmpty() ? name + " (admin)" : name);
-        }
+        // avatar crown badge once when it flips.
+        if (m_isAdmin != wasAdmin)
+            updateAdminCrownBadge();
+        // A freshly launched instance's request to join rides the same signed
+        // heartbeat reply for admins (adhoc #97): light the red dot over the
+        // relay favicon and show the Approve button beside it.
+        setPendingRelayJoins(
+            m_isAdmin ? resp.value(QStringLiteral("pendingRelays")).toInt()
+                      : 0);
         // Fetch the shared room-chat key once the account identity is available,
         // so it's cached before the user opens chat (no-op once fetched).
         fetchRoomPassphrase();
         // Bring the World virtual office's channel conversations into the chat
         // sidebar (adhoc #412). Idempotent, so the heartbeat can just call it.
         startOfficeChannelMirror();
+        // Keep the bell's badge honest about alerts raised on the website
+        // (adhoc #59). Throttled inside, so this 60s beat costs one read per
+        // five minutes rather than one per beat.
+        refreshWebAlerts();
         if (m_isAdmin) {
             if (!m_adminPollTimer) {
                 m_adminPollTimer = new QTimer(this);
@@ -2006,6 +2166,181 @@ bool MainWindow::adminVerifyEmail(const QString &target)
     return false;
 }
 
+void MainWindow::setPendingRelayJoins(int count)
+{
+    count = qMax(0, count);
+    const int previous = m_pendingRelayJoins;
+    m_pendingRelayJoins = count;
+    if (m_relayJoinDot && m_relayMenuButton) {
+        if (count > 0) {
+            // Pin to the favicon's top-right corner, the same treatment as the
+            // chat button's unread badge.
+            m_relayJoinDot->move(
+                qMax(0, m_relayMenuButton->width() - m_relayJoinDot->width() -
+                            2),
+                2);
+            m_relayJoinDot->show();
+            m_relayJoinDot->raise();
+        } else {
+            m_relayJoinDot->hide();
+        }
+    }
+    if (m_relayJoinApproveButton) {
+        m_relayJoinApproveButton->setText(
+            count > 1 ? QStringLiteral("Approve (%1)").arg(count)
+                      : QStringLiteral("Approve"));
+        m_relayJoinApproveButton->setToolTip(
+            count > 1
+                ? QStringLiteral(
+                      "%1 newly launched ForkMesh instances pinged this relay "
+                      "asking to join. Approve to link them — each joins the "
+                      "Worlds and starts the firework show.")
+                      .arg(count)
+                : QStringLiteral(
+                      "A newly launched ForkMesh instance pinged this relay "
+                      "asking to join. Approve to link it — it joins the "
+                      "Worlds and the firework show starts."));
+        m_relayJoinApproveButton->setVisible(count > 0);
+    }
+    if (count > previous)
+        logSystem(QStringLiteral(
+            "A new ForkMesh instance is ready to be linked — click Approve "
+            "beside the relay favicon to let it join."));
+}
+
+void MainWindow::showRelayJoinApprovalDialog()
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || !hasOwnerSigningCapability(node) ||
+        !m_profileIdentity.isValid())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-relays-v1\n" + node + "\n" + ts).toUtf8();
+    QUrl url = accountsApiUrl("admin-relays");
+    QUrlQuery query;
+    query.addQueryItem("node", node);
+    query.addQueryItem("ts", ts);
+    query.addQueryItem("sig", m_profileIdentity.signData(canonical));
+    url.setQuery(query);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    loop.exec();
+    const QJsonObject resp = QJsonDocument::fromJson(reply->readAll()).object();
+    reply->deleteLater();
+
+    QDialog dialog(this);
+    dialog.setWindowTitle("Link new instances");
+    dialog.resize(560, 420);
+    auto *layout = new QVBoxLayout(&dialog);
+    auto *intro = new QLabel(
+        "Newly launched ForkMesh instances that pinged this relay asking to "
+        "join the federation. Approving links an instance into the Worlds — "
+        "and the firework show starts.");
+    intro->setWordWrap(true);
+    layout->addWidget(intro);
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    auto *inner = new QWidget;
+    auto *rows = new QVBoxLayout(inner);
+    int pendingShown = 0;
+    for (const QJsonValue &v : resp.value("relays").toArray()) {
+        const QJsonObject obj = v.toObject();
+        if (obj.value("status").toString() != QStringLiteral("pending"))
+            continue;
+        const QString pubkey = obj.value("pubkey").toString();
+        if (pubkey.isEmpty())
+            continue;
+        ++pendingShown;
+        const QString label = obj.value("label").toString();
+        const QString baseUrl = obj.value("baseUrl").toString();
+        auto *row = new QHBoxLayout;
+        auto *info = new QLabel(
+            QStringLiteral("<b>%1</b><br><span style='color:#8b949e'>%2</span>")
+                .arg((label.isEmpty() ? QStringLiteral("Unnamed instance")
+                                      : label)
+                         .toHtmlEscaped(),
+                     baseUrl.toHtmlEscaped()));
+        info->setTextFormat(Qt::RichText);
+        row->addWidget(info, 1);
+        auto *blockBtn = new QPushButton("Block");
+        blockBtn->setObjectName("ghostButton");
+        blockBtn->setCursor(Qt::PointingHandCursor);
+        row->addWidget(blockBtn);
+        auto *approveBtn = new QPushButton("Approve && link");
+        approveBtn->setObjectName("primaryButton");
+        approveBtn->setCursor(Qt::PointingHandCursor);
+        row->addWidget(approveBtn);
+        rows->addLayout(row);
+        connect(approveBtn, &QPushButton::clicked, &dialog,
+                [this, pubkey, approveBtn, blockBtn]() {
+                    approveBtn->setEnabled(false);
+                    blockBtn->setEnabled(false);
+                    if (adminRelayApprove(pubkey, QStringLiteral("approve"))) {
+                        approveBtn->setText("Linked \xE2\x9C\x93");
+                    } else {
+                        approveBtn->setText("Failed");
+                        approveBtn->setEnabled(true);
+                        blockBtn->setEnabled(true);
+                    }
+                });
+        connect(blockBtn, &QPushButton::clicked, &dialog,
+                [this, pubkey, approveBtn, blockBtn]() {
+                    approveBtn->setEnabled(false);
+                    blockBtn->setEnabled(false);
+                    if (adminRelayApprove(pubkey, QStringLiteral("block"))) {
+                        blockBtn->setText("Blocked");
+                    } else {
+                        blockBtn->setText("Failed");
+                        approveBtn->setEnabled(true);
+                        blockBtn->setEnabled(true);
+                    }
+                });
+    }
+    if (!pendingShown)
+        rows->addWidget(
+            new QLabel("<i>No instances waiting to be linked.</i>"));
+    rows->addStretch();
+    scroll->setWidget(inner);
+    layout->addWidget(scroll, 1);
+    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close);
+    layout->addWidget(buttons);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    dialog.exec();
+}
+
+bool MainWindow::adminRelayApprove(const QString &pubkey, const QString &action)
+{
+    const QString node = accountOwner();
+    if (node.isEmpty() || pubkey.isEmpty() ||
+        !hasOwnerSigningCapability(node) || !m_profileIdentity.isValid())
+        return false;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-admin-relay-approve-v1\n" + node + "\n" + pubkey + "\n" +
+         action + "\n" + ts)
+            .toUtf8();
+    int status = 0;
+    const QJsonObject resp = postAccountSync(
+        "admin-relay-approve",
+        QJsonObject{{"node", node}, {"ts", ts},
+                    {"sig", m_profileIdentity.signData(canonical)},
+                    {"pubkey", pubkey}, {"action", action}},
+        &status);
+    if (status != 200 || !resp.value("ok").toBool())
+        return false;
+    setPendingRelayJoins(m_pendingRelayJoins - 1);
+    logSystem(action == QStringLiteral("approve")
+                  ? QStringLiteral(
+                        "\xF0\x9F\x8E\x86 Instance linked: it joined the "
+                        "federation and the World is running its firework "
+                        "show.")
+                  : QStringLiteral("Instance join request blocked."));
+    return true;
+}
+
 QString MainWindow::accountOwner() const
 {
     if (!m_accountName.isEmpty())
@@ -2108,10 +2443,61 @@ QString MainWindow::nodeOwnerDisplayName() const
 
 QString MainWindow::chatDisplayName() const
 {
+    // No username yet (fresh install still on its generated node name): chat
+    // as a guest, exactly like the website's anonymous visitors, so messages
+    // render on every surface instead of being dropped as node frames. The
+    // machine keeps its generated node name; only the person is anonymous.
+    if (chatIdentityIsGuest())
+        return guestChatName();
     const QString user = topBarUserName().trimmed();
     if (!user.isEmpty())
         return user.left(80);
     return accountNameFromInput(m_userName, QString()).left(80);
+}
+
+bool MainWindow::chatIdentityIsGuest() const
+{
+    // Headless nodes are fleet machines whose chat identity IS the node —
+    // renaming them "Guest ####" out from under rosters would be a regression.
+    if (m_headless)
+        return false;
+    // Any linked or signed-in user identity wins over guest status.
+    if (m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty() ||
+        !m_nodeOwnerUser.trimmed().isEmpty())
+        return false;
+    // A guest is an install still running under the name a first run handed
+    // out. Typing a username (setup screen or Settings) or logging in / signing
+    // up replaces account/nodeName, so the two diverge and guest mode ends.
+    const QString generated = accountNameFromInput(
+        QSettings().value(kGeneratedNodeNameSetting).toString(), QString());
+    return !generated.isEmpty() &&
+           savedProfileName().compare(generated, Qt::CaseInsensitive) == 0;
+}
+
+QString MainWindow::guestChatName() const
+{
+    // Match the website's anonymous-visitor naming ("Guest 1234"): recognised
+    // by every surface's guest grouping (isTemporaryChatGuest, the web's guest
+    // section). Reuse the generated node name's numeric tail so the name is
+    // stable across restarts; fall back to a digest of the identity key.
+    const QString generated =
+        QSettings().value(kGeneratedNodeNameSetting).toString();
+    static const QRegularExpression tailDigits(QStringLiteral("(\\d{4})$"));
+    const QRegularExpressionMatch match = tailDigits.match(generated);
+    QString digits = match.hasMatch() ? match.captured(1) : QString();
+    if (digits.isEmpty()) {
+        const QByteArray key = m_profileIdentity.publicKey().toUtf8();
+        if (!key.isEmpty()) {
+            const QByteArray digest =
+                QCryptographicHash::hash(key, QCryptographicHash::Sha256);
+            quint32 value = 0;
+            for (int i = 0; i < 4; ++i)
+                value = (value << 8) | quint8(digest.at(i));
+            digits = QString::number(1000 + value % 9000);
+        }
+    }
+    return digits.isEmpty() ? QStringLiteral("Guest")
+                            : QStringLiteral("Guest %1").arg(digits);
 }
 
 // The node name of THIS machine — never the username. A user account owns many
@@ -2421,6 +2807,19 @@ QString MainWindow::hostedCloneUrl(const QString &owner, const QString &name) co
     return url.toString();
 }
 
+bool MainWindow::serviceManagedCheckout(const QString &localPath) const
+{
+    const QString canonical =
+        QFileInfo(localPath.trimmed()).canonicalFilePath();
+    const QString serviceHome =
+        QFileInfo(QDir::homePath()).canonicalFilePath();
+    return !canonical.isEmpty() && !serviceHome.isEmpty() &&
+           (canonical == serviceHome ||
+            canonical.startsWith(serviceHome + QLatin1Char('/'))) &&
+           QFileInfo(QDir(canonical).filePath(QStringLiteral(".git")))
+               .exists();
+}
+
 void MainWindow::ensureFlagshipRepo()
 {
     if (!m_networkAccess)
@@ -2470,19 +2869,9 @@ void MainWindow::ensureFlagshipRepo()
                 // installed provider CLIs unable to claim any job. Preserve a
                 // private checkout beneath the service account's home, while
                 // still rejecting stale, external, or missing paths copied
-                // from another machine.
-                const QString localPath =
-                    QFileInfo(repo.localPath).canonicalFilePath();
-                const QString serviceHome =
-                    QFileInfo(QDir::homePath()).canonicalFilePath();
-                const bool serviceManagedCheckout =
-                    !localPath.isEmpty() && !serviceHome.isEmpty() &&
-                    (localPath == serviceHome ||
-                     localPath.startsWith(serviceHome + QLatin1Char('/'))) &&
-                    QFileInfo(QDir(localPath).filePath(
-                                  QStringLiteral(".git")))
-                        .exists();
-                if (!serviceManagedCheckout) {
+                // from another machine. (The sealing sync keeps a preserved
+                // checkout tracking the relay — see UpstreamCheckoutSync.)
+                if (!serviceManagedCheckout(repo.localPath)) {
                     repo.localPath.clear();
                     changed = true;
                 }
@@ -2959,6 +3348,11 @@ bool MainWindow::verifyTotpLogin(const QString &email,
             loginRequest.insert(QStringLiteral("pubkey"), publicKey);
             loginRequest.insert(QStringLiteral("deviceTs"), deviceTs);
             loginRequest.insert(QStringLiteral("deviceSig"), deviceSig);
+            // Name the device the relay is about to register, so the account's
+            // device list on the website identifies this machine instead of
+            // showing an unlabelled key.
+            loginRequest.insert(QStringLiteral("deviceLabel"),
+                                machineNodeName());
         }
     }
     int status = 0;
@@ -3451,10 +3845,31 @@ void MainWindow::styleFooterUpdateLog()
     // Log view regardless of theme (adhoc #19). Per-line severity/category colour
     // comes from the HTML badge that setFooterUpdateLine() renders; the base text
     // stays black so plain messages don't wash out on white.
+    // No border of its own (adhoc #92): the panel it sits in already draws the
+    // rounded green outline, and the extra grey hairline 2px inside it read as a
+    // doubled edge. The right padding is trimmed to a hair as well — for a styled
+    // QAbstractScrollArea the padding pushes the *scrollbar* in too, which parked
+    // the scroll handle a dozen pixels off the panel edge with dead white between
+    // them; now it sits right against the border.
+    // The scrollbar rides the same white canvas: with the app-wide (transparent)
+    // track it painted the dark theme's window colour in a column hard against
+    // the green border, which read as a second, darker edge inside it.
     m_footerUpdateLog->setStyleSheet(
         QStringLiteral("QTextEdit#footerUpdateLog{color:#1f2328;border:none;"
-                       "border-right:1px solid #d0d7de;background:#ffffff;"
-                       "font-family:monospace;font-size:11px;padding:3px 12px;}"));
+                       "background:#ffffff;font-family:monospace;font-size:11px;"
+                       "padding:3px 1px 3px 12px;}"
+                       "QTextEdit#footerUpdateLog QScrollBar:vertical{"
+                       "background:#ffffff;width:9px;margin:0;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::handle:vertical{"
+                       "background:#d0d7de;border-radius:4px;min-height:24px;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::handle:vertical:"
+                       "hover{background:#afb8c1;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::add-line:vertical,"
+                       "QTextEdit#footerUpdateLog QScrollBar::sub-line:vertical{"
+                       "height:0;}"
+                       "QTextEdit#footerUpdateLog QScrollBar::add-page:vertical,"
+                       "QTextEdit#footerUpdateLog QScrollBar::sub-page:vertical{"
+                       "background:#ffffff;}"));
 }
 
 // Render the same colored category badge the Log view uses so the always-on
@@ -3472,8 +3887,11 @@ QString MainWindow::footerLogLineHtml(const QString &clean)
     const QString badge = logBadgeFor(clean);
     const QString accent = logAccentFor(clean);
     QString html;
-    // Same leading site icon the full Log view uses (adhoc #436), registered on
-    // this document too so the <img> resolves here.
+    // The "add this entry to the prompt" plus sits furthest left, ahead of the
+    // site icon, so the column of affordances lines up down the strip (adhoc
+    // #114). Same leading site icon the full Log view uses (adhoc #436),
+    // registered on this document too so the <img> resolves here.
+    html += logPromptIconTag(m_footerUpdateLog, clean);
     html += logFaviconTag(message, m_footerUpdateLog);
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:#656d76'>%1</span>&nbsp;&nbsp;")
@@ -3494,27 +3912,38 @@ void MainWindow::setFooterUpdateLine(const QString &line)
     if (clean.isEmpty())
         return;
     const QString html = footerLogLineHtml(clean);
-    // Only auto-scroll to the new line if the view was already at (or very near)
-    // the bottom — otherwise a user who scrolled up to search back through
-    // history would get yanked back down by every new event.
+    // The strip follows the newest line by default, so a glance at the footer is
+    // always a glance at what just happened (adhoc #92). Scrolling back through
+    // history is what the corner pause toggle is for: while it's held down the
+    // view stays exactly where it was parked.
     QScrollBar *bar = m_footerUpdateLog->verticalScrollBar();
-    const bool wasAtBottom = !bar || bar->value() >= bar->maximum() - 2;
+    const bool follow = !m_footerLogScrollPaused;
     m_footerUpdateLog->append(html);
     // QTextEdit has no setMaximumBlockCount: trim the oldest lines by hand so a
     // long-running session can't grow the strip without bound.
+    // Drop them in ONE edit: removing a block at a time made QTextDocument
+    // re-lay-out the whole 300-line rich-text document per removed line, and the
+    // stall watchdog caught that quadratic loop freezing the GUI thread for
+    // ~520 ms when flushBackgroundOutcomes() flushed a burst of lines at once
+    // (stall log: setFooterUpdateLine → QTextCursor::deleteChar →
+    // QTextDocumentLayout::doLayout, adhoc #93). Selecting from the start of the
+    // document to the start of the first block we keep also swallows the
+    // separators the old per-block deleteChar() had to clean up.
     QTextDocument *doc = m_footerUpdateLog->document();
-    while (doc->blockCount() > kFooterLogSeedLines) {
-        QTextCursor trim(doc->firstBlock());
-        trim.select(QTextCursor::BlockUnderCursor);
+    if (const int excess = doc->blockCount() - kFooterLogSeedLines; excess > 0) {
+        QTextCursor trim(doc);
+        trim.beginEditBlock();
+        trim.movePosition(QTextCursor::Start);
+        trim.movePosition(QTextCursor::NextBlock, QTextCursor::KeepAnchor, excess);
         trim.removeSelectedText();
-        trim.deleteChar(); // the block separator left behind by the selection
+        trim.endEditBlock();
     }
     // Remember the full, untruncated line on the block just appended so the
     // no-wrap strip can still show it on hover and open the full Log at it on
     // click (adhoc #133), even though the visible text is clipped at the edge.
     if (QTextBlock last = m_footerUpdateLog->document()->lastBlock(); last.isValid())
         last.setUserData(new FooterLogLineData(clean));
-    if (wasAtBottom && bar)
+    if (follow && bar)
         bar->setValue(bar->maximum());
 }
 
@@ -3692,16 +4121,9 @@ void MainWindow::buildAndRelaunch(const QString &clientDir, const QString &asUse
     runUpdateStepUser("cmake", cmakeConfigureArgs(clientDir, buildDir, buildType),
                       clientDir, [this, buildDir, appPath] {
         setUpdateStatus("Rebuilding...");
-        // Cap parallelism by RAM, not just cores: cc1plus peaks well past
-        // 1 GB on the big Qt translation units, and an OOM kill during an
-        // in-place update can take out the RUNNING node — which nothing
-        // restarts (the fleet daemons run under nohup, no supervisor).
-        int jobs = QThread::idealThreadCount();
-        const qint64 totalRam = SystemStats::totalMemoryBytes();
-        if (totalRam > 0)
-            jobs = qBound(1, int(totalRam / (1536LL * 1024 * 1024)), jobs);
         runUpdateStepUser("cmake",
-                          {"--build", buildDir, "-j", QString::number(jobs)},
+                          {"--build", buildDir, "-j",
+                           QString::number(ramCappedBuildJobs())},
                           buildDir, [this, buildDir, appPath] {
             const QString built = builtExecutablePath(buildDir);
             installAndRelaunch(built, appPath);

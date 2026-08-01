@@ -78,6 +78,10 @@ def test_movement_hot_path_reuses_vectors_and_reports_input_delay():
     assert "movementRight.set(" in movement
     assert "new THREE.Vector3()" not in movement
     assert "return movementInputState" in movement
+    assert "const input = movementInput();" in town_walk
+    assert "updateJetpackFlight(input, delta, time)" in town_walk
+    assert "movementSpeedForInput(input, delta)" in town_walk
+    assert "movementSpeedForInput(\n          {" not in town_walk
     assert "? topSpeed" in SCENE
     assert town_walk.count("queueMovementEvent({") == 2
     assert "onMovement({" not in town_walk
@@ -98,6 +102,8 @@ def test_camera_and_non_motion_frame_work_are_allocation_bounded():
     assert "new THREE.Vector3()" not in camera
     assert "cameraEye.set(" in camera
     assert "cameraTarget" in camera
+    assert "officeCameraLocalPosition" in camera
+    assert "officeAvatarLocalPosition(\n        player,\n        officeCameraLocalPosition," in camera
     assert "time >= nextProximityUpdateAt" in animate
     assert "time >= nextScreenLabelUpdateAt" in animate
     # Drawing-buffer inspection and console I/O are deferred until after the
@@ -122,10 +128,27 @@ def test_zoom_and_selection_work_are_bounded_to_display_cadences():
     animate = _section(SCENE, "  function animate(", "\n  function setPaused(")
     assert "updateSceneLevelOfDetail();" in zoom
     assert "updateSceneLevelOfDetail(true);" not in zoom
-    assert "if (!force && farSceneDetail === far) return;" in lod
+    assert "if (!force && farSceneDetail === far) {" in lod
+    assert "updateLocalPointLightBudget(far);" in lod
     assert "nextSceneLodAt = time + SCENE_LOD_SAMPLE_MS" in animate
     assert "time >= nextAvatarHighlightAt" in animate
     assert "nextAvatarHighlightAt = time + AVATAR_HIGHLIGHT_SAMPLE_MS" in animate
+    assert "VISUAL_ANIMATION_DESKTOP_MS = 1000 / 30" in SCENE
+    assert ": VISUAL_ANIMATION_DESKTOP_MS" in animate
+    assert "frameAnimated.forEach((callback) => callback(time, delta))" in animate
+    assert "frameAnimated.push((time, delta) =>" in SCENE
+    assert "function updateEngineeringDebugPanel(time, delta)" in SCENE
+    assert "updateEngineeringDebugPanel(time, delta)" in animate
+
+
+def test_shadow_refreshes_wait_for_input_to_settle():
+    animate = _section(SCENE, "  function animate(", "\n  function setPaused(")
+    assert "const SHADOW_MAP_UPDATE_MS = 10_000" in SCENE
+    assert "const SHADOW_MAP_BUSY_RETRY_MS = 1_000" in SCENE
+    assert "const shadowRefreshBusy =" in animate
+    assert "wasWalking ||" in animate
+    assert "primaryPointerId !== null" in animate
+    assert "nextShadowMapUpdateAt = time + SHADOW_MAP_BUSY_RETRY_MS" in animate
 
 
 def test_stall_logs_are_aggregated_deferred_and_never_capture_stacks():
@@ -135,7 +158,8 @@ def test_stall_logs_are_aggregated_deferred_and_never_capture_stacks():
         "  function scheduleRenderStallWarning(",
         "\n  function animate(",
     )
-    assert "const RENDER_STALL_LOG_COOLDOWN_MS = 30_000;" in SCENE
+    assert "const RENDER_STALL_THRESHOLD_MS = 500;" in SCENE
+    assert "const RENDER_STALL_LOG_COOLDOWN_MS = 5 * 60_000;" in SCENE
     assert "suppressedRenderStalls += 1" in animate
     assert "window.setTimeout(" in warning
     assert "console.warn(" in warning

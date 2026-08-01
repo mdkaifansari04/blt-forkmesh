@@ -103,6 +103,8 @@ def test_admin_hud_counts_only_rows_after_the_local_seen_cursor():
     assert "async def world_admin_errors_handler(env, request):" in ENTRY
     assert '"platform_administrator"' in ENTRY
     assert '"SELECT COUNT(*) AS n FROM error_log WHERE id>?"' in ENTRY
+    assert '"FROM error_log ORDER BY id DESC LIMIT 100"' in ENTRY
+    assert 'query.get("include", ["0"])[0] == "1"' in ENTRY
     assert '"/api/world/admin/errors"' in ENTRY
     assert "ADMIN_ERROR_SEEN_KEY" in WORLD
     assert "seen === null" in WORLD
@@ -111,3 +113,14 @@ def test_admin_hud_counts_only_rows_after_the_local_seen_cursor():
     assert "this.identity?.isAdmin !== true" in WORLD
     assert "world-admin-error-arrival" in WORLD_CSS
     assert "prefers-reduced-motion: reduce" in WORLD_CSS
+    assert 'method not in ("GET", "POST", "DELETE")' in ENTRY
+    assert '"DELETE FROM error_log WHERE id=?"' in ENTRY
+    assert "_admin_error_create_bot_task(" in ENTRY
+    assert 'payload["groups"]' in ENTRY
+    assert "world-error-group-table" in WORLD
+    assert "world-error-table-header" in WORLD
+    assert "data-world-admin-error-delete" in WORLD
+    assert "data-world-admin-error-task" in WORLD
+    assert "async deleteAdminError(" in WORLD
+    assert "async createTaskFromAdminError(" in WORLD
+    assert ".world-error-actor-stack" in WORLD_CSS

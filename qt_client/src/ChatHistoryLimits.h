@@ -39,14 +39,26 @@ inline qsizetype entryCost(const QJsonObject &entry)
 // so the newest message always fits and history is never left empty.
 // Returns the ids of the evicted entries so the caller can drop any
 // per-message bookkeeping (sender/conversation/reactions) keyed on them.
-inline QStringList appendBounded(QList<QJsonObject> &history, QJsonObject message)
+//
+// `runningTotal`, when given, holds the channel's current total cost and is
+// updated in place. Without it every append re-derives the total by walking
+// the whole list — and entryCost() materializes each entry's "file"/"text"
+// payload out of QJsonObject's compact storage, so on a busy channel that
+// walk re-decoded up to kMaxCharsPerChannel chars per incoming message and
+// showed up as >500 ms GUI stalls in ServerNode::storeHistory.
+inline QStringList appendBounded(QList<QJsonObject> &history, QJsonObject message,
+                                 qsizetype *runningTotal = nullptr)
 {
     if (entryCost(message) > kMaxCharsPerChannel)
         message.remove(QLatin1String("file"));
     history.append(message);
     qsizetype totalChars = 0;
-    for (const QJsonObject &entry : std::as_const(history))
-        totalChars += entryCost(entry);
+    if (runningTotal) {
+        totalChars = *runningTotal + entryCost(message);
+    } else {
+        for (const QJsonObject &entry : std::as_const(history))
+            totalChars += entryCost(entry);
+    }
     QStringList evicted;
     while (history.size() > 1 && (history.size() > kMaxEntriesPerChannel ||
                                   totalChars > kMaxCharsPerChannel)) {
@@ -56,6 +68,8 @@ inline QStringList appendBounded(QList<QJsonObject> &history, QJsonObject messag
             evicted.append(id);
         history.removeFirst();
     }
+    if (runningTotal)
+        *runningTotal = totalChars;
     return evicted;
 }
 

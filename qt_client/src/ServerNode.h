@@ -62,6 +62,9 @@ public:
 #endif
 
     void sendChat(const QString &channel, const QString &text) override;
+    void sendThreadReply(const QString &channel,
+                         const QString &rootMessageId,
+                         const QString &text) override;
     void setAccountKind(const QString &kind) override;
     void setRoomPassphrase(const QString &passphrase) override;
     void sendBotChat(const QString &channel, const QString &text) override;
@@ -301,6 +304,10 @@ private:
     QSet<QString> m_hiddenChannels;
     QHash<QString, Peer> m_peers;
     QHash<QString, QList<QJsonObject>> m_channelHistory;
+    // Running ChatHistoryLimits::entryCost total per channel, so appendBounded
+    // doesn't re-walk (and re-decode) the whole history on every message.
+    // Kept in lockstep by storeHistory/updateStoredMessage/channel removal.
+    QHash<QString, qsizetype> m_channelHistoryChars;
     QHash<QString, QString> m_messageConversation;
     QHash<QString, QString> m_messageSender;
     // Insertion order of the ids in the two maps above; oldest are dropped

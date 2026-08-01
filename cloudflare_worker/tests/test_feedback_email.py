@@ -26,7 +26,10 @@ FUNCS = {"_send_feedback_emails", "_feedback_email_content", "_account_kind",
 CONSTANTS = [
     node for node in ast.parse(ENTRY_TEXT).body
     if isinstance(node, ast.Assign)
-    and any(getattr(t, "id", "").startswith("FEEDBACK_EMAIL") for t in node.targets)
+    and any(getattr(t, "id", "").startswith("FEEDBACK_EMAIL")
+            # _stamp_account_email bounds the per-account send history.
+            or getattr(t, "id", "") == "ACCOUNT_EMAIL_HISTORY"
+            for t in node.targets)
 ]
 
 

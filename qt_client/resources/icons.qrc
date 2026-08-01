@@ -16,6 +16,7 @@
         <file alias="comment.svg">icons/octicons/comment.svg</file>
         <file alias="copy.svg">icons/octicons/copy.svg</file>
         <file alias="credit-card.svg">icons/octicons/credit-card.svg</file>
+        <file alias="crown.svg">icons/octicons/crown.svg</file>
         <file alias="device-desktop.svg">icons/octicons/device-desktop.svg</file>
         <file alias="diff.svg">icons/octicons/diff.svg</file>
         <file alias="download.svg">icons/octicons/download.svg</file>
@@ -33,6 +34,7 @@
         <file alias="hand.svg">icons/octicons/hand.svg</file>
         <file alias="history.svg">icons/octicons/history.svg</file>
         <file alias="home.svg">icons/octicons/home.svg</file>
+        <file alias="info.svg">icons/octicons/info.svg</file>
         <file alias="issue-opened.svg">icons/octicons/issue-opened.svg</file>
         <file alias="issue-reopened.svg">icons/octicons/issue-reopened.svg</file>
         <file alias="key.svg">icons/octicons/key.svg</file>
@@ -59,6 +61,7 @@
         <file alias="sign-in.svg">icons/octicons/sign-in.svg</file>
         <file alias="sign-out.svg">icons/octicons/sign-out.svg</file>
         <file alias="sort-desc.svg">icons/octicons/sort-desc.svg</file>
+        <file alias="sparkle.svg">icons/octicons/sparkle.svg</file>
         <file alias="star.svg">icons/octicons/star.svg</file>
         <file alias="stop.svg">icons/octicons/stop.svg</file>
         <file alias="sun.svg">icons/octicons/sun.svg</file>
@@ -67,6 +70,7 @@
         <file alias="terminal.svg">icons/octicons/terminal.svg</file>
         <file alias="thumbsup.svg">icons/octicons/thumbsup.svg</file>
         <file alias="trash.svg">icons/octicons/trash.svg</file>
+        <file alias="unlock.svg">icons/octicons/unlock.svg</file>
         <file alias="upload.svg">icons/octicons/upload.svg</file>
         <file alias="workflow.svg">icons/octicons/workflow.svg</file>
         <file alias="x.svg">icons/octicons/x.svg</file>

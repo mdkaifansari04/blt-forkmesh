@@ -54,7 +54,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-col gap-1">
             ${composeIdentityHtml(state.session, "Filing")}
-            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">An eligible online mirror will add signed issues directly to this repository.</span>
           </div>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
@@ -222,9 +222,9 @@
     setHint("Preparing and signing the change set…");
     try {
       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
-      // Submissions land in the maintainer's inbox, not the public mirror, so it
-      // won't be visible there until they drain it - but show it locally, on
-      // top of this session's issue list, so the submitter sees it right away.
+      // The relay wakes eligible online mirrors immediately. Keep a local
+      // optimistic row until the first mirror commits the signed issue and its
+      // durable issue number becomes visible from the repository.
       const pendingItem = {
         number: null,
         localId: `pending-${Date.now().toString(36)}`,
@@ -239,12 +239,6 @@
         pending: true,
       };
       state.issuesView.items = [pendingItem, ...state.issuesView.items];
-      // Issue #379: when the owner files an issue while their source-of-truth
-      // node is offline but a mirror is serving the repo, persist it locally so
-      // it keeps showing up across reloads - fully, not just this session -
-      // until the node comes back online and drains it to the mirror.
-      const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
-      if (ownerOffline) savePendingIssue(repo, pendingItem);
       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
@@ -254,15 +248,13 @@
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
       setHint(
-        ownerOffline
-          ? "Your source-of-truth node is offline, so this issue is held on a mirror and will sync to your node when it comes back online."
-          : "Issue sent to the maintainer's inbox for review. Submit another or go back.",
+        "Issue accepted. The first eligible online mirror will add it directly to the repository.",
         "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Issue delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
           : code === "not_authorized" ? "Only the repository owner or an admin can assign issues to an agent."
@@ -363,7 +355,7 @@
           <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="upload" class="h-4 w-4 text-primary"></i>Import issues from CSV</span>
           <button type="button" data-repo-issue-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to issues</button>
         </div>
-        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is filed as its own signed issue in the maintainer's inbox.</p>
+        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is a signed issue delivered to the first eligible online mirror.</p>
         <div class="flex flex-wrap items-center gap-2">
           <button type="button" data-repo-issue-template class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="download" class="h-3.5 w-3.5"></i>Download template</button>
           <input type="file" data-repo-issue-csv-input accept=".csv,text/csv" class="text-xs text-foreground file:mr-2 file:h-8 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:text-xs file:font-medium file:text-foreground" />
@@ -372,7 +364,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-col gap-1">
             ${composeIdentityHtml(state.session, "Filing")}
-            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Eligible online mirrors add accepted issues directly to the repository.</span>
           </div>
           <button type="submit" data-repo-issue-import-submit disabled class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Import issues</button>
         </div>
@@ -454,7 +446,7 @@
     setHint(
       failed
         ? `Imported ${ok} issue${ok === 1 ? "" : "s"}; ${failed} could not be sent. Go back to review.`
-        : `Imported ${ok} issue${ok === 1 ? "" : "s"} to the maintainer's inbox. Go back to review.`,
+        : `Submitted ${ok} issue${ok === 1 ? "" : "s"} for direct mirror delivery.`,
       failed ? "bad" : "good");
   }
 
@@ -715,6 +707,23 @@
         </span>`;
   }
 
+  // Potentially long lists stay out of the row layout. The chip carries only
+  // the item count; hovering it reveals the complete, one-item-per-line list.
+  // Keeping it focusable gives keyboard users the same native tooltip and an
+  // explicit accessible label without adding a second visual row.
+  function mirrorListChip(label, values) {
+    const list = (Array.isArray(values) ? values : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    if (!list.length) return mirrorChip(label, "", false, "");
+    const tooltip = `${label}:\n${list.map((value) => `\u2022 ${value}`).join("\n")}`;
+    return `
+        <span class="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-mono" tabindex="0" aria-label="${escapeHtml(`${label}: ${list.join(", ")}`)}" title="${escapeHtml(tooltip)}">
+          <span class="text-muted-foreground">${escapeHtml(label)}</span>
+          <span class="text-foreground">${formatCount(list.length)}</span>
+        </span>`;
+  }
+
   // The metadata columns the desktop Mirror nodes panel shows, rendered as chips
   // under each mirror row: commit + sync freshness, on-disk size, and the mirrored
   // issue/commit/branch/pull/discussion/worktree/clone/website/artifact tallies.
@@ -748,7 +757,7 @@
       mirrorChip("Latency", Number.isFinite(Number(mirror.latencyMs)) ? `${Math.max(0, Number(mirror.latencyMs))} ms` : "", false, ""),
       mirrorChip("Region", mirror.region || "", false, ""),
       mirrorChip("Endpoint integrity", mirror.endpointIntegrity || "", mirror.endpointIntegrity && mirror.endpointIntegrity !== "ok", ""),
-      mirrorChip("Capabilities", operations.join(", "), false, ""),
+      mirrorListChip("Capabilities", operations),
       mirrorChip("Size", mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "", false, ""),
       mirrorChip("Issues", mirrorCountText(mirror.issueCount), mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), `Source: ${mirrorCountText(refMirror?.issueCount)}`),
       mirrorChip("Commits", mirrorCountText(mirror.commitCount), mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), `Source: ${mirrorCountText(refMirror?.commitCount)}`),
@@ -770,9 +779,10 @@
     return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
   }
 
-  // The full Mirrors-tab row: a header line (dot, name, source-of-truth / out-of-
-  // sync / integrity badges, version, serve speed, status) over a wrapped strip of
-  // the same metadata columns the desktop Mirror nodes panel shows.
+  // The full Mirrors-tab row stays on one line: identity, state, metadata, and
+  // reachability all share one non-wrapping strip. The surrounding list scrolls
+  // horizontally on narrow screens; unbounded list data is condensed by
+  // mirrorListChip and remains available on hover/focus.
   function renderMirrorTabRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
@@ -808,26 +818,22 @@
         ? "text-amber-500"
         : "text-primary";
     const rowClass = isServing
-      ? "border-t border-border px-4 py-3 text-sm ring-1 ring-inset ring-primary bg-primary/5"
-      : "border-t border-border px-4 py-3 text-sm hover:bg-secondary/40 transition-colors";
+      ? "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm ring-1 ring-inset ring-primary bg-primary/5"
+      : "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm hover:bg-secondary/40 transition-colors";
     return `
         <div class="${rowClass}">
-          <div class="flex items-center gap-3">
-            <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
-            <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-              <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
-              ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
-              ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
-              ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
-              ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
-              ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
-            </div>
-            <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
-              ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
-              ${escapeHtml(mirror.status || "unknown")}
-            </span>
-          </div>
-          <div class="mt-2 flex flex-wrap gap-1.5 pl-7">${mirrorDetailChips(mirror, refMirror)}</div>
+          <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
+          <span class="shrink-0 font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
+          ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
+          ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
+          ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+          ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
+          ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
+          ${mirrorDetailChips(mirror, refMirror)}
+          <span class="ml-auto flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
+            ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
+            ${escapeHtml(mirror.status || "unknown")}
+          </span>
         </div>`;
   }
 
@@ -890,9 +896,9 @@
           (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
           String(a.node || a.owner || a.name || "").localeCompare(String(b.node || b.owner || b.name || "")),
       );
-      tabContainer.innerHTML = ordered
+      tabContainer.innerHTML = `<div class="overflow-x-auto">${ordered
         .map((mirror) => renderMirrorTabRow(mirror, servedBy, refMirror))
-        .join("");
+        .join("")}</div>`;
     }
     renderRepoLiveMirrorList(mirrors, servedBy);
     window.lucide?.createIcons();
