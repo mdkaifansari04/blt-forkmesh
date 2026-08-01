@@ -544,8 +544,8 @@ void MainWindow::loadWorktreesPanel()
     if (repoPath.isEmpty() || !QDir(repoPath).exists(QStringLiteral(".git"))) {
         if (m_worktreesSummary)
             m_worktreesSummary->setText(QStringLiteral("· no local checkout"));
-        if (m_worktreesButton)
-            m_worktreesButton->setText(QStringLiteral("Worktrees"));
+        if (auto *b = dynamic_cast<VerticalIconButton *>(m_worktreesButton))
+            b->setBadgeCount(0);
         return;
     }
 
@@ -821,12 +821,8 @@ void MainWindow::loadWorktreesPanel()
     if (m_worktreesSummary)
         m_worktreesSummary->setText(
             QString::fromUtf8("\xC2\xB7 %1 worktree(s)").arg(wts.size()));
-    if (m_worktreesButton)
-        m_worktreesButton->setText(
-            QStringLiteral("%1 %2")
-                .arg(formatCount(wts.size()))
-                .arg(wts.size() == 1 ? QStringLiteral("worktree")
-                                     : QStringLiteral("worktrees")));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_worktreesButton))
+        b->setBadgeCount(wts.size());
 
     // Re-select the worktree that was selected before the rebuild so its diff and
     // the detail buttons stay visible (e.g. right after "Update from main"). If it
