@@ -2253,6 +2253,14 @@ int main(int argc, char *argv[])
                   !genieButton->toolTip().contains(QStringLiteral("agent"),
                                                    Qt::CaseInsensitive),
               QStringLiteral("the composer task button files a General task"));
+        auto *repoSizeChart = seeded.findChild<QWidget *>(QStringLiteral("repoSizeChart"));
+        auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
+        auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
+        auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
+        check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
+                  repoSizeChart->width() > 34 && repoLinesChart->width() > 34 &&
+                  repoFilesChart->width() > 34 && ratchet->isCheckable(),
+              QStringLiteral("repository trends and Ratchet Mode live in the top bar"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.

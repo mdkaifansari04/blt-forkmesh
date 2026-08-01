@@ -165,6 +165,7 @@ class QImage;
 class QProgressBar;
 class QPropertyAnimation;
 class QPushButton;
+class QToolButton;
 class QScrollArea;
 class QSpinBox;
 class QStackedWidget;
@@ -1185,6 +1186,8 @@ private:
     // the path to the user check for that.
     static QString stallLogPath();
     void updateFooterDiagnostics();
+    void refreshRepositoryStats();
+    void toggleRepositoryRatchet(bool enabled);
     void onUiStall(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
     // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
     // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
@@ -5255,6 +5258,11 @@ private:
     // QWidget* and poked via static_cast since ResourceSparkline is private to
     // MainWindowChat.cpp.
     QWidget *m_cpuChart = nullptr;
+    QWidget *m_repoSizeChart = nullptr;
+    QWidget *m_repoLinesChart = nullptr;
+    QWidget *m_repoFilesChart = nullptr;
+    QToolButton *m_repoRatchetButton = nullptr;
+    qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
     QWidget *m_diskChart = nullptr;
     StallWatchdog *m_stallWatchdog = nullptr;

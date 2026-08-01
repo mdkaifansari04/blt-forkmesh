@@ -7,6 +7,7 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "RepoStatsStore.h"
 #include "KebabHeaderView.h"
 #include "PacmanProgress.h"
 
@@ -1554,6 +1555,11 @@ bool MainWindow::performScmCommit()
             QMessageBox::warning(this, "Commit", err.isEmpty() ? "git add failed." : err);
             return false;
         }
+    }
+    QString ratchetReason;
+    if (!RepoStatsStore::stagedCommitAllowed(dir, &ratchetReason)) {
+        QMessageBox::warning(this, QStringLiteral("Ratchet Mode"), ratchetReason);
+        return false;
     }
     QString err;
     if (!runGitCapture(dir, {"commit", "-m", msg}, nullptr, &err)) {
