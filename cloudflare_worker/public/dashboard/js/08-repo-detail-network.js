@@ -545,14 +545,15 @@
   }
 
   // Opening a repo from any list/search control is a real page navigation now
-  // (repo pages are their own documents). Prefer the canonical origin's clean
-  // URL when the catalog already resolved the key (alias groups), falling back
-  // to the raw owner/name path — the repo page resolves it again on boot.
+  // (repo pages are their own documents). Prefer the organization address the
+  // list already displays when the catalog resolved the key (alias groups),
+  // falling back to the raw owner/name path — the repo page resolves it again
+  // on boot.
   function openRepoPage(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return;
     const repo = findRepository(wanted);
-    const url = repo ? repoPathUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
+    const url = repo ? repoLinkUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
     closeMobileDrawers();
     location.assign(url);
   }
@@ -2051,8 +2052,9 @@
         "[data-repo-issue-mcp-prompt]",
       );
       if (issueMcpPromptButton) {
-        // Shift-click re-asks for the connector token, so a rotated or revoked
-        // one can be replaced without clearing site storage by hand.
+        // A plain click copies straight away with a generated connector token.
+        // Shift-click opens the paste box instead, so a node that already
+        // published its own connector can hand over that token by hand.
         void copyIssueMcpPrompt(issueMcpPromptButton, {
           replaceToken: event.shiftKey === true,
         });
