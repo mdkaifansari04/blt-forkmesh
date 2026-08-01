@@ -445,7 +445,7 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
-      <a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-start gap-3 text-left">
+      <a href="${escapeHtml(groupLinkUrl(group))}" class="flex min-w-0 items-start gap-3 text-left">
         ${nativeRepositoryLogoMarkup(repo, "h-12 w-12")}
         <span class="block min-w-0 flex-1">
         <span class="flex min-w-0 flex-wrap items-center gap-2">
@@ -571,7 +571,7 @@
           // organization does not come back a second time under the node that
           // publishes it.
           key: `${groupDisplayOwner(group)}/${repo.name || ""}`,
-          href: repoPathUrl(repo),
+          href: groupLinkUrl(group),
           organization: false,
         };
       }),
@@ -611,7 +611,7 @@
         })),
       ...groupRepositories(state.repositories || []).map((group) => {
         const repo = sourceOfTruth(group);
-        return { repo, href: repoPathUrl(repo), organization: false };
+        return { repo, href: groupLinkUrl(group), organization: false };
       }),
     ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
       .filter((entry, index, values) =>
@@ -668,7 +668,7 @@
           ${nativeRepositoryLogoMarkup(repo)}
           <div class="min-w-0 flex-1">
             <p class="text-sm text-muted-foreground">
-              <a href="${escapeHtml(repoPathUrl(repo))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
+              <a href="${escapeHtml(groupLinkUrl(group))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
               ${live ? "is available on the mesh" : "is waiting for a live host"}
             </p>
             <p class="mt-2 line-clamp-2 text-sm leading-5 text-muted-foreground">${escapeHtml(description)}</p>

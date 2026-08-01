@@ -47,4 +47,15 @@ RefreshOutcome refreshManagedCheckoutFromUpstream(
     const QString &checkoutPath, const QString &upstreamUrl,
     const QStringList &forcedBranches = {QStringLiteral("forkmesh/pulls")});
 
+// The strictly-additive variant for a SOURCE-OF-TRUTH working copy converging
+// on submissions an online mirror merged (and drained) while this node was
+// offline. Differences from the managed-checkout refresh: the user's remote
+// configuration is never touched (one-shot fetch by URL into a scratch
+// remote-tracking namespace), nothing is ever pruned, and no branch is force
+// tracked — every local ref moves only by fast-forward through a clean
+// worktree, so local-only commits always survive and supersede the mesh on
+// this node's next publish.
+RefreshOutcome convergeSourceCheckoutFromMesh(const QString &checkoutPath,
+                                              const QString &meshUrl);
+
 } // namespace forkmesh::upstream

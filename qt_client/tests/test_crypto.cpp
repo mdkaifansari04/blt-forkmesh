@@ -32,6 +32,7 @@
 #include "../src/RoomCrypto.h"
 #include "../src/StrictGitReader.h"
 #include "../src/SystemStats.h"
+#include "../src/UsageLimitCalendar.h"
 
 #include <QByteArray>
 #include <QCoreApplication>
@@ -356,6 +357,40 @@ int main(int argc, char *argv[])
         const QString linked = ReferenceLinks::linkifyMarkdownReferences(input);
         check(linked == input,
               "reference linker skips existing links, URLs, inline code, and code blocks");
+    }
+
+    {
+        const qint64 resetMs = QDateTime::fromString(
+                                   QStringLiteral("2026-08-01T12:30:00Z"),
+                                   Qt::ISODate)
+                                   .toMSecsSinceEpoch();
+        const QString calendar = UsageLimitCalendar::eventText(
+            QStringLiteral("claude"), QStringLiteral("5h"),
+            QStringLiteral("Claude Code"), QStringLiteral("5-hour"), resetMs,
+            resetMs - 60 * 1000);
+        check(calendar.contains(QStringLiteral("BEGIN:VCALENDAR\r\n")) &&
+                  calendar.contains(QStringLiteral("METHOD:PUBLISH\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "UID:forkmesh-usage-claude-5h-1785587400000@local\r\n")) &&
+                  calendar.contains(QStringLiteral("DTSTART:20260801T123000Z\r\n")) &&
+                  calendar.contains(QStringLiteral("TRIGGER:PT0M\r\n")) &&
+                  calendar.contains(QStringLiteral(
+                      "SUMMARY:ForkMesh: Claude Code usage is ready\r\n")),
+              "usage-limit calendar export is a timed iCalendar event with an alarm");
+        check(UsageLimitCalendar::eventText(
+                  QStringLiteral("claude"), QStringLiteral("5h"),
+                  QStringLiteral("Claude Code"), QStringLiteral("5-hour"), 0)
+                  .isEmpty(),
+              "usage-limit calendar export rejects a missing reset time");
+
+        const QString path = UsageLimitCalendar::writeEvent(
+            QStringLiteral("codex"), QStringLiteral("weekly"),
+            QStringLiteral("Codex"), QStringLiteral("weekly"), resetMs);
+        QFile file(path);
+        check(!path.isEmpty() && file.open(QIODevice::ReadOnly) &&
+                  QString::fromUtf8(file.readAll()).contains(
+                      QStringLiteral("ForkMesh: Codex usage is ready")),
+              "usage-limit calendar event is written atomically under app data");
     }
 
     {
@@ -6621,6 +6656,16 @@ int main(int argc, char *argv[])
               "nothing is pruned under the limit, and keep=0 still spares the "
               "newest snapshot");
 
+        // The hourly toggle's unset-default follows the Cloudflare API token:
+        // only a control node backs itself up without being asked, because
+        // every other install (desktop or VPS) would rather not spend a day of
+        // ~1GB tarballs it never opted into.
+        check(forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
+                  !forkmesh::autoBackupDefault(QString()) &&
+                  !forkmesh::autoBackupDefault(QStringLiteral("   ")),
+              "hourly backups default on only for control nodes, and a blank "
+              "token is not one");
+
         const QDateTime now =
             QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
                                   Qt::ISODate);
@@ -6869,6 +6914,20 @@ int main(int argc, char *argv[])
                       scan.unreadableSample.first().endsWith(
                           QStringLiteral("/locked")),
                   "an unlistable directory is reported, not silently dropped");
+            // What decides whether selecting a folder asks for the root password
+            // before scanning it at all (adhoc #112).
+            check(scanNeedsElevation(tree.path(), {}),
+                  "a folder holding an unlistable directory wants root up front");
+            check(!scanNeedsElevation(
+                      tree.path(),
+                      {root.absoluteFilePath(QStringLiteral("locked"))}),
+                  "a folder whose only locked child is pruned does not");
+            check(!scanNeedsElevation(
+                      root.absoluteFilePath(QStringLiteral("keep")), {}),
+                  "a fully readable folder never raises a password prompt");
+        } else {
+            check(!scanNeedsElevation(tree.path(), {}),
+                  "already running as root, there is nothing left to ask for");
         }
         // Restore, or QTemporaryDir cannot clean up after itself.
         QFile::setPermissions(root.absoluteFilePath(QStringLiteral("locked")),
@@ -6896,6 +6955,51 @@ int main(int argc, char *argv[])
         check(!decodeScanResult(QByteArray("not a scan"), &decoded) &&
                   !decodeScanResult(QByteArray(), &decoded),
               "a truncated or foreign payload is never read as a tree");
+
+        // Live progress (adhoc #112): the walk names the folder it is inside so
+        // the tab can show it, and the same updates survive the trip out of the
+        // elevated helper on stderr.
+        QStringList visited;
+        qint64 lastBytes = -1;
+        scanDirectorySizes(tree.path(), options,
+                           [&](const QString &current, qint64 bytes, int) {
+                               visited.append(current);
+                               lastBytes = bytes;
+                           });
+        check(visited.contains(QDir::cleanPath(tree.path())) && lastBytes >= 0,
+              "a scan reports the folder it is walking, root first");
+
+        QString progressPath;
+        qint64 progressBytes = 0;
+        int progressFiles = 0;
+        // A newline in a filename would otherwise split one update into two.
+        const QString awkward =
+            tree.path() + QStringLiteral("/od d\nname 100%");
+        check(decodeScanProgress(encodeScanProgress(awkward, 4096, 7),
+                                 &progressPath, &progressBytes,
+                                 &progressFiles) &&
+                  progressPath == awkward && progressBytes == 4096 &&
+                  progressFiles == 7,
+              "a progress line round-trips a path with a newline in it");
+        check(encodeScanProgress(awkward, 4096, 7).count('\n') == 1,
+              "one progress update is exactly one line");
+        check(!decodeScanProgress(QByteArray("sudo: a password is required"),
+                                  &progressPath, &progressBytes,
+                                  &progressFiles) &&
+                  !decodeScanProgress(QByteArray("FMSZ-PROGRESS 12"),
+                                      &progressPath, &progressBytes,
+                                      &progressFiles),
+              "sudo's own chatter and a truncated line are not progress");
+
+        // Stop button: a canceled poll must unwind before the walk descends
+        // into anything, rather than finishing the tree and throwing it away.
+        int cancelChecks = 0;
+        const DirectorySizeScanResult stopped = scanDirectorySizes(
+            tree.path(), options, {},
+            [&] { ++cancelChecks; return true; });
+        check(stopped.root.size == 0 && stopped.root.fileCount == 0 &&
+                  stopped.root.children.isEmpty() && cancelChecks > 0,
+              "a scan canceled up front produces an empty tree, not a partial one");
     }
 
 #if defined(Q_OS_LINUX)

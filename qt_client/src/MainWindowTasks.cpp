@@ -454,8 +454,22 @@ void MainWindow::requestOrganizationTasks(
         const QString proof = organizationTaskProof(method, path, &resource);
         if (proof.isEmpty() ||
             !authenticateOrgTaskRequest(url, request, proof, resource)) {
-            handler(false, {}, QStringLiteral(
-                "Sign in to an organization account to use private tasks."));
+            // Distinguish "not signed in at all" from "signed in with this
+            // device's key, but this change (delete, edit, QA, another
+            // member's timer, ...) deliberately needs a real session." The
+            // first message told an operator who was plainly using their own
+            // account to "sign in" to it, which reads as a no-op bug when the
+            // actual, actionable step is a password login (adhoc #108).
+            handler(false, {},
+                    m_accountAuthenticated
+                        ? QString::fromUtf8(
+                              "This change needs a password sign-in on this "
+                              "device, not just its saved account key \xE2"
+                              "\x80\x94 use Settings \xE2\x86\x92 \"Log in to "
+                              "a user account\", then try again.")
+                        : QStringLiteral(
+                              "Sign in to an organization account to use "
+                              "private tasks."));
             return;
         }
         keySigned = true;
@@ -1008,6 +1022,56 @@ void MainWindow::createOrganizationTask()
         });
 }
 
+// File the prompt-bar text as an ordinary shared task. It is deliberately
+// unassigned and routed to General: pressing "task" must not launch a genie (or
+// any other agent) as a side effect. An operator can assign/start it from the
+// Tasks page when it is ready.
+void MainWindow::createQuickAddOrganizationTask()
+{
+    if (!m_issueQuickAdd)
+        return;
+    const QString prompt = m_issueQuickAdd->toPlainText().trimmed();
+    if (prompt.isEmpty()) {
+        flashMessage(QStringLiteral("Type a task first."), true);
+        m_issueQuickAdd->setFocus();
+        return;
+    }
+
+    QString title = prompt.section(QLatin1Char('\n'), 0, 0).simplified();
+    if (title.size() > 160)
+        title = title.left(159).trimmed() + QString::fromUtf8("\xE2\x80\xA6");
+    QString repository;
+    const int repoIndex = issuesRepoIndex();
+    if (repoIndex >= 0 && repoIndex < m_repositories.size()) {
+        const RepositoryRecord &repo = m_repositories.at(repoIndex);
+        repository = repo.owner + QLatin1Char('/') + repo.name;
+    }
+    const QJsonObject body{
+        {QStringLiteral("title"), title},
+        {QStringLiteral("details"), prompt},
+        {QStringLiteral("department"), QStringLiteral("general")},
+        {QStringLiteral("destination"), QStringLiteral("department")},
+        {QStringLiteral("assigneeKind"), QStringLiteral("unassigned")},
+        {QStringLiteral("repository"), repository},
+        {QStringLiteral("priority"), 50},
+    };
+    requestOrganizationTasks(
+        QByteArrayLiteral("POST"), QStringLiteral("/api/tasks"), body,
+        [this, prompt](bool ok, const QJsonObject &, const QString &error) {
+            if (!ok) {
+                flashMessage(QStringLiteral("Task creation failed: %1").arg(error),
+                             true);
+                return;
+            }
+            recordQuickAddHistory(prompt);
+            m_issueQuickAdd->clear();
+            clearQuickAddImages();
+            showSection(kOrganizationTasksSectionIndex);
+            refreshOrganizationTasks();
+            flashMessage(QStringLiteral("Task added to General."));
+        });
+}
+
 void MainWindow::createOrganizationTaskFollowUp()
 {
     const QJsonObject parent = selectedOrganizationTask(
@@ -1271,7 +1335,14 @@ void MainWindow::deleteOrganizationTask()
             m_organizationTasksStatus->setText(
                 ok ? QStringLiteral("Task deleted.")
                    : QStringLiteral("Task deletion failed: %1").arg(error));
-            if (ok)
+            if (ok) {
                 refreshOrganizationTasks();
+                return;
+            }
+            // A failed delete left the task sitting right where it was, with
+            // only a status label above the table to explain why — easy to
+            // miss, which read as "delete did nothing" (adhoc #108). Put the
+            // reason somewhere the operator cannot scroll past.
+            QMessageBox::warning(this, QStringLiteral("Delete task"), error);
         });
 }

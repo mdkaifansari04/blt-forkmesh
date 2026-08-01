@@ -74,6 +74,7 @@ struct MirrorSelfSnapshot {
 };
 
 #include <QElapsedTimer>
+#include <QFutureWatcher>
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -111,11 +112,15 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
+class NodeDotMatrix;
+class RelaySpeedDot;
 class ActionRunStrip;
 }
 using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
+using forkmesh::ui::NodeDotMatrix;
+using forkmesh::ui::RelaySpeedDot;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -139,6 +144,7 @@ class QComboBox;
 class QCompleter;
 class QAbstractItemView;
 class QDateEdit;
+class QDialog;
 class QStringListModel;
 class QGraphicsOpacityEffect;
 class QFrame;
@@ -159,6 +165,7 @@ class QImage;
 class QProgressBar;
 class QPropertyAnimation;
 class QPushButton;
+class QToolButton;
 class QScrollArea;
 class QSpinBox;
 class QStackedWidget;
@@ -392,10 +399,19 @@ public:
                                    const QStringList &nodes);
     void testShowNodesSection();
     QStringList testNodeDirectoryNames() const;
+    // The chat header's users popup: rebuild it for `conversation` and read back
+    // the names it lists (adhoc #129).
+    QStringList testChatMemberNames(const QString &conversation);
     void testRenderNetworkRepos(const QJsonArray &repos);
     QStringList testNetworkRepoNames() const;
     QString testNetworkRepoActionText(int row) const;
     QString testNetworkRepoMirrorHeader() const;
+    // Every Repos column label, and one row's value under a named column, so a
+    // test can pin the full catalog field set the page shows (adhoc #118).
+    QStringList testNetworkRepoColumns() const;
+    QString testNetworkRepoCellText(int row, const QString &header) const;
+    // Badge riding the activity rail's Repos icon.
+    int testReposNavBadgeCount() const;
     void testRebuildNetworkLogView() { rebuildNetworkLogView(); }
     // Quick log filter (the chip row above the log): the chips currently offered,
     // and clicking one by category ("" = All).
@@ -442,15 +458,29 @@ public:
             m_pendingSilentAuth = false;
             m_pendingRestoreRepoIndex = -1;
             m_deferredStartupRun = true;
+            m_startupAuthResolved = true;
         }
+    }
+    void testMarkDeferredStartupRunning()
+    {
+        m_deferredStartupRun = true;
+        m_startupAuthResolved = false;
     }
     void testRunDeferredStartupNow() { runDeferredStartup(); }
     void testStartSession() { startSession(); }
     void testEnablePaidMirroring() { enablePaidMirroring(); }
     int testAccountFlowCalls() const { return m_testEnsureNodeAccountCalls; }
     int testStackIndex() const;
+    // adhoc #115: state of the top-bar "Log in / Sign up" pill. Reported from
+    // isHidden() rather than isVisible() so it means "this widget wants to show"
+    // even in a test window that is never actually shown.
+    bool testSignInButtonVisible() const;
+    void testRefreshSignInButton() { updateSignInButton(); }
     QString testUserName() const { return m_userName; }
     QString testAccountName() const { return m_accountName; }
+    bool testChatIdentityIsGuest() const { return chatIdentityIsGuest(); }
+    QString testChatDisplayName() const { return chatDisplayName(); }
+    QString testMachineNodeName() const { return machineNodeName(); }
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
@@ -482,6 +512,14 @@ public:
     // The branch the open repo treats as its default/merge base, so a test can
     // prove it stays main even when the working tree is parked on a feature branch.
     Q_INVOKABLE QString testRepoDefaultBranch() const;
+    // The push-driven repo-detail refresh, so a test can land a repo's refs
+    // *after* the detail view opened — a fresh install's first clone — and prove
+    // the status strip and the tab counts catch up (adhoc #116).
+    Q_INVOKABLE void testRefreshOpenRepoDetail() { refreshOpenRepoDetail(); }
+    // Text of the "Actions (N)" tab badge, empty when the tab row isn't built.
+    Q_INVOKABLE QString testRepoActionsTabText() const;
+    // Text of the Code toolbar's "N branches" toggle, empty when not built.
+    Q_INVOKABLE QString testRepoBranchesButtonText() const;
     // Switch the open repo-detail view to its Issues sub-tab (stack index 2) so
     // the issues toolbar gets real geometry. Returns false if not built yet.
     Q_INVOKABLE bool testShowRepoIssuesTab();
@@ -555,7 +593,12 @@ public:
     // issue #272: open the Worktrees tab on a branch, rebuild the panel (as an
     // "Update from main" merge does), and read back which worktree stays selected
     // so a test can prove the detail pane doesn't go blank after a refresh.
-    void testSwitchToWorktree(const QString &branch) { switchToWorktree(branch); }
+    void testSwitchToWorktree(const QString &branch)
+    {
+        showOverviewWorktrees();
+        loadWorktreesPanel();
+        selectWorktreeRow(branch);
+    }
     void testReloadWorktreesPanel() { loadWorktreesPanel(); }
     QString testSelectedWorktreeBranch() const { return m_worktreeSelectedBranch; }
     // Detail-pane branch label text, so a test can prove the worktree detail
@@ -621,31 +664,100 @@ public:
     // Rebuilds off-thread now (adhoc #420), so this pumps until the rows land.
     void testReloadBranchesPanel();
     QString testBranchWorktreePath(const QString &branch) const;
+    // Compact Branch-cell data as
+    // files|added|removed|worktree|conflict|updated|behind|ahead.
+    QString testBranchVisualBadges(const QString &branch) const;
+    bool testBranchesUseCompactColumns() const;
+    bool testBranchesKeepFlexibleNameColumn() const;
+    bool testBranchDelegatePaintsSingleTextLayer(const QString &branch) const;
+    bool testBranchSelectedTextColorIsReadable(const QString &branch) const;
     // Inject an agent session so a test can prove the branches list surfaces the
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)
     {
+        for (AgentSession &existing : m_agentSessions) {
+            if (existing.id == session.id) {
+                existing = session;
+                return;
+            }
+        }
         m_agentSessions.append(session);
     }
+    // Take the nav strip's route to the Agents tab, so a test can read that
+    // lazily-built list back the way a user reaches it (adhoc #119).
+    void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
-    // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
-    // the branches list names the issue/agent a branch is attached to (adhoc #191).
-    QString testBranchAttachmentText(const QString &branch) const;
-    // Whether the "Issue / Agent" cell (column 4) for `branch` carries an icon, so
-    // a test can prove the branches list stamps the agent's status icon on a branch
-    // an agent is working (adhoc #251).
+    // Whether the leading Branch cell for `branch` carries an icon, so a test can
+    // prove the list stamps agent status at the row's left edge (adhoc #251).
     bool testBranchAttachmentHasIcon(const QString &branch) const;
-    // Branch names (column 0) in row order, so a test can prove the default branch
+    // Branch names in row order, so a test can prove the default branch
     // is pinned to the top of the list regardless of commit recency (adhoc #185).
     QStringList testBranchRowOrder() const;
+    int testBranchesTabIndex() const { return m_branchesTabIndex; }
+    int testOverviewBodyPage() const;
+    bool testClickBranchRowInOverview(const QString &branch);
+    bool testBranchesPanelOwnsDiffView() const;
+    // True only when Git owns the full repository workspace: its rail entry is
+    // selected, every Code-only chrome band is hidden, and no registered diff
+    // viewer outside the Git stack is visible.
+    bool testGitWorkspaceIsExclusive() const;
     // Follow a branch link and read back the branch the table landed on right
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
     QString testSwitchToBranchImmediateSelection(const QString &branch);
-    // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
-    // session the app navigated to (m_selectedAgentSessionId), so a test can prove
-    // clicking the cell jumps to that branch's agent (adhoc #258).
-    int testClickBranchAgentCell(const QString &branch);
+    // Take the worktree route and expose the branch the Git view is browsing,
+    // proving worktrees no longer open a second diff surface.
+    QString testSwitchToWorktreeGitBranch(const QString &branch)
+    {
+        switchToWorktree(branch);
+        return m_repoBranch;
+    }
+    // The branch whose history the Git view's graph is browsing (empty = HEAD),
+    // so a test can prove a branch link lands the graph on that branch.
+    QString testBrowsedBranch() const { return m_repoBranch; }
+    // Take the agent detail page's "Branch" route, so a test can prove it binds
+    // the Git view to that session's own repository before opening its branch
+    // there — the sessions list is global (adhoc #131).
+    void testSwitchToAgentBranch(int sessionId) { switchToAgentBranch(sessionId); }
+    // Which page the Git view's right pane shows (kCommitWorkspace*Page), and
+    // the branch the range pane is reviewing — so a test can prove a branch link
+    // lands on the range review pane in the Git view (adhoc #107).
+    int testCommitWorkspacePage() const;
+    QString testBranchDiffBranch() const { return m_branchDiffBranch; }
+    QStringList testBranchDiffFiles() const { return m_branchDiffFilePaths; }
+    // Paths rendered in the universal CHANGES tree, so branch tests can prove
+    // the range's files appear without swapping to a second navigator.
+    QStringList testSourceControlPaths() const;
+    // Select a CHANGES row and report whether the right-hand diff navigation
+    // targeted that exact file.
+    bool testClickSourceControlPath(const QString &path);
+    // Which page each half of the Git view's left column shows. Both stay on the
+    // universal source-control panel and commit graph for every diff kind.
+    int testGitFilesSlotPage() const;
+    int testGitHistorySlotPage() const;
+    // The base end of the "<branch> \xE2\x86\x92 <base>" compare indicator beside
+    // the graph's branch button, or empty while it's hidden — so a test can
+    // prove browsing a branch shows what it is being compared against, and that
+    // the base is switchable (adhoc #16).
+    QString testCompareIndicatorText() const;
+    // Point the compare indicator's base dropdown at another branch, so a test
+    // can prove the range re-diffs against it (adhoc #16).
+    void testSetCompareBase(const QString &base);
+    // Click the range pane's close button, so a test can prove the left column
+    // goes back to the working tree when the review is dismissed (adhoc #110).
+    void testCloseBranchRange();
+    // Click the activity rail's Git entry, so a test can prove it always lands
+    // on the default branch's working-tree view.
+    void testClickRailGitButton();
+    int testGitPendingSyncCount() const;
+    void testNavigateBack() { navigateBack(); }
+    void testNavigateForward() { navigateForward(); }
+    QString testNavBackToolTip() const;
+    QString testNavForwardToolTip() const;
+    // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
+    // all" button once it's live, so a test can prove merging from the review
+    // closes it (adhoc #119). False when the button never became clickable.
+    bool testClickBranchReviewMerge(bool deleteAll);
     // issue #291: when an agent task's worktree/PR lands in the base branch the
     // session is flagged "merged" on its Status column and detail page. Drive the
     // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
@@ -656,9 +768,12 @@ public:
         return markAgentSessionsMerged(0, branch);
     }
     QString testAgentStatusCellText(int sessionId) const;
+    QString testAgentDetailTitleText() const;
+    bool testAgentDetailTitleWraps() const;
+    QString testRenderAgentDetailTitle(const QString &text);
     // adhoc #403: the badge data the Status cell hands its branch chip, read back
-    // as "files|dirty|worktree", so a test can prove the chip's files-changed /
-    // uncommitted / worktree-present markers are fed from the session's diff stat.
+    // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
+    // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
     bool testAgentSessionMerged(int sessionId) const;
 #endif
@@ -720,7 +835,8 @@ protected:
     bool handleFramelessResizeEvent(QObject *obj, QEvent *event);
     void updateFramelessResizeCursor(Qt::Edges edges);
     // Right-click on selected text anywhere (transcript, diff, README, logs):
-    // shows the widget's normal context menu plus a "Send to Prompt" action.
+    // shows the widget's normal context menu plus "Send to Prompt" and
+    // "Search Codebase" actions.
     // Returns true (event consumed) only when it took over the menu.
     bool maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce);
     // Appends text to whichever prompt box is the relevant target: the
@@ -747,6 +863,10 @@ private:
     void runDeferredStartup();
     bool m_deferredStartupStarted = false; // showEvent armed the triggers
     bool m_deferredStartupRun = false;     // runDeferredStartup already ran
+    // The top-bar sign-in pill stays hidden until the launch-time silent-auth
+    // lookup has completed. m_deferredStartupRun flips before that lookup while
+    // restoring the last view, so it cannot safely gate the pill by itself.
+    bool m_startupAuthResolved = false;
     bool m_framelessResizeCursorActive = false;
     int m_pendingRestoreRepoIndex = -1;    // last repo to reopen, or -1
     bool m_pendingSilentAuth = false;      // attempt auto-connect on first frame
@@ -868,6 +988,16 @@ private:
     bool isOfficeConversation(const QString &conversation) const;
     void showAdminVerifyDialog();
     bool adminVerifyEmail(const QString &target);
+    // Pending federated-instance join requests (adhoc #97): a freshly launched
+    // instance pings the main relay asking to join; for admins the pending
+    // count rides the signed heartbeat reply, a red dot over the top-left
+    // relay favicon flags it, and the Approve button beside it opens the link
+    // dialog. Approving marks the relay approved upstream, which adds it to
+    // /api/world/instances — the World then runs its firework show for the
+    // newly joined instance.
+    void setPendingRelayJoins(int count);
+    void showRelayJoinApprovalDialog();
+    bool adminRelayApprove(const QString &pubkey, const QString &action);
     void verifyWallet();
     QUrl accountsApiUrl(const QString &leaf) const;
     QJsonObject postAccountSync(const QString &leaf, const QJsonObject &body,
@@ -970,6 +1100,12 @@ private:
     QString topBarUserName() const; // linked user/account name shown in the top bar
     QString nodeOwnerDisplayName() const; // user account that owns this node, if known
     QString chatDisplayName() const; // user identity used for chat sender names
+    // A first-run desktop whose account name is still the auto-generated node
+    // name (and that no user account owns) has no username yet: the person
+    // chats as an anonymous guest, the same way the website treats visitors
+    // (adhoc #113). Headless nodes are fleet machines and never guests.
+    bool chatIdentityIsGuest() const;
+    QString guestChatName() const;   // stable "Guest ####" for this install
     QString machineNodeName() const; // THIS machine's node name (never the username)
     void saveMachineNodeName(const QString &name); // persist + re-advertise
     // Persist the extra Actions `runs-on:` labels this machine answers to,
@@ -996,10 +1132,14 @@ private:
     void queryNavSolanaUsdPrice(const QString &addr, qint64 lamports);
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
-    // Keep the open repo's sync-derived indicators in step (adhoc #374 removed the
-    // floating "Sync" pill that used to hover above the Code tab; the activity
-    // rail's Git glyph and the commit list's "waiting to sync" markers remain).
+    void updateReposNavBadge();    // rail badge = repos the Repos page lists
+    // Keep the open repo's sync-derived indicators in step. The Sync action lives
+    // inside Source Control's Outgoing Changes group (never floating above Code),
+    // alongside the activity-rail spinner and commit pending-sync markers.
     void refreshRepoSyncIndicators();
+    // Source-control's compact Outgoing Changes group. It counts commits ahead
+    // of the served mirror/upstream and drives the one-click safe publish path.
+    void refreshSourceControlOutgoing();
     void pushCurrentRepoUpstream();
     // Launch the async `git push` for a repo whose secret scan has completed and
     // been approved (see pushCurrentRepoUpstream). The repo must already be marked
@@ -1095,6 +1235,8 @@ private:
     // the path to the user check for that.
     static QString stallLogPath();
     void updateFooterDiagnostics();
+    void refreshRepositoryStats();
+    void toggleRepositoryRatchet(bool enabled);
     void onUiStall(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
     // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
     // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
@@ -1197,6 +1339,7 @@ private:
     void renderOrganizationTaskDetail();
     void updateOrganizationTaskActions();
     void createOrganizationTask();
+    void createQuickAddOrganizationTask();
     void createOrganizationTaskFollowUp();
     void refreshOrganizationTaskQueue();
     void moveQueuedAgentItemToTasks();
@@ -1281,6 +1424,9 @@ private:
     QWidget *buildNetworkReposSection();
     void refreshNetworkReposPage();
     void renderNetworkRepos(const QJsonArray &repos);
+    // Fills a Repos row's catalog-data columns (everything the relay publishes
+    // about the repository except its description).
+    void fillNetworkRepoDataCells(int row, const QJsonObject &repo);
     void fetchNetworkRepoMirrors(const QString &owner, const QString &name,
                                  int row, int generation);
     int findNetworkRepoIndex(const QString &owner, const QString &name,
@@ -1313,6 +1459,14 @@ private:
         QString *error = nullptr, bool restartRunningGateway = false);
     void startDirectMirrorServices();
     void stopDirectMirrorServices();
+    // Startup auto-start for provisioned direct HTTPS mirrors (gated by
+    // control/autoStartMirrorServices, default on): re-establishes the
+    // gateway + Tunnel + registration after a restart without anyone
+    // clicking "Start mirror services" — a headless VPS has nobody to click.
+    void maybeAutoStartDirectMirrorServices();
+    // Arms the 5-minute health/registration recheck once; normally created
+    // with the Control Node page, which a headless node never builds.
+    void ensureDirectMirrorRegistrationTimer(QObject *parent);
     void registerDirectMirrorEndpoint();
     void checkDirectMirrorGatewayHealth();
     void appendControlNodeOutput(const QString &text);
@@ -1324,6 +1478,28 @@ private:
     void appendSiteDeployOutput(const QString &text);
     void connectToDeployedRelay(const QString &hostname);
     void deploySavedHostsFromControl();
+    // API token tab (adhoc #108): check a Cloudflare token against the exact
+    // permissions the deploy path needs, and mint a correctly scoped
+    // replacement into this device's variables and cloudflare_worker/
+    // .env.production. Token values live in the password edit, the in-memory
+    // redaction copy and those two stores only.
+    QWidget *buildCloudflareTokenCard();
+    QString resolvedCloudflareApiToken() const;
+    void testCloudflareApiToken();
+    void checkCloudflareTokenPolicies(const QString &token,
+                                      const QString &tokenId);
+    void resolveCloudflareTokenTopology(const QString &token);
+    void runCloudflareTokenProbe(const QString &token, int index);
+    void renderCloudflareTokenReport();
+    void setCloudflareTokenBusy(bool busy);
+    void endCloudflareTokenRun();
+    void appendCloudflareTokenOutput(const QString &text);
+    void generateCloudflareApiToken();
+    void adoptRotatedCloudflareToken(const QString &token);
+    // Persist a validated Cloudflare token in both credential stores used by
+    // the Qt app and deployment scripts.
+    QStringList rememberCloudflareApiToken(const QString &token,
+                                           QString *error = nullptr);
     // First-instance-owner community reward-pool signer. The Solana private key
     // is imported into an encrypted local vault and never leaves this desktop;
     // the Worker only authors public intents and records public reconciliation.
@@ -1517,9 +1693,19 @@ private:
     // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
     // ForkMesh-managed SSH key, boot the instance, then hand off to the normal
     // runHostInstall flow which installs ForkMesh and auto-links the node to
-    // this account. The API key lives in memory only for the duration of the
-    // run; it is never written to QSettings or argv.
+    // this account. The API key never travels in argv; once Vultr accepts it,
+    // rememberVultrApiKey stores it so no later run has to ask for it again.
     void createVultrMirrorFromForm();
+    // Persist a Vultr API key Vultr itself has just accepted, in the two places
+    // this app reads provisioning credentials from: the canonical
+    // VULTR_API_KEY device variable (Settings > Variables / Secrets, injected
+    // into every action run) and cloudflare_worker/.env.production beside the
+    // Cloudflare deploy credentials. Returns where it was written — empty when
+    // the key is unusable or already stored everywhere — and reports a failed
+    // file write through *error without undoing the variable that succeeded
+    // (adhoc #127).
+    QStringList rememberVultrApiKey(const QString &apiKey,
+                                    QString *error = nullptr);
     void vultrApiCall(const QString &apiKey, const QString &path,
                       const QByteArray &method, const QJsonObject &body,
                       std::function<void(QJsonObject, QString)> onDone);
@@ -1690,7 +1876,11 @@ private:
     // sizes. refreshSizeMapTab scans on a worker thread; force=false is the
     // lazy tab-click path that reuses the last scan of the same repo.
     QWidget *buildSizeMapTab();
-    void refreshSizeMapTab(bool force);
+    // allowElevation marks the refreshes a click asked for (Rescan, a new
+    // folder, a filesystem card): those may go straight to the password prompt
+    // when the folder needs root, rather than drawing a half-empty map first
+    // (adhoc #112). Automatic refreshes never prompt.
+    void refreshSizeMapTab(bool force, bool allowElevation = false);
     // Folder the size map scans: m_sizeMapRootOverride when the user picked one
     // with "Choose folder…", otherwise this repository's working copy.
     QString sizeMapRoot() const;
@@ -1708,7 +1898,18 @@ private:
     // were skipped (adhoc #76). pkexec — or a password prompt feeding
     // `sudo -S` where pkexec is missing — runs this same binary in its
     // --size-map-scan helper mode and streams the tree back.
-    void rescanSizeMapElevated();
+    // upfront distinguishes the prompt raised the moment a root-only folder is
+    // selected from the one behind the button: if that prompt is dismissed the
+    // map falls back to an unprivileged scan, so the tab is never left blank.
+    void rescanSizeMapElevated(bool upfront = false);
+    // Stop button: cancels whichever scan is currently running, worker-thread
+    // walk or elevated helper process, the same disconnect-before-kill pattern
+    // as stopSearch().
+    void stopSizeMapScan();
+    // Live "scanning <folder> · N files · M so far" line, driven from the walk
+    // itself (adhoc #112).
+    void showSizeMapScanProgress(const QString &current, qint64 bytes,
+                                 int files, bool elevated);
     void applySizeMapResult(const QString &path,
                             forkmesh::DirectorySizeScanResult result,
                             bool hideIgnored, bool elevated);
@@ -1718,6 +1919,9 @@ private:
     QWidget *buildDiscussionsTab();
     DiscussionStore discussionStoreForCurrentRepo() const;
     void reloadDiscussions();
+    // The "Discussions (N)" badge alone, loaded off-thread, so the count is right
+    // without building the (lazy) Discussions panel — see refreshRepoTabCounts().
+    void reloadDiscussionCountInBackground();
     void showDiscussion(int number);
     void renderDiscussionThread(const Discussion &discussion);
     void updateDiscussionActionState();
@@ -1859,6 +2063,14 @@ private:
                                  const QString &preferredBase = QString(),
                                  const QString &preferredHead = QString());
     void switchToPullTab(int pullNumber);
+    // Open a pull request's commits/files/diff in the Git view's range pane
+    // (adhoc #107) — the agent view's PR links land here; the pane's "PR #N"
+    // button goes on to the full pull request page (switchToPullTab).
+    void openPullDiffInGitView(int pullNumber);
+    // Review threads keyed path\x1fside:line for renderDiffHtml's lineNotes —
+    // factored out of renderPullDiff so the Git view's range pane can render the
+    // same threads when it shows a PR (adhoc #107).
+    QHash<QString, QString> buildPullLineNotes(const PullRequest &pr);
     void updateCurrentPullBranch();
     void mergeCurrentPull();
     void resolveCurrentPullConflicts(); // open the per-conflict merge editor
@@ -2086,7 +2298,10 @@ private:
     // Same as continueSelectedAgentSession, but for an arbitrary session id —
     // used to resume a session steered from the website (adhoc #182) without
     // disturbing whatever session is currently selected in the UI.
-    void continueAgentSession(int sessionId);
+    // deferRefresh=true skips the trailing reload/queue pump so a batch caller
+    // (startAllStoppedAgents) can rebuild the table and drain the queue once at
+    // the end rather than once per session.
+    void continueAgentSession(int sessionId, bool deferRefresh = false);
     // Ask the given session's agent to merge base and resolve conflicts, then
     // resume it. Driven by the agents list's orange conflict button (adhoc
     // #446); a no-op while that session is already running or queued.
@@ -2196,6 +2411,22 @@ private:
     // only useful signal for a headless node that has no one watching its
     // screen. Opt-in via kEmailOnCreditsRefillSetting; a no-op when off.
     void maybeEmailCreditsRefilled(bool weekly);
+    // When a provider reports a reset time for an exhausted usage window, make
+    // one local iCalendar reminder and arm the matching desktop ping. The
+    // calendar app owns alerts while ForkMesh is closed; the timer covers a
+    // running desktop.
+    void scheduleUsageLimitReminder(const QString &providerKey,
+                                    const QString &windowKey,
+                                    const QString &providerName,
+                                    const QString &windowName,
+                                    qint64 resetMs);
+    void restoreUsageLimitReminders();
+    void clearUsageLimitReminders();
+    void notifyUsageLimitReady(const QString &providerKey,
+                               const QString &windowKey,
+                               const QString &providerName,
+                               const QString &windowName,
+                               qint64 resetMs);
     // Issue #115: persist and restore month-to-date spend so the figures are
     // shown on restart instead of waiting for a fresh API refresh.
     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
@@ -2207,6 +2438,9 @@ private:
     void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
+    // Open an agent session's branch in the Git view's range pane, binding the
+    // repo detail to that session's repository first (adhoc #131).
+    void switchToAgentBranch(int sessionId);
     // Jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
@@ -2223,6 +2457,11 @@ private:
     // Re-drain the queue after a slot frees, coalesced onto the event loop and
     // skipped unless something is queued AND there is room to start it.
     void scheduleAgentQueuePump();
+    // Persist the machine-wide concurrent-agent limit, keep both controls in
+    // sync, and immediately drain any newly available queue slots.
+    void setAgentConcurrencyLimit(int limit);
+    // Update the Agents-toolbar queue readout and its one-click limit controls.
+    void refreshAgentQueueControls();
     // How many sessions currently hold one of the maxRunningAgents() slots
     // (adhoc #433): our own, unmerged, actively-executing ones.
     int runningAgentCount() const;
@@ -2230,6 +2469,11 @@ private:
     QList<int> stoppableAgentSessionIds() const;
     // Stop every session above and clear the pending queue (adhoc #433).
     void stopAllRunningAgents();
+    // "Stop all" read backwards (adhoc #136): the idle sessions — stopped or
+    // failed, ours, not merged — that can be resumed, across all repos.
+    QList<int> startableAgentSessionIds() const;
+    // Queue every session above for a resume; the run limit drains the queue.
+    void startAllStoppedAgents();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
@@ -2300,6 +2544,9 @@ private:
     void refreshRepoActions();           // workflows column + runs for the open repo
     QList<ActionWorkflow> availableWorkflowsForRepo(
         const RepositoryRecord &repo) const;
+    // The "Actions (N)" badge alone, discovered off-thread, so the count is right
+    // without building the (lazy) Actions panel — see refreshRepoTabCounts().
+    void reloadWorkflowCountInBackground();
     // Show/populate the manual-run bar for the selected workflow (branches from
     // the repo's mirror, default "main"); hidden unless it allows manual runs.
     void updateManualRunBar();
@@ -2409,18 +2656,48 @@ private:
     void onRunLog(int runId, const QString &text);
     void notifyActionEvent(const QString &title, const QString &body,
                            bool warning); // tray alert gated by the run-alert setting
+    // Defined further down with the rest of the actions state; declared here so
+    // the ping funnel below can take one.
+    struct AppNotification;
     void addNotification(const QString &title, const QString &body,
                          bool warning = false, int runId = -1);
     // Overload that records where a notification's row should jump to when its
-    // row is double-clicked on the Notifications page (issue #292).
+    // row is clicked on the Pings page (issue #292).
     void addNotification(const QString &title, const QString &body, bool warning,
                          const NotificationLink &link);
+    // Overload that also records the classification columns the Pings page
+    // shows (kind / who it came from), matching the website inbox's own fields
+    // so both sides of the page carry the same information (adhoc #77).
+    void addNotification(const QString &title, const QString &body, bool warning,
+                         const NotificationLink &link, const QString &kind,
+                         const QString &actor);
+    // The single funnel every in-app event goes through: it files the event on
+    // the Pings page and raises it in the message area above the footer log
+    // (adhoc #77).
+    void recordNotification(AppNotification item);
+    // Raise one ping in the toast pill that sits above the footer's mini-log,
+    // so new events are visible without opening a page. An error ping shows
+    // immediately (preempting a routine toast) and flashes the red app border.
+    void flashNotification(const AppNotification &item);
+    // Flash a red border around the whole window for a moment — the desktop
+    // twin of the World's world-admin-error-arrival effect (adhoc #77).
+    void flashErrorBorder();
     // Open the screen/item a notification points at (issue/PR/discussion/commit).
     void openNotificationLink(const NotificationLink &link);
     void showNotifications();
     // Notifications live in their own top-level section: a sortable table
     // (buildNotificationsSection is declared with the other section builders).
     void refreshNotificationsTable();
+    // Repaint the compact ping feed that sits above the network log.
+    void refreshLogEventList();
+    // Row-level removal on that page: a local event is simply forgotten, while
+    // a mirrored website ping is deleted from the account's inbox too.
+    void deleteSelectedNotifications();
+    void deleteWebAlert(const QString &alertId);
+    // Open whatever a Pings row points at (run, in-app screen, or the website
+    // page behind an alert about a repo this node doesn't mirror).
+    void openNotificationRow(int row);
+    static QString notificationLinkLabel(const NotificationLink &link);
     void updateNotificationButton();
     // Mirror the website's alert inbox (/api/notifications) onto that page, so
     // an alert raised on the site is readable — and openable — in the desktop
@@ -2430,6 +2707,11 @@ private:
     void markWebAlertsRead();
     // Show/hide the small top-bar rebuild+restart button per the opt-in setting.
     void updateNavRebuildButton();
+    // Show the top-bar "Log in / Sign up" pill only while this machine has no
+    // forkmesh.com user account attached (adhoc #115).
+    void updateSignInButton();
+    // Menu behind that pill: in-app password login, or the website's signup page.
+    void showSignInMenu();
     // Reposition the floating "Log" button to the live-log strip's corner.
     void positionFloatingLogButton();
     // Keep the pause-scroll toggle in the live-log strip's bottom-right corner,
@@ -2488,17 +2770,19 @@ private:
     // single refresh so the heavyweight reload doesn't run once per event.
     void scheduleOpenRepoDetailRefresh();
     void updateRepoCodeSize();
-    void updateRepoCommitCount();
     void updateRepoIssueCount();
     void updateRepoDiscussionCount();
     void updateRepoPullCount();
+    // Fill in every repo-tab badge whose panel loads lazily (Issues, Discussions,
+    // Actions) from worker threads, so the tab row is right on the first frame
+    // rather than only after each tab is clicked (adhoc #116).
+    void refreshRepoTabCounts();
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
     void showRepoEditor();
     void showRepoCoveExplorer();
-    // The commit history lives inside the Code overview (no top-bar tab): the
-    // commit strip's "N Commits" button toggles the area under the latest-commit
-    // bar between the file browser and the commits panel.
+    // The Git workspace is stored beside the Code overview for layout reuse,
+    // but only the activity-rail Git destination opens it.
     void showOverviewCommits();
     void showOverviewFiles();
     void showOverviewBranches();
@@ -2553,6 +2837,38 @@ private:
     bool proposePullFromMirrorEdit(const QString &cleanPath, const QString &content);
     void loadRepoInfo();
     void loadBranchesAndTags();
+    // Everything loadBranchesAndTags() shows, gathered on a worker thread: its
+    // five git reads (sorted branch list, HEAD, worktree list, remotes, tags)
+    // each blocked the GUI thread for seconds in the stall log whenever agent
+    // sessions kept the disk busy, and the function runs on every repo open,
+    // merge and pull refresh.
+    struct BranchesTagsSnapshot {
+        // Inputs, snapshotted on the GUI thread before the worker starts.
+        QString dir;               // repoGitDir()
+        QString localPath;         // working copy for the worktree count
+        QString configuredDefault; // m_repoInfo.defaultBranch
+        QString checkedOut;        // m_repoBranch at issue time
+        // Worker-filled results.
+        QString base;          // default branch (chooseDefaultBranch)
+        QString head;          // checked-out branch (empty = detached/none)
+        QStringList branches;  // local heads, committerdate-sorted
+        int worktreeCount = 0; // linked worktrees, minus forkmesh/pulls
+        struct Remote {
+            QString name;
+            QString fetchUrl;
+            QString pushUrl;
+        };
+        QList<Remote> remotes;
+        int tagCount = 0;
+    };
+    // Runs on a worker thread: fills the git-derived half of `snap`.
+    static BranchesTagsSnapshot readBranchesTagsGit(BranchesTagsSnapshot snap);
+    // Applies a gathered snapshot to the toolbar buttons/menus (GUI thread).
+    void applyBranchesTags(const BranchesTagsSnapshot &snap);
+    // Serializes loadBranchesAndTags() gathers; a call landing while one is in
+    // flight coalesces into a single trailing reload.
+    bool m_branchesTagsLoading = false;
+    bool m_branchesTagsReloadQueued = false;
     QStringList repoBranches() const;
     // The two reads behind repoBranches()/repoDefaultBranch() with no GUI state
     // of their own, so worker threads can run them too (adhoc #420).
@@ -2592,10 +2908,28 @@ private:
         QHash<QString, QPair<int, int>> remoteAheadBehind;
         QHash<QString, QString> worktrees; // branch -> linked worktree path
     };
+    struct BranchChangeStat {
+        int files = -1;
+        int added = -1;
+        int removed = -1;
+    };
+    // Branches table layout: destructive action first, immediately followed by
+    // the branch name. Updated/worktree remain hidden backing columns whose data
+    // is folded into the compact Branch delegate.
+    static constexpr int kBranchesDeleteColumn = 0;
+    static constexpr int kBranchesNameColumn = 1;
+    static constexpr int kBranchesStatusColumn = 2;
+    static constexpr int kBranchesUpdatedColumn = 3;
+    static constexpr int kBranchesWorktreeColumn = 4;
     // Runs on a worker thread: fills the git-derived half of `data`.
     static BranchesPanelData readBranchesPanelGit(BranchesPanelData data);
     // Builds the table rows from a gathered snapshot (GUI thread, no git).
     void renderBranchesPanel(const BranchesPanelData &data);
+    // Fill the compact files/+/- badges after the table is visible. Computing a
+    // range numstat for every branch can be expensive in a large repository, so
+    // this deliberately runs as a second, cached worker pass rather than holding
+    // up the initial Branches render.
+    void startBranchChangeStats(const BranchesPanelData &data);
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
@@ -2638,28 +2972,51 @@ private:
     // Open the Worktrees tab and select the row for a branch (used by the
     // clickable worktree-location link in the agent session header — issue #265).
     void switchToWorktree(const QString &branch);
-    // Open the Branches tab and select the row for a branch, previewing its diff
-    // (used by the clickable branch-name link in the agent session header —
-    // adhoc #123).
+    // Open a branch in the Git view (adhoc #1; used by the clickable branch
+    // links in the agent session header, the PR header, the Branches panel and
+    // the graph's branch dropdown — adhoc #123). The graph browses the branch's
+    // history and, for any branch other than the compare base, the right pane
+    // opens its range diff against that base at the same time — one combined
+    // view, "<branch> -> <base>", rather than a separate review page (adhoc
+    // #16).
     void switchToBranch(const QString &branch);
+    // Base branch of the Git view's comparison. Empty means "the repo's default
+    // branch", which is where every comparison starts; the compare indicator's
+    // base dropdown sets it, and leaving the compare view clears it (adhoc #16).
+    QString m_branchCompareBase;
+    QString branchCompareBase() const;
+    // Re-diff the branch under review against `base` (the indicator's base
+    // dropdown). Empty restores the repo's default branch (adhoc #16).
+    void setBranchCompareBase(const QString &base);
+    // Leave the branch compare view: right pane back to the working-tree diff,
+    // graph back on the default branch, compare base reset (adhoc #16).
+    void closeBranchCompareView();
     // Select the worktrees-table row whose branch matches, repopulating the diff
     // pane and detail buttons. Returns false if no such row exists. Used to keep
     // the selection on the worktree being acted on after loadWorktreesPanel()
     // rebuilds the table (which would otherwise clear it — issue #272).
     bool selectWorktreeRow(const QString &branch);
-    // Same for the branches table: select the row whose name matches (which fires
-    // currentCellChanged -> showBranchDiff). Returns false if no such row exists.
+    // Same for the branches table: select the row whose name matches (selection
+    // only — the diff renders in the Git view's range pane, adhoc #107).
+    // Returns false if no such row exists.
     bool selectBranchRow(const QString &branch);
     // Explain that a branch link pointed at a branch this repository doesn't have.
     void reportBranchNotFound(const QString &branch);
-    void showWorktreeDiff(const QString &branch, const QString &worktreePath);
+    void updateWorktreeSelection(const QString &branch,
+                                 const QString &worktreePath);
     // Merge a worktree's branch into the default branch. On success the now-merged
     // worktree and its branch are removed (the work is preserved in the merge
     // commit); pass its folder so it can be. deleteAgent=true additionally tears
-    // down the agent session(s) that produced the branch.
-    void mergeWorktreeIntoMain(const QString &branch,
+    // down the agent session(s) that produced the branch. Returns true only when
+    // the branch's commits provably landed in the base branch — callers that tidy
+    // up after themselves (closing the branch diff, adhoc #119) must leave the
+    // review open when the merge was refused or conflicted.
+    bool mergeWorktreeIntoMain(const QString &branch,
                                const QString &worktreePath = QString(),
                                bool deleteAgent = false);
+    // Leave the branch review after one of its merge buttons landed the branch,
+    // returning the Git view to the working tree (adhoc #119).
+    void closeBranchDiffAfterMerge();
     // The same merge for an agent session's branch, but bound to that session's
     // repository first — the Agents tab is global, so the repo the detail view
     // holds is often not the session's. False when the bind didn't take.
@@ -2709,25 +3066,42 @@ private:
     // Paint the branch detail bar from already-gathered counts, and let auto-pull
     // decide once the bar reflects them (the counts arrive off-thread now).
     void applyBranchDetailActions(const QString &branch, const QString &base,
-                                  int behind, int ahead, bool hasConflict);
+                                  int behind, int ahead, bool hasConflict,
+                                  bool worktreeConflict = false);
     void maybeAutoPullBranch(const QString &branch);
     // Bumped per branch selection so a detail-bar read that lands late is dropped.
     int m_branchDetailActionsGen = 0;
-    // Render the branch diff for whichever scope is selected in m_branchScopeList
-    // (whole branch vs base, the worktree's uncommitted changes, or one commit).
+    // Render the branch's whole range diff (everything it adds over base).
     void renderBranchScopeDiff();
     // Filesystem path whose uncommitted changes belong to `branch`: its dedicated
     // worktree, or the main checkout when `branch` is the one checked out there.
     // Empty when the branch is checked out nowhere (so it can't be dirty).
     QString branchWorkDir(const QString &branch) const;
-    // Render an already-captured patch into the branch diff view + changed-files
-    // list (shared by every scope above). `viewedContext` scopes the per-file
-    // "viewed" toggles; `emptyMessage` shows when the patch has no changes.
+    // Render an already-captured patch into the branch diff view. `viewedContext`
+    // scopes the per-file "viewed" toggles; `emptyMessage` shows when the patch
+    // has no changes.
     void renderBranchDiffPatch(const QString &patch, const QString &emptyMessage,
                                const QString &viewedContext);
     // Rebuild the sticky-bar file-span map from whatever is currently in the
     // branch diff document (called once a streamed render has fully landed).
     void rebuildBranchDiffSpans();
+    // The branch/PR range review pane hosted in the Git view's commits workspace
+    // (adhoc #107): detail action bar + scope/files lists + diff, plus the PR
+    // viewer's diff tools (find bar, prev/next change, split toggle, Pac-Man
+    // sticky header, auto-mark-viewed on scroll).
+    QWidget *buildBranchRangePane();
+    // Refresh m_branchFileTops (absolute document y of each file header) from the
+    // span map; cheap enough to rebuild lazily whenever a render drops the cache.
+    void computeBranchFileTops();
+    // Debounced off the branch diff's scrollbar: mark files scrolled fully
+    // through as viewed and re-render, mirroring the PR pane (adhoc #107).
+    void applyBranchAutoMarkViewedOnScroll();
+    // Scroll the branch/PR diff to the next/previous hunk ("@@ -" header).
+    bool branchScrollToAdjacentHunk(int delta);
+    // Find-in-diff over the range pane (mirrors togglePullDiffSearch and friends).
+    void toggleBranchDiffSearch(bool show);
+    void branchDiffSearchRecompute();
+    void branchDiffSearchGoTo(int delta);
     // Open the selected branch's working directory in VSCodium: its dedicated
     // worktree if it has one, otherwise the repo's main checkout.
     void openBranchInCodium(const QString &branch);
@@ -2905,6 +3279,10 @@ private:
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
                              const QString &source);
+    // Verify that one exact mirror (with failover disabled server-side) can
+    // return README.md. Results feed the Reachability column after Artifacts.
+    void fetchMirrorReachability(const QString &owner, const QString &repo,
+                                 const QString &source, const QString &node);
     // Fetch the worker's per-artifact release download counts (logged each time
     // /releases/blob/sha256/<hash> streams a binary out), so the Releases tab can
     // show how many times each artifact has been downloaded.
@@ -2933,6 +3311,10 @@ private:
     void moveGlobalSearchSelection(int delta); // keyboard up/down through results
     void activateGlobalSearchItem(QListWidgetItem *item); // navigate to a result
     void hideGlobalSearchPopup();
+    // On the Git page the same box is that page's commit search (it has none of
+    // its own): mirror what's typed into the commit-list filter, and clear the
+    // filter again when the page isn't on screen.
+    void syncGitCommitFilter();
     // --- Browser-style back / forward navigation, sat just left of the search box.
     // A history of "places" (section + open repo + repo tab) is recorded as you
     // move around; Back and Forward walk it without recording new entries.
@@ -2942,6 +3324,7 @@ private:
     void restoreNavEntry(int index);           // navigate to a recorded place
     struct NavPlace;
     void applyNavDetailTab(const NavPlace &place); // re-select a recorded repo tab
+    QString navPlaceLabel(const NavPlace &place) const; // human-readable trail destination
     void navigateBack();
     void navigateForward();
     void updateNavHistoryButtons();            // enable/disable per trail position
@@ -3002,6 +3385,13 @@ private:
     QWidget *buildSourceControlPanel();
     void refreshSourceControl();             // re-scan `git status` into the tree
     void refreshSourceControl(bool force);   // force refresh path bypassing cache short-circuit
+    // While a branch/PR comparison is open, populate the same CHANGES tree with
+    // that range's files while leaving its composer and actions in place.
+    void showRangeFilesInSourceControl(const QStringList &paths,
+                                       const QStringList &statuses);
+    bool sourceControlShowsRange() const;
+    QString sourceControlGitDir() const;
+    void scrollBranchDiffToFile(const QString &path);
     // Detached `git status` that only updates the activity rail's Git badge, so
     // the uncommitted-file count is right on every repo tab (and right after a
     // repo opens), not just while the changes panel is the visible view.
@@ -3271,6 +3661,14 @@ private:
     void saveIssueTitleEdit();
     void cancelIssueTitleEdit();
     void promptNewIssue();
+    // promptNewIssue() with the compose page pre-filled. Kept as a separate
+    // name (not a defaulted overload) so promptNewIssue stays connectable to
+    // QPushButton::clicked.
+    void composeNewIssue(const QString &prefillTitle, const QString &prefillBody);
+    // Chat -> issue: file what someone said in chat as a repository issue.
+    // Asks which repository, then opens the pre-filled compose page there.
+    void promptIssueFromChatMessage(const QString &text, const QString &senderName,
+                                    qint64 timestampMs);
     void quickAddIssue();
     // Quick-add image attachment (issue #79): pick or paste an image in the footer
     // quick-add bar. In "No issue" mode the path is sent to the agent in its
@@ -3613,6 +4011,13 @@ private:
     // owner/ts/sig query params carrying the forkmesh-issues-pull-v1 drain
     // token — the shared auth for inbox GET/DELETE and /api/sync.
     QUrlQuery signedInboxQuery(const QString &owner) const;
+    // On a mirror-intake ack, attach this node's fresh signed refs
+    // attestation (state/stateTs/stateSig) so the relay pins the state the
+    // mirror now serves — without it, the merged submissions would knock the
+    // mirror out of the clone integrity gate while the source is offline.
+    void appendMirrorStateAttestation(QUrlQuery *query,
+                                      const RepositoryRecord &repo,
+                                      const QString &signer) const;
     // #368: identity key backup/export/import UI + first-run "back up" nag.
     void backUpIdentityKey();
     void refreshIdentityBackupNag();
@@ -3675,6 +4080,11 @@ private:
     void onMessageDeleted(const QString &conversation, const QString &messageId);
     void promptEditMessage(const QString &messageId, const QString &currentText);
     void confirmDeleteMessage(const QString &messageId);
+    void openChatThread(const QString &rootMessageId);
+    void rebuildChatThreadDialog();
+    void sendChatThreadReply();
+    int chatThreadReplyCount(const QString &conversation,
+                             const QString &rootMessageId) const;
     // Admin moderation: delete any message (not just your own). The delete is
     // signed by this node's identity and broadcast; peers verify the signature
     // and the signer's admin status before applying.
@@ -3736,7 +4146,9 @@ private:
     void flashMessage(const QString &text, bool error = false,
                       const QString &clickHref = QString());
     void dismissTopMessage(); // hide the top toast and its Copy / dismiss buttons
-    void advanceTopMessageQueue(); // show the next queued error, or dismiss if none left
+    void advanceTopMessageQueue(); // show the next queued message, or dismiss if none left
+    void queueTopMessage(const QString &text, bool error); // park one behind the current toast
+    bool topMessageBusy() const; // a toast is up and still counting down
     void renderTopMessageCountdown(); // (re)paint the toast with its seconds-left suffix
     void renderTopMessage(); // (re)paint the toast, elided or expanded in place
     void positionTopMessageOverlay(); // size + anchor the floating expanded-toast panel
@@ -3745,6 +4157,8 @@ private:
     // instead of vanishing.
     bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
+    MessageRow *createMessageRow(const ChatMessage &message,
+                                 bool threadContext = false);
     void renderConversationRows(); // rebuilds rows in place; caller handles scrolling
     void rebuildConversationView();
     void scrollToBottom();
@@ -3785,6 +4199,10 @@ private:
     // composer at the caret.
     void showEmojiPicker(QWidget *anchor);
     void insertEmojiIntoComposer(const QString &emoji);
+    // "Send to Prompt" message-menu action: append an existing message's text
+    // to the footer's bottom-right prompt box (not the chat input) so it can be
+    // handed to an agent or edited before sending.
+    void sendMessageToPrompt(const QString &text);
     // Re-create the private rooms we own/were invited to after a fresh connect,
     // since the backend clears its channel set each session.
     void restorePrivateChannels();
@@ -3901,6 +4319,9 @@ private:
     void startSyncFetch(int index, bool quiet, bool hasMirror,
                         const QStringList &args, const QString &beforeDigest,
                         const QString &beforeHeadCommit);
+    // Select (and prime) the repo a fresh install has been waiting on, once its
+    // first clone lands. Returns true when this index was the one awaited.
+    bool completePendingRepoAutoOpen(int index);
     void autoSyncMirrors();
     // Periodic-timer wrapper for autoSyncMirrors(): skips the round while the
     // relay host sits in BackoffNetworkAccessManager's 429/5xx cooldown, since
@@ -3915,9 +4336,16 @@ private:
     // hello (adhoc #82).
     bool mirrorHasCommit(const QString &mirrorPath, const QString &commit);
     QSet<QString> m_mirrorCommitsPresent; // "<mirrorPath>\x1f<commit>" seen present
+    // Source-of-truth catch-up: online mirrors merge (and drain) web-submitted
+    // issues/PRs/discussions directly into the branches they serve, so when a
+    // peer advertises commits this node's OWN repo lacks, fast-forward the
+    // bare mirror and working copy from the mesh instead of skipping "because
+    // we are upstream". Strictly additive — local-only work is never touched.
+    void convergeSourceRepoFromMesh(int index);
+    QHash<QString, qint64> m_sourceConvergeAttemptMs; // owner/name -> last try
     // After a local change to a repo (new/updated issue, PR, comment, merge),
     // push it to the bare mirror and tell peers immediately instead of waiting
-    // for the three-minute auto-sync, so counts and content converge right away.
+    // for the one-minute auto-sync, so counts and content converge right away.
     void propagateRepoUpdate(int index);
     // A peer announced it refreshed "owner/name" from source; notify if we
     // mirror the same repo. `commit` is the new HEAD it advanced to.
@@ -4038,17 +4466,38 @@ private:
     // Top-bar relay switcher: a "favicon  domain ▾ count" dropdown button
     // (search/switch/add relays).
     QPushButton *m_relayMenuButton = nullptr;
-    // Spinning-radar + latency readout sitting on the window-chrome line just
-    // left of the CPU/MEM/DISK sparklines: probes the active relay once a
-    // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
-    // turning into a red alert when the relay doesn't answer. Held as a
-    // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
-    // MainWindow.cpp).
-    QWidget *m_relayRadar = nullptr;
-    // Echoes the mesh's serving nodes into the dish as blips (m_radarNodes).
-    // `force` overrides the repo-scoped Mirror-nodes panel's claim on the dish,
-    // for the case where that panel has no repo to show.
-    void updateRelayRadarNodes(bool force = false);
+    // Red dot pinned to the relay favicon's corner while a freshly launched
+    // instance waits to be linked, plus the Approve button beside it that
+    // opens the join dialog. Hidden unless this account is an admin with at
+    // least one pending join request (adhoc #97).
+    QLabel *m_relayJoinDot = nullptr;
+    QPushButton *m_relayJoinApproveButton = nullptr;
+    int m_pendingRelayJoins = 0;
+    // Connection-speed dot pinned above the instance logo (adhoc #124): probes
+    // the active relay once a minute and colours itself green/amber/red by the
+    // round-trip time, red when the relay doesn't answer at all. It replaced
+    // the spinning radar dish that used to sit beside the CPU/MEM/DISK
+    // sparklines; the dish's node blips are now the chrome line's node dots.
+    RelaySpeedDot *m_relaySpeedDot = nullptr;
+    // Applies a measured (or failed, ms < 0) probe to that dot, the per-relay
+    // speed cache and the instance button's tooltip.
+    void setRelayLinkSpeed(const QString &host, int ms);
+    void refreshRelayMenuTooltip();
+    // Round-trip milliseconds per relay host, so the relay dropdown can show
+    // each instance's connection speed the moment it opens (adhoc #124). ms < 0
+    // means the last probe went unanswered; stampMs dates the sample.
+    struct RelayLatencySample {
+        int ms = -1;
+        qint64 stampMs = 0;
+    };
+    QHash<QString, RelayLatencySample> m_relayHostLatency;
+    QSet<QString> m_relaySpeedProbes; // hosts with a dropdown probe in flight
+    void probeRelayHostSpeed(const QString &serverUrl,
+                             std::function<void(int)> done);
+    // "30 ms" / "no answer" / "measuring…" for one relay host, and that same
+    // figure as a relay-dropdown entry ("forkmesh.com  ·  30 ms").
+    QString relaySpeedText(const QString &host) const;
+    QString relayMenuEntryText(const QString &host) const;
     QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
     bool m_relayProbeInFlight = false;     // guard against overlapping probes
     qint64 m_lastWsLatencySampleMs = 0;    // when the room socket last ponged
@@ -4132,12 +4581,17 @@ private:
     QString m_organizationTaskActor;
     bool m_organizationTasksCanManage = false;
     bool m_organizationTasksLoading = false;
-    QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     // "Agents" heads the app navigation rail (adhoc #70), badged with the number
     // of running sessions. Its live fleet matrix stays on the window-chrome
     // line, followed there by the recent action-run strip.
     QPushButton *m_agentsNavButton = nullptr;
     AgentDotMatrix *m_agentDotMatrix = nullptr;
+    // One dot per node on the network, immediately right of the agent squares
+    // with a faint divider between the two groups (adhoc #124).
+    NodeDotMatrix *m_nodeDotMatrix = nullptr;
+    QWidget *m_chromeDotDivider = nullptr;
+    void refreshNodeDotMatrix();
+    void updateChromeDotDivider();
     ActionRunStrip *m_actionRunStrip = nullptr;
     // Last status tally rendered into the matrix's tooltip, so the scanner tick
     // can skip rebuilding an unchanged string ~20x a second.
@@ -4163,12 +4617,18 @@ private:
     QString m_topMessageBaseHtml;         // toast HTML without the countdown suffix
     QString m_topMessageHref;             // when set, the toast is a clickable link (routed by linkActivated)
     int m_topMessageSecondsLeft = 0;      // seconds before an auto-dismiss toast fades
-    // Pending error messages that arrived while another error toast was already
-    // counting down. A burst of quick failures (e.g. retries) would otherwise
-    // stomp each other before any could be read; queuing gives each its own
-    // full countdown once the current one finishes (see advanceTopMessageQueue).
-    QStringList m_topMessageQueue;
+    // Pending messages that arrived while another toast was already counting
+    // down. A burst (retries, or the run of events the Pings page now mirrors
+    // here) would otherwise stomp each other before any could be read; queuing
+    // gives each its own full countdown once the current one finishes (see
+    // advanceTopMessageQueue). Each entry carries its own error flag so a
+    // queued event keeps its colour.
+    QList<QPair<QString, bool>> m_topMessageQueue;
     bool m_topMessageError = false;       // current toast is a failure (red) vs success (green)
+    // Red border flashed around the whole window while an error ping arrives —
+    // the desktop twin of the World's world-admin-error-arrival (adhoc #77).
+    QWidget *m_errorBorderOverlay = nullptr;
+    QTimer *m_errorBorderTimer = nullptr;
     bool m_topMessageElided = false;      // current toast was truncated (Expand reveals it inline)
     bool m_topMessageExpanded = false;    // user expanded the truncated toast to its full text
     bool m_repoPinMismatch = false;       // true when the open repo's served refs no longer match the relay's pinned hash (adhoc #65)
@@ -4263,11 +4723,21 @@ private:
         int repoCount = 0;
     };
     QList<NodeMenuEntry> m_nodeMenuEntries;
-    // The mesh's real serving nodes (refreshNodesTable's filtered list), echoed
-    // as blips inside the relay radar. Without this the radar only ever showed
-    // nodes while the repo-detail Mirror-nodes tab happened to be open, so it
-    // swept an empty dish from launch (adhoc #79).
-    QList<NodeMenuEntry> m_radarNodes;
+    // The mesh's real serving nodes (refreshNodesTable's filtered list), drawn
+    // as the chrome line's node dots. Without this the dots would only ever
+    // show nodes while the repo-detail Mirror-nodes tab happened to be open,
+    // rather than the whole network from launch (adhoc #79 / #124).
+    QList<NodeMenuEntry> m_nodeDotEntries;
+    // Sync/integrity state for the repo the Mirror-nodes panel is showing,
+    // keyed by lower-cased node name: a node that is behind or failing that
+    // repo's integrity gate is tinted amber in the dots while the panel has a
+    // repo (adhoc #124). Empty whenever no repo is open.
+    struct NodeDotRepoState {
+        bool behind = false;
+        bool integrityFailing = false;
+    };
+    QHash<QString, NodeDotRepoState> m_nodeDotRepoStates;
+    void setNodeDotRepoStates(const QHash<QString, NodeDotRepoState> &states);
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
@@ -4281,6 +4751,11 @@ private:
     // Network button's badge.
     QPushButton *m_networkNavButton = nullptr; // "Network" diagnostics top-nav button
     QPushButton *m_navRebuildButton = nullptr; // small rebuild+restart button (opt-in)
+    // Top-bar "Log in / Sign up" pill. The first-run setup screen is gone (adhoc
+    // #115) — the app opens straight into the shell — so this is the only entry
+    // point for attaching this machine to a forkmesh.com user account. Hidden as
+    // soon as one is attached (see updateSignInButton).
+    QPushButton *m_navSignInButton = nullptr;
     QPushButton *m_navScreenshotButton = nullptr; // drag-a-region screenshot -> prompt
     QPushButton *m_navResizeButton = nullptr; // snap window to a common minimal size
     QPushButton *m_restartSpinButton = nullptr; // button whose icon spins mid-restart
@@ -4296,6 +4771,9 @@ private:
     QPushButton *m_networkReposRefreshButton = nullptr;
     int m_networkReposLoadGen = 0;
     QJsonArray m_networkReposLastPayload; // regroup when user/node ownership arrives
+    // Repositories the Repos page last listed, which is what its rail badge
+    // counts; -1 until the catalog has been rendered once (adhoc #118).
+    int m_networkRepoRowCount = -1;
     // Opaque private archive ids are delivered only in an authenticated,
     // ACL-filtered catalog response. They let the client use a name-free
     // /api/private-replicas/<id> URL; no private owner/repository identity is
@@ -4304,6 +4782,10 @@ private:
     // Local control-node section. The Cloudflare token exists only in the
     // password edit/process environment and the short-lived redaction copy;
     // unlike public deployment fields, it is never written to QSettings.
+    // One tab per operational area (adhoc #108). The Cloudflare index is kept so
+    // a forkmesh://control/cloudflare deep link lands on the fields it fills.
+    QTabWidget *m_controlNodeTabs = nullptr;
+    int m_controlCloudflareTabIndex = -1;
     QLabel *m_controlNodeStatus = nullptr;
     QLabel *m_controlNodeHealth = nullptr;
     QLabel *m_controlIdentityStatus = nullptr;
@@ -4329,6 +4811,24 @@ private:
     QPushButton *m_cloudflareDeployButton = nullptr;
     QPushButton *m_cloudflareCancelButton = nullptr;
     QPlainTextEdit *m_controlNodeOutput = nullptr;
+    // API token tab. m_controlTokenSecret is the same kind of short-lived
+    // redaction copy as m_cloudflareActiveSecret: it exists so this tab's own
+    // output can never echo the credential, and is cleared when a check ends.
+    QLineEdit *m_controlTokenEdit = nullptr;
+    QLabel *m_controlTokenStatus = nullptr;
+    QLabel *m_controlTokenTargets = nullptr;
+    QTableWidget *m_controlTokenTable = nullptr;
+    QPushButton *m_controlTokenTestButton = nullptr;
+    QPushButton *m_controlTokenGenerateButton = nullptr;
+    QPlainTextEdit *m_controlTokenOutput = nullptr;
+    QString m_controlTokenSecret;
+    QStringList m_controlTokenGrantedGroups;
+    QHash<QString, QString> m_controlTokenProbeResults; // requirement key -> live check
+    QString m_controlTokenAccountId;
+    QString m_controlTokenZoneId;
+    QString m_controlTokenUserResource;
+    bool m_controlTokenPolicyReadable = false;
+    bool m_controlTokenBusy = false;
     // cloudflare_worker/deploy.sh: one button, live merged output, cancel.
     QPushButton *m_siteDeployButton = nullptr;
     QPushButton *m_siteDeployCancelButton = nullptr;
@@ -4427,9 +4927,12 @@ private:
     QProcess *m_hostAgentInstallProcess = nullptr; // Claude/Codex CLI install
     QProcess *m_hostDiskProcess = nullptr;    // running ssh size-map read, if any
     // One-click Vultr mirror provisioning (adhoc #315). The API key is read
-    // from the field (or a stored VULTR_API_KEY device variable) per run and
-    // deliberately has no persistent member.
+    // from the field (or a stored VULTR_API_KEY device variable) per run.
     QLineEdit *m_vultrApiKeyEdit = nullptr;
+    // Last key rememberVultrApiKey stored successfully, so a provision run's
+    // dozen API calls save it once instead of rewriting the variable store and
+    // .env.production behind every one of them (adhoc #127).
+    QString m_vultrRememberedKey;
     QLineEdit *m_vultrNameEdit = nullptr;
     // Opt-in (default on): after ForkMesh installs, also install the Claude
     // Code and Codex CLIs on the new mirror and copy this device's provider
@@ -4450,6 +4953,10 @@ private:
     // toggling it mid-provision cannot change what the run does.
     bool m_vultrInstallAgentClis = false;
     QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
+    // Session-only Cloudflare credential for the fresh node's Tunnel
+    // bootstrap. It is sent as the first SSH stdin line, never argv/logged,
+    // and scrubbed as soon as provisioning reaches a terminal state.
+    QString m_vultrTunnelApiToken;
     // Non-secret billing/provenance facts captured from Vultr's selected plan
     // and created instance. These are persisted with the saved Host row so an
     // operator can identify the plan and expected monthly cost later.
@@ -4587,6 +5094,9 @@ private:
     QLabel *m_settingsAvatarPreview = nullptr;
     QLabel *m_identityBackupNag = nullptr; // #368: "back up your key" warning
     QTextBrowser *m_settingsLog = nullptr;
+    // Compact feed of the newest pings, shown above the network log so every
+    // new event is visible on that page too (adhoc #77).
+    QListWidget *m_logEventList = nullptr;
     QPushButton *m_logScrollLockButton = nullptr;
     bool m_logScrollLocked = false;
     QHBoxLayout *m_logFilterRow = nullptr;    // chip row above the network log
@@ -4618,6 +5128,7 @@ private:
     // Default coding-agent provider for new assignments; seeds the quick-add and
     // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.
     QComboBox *m_defaultAgentProviderCombo = nullptr;
+    QLineEdit *m_maxRunningAgentsEdit = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;
     QLineEdit *m_openAiAdminKeyEdit = nullptr;
     QLineEdit *m_codexModelEdit = nullptr;
@@ -4683,20 +5194,18 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
-    // "genie" (adhoc #42), stacked above "add" and "new": starts an agent wired
-    // to the website's remote MCP server so it picks its own work off the
-    // organization's shared task list instead of running a typed prompt.
+    // The "task" button, stacked above "add" and "new", files the typed prompt
+    // as an unassigned item in the organization's General task list (adhoc
+    // #151). The member name is retained to avoid churning the existing QSS.
     QPushButton *m_quickAddGenieButton = nullptr;
     // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
     // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
     // can restyle it as the two selected/deselected agent detail changes which of
     // the two buttons Enter actually triggers.
     QPushButton *m_quickAddSendButton = nullptr;
-    // Small green "Enter" badge (adhoc #89), shown on the "new" send button
-    // when Enter currently activates it. The "add" (follow-up) button has no
-    // such badge — it's only ever the Enter target while the Agents tab
-    // itself is on screen, so the button's own green outline is enough.
-    QLabel *m_quickAddSendEnterBadge = nullptr;
+    // No corner badge on either send button (adhoc #120): the small green "⏎"
+    // glyph that used to ride the top-right corner of "new" while Enter targeted
+    // it is gone; the button's own green outline is the only Enter indicator.
     QPushButton *m_quickAddImageButton = nullptr; // attach an image (issue #79)
     QStringList m_quickAddImages;               // image paths queued for next send
     QWidget *m_quickAddAttachStrip = nullptr;   // chips w/ thumbnail + "x" remove
@@ -4735,18 +5244,11 @@ private:
     // is submitted (same as Enter/Send) as soon as a voice dictation finishes its
     // final transcription, so you can dictate-and-go without reaching for the keyboard.
     QCheckBox *m_quickAddVoiceAutoSubmit = nullptr;
-    // "YOLO" toggle beside it (adhoc #12): when checked, every agent started while
-    // it is on merges its own branch into the default branch the moment its run
-    // finishes successfully, instead of waiting for a pull-request review. Read at
-    // launch time and stamped onto the session (AgentSession::yolo), so flipping it
-    // later never changes what an already-running agent will do.
-    QCheckBox *m_quickAddYolo = nullptr;
-    // "Task" toggle beside it (adhoc #18): when checked, every agent started while
-    // it is on also opens an organization task for the run. Read at launch time and
-    // stamped onto the session (AgentSession::orgTask), so unticking it later never
-    // orphans the task an already-running agent is going to close out. On by
-    // default, unlike YOLO: opening a task changes nothing about the run itself.
-    QCheckBox *m_quickAddTask = nullptr;
+    // The composer's "YOLO" (adhoc #12) and "Task" (adhoc #18) checkboxes are
+    // gone (adhoc #120). Runs launched from the prompt bar are stamped with what
+    // those toggles defaulted to — AgentSession::yolo false (never merge without
+    // review) and AgentSession::orgTask true (mirror the run as an organization
+    // task) — in startAgentForIssue()/startAdHocAgentForRepo().
     // Dictation can target any text box, not just the footer prompt: m_voiceTargetEdit
     // is the box the current capture writes into and m_voiceActiveButton the mic that
     // started it (so its icon swaps to red while recording). m_voiceIdlePlaceholder is
@@ -4855,6 +5357,11 @@ private:
     // QWidget* and poked via static_cast since ResourceSparkline is private to
     // MainWindowChat.cpp.
     QWidget *m_cpuChart = nullptr;
+    QWidget *m_repoSizeChart = nullptr;
+    QWidget *m_repoLinesChart = nullptr;
+    QWidget *m_repoFilesChart = nullptr;
+    QToolButton *m_repoRatchetButton = nullptr;
+    qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
     QWidget *m_diskChart = nullptr;
     StallWatchdog *m_stallWatchdog = nullptr;
@@ -4909,9 +5416,6 @@ private:
     QPushButton *m_repoWorktreesTab = nullptr; // handle for the Worktrees (N) badge
     QTableWidget *m_worktreesTable = nullptr;
     QLabel *m_worktreesSummary = nullptr;
-    QTextBrowser *m_worktreeDiffView = nullptr;
-    QListWidget *m_worktreeFileList = nullptr;
-    QLabel *m_worktreeFilesSummary = nullptr;
     QLabel *m_worktreeBranchLabel = nullptr; // shows which branch the open detail is on
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
     QPushButton *m_worktreeMergeDeleteAgentButton = nullptr; // merge, then delete its agent too
@@ -4950,42 +5454,43 @@ private:
     // directories this user cannot list, hidden again once the elevated rescan
     // has produced the complete tree for that folder.
     QPushButton *m_sizeMapElevate = nullptr;
+    // "Stop": shown only while a scan is running; stopSizeMapScan() hides it.
+    QPushButton *m_sizeMapStop = nullptr;
+    // The in-flight unprivileged scan's watcher, so Stop can cancel it. Null
+    // once the scan finishes or is stopped.
+    QFutureWatcher<forkmesh::DirectorySizeScanResult> *m_sizeMapWatcher = nullptr;
+    // The in-flight elevated helper process, so Stop can kill it. Null once
+    // the scan finishes or is stopped.
+    QProcess *m_sizeMapElevatedProcess = nullptr;
     // Container holding one StorageMiniMap per mounted filesystem; refilled on
     // every rescan so mounts appearing or vanishing are picked up.
     QWidget *m_sizeMapVolumesBox = nullptr;
     QPushButton *m_repoProjectsTab = nullptr; // handle for the Projects (N) badge
     QLabel *m_repoVisibilityHint = nullptr; // explains the current visibility
     QTableWidget *m_branchesTable = nullptr;
-    // Splitter holding the branches table + changed-files/scope lists + diff view.
-    // loadBranchesPanel() freezes it while it tears down and rebuilds the rows so
-    // the panes don't flash blank during a refresh/merge (adhoc #256).
-    QWidget *m_branchesSplit = nullptr;
     QLabel *m_branchesSummary = nullptr;
     QPushButton *m_branchPullAllButton = nullptr; // "Pull <base> into all" header action
     // When checked, a successful "Merge to main" auto-runs "Pull <base> into all"
     // so the remaining branches catch up with the merge (adhoc #250).
     QCheckBox *m_branchAutoPullAllCheck = nullptr;
     QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
-    QListWidget *m_branchFileList = nullptr;    // changed-files list beside the diff
-    QLabel *m_branchFilesSummary = nullptr;     // "N files changed" header
-    // Scope selector above the changed-files list: "All changes", the branch's
-    // uncommitted working-tree changes (when its checkout is dirty), and one row
-    // per commit the branch adds over base. Selecting a row re-renders the diff
-    // for just that scope (issue: show commits + uncommitted changes, diffable).
-    QListWidget *m_branchScopeList = nullptr;
-    QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
+    // Pull request the range pane is reviewing, or -1 when it shows a plain
+    // branch. Set only by the two entry points (openPullDiffInGitView /
+    // switchToBranch) so internal refreshes keep the current mode (adhoc #107).
+    // PR mode renders the PR's review threads + comment gutters into the diff
+    // and shows the "PR #N" button that opens the full pull request page.
+    int m_branchDiffPullNumber = -1;
     // Branch that auto-pull has already been attempted for (see showBranchDiff),
-    // so a declined stash prompt or an aborted merge doesn't re-nag every time the
-    // panel happens to rebuild while the same branch is still selected. Cleared
-    // implicitly by simply differing once a different branch is selected.
+    // so a failed update doesn't retry on every incidental rebuild while the same
+    // branch stays selected. Cleared implicitly by simply differing once another
+    // branch is selected.
     QString m_branchAutoPullAttempted;
-    // Bumped each time a branch is selected / a scope diff is requested so the
-    // off-thread git reads that build the scope list and render the diff can drop
-    // their result if the user has since switched branch or scope (issue #353 —
-    // showBranchDiff/renderBranchScopeDiff shelled git on the GUI thread).
-    int m_branchScopeLoadGen = 0;
+    // Bumped each time a branch is selected / a range diff is requested so the
+    // off-thread git read that renders the diff can drop its result if the user
+    // has since switched branch (issue #353 — showBranchDiff/
+    // renderBranchScopeDiff shelled git on the GUI thread).
     int m_branchScopeDiffGen = 0;
     // Branch merge-conflict probes. `git merge-tree` costs ~0.5-1s per branch on a
     // busy repo, so running one per row inline froze the branches panel for
@@ -4996,6 +5501,9 @@ private:
     // rebuilds and the detail pane reuse it rather than re-shelling git.
     QHash<QString, bool> m_branchConflictCache;
     QSet<QString> m_branchConflictProbes; // branches a worker is probing right now
+    QHash<QString, BranchChangeStat> m_branchChangeStatsCache;
+    int m_branchChangeStatsGen = 0;
+    bool m_branchChangeStatsLoading = false;
     // Probe the given branches (pairs of branch name + cache key) for conflicts
     // with `base` off the GUI thread, painting each verdict into the table when
     // it lands.
@@ -5013,17 +5521,55 @@ private:
     // a commit, or the uncommitted changes); set by renderBranchDiffPatch so the
     // per-file Viewed toggle persists against the right scope, not always "all".
     QString m_branchDiffViewedContext;
-    QLabel *m_branchDiffSticky = nullptr;
+    // Checkout whose complete snapshot is compared with the base. For a linked
+    // worktree this lets the one Git view include committed, staged, unstaged,
+    // and untracked changes rather than only the branch tip.
+    QString m_branchDiffWorkDir;
+    // Sticky header pinned over the branch/PR diff (same form as the PR viewer's:
+    // filename, Pac-Man read-progress chart, percent label and a Viewed toggle).
+    QFrame *m_branchDiffSticky = nullptr;
+    QLabel *m_branchStickyPath = nullptr;
+    PacmanProgress *m_branchStickyPacman = nullptr;
+    QLabel *m_branchStickyPercent = nullptr;
+    QPushButton *m_branchStickyViewed = nullptr;
+    QString m_branchStickyFile; // file the sticky bar currently mirrors
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     // Ordered file paths of the diff currently in the branch view, so the
     // sticky-bar span map can be rebuilt once the whole diff has landed (the
-    // render is progressive — see renderDiffStreamed, adhoc #51/#421).
+    // render is progressive — see renderDiffStreamed, adhoc #51/#421), and each
+    // file's document anchor so the auto-mark-viewed re-render can land back on
+    // the file still being read.
     QStringList m_branchDiffFilePaths;
+    QStringList m_branchDiffFileAnchors;
+    // Last file a CHANGES-row action navigated to in either the branch-range or
+    // working-tree diff. Also gives the window tests a stable assertion that
+    // does not depend on viewport height or font metrics.
+    QString m_lastSourceControlDiffPath;
+    // Absolute document y of each file header (aligned to m_branchDiffFileSpans),
+    // cached so the per-scroll-tick sticky/progress update doesn't re-measure the
+    // document; cleared on every re-render / stream-finish (mirrors the PR pane).
+    QList<int> m_branchFileTops;
+    // Debounces the auto-mark-viewed sweep off the branch diff's scrollbar, same
+    // rhythm as the PR viewer's m_pullAutoViewedDebounce (adhoc #107).
+    QTimer *m_branchAutoViewedDebounce = nullptr;
+    // Find-in-diff bar over the branch/PR range pane (mirrors the PR viewer's).
+    QWidget *m_branchDiffSearchBar = nullptr;
+    QLineEdit *m_branchDiffSearchInput = nullptr;
+    QLabel *m_branchDiffSearchCount = nullptr;
+    QList<QTextCursor> m_branchDiffSearchMatches;
+    int m_branchDiffSearchIndex = -1;
+    // Unified <-> side-by-side toggle for the range pane (shared preference).
+    QPushButton *m_branchSplitButton = nullptr;
+    // "PR #N" — shown in PR mode; opens the full pull request page.
+    QPushButton *m_branchOpenPullButton = nullptr;
     QPushButton *m_branchesDeleteSelBtn = nullptr;
     // Detail-pane action bar above the branch diff: acts on the selected branch
     // (m_branchDiffBranch), mirroring the worktrees tab. Their enabled/tooltip
     // state is refreshed in updateBranchDetailActions() as the selection changes.
-    QLabel *m_branchDetailLabel = nullptr;      // "<branch> · N behind · M ahead"
+    QLabel *m_branchDetailLabel = nullptr;      // "<branch> -> <base> · N behind · M ahead"
+    // Closes the review and hands the Git view's left column back to the working
+    // tree / commit history (adhoc #110).
+    QPushButton *m_branchCloseButton = nullptr;
     QPushButton *m_branchOpenCodiumButton = nullptr; // "Open in Codium" (VSCodium)
     QPushButton *m_branchMergeEditorButton = nullptr; // "Merge editor" (resolve by hand)
     QPushButton *m_branchPullButton = nullptr;  // "Pull <base>" into the branch
@@ -5086,7 +5632,6 @@ private:
     QPushButton *m_worktreesButton = nullptr; // "N worktrees" toggle in the Code toolbar
     QPushButton *m_remotesButton = nullptr;   // "N remotes" dropdown in the Code toolbar
     QPushButton *m_tagsButton = nullptr;
-    QPushButton *m_toolbarCommitsButton = nullptr; // -> commits panel, next to Branches/Tags
     // Persistent segmented toggle, always visible above the Code page, that
     // switches between the GitHub-style overview and the explorer/editor view.
     QPushButton *m_filesModeOverviewButton = nullptr; // -> code overview
@@ -5178,18 +5723,20 @@ private:
     QListWidget *m_globalSearchPopup = nullptr;
     QTimer *m_globalSearchTimer = nullptr;     // debounce keystrokes before rebuilding
     // Back / forward navigation trail (left of the search box). Each entry is a
-    // place we landed on: the top-level section index, the repo open in the
-    // detail panel (-1 = none), and which repo tab (Code / Commits / Issues /
-    // Pulls / …) was showing, so a click onto any of them is its own step that
-    // Back / Forward can return to. detailTab is -1 outside the Code section.
+    // place we landed on: section, repository, repo tab, and—inside Git—the
+    // browsed branch. This lets Back / Forward cross Code ↔ Git and branch ↔
+    // branch rather than treating them as the same Code-tab location.
     struct NavPlace {
         int section = 0;
         int repoIndex = -1;
         int detailTab = -1;
+        int overviewPage = -1; // files=0, Git=1, branches=2, worktrees=3
+        QString branch;
         bool operator==(const NavPlace &o) const
         {
             return section == o.section && repoIndex == o.repoIndex &&
-                   detailTab == o.detailTab;
+                   detailTab == o.detailTab && overviewPage == o.overviewPage &&
+                   branch == o.branch;
         }
     };
     QPushButton *m_navBackButton = nullptr;
@@ -5236,6 +5783,21 @@ private:
     // Source Control panel (left side of the Commits tab).
     static constexpr int kCommitWorkspaceChangesPage = 0;
     static constexpr int kCommitWorkspaceCommitPage = 1;
+    // Branch/PR range review page: its diff fills the right pane while the
+    // universal source-control panel and commit graph stay in the left column.
+    static constexpr int kCommitWorkspaceRangePage = 2;
+    // The Git view's left column: source control above commit history.
+    QStackedWidget *m_gitFilesSlot = nullptr;
+    QStackedWidget *m_gitHistorySlot = nullptr;
+    // Show a right-pane page and keep its compare indicator in step.
+    void setCommitWorkspacePage(int page);
+    // The "<branch> -> <base>" compare indicator on the graph's branch row:
+    // while a branch/PR comparison is open on the right pane, an arrow and a
+    // base button appear after the branch button, and the base button's
+    // dropdown picks which branch the range is diffed against (adhoc #16).
+    QLabel *m_commitsCompareArrow = nullptr;
+    QPushButton *m_commitsCompareBaseButton = nullptr;
+    void updateCommitsCompareIndicator();
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;
@@ -5255,9 +5817,12 @@ private:
     QPushButton *m_scmCommitButton = nullptr;
     QPushButton *m_scmCommitPushButton = nullptr; // commit, then publish/push
     QPushButton *m_scmStageCommitPushButton = nullptr; // stage all, commit, push
-    QPushButton *m_scmStageAllButton = nullptr;
-    QPushButton *m_scmUnstageAllButton = nullptr;
-    QPushButton *m_scmDiscardAllButton = nullptr;
+    QWidget *m_scmOutgoingPanel = nullptr;
+    QLabel *m_scmOutgoingLabel = nullptr; // branch + pending commit count
+    QPushButton *m_scmSyncButton = nullptr; // publish/push pending commits
+    int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
+    // Stage all / Unstage all / Discard all have no buttons of their own in the
+    // panel any more — the CHANGES group headers carry those three actions.
     QPushButton *m_scmRefreshButton = nullptr;
     QPushButton *m_scmPrevButton = nullptr;   // jump to previous changed file
     QPushButton *m_scmNextButton = nullptr;   // jump to next changed file
@@ -5322,9 +5887,8 @@ private:
     bool m_overviewLoading = false;
     int m_treeLoadedForIndex = -1;          // repo whose explorer tree is built
     QLabel *m_commitBar = nullptr;
-    QPushButton *m_historyButton = nullptr;
     // Area under the latest-commit bar: 0 = crumb + file list + README,
-    // 1 = the commits panel (list + diff), toggled by m_historyButton.
+    // 1 = the Git workspace, reachable only from the activity rail.
     QStackedWidget *m_overviewBodyStack = nullptr;
     QLabel *m_overviewCrumb = nullptr;
     QString m_commitBarStatusHash;
@@ -5386,6 +5950,8 @@ private:
     QPushButton *m_discussionCommentButton = nullptr;
     QLabel *m_discussionCategorySummary = nullptr;
     QList<Discussion> m_currentDiscussions;
+    // Same guard as m_workflowCountLoadGen, for the badge-only discussions load.
+    int m_discussionCountLoadGen = 0;
     int m_currentDiscussionNumber = -1;
     DiscussionInboxBackoff m_discussionInboxBackoff;
     // Exponential backoff for the app's periodic network pollers (owner-inbox
@@ -5398,6 +5964,10 @@ private:
     // periodic heartbeat timer if the immediate send fails).
     bool m_pendingCreditsRefilled5h = false;
     bool m_pendingCreditsRefilledWeekly = false;
+    // One armed timer per provider/window; calendar reminders persist outside
+    // the process, while these timers make the desktop ping prompt when the
+    // app remains open.
+    QHash<QString, QTimer *> m_usageLimitReminderTimers;
 
     // --- Cove (encrypted vault) UI + session state ----------------------------
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
@@ -5612,7 +6182,14 @@ private:
         qint64 timestampMs = 0;
         bool warning = false;
         int runId = -1;
-        NotificationLink link; // double-click destination (issue #292)
+        NotificationLink link; // click destination (issue #292)
+        // Columns the Pings page shows for every row, named after the website
+        // inbox's own fields so a local event and a mirrored website ping read
+        // the same way (adhoc #77).
+        QString kind;   // "issue" | "chat" | "action" | … (defaults from link)
+        QString actor;  // who caused it, when known
+        QString repo;   // "owner/name", when it is about a repository
+        qint64 id = 0;  // stable row identity, so one row can be deleted
     };
     ActionStore *m_actionStore = nullptr;
     // A pool of runners so independent workflows (e.g. the Android build, the CI
@@ -5641,8 +6218,11 @@ private:
     qint64 m_mirrorActionsSummaryAttemptedAtMs = 0;
     qint64 m_lastExternalActionsScanMs = 0;
     QList<AppNotification> m_notifications;
+    qint64 m_nextNotificationId = 1; // row identity for delete (adhoc #77)
+    // Website ping ids already surfaced as immediate error pings, so a poll
+    // that returns the same inbox again never re-flashes them (adhoc #77).
+    QSet<QString> m_flashedWebAlertIds;
     QPushButton *m_notificationButton = nullptr;
-    QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     // The website's alert inbox, mirrored onto that page (adhoc #59).
     QJsonArray m_webAlerts;
@@ -5655,6 +6235,10 @@ private:
     QLabel *m_actionNodeLabel = nullptr;         // caption above that dropdown
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
+    // Bumped by every workflow discovery (panel or badge-only): a background
+    // count that lands after a newer load — or after the panel loaded the real
+    // list — drops its result instead of overwriting it.
+    int m_workflowCountLoadGen = 0;
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,
@@ -5864,6 +6448,10 @@ private:
     QPushButton *m_agentInfoButton = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
+    // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run
+    // finishing no longer opens one, this button does. Shown until the session
+    // has a PR.
+    QPushButton *m_agentCreatePrButton = nullptr;
     // "Create linked issue" — shown for ad-hoc sessions with no issue yet, so the
     // run can be promoted to a tracked issue from the detail header (adhoc #189).
     QPushButton *m_agentCreateIssueButton = nullptr;
@@ -6259,8 +6847,15 @@ private:
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
     // Above the session list: stop every running agent and cancel the queue
-    // (adhoc #433).
+    // (adhoc #433), and its counterpart that resumes every stopped/failed one
+    // (adhoc #136).
     QPushButton *m_agentStopAllButton = nullptr;
+    QPushButton *m_agentStartAllButton = nullptr;
+    // Beside Start all: queued sessions / concurrent run limit, with direct
+    // one-click controls for that limit.
+    QLabel *m_agentQueueStatusLabel = nullptr;
+    QPushButton *m_agentQueueLimitDecreaseButton = nullptr;
+    QPushButton *m_agentQueueLimitIncreaseButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Detail-toolbar buttons (adhoc #51) opening this session's branch in the
     // Branches tab and its worktree in the Worktrees tab. Full-size buttons like
@@ -6703,6 +7298,9 @@ private:
     QJsonArray m_catalogMirrorsCache;      // last /mirrors payload's "mirrors"
     QString m_catalogMirrorsFetchSource;   // source the last fetch was kicked for
     qint64 m_catalogMirrorsFetchedMs = 0;  // throttle: last fetch kick time
+    // "owner/repo|node" -> bounded result from the exact-node README probe.
+    QHash<QString, QJsonObject> m_mirrorReachabilityCache;
+    QSet<QString> m_mirrorReachabilityInFlight;
     // Per-artifact release download counts for the repo currently shown in the
     // Releases panel (sha256 -> times downloaded), from the worker's
     // /releases/downloads endpoint.
@@ -6736,6 +7334,11 @@ private:
     QTimer *m_chatSaveTimer = nullptr;
     QTimer *m_chatExpiryTimer = nullptr; // periodic pruneExpiredChatHistory()
     QHash<QString, MessageRow *> m_visibleRows; // messageId -> row (current conv)
+    QString m_activeChatThreadRootId;
+    QDialog *m_chatThreadDialog = nullptr;
+    QVBoxLayout *m_chatThreadRowsLayout = nullptr;
+    QPlainTextEdit *m_chatThreadInput = nullptr;
+    QLabel *m_chatThreadCountLabel = nullptr;
     // messageId -> emoji -> reactor display names.
     QHash<QString, QMap<QString, QStringList>> m_reactions;
     QHash<QString, QPixmap> m_avatars;          // senderId -> avatar
@@ -6766,6 +7369,9 @@ private:
     QTimer *m_repoChangeBadgeTimer = nullptr;
     qint64 m_connectedAtMs = 0;
     qint64 m_totalConnectionMs = 0;
+    // When updateHomeStats() last persisted the uptime total, so the once-a-
+    // minute refresh doesn't rewrite the whole settings file each tick.
+    qint64 m_uptimePersistedAtMs = 0;
     // Until this moment, "node connected" alerts are suppressed: the roster
     // arrives incrementally right after we connect, so without a grace window
     // every node that was already online would pop a notification on startup.

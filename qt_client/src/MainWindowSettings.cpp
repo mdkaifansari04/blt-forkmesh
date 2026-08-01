@@ -282,27 +282,9 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoUpdateSetting, enabled);
     });
 
-    // Default tab a repository opens on. Stored as the repo-detail tab index;
-    // defaults to Agents (see defaultRepoTabIndex()).
-    auto *defaultTabLabel = new QLabel("Open repositories on tab");
-    auto *defaultTabCombo = new QComboBox;
-    defaultTabCombo->addItem(QStringLiteral("Code"), 0);
-    defaultTabCombo->addItem(QStringLiteral("Commits"), 1);
-    defaultTabCombo->addItem(QStringLiteral("Issues"), 2);
-    defaultTabCombo->addItem(QStringLiteral("Agents"), 3);
-    defaultTabCombo->addItem(QStringLiteral("Pull requests"), 4);
-    defaultTabCombo->addItem(QStringLiteral("Discussions"), 5);
-    defaultTabCombo->setToolTip(
-        "Which tab to show when you open a repository. Defaults to Agents.");
-    {
-        const int idx = defaultTabCombo->findData(defaultRepoTabIndex());
-        defaultTabCombo->setCurrentIndex(idx < 0 ? 0 : idx);
-    }
-    connect(defaultTabCombo, &QComboBox::currentIndexChanged, this,
-            [defaultTabCombo](int) {
-                QSettings().setValue(kDefaultRepoTabSetting,
-                                     defaultTabCombo->currentData().toInt());
-            });
+    // There is no "open repositories on tab" preference any more (adhoc #119): a
+    // repo opens on its Code overview, and a relaunch restores the tab last
+    // viewed. See kRepoLandingTab.
 
     auto *autoSwitchToAgentCheck =
         new QCheckBox("Switch to Agents tab when a new agent is created");
@@ -1031,23 +1013,18 @@ QWidget *MainWindow::buildSettingsSection()
     // Cap on how many agents run at once (adhoc #433). Anything started past the
     // cap waits in the queue with a clock icon and launches as slots free up, so
     // assigning a batch of issues can't spawn a CLI per issue all at once.
-    auto *maxRunningAgentsEdit = new QLineEdit;
-    maxRunningAgentsEdit->setPlaceholderText(
+    m_maxRunningAgentsEdit = new QLineEdit;
+    m_maxRunningAgentsEdit->setObjectName("maxRunningAgentsEdit");
+    m_maxRunningAgentsEdit->setPlaceholderText(
         QString::number(kDefaultMaxRunningAgents));
-    maxRunningAgentsEdit->setText(QString::number(maxRunningAgents()));
-    maxRunningAgentsEdit->setToolTip(
+    m_maxRunningAgentsEdit->setText(QString::number(maxRunningAgents()));
+    m_maxRunningAgentsEdit->setToolTip(
         "How many agent sessions may run at the same time. Sessions started "
         "beyond this stay queued and start automatically as running ones "
         "finish. Defaults to 5.");
-    connect(maxRunningAgentsEdit, &QLineEdit::editingFinished, this,
-            [this, maxRunningAgentsEdit] {
-                const int limit = qMax(kMinMaxRunningAgents,
-                                       maxRunningAgentsEdit->text().toInt());
-                maxRunningAgentsEdit->setText(QString::number(limit));
-                QSettings().setValue(kMaxRunningAgentsSetting, limit);
-                // Raising the cap should start waiting sessions right away
-                // rather than at the next completion.
-                scheduleAgentQueuePump();
+    connect(m_maxRunningAgentsEdit, &QLineEdit::editingFinished, this,
+            [this] {
+                setAgentConcurrencyLimit(m_maxRunningAgentsEdit->text().toInt());
             });
 
     m_codexApiKeyEdit = new QLineEdit;
@@ -1174,7 +1151,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->setLabelAlignment(Qt::AlignLeft);
     agentForm->setSpacing(8);
     agentForm->addRow("Default agent", m_defaultAgentProviderCombo);
-    agentForm->addRow("Max running agents", maxRunningAgentsEdit);
+    agentForm->addRow("Max running agents", m_maxRunningAgentsEdit);
     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
     agentForm->addRow("OpenAI model", m_codexModelEdit);
@@ -1300,6 +1277,23 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kEmailOnCreditsRefillSetting, enabled);
     });
     usageText->addWidget(emailOnRefillCheck);
+    auto *usageCalendarReminderCheck = new QCheckBox(
+        "Add a calendar reminder and ping me when agent usage resets");
+    usageCalendarReminderCheck->setChecked(
+        QSettings().value(kUsageLimitCalendarReminderSetting, false).toBool());
+    usageCalendarReminderCheck->setToolTip(
+        "When Claude Code or Codex usage is exhausted, open a standard calendar "
+        "reminder for its reset time and show a ForkMesh system ping when it is "
+        "ready again. The calendar app handles alerts while ForkMesh is closed.");
+    connect(usageCalendarReminderCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+                QSettings().setValue(kUsageLimitCalendarReminderSetting, enabled);
+                if (enabled)
+                    restoreUsageLimitReminders();
+                else
+                    clearUsageLimitReminders();
+            });
+    usageText->addWidget(usageCalendarReminderCheck);
     // Issue #115: restore the last-known spend figures immediately so they are
     // visible on restart before any network refresh completes.
     applyCachedSpendLabels();
@@ -1715,8 +1709,6 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_autostartInfo);
     generalCol->addLayout(autostartRemoveRow);
     generalCol->addWidget(autoUpdateCheck);
-    generalCol->addWidget(defaultTabLabel);
-    generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(autoSwitchToAgentCheck);
     generalCol->addWidget(excludeExternalClaudeCheck);
     generalCol->addWidget(publishAgentsToWebCheck);
@@ -1960,7 +1952,9 @@ QWidget *MainWindow::buildQuickSetupTab()
         "Stored locally in Variables / Secrets, injected into every action "
         "run's environment and redacted from logs. The Cloudflare token "
         "authenticates the deploy workflow and tunnel bootstrap; the Vultr "
-        "token lets provisioning workflows create mirror nodes.");
+        "token lets provisioning workflows create mirror nodes and is also "
+        "written to cloudflare_worker/.env.production, so neither this page "
+        "nor the Hosts page asks for it twice.");
     credsHint->setObjectName("statusLine");
     credsHint->setWordWrap(true);
 
@@ -1985,10 +1979,11 @@ QWidget *MainWindow::buildQuickSetupTab()
     vultrTokenEdit->setEchoMode(QLineEdit::Password);
     vultrTokenEdit->setPlaceholderText("Vultr API token");
     vultrTokenEdit->setToolTip(
-        "Saved as the VULTR_API_TOKEN variable so provisioning workflows can "
-        "create mirror-node servers on Vultr.");
+        "Saved as the VULTR_API_KEY variable and in "
+        "cloudflare_worker/.env.production, so provisioning workflows and the "
+        "Hosts page's one-click mirror both find it without asking again.");
     vultrTokenEdit->setText(
-        quickSetupStoredVariable(storedVars, QStringLiteral("VULTR_API_TOKEN")));
+        forkmesh::control::vultrApiKeyFromVariables(storedVars));
 
     auto *credsForm = new QFormLayout;
     credsForm->setLabelAlignment(Qt::AlignLeft);
@@ -2156,11 +2151,6 @@ QWidget *MainWindow::buildQuickSetupTab()
                     cfAccountEdit->text().trimmed(),
                     forkmesh::control::cloudflareAccountIdFromVariables(vars),
                     QStringLiteral("Cloudflare account ID"));
-        putVariable(QStringLiteral("VULTR_API_TOKEN"),
-                    vultrTokenEdit->text().trimmed(),
-                    quickSetupStoredVariable(
-                        vars, QStringLiteral("VULTR_API_TOKEN")),
-                    QStringLiteral("Vultr API token"));
         putVariable(QStringLiteral("WORLD_THEME"),
                     worldThemeCombo->currentData().toString(),
                     quickSetupStoredVariable(
@@ -2181,13 +2171,29 @@ QWidget *MainWindow::buildQuickSetupTab()
             reloadVariablesTable();
         }
 
+        // The Vultr key goes through the shared helper so this page and the
+        // Hosts page's one-click mirror agree on where it lives: the canonical
+        // VULTR_API_KEY variable plus cloudflare_worker/.env.production. It
+        // runs after the store update above so it reads that fresh map back
+        // instead of overwriting it (adhoc #127).
+        QString vultrError;
+        if (!rememberVultrApiKey(vultrTokenEdit->text().trimmed(), &vultrError)
+                 .isEmpty()) {
+            applied << QStringLiteral("Vultr API token");
+        }
+
         if (applied.isEmpty()) {
             setStatus("Nothing to apply \xE2\x80\x94 every field already "
                       "matches the stored setup.",
                       false);
             return;
         }
-        setStatus(QStringLiteral("Saved: %1.").arg(applied.join(", ")), false);
+        setStatus(QStringLiteral("Saved: %1.%2")
+                      .arg(applied.join(", "),
+                           vultrError.isEmpty()
+                               ? QString()
+                               : QStringLiteral(" ") + vultrError),
+                  false);
         logSystem(QStringLiteral("Quick setup applied: %1.")
                       .arg(applied.join(", ")));
     });
@@ -2538,10 +2544,12 @@ void MainWindow::updateUserAvatarButton()
     if (!m_userAvatarNavButton)
         return;
     // Circular, like the website renders an account's picture (adhoc #19).
-    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 34, 0.5);
+    // 24px, so the rail's Account item reads at the same visual weight as its
+    // 20px octicon siblings (adhoc #117).
+    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 24, 0.5);
     if (!pm.isNull())
         m_userAvatarNavButton->setIcon(QIcon(pm));
-    m_userAvatarNavButton->setIconSize(QSize(34, 34));
+    m_userAvatarNavButton->setIconSize(QSize(24, 24));
     m_userAvatarNavButton->setText(QString());
 }
 
@@ -2622,16 +2630,19 @@ void MainWindow::setSettingsAvatar(const QByteArray &pngData)
     if (!pixmap.loadFromData(data))
         return;
     constexpr int side = 64;
-    QPixmap rounded(side, side);
-    rounded.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap rounded = crispIconPixmap(side, dpr);
     QPainter painter(&rounded);
     painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
     QPainterPath clip;
     clip.addRoundedRect(0, 0, side, side, 14, 14);
     painter.setClipPath(clip);
-    painter.drawPixmap(0, 0,
-                       pixmap.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                     Qt::SmoothTransformation));
+    QPixmap scaled = pixmap.scaled(rounded.width(), rounded.height(),
+                                   Qt::KeepAspectRatioByExpanding,
+                                   Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    painter.drawPixmap(0, 0, scaled);
     m_settingsAvatarPreview->setPixmap(rounded);
 }
 
@@ -3136,7 +3147,11 @@ void MainWindow::leaveSession(const QString &)
         m_backend = nullptr;
     }
     updateConnectionStatus();
-    m_stack->setCurrentIndex(0);
+    // Leaving the mesh used to dump the user back on the setup screen; that
+    // screen is gone (adhoc #115), so stay in the app — the status line already
+    // reports the disconnect and the top-bar pill reappears if the account went
+    // with it.
+    updateSignInButton();
     m_userName.clear();
 
     m_homeRoster.clear();
@@ -3899,16 +3914,18 @@ void MainWindow::registerLogFaviconResource(const QString &host, QTextEdit *view
         return;
     QPixmap pix;
     if (m_faviconCache.contains(host)) {
+        const qreal dpr = iconDevicePixelRatio();
+        const int px = qMax(1, qRound(16 * dpr));
         pix = m_faviconCache.value(host)
-                  .scaled(16, 16, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                  .scaled(px, px, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        pix.setDevicePixelRatio(dpr);
     } else if (hasBuiltinFavicon(host)) {
         pix = builtinFavicon(host, 16);
     } else {
         // Never leave the 14px box empty: the host's letter badge stands in
         // until (or in place of) a fetched icon, so every network line in the
         // log reads with an icon (adhoc #436).
-        pix = letterFavicon(host).scaled(16, 16, Qt::KeepAspectRatio,
-                                         Qt::SmoothTransformation);
+        pix = letterFavicon(host, 16);
     }
     view->document()->addResource(
         QTextDocument::ImageResource,
@@ -3971,7 +3988,10 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         m_settingsLog->append(formatDayDividerHtml(date, dark));
     }
 
-    m_settingsLog->append(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+    m_settingsLog->append(formatLogLineHtml(
+        time, message, dark,
+        logPromptIconTag(m_settingsLog, storedLine) +
+            logFaviconTag(message, m_settingsLog)));
     if (lockedPosition >= 0)
         scrollBar->setValue(lockedPosition);
 }
@@ -4015,7 +4035,10 @@ void MainWindow::loadOlderNetworkLogSegment()
             html += QStringLiteral("<div>%1</div>").arg(formatDayDividerHtml(date, dark));
         }
         html += QStringLiteral("<div>%1</div>")
-                    .arg(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+                    .arg(formatLogLineHtml(
+                        time, message, dark,
+                        logPromptIconTag(m_settingsLog, storedLine) +
+                            logFaviconTag(message, m_settingsLog)));
     }
 
     QScrollBar *sb = m_settingsLog->verticalScrollBar();
@@ -4404,6 +4427,28 @@ bool MainWindow::topMessageDockVisible() const
     return m_footerDock && m_footerDock->isVisible();
 }
 
+// Park a message behind the toast that is currently counting down, dropping the
+// oldest once the queue is full. Used both by a burst of errors and by the
+// stream of pings this area mirrors (adhoc #77).
+void MainWindow::queueTopMessage(const QString &text, bool error)
+{
+    const QString trimmed = text.simplified();
+    if (trimmed.isEmpty())
+        return;
+    m_topMessageQueue.append(qMakePair(trimmed, error));
+    while (m_topMessageQueue.size() > kToastQueueLimit)
+        m_topMessageQueue.removeFirst();
+    renderTopMessageCountdown(); // repaint the "(+N more)" suffix
+}
+
+// True while a toast is on screen with its countdown still running: a new
+// background event must queue instead of stomping what is being read.
+bool MainWindow::topMessageBusy() const
+{
+    return m_topMessage && m_topMessage->isVisible() && m_topMessageTimer &&
+           m_topMessageTimer->isActive();
+}
+
 // (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
 // A long message shows as an elided one-liner so it can never widen the window;
 // expanding it wraps the full text so the toast grows in place (no modal).
@@ -4501,6 +4546,9 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
     if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
         positionTopMessageOverlay();
+    // The red error-ping border hugs the window edges (adhoc #77).
+    if (m_errorBorderOverlay && m_errorBorderOverlay->isVisible())
+        m_errorBorderOverlay->setGeometry(rect());
 }
 
 void MainWindow::flashMessage(const QString &text, bool error,
@@ -4528,10 +4576,7 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // shows it with its own full countdown once the current toast finishes.
     if (error && m_topMessage->isVisible() && m_topMessageError &&
         m_topMessageTimer && m_topMessageTimer->isActive()) {
-        m_topMessageQueue.append(trimmed);
-        while (m_topMessageQueue.size() > kToastQueueLimit)
-            m_topMessageQueue.removeFirst();
-        renderTopMessageCountdown(); // repaint the "(+N more)" suffix
+        queueTopMessage(trimmed, true);
         return;
     }
     m_topMessageError = error;
@@ -4602,7 +4647,7 @@ void MainWindow::renderTopMessageCountdown()
     // Tell the user more errors are waiting behind this one, so a fading toast
     // doesn't feel like it silently dropped the rest of a quick burst.
     QString queuedSuffix;
-    if (m_topMessageError && !m_topMessageQueue.isEmpty())
+    if (!m_topMessageQueue.isEmpty())
         queuedSuffix = QStringLiteral(" <span style='color:#6e7681'>(+%1 more)</span>")
                            .arg(m_topMessageQueue.size());
     m_topMessage->setText(m_topMessageBaseHtml + suffix + queuedSuffix);
@@ -4635,7 +4680,7 @@ void MainWindow::dismissTopMessage()
         m_topMessageClose->hide();
 }
 
-// Show the next queued error (its own full countdown, per flashMessage), or
+// Show the next queued message (its own full countdown, per flashMessage), or
 // fully dismiss the toast if nothing is waiting. Called when the current
 // toast's countdown runs out or the user dismisses it early.
 void MainWindow::advanceTopMessageQueue()
@@ -4644,8 +4689,14 @@ void MainWindow::advanceTopMessageQueue()
         dismissTopMessage();
         return;
     }
-    const QString next = m_topMessageQueue.takeFirst();
-    flashMessage(next, /*error=*/true);
+    const QPair<QString, bool> next = m_topMessageQueue.takeFirst();
+    // Hide first: flashMessage would otherwise see a toast that is still
+    // visible and queue this one straight back behind itself.
+    if (m_topMessage)
+        m_topMessage->hide();
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop();
+    flashMessage(next.first, next.second);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

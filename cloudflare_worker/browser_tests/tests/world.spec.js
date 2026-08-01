@@ -6145,7 +6145,9 @@ test("local diagnostics report renderer and existing socket state without new te
   await expect(diagnostics).toContainText("Socket frames");
   await expect(diagnostics).toContainText("coalesced");
   await expect(diagnostics).toContainText("dddddddddddd");
-  await expect(diagnostics).toContainText("No diagnostics are transmitted");
+  await expect(diagnostics).toContainText(
+    "Nothing here is transmitted while you are in the World",
+  );
 
   const snapshot = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.lastDiagnosticsSnapshot,
@@ -6226,6 +6228,101 @@ test("the topbar has no clock or emote actions and local light level survives mo
     (shell) => shell.identity,
   );
   expect(publicIdentityState.lightLevel).toBeUndefined();
+});
+
+test("a handshake is offered to one visitor and poses both avatars once accepted", async ({
+  page,
+}) => {
+  test.slow();
+  const frames = [];
+  let relay = null;
+  await prepareWorldPage(page, "handshake-host", {
+    worldSocketHandler(socket, socketId) {
+      relay = socket;
+      socket.onMessage((raw) => frames.push(JSON.parse(String(raw))));
+      socket.send(JSON.stringify({
+        type: "welcome",
+        id: socketId,
+        peers: [
+          {
+            id: "peer-neighbor",
+            name: "Neighbor",
+            status: "available",
+            x: 3,
+            y: 0.38,
+            z: 4,
+            yaw: 0,
+            space: "town-square",
+          },
+        ],
+      }));
+    },
+  });
+  await waitForWorld(page);
+
+  // A handshake is offered from the selected visitor's own profile, so it is
+  // always addressed at exactly one live peer.
+  await page.locator("forkmesh-world").evaluate((shell) => {
+    shell.openWorldMemberDetail({
+      peerId: "peer-neighbor",
+      name: "Neighbor",
+      accountStatus: "Guest",
+    });
+  });
+  await page.getByRole("button", { name: "Offer handshake" }).click();
+  await expect
+    .poll(() => frames.filter((frame) => frame.kind === "handshake-offer"))
+    .toEqual([
+      { type: "interaction", kind: "handshake-offer", target: "peer-neighbor" },
+    ]);
+  await expect(
+    page.getByRole("button", { name: "Handshake offered" }),
+  ).toBeDisabled();
+
+  // The relay publishes the accepted pair to the room; both halves pose.
+  relay.send(JSON.stringify({
+    type: "interaction",
+    kind: "handshake",
+    from: "peer-neighbor",
+    with: "handshake-host",
+  }));
+  await expect
+    .poll(() =>
+      page.locator("forkmesh-world").evaluate((shell) => ({
+        self:
+          Number(shell.world.player.userData.handshakeStartedAt || 0) > 0,
+        peer:
+          Number(
+            shell.world.scene.getObjectByName("avatar:peer-neighbor")
+              ?.userData?.handshakeStartedAt || 0,
+          ) > 0,
+      })),
+    )
+    .toEqual({ self: true, peer: true });
+  await expect(
+    page.getByRole("button", { name: "Offer handshake" }),
+  ).toBeEnabled();
+
+  // An offer arriving from that peer turns the same panel into the answer.
+  relay.send(JSON.stringify({
+    type: "interaction",
+    kind: "handshake-offer",
+    from: "peer-neighbor",
+  }));
+  await page.getByRole("button", { name: "Shake hands back" }).click();
+  await expect
+    .poll(() => frames.filter((frame) => frame.kind === "handshake-accept"))
+    .toEqual([
+      {
+        type: "interaction",
+        kind: "handshake-accept",
+        target: "peer-neighbor",
+      },
+    ]);
+  // Answering consumes the offer: the panel goes back to offering one.
+  await expect(
+    page.getByRole("button", { name: "Offer handshake" }),
+  ).toBeVisible();
 });
 
 test("Unicode emoji status is local-persisted, coalesced, and available to every avatar label", async ({
@@ -6547,6 +6644,94 @@ test("thumbstick motion is continuous, proportional, and recenters on release", 
     ),
   ).toBe("0px");
   await client.detach();
+  await context.close();
+});
+
+test("thumbstick recenters when its terminal event arrives outside the control", async ({
+  browser,
+}) => {
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+  });
+  const page = await context.newPage();
+  await prepareWorldPage(page, "thumbstick-interrupted-release");
+  await waitForWorld(page);
+
+  const thumbstick = page.locator("[data-world-thumbstick]");
+  const handle = page.locator("[data-world-thumbstick-handle]");
+  const box = await thumbstick.boundingBox();
+  expect(box).not.toBeNull();
+  const centre = {
+    x: Math.round(box.x + box.width / 2),
+    y: Math.round(box.y + box.height / 2),
+  };
+  const dispatchThumbstickPointer = (type, pointerId) =>
+    thumbstick.evaluate(
+      (element, { type, pointerId, x, y }) => {
+        element.dispatchEvent(
+          new PointerEvent(type, {
+            pointerId,
+            pointerType: "touch",
+            clientX: x,
+            clientY: y,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      },
+      {
+        type,
+        pointerId,
+        x: centre.x,
+        y: centre.y - (type === "pointermove" ? box.height * 0.3 : 0),
+      },
+    );
+  await dispatchThumbstickPointer("pointerdown", 1);
+  await dispatchThumbstickPointer("pointermove", 1);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(true);
+
+  // Simulate a mobile browser delivering the terminal event at window rather
+  // than at the captured control. The element listener alone cannot see this.
+  await page.evaluate(() => {
+    window.dispatchEvent(
+      new PointerEvent("pointercancel", {
+        pointerId: 1,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+  });
+
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(false);
+  await expect(thumbstick).toHaveAttribute("data-active", "false");
+  for (const property of ["--thumb-x", "--thumb-y"]) {
+    expect(
+      await handle.evaluate((element, name) =>
+        getComputedStyle(element).getPropertyValue(name).trim(),
+        property,
+      ),
+    ).toBe("0px");
+  }
+
+  // A fresh touch must be accepted instead of being blocked by stale state.
+  await dispatchThumbstickPointer("pointerdown", 2);
+  await dispatchThumbstickPointer("pointermove", 2);
+  await expect.poll(() =>
+    page.locator("forkmesh-world").evaluate(
+      (shell) => shell.world.getMovementState().touchActive,
+    ),
+  ).toBe(true);
+  await dispatchThumbstickPointer("pointerup", 2);
   await context.close();
 });
 

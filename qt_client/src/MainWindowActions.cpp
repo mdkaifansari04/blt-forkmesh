@@ -489,13 +489,19 @@ void MainWindow::scanActionSpool()
                 // MainWindow::syncRepository/onPeerMirrorUpdated). A push that
                 // lands directly on this served bare mirror never goes through
                 // syncRepository, so without this, peers would only notice at
-                // their next three-minute auto-sync tick instead of
+                // their next one-minute auto-sync tick instead of
                 // converging in seconds.
                 if (!r.previewOnly && m_backend)
                     m_backend->notifyMirrorUpdated(
                         catalogOwner(r) + "/" +
                             repoSegment(r.name, QStringLiteral("repository")),
                         commit);
+                // Relay frames reach the desktop peers immediately, but the
+                // SSH-fed headless fleet is outside that room. Fan the exact
+                // refs that just landed on this source mirror out to its
+                // configured SSH remotes now, rather than leaving those nodes
+                // to discover the push on the periodic safety-net sync.
+                pushToSshMirrorRemotes(idx);
             }
         }
         // Skip events with no branch update or a branch deletion (all-zero SHA).
@@ -972,14 +978,24 @@ void MainWindow::refreshOpenRepoDetail()
     // at only one of them.
     const int visibleTab =
         m_repoDetailStack ? m_repoDetailStack->currentIndex() : -1;
-    if (visibleTab == 0 ||
+    // An empty browsed branch means this repo's refs weren't on disk at all when
+    // the view opened — a fresh install's first clone lands well after its detail
+    // page did. Everything derived from them is still on its empty value: the
+    // status strip's bottom-left branch button, "0 branches", "Tags 0",
+    // "Releases (0)". Re-read them whatever tab is on screen, so the sync that
+    // brings the repo down is the one that fills them in (adhoc #116). Once a
+    // branch is known the visible-tab gate keeps the per-push cost as it was.
+    const bool refsJustArrived = m_repoBranch.isEmpty();
+    if (refsJustArrived || visibleTab == 0 ||
         (m_branchesTabIndex >= 0 && visibleTab == m_branchesTabIndex))
         loadBranchesAndTags();
     if (m_commitsTable && m_commitsTable->isVisibleTo(this))
         loadCommits();
     if (visibleTab == 3)
         reloadAgents();
-    if (visibleTab == 2)
+    if (refsJustArrived)
+        refreshRepoTabCounts(); // the repo only just materialized: every badge is empty
+    else if (visibleTab == 2)
         reloadIssuesInBackground();
     // Pull metadata still feeds counts and agent state, but its git/disk load is
     // worker-backed; applying the resulting table is a single model allocation.
@@ -1522,33 +1538,133 @@ void MainWindow::addNotification(const QString &title, const QString &body,
     item.body = body;
     item.warning = warning;
     item.runId = runId;
-    item.timestampMs = QDateTime::currentMSecsSinceEpoch();
-    m_notifications.prepend(item);
-    while (m_notifications.size() > 100)
-        m_notifications.removeLast();
-    updateNotificationButton();
-    // Keep the open Notifications page live as new alerts arrive.
-    if (m_notificationsTable && m_sectionStack &&
-        m_sectionStack->currentIndex() == 3)
-        refreshNotificationsTable();
+    if (runId > 0)
+        item.kind = QStringLiteral("action");
+    recordNotification(item);
 }
 
 void MainWindow::addNotification(const QString &title, const QString &body,
                                  bool warning, const NotificationLink &link)
+{
+    addNotification(title, body, warning, link, QString(), QString());
+}
+
+void MainWindow::addNotification(const QString &title, const QString &body,
+                                 bool warning, const NotificationLink &link,
+                                 const QString &kind, const QString &actor)
 {
     AppNotification item;
     item.title = title;
     item.body = body;
     item.warning = warning;
     item.link = link;
-    item.timestampMs = QDateTime::currentMSecsSinceEpoch();
+    item.kind = kind;
+    item.actor = actor;
+    recordNotification(item);
+}
+
+// Every in-app event lands here: it is filed on the Pings page, counted on the
+// bell, listed in the feed above the network log, and raised in the message
+// area above the footer's mini-log so a new event is seen without opening a
+// page (adhoc #77).
+void MainWindow::recordNotification(AppNotification item)
+{
+    item.id = m_nextNotificationId++;
+    if (item.timestampMs <= 0)
+        item.timestampMs = QDateTime::currentMSecsSinceEpoch();
+    if (item.kind.isEmpty())
+        item.kind = item.link.isValid() ? item.link.kind
+                                        : QStringLiteral("desktop");
+    if (item.repo.isEmpty() && !item.link.owner.isEmpty())
+        item.repo = item.link.owner + QLatin1Char('/') + item.link.name;
     m_notifications.prepend(item);
     while (m_notifications.size() > 100)
         m_notifications.removeLast();
     updateNotificationButton();
+    flashNotification(item);
+    refreshLogEventList();
+    // Keep the open Pings page live as new alerts arrive.
     if (m_notificationsTable && m_sectionStack &&
         m_sectionStack->currentIndex() == 3)
         refreshNotificationsTable();
+}
+
+// The pill above the footer mini-log is this window's ping area, so every
+// recorded event shows there. A routine event queues behind whatever is
+// already counting down rather than stomping it; an error must be seen the
+// moment it happens, so it goes straight through flashMessage (which replaces
+// a routine toast immediately and only queues behind another error) and
+// flashes the red app border (adhoc #77).
+void MainWindow::flashNotification(const AppNotification &item)
+{
+    QString text = item.title.simplified();
+    const QString detail = item.body.simplified();
+    if (!detail.isEmpty())
+        text += QString::fromUtf8(" \xE2\x80\x94 ") + detail; // —
+    if (text.isEmpty())
+        return;
+    if (item.warning) {
+        flashMessage(text, true);
+        flashErrorBorder();
+    } else if (topMessageBusy()) {
+        queueTopMessage(text, false);
+    } else {
+        flashMessage(text, false);
+    }
+}
+
+// Flash a 3px red border (plus a soft inner glow) around the whole window for
+// 1.5 seconds — the same visual the World plays when a new error group arrives
+// (world-admin-error-arrival in world.css, adhoc #77). Re-flashing while one
+// is up restarts the countdown, exactly like the World's timer reset.
+void MainWindow::flashErrorBorder()
+{
+    if (!m_errorBorderOverlay) {
+        // A paint-only widget: transparent to the mouse, always resized over
+        // the central area, painting nothing but the border and glow.
+        class ErrorBorderWidget : public QWidget
+        {
+        public:
+            explicit ErrorBorderWidget(QWidget *parent) : QWidget(parent)
+            {
+                setAttribute(Qt::WA_TransparentForMouseEvents);
+                setAttribute(Qt::WA_NoSystemBackground);
+                setAttribute(Qt::WA_TranslucentBackground);
+            }
+
+        protected:
+            void paintEvent(QPaintEvent *) override
+            {
+                QPainter painter(this);
+                painter.setRenderHint(QPainter::Antialiasing, false);
+                // Border: rgb(248 81 73 / 0.72); glow: a few widening, fading
+                // strokes standing in for the CSS inset box-shadow.
+                QPen pen(QColor(248, 81, 73, 184), 3);
+                pen.setJoinStyle(Qt::MiterJoin);
+                painter.setPen(pen);
+                painter.drawRect(rect().adjusted(1, 1, -2, -2));
+                for (int step = 1; step <= 6; ++step) {
+                    const int inset = 2 + step * 3;
+                    QPen glow(QColor(248, 81, 73, 56 - step * 8), 3);
+                    glow.setJoinStyle(Qt::MiterJoin);
+                    painter.setPen(glow);
+                    painter.drawRect(
+                        rect().adjusted(inset, inset, -inset - 1, -inset - 1));
+                }
+            }
+        };
+        m_errorBorderOverlay = new ErrorBorderWidget(this);
+        m_errorBorderTimer = new QTimer(this);
+        m_errorBorderTimer->setSingleShot(true);
+        connect(m_errorBorderTimer, &QTimer::timeout, this, [this] {
+            if (m_errorBorderOverlay)
+                m_errorBorderOverlay->hide();
+        });
+    }
+    m_errorBorderOverlay->setGeometry(rect());
+    m_errorBorderOverlay->show();
+    m_errorBorderOverlay->raise();
+    m_errorBorderTimer->start(1500); // world-admin-error-arrival's 1.5s
 }
 
 // Jump to the screen/item a ping points at: open the owning repo, switch
@@ -1592,7 +1708,7 @@ void MainWindow::openNotificationLink(const NotificationLink &link)
         if (link.number > 0)
             showDiscussion(link.number);
     } else if (link.kind == QLatin1String("commit")) {
-        showOverviewCommits(); // the commits panel inside the Code overview
+        showOverviewCommits(); // the universal Git workspace
         if (!link.ref.isEmpty())
             showCommit(link.ref);
     } else if (link.kind == QLatin1String("release")) {
@@ -1674,37 +1790,13 @@ void MainWindow::updateNotificationButton()
     m_notificationButton->setToolTip(
         tips.isEmpty() ? QStringLiteral("Pings")
                        : tips.join(QString::fromUtf8(" \xC2\xB7 ")));
-    // The button keeps its "topNavButton" identity (so it stays uniform and
-    // shows its checked state); the pending-approval accent rides on a dynamic
-    // property instead of swapping the object name.
-    m_notificationButton->setProperty("alert", pending > 0);
-    m_notificationButton->style()->unpolish(m_notificationButton);
-    m_notificationButton->style()->polish(m_notificationButton);
-    if (m_notificationRailBadge) {
-        if (pending > 0) {
-            const QString text =
-                pending > 99 ? QStringLiteral("99+") : QString::number(pending);
-            m_notificationRailBadge->setText(text);
-            const int height = 14; // matches #chatUnreadBadge's 7px radius
-            const int width =
-                qMax(height, m_notificationRailBadge->fontMetrics()
-                                 .horizontalAdvance(text) + 8);
-            // Ride the bell's own top-right corner, the way every other rail
-            // item paints its count (ActivityRailButton), instead of the
-            // button's far right edge — a badge parked out there forced the
-            // rail to reserve a whole empty column for it (adhoc #19).
-            const int buttonWidth = m_notificationButton->width();
-            const int iconRight = (buttonWidth + kNotificationBellIconPx) / 2;
-            m_notificationRailBadge->resize(width, height);
-            m_notificationRailBadge->move(
-                qBound(0, iconRight - width + height / 2 + 2,
-                       qMax(0, buttonWidth - width)),
-                0);
-            m_notificationRailBadge->show();
-            m_notificationRailBadge->raise();
-        } else {
-            m_notificationRailBadge->hide();
-        }
+    // The bell is a regular rail item; it paints the pending count on the
+    // icon's corner itself (red "needs you" style, set at construction) and
+    // tints the glyph amber while anything waits.
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_notificationButton)) {
+        railButton->setAlertTint(pending > 0);
+        railButton->setBadgeCount(pending);
     }
 }
 
@@ -1737,6 +1829,10 @@ void MainWindow::openActionRunFromNotification(int runId)
 // ---- Notifications (its own sortable-table section) ------------------------
 
 namespace {
+// Type, Kind, Title, Detail, Repository, From, Status, When, Link — every field
+// a ping carries gets a column (adhoc #77).
+constexpr int kNotificationColumns = 9;
+
 // A table item that sorts by an epoch-millis value held in Qt::UserRole while
 // displaying a human-friendly date, so the "When" column orders chronologically
 // instead of lexicographically.
@@ -1832,6 +1928,7 @@ QString webPingKindLabel(const QString &kind)
         {QStringLiteral("repository_hosted"), QStringLiteral("Repo hosted")},
         {QStringLiteral("organization_task_started"), QStringLiteral("Org task")},
         {QStringLiteral("organization_task_activity"), QStringLiteral("Org task")},
+        {QStringLiteral("error_group"), QStringLiteral("Error group")},
     };
     return labels.value(kind, QStringLiteral("Web"));
 }
@@ -1874,6 +1971,18 @@ QWidget *MainWindow::buildNotificationsSection()
                          QStringLiteral("emblem-default"));
     });
 
+    // Row-level removal, alongside the bulk Clear below. A local event is just
+    // forgotten; a mirrored website ping is deleted from the account's inbox
+    // on the relay too, so it doesn't come back on the next refresh.
+    auto *deleteButton = new QPushButton(QStringLiteral("Delete"));
+    deleteButton->setObjectName("repoAction");
+    deleteButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(deleteButton, "x", 16);
+    deleteButton->setToolTip(
+        QStringLiteral("Delete the selected pings (Del)"));
+    connect(deleteButton, &QPushButton::clicked, this,
+            &MainWindow::deleteSelectedNotifications);
+
     auto *clearButton = new QPushButton(QStringLiteral("Clear"));
     clearButton->setObjectName("repoAction");
     clearButton->setCursor(Qt::PointingHandCursor);
@@ -1884,6 +1993,7 @@ QWidget *MainWindow::buildNotificationsSection()
         m_notifications.clear();
         markWebAlertsRead();
         updateNotificationButton();
+        refreshLogEventList();
         refreshNotificationsTable();
     });
 
@@ -1893,64 +2003,97 @@ QWidget *MainWindow::buildNotificationsSection()
     header->addStretch();
     header->addWidget(testButton);
     header->addWidget(refreshButton);
+    header->addWidget(deleteButton);
     header->addWidget(clearButton);
 
-    // GitHub-ish columns; the table is sortable by clicking a header section.
-    m_notificationsTable = new QTableWidget(0, 4);
+    // Every field a ping carries gets its own sortable column, so the page
+    // shows the same information the website inbox stores (adhoc #77).
+    m_notificationsTable = new QTableWidget(0, kNotificationColumns);
     installColumnHeaderMenu(m_notificationsTable); // 3-dots per-column menu (issue #318)
     m_notificationsTable->setObjectName("issueTable"); // reuse the table styling
     m_notificationsTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Type"), QStringLiteral("Title"),
-         QStringLiteral("Detail"), QStringLiteral("When")});
+        {QStringLiteral("Type"), QStringLiteral("Kind"),
+         QStringLiteral("Title"), QStringLiteral("Detail"),
+         QStringLiteral("Repository"), QStringLiteral("From"),
+         QStringLiteral("Status"), QStringLiteral("When"),
+         QStringLiteral("Link")});
     m_notificationsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_notificationsTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    // Extended, so a run of rows can be deleted in one go.
+    m_notificationsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     m_notificationsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_notificationsTable->verticalHeader()->setVisible(false);
     m_notificationsTable->setSortingEnabled(true);
     m_notificationsTable->setAlternatingRowColors(true);
-    m_notificationsTable->horizontalHeader()->setSectionResizeMode(
-        1, QHeaderView::Stretch);
+    m_notificationsTable->setContextMenuPolicy(Qt::CustomContextMenu);
     m_notificationsTable->horizontalHeader()->setSectionResizeMode(
         2, QHeaderView::Stretch);
     m_notificationsTable->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::ResizeToContents);
-    m_notificationsTable->horizontalHeader()->setSectionResizeMode(
-        3, QHeaderView::ResizeToContents);
+        3, QHeaderView::Stretch);
+    for (int column : {0, 1, 4, 5, 6, 7, 8})
+        m_notificationsTable->horizontalHeader()->setSectionResizeMode(
+            column, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_notificationsTable);
     m_notificationsTable->horizontalHeader()->setSortIndicator(
-        3, Qt::DescendingOrder); // newest first by default
+        7, Qt::DescendingOrder); // newest first by default
     m_notificationsTable->setToolTip(
         QStringLiteral("Click a row to open the related issue, pull "
-                       "request, discussion, commit, chat or action."));
+                       "request, discussion, commit, chat or action. Del (or "
+                       "right-click) removes the selected rows."));
     // A single click is enough to jump to what the ping is about (adhoc #88);
     // itemClicked also fires on the first half of a double-click, so no
-    // separate double-click handler is needed.
+    // separate double-click handler is needed. A Ctrl/Shift-click is a
+    // selection gesture (for Delete), not a navigation.
     connect(m_notificationsTable, &QTableWidget::itemClicked, this,
             [this](QTableWidgetItem *item) {
-                if (!item)
+                if (!item ||
+                    (QGuiApplication::keyboardModifiers() &
+                     (Qt::ControlModifier | Qt::ShiftModifier)))
                     return;
-                QTableWidgetItem *first = m_notificationsTable->item(item->row(), 0);
-                if (!first)
+                openNotificationRow(item->row());
+            });
+
+    // Del removes the selection; scoped to the table so it can never fire from
+    // another page. The right-click menu offers the same, plus Open and Copy.
+    auto *deleteShortcut =
+        new QShortcut(QKeySequence::Delete, m_notificationsTable);
+    deleteShortcut->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(deleteShortcut, &QShortcut::activated, this,
+            &MainWindow::deleteSelectedNotifications);
+    connect(m_notificationsTable, &QWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos) {
+                QTableWidgetItem *item = m_notificationsTable->itemAt(pos);
+                // Right-clicking outside the current selection moves it;
+                // inside it, the whole multi-row selection is kept.
+                if (item && !item->isSelected())
+                    m_notificationsTable->selectRow(item->row());
+                QMenu menu(this);
+                QAction *open = item ? menu.addAction(QStringLiteral("Open"))
+                                     : nullptr;
+                QAction *copy = item ? menu.addAction(QStringLiteral("Copy row"))
+                                     : nullptr;
+                if (item)
+                    menu.addSeparator();
+                QAction *remove = menu.addAction(QStringLiteral("Delete"));
+                remove->setEnabled(
+                    !m_notificationsTable->selectionModel()->selectedRows()
+                         .isEmpty());
+                QAction *chosen =
+                    menu.exec(m_notificationsTable->viewport()->mapToGlobal(pos));
+                if (!chosen)
                     return;
-                // Approval rows route to their run; everything else carries a
-                // NotificationLink to the screen/item it's about (issue #292).
-                const int runId = first->data(Qt::UserRole).toInt();
-                if (runId > 0) {
-                    openActionRunFromNotification(runId);
-                    return;
+                if (chosen == remove) {
+                    deleteSelectedNotifications();
+                } else if (chosen == open) {
+                    openNotificationRow(item->row());
+                } else if (chosen == copy) {
+                    QStringList cells;
+                    for (int column = 0; column < kNotificationColumns; ++column)
+                        if (QTableWidgetItem *cell =
+                                m_notificationsTable->item(item->row(), column))
+                            cells << cell->text();
+                    QGuiApplication::clipboard()->setText(
+                        cells.join(QStringLiteral("\t")));
                 }
-                const QVariant nav = first->data(Qt::UserRole + 1);
-                if (nav.canConvert<NotificationLink>() &&
-                    qvariant_cast<NotificationLink>(nav).isValid()) {
-                    openNotificationLink(qvariant_cast<NotificationLink>(nav));
-                    return;
-                }
-                // A website ping about something this node doesn't mirror
-                // still has somewhere to go: its page on the site (adhoc #59).
-                const QString href =
-                    first->data(Qt::UserRole + 2).toString();
-                if (!href.isEmpty())
-                    QDesktopServices::openUrl(QUrl(href));
             });
 
     auto *layout = new QVBoxLayout(page);
@@ -1972,53 +2115,105 @@ void MainWindow::refreshNotificationsTable()
     m_notificationsTable->setSortingEnabled(false);
     m_notificationsTable->setRowCount(0);
 
-    auto addRow = [this](const QString &type, const QString &titleText,
-                         const QString &detail, qint64 whenMs, int runId,
-                         bool warning, const NotificationLink &link,
-                         const QString &href = QString()) {
+    // One row per event, carrying every field that event has. The row's first
+    // cell also holds the machine-readable identity the click and delete
+    // handlers read back: the run id, the in-app destination (issue #292), the
+    // website address (adhoc #59), the local ping id and the website alert id
+    // (adhoc #77).
+    struct NotificationRow {
+        QString type;
+        QString kind;
+        QString title;
+        QString detail;
+        QString repo;
+        QString actor;
+        QString status;
+        qint64 whenMs = 0;
+        QString link;
+        int runId = -1;
+        bool warning = false;
+        NotificationLink destination;
+        QString href;
+        qint64 localId = 0;
+        QString webId;
+    };
+    auto addRow = [this](const NotificationRow &data) {
         const int row = m_notificationsTable->rowCount();
         m_notificationsTable->insertRow(row);
 
-        auto *typeItem = new QTableWidgetItem(type);
-        typeItem->setData(Qt::UserRole, runId);
-        // Carry the double-click destination (issue #292) on the row's first
-        // cell; the handler reads it back to open the related screen/item, and
-        // falls back to the website address for an alert about a repository
-        // this node doesn't mirror (adhoc #59).
-        if (link.isValid())
-            typeItem->setData(Qt::UserRole + 1, QVariant::fromValue(link));
-        if (!href.isEmpty())
-            typeItem->setData(Qt::UserRole + 2, href);
-        auto *titleItem = new QTableWidgetItem(titleText);
-        auto *detailItem = new QTableWidgetItem(detail);
+        auto *typeItem = new QTableWidgetItem(data.type);
+        typeItem->setData(Qt::UserRole, data.runId);
+        if (data.destination.isValid())
+            typeItem->setData(Qt::UserRole + 1,
+                              QVariant::fromValue(data.destination));
+        if (!data.href.isEmpty())
+            typeItem->setData(Qt::UserRole + 2, data.href);
+        if (data.localId > 0)
+            typeItem->setData(Qt::UserRole + 3,
+                              static_cast<qlonglong>(data.localId));
+        if (!data.webId.isEmpty())
+            typeItem->setData(Qt::UserRole + 4, data.webId);
+
         // Sorts chronologically (by epoch millis) while showing a friendly date.
         auto *whenItem = new TimestampItem(
-            whenMs > 0 ? formatRepoDate(whenMs) : QString(), whenMs);
-
-        if (warning) {
-            const QColor red("#f85149");
-            for (QTableWidgetItem *it : {typeItem, titleItem, detailItem,
-                                         static_cast<QTableWidgetItem *>(whenItem)})
-                it->setForeground(red);
+            data.whenMs > 0 ? formatRepoDate(data.whenMs) : QString(),
+            data.whenMs);
+        QList<QTableWidgetItem *> cells{
+            typeItem,
+            new QTableWidgetItem(data.kind),
+            new QTableWidgetItem(data.title),
+            new QTableWidgetItem(data.detail),
+            new QTableWidgetItem(data.repo),
+            new QTableWidgetItem(data.actor),
+            new QTableWidgetItem(data.status),
+            whenItem,
+            new QTableWidgetItem(data.link)};
+        const QColor red("#f85149");
+        for (int column = 0; column < cells.size(); ++column) {
+            QTableWidgetItem *cell = cells.at(column);
+            // Long titles/details are elided by the column width, so keep the
+            // full text one hover away rather than only in the toast.
+            if (!cell->text().isEmpty())
+                cell->setToolTip(cell->text());
+            if (data.warning)
+                cell->setForeground(red);
+            m_notificationsTable->setItem(row, column, cell);
         }
-        m_notificationsTable->setItem(row, 0, typeItem);
-        m_notificationsTable->setItem(row, 1, titleItem);
-        m_notificationsTable->setItem(row, 2, detailItem);
-        m_notificationsTable->setItem(row, 3, whenItem);
     };
 
     for (const ActionRun &run : std::as_const(m_actionRuns)) {
         if (run.status != ActionStatus::AwaitingApproval)
             continue;
-        addRow(QStringLiteral("Approval"), run.workflowName,
-               QStringLiteral("%1/%2 at %3")
-                   .arg(run.owner, run.name, run.commit.left(8)),
-               run.createdAtMs, run.id, false, NotificationLink());
+        NotificationRow data;
+        data.type = QStringLiteral("Approval");
+        data.kind = QStringLiteral("action");
+        data.title = run.workflowName;
+        data.detail = QStringLiteral("%1/%2 at %3")
+                          .arg(run.owner, run.name, run.commit.left(8));
+        data.repo = run.owner + QLatin1Char('/') + run.name;
+        data.status = QStringLiteral("Awaiting approval");
+        data.whenMs = run.createdAtMs;
+        data.link = QStringLiteral("run #%1").arg(run.id);
+        data.runId = run.id;
+        addRow(data);
     }
     for (const AppNotification &notice : std::as_const(m_notifications)) {
-        addRow(notice.warning ? QStringLiteral("Alert") : QStringLiteral("Info"),
-               notice.title, notice.body, notice.timestampMs, notice.runId,
-               notice.warning, notice.link);
+        NotificationRow data;
+        data.type = notice.warning ? QStringLiteral("Alert")
+                                   : QStringLiteral("Info");
+        data.kind = notice.kind;
+        data.title = notice.title;
+        data.detail = notice.body;
+        data.repo = notice.repo;
+        data.actor = notice.actor;
+        data.status = QStringLiteral("Desktop");
+        data.whenMs = notice.timestampMs;
+        data.link = notificationLinkLabel(notice.link);
+        data.runId = notice.runId;
+        data.warning = notice.warning;
+        data.destination = notice.link;
+        data.localId = notice.id;
+        addRow(data);
     }
     // The website's ping inbox, listed alongside the local events so one page
     // answers "what happened?" whichever side raised it (adhoc #59).
@@ -2026,6 +2221,8 @@ void MainWindow::refreshNotificationsTable()
         const QJsonObject alert = value.toObject();
         const bool unread =
             alert.value(QStringLiteral("readAt")).toDouble() <= 0;
+        const QString kind =
+            alert.value(QStringLiteral("kind")).toString().trimmed();
         const QString title =
             alert.value(QStringLiteral("title")).toString().trimmed();
         const QString body =
@@ -2038,18 +2235,176 @@ void MainWindow::refreshNotificationsTable()
             href.startsWith(QLatin1Char('/'))
                 ? catalogApiUrl().resolved(QUrl(href)).toString()
                 : QString();
-        addRow(webPingKindLabel(
-                   alert.value(QStringLiteral("kind")).toString().trimmed()),
-               // Unread pings are dotted the way the site's bell marks them;
-               // the column is otherwise identical to a local ping.
-               (unread ? QString::fromUtf8("\xE2\x97\x8F ") : QString()) +
-                   (title.isEmpty() ? QStringLiteral("Website ping") : title),
-               body.isEmpty() ? repo : body,
-               qint64(alert.value(QStringLiteral("ts")).toDouble()), -1, false,
-               webAlertLink(alert), webUrl);
+        NotificationRow data;
+        data.type = webPingKindLabel(kind);
+        data.kind = kind;
+        // Unread pings are dotted the way the site's bell marks them; the
+        // Status column spells the same thing out for sorting.
+        data.title = (unread ? QString::fromUtf8("\xE2\x97\x8F ") : QString()) +
+                     (title.isEmpty() ? QStringLiteral("Website ping") : title);
+        data.detail = body;
+        data.repo = repo;
+        data.actor = alert.value(QStringLiteral("actor")).toString().trimmed();
+        data.status = unread ? QStringLiteral("Unread")
+                             : QStringLiteral("Read");
+        data.whenMs = qint64(alert.value(QStringLiteral("ts")).toDouble());
+        data.link = href;
+        // The site paints error groups red the way local alerts are.
+        data.warning = kind == QLatin1String("error_group");
+        data.destination = webAlertLink(alert);
+        data.href = webUrl;
+        data.webId = alert.value(QStringLiteral("id")).toString().trimmed();
+        addRow(data);
     }
 
     m_notificationsTable->setSortingEnabled(true);
+}
+
+// The Link column's human-readable form of an in-app destination, e.g.
+// "owner/name#12" for an issue or "owner/name@abc1234" for a commit.
+QString MainWindow::notificationLinkLabel(const NotificationLink &link)
+{
+    if (!link.isValid())
+        return {};
+    if (link.kind == QLatin1String("chat"))
+        return link.ref;
+    QString label = link.owner.isEmpty()
+                        ? link.kind
+                        : link.owner + QLatin1Char('/') + link.name;
+    if (link.number > 0)
+        label += QLatin1Char('#') + QString::number(link.number);
+    else if (!link.ref.isEmpty())
+        label += QLatin1Char('@') + link.ref.left(8);
+    return label;
+}
+
+// Open whatever the row on the Pings page points at: the run behind an
+// approval, the in-app screen behind a link, or — for a website ping about a
+// repository this node doesn't mirror — its page on the site (adhoc #59).
+void MainWindow::openNotificationRow(int row)
+{
+    if (!m_notificationsTable || row < 0)
+        return;
+    QTableWidgetItem *first = m_notificationsTable->item(row, 0);
+    if (!first)
+        return;
+    const int runId = first->data(Qt::UserRole).toInt();
+    if (runId > 0) {
+        openActionRunFromNotification(runId);
+        return;
+    }
+    const QVariant nav = first->data(Qt::UserRole + 1);
+    if (nav.canConvert<NotificationLink>() &&
+        qvariant_cast<NotificationLink>(nav).isValid()) {
+        openNotificationLink(qvariant_cast<NotificationLink>(nav));
+        return;
+    }
+    const QString href = first->data(Qt::UserRole + 2).toString();
+    if (!href.isEmpty())
+        QDesktopServices::openUrl(QUrl(href));
+}
+
+// Remove the selected rows: a desktop event is simply forgotten, a mirrored
+// website ping is deleted from the account's inbox on the relay too, and a
+// pending approval is left alone (it disappears when the run is decided).
+void MainWindow::deleteSelectedNotifications()
+{
+    if (!m_notificationsTable || !m_notificationsTable->selectionModel())
+        return;
+    QSet<qlonglong> localIds;
+    QStringList webIds;
+    int approvals = 0;
+    const QModelIndexList rows =
+        m_notificationsTable->selectionModel()->selectedRows();
+    for (const QModelIndex &index : rows) {
+        QTableWidgetItem *first = m_notificationsTable->item(index.row(), 0);
+        if (!first)
+            continue;
+        const qlonglong localId = first->data(Qt::UserRole + 3).toLongLong();
+        const QString webId = first->data(Qt::UserRole + 4).toString();
+        if (localId > 0)
+            localIds.insert(localId);
+        else if (!webId.isEmpty())
+            webIds << webId;
+        else
+            ++approvals;
+    }
+    if (localIds.isEmpty() && webIds.isEmpty()) {
+        if (approvals > 0)
+            flashMessage(QStringLiteral(
+                             "Approvals clear themselves once the run is "
+                             "approved or rejected."),
+                         false);
+        return;
+    }
+    if (!localIds.isEmpty()) {
+        auto stale = [&localIds](const AppNotification &notice) {
+            return localIds.contains(static_cast<qlonglong>(notice.id));
+        };
+        m_notifications.erase(std::remove_if(m_notifications.begin(),
+                                             m_notifications.end(), stale),
+                              m_notifications.end());
+    }
+    for (const QString &alertId : std::as_const(webIds))
+        deleteWebAlert(alertId);
+    updateNotificationButton();
+    refreshLogEventList();
+    refreshNotificationsTable();
+}
+
+// Delete one mirrored website ping from this account's inbox on the relay.
+// The desktop holds no session token, so the request is signed with the
+// account key and a proof that binds the id being deleted (adhoc #77).
+void MainWindow::deleteWebAlert(const QString &alertId)
+{
+    const QString id = alertId.trimmed().toLower();
+    // Drop it locally either way: the page must not keep showing a row the
+    // user just deleted while the relay round trip is in flight.
+    QJsonArray remaining;
+    for (const QJsonValue &value : std::as_const(m_webAlerts)) {
+        const QJsonObject alert = value.toObject();
+        if (alert.value(QStringLiteral("id")).toString().trimmed().toLower() == id) {
+            if (alert.value(QStringLiteral("readAt")).toDouble() <= 0 &&
+                m_webAlertsUnread > 0)
+                --m_webAlertsUnread;
+            continue;
+        }
+        remaining.append(value);
+    }
+    m_webAlerts = remaining;
+    if (!m_networkAccess || id.isEmpty())
+        return;
+    const QString node = accountOwner().trimmed().toLower();
+    if (node.isEmpty())
+        return;
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/notifications"));
+    url.setQuery(QString());
+    QNetworkRequest request(url);
+    request.setTransferTimeout(15000);
+    request.setRawHeader(QByteArrayLiteral("Accept"),
+                         QByteArrayLiteral("application/json"));
+    if (!authenticateOrgTaskRequest(url, request, kAccountAlertDeleteProof, id))
+        return;
+    const QJsonObject body{{QStringLiteral("node"), node},
+                           {QStringLiteral("id"), id}};
+    QNetworkReply *reply = m_networkAccess->sendCustomRequest(
+        request, QByteArrayLiteral("DELETE"),
+        QJsonDocument(body).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply] {
+        reply->deleteLater();
+        const int status =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        if (reply->error() != QNetworkReply::NoError || status < 200 ||
+            status >= 300) {
+            flashMessage(QStringLiteral(
+                             "Couldn't delete that website ping (%1).")
+                             .arg(status),
+                         true);
+            // The relay still has it, so put it back on the next read.
+            m_webAlertsFetchedAtMs = 0;
+        }
+    });
 }
 
 // Pull this account's website alert inbox onto the Notifications page. The
@@ -2101,6 +2456,32 @@ void MainWindow::refreshWebAlerts(bool force)
         m_webAlerts = payload.value(QStringLiteral("notifications")).toArray();
         m_webAlertsUnread = payload.value(QStringLiteral("unread")).toInt();
         updateNotificationButton();
+        // An unread error-group ping is an error that just happened somewhere
+        // on the mesh: raise it in the ping area (and flash the red border)
+        // the moment this poll sees it, instead of leaving it to be discovered
+        // on the Pings page. Each alert id flashes once per app run (adhoc #77).
+        for (const QJsonValue &value : std::as_const(m_webAlerts)) {
+            const QJsonObject alert = value.toObject();
+            if (alert.value(QStringLiteral("kind")).toString().trimmed() !=
+                    QLatin1String("error_group") ||
+                alert.value(QStringLiteral("readAt")).toDouble() > 0)
+                continue;
+            const QString id =
+                alert.value(QStringLiteral("id")).toString().trimmed();
+            if (id.isEmpty() || m_flashedWebAlertIds.contains(id))
+                continue;
+            m_flashedWebAlertIds.insert(id);
+            const QString title =
+                alert.value(QStringLiteral("title")).toString().trimmed();
+            AppNotification ping;
+            ping.title = title.isEmpty()
+                             ? QStringLiteral("New error group on the relay")
+                             : title;
+            ping.body = alert.value(QStringLiteral("body")).toString().trimmed();
+            ping.warning = true;
+            ping.kind = QStringLiteral("error_group");
+            flashNotification(ping);
+        }
         // Only repaint while the page is the one on screen; it rebuilds from
         // m_webAlerts whenever it opens anyway.
         if (m_notificationsTable && m_sectionStack &&
@@ -2419,9 +2800,14 @@ void MainWindow::updateActionsTabIndicator()
     // used to be a floating strip of draining bars above the tab (adhoc #105),
     // removed along with the rest of that band (adhoc #420); the Actions tab
     // itself lists queued and running runs.
-    const int workflows =
-        m_actionWorkflowList ? qMax(0, m_actionWorkflowList->count() - 1) : 0;
-    tab->setText(QStringLiteral("Actions (%1)").arg(formatCount(workflows)));
+    //
+    // m_repoWorkflows, not the list widget's row count: the widget is built once
+    // per window and keeps the last-visited repo's rows, so it reported that
+    // repo's count for every repo opened afterwards. m_repoWorkflows is per-repo
+    // — cleared on open, then filled by refreshRepoActions() or, when the panel
+    // stays lazy, by reloadWorkflowCountInBackground() (adhoc #116).
+    tab->setText(QStringLiteral("Actions (%1)")
+                     .arg(formatCount(m_repoWorkflows.size())));
 }
 
 // Duration of the previous finished run of the same workflow, shown as the
@@ -2529,16 +2915,19 @@ void MainWindow::maybeRestoreIssueLooper()
     looperStartNext();
 }
 
-QList<ActionWorkflow>
-MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
+// The workflow discovery behind availableWorkflowsForRepo(), with no window
+// state of its own so a worker thread can run it too (the Actions badge loads
+// off-thread — see reloadWorkflowCountInBackground).
+static QList<ActionWorkflow> workflowsInRepoPaths(const QString &mirrorPath,
+                                                  const QString &localPath)
 {
     QList<ActionWorkflow> out;
     // Prefer reading the bare mirror's default branch (HEAD); fall back to a
     // local working tree if one is configured.
-    if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()) {
+    if (!mirrorPath.isEmpty() && QDir(mirrorPath).exists()) {
         QProcess ls;
         ls.start(QStringLiteral("git"),
-                 {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("ls-tree"),
+                 {QStringLiteral("-C"), mirrorPath, QStringLiteral("ls-tree"),
                   QStringLiteral("-r"), QStringLiteral("--name-only"),
                   QStringLiteral("HEAD"), QStringLiteral("--"),
                   QStringLiteral(".forkmesh")});
@@ -2551,7 +2940,7 @@ MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
                 continue;
             QProcess show;
             show.start(QStringLiteral("git"),
-                       {QStringLiteral("-C"), repo.mirrorPath,
+                       {QStringLiteral("-C"), mirrorPath,
                         QStringLiteral("show"), QStringLiteral("HEAD:") + path});
             show.waitForFinished(8000);
             if (show.exitCode() != 0)
@@ -2560,9 +2949,43 @@ MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
                 path, QString::fromUtf8(show.readAllStandardOutput())));
         }
     }
-    if (out.isEmpty() && !repo.localPath.isEmpty())
-        out = ActionFile::parseWorkflowsInDir(repo.localPath);
+    if (out.isEmpty() && !localPath.isEmpty())
+        out = ActionFile::parseWorkflowsInDir(localPath);
     return out;
+}
+
+QList<ActionWorkflow>
+MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
+{
+    return workflowsInRepoPaths(repo.mirrorPath, repo.localPath);
+}
+
+// The "Actions (N)" badge without building the Actions panel. Discovery shells
+// Git once per workflow file, so the panel is deliberately lazy — which left
+// every repo advertising "Actions (0)" until its Actions tab was clicked
+// (adhoc #116). Run the same discovery on a worker and keep the result in
+// m_repoWorkflows, exactly where refreshRepoActions() puts it.
+void MainWindow::reloadWorkflowCountInBackground()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int repoIndex = m_repoDetailIndex;
+    const int generation = ++m_workflowCountLoadGen;
+    // By value: the worker must touch nothing the GUI thread owns.
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    const QString mirrorPath = repo.mirrorPath;
+    const QString localPath = repo.localPath;
+    runOffThread<QList<ActionWorkflow>>(
+        [mirrorPath, localPath] {
+            return workflowsInRepoPaths(mirrorPath, localPath);
+        },
+        [this, repoIndex, generation](QList<ActionWorkflow> loaded) {
+            if (generation != m_workflowCountLoadGen ||
+                repoIndex != m_repoDetailIndex)
+                return; // superseded, or the user moved to another repo
+            m_repoWorkflows = std::move(loaded);
+            updateActionsTabIndicator();
+        });
 }
 
 void MainWindow::updateWorkflowListItem(QListWidgetItem *item,
@@ -2620,8 +3043,8 @@ void MainWindow::refreshRepoActions()
     m_actionWorkflowList->clear();
 
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        if (m_repoActionsTab)
-            m_repoActionsTab->setText(QStringLiteral("Actions (0)"));
+        m_repoWorkflows.clear();
+        updateActionsTabIndicator();
         refreshActionsTable();
         return;
     }
@@ -2659,9 +3082,9 @@ void MainWindow::refreshRepoActions()
     showLatestVisibleActionRun();
     updateManualRunBar();
     refreshWorkflowNodeCombo();
-    if (m_repoActionsTab)
-        m_repoActionsTab->setText(QStringLiteral("Actions (%1)")
-                                      .arg(formatCount(qMax(0, m_actionWorkflowList->count() - 1))));
+    // This panel load is authoritative over any badge-only count still in flight.
+    ++m_workflowCountLoadGen;
+    updateActionsTabIndicator();
 }
 
 void MainWindow::refreshWorkflowNodeCombo()

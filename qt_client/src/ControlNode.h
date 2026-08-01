@@ -4,6 +4,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QList>
 #include <QMap>
 #include <QProcessEnvironment>
 #include <QString>
@@ -465,6 +466,11 @@ bool vultrInstanceIsIpv6Only(const QJsonObject &instance);
 // carrying its hosting provider in its name (adhoc #344).
 QString nextMirrorNodeName(const QStringList &existingNames);
 
+// The device-variable names a stored Vultr API key may carry, in resolution
+// order. The first entry is the canonical name every save writes, so a key
+// entered on any page is the one every later run resolves (adhoc #127).
+QStringList vultrApiKeyVariableNames();
+
 // Resolve a Vultr API key this node already stores as a device-local Actions
 // variable (same contract as cloudflareApiTokenFromVariables).
 QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
@@ -580,5 +586,95 @@ QString cloudflareZoneId(const QJsonArray &zones, const QString &zoneName);
 QString cloudflareDnsRecordId(const QJsonArray &records,
                               const QString &hostname,
                               const QString &recordType);
+
+// --- Cloudflare API token check and rotation (adhoc #108) ------------------
+// The Control node page's API token tab reports what an operator's token can
+// actually do against what ForkMesh needs, and mints a correctly scoped
+// replacement. Everything here is deterministic over the raw Cloudflare v4
+// JSON; the HTTPS calls, the local variable store and the .env.production write
+// stay in the UI layer. A token value never enters a returned string.
+
+// One Cloudflare capability the deploy path needs from an API token.
+struct CloudflareTokenRequirement {
+    QString key;             // stable id, also the probe-result map key
+    QString label;           // dashboard wording, e.g. "Workers Scripts: Edit"
+    QString purpose;         // what stops working without it
+    QStringList groupNames;  // acceptable permission-group names, mint-first
+    QString scope;           // "account", "zone" or "user"
+    // A read-only endpoint that proves the token really reaches this resource on
+    // this account. Edit rights cannot be probed without writing, so a
+    // successful probe only ever confirms read access.
+    QString probePath;       // "{account}"/"{zone}" placeholders, may be empty
+    bool required = true;    // false: only this page's own token tooling needs it
+};
+
+// The requirement set, required entries first. Stable order: the table on the
+// page and a minted token's policies both follow it.
+QList<CloudflareTokenRequirement> cloudflareTokenRequirements();
+
+// Read-only probe path with the ids filled in, or an empty string when the
+// requirement has no probe or the id it needs is unknown or malformed.
+QString cloudflareTokenProbePath(const CloudflareTokenRequirement &requirement,
+                                 const QString &accountId,
+                                 const QString &zoneId);
+
+// Loose shape check before a token is put on the wire: Cloudflare issues
+// 40-character base62 tokens, but the bound stays wide so a future format keeps
+// working. Whitespace and newlines are rejected, which is what a pasted
+// credential file looks like.
+bool isPlausibleCloudflareApiToken(const QString &token);
+
+// Token state from GET /user/tokens/verify ("active" when usable) and the token
+// id, so its own policies can then be read.
+QString cloudflareTokenVerifyStatus(const QJsonObject &verifyResult);
+QString cloudflareTokenVerifyId(const QJsonObject &verifyResult);
+
+// Distinct permission-group names allowed by GET /user/tokens/<id>, sorted.
+// Groups inside a deny policy are not reported as granted.
+QStringList cloudflareTokenPermissionGroupNames(const QJsonObject &tokenDetail);
+
+// True when the granted group names cover this requirement.
+bool cloudflareTokenGrantsRequirement(
+    const CloudflareTokenRequirement &requirement,
+    const QStringList &grantedGroupNames);
+
+// The account ids and the user resource key a token's own policies name. A
+// token that cannot list accounts still reveals which account it belongs to
+// this way, and the user key is the only way to scope user-level permission
+// groups (API Tokens) on a replacement token.
+QStringList cloudflareTokenAccountIds(const QJsonObject &tokenDetail);
+QString cloudflareTokenUserResourceKey(const QJsonObject &tokenDetail);
+
+// Exact POST /user/tokens body for a replacement ForkMesh deployment token.
+// Permission-group ids come from the account's own
+// GET /user/tokens/permission_groups catalog, so no id is hardcoded here.
+// Account- and zone-scoped groups become one policy each; user-scoped groups
+// are included only when userResourceKey is known. Fails closed with *error
+// when a required group has no id or no resource to bind to; optional groups
+// are dropped silently.
+QJsonObject cloudflareTokenCreatePayload(
+    const QString &tokenName, const QString &accountId, const QString &zoneId,
+    const QString &userResourceKey, const QJsonArray &permissionGroupCatalog,
+    QString *error = nullptr);
+
+// The new secret from POST /user/tokens, validated as a usable token.
+QString cloudflareCreatedTokenValue(const QJsonObject &createResult);
+
+// Replace (or append) one NAME=value assignment in a .env file's text, keeping
+// every other line, comment and ordering intact. Commented-out assignments are
+// left alone, a later duplicate of the same name is dropped (it would win when
+// deploy.sh sources the file), and the result always ends in a newline.
+QString updatedEnvAssignment(const QString &contents, const QString &name,
+                             const QString &value);
+
+// cloudflare_worker/.env.production beside the repository-pinned deploy.sh —
+// the file deploy.sh exports CLOUDFLARE_* from. The path is returned even when
+// the file does not exist yet, so a rotation can create it.
+QString siteDeployEnvFilePath(const QString &sourceDir = QString(),
+                              const QString &applicationDir = QString());
+
+// "…9f3c" — the last four characters of a token, so the page can name which
+// credential is in play without ever echoing one.
+QString maskedTokenSuffix(const QString &token);
 
 } // namespace forkmesh::control

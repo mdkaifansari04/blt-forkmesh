@@ -222,12 +222,14 @@ QWidget *MainWindow::buildDataSection()
     auto *autoLabel = new QLabel("AUTOMATIC BACKUPS");
     autoLabel->setObjectName("sectionLabel");
     auto *autoHint = new QLabel(
-        "Every hour ForkMesh writes a snapshot of the live database \xE2\x80\x94 "
-        "your identity key, account, chat history, agents, issues and pull "
-        "requests \xE2\x80\x94 to this computer's drive. Restore any snapshot "
-        "below to roll the whole database back to that moment. Each one is an "
-        "ordinary .tar.gz, so it can also be recovered by hand with "
-        "\"tar xzf\".");
+        "With this on, every hour ForkMesh writes a snapshot of the live "
+        "database \xE2\x80\x94 your identity key, account, chat history, agents, "
+        "issues and pull requests \xE2\x80\x94 to this computer's drive. It "
+        "starts on only for control nodes (the ones holding a Cloudflare API "
+        "token), since a day of snapshots can run to gigabytes; tick the box to "
+        "turn it on here. Restore any snapshot below to roll the whole database "
+        "back to that moment. Each one is an ordinary .tar.gz, so it can also "
+        "be recovered by hand with \"tar xzf\".");
     autoHint->setObjectName("statusLine");
     autoHint->setWordWrap(true);
 
@@ -662,7 +664,12 @@ QString MainWindow::backupRoot() const
 
 bool MainWindow::autoBackupEnabled() const
 {
-    return QSettings().value(kAutoBackupEnabledSetting, true).toBool();
+    // Unset means "whatever this kind of node should do": on for control nodes
+    // (a Cloudflare API token is what makes one), off for everything else.
+    return QSettings()
+        .value(kAutoBackupEnabledSetting,
+               forkmesh::autoBackupDefault(resolvedCloudflareApiToken()))
+        .toBool();
 }
 
 int MainWindow::backupKeepCount() const

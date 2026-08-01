@@ -4,9 +4,10 @@
 The desktop Alerts page mirrors the website's notification bell. A desktop that
 authenticated silently owns its account's Ed25519 key and holds no session
 token, so it can only reach /api/notifications by signing a proof onto the URL.
-These checks pin how narrow that credential is: two operations, each with its
-own proof, the collection path only, and no authority for an account that is
-not an active user.
+These checks pin how narrow that credential is: three operations, each with its
+own proof (and the delete proof additionally bound to the row being removed),
+the collection path only, and no authority for an account that is not an active
+user.
 
 AST-extraction harness in the style of test_org_task_signed_writes.py.
 """
@@ -33,6 +34,7 @@ FUNCS = {
 CONSTANTS = {
     "ACCOUNT_ALERT_LIST_PROOF",
     "ACCOUNT_ALERT_READ_PROOF",
+    "ACCOUNT_ALERT_DELETE_PROOF",
     "ACCOUNT_ALERT_COLLECTION_RE",
 }
 
@@ -133,6 +135,18 @@ def _signed_url(namespace, path, proof_name, node="alice", pubkey="PK-alice",
     )
 
 
+def _signed_delete_url(namespace, item_id, node="alice", pubkey="PK-alice",
+                       ts="1700000000000"):
+    # The delete proof binds the row id, so the canonical string carries it.
+    canonical = (namespace["ACCOUNT_ALERT_DELETE_PROOF"] + "\n" + node + "\n"
+                 + item_id + "\n" + ts)
+    sig = _fake_sig(pubkey, canonical.encode())
+    return (
+        "https://forkmesh.test/api/notifications"
+        "?node=" + node + "&ts=" + ts + "&sig=" + sig
+    )
+
+
 def _user(**overrides):
     record = {"pubkey": "PK-alice", "status": "active", "kind": "user"}
     record.update(overrides)
@@ -172,13 +186,49 @@ def test_a_read_proof_is_never_replayable_as_a_write():
                         "ACCOUNT_ALERT_READ_PROOF")))) == ""
 
 
-def test_deleting_an_alert_is_never_signature_authorized():
-    """Removing a row from the inbox still requires a real session."""
+def test_deleting_an_alert_needs_its_own_proof_bound_to_the_row():
+    """The desktop can delete, but only the exact row it signed (adhoc #77)."""
 
     namespace, env = _harness({"alice": _user()})
     resolve = namespace["_account_alert_signed_session"]
-    for method in ("DELETE", "PATCH", "PUT"):
-        for proof in ("ACCOUNT_ALERT_LIST_PROOF", "ACCOUNT_ALERT_READ_PROOF"):
+    row = "a" * 64
+    other = "b" * 64
+
+    assert asyncio.run(resolve(env, _Request(
+        method="DELETE",
+        url=_signed_delete_url(namespace, row)), row)) == "alice"
+    # The same signature presented for a different row proves nothing.
+    assert asyncio.run(resolve(env, _Request(
+        method="DELETE",
+        url=_signed_delete_url(namespace, row)), other)) == ""
+    # …and neither does a delete with no row named at all.
+    assert asyncio.run(resolve(env, _Request(
+        method="DELETE",
+        url=_signed_delete_url(namespace, row)), "")) == ""
+
+
+def test_a_read_or_list_proof_is_never_replayable_as_a_delete():
+    namespace, env = _harness({"alice": _user()})
+    resolve = namespace["_account_alert_signed_session"]
+    row = "a" * 64
+    for proof in ("ACCOUNT_ALERT_LIST_PROOF", "ACCOUNT_ALERT_READ_PROOF"):
+        assert asyncio.run(resolve(env, _Request(
+            method="DELETE",
+            url=_signed_url(
+                namespace, "/api/notifications", proof)), row)) == "", proof
+    # The delete proof is likewise inert on the read verbs.
+    for method in ("GET", "POST"):
+        assert asyncio.run(resolve(env, _Request(
+            method=method,
+            url=_signed_delete_url(namespace, row)))) == "", method
+
+
+def test_no_other_verb_is_signature_authorized():
+    namespace, env = _harness({"alice": _user()})
+    resolve = namespace["_account_alert_signed_session"]
+    for method in ("PATCH", "PUT"):
+        for proof in ("ACCOUNT_ALERT_LIST_PROOF", "ACCOUNT_ALERT_READ_PROOF",
+                      "ACCOUNT_ALERT_DELETE_PROOF"):
             assert asyncio.run(resolve(env, _Request(
                 method=method,
                 url=_signed_url(
@@ -257,15 +307,16 @@ def test_the_session_token_still_wins_and_the_signature_only_fills_the_gap():
         _Request(url="https://forkmesh.test/api/notifications"))) == "bob"
 
 
-def test_the_inbox_handler_uses_the_shared_gate_for_reads_and_marks_read():
+def test_the_inbox_handler_uses_the_shared_gate_for_every_verb():
     start = ENTRY_TEXT.index("async def notifications_handler(env, request):")
     handler = ENTRY_TEXT[start:ENTRY_TEXT.index(
         "async def mirror_requests_handler(", start)]
-    assert handler.count("_alert_inbox_account_name(") == 2
-    # The DELETE branch keeps the strict session-only gate.
+    assert handler.count("_alert_inbox_account_name(") == 3
+    assert "_authed_account_name(" not in handler
+    # The DELETE branch hands the row id to the gate, so the signature it
+    # accepts is the one that named this row (adhoc #77).
     delete_branch = handler[handler.index('if method == "DELETE":'):]
-    assert "_authed_account_name(" in delete_branch
-    assert "_alert_inbox_account_name(" not in delete_branch
+    assert "resource=item_id" in delete_branch
 
 
 def test_desktop_and_worker_agree_on_the_canonical_proof_strings():
@@ -273,6 +324,7 @@ def test_desktop_and_worker_agree_on_the_canonical_proof_strings():
         ENTRY.parents[2] / "qt_client" / "src" / "MainWindowInternal.h"
     ).read_text(encoding="utf-8")
     for proof in ("forkmesh-account-alert-list-v1",
-                  "forkmesh-account-alert-read-v1"):
+                  "forkmesh-account-alert-read-v1",
+                  "forkmesh-account-alert-delete-v1"):
         assert '"%s"' % proof in ENTRY_TEXT
         assert '"%s"' % proof in qt

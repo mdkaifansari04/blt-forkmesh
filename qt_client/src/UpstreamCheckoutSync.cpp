@@ -21,7 +21,17 @@ bool runGit(const QString &dir, const QStringList &args, QString *output,
     QProcess process;
     process.setWorkingDirectory(dir);
     process.setProcessChannelMode(QProcess::SeparateChannels);
-    process.start(QStringLiteral("git"), args);
+    // Headless mirrors are commonly provisioned on small VPS plans. Keep Git's
+    // packing processes from sizing their worker count and caches from the host
+    // CPU count: an initial flagship fetch must not consume the RAM sshd and
+    // the node itself need in order to finish registering.
+    QStringList boundedArgs{
+        QStringLiteral("-c"), QStringLiteral("pack.threads=1"),
+        QStringLiteral("-c"), QStringLiteral("core.deltaBaseCacheLimit=16m"),
+        QStringLiteral("-c"), QStringLiteral("pack.deltaCacheSize=16m"),
+        QStringLiteral("-c"), QStringLiteral("pack.windowMemory=16m")};
+    boundedArgs.append(args);
+    process.start(QStringLiteral("git"), boundedArgs);
     if (!process.waitForFinished(timeoutMs)) {
         process.kill();
         process.waitForFinished(5000);
@@ -128,9 +138,10 @@ QString RefreshOutcome::summary() const
            parts.join(QStringLiteral(", "));
 }
 
-RefreshOutcome refreshManagedCheckoutFromUpstream(
-    const QString &checkoutPath, const QString &upstreamUrl,
-    const QStringList &forcedBranches)
+static RefreshOutcome refreshCore(const QString &checkoutPath,
+                                  const QString &upstreamUrl,
+                                  const QStringList &forcedBranches,
+                                  bool repointOrigin, bool pruneGone)
 {
     RefreshOutcome outcome;
     const QString path = checkoutPath.trimmed();
@@ -141,33 +152,53 @@ RefreshOutcome refreshManagedCheckoutFromUpstream(
         return outcome;
     }
 
-    // Track the live relay route and the full branch namespace: provisioned
-    // checkouts are single-branch clones whose refspec only covered main.
-    if (!runGit(path,
-                {QStringLiteral("remote"), QStringLiteral("set-url"),
-                 QStringLiteral("origin"), url},
-                nullptr))
+    const QString remoteNs = repointOrigin
+                                 ? QStringLiteral("refs/remotes/origin")
+                                 : QStringLiteral("refs/remotes/forkmesh-mesh");
+    if (repointOrigin) {
+        // Track the live relay route and the full branch namespace:
+        // provisioned checkouts are single-branch clones whose refspec only
+        // covered main.
+        if (!runGit(path,
+                    {QStringLiteral("remote"), QStringLiteral("set-url"),
+                     QStringLiteral("origin"), url},
+                    nullptr))
+            runGit(path,
+                   {QStringLiteral("remote"), QStringLiteral("add"),
+                    QStringLiteral("origin"), url},
+                   nullptr);
         runGit(path,
-               {QStringLiteral("remote"), QStringLiteral("add"),
-                QStringLiteral("origin"), url},
+               {QStringLiteral("config"), QStringLiteral("remote.origin.fetch"),
+                QStringLiteral("+refs/heads/*:refs/remotes/origin/*")},
                nullptr);
-    runGit(path,
-           {QStringLiteral("config"), QStringLiteral("remote.origin.fetch"),
-            QStringLiteral("+refs/heads/*:refs/remotes/origin/*")},
-           nullptr);
-    if (!runGit(path,
-                {QStringLiteral("fetch"), QStringLiteral("--prune"),
-                 QStringLiteral("--prune-tags"), QStringLiteral("--tags"),
-                 QStringLiteral("--force"), QStringLiteral("--quiet"),
-                 QStringLiteral("origin")},
-                nullptr, kFetchTimeoutMs)) {
-        outcome.error = QStringLiteral("fetch from the relay failed");
-        return outcome;
+        if (!runGit(path,
+                    {QStringLiteral("fetch"), QStringLiteral("--prune"),
+                     QStringLiteral("--prune-tags"), QStringLiteral("--tags"),
+                     QStringLiteral("--force"), QStringLiteral("--quiet"),
+                     QStringLiteral("origin")},
+                    nullptr, kFetchTimeoutMs)) {
+            outcome.error = QStringLiteral("fetch from the relay failed");
+            return outcome;
+        }
+    } else {
+        // A personal working copy: never touch the user's remote
+        // configuration. One-shot fetch by URL into a scratch remote-tracking
+        // namespace; the forced refspec only ever moves that scratch view,
+        // and the per-branch logic below still refuses every non-fast-forward
+        // local update.
+        if (!runGit(path,
+                    {QStringLiteral("fetch"), QStringLiteral("--prune"),
+                     QStringLiteral("--quiet"), url,
+                     QStringLiteral("+refs/heads/*:") + remoteNs +
+                         QStringLiteral("/*")},
+                    nullptr, kFetchTimeoutMs)) {
+            outcome.error = QStringLiteral("fetch from the mesh failed");
+            return outcome;
+        }
     }
     outcome.fetchOk = true;
 
-    const QHash<QString, QString> upstream =
-        refTips(path, QStringLiteral("refs/remotes/origin"), 3);
+    const QHash<QString, QString> upstream = refTips(path, remoteNs, 3);
     if (upstream.isEmpty()) {
         outcome.error = QStringLiteral("upstream advertised no branches");
         return outcome;
@@ -229,25 +260,48 @@ RefreshOutcome refreshManagedCheckoutFromUpstream(
         }
     }
 
-    const QString upstreamMain = upstream.value(QStringLiteral("main"));
-    for (auto it = local.constBegin(); it != local.constEnd(); ++it) {
-        const QString &branch = it.key();
-        if (upstream.contains(branch) || checkedOut.contains(branch))
-            continue;
-        // Gone upstream. Drop it only when everything it points at already
-        // lives in upstream main — stale claim markers, merged work.
-        if (!upstreamMain.isEmpty() &&
-            containedIn(path, it.value(), upstreamMain)) {
-            if (runGit(path,
-                       {QStringLiteral("branch"), QStringLiteral("-D"), branch},
-                       nullptr))
-                ++outcome.branchesPruned;
-        } else {
-            ++outcome.branchesKept;
+    if (pruneGone) {
+        const QString upstreamMain = upstream.value(QStringLiteral("main"));
+        for (auto it = local.constBegin(); it != local.constEnd(); ++it) {
+            const QString &branch = it.key();
+            if (upstream.contains(branch) || checkedOut.contains(branch))
+                continue;
+            // Gone upstream. Drop it only when everything it points at already
+            // lives in upstream main — stale claim markers, merged work.
+            if (!upstreamMain.isEmpty() &&
+                containedIn(path, it.value(), upstreamMain)) {
+                if (runGit(path,
+                           {QStringLiteral("branch"), QStringLiteral("-D"),
+                            branch},
+                           nullptr))
+                    ++outcome.branchesPruned;
+            } else {
+                ++outcome.branchesKept;
+            }
         }
     }
 
     return outcome;
+}
+
+RefreshOutcome refreshManagedCheckoutFromUpstream(
+    const QString &checkoutPath, const QString &upstreamUrl,
+    const QStringList &forcedBranches)
+{
+    return refreshCore(checkoutPath, upstreamUrl, forcedBranches,
+                       /*repointOrigin=*/true, /*pruneGone=*/true);
+}
+
+RefreshOutcome convergeSourceCheckoutFromMesh(const QString &checkoutPath,
+                                              const QString &meshUrl)
+{
+    // The source of truth converging on submissions an online mirror merged
+    // while this node was away. Strictly additive: no remote reconfiguration,
+    // no branch pruning, no forced branches — every local ref moves only by
+    // fast-forward through a clean worktree, so local-only work always wins
+    // and simply supersedes the mesh on the next publish.
+    return refreshCore(checkoutPath, meshUrl, /*forcedBranches=*/{},
+                       /*repointOrigin=*/false, /*pruneGone=*/false);
 }
 
 } // namespace forkmesh::upstream

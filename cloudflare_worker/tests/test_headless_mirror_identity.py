@@ -510,7 +510,34 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
         "diskTotalBytes",
         "actionsEnabled",
         "actionsState",
+        "cloneServedAt",
+        "cloneServedAgent",
+        "websiteServedAt",
+        "websiteServedAgent",
     }.intersection(unreported)
+
+    # Last-served stamps: signed when the gateway reported one, and only ever
+    # as a bounded client class. A raw User-Agent (a request fingerprint) and a
+    # non-positive stamp are dropped, matching the Worker's normalizer exactly.
+    served = helper._normalized_public_catalog(
+        {
+            "owner": "forkmesh",
+            "name": "forkmesh",
+            "visibility": "public",
+            "updatedAt": "1784840000002",
+            "stateHash": state_hash,
+            "cloneServedAt": "1784839000000",
+            "cloneServedAgent": "git-client",
+            "websiteServedAt": "0",
+            "websiteServedAgent": "Mozilla/5.0 (X11)",
+        },
+        identity["public"]["nodePublicKey"],
+        now_ms=1784840000002,
+    )
+    assert served["cloneServedAt"] == "1784839000000"
+    assert served["cloneServedAgent"] == "git-client"
+    assert "websiteServedAt" not in served
+    assert "websiteServedAgent" not in served
 
 
 @pytest.mark.parametrize(

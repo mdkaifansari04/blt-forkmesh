@@ -192,8 +192,10 @@
                   ? 'data-lucide="git-pull-request"'
                   : `data-lucide="${meta.icon}"`;
               // Inbox-backed tabs get a second (hidden until filled) badge for
-              // items still sitting in the relay's inbox awaiting the owner
-              // node's next sync — see loadRepoPendingCounts.
+              // items still sitting in the relay's inbox that no online node
+              // (source of truth or an approved mirror) has merged yet — see
+              // loadRepoPendingCounts. Any online mirror drains the queue by
+              // committing submissions straight into the repo it serves.
               const pendingBadge = ["issues", "pulls", "discussions"].includes(tab)
                 ? `<span data-dashboard-repo-tab-pending="${tab}" class="hidden rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-mono text-yellow-500"></span>`
                 : "";
@@ -543,14 +545,15 @@
   }
 
   // Opening a repo from any list/search control is a real page navigation now
-  // (repo pages are their own documents). Prefer the canonical origin's clean
-  // URL when the catalog already resolved the key (alias groups), falling back
-  // to the raw owner/name path — the repo page resolves it again on boot.
+  // (repo pages are their own documents). Prefer the organization address the
+  // list already displays when the catalog resolved the key (alias groups),
+  // falling back to the raw owner/name path — the repo page resolves it again
+  // on boot.
   function openRepoPage(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return;
     const repo = findRepository(wanted);
-    const url = repo ? repoPathUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
+    const url = repo ? repoLinkUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
     closeMobileDrawers();
     location.assign(url);
   }
@@ -752,6 +755,8 @@
       pending_inbox: "inbox",
       mirror_request: "radio",
       account_email_sent: "mail-check",
+      organization_task_started: "clipboard-list",
+      organization_task_activity: "clipboard-list",
     })[kind] || "bell";
   }
 
@@ -813,10 +818,50 @@
         </div>
       </div>
       <p class="mt-5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">${escapeHtml(item.body || "ForkMesh notification")}</p>
+      ${organizationTaskDetailsHtml(item)}
       ${mirrorRequestActionsHtml(item)}
       ${item.href ? `<a href="${escapeHtml(item.href)}" class="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Open context</a>` : ""}
     `;
     window.lucide?.createIcons();
+  }
+
+  // Organization task pings (adhoc #147) carry the whole event on meta, so the
+  // reader gets who/what/which org spelled out as fields instead of having to
+  // parse the one-line summary the ping list shows.
+  function organizationTaskDetailsHtml(item) {
+    if (!item || !String(item.kind || "").startsWith("organization_task")) return "";
+    const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
+    const assignee = String(meta.assignee || "");
+    const assigneeLabel = meta.assigneeKind === "agent"
+      ? "An agent"
+      : (assignee ? `@${assignee}` : "Unassigned");
+    const priority = Number(meta.priority) || 0;
+    const status = ({
+      idle: "Not started",
+      active: "In progress",
+      done: "Done",
+    })[String(meta.status || "")] || String(meta.status || "");
+    const rows = [
+      ["Who", meta.actor ? `@${meta.actor}` : ""],
+      ["What", `${String(meta.action || "updated")} a task`],
+      ["Task", meta.taskTitle || ""],
+      ["Organization", meta.organization || ""],
+      ["Department", meta.department || ""],
+      ["Team", meta.team || ""],
+      ["Assigned to", assigneeLabel],
+      ["Priority", priority > 0 ? String(priority) : ""],
+      ["Status", status],
+      ["Repository", meta.repository || ""],
+    ].filter(([, value]) => String(value || "").trim());
+    if (!rows.length) return "";
+    return `
+      <dl class="mt-5 grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">
+        ${rows.map(([label, value]) => `
+          <dt class="text-muted-foreground">${escapeHtml(label)}</dt>
+          <dd class="min-w-0 break-words text-foreground">${escapeHtml(String(value))}</dd>
+        `).join("")}
+      </dl>
+    `;
   }
 
   // Accept/Reject controls on an incoming "someone asked your node to mirror
@@ -1023,7 +1068,10 @@
     state.selectedNotificationId = id;
     renderNotificationModal();
     if (!item.readAt) await markNotificationsRead([id]);
-    if (modal) setNotificationModalOpen(true);
+    if (modal) {
+      setNotificationDropdownOpen(false);
+      setNotificationModalOpen(true);
+    }
   }
 
   // The release version changes at most per deploy: cache it in sessionStorage
@@ -1470,7 +1518,10 @@
 
     const notificationOpen = event.target.closest("[data-notification-open]");
     if (notificationOpen) {
-      await openNotification(notificationOpen.dataset.notificationOpen || "", Boolean(event.target.closest("#notificationModal")));
+      await openNotification(
+        notificationOpen.dataset.notificationOpen || "",
+        !event.target.closest("#notificationModal"),
+      );
       return;
     }
 
@@ -2045,6 +2096,105 @@
         return;
       }
 
+      const issueMcpPromptButton = event.target.closest(
+        "[data-repo-issue-mcp-prompt]",
+      );
+      if (issueMcpPromptButton) {
+        // A plain click copies straight away with a generated connector token.
+        // Shift-click opens the paste box instead, so a node that already
+        // published its own connector can hand over that token by hand.
+        void copyIssueMcpPrompt(issueMcpPromptButton, {
+          replaceToken: event.shiftKey === true,
+        });
+        return;
+      }
+
+      const issueTitleEditButton = event.target.closest(
+        "[data-repo-issue-title-edit]",
+      );
+      if (issueTitleEditButton) {
+        const article = issueTitleEditButton.closest("[data-repo-record-detail]");
+        article?.querySelector("[data-repo-issue-title-heading]")?.classList.add("hidden");
+        const form = article?.querySelector("[data-repo-issue-title-form]");
+        form?.classList.remove("hidden");
+        form?.classList.add("flex");
+        form?.querySelector("[data-repo-issue-title-input]")?.focus();
+        return;
+      }
+
+      const issueTitleCancelButton = event.target.closest(
+        "[data-repo-issue-title-cancel]",
+      );
+      if (issueTitleCancelButton) {
+        renderCurrentWebIssueDetail();
+        return;
+      }
+
+      const issueDescriptionEditButton = event.target.closest(
+        "[data-repo-issue-description-edit]",
+      );
+      if (issueDescriptionEditButton) {
+        const section = issueDescriptionEditButton.closest("[data-repo-record-conversation]");
+        section?.querySelector("[data-repo-record-body]")?.classList.add("hidden");
+        issueDescriptionEditButton.parentElement?.classList.add("hidden");
+        section?.querySelector("[data-repo-issue-description-form]")?.classList.remove("hidden");
+        section?.querySelector("[data-repo-issue-description-input]")?.focus();
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-description-cancel]")) {
+        renderCurrentWebIssueDetail();
+        return;
+      }
+
+      const issueStatusButton = event.target.closest("[data-repo-issue-status]");
+      if (issueStatusButton) {
+        void handleWebIssueAction(issueStatusButton.dataset.repoIssueStatus || "");
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-vote]")) {
+        void handleWebIssueAction("vote");
+        return;
+      }
+
+      const issueSubscriptionButton = event.target.closest(
+        "[data-repo-issue-subscription]",
+      );
+      if (issueSubscriptionButton) {
+        void handleWebIssueAction(
+          issueSubscriptionButton.dataset.repoIssueSubscription || "subscribe",
+        );
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-delete]")) {
+        void handleWebIssueAction("delete-issue");
+        return;
+      }
+
+      const issueCommentEditButton = event.target.closest(
+        "[data-repo-issue-comment-edit]",
+      );
+      if (issueCommentEditButton) {
+        void handleWebIssueAction(
+          "edit-comment",
+          issueCommentEditButton.dataset.repoIssueCommentEdit || "",
+        );
+        return;
+      }
+
+      const issueCommentDeleteButton = event.target.closest(
+        "[data-repo-issue-comment-delete]",
+      );
+      if (issueCommentDeleteButton) {
+        void handleWebIssueAction(
+          "delete-comment",
+          issueCommentDeleteButton.dataset.repoIssueCommentDelete || "",
+        );
+        return;
+      }
+
       const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
       if (pullViewedButton && state.selectedRepo) {
         toggleRepoPullViewed(
@@ -2288,7 +2438,31 @@
     const issueCommentForm = event.target.closest("[data-repo-issue-comment-form]");
     if (issueCommentForm && state.selectedRepo) {
       event.preventDefault();
+      issueCommentForm._issueSubmitAction =
+        event.submitter?.dataset.repoIssueCommentAction || "comment";
       handleIssueCommentSubmit(state.selectedRepo, issueCommentForm);
+      return;
+    }
+    const issueTitleForm = event.target.closest("[data-repo-issue-title-form]");
+    if (issueTitleForm) {
+      event.preventDefault();
+      void handleWebIssueTitleSubmit(issueTitleForm);
+      return;
+    }
+    const issueDescriptionForm = event.target.closest(
+      "[data-repo-issue-description-form]",
+    );
+    if (issueDescriptionForm) {
+      event.preventDefault();
+      void handleWebIssueDescriptionSubmit(issueDescriptionForm);
+      return;
+    }
+    const issueMetadataForm = event.target.closest(
+      "[data-repo-issue-metadata-form]",
+    );
+    if (issueMetadataForm) {
+      event.preventDefault();
+      void handleWebIssueMetadataSubmit(issueMetadataForm);
       return;
     }
     const discussionReplyForm = event.target.closest("[data-repo-discussion-reply-form]");

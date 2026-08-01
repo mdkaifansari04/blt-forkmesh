@@ -310,16 +310,28 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // Settings afterwards.
     if (savedProfileName().isEmpty()) {
         m_freshInstall = true;
-        QSettings().setValue(kAccountNameSetting, randomFunNodeName());
+        const QString generated = randomFunNodeName();
+        QSettings().setValue(kAccountNameSetting, generated);
+        // Record that this name was handed out, not chosen. While it is still
+        // the account name (and no user account is linked), chat speaks as a
+        // guest — the generated name stays the machine's node identity, but it
+        // is not the person's username (see chatIdentityIsGuest()).
+        QSettings().setValue(kGeneratedNodeNameSetting, generated);
     }
     if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
         m_userName = saved;
 
     m_stack = new QStackedWidget(this);
+    // The setup page is no longer a screen anyone sees (adhoc #115): it only ever
+    // asked for a username and a relay host that both already have working
+    // defaults, so it loaded straight into the app anyway. It stays in the stack
+    // purely as the data holder for m_nameEdit / m_serverUrlEdit / m_setupError,
+    // which the session, settings and update paths all still read and write.
     m_stack->addWidget(buildSetupPage());
     logStartup(QStringLiteral("setup page built"));
     m_stack->addWidget(buildChatPage());
     logStartup(QStringLiteral("chat/app page built"));
+    m_stack->setCurrentIndex(1); // open in the app shell, always
     setCentralWidget(m_stack);
     // Build the two largest, most frequently visited repository surfaces before
     // the window becomes interactive. QWidget construction cannot legally run
@@ -397,7 +409,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // owner's repo as it updates. Push events are the primary signal now —
     // since bf6323d0 mirror peers are notified the instant a push lands on the
     // source's bare mirror — so this timer is only a safety net for dropped
-    // events. Three minutes (kMirrorSyncIntervalMs) with ±15% jitter keeps the
+    // events. One minute (kMirrorSyncIntervalMs) with ±15% jitter keeps the
     // dropped-event recovery window short without making a fleet fetch in
     // lockstep. The existing per-repository in-flight guard prevents a timer
     // tick from duplicating an immediate push/roster-driven sync, and the job
@@ -485,17 +497,9 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_setupError->setText(m_profileIdentity.errorString());
         m_setupError->show();
     } else {
-        // Avoid a flash of the login/setup screen on restart only when the
-        // persisted capability belongs to both this account and this exact
-        // local identity key. The identity must be loaded before this check.
-        const QSettings startupSettings;
-        if (AccountCapability::persistedMarkerMatches(
-                startupSettings.value(kDesktopCapableAccountSetting).toString(),
-                startupSettings.value(kDesktopCapablePublicKeySetting).toString(),
-                startupSettings.value(kAuthedAccountSetting).toString(),
-                m_profileIdentity.publicKey())) {
-            m_stack->setCurrentIndex(1);
-        }
+        // The stack already opens on the app shell, so there is no login/setup
+        // screen left to flash past here — the persisted-capability check that
+        // used to decide it is gone with the screen (adhoc #115).
         if (m_pubkeyLabel) {
             m_pubkeyLabel->setText("Ed25519 public key: " +
                                    m_profileIdentity.shortPublicKey());
@@ -511,6 +515,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_pendingSilentAuth = true;
     }
     logStartup(QStringLiteral("identity loaded"));
+    // A provisioned headless mirror never builds or opens the Control Node
+    // page, which used to be the only path that armed its gateway/tunnel
+    // services. Defer until construction and setHeadlessMode() have completed;
+    // the helper still requires the persisted hostname plus an owner-only
+    // connector token, so ordinary clients with no endpoint are a no-op.
+    QTimer::singleShot(
+        0, this, &MainWindow::maybeAutoStartDirectMirrorServices);
     updateHomeStats();
     // Populate the Hosts/Relays nav button counts up front — Nodes' count
     // follows the roster and updates itself via updateNodeSwitcher().
@@ -564,8 +575,10 @@ void MainWindow::runDeferredStartup()
     // No account is required: the node drops straight into the app shell.
     // Silent auth is best-effort — it restores an existing active account's
     // hosting/payout state when this key owns one, but its absence no longer
-    // keeps the node on the welcome screen. The empty-name branch below is now
-    // just a safety net (e.g. name-generation somehow failed).
+    // keeps the node on the welcome screen. A missing/invalid name (e.g. name
+    // generation somehow failed) no longer falls back to the retired setup
+    // screen either; the app stays put and the top-bar sign-in pill is the way
+    // in (adhoc #115).
     auto startNetworking = [&] {
         if (m_pendingSilentAuth) {
             m_pendingSilentAuth = false;
@@ -574,12 +587,8 @@ void MainWindow::runDeferredStartup()
                                      : QString();
             if (!name.isEmpty() && isValidNodeName(name)) {
                 authenticateSilently(name);
-                if (m_stack)
-                    m_stack->setCurrentIndex(1); // app shell
                 startSession();
                 runHeadlessBootstrap();
-            } else if (m_stack) {
-                m_stack->setCurrentIndex(0); // first run / no name: show setup
             }
         }
 
@@ -595,13 +604,18 @@ void MainWindow::runDeferredStartup()
                     if (m_nameEdit)
                         m_nameEdit->setText(name);
                     authenticateSilently(name);
-                    if (m_stack)
-                        m_stack->setCurrentIndex(1);
                     startSession();
                 }
                 runHeadlessBootstrap();
             }
         }
+
+        // Silent auth has now had its say, so the top-bar pill can offer "Log in
+        // / Sign up" (or stay hidden) knowing whether a user account is attached.
+        // This is intentionally separate from m_deferredStartupRun: restoring a
+        // view can update the chrome before this lookup happens.
+        m_startupAuthResolved = true;
+        updateSignInButton();
     };
 
     // An unattended node must publish/host no matter what the restore below
@@ -623,20 +637,19 @@ void MainWindow::runDeferredStartup()
         m_selectedNode = m_repositories.at(index).owner;
         refreshRepositoryList();
         openRepoDetail(index);
-        // Land back on whichever tab was actually open last (adhoc #101) rather
-        // than Settings -> General's "open repositories on tab" default (Agents
-        // unless changed) — a relaunch should stay on whatever page it's on, not
-        // detour through Agents every time.
+        // Land back on whichever tab was actually open last (adhoc #101) — a
+        // relaunch should stay on whatever page it's on. Nothing overrides that
+        // any more: openRepoDetail() above lands on the Code overview, and the
+        // preferred-tab setting that used to detour every launch through Agents
+        // is gone (adhoc #119).
         const int savedTab =
             QSettings().value(kLastRepoDetailTabSetting, -1).toInt();
         if (savedTab >= 0) {
             // applyNavDetailTab()'s Agents (tab 3) branch sets the stack index
             // directly rather than driving it through a button click, so — unlike
-            // every other tab — it never lazily builds the real page itself. That
-            // is normally masked by Agents also being the default landing tab
-            // (already built above by openRepoDetail()); build it explicitly here
-            // so landing on a saved tab that differs from the configured default
-            // cannot leave the Agents tab showing its unbuilt placeholder.
+            // every other tab — it never lazily builds the real page itself. Build
+            // it explicitly here so restoring the Agents tab can't leave it showing
+            // its unbuilt placeholder.
             ensureRepoDetailTabBuilt(savedTab);
             NavPlace target;
             target.section = 0;
@@ -696,9 +709,20 @@ void MainWindow::runDeferredStartup()
     refreshClaudeCodeUsage();
 
     // Hourly snapshot of the live database to the local drive (Settings -> Data
-    // -> Automatic backups). Armed for every launch, headless included — an
-    // unattended mirror is exactly where a lost identity key hurts most.
+    // -> Automatic backups). Armed for every launch, headless included, but it
+    // only starts a timer where backups are actually on: control nodes by
+    // default, anyone who ticked the box.
     startAutoBackups();
+
+    // A provisioned direct HTTPS mirror (hostname configured + owner-only
+    // connector token on disk) used to stay dark after every restart until
+    // someone clicked "Start mirror services" — a headless VPS has nobody to
+    // click it, so its Cloudflare Tunnel never came back. Auto-start the
+    // gateway/Tunnel/registration chain, deferred a further beat so spawning
+    // the gateway and cloudflared doesn't compete with the startup sync burst
+    // (autoSyncMirrors/performRelaySync fire in this same window).
+    QTimer::singleShot(10000, this,
+                       &MainWindow::maybeAutoStartDirectMirrorServices);
 }
 
 void MainWindow::applyTheme()
@@ -725,6 +749,14 @@ void MainWindow::refreshThemedIcons()
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
+    // Bank the still-running uptime clock exactly: the periodic persist in
+    // updateHomeStats() is throttled, so quitting mid-session would otherwise
+    // drop the minutes since its last write.
+    if (m_connectedAtMs > 0)
+        QSettings().setValue(kConnectionTotalSetting,
+                             m_totalConnectionMs +
+                                 QDateTime::currentMSecsSinceEpoch() -
+                                 m_connectedAtMs);
     saveChatHistory();
     // Record this session's stop time, then flush+trim the persisted log.
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));

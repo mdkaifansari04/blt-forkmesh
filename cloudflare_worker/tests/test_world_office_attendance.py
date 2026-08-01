@@ -399,6 +399,76 @@ def test_repeated_in_opens_one_visit_and_out_closes_that_same_row_once():
     assert checked_out["payload"]["visits"][0]["floor"] == ""
 
 
+def test_new_visit_id_closes_reloaded_page_at_its_last_heartbeat():
+    handler, database, state = _runtime()
+    _sign_in(state, name="Alice")
+    first_id = "1" * 32
+    second_id = "2" * 32
+
+    _run(handler(None, _Request({
+        "action": "in",
+        "visitId": first_id,
+        "floor": "engineering",
+    })))
+    _Clock.value += 30_000
+    _run(handler(None, _Request({
+        "action": "heartbeat",
+        "visitId": first_id,
+        "floor": "engineering",
+    })))
+    last_heartbeat = _Clock.value
+    _Clock.value += 10_000
+    response = _run(handler(None, _Request({
+        "action": "in",
+        "visitId": second_id,
+        "floor": "lobby",
+    })))
+
+    rows = database.execute(
+        "SELECT visit_id,in_at,out_at,last_seen_at "
+        "FROM world_office_attendance ORDER BY in_at,visit_id"
+    ).fetchall()
+    assert len(rows) == 2
+    assert rows[0]["visit_id"] == first_id
+    assert rows[0]["out_at"] == last_heartbeat
+    assert rows[1]["visit_id"] == second_id
+    assert rows[1]["in_at"] == _Clock.value
+    assert rows[1]["out_at"] is None
+    assert response["payload"]["leaderboard"][0] == {
+        "account": "Alice",
+        "longestDurationMs": 30_000,
+        "activeDurationMs": 0,
+        "present": True,
+        "floor": "Lobby",
+    }
+
+    # Delayed writes (including an IN retry) from the replaced page cannot
+    # extend or close this visit.
+    _Clock.value += 5_000
+    _run(handler(None, _Request({
+        "action": "in",
+        "visitId": first_id,
+        "floor": "rooftop",
+    })))
+    _run(handler(None, _Request({
+        "action": "heartbeat",
+        "visitId": first_id,
+        "floor": "rooftop",
+    })))
+    _run(handler(None, _Request({
+        "action": "out",
+        "visitId": first_id,
+    })))
+    current = database.execute(
+        "SELECT out_at,last_seen_at,floor_id "
+        "FROM world_office_attendance WHERE visit_id=?",
+        (second_id,),
+    ).fetchone()
+    assert current["out_at"] is None
+    assert current["last_seen_at"] == rows[1]["last_seen_at"]
+    assert current["floor_id"] == "lobby"
+
+
 def test_stale_open_visit_is_closed_and_live_floor_tracks_heartbeat():
     handler, database, state = _runtime()
     _sign_in(state, name="Alice")
@@ -493,6 +563,12 @@ def test_only_active_user_sessions_can_punch_and_actions_are_validated():
         None, _Request({"action": "arrive"})))
     assert invalid_action["status"] == 400
     assert invalid_action["payload"] == {"error": "invalid_action"}
+    invalid_visit = _run(handler(None, _Request({
+        "action": "in",
+        "visitId": "not-a-visit",
+    })))
+    assert invalid_visit["status"] == 400
+    assert invalid_visit["payload"] == {"error": "invalid_visit"}
     assert _run(handler(
         None, _Request(invalid_json=True)))["status"] == 400
     assert database.execute(
