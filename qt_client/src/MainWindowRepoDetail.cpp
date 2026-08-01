@@ -3830,6 +3830,8 @@ void MainWindow::loadCommits()
     const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
+        "--topo-order",
+        "--decorate=full",
         "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P%x1f%D%x1f%b"};
     logArgs << "-n" << QString::number(rowLimit + 1);
     logArgs << currentRef();
@@ -3953,22 +3955,39 @@ void MainWindow::loadCommits()
         // crowd out the message.
         {
             QStringList refs;
+            QStringList refKinds;
             const QStringList rawRefs = f.value(7).split(
                 QStringLiteral(", "), Qt::SkipEmptyParts);
             for (QString ref : rawRefs) {
                 ref = ref.trimmed();
-                if (ref.startsWith(QLatin1String("HEAD -> ")))
+                QString kind = QStringLiteral("local");
+                if (ref.startsWith(QLatin1String("HEAD -> "))) {
                     ref = ref.mid(8);
-                else if (ref == QLatin1String("HEAD"))
+                } else if (ref == QLatin1String("HEAD")) {
                     continue; // detached HEAD marker, not a ref
-                if (ref.startsWith(QLatin1String("tag: ")))
+                } else if (ref.startsWith(QLatin1String("tag: "))) {
                     ref = ref.mid(5);
+                    kind = QStringLiteral("tag");
+                }
+                if (ref.startsWith(QLatin1String("refs/heads/"))) {
+                    ref = ref.mid(11);
+                    kind = QStringLiteral("local");
+                } else if (ref.startsWith(QLatin1String("refs/remotes/"))) {
+                    ref = ref.mid(13);
+                    kind = QStringLiteral("remote");
+                } else if (ref.startsWith(QLatin1String("refs/tags/"))) {
+                    ref = ref.mid(10);
+                    kind = QStringLiteral("tag");
+                }
                 refs << ref;
+                refKinds << kind;
                 if (refs.size() >= 3)
                     break;
             }
-            if (!refs.isEmpty())
+            if (!refs.isEmpty()) {
                 summary->setData(kCommitRefsRole, refs);
+                summary->setData(kCommitRefKindsRole, refKinds);
+            }
         }
         // Action/check status badge for this commit (green check / red x /
         // spinning-blue dot), shown as a leading icon when a workflow ran for it.

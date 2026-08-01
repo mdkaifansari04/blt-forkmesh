@@ -1607,6 +1607,85 @@ int main(int argc, char *argv[])
               !findButtonStartingWith(window, "Syncing"),
           QStringLiteral("no floating Sync button above the Code tab"));
 
+    // Outgoing commits belong inside Source Control, with one safe Sync action.
+    // Give the earlier upstream fixture a real merge so this also exercises the
+    // graph's branch-out/loop-in topology and local/remote ref badge metadata.
+    if (upstreamRepo.isValid()) {
+        const bool outgoingHistory =
+            runGitChecked(upstreamRepo.path(),
+                          {"checkout", "-b", "feature/graph-loop"}) &&
+            runGitChecked(upstreamRepo.path(),
+                          {"commit", "--allow-empty", "-m", "feature lane"}) &&
+            runGitChecked(upstreamRepo.path(), {"checkout", "main"}) &&
+            runGitChecked(upstreamRepo.path(),
+                          {"commit", "--allow-empty", "-m", "main lane"}) &&
+            runGitChecked(upstreamRepo.path(),
+                          {"merge", "--no-ff", "feature/graph-loop", "-m",
+                           "merge graph loop"});
+        const int outgoingRepoIndex = window.testAddLocalRepository(
+            QStringLiteral("me"), QStringLiteral("outgoing-repo"),
+            upstreamRepo.path());
+        window.testOpenRepository(outgoingRepoIndex);
+        window.testClickRailGitButton();
+
+        QWidget *outgoingPanel = window.findChild<QWidget *>(
+            QStringLiteral("scmOutgoingPanel"));
+        QPushButton *syncChanges = window.findChild<QPushButton *>(
+            QStringLiteral("scmSyncButton"));
+        QLabel *outgoingLabel = window.findChild<QLabel *>(
+            QStringLiteral("scmOutgoingLabel"));
+        QElapsedTimer outgoingTimer;
+        outgoingTimer.start();
+        while (outgoingPanel && !outgoingPanel->isVisibleTo(&window) &&
+               outgoingTimer.elapsed() < 5000)
+            QApplication::processEvents(QEventLoop::AllEvents, 10);
+        check(outgoingHistory && outgoingPanel && syncChanges && outgoingLabel &&
+                  outgoingPanel->isVisibleTo(&window) &&
+                  syncChanges->text().contains(QStringLiteral("3↑")) &&
+                  syncChanges->isEnabled() &&
+                  outgoingLabel->text().contains(QStringLiteral("main")),
+              QString("Source Control shows three outgoing commits and an enabled "
+                      "Sync Changes button (history=%1 visible=%2 button=%3 "
+                      "label=%4)")
+                  .arg(outgoingHistory)
+                  .arg(outgoingPanel && outgoingPanel->isVisibleTo(&window))
+                  .arg(syncChanges ? syncChanges->text()
+                                   : QStringLiteral("<missing>"))
+                  .arg(outgoingLabel ? outgoingLabel->text()
+                                     : QStringLiteral("<missing>")));
+
+        QTableWidget *graph = window.findChild<QTableWidget *>(
+            QStringLiteral("commitsList"));
+        bool localRef = false;
+        bool remoteRef = false;
+        bool mergeLoop = false;
+        if (graph) {
+            for (int row = 0; row < graph->rowCount(); ++row) {
+                if (QTableWidgetItem *summary = graph->item(row, 6)) {
+                    const QStringList kinds =
+                        summary->data(Qt::UserRole + 34).toStringList();
+                    localRef = localRef || kinds.contains(QStringLiteral("local"));
+                    remoteRef = remoteRef || kinds.contains(QStringLiteral("remote"));
+                }
+                if (QTableWidgetItem *lane = graph->item(row, 8)) {
+                    const QVariantList top =
+                        lane->data(Qt::UserRole + 20).toList();
+                    const QVariantList bottom =
+                        lane->data(Qt::UserRole + 22).toList();
+                    mergeLoop = mergeLoop ||
+                                (lane->data(Qt::UserRole + 32).toBool() &&
+                                 top != bottom);
+                }
+            }
+        }
+        check(localRef && remoteRef && mergeLoop,
+              QString("commit graph identifies local target refs, remote cloud "
+                      "refs, and a merge loop (local=%1 remote=%2 loop=%3)")
+                  .arg(localRef)
+                  .arg(remoteRef)
+                  .arg(mergeLoop));
+    }
+
     // issue #272: clicking "Update from main" rebuilds the worktrees panel. The
     // rebuild must keep the same worktree selected so its diff/detail pane stays
     // on screen instead of going blank.
