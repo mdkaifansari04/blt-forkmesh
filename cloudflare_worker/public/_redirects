@@ -6,6 +6,7 @@
 /dashboard/repos /dashboard/repos/index.html 200
 /dashboard/network /dashboard/network/index.html 200
 /dashboard/chat /dashboard/chat/index.html 200
+/dashboard/tasks /dashboard/tasks/index.html 200
 /dashboard/settings /dashboard/settings/index.html 200
 /dashboard/profile /dashboard/profile/index.html 200
 /dashboard/profile/repositories /dashboard/profile/repositories/index.html 200

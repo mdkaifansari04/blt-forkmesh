@@ -81,6 +81,18 @@
     settingsView: {
       section: "public-profile",
     },
+    // /dashboard/tasks (adhoc #24): the organization-private task catalog, read
+    // whole and then filtered and paged in the browser. `actor` is the relay's
+    // name for the signed-in member, used by the "Assigned to me" filter.
+    tasksView: {
+      items: [],
+      filter: "open",
+      query: "",
+      page: 1,
+      loading: true,
+      error: "",
+      actor: "",
+    },
     globalSearch: {
       open: false,
       selectedIndex: 0,

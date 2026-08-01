@@ -38,6 +38,7 @@ run_worker_first = [
   "!/dashboard/repos",
   "!/dashboard/network",
   "!/dashboard/chat",
+  "!/dashboard/tasks",
   "!/dashboard/settings",
   "!/dashboard/profile",
   "!/dashboard/profile/repositories",
