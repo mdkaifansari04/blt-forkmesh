@@ -1164,6 +1164,26 @@ void setAgentTitleText(QLabel *label, const QString &text)
         label->setText(text);
 }
 
+// The agent detail's action buttons are the same octicon-over-caption tiles as
+// the left navigation rail (adhoc #2 follow-up: "make buttons have the same
+// style as the left rail") — one visual language for every clickable item on
+// the screen's edge. Same class as the rail, just non-checkable (an action,
+// not a destination) and widened when a caption outgrows the rail's item width.
+ActivityRailButton *railActionButton(const QString &icon, const QString &caption,
+                                     const QString &tooltip)
+{
+    auto *button = new ActivityRailButton(icon, caption);
+    button->setCheckable(false);
+    QFont f = QGuiApplication::font();
+    f.setPixelSize(10);
+    f.setWeight(QFont::DemiBold);
+    button->setFixedSize(
+        qMax(railItemWidth(), QFontMetrics(f).horizontalAdvance(caption) + 12),
+        kRailItemHeight);
+    button->setToolTip(tooltip);
+    return button;
+}
+
 } // namespace
 
 QWidget *MainWindow::buildAgentsTab()
@@ -1443,12 +1463,10 @@ QWidget *MainWindow::buildAgentsTab()
     auto *metaPopupLayout = new QVBoxLayout(m_agentMetaPopup);
     metaPopupLayout->setContentsMargins(12, 10, 12, 10);
     metaPopupLayout->addWidget(m_agentMeta);
-    m_agentInfoButton = new QPushButton(QStringLiteral("Info"));
-    m_agentInfoButton->setCursor(Qt::PointingHandCursor);
-    m_agentInfoButton->setToolTip(
+    m_agentInfoButton = railActionButton(
+        QStringLiteral("info"), QStringLiteral("Info"),
         "Show this session's details: agent, model, mode, repo, status, issue, "
         "PR, branch and worktree");
-    setOcticon(m_agentInfoButton, "info", 16);
     connect(m_agentInfoButton, &QPushButton::clicked, this, [this] {
         if (!m_agentMetaPopup)
             return;
@@ -1475,10 +1493,9 @@ QWidget *MainWindow::buildAgentsTab()
         m_agentMetaPopup->show();
     });
 
-    m_agentStopButton = new QPushButton("Stop");
-    m_agentStopButton->setObjectName("dangerButton");
-    m_agentStopButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentStopButton, "circle-slash", 16);
+    m_agentStopButton = railActionButton(QStringLiteral("circle-slash"),
+                                         QStringLiteral("Stop"),
+                                         "Stop this session's running agent");
     connect(m_agentStopButton, &QPushButton::clicked, this, [this] {
         // External (watch-only) rows have no runner/stream — stop the CLI process
         // ForkMesh detected running outside it instead.
@@ -1495,12 +1512,9 @@ QWidget *MainWindow::buildAgentsTab()
     // adhoc #51 folded the session-only "Delete" that sat beside it into this one
     // button, so watch-only rows (no branch of ours to clean up) go down the
     // session-only path from here.
-    m_agentDeleteAllButton = new QPushButton("Delete");
-    m_agentDeleteAllButton->setObjectName("dangerButton");
-    m_agentDeleteAllButton->setCursor(Qt::PointingHandCursor);
-    m_agentDeleteAllButton->setToolTip(
+    m_agentDeleteAllButton = railActionButton(
+        QStringLiteral("trash"), QStringLiteral("Delete"),
         "Delete this agent session, its worktree folder and its branch");
-    setOcticon(m_agentDeleteAllButton, "trash", 16);
     connect(m_agentDeleteAllButton, &QPushButton::clicked, this, [this] {
         if (isExternalSession(m_selectedAgentSessionId)) {
             deleteSelectedAgentSession();
@@ -1538,10 +1552,9 @@ QWidget *MainWindow::buildAgentsTab()
     });
 
     // "View PR" — appears once the session produced a pull request.
-    m_agentViewPrButton = new QPushButton("View PR");
-    m_agentViewPrButton->setObjectName("primaryButton");
-    m_agentViewPrButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentViewPrButton, "git-pull-request", 16);
+    m_agentViewPrButton = railActionButton(
+        QStringLiteral("git-pull-request"), QStringLiteral("View PR"),
+        "Review this session's pull request in the Git view");
     m_agentViewPrButton->hide();
     connect(m_agentViewPrButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
@@ -1551,15 +1564,66 @@ QWidget *MainWindow::buildAgentsTab()
             openPullDiffInGitView(s->prNumber);
     });
 
+    // "Create PR" — a run finishing no longer opens a pull request by itself
+    // (adhoc #2 follow-up: "I don't want the agent to submit a PR unless I
+    // tell it"); this button is now the only way a transcript session's work
+    // becomes one. Visible until the session has a PR.
+    m_agentCreatePrButton = railActionButton(
+        QStringLiteral("git-pull-request"), QStringLiteral("Create PR"),
+        "Open a pull request from this session's branch (its diff since the "
+        "base commit, committed or not)");
+    m_agentCreatePrButton->hide();
+    connect(m_agentCreatePrButton, &QPushButton::clicked, this, [this] {
+        const int sid = m_selectedAgentSessionId;
+        AgentSession *s = findAgentSession(sid);
+        if (!s || s->branchName.isEmpty())
+            return;
+        if (s->prNumber > 0) {
+            flashMessage(QStringLiteral("This session already has PR #%1.")
+                             .arg(s->prNumber));
+            return;
+        }
+        const QString branch = s->branchName;
+        const int ri = repoIndexFor(s->owner, s->name);
+        if (ri < 0)
+            return;
+        // Only ever diff the session's own worktree — resolving to the shared
+        // checkout is exactly how sessions bled into each other (adhoc #2).
+        // cachedSessionWorktree can shell git, which pumps the event loop, so
+        // `s` is not touched after this point (git-pump UAF family).
+        const QString wt =
+            cachedSessionWorktree(sid, m_repositories.at(ri).localPath, branch);
+        if (wt.isEmpty() || !QDir(wt).exists()) {
+            flashMessage(
+                QStringLiteral("This session's worktree is gone — there is no "
+                               "isolated tree left to diff into a PR."),
+                true);
+            return;
+        }
+        maybeCreatePullForStreamSession(sid);
+        // Re-find: the PR path pumps the GUI event loop over git (git-pump UAF
+        // family), so `s` may dangle by now.
+        if (const AgentSession *after = findAgentSession(sid);
+            after && after->prNumber > 0)
+            flashMessage(QStringLiteral("Created pull request #%1.")
+                             .arg(after->prNumber));
+        else
+            // Mirror nodes submit the PR to the owner instead of numbering it
+            // locally, and a no-change branch creates nothing — the session log
+            // says which.
+            flashMessage(QStringLiteral(
+                "No local pull request was created — see the session log."));
+        reloadAgents();
+        if (sid == m_selectedAgentSessionId)
+            showAgentSession(sid);
+    });
+
     // "Create linked issue" — for ad-hoc sessions (no issue) it files a tracked
     // issue from the run's prompt and links the two (adhoc #189). Hidden once the
     // session already has a linked issue.
-    m_agentCreateIssueButton = new QPushButton("+ issue");
-    m_agentCreateIssueButton->setObjectName("primaryButton");
-    m_agentCreateIssueButton->setCursor(Qt::PointingHandCursor);
-    m_agentCreateIssueButton->setToolTip(
+    m_agentCreateIssueButton = railActionButton(
+        QStringLiteral("issue-opened"), QStringLiteral("+ issue"),
         "Create a tracked issue from this run and link it to this session");
-    setOcticon(m_agentCreateIssueButton, "issue-opened", 16);
     m_agentCreateIssueButton->hide();
     connect(m_agentCreateIssueButton, &QPushButton::clicked, this,
             &MainWindow::createLinkedIssueForSelectedSession);
@@ -1581,17 +1645,15 @@ QWidget *MainWindow::buildAgentsTab()
     // Both are green (adhoc #84): opening the branch or its checkout is the
     // ordinary, safe thing to do from a finished run, so they read as go actions
     // beside the red Stop/Delete pair rather than as more of the same.
-    m_agentBranchButton = new QPushButton(QStringLiteral("Branch"));
-    m_agentBranchButton->setObjectName("successButton");
-    m_agentBranchButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentBranchButton, "git-branch", 16);
+    m_agentBranchButton = railActionButton(
+        QStringLiteral("git-branch"), QStringLiteral("Branch"),
+        "Open this session's branch in the Git view");
     m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
     connect(m_agentBranchButton, &QPushButton::clicked, this,
             [this] { switchToAgentBranch(m_selectedAgentSessionId); });
-    m_agentWorktreeButton = new QPushButton(QStringLiteral("Worktree"));
-    m_agentWorktreeButton->setObjectName("successButton");
-    m_agentWorktreeButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentWorktreeButton, "file-directory", 16);
+    m_agentWorktreeButton = railActionButton(
+        QStringLiteral("file-directory"), QStringLiteral("Worktree"),
+        "Open this session's worktree in the Worktrees tab");
     m_agentWorktreeButton->hide();
     connect(m_agentWorktreeButton, &QPushButton::clicked, this, [this] {
         if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
@@ -1610,6 +1672,7 @@ QWidget *MainWindow::buildAgentsTab()
     actionRow->setContentsMargins(0, 0, 0, 0);
     actionRow->setSpacing(6);
     actionRow->addWidget(m_agentCreateIssueButton);
+    actionRow->addWidget(m_agentCreatePrButton);
     actionRow->addWidget(m_agentViewPrButton);
     actionRow->addWidget(m_agentStopButton);
     actionRow->addWidget(m_agentDeleteAllButton);
@@ -1895,12 +1958,8 @@ QWidget *MainWindow::buildAgentsTab()
     // Per-session worktree actions, mirroring the Worktrees tab's detail bar but
     // acting on this session's branch (issue #131: "add the worktree functions
     // there too"). Enabled only for a real feature-branch worktree on disk.
-    m_agentUpdateButton = new QPushButton("Update from main");
-    m_agentUpdateButton->setObjectName("ghostButton");
-    m_agentUpdateButton->setProperty("buttonSize", "sm");
-    m_agentUpdateButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentUpdateButton, "sync", 14);
-    m_agentUpdateButton->setToolTip(
+    m_agentUpdateButton = railActionButton(
+        QStringLiteral("sync"), QStringLiteral("Update"),
         "Merge the default branch into this session's worktree branch");
     connect(m_agentUpdateButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
@@ -1918,12 +1977,8 @@ QWidget *MainWindow::buildAgentsTab()
         // The merge changed the branch's diff vs main — redraw the Files-changed tab.
         refreshAgentFilesPanel(m_selectedAgentSessionId);
     });
-    m_agentMergeButton = new QPushButton("Merge into main");
-    m_agentMergeButton->setObjectName("primaryButton");
-    m_agentMergeButton->setProperty("buttonSize", "sm");
-    m_agentMergeButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentMergeButton, "check-circle", 14);
-    m_agentMergeButton->setToolTip(
+    m_agentMergeButton = railActionButton(
+        QStringLiteral("check-circle"), QStringLiteral("Merge"),
         "Merge this session's branch into the default branch, then delete the "
         "worktree and its branch");
     connect(m_agentMergeButton, &QPushButton::clicked, this, [this] {
@@ -1937,14 +1992,8 @@ QWidget *MainWindow::buildAgentsTab()
     });
     // Same merge, but also tear down this agent session once its branch is in main
     // (mirrors the Worktrees tab's "Merge & delete agent").
-    m_agentMergeDeleteButton = new QPushButton("Merge & delete agent");
-    // Green/primary like "Merge into main" — both land the branch in main, so they
-    // read as the affirmative actions on this bar (adhoc #254).
-    m_agentMergeDeleteButton->setObjectName("primaryButton");
-    m_agentMergeDeleteButton->setProperty("buttonSize", "sm");
-    m_agentMergeDeleteButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentMergeDeleteButton, "check-circle", 14);
-    m_agentMergeDeleteButton->setToolTip(
+    m_agentMergeDeleteButton = railActionButton(
+        QStringLiteral("check-circle"), QStringLiteral("Merge & del"),
         "Merge this session's branch into the default branch, then delete the "
         "worktree, its branch and its agent session");
     connect(m_agentMergeDeleteButton, &QPushButton::clicked, this, [this] {
@@ -1956,12 +2005,8 @@ QWidget *MainWindow::buildAgentsTab()
             return;
         mergeAgentBranchIntoBase(ri, s->branchName, /*deleteAgent=*/true);
     });
-    m_agentWtDeleteButton = new QPushButton("Delete worktree");
-    m_agentWtDeleteButton->setObjectName("ghostButton");
-    m_agentWtDeleteButton->setProperty("buttonSize", "sm");
-    m_agentWtDeleteButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_agentWtDeleteButton, "trash", 14);
-    m_agentWtDeleteButton->setToolTip(
+    m_agentWtDeleteButton = railActionButton(
+        QStringLiteral("trash"), QStringLiteral("Delete"),
         "Remove this session's worktree, delete its branch and its agent session");
     connect(m_agentWtDeleteButton, &QPushButton::clicked, this, [this] {
         AgentSession *s = findAgentSession(m_selectedAgentSessionId);
@@ -5875,6 +5920,8 @@ void MainWindow::showAgentSession(int sessionId)
             m_agentNetPanel->clear();
         if (m_agentViewPrButton)
             m_agentViewPrButton->hide();
+        if (m_agentCreatePrButton)
+            m_agentCreatePrButton->hide();
         if (m_agentCreateIssueButton)
             m_agentCreateIssueButton->hide();
         if (m_agentBranchButton)
@@ -5954,18 +6001,22 @@ void MainWindow::showAgentSession(int sessionId)
     setAgentUsageLabel(*session);
     refreshAgentStatusPill(sessionId);
 
-    // View PR button appears once a pull request exists for this session.
+    // View PR button appears once a pull request exists for this session; the
+    // Create PR button is its counterpart until then. (The rail-style tile's
+    // caption is fixed, so the PR number rides the tooltip rather than the
+    // label.)
     if (m_agentViewPrButton) {
         m_agentViewPrButton->setVisible(session->prNumber > 0);
-        if (session->prNumber > 0) {
-            m_agentViewPrButton->setText(
-                QStringLiteral("View PR #%1").arg(session->prNumber));
+        if (session->prNumber > 0)
             m_agentViewPrButton->setToolTip(
                 QStringLiteral("Review PR #%1's commits, files and diff in the "
                                "Git view")
                     .arg(session->prNumber));
-        }
     }
+    if (m_agentCreatePrButton)
+        m_agentCreatePrButton->setVisible(session->prNumber <= 0 &&
+                                          !session->branchName.isEmpty() &&
+                                          !isExternalSession(sessionId));
     // "Create linked issue" only makes sense for an ad-hoc, owner-side session
     // that isn't already tracked by one. External (watch-only) sessions and
     // mirror checkouts can't write issue events, so hide it there (adhoc #189).
@@ -8047,62 +8098,31 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     }
     if (session.baseBranch.isEmpty())
         session.baseBranch = session.baseRef;
-    session.createPr = true; // always open a PR for a finished transcript session
+    session.createPr = true; // lets the Create PR button (or a YOLO run) open one
     // Persist an ad-hoc task so it can be replayed after an app restart (the
     // composer's free-form prompt has no issue to re-read it from).
     if (session.prompt.isEmpty() && !customPrompt.trimmed().isEmpty())
         session.prompt = customPrompt.trimmed();
 
-    const QString baseName =
-        session.baseBranch.isEmpty() ? QStringLiteral("main") : session.baseBranch;
-    // Ad-hoc sessions (issue #273) carry the user's task verbatim as the lead;
-    // issue-assigned sessions get the full title + description + comment thread
-    // embedded directly (adhoc #256) — pointing only at the issue JSON left
-    // the agent to go dig it up itself, and it sometimes never did. Both share
-    // the same worktree/commit/PR workflow tail so the run lands as a pull request.
-    // Name the issue JSON where it actually lives (open/<n>/ or closed/<n>/,
-    // legacy <n>/ on a pre-split checkout) so the agent's reference path works.
-    const QString issueJsonRel =
-        session.issueNumber > 0
-            ? QDir(repoPath).relativeFilePath(
-                  IssueStore::issueDirPath(repoPath, session.issueNumber)) +
-                  QStringLiteral("/issue-%1.json").arg(session.issueNumber)
-            : QString();
+    // The prompt is ONLY the task now (adhoc #2 follow-up: "I don't want any
+    // extra prompts") — the worktree and its checked-out branch reach the CLI
+    // through the command line (the process working directory), not as prose.
+    // Ad-hoc sessions (issue #273) send the typed prompt verbatim;
+    // issue-assigned sessions embed the full title + description + comment
+    // thread directly (adhoc #256) — pointing only at the issue JSON left the
+    // agent to go dig it up itself, and it sometimes never did.
     const QString lead =
         customPrompt.trimmed().isEmpty()
-            ? QStringLiteral(
-                  "Resolve the following ForkMesh issue end to end.\n\n"
-                  "%1\n"
-                  "You are working in a dedicated git worktree on branch `%2` "
-                  "(forked from `%3`). The description and comments above are "
-                  "the full issue context; %4 holds the same "
-                  "description verbatim if you need to reference the raw file.\n")
-                  .arg(issueContextPrompt(issue), session.branchName, baseName,
-                       issueJsonRel)
-            : QStringLiteral(
-                  "%1\n\n"
-                  "You are working in a dedicated git worktree on branch `%2` "
-                  "(forked from `%3`).")
-                  .arg(customPrompt.trimmed())
-                  .arg(session.branchName)
-                  .arg(baseName);
-    // No built-in system prompt any more (adhoc #2): the agent starts inside
-    // its own worktree on its own branch, so the isolation and workflow the
-    // old preamble + "Work end to end" body spelled out are enforced by the
-    // harness rather than instructed. The agent gets the task (`lead`, which
-    // names its branch/worktree) plus one factual line on how the run lands.
-    // A custom preamble from Settings → Agents still governs the run when set.
-    const QString body =
-        lead + QStringLiteral(
-                   "\nForkMesh will open the pull request from `%1` when the "
-                   "run finishes; committed and uncommitted work in the "
-                   "worktree both land in it.\n")
-                   .arg(session.branchName);
+            ? QStringLiteral("Resolve the following ForkMesh issue.\n\n%1")
+                  .arg(issueContextPrompt(issue))
+            : customPrompt.trimmed();
+    // A custom preamble from Settings → Agents still governs the run when the
+    // user wrote one; otherwise the task stands alone.
     const QString customPreamble =
         QSettings().value(kAgentPromptPreambleSetting).toString().trimmed();
     QString prompt = customPreamble.isEmpty()
-                         ? body
-                         : customPreamble + QStringLiteral("\n\n") + body;
+                         ? lead
+                         : customPreamble + QStringLiteral("\n\n") + lead;
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -8252,18 +8272,29 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 scheduleAgentSessionsPush(); // adhoc #182
             }
         }
-        maybeCreatePullForStreamSession(sid);
-        // Land the branch straight away when the session was started in YOLO mode
-        // (adhoc #12). Before cleanupStreamWorktree, so the merge still has the
-        // worktree to bring up to date with base first — and after the PR, so the
-        // pull request exists as a record of what was merged.
-        maybeAutoMergeForSession(sid);
-        // Close out the organization task the prompt opened (adhoc #18), after
-        // the merge so the completion note can say the branch landed.
-        completeOrgTaskForSession(sid);
-        // The PR captured the diff as a patch, so the worktree is no longer
-        // needed; drop it to free the branch for checkout (issue #74).
-        cleanupStreamWorktree(sid);
+        // Pull requests are user-driven now (adhoc #2 follow-up: "I don't want
+        // the agent to submit a PR unless I tell it"): a run finishing no longer
+        // opens one — the detail header's Create PR button does. Only a legacy
+        // YOLO session (adhoc #12) still auto-lands, since its whole point is
+        // finishing unattended: it needs the PR as the record of the merge, the
+        // merge itself, and its worktree released. Everyone else keeps their
+        // worktree — with any uncommitted work — until the user creates the PR,
+        // merges or deletes it from the detail's buttons.
+        if (const AgentSession *fin = findAgentSession(sid); fin && fin->yolo) {
+            maybeCreatePullForStreamSession(sid);
+            // Before cleanupStreamWorktree, so the merge still has the worktree
+            // to bring up to date with base first — and after the PR, so the
+            // pull request exists as a record of what was merged.
+            maybeAutoMergeForSession(sid);
+            // Close out the organization task the prompt opened (adhoc #18),
+            // after the merge so the completion note can say the branch landed.
+            completeOrgTaskForSession(sid);
+            // The PR captured the diff as a patch, so the worktree is no longer
+            // needed; drop it to free the branch for checkout (issue #74).
+            cleanupStreamWorktree(sid);
+        } else {
+            completeOrgTaskForSession(sid); // adhoc #18
+        }
         if (codex) {
             if (CodexAppServerSession *done = m_codexStreams.take(sid))
                 done->deleteLater();
@@ -8427,9 +8458,9 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                                 : kAgentAskModeLabel)
                     : sessionMode;
             const QString effort = sessionStrength;
-            const QString launchPrompt =
-                AgentRunner::launchIdentityInstruction(kCodexProvider, selectedModel, mode,
-                                                       effort) + QStringLiteral("\n\n") + prompt;
+            // The launch identity is a log line only — it used to be prepended
+            // to the prompt too, but the prompt now carries nothing beyond the
+            // task (adhoc #2 follow-up).
             if (AgentSession *as = findAgentSession(sid))
                 m_agentStore->appendLog(
                     *as, QStringLiteral("==> %1\n")
@@ -8448,7 +8479,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 jailMb = agentJailMemoryMb();
                 codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
-            live->start(workdir, codexEnv, launchPrompt, resumeId, selectedModel, mode,
+            live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
                         effort, jailMb);
             return;
         }
@@ -8499,17 +8530,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 jailMb = agentJailMemoryMb();
                 launchEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
-            const QString launchPrompt =
-                AgentRunner::launchIdentityInstruction(QStringLiteral("claude-code"),
-                                                       chosenModel, sessionMode, effort) +
-                QStringLiteral("\n\n") + prompt;
+            // Identity goes to the log only; the prompt carries nothing beyond
+            // the task (adhoc #2 follow-up).
             if (AgentSession *as = findAgentSession(sid))
                 m_agentStore->appendLog(
                     *as, QStringLiteral("==> %1\n")
                              .arg(AgentRunner::launchIdentityInstruction(
                                  QStringLiteral("claude-code"), chosenModel,
                                  sessionMode, effort)));
-            live->start(workdir, launchEnv, launchPrompt, /*skipPermissions=*/autoMode,
+            live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
                         resumeId, chosenModel, effort, fallback, jailMb);
         };
         if (selectedModel == kClaudeAutoModelId)
@@ -8625,15 +8654,45 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 });
         add->start(QStringLiteral("bash"), {QStringLiteral("-lc"), script});
     };
-    // Wait for the just-finished run's teardown thread (if any) to drain before the
-    // first add so the two `git worktree` runs never overlap — this is what makes
-    // the resume land in the worktree on the *first* Add (adhoc #84). isRunning()
-    // is true only until run() returns, and finished() is emitted after that and
-    // delivered to this GUI thread as a queued signal, so connecting here can't
-    // miss it. runAdd's own retry budget covers any teardown not tracked here.
+    // Wait for the just-finished run's teardown thread (if any) to drain before
+    // touching the path so the two `git worktree` runs never overlap — this is
+    // what makes the resume land in the worktree on the *first* Add (adhoc #84).
+    // isRunning() is true only until run() returns, and finished() is emitted
+    // after that and delivered to this GUI thread as a queued signal, so
+    // connecting here can't miss it. runAdd's own retry budget covers any
+    // teardown not tracked here.
+    //
+    // With no teardown in flight, a finished non-YOLO session's worktree is
+    // usually still there (the PR is opened by the Create PR button now, not by
+    // the run finishing) — with any uncommitted work in it. Reuse it as-is:
+    // the remove+add script would `git worktree remove --force` those
+    // uncommitted changes into oblivion. Reuse only a tree that really is this
+    // session's branch — the linked worktree's own HEAD names it without
+    // shelling git (<wtPath>/.git is "gitdir: …/.git/worktrees/<n>", and HEAD
+    // there is "ref: refs/heads/<branch>"); anything else (a half-torn-down
+    // folder, a stale tree on another branch) goes through the recreate script.
+    auto worktreeOnSessionBranch = [&wtPath, &branchName]() -> bool {
+        QFile dotGit(wtPath + QStringLiteral("/.git"));
+        if (!dotGit.open(QIODevice::ReadOnly | QIODevice::Text))
+            return false;
+        QString gitDir = QString::fromUtf8(dotGit.readLine()).trimmed();
+        if (!gitDir.startsWith(QLatin1String("gitdir:")))
+            return false;
+        gitDir = gitDir.mid(7).trimmed();
+        if (QDir::isRelativePath(gitDir))
+            gitDir = QDir(wtPath).absoluteFilePath(gitDir);
+        QFile head(gitDir + QStringLiteral("/HEAD"));
+        if (!head.open(QIODevice::ReadOnly | QIODevice::Text))
+            return false;
+        return QString::fromUtf8(head.readLine()).trimmed() ==
+               QStringLiteral("ref: refs/heads/") + branchName;
+    };
     if (QThread *teardown = m_worktreeTeardown.value(sid);
         teardown && teardown->isRunning()) {
         connect(teardown, &QThread::finished, this, [runAdd] { (*runAdd)(3); });
+    } else if (worktreeOnSessionBranch()) {
+        m_streamWorktree[sid] = wtPath;
+        launch(wtPath);
     } else {
         (*runAdd)(3);
     }
@@ -9504,11 +9563,14 @@ void MainWindow::applyTranscriptEvent(int sessionId, const QJsonObject &event)
             updateAgentStatusCell(sessionId);
         }
         // app-server remains alive between turns, unlike the one-shot runner.
-        // Capture/open the PR as soon as a clean Codex turn completes instead of
-        // waiting for the long-lived transport process to exit.
+        // A clean Codex turn used to capture/open the PR right here; PRs are
+        // user-driven now (adhoc #2 follow-up), so only a legacy YOLO session
+        // still does — it can't wait for a click.
         if (m_codexStreams.contains(sessionId) &&
             !ev.value(QStringLiteral("is_error")).toBool()) {
-            maybeCreatePullForStreamSession(sessionId);
+            if (const AgentSession *cs = findAgentSession(sessionId);
+                cs && cs->yolo)
+                maybeCreatePullForStreamSession(sessionId);
             looperOnSessionFinished(sessionId);
         }
     }

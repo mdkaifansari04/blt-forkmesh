@@ -6351,6 +6351,10 @@ private:
     QPushButton *m_agentInfoButton = nullptr;
     QLabel *m_agentNetPanel = nullptr;   // live API-traffic graphic
     QPushButton *m_agentViewPrButton = nullptr;
+    // "Create PR" — pull requests are user-driven (adhoc #2 follow-up): a run
+    // finishing no longer opens one, this button does. Shown until the session
+    // has a PR.
+    QPushButton *m_agentCreatePrButton = nullptr;
     // "Create linked issue" — shown for ad-hoc sessions with no issue yet, so the
     // run can be promoted to a tracked issue from the detail header (adhoc #189).
     QPushButton *m_agentCreateIssueButton = nullptr;
