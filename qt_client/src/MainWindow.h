@@ -774,7 +774,8 @@ protected:
     bool handleFramelessResizeEvent(QObject *obj, QEvent *event);
     void updateFramelessResizeCursor(Qt::Edges edges);
     // Right-click on selected text anywhere (transcript, diff, README, logs):
-    // shows the widget's normal context menu plus a "Send to Prompt" action.
+    // shows the widget's normal context menu plus "Send to Prompt" and
+    // "Search Codebase" actions.
     // Returns true (event consumed) only when it took over the menu.
     bool maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce);
     // Appends text to whichever prompt box is the relevant target: the
