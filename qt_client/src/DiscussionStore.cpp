@@ -307,6 +307,10 @@ bool DiscussionStore::readDiscussionFile(int number, Discussion &out) const
     out.number = number;
     out.title = fm.get("title");
     out.category = fm.get("category");
+    out.status = fm.get("status");
+    if (out.status != QLatin1String("closed") &&
+        out.status != QLatin1String("archived"))
+        out.status = QStringLiteral("open");
     out.createdAt = fm.num("createdAt");
     out.author = fm.get("author");
     out.authorName = fm.get("authorName");
@@ -344,6 +348,10 @@ bool DiscussionStore::writeDiscussionFile(const Discussion &discussion,
     lines << "number: " + QString::number(discussion.number);
     lines << "title: " + open.title;
     lines << "category: " + open.category;
+    lines << "status: " + (discussion.status == QLatin1String("closed") ||
+                              discussion.status == QLatin1String("archived")
+                          ? discussion.status
+                          : QStringLiteral("open"));
     lines << "createdAt: " + QString::number(discussion.createdAt);
     lines << "author: " + open.author;
     lines << "authorName: " + open.authorName;
@@ -393,7 +401,8 @@ int DiscussionStore::nextNumber() const
 bool DiscussionStore::commit(const QString &message, QString *error) const
 {
     QString err;
-    if (!runGit(m_workTree, {"add", ".forkmesh/discussions"}, nullptr, &err)) {
+    if (!runGit(m_workTree, {"add", "-A", "--", ".forkmesh/discussions"}, nullptr,
+                &err)) {
         if (error)
             *error = "git add failed: " + err;
         return false;
@@ -462,6 +471,13 @@ bool DiscussionStore::addComment(int number, const QString &body, QString *error
             *error = QStringLiteral("Discussion #%1 not found.").arg(number);
         return false;
     }
+    if (discussion.status != QLatin1String("open")) {
+        if (error)
+            *error = QStringLiteral("Discussion #%1 is %2.")
+                         .arg(number)
+                         .arg(discussion.status);
+        return false;
+    }
 
     DiscussionEvent ev;
     ev.type = "comment";
@@ -524,6 +540,56 @@ bool DiscussionStore::deleteComment(int number, const QString &eventId,
         return false;
     return commit(QStringLiteral("discussion #%1: delete comment").arg(number),
                   error);
+}
+
+bool DiscussionStore::setStatus(int number, const QString &status, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    if (status != QLatin1String("open") && status != QLatin1String("closed") &&
+        status != QLatin1String("archived")) {
+        if (error)
+            *error = QStringLiteral("Unsupported discussion status.");
+        return false;
+    }
+
+    Discussion discussion;
+    if (!readDiscussionFile(number, discussion)) {
+        if (error)
+            *error = QStringLiteral("Discussion #%1 not found.").arg(number);
+        return false;
+    }
+    if (discussion.status == status)
+        return true;
+    discussion.status = status;
+    if (!writeDiscussionFile(discussion, error))
+        return false;
+    return commit(QStringLiteral("discussion #%1: %2").arg(number).arg(status),
+                  error);
+}
+
+bool DiscussionStore::deleteDiscussion(int number, QString *error)
+{
+    if (!canWrite()) {
+        if (error)
+            *error = QStringLiteral("This repository is read-only on this node.");
+        return false;
+    }
+    const QString path = discussionDir(number);
+    if (!QDir(path).exists()) {
+        if (error)
+            *error = QStringLiteral("Discussion #%1 not found.").arg(number);
+        return false;
+    }
+    if (!QDir(path).removeRecursively()) {
+        if (error)
+            *error = QStringLiteral("Could not remove discussion #%1.").arg(number);
+        return false;
+    }
+    return commit(QStringLiteral("discussion #%1: delete").arg(number), error);
 }
 
 bool DiscussionStore::applyRemoteEvent(int number, const DiscussionEvent &ev,
@@ -677,6 +743,10 @@ QList<Discussion> DiscussionStore::loadFromMirror(QString *error) const
         discussion.number = number;
         discussion.title = fm.get("title");
         discussion.category = fm.get("category");
+        discussion.status = fm.get("status");
+        if (discussion.status != QLatin1String("closed") &&
+            discussion.status != QLatin1String("archived"))
+            discussion.status = QStringLiteral("open");
         discussion.createdAt = fm.num("createdAt");
         discussion.author = fm.get("author");
         discussion.authorName = fm.get("authorName");

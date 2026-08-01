@@ -26,6 +26,7 @@ struct Discussion {
     int number = 0;
     QString title;
     QString category;
+    QString status = "open"; // open | closed | archived
     qint64 createdAt = 0;
     QString author;
     QString authorName;
@@ -49,6 +50,8 @@ public:
                          const QString &category, QString *error = nullptr);
     bool addComment(int number, const QString &body, QString *error = nullptr);
     bool deleteComment(int number, const QString &eventId, QString *error = nullptr);
+    bool setStatus(int number, const QString &status, QString *error = nullptr);
+    bool deleteDiscussion(int number, QString *error = nullptr);
     bool applyRemoteEvent(int number, const DiscussionEvent &ev,
                           const QString &titleIfNew,
                           QString *error = nullptr);

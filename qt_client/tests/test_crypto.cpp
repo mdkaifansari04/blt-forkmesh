@@ -4831,6 +4831,24 @@ int main(int argc, char *argv[])
               "discussion remote comment applies");
         check(discussions.applyRemoteEvent(dn, remoteComment, "Remote welcome", &err),
               "discussion remote comment reapply is idempotent");
+        check(discussions.setStatus(dn, "closed", &err),
+              "discussion close succeeds");
+        loadedDiscussions = discussions.loadAll();
+        check(!loadedDiscussions.isEmpty() &&
+                  loadedDiscussions.first().status == "closed",
+              "closed discussion status round-trips");
+        check(!discussions.addComment(dn, "should be rejected", &err),
+              "closed discussion rejects new comments");
+        check(discussions.setStatus(dn, "archived", &err),
+              "discussion archive succeeds");
+        check(discussions.setStatus(dn, "open", &err),
+              "archived discussion can be reopened");
+        check(discussions.deleteDiscussion(dn, &err),
+              "discussion delete succeeds");
+        const QList<Discussion> afterDiscussionDelete = discussions.loadAll();
+        check(std::none_of(afterDiscussionDelete.begin(), afterDiscussionDelete.end(),
+                           [&](const Discussion &d) { return d.number == dn; }),
+              "deleted discussion no longer loads");
 
         PullRequest reviewPr;
         reviewPr.number = 99;

@@ -55,12 +55,12 @@ QWidget *MainWindow::buildDiscussionsTab()
             category, DiscussionStore::normalizedCategory(category));
     }
 
-    m_discussionTable = new QTableWidget(0, 6);
+    m_discussionTable = new QTableWidget(0, 7);
     installColumnHeaderMenu(m_discussionTable); // 3-dots per-column menu (issue #318)
     m_discussionTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_discussionTable);
     m_discussionTable->setHorizontalHeaderLabels(
-        {"#", "Title", "Category", "Comments", "Updated", "Author"});
+        {"#", "Title", "Category", "Status", "Comments", "Updated", "Author"});
     m_discussionTable->verticalHeader()->setVisible(false);
     m_discussionTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_discussionTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -72,7 +72,7 @@ QWidget *MainWindow::buildDiscussionsTab()
     dh->setHighlightSections(false);
     dh->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     dh->setSectionResizeMode(1, QHeaderView::Stretch);
-    for (int c = 2; c < 6; ++c)
+    for (int c = 2; c < 7; ++c)
         dh->setSectionResizeMode(c, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_discussionTable);
 
@@ -98,6 +98,29 @@ QWidget *MainWindow::buildDiscussionsTab()
     m_discussionInlineNotice->setObjectName("issueInlineNotice");
     m_discussionInlineNotice->setWordWrap(true);
     m_discussionInlineNotice->hide();
+
+    m_discussionCloseButton = new QPushButton("Close discussion");
+    m_discussionArchiveButton = new QPushButton("Archive discussion");
+    m_discussionDeleteButton = new QPushButton("Delete discussion");
+    for (QPushButton *button : {m_discussionCloseButton,
+                                m_discussionArchiveButton,
+                                m_discussionDeleteButton}) {
+        button->setObjectName(button == m_discussionDeleteButton
+                                   ? "issueDangerLink"
+                                   : "ghostButton");
+        button->setProperty("buttonSize", "sm");
+        button->setCursor(Qt::PointingHandCursor);
+    }
+    setOcticon(m_discussionCloseButton, "issue-closed", 15);
+    setOcticon(m_discussionArchiveButton, "archive", 15);
+    setOcticon(m_discussionDeleteButton, "trash", 15);
+    auto *detailHeader = new QHBoxLayout;
+    detailHeader->setContentsMargins(0, 0, 0, 0);
+    detailHeader->setSpacing(6);
+    detailHeader->addWidget(m_discussionTitle, 1);
+    detailHeader->addWidget(m_discussionCloseButton);
+    detailHeader->addWidget(m_discussionArchiveButton);
+    detailHeader->addWidget(m_discussionDeleteButton);
 
     m_discussionThreadContainer = new QWidget;
     m_discussionThreadLayout = new QVBoxLayout(m_discussionThreadContainer);
@@ -129,7 +152,7 @@ QWidget *MainWindow::buildDiscussionsTab()
     auto *detailLayout = new QVBoxLayout(detailPane);
     detailLayout->setContentsMargins(18, 18, 12, 18);
     detailLayout->setSpacing(8);
-    detailLayout->addWidget(m_discussionTitle);
+    detailLayout->addLayout(detailHeader);
     detailLayout->addWidget(m_discussionMeta);
     detailLayout->addWidget(m_discussionInlineNotice);
     detailLayout->addWidget(m_discussionThreadScroll, 1);
@@ -188,6 +211,26 @@ QWidget *MainWindow::buildDiscussionsTab()
             &MainWindow::syncDiscussionsInbox);
     connect(m_discussionCommentButton, &QPushButton::clicked, this,
             &MainWindow::postDiscussionComment);
+    connect(m_discussionCloseButton, &QPushButton::clicked, this, [this] {
+        for (const Discussion &discussion : std::as_const(m_currentDiscussions))
+            if (discussion.number == m_currentDiscussionNumber) {
+                setDiscussionStatus(discussion.status == QLatin1String("closed")
+                                        ? QStringLiteral("open")
+                                        : QStringLiteral("closed"));
+                return;
+            }
+    });
+    connect(m_discussionArchiveButton, &QPushButton::clicked, this, [this] {
+        for (const Discussion &discussion : std::as_const(m_currentDiscussions))
+            if (discussion.number == m_currentDiscussionNumber) {
+                setDiscussionStatus(discussion.status == QLatin1String("archived")
+                                        ? QStringLiteral("open")
+                                        : QStringLiteral("archived"));
+                return;
+            }
+    });
+    connect(m_discussionDeleteButton, &QPushButton::clicked, this,
+            &MainWindow::deleteCurrentDiscussion);
     updateDiscussionActionState();
     return page;
 }
@@ -309,10 +352,12 @@ void MainWindow::reloadDiscussions()
         m_discussionTable->setItem(row, 1,
                                    new QTableWidgetItem(discussion.title));
         m_discussionTable->setItem(row, 2, new QTableWidgetItem(category));
+        m_discussionTable->setItem(row, 3,
+                                   new QTableWidgetItem(discussion.status));
         auto *comments = new SortTableWidgetItem;
         comments->setData(Qt::DisplayRole, discussion.commentCount());
         comments->setData(kTableSortRole, discussion.commentCount());
-        m_discussionTable->setItem(row, 3, comments);
+        m_discussionTable->setItem(row, 4, comments);
         const qint64 updated = discussion.updatedAt();
         auto *updatedItem = new SortTableWidgetItem(
             updated > 0 ? formatIssueRelativeTime(updated)
@@ -323,7 +368,7 @@ void MainWindow::reloadDiscussions()
                 QDateTime::fromMSecsSinceEpoch(updated).toString(
                     QStringLiteral("yyyy-MM-dd HH:mm")));
         }
-        m_discussionTable->setItem(row, 4, updatedItem);
+        m_discussionTable->setItem(row, 5, updatedItem);
         const QString author =
             discussion.authorName.trimmed().isEmpty()
                 ? (discussion.author.isEmpty() ? QStringLiteral("-")
@@ -331,10 +376,10 @@ void MainWindow::reloadDiscussions()
                 : discussion.authorName.trimmed();
         auto *authorItem = new QTableWidgetItem(author);
         authorItem->setToolTip(discussion.author);
-        m_discussionTable->setItem(row, 5, authorItem);
+        m_discussionTable->setItem(row, 6, authorItem);
     }
     m_discussionTable->setSortingEnabled(true);
-    m_discussionTable->sortItems(4, Qt::DescendingOrder);
+    m_discussionTable->sortItems(5, Qt::DescendingOrder);
     block.unblock();
 
     int selRow = -1;
@@ -390,9 +435,10 @@ void MainWindow::showDiscussion(int number)
             found->authorName.isEmpty() ? found->author.left(10)
                                         : found->authorName;
         m_discussionMeta->setText(
-            QStringLiteral("<b>%1</b> - %2 comment%3 - updated %4 - by %5")
+            QStringLiteral("<b>%1</b> - %2 - %3 comment%4 - updated %5 - by %6")
                 .arg(DiscussionStore::normalizedCategory(found->category)
                          .toHtmlEscaped())
+                .arg(found->status.toHtmlEscaped())
                 .arg(found->commentCount())
                 .arg(found->commentCount() == 1 ? QString()
                                                 : QStringLiteral("s"))
@@ -400,7 +446,7 @@ void MainWindow::showDiscussion(int number)
                 .arg(who.toHtmlEscaped()));
     }
     if (m_discussionComposer) {
-        m_discussionComposer->setEnabled(true);
+        m_discussionComposer->setEnabled(found->status == QLatin1String("open"));
         m_discussionComposer->setMentionCandidates(mentionCandidateNames());
         if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
             const RepositoryRecord &repo =
@@ -500,7 +546,30 @@ void MainWindow::updateDiscussionActionState()
                      : QStringLiteral("Only the owning node can sync this inbox"));
     }
     const bool haveDiscussion = m_currentDiscussionNumber > 0;
-    const bool canParticipate = haveRepo && (writable || m_networkAccess);
+    QString status = QStringLiteral("open");
+    for (const Discussion &discussion : std::as_const(m_currentDiscussions))
+        if (discussion.number == m_currentDiscussionNumber) {
+            status = discussion.status;
+            break;
+        }
+    const bool canParticipate = haveRepo && (writable || m_networkAccess) &&
+                                (!haveDiscussion || status == QLatin1String("open"));
+    if (m_discussionCloseButton) {
+        m_discussionCloseButton->setEnabled(writable && haveDiscussion &&
+                                            status != QLatin1String("archived"));
+        m_discussionCloseButton->setText(status == QLatin1String("closed")
+                                             ? QStringLiteral("Reopen discussion")
+                                             : QStringLiteral("Close discussion"));
+    }
+    if (m_discussionArchiveButton) {
+        m_discussionArchiveButton->setEnabled(writable && haveDiscussion);
+        m_discussionArchiveButton->setText(
+            status == QLatin1String("archived")
+                ? QStringLiteral("Unarchive discussion")
+                : QStringLiteral("Archive discussion"));
+    }
+    if (m_discussionDeleteButton)
+        m_discussionDeleteButton->setEnabled(writable && haveDiscussion);
     // Keep the composer live even with nothing selected so you can start a
     // discussion just by typing; the title is derived from the first line.
     if (m_discussionComposer) {
@@ -527,6 +596,58 @@ void MainWindow::updateDiscussionActionState()
                            ? QStringLiteral("Send a signed %1 to the owner").arg(noun)
                            : QStringLiteral("Network access is unavailable"));
     }
+}
+
+void MainWindow::setDiscussionStatus(const QString &status)
+{
+    if (m_currentDiscussionNumber <= 0)
+        return;
+    DiscussionStore store = discussionStoreForCurrentRepo();
+    QString error;
+    if (!store.setStatus(m_currentDiscussionNumber, status, &error)) {
+        setDiscussionInlineNotice(
+            error.isEmpty() ? QStringLiteral("Could not update the discussion.")
+                            : error,
+            true);
+        return;
+    }
+    const int number = m_currentDiscussionNumber;
+    reloadDiscussions();
+    showDiscussion(number);
+    propagateRepoUpdate(m_repoDetailIndex);
+    setDiscussionInlineNotice(
+        status == QLatin1String("closed")
+            ? QStringLiteral("Discussion closed.")
+            : status == QLatin1String("archived")
+                  ? QStringLiteral("Discussion archived.")
+                  : QStringLiteral("Discussion reopened."));
+}
+
+void MainWindow::deleteCurrentDiscussion()
+{
+    if (m_currentDiscussionNumber <= 0)
+        return;
+    const int number = m_currentDiscussionNumber;
+    if (QMessageBox::question(
+            this, QStringLiteral("Delete discussion"),
+            QStringLiteral("Delete discussion #%1? This cannot be undone.")
+                .arg(number),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No) != QMessageBox::Yes)
+        return;
+    DiscussionStore store = discussionStoreForCurrentRepo();
+    QString error;
+    if (!store.deleteDiscussion(number, &error)) {
+        setDiscussionInlineNotice(
+            error.isEmpty() ? QStringLiteral("Could not delete the discussion.")
+                            : error,
+            true);
+        return;
+    }
+    m_currentDiscussionNumber = -1;
+    reloadDiscussions();
+    propagateRepoUpdate(m_repoDetailIndex);
+    setDiscussionInlineNotice(QStringLiteral("Discussion deleted."));
 }
 
 void MainWindow::createDiscussionDialog()
@@ -685,6 +806,14 @@ void MainWindow::postDiscussionComment()
         startDiscussionFromComposer();
         return;
     }
+    for (const Discussion &discussion : std::as_const(m_currentDiscussions))
+        if (discussion.number == m_currentDiscussionNumber &&
+            discussion.status != QLatin1String("open")) {
+            setDiscussionInlineNotice(
+                QStringLiteral("This discussion is %1.").arg(discussion.status),
+                true);
+            return;
+        }
     const QString body = m_discussionComposer->markdown().trimmed();
     if (body.isEmpty()) {
         setDiscussionInlineNotice("Write a comment first.", true);
