@@ -693,6 +693,42 @@ def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
     assert ".world-loading-screen" not in CSS
 
 
+def test_opening_curtain_itemizes_every_boot_step_with_live_timers():
+    # "Opening ForkMesh World" used to be one headline over a percentage. The
+    # curtain now lists every startup step with its own running seconds
+    # counter, so a slow open names the step it is actually waiting on.
+    assert "const WORLD_BOOT_STEPS = [" in APP
+    for step in ("restore", "session", "engine", "scene", "data", "populate", "spawn"):
+        assert f'{{ id: "{step}", label: "' in APP
+    assert "data-world-loading-steps" in APP
+    assert 'data-world-boot-step="${escapeHTML(step.id)}"' in APP
+    assert "data-world-boot-time" in APP
+    assert "data-world-loading-elapsed" in APP
+    # Counters redraw on their own interval and stop when the ledger closes,
+    # including the WebGL-fallback path that throws the curtain away.
+    assert "const WORLD_BOOT_TICK_MS = 100;" in APP
+    assert "() => this.tickBootSteps()," in APP
+    assert "window.clearInterval(this.bootTickTimer);" in APP
+    assert 'this.completeBootTimeline({ state: "failed" });' in APP
+    # Every awaited stage of bootstrap() reports through the ledger.
+    assert 'this.trackBootStep(\n        "session",' in APP
+    assert 'this.trackBootStep("data", this.loadWorldData())' in APP
+    assert 'this.startBootStep("scene", "geometry, lighting, labels")' in APP
+    assert 'this.finishBootStep("scene");' in APP
+    assert 'this.finishBootStep("populate");' in APP
+    assert 'this.finishBootStep("spawn");' in APP
+    # The world-data fan-out reports "n/total requests" as it settles rather
+    # than sitting silent for the whole batch.
+    assert 'this.countBootRequests("data", [' in APP
+    assert "`${settled}/${total} requests`" in APP
+    # Ten repaints a second must not be announced: the single stage line above
+    # the ledger stays the curtain's live region.
+    assert 'aria-live="off"' in APP
+    assert ".world-loading-steps li {" in CSS
+    assert '.world-loading-steps li[data-state="running"] .world-loading-step-mark' in CSS
+    assert "font-variant-numeric: tabular-nums;" in CSS
+
+
 def test_world_has_consent_aware_activity_events_and_media():
     for retired_landmark in ("events", "neighborhood", "broadcast"):
         assert f'id: "{retired_landmark}"' not in DATA
