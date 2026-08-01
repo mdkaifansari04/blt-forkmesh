@@ -1,5 +1,5 @@
--- Revocable organization bot credentials. The plaintext token is returned
--- once; D1 retains only a keyed blind index plus encrypted display metadata.
+
+
 CREATE TABLE IF NOT EXISTS org_bot_tokens (
   token_id       TEXT PRIMARY KEY,
   org_bi         TEXT NOT NULL,

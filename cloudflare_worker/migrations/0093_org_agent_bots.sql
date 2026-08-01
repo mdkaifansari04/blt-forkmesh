@@ -1,5 +1,5 @@
--- Organization-scoped Claude/Codex sessions dispatched to eligible mirrors.
--- This channel is separate from owner-only repo_agents E2EE records.
+
+
 CREATE TABLE IF NOT EXISTS org_agent_sessions (
     session_id TEXT PRIMARY KEY,
     org_bi TEXT NOT NULL,
@@ -32,8 +32,8 @@ CREATE TABLE IF NOT EXISTS org_agent_jobs (
 CREATE INDEX IF NOT EXISTS idx_org_agent_jobs_drain
 ON org_agent_jobs(target_node, repo, status, id);
 
--- Codex may move an explicitly linked build-board item to Done only after its
--- leased mirror job reports a terminal successful result.
+
+
 ALTER TABLE world_build_board_items
 ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0
 CHECK (completed_at >= 0);

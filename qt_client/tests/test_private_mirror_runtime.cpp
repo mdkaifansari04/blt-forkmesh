@@ -74,7 +74,7 @@ QString sha256Hex(const QByteArray &bytes)
             .toHex());
 }
 
-} // namespace
+}
 
 int main(int argc, char **argv)
 {
@@ -251,8 +251,8 @@ int main(int argc, char **argv)
               .isEmpty(),
           "same-epoch ciphertext conflicts are rejected instead of overwriting a trusted replica");
 
-    // A recipient is not the owner and cannot use the lower-level store API to
-    // replace content or redefine the owner-recipient set.
+
+
     check(!PrivateMirrorStore::replaceReplica(
               replicaRoot, created.opaqueId, QByteArrayLiteral("malicious"),
               collaborator,

@@ -1,7 +1,7 @@
--- ActivityPub federation (fediverse interop). Local user/repo actors get RSA
--- keypairs and become followable from Mastodon-compatible servers; remote
--- replies land in ap_comments (never in the Ed25519-signed event log); the
--- ap_outbox table is the queue-free (free plan) delivery retry queue.
+
+
+
+
 CREATE TABLE IF NOT EXISTS ap_actors (
     actor_bi TEXT PRIMARY KEY, kind TEXT NOT NULL,
     pubkey_pem TEXT NOT NULL, data TEXT NOT NULL,

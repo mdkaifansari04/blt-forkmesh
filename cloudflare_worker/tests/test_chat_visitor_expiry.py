@@ -50,12 +50,12 @@ def test_web_chat_has_ten_minute_visitor_window():
 
 def test_web_chat_recognises_guests_and_world_visitors():
     predicate = _js_function(CHAT, "personIsTransientVisitor")
-    # Anonymous guests are flagged by their advertised kind…
+
     assert 'person.kind === "guest"' in predicate
-    # …and legacy/older clients by the name they assert.
+
     assert "world\\s+visitor" in predicate
     assert "world\\s+guest" in predicate
-    # Never our own row: the local visitor must not delete itself.
+
     assert "person.id === selfId" in predicate
 
 
@@ -66,7 +66,7 @@ def test_web_chat_sweeps_idle_visitors_on_every_paint():
     assert "roster.delete(id)" in sweep
     people = _js_function(CHAT, "renderPeople")
     assert "forgetIdleVisitors();" in people
-    # The 30s repaint timer doubles as the sweep timer in a silent room.
+
     assert re.search(r"setInterval\(renderPeople,\s*30000\)", CHAT)
 
 
@@ -82,7 +82,7 @@ def test_desktop_drops_idle_visitors_from_the_users_column():
     body = MESSAGES[start:start + 6000]
     assert "ChatVisitorPresence::isTransientVisitor(prev.accountKind" in body
     assert "ChatVisitorPresence::visitorIsIdle(lastSeen, nowMs)" in body
-    # Real nodes/accounts still keep their offline row for the Node dropdown.
+
     assert "offline.online = false;" in body
 
 

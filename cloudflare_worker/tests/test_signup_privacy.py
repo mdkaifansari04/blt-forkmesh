@@ -17,17 +17,17 @@ from pathlib import Path
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-# SCHEMA_STATEMENTS (D1 DDL) was extracted from entry.py into schema.py;
-# concatenate it so the schema source-contract assertions below still resolve.
+
+
 SCHEMA = ENTRY.parent / "schema.py"
 ENTRY_TEXT = (
     ENTRY.read_text(encoding="utf-8") + "\n" + SCHEMA.read_text(encoding="utf-8"))
 
 
 def test_users_table_has_ip_blind_index_column_and_index():
-    # The users table (the authoritative account store since the legacy
-    # accounts table was dropped by migration 0042) carries the blind-index
-    # column and its lookup index from CREATE.
+
+
+
     assert "ip_bi TEXT" in ENTRY_TEXT
     assert "CREATE INDEX IF NOT EXISTS idx_users_ip ON users(ip_bi)" in ENTRY_TEXT
 
@@ -42,7 +42,7 @@ def test_parity_d1_migration_file_exists():
 
 def test_signup_ip_comes_from_cloudflare_connecting_ip_header():
     assert 'headers.get("cf-connecting-ip")' in ENTRY_TEXT
-    # X-Forwarded-For is only a fallback for non-CF paths.
+
     assert 'headers.get("x-forwarded-for")' in ENTRY_TEXT
 
 
@@ -64,8 +64,8 @@ def test_raw_signup_ip_and_user_agent_are_not_retained_in_account_metadata():
 
 
 def test_only_a_blind_index_of_the_ip_is_indexed_not_the_raw_ip():
-    # The searchable column is the one-way HMAC, derived from the stored IP, and
-    # handed to _save_account as ip_bi (not the address).
+
+
     assert "ip_bi = await blind_index(env, signup_ip)" in ENTRY_TEXT
     assert "await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)" \
         in ENTRY_TEXT

@@ -29,8 +29,8 @@ namespace {
 
 constexpr int kGitTimeoutMs = 15000;
 constexpr qint64 kMaxJsonSafeInteger = 9007199254740991LL;
-// History rewrites (filter-branch) replay every commit, so they need far longer
-// than an ordinary git invocation.
+
+
 constexpr int kGitRewriteTimeoutMs = 120000;
 
 bool strictJsonSafeInteger(const QString &text, qint64 minimum,
@@ -45,12 +45,12 @@ bool strictJsonSafeInteger(const QString &text, qint64 minimum,
     return true;
 }
 
-// Wait for `process` to finish. When `keepGuiAlive` is set the caller is on the
-// GUI thread and the command (a `git apply --check` dry-run) can take a second
-// or more, so poll in short slices and pump posted events between them — the
-// same approach as MainWindow's GitKeepAlive — to keep the window painted
-// instead of freezing the event loop. Returns false on timeout, after killing
-// the process. User input is excluded so a pump can't re-enter via clicks.
+
+
+
+
+
+
 bool waitForFinishedKeepAlive(QProcess &process, int timeoutMs, bool keepGuiAlive)
 {
     if (!keepGuiAlive)
@@ -59,7 +59,7 @@ bool waitForFinishedKeepAlive(QProcess &process, int timeoutMs, bool keepGuiAliv
     timer.start();
     while (!process.waitForFinished(40)) {
         if (process.state() == QProcess::NotRunning)
-            return true; // exited between polls; caller inspects the exit code
+            return true;
         if (timer.hasExpired(timeoutMs)) {
             process.kill();
             process.waitForFinished(200);
@@ -80,11 +80,11 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
         process.setProcessEnvironment(env);
     }
     process.start("git", QStringList{"-C", dir} + args);
-    // On the GUI thread pump between polls: applying a pulls-inbox payload runs
-    // these commands (materializePullRef's worktree add / am replay in
-    // particular) synchronously on the main thread, and a plain blocking wait
-    // froze the window for 1s+ per PR (stall log: PullStore::materializePullRef,
-    // PullStore::readPull).
+
+
+
+
+
     const QCoreApplication *app = QCoreApplication::instance();
     const bool onGuiThread = app && QThread::currentThread() == app->thread();
     if (!waitForFinishedKeepAlive(process, timeoutMs, onGuiThread)) {
@@ -103,13 +103,13 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
     return true;
 }
 
-// Reconstruct a branch-backed PR's diff and commit series from the synced
-// base/head refs instead of from committed patch blobs. `dir` may be a working
-// tree or a bare mirror — both carry refs/heads/* after a sync. The diff uses
-// merge-base (three-dot) so it stays the PR's net change as the base advances;
-// the commit series uses two-dot so it is exactly the commits unique to head.
-// Returns false (leaving the outputs untouched) when either ref is missing or
-// `head` is a cross-node "<node>:<branch>" label that does not resolve locally.
+
+
+
+
+
+
+
 bool deriveFromRefs(const QString &dir, const QString &base, const QString &head,
                     QString *patch, QString *commits)
 {
@@ -121,10 +121,10 @@ bool deriveFromRefs(const QString &dir, const QString &base, const QString &head
         return false;
     if (patch) {
         QByteArray diff;
-        // --binary embeds the literal/delta for binary files; without it the diff
-        // is only "Binary files differ", which `git apply` (the flat-patch merge
-        // and checkMergeable dry-run) cannot replay — so binary changes would
-        // silently fail to merge or be misreported as conflicts.
+
+
+
+
         runGit(dir, {"diff", "--binary", base + "..." + head}, &diff);
         *patch = QString::fromUtf8(diff);
     }
@@ -215,12 +215,12 @@ bool deriveFromImmutableOids(const QString &dir, const QString &baseOid,
     return true;
 }
 
-// Make a branch-backed PR's head commit reachable in the working tree's object
-// store and return its SHA (empty when unavailable). Prefers the local ref when
-// it resolves; otherwise fetches just that branch's objects from the mirror
-// (which keeps refs/heads/* after a sync) so a real ref-merge can run with no
-// patch involved. A cross-node "<node>:<branch>" head never resolves locally and
-// returns empty — those PRs are stored-patch and merge from their carried diff.
+
+
+
+
+
+
 QString reachableHeadCommit(const QString &workTree, const QString &mirror,
                             const QString &head)
 {
@@ -243,12 +243,12 @@ QString reachableHeadCommit(const QString &workTree, const QString &mirror,
     return QString();
 }
 
-// Drop any other worktree currently holding `branch` checked out so the main
-// worktree can check it out. An agent session runs in a temp worktree at
-// /tmp/forkmesh-worktrees/…; if one is left behind it keeps the branch reserved
-// and `git checkout <branch>` here fails with "is already used by worktree at …".
-// Removing the worktree frees the branch while keeping its ref intact. Returns
-// true if it released something (so the caller should retry the checkout).
+
+
+
+
+
+
 bool releaseWorktreeHoldingBranch(const QString &dir, const QString &branch)
 {
     if (branch.trimmed().isEmpty())
@@ -280,13 +280,13 @@ bool releaseWorktreeHoldingBranch(const QString &dir, const QString &branch)
     return true;
 }
 
-// Pull the conflicting file paths out of `git apply --check --3way` output,
-// which names the offending file in a few shapes depending on whether the
-// 3-way fallback ran:
-//   "error: patch failed: <path>:<line>"
-//   "error: <path>: patch does not apply"
-//   "error: <path>: does not exist in index" / "does not match index"
-//   "Applied patch to '<path>' with conflicts."
+
+
+
+
+
+
+
 QStringList parseApplyConflicts(const QString &text)
 {
     static const QRegularExpression patterns[] = {
@@ -323,7 +323,7 @@ bool writeTextFile(const QString &path, const QString &text, QString *error)
     return true;
 }
 
-// Minimal "---\nkey: value\n---\n\nbody" frontmatter (same subset as IssueStore).
+
 struct FrontMatter {
     QHash<QString, QString> values;
     QString body;
@@ -361,8 +361,8 @@ FrontMatter parseFrontMatter(const QByteArray &bytes)
     return fm;
 }
 
-// Subsequent-event filenames: NNNN-<type>.md (same convention as issues/).
-// The type may contain hyphens (e.g. "line-comment").
+
+
 const QRegularExpression &eventFileRe()
 {
     static const QRegularExpression re(QStringLiteral("^\\d{4}-[a-z-]+\\.md$"));
@@ -422,8 +422,8 @@ PullEvent eventFromFrontMatter(const FrontMatter &fm)
     return ev;
 }
 
-// filter-branch leaves the pre-rewrite tips under refs/original/*; drop them so
-// the old (un-purged) history is actually unreachable and can be gc'd.
+
+
 bool removeOriginalRefs(const QString &workTree, QString *error)
 {
     QByteArray refs;
@@ -449,9 +449,9 @@ bool removeOriginalRefs(const QString &workTree, QString *error)
     return true;
 }
 
-// A history rewrite requires a clean tree. Refuse if anything tracked *other*
-// than the pull being deleted is staged/modified, so we never replay or discard
-// a collaborator's in-flight work (agents share this working tree).
+
+
+
 bool hasUnrelatedTrackedChanges(const QString &workTree, const QString &relPath,
                                 QString *error)
 {
@@ -480,15 +480,15 @@ bool hasUnrelatedTrackedChanges(const QString &workTree, const QString &relPath,
     return false;
 }
 
-// The file a "diff --git a/<path> b/<path>" header names, taken from the b-side
-// exactly the way the Files-changed list does (so the path we match against is
-// the same one the UI hands back when a row is selected).
+
+
+
 QString diffHeaderPath(const QString &diffLine)
 {
     return diffLine.section(QStringLiteral(" b/"), 1);
 }
 
-// True when any line in a diff body opens a file section.
+
 bool bodyHasFileDiff(const QString &body)
 {
     const QStringList lines = body.split('\n');
@@ -498,10 +498,10 @@ bool bodyHasFileDiff(const QString &body)
     return false;
 }
 
-// Drop the unified-diff section(s) for `relPath` from a single diff body (one
-// with no email framing — a raw `git diff`, or an mbox message with its trailing
-// signature already split off). A section runs from its "diff --git" header up to
-// the next header or the end. Sets *removed when at least one section matched.
+
+
+
+
 QString removeFileSectionsFromDiff(const QString &body, const QString &relPath,
                                    bool *removed)
 {
@@ -524,11 +524,11 @@ QString removeFileSectionsFromDiff(const QString &body, const QString &relPath,
     return kept.join('\n');
 }
 
-// Split a format-patch message at its "-- \n<version>" signature, which is always
-// the final such marker (a removed line whose content is "- " would render as
-// "-- " inside a hunk, so we match from the end to land on the real one). Returns
-// the body before it and the trailer from it onward, so reassembling as
-// body + "\n" + trailer reproduces the message verbatim.
+
+
+
+
+
 void splitMboxSignature(const QString &message, QString *body, QString *trailer)
 {
     const QStringList lines = message.split('\n');
@@ -548,11 +548,11 @@ void splitMboxSignature(const QString &message, QString *body, QString *trailer)
     *trailer = QStringList(lines.mid(sig)).join('\n');
 }
 
-// Drop the diffstat git format-patch wrote between the "---" cut and the diff.
-// Once a file is excised the stat is stale (and would still name the removed
-// file), git am ignores it, and the applied commit never includes it anyway — so
-// for a message we have already edited we simply remove it. Messages we don't
-// touch are left byte-for-byte intact by the caller.
+
+
+
+
+
 QString stripDiffstat(const QString &message)
 {
     const QStringList lines = message.split('\n');
@@ -573,27 +573,27 @@ QString stripDiffstat(const QString &message)
         }
     }
     if (cut < 0)
-        return message; // no format-patch cut; nothing recognizable to drop
+        return message;
     QStringList kept = lines.mid(0, cut + 1);
-    // Skip the diffstat: its lines (and the trailing blank) are space-prefixed or
-    // empty. Stop at the first line that is neither — i.e. the diff itself.
+
+
     int i = cut + 1;
     while (i < firstDiff && (lines.at(i).isEmpty() || lines.at(i).startsWith(' ')))
         ++i;
-    kept << QString(); // one blank line between the message and the diff
+    kept << QString();
     for (; i < lines.size(); ++i)
         kept << lines.at(i);
     return kept.join('\n');
 }
 
-// Excise the diff for `relPath` from every commit in a format-patch mbox. A
-// commit left with no remaining file diffs (it only touched that file) is dropped
-// whole so `git am` is never handed an empty patch. Survivors keep their headers
-// and signatures untouched. Returns an empty string when nothing is left.
+
+
+
+
 QString removeFileFromMbox(const QString &mbox, const QString &relPath)
 {
-    // Each commit message begins at a "From <sha> Mon Sep 17 00:00:00 2001" line.
-    // Diff content never starts a line that way, so it is a safe message delimiter.
+
+
     static const QRegularExpression boundary(
         QStringLiteral("^From [0-9a-f]+ Mon Sep 17 00:00:00 2001$"));
     const QStringList lines = mbox.split('\n');
@@ -607,8 +607,8 @@ QString removeFileFromMbox(const QString &mbox, const QString &relPath)
     QStringList out;
     for (const QStringList &msgLines : messages) {
         const QString message = msgLines.join('\n');
-        // Anything before the first real header (none, in practice) is passed
-        // through so we never silently corrupt an unexpected shape.
+
+
         if (msgLines.isEmpty() || !boundary.match(msgLines.first()).hasMatch()) {
             out << message;
             continue;
@@ -618,11 +618,11 @@ QString removeFileFromMbox(const QString &mbox, const QString &relPath)
         bool removed = false;
         const QString newBody = removeFileSectionsFromDiff(body, relPath, &removed);
         if (!removed) {
-            out << message; // this commit doesn't touch the file
+            out << message;
             continue;
         }
         if (!bodyHasFileDiff(newBody))
-            continue; // the commit only touched the file — drop it entirely
+            continue;
         const QString trimmedBody = stripDiffstat(newBody);
         out << (trailer.isEmpty() ? trimmedBody : trimmedBody + "\n" + trailer);
     }
@@ -631,9 +631,9 @@ QString removeFileFromMbox(const QString &mbox, const QString &relPath)
     return result.trimmed().isEmpty() ? QString() : result;
 }
 
-} // namespace
+}
 
-// ---- PullEvent -------------------------------------------------------------
+
 
 QJsonObject PullEvent::toJson() const
 {
@@ -671,7 +671,7 @@ PullEvent PullEvent::fromJson(const QJsonObject &obj)
     return ev;
 }
 
-// ---- PullRequest (JSON wire format) ----------------------------------------
+
 
 QJsonObject PullRequest::toJson() const
 {
@@ -708,8 +708,8 @@ PullRequest PullRequest::fromJson(const QJsonObject &obj)
 
 QString PullRequest::reviewSummary() const
 {
-    // Fold reviews into the latest state per author; a later review supersedes an
-    // earlier one from the same node. "commented" reviews don't set a state.
+
+
     QHash<QString, QString> latest;
     for (const PullEvent &ev : events) {
         if (ev.type != QLatin1String("review"))
@@ -718,7 +718,7 @@ QString PullRequest::reviewSummary() const
             ev.state == QLatin1String("changes_requested"))
             latest.insert(ev.author, ev.state);
         else
-            latest.remove(ev.author); // a plain comment-review clears prior state
+            latest.remove(ev.author);
     }
     bool approved = false;
     for (auto it = latest.constBegin(); it != latest.constEnd(); ++it) {
@@ -779,7 +779,7 @@ bool PullRequest::independentReviewGateSatisfied() const
            independentApprovalCount() > 0;
 }
 
-// ---- PullStore -------------------------------------------------------------
+
 
 PullStore::PullStore(QString workTreePath, QString mirrorPath,
                      const ForkMeshIdentity *identity, QString authorName)
@@ -809,9 +809,9 @@ QString PullStore::metaWorkTree() const
 {
     if (m_workTree.isEmpty())
         return QString();
-    // Mirror intake already opens a short-lived worktree directly on the
-    // dedicated metadata branch. Reuse it instead of creating a second,
-    // persistent linked worktree whose path is keyed to a temporary directory.
+
+
+
     QByteArray currentBranch;
     if (runGit(m_workTree, {"symbolic-ref", "--short", "-q", "HEAD"},
                &currentBranch) &&
@@ -819,10 +819,10 @@ QString PullStore::metaWorkTree() const
             QLatin1String("forkmesh/pulls")) {
         return m_workTree;
     }
-    // One linked worktree per repo, keyed by a hash of its path, under app
-    // data so it persists across restarts (unlike the /tmp agent-session
-    // worktrees elsewhere in this file, this one holds the live PR metadata,
-    // not scratch state).
+
+
+
+
     const QByteArray key = QCryptographicHash::hash(
                                 QDir(m_workTree).absolutePath().toUtf8(),
                                 QCryptographicHash::Sha256)
@@ -831,7 +831,7 @@ QString PullStore::metaWorkTree() const
     const QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation) +
                         "/pull-meta/" + QString::fromUtf8(key);
     if (QFileInfo::exists(dir + "/.git"))
-        return dir; // already linked from a prior run
+        return dir;
     QDir().mkpath(QFileInfo(dir).absolutePath());
     const bool branchExists = runGit(
         m_workTree, {"rev-parse", "--verify", "-q", "refs/heads/forkmesh/pulls^{commit}"});
@@ -842,8 +842,8 @@ QString PullStore::metaWorkTree() const
                            {"worktree", "add", "-b", "forkmesh/pulls", dir, "HEAD"});
     };
     if (!link()) {
-        // A leftover/corrupt directory from a previous failed attempt - clear
-        // it and try once more.
+
+
         runGit(m_workTree, {"worktree", "prune"}, nullptr, nullptr);
         QDir(dir).removeRecursively();
         if (!link())
@@ -862,9 +862,9 @@ bool PullStore::materializePullRef(const PullRequest &pr, QString *error) const
                    {"rev-parse", "--verify", "-q", pr.base.trimmed() + "^{commit}"},
                    &baseSha) &&
             !baseSha.trimmed().isEmpty()) {
-            // Replay the PR's commits (or a synthesized single commit from the
-            // flat patch, same as beginPullBranch) into a throwaway detached
-            // worktree so the user's actual checkout is never disturbed.
+
+
+
             const QString scratchDir = QDir::temp().filePath(
                 QStringLiteral("forkmesh-pr-ref-%1-%2")
                     .arg(pr.number)
@@ -892,7 +892,7 @@ bool PullStore::materializePullRef(const PullRequest &pr, QString *error) const
         }
     }
     if (sha.isEmpty())
-        return true; // best-effort: readers fall back to the legacy path
+        return true;
     QString err;
     if (!runGit(m_workTree,
                {"update-ref", QStringLiteral("refs/pr/%1/head").arg(pr.number), sha},
@@ -907,10 +907,10 @@ bool PullStore::materializePullRef(const PullRequest &pr, QString *error) const
 void PullStore::computeStats(PullRequest &pr)
 {
     int files = 0, add = 0, del = 0;
-    // Walk the patch line-by-line over a view instead of pr.patch.split('\n'):
-    // a large patch otherwise materialises a QStringList holding one heap-allocated
-    // QString per line, and building + destroying that list blocked the UI thread
-    // for ~1.6s (the QString destructor was the stall hot spot, issue #152).
+
+
+
+
     const QStringView patch(pr.patch);
     for (qsizetype start = 0; start <= patch.size();) {
         const qsizetype nl = patch.indexOf(u'\n', start);
@@ -920,7 +920,7 @@ void PullStore::computeStats(PullRequest &pr)
             ++files;
         else if (line.startsWith(QLatin1String("+++ ")) ||
                  line.startsWith(QLatin1String("--- "))) {
-            // file-header line, not a +/- content line
+
         } else if (line.startsWith(u'+'))
             ++add;
         else if (line.startsWith(u'-'))
@@ -937,9 +937,9 @@ void PullStore::computeStats(PullRequest &pr)
 QByteArray PullStore::canonicalString(const PullRequest &pr)
 {
     const QChar nul(QChar::Null);
-    // The mbox is appended as a 5th NUL-separated field. This changes the hash
-    // versus the original 4-field form even when commits is empty, so the worker
-    // verifies against both forms during the client rollout.
+
+
+
     const QString content =
         pr.title + nul + pr.base + nul + pr.head + nul + pr.patch + nul + pr.commits;
     const QByteArray contentHash =
@@ -977,7 +977,7 @@ PullRequest PullStore::makeSignedPull(PullRequest pr) const
     return pr;
 }
 
-// ---- Conversation events (comments + reviews) ------------------------------
+
 
 QString PullStore::contentForSigning(const PullEvent &ev)
 {
@@ -1048,7 +1048,7 @@ QList<PullEvent> PullStore::readEvents(int number) const
 
 int PullStore::nextEventIndex(int number) const
 {
-    int max = 1; // pull.md is conceptually event 1
+    int max = 1;
     for (const QString &name : QDir(pullDir(number)).entryList(QDir::Files)) {
         if (!eventFileRe().match(name).hasMatch())
             continue;
@@ -1318,16 +1318,16 @@ bool PullStore::writePull(const PullRequest &pr, QString *error) const
                        lines.join('\n') + "\n" + pr.description + "\n", error))
         return false;
     if (pr.branchBacked) {
-        // Keep the diff out of the repo: it is reconstructed from base..head on
-        // read. Drop any stale blobs (e.g. a PR converted to branch-backed) so a
-        // reader never picks up an outdated committed copy.
+
+
+
         QFile::remove(pullDir(pr.number) + "/changes.patch");
         QFile::remove(pullDir(pr.number) + "/commits.mbox");
         return true;
     }
     if (!writeTextFile(pullDir(pr.number) + "/changes.patch", pr.patch, error))
         return false;
-    // Authored commit series, when present, so merge can replay it with `git am`.
+
     if (!pr.commits.isEmpty())
         return writeTextFile(pullDir(pr.number) + "/commits.mbox", pr.commits, error);
     return true;
@@ -1355,20 +1355,20 @@ bool PullStore::readPull(int number, PullRequest &out) const
     out.mergeBase = fm.get("mergeBase");
     out.mergeHead = fm.get("mergeHead");
     out.description = fm.body;
-    // A branch-backed PR carries no committed diff: reconstruct it from the refs.
-    // A merged one resolves against the snapshot taken at merge (the live range
-    // would be empty once the base absorbed the commits).
+
+
+
     const bool merged = !out.mergeBase.isEmpty() && !out.mergeHead.isEmpty();
     const QString rbase = merged ? out.mergeBase : out.base;
     const QString rhead = merged ? out.mergeHead : out.head;
-    // Reconstruct from real git objects wherever they resolve — the working tree
-    // first, then the mirror (it keeps refs/heads/* after a sync, so a PR pushed
-    // from another node is reachable even before its branch lands here). Sourcing
-    // the diff and commit series straight from the commits means a truncated or
-    // otherwise corrupt stored changes.patch / commits.mbox blob (e.g. a binary
-    // section damaged in transit through the inbox) can never reach `git am`.
-    // Fall through to the on-disk blobs only when nothing resolves anywhere
-    // (degraded, but never crashes).
+
+
+
+
+
+
+
+
     const bool derived =
         out.branchBacked &&
         (deriveFromRefs(m_workTree, rbase, rhead, &out.patch, &out.commits) ||
@@ -1439,9 +1439,9 @@ int PullStore::createPull(const QString &title, const QString &description,
             *error = QStringLiteral("This repository is read-only on this node.");
         return -1;
     }
-    // Don't open a second PR for a head branch that already has an open one.
-    // Agents derive a unique branch per session, so a match means this exact
-    // change was already submitted — return the existing number instead.
+
+
+
     if (!head.isEmpty()) {
         for (const PullRequest &existing : loadAll()) {
             if (existing.status == QLatin1String("open") && existing.head == head)
@@ -1455,16 +1455,16 @@ int PullStore::createPull(const QString &title, const QString &description,
     pr.head = head;
     pr.patch = patch;
     pr.commits = commits;
-    // Branch-backed: the head branch ref carries the change as real commits, so
-    // store only the signed pointer and reconstruct the diff from base..head.
-    // Recompute patch/commits from the refs now so the signature (and any later
-    // cross-node submission) matches exactly what readers will derive.
+
+
+
+
     if (branchBacked) {
         QString dpatch, dcommits;
-        // Only go branch-backed when the committed range actually reproduces the
-        // change. If the refs are missing or the range is empty (e.g. the work is
-        // still uncommitted in a worktree), keep the passed patch as a stored PR
-        // so nothing is dropped.
+
+
+
+
         const QString baseOid = resolvedCommitOid(m_workTree, base);
         const QString headOid = resolvedCommitOid(m_workTree, head);
         if (!baseOid.isEmpty() && !headOid.isEmpty() &&
@@ -1588,8 +1588,8 @@ bool PullStore::updateBranchFromBase(int number, QString *error)
             : current;
 
     if (!runGit(m_workTree, {"checkout", pr.head}, nullptr, &err)) {
-        // A leftover agent worktree may still hold this branch ("is already used
-        // by worktree at …"). Release it and retry once before giving up.
+
+
         const bool recovered = releaseWorktreeHoldingBranch(m_workTree, pr.head) &&
                                runGit(m_workTree, {"checkout", pr.head}, nullptr, &err);
         if (!recovered) {
@@ -1631,11 +1631,11 @@ bool PullStore::updateBranchFromBase(int number, QString *error)
                     .arg(pr.base),
                 error))
         return false;
-    // Invalidate rather than refresh: mergePull only trusts a ref that was
-    // materialized at creation and never touched since, so a stale one left
-    // behind by this update doesn't silently change what a later merge
-    // applies. mergePull's pre-#399 fallback (patch/branch-name resolution)
-    // takes over correctly once the ref is gone.
+
+
+
+
+
     runGit(m_workTree,
           {"update-ref", "-d", QStringLiteral("refs/pr/%1/head").arg(number)},
           nullptr, nullptr);
@@ -1670,20 +1670,20 @@ bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
         return false;
     }
     QString err;
-    // refs/pr/<n>/head (issue #399) is only ever set at creation time and
-    // deleted (never refreshed) by any later edit/conflict-resolution/rebase,
-    // so if it resolves here it's guaranteed to still describe exactly the
-    // content this PR had when it was opened — trust it directly. A PR that
-    // has since been edited has no ref and correctly falls through to the
-    // pre-#399 behavior below. The PR's change lives in real commits
-    // somewhere reachable — its own materialized ref, its head branch's local
-    // ref, or fetched from the mirror — so merge it the robust, patch-free
-    // way: bring the commit into reach and `git merge` it into the checked-
-    // out base. This replays the exact objects — full authorship, binary
-    // files, renames — with none of a patch's context-drift or "corrupt
-    // binary patch" fragility. Only a PR with no reachable commit anywhere
-    // (pre-#399 stored-patch record, no ref, or an edited PR) falls back to
-    // applying the diff below.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     QByteArray prRefSha;
     QString headSha;
     if (runGit(m_workTree,
@@ -1696,17 +1696,17 @@ bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
         headSha = reachableHeadCommit(m_workTree, m_mirror, pr.head);
     }
     const bool refMerge = !headSha.isEmpty();
-    // Snapshot the exact commits the merge is about to apply *before* it runs:
-    // `git merge`/am advances the checked-out base, so reading these afterwards
-    // would no longer give the PR's pre-merge range. Used below to keep a merged
-    // branch-backed PR's diff viewable once the base absorbs the commits.
+
+
+
+
     QString preBase, preHead;
     if (pr.branchBacked) {
         QByteArray bsha;
         if (runGit(m_workTree, {"rev-parse", "--verify", pr.base + "^{commit}"},
                    &bsha))
             preBase = QString::fromUtf8(bsha).trimmed();
-        preHead = headSha; // the resolved head (local ref or fetched from mirror)
+        preHead = headSha;
         if (preHead.isEmpty()) {
             QByteArray hsha;
             if (runGit(m_workTree, {"rev-parse", "--verify", pr.head + "^{commit}"},
@@ -1716,10 +1716,10 @@ bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
     }
     bool applied = false;
     if (refMerge) {
-        // Real merge of the head commit into the current base. A fast-forward when
-        // the base is an ancestor (the common linear case), else a merge commit;
-        // either way every authored commit stays in history. On conflict, abort so
-        // the tree is left clean and the reviewer can resolve it interactively.
+
+
+
+
         applied = runGit(m_workTree,
                          {"merge", "--no-edit", "-m",
                           QStringLiteral("merge pull #%1: %2").arg(number).arg(pr.title),
@@ -1732,18 +1732,18 @@ bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
             return false;
         }
     } else {
-        // A branch-backed PR has no committed blobs; readPull derived its patch
-        // and commit series from the refs. Replay them through a temp file so the
-        // rest of the merge is identical whether the diff was stored or rebuilt.
+
+
+
         const QString storedPatch = pullDir(number) + "/changes.patch";
         const QString storedMbox = pullDir(number) + "/commits.mbox";
         QString tempFile;
         auto materialize = [&](const QString &onDisk, const QString &content,
                                const char *suffix) -> QString {
-            // For a branch-backed PR the authoritative bytes are the ones readPull
-            // reconstructed from the refs; a stale or truncated on-disk blob (e.g.
-            // an inbox-drained commits.mbox) must never be preferred over them, or
-            // a damaged binary section resurfaces as "corrupt binary patch".
+
+
+
+
             if (!pr.branchBacked && QFileInfo::exists(onDisk))
                 return onDisk;
             tempFile = QDir::temp().filePath(
@@ -1751,9 +1751,9 @@ bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
             return writeTextFile(tempFile, content, error) ? tempFile : QString();
         };
         if (!pr.commits.isEmpty()) {
-            // Replay the author's commits so their name/email/date/message survive.
-            // 3-way lets `git am` resolve against the current base; on any failure
-            // we abort so the working tree is left clean for the reviewer to retry.
+
+
+
             const QString mbox = materialize(storedMbox, pr.commits, "mbox");
             if (mbox.isEmpty())
                 return false;
@@ -1779,20 +1779,20 @@ bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
             return false;
     }
     pr.status = "merged";
-    // Freeze the snapshot taken above so the merged PR's diff stays viewable.
+
     if (pr.branchBacked && !preBase.isEmpty() && !preHead.isEmpty()) {
         pr.mergeBase = preBase;
         pr.mergeHead = preHead;
     }
     if (!writePull(pr, error))
         return false;
-    // Record the status update on the pulls/ metadata branch (issue #399) -
-    // separate from whatever just landed the code change on m_workTree below.
+
+
     if (!commit(QStringLiteral("pull #%1: merged").arg(number), error))
         return false;
-    // git merge and git am both commit the code change themselves; only the
-    // flat-patch `git apply --index --3way` path (no ref, no commit series)
-    // left it staged-but-uncommitted, so land that one explicitly.
+
+
+
     if (refMerge || !pr.commits.isEmpty())
         return true;
     if (!runGit(m_workTree, {"add", "-A"}, nullptr, &err)) {
@@ -1813,17 +1813,17 @@ bool PullStore::mergePull(int number, QString *error, bool requirePeerReview)
     return true;
 }
 
-// ---- Interactive conflict resolution ---------------------------------------
+
 
 QString PullStore::syntheticMbox(const PullRequest &pr)
 {
-    // A flat patch carries no author/commit metadata; wrap it in a minimal,
-    // single-commit mbox so `git am` can apply it and still credit the PR author.
+
+
     const QString name = pr.authorName.trimmed().isEmpty()
                              ? QStringLiteral("ForkMesh contributor")
                              : pr.authorName.trimmed();
-    // The pubkey is base64url (valid email local-part chars); fall back to a
-    // placeholder so the address is always well-formed.
+
+
     const QString email = (pr.author.isEmpty() ? QStringLiteral("contributor")
                                                : pr.author) +
                           QStringLiteral("@forkmesh");
@@ -1846,7 +1846,7 @@ QString PullStore::syntheticMbox(const PullRequest &pr)
     return out;
 }
 
-// Path to the in-progress `git am` state directory, or empty when none.
+
 static QString amStateDir(const QString &workTree)
 {
     QByteArray out;
@@ -1860,7 +1860,7 @@ static QString amStateDir(const QString &workTree)
     return QFileInfo::exists(path) ? path : QString();
 }
 
-// Files the merge left unresolved (unmerged index entries).
+
 static QStringList unmergedFiles(const QString &workTree)
 {
     QByteArray out;
@@ -1875,13 +1875,13 @@ bool PullStore::conflictMergeInProgress() const
             !amStateDir(m_editWorkTree).isEmpty());
 }
 
-// Check out a fresh work-branch for the PR (its named head, or pull/<N>, started
-// from the base) and `git am` the PR onto it, so any changes stay isolated from
-// the base branch. Sets the m_am* state. Returns false on a hard failure (already
-// torn down); on success sets *cleanApply (true = applied with no conflict and
-// committed on the branch; false = conflict markers left in the tree with the am
-// session open) and, when conflicting, fills *conflicted with the unmerged paths.
-// Shared by startConflictMerge (resolve) and startPullFileEdit (edit a file).
+
+
+
+
+
+
+
 bool PullStore::beginPullBranch(int number, QStringList *conflicted,
                                 bool *cleanApply, QString *error)
 {
@@ -1900,8 +1900,8 @@ bool PullStore::beginPullBranch(int number, QStringList *conflicted,
                                     "progress; finish or cancel it first.");
         return false;
     }
-    // `git am` refuses to run on a dirty tree, and the work would entangle the
-    // user's own edits — require a clean tree up front.
+
+
     QByteArray porcelain;
     runGit(m_workTree, {"status", "--porcelain"}, &porcelain);
     if (!porcelain.trimmed().isEmpty()) {
@@ -1921,8 +1921,8 @@ bool PullStore::beginPullBranch(int number, QStringList *conflicted,
         return false;
     }
 
-    // Work on the PR's own branch so changes stay isolated from the base branch —
-    // a later mergePull is what lands them. Remember where to return to.
+
+
     QString err;
     QByteArray originalBranch;
     QByteArray originalCommit;
@@ -1933,17 +1933,17 @@ bool PullStore::beginPullBranch(int number, QStringList *conflicted,
                          ? QString::fromUtf8(originalCommit).trimmed()
                          : current;
 
-    // Branch to commit onto: the PR's named head, or a synthesized pull/<N>.
-    // Never the base branch itself (that would defeat the isolation).
+
+
     QString branchName = pr.head.trimmed();
     if (branchName.isEmpty() || branchName == m_amRestoreRef ||
         branchName == pr.base.trimmed())
         branchName = QStringLiteral("pull/%1").arg(number);
     m_amBranch = branchName;
 
-    // Start point: the PR's recorded base when it resolves to a commit, else the
-    // current checkout. Capture it as a stable SHA so the regenerated diff is
-    // unaffected by later ref movement.
+
+
+
     QString startPoint = m_amRestoreRef;
     if (!pr.base.trimmed().isEmpty()) {
         QByteArray baseSha;
@@ -1973,13 +1973,13 @@ bool PullStore::beginPullBranch(int number, QStringList *conflicted,
         return false;
     }
 
-    // Source mbox: the authored series when present (committed blob, or the one
-    // readPull reconstructed for a branch-backed PR), else a single synthesized
-    // commit from the flat patch. A temp mbox is read once by `git am`, then
-    // removed. Preferring pr.commits keeps every authored commit on the branch.
-    // Never trust an on-disk commits.mbox for a branch-backed PR: readPull
-    // rebuilt pr.commits from the refs, while the stored blob may be a truncated
-    // inbox artifact whose damaged binary section trips "corrupt binary patch".
+
+
+
+
+
+
+
     const QString realMbox = pullDir(number) + "/commits.mbox";
     QString mboxPath;
     QString tempMbox;
@@ -2002,26 +2002,26 @@ bool PullStore::beginPullBranch(int number, QStringList *conflicted,
     git.waitForFinished(60000);
     const bool ok = git.exitStatus() == QProcess::NormalExit && git.exitCode() == 0;
     if (!tempMbox.isEmpty())
-        QFile::remove(tempMbox); // git am has already copied it into its state dir
+        QFile::remove(tempMbox);
 
     if (ok) {
         if (cleanApply)
             *cleanApply = true;
-        return true; // applied with no conflict; committed on the branch
+        return true;
     }
-    // Non-zero exit: a content conflict leaves the am session in progress with
-    // unmerged files. Anything else is a hard failure we shouldn't leave behind.
+
+
     QStringList files = unmergedFiles(m_workTree);
     if (amStateDir(m_workTree).isEmpty() || files.isEmpty()) {
         const QString detail =
             QString::fromUtf8(git.readAllStandardError()).trimmed().left(300);
         abortConflictMerge();
         if (error) {
-            // A corrupt/truncated patch (typically a binary section damaged in
-            // transit) makes `git am` bail before it can leave any conflict to
-            // resolve. The commits are reconstructed from refs whenever those are
-            // reachable, so a recurrence means the source objects aren't here yet
-            // — point the reviewer at the fix instead of the raw git error.
+
+
+
+
+
             if (detail.contains(QLatin1String("corrupt")))
                 *error = QStringLiteral(
                              "This pull request's patch is corrupt, so it could "
@@ -2051,12 +2051,12 @@ bool PullStore::startConflictMerge(int number, QStringList *conflicted,
     if (!beginPullBranch(number, conflicted, &clean, error))
         return false;
     if (clean) {
-        // Applied with no markers to edit — finalize on the branch straight away.
+
         if (resolvedClean)
             *resolvedClean = true;
         return finishConflictMerge(number, error);
     }
-    return true; // conflicts left in the tree for the caller to resolve
+    return true;
 }
 
 bool PullStore::startConflictAgentEdit(int number, QStringList *conflicted,
@@ -2083,14 +2083,14 @@ bool PullStore::startPullFileEdit(int number, const QString &relPath,
     if (!beginPullBranch(number, &conflicted, &clean, error))
         return false;
     if (!clean) {
-        // We can't edit through conflict markers; the PR must be resolved first.
+
         abortConflictMerge();
         if (error)
             *error = QStringLiteral("This pull request has conflicts - use "
                                     "\"Resolve conflicts\" first, then edit.");
         return false;
     }
-    // The PR is now applied on m_amBranch; hand back the file to edit.
+
     const QString abs = m_workTree + "/" + relPath;
     QFile f(abs);
     if (!QFileInfo::exists(abs) || !f.open(QIODevice::ReadOnly)) {
@@ -2103,7 +2103,7 @@ bool PullStore::startPullFileEdit(int number, const QString &relPath,
     if (content)
         *content = QString::fromUtf8(f.readAll());
     f.close();
-    return true; // branch left checked out; finishPullFileEdit commits the edit
+    return true;
 }
 
 bool PullStore::finishPullFileEdit(int number, const QString &relPath,
@@ -2125,7 +2125,7 @@ bool PullStore::finishPullFileEdit(int number, const QString &relPath,
     QByteArray staged;
     runGit(m_workTree, {"diff", "--cached", "--name-only"}, &staged);
     if (staged.trimmed().isEmpty()) {
-        // The file is unchanged — nothing to commit; tear the work branch down.
+
         abortConflictMerge();
         if (error)
             *error = QStringLiteral("No changes to commit.");
@@ -2149,18 +2149,18 @@ QString PullStore::agentEditWorkTree() const
     return m_editWorkTree;
 }
 
-// Check the pull request's branch out in a throwaway linked worktree so an agent
-// can edit it without the user's own checkout being involved at all (adhoc
-// #437): it may be dirty, mid-rebase, or sitting on another branch. A
-// branch-backed PR is edited at its real branch tip (its commits *are* the pull
-// request); anything else is replayed onto the base with `git am`, the same way
-// the in-tree path does it. The worktree is detached so it never collides with a
-// branch that is checked out elsewhere.
+
+
+
+
+
+
+
 bool PullStore::beginPullEditWorkTree(int number, QString *error)
 {
     discardPullEditWorkTree();
     if (!canWrite())
-        return false; // caller falls back and reports the missing working tree
+        return false;
     PullRequest pr;
     if (!readPull(number, pr)) {
         if (error)
@@ -2178,11 +2178,11 @@ bool PullStore::beginPullEditWorkTree(int number, QString *error)
     if (baseSha.isEmpty())
         baseSha = resolvedCommitOid(m_workTree, QStringLiteral("HEAD"));
     if (baseSha.isEmpty())
-        return false; // nothing to branch from here — let the caller fall back
+        return false;
 
-    // The PR's own branch when it names one that lives here; a cross-node
-    // "<node>:<branch>" label or a collision with the base means a synthesized
-    // pull/<N> instead (never the base itself — that would defeat the isolation).
+
+
+
     QString branchName = pr.head.trimmed();
     if (branchName.contains(QLatin1Char(':')) || branchName == baseRef)
         branchName.clear();
@@ -2200,14 +2200,14 @@ bool PullStore::beginPullEditWorkTree(int number, QString *error)
                              headSha.isEmpty() ? baseSha : headSha})) {
         runGit(m_workTree, {"worktree", "prune"}, nullptr, nullptr);
         QDir(dir).removeRecursively();
-        return false; // no worktree available — fall back to the in-tree replay
+        return false;
     }
     m_editWorkTree = dir;
 
     if (headSha.isEmpty()) {
-        // Replay the PR onto the base inside the scratch worktree. Conflicts
-        // belong to the resolve flow, so anything short of a clean apply is torn
-        // down here.
+
+
+
         const QString mboxPath =
             QDir::temp().filePath(QStringLiteral("forkmesh-pr-edit-%1.mbox").arg(number));
         const bool wrote = writeTextFile(
@@ -2229,14 +2229,14 @@ bool PullStore::beginPullEditWorkTree(int number, QString *error)
 
     m_amBranch = branchName;
     m_amBase = baseSha;
-    m_amRestoreRef.clear(); // nothing was checked out in the user's tree
+    m_amRestoreRef.clear();
     return true;
 }
 
-// Replay a PR onto its current base in a detached worktree, leaving any
-// conflict markers there for an agent. This deliberately has no in-tree
-// fallback: a user's unrelated tracked/untracked changes must never block or be
-// swept into an automated PR fix.
+
+
+
+
 bool PullStore::beginPullConflictWorkTree(int number, QStringList *conflicted,
                                           bool *cleanApply, QString *error)
 {
@@ -2295,9 +2295,9 @@ bool PullStore::beginPullConflictWorkTree(int number, QStringList *conflicted,
         return false;
     }
     m_editWorkTree = dir;
-    // Always land agent conflict fixes on a dedicated branch. This avoids
-    // trying to move a PR head branch that may itself be checked out beside
-    // unrelated local changes.
+
+
+
     m_amBranch = QStringLiteral("pull/%1-agent-fix").arg(number);
     m_amBase = baseSha;
     m_amRestoreRef.clear();
@@ -2356,10 +2356,10 @@ void PullStore::discardPullEditWorkTree()
 
 bool PullStore::startPullAgentEdit(int number, QString *error)
 {
-    // Preferred path: edit in a scratch worktree on the PR's own branch, which
-    // works whatever state the user's checkout is in (adhoc #437). An empty
-    // error there means git could not hand out a worktree, not that the pull
-    // request is unfit — so fall through to the in-tree replay below.
+
+
+
+
     QString worktreeError;
     if (beginPullEditWorkTree(number, &worktreeError))
         return true;
@@ -2374,15 +2374,15 @@ bool PullStore::startPullAgentEdit(int number, QString *error)
     if (!beginPullBranch(number, &conflicted, &clean, error))
         return false;
     if (!clean) {
-        // Agent edits sit on top of the applied PR; conflicts must go through
-        // the resolve flow first.
+
+
         abortConflictMerge();
         if (error)
             *error = QStringLiteral("This pull request has conflicts - use "
                                     "\"Resolve conflicts\" first.");
         return false;
     }
-    return true; // branch left checked out; finishPullAgentEdit commits the edits
+    return true;
 }
 
 bool PullStore::finishPullAgentEdit(int number, const QString &commitMsg,
@@ -2393,8 +2393,8 @@ bool PullStore::finishPullAgentEdit(int number, const QString &commitMsg,
             *error = QStringLiteral("Editing needs a local working tree.");
         return false;
     }
-    // The edits are wherever the agent ran: the scratch worktree, or the main
-    // tree when the in-tree fallback was taken.
+
+
     const QString dir = m_editWorkTree.isEmpty() ? m_workTree : m_editWorkTree;
     QString err;
     if (!runGit(dir, {"add", "-A"}, nullptr, &err)) {
@@ -2405,7 +2405,7 @@ bool PullStore::finishPullAgentEdit(int number, const QString &commitMsg,
     QByteArray staged;
     runGit(dir, {"diff", "--cached", "--name-only"}, &staged);
     if (staged.trimmed().isEmpty()) {
-        // The agent changed nothing — tear the work branch down.
+
         abortConflictMerge();
         if (error)
             *error = QStringLiteral("No changes to commit.");
@@ -2421,10 +2421,10 @@ bool PullStore::finishPullAgentEdit(int number, const QString &commitMsg,
     return finalizeOnPullBranch(number, commitMsg, error);
 }
 
-// The scratch worktree commits on a detached HEAD; land that commit on the PR's
-// branch so the branch (and with it a branch-backed PR) carries the fixes. A
-// leftover agent worktree holding the branch is released and retried; the user's
-// own checkout sitting on it is fast-forwarded instead.
+
+
+
+
 bool PullStore::moveBranchToEditTip(QString *error)
 {
     const QString tip = resolvedCommitOid(m_editWorkTree, QStringLiteral("HEAD"));
@@ -2439,8 +2439,8 @@ bool PullStore::moveBranchToEditTip(QString *error)
     if (releaseWorktreeHoldingBranch(m_workTree, m_amBranch) &&
         runGit(m_workTree, {"branch", "-f", m_amBranch, tip}, nullptr, &err))
         return true;
-    // Still refused: the branch is checked out in the user's own tree. A
-    // fast-forward moves it there without touching their uncommitted work.
+
+
     QByteArray current;
     runGit(m_workTree, {"rev-parse", "--abbrev-ref", "HEAD"}, &current, nullptr);
     if (QString::fromUtf8(current).trimmed() == m_amBranch &&
@@ -2472,12 +2472,12 @@ bool PullStore::deletePullFile(int number, const QString &relPath, QString *erro
         return false;
     }
 
-    // Edit the stored diff directly rather than rebuilding the PR's branch
-    // (issue #258). The old path checked the PR's commits out onto the current
-    // base with `git am` and regenerated the patch — but `git am` silently skips
-    // commits whose content already exists on the base ("patch already applied"),
-    // so deleting a single file could drop most of the PR. Excising just this
-    // file's section keeps every other change exactly as the author wrote it.
+
+
+
+
+
+
     bool removed = false;
     const QString newPatch = removeFileSectionsFromDiff(pr.patch, relPath, &removed);
     if (!removed) {
@@ -2497,11 +2497,11 @@ bool PullStore::deletePullFile(int number, const QString &relPath, QString *erro
     pr.patch = newPatch;
     if (!pr.commits.isEmpty())
         pr.commits = removeFileFromMbox(pr.commits, relPath);
-    computeStats(pr); // refresh files/additions/deletions from the trimmed patch
+    computeStats(pr);
 
-    // The trimmed diff no longer matches base..head, so it can no longer be
-    // reconstructed from the branch — persist it as a stored-patch PR (writePull
-    // then writes the blobs, which become the source of truth on read).
+
+
+
     pr.branchBacked = false;
     pr.creationBaseOid.clear();
     pr.creationHeadOid.clear();
@@ -2509,28 +2509,28 @@ bool PullStore::deletePullFile(int number, const QString &relPath, QString *erro
     pr.mergeHead.clear();
     if (!writePull(pr, error))
         return false;
-    // writePull only (re)writes commits.mbox when it's non-empty; if every
-    // authored commit collapsed away, drop the stale file so merge falls back to
-    // the patch instead of replaying an out-of-date series.
+
+
+
     if (pr.commits.isEmpty())
         QFile::remove(pullDir(number) + "/commits.mbox");
     if (!commit(QStringLiteral("pull #%1: delete %2").arg(number).arg(relPath),
                error))
         return false;
-    // Invalidate any materialized ref (issue #399): it would still point at
-    // the pre-edit commits (including the just-removed file's), and a stale
-    // ref would silently override the trimmed patch/mbox this just wrote.
-    // See updateBranchFromBase for the same reasoning.
+
+
+
+
     runGit(m_workTree,
           {"update-ref", "-d", QStringLiteral("refs/pr/%1/head").arg(number)},
           nullptr, nullptr);
     return true;
 }
 
-// Shared tail for the on-branch PR operations (resolve, edit): leave the work
-// branch, regenerate the PR's patch + commit series against the current base so
-// it stays cleanly mergeable, keep it open, and commit the refreshed pulls/
-// metadata onto the original branch. Consumes (and clears) the m_am* state.
+
+
+
+
 bool PullStore::finalizeOnPullBranch(int number, const QString &commitMsg,
                                      QString *error)
 {
@@ -2568,13 +2568,13 @@ bool PullStore::finalizeOnPullBranch(int number, const QString &commitMsg,
     computeStats(pr);
     if (!writePull(pr, error))
         return false;
-    discardPullEditWorkTree(); // no-op unless an agent edit ran in a scratch tree
+    discardPullEditWorkTree();
     m_amBranch.clear();
     m_amBase.clear();
     m_amRestoreRef.clear();
     if (!commit(commitMsg, error))
         return false;
-    // Invalidate rather than refresh - see updateBranchFromBase for why.
+
     runGit(m_workTree,
           {"update-ref", "-d", QStringLiteral("refs/pr/%1/head").arg(number)},
           nullptr, nullptr);
@@ -2589,7 +2589,7 @@ bool PullStore::finishConflictMerge(int number, QString *error)
         return false;
     }
     const QString dir = m_editWorkTree.isEmpty() ? m_workTree : m_editWorkTree;
-    // Refuse to commit a tree that still carries conflict markers.
+
     for (const QString &rel : unmergedFiles(dir)) {
         QFile f(dir + "/" + rel);
         if (!f.open(QIODevice::ReadOnly))
@@ -2610,8 +2610,8 @@ bool PullStore::finishConflictMerge(int number, QString *error)
             *error = "git add failed: " + err;
         return false;
     }
-    // Complete the replay only if an am session is actually open (a clean apply
-    // in startConflictMerge already committed it).
+
+
     if (!amStateDir(dir).isEmpty() &&
         !runGit(dir, {"am", "--continue"}, nullptr, &err)) {
         if (error)
@@ -2620,9 +2620,9 @@ bool PullStore::finishConflictMerge(int number, QString *error)
     }
     if (!m_editWorkTree.isEmpty() && !moveBranchToEditTip(error))
         return false;
-    // The resolution now lives on m_amBranch. Return to the original branch,
-    // regenerate the PR from it, and leave it open — the base branch only gets
-    // the refreshed pulls/ metadata; merging stays the owner's separate step.
+
+
+
     return finalizeOnPullBranch(
         number,
         QStringLiteral("pull #%1: resolve conflicts on %2")
@@ -2636,10 +2636,10 @@ void PullStore::abortConflictMerge()
     if (m_workTree.isEmpty())
         return;
     if (!m_editWorkTree.isEmpty()) {
-        // Agent edit in a scratch worktree: nothing was checked out in the user's
-        // tree and the PR's branch was never moved, so dropping the worktree
-        // undoes the whole thing. Never delete m_amBranch here — unlike the
-        // in-tree path it is the PR's real branch, not a throwaway.
+
+
+
+
         discardPullEditWorkTree();
         m_amBranch.clear();
         m_amBase.clear();
@@ -2648,8 +2648,8 @@ void PullStore::abortConflictMerge()
     }
     if (!amStateDir(m_workTree).isEmpty())
         runGit(m_workTree, {"am", "--abort"}, nullptr, nullptr);
-    // Return to the branch we started from and drop the throwaway PR branch so a
-    // cancelled resolution leaves no trace.
+
+
     if (!m_amRestoreRef.isEmpty() && m_amRestoreRef != m_amBranch)
         runGit(m_workTree, {"checkout", m_amRestoreRef}, nullptr, nullptr);
     if (!m_amBranch.isEmpty())
@@ -2678,12 +2678,12 @@ bool PullStore::checkMergeable(int number, bool *clean,
             *error = QStringLiteral("Pull request #%1 not found.").arg(number);
         return false;
     }
-    // A branch-backed PR merges by real refs (see mergePull), so preview it the
-    // same way: `git merge-tree` runs the actual 3-way merge in memory and reports
-    // conflicts without touching the index or working tree — with no patch, none
-    // of the "missing base blob" / context-drift false conflicts a
-    // `git apply --check` produces. Only a stored-patch PR (or a branch-backed one
-    // whose commits aren't reachable anywhere) falls back to the patch dry-run.
+
+
+
+
+
+
     if (pr.branchBacked) {
         const QString headSha = reachableHeadCommit(m_workTree, m_mirror, pr.head);
         QByteArray baseSha;
@@ -2709,9 +2709,9 @@ bool PullStore::checkMergeable(int number, bool *clean,
                 return true;
             }
             if (normal && code == 1) {
-                // Conflicts. The conflicted-file-info block lists one line per
-                // unmerged stage as "<mode> <object> <stage>\t<path>", ending at a
-                // blank line before the informational messages.
+
+
+
                 if (conflictFiles) {
                     static const QRegularExpression stageLine(
                         QStringLiteral("^\\d+ [0-9a-f]+ [123]\t(.+)$"));
@@ -2719,20 +2719,20 @@ bool PullStore::checkMergeable(int number, bool *clean,
                         QString::fromUtf8(git.readAllStandardOutput()).split('\n');
                     for (int i = 1; i < lines.size(); ++i) {
                         if (lines.at(i).trimmed().isEmpty())
-                            break; // reached the informational-messages section
+                            break;
                         const QRegularExpressionMatch m = stageLine.match(lines.at(i));
                         if (m.hasMatch() && !conflictFiles->contains(m.captured(1)))
                             *conflictFiles << m.captured(1);
                     }
                 }
-                return true; // *clean stays false
+                return true;
             }
-            // Exit >1 means merge-tree could not run (e.g. unrelated histories);
-            // fall through to the patch dry-run rather than hard-failing.
+
+
         }
     }
-    // A branch-backed PR's diff is reconstructed (readPull filled pr.patch); dry-
-    // run it through a temp file. A stored-patch PR uses its committed blob.
+
+
     QString patchPath = pullDir(number) + "/changes.patch";
     QString tempFile;
     if (!QFileInfo::exists(patchPath)) {
@@ -2748,9 +2748,9 @@ bool PullStore::checkMergeable(int number, bool *clean,
         patchPath = tempFile;
     }
 
-    // --check dry-runs the same 3-way apply mergePull performs, without
-    // touching the index or working tree. Run git directly (not through runGit,
-    // which truncates failure output) so we get the full per-file diagnostics.
+
+
+
     QProcess git;
     git.start("git",
               {"-C", m_workTree, "apply", "--check", "--3way", patchPath});
@@ -2766,9 +2766,9 @@ bool PullStore::checkMergeable(int number, bool *clean,
                            QString::fromUtf8(git.readAllStandardOutput());
     const bool exitedClean =
         git.exitStatus() == QProcess::NormalExit && git.exitCode() == 0;
-    // The 3-way fallback can "apply with conflicts" and still exit 0, so treat
-    // that message as a conflict too — clean means a non-zero exit AND no
-    // "with conflicts" report.
+
+
+
     const bool hasConflicts =
         output.contains(QStringLiteral("with conflicts"));
     if (exitedClean && !hasConflicts) {
@@ -2825,22 +2825,22 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
     }
     const QString relPath = QStringLiteral("pulls/%1").arg(number);
     QString err;
-    // pulls/ now lives on its own metadata branch (issue #399); fall back to
-    // m_workTree only if a working tree somehow isn't available at all.
+
+
     const QString meta = metaWorkTree();
     const QString metaDir = meta.isEmpty() ? m_workTree : meta;
-    // The plain delete below commits path-scoped (`commit -- pulls/<n>`), so
-    // unrelated tracked changes elsewhere in the work tree (e.g. edits on main)
-    // never enter it and can't block the deletion. Only the opt-in history
-    // rewrite needs a clean tree: git filter-branch refuses to run with unstaged
-    // changes, so gate the guard on rewriteHistory rather than rejecting every
-    // delete when the working tree happens to be dirty.
+
+
+
+
+
+
     if (rewriteHistory && hasUnrelatedTrackedChanges(metaDir, relPath, error))
         return false;
 
-    // First commit a normal deletion so the work tree is clean for the history
-    // rewrite below, which then prunes this commit along with the prior
-    // pull-only commits (e.g. "pull #N: open" and its changes.patch).
+
+
+
     runGit(metaDir, {"rm", "-r", "--ignore-unmatch", "--", relPath}, nullptr, nullptr);
     if (QDir(dir).exists() && !QDir(dir).removeRecursively()) {
         if (error)
@@ -2857,27 +2857,27 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
             return false;
         }
     }
-    // Best-effort: drop the materialized content ref too. Leaving it behind is
-    // harmless (an unreferenced object eventually swept by gc), just untidy.
+
+
     runGit(m_workTree,
           {"update-ref", "-d", QStringLiteral("refs/pr/%1/head").arg(number)},
           nullptr, nullptr);
 
-    // Default path: the PR folder is gone at the tip, which is all most callers
-    // want. Skip the expensive full-history rewrite unless explicitly requested.
+
+
     if (!rewriteHistory)
         return true;
 
-    // Purge pulls/<number> from every commit so the diff text it carried
-    // (changes.patch / commits.mbox) can no longer be found by searching
-    // history. Without this the soft delete above only hides the files at the
-    // tip; older commits still contain them. --all rewrites every ref in the
-    // repo (shared by every linked worktree, including the pulls/ metadata
-    // worktree's checked-out forkmesh/pulls branch) regardless of which
-    // worktree directory this runs from - but a branch that's checked out
-    // elsewhere while filter-branch rewrites it is an unverified edge case
-    // here; a metadata-worktree removal/relink before a rewriteHistory=true
-    // call would be the safer sequencing if this proves flaky in practice.
+
+
+
+
+
+
+
+
+
+
     QByteArray refs;
     if (!runGit(m_workTree, {"rev-list", "--all", "--max-count=1"}, &refs, &err,
                 kGitRewriteTimeoutMs)) {
@@ -2931,9 +2931,9 @@ bool PullStore::deletePull(int number, bool rewriteHistory, QString *error)
 }
 bool PullStore::commit(const QString &message, QString *error) const
 {
-    // Commits pulls/ onto its own dedicated branch (issue #399) rather than
-    // whatever the user currently has checked out - which, mid conflict
-    // resolution or file edit, may not even be main.
+
+
+
     const QString meta = metaWorkTree();
     const QString dir = meta.isEmpty() ? m_workTree : meta;
     QString err;
@@ -2952,15 +2952,15 @@ bool PullStore::commit(const QString &message, QString *error) const
     return true;
 }
 
-// ---- Read-only access from a bare mirror -----------------------------------
+
 
 QString PullStore::mirrorRef() const
 {
     QByteArray output;
-    // Prefer the dedicated pull-metadata branch (issue #399) so a mirror-only
-    // (read-only) node still sees live PR data even though it no longer lands
-    // on the default branch; fall back for mirrors that predate this or
-    // haven't synced the new branch yet.
+
+
+
+
     if (runGit(m_mirror,
                {"rev-parse", "--verify", "-q", "refs/heads/forkmesh/pulls^{commit}"},
                &output) &&
@@ -3257,9 +3257,9 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error, bool strict,
         pr.mergeBase = fm.get("mergeBase");
         pr.mergeHead = fm.get("mergeHead");
         pr.description = fm.body;
-        // Branch-backed PRs carry no committed diff — reconstruct it from the
-        // base/head refs the mirror already syncs (the merge snapshot for a
-        // merged one). Fall back to committed blobs for legacy/portable PRs.
+
+
+
         bool derived = false;
         if (pr.branchBacked) {
             if (strict) {
@@ -3303,8 +3303,8 @@ QList<PullRequest> PullStore::loadFromMirror(QString *error, bool strict,
         if (strict) {
             names = strictEventNames.value(base);
         } else {
-            // Keep permissive loading on its existing per-pull path. Strict
-            // loading already got every event from the recursive tree batch.
+
+
             QByteArray dirListing;
             eventsEnumerated =
                 readGit({"ls-tree", ref, "pulls/" + base + "/"},

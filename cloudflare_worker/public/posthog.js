@@ -1,9 +1,9 @@
-// Optional, coarse product analytics.
-//
-// This file is included by every public page, but it does not load PostHog or
-// send a network request unless this browser has explicitly opted in. ForkMesh
-// never sends a raw path, query string, referrer, element text, form value, or
-// account/repository identifier through this integration.
+
+
+
+
+
+
 (() => {
   "use strict";
 
@@ -46,9 +46,9 @@
     }
   }
 
-  // Deliberately map paths to a small fixed vocabulary. In particular,
-  // /owner/repository, private deep links, issue ids, searches, and query
-  // parameters never leave the browser.
+
+
+
   function coarseSurface(pathname) {
     const path = String(pathname || "/").toLowerCase();
     if (path === "/") return "home";
@@ -149,8 +149,8 @@
   window.addEventListener(
     "error",
     (event) => {
-      // Resource-load errors do not expose a useful exception and can reveal
-      // asset paths. The operational collector is for uncaught JavaScript.
+
+
       if (event.target && event.target !== window) return;
       reportClientError(
         "error",
@@ -165,9 +165,9 @@
   );
   window.addEventListener("unhandledrejection", (event) => {
     const reason = event.reason;
-    // World navigation and mobile gesture reconciliation intentionally abort
-    // stale fetches. Browsers surface those cancellations as unhandled
-    // AbortError rejections even though no request or UI action failed.
+
+
+
     if (
       reason?.name === "AbortError" ||
       /signal is aborted|operation was aborted/i.test(
@@ -184,7 +184,7 @@
   });
 
   function installPostHogBootstrap() {
-    // Standard queueing bootstrap, intentionally invoked only after consent.
+
     !function(t,e){var o,n,p,r;e.__SV||(window.posthog&&window.posthog.__loaded)||(window.posthog=e,e._i=[],e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]),t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript",p.crossOrigin="anonymous",p.async=!0,p.src=s.api_host.replace(".i.posthog.com","-assets.i.posthog.com")+"/static/array.js",(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="ki Ci init qi Hi pr Bi zi Di capture calculateEventProperties Qi register register_once register_for_session unregister unregister_for_session Ki getFeatureFlag getFeatureFlagPayload getFeatureFlagResult getAllFeatureFlags isFeatureEnabled reloadFeatureFlags updateFlags updateEarlyAccessFeatureEnrollment getEarlyAccessFeatures on onFeatureFlags onSurveysLoaded onSessionId getSurveys getActiveMatchingSurveys renderSurvey displaySurvey cancelPendingSurvey canRenderSurvey canRenderSurveyAsync Xi identify setPersonProperties unsetPersonProperties group resetGroups setPersonPropertiesForFlags resetPersonPropertiesForFlags setGroupPropertiesForFlags resetGroupPropertiesForFlags reset shutdown setIdentity clearIdentity get_distinct_id getGroups get_session_id get_session_replay_url alias set_config startSessionRecording stopSessionRecording sessionRecordingStarted captureException addExceptionStep captureLog startExceptionAutocapture stopExceptionAutocapture loadToolbar get_property getSessionProperty Ji Gi createPersonProfile setInternalOrTestUser Yi Ai rn opt_in_capturing opt_out_capturing has_opted_in_capturing has_opted_out_capturing get_explicit_consent_status is_capturing clear_opt_in_out_capturing Vi debug mr it getPageViewId captureTraceFeedback captureTraceMetric Oi".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])},e.__SV=1)}(document,window.posthog||[]);
   }
 
@@ -278,7 +278,7 @@
     status,
   });
 
-  // Default is off. This is the sole automatic start path and it requires a
-  // previously stored explicit grant on this device.
+
+
   if (storedConsent() === "granted" && !privacySignalEnabled()) start();
 })();

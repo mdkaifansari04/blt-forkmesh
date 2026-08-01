@@ -179,8 +179,8 @@ def test_account_session_record_uses_v2_digest_lookup_for_bearer_tokens():
     assert any("FROM users" in sql for sql, _args in queries)
     assert updates and "last_seen_at" in updates[0][0]
 
-    # The public session id is not sufficient: changing the secret keeps the
-    # lookup key the same but fails the keyed digest comparison.
+
+
     forged = "v2." + "a" * 32 + "." + "c" * 43
     assert asyncio.run(record(
         env,
@@ -231,7 +231,7 @@ def test_account_session_record_cookie_selection_enforces_mutation_origin():
         assert asyncio.run(record(
             env, denied, {"sessionToken": "cookie"})) == ("", None)
 
-    # Safe reads may use the HttpOnly cookie without an Origin header.
+
     read = _session_request(headers={"cookie": cookie})
     assert asyncio.run(record(
         env, read, {"sessionToken": "cookie"}))[0] == "account-bi"

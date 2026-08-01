@@ -16,7 +16,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import static_routes  # noqa: E402
+import static_routes
 
 CANONICAL_PAGE_ROUTES = {
     "/": "/index.html",
@@ -93,25 +93,25 @@ DOCS_PAGE_REDIRECT_RULES = {
 }
 
 NON_ROUTED_HTML_ASSETS = {
-    # Served by Cloudflare only for misses, not a navigable product route.
+
     "404.html",
-    # Authored dashboard source; the generated dashboard/index.html asset is the
-    # public route target.
+
+
     "dashboard/shell.html",
-    # The repo-detail document: fetched by the Worker for every /owner/repo
-    # route, never a navigable asset path of its own.
+
+
     "dashboard/repo.html",
-    # Duplicate static copy kept for source parity; its public route is
-    # canonicalized to the index-backed route above.
+
+
     "docs.html",
 } | {
-    # Blog posts live under /blog/<slug>/ and are served as static
-    # directory indexes, while /blog itself is the canonical listing route.
+
+
     path.relative_to(PUBLIC).as_posix()
     for path in (PUBLIC / "blog").glob("*/index.html")
 } | {
-    # Docs pages live under /docs/<slug>/ and are served as static
-    # directory indexes, while /docs itself is the canonical listing route.
+
+
     path.relative_to(PUBLIC).as_posix()
     for path in (PUBLIC / "docs").glob("*/index.html")
 }
@@ -227,9 +227,9 @@ def test_worker_does_not_own_static_page_alias_routes():
         else:
             assert route not in run_worker_first
 
-    # / and /dashboard ARE worker-owned: / selects the world shell and
-    # /dashboard must see the query string to 308 legacy ?section= URLs —
-    # _redirects cannot match either.
+
+
+
     assert "/" in run_worker_first
     assert "/dashboard" in run_worker_first
 
@@ -267,10 +267,10 @@ def test_repo_shortcuts_are_worker_owned_without_hijacking_static_assets():
 
 
 def test_public_profile_routes_are_worker_owned():
-    # /@name is single-segment, so it does not match /*/*; without explicit
-    # entries Static Assets shadows it, encodes @ -> %40, and 404s before the
-    # worker's public_profile_handler runs. Both literal and pre-encoded forms
-    # must be routed to the worker.
+
+
+
+
     run_worker_first = WRANGLER["assets"]["run_worker_first"]
 
     assert "/@*" in run_worker_first

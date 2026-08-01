@@ -1,13 +1,13 @@
 (() => {
-  // Must match valid_node_name in cloudflare_worker/src/entry.py and the Qt
-  // client: a single DNS-like label, lowercase, hyphens allowed, no underscores.
+
+
   const NAME_RE = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
   const $ = (sel) => document.querySelector(sel);
   const isLive = location.protocol !== "file:";
 
-  // Referral attribution: /r/<name> bounces here with ?ref=<name>. Remember it
-  // so the credit survives a detour (pricing, docs) before the form is sent.
+
+
   function referralCode() {
     let ref = "";
     try {
@@ -33,7 +33,7 @@
   const signupHint = $("#signup-hint");
 
   function setNameHint(text, cls) {
-    // Only surface this hint for an actual error; success/neutral states stay quiet.
+
     nameHint.textContent = cls === "bad" ? text : "";
     nameHint.className = "hint" + (cls ? " " + cls : "");
   }
@@ -59,7 +59,7 @@
       ...options,
     });
     let body = {};
-    try { body = await res.json(); } catch (_) { /* ignore */ }
+    try { body = await res.json(); } catch (_) {   }
     return { ok: res.ok, status: res.status, body };
   }
 
@@ -186,8 +186,8 @@
     showVerifyView(nodeName, email);
   }
 
-  // Popular webmail providers keyed by email domain, so the matching inbox
-  // link is surfaced first on the "check your inbox" screen.
+
+
   const MAIL_PROVIDERS = {
     "gmail.com": "https://mail.google.com/",
     "googlemail.com": "https://mail.google.com/",
@@ -206,13 +206,13 @@
     const signupView = $("#signup-view");
     const verifyView = $("#verify-view");
     if (!verifyView) {
-      // Fallback if markup is missing: land on the dashboard as before.
+
       location.href = "/dashboard";
       return;
     }
     $("#recap-name").textContent = nodeName;
     $("#recap-email").textContent = email;
-    // Move the provider matching the user's email domain to the front.
+
     const domain = (email.split("@")[1] || "").toLowerCase();
     const inbox = MAIL_PROVIDERS[domain];
     const links = $("#mail-links");

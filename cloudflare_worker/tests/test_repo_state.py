@@ -59,10 +59,10 @@ SHA_PEELED = "4444444444444444444444444444444444444444"
 
 
 def _client_canonical(refs):
-    # Mirror PublicMirrorRuntime::refsSha256FromForEachRef (what the desktop's
-    # mirrorStateHash signs) and the mirror tools' refs_canonical(): "<sha>
-    # <refname>" lines sorted BY REFNAME (`for-each-ref --sort=refname`),
-    # joined by \n.
+
+
+
+
     return "\n".join(
         "%s %s" % (sha, name) for name, sha in sorted(refs.items()))
 
@@ -73,8 +73,8 @@ def test_canonical_matches_client_form():
         "refs/heads/dev": SHA_DEV,
         "refs/tags/v1": SHA_TAG,
     }
-    # A realistic v0 advertisement: first ref carries NUL-delimited capabilities,
-    # HEAD and a peeled tag line are present and must be dropped.
+
+
     body = (
         _pkt(("%s HEAD\x00multi_ack symref=HEAD:refs/heads/main\n" % SHA_MAIN).encode())
         + _pkt(("%s refs/heads/dev\n" % SHA_DEV).encode())
@@ -101,8 +101,8 @@ def test_hash_round_trips():
 
 
 def test_non_served_refs_are_ignored():
-    # refs/remotes/* and tool refs (refs/codex/*) are not served, so they must
-    # not influence the fingerprint even if a mirror somehow advertises them.
+
+
     body = (
         _pkt(("%s HEAD\x00caps\n" % SHA_MAIN).encode())
         + _pkt(("%s refs/heads/main\n" % SHA_MAIN).encode())
@@ -114,8 +114,8 @@ def test_non_served_refs_are_ignored():
 
 
 def test_empty_repo_is_stable():
-    # An empty repo advertises only the zero-id capabilities line; both sides
-    # then hash the empty string identically.
+
+
     body = _pkt(b"0" * 40 + b" capabilities^{}\x00caps\n") + b"0000"
     assert advertised_refs_canonical(body) == ""
 
@@ -123,5 +123,5 @@ def test_empty_repo_is_stable():
 def test_malformed_body_does_not_raise():
     assert advertised_refs_canonical(b"") == ""
     assert advertised_refs_canonical(b"zzzz garbage") == ""
-    # Truncated length header (claims more bytes than present) stops cleanly.
+
     assert advertised_refs_canonical(b"00ff" + b"short") == ""

@@ -121,7 +121,7 @@ def test_private_and_missing_repositories_share_a_hidden_result():
         missing_context(None, _Request(), "alice", "secret"))
     assert private is None
     assert missing is None
-    # The private catalog payload is not decrypted before the blind-index ACL.
+
     assert private_decrypts == []
     assert missing_decrypts == []
 

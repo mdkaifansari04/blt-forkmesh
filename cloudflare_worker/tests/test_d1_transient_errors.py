@@ -37,7 +37,7 @@ def _load(names, extra=None):
                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
                 and n.name in names]
     assert {n.name for n in selected} == names, "missing functions"
-    # Module-level marker tuples the predicate reads.
+
     consts = [n for n in tree.body
               if isinstance(n, ast.Assign)
               and any(getattr(t, "id", "") in
@@ -97,7 +97,7 @@ class _Results:
         self.results = rows
 
 
-# --- the read helpers replay a transient fault -------------------------------
+
 
 def test_transient_d1_fault_is_replayed_once_and_succeeds():
     ns = _load(READ_FUNCS)
@@ -105,10 +105,10 @@ def test_transient_d1_fault_is_replayed_once_and_succeeds():
     row = asyncio.run(ns["d1_first"](
         _Env(db), "SELECT data FROM nodes WHERE node_bi=?", "bi:x"))
 
-    # The caller sees the row, not the platform fault.
+
     assert row == {"name": "magnetic-mirror-8594"}
-    # Exactly two attempts, and the replay rebuilt the bound statement: a
-    # prepared statement that already failed is not guaranteed re-awaitable.
+
+
     assert db.attempts == [
         ("SELECT data FROM nodes WHERE node_bi=?", ("bi:x",)),
         ("SELECT data FROM nodes WHERE node_bi=?", ("bi:x",)),
@@ -131,7 +131,7 @@ def test_replay_is_bounded_at_one_retry():
         raise AssertionError("a persistent D1 fault must still propagate")
     except RuntimeError as exc:
         assert "internal error" in str(exc)
-    # Two attempts total — never an unbounded retry loop against a sick DB.
+
     assert len(db.attempts) == 2
 
 
@@ -143,8 +143,8 @@ def test_overloaded_d1_is_never_replayed():
         raise AssertionError("an overloaded D1 must fail fast")
     except RuntimeError as exc:
         assert "overloaded" in str(exc)
-    # Replaying reads into an overloaded database is the amplification that
-    # turned the 2026-07-11 free-plan incident into a death spiral.
+
+
     assert len(db.attempts) == 1
 
 
@@ -162,23 +162,23 @@ def test_our_own_bad_query_is_not_replayed():
 def test_writes_are_never_replayed():
     """d1_run must keep failing fast — not every write is idempotent."""
     source = ENTRY.read_text(encoding="utf-8")
-    # Anchor on the module-level helper, not the request-context method that
-    # merely forwards to it.
+
+
     body = source.split("\nasync def d1_run(", 1)[1].split("\nasync def ", 1)[0]
     assert "_d1_read" not in body
     assert "await stmt.run()" in body
 
 
-# --- the router turns an escaped D1 outage into backpressure ------------------
+
 
 def test_platform_faults_are_classified_but_our_bugs_are_not():
     ns = _load(ROUTER_FUNCS)
     is_platform = ns["_is_d1_platform_error"]
-    # Both the one-off blip and the sustained outage are D1's failure, so both
-    # become a 503 rather than a re-raised 500.
+
+
     assert is_platform(RuntimeError(D1_INTERNAL))
     assert is_platform(RuntimeError(D1_OVERLOADED))
-    # Our own broken SQL and unrelated bugs must keep their 500 + Sentry stack.
+
     assert not is_platform(RuntimeError("D1_ERROR: no such column: bogus"))
     assert not is_platform(KeyError("name"))
     assert not is_platform(RuntimeError("internal error; reference = x"))
@@ -190,13 +190,13 @@ def test_router_answers_503_degraded_instead_of_re_raising():
                            "\"legacy_custody_migration_required\":", 1)[1]
     handler = handler.split("        try:\n            status = int(", 1)[0]
     assert "_is_d1_platform_error(error)" in handler
-    # 503 + Retry-After so clients back off, and the degraded marker keeps the
-    # outer 5xx logger from double-logging what log_d1_unavailable recorded.
+
+
     assert "status=503" in handler
     assert "\"Retry-After\": \"2\"" in handler
     assert "EXPECTED_DEGRADED_HEADERS" in handler
     assert "log_d1_unavailable(" in handler
-    # The generic 1101 capture stays reachable for every other exception.
+
     assert "capture_worker_exception" in handler
 
 

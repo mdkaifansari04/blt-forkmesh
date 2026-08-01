@@ -15,9 +15,9 @@
 
 namespace {
 
-// Pre-v2 lossy key. Keep this implementation byte-for-byte compatible so old
-// run directories and approval records can be migrated, but never use it for a
-// new storage decision.
+
+
+
 QString legacySanitize(const QString &owner, const QString &name)
 {
     QString key = owner + QStringLiteral("-") + name;
@@ -72,9 +72,9 @@ QByteArray reviewOnlyLegacyApprovals(const QByteArray &raw)
         if (!it.value().isObject())
             continue;
         QJsonObject approval = it.value().toObject();
-        // A lossy key can never prove which repository was approved. Preserve
-        // the prior YAML for a useful review diff, but invalidate its execution
-        // authority and require a fresh repository-state-bound approval.
+
+
+
         approval.insert(QStringLiteral("schema"), 0);
         approval.insert(QStringLiteral("legacyScopeUnverified"), true);
         it.value() = approval;
@@ -82,7 +82,7 @@ QByteArray reviewOnlyLegacyApprovals(const QByteArray &raw)
     return QJsonDocument(approvals).toJson(QJsonDocument::Compact);
 }
 
-} // namespace
+}
 
 bool ActionNeeds::matches(const QString &token, const QString &workflowName,
                           const QString &workflowPath)
@@ -107,8 +107,8 @@ ActionNeeds::State ActionNeeds::resolve(const ActionRun &run,
 {
     State state = State::Ready;
     for (const QString &token : needs) {
-        // history is newest first, so the first match is the live run of that
-        // workflow for this commit (a re-run supersedes the older record).
+
+
         const ActionRun *dependency = nullptr;
         for (const ActionRun &candidate : history) {
             if (candidate.id == run.id || candidate.owner != run.owner ||
@@ -120,7 +120,7 @@ ActionNeeds::State ActionNeeds::resolve(const ActionRun &run,
             break;
         }
         if (!dependency)
-            continue; // not scheduled here; never a barrier
+            continue;
         if (dependency->status == ActionStatus::Success)
             continue;
         const bool pending =
@@ -132,7 +132,7 @@ ActionNeeds::State ActionNeeds::resolve(const ActionRun &run,
                 *detail = QStringLiteral("\"%1\" %2")
                               .arg(dependency->workflowName,
                                    dependency->status);
-            return State::Blocked; // can never become ready
+            return State::Blocked;
         }
         if (state == State::Ready) {
             state = State::Waiting;
@@ -272,9 +272,9 @@ void ActionStore::migrateLegacyRecords()
                 QDir().rename(repositoryDir.filePath(id), destination);
             }
 
-            // Artifacts use the same repository/run hierarchy. Move the exact
-            // run id alongside its metadata; a legacy collision can therefore
-            // be split without granting either repository the other's files.
+
+
+
             const QString oldArtifact =
                 QDir(m_root + QStringLiteral("/artifacts/") +
                      run.legacyRepoKey())
@@ -296,11 +296,11 @@ void ActionStore::migrateLegacyRecords()
         }
     }
 
-    // A lossy legacy approval can be associated for review only when every
-    // persisted run under that old key names one canonical repository. Even
-    // then it is downgraded so it can show the previous YAML diff but cannot
-    // execute or receive secrets without a fresh approval. If old records
-    // prove a collision, leave the ambiguous record behind and fail closed.
+
+
+
+
+
     QSettings settings;
     for (auto it = canonicalKeysByLegacyKey.constBegin();
          it != canonicalKeysByLegacyKey.constEnd(); ++it) {
@@ -421,7 +421,7 @@ QList<ActionRun> ActionStore::loadAllRuns() const
     return runs;
 }
 
-// --- Variables --------------------------------------------------------------
+
 
 QMap<QString, QString> ActionStore::variables()
 {
@@ -443,7 +443,7 @@ void ActionStore::setVariables(const QMap<QString, QString> &vars)
                          QJsonDocument(obj).toJson(QJsonDocument::Compact));
 }
 
-// --- Approvals --------------------------------------------------------------
+
 
 bool ActionStore::isApproved(const QString &repoKey, const QString &path,
                              const QString &content,
@@ -457,7 +457,7 @@ bool ActionStore::isApproved(const QString &repoKey, const QString &path,
     const QJsonValue stored =
         QJsonDocument::fromJson(raw).object().value(path);
     if (!stored.isObject())
-        return false; // legacy YAML-only approvals deliberately fail closed
+        return false;
     const QJsonObject approval = stored.toObject();
     return approval.value(QStringLiteral("schema")).toInt() == 2 &&
            approval.value(QStringLiteral("workflowContent")).toString() == content &&
@@ -473,7 +473,7 @@ void ActionStore::approve(const QString &repoKey, const QString &path,
                           const QString &executionDigest)
 {
     if (repositoryTree.isEmpty() || executionDigest.isEmpty())
-        return; // an unbound approval is never persisted
+        return;
     const QByteArray raw =
         QSettings().value(approvalKey(repoKey)).toByteArray();
     QJsonObject obj = QJsonDocument::fromJson(raw).object();
@@ -495,8 +495,8 @@ QString ActionStore::lastApprovedContent(const QString &repoKey,
         QSettings().value(approvalKey(repoKey)).toByteArray();
     const QJsonValue value =
         QJsonDocument::fromJson(raw).object().value(path);
-    // Keep showing the previous YAML in the review diff while migrating a
-    // legacy approval, but never treat that string-only entry as executable.
+
+
     return value.isObject()
                ? value.toObject()
                      .value(QStringLiteral("workflowContent"))
@@ -561,8 +561,8 @@ bool ActionStore::repositoryStateDigest(const QString &repository,
     if (!objectId.match(tree).hasMatch())
         return fail(QStringLiteral("repository returned an invalid tree id"));
 
-    // Hash the raw recursive manifest first. This binds executable bits,
-    // symlinks, paths, object ids, and submodule commit pins.
+
+
     QByteArray manifest;
     if (!capture(base +
                      QStringList{QStringLiteral("ls-tree"),
@@ -578,9 +578,9 @@ bool ActionStore::repositoryStateDigest(const QString &repository,
     digest.addData(manifest);
     digest.addData(QByteArray("\0archive\0", 9));
 
-    // Hash actual file bytes as well as Git object ids. Streaming keeps memory
-    // bounded even for a large repository, while a hard deadline prevents a
-    // corrupt or hostile repository from wedging workflow review.
+
+
+
     QProcess archive;
     archive.setProcessChannelMode(QProcess::SeparateChannels);
     archive.start(QStringLiteral("git"),

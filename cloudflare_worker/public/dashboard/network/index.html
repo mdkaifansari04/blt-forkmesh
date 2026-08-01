@@ -214,10 +214,10 @@
         line-height: 1.5;
       }
 
-      /* Edit / delete controls on your own chat messages. Hidden until the row
-         is hovered (or a control takes keyboard focus) so the transcript stays
-         quiet, like the full chat page. Hand-written because the pre-built
-         dashboard/tailwind.css carries no group-hover variant. */
+
+
+
+
       .chat-message-actions {
         opacity: 0;
         transition: opacity 120ms ease;
@@ -234,7 +234,7 @@
         opacity: 1;
       }
 
-      /* Touch devices never hover: keep the controls reachable there. */
+
       @media (hover: none) {
         .chat-message-actions {
           opacity: 1;
@@ -366,8 +366,8 @@
         font-size: 11px;
       }
 
-      /* Shared loading indicator: inherits currentColor so it matches the
-         muted text it sits next to in either theme. */
+
+
       .fm-spinner {
         display: inline-block;
         width: 14px;
@@ -782,8 +782,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-    <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
+    <script src="/dashboard.js?v=65d50669447a" defer></script>
+    <script src="/dashboard-chat.js?v=9224afc1ff1c" defer></script>
   </head>
   <body class="bg-background text-foreground" data-page="network">
     <div data-dashboard-root data-dashboard-section="network" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
@@ -1005,6 +1005,7 @@
       </div>
 
 
+
       <button data-mobile-sidebar-backdrop type="button" aria-label="Close dashboard menu"></button>
 
       <div data-dashboard-shell class="flex flex-1 min-h-0 overflow-hidden">
@@ -1157,6 +1158,7 @@
             </div>
           </section>
 
+
                 <template data-profile-sidebar-template>
                   <div class="flex items-start gap-4 lg:block">
                     <span data-profile-page-avatar class="relative flex h-72 w-72 max-h-28 max-w-28 shrink-0 items-center justify-center overflow-hidden rounded-full border border-border bg-secondary text-4xl font-semibold text-foreground font-mono sm:max-h-36 sm:max-w-36 lg:max-h-none lg:max-w-none">
@@ -1214,6 +1216,8 @@
                 </template>
         </div>
       </main>
+
+
 
 	    </div>
 	    </div>
@@ -1415,6 +1419,7 @@
     </div>
 
 
+
 	    <script>
       const avatarColors = ["#4ade80", "#818cf8", "#38bdf8", "#fb923c", "#f472b6", "#fbbf24"];
 
@@ -1474,7 +1479,7 @@
       }
 
       function repoQuery() {
-        // The search box only exists on the repos page document.
+
         return document.getElementById("repoSearch")?.value.trim().toLowerCase() || "";
       }
 
@@ -1516,7 +1521,7 @@
       }
 
       function applyRepoVisibility() {
-        // Repo cards + pagination only exist on the repos page document.
+
         const list = document.getElementById("repoList");
         if (!list) return;
         const cards = repoCards();
@@ -1616,7 +1621,7 @@
         });
       });
 
-      // Chat is wired by /dashboard-chat.js.
+
 	      initProfileMenu();
 	      lucide.createIcons();
     </script>

@@ -38,9 +38,9 @@ HOST_RE = re.compile(
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$"
 )
 SOLANA_ADDRESS_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
-# A deliberately tiny, deterministic SOL-denominated appreciation estimate.
-# Scores map across ten steps; the UI publishes only SOL and never presents
-# this as a guaranteed payout or a balance.
+
+
+
 REWARD_SOL_MIN = 0.00005
 REWARD_SOL_MAX = 0.00050
 

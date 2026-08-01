@@ -6,8 +6,8 @@
       repo.name,
       canonical.owner,
       canonical.name,
-      // Cards are labelled with the logical owner, so filtering by the
-      // organization (or account) name has to match too.
+
+
       ...repoLogicalOwners(repo).map((value) => value.owner),
       repo.description,
       repo.channel,
@@ -140,20 +140,20 @@
     return true;
   }
 
-  // A repo is reachable when its own host is live OR - for a public repo - a peer
-  // mirroring the same logical repo is online and the relay serves it in place
-  // through the repo's own URL (adhoc #61). cloneOnline is the worker's group
-  // verdict; fall back to liveHost for older payloads that predate it.
+
+
+
+
   function repoIsLive(repo) {
     return Boolean(repo?.cloneOnline ?? repo?.liveHost);
   }
-  // Live, but the named source of truth is down - a mirror node is serving it.
+
   function repoServedByMirror(repo) {
     return repoIsLive(repo) && !repo?.liveHost;
   }
-  // The signed-in account owns this repo when their node name matches the repo
-  // owner slug (case-insensitive). Owners get to keep their own offline issue
-  // submissions visible until their source-of-truth node drains them (#379).
+
+
+
   function isRepoOwner(repo) {
     const owner = String(repo?.owner || "").trim().toLowerCase();
     const me = String(state.session?.nodeName || "").trim().toLowerCase();
@@ -255,8 +255,8 @@
   function nativeRepositoryLogoCacheKey(endpoint) {
     const token = String(state.session?.sessionToken || "");
     if (token !== nativeRepositoryLogoSessionToken) {
-      // A guest miss must not hide a private logo after login, and an
-      // owner-authorized logo must never survive logout/account switching.
+
+
       nativeRepositoryLogoCache.clear();
       nativeRepositoryLogoSessionToken = token;
       nativeRepositoryLogoSessionEpoch += 1;
@@ -279,15 +279,15 @@
         if (String(state.session?.sessionToken || "") !== token) return null;
         return {
           dataUrl: nativeRepositoryLogoDataUrl(body?.logo?.dataUrl),
-          // The repository's own root logo streams through a mirror, so it can
-          // fail long after the card rendered. The generated/approved artwork
-          // ships with it so the card swaps instead of showing a broken image.
+
+
+
           fallbackDataUrl: nativeRepositoryLogoDataUrl(
             body?.logo?.fallbackDataUrl),
         };
       }).catch(() => {
-        // Do not negatively cache authorization failures or transient errors.
-        // The same card can be retried after login or on a later render.
+
+
         if (nativeRepositoryLogoCache.get(cacheKey) === pending) {
           nativeRepositoryLogoCache.delete(cacheKey);
         }
@@ -321,9 +321,9 @@
       const dataUrl = String(logo?.dataUrl || "");
       const fallbackDataUrl = String(logo?.fallbackDataUrl || "");
       if (!dataUrl || !image.isConnected) return;
-      // The committed root logo is served by a mirror, so it can fail after the
-      // card rendered (offline or lagging host). Swap to the generated artwork,
-      // then to the repository icon — never leave a broken image behind.
+
+
+
       image.onerror = () => {
         if (fallbackDataUrl && image.dataset.logoFallbackUsed !== "true") {
           image.dataset.logoFallbackUsed = "true";
@@ -567,9 +567,9 @@
         const repo = sourceOfTruth(group);
         return {
           repo,
-          // Dedupe on the label, so a repo already listed under its
-          // organization does not come back a second time under the node that
-          // publishes it.
+
+
+
           key: `${groupDisplayOwner(group)}/${repo.name || ""}`,
           href: groupLinkUrl(group),
           organization: false,
@@ -695,17 +695,17 @@
     hydrateNativeRepositoryLogos(container);
   }
 
-  // Home right-rail "Latest from the blog" (adhoc #381): the newest feature
-  // posts with their artwork, read from the blog's own RSS document. The feed
-  // is derived from the shipped blog index and edge-cached for thirty minutes
-  // (see blog_feed.py), so this is one cheap same-origin read per dashboard
-  // load rather than a second hand-maintained copy of the post list.
+
+
+
+
+
   const HOME_BLOG_POST_LIMIT = 3;
   const HOME_BLOG_FEED_URL = "/rss.xml";
 
-  // Feed URLs are absolute against forkmesh.com; keep only the path so the
-  // dashboard links and paints artwork from whatever origin it is served on
-  // (and never loads an image from a foreign host).
+
+
+
   function homeBlogUrl(value) {
     const raw = String(value || "").trim();
     if (!raw) return "";
@@ -808,10 +808,10 @@
     renderHomeRepositories();
   }
 
-  // Home left-rail "Active agent sessions" (adhoc #81). Renders the aggregated
-  // non-terminal agent runs collected by loadHomeAgentSessions(). The panel
-  // stays hidden until there is at least one active session so it never shows
-  // an empty box to accounts that don't run agents.
+
+
+
+
   function renderHomeAgentSessions() {
     const panel = $("[data-home-agent-sessions-panel]");
     const container = $("[data-home-agent-sessions]");
@@ -840,10 +840,10 @@
     window.lucide?.createIcons();
   }
 
-  // Fetch the agent-session list for every repo the session can assign agents
-  // to and keep only the still-running (non-terminal) ones. The per-repo
-  // /agents/list endpoint is owner-gated, so this only runs for a signed-in
-  // account and silently skips repos it can't read.
+
+
+
+
   async function loadHomeAgentSessions() {
     if (!state.session?.nodeName) return;
     const repos = (state.repositories || []).filter((repo) =>
@@ -867,9 +867,9 @@
     renderHomeAgentSessions();
   }
 
-  // The repo groups the profile pages list: the whole catalog on the
-  // session's own dashboard, but ONLY the viewed account's repos in
-  // public-profile mode (/@name).
+
+
+
   function profileRepositoryGroups() {
     let groups = groupRepositories(state.repositories || []);
     if (state.publicProfile) {
@@ -1109,12 +1109,12 @@
     }
   }
 
-  // New-repository flow (adhoc #30). Publishing a signed catalog record and
-  // running the git mirror both require the account's Ed25519 key, which lives
-  // on the desktop node — the browser only holds a separate web-issue identity.
-  // So this "Create & mirror" modal collects the repo details on the web, then
-  // hands off the concrete steps to complete it in the desktop node's Repos
-  // page, rather than pretending the pure-web path can publish.
+
+
+
+
+
+
   function setNewRepoModalOpen(open) {
     const modal = $("[data-new-repo-modal]");
     if (!modal) return;
@@ -1246,8 +1246,8 @@
           "bad",
         );
       } finally {
-        // The credential is request-only: remove it from the form immediately,
-        // regardless of success or provider failure.
+
+
         if (tokenInput) tokenInput.value = "";
         if (submit) submit.disabled = false;
       }
@@ -1290,12 +1290,12 @@
     detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
     });
-    // The About right-hand rail only belongs next to the file tree/README
-    // (owner decision 2026-07-12, discussion #2): every other tab — commits,
-    // releases, issues, projects, pulls, discussions, insights, mirrors,
-    // agents, settings — goes full-width instead of leaving a rail with nothing beside
-    // it to explain. The explorer focus mode independently hides the rail
-    // (and collapses this same grid) while active on the code tab.
+
+
+
+
+
+
     const contentGrid = detail.querySelector("[data-repo-content-grid]");
     const about = detail.querySelector("[data-repo-about]");
     const showAbout = tab === "code";
@@ -1304,27 +1304,27 @@
     about?.classList.toggle("hidden", !showAbout);
   }
 
-  // Tab switch requested by the user (or a Back/Forward step): shows the tab,
-  // mirrors it into the address bar so refresh/back land on the same page,
-  // and fetches its records on first view. Issues, pull requests and
-  // discussions load lazily here rather than on repo open so a repo with many
-  // records doesn't fire record reads for tabs nobody opened.
+
+
+
+
+
   function activateRepoTab(tab) {
     setRepoTab(tab);
-    // The Agents auto-refresh poll only makes sense while that tab is the one
-    // on screen; leaving it (to any other tab) stops the poll.
+
+
     if (tab !== "agents") {
-      // Leaving the tab closes any open agent detail page (adhoc #259) so
-      // returning to Agents lands on the session list, not a stale transcript.
+
+
       state.agentsView.selectedAgentId = null;
     }
     if (!state.selectedRepo) return;
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
-    // Mirror health loads once with the repository summary, then refreshes
-    // only when its own tab is actually opened (plus the bounded visible-tab
-    // fallback and coalesced socket signal below).
+
+
+
     if (tab === "mirrors") {
       void loadRepoMirrors(state.selectedRepo, { background: true });
     }
@@ -1344,8 +1344,8 @@
       else if (tab === "agents") loadRepoAgents(state.selectedRepo);
       else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
     } else if (tab === "issues") {
-      // Re-selecting the tab should return to the issues list even if the
-      // new-issue compose form was left open.
+
+
       renderRepoIssues();
     } else if (tab === "projects") {
       renderRepoProjects();
@@ -1405,9 +1405,9 @@
         badge.hidden = true;
         badge.textContent = "";
       } else {
-        // Confirms the page loaded from a live mirror and which one (the
-        // router round-robins browse traffic across every online mirror of
-        // the repo).
+
+
+
         const speed = formatServeSpeed(tookMs);
         badge.textContent = [`served by ${name}`, speed, servedMirrorStats(name)]
           .filter(Boolean)
@@ -1415,9 +1415,9 @@
         badge.hidden = false;
       }
     }
-    // Re-render the repo's mirror lists so the node that just answered gets
-    // its green "serving this request" highlight without waiting on a fresh
-    // /mirrors fetch.
+
+
+
     renderRepoMirrorLists(state.repoMirrors, state.repoServedBy);
   }
 
@@ -1482,8 +1482,8 @@
     const focusActions = detail?.querySelector("[data-repo-focus-actions]");
     if (!detail) return;
 
-    // The grid collapse matches the base class renderRepoDetail emits (lg:) —
-    // legitimate here because focus mode hides the About rail entirely.
+
+
     contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", !active);
     contentGrid?.classList.toggle("lg:grid-cols-1", active);
     workspace?.classList.toggle("grid", active);
@@ -1798,10 +1798,10 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    // Callers reading the dedicated pull-metadata branch first resolve its
-    // immutable OID with resolveRepoPullMetadataCommit(), then pass that exact
-    // value here. Explicitly empty refs retain the generic no-ref URL contract
-    // for compatibility callers; pull readers never rely on that ambiguity.
+
+
+
+
     if (!("ref" in (params || {}))) query.set("ref", repoSelectedBranch(repo));
     else if (!String(params.ref || "")) query.delete("ref");
     const version = repoDataVersion(repo);

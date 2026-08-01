@@ -118,9 +118,9 @@ def test_repeats_of_a_known_group_are_silent():
     for _ in range(4):
         asyncio.run(write(env, 500, "GET", "/api/sync", "boom"))
     assert len(rows) == 4
-    assert len(sent) == 1  # only the row that opened the group
+    assert len(sent) == 1
 
-    # A different group is its own first sighting.
+
     asyncio.run(write(env, 500, "GET", "/api/sync", "different boom"))
     assert len(sent) == 2
 
@@ -144,7 +144,7 @@ def test_a_failing_notification_never_breaks_error_logging():
     namespace["enqueue_notification"] = explode
     asyncio.run(namespace["_write_error_log"](
         env, 500, "GET", "/api/sync", "boom"))
-    assert len(rows) == 1  # the error itself was still recorded
+    assert len(rows) == 1
 
 
 def test_the_group_is_read_before_the_row_that_would_answer_it():

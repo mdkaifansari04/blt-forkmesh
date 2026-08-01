@@ -62,7 +62,7 @@ class GitHubAPI:
         self._opener = opener
         self._sleep = sleeper
 
-    def __repr__(self) -> str:  # pragma: no cover - defensive logging guard
+    def __repr__(self) -> str:
         return "GitHubAPI(token=<redacted>)"
 
     def request(
@@ -243,8 +243,8 @@ def destination_body(
         issue.get("html_url")
         or f"https://github.com/{source_repository}/issues/{issue['number']}"
     )
-    # A source author cannot inject a forged mapping ahead of the marker this
-    # synchronizer appends. Destination parsing also uses the final marker.
+
+
     original = MAPPING_RE.sub(
         "<!-- source issue-sync marker removed -->",
         str(issue.get("body") or ""),

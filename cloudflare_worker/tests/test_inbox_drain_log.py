@@ -124,15 +124,15 @@ def test_exact_id_drain_leaves_untouched_rows_and_logs_count():
     req = _Request("https://x/api/repo/o/r/issues?owner=o&ts=1&sig=s&ids=1,2")
     removed = asyncio.run(ns["_drain_issue_inbox"](object(), req, "bi:o/r"))
     assert removed == 2
-    # Row 3 (filed after the node read ids 1,2) must survive to the next sync.
+
     assert rows == [{"id": 3}]
-    # The drain is recorded: (ts, repo_bi, kind, count).
+
     assert log == [(1_234, "bi:o/r", "issues", 2)]
 
 
 def test_no_ids_removes_nothing_and_writes_no_log():
-    # Without ?ids= there is no full-drain fallback: an ack that names nothing
-    # must leave the queue untouched so items stay until a node acks them by id.
+
+
     rows = [{"id": 1}, {"id": 2}]
     env_fakes, executed, log = _env(rows)
     ns = _load({"parse_qs": parse_qs, "urlparse": urlparse, "Date": _Date,
@@ -146,8 +146,8 @@ def test_no_ids_removes_nothing_and_writes_no_log():
 
 
 def test_acking_already_gone_ids_writes_no_log_row():
-    # Ids that no longer match any row (a redelivered ack) drain nothing, so no
-    # log entry is written.
+
+
     rows = [{"id": 5}]
     env_fakes, executed, log = _env(rows)
     ns = _load({"parse_qs": parse_qs, "urlparse": urlparse, "Date": _Date,

@@ -88,9 +88,9 @@ WEBSITE_COUNTER_OPERATIONS = frozenset({
     "release-blob",
 })
 SERVICE_COUNTER_ROW_FIELDS = ("clonesServed", "websiteServed", "updatedAt")
-# Optional per-row extension: when the last clone / website request was served
-# and which class of client it was. Only the generalized class below is stored,
-# never the raw User-Agent, so no request fingerprint reaches a public record.
+
+
+
 SERVICE_COUNTER_STAMP_FIELDS = (
     "cloneServedAt",
     "cloneServedAgent",
@@ -971,7 +971,7 @@ def load_config(path: Path) -> GatewayConfig:
                 raise GatewayError(
                     "private repository entry may contain identity fields only"
                 )
-            # Do not inspect or materialize private repository locations.
+
             repositories.append(
                 RepositoryConfig(
                     owner,
@@ -1018,8 +1018,8 @@ def load_config(path: Path) -> GatewayConfig:
             raise GatewayError(
                 "enabled public repository requires integrity.expectedRefsSha256"
             )
-        # A missing capability list keeps the historical read-only surface.
-        # Write operations are never enabled implicitly.
+
+
         operations_raw = item.get(
             "operations", sorted(DEFAULT_PUBLIC_OPERATIONS)
         )
@@ -1252,11 +1252,11 @@ def _git_environment() -> dict[str, str]:
 
 
 def _git_prefix(git_dir: Path) -> list[str]:
-    # Command-line values override executable local configuration that could
-    # otherwise start helper programs while serving a repository. Git ignores
-    # repository-scoped uploadpack.packObjectsHook because it is protected
-    # configuration; setting that key to an empty command makes upload-pack
-    # try to execute an empty program instead of disabling the hook.
+
+
+
+
+
     return [
         "git",
         "-c",
@@ -1267,9 +1267,9 @@ def _git_prefix(git_dir: Path) -> list[str]:
         "credential.helper=",
         "-c",
         "protocol.ext.allow=never",
-        # Merge transaction refs are owner-only recovery/idempotency state.
-        # Hide the whole internal namespace from both advertisements and
-        # unadvertised object wants, including future internal ref families.
+
+
+
         "-c",
         "uploadpack.hideRefs=" + INTERNAL_GIT_REF_NAMESPACE,
         f"--git-dir={git_dir}",
@@ -1565,9 +1565,9 @@ def _dependency_target(
     source_dir = posixpath.dirname(source)
     relative = raw.startswith(".")
     source_suffix = Path(source).suffix.lower()
-    # Bare JavaScript/TypeScript specifiers use package or project-alias
-    # resolution. Without a committed resolver configuration, treating a
-    # same-named source file as the target would manufacture an edge.
+
+
+
     if (
         source_suffix in {".js", ".jsx", ".mjs", ".ts", ".tsx"}
         and not relative
@@ -1600,9 +1600,9 @@ def _dependency_target(
         if candidate in known_paths and candidate != source:
             return candidate
 
-    # Absolute module/package imports often include a configured project or
-    # Java package prefix. Resolve only a unique committed suffix; ambiguity
-    # stays unresolved instead of manufacturing an edge.
+
+
+
     if not relative:
         for candidate in candidates:
             matches = suffix_index.get(candidate, [])
@@ -1744,7 +1744,7 @@ def _parse_xml_coverage(
     except UnicodeDecodeError:
         return {}
     result: dict[str, float] = {}
-    # Cobertura class records usually carry a direct line-rate.
+
     for match in itertools.islice(re.finditer(
         r"<class\b[^>]*\bfilename=[\"']([^\"']+)[\"'][^>]*"
         r"\bline-rate=[\"']([0-9.]+)[\"']",
@@ -1758,7 +1758,7 @@ def _parse_xml_coverage(
             continue
         if path and 0 <= percent <= 100:
             result[path] = percent
-    # JaCoCo sourcefile records expose missed/covered LINE counters.
+
     for package in itertools.islice(re.finditer(
         r"<package\b[^>]*\bname=[\"']([^\"']*)[\"'][^>]*>(.*?)</package>",
         text,
@@ -2127,14 +2127,14 @@ class GitRepository:
     def tree(self, query: Mapping[str, str]) -> dict[str, Any]:
         path = _safe_repo_path(query.get("path", ""))
         commit = self.resolve_commit(query.get("ref", ""))
-        # Pull and issue directory reads are control metadata, not code-graph
-        # exploration. Building the whole-repository dependency/coverage
-        # analysis here made a 44-PR listing scan thousands of files before it
-        # could return, then _commit_summary spawned one `git log` per PR. On a
-        # one-vCPU mirror (especially while fsck is running) that turned a
-        # small exact-ref read into a 20-35 second request. Keep the regular
-        # rich analysis everywhere else, while these two explicit public
-        # metadata namespaces receive commit-pinned neutral analysis fields.
+
+
+
+
+
+
+
+
         collaboration_tree = any(
             path == root or path.startswith(root + "/")
             for root in COLLABORATION_TREE_ROOTS
@@ -2242,12 +2242,12 @@ class GitRepository:
 
     def blobs(self, paths: Iterable[str], ref: str = "") -> dict[str, Any]:
         """Bounded compatibility batch for the repository web UI."""
-        # Resolve once so every member of the batch and the returned proof name
-        # the same immutable repository state even when the caller supplied a
-        # moving branch name.
+
+
+
         commit = self.resolve_commit(ref)
         output: dict[str, Any] = {}
-        # Reserve the bounded envelope before accounting for member payloads.
+
         used = len(commit) + 128
         truncated = False
         for path in list(paths)[:60]:
@@ -2678,8 +2678,8 @@ class GitRepository:
                 if name and avatar:
                     contributor_avatars[name] = avatar
         except (GitError, UnicodeDecodeError, json.JSONDecodeError):
-            # Avatar metadata is optional. Git remains the contributor source
-            # of truth and every author still receives a deterministic circle.
+
+
             pass
         contributors = []
         for row in shortlog.decode("utf-8", "replace").splitlines()[:500]:
@@ -3175,8 +3175,8 @@ class GatewayServiceCounters:
             return
         loaded: dict[str, dict[str, int | str]] = {}
         for key, row in list(value["repositories"].items())[:4096]:
-            # The last-served stamps are an optional extension: a row written
-            # by an older gateway carries the three core fields only.
+
+
             if (
                 not isinstance(key, str)
                 or len(key) > 220
@@ -3299,9 +3299,9 @@ class GatewayServiceCounters:
                 max(0, int(self.clock_ms())),
             )
             previous["updatedAt"] = served_at
-            # "When did this node last serve a clone / a website read, and to
-            # what kind of client" -- the pair the Mirror node cards show
-            # beside each total.
+
+
+
             if served_at > 0:
                 previous[stamp_field] = served_at
                 previous[agent_field] = service_counter_agent_class(user_agent)
@@ -3424,8 +3424,8 @@ class GatewayApplication:
                                 )
                             )
                         except (GatewayError, GitError, OSError):
-                            # One failed encrypted identity remains unavailable
-                            # for every alias during this application lifetime.
+
+
                             materialized_archives[archive] = None
                             raise
                     git_dir = materialized_archives[archive]
@@ -3440,7 +3440,7 @@ class GatewayApplication:
                     repository.name,
                 )
             except (GatewayError, GitError, OSError):
-                # Do not log the repository identity or local storage path.
+
                 self.quarantined_count += 1
 
         self._manifest = config.manifest_path.read_bytes()
@@ -3551,9 +3551,9 @@ class GatewayApplication:
         self._manifest = replacement._manifest
         self._temporary_root = replacement._temporary_root
         self._retired_roots.append(old_root)
-        # The replacement loaded the same durable counter file only so its
-        # newly validated repositories could be initialized. Keep this live
-        # application's in-memory tally and stop the replacement's timer.
+
+
+
         replacement.service_counters.close()
 
     @staticmethod
@@ -3989,8 +3989,8 @@ class GatewayApplication:
                 operation = unquote(pieces[5], errors="strict")
             except UnicodeError as exc:
                 raise GatewayError("repository route was not found") from exc
-            # Unknown, disabled, private, and quarantined repositories all take
-            # the same lookup path and produce the same response.
+
+
             repository = self.repositories.get((owner, name.lower()))
             if repository is None or operation not in repository.config.operations:
                 raise GatewayError("repository route was not found")
@@ -4122,8 +4122,8 @@ class GatewayApplication:
         except Exception:
             response = json_response({"ok": False, "error": "mirror_unavailable"}, 503)
         finally:
-            # Successful responses are recorded by the HTTP adapter after
-            # streaming. Error/control responses are intentionally identity-free.
+
+
             pass
         self._record(
             request_id=request_id,
@@ -4147,28 +4147,28 @@ class MirrorGatewayHandler(BaseHTTPRequestHandler):
 
     @property
     def application(self) -> GatewayApplication:
-        return self.server.application  # type: ignore[attr-defined]
+        return self.server.application
 
     def log_message(self, _format: str, *_arguments: Any) -> None:
-        # BaseHTTPRequestHandler logs client IP and raw path by default.
+
         return
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         self._handle()
 
-    def do_HEAD(self) -> None:  # noqa: N802
+    def do_HEAD(self) -> None:
         self._handle()
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         self._handle()
 
-    def do_PUT(self) -> None:  # noqa: N802
+    def do_PUT(self) -> None:
         self._method_not_allowed()
 
-    def do_DELETE(self) -> None:  # noqa: N802
+    def do_DELETE(self) -> None:
         self._method_not_allowed()
 
-    def do_PATCH(self) -> None:  # noqa: N802
+    def do_PATCH(self) -> None:
         self._method_not_allowed()
 
     def _method_not_allowed(self) -> None:
@@ -4186,8 +4186,8 @@ class MirrorGatewayHandler(BaseHTTPRequestHandler):
         if length < 0 or length > MAX_REQUEST_BODY:
             raise GatewayError("invalid request length")
         if self.headers.get("Transfer-Encoding"):
-            # Cloudflare sends a Content-Length for these bounded capability
-            # requests; rejecting ambiguous framing prevents request smuggling.
+
+
             raise GatewayError("transfer encoding is not supported")
         return self.rfile.read(length) if length else b""
 
@@ -4364,7 +4364,7 @@ class MirrorGatewayServer(ThreadingHTTPServer):
     def handle_error(
         self, _request: Any, _client_address: Any
     ) -> None:
-        # socketserver's default includes the raw client address and traceback.
+
         self.application.log(
             {
                 "time": datetime.now(timezone.utc)
@@ -4500,8 +4500,8 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 server.serve_forever(poll_interval=0.5)
             except KeyboardInterrupt:
-                # systemd uses SIGINT so TemporaryDirectory cleanup runs
-                # instead of leaking one materialized repository per restart.
+
+
                 pass
         finally:
             server.server_close()

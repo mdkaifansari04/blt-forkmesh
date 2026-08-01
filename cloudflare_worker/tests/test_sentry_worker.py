@@ -152,10 +152,10 @@ def test_worker_error_log_reports_to_sentry_and_preserves_d1_log():
 
 
 def test_sentry_cron_monitor_checkins_are_disabled():
-    # The Sentry cron monitor check-ins are commented out for now (adhoc #158).
-    # The helper machinery is left intact so the monitor can be re-enabled by
-    # uncommenting the two call sites in scheduled(), but no check-in is
-    # actually sent on a cron tick.
+
+
+
+
     assert 'SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"' in ENTRY_TEXT
     assert "async def capture_sentry_cron_check_in" in ENTRY_TEXT
     assert '"type": "check_in"' in ENTRY_TEXT
@@ -168,15 +168,15 @@ def test_sentry_cron_monitor_checkins_are_disabled():
 
     scheduled = ENTRY_TEXT.split("async def scheduled", 1)[1] \
         .split("async def fetch", 1)[0]
-    # No live (uncommented) check-in call remains in the scheduled handler.
+
     for line in scheduled.splitlines():
         stripped = line.strip()
         if stripped.startswith("#"):
             continue
         assert "capture_sentry_cron_check_in(" not in stripped
-    # The commented-out call sites are still present for easy re-enabling.
+
     assert "# await capture_sentry_cron_check_in(" in scheduled
-    # The failure-logging path (independent of the Sentry monitor) still runs.
+
     assert "await log_cron_error(" in scheduled
     assert "error=error, failures=cron_failures" in scheduled
 
@@ -247,8 +247,8 @@ def test_background_tasks_observe_exceptions_instead_of_default_handler():
         if "asyncio.ensure_future(" in line
     ]
     assert ensure_future_lines == ["task = asyncio.ensure_future(coro)"]
-    # Repository transfers are awaited direct-HTTPS fetches, not detached
-    # socket watchdog tasks.
+
+
     proxy = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _https_mirror_proxy"):
         ENTRY_TEXT.index("\n\nclass Default")
@@ -416,9 +416,9 @@ def test_forkmesh_actions_run_full_worker_pytest_suite():
 
 
 def test_action_runner_does_not_override_installer_source_in_ci_jobs():
-    # Repository identity is only injected for release jobs. Keep the owner/name
-    # guard nested in that release-only block so ordinary CI runs retain the
-    # installer source chosen by their workflow environment.
+
+
+
     assert "if (isReleaseRun()) {" in ACTION_RUNNER_CPP_TEXT
     assert (
         "if (!m_run.owner.isEmpty() && !m_run.name.isEmpty())\n"
@@ -440,8 +440,8 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
     assert "emitSuppressedProcessOutputTail()" in ACTION_RUNNER_CPP_TEXT
     assert "rememberCrashProcessOutput(const QByteArray &bytes)" in ACTION_RUNNER_CPP_TEXT
     assert "updateCrashContext()" in ACTION_RUNNER_CPP_TEXT
-    # Artifact validation can replace the caller's original finalMessage, so
-    # diagnostics must capture the effective result shown to the user.
+
+
     assert "logFailureDiagnostic(resultMessage)" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputBytes = 0;" in ACTION_RUNNER_CPP_TEXT
     assert "m_processOutputSuppressedBytes = 0;" in ACTION_RUNNER_CPP_TEXT
@@ -526,9 +526,9 @@ def test_action_runner_caps_process_output_so_pipeline_logs_do_not_crash_app():
 
 
 def test_worker_observability_stays_within_the_free_event_budget():
-    # Retain a useful diagnostic sample without letting routine invocations
-    # consume Cloudflare's 200k/day observability-event allowance. Sentry's
-    # explicit error path remains independent from this dashboard sample.
+
+
+
     observability = WRANGLER_DATA["observability"]
     assert observability["enabled"] is True
     assert 0 < observability["head_sampling_rate"] <= 0.05
@@ -543,12 +543,12 @@ def test_worker_observability_stays_within_the_free_event_budget():
 
 
 def test_expected_degraded_responses_skip_the_generic_5xx_logger():
-    # Deliberate degraded answers — DO-abort 503s whose real reason
-    # log_durable_object_abort already recorded, the fail-closed git push
-    # 501, and central-fund/office "upstream unavailable" 503s — used to be
-    # re-logged by the outer fetch as anonymous "response status N" Sentry
-    # events (one DO abort produced TWO error-log rows). They now carry the
-    # expected-degraded marker and the generic logger skips them.
+
+
+
+
+
+
     assert 'EXPECTED_DEGRADED_HEADER = "x-forkmesh-expected-degraded"' in (
         ENTRY_TEXT)
     assert "def _response_is_expected_degraded(response):" in ENTRY_TEXT
@@ -559,8 +559,8 @@ def test_expected_degraded_responses_skip_the_generic_5xx_logger():
     assert logger_block.index("_response_is_expected_degraded") < (
         logger_block.index("await log_error("))
 
-    # Every DO-abort 503 fallback is marked, so the detailed abort row stays
-    # the only record of the event.
+
+
     for site_start in [
         match for match in range(len(ENTRY_TEXT))
         if ENTRY_TEXT.startswith("await log_durable_object_abort(", match)
@@ -569,8 +569,8 @@ def test_expected_degraded_responses_skip_the_generic_5xx_logger():
         assert "EXPECTED_DEGRADED_HEADERS" in tail, ENTRY_TEXT[
             site_start:site_start + 120]
 
-    # The deliberate not-implemented push answer and the central-fund
-    # unavailable answers are marked too.
+
+
     push_block = ENTRY_TEXT.split("direct_https_receive_pack_required", 1)[1]
     assert "EXPECTED_DEGRADED_HEADERS" in push_block[:300]
     fund_block = ENTRY_TEXT.split(
@@ -588,10 +588,10 @@ def test_mirror_gateway_retries_all_5xx_and_marks_unavailability_expected():
 
 
 def test_redacted_repo_routes_keep_identity_free_route_family_tags():
-    # /private-or-unpublished-repository collapsed EVERY failing private or
-    # unknown repo route into one bucket; recurring failures could not even
-    # be told apart by endpoint. The redacted path now keeps only the fixed
-    # route-family name — never owner/repo or user-named path parts.
+
+
+
+
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     selected = [
         node for node in tree.body
@@ -629,7 +629,7 @@ def test_redacted_repo_routes_keep_identity_free_route_family_tags():
     assert kind("/api/repo/alice/top-secret/tree") == "[api:tree]"
     assert kind("/api/repo/alice/top-secret/star") == "[api:star]"
     assert kind("/alice/top-secret/blob/src/keys.pem") == "[page]"
-    # User-named data never survives into the tag.
+
     for rendered in (
         kind("/api/repo/alice/top-secret/" + "x" * 60),
         kind("/api/repo/alice/top-secret/%2e%2e"),

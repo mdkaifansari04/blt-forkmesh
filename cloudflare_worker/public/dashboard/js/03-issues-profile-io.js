@@ -187,7 +187,7 @@
       try {
         const privateKey = await crypto.subtle.importKey("jwk", stored.jwk, { name: "Ed25519" }, false, ["sign"]);
         return { privateKey, pub: stored.pub };
-      } catch (_) { /* fall through and mint a fresh key */ }
+      } catch (_) {   }
     }
     const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
     const rawPub = await crypto.subtle.exportKey("raw", pair.publicKey);
@@ -202,15 +202,15 @@
     return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
   }
 
-  // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
-  // submission POST (verify_issue_event in the worker). New issues are signed
-  // with number 0; the first eligible mirror assigns the durable number when
-  // it commits the issue to the repository it serves.
+
+
+
+
   async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "", extraMeta = {}) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
-    // open event content = title \0 body \0 attachments(joined by ","; empty here)
+
     const NUL = String.fromCharCode(0);
     const content = title + NUL + cleanBody + NUL;
     const contentHash = await sha256HexLower(content);
@@ -244,9 +244,9 @@
         provider: assignAgent ? String(agentProvider || "") : "",
       },
     };
-    // When assignAgent is true, include the account session so the server can
-    // verify the caller really is the repo owner or an admin (adhoc #225). The
-    // session token is the proof; ownerAccount stays only as a display hint.
+
+
+
     if (assignAgent) {
       payload.ownerAccount = state.session?.nodeName || "";
       payload.sessionToken = state.session?.sessionToken || "";
@@ -263,25 +263,25 @@
     return data;
   }
 
-  // The compact World chat composer is a second presentation of the canonical
-  // dashboard actions. Expose the signed issue operation narrowly so the chat
-  // bundle can file through the same eligible-mirror delivery path without duplicating key,
-  // signature, authorization, or payload logic.
+
+
+
+
   window.ForkMeshDashboardActions = Object.assign(
     window.ForkMeshDashboardActions || {},
     { submitWebIssue },
   );
 
-  // Mirrors IssueStore::contentForSigning's "comment" case (body NUL
-  // attachments) and the desktop's inbox POST (verify_issue_event in the
-  // worker). Unlike a new issue's "open" event, a comment is signed against the
-  // issue's real number - the maintainer's node appends it to that issue when it
-  // drains the inbox (IssueStore::applyRemoteEvent).
+
+
+
+
+
   async function submitWebIssueComment(repo, number, body) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
-    // comment event content = body \0 attachments(joined by ","; empty here)
+
     const NUL = String.fromCharCode(0);
     const contentHash = await sha256HexLower(cleanBody + NUL);
     const canonical = `forkmesh-issue-event-v1\ncomment\n${number}\n${pub}\n${ts}\n${contentHash}`;
@@ -309,10 +309,10 @@
     return data;
   }
 
-  // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
-  // reply body) and the desktop's discussion inbox POST (verify_discussion_event
-  // in the worker). Replies are signed against the discussion's real number -
-  // unlike a new discussion's "open" event, they don't use the placeholder 0.
+
+
+
+
   async function submitWebDiscussionComment(repo, number, body) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
@@ -342,12 +342,12 @@
     return data;
   }
 
-  // Mirrors PullStore::contentForSigning's per-type field order (comment,
-  // review, line-comment, thread-comment, thread-reply, thread-state,
-  // suggestion-state) and the desktop's pull inbox POST
-  // (verify_pull_comment_event/pull_comment_content in the worker). Covers
-  // every conversation-shaped pull event; opening a brand new pull request is
-  // a distinct signed shape (submitWebPullOpen, below).
+
+
+
+
+
+
   async function submitWebPullEvent(repo, number, type, fields = {}) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
@@ -411,10 +411,10 @@
     return submitWebPullEvent(repo, number, "review", { state: reviewState, body });
   }
 
-  // Mirrors PullStore::canonicalString for a new pull (verify_pull_event in
-  // the Worker). Branch names alone are mutable and may not exist on the
-  // owner's node, so resolve them through an attested mirror once and sign the
-  // resulting portable binary patch + commit series.
+
+
+
+
   async function submitWebPullOpen(repo, title, body, base, head) {
     const comparison = await fetchRepoJson(repoLiveUrl(repo, "compare", {
       base,
@@ -493,8 +493,8 @@
     setHint("Signing and sending…");
     try {
       await submitWebIssueComment(repo, number, body);
-      // Show the comment straight away: it only reaches the mirror once the
-      // maintainer's node drains the inbox, so the timeline can't reload it yet.
+
+
       const timeline = form.parentElement?.querySelector("[data-repo-issue-timeline]");
       if (timeline) {
         if (timeline.dataset.empty === "true") {

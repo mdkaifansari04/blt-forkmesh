@@ -1,6 +1,6 @@
--- Human triage is stored separately from immutable scanner artifacts.
--- Repository identity remains a blind index; scan/finding ids are content
--- fingerprints, and reviewer notes/status are encrypted in `data`.
+
+
+
 
 CREATE TABLE IF NOT EXISTS repo_security_scan_reviews (
     repo_bi TEXT NOT NULL,

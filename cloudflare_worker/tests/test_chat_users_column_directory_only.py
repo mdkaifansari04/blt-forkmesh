@@ -31,8 +31,8 @@ def _members_body() -> str:
 
 
 def test_directory_is_indexed_by_account_name():
-    # directoryUserKey() collapses our own entry to "\x01self", which never
-    # matches a group key, so the filter needs the plain account-name key.
+
+
     assert "QString directoryAccountKey(const MemberInfo &u)" in MESSAGES
 
 
@@ -41,7 +41,7 @@ def test_users_column_keeps_only_directory_accounts():
     assert "directoryAccountKey(u)" in body
     assert "accountKeys.contains(g.key)" in body
     assert "groups.erase(std::remove_if(" in body
-    # Our own row survives even when the directory hasn't listed it yet.
+
     assert "!g.primary.self &&" in body
 
 

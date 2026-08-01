@@ -11,8 +11,8 @@
 
 class QProcess;
 
-// Owns a Codex app-server process and adapts its JSONL protocol to the
-// Claude-shaped events consumed by ForkMesh's native transcript.
+
+
 class CodexAppServerSession : public QObject
 {
     Q_OBJECT
@@ -20,12 +20,12 @@ public:
     explicit CodexAppServerSession(QObject *parent = nullptr);
     ~CodexAppServerSession() override;
 
-    // Launch `codex app-server` in cwd. extraEnv entries use KEY=VALUE to set
-    // and KEY to unset, matching the embedded terminal's environment handling.
-    // memoryLimitMb > 0 jails the launch (adhoc #236): the shell caps the
-    // process tree's data memory at that many MB before exec'ing codex. Only
-    // applies to the default bash launch — an injected setAppServerCommand
-    // program (tests) runs as-is.
+
+
+
+
+
+
     void start(const QString &cwd, const QStringList &extraEnv,
                const QString &initialPrompt,
                const QString &resumeThreadId = QString(),
@@ -40,18 +40,18 @@ public:
     void interrupt();
     void stop();
     bool running() const;
-    // PID of the running app-server (0 when not running), so the UI can count
-    // the build processes the agent spawned below it (adhoc #57).
+
+
     qint64 processId() const;
-    // Whether a turn is actively executing right now. The app-server process
-    // stays alive between turns, so running() alone can't tell "busy" from
-    // "idle waiting for the next turn" — this flips true on turn/started and
-    // false on turn/completed (adhoc #157).
+
+
+
+
     bool turnActive() const { return m_turnActive; }
     QString threadId() const;
 
-    // Primarily useful for deterministic protocol tests and packaged Codex
-    // binaries. Empty values restore the default `codex app-server` command.
+
+
     void setAppServerCommand(const QString &program,
                              const QStringList &arguments = QStringList());
 

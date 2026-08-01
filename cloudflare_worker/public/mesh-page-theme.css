@@ -61,10 +61,10 @@ html.light {
   --primary-foreground: var(--mesh-button-text);
 }
 
-/*
- * These shared mappings sit below the pages' unlayered dark styles. The
- * html.light rules that follow opt each family into the semantic palette.
- */
+
+
+
+
 @layer mesh-page-theme {
   .about-shell, .legal-shell, .page-shell {
     background: var(--mesh-page-bg);

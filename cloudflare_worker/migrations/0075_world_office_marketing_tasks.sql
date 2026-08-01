@@ -1,8 +1,8 @@
--- Private organization marketing work for the in-world Office.
---
--- Human-readable task copy, assignee labels, and check-in notes live only in
--- encrypted `data` values.  Plain columns contain opaque blind indexes,
--- bounded state, and server-authoritative timer metadata.
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS world_office_marketing_tasks (
   task_id              TEXT PRIMARY KEY,
@@ -29,8 +29,8 @@ CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_org
 CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_assignee
   ON world_office_marketing_tasks(org_bi, assignee_bi, updated_at DESC);
 
--- The application uses a conditional UPDATE when starting work; this partial
--- unique index remains the race-safe final authority.
+
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_world_office_one_active_per_assignee
   ON world_office_marketing_tasks(org_bi, active_assignee_bi)
   WHERE status = 'active' AND active_assignee_bi <> '';

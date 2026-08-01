@@ -36,7 +36,7 @@ def test_scene_builds_a_bounded_desk_from_verified_records_only():
     assert '"combined"' not in DESK
     assert "items.length > 13 ? 2 : 1" not in DESK
     assert "repository-issue-page-expanded:" in DESK
-    # Pure projection: no network, no storage, no invented records.
+
     assert "fetch" not in DESK
     assert "localStorage" not in DESK
     assert "sessionStorage" not in DESK
@@ -66,8 +66,8 @@ def test_issue_and_pull_cards_show_commit_pinned_metadata():
 
 
 def test_desk_layer_is_removed_on_rebuild_and_catalog_replacement():
-    # Once inside updateRepositoryRecordDesk, once when the portal catalog
-    # layer that mounts the desk is torn down.
+
+
     assert DESK.count("world.userData.repositoryRecordDeskLayer = null") == 1
     assert SCENE.count("world.userData.repositoryRecordDeskLayer = null") >= 2
     assert "removeGeneratedLayer(previousMount, previousLayer, interactive)" in DESK
@@ -132,9 +132,9 @@ def test_shell_routes_pull_cards_into_the_canonical_web_workbench():
     assert 'detail.dataset.openLandmark = `repository-${recordKind}`' in generic
     assert '"pulls" : "issues"' in generic
     assert "Repository portals" not in generic
-    # The desk is fed the same commit-matched records as the explorer panel.
+
     assert "pulls: this.repositoryPullRecords(active)" in APP
     assert "expandedIssue: this.expandedRepositoryIssuePage" in APP
     assert 'this.world.updateRepositoryRecordDesk?.({}, {})' in APP
-    # Expansion state resets whenever a repository map is (re)loaded.
+
     assert APP.count("this.expandedRepositoryIssuePage = 0;") >= 3

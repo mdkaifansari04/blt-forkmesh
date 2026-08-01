@@ -36,7 +36,7 @@ def _load(*names, extra_globals=None):
 
 
 NOW = 1_000_000_000_000
-STALE_MS = 90_000  # HOST_PRESENCE_STALE_MS stand-in for the test
+STALE_MS = 90_000
 
 
 def _run(host_rows):
@@ -62,7 +62,7 @@ def _run(host_rows):
                     } if owner is not None else None,
                 })
             return rows
-        return []  # account_presence query -> none online via account presence
+        return []
 
     async def d1_first(env, sql, *args):
         return {}
@@ -114,24 +114,24 @@ async def _const(value):
 
 
 def test_hosts_counts_distinct_online_nodes_not_tunnels():
-    # newnewnode hosts two repos (two presence rows), plus one distinct mirror.
+
     out = _run([
         ("bi:newnewnode/a", "bi:newnewnode", 0, "newnewnode"),
         ("bi:newnewnode/b", "bi:newnewnode", 0, "newnewnode"),
         ("bi:vm1/a", "bi:vm1", 0, "vm1"),
     ])
     assert sorted(out["onlineNodes"]) == ["newnewnode", "vm1"]
-    # Two distinct nodes -> 2, even though there are three host_presence rows.
+
     assert out["hosts"] == 2
     assert out["hosts"] == len(out["onlineNodes"])
 
 
 def test_adhoc_and_private_tunnels_are_not_counted_or_named():
-    # A public mirror, an ad-hoc tunnel (no catalog record), and a private repo.
+
     out = _run([
         ("bi:newnewnode/a", "bi:newnewnode", 0, "newnewnode"),
-        ("bi:adhoc/x", None, 0, None),          # no public catalog record
-        ("bi:secret/y", "bi:secret", 1, "secret"),  # private repo
+        ("bi:adhoc/x", None, 0, None),
+        ("bi:secret/y", "bi:secret", 1, "secret"),
     ])
     assert out["onlineNodes"] == ["newnewnode"]
     assert out["hosts"] == 1

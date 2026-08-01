@@ -10,22 +10,22 @@
 
 #include <functional>
 
-// Drop-in QNetworkAccessManager that gates every request against a
-// "<host>/api/*" path through NetworkBackoff, keyed per host.
-//
-// Several pollers already avoid *firing* a request while they know they're
-// in a cooldown (see MainWindow::m_pollBackoff), but plenty of call sites
-// don't: one-shot issue/pull/discussion submissions, the top-bar relay
-// latency probe, catalog publish, etc. When a relay's daily Cloudflare quota
-// is exhausted it answers *every* request with an HTTP 429 page — including
-// the lightweight /api/version probe — so without a host-wide gate, each of
-// those independent call sites keeps hammering the relay on its own
-// schedule, burning more of the very quota that's missing. This subclass
-// catches all of them at the transport layer: the first 429 from a host
-// starts an exponential cooldown (NetworkBackoff's normal doubling-with-
-// jitter curve) during which further requests to that host's /api/* paths
-// are answered locally with a synthetic error instead of ever reaching the
-// network, and a subsequent success clears the streak.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class BackoffNetworkAccessManager : public QNetworkAccessManager
 {
     Q_OBJECT
@@ -78,11 +78,11 @@ public:
     QList<EndpointStats> endpointStats() const;
     QList<RequestRecord> endpointRequests(const QString &method,
                                           const QString &endpoint) const;
-    // True while this host's /api/* traffic sits inside the 429/5xx cooldown
-    // window (createRequest would answer it locally with a synthetic error).
-    // Lets periodic work that never passes through this manager — e.g. the
-    // git-subprocess mirror fetches — honour the same host-wide backpressure
-    // and skip a round instead of hammering an already rate-limited relay.
+
+
+
+
+
     bool hostInCooldown(const QString &host) const;
 
     static QString canonicalFirewallRule(const QString &rule);

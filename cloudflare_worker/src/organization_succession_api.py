@@ -588,9 +588,9 @@ async def _finalize(runtime, context):
             },
             status=409,
         )
-    # Migration 0064's BEFORE/AFTER triggers recheck the live org roster and
-    # perform only the two org_members.role updates.  The event is in the same
-    # D1 batch, so completion and append-only history commit together.
+
+
+
     try:
         await runtime.batch([
             (

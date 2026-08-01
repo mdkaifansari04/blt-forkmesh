@@ -25,8 +25,8 @@ def test_live_state_requires_loaded_schema_or_usable_capability_evidence():
     assert "Array.isArray(orgResult.value?.organizations)" in APP
     assert "Array.isArray(eventsResult.value?.events)" in APP
     assert "hasCompletedSecurityScan(this.securityScan)" in APP
-    # Mirror cabinets are live infrastructure, not a synthetic landmark whose
-    # state can be inferred from one remote response.
+
+
     assert "liveNodeRecords(this.network, this.mirrorCatalogs)" in APP
     assert "this.world?.updateNetworkNodes(" in APP
     assert "LANDMARK_CONSTRUCTION_REASONS.workshops" not in APP

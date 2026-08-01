@@ -1,9 +1,9 @@
--- Private proof-of-work links for the Marketing floor.
---
--- Only opaque organization/account indexes and bounded timestamps are plain.
--- The member name, public HTTPS URL, label, and hostname stay in the sealed
--- payload and are returned only after a current Marketing-team membership
--- check.
+
+
+
+
+
+
 CREATE TABLE IF NOT EXISTS world_office_marketing_proofs (
     proof_id TEXT PRIMARY KEY CHECK (
         length(proof_id) = 32

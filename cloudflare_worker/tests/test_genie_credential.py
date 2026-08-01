@@ -194,7 +194,7 @@ def test_genie_proof_is_post_only_and_not_interchangeable_with_task_proofs():
         assert asyncio.run(resolve(env, _Request(
             method=method, url=_signed_url(namespace)))) == ("", None), method
 
-    # A proof signed to open a task must not mint a credential.
+
     crossed = _signed_url(namespace, proof_name="ORG_TASK_OPEN_PROOF")
     assert asyncio.run(resolve(env, _Request(url=crossed))) == ("", None)
 
@@ -233,9 +233,9 @@ def test_endpoint_is_routed_and_prefers_the_signature_over_ambient_authority():
         in ENTRY_TEXT
     signed = HANDLER.index("_genie_credential_signed_session(env, request)")
     session = HANDLER.index("_account_session_record(env, request, data)")
-    # The signature is consulted first, and an account session only as a
-    # fallback — never a cookie on a cross-origin write, which
-    # _account_session_record itself refuses.
+
+
+
     assert signed < session
     assert '"method_not_allowed"' in HANDLER
     assert 'cache_control="no-store"' in HANDLER
@@ -248,13 +248,13 @@ def test_minted_credential_is_task_only_and_admin_gated():
     assert 'await _org_role(env, org_bi, actor) not in ("owner", "admin")' \
         in HANDLER
     assert '"forbidden"' in HANDLER
-    # Same store, same cap, and an audit record either way.
+
     assert "INSERT INTO org_bot_tokens " in HANDLER
     assert "ORG_BOT_TOKEN_MAX_ACTIVE" in HANDLER
     assert '"too_many_bot_tokens"' in HANDLER
     assert HANDLER.count('"organization.bot_token_create"') == 2
-    # Re-minting retires this device's previous credential instead of stacking
-    # new ones up against the cap.
+
+
     assert "UPDATE org_bot_tokens SET revoked_at=?" in HANDLER
 
 
@@ -282,16 +282,16 @@ def test_desktop_signs_the_same_proof_and_shows_the_run_as_a_session():
     assert '"forkmesh-genie-credential-v1"' in QT_INTERNAL
     assert '"/api/genie/credential"' in QT_MCP
     assert "kGenieCredentialProof" in QT_MCP
-    # Pressing genie starts the run; it no longer bounces to Settings for a
-    # hand-pasted credential.
+
+
     start = QT_MCP[
         QT_MCP.index("void MainWindow::startGenieAgent()"):
         QT_MCP.index("void MainWindow::requestGenieCredential(")
     ]
     assert "requestGenieCredential(repoIndex, typed)" in start
     assert "showSection(1)" not in start
-    # The session list names it, so the run is visible as a running agent
-    # session rather than only in the log.
+
+
     launch = QT_MCP[
         QT_MCP.index("void MainWindow::launchGenieRun("):
         QT_MCP.index("void MainWindow::applyGenieTaskTitle(")

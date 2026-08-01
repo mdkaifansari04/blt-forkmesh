@@ -1,9 +1,9 @@
--- Redacted automated security-scan artifacts.
---
--- Repository identity is a keyed blind index and the documented rich +
--- clipboard envelope is AES-GCM encrypted in ``data``.  This keeps private
--- repository names, paths, and findings out of plaintext D1 storage.  The
--- Worker enforces a fixed per-repository history limit after every upsert.
+
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS repo_security_scans (
     repo_bi TEXT NOT NULL,

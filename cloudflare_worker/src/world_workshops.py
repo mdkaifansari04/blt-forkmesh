@@ -492,8 +492,8 @@ async def _create(runtime, data, account_bi, actor):
             now,
         )
     except Exception:
-        # Best-effort cleanup avoids leaving a session without its owner if a
-        # later D1 statement fails.
+
+
         try:
             await runtime.d1_run(
                 "DELETE FROM world_workshop_sessions WHERE session_id=?",

@@ -67,9 +67,9 @@ class DiscordRateCoordinator:
                 self.path_buckets = dict(list(self.path_buckets.items())[-MAX_BUCKETS:])
         else:
             bucket = self.path_buckets.get(path, "")
-        # Discord does not always include a bucket on a 429. Fixed request
-        # paths are themselves a safe bounded fallback, preventing a hot
-        # caller from immediately retrying the same route in that case.
+
+
+
         if not bucket and path:
             bucket = "path:" + path[:120]
             self.path_buckets[path] = bucket
@@ -109,8 +109,8 @@ class DiscordRateCoordinator:
                     self.bucket_until = dict(
                         list(self.bucket_until.items())[-MAX_BUCKETS:])
             return cooldown
-        # When Discord says this was the final remaining request, honor the
-        # reset window proactively instead of causing an avoidable 429.
+
+
         if remaining == 0 and reset_after and bucket:
             self.bucket_until[bucket] = max(
                 self.bucket_until.get(bucket, 0), now + reset_after)

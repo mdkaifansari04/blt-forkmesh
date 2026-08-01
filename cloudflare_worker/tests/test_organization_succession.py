@@ -20,8 +20,8 @@ SCHEMA = SRC / "schema.py"
 DOC = ROOT / "docs" / "operations" / "organization-succession.md"
 
 sys.path.insert(0, str(SRC))
-import organization_succession as policy  # noqa: E402
-import organization_succession_api as api  # noqa: E402
+import organization_succession as policy
+import organization_succession_api as api
 
 
 def _module(name):
@@ -50,7 +50,7 @@ class Runtime:
                 encoding="utf-8"
             )
         )
-        # Sentinels from stores succession must never mutate.
+
         self.db.executescript(
             """
             CREATE TABLE repositories (
@@ -445,7 +445,7 @@ def test_threshold_approvals_and_grace_complete_scoped_roles_only():
     assert runtime.request(
         "platform-admin", "POST", "approve")["status"] == 403
     assert runtime.request("alice", "POST", "approve")["status"] == 200
-    # Duplicate approval is idempotent and does not inflate the threshold.
+
     assert runtime.request(
         "alice", "POST", "approve")["data"]["case"]["approvalCount"] == 1
     assert runtime.request("bob", "POST", "approve")["status"] == 200

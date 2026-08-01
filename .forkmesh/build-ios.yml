@@ -3,10 +3,10 @@ on: [push, workflow_dispatch]
 jobs:
   ios:
     steps:
-      # Only build when this push actually touched flutter_app/. Mirrors the
-      # Android/deploy workflows' "skip unless changed" gate: a sentinel file
-      # written here is checked by the build step so it no-ops on unrelated
-      # commits.
+
+
+
+
       - name: Skip unless flutter_app/ changed
         run: |
           # HEAD is normally a MERGE commit (agent branches land on main via
@@ -29,12 +29,12 @@ jobs:
             printf '%s\n' "$app_changes"
           fi
 
-      # Build the unsigned release .app and copy it out of the (temporary) run
-      # worktree to a persistent artifacts dir on this node, since the worktree
-      # is removed when the run finishes. The artifact path is printed to the
-      # run log — that's the attached artifact link (ForkMesh has no relay
-      # artifact upload). iOS binaries can only be compiled on macOS, so this
-      # step only succeeds on a Mac node.
+
+
+
+
+
+
       - name: Build .app and collect artifact
         run: |
           [ -f .forkmesh-skip-ios ] && exit 0

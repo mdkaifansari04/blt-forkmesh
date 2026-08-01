@@ -16,9 +16,9 @@ import '../theme.dart';
 import '../widgets/compose_identity_bar.dart';
 import '../widgets/fm_ui.dart';
 
-/// Repo detail with the GitHub-style tabs the Qt client has: About/Code,
-/// Commits, Issues, Pull requests. Reads over the worker REST API; writes
-/// (new issue/PR, comment, vote, review, status) go to the signed relay inbox.
+
+
+
 class RepoDetailScreen extends StatefulWidget {
   const RepoDetailScreen({
     super.key,
@@ -140,7 +140,7 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
           return;
       }
     } catch (_) {
-      // Keep the repo tab open if the exact item cannot be loaded yet.
+
     }
   }
 
@@ -256,9 +256,9 @@ class _RepoDetailScreenState extends State<RepoDetailScreen>
   }
 }
 
-// ---------------------------------------------------------------------------
-// Write-path dialogs and sheets (all submit to the signed inbox).
-// ---------------------------------------------------------------------------
+
+
+
 
 Future<void> _run(
   BuildContext context,
@@ -1091,9 +1091,9 @@ Future<String?> _promptText(
   );
 }
 
-// ---------------------------------------------------------------------------
-// Read-only tabs
-// ---------------------------------------------------------------------------
+
+
+
 
 class _AboutTab extends StatelessWidget {
   const _AboutTab({required this.repo});
@@ -4164,9 +4164,9 @@ class _CommitsTab extends StatelessWidget {
   }
 }
 
-// Static section header for the commit timeline. Only History exists as a
-// view here, so it is presented as a plain header rather than a tab strip
-// that would imply switchable Changes/Branches views.
+
+
+
 class _GitHistoryHeader extends StatelessWidget {
   const _GitHistoryHeader({required this.commits});
 

@@ -53,8 +53,8 @@ def test_d1_table_display_shows_storage_against_free_and_paid_limits():
 
 
 def test_infrastructure_display_adds_no_durable_object_polling():
-    # Context and the cached network overview are each part of the existing
-    # one-shot bootstrap. Rendering their values must not create another poll.
+
+
     assert APP.count('this.fetchJSON("/api/world/context"') == 1
     assert APP.count('this.fetchJSON("/api/network/overview"') == 1
     for method in (
@@ -69,9 +69,9 @@ def test_infrastructure_display_adds_no_durable_object_polling():
 
 
 def test_treasury_balance_refreshes_on_hover_instead_of_on_a_timer():
-    # Every /api/accounts/central-fund view costs a public Solana RPC round
-    # trip, so the SOL board keeps the balance it is already painted with
-    # until somebody points at it. No timer may fetch it.
+
+
+
     assert "WORLD_REWARD_POLL_MS" not in APP
     board = _between("  startStatusBoardPolling() {", "\n  }")
     assert "this.syncSystemStatusBoardTimer()" in board
@@ -80,7 +80,7 @@ def test_treasury_balance_refreshes_on_hover_instead_of_on_a_timer():
     assert "now - this.rewardHoverRefreshedAt < WORLD_REWARD_HOVER_MS" in hover
     assert "this.refreshRewardState({ force: true })" in hover
     assert "onRewardBoardHover: () =>" in APP
-    # The hover itself is reported by the scene, from the treasury sign only.
+
     assert "onRewardBoardHover = () => {}," in SCENE
     assert "function updateRewardBoardHover(event, now) {" in SCENE
     assert 'landmarkObjects.get("fountain")?.userData?.treasurySign' in SCENE

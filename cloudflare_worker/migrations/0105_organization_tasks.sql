@@ -1,6 +1,6 @@
--- Organization-private universal work. Existing Marketing tasks are copied
--- into the new catalog without decrypting or rewriting their sealed payloads,
--- so titles, details, assignees, and creator labels remain encrypted at rest.
+
+
+
 CREATE TABLE IF NOT EXISTS organization_tasks (
   task_id              TEXT PRIMARY KEY,
   org_bi               TEXT NOT NULL,
@@ -89,9 +89,9 @@ CREATE TABLE IF NOT EXISTS organization_task_qa_reviews (
 CREATE INDEX IF NOT EXISTS idx_organization_task_qa_reviews_task
   ON organization_task_qa_reviews(org_bi, task_id, reviewed_at DESC);
 
--- Limited outside collaborators are deliberately separate from org_members
--- and org_team_members. Their team placement never participates in repository
--- permission calculation or Office-floor admission.
+
+
+
 CREATE TABLE IF NOT EXISTS org_team_collaborators (
   org_bi       TEXT NOT NULL,
   team         TEXT NOT NULL,
@@ -104,8 +104,8 @@ CREATE TABLE IF NOT EXISTS org_team_collaborators (
 CREATE INDEX IF NOT EXISTS idx_org_team_collaborators_account
   ON org_team_collaborators(account_bi, org_bi, team);
 
--- One-time promotion of every legacy Marketing record. INSERT OR IGNORE makes
--- deployment retries safe and preserves a newer universal copy if present.
+
+
 INSERT OR IGNORE INTO organization_tasks (
   task_id, org_bi, department, team, destination, assignee_kind, status,
   assignee_bi, active_assignee_bi, data, created_by_bi, created_at, updated_at,

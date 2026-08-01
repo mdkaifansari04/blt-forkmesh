@@ -32,8 +32,8 @@
 
 :root {
   color-scheme: dark;
-  /* GitHub dark primitives: every overlay, drawer, kiosk, and HUD panel
-     inherits one coherent border/background/action system. */
+
+
   --world-ink: #0d1117;
   --world-ink-soft: #161b22;
   --world-panel: rgb(22 27 34 / 0.96);
@@ -244,9 +244,9 @@ forkmesh-world {
 
 .fm-world {
   --accent: var(--world-mint);
-  /* Detail panel geometry. The grip on the panel's left edge writes
-     --world-detail-user-width; the per-panel base width is the floor, so a
-     dragged-narrow panel never shrinks a naturally wider one. */
+
+
+
   --world-detail-base-width: 420px;
   --world-detail-user-width: 0px;
   --world-detail-max-width: calc(
@@ -374,11 +374,11 @@ forkmesh-world {
   animation: world-loader-shimmer 700ms linear infinite;
 }
 
-/*
-  Opening ledger: one row per startup step with a live seconds counter, so a
-  slow open names the step it is waiting on. Rows are painted from
-  WORLD_BOOT_STEPS and keep their order whether or not they overlap.
-*/
+
+
+
+
+
 .world-loading-steps {
   width: 100%;
   max-height: min(46vh, 260px);
@@ -443,7 +443,7 @@ forkmesh-world {
   white-space: nowrap;
 }
 
-/* A note only appears once a step has something to report. */
+
 .world-loading-curtain .world-loading-step-note {
   overflow: hidden;
   color: rgb(158 247 198 / 0.55);
@@ -458,7 +458,7 @@ forkmesh-world {
   display: none;
 }
 
-/* Counters redraw ten times a second: fixed digit cells keep them steady. */
+
 .world-loading-curtain .world-loading-step-time {
   min-width: 42px;
   font-variant-numeric: tabular-nums;
@@ -516,7 +516,7 @@ forkmesh-world {
   }
 }
 
-/* Wearable jetpack and World Gym controls. */
+
 .world-avatar-actions [data-world-jetpack-toggle][data-active="true"] {
   border-color: #79c0ff;
   background:
@@ -950,8 +950,8 @@ forkmesh-world {
 .world-brand img {
   width: 44px;
   height: 44px;
-  /* The mark asset is portrait, so cover cropped its top and bottom inside
-     the status ring. Preserve the complete logo instead. */
+
+
   object-fit: contain;
   flex: 0 0 auto;
   position: relative;
@@ -988,8 +988,8 @@ forkmesh-world {
   white-space: nowrap;
 }
 
-/* Shared GitHub-style panel chrome; a final cascade pass below catches
-   feature-specific surfaces declared later in this file. */
+
+
 .fm-world :is(
   .world-detail,
   .world-map,
@@ -1119,8 +1119,8 @@ forkmesh-world {
   white-space: nowrap;
 }
 
-/* The avatar is the launcher.  Revealed controls retain their compact 40px
-   square footprint and simply slide out to its left. */
+
+
 .world-hud[data-hud-expanded="true"] .world-top-actions {
   gap: 6px;
   filter: drop-shadow(0 10px 18px rgb(1 4 9 / 0.34));
@@ -1180,7 +1180,7 @@ forkmesh-world {
   display: none;
 }
 
-/* The hand mirrors the gesture the avatar plays in the scene. */
+
 .world-wave-button span[aria-hidden="true"] {
   display: inline-block;
   transform-origin: 70% 80%;
@@ -1214,8 +1214,8 @@ forkmesh-world {
 }
 
 [data-world-sound-toggle] {
-  /* Sound consent must remain reachable while a landmark detail is open.
-     Only this explicit media control rises above the dismissing backdrop. */
+
+
   position: relative;
   z-index: 21;
 }
@@ -2191,8 +2191,8 @@ forkmesh-world.world-admin-error-arrival::after {
   color: var(--world-copy);
 }
 
-/* Graded readings: green is healthy, orange is worth watching, red is too
-   high. Only the number is tinted so the surrounding text stays readable. */
+
+
 .world-diagnostics-value {
   color: var(--world-copy);
 }
@@ -2218,7 +2218,7 @@ forkmesh-world.world-admin-error-arrival::after {
   }
 }
 
-/* DEBUG owns the lower-left; chat owns the lower-right all the way down. */
+
 .world-chat-terminal {
   right: 0;
   bottom: 0;
@@ -2274,8 +2274,8 @@ forkmesh-world.world-admin-error-arrival::after {
   display: none;
 }
 
-/* Unread count on the collapsed CHAT bar. Opening the panel zeroes it, so it
-   is only ever visible while the bar is closed. */
+
+
 .world-chat-terminal-unread {
   flex: 0 0 auto;
   min-width: 14px;
@@ -2503,8 +2503,8 @@ forkmesh-world.world-admin-error-arrival::after {
 }
 
 .world-detail-backdrop[data-open="true"] {
-  /* Desktop details are deliberately non-modal. The canvas remains bright and
-     interactive everywhere the floating panel does not cover it. */
+
+
   opacity: 0;
   visibility: hidden;
 }
@@ -2594,8 +2594,8 @@ forkmesh-world.world-admin-error-arrival::after {
   background: #fff;
 }
 
-/* Drag grip on the panel's left edge. It lives outside the panel because
-   every detail renderer replaces the panel's innerHTML wholesale. */
+
+
 .world-detail-resize {
   position: absolute;
   z-index: 21;
@@ -2646,9 +2646,9 @@ forkmesh-world.world-admin-error-arrival::after {
 .world-detail-header {
   position: relative;
   display: grid;
-  /* minmax(0, …) so a long unbreakable title cannot widen the header past the
-     panel: an overflowing header pushes the close button out of view, and
-     focusing it scrolls the whole panel sideways into blank space. */
+
+
+
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 18px;
   border-bottom: 1px solid var(--world-line);
@@ -2672,7 +2672,7 @@ forkmesh-world.world-admin-error-arrival::after {
   font-size: clamp(2.2rem, 7vw, 3.75rem);
   line-height: 0.9;
   letter-spacing: -0.055em;
-  /* Table and repository names are single unbreakable tokens. */
+
   overflow-wrap: anywhere;
 }
 
@@ -2705,8 +2705,8 @@ forkmesh-world.world-admin-error-arrival::after {
   padding: 24px 24px max(32px, var(--safe-bottom));
 }
 
-/* Database table browser: opened by clicking a bar on the System Capacity
-   platform. The header row stays put while the counts scroll underneath. */
+
+
 .world-capacity-tables {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -2784,8 +2784,8 @@ forkmesh-world.world-admin-error-arrival::after {
   color: var(--detail-color);
 }
 
-/* Mastodon mini app: fixed profile summary with independently scrollable
-   toots underneath, matching the kiosk beside the ForkMesh Office. */
+
+
 .world-mastodon-app {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr) auto;
@@ -3124,12 +3124,12 @@ forkmesh-world.world-admin-error-arrival::after {
   position: absolute;
   z-index: 32;
   top: max(18px, var(--safe-top));
-  /*
-   * Keep the modal above the always-visible CHAT / DEBUG terminal strip.
-   * This is especially important on short mobile visual viewports: otherwise
-   * the iframe composer remains in the layout but is covered by the higher
-   * z-index terminal summaries at the bottom of the World.
-   */
+
+
+
+
+
+
   bottom: calc(
     var(--safe-bottom) + var(--world-diagnostics-height) + 8px
   );
@@ -3949,10 +3949,10 @@ forkmesh-world.world-admin-error-arrival::after {
   overflow-wrap: anywhere;
 }
 
-/* "How this ran" line under a bot-assigned task: which bot started and
-   finished it, and the model, mode, and strength it used. Set back from the
-   routing line above it so the run detail reads as a footnote, not a second
-   heading. */
+
+
+
+
 .world-office-task-copy small.world-office-task-agent-run {
   color: var(--world-muted);
   opacity: 0.82;
@@ -6635,8 +6635,8 @@ forkmesh-world.world-office-active .world-quick-dock {
 
 .world-settings-tabs {
   display: grid;
-  /* Five tabs for administrators, four for everyone else: let the strip
-     decide its own column count and wrap instead of hard-coding three. */
+
+
   grid-template-columns: repeat(auto-fit, minmax(84px, 1fr));
   margin-top: 16px;
   border: 1px solid var(--world-line);
@@ -6669,8 +6669,8 @@ forkmesh-world.world-office-active .world-quick-dock {
   display: none;
 }
 
-/* Debug tab: the same graded one-second readouts as the floating pill, laid
-   out with room to read, plus ranked improvement suggestions. */
+
+
 .world-debug-live {
   display: grid;
   gap: 6px;
@@ -6725,8 +6725,8 @@ forkmesh-world.world-office-active .world-quick-dock {
   color: var(--world-danger);
 }
 
-/* The frame-history sparkline is plain text so it survives screenshots and
-   copy/paste; block glyphs need the mono face and a little tracking. */
+
+
 .world-debug-live .world-debug-sparkline {
   display: inline-block;
   vertical-align: bottom;
@@ -6758,7 +6758,7 @@ forkmesh-world.world-office-active .world-quick-dock {
   outline: none;
 }
 
-/* Elements tab: one switch per registered world element, grouped by kind. */
+
 .world-element-master {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -7969,7 +7969,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-top-actions {
-    /* Compact mode exposes only the circular account launcher. */
+
     gap: 0;
   }
 
@@ -8042,8 +8042,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     transform: translateY(102%);
   }
 
-  /* The panel is a full-width bottom sheet here, so there is no left edge to
-     drag. */
+
+
   .world-detail-resize {
     display: none;
   }
@@ -8139,9 +8139,9 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 
 @media (max-width: 375px) {
   .world-top-actions > .world-wave-button {
-    /* The narrowest phones have no room left in the tool row. Alerts, sound
-       consent, and settings keep their slots; the wave is the one control
-       here that has no consequence when it is out of reach. */
+
+
+
     display: none;
   }
 }
@@ -8156,8 +8156,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* Touch capability, not viewport width, determines whether the compact analog
-   thumbstick is needed. */
+
+
 @media (pointer: coarse), (hover: none) {
   .world-touch-controls {
     display: grid;
@@ -8220,8 +8220,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
     width: 58px;
   }
 
-  /* The collapsed bar shrinks to the word CHAT here; give the unread pill room
-     rather than letting it clip. */
+
+
   .world-chat-terminal:not([open]):has(
       .world-chat-terminal-unread:not([hidden])
     ) {
@@ -8345,7 +8345,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* Screenshot capture and annotation */
+
 .world-shot-overlay {
   position: fixed;
   inset: 0;
@@ -8717,8 +8717,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   font: 0.75rem/1.55 var(--world-mono, ui-monospace, monospace);
 }
 
-/* Final shared chrome pass: feature-specific rules may control layout, but
-   every user-facing surface finishes with the same GitHub dark primitives. */
+
+
 .fm-world :is(
   dialog,
   aside:not(.world-right-rail),
@@ -8746,9 +8746,9 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   outline-offset: 2px;
 }
 
-/* Compact orb HUD. Both controls stay logo-sized until hovered, keyboard
-   focused, or explicitly opened. The expanded surfaces remain ordinary
-   details elements so touch and assistive-technology users can pin them. */
+
+
+
 .world-diagnostics,
 .world-diagnostics:not(.world-chat-terminal) {
   position: absolute;
@@ -9012,7 +9012,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* Native World chat: each surface floats independently over the scene. */
+
 .world-chat-terminal[open] {
   top: auto;
   bottom: max(12px, env(safe-area-inset-bottom));
@@ -9263,9 +9263,9 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   line-height: 1;
 }
 
-/* The per-message "turn this into an issue" form. Its title field is the only
-   <input> the in-world chat renders, so it is not covered by the shared
-   button/select/textarea control rule above and gets the glass treatment here. */
+
+
+
 .world-native-chat .chat-issue-form {
   display: flex;
   flex-direction: column;
@@ -9714,14 +9714,14 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* -------------------------------------------------------------------------
-   Primer product UI
 
-   The World is intentionally framework-free, so these are the functional
-   Primer primitives and component recipes used by the HUD rather than a
-   second component runtime. Feature CSS above still owns placement and
-   animation; this layer owns the shared visual language.
-   ------------------------------------------------------------------------- */
+
+
+
+
+
+
+
 :root {
   --bgColor-default: #0d1117;
   --bgColor-muted: #161b22;
@@ -9769,8 +9769,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   --base-text-weight-medium: 500;
   --base-text-weight-semibold: 600;
 
-  /* Keep the existing World API stable while every HUD feature moves through
-     the same Primer functional tokens. */
+
+
   --world-ink: var(--bgColor-default);
   --world-ink-soft: var(--bgColor-muted);
   --world-panel: rgb(22 27 34 / 0.96);
@@ -9813,7 +9813,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   letter-spacing: 0.04em;
 }
 
-/* Overlay, Box, Dialog, and card surfaces. */
+
 .world-hud :is(
   .world-detail,
   .world-settings,
@@ -9865,7 +9865,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   padding: var(--base-size-24);
 }
 
-/* Primer Button: secondary is the default; primary and danger are explicit. */
+
 .world-hud :is(
   .world-primary-action,
   .world-secondary-action,
@@ -9982,7 +9982,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   opacity: 0.7;
 }
 
-/* Primer FormControl. */
+
 .world-hud :is(
   input[type="text"],
   input[type="email"],
@@ -10010,7 +10010,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   accent-color: var(--focus-outlineColor);
 }
 
-/* UnderlineNav treatment for settings and account tabs. */
+
 .world-settings-tabs,
 .world-account-tabs {
   display: flex;
@@ -10068,7 +10068,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   content: "";
 }
 
-/* Preferences are composed from Primer Box and FormControl patterns. */
+
 .world-settings {
   padding: var(--base-size-24);
 }
@@ -10091,9 +10091,9 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   color: var(--fgColor-muted);
 }
 
-/* HUD popout chrome stays reachable while the panel body scrolls. The
-   translucent header also keeps underlying copy from showing through the
-   close control without turning the popout back into an opaque slab. */
+
+
+
 .world-detail-header,
 .world-settings-heading,
 .world-account-heading,
@@ -10173,7 +10173,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   background: var(--bgColor-muted);
 }
 
-/* Primer Counter + Box patterns for assigned work. */
+
 .world-work-stats {
   gap: var(--base-size-8);
   margin-bottom: var(--base-size-16);
@@ -10397,7 +10397,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   text-transform: none;
 }
 
-/* Compact HUD launchers and notices use the same controls and neutral glass. */
+
 .world-brand {
   border: 1px solid var(--borderColor-default);
   background: rgb(13 17 23 / 0.88);
@@ -10451,10 +10451,10 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   background: var(--fgColor-accent);
 }
 
-/* In compact mode the actionable counters live in their own list beside the
-   avatar. They remain the real notification/error/task controls, so clicking
-   one opens its destination. Expanding the HUD restores each counter to the
-   corner of its respective icon. */
+
+
+
+
 .world-hud[data-hud-expanded="false"]
   .world-top-link:has(> .world-tool-count:not([hidden])) {
   display: inline-grid;
@@ -10577,8 +10577,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* Fixed launcher geometry. The account avatar reveals these controls, but
-   every revealed shortcut keeps the same square footprint. */
+
+
 .fm-world .world-shirt-badge {
   width: 56px;
   height: 56px;
@@ -10760,8 +10760,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* On-demand Discord bridge. This deliberately lives outside the render loop:
- * no animation, polling, or automatic message relay is attached to the World. */
+
+
 .world-discord-trigger {
   position: fixed;
   right: max(12px, env(safe-area-inset-right));
@@ -10936,10 +10936,10 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* Persistent, centered World controls. Avatar actions are gameplay controls,
-   not chat controls, so they remain reachable even when the chat transcript is
-   closed. The three activity totals similarly have one home at the top center
-   instead of duplicating badges inside the avatar launcher. */
+
+
+
+
 .world-avatar-actions {
   position: fixed;
   z-index: 58;
@@ -11066,7 +11066,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   display: none !important;
 }
 
-/* Newest messages are inserted first by the controller. */
+
 .world-native-chat #fullChatMessages {
   align-content: start;
 }
@@ -11083,8 +11083,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   max-height: 120px;
 }
 
-/* The chat launcher no longer carries a second online/live dot, and the debug
-   glyph is just the nine health pixels without an inner circular ring. */
+
+
 .world-chat-terminal-avatar::after {
   display: none;
   content: none;
@@ -11107,8 +11107,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* Sortable activity boards: Tasks, Notifications, and Errors share one
-   energetic, information-dense card language while keeping every row readable. */
+
+
 .world-settings[data-active-tab="work"] {
   width: min(
     var(--world-settings-user-width, 1180px),
@@ -11473,8 +11473,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   overflow-x: auto;
 }
 
-/* The later generic .world-activity-row rule (46px avatar + copy grid) must
-   never win over the tabular layout, or every cell stacks vertically. */
+
+
 .world-notification-table-header,
 .world-notification-row {
   display: grid !important;
@@ -11906,8 +11906,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   font-size: 0.65rem;
 }
 
-/* Dense organization task catalog. Closed rows are spreadsheet-thin; opening
-   one reveals the rich task record as a private chat-style bubble underneath. */
+
+
 .world-task-table {
   --world-task-columns:
     minmax(280px, 2.4fr)
@@ -11939,8 +11939,8 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   min-width: 1580px;
 }
 
-/* Walk-in instance booth. This is deliberately a flat, non-modal work surface:
-   walking and the rest of the World remain available behind it. */
+
+
 .world-instance-launcher {
   position: absolute;
   z-index: 62;
@@ -13043,7 +13043,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 }
 
-/* Quick composer: a quiet orb that unfolds independently from chat history. */
+
 .world-chat-terminal:not([open]),
 .world-chat-terminal.world-chat-terminal--debug-hidden:not([open]) {
   width: 56px !important;

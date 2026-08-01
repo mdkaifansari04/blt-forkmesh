@@ -40,8 +40,8 @@ test("World embeds same-origin global chat and connects its real room transport"
   });
   page.on("pageerror", (error) => browserErrors.push(error.message));
 
-  // Keep this test deterministic while still asking Chromium to enforce the
-  // production CSP against the real script URLs used by the chat document.
+
+
   await page.route("https://cdn.tailwindcss.com/**", (route) =>
     route.fulfill({
       contentType: "application/javascript",
@@ -94,9 +94,9 @@ test("World embeds same-origin global chat and connects its real room transport"
     },
   );
 
-  // These are the production response controls declared in public/_headers:
-  // cross-origin framing stays forbidden, but the World may embed chat from
-  // its own origin.
+
+
+
   await page.route(
     "**/dashboard/chat/index.html?worldEmbed=1",
     async (route) => {

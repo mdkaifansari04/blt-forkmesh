@@ -1,6 +1,6 @@
--- Consented public links submitted at the World lobby kiosk. Human-readable
--- URLs/accounts are encrypted in data; account/url indexes are opaque. Scores
--- and traffic ranges are public kiosk output and intentionally bounded.
+
+
+
 CREATE TABLE IF NOT EXISTS world_lobby_links (
     link_id TEXT PRIMARY KEY,
     account_bi TEXT NOT NULL,

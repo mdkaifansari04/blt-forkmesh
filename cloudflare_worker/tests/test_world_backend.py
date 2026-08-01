@@ -26,8 +26,8 @@ SCHEMA = ROOT / "src" / "schema.py"
 INACTIVE_MIGRATION = ROOT / "migrations" / "0051_world_presence_spaces.sql"
 WORLD_JS = ROOT / "public" / "world" / "world.js"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
-# Private handover close code: one account keeps one avatar, and the newest
-# device drives it. Kept in lockstep with entry.py and world.js.
+
+
 WORLD_ACCOUNT_TAKEOVER_CODE = 4009
 
 spec = importlib.util.spec_from_file_location("forkmesh_world_protocol", WORLD_PATH)
@@ -202,7 +202,7 @@ def test_presence_message_discards_sensitive_and_unknown_fields():
         "activityCategory": "viewing-repository",
         "publicDoor": "knock",
         "shareCountry": True,
-        # All of these must be ignored rather than reflected.
+
         "id": "attacker-picked",
         "countryCode": "GB",
         "ip": "203.0.113.10",
@@ -482,8 +482,8 @@ def test_exact_first_seen_and_joined_ages_stay_bounded_and_gated():
         "type": "presence",
         "activityCategory": "viewing-repository",
         "firstSeenMinutes": 99999999,
-        # A "joined tomorrow" claim, and every pre-2020 or non-integer value,
-        # collapses to no joined date rather than a nonsense badge line.
+
+
         "joinedAt": now + 60000,
     }, account, now)
     assert bounded["firstSeenMinutes"] == world.WORLD_FIRST_SEEN_MAX_MINUTES
@@ -505,7 +505,7 @@ def test_exact_first_seen_and_joined_ages_stay_bounded_and_gated():
     }, shared, now)
     assert hidden["firstSeenMinutes"] == 0
 
-    # A connection the routing Worker never authenticated has no joined date.
+
     _, guest = world.sanitize_message({
         "type": "presence",
         "activityCategory": "viewing-repository",
@@ -527,19 +527,19 @@ def test_arrival_slots_fill_unique_forward_facing_rows_of_ten():
 
 
 def test_arrival_cells_occupied_by_standing_visitors_read_as_used_slots():
-    # Exact cell centres and near-misses within the clearance both block.
+
     assert world.arrival_slot_near_position(-8.1, 30.0) == 0
     assert world.arrival_slot_near_position(-6.3, 30.0) == 1
     assert world.arrival_slot_near_position(-7.6, 29.4) == 0
     assert world.arrival_slot_near_position(-8.1, 27.9) == 10
-    # Positions away from the grid, and junk, never reserve anything.
+
     assert world.arrival_slot_near_position(0.0, 10.0) == -1
     assert world.arrival_slot_near_position(-8.1, 30.0 - 1.0) == -1
     assert world.arrival_slot_near_position("junk", None) == -1
     assert world.arrival_slot_near_position(float("nan"), 30.0) == -1
     assert world.arrival_slot_near_position(float("inf"), 30.0) == -1
-    # A visitor standing on cell 0 with an unrelated reservation still keeps
-    # a newcomer off cell 0.
+
+
     assert world.first_available_arrival_slot(
         [7, world.arrival_slot_near_position(-8.1, 30.0)]) == 1
 
@@ -678,13 +678,13 @@ def test_account_presence_key_folds_only_verified_names():
         "jett")
     assert world.account_presence_key("jett") != world.account_presence_key(
         "jetta")
-    # No verified account behind the socket: guests are never combined, and a
-    # name that only survives sanitizing as a generic fallback folds nothing.
+
+
     assert world.account_presence_key("") == ""
     assert world.account_presence_key(None) == ""
     assert world.account_presence_key("<<<>>>") == ""
     assert world.account_presence_key("  ") == ""
-    # Surrounding whitespace is not a different person.
+
     assert world.account_presence_key(" jett ") == "jett"
 
 
@@ -697,7 +697,7 @@ def test_second_device_takes_over_the_one_avatar_for_the_same_account():
     asyncio.run(instance.fetch(_signed_in_request("jett", "nonce-aaaa1111")))
     first = instance.ctx.sockets[-1]
     assert first.attachment.account_key == "jett"
-    # The private fold key stays out of every frame the world ever sends.
+
     assert "account_key" not in json.dumps(first.sent + onlooker.sent)
 
     clock["now"] += 15_000
@@ -705,8 +705,8 @@ def test_second_device_takes_over_the_one_avatar_for_the_same_account():
     second = instance.ctx.sockets[-1]
     assert second is not first
 
-    # The earlier device is retired with the handover code, and the onlooker
-    # is told to drop that avatar rather than being left with two "jett"s.
+
+
     assert first.closes[0] == (
         WORLD_ACCOUNT_TAKEOVER_CODE, "moved to your newest device")
     assert first.attachment.departed is True
@@ -716,8 +716,8 @@ def test_second_device_takes_over_the_one_avatar_for_the_same_account():
     assert [frame["peer"]["id"] for frame in joins] == [
         first.attachment.id, second.attachment.id]
 
-    # The newest device's own snapshot holds the onlooker and no retired twin,
-    # and it reuses the arrival cell the replaced socket just released.
+
+
     welcome = second.sent[0]
     assert [peer["id"] for peer in welcome["peers"]] == [onlooker.attachment.id]
     assert (welcome["self"]["x"], welcome["self"]["z"]) == (-6.3, 30.0)
@@ -738,8 +738,8 @@ def test_takeover_never_combines_guests_or_other_accounts():
     clock["now"] += 15_000
     asyncio.run(instance.fetch(_signed_in_request("nova", "nonce-cccc3333")))
 
-    # A second guest cannot evict the first, and one account cannot evict
-    # another: only the same verified account folds onto one avatar.
+
+
     assert guest.closes == []
     assert signed_in.closes == []
     assert len(instance.ctx.sockets[-1].sent[0]["peers"]) == 3
@@ -751,7 +751,7 @@ def test_takeover_close_code_is_shared_by_the_relay_and_the_browser():
     world_js = WORLD_JS.read_text(encoding="utf-8")
     assert "const SOCKET_ACCOUNT_TAKEOVER_CODE = %d;" % (
         WORLD_ACCOUNT_TAKEOVER_CODE) in world_js
-    # The displaced browser stands down instead of racing the newest device.
+
     assert "handlePresenceTakeover()" in world_js
     assert "reclaimPresenceHere()" in world_js
     assert (
@@ -766,12 +766,12 @@ def test_connects_land_in_open_grid_cells_never_on_a_standing_visitor():
         clock["now"] += 15_000
         asyncio.run(instance.fetch(_FetchRequest()))
         welcomes.append(instance.ctx.sockets[-1].sent[0])
-    # Sequential fresh joins fill the arrival row without overlap.
+
     assert [(w["self"]["x"], w["self"]["z"]) for w in welcomes] == [
         (-8.1, 30.0), (-6.3, 30.0), (-4.5, 30.0)]
 
-    # A visitor whose reconnect reserved an unrelated slot while they kept
-    # standing on cell 0 still blocks cell 0 for the next newcomer.
+
+
     instance.ctx.sockets[0].attachment.arrival_slot = 9
     clock["now"] += 15_000
     asyncio.run(instance.fetch(_FetchRequest()))
@@ -877,15 +877,15 @@ def test_handshake_offers_are_targeted_one_use_and_only_public_when_accepted():
     ):
         assert world.sanitize_interaction(invalid, sender) is None
 
-    # The offer reaches exactly one live peer and parks there as a one-use
-    # consent record; only that record makes an answer possible.
+
+
     assert '"kind": "handshake-offer"' in ENTRY_TEXT
     assert '"pending_handshakes": pending_handshakes' in ENTRY_TEXT
     assert 'pending_handshakes=pending[-8:]' in ENTRY_TEXT
     assert '_ws_attr(ws, "pending_handshakes", []) or []' in ENTRY_TEXT
-    # A declined handshake goes back to the offerer alone; an accepted one is
-    # the only frame the rest of the room ever sees, and it carries just the
-    # two peer ids.
+
+
+
     handshake_broadcast = ENTRY_TEXT[
         ENTRY_TEXT.index('"kind": "handshake",'):
     ][:400]
@@ -936,14 +936,14 @@ def test_name_and_identity_badge_fields_are_privacy_controlled_not_claims():
         "browser": "firefox",
         "os": "linux",
         "status": "available",
-        # Guests cannot assert privileged identity or account claims.
+
         "accountStatus": "organization_admin",
         "verified": True,
         "paid": True,
         "email": "alice@example.test",
     }, current, 2000)
-    # Anonymous display names stay server-generated so a guest cannot create a
-    # moving lookalike of a signed-in account.
+
+
     assert named["name"] == "Guest peer"
     assert named["status"] == "available"
     assert named["accountStatus"] == "Guest"
@@ -1232,7 +1232,7 @@ def test_world_durable_object_is_transient_and_hibernating():
     assert "'from': state.get('id')" in source
     assert "webSocketError" in source
     assert "_live_sockets(cleanup=True)" in source
-    # No persistence/history subsystem is reachable from this class.
+
     for forbidden in (
         ".storage", "d1_", "ensure_schema", "chat_history",
         "account_row", "/api/repo/", "wallet",
@@ -1310,10 +1310,10 @@ def test_world_route_binding_and_migration_are_registered():
         item["name"]: item["class_name"]
         for item in config["durable_objects"]["bindings"]
     }
-    # Multiplayer chat, world presence, the per-owner node event channel, and
-    # the alarm-backed cron watchdog remain; the repository transport DO
-    # (ForkMeshHost, which carried git bytes) is deleted and must never return
-    # as a production binding.
+
+
+
+
     assert bindings == {
         "FORKMESH_MAINNODE_ROOM": "ForkMeshRoom",
         "FORKMESH_WORLD": "ForkMeshWorld",
@@ -1467,8 +1467,8 @@ def test_world_system_capacity_is_bounded_content_free_and_identifier_safe():
     exec(compile(module, str(ENTRY), "exec"), namespace)
     result = asyncio.run(namespace["_world_system_capacity"](object()))
 
-    # Empty and single-row tables are part of the inventory; only an
-    # unrepresentable count, an unsafe name, or a vanished table is skipped.
+
+
     assert result == [
         {"name": "accounts", "rowCount": 37},
         {"name": "one_row", "rowCount": 1},
@@ -1627,9 +1627,9 @@ def test_world_d1_storage_reports_provider_size_and_documented_limits():
 
 
 def test_arrival_counter_keeps_only_fixed_size_unique_sketches():
-    # Arrival identity is derived in the outer Worker, never persisted in the
-    # storage-free ForkMeshWorld object. D1 receives only fixed-size HLL
-    # register/rank updates for an all-time and a short-lived temporal sketch.
+
+
+
     route_source = ast.unparse(_top_level_node("Default"))
     assert "world_visitors_handler" in route_source
     assert "/api/world/visitors" in route_source

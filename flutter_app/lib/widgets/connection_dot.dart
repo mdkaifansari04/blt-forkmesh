@@ -3,8 +3,8 @@ import 'package:flutter/material.dart';
 import '../services/relay_service.dart';
 import '../theme.dart';
 
-/// Small avatar with a presence dot, mirroring the Qt client's top-right avatar
-/// + connection dot (green online / amber connecting / grey offline).
+
+
 class AvatarWithDot extends StatelessWidget {
   const AvatarWithDot({
     super.key,

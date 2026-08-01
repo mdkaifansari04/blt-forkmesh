@@ -103,13 +103,13 @@ def test_pricing_page_reuses_landing_font_stack():
 
 
 def test_pricing_page_uses_the_universal_site_header():
-    # The copied landing nav was replaced by the shared session-aware header
-    # (site-header.js): one chrome for every page, account chip when logged in.
+
+
     PRICING_HTML = _pricing_html()
     body = PRICING_HTML[PRICING_HTML.index("<body"):]
 
     assert '<div data-forkmesh-header="simple"></div>' in body
-    assert "<header" not in body  # rendered by site-header.js at runtime
+    assert "<header" not in body
     assert "Sign Up / Log In" not in body
 
 

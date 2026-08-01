@@ -1,10 +1,10 @@
   function renderRepoDetail(repo) {
     const detail = $("[data-repo-detail]");
     if (!detail || !repo) return;
-    // Capture the signed-in participant's workshop continuation parameters
-    // before navigateHistory removes the query string from the canonical repo
-    // URL. The consumer independently verifies repository, run, result, and
-    // commit against the encrypted workshop record before preparing a prompt.
+
+
+
+
     const workshopDeepLink = workshopAgentDeepLink(repo);
     state.selectedRepo = repo;
     state.repoCollectionPages = { issues: 1, pulls: 1 };
@@ -12,25 +12,25 @@
     state.repoLatestCommit = null;
     state.repoServedBy = null;
     state.agentsView = { agents: [], selectedAgentId: null };
-    // A search left over from the previously-open repo must not carry into
-    // this one — the search box is rendered immediately (below, via
-    // renderRepoCollectionPanel), before the Issues tab's own lazy load
-    // would otherwise reset it.
+
+
+
+
     state.issuesView = { filter: "open", items: [], query: "" };
-    // Pull requests and discussions load lazily the first time their tab is
-    // opened rather than on every page load. Eagerly fetching every record's
-    // blob up front is what flooded the host with requests and tripped the rate
-    // limit after a few refreshes; this map remembers which tabs have loaded.
+
+
+
+
     state.loadedRepoTabs = {};
-    // Show the clean, shareable /owner/name URL in the address bar instead of
-    // the /dashboard/owner/name... path that 404.html bounces refreshed repo
-    // links (including /owner/name/issues etc.) to. Carry over whatever tab or
-    // tree/blob suffix the incoming URL already pointed at instead of
-    // collapsing it to the bare repo root - otherwise a refresh on the Issues
-    // tab would lose its place and land back on Code. Only trust that suffix
-    // when the URL is actually addressing THIS repo already (a fresh open from
-    // the repo list/sidebar while some other repo's tab URL is showing should
-    // still land on Code, not inherit the other repo's tab).
+
+
+
+
+
+
+
+
+
     const routeParts = repoRouteParts();
     const routeRepoKey = routeParts.length >= 2
       ? `${safeDecodeURIComponent(routeParts[0])}/${safeDecodeURIComponent(routeParts[1])}`
@@ -39,10 +39,10 @@
       && repoMatchesKey(repo, routeRepoKey);
     const routeKind = routeMatchesRepo ? routeParts[2] : undefined;
     const routePath = routeMatchesRepo && routeParts.length > 3 ? routeParts.slice(3).map(decodeURIComponent).join("/") : "";
-    // /owner/repo/pulls/<N> is a record deep link (the desktop client's
-    // "View on website" button, or a refreshed/shared PR detail URL): keep
-    // the number in the address bar and open that record's detail page below.
-    // Issues deep-link the same way so a refresh on an open issue stays on it.
+
+
+
+
     const recordRoute = ["pulls", "discussions", "issues"].includes(routeKind) && /^\d+$/.test(routePath)
       ? { kind: routeKind, number: routePath }
       : null;
@@ -83,13 +83,13 @@
     const canSeeSettingsTab = canEditAbout;
     const actionSeed = repoKey(repo);
     const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
-    // Watch is real: it is the repo's fediverse follower count (see
-    // loadRepoFediverse), and the button opens the follow-from-Mastodon card.
-    // The public repository actor is the canonical ForkMesh identity. Do not
-    // derive it from a mirror hostname or replica owner name.
+
+
+
+
     const fediHandle = "@forkmesh.forkmesh@forkmesh.com";
-    // Deep link that opens this repo's fediverse actor on Mastodon (any
-    // instance resolves a remote acct handle; mastodon.social is the default).
+
+
     const mastodonUrl = `https://mastodon.social/${fediHandle}`;
     const settingsPanel = canSeeSettingsTab ? `
       <section data-dashboard-repo-tab-panel="settings" class="hidden">
@@ -191,11 +191,11 @@
                 : tab === "pulls"
                   ? 'data-lucide="git-pull-request"'
                   : `data-lucide="${meta.icon}"`;
-              // Inbox-backed tabs get a second (hidden until filled) badge for
-              // items still sitting in the relay's inbox that no online node
-              // (source of truth or an approved mirror) has merged yet — see
-              // loadRepoPendingCounts. Any online mirror drains the queue by
-              // committing submissions straight into the repo it serves.
+
+
+
+
+
               const pendingBadge = ["issues", "pulls", "discussions"].includes(tab)
                 ? `<span data-dashboard-repo-tab-pending="${tab}" class="hidden rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-mono text-yellow-500"></span>`
                 : "";
@@ -390,24 +390,24 @@
           </aside>
         </div>
       </div>`;
-    // Restore whichever tab the URL points at (e.g. a refresh on
-    // /owner/repo/issues) instead of always defaulting back to Code. This
-    // runs right after painting the DOM, before anything else that could
-    // throw (icon rendering, feature-panel loads) — otherwise a later error
-    // would leave the page stuck showing Code even though the URL (and the
-    // markup underneath) is already on the right tab.
+
+
+
+
+
+
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
     window.lucide?.createIcons();
-    // When the URL restored a feature tab (or a record detail), the tree/README
-    // load is only a warm-up for a later click on Code — run it in background
-    // mode so it can't flip the visible tab or rewrite the restored URL.
+
+
+
     loadRepositoryTree(repo, routeKind === "tree" ? routePath : "", { background: initialTab !== "code" });
-    // A deep link into a subfolder (or a blob) loads a subpath/blob tree that
-    // carries no served counts, so the tab badges would stay on the stale
-    // catalog seed (e.g. Issues showing 7 while the open/ folder holds 11).
-    // Refresh them from the mirror's root counts in that case; the root code
-    // view and the feature-tab routes already fetch the root tree themselves.
+
+
+
+
+
     if ((routeKind === "tree" || routeKind === "blob") && routePath) refreshServedCounts(repo);
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo, recordRoute);
@@ -417,12 +417,12 @@
     consumeWorkshopAgentDeepLink(repo, workshopDeepLink);
   }
 
-  // GitHub-style "Code" button: a green trigger that opens a popover with the
-  // clone info instead of silently copying on click. Shows the HTTPS clone URL
-  // (readonly, selectable, with a copy button) and the ready-to-paste
-  // `git clone` command. Used both in the code toolbar and the compact
-  // scroll-pinned focus bar (compact=true), each self-contained in its own
-  // relative wrapper so the toggle handler can scope to the clicked one.
+
+
+
+
+
+
   function renderRepoCodeButton(repo, compact = false) {
     const url = cloneUrl(repo);
     const gitCmd = `git clone ${url}`;
@@ -544,11 +544,11 @@
     return null;
   }
 
-  // Opening a repo from any list/search control is a real page navigation now
-  // (repo pages are their own documents). Prefer the organization address the
-  // list already displays when the catalog resolved the key (alias groups),
-  // falling back to the raw owner/name path — the repo page resolves it again
-  // on boot.
+
+
+
+
+
   function openRepoPage(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return;
@@ -558,9 +558,9 @@
     location.assign(url);
   }
 
-  // A node's dot is only filled green when it is online *right now*; historical
-  // uptime-leaderboard entries that have since gone offline render hollow so an
-  // idle node no longer looks active (the right-rail bug in adhoc #86).
+
+
+
   function nodeDotClass(row, size) {
     return row.online
       ? `${size} fill-primary text-primary shrink-0`
@@ -572,14 +572,14 @@
     return row.online ? "live" : "";
   }
 
-  // Node detail chips shown under each row in the full "Connected nodes" list
-  // (not the compact home-page rail). Text fields fall back to an em dash when
-  // a node hasn't reported them; counts default to 0 rather than a dash since
-  // "no repos yet" is a real, distinct state from "field not tracked". CPU/RAM/
-  // Disk aren't collected by any node -> worker path today (that telemetry is
-  // desktop-only peer-room presence, see ServerNode::sampleSystemStats), so
-  // they always render as a dash here for parity with the desktop Mirror nodes
-  // panel's columns rather than being omitted.
+
+
+
+
+
+
+
+
   function nodeDetailChips(row) {
     const textChips = [
       ["Commit", row.commit ? String(row.commit).slice(0, 7) : ""],
@@ -612,10 +612,10 @@
       .join("");
   }
 
-  // The "Online only" toggle in the Connected nodes header hides offline nodes
-  // (the default, matching the desktop Mirror nodes panel). Turning it off
-  // surfaces nodes that have gone offline but still published a mirror record,
-  // rendered inactive rather than live. Defaults to on until the user flips it.
+
+
+
+
   function networkOnlineOnly() {
     return state.networkOnlineOnly !== false;
   }
@@ -696,11 +696,11 @@
       $("[data-network-clients]") && ($("[data-network-clients]").textContent = formatCount(clients));
       $("[data-network-uptime]") && ($("[data-network-uptime]").textContent = activeMinutes ? "Active" : "Idle");
 
-      // Merge the 48h uptime leaderboard (name + minutes) with the set of nodes
-      // that are online right now. Online nodes sort first and always appear even
-      // with no accrued minutes yet, so a freshly-started node (e.g. a VM host)
-      // shows up on the rail; offline leaderboard nodes stay listed but render
-      // as inactive rather than looking live.
+
+
+
+
+
       const onlineNames = Array.isArray(stats.onlineNodes) ? stats.onlineNodes : [];
       const onlineSet = new Set(
         onlineNames.map((name) => String(name || "").trim().toLowerCase()).filter(Boolean),
@@ -825,9 +825,9 @@
     window.lucide?.createIcons();
   }
 
-  // Organization task pings (adhoc #147) carry the whole event on meta, so the
-  // reader gets who/what/which org spelled out as fields instead of having to
-  // parse the one-line summary the ping list shows.
+
+
+
   function organizationTaskDetailsHtml(item) {
     if (!item || !String(item.kind || "").startsWith("organization_task")) return "";
     const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
@@ -864,9 +864,9 @@
     `;
   }
 
-  // Accept/Reject controls on an incoming "someone asked your node to mirror
-  // their repo" notification (issue #385). Only the still-pending request the
-  // recipient can act on gets buttons; replies ("X accepted…") carry none.
+
+
+
   function mirrorRequestActionsHtml(item) {
     if (!item || item.kind !== "mirror_request") return "";
     const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
@@ -911,10 +911,10 @@
     }
   }
 
-  // "Ask a node to mirror your repo" (issue #385): the owner types a node name;
-  // that node's holder gets a notification and, if they accept, their node
-  // starts mirroring this repo. Only shown to the repo owner (see
-  // renderMirrorRequestForm) — the worker re-checks ownership from the session.
+
+
+
+
   async function askNodeToMirror(trigger) {
     const repo = state.selectedRepo;
     if (!repo || !isRepoOwner(repo)) return;
@@ -1074,16 +1074,16 @@
     }
   }
 
-  // The release version changes at most per deploy: cache it in sessionStorage
-  // for an hour so repeat page navigations don't refetch /api/version.
+
+
   const APP_VERSION_STORAGE = "forkmesh.appVersion";
   const APP_VERSION_TTL_MS = 60 * 60 * 1000;
 
   async function renderAppVersion() {
-    // Show the live ForkMesh release version (same number as the desktop app -
-    // deploy.sh stamps it from qt_client/CMakeLists.txt as the APP_VERSION Worker
-    // var) next to the logo. Best-effort: stay hidden if the endpoint or version
-    // is unavailable so the header never shows a broken "v".
+
+
+
+
     const el = $("[data-app-version]");
     if (!el) return;
     const show = (version) => {
@@ -1097,7 +1097,7 @@
         return;
       }
     } catch (_) {
-      /* unreadable cache entry: fall through to the fetch */
+
     }
     try {
       const data = await fetchJson("/api/version");
@@ -1109,11 +1109,11 @@
           expiresAt: Date.now() + APP_VERSION_TTL_MS,
         }));
       } catch (_) {
-        /* best-effort cache */
+
       }
       show(version);
     } catch (_) {
-      /* leave the version chip hidden */
+
     }
   }
 
@@ -1187,16 +1187,16 @@
     }
   }
 
-  // Each page is its own document (marked <body data-page="...">). Boot runs
-  // the shared chrome first, then that page's init — the page's own markup is
-  // already visible at parse time, so there is no flash-then-swap.
+
+
+
   function currentPage() {
     return document.body?.dataset?.page || "home";
   }
 
-  // Clean path per legacy ?section= name — links from old builds and the
-  // desktop app still arrive as /dashboard?section=X. The Worker 308s these
-  // too; this client shim is belt-and-braces for cached home documents.
+
+
+
   const SECTION_PATHS = {
     home: "/dashboard",
     repos: "/dashboard/repos",
@@ -1223,23 +1223,23 @@
     return "";
   }
 
-  // Fetches the repository catalog once and fans it out to whatever containers
-  // exist on this page (sidebar list is chrome on every page; the repos list,
-  // home feed, and profile views fill in when present). Never awaited before
-  // first paint — each page shows its own skeleton immediately. The repo page
-  // awaits this promise before resolving its /owner/repo path.
+
+
+
+
+
   let repositoriesReady = null;
 
-  // Resolves once hydrateCanonicalProfile has refreshed the session with the
-  // authoritative nodes/isAdmin fields. The owner-only Agents tab (adhoc #182)
-  // is gated on those, so the repo page waits on this before deciding whether
-  // an /owner/repo/agents deep link is a real tab route or must collapse to
-  // Code — otherwise a hard refresh on Agents races the hydration and bounces
-  // back to the repo root (adhoc #93).
+
+
+
+
+
+
   let canonicalProfileReady = null;
 
-  // Boot/shared-chrome loads take the cached path (browser + edge cache honor
-  // the server's max-age); only explicit user refresh actions pass fresh:true.
+
+
   async function loadRepositories({ fresh = false } = {}) {
     if (dashboardMockRepositoriesEnabled()) {
       renderRepositories(dashboardMockRepositories(), state.session);
@@ -1261,8 +1261,8 @@
     }
   }
 
-  // Returns false when boot is aborting into a redirect (login bounce, legacy
-  // URL shim) so the page init doesn't race the navigation.
+
+
   function initSharedChrome() {
     const session = readSession();
     state.session = session;
@@ -1270,15 +1270,15 @@
 
     const grant = pendingLinkGrant();
     if (grant && !session?.nodeName) {
-      // A link grant arrived but nobody is logged in: bounce through login and
-      // come straight back with the grant intact so the link completes then.
+
+
       location.replace("/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`));
       return false;
     }
     if (grant && currentPage() !== "settings") {
-      // The desktop app hard-codes /dashboard?link_node=... — the Nodes panel
-      // lives on the settings document now. Carry the grant params over
-      // untouched; offerLinkGrant strips them there.
+
+
+
       location.replace("/dashboard/settings" + location.search);
       return false;
     }
@@ -1288,15 +1288,15 @@
       return false;
     }
 
-    // Guests can browse repositories without an account: instead of bouncing
-    // signed-out visitors back to the landing page, the header swaps the
-    // profile/notification controls for a Sign Up / Log In link.
+
+
+
     const guest = !session || (!session.nodeName && !session.email);
     if (guest) {
-      // The profile and settings documents are account pages — signed-out
-      // visitors have no profile to show there, so bounce through login and
-      // come back once they have one. /@name public profiles share the profile
-      // document and stay open to guests.
+
+
+
+
       const page = currentPage();
       const accountPage = page === "settings" ||
         ((page === "profile" || page === "profile-repositories") && !publicProfileNameFromPath());
@@ -1312,14 +1312,14 @@
       $("[data-profile-settings-button]")?.classList.add("hidden");
       $("#notificationToggle")?.classList.add("hidden");
       $("#agentModalToggle")?.classList.add("hidden");
-      // Keep the presence cookie honest: localStorage says logged out, so the
-      // Worker must stop 302ing / to the dashboard.
+
+
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
     }
 
     if (guest) {
-      // No fabricated "guest" identity: the chrome keeps its baked defaults;
-      // only the per-page header context still needs to be set.
+
+
       renderHeaderContext();
     } else {
       renderProfile(session);
@@ -1334,20 +1334,20 @@
 
   function initHomePage() {
     renderHomeBlogPosts();
-    // The blog card fills in from the edge-cached feed; the baked markup
-    // already shows its loading state.
+
+
     void loadHomeBlogPosts();
     void loadHomeOrganizationRepositories();
-    // Feed + top repositories fill in when loadRepositories()/loadNotifications()
-    // resolve — both re-render the home containers.
-    // Active agent sessions (adhoc #81) need the catalog first so we know which
-    // repos to poll; fetch them once repositories are loaded.
+
+
+
+
     repositoriesReady?.then(() => loadHomeAgentSessions()).catch(() => {});
   }
 
   function initReposPage() {
-    // The catalog fetch from initSharedChrome() owns this page's content; the
-    // baked markup already shows the loading state.
+
+
     loadExternalRepositories();
   }
 
@@ -1356,13 +1356,13 @@
   }
 
   function initChatPage() {
-    // dashboard-chat.js self-boots off the #fullChatMessages markup.
+
   }
 
   function initProfileOverviewPage() {
-    // /@name serves this same document in public-profile mode: render the
-    // named account's public data instead of the logged-in session (viewing
-    // your own /@name keeps the full owner view).
+
+
+
     const publicName = publicProfileNameFromPath();
     const own = String(state.session?.nodeName || "").toLowerCase();
     if (publicName && publicName !== own) {
@@ -1387,8 +1387,8 @@
     if (detail && requested) {
       detail.innerHTML = `<p class="text-sm text-muted-foreground">${loadingHtml("Loading repository…")}</p>`;
     }
-    // findRepository needs the catalog (alias/canonical grouping), so this page
-    // does wait on the shared fetch before rendering the detail body.
+
+
     await (repositoriesReady || loadRepositories());
     let repo = requested ? findRepository(requested) : null;
     if (
@@ -1396,25 +1396,25 @@
       requested &&
       repoKey(repo).toLowerCase() !== requested.toLowerCase()
     ) {
-      // A catalog alias normally resolves to its backing source record. Before
-      // accepting that canonical identity, check whether the URL is a durable
-      // organization alias so subsequent tab/tree navigation keeps the public
-      // /org/repo address instead of appearing to redirect to /node/repo.
+
+
+
+
       repo = (await findOrganizationRepository(requested)) || repo;
     } else if (!repo && requested) {
-      // Organization URLs are public aliases backed by a node-owned catalog
-      // record. The catalog deliberately publishes only the signing node's
-      // identity, so resolve the public org link on a direct-page visit and
-      // keep the requested organization identity while every data request
-      // continues through the Worker's existing org-alias authorization path.
+
+
+
+
+
       repo = await findOrganizationRepository(requested);
     }
     if (repo) {
       startRepoMirrorPolling();
-      // Owner/admin Agents and owner-only Settings depend on nodes/isAdmin
-      // fields that land after canonical profile hydration. On a hard refresh
-      // of either private control route, wait before deciding whether the tab
-      // exists so the URL is not incorrectly collapsed back to Code.
+
+
+
+
       const routeParts = repoRouteParts();
       if (
         (routeParts[2] === "agents" && !sessionCanAssignAgent(repo)) ||
@@ -1724,7 +1724,7 @@
           return;
         }
         event.preventDefault();
-        // Repo pages are real documents now: opening one is a real navigation.
+
         openRepoPage(openButton.dataset.dashboardOpenRepo);
         return;
       }
@@ -1742,8 +1742,8 @@
         return;
       }
 
-      // Watch popover: the button shows the repo's fediverse follower count
-      // and opens the follow-from-Mastodon card; any click outside closes it.
+
+
       const watchButton = event.target.closest("[data-repo-action-watch]");
       if (watchButton) {
         $("[data-repo-watch-menu]")?.classList.toggle("hidden");
@@ -1753,8 +1753,8 @@
         $("[data-repo-watch-menu]")?.classList.add("hidden");
       }
 
-      // GitHub-style Code dropdown: toggle the clone popover scoped to the
-      // clicked button; a click anywhere outside a code wrapper closes them.
+
+
       const codeButton = event.target.closest("[data-repo-code-button]");
       if (codeButton) {
         const wrap = codeButton.closest("[data-repo-code-wrap]");
@@ -1765,7 +1765,7 @@
         if (menu && willOpen) {
           menu.classList.remove("hidden");
           codeButton.setAttribute("aria-expanded", "true");
-          // Pre-select the URL so Ctrl/Cmd+C works immediately, like GitHub.
+
           wrap.querySelector("[data-repo-clone-url]")?.select?.();
         }
         return;
@@ -1879,9 +1879,9 @@
         return;
       }
 
-      // Owner "Fediverse posts" dropdown: load the post list the moment it's
-      // expanded (setTimeout so the <details> default toggle has applied), and
-      // delete a post from its trash button.
+
+
+
       const fediPostsSummary = event.target.closest("[data-repo-fedi-posts] > summary");
       if (fediPostsSummary && state.selectedRepo) {
         const repo = state.selectedRepo;
@@ -2060,9 +2060,9 @@
       if (recordButton && state.selectedRepo) {
         const kind = recordButton.dataset.repoRecordKind || "";
         const number = recordButton.dataset.repoRecordNumber || "";
-        // Mirror the opened record into the address bar (/owner/repo/pulls/4)
-        // so refresh and the desktop client's "View on website" button land on
-        // this same detail page. Pending records have no mirror number yet.
+
+
+
         if (["pulls", "discussions", "issues"].includes(kind) && /^\d+$/.test(number)) {
           navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}/${number}`);
         }
@@ -2078,8 +2078,8 @@
         }
         state.repoRecordDetail = null;
         if (kind === "issues") {
-          // A deep-linked refresh straight into the issue detail never loaded
-          // the list, so fetch it now instead of flashing an empty "No issues".
+
+
           if (state.issuesView.items.length) renderRepoIssues();
           else loadRepoIssues(state.selectedRepo);
         } else {
@@ -2100,9 +2100,9 @@
         "[data-repo-issue-mcp-prompt]",
       );
       if (issueMcpPromptButton) {
-        // A plain click copies straight away with a generated connector token.
-        // Shift-click opens the paste box instead, so a node that already
-        // published its own connector can hand over that token by hand.
+
+
+
         void copyIssueMcpPrompt(issueMcpPromptButton, {
           replaceToken: event.shiftKey === true,
         });
@@ -2135,8 +2135,8 @@
         return;
       }
 
-      // PR detail section tabs are isolated panels, matching the GitHub review
-      // surface: only the selected section is visible at a time.
+
+
       const recordTabButton = event.target.closest("[data-repo-record-tab]");
       if (recordTabButton) {
         const article = recordTabButton.closest("[data-repo-record-detail]");
@@ -2166,10 +2166,10 @@
         const targetPage = Number(repoCollectionPageButton.dataset.repoCollectionPageTarget);
         if (kind && Number.isFinite(targetPage)) {
           state.repoCollectionPages[kind] = targetPage;
-          // Issues keep their open/closed/all filter (and its filter bar) that
-          // renderRepoIssues applies; routing pagination through
-          // loadRepoCollection would re-render the raw record list unfiltered,
-          // leaking closed issues into the default "open" view (issue #420).
+
+
+
+
           if (kind === "issues") renderRepoIssues();
           else loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
         }
@@ -2189,8 +2189,8 @@
 
       const agentsRefreshButton = event.target.closest("[data-repo-agents-refresh]");
       if (agentsRefreshButton && state.selectedRepo) {
-        // On the detail page, Refresh reloads that agent's transcript; on the
-        // list it reloads the session list (adhoc #259).
+
+
         if (state.agentsView.selectedAgentId != null) {
           loadRepoAgentTranscript(state.selectedRepo, state.agentsView.selectedAgentId);
         } else {
@@ -2199,8 +2199,8 @@
         return;
       }
 
-      // Open an agent's detail page - live transcript + prompt (adhoc #259).
-      // Toggle: clicking a selected agent returns to the list (issue #375).
+
+
       const agentOpenButton = event.target.closest("[data-repo-agent-open]");
       if (agentOpenButton && state.selectedRepo) {
         const agentId = agentOpenButton.dataset.repoAgentId || "";
@@ -2292,9 +2292,9 @@
       if (submit) submit.disabled = true;
       setRepoAboutStatus("Saving...");
       try {
-        // Optional branding uploads ride along with the description: a chosen
-        // file becomes a data-URL PNG, a checked "Remove" sends "" (clear),
-        // and an untouched image is simply omitted (left unchanged).
+
+
+
         const media = {};
         const readAsDataUrl = (file) => new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -2318,8 +2318,8 @@
         applyRepoAboutWebsite(website);
         setRepoAboutStatus("Saved.", "good");
         setRepoAboutEditing(false);
-        // Refresh the badge header + watch count so the new logo/banner (and
-        // the ?v= cache-buster) show immediately.
+
+
         loadRepoFediverse(state.selectedRepo);
       } catch (error) {
         const code = String(error?.message || "");
@@ -2383,8 +2383,8 @@
     const agentNewForm = event.target.closest("[data-repo-agent-new-form]");
     if (agentNewForm) {
       event.preventDefault();
-      // The form lives in the header modal (adhoc #62): the target repo comes
-      // from the modal's own repository picker, not the open repo page.
+
+
       handleRepoAgentNewSubmit(agentModalSelectedRepo(), agentNewForm);
     }
   });
@@ -2437,9 +2437,9 @@
     updateRepositoryPagination();
   });
 
-  // New-repository modal (adhoc #30): open from the Repos header, collect the
-  // create-and-mirror details, then hand off to the desktop node (see
-  // handleNewRepoSubmit — the signed publish + git mirror are desktop-only).
+
+
+
   $("[data-new-repo-open]")?.addEventListener("click", () => setNewRepoModalOpen(true));
   $("[data-new-repo-close]")?.addEventListener("click", () => setNewRepoModalOpen(false));
   $("[data-new-repo-backdrop]")?.addEventListener("click", () => setNewRepoModalOpen(false));
@@ -2472,15 +2472,15 @@
     deleteSelectedExternalRepositories();
   });
 
-  // [data-profile-settings-button] is a real link to /dashboard/settings now,
-  // and [data-settings-section-link] clicks are handled by the delegated
-  // document click handler above (with push: true for URL reflection).
+
+
+
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-save]")?.addEventListener("click", saveProfile);
-  // No direct [data-profile-verify-email] listener: the delegated document
-  // click handler above already routes it, and a second listener would fire a
-  // duplicate send that the resend cooldown then rejects.
+
+
+
   $("[data-profile-rename-input]")?.addEventListener("input", () => {
     window.clearTimeout(state.nodeNameAvailability.timer);
     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);
@@ -2567,9 +2567,9 @@
     }
   });
 
-  // History handling is page-scoped now: only the repo page (tabs/tree/blob)
-  // and the settings page (sub-tabs) push same-document states. Back/Forward
-  // across pages is native navigation between real documents.
+
+
+
   function initPageHistory() {
     const page = currentPage();
     if (page === "settings") {
@@ -2583,29 +2583,29 @@
       const requested = requestedRepoKey();
       const repo = requested ? findRepository(requested) : null;
       if (!repo) {
-        // The entry points outside this repo document — a real navigation.
+
         location.reload();
         return;
       }
       if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
-        // Same repo; restore the path/tab from the URL instead of tearing down
-        // and rebuilding the whole detail view.
+
+
         const parts = repoRouteParts();
         const kind = parts[2];
         const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
         if (repoTabRoutesFor(repo).includes(kind)) {
-          // Feature tab (issues, pulls, etc.): restore without re-loading
-          // records since they cache in state.
+
+
           setRepoTab(kind);
-          // Step Back/Forward between a record detail (/pulls/4) and its list.
+
           if (["pulls", "discussions", "issues"].includes(kind)) {
             if (/^\d+$/.test(path)) {
               loadRepoRecordDetail(repo, kind, path);
             } else if (state.repoRecordDetail?.kind === kind) {
               state.repoRecordDetail = null;
-              // Issues re-render through their filtered list (loadRepoCollection
-              // would leak closed issues into the default Open view); fetch it
-              // if a deep-link landing never populated the list.
+
+
+
               if (kind === "issues") {
                 if (state.issuesView.items.length) renderRepoIssues();
                 else loadRepoIssues(repo);

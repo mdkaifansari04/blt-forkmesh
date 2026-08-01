@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Persisted user/app settings, mirroring the Qt client's QSettings keys we care
-/// about: display name, relay URL/room/passphrase, and import tokens.
+
+
 class SettingsService extends ChangeNotifier {
   SettingsService(this._prefs);
 
@@ -41,9 +41,9 @@ class SettingsService extends ChangeNotifier {
   String get room => _prefs.getString('server/room') ?? defaultRoom;
   String get passphrase {
     final stored = _prefs.getString('server/passphrase');
-    // Earlier Flutter builds saved this legacy value, which made mobile derive a
-    // different room key from Qt's passphrase-free public room. Treat it as empty
-    // so chat interoperates with desktop nodes and retained Worker history.
+
+
+
     if (stored == legacyPublicRoomPassphrase) return '';
     return stored ?? defaultPassphrase;
   }
@@ -69,11 +69,11 @@ class SettingsService extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Convert the configured relay WebSocket URL into its public World origin.
-  ///
-  /// Authentication tokens and room paths are deliberately discarded. An
-  /// invalid or credential-bearing value falls back to the production origin
-  /// instead of being handed to the platform URL launcher.
+
+
+
+
+
   static Uri worldUriForServerUrl(String value) {
     final relay = Uri.tryParse(value.trim());
     if (relay == null ||

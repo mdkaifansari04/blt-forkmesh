@@ -7,8 +7,8 @@ import 'package:forkmesh/services/api_service.dart';
 import 'package:forkmesh/services/settings_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// Serves canned JSON for the org endpoints and records each request so the
-/// tests can assert method + path + body, mirroring api_service_test.dart.
+
+
 class _OrgServer {
   _OrgServer(this.server);
 
@@ -89,7 +89,7 @@ void main() {
     expect(team.permission, 'write');
     expect(team.members, 4);
 
-    // node_owner is the wire name used inside the org profile repo list.
+
     final repo = OrgRepo.fromJson({'repo': 'API', 'node_owner': 'Bob'});
     expect(repo.repo, 'api');
     expect(repo.node, 'Bob');
@@ -205,8 +205,8 @@ void main() {
     await api.removeOrgTeamMember('acme', 'core', 'Alice');
     await api.deleteOrg('acme');
 
-    // Skip the initial GET /members; assert the writes. Records compare maps
-    // by identity, so check each field (body via the equals matcher) instead.
+
+
     final writes = server.requests.where((r) => r.method != 'GET').toList();
     void expectWrite(
       int i,

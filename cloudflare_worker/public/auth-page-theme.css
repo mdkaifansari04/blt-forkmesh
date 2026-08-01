@@ -54,11 +54,11 @@ html.light {
   --auth-shadow: 0 18px 50px rgba(31, 35, 40, 0.12);
 }
 
-/*
- * Keep the semantic mappings reusable without displacing the existing
- * unlayered dark page styles. The scoped light rules below intentionally win
- * when the shared theme controller applies html.light.
- */
+
+
+
+
+
 @layer auth-page-theme {
   body {
     background: var(--auth-page-bg);

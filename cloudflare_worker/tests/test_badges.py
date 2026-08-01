@@ -75,13 +75,13 @@ def _response(data, status=200, **kwargs):
     return {"status": status, "data": data}
 
 
-# --- Route table + schema ----------------------------------------------------
+
 
 def test_routes_cover_the_badges_api():
     assert urls.BADGES_RE.match("/api/badges")
     m = urls.BADGE_ACCOUNT_RE.match("/api/badges/jett")
     assert m and m.group(1) == "jett"
-    # single-segment BADGES_RE never swallows the per-account resource
+
     assert not urls.BADGES_RE.match("/api/badges/jett")
 
 
@@ -91,7 +91,7 @@ def test_schema_defines_badge_awards_table_and_migration_exists():
     assert (ROOT / "migrations" / "0084_badge_awards.sql").exists()
 
 
-# --- Catalog (pure module) ----------------------------------------------------
+
 
 def test_catalog_is_a_fixed_known_set():
     slugs = {entry["slug"] for entry in badges.public_catalog()}
@@ -116,7 +116,7 @@ def test_badge_definition_round_trips_the_catalog():
     assert badges.badge_definition("bogus") is None
 
 
-# --- _award_badge --------------------------------------------------------------
+
 
 def _award_ns():
     writes = []
@@ -159,7 +159,7 @@ def test_award_badge_is_a_noop_for_unknown_slug_or_missing_account():
     assert writes == []
 
 
-# --- account_badges_handler ---------------------------------------------------
+
 
 def _account_badges_ns(is_admin, account_exists=True, existing_awards=None):
     writes = []
@@ -294,7 +294,7 @@ def test_admin_can_grant_and_revoke_a_catalog_badge():
     assert audits[-1]["action"] == "badge.revoke"
 
 
-# --- Automatic-award hooks (source-level wiring) ------------------------------
+
 
 def _function_source(name):
     fn = next(

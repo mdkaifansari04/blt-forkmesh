@@ -19,10 +19,10 @@ def test_top_bar_merges_user_identity_into_node_name_and_avatar():
     header = HEADER.read_text(encoding="utf-8")
     chat = CHAT.read_text(encoding="utf-8")
 
-    # The top bar no longer has a separate "User" caption/dropdown or a
-    # second (node) avatar button — the user account name is folded into
-    # the node-name label and the node avatar button was dropped, leaving
-    # a single user avatar that also carries the connection status dot.
+
+
+
+
     assert "QLabel *m_userLabel = nullptr;" not in header
     assert "QPushButton *m_userMenuButton = nullptr;" not in header
     assert "QPushButton *m_avatarNavButton = nullptr;" not in header

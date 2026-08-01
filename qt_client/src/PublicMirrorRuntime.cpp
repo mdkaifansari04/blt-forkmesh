@@ -114,11 +114,11 @@ bool prepareOwnerDirectory(const QString &path, QString *error)
     return true;
 }
 
-// Common install locations that a desktop-launched GUI often misses because it
-// inherits a minimal PATH (no login-shell profile). age/age-keygen land here
-// when installed via Homebrew, Go, Cargo, or a per-user prefix, so we fall back
-// to them when the PATH lookup comes up empty. Absolute-path lookups above and
-// the on-PATH lookup are unaffected; this only adds candidate directories.
+
+
+
+
+
 QStringList extraProgramSearchDirs()
 {
     QStringList dirs{QStringLiteral("/opt/homebrew/bin"),
@@ -308,12 +308,12 @@ bool cloneSource(const QString &source, const QStringList &gitPrefixArgs,
                   << QStringLiteral("-c")
                   << QStringLiteral("core.hooksPath=") + QProcess::nullDevice()
                   << QStringLiteral("-c") << QStringLiteral("http.followRedirects=false")
-                  // A new mirror commonly starts on a small VPS. Git otherwise
-                  // sizes index-pack threads and delta caches from host CPUs,
-                  // which can consume nearly all RAM during the flagship clone
-                  // and starve sshd before the node can publish. These bounded
-                  // client-side settings trade a little first-sync speed for a
-                  // responsive, deterministic provisioning path.
+
+
+
+
+
+
                   << QStringLiteral("-c") << QStringLiteral("pack.threads=1")
                   << QStringLiteral("-c")
                   << QStringLiteral("core.deltaBaseCacheLimit=16m")
@@ -1051,8 +1051,8 @@ PublicMirrorRuntime::SyncResult sealTemporaryRepository(
     }
     clearBytes(&entry.secretIdentity);
 
-    // Authenticate a fresh decrypt before exposing the result or allowing a
-    // caller to remove any legacy durable plaintext.
+
+
     std::unique_ptr<PublicMirrorMaterialization> authenticated =
         PublicMirrorRuntime::materialize(
             archiveRoot, vaultPath, vaultSecret,
@@ -1073,7 +1073,7 @@ bool parseIntegerString(const QJsonValue &value, qint64 *result)
     return true;
 }
 
-} // namespace
+}
 
 QString PublicMirrorRuntime::refsSha256FromForEachRef(
     const QByteArray &output)

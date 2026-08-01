@@ -9,18 +9,18 @@ class ChatBackend;
 class QCoreApplication;
 class QSocketNotifier;
 
-// Interactive stdin REPL for running ForkMesh on a headless server / VM. The full
-// backend (mesh presence, repo serving, mirror sync, owned-inbox polling) runs in
-// the Qt event loop via MainWindow exactly as it does on the desktop; this console
-// only observes and drives it. Created by main() when launched with --headless (or
-// when no display is detected). Unix-only stdin handling; on other platforms it
-// degrades to a live event-streaming daemon with no command input.
-//
-// It is a durable daemon: it keeps running until explicitly stopped — by the
-// `quit`/`exit` command or a SIGINT/SIGTERM (e.g. `kill`, `systemctl stop`,
-// Ctrl-C). Losing stdin (EOF / `</dev/null` when launched by a service manager)
-// does NOT stop the node; it just detaches the command prompt and the backend
-// runs on (issue #287).
+
+
+
+
+
+
+
+
+
+
+
+
 class HeadlessConsole : public QObject
 {
     Q_OBJECT
@@ -39,10 +39,10 @@ private:
     void printLines(const QStringList &lines);
     void logEvent(const QString &text);
     void attachFeed(ChatBackend *backend);
-    void detachStdin();          // stop reading stdin but keep the node running
-    void shutdown(const QString &reason); // explicit stop: close + quit the loop
-    // Run the nightly end-to-end mesh-loop self-test (issue #352): the sibling
-    // `forkmesh-e2e` binary, streamed to this console. Used by the `e2e` command.
+    void detachStdin();
+    void shutdown(const QString &reason);
+
+
     void runMeshLoopSelfTest();
 
     MainWindow *m_window;

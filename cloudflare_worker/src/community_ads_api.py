@@ -288,7 +288,7 @@ async def _placements(runtime):
     for row in rows or []:
         data = _decode_data(row)
         tags = list(data.get("contextTags") or [])
-        # Context and declared content tags are the only selection inputs.
+
         candidates.append({
             "proposalId": str(row.get("proposal_id") or ""),
             "label": "Community-reviewed placement",

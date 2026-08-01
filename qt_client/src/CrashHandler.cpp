@@ -29,37 +29,37 @@ namespace forkmesh {
 #ifdef FORKMESH_CRASH_HANDLER
 namespace {
 
-// Everything a signal handler touches is prepared here, in normal context, so
-// the handler itself only calls async-signal-safe functions. Fixed C buffers,
-// no QString/std::string, so there's no allocation on the crash path.
+
+
+
 char g_buildInfo[512] = {0};
 char g_crashContext[4096] = {0};
 
-// A dedicated stack so the SIGSEGV handler still runs when the crash *is* a
-// stack overflow (the normal stack is then unusable). A fixed 64 KiB: modern
-// glibc makes SIGSTKSZ a runtime sysconf() call, so it can't size a static
-// array — 64 KiB comfortably exceeds the classic 8 KiB MINSIGSTKSZ.
+
+
+
+
 char g_altStack[64 * 1024];
 
-// The app's user-facing Log view persists to network_log.txt. A pre-opened fd
-// lets the signal handler write crash records directly there so they appear in
-// the log view without needing a separate crash file.
+
+
+
 int g_mainLogFd = -1;
 
-// Guard against a fault while we're already handling one (a bug in the handler,
-// or a second thread crashing) turning into an infinite loop.
+
+
 std::atomic_flag g_handling = ATOMIC_FLAG_INIT;
 
-// Set only while a local action workflow owns child processes. A failing child
-// step may be terminated as part of a wider process group; the UI should record
-// that signal and continue so the action can settle into a normal failed run.
-// Reference count of in-flight action runs that want the app to survive a
-// termination signal. It is a counter, not a bool, because several runners can
-// execute workflows in parallel now — protection must stay on until the LAST of
-// them finishes, not drop the moment any single run completes.
+
+
+
+
+
+
+
 std::atomic_int g_surviveTerminationSignals{0};
 
-// Async-signal-safe unsigned-to-decimal. Writes into buf, returns length.
+
 int safeUtoa(unsigned long v, char *buf)
 {
     char tmp[24];
@@ -95,8 +95,8 @@ void safeWriteFd(int fd, const char *s)
     (void)r;
 }
 
-// Write to stderr and also to the network log so crash records appear in the
-// user-visible log view without needing a separate crash file.
+
+
 void safeWrite(const char *s)
 {
     safeWriteFd(2, s);
@@ -154,8 +154,8 @@ void safeWriteSignalInfo(const siginfo_t *info)
     safeWrite("\n");
 }
 
-// backtrace_symbols_fd targets one fd, so emit the frames to stderr and the
-// network log separately.
+
+
 void safeBacktrace(void *const *frames, int n)
 {
     backtrace_symbols_fd(frames, n, 2);
@@ -224,11 +224,11 @@ void safeWriteMainLogSignalRecord(int sig, unsigned long when,
     safeWriteFd(g_mainLogFd, "\n");
 }
 
-// The signal handler. Strictly async-signal-safe: only write/time/
-// backtrace(_symbols_fd), no allocation, no Qt.
+
+
 void crashHandler(int sig, siginfo_t *info, void *)
 {
-    // First faulter wins; anyone re-entering just restores the default and dies.
+
     if (g_handling.test_and_set()) {
         signal(sig, SIG_DFL);
         raise(sig);
@@ -267,15 +267,15 @@ void crashHandler(int sig, siginfo_t *info, void *)
     safeBacktrace(frames, n);
     safeWrite("==========================\n");
 
-    // Chain to the default handler so the OS still terminates the process (and
-    // writes a core dump if enabled) exactly as it would have without us.
+
+
     signal(sig, SIG_DFL);
     raise(sig);
 }
 
-// std::terminate fires for an uncaught C++ exception. It runs in normal context
-// (not a signal), so we can grab the exception message before abort() — which
-// raises SIGABRT and thus logs the backtrace through crashHandler().
+
+
+
 void terminateHandler()
 {
     const char *what = nullptr;
@@ -293,13 +293,13 @@ void terminateHandler()
     safeWrite(what ? what : "(unknown / no active exception)");
     safeWrite("\n");
     safeWriteCrashContext();
-    std::abort(); // -> SIGABRT -> crashHandler() logs the backtrace
+    std::abort();
 }
 
 void installSignalHandlers()
 {
-    // Run SIGSEGV etc. on a dedicated stack so a stack-overflow crash can still
-    // be logged.
+
+
     stack_t ss;
     ss.ss_sp = g_altStack;
     ss.ss_size = sizeof(g_altStack);
@@ -310,13 +310,13 @@ void installSignalHandlers()
     std::memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = crashHandler;
     sigemptyset(&sa.sa_mask);
-    // Do not use SA_RESETHAND here: an action may survive a logged SIGTERM and
-    // then need the handler again before the failed child process exits. For
-    // real fatal crashes we explicitly restore the default handler below before
-    // re-raising.
+
+
+
+
     sa.sa_flags = SA_ONSTACK | SA_SIGINFO;
-    // Catch every normal fatal/termination signal we can reasonably handle. The
-    // kernel does not allow SIGKILL or SIGSTOP to be caught, blocked, or logged.
+
+
     for (int sig : {SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL, SIGTERM, SIGINT,
                     SIGHUP, SIGQUIT
 #ifdef SIGTRAP
@@ -335,8 +335,8 @@ void installSignalHandlers()
         sigaction(sig, &sa, nullptr);
 }
 
-} // namespace
-#endif // FORKMESH_CRASH_HANDLER
+}
+#endif
 
 namespace {
 
@@ -377,7 +377,7 @@ void appendDiagnosticToMainLog(const QString &kind, const QString &context,
     f.write("\n");
 }
 
-} // namespace
+}
 
 void installCrashHandler(const QString &crashLogPath,
                          const QString &mainLogPath)
@@ -387,9 +387,9 @@ void installCrashHandler(const QString &crashLogPath,
         QByteArrayLiteral("ForkMesh v" FORKMESH_VERSION " (src " FORKMESH_SOURCE_DIR ")");
     qstrncpy(g_buildInfo, build.constData(), sizeof(g_buildInfo));
 
-    // crashLogPath is no longer used — crash records go directly to the network
-    // log (g_mainLogFd / network_log.txt) so they appear in the log view without
-    // needing a separate file. The parameter is kept for API compatibility.
+
+
+
     Q_UNUSED(crashLogPath);
     if (!mainLogPath.isEmpty()) {
         QDir().mkpath(QFileInfo(mainLogPath).absolutePath());
@@ -398,15 +398,15 @@ void installCrashHandler(const QString &crashLogPath,
                              O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
     }
 
-    // Warm up backtrace() so the first (in-handler) call can't try to dlopen
-    // libgcc's unwinder — that would malloc, which isn't signal-safe.
+
+
     void *warm[4];
     backtrace(warm, 4);
 
     installSignalHandlers();
     std::set_terminate(terminateHandler);
 #else
-    Q_UNUSED(crashLogPath); // kept for API compatibility; never used
+    Q_UNUSED(crashLogPath);
     Q_UNUSED(mainLogPath);
 #endif
 }
@@ -427,8 +427,8 @@ void setCrashContext(const QString &context)
 void setTerminationSignalSurvivalEnabled(bool enabled)
 {
 #ifdef FORKMESH_CRASH_HANDLER
-    // Balanced enable/disable per active run; never let the count go negative if
-    // a disable somehow arrives without a matching enable.
+
+
     if (enabled) {
         g_surviveTerminationSignals.fetch_add(1, std::memory_order_relaxed);
     } else {
@@ -453,8 +453,8 @@ void logDiagnosticEvent(const QString &context, const QString &details)
         + details + QLatin1Char('\n')
         + QStringLiteral("===============================\n");
 
-    // Main application log (stderr). qCritical keeps it visible at default log
-    // levels and alongside the startup timing / node log.
+
+
     qCritical().noquote() << block;
     appendDiagnosticToMainLog(QStringLiteral("ForkMesh diagnostic"), context,
                               details);
@@ -475,4 +475,4 @@ void logCaughtFault(const QString &context, const QString &what)
                               what);
 }
 
-} // namespace forkmesh
+}

@@ -17,7 +17,7 @@ SCHEMA_TEXT = SCHEMA.read_text(encoding="utf-8")
 PROFILE_FOLLOW_MIGRATION = (
     Path(__file__).resolve().parents[1] / "migrations" / "0027_profile_follows.sql"
 )
-# MainWindow.cpp is split into feature TUs (MainWindow*.cpp); scan them all.
+
 QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 QT_TEXT = "\n".join(
     p.read_text(encoding="utf-8") for p in sorted(QT_SRC.glob("MainWindow*.cpp"))
@@ -107,10 +107,10 @@ def test_worker_profile_contract_includes_avatar_updates():
 
 
 def test_public_lookup_reads_only_users_nodes_tables():
-    # Users and nodes are the authoritative tables (the legacy accounts table
-    # was dropped by migration 0042), so the public /api/accounts/<name>
-    # profile lookup resolves solely from them — keyless reservations live in
-    # nodes, so availability checks still see a reserved name as taken.
+
+
+
+
     public_lookup_start = ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)")
     public_lookup_body = ENTRY_TEXT[
         public_lookup_start:
@@ -192,8 +192,8 @@ def test_worker_profile_contract_includes_about_location_timezone_and_counts():
     assert 'rec["profile_location"] = location' in profile_body
     assert 'rec["profile_timezone"] = timezone' in profile_body
     assert 'await _account_social_counts(env, name)' in public_payload_body
-    # The public lookup passes the optional ?viewer= through so the /@name
-    # page can show the caller's own Follow/Following state (display-only).
+
+
     assert '_account_social_counts(' in public_lookup_body
     assert 'env, rec.get("name", name), viewer)' in public_lookup_body
     assert '"viewer"' in public_lookup_body
@@ -249,11 +249,11 @@ def test_worker_profile_public_edits_and_follows_accept_signed_session_token():
 
 
 def test_public_profile_fields_whitelist_allows_the_always_sent_password_key():
-    # The dashboard's profilePayload() always includes a `password` field, even
-    # on pages (like the public-profile editor) that have no password input and
-    # send it empty. If `password` is missing from public_profile_fields the
-    # session-authed save falls through to the credentials branch and 401s with
-    # invalid_credentials no matter how recently the user signed in (adhoc #49).
+
+
+
+
+
     whitelist_block = ENTRY_TEXT[
         ENTRY_TEXT.index("public_profile_fields = {"):
         ENTRY_TEXT.index("session_bi, session_rec = await _account_session_record")
@@ -262,8 +262,8 @@ def test_public_profile_fields_whitelist_allows_the_always_sent_password_key():
 
 
 def test_worker_public_profile_page_wires_follow_and_public_mode():
-    # /@name now serves the FULL dashboard profile document; the follow
-    # control and foreign-profile rendering live in the dashboard bundle.
+
+
     dashboard_js = (
         Path(__file__).resolve().parents[1] / "public" / "dashboard.js"
     ).read_text(encoding="utf-8")
@@ -272,15 +272,15 @@ def test_worker_public_profile_page_wires_follow_and_public_mode():
     assert "state.publicProfile" in dashboard_js
     assert "data-profile-follow" in dashboard_js
     assert '"/api/accounts/" + encodeURIComponent(name) + "/follow"' in dashboard_js
-    # Public mode never shows a mailbox for a foreign account.
+
     assert 'profile.email = "@" + profile.nodeName' in dashboard_js
 
 
 def test_public_profile_page_injects_verified_link_tags():
-    # _serve_profile_page injects the per-user head tags into the shared
-    # prebuilt profile document: canonical + the reciprocal rel="me" (the
-    # verified half of the fediverse actor's profile link) + the ActivityPub
-    # alternate for discovery, and swaps the <title>.
+
+
+
+
     body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _serve_profile_page"):
         ENTRY_TEXT.index("async def _serve_repo_page")
@@ -292,8 +292,8 @@ def test_public_profile_page_injects_verified_link_tags():
     assert 'application/activity+json' in body
     assert '/ap/users/%s' in body
     assert '<title>@%s · ForkMesh</title>' in body
-    # Eligibility mirrors the fediverse actor: active + not private (node
-    # accounts included, matching _ap_user_federates).
+
+
     assert 'rec.get("status") != "active"' in body
     assert 'rec.get("profile_private")' in body
     assert '_serve_not_found_page(url)' in body
@@ -307,9 +307,9 @@ def test_worker_serves_public_at_profiles_and_private_profiles_404():
     ]
 
     assert 'r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(/repositories)?/?$"' in route_body
-    # The route matches the percent-decoded, case-folded path: pasted links
-    # often arrive as /%40name (an encoded @) or /@Name, and both used to fall
-    # through to the 404 page instead of the profile.
+
+
+
     assert "unquote(url.path).lower()" in route_body
     assert "_serve_profile_page(" in route_body
     assert 'bool(rec.get("profile_private"))' in ENTRY_TEXT
@@ -327,9 +327,9 @@ def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
 
     assert '"LEFT JOIN world_user_activity a ON a.account_bi=u.user_bi "' in body
     assert '"ORDER BY u.username COLLATE NOCASE LIMIT ?"' in body
-    # The campfire seats members in this array's order, one bench per
-    # account, so the response is resorted by join date (oldest first)
-    # rather than left in the query's alphabetical fetch order.
+
+
+
     assert 'out.sort(key=lambda user: user.get("createdAt", 0))' in body
     assert "last_touch_at" not in body
     assert "FROM accounts" not in body
@@ -344,10 +344,10 @@ def test_worker_exposes_public_user_directory_for_chat_without_private_fields():
 
 
 def test_qt_client_publishes_user_chat_avatar_to_peers():
-    # The desktop's avatar reaches peers through the chat backend broadcast
-    # (the signed heartbeat carries no avatar; the worker-side avatarPng comes
-    # from the dashboard profile flow, pinned above). Chat uses the user avatar
-    # so messages do not show up as the node profile.
+
+
+
+
     assert "updateChatIdentity();" in QT_TEXT
     assert "m_backend->setAvatar(avatar);" in QT_TEXT
     assert "effectiveUserAvatar();" in QT_TEXT
@@ -356,8 +356,8 @@ def test_qt_client_publishes_user_chat_avatar_to_peers():
         QT_TEXT.index("void MainWindow::sendNodeHeartbeat()"):
         QT_TEXT.index("void MainWindow::showNodeClaimCode")
     ]
-    # The per-minute heartbeat stays lean: name + solana + ts + sig only, no
-    # avatar re-upload every beat.
+
+
     assert '{"nodeName", name}, {"solana", solana}, {"ts", ts}' in heartbeat_body
     assert "avatarPng" not in heartbeat_body
 
@@ -383,9 +383,9 @@ def test_profile_endpoint_supports_verified_node_rename_and_hard_delete():
 
 
 def test_public_account_lookup_reports_email_verified_status():
-    # issue #320: the dashboard's profile refresh path reuses this same public
-    # GET lookup, so it must reflect a verification that happened in another tab
-    # or "verify your email" never clears.
+
+
+
     lookup_body = ENTRY_TEXT[
         ENTRY_TEXT.index("match = ACCOUNTS_RE.match(url.path)"):
         ENTRY_TEXT.index("# --- Repository submission inboxes")
@@ -491,7 +491,7 @@ def test_namespace_rename_moves_account_repo_and_repo_scoped_state():
 
 
 def test_worker_exposes_password_reset_flow():
-    # Both halves of the emailed password-reset flow are routed and implemented.
+
     assert 'url.path == "/api/accounts/forgot-password" and method == "POST"' in ENTRY_TEXT
     assert 'url.path == "/api/accounts/reset-password" and method == "POST"' in ENTRY_TEXT
     assert "async def _account_forgot_password" in ENTRY_TEXT
@@ -505,8 +505,8 @@ def test_forgot_password_does_not_leak_account_existence():
         ENTRY_TEXT.index("async def _account_forgot_password"):
         ENTRY_TEXT.index("async def _account_reset_password")
     ]
-    # Look up by email OR node name, but always answer {"ok": True} so the
-    # endpoint can't enumerate which accounts exist.
+
+
     assert 'data.get("identifier", "")' in forgot_body
     assert "_send_password_reset_email" in forgot_body
     assert 'return json_response({"ok": True})' in forgot_body
@@ -519,8 +519,8 @@ def test_reset_password_validates_token_expiry_and_hashes_new_password():
         ENTRY_TEXT.index("async def _account_reset_password"):
         ENTRY_TEXT.index("def _verify_email_page")
     ]
-    # Expiry is enforced, the token is recomputed from the stored pass_hash
-    # (single-use), a short password is rejected, and the new one is PBKDF2-hashed.
+
+
     assert "reset_link_expired" in reset_body
     assert "password_too_short" in reset_body
     assert "invalid_reset_token" in reset_body
@@ -532,7 +532,7 @@ def test_reset_password_validates_token_expiry_and_hashes_new_password():
         ENTRY_TEXT.index("async def _password_reset_token"):
         ENTRY_TEXT.index("async def _send_password_reset_email")
     ]
-    # The token is domain-separated and binds the current pass_hash + expiry.
+
     assert "forkmesh-password-reset-v1" in token_body
     assert "pass_hash" in token_body
 
@@ -551,8 +551,8 @@ def test_signup_verification_email_is_a_professional_welcome_email():
         "founders@forkmesh.com",
         "color:#4ade80",
         "/api/accounts/verify-email?node=",
-        # Renders through the shared branded card, rather than a
-        # bespoke inline template.
+
+
         "_forkmesh_email_card_html(",
     ):
         assert marker in body
@@ -567,8 +567,8 @@ def test_signup_verification_email_is_a_professional_welcome_email():
         "data-forkmesh-site-action",
     ):
         assert marker in card_body
-    # One explicit light palette avoids partial dark-mode overrides that can
-    # combine a light card with light text.
+
+
     assert "@media" not in card_body
     assert "background:#090909" not in card_body
     assert "background:#141416" not in card_body

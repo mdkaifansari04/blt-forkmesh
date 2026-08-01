@@ -1,15 +1,15 @@
-// MainWindowData: the Settings -> Data tab.
-//
-// Shows every on-disk location ForkMesh owns (with a per-directory breakdown of
-// how many folders/files it holds and how big it is), lets you open a folder in
-// the file manager to explore it, delete any location individually or wipe them
-// all at once, and export/import the configuration as a portable .tar.gz backup.
-// It also runs and surfaces the hourly automatic backup of the live database
-// (see LocalBackupStore.h) — the Backups panel lists every snapshot on the local
-// drive and restores any one of them in a click.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h.
+
+
+
+
+
+
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -20,17 +20,17 @@ using namespace forkmesh::ui;
 
 namespace {
 
-// One managed on-disk location shown in the Data tab.
+
 struct DataDir {
-    QString label; // friendly name
-    QString path;  // absolute path
-    QString hint;  // what lives here (tooltip)
-    bool inBackup; // included in export/import (true = configuration, not bulk cache)
+    QString label;
+    QString path;
+    QString hint;
+    bool inBackup;
 };
 
-// Recursive folder/file/byte tally for a directory. `prune` holds absolute paths
-// whose subtrees should not be descended into (used so the "Application data"
-// row doesn't double-count the mirror/browse-cache dirs nested inside it).
+
+
+
 struct DirStat {
     int folders = 0;
     int files = 0;
@@ -43,7 +43,7 @@ void scanInto(const QString &path, const QSet<QString> &prune, DirStat &s)
         QDir(path).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot |
                                  QDir::Hidden | QDir::System);
     for (const QFileInfo &fi : entries) {
-        // Never follow symlinks: they can loop and they point outside the tree.
+
         if (fi.isSymLink()) {
             s.files++;
             continue;
@@ -60,9 +60,9 @@ void scanInto(const QString &path, const QSet<QString> &prune, DirStat &s)
     }
 }
 
-// The full set of directories ForkMesh writes to. `mirrorRoot`/`previewRoot` are
-// resolved by the caller (they can be relocated in Settings), the rest come from
-// the platform's standard locations and the QSettings config file.
+
+
+
 QVector<DataDir> resolveDataDirs(const QString &mirrorRoot,
                                  const QString &previewRoot,
                                  const QString &backupRoot)
@@ -82,7 +82,7 @@ QVector<DataDir> resolveDataDirs(const QString &mirrorRoot,
             return;
         const QString abs = QDir(path).absolutePath();
         for (const DataDir &d : dirs)
-            if (d.path == abs) // don't list the same folder twice
+            if (d.path == abs)
                 return;
         dirs.append({label, abs, hint, backup});
     };
@@ -112,9 +112,9 @@ QVector<DataDir> resolveDataDirs(const QString &mirrorRoot,
     return dirs;
 }
 
-} // namespace
+}
 
-// -------------------------------------------------------------------- Data tab
+
 
 QWidget *MainWindow::buildDataSection()
 {
@@ -123,7 +123,7 @@ QWidget *MainWindow::buildDataSection()
     col->setContentsMargins(2, 14, 2, 14);
     col->setSpacing(10);
 
-    // --- where the data lives ------------------------------------------------
+
     auto *storageLabel = new QLabel("CONFIGURATION DATA");
     storageLabel->setObjectName("sectionLabel");
     auto *storageHint = new QLabel(
@@ -135,7 +135,7 @@ QWidget *MainWindow::buildDataSection()
     storageHint->setWordWrap(true);
 
     m_dataDirTable = new QTableWidget(0, 6);
-    installColumnHeaderMenu(m_dataDirTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_dataDirTable);
     m_dataDirTable->setHorizontalHeaderLabels(
         {"Location", "Path", "Folders", "Files", "Size", ""});
     m_dataDirTable->verticalHeader()->setVisible(false);
@@ -148,7 +148,7 @@ QWidget *MainWindow::buildDataSection()
     dataHeader->setStretchLastSection(false);
     for (int c = 0; c < m_dataDirTable->columnCount(); ++c)
         dataHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
-    dataHeader->setSectionResizeMode(1, QHeaderView::Stretch); // path takes slack
+    dataHeader->setSectionResizeMode(1, QHeaderView::Stretch);
 
     auto *refreshButton = new QPushButton("Refresh");
     refreshButton->setObjectName("ghostButton");
@@ -156,11 +156,11 @@ QWidget *MainWindow::buildDataSection()
     connect(refreshButton, &QPushButton::clicked, this,
             &MainWindow::refreshDataDirTable);
 
-    // --- log files -----------------------------------------------------------
-    // The two logs the app writes are files, not folders, so they never show up
-    // in the table above — but they are the first thing anyone needs when
-    // reporting a freeze or a failed sync, so name their exact paths here
-    // (adhoc #90).
+
+
+
+
+
     auto *logsLabel = new QLabel("LOG FILES");
     logsLabel->setObjectName("sectionLabel");
     auto *logsHint = new QLabel(
@@ -218,7 +218,7 @@ QWidget *MainWindow::buildDataSection()
                              "records; the footer's stall badge drafts a fix-it "
                              "prompt from these."));
 
-    // --- hourly snapshots ----------------------------------------------------
+
     auto *autoLabel = new QLabel("AUTOMATIC BACKUPS");
     autoLabel->setObjectName("sectionLabel");
     auto *autoHint = new QLabel(
@@ -238,7 +238,7 @@ QWidget *MainWindow::buildDataSection()
     m_backupEnabledCheck->setCursor(Qt::PointingHandCursor);
     connect(m_backupEnabledCheck, &QCheckBox::toggled, this, [this](bool on) {
         QSettings().setValue(kAutoBackupEnabledSetting, on);
-        startAutoBackups(); // arms or stops the hourly timer
+        startAutoBackups();
         setBackupStatus(on ? QStringLiteral("Hourly backups are on.")
                            : QStringLiteral("Hourly backups are off \xE2\x80\x94 "
                                             "existing snapshots are kept."));
@@ -298,14 +298,14 @@ QWidget *MainWindow::buildDataSection()
     backupHeader->setStretchLastSection(false);
     for (int c = 0; c < m_backupTable->columnCount(); ++c)
         backupHeader->setSectionResizeMode(c, QHeaderView::ResizeToContents);
-    backupHeader->setSectionResizeMode(3, QHeaderView::Stretch); // file name
+    backupHeader->setSectionResizeMode(3, QHeaderView::Stretch);
 
     m_backupStatus = new QLabel;
     m_backupStatus->setObjectName("statusLine");
     m_backupStatus->setWordWrap(true);
     m_backupStatus->setVisible(false);
 
-    // --- backup / restore ----------------------------------------------------
+
     auto *backupLabel = new QLabel("EXPORT & IMPORT");
     backupLabel->setObjectName("sectionLabel");
     auto *backupHint = new QLabel(
@@ -341,7 +341,7 @@ QWidget *MainWindow::buildDataSection()
     m_dataStatus->setWordWrap(true);
     m_dataStatus->setVisible(false);
 
-    // --- danger zone ---------------------------------------------------------
+
     auto *dangerLabel = new QLabel("DELETE EVERYTHING");
     dangerLabel->setObjectName("sectionLabel");
     auto *dangerHint = new QLabel(
@@ -392,8 +392,8 @@ void MainWindow::refreshDataDirTable()
         return;
     const QVector<DataDir> dirs = resolveDataDirs(
         repositoryMirrorRoot(), repositoryPreviewRoot(), backupRoot());
-    // Nested mirror/browse-cache/backup subtrees are shown as their own rows, so
-    // keep them out of the "Application data" tally to avoid counting them twice.
+
+
     QSet<QString> nested;
     nested.insert(QDir(repositoryMirrorRoot()).absolutePath());
     nested.insert(QDir(repositoryPreviewRoot()).absolutePath());
@@ -414,7 +414,7 @@ void MainWindow::refreshDataDirTable()
 
         if (exists) {
             QSet<QString> prune = nested;
-            prune.remove(d.path); // always count the row's own subtree in full
+            prune.remove(d.path);
             DirStat st;
             scanInto(d.path, prune, st);
             auto num = [](int n) {
@@ -443,7 +443,7 @@ void MainWindow::refreshDataDirTable()
             m_dataDirTable->setItem(r, 4, sizeItem);
         }
 
-        // Per-row actions: open the folder to explore it, or delete it.
+
         auto *actions = new QWidget;
         auto *actionRow = new QHBoxLayout(actions);
         actionRow->setContentsMargins(4, 2, 4, 2);
@@ -462,7 +462,7 @@ void MainWindow::refreshDataDirTable()
         deleteButton->setCursor(Qt::PointingHandCursor);
         deleteButton->setEnabled(exists);
         const QString label = d.label;
-        const bool critical = d.inBackup; // identity/preferences => restart after
+        const bool critical = d.inBackup;
         connect(deleteButton, &QPushButton::clicked, this,
                 [this, label, path, critical] {
                     deleteDataDir(label, path, critical);
@@ -484,7 +484,7 @@ void MainWindow::setDataStatus(const QString &text, bool error)
     m_dataStatus->setVisible(!text.isEmpty());
 }
 
-// ----------------------------------------------------------- export / import
+
 
 void MainWindow::exportConfigData()
 {
@@ -510,9 +510,9 @@ void MainWindow::exportConfigData()
         !out.endsWith(QStringLiteral(".tgz")))
         out += QStringLiteral(".tar.gz");
 
-    // Exactly the archive an hourly snapshot writes: the app-data dir plus the
-    // settings file, minus the large re-downloadable mirrors/browse cache and
-    // the snapshot folder itself.
+
+
+
     const QStringList args = forkmesh::configArchiveTarArgs(
         out, QStandardPaths::writableLocation(QStandardPaths::AppDataLocation),
         QSettings().fileName(),
@@ -549,9 +549,9 @@ void MainWindow::importConfigData()
     restoreConfigArchive(in);
 }
 
-// Unpack `in` over the live data and restart. Shared by the manual import and
-// by the Backups panel's per-snapshot Restore button, so recovering an hourly
-// snapshot follows exactly the same swap-and-relaunch path as an import.
+
+
+
 void MainWindow::restoreConfigArchive(const QString &in)
 {
     const QString tarExe = QStandardPaths::findExecutable(QStringLiteral("tar"));
@@ -592,8 +592,8 @@ void MainWindow::restoreConfigArchive(const QString &in)
     const QString stamp =
         QDateTime::currentDateTime().toString("yyyyMMdd-HHmmss");
 
-    // Extract next to the app-data dir so moving the unpacked tree into place is
-    // a same-filesystem rename rather than a slow cross-device copy.
+
+
     const QString workRoot =
         appParent + QStringLiteral("/.forkmesh-import-") + stamp;
     QDir().mkpath(workRoot);
@@ -620,18 +620,18 @@ void MainWindow::restoreConfigArchive(const QString &in)
         return;
     }
 
-    // Stop everything that writes to disk before swapping the folders out.
+
     stopLiveServicesForDataOp();
 
     if (QFileInfo::exists(importedApp)) {
         QDir().mkpath(appParent);
         const QString displaced = appData + ".bak-" + stamp;
         const QString liveBackups = QDir(backupRoot()).absolutePath();
-        // Snapshots are excluded from every archive, so the restored tree has no
-        // backups/ folder of its own. Carry the existing one across from the
-        // displaced tree — otherwise restoring the wrong snapshot would look
-        // like it deleted the entire backup history, including the one the user
-        // actually wanted.
+
+
+
+
+
         const QString rel = QDir(appData).relativeFilePath(liveBackups);
         const bool backupsNested = !rel.startsWith(QStringLiteral(".."));
         if (QFileInfo::exists(appData))
@@ -645,8 +645,8 @@ void MainWindow::restoreConfigArchive(const QString &in)
         QDir().mkpath(configDir);
         if (QFileInfo::exists(configFile))
             QFile::rename(configFile, configFile + ".bak-" + stamp);
-        // ~/.config and ~/.local/share can be on different filesystems; fall
-        // back to a copy when a rename can't cross the boundary.
+
+
         if (!QFile::rename(importedConfig, configFile))
             QFile::copy(importedConfig, configFile);
     }
@@ -655,7 +655,7 @@ void MainWindow::restoreConfigArchive(const QString &in)
     relaunchForkMesh();
 }
 
-// ------------------------------------------------------ hourly local backups
+
 
 QString MainWindow::backupRoot() const
 {
@@ -664,8 +664,8 @@ QString MainWindow::backupRoot() const
 
 bool MainWindow::autoBackupEnabled() const
 {
-    // Unset means "whatever this kind of node should do": on for control nodes
-    // (a Cloudflare API token is what makes one), off for everything else.
+
+
     return QSettings()
         .value(kAutoBackupEnabledSetting,
                forkmesh::autoBackupDefault(resolvedCloudflareApiToken()))
@@ -691,8 +691,8 @@ void MainWindow::setBackupStatus(const QString &text, bool error)
     m_backupStatus->setVisible(!text.isEmpty());
 }
 
-// Arm (or stop) the hourly snapshot timer. Called once at startup and again
-// whenever the checkbox is toggled, so it must be idempotent.
+
+
 void MainWindow::startAutoBackups()
 {
     if (!m_backupTimer) {
@@ -708,11 +708,11 @@ void MainWindow::startAutoBackups()
     }
     m_backupTimer->start();
 
-    // Catch up when this launch comes more than an hour after the newest
-    // snapshot (the app was closed overnight, or backups were just switched on)
-    // — otherwise a machine that is only ever up for 50 minutes at a time would
-    // never get a backup at all. Deferred a few seconds so the first frame isn't
-    // competing with tar for the disk.
+
+
+
+
+
     const QList<forkmesh::BackupSnapshot> snapshots =
         forkmesh::listBackups(backupRoot());
     const QDateTime last =
@@ -721,9 +721,9 @@ void MainWindow::startAutoBackups()
         QTimer::singleShot(15000, this, [this] { takeBackupNow(true); });
 }
 
-// Pack one snapshot. Always asynchronous: tar over the whole store takes long
-// enough that doing it on the GUI thread would read as a freeze (and would trip
-// the stall watchdog) every hour, on the hour.
+
+
+
 void MainWindow::takeBackupNow(bool automatic)
 {
     if (automatic && !autoBackupEnabled())
@@ -736,8 +736,8 @@ void MainWindow::takeBackupNow(bool automatic)
 
     const QString tarExe = QStandardPaths::findExecutable(QStringLiteral("tar"));
     if (tarExe.isEmpty()) {
-        // The panel isn't built on a headless node, so the log is the only place
-        // an unattended host can report that its backups never ran.
+
+
         setBackupStatus("Can't back up: the 'tar' tool was not found on this "
                         "system.",
                         true);
@@ -750,9 +750,9 @@ void MainWindow::takeBackupNow(bool automatic)
     const QString finalPath = QDir(backupRoot())
                                   .filePath(forkmesh::backupFileName(
                                       QDateTime::currentDateTime()));
-    // Pack into a .part file and rename only once tar succeeds: a killed or
-    // crashed run then leaves something listBackups() ignores, instead of a
-    // truncated archive that looks restorable.
+
+
+
     const QString partPath = finalPath + QStringLiteral(".part");
     const QStringList args = forkmesh::configArchiveTarArgs(
         partPath,
@@ -776,9 +776,9 @@ void MainWindow::takeBackupNow(bool automatic)
                 m_backupProcess = nullptr;
                 if (m_backupNowButton)
                     m_backupNowButton->setEnabled(true);
-                // tar exits 1 when a file changed while it was being read. The
-                // live stores are written continuously, so that is a warning
-                // about one file, not a failed archive — accept it.
+
+
+
                 const bool ok = status == QProcess::NormalExit &&
                                 (code == 0 || code == 1);
                 if (ok && QFile::rename(partPath, finalPath)) {
@@ -810,8 +810,8 @@ void MainWindow::takeBackupNow(bool automatic)
     tar->start(tarExe, args);
 }
 
-// Keep at most backupKeepCount() snapshots, newest first, and sweep any .part
-// left behind by a killed tar.
+
+
 void MainWindow::pruneOldBackups()
 {
     const QList<forkmesh::BackupSnapshot> stale = forkmesh::backupsToPrune(
@@ -819,7 +819,7 @@ void MainWindow::pruneOldBackups()
     for (const forkmesh::BackupSnapshot &snapshot : stale)
         QFile::remove(snapshot.path);
     if (m_backupProcess)
-        return; // an in-flight tar owns the current .part
+        return;
     const QFileInfoList partials =
         QDir(backupRoot())
             .entryInfoList({QStringLiteral("forkmesh-backup-*.tar.gz.part")},
@@ -902,7 +902,7 @@ void MainWindow::refreshBackupTable()
                                  "takes one on demand."));
 }
 
-// ---------------------------------------------------------------- deletion
+
 
 void MainWindow::deleteDataDir(const QString &label, const QString &path,
                                bool critical)
@@ -940,7 +940,7 @@ void MainWindow::deleteDataDir(const QString &label, const QString &path,
                       "files may be in use.",
                       true);
     refreshDataDirTable();
-    refreshBackupTable(); // the Backups row is one of the deletable locations
+    refreshBackupTable();
 }
 
 void MainWindow::deleteAllData()
@@ -990,16 +990,16 @@ void MainWindow::deleteAllData()
     relaunchForkMesh();
 }
 
-// Quiesce every background service that writes to disk so a wipe/swap/restore
-// isn't racing live file writes. Mirrors the teardown used by uninstall.
+
+
 void MainWindow::stopLiveServicesForDataOp()
 {
     if (m_heartbeatTimer)
         m_heartbeatTimer->stop();
     if (m_adminPollTimer)
         m_adminPollTimer->stop();
-    // An in-flight snapshot is reading the very tree that's about to be swapped
-    // out, and would write its half-packed archive into the folder we move.
+
+
     if (m_backupTimer)
         m_backupTimer->stop();
     if (m_backupProcess) {
@@ -1018,14 +1018,14 @@ void MainWindow::stopLiveServicesForDataOp()
     }
 }
 
-// Restart the currently-running binary so it comes back up on the freshly
-// imported/wiped data, then quit this instance.
+
+
 void MainWindow::relaunchForkMesh()
 {
     QDir::setCurrent(QDir::homePath());
-    // Release the instance lock before spawning the replacement process, or it
-    // bounces off the still-held lock (this process hasn't unwound yet) and
-    // exits into nothing instead of taking over.
+
+
+
     forkmesh::releaseSingleInstance();
     QProcess::startDetached(QCoreApplication::applicationFilePath(),
                             QCoreApplication::arguments().mid(1));

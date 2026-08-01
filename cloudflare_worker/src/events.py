@@ -41,8 +41,8 @@ def b64url_decode(value):
 
 
 async def ed25519_verify(pubkey_b64url, sig_b64url, data_bytes):
-    # Verify a raw Ed25519 signature using the runtime's WebCrypto, matching the
-    # desktop client's identity (raw 32-byte key + 64-byte sig, base64url).
+
+
     try:
         raw_key = b64url_decode(pubkey_b64url)
         signature = b64url_decode(sig_b64url)
@@ -70,8 +70,8 @@ async def sha256_hex(text):
 
 
 def issue_event_content(ev):
-    # Type-specific canonical content; MUST match the client's
-    # IssueStore::contentForSigning and issues/README.md. Fields joined by NUL.
+
+
     t = ev.get("type", "")
     attachments = ",".join(ev.get("attachments") or [])
     if t == "open":
@@ -87,8 +87,8 @@ def issue_event_content(ev):
     if t == "milestone":
         return ev.get("milestone", "") or ""
     if t == "dates":
-        # Gantt start/end (epoch ms, 0 = unset); must byte-match the client's
-        # IssueStore/ProjectStore contentForSigning "dates" case.
+
+
         parts = []
         for key in ("startDate", "endDate"):
             try:
@@ -118,7 +118,7 @@ def issue_event_content(ev):
     if t == "delete":
         return ev.get("target", "")
     if t == "vote":
-        return ""  # type+number+author+ts already bind the signed vote
+        return ""
     return ""
 
 
@@ -167,7 +167,7 @@ def normalized_discussion_category(value):
 
 
 def discussion_event_content(ev):
-    # Mirrors DiscussionStore::contentForSigning. Fields joined by NUL.
+
     t = ev.get("type", "")
     if t == "open":
         return "\x00".join([
@@ -179,10 +179,10 @@ def discussion_event_content(ev):
 
 
 async def verify_discussion_event(number, ev):
-    # Mirrors DiscussionStore::canonicalString(number, ev): the signature binds
-    # the canonical discussion number plus type-specific content. New discussions
-    # submitted through the inbox are signed with number 0 because the owner
-    # assigns the durable repo number when draining the inbox.
+
+
+
+
     author = ev.get("author", "")
     signature = ev.get("sig", "")
     event_type = ev.get("type", "")
@@ -204,12 +204,12 @@ async def verify_discussion_event(number, ev):
 
 
 async def verify_pull_event(pr):
-    # Mirrors PullStore::canonicalString: the signature commits to
-    # title/base/head/patch (not the number, which the owner assigns on merge).
-    # Newer clients append a 5th field — the format-patch mbox (commits) — so the
-    # owner can replay authored commits on merge. Accept either form so a client
-    # rollout doesn't reject not-yet-updated peers; an old client simply omits the
-    # 5th field and an old peer that signed the 4-field form still verifies.
+
+
+
+
+
+
     author = pr.get("author", "")
     signature = pr.get("sig", "")
     if not author or not signature:
@@ -221,10 +221,10 @@ async def verify_pull_event(pr):
     fields = [pr.get("title", ""), pr.get("base", ""), pr.get("head", ""),
               pr.get("patch", "")]
     commits = pr.get("commits", "")
-    # A legacy signature never authenticated a commit mbox. Only try that
-    # four-field form when the submission carries no commits; otherwise an
-    # attacker could append unsigned commits that Qt would replay in preference
-    # to the signed flat patch.
+
+
+
+
     contents = ["\x00".join(fields + [commits])]
     if not commits:
         contents.append("\x00".join(fields))
@@ -239,7 +239,7 @@ async def verify_pull_event(pr):
 
 
 def pull_comment_content(ev):
-    # Mirrors PullStore::contentForSigning. Fields joined by NUL.
+
     t = ev.get("type", "")
     def int_field(name):
         try:
@@ -279,8 +279,8 @@ def pull_comment_content(ev):
 
 
 async def verify_pull_comment_event(number, ev):
-    # Mirrors PullStore::canonicalString(number, ev): the signature binds the PR
-    # number (reviewers act on the owner's mirror, which has canonical numbers).
+
+
     author = ev.get("author", "")
     signature = ev.get("sig", "")
     event_type = ev.get("type", "")
@@ -302,22 +302,22 @@ async def verify_pull_comment_event(number, ev):
     return await ed25519_verify(author, signature, canonical)
 
 
-# ---------------------------------------------------------------------------
-# Release publishing (issue #304). See docs/design/release-binary-publishing.md.
-#
-# Release METADATA is small, signed, and git-committed (synced across the mesh
-# like issues/PRs); release PAYLOADS (the binary bytes) live in a per-node
-# content-addressed blob store that is gitignored and NEVER committed. The pure
-# integrity-spine helpers shared by both sides — the canonical signable manifest,
-# the CAS path layout, sha256sum-compatible checksum generation, semver `latest`
-# resolution, and the same-name re-upload decision — live in releases.py. Only
-# the async signature check lives here, since it reaches into this module's
-# Ed25519/sha256 crypto.
-# ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
 async def verify_release_manifest(manifest):
-    # Mirrors the client publisher: sign sha256(release_manifest_content) with the
-    # creator's Ed25519 identity. One signature thus authenticates every asset's
-    # bytes (each blob_sha256 is inside the signed content).
+
+
+
     author = manifest.get("created_by", "") or ""
     signature = manifest.get("sig", "") or ""
     repo = manifest.get("repo", "") or ""

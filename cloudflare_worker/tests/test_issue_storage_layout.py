@@ -29,8 +29,8 @@ def test_repository_issues_live_under_open_closed_status_folders():
     assert ISSUES.is_dir()
     assert not list(ISSUES.rglob("*.md"))
 
-    # The pre-split legacy layout (numbered folders directly under the root)
-    # must not resurface once migrated.
+
+
     assert _numeric_dirs(ISSUES) == []
 
     issue_dirs = _numeric_dirs(ISSUES / "open") + _numeric_dirs(ISSUES / "closed")
@@ -39,7 +39,7 @@ def test_repository_issues_live_under_open_closed_status_folders():
     seen = set()
     for issue_dir in issue_dirs:
         number = int(issue_dir.name)
-        assert number not in seen  # a number lives on exactly one side
+        assert number not in seen
         seen.add(number)
         issue_file = issue_dir / f"issue-{number}.json"
         assert issue_file.is_file()
@@ -50,9 +50,9 @@ def test_repository_issues_live_under_open_closed_status_folders():
 
 
 def test_issue_folder_matches_recorded_status():
-    # The folder IS the status: everything under open/ folds to a non-closed
-    # status and everything under closed/ folds to "closed" (the latest status
-    # event wins, matching the desktop's recomputeMetadata).
+
+
+
     for side in ("open", "closed"):
         for issue_dir in _numeric_dirs(ISSUES / side):
             number = int(issue_dir.name)

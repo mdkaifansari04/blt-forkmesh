@@ -1,8 +1,8 @@
--- Server-authoritative shared playback coordination.
---
--- This table stores only an external playlist item reference and a clock
--- position. It never stores, proxies, autoplays, records, or rebroadcasts
--- media. Each browser remains responsible for explicit local playback consent.
+
+
+
+
+
 CREATE TABLE IF NOT EXISTS world_media_playback (
     space_id TEXT PRIMARY KEY,
     item_id TEXT NOT NULL DEFAULT '',

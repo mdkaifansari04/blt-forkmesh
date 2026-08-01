@@ -44,9 +44,9 @@ function timestamp(value) {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }
 
-// Bounded client classes a node may report for the clone / website read it
-// last served. Anything else (including a raw User-Agent a tampered record
-// might carry) stays unknown rather than being echoed into the cabinet.
+
+
+
 const SERVE_AGENT_CLASSES = new Set([
   "forkmesh-node",
   "git-client",
@@ -233,16 +233,16 @@ function publicResourceRecord(record) {
   });
 }
 
-/**
- * Build the bounded, truthful records consumed by the 3D server cabinets.
- *
- * Cabinet membership comes only from records in the public signed mirror
- * payload. Offline, healing, and integrity-rejected records remain visible as
- * clearly non-serving cabinets; otherwise a temporary route failure makes a
- * real mirror appear to have never existed. The network overview contains
- * repository-owner aggregates as well as machines, so it may enrich a matching
- * cabinet but must never create one. Unknown and opted-out metrics remain null.
- */
+
+
+
+
+
+
+
+
+
+
 export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
   const details = Array.isArray(network?.leaderboards?.nodes)
     ? network.leaderboards.nodes
@@ -264,8 +264,8 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
   payloadList.slice(0, 100).forEach((payload) => {
     if (!Array.isArray(payload?.mirrors)) return;
     payload.mirrors.slice(0, 100).forEach((mirror) => {
-      // `node` is the canonical machine identity. `owner` can be a user or
-      // repository account and is intentionally only a legacy fallback.
+
+
       const name = text(mirror?.node || mirror?.machineName, "", 80);
       if (!name) return;
       const key = name.toLowerCase();
@@ -305,12 +305,12 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
       const primary = repositories[0] || {};
       const hasPrimary = repositories.length > 0;
       const now = Date.now();
-      // The cabinet represents the physical node, not just this repository's
-      // clone route. A recent generic signed endpoint challenge proves that
-      // mirror2 is alive even while an exact refs pin is converging; the
-      // repository record still keeps cloneAvailable=false and its integrity
-      // verdict so the detail panel never implies that blocked bytes are
-      // currently routable.
+
+
+
+
+
+
       const online = repositories.some(
         (repository) =>
           repository.status === "online" ||
@@ -339,8 +339,8 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
       const aggregate = nodeAggregateRecord(detail);
       return omitUnknownValues({
         name: displayName,
-        // The machine's advertised node name — the display label for the
-        // cabinet. The account (`name`) stays the identity/grouping key.
+
+
         machineName: primary.machineName || aggregate.machineName || null,
         ownerUser: primary.ownerUser || null,
         online,
@@ -406,9 +406,9 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         websiteServed: hasPrimary
           ? primary.websiteServed
           : aggregate.websiteServed,
-        // Paired with the two counters above: the stamp has to describe the
-        // same repository the count does, so it follows the same primary /
-        // aggregate choice rather than mixing sources.
+
+
+
         cloneServedAt: hasPrimary
           ? (primary.cloneServedAt ?? null)
           : (aggregate.cloneServedAt ?? null),
@@ -425,9 +425,9 @@ export function buildLiveMirrorNodes(network, mirrorPayloads = []) {
         ...resources,
       });
     });
-  // The freshest mirror is placed first in the cabinet yard. This also keeps a
-  // multi-repository node's displayed commit tied to its newest reported state,
-  // rather than whichever repository happens to sort first by name.
+
+
+
   return nodes
     .sort((left, right) =>
       Number(right.online === true) - Number(left.online === true) ||

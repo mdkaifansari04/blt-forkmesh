@@ -106,8 +106,8 @@ def _load_watchdog():
         "_repository_monitor_admin_emails":
             _repository_monitor_admin_emails,
         "_status_alert_emails_enabled": _status_alert_emails_enabled,
-        # The flagship repo's admin switch, off in production until an org
-        # admin opts in. The transition tests below exercise the on path.
+
+
         "_alerts_enabled": True,
         "_send_email": _send_email,
         "_cloudflare_attention_log_tail": _cloudflare_attention_log_tail,
@@ -155,14 +155,14 @@ def test_watchdog_alerts_once_and_recovers_once():
     Date = ns["Date"]
     grace = ns["CRON_WATCHDOG_GRACE_MS"]
 
-    # First successful completion arms the independent alarm without email.
+
     response = asyncio.run(watchdog.fetch(request))
     assert response.status == 200
     assert storage.data["last_completion_at"] == Date.value
     assert storage.alarm_at == Date.value + grace
     assert ns["_sends"] == []
 
-    # Three missed ticks produce exactly one outage message.
+
     Date.value += grace
     asyncio.run(watchdog.alarm())
     assert len(ns["_sends"]) == 1
@@ -173,7 +173,7 @@ def test_watchdog_alerts_once_and_recovers_once():
     asyncio.run(watchdog.alarm())
     assert len(ns["_sends"]) == 1
 
-    # The next fully completed cron tick produces one recovery and rearms.
+
     Date.value += 60_000
     asyncio.run(watchdog.fetch(request))
     assert len(ns["_sends"]) == 2
@@ -268,14 +268,14 @@ def test_watchdog_sends_nothing_while_alert_mail_is_switched_off():
     retry = ns["CRON_WATCHDOG_RETRY_MS"]
     storage.data["last_completion_at"] = Date.value - grace
 
-    # A suppressed outage still settles the transition: rearming the retry
-    # alarm would spin forever on a send that is never going to happen.
+
+
     asyncio.run(watchdog.alarm())
     assert ns["_sends"] == []
     assert storage.data["notified_state"] == "down"
     assert storage.alarm_at != Date.value + retry
 
-    # The later recovery is suppressed too, and clears the outage state.
+
     asyncio.run(watchdog.fetch(request))
     assert ns["_sends"] == []
     assert storage.data["notified_state"] == "up"
@@ -283,8 +283,8 @@ def test_watchdog_sends_nothing_while_alert_mail_is_switched_off():
 
 
 def test_status_alert_mail_is_off_until_a_repo_admin_enables_it():
-    # Defaults must stay off: the switch is opt-in, per repository, and the
-    # two send paths both consult it.
+
+
     defaults = ENTRY_TEXT.split("REPO_ALERT_SETTING_DEFAULTS = {", 1)[1] \
         .split("}", 1)[0]
     assert '"statusEmails": False' in defaults

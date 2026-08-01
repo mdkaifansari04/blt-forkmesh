@@ -13,7 +13,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import reward_scheduler as rewards  # noqa: E402
+import reward_scheduler as rewards
 
 
 SOURCE_WALLET = "11111111111111111111111111111111"

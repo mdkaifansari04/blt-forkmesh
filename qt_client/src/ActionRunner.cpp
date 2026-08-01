@@ -37,12 +37,12 @@ constexpr qsizetype kActionCrashOutputTailBytes = 12 * 1024;
 constexpr qsizetype kActionCrashContextMaxChars = 12000;
 constexpr qint64 kMaxLandedArtifactBytes = 1024LL * 1024 * 1024;
 
-// CPU share a sandboxed step may use, as a systemd CPUQuota percentage. A
-// hard-wired 200% starved the heaviest workflow this repository has — a
-// from-scratch release build of the desktop client — into the step deadline
-// (adhoc #329). Leave one core to the node itself and never take the whole
-// machine; CPUWeight (set alongside the quota) keeps the interactive app ahead
-// of a step whenever they do compete.
+
+
+
+
+
+
 int actionCpuQuotaPercent()
 {
     const int cores = qMax(1, QThread::idealThreadCount());
@@ -135,15 +135,15 @@ QString diagnosticSafeText(const QString &input, qsizetype maxChars)
     return prefix + out;
 }
 
-} // namespace
+}
 
 ActionRunner::ActionRunner(ActionStore *store, QObject *parent)
     : QObject(parent), m_store(store)
 {
     m_stepTimer = new QTimer(this);
     m_stepTimer->setSingleShot(true);
-    // Coarse timers may fire up to 5% late — 4.5 minutes on the step deadline —
-    // which would let the sandbox scope's own RuntimeMaxSec kill land first.
+
+
     m_stepTimer->setTimerType(Qt::PreciseTimer);
     connect(m_stepTimer, &QTimer::timeout, this,
             [this] { terminateCurrentProcess(true); });
@@ -257,17 +257,17 @@ void ActionRunner::start(const ActionRun &run, const ActionWorkflow &workflow,
     m_store->saveRun(m_run);
     emit statusChanged(m_run.id, m_run.status);
 
-    emitLog(QString::fromUtf8("==> \xF0\x9F\x9A\x80 Workflow: %1 (%2)") // 🚀
+    emitLog(QString::fromUtf8("==> \xF0\x9F\x9A\x80 Workflow: %1 (%2)")
                 .arg(m_workflow.name, m_workflow.path));
-    emitLog(QString::fromUtf8("==> \xF0\x9F\x93\x8D Commit:   %1 on %2") // 📍
+    emitLog(QString::fromUtf8("==> \xF0\x9F\x93\x8D Commit:   %1 on %2")
                 .arg(m_run.commit.left(12), m_run.ref));
     emitLog(QString::fromUtf8(
-        "==> \xF0\x9F\x8C\xBF Checking out into a temporary worktree\xE2\x80\xA6")); // 🌿 …
+        "==> \xF0\x9F\x8C\xBF Checking out into a temporary worktree\xE2\x80\xA6"));
 
-    // An encrypted repository is served out of a temporary materialization, so
-    // say plainly that the mirror went away rather than leaving a bare "fatal:
-    // cannot change to '/tmp/ForkMesh-XXXXXX/repository.git'" behind a generic
-    // "Checkout failed." (adhoc #314).
+
+
+
+
     if (m_mirror.trimmed().isEmpty() || !QDir(m_mirror).exists()) {
         complete(false,
                  QStringLiteral("The served mirror for %1/%2 is no longer "
@@ -320,11 +320,11 @@ void ActionRunner::stop()
         return;
     m_stopping = true;
     emitLog(QString());
-    emitLog(QString::fromUtf8("==> \xF0\x9F\x9B\x91 Stop requested by user.")); // 🛑
+    emitLog(QString::fromUtf8("==> \xF0\x9F\x9B\x91 Stop requested by user."));
 
     if (m_process && m_process->state() != QProcess::NotRunning) {
         terminateCurrentProcess(false);
-        return; // finished() → onProcessFinished → complete()
+        return;
     }
     complete(false, QStringLiteral("Stopped."));
 }
@@ -349,9 +349,9 @@ void ActionRunner::terminateCurrentProcess(bool timedOut)
     }
 #endif
 #ifndef Q_OS_WIN
-    // setsid() in launch() made the outer sandbox process a process-group
-    // leader. bubblewrap's --die-with-parent then tears down every namespace
-    // child even if a hostile shell forked or changed its own process group.
+
+
+
     const qint64 pid = m_process->processId();
     if (pid > 0)
         ::kill(static_cast<pid_t>(-pid), SIGTERM);
@@ -393,9 +393,9 @@ void ActionRunner::launch(Phase phase, const QString &program,
         m_process->setWorkingDirectory(workingDir);
 
 #ifndef Q_OS_WIN
-    // Put each child in its own process group so stop() can signal the whole
-    // tree: a step's shell may fork cargo/wrangler/etc. that would otherwise
-    // outlive a kill of just the shell.
+
+
+
     const ActionSandboxLimits limits = m_limits;
     const bool sandboxedStep = phase == Phase::Step;
     m_process->setChildProcessModifier([limits, sandboxedStep] {
@@ -417,9 +417,9 @@ void ActionRunner::launch(Phase phase, const QString &program,
     });
 #endif
 
-    // Deliberately do not inherit the node process environment. This keeps
-    // wallet, identity, SSH, cloud, desktop-session, and private-repository
-    // credentials outside both trusted Git setup and the workflow sandbox.
+
+
+
     QProcessEnvironment env;
     env.insert(QStringLiteral("PATH"),
                phase == Phase::Step
@@ -450,11 +450,11 @@ void ActionRunner::launch(Phase phase, const QString &program,
                    QStringLiteral("/home/forkmesh/.local/share"));
         env.insert(QStringLiteral("XDG_STATE_HOME"),
                    QStringLiteral("/home/forkmesh/.local/state"));
-        // The sandbox's cgroup is not visible inside the mount namespace, so a
-        // step cannot read its own budget: `nproc` reports the host's cores and
-        // /proc/meminfo the host's RAM. Publish both explicitly — a build that
-        // sizes -j from them neither starves on the CPU quota nor gets OOM
-        // killed by MemoryMax.
+
+
+
+
+
         env.insert(QStringLiteral("FORKMESH_ACTIONS_CPUS"),
                    QString::number(qMax(1, actionCpuQuotaPercent() / 100)));
         env.insert(QStringLiteral("FORKMESH_ACTIONS_MEMORY_MB"),
@@ -496,7 +496,7 @@ void ActionRunner::launch(Phase phase, const QString &program,
     connect(m_process, &QProcess::errorOccurred, this,
             [this](QProcess::ProcessError) {
                 if (m_process)
-                    emitLog(QString::fromUtf8("!! \xE2\x9A\xA0\xEF\xB8\x8F  ") + // ⚠️
+                    emitLog(QString::fromUtf8("!! \xE2\x9A\xA0\xEF\xB8\x8F  ") +
                             m_process->errorString());
             });
     connect(m_process, &QProcess::started, this, [this] {
@@ -581,9 +581,9 @@ QStringList ActionRunner::sandboxArguments(const QString &shell,
         if (QFileInfo::exists(path))
             args << QStringLiteral("--ro-bind") << path << path;
     };
-    // Only executable/runtime roots are visible. In particular, the host home,
-    // /root, /srv, /var/lib, /run/user, and the node's application-data tree
-    // never enter the mount namespace.
+
+
+
     bindReadOnlyIfPresent(QStringLiteral("/usr"));
     bindReadOnlyIfPresent(QStringLiteral("/bin"));
     bindReadOnlyIfPresent(QStringLiteral("/lib"));
@@ -628,8 +628,8 @@ void ActionRunner::launchSandboxedStep(const QString &command)
     const QString shell =
         QFile::exists(QStringLiteral("/bin/bash")) ? QStringLiteral("/bin/bash")
                                                    : QStringLiteral("/bin/sh");
-    // Feed the expanded script on stdin. Secrets therefore never appear in the
-    // process command line, crash process descriptions, or `ps` output.
+
+
     m_processStdin = command.toUtf8();
     if (!m_processStdin.endsWith('\n'))
         m_processStdin.append('\n');
@@ -653,9 +653,9 @@ void ActionRunner::launchSandboxedStep(const QString &command)
         QStringLiteral("--property=MemorySwapMax=0"),
         QStringLiteral("--property=CPUQuota=%1%").arg(actionCpuQuotaPercent()),
         QStringLiteral("--property=CPUWeight=20"),
-        // Grace on top of the in-app deadline so the runner's own timer always
-        // wins the race and reports "exceeded the process time limit" instead
-        // of the scope's opaque SIGTERM ("Process crashed", exit code 15).
+
+
+
         QStringLiteral("--property=RuntimeMaxSec=%1").arg(runtimeSeconds + 60),
         QStringLiteral("--"),
         bwrap,
@@ -719,7 +719,7 @@ void ActionRunner::onProcessFinished(int exitCode)
 {
     m_stepTimer->stop();
     m_systemdUnit.clear();
-    // Drain any tail output before tearing the process down.
+
     if (m_process) {
         const QByteArray tail = m_process->readAllStandardOutput();
         if (!tail.isEmpty())
@@ -729,8 +729,8 @@ void ActionRunner::onProcessFinished(int exitCode)
         m_process = nullptr;
     }
 
-    // A user-requested stop overrides whatever exit code the killed process
-    // reported; record the run as Cancelled rather than Failed.
+
+
     if (m_stopping) {
         complete(false, QStringLiteral("Stopped by user."));
         return;
@@ -788,7 +788,7 @@ void ActionRunner::onProcessFinished(int exitCode)
         }
         emitLog(QString::fromUtf8(
                     "==> \xE2\x9C\x85 Approval bound to tree %1 and state "
-                    "SHA-256 %2.") // ✅
+                    "SHA-256 %2.")
                     .arg(m_run.repositoryTree.left(12),
                          m_run.executionDigest.left(16)));
         emitLog(m_networkAllowed
@@ -801,7 +801,7 @@ void ActionRunner::onProcessFinished(int exitCode)
         return;
     }
 
-    // A step finished.
+
     if (exitCode != 0) {
         complete(false, QStringLiteral("Step failed with exit code %1.")
                             .arg(exitCode));
@@ -833,17 +833,17 @@ void ActionRunner::runNextStep()
     m_currentCommand = command;
     updateCrashContext();
     emitLog(QString());
-    emitLog(QString::fromUtf8("==> \xF0\x9F\x94\xA7 %1").arg(label)); // 🔧
+    emitLog(QString::fromUtf8("==> \xF0\x9F\x94\xA7 %1").arg(label));
 
     launchSandboxedStep(command);
 }
 
 void ActionRunner::complete(bool ok, const QString &finalMessage)
 {
-    // A release run writes its artifact metadata into the throwaway worktree;
-    // harvest it into the working copy BEFORE cleanupWorktree() removes the dir,
-    // otherwise the release would never show up (issue: no artifacts listed / no
-    // prebuilt binary published).
+
+
+
+
     QString resultMessage = finalMessage;
     bool landed = false;
     if (ok && isReleaseRun()) {
@@ -864,9 +864,9 @@ void ActionRunner::complete(bool ok, const QString &finalMessage)
     if (!ok && !m_stopping)
         logFailureDiagnostic(resultMessage);
     emitLog(QString());
-    emitLog((m_stopping ? QString::fromUtf8("==> \xF0\x9F\x9B\x91 STOPPED: ") // 🛑
-                        : ok ? QString::fromUtf8("==> \xE2\x9C\x85 SUCCESS: ") // ✅
-                             : QString::fromUtf8("==> \xE2\x9D\x8C FAILED: ")) + // ❌
+    emitLog((m_stopping ? QString::fromUtf8("==> \xF0\x9F\x9B\x91 STOPPED: ")
+                        : ok ? QString::fromUtf8("==> \xE2\x9C\x85 SUCCESS: ")
+                             : QString::fromUtf8("==> \xE2\x9D\x8C FAILED: ")) +
             resultMessage);
 
     cleanupWorktree();
@@ -895,17 +895,17 @@ bool ActionRunner::isReleaseRun() const
 
 bool ActionRunner::landReleaseMetadata()
 {
-    // Only the owner (who holds the working copy) can publish; a mirror-only node
-    // has nowhere to commit and can't publish anyway.
+
+
     if (m_repoWorkTree.isEmpty() || !QDir(m_repoWorkTree).exists())
         return false;
     const QDir produced(m_workspace + QStringLiteral("/.forkmesh/releases"));
     if (!produced.exists())
         return false;
 
-    // Mirror .forkmesh/releases/ from the worktree into the working copy. The metadata is a
-    // few tiny text files (SHASUMS256.txt + release.json per channel); the binary
-    // bytes are NOT here — they already live in the served CAS.
+
+
+
     const QDir dest(m_repoWorkTree + QStringLiteral("/.forkmesh/releases"));
     const QString destRoot = dest.absolutePath();
     QDir().mkpath(destRoot);
@@ -922,7 +922,7 @@ bool ActionRunner::landReleaseMetadata()
                 if (fi.isDir()) {
                     copyTree(fi.absoluteFilePath(), to);
                 } else {
-                    QFile::remove(to); // overwrite an older manifest
+                    QFile::remove(to);
                     if (QFile::copy(fi.absoluteFilePath(), to))
                         copiedAny = true;
                 }
@@ -941,18 +941,18 @@ bool ActionRunner::landReleaseMetadata()
     if (!copiedAny)
         return false;
 
-    // Carry the version-header bump the release workflow made (project(ForkMesh
-    // VERSION ...)) into the working copy too, so it lands in the same commit.
-    // The path is only staged when the bump actually changed something, keeping
-    // the release commit to .forkmesh/releases/ alone whenever the header is already in
-    // sync (or the tag wasn't a clean semver).
+
+
+
+
+
     QStringList paths{QStringLiteral(".forkmesh/releases")};
     if (landVersionHeader())
         paths << QStringLiteral("qt_client/CMakeLists.txt");
 
-    // Stage just those paths and commit only if they actually changed, so
-    // re-cutting an identical release is a no-op and we never disturb unrelated
-    // edits.
+
+
+
     auto git = [&](const QStringList &args) {
         QProcess p;
         p.setWorkingDirectory(m_repoWorkTree);
@@ -966,7 +966,7 @@ bool ActionRunner::landReleaseMetadata()
             paths) == 0) {
         emitLog(QString::fromUtf8(
             "==> \xE2\x84\xB9\xEF\xB8\x8F  Release metadata unchanged; nothing to "
-            "publish.")); // ℹ️
+            "publish."));
         return false;
     }
     const QString tag = m_run.ref.mid(QStringLiteral("refs/tags/").size());
@@ -989,7 +989,7 @@ bool ActionRunner::landReleaseMetadata()
     }
     emitLog(QString::fromUtf8(
                 "==> \xF0\x9F\x93\xA6 Attached release metadata for %1; "
-                "publishing\xE2\x80\xA6") // 📦 …
+                "publishing\xE2\x80\xA6")
                 .arg(tag));
     return true;
 }
@@ -1002,7 +1002,7 @@ bool ActionRunner::landVersionHeader()
     QFile src(m_workspace + QLatin1Char('/') + rel);
     QFile dst(m_repoWorkTree + QLatin1Char('/') + rel);
 
-    // The version sits on a single line: project(ForkMesh VERSION X.Y.Z ...).
+
     static const QRegularExpression versionLine(
         QStringLiteral("^(project\\(ForkMesh VERSION )([0-9]+\\.[0-9]+\\.[0-9]+)"),
         QRegularExpression::MultilineOption);
@@ -1013,7 +1013,7 @@ bool ActionRunner::landVersionHeader()
         versionLine.match(QString::fromUtf8(src.readAll()));
     src.close();
     if (!want.hasMatch())
-        return false; // workflow left the header alone (e.g. no clean semver tag)
+        return false;
     const QString version = want.captured(2);
 
     if (!dst.open(QIODevice::ReadOnly | QIODevice::Text))
@@ -1022,7 +1022,7 @@ bool ActionRunner::landVersionHeader()
     dst.close();
     const QRegularExpressionMatch have = versionLine.match(text);
     if (!have.hasMatch() || have.captured(2) == version)
-        return false; // header missing here or already at the release version
+        return false;
     text.replace(have.capturedStart(2), have.capturedLength(2), version);
     if (!dst.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
         return false;
@@ -1190,7 +1190,7 @@ void ActionRunner::cleanupWorktree()
 {
     if (m_sandboxRoot.isEmpty())
         return;
-    // Best-effort: detach the worktree from the mirror, then remove the dir.
+
     QProcess::execute(QStringLiteral("git"),
                       {QStringLiteral("-C"), m_mirror, QStringLiteral("worktree"),
                        QStringLiteral("remove"), QStringLiteral("--force"),

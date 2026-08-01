@@ -25,8 +25,8 @@ def _function_source(name):
 
 
 def _reward_circle_slots(count, centre_x=0.0, centre_z=0.0, options=None):
-    # The real landmark table decides the campfire keep-out, so the slot math
-    # is exercised against the shipped world data rather than a stand-in.
+
+
     data_uri = json.dumps((WORLD / "world-data.js").as_uri())
     world_radius = SCENE[SCENE.index("const WORLD_RADIUS = "):]
     world_radius = world_radius[: world_radius.index(";") + 1]
@@ -89,8 +89,8 @@ def test_node_order_is_stable_but_membership_changes_reflow_the_ring():
     assert "usableNodes.forEach(({ node, name: nodeName }, nodeIndex)" in block
     assert "networkNodeSnapshot" in block
     assert 'worldLayoutId("node-"' not in block
-    # Automatic placement piggybacks on the catalog update: it does not add
-    # another timer, request, or listener.
+
+
     assert "fetch(" not in block
     assert "setInterval(" not in block
     assert "addEventListener(" not in block
@@ -102,10 +102,10 @@ def test_reward_circle_slots_clear_the_pool_and_never_collide():
         assert len(slots) == count
         for slot in slots:
             radius = math.hypot(slot["x"], slot["z"])
-            # Outside the 5.25 pool rim and the 6.4–8.5 tree circle.
+
             assert radius >= 10.7
-            # The member fire now occupies its own south island, safely clear
-            # of every central service-yard slot.
+
+
             assert math.hypot(slot["x"], slot["z"] - 130) >= 8.2
         for index, left in enumerate(slots):
             for right in slots[index + 1:]:
@@ -158,7 +158,7 @@ def test_reward_circle_slots_follow_a_relocated_pool():
     assert len(slots) == 6
     for slot in slots:
         assert math.hypot(slot["x"] - 12.0, slot["z"] + 7.0) >= 10.7
-    # Evenly spread around the relocated pool, not bunched on one side.
+
     assert abs(sum(slot["x"] for slot in slots) / 6 - 12.0) < 1.5
     assert abs(sum(slot["z"] for slot in slots) / 6 + 7.0) < 1.5
 
@@ -168,45 +168,45 @@ def test_reward_pool_rim_title_is_measured_so_wraps_do_not_overlap():
     block = SCENE[start: SCENE.index("\n}\n", start)]
     assert "const repeats = 3;" in block
     assert 'const title = "GLOBAL REWARD POOL";' in block
-    # The type shrinks to the measured slot rather than trusting a fixed size.
+
     assert "const available = slot * 0.72;" in block
     assert "context.measureText(title).width > available" in block
     assert "context.fillText(title, centre, height / 2 + 4);" in block
 
 
 def test_reward_pool_shows_a_live_mirror_count_above_the_orb():
-    # The cabinets already ring this basin, so their live total hangs over the
-    # pool orb instead of on another sign.
+
+
     assert "function rewardPoolMirrorCountTexture(THREE, total, online)" in SCENE
     fountain_start = SCENE.index("function createFountain(")
     fountain = SCENE[fountain_start: SCENE.index("\n}\n", fountain_start)]
     assert 'mirrorCountSprite.name = "reward-pool-mirror-count";' in fountain
-    # The online count is painted directly into the raised fireball orb.
+
     assert "mirrorCountSprite.position.y = 6.7;" in fountain
     assert "depthTest: false" in fountain
     assert "group.add(mirrorCountSprite);" in fountain
-    # Hidden until the first signed catalog lands, so no placeholder zero.
+
     assert "mirrorCountSprite.visible = false;" in fountain
     texture_start = SCENE.index("function rewardPoolMirrorCountTexture(")
     texture = SCENE[texture_start: SCENE.index("\n}\n", texture_start)]
     assert 'context.fillText(live.toLocaleString("en-US"), 256, 92);' in texture
     assert 'context.fillText("ONLINE", 256, 168);' in texture
-    # Offline cabinets stay in the ring, and the second line states the total.
+
     assert '`${count.toLocaleString("en-US")} TOTAL`' in texture
 
 
 def test_mirror_count_is_repainted_by_the_live_node_update():
     start = SCENE.index("function updateNetworkNodes(")
     update = SCENE[start: SCENE.index("\n  }\n", start)]
-    # Counted from the cabinets actually placed in the ring, not the raw
-    # payload, and only the nodes the signed record reports as answering.
+
+
     assert "setRewardPoolMirrorCount(" in update
     assert "usableNodes.length," in update
     assert 'String(node?.status || "").toLowerCase() === "online",' in update
     setter_start = SCENE.index("function setRewardPoolMirrorCount(")
     setter = SCENE[setter_start: SCENE.index("\n  }\n", setter_start)]
-    # An empty catalog stays hidden rather than claiming zero mirrors.
+
     assert "sprite.visible = count > 0;" in setter
-    # The catalog refresh is on a timer, so repaint only when a number moves.
+
     assert "if (mirrorCountShown === key) return;" in setter
     assert "sprite.material.map?.dispose?.();" in setter

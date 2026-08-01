@@ -442,8 +442,8 @@ def test_new_visit_id_closes_reloaded_page_at_its_last_heartbeat():
         "floor": "Lobby",
     }
 
-    # Delayed writes (including an IN retry) from the replaced page cannot
-    # extend or close this visit.
+
+
     _Clock.value += 5_000
     _run(handler(None, _Request({
         "action": "in",

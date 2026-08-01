@@ -113,11 +113,11 @@
               </a>`;
   }
 
-  // ForkMesh World band pinned to the very bottom of every page: a short intro
-  // strip, then the live Town Square embedded edge-to-edge with no border
-  // below it. The "full screen" link navigates the same window to /world/.
-  // Pages without a footer (the auth pages) mount it standalone, which needs
-  // the extra class because the palette variables live on .forkmesh-footer.
+
+
+
+
+
   function renderWorldBand(standalone) {
     const titleId = standalone
       ? "site-footer-world-title-standalone"
@@ -231,8 +231,8 @@
     host.replaceWith(template.content.firstElementChild);
   }
 
-  // Standalone World band for pages that render no footer, such as the signup
-  // page a referral link lands on.
+
+
   function mountWorldBands() {
     document
       .querySelectorAll("[data-forkmesh-world]")

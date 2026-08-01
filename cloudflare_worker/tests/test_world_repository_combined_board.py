@@ -128,7 +128,7 @@ def test_agent_and_fediverse_counts_share_the_repository_placard():
     assert "repositoryAgentTasksByRepository.get(repositoryKey)" in activity
     assert "portalRecord?.record?.fediverseFollowerCount" in activity
     assert "{ runningAgents, fediverseFollowers }" in activity
-    # Counts no longer float as separate labels beside the robot dock or ring.
+
     assert "repository-agent-control-label:" not in SCENE
     assert "repository-fediverse-follower-caption:" not in SCENE
 

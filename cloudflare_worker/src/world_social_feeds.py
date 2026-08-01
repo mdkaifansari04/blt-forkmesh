@@ -17,9 +17,9 @@ import blog_feed
 
 TWITTER_HANDLE = "forkmesh"
 TWITTER_PROFILE_URL = "https://x.com/forkmesh"
-# X's widget-syndication timeline is the only unauthenticated read left; it
-# serves HTML whose __NEXT_DATA__ script carries the timeline JSON. It is
-# best-effort: when it stops serving, the banner keeps its static sign.
+
+
+
 TWITTER_SYNDICATION_URL = (
     "https://syndication.twitter.com/srv/timeline-profile/screen-name/"
     + TWITTER_HANDLE
@@ -33,13 +33,13 @@ REDDIT_PROFILE_URL = "https://www.reddit.com/r/forkmesh/"
 REDDIT_LISTING_URL = (
     "https://www.reddit.com/r/forkmesh/new.json?limit=10&raw_json=1"
 )
-# Reddit rejects generic user agents; the documented convention is
-# platform:app-id:version (by /u/owner).
+
+
 REDDIT_USER_AGENT = "web:forkmesh-world-banner:v1 (by /u/forkmesh)"
-# The blog board rides the blog's own RSS feed: the Worker builds that
-# document from our static index (no external fetch, see blog_feed) and this
-# module reduces the published items to the banner's post shape, so the board
-# shows exactly what a subscriber sees — preview text and artwork included.
+
+
+
+
 BLOG_URL = blog_feed.BLOG_URL
 BLOG_FEED_URL = blog_feed.FEED_URL
 BLOG_INDEX_ASSET = blog_feed.BLOG_INDEX_ASSET
@@ -66,7 +66,7 @@ def _epoch_ms(value):
         return 0
     if number <= 0:
         return 0
-    # Reddit reports seconds; anything already in milliseconds passes through.
+
     return int(number if number > 10**12 else number * 1000)
 
 
@@ -117,8 +117,8 @@ def extract_next_data(html):
 
 
 def _twitter_created_ms(value):
-    # created_at arrives either as epoch milliseconds or as Twitter's classic
-    # "Mon Apr 01 12:00:00 +0000 2024" string depending on payload vintage.
+
+
     ms = _epoch_ms(value)
     if ms:
         return ms
@@ -149,8 +149,8 @@ def normalize_twitter_timeline(next_data):
         tweet = content.get("tweet") if isinstance(content, dict) else None
         if not isinstance(tweet, dict):
             continue
-        # A retweet carries the original underneath; show what the account
-        # amplified, credited to its author.
+
+
         retweeted = tweet.get("retweeted_status")
         record = retweeted if isinstance(retweeted, dict) else tweet
         text = _clean_text(record.get("full_text") or record.get("text"))

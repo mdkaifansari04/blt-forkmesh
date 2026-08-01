@@ -1,7 +1,7 @@
-// Headless protocol test for ClaudeIdeBridge (issue #191): drives the bridge's
-// WebSocket/JSON-RPC server exactly as the `claude` CLI would — RFC 6455
-// handshake with the lockfile auth token, MCP initialize, and a tools/call — so
-// the wire format is verified without needing the real CLI installed.
+
+
+
+
 #include "../src/ClaudeIdeBridge.h"
 
 #include <QByteArray>
@@ -31,9 +31,9 @@ void check(bool condition, const char *what)
     }
 }
 
-// Spin the event loop until pred() is true or the deadline passes. Both the
-// in-process server and the client socket live in this thread, so we must pump
-// rather than block on waitForReadyRead.
+
+
+
 template <typename Pred> bool pump(Pred pred, int timeoutMs = 3000)
 {
     QElapsedTimer t;
@@ -46,11 +46,11 @@ template <typename Pred> bool pump(Pred pred, int timeoutMs = 3000)
     return true;
 }
 
-// Client -> server frames must be masked (RFC 6455 §5.3).
+
 QByteArray maskedTextFrame(const QByteArray &payload)
 {
     QByteArray f;
-    f.append(char(0x80 | 0x01)); // FIN + text
+    f.append(char(0x80 | 0x01));
     const int n = payload.size();
     if (n < 126) {
         f.append(char(0x80 | n));
@@ -74,7 +74,7 @@ QByteArray maskedTextFrame(const QByteArray &payload)
     return f;
 }
 
-// Pull complete unmasked text messages out of a server->client byte stream.
+
 QList<QByteArray> drainServerMessages(QByteArray &buf)
 {
     QList<QByteArray> out;
@@ -105,13 +105,13 @@ QList<QByteArray> drainServerMessages(QByteArray &buf)
     return out;
 }
 
-} // namespace
+}
 
 int main(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
 
-    // Isolate the lockfile under a throwaway HOME.
+
     QTemporaryDir home;
     check(home.isValid(), "temp HOME created");
     qputenv("HOME", home.path().toUtf8());
@@ -126,7 +126,7 @@ int main(int argc, char *argv[])
     check(bridge.env().contains(QStringLiteral("ENABLE_IDE_INTEGRATION=true")),
           "env enables IDE integration");
 
-    // The CLI discovers us via ~/.claude/ide/<port>.lock.
+
     const QString lockPath =
         home.path() + QStringLiteral("/.claude/ide/%1.lock").arg(bridge.port());
     QString authToken;
@@ -147,7 +147,7 @@ int main(int argc, char *argv[])
               "lockfile carries the workspace folder");
     }
 
-    // ---- a wrong token is rejected at the handshake -----------------------
+
     {
         QTcpSocket bad;
         bad.connectToHost(QHostAddress::LocalHost, bridge.port());
@@ -166,14 +166,14 @@ int main(int argc, char *argv[])
         check(resp.startsWith("HTTP/1.1 401"), "wrong auth token is rejected");
     }
 
-    // ---- the authorized handshake + JSON-RPC ------------------------------
+
     QTcpSocket sock;
     sock.connectToHost(QHostAddress::LocalHost, bridge.port());
     check(pump([&] { return sock.state() == QAbstractSocket::ConnectedState; }),
           "client connects (TCP)");
 
-    // Mirror the real CLI handshake: it requests the "mcp" subprotocol and the
-    // server must echo it back (a strict ws client rejects an ignored protocol).
+
+
     QByteArray req =
         "GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\n"
         "Connection: Upgrade\r\nSec-WebSocket-Version: 13\r\n"
@@ -192,7 +192,7 @@ int main(int argc, char *argv[])
     check(in.startsWith("HTTP/1.1 101"), "server completes the WS handshake");
     check(in.contains("Sec-WebSocket-Protocol: mcp"),
           "server echoes the mcp subprotocol");
-    in.remove(0, in.indexOf("\r\n\r\n") + 4); // anything after is frame data
+    in.remove(0, in.indexOf("\r\n\r\n") + 4);
 
     auto rpc = [&](const QJsonObject &msg) -> QJsonObject {
         sock.write(maskedTextFrame(QJsonDocument(msg).toJson(QJsonDocument::Compact)));
@@ -267,7 +267,7 @@ int main(int argc, char *argv[])
                   .toString() == workspace.path(),
           "getWorkspaceFolders returns the workspace path");
 
-    // selection sync round-trips through getCurrentSelection
+
     bridge.setSelection(QStringLiteral("/tmp/x.txt"), QStringLiteral("hello"), 1, 0,
                         1, 5);
     const QJsonObject selResult =
@@ -293,7 +293,7 @@ int main(int argc, char *argv[])
                   .toString() == "hello",
           "getCurrentSelection reflects the active selection");
 
-    // Stopping the bridge removes the lockfile.
+
     bridge.stop();
     check(!QFile::exists(lockPath), "stop() removes the lockfile");
 

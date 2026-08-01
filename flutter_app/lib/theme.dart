@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 
-/// ForkMesh spacing scale for the Lunel-inspired mobile refresh.
+
 class FmSpace {
   static const double x0 = 0;
   static const double x1 = 4;
@@ -13,7 +13,7 @@ class FmSpace {
   static const double x8 = 64;
 }
 
-/// ForkMesh radius scale.
+
 class FmRadius {
   static const double sm = 4;
   static const double md = 8;
@@ -21,13 +21,13 @@ class FmRadius {
   static const double full = 999;
 }
 
-/// ForkMesh motion durations.
+
 class FmMotion {
   static const fast = Duration(milliseconds: 100);
   static const normal = Duration(milliseconds: 200);
 }
 
-/// ForkMesh mobile palette for the professional light UI refresh.
+
 class FmColors {
   static const bgBase = Color(0xFFF7F7F7);
   static const bgRaised = Color(0xFFFFFFFF);
@@ -81,7 +81,7 @@ class FmColors {
   static const text = textPrimary;
   static const textMuted = textSecondary;
 
-  // Sender name palette (hashed per user), mirrors kSenderPalette.
+
   static const senders = <Color>[
     Color(0xFFF85149),
     Color(0xFFE3B341),

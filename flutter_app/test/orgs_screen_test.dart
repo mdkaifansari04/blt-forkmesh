@@ -22,8 +22,8 @@ class _TestAuthService extends AuthService {
   bool get isAuthenticated => _session != null;
 }
 
-// The widget test binding forces all real HTTP to 400, so the screen is fed a
-// fake ApiService that returns canned org data instead of hitting the network.
+
+
 class _FakeApiService extends ApiService {
   _FakeApiService(super.settings, this.orgs);
 
@@ -88,7 +88,7 @@ void main() {
     expect(find.text('globex'), findsOneWidget);
     expect(find.text('OWNER'), findsOneWidget);
     expect(find.text('MEMBER'), findsOneWidget);
-    // The create action is shown while signed in.
+
     expect(find.byKey(const ValueKey('org-create-button')), findsOneWidget);
   });
 

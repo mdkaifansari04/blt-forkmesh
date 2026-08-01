@@ -7,8 +7,8 @@ import '../theme.dart';
 import '../widgets/compose_identity_bar.dart';
 import '../widgets/fm_ui.dart';
 
-/// Encrypted chat against the live relay room: channel list, member roster, and
-/// the message transcript with a composer. Interoperates with Qt-client nodes.
+
+
 class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
 
@@ -185,9 +185,9 @@ class _ChannelTile extends StatelessWidget {
   );
 }
 
-/// A single chat participant: their username, a disambiguating id when another
-/// user shares the name, and their online nodes as small platform icons — so a
-/// person running several nodes reads as one user rather than duplicates.
+
+
+
 class _MemberGroupTile extends StatelessWidget {
   const _MemberGroupTile({
     required this.group,
@@ -274,7 +274,7 @@ class _MemberGroupTile extends StatelessWidget {
   }
 }
 
-/// Horizontal strip of one small icon per node the user currently runs.
+
 class _NodeIcons extends StatelessWidget {
   const _NodeIcons({required this.nodes});
   final List<Member> nodes;
@@ -471,9 +471,9 @@ class _Transcript extends StatelessWidget {
   }
 }
 
-/// Tappable strip shown above the transcript whenever unread messages are
-/// waiting. Tapping the up arrow marks everything read (clearing the nav badge)
-/// and jumps to the newest messages so they can be seen.
+
+
+
 class _UnreadBanner extends StatelessWidget {
   const _UnreadBanner({required this.count, required this.onTap});
 

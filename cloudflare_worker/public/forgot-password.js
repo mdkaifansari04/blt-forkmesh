@@ -9,9 +9,9 @@
     hint.className = "hint" + (cls ? " " + cls : "");
   }
 
-  // Deliberately generic: whether or not the identifier matches an account, we
-  // show the same confirmation so this page can't be used to probe which emails
-  // are registered (the API returns {ok:true} either way).
+
+
+
   const SENT_MESSAGE =
     "If that account exists, a reset link is on its way. Check your email.";
 

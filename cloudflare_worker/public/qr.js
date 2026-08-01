@@ -1,14 +1,14 @@
-// ForkMesh's own QR-code generator — no third-party library.
-//
-// Scope: byte mode, error-correction level L, QR versions 1–5 (a single error
-// block, which keeps placement simple). That covers up to 108 bytes — plenty
-// for a "bitcoincash:<addr>?amount=..." URI. Exposes:
-//   ForkMeshQR.toCanvas(text, pxSize) -> <canvas>
-//   ForkMeshQR.render(text, containerEl, pxSize)
+
+
+
+
+
+
+
 (function (global) {
   "use strict";
 
-  // --- GF(256) tables (primitive polynomial 0x11d) --------------------------
+
   const EXP = new Array(512);
   const LOG = new Array(256);
   (function () {
@@ -31,12 +31,12 @@
     for (let i = 0; i < degree; i++) {
       const next = new Array(poly.length + 1).fill(0);
       for (let j = 0; j < poly.length; j++) {
-        next[j] ^= poly[j]; // multiply by x
-        next[j + 1] ^= gfMul(poly[j], EXP[i]); // times -α^i
+        next[j] ^= poly[j];
+        next[j + 1] ^= gfMul(poly[j], EXP[i]);
       }
       poly = next;
     }
-    return poly; // poly[0] === 1 (leading)
+    return poly;
   }
 
   function rsEncode(data, ecLen) {
@@ -48,14 +48,14 @@
         for (let j = 0; j < gen.length; j++)
           res[i + j] ^= gfMul(gen[j], coef);
     }
-    return res.slice(data.length); // the ecLen remainder bytes
+    return res.slice(data.length);
   }
 
-  // --- Per-version capacity at EC level L -----------------------------------
-  // { data: total data codewords, ec: EC codewords PER BLOCK, blocks }.
-  // v1-5 are a single block; v6 (level L) is two equal blocks, so we interleave.
-  // Versions >=7 are intentionally out of scope (they'd need version-info
-  // modules and multiple alignment patterns).
+
+
+
+
+
   const CAP_L = {
     1: { data: 19, ec: 7, blocks: 1 },
     2: { data: 34, ec: 10, blocks: 1 },
@@ -64,28 +64,28 @@
     5: { data: 108, ec: 26, blocks: 1 },
     6: { data: 136, ec: 18, blocks: 2 },
   };
-  // Single alignment-pattern center (only one for v2-6 at these sizes).
+
   const ALIGN = { 2: 18, 3: 22, 4: 26, 5: 30, 6: 34 };
 
   function chooseVersion(byteLen) {
     for (let v = 1; v <= 6; v++) {
-      // 4-bit mode + 8-bit count + 8*len bits must fit in dataCodewords*8.
+
       if (4 + 8 + byteLen * 8 <= CAP_L[v].data * 8) return v;
     }
     throw new Error("data too long for QR v1–5");
   }
 
-  // --- Bit stream -> data codewords -----------------------------------------
+
   function buildCodewords(bytes, version) {
     const cap = CAP_L[version];
     const bits = [];
     const push = (val, len) => {
       for (let i = len - 1; i >= 0; i--) bits.push((val >> i) & 1);
     };
-    push(0b0100, 4); // byte mode
-    push(bytes.length, 8); // char count (8 bits for v1–9)
+    push(0b0100, 4);
+    push(bytes.length, 8);
     for (const b of bytes) push(b, 8);
-    // Terminator (up to 4 zero bits), then pad to a byte boundary.
+
     const capBits = cap.data * 8;
     for (let i = 0; i < 4 && bits.length < capBits; i++) bits.push(0);
     while (bits.length % 8 !== 0) bits.push(0);
@@ -95,13 +95,13 @@
       for (let j = 0; j < 8; j++) b = (b << 1) | bits[i + j];
       codewords.push(b);
     }
-    // Pad codewords with the standard 0xEC / 0x11 alternation.
+
     const pads = [0xec, 0x11];
     let p = 0;
     while (codewords.length < cap.data) codewords.push(pads[p++ % 2]);
 
-    // Split into equal blocks, RS-encode each, then interleave data then EC.
-    // For a single block (v1-5) this is just data followed by its EC bytes.
+
+
     const nBlocks = cap.blocks;
     const perBlock = cap.data / nBlocks;
     const dataBlocks = [];
@@ -119,7 +119,7 @@
     return out;
   }
 
-  // --- Matrix ---------------------------------------------------------------
+
   function makeMatrix(version, allCodewords) {
     const size = 17 + 4 * version;
     const m = Array.from({ length: size }, () => new Array(size).fill(null));
@@ -146,26 +146,26 @@
     finder(0, size - 7);
     finder(size - 7, 0);
 
-    // Timing patterns.
+
     for (let i = 8; i < size - 8; i++) {
       if (!reserved[6][i]) set(6, i, i % 2 === 0);
       if (!reserved[i][6]) set(i, 6, i % 2 === 0);
     }
-    // Dark module.
+
     set(4 * version + 9, 8, true);
 
-    // Alignment pattern (v >= 2).
+
     if (ALIGN[version] !== undefined) {
       const ac = ALIGN[version];
       for (let dr = -2; dr <= 2; dr++)
         for (let dc = -2; dc <= 2; dc++) {
           const ring =
-            Math.max(Math.abs(dr), Math.abs(dc)) !== 1; // center + outer ring
+            Math.max(Math.abs(dr), Math.abs(dc)) !== 1;
           set(ac + dr, ac + dc, ring);
         }
     }
 
-    // Reserve the format-info regions (filled later, after masking).
+
     for (let i = 0; i < 9; i++) {
       if (!reserved[8][i]) reserved[8][i] = true;
       if (!reserved[i][8]) reserved[i][8] = true;
@@ -175,14 +175,14 @@
       reserved[size - 1 - i][8] = true;
     }
 
-    // Lay the data+EC bitstream in the upward/downward zigzag.
+
     const bits = [];
     for (const cw of allCodewords)
       for (let i = 7; i >= 0; i--) bits.push((cw >> i) & 1);
     let bi = 0;
     let upward = true;
     for (let col = size - 1; col > 0; col -= 2) {
-      if (col === 6) col--; // skip the vertical timing column
+      if (col === 6) col--;
       for (let i = 0; i < size; i++) {
         const row = upward ? size - 1 - i : i;
         for (let c = 0; c < 2; c++) {
@@ -208,32 +208,32 @@
   ];
 
   function formatBits(mask) {
-    // EC level L = 0b01.
+
     const data = (0b01 << 3) | mask;
     let d = data << 10;
     const g = 0b10100110111;
     for (let i = 14; i >= 10; i--) if ((d >> i) & 1) d ^= g << (i - 10);
-    return ((data << 10) | d) ^ 0b101010000010010; // 15 bits, with mask
+    return ((data << 10) | d) ^ 0b101010000010010;
   }
 
   function applyFormat(m, size, mask) {
     const bits = formatBits(mask);
     const bit = (i) => ((bits >> i) & 1) === 1;
-    // Around the top-left finder.
+
     for (let i = 0; i <= 5; i++) m[i][8] = bit(i);
     m[7][8] = bit(6);
     m[8][8] = bit(7);
     m[8][7] = bit(8);
     for (let i = 9; i <= 14; i++) m[8][14 - i] = bit(i);
-    // Around the other two finders.
+
     for (let i = 0; i <= 7; i++) m[size - 1 - i][8] = bit(i);
     for (let i = 8; i <= 14; i++) m[8][size - 15 + i] = bit(i);
-    m[size - 8][8] = true; // dark module stays set
+    m[size - 8][8] = true;
   }
 
   function penalty(m, size) {
     let score = 0;
-    // Rule 1: runs of 5+ same-color in rows and columns.
+
     for (let r = 0; r < size; r++) {
       for (const line of [m[r], m.map((row) => row[r])]) {
         let run = 1;
@@ -246,15 +246,15 @@
         }
       }
     }
-    // Rule 2: 2x2 blocks of same color.
+
     for (let r = 0; r < size - 1; r++)
       for (let c = 0; c < size - 1; c++) {
         const v = m[r][c];
         if (v === m[r][c + 1] && v === m[r + 1][c] && v === m[r + 1][c + 1])
           score += 3;
       }
-    // Rule 3 (finder-like patterns) and Rule 4 (balance) are minor; we apply a
-    // light balance penalty so the chosen mask isn't wildly skewed.
+
+
     let dark = 0;
     for (let r = 0; r < size; r++)
       for (let c = 0; c < size; c++) if (m[r][c]) dark++;
@@ -285,7 +285,7 @@
 
   function toCanvas(text, pxSize) {
     const { modules, size } = generate(text);
-    const quiet = 4; // standard quiet-zone modules
+    const quiet = 4;
     const total = size + quiet * 2;
     const scale = Math.max(1, Math.floor((pxSize || 220) / total));
     const canvas = document.createElement("canvas");
@@ -312,7 +312,7 @@
   }
 
   global.ForkMeshQR = { toCanvas, render, generate };
-  // Internals exposed for the self-consistency test harness only.
+
   global.ForkMeshQR._test = {
     makeMatrix, buildCodewords, chooseVersion, rsEncode, MASKS, CAP_L, formatBits,
   };

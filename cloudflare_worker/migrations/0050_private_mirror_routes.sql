@@ -1,9 +1,9 @@
--- Owner-authorized routes to opaque, end-to-end encrypted private replicas.
---
--- Repository identities are represented only by blind indexes. The random
--- replica id is not a repository name and addresses ciphertext at a registered
--- direct-HTTPS mirror. D1 never stores repository bytes, plaintext private
--- names, recipient private keys, wallet material, or decryption keys.
+
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS private_mirror_routes (
     binding_bi TEXT PRIMARY KEY,

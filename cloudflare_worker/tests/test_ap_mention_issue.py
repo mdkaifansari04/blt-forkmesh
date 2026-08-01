@@ -89,8 +89,8 @@ def test_public_feed_requires_explicit_activitystreams_public_audience():
 
 
 async def _passthrough_alias(env, owner, repo):
-    # Non-org repos resolve to themselves; org-alias resolution is pinned in
-    # test_orgs_teams.py.
+
+
     return owner
 
 
@@ -208,24 +208,24 @@ def _mention_env(log, *, is_private=0, has_repo=True, seen=False,
         })
 
 
-# --- Mention-tag gate ---------------------------------------------------------
+
 
 def test_note_repo_mention_maps_only_local_repo_actors():
     ns = _mention_env([])
     fn = ns["_ap_note_repo_mention"]
     assert fn(ORIGIN, _note()) == ("forkmesh", "forkmesh")
-    # User actors, foreign servers, and mention-free notes don't open the gate.
+
     assert fn(ORIGIN, _note(mentions=[ORIGIN + "/ap/users/alice"])) is None
     assert fn(ORIGIN, _note(
         mentions=["https://other.example/ap/repos/a/b"])) is None
     assert fn(ORIGIN, _note(mentions=[])) is None
-    # Actor ids are lowercase-normalized like every other AP lookup.
+
     assert fn(ORIGIN, _note(
         mentions=[ORIGIN + "/ap/repos/ForkMesh/ForkMesh"])) == \
         ("forkmesh", "forkmesh")
 
 
-# --- Verified activity recording ---------------------------------------------
+
 
 def test_verified_mention_records_for_manual_review_only():
     log = []
@@ -283,7 +283,7 @@ def test_non_issue_shaped_public_feedback_is_still_reviewable_not_filed():
     assert not any(e[0] in ("ai", "enqueue", "reply") for e in log)
 
 
-# --- Gates --------------------------------------------------------------------
+
 
 def test_legacy_seen_note_drops_before_new_review_record():
     log = []
@@ -321,7 +321,7 @@ def test_inbox_capacity_is_not_consulted_until_manual_create():
     assert not any(e[0] in ("enqueue", "reply", "ai") for e in log)
 
 
-# --- The reply Note -----------------------------------------------------------
+
 
 def _reply_env(log):
     async def _ap_local_actor(env, kind, handle, create=False):
@@ -379,7 +379,7 @@ def test_reply_note_addresses_author_and_carries_issue_context():
     assert note["tag"] == [{"type": "Mention", "href": REMOTE["actor_id"],
                             "name": "@alice@mastodon.example"}]
     assert "confirmed issue #7" in note["content"]
-    # Replies to our reply thread into the new issue as federated comments.
+
     assert rec["context"] == {"owner": "forkmesh", "repo": "forkmesh",
                               "kind": "issue", "ref": "7",
                               "key": "forkmesh/forkmesh#issue#7"}
@@ -391,11 +391,11 @@ def test_reply_note_addresses_author_and_carries_issue_context():
     assert ("drain", 1) in log
 
 
-# --- Inbox gate ---------------------------------------------------------------
+
 
 def test_inbox_lets_repo_mention_create_through_to_verification():
-    # Borrow test_ap_inbox_load's environment shape: no Signature header, so
-    # reaching 401 signature_required proves the mention passed the pre-drop.
+
+
     class FakeRequest:
         def __init__(self, body):
             self.method = "POST"

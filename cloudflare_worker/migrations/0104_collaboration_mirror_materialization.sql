@@ -1,6 +1,6 @@
--- Let integrity-approved online mirrors materialize pull requests and
--- discussions immediately, matching the existing issue path. The encrypted
--- relay row remains until the source-of-truth node commits it.
+
+
+
 ALTER TABLE pull_inbox
   ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT '';
 ALTER TABLE pull_inbox

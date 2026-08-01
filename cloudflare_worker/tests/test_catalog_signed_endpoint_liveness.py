@@ -114,8 +114,8 @@ def _run(endpoint):
         return value
 
     async def active_nodes(_env):
-        # A retained catalog row is still visible when no node has fresh
-        # liveness evidence. The old read-time filter would drop every row.
+
+
         return set()
 
     async def blind_index(_env, value):

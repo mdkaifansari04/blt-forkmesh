@@ -10,7 +10,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import edge_routing as routing  # noqa: E402
+import edge_routing as routing
 
 
 def _record(node="mirror-a", **extra):

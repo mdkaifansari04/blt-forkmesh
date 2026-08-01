@@ -1,53 +1,53 @@
 #!/usr/bin/env bash
-# Publish prebuilt release binaries WITHOUT committing them into git (issue #304;
-# see docs/design/release-binary-publishing.md).
-#
-# For each binary you pass, this:
-#   1. computes its sha256 (its content address),
-#   2. copies the bytes into the node's content-addressed release store (the CAS,
-#      co-located with the served mirror — NEVER committed to git), and
-#   3. records the asset in the channel's release metadata:
-#        .forkmesh/releases/<channel>/SHASUMS256.txt   (sha256sum -c compatible)
-#        .forkmesh/releases/<channel>/release.json     (authenticated manifest body)
-#        .forkmesh/releases/<channel>/release.json.sig (Ed25519 detached signature)
-#
-# Commit the .forkmesh/releases/<channel>/ metadata changes (small, text) the usual way;
-# install.sh authenticates release.json against a separately trusted key or
-# controller digest, verifies that it binds SHASUMS256.txt, then downloads each
-# binary from the content-addressed endpoint and verifies the SHA-256.
-#
-# Usage:
-#   tools/forkmesh-release-publish.sh [--channel latest] [--tag vX.Y.Z] \
-#       [--tag-commit GIT_COMMIT] [--build-commit GIT_COMMIT] \
-#       [--cas-dir DIR] [--repo owner/repo] [--signing-key PRIVATE_KEY.pem] \
-#       BINARY [BINARY ...]
-#
-#   --channel   Release channel directory under .forkmesh/releases/ (default: latest, or
-#               $RELEASE_CHANNEL).
-#   --tag       Immutable git tag this release is cut from (default: $FORKMESH_TAG
-#               or the current `git describe --tags`).
-#   --tag-commit  Peeled commit targeted by --tag (default:
-#                 $FORKMESH_TAG_COMMIT, else `git rev-list -n1 <tag>`).
-#   --build-commit
-#                 Exact code-source commit embedded in the binaries (default:
-#                 $FORKMESH_BUILD_COMMIT, else the newest commit outside
-#                 .forkmesh/releases/). This is deliberately separate from the
-#                 immutable tag target so same-semver rebuild provenance does
-#                 not redefine an existing tag.
-#   --cas-dir   Where to write blob bytes — point this at the serving node's
-#               <mirror>/forkmesh-releases directory. Defaults to
-#               $FORKMESH_RELEASE_CAS, else .forkmesh/release-blobs (the node that
-#               serves the repo must read its CAS from this path).
-#   --repo      owner/repo for the manifest (default: $FORKMESH_REPO,
-#               else forkmesh/forkmesh).
-#   --signing-key
-#               Ed25519 private key in PEM form. Defaults to
-#               $FORKMESH_RELEASE_SIGNING_KEY. Publishing fails closed when it
-#               is absent: release metadata is executable supply-chain input,
-#               not an optional authenticity hint.
-#
-# Each BINARY should already be named the way install.sh resolves per platform:
-#   forkmesh-<os>-<arch>[.exe]   (os: linux|macos|windows, arch: x86_64|arm64)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 set -euo pipefail
 
 channel="${RELEASE_CHANNEL:-latest}"
@@ -162,20 +162,20 @@ sha256_of() {
   else echo "Error: need sha256sum or shasum." >&2; exit 1; fi
 }
 
-# Derive os/arch from a forkmesh-<os>-<arch>[.exe] asset name (best effort).
+
 asset_os=""; asset_arch=""
 detect_os_arch() {
   local n="${1%.exe}"
   asset_arch="${n##*-}"; n="${n%-*}"; asset_os="${n##*-}"
 }
 
-# Escape a value for embedding in a JSON string. Filenames/tags are operator
-# supplied, but one containing a double quote or backslash would otherwise
-# corrupt (or inject fields into) the emitted manifest JSON.
+
+
+
 json_escape() {
   local s="$1"
-  s="${s//\\/\\\\}"    # backslash first so later escapes aren't re-escaped
-  s="${s//\"/\\\"}"    # double quote
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
   s="${s//$'\n'/\\n}"
   s="${s//$'\r'/\\r}"
   s="${s//$'\t'/\\t}"
@@ -193,8 +193,8 @@ for bin in "${bins[@]}"; do
   size="$(wc -c < "$bin" | tr -d ' ')"
   detect_os_arch "$name"
 
-  # Content-addressed store: sha256/<aa>/<full>/data. Idempotent — re-publishing
-  # identical bytes is a no-op (the blob already exists under its hash).
+
+
   blob="${cas_dir}/sha256/${hash:0:2}/${hash}/data"
   mkdir -p "$(dirname "$blob")"
   [ -f "$blob" ] || cp "$bin" "$blob"
@@ -206,14 +206,14 @@ for bin in "${bins[@]}"; do
   echo "Staged $name ($size bytes) -> ${blob}"
 done
 
-# SHASUMS256.txt sorted by filename so the committed manifest is stable.
+
 sort -k2 "${sums_file}.tmp" > "$sums_file"
 rm -f "${sums_file}.tmp"
 sums_hash="$(sha256_of "$sums_file")"
 
-# release.json: the manifest install.sh / the release page can read, and the
-# exact body signed below. The checksum-list hash prevents an attacker from
-# mixing an authenticated manifest with a modified SHASUMS256.txt.
+
+
+
 {
   printf '{\n'
   printf '  "schema": "forkmesh-release-v2",\n'
@@ -228,8 +228,8 @@ sums_hash="$(sha256_of "$sums_file")"
   printf '}\n'
 } > "${meta_dir}/release.json"
 
-# Raw 64-byte Ed25519 detached signature. Keeping the signature detached means
-# the exact release.json bytes are independently hashable/controller-pinnable.
+
+
 signature="${meta_dir}/release.json.sig"
 if ! openssl pkeyutl -sign -rawin -inkey "$signing_key" \
      -in "${meta_dir}/release.json" -out "${signature}.tmp" 2>/dev/null; then

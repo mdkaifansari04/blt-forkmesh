@@ -261,4 +261,4 @@ inline QString linkifyMarkdownReferences(const QString &input)
     return out;
 }
 
-} // namespace ReferenceLinks
+}

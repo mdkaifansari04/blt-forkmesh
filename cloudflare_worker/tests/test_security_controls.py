@@ -51,7 +51,7 @@ def test_roles_are_explicit_and_scope_limited():
     assert not security.role_scope_allowed(
         "platform_administrator", "repository"
     )
-    # Privileged moderation/reviewer/admin grants never become profile badges.
+
     assert security.public_roles(
         ["mirror_operator", "moderator", "platform_administrator"]
     ) == ["mirror_operator"]
@@ -94,8 +94,8 @@ def test_worker_has_no_abuse_quarantine_request_or_response_runtime():
     ):
         assert not hasattr(security, removed)
 
-    # Removing the cross-request quarantine does not weaken ordinary endpoint
-    # authorization, input validation, or narrowly scoped traffic limits.
+
+
     for retained in (
         "signup_rate_check",
         "ROOM_MSG_WINDOW_MS",
@@ -134,7 +134,7 @@ def test_owner_public_bundle_contains_no_private_material_and_binds_key_id():
         "v": 1,
         "x25519": _b64url(x25519),
         "mlkem768": _b64url(mlkem),
-        # Caller-provided aliases and private fields are ignored.
+
         "kid": "attacker-alias",
         "privateKey": "never-retained",
     })
@@ -263,8 +263,8 @@ def test_error_logs_redact_browser_repository_routes_too():
         :worker.index("async def capture_worker_exception")
     ]
     assert "looks_like_repo_route(path)" in body
-    # The redacted bucket keeps an identity-free route-family suffix
-    # ([page] / [git-*] / [api:<fixed-route-name>]) so recurring failures can
-    # be told apart by endpoint without re-exposing owner/repo.
+
+
+
     assert '"/private-or-unpublished-repository/"' in body
     assert "_privacy_redacted_route_kind(path)" in body

@@ -41,11 +41,11 @@ FAILURES = []
 
 MAX_SAFE_INT = 9007199254740991
 
-# ---- shared drift fixtures ---------------------------------------------------
-# One fixture per event type, pinning the exact contentForSigning bytes of
-# qt_client/src/IssueStore.cpp and ProjectStore.cpp (and the relay Worker's
-# issue_event_content). If the server's port drifts from these rules, the
-# comparison below fails before any signature check ever runs.
+
+
+
+
+
 ISSUE_CONTENT_FIXTURES = [
     ({"type": "open", "title": "T", "body": "B",
       "attachments": ["a.png", "b.png"]}, "T\x00B\x00a.png,b.png"),
@@ -233,7 +233,7 @@ def main():
     repo = tmp / "repo"
     repo.mkdir()
 
-    # fresh identity at the path the server reads
+
     data_home = tmp / "data"
     key_dir = data_home / "ForkMesh/ForkMesh/identity"
     key_dir.mkdir(parents=True)
@@ -248,7 +248,7 @@ def main():
 
     os.environ["XDG_DATA_HOME"] = str(data_home)
     os.environ["FORKMESH_REPO"] = str(repo)
-    # reset cached identity/paths picked up at import time
+
     srv.KEY_PATH = key_dir / "ed25519.pem"
     connector_path = data_home / "ForkMesh/ForkMesh/mcp/connector.json"
     srv.CONNECTOR_PATH = connector_path
@@ -268,15 +268,15 @@ def main():
     git("config", "user.email", "t@t")
     git("config", "user.name", "tester")
     (repo / "README.md").write_text("hello mesh\n")
-    # Pre-existing native tracker state: an open issue, a closed issue, and a
-    # project, so allocation must span both status folders and past projects.
+
+
     seed_issue(repo, 1, "open", "Seeded open issue")
     seed_issue(repo, 2, "closed", "Seeded closed issue")
     seed_project(repo, 1, "Seeded project")
     git("add", "-A")
     git("commit", "-qm", "init")
 
-    # canonical signing rules must match the native stores' fixtures exactly
+
     check("issue contentForSigning matches native fixtures", all(
         srv.issue_content_for_signing(ev) == expected
         for ev, expected in ISSUE_CONTENT_FIXTURES))
@@ -284,12 +284,12 @@ def main():
         srv.project_content_for_signing(ev) == expected
         for ev, expected in PROJECT_CONTENT_FIXTURES))
 
-    # initialize handshake
+
     resp = rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
                 "params": {"protocolVersion": "2025-06-18"}})
     check("initialize", resp["result"]["serverInfo"]["name"] == "forkmesh")
 
-    # tools/list advertises all 12 tools
+
     resp = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
     names = {t["name"] for t in resp["result"]["tools"]}
     check("tools/list has 12 tools", names == {
@@ -304,26 +304,26 @@ def main():
         res = r["result"]
         return res["content"][0]["text"], res.get("isError", False)
 
-    # list_repos
+
     text, err = call("list_repos", {})
     check("list_repos", not err and json.loads(text)[0]["name"] == "repo")
     check("list_repos counts seeded open issue",
           json.loads(text)[0]["openIssues"] == 1)
 
-    # read_file
+
     text, err = call("read_file", {"path": "README.md"})
     check("read_file", not err and text == "hello mesh\n")
     _, err = call("read_file", {"path": "../escape"})
     check("read_file blocks traversal", err)
-    # Absolute paths must not escape the repo: Path(repo) / "/etc/passwd"
-    # collapses to "/etc/passwd", so a ".."-only guard would leak any file
-    # (including the node's Ed25519 identity key).
+
+
+
     _, err = call("read_file", {"path": "/etc/passwd"})
     check("read_file blocks absolute path", err)
 
-    # ---- issues -------------------------------------------------------------
-    # create_issue allocates past the seeded closed issue and writes the
-    # native signed-event record, never the legacy Markdown layout.
+
+
+
     text, err = call("create_issue", {
         "title": "First bug", "body": "it broke", "labels": ["bug"],
         "start_date": "2026-07-20", "end_date": "2026-07-24"})
@@ -346,7 +346,7 @@ def main():
     check("issue committed with native message",
           last_commit() == "issue #3: First bug")
 
-    # second dated issue (epoch-ms dates)
+
     text, err = call("create_issue", {
         "title": "Second bug", "body": "also broke",
         "start_date": 1784433600000, "end_date": 1784520000000})
@@ -356,7 +356,7 @@ def main():
     check("second issue verifies + strict", issue_loads_strict(rec4, 4) and
           all(verify_issue_event(pub_b64, 4, e) for e in rec4["events"]))
 
-    # invalid dates fail with no partial record
+
     _, err = call("create_issue", {"title": "Bad", "start_date": "not-a-date"})
     check("create_issue rejects invalid date", err)
     _, err = call("create_issue", {"title": "Bad", "start_date": "2026-07-24",
@@ -365,7 +365,7 @@ def main():
     check("no partial record after date errors",
           not any(d.exists() for d in srv.issue_dir_candidates(repo, 5)))
 
-    # a stale number read (concurrent writer took it) retries with a fresh one
+
     real_next = srv.next_issue_number
     calls = {"n": 0}
 
@@ -380,8 +380,8 @@ def main():
         srv.next_issue_number = real_next
     check("stale-number collision retries", not err and "#5" in text)
 
-    # a collision that lands between our write and commit is re-read and the
-    # partial record is withdrawn before retrying
+
+
     real_sign = srv.sign_issue_event
     raced = {"done": False}
 
@@ -405,7 +405,7 @@ def main():
           not (repo / ".forkmesh/issues/open/6").exists() and
           (repo / ".forkmesh/issues/open/7/issue-7.json").is_file())
 
-    # search_issues reads the native records; folder is authoritative
+
     text, err = call("search_issues", {"query": "bug"})
     check("search_issues match", not err and
           [r["number"] for r in json.loads(text)] == [3, 4])
@@ -415,7 +415,7 @@ def main():
     text, _ = call("search_issues", {"query": "nonexistent-xyz"})
     check("search_issues no match", json.loads(text) == [])
 
-    # comment_on_issue appends a signed event to the record
+
     _, err = call("comment_on_issue", {"number": 3, "body": "me too"})
     check("comment_on_issue", not err)
     rec = json.loads(ipath.read_text())
@@ -427,7 +427,7 @@ def main():
     _, err = call("comment_on_issue", {"number": 99, "body": "x"})
     check("comment_on_issue unknown issue", err)
 
-    # ---- milestones ---------------------------------------------------------
+
     _, err = call("create_milestone", {"title": "Sprint A",
                                        "due": "2026-08-01",
                                        "description": "first sprint"})
@@ -458,7 +458,7 @@ def main():
     _, err = call("update_milestone", {"title": "Sprint A", "status": "wat"})
     check("update_milestone bad status", err)
 
-    # ---- projects -----------------------------------------------------------
+
     text, err = call("create_project", {
         "title": "Roadmap Q3", "body": "the plan",
         "start_date": "2026-07-20", "end_date": "2026-08-01",
@@ -481,7 +481,7 @@ def main():
     check("project committed with native message",
           last_commit() == "projects: #2 Roadmap Q3")
 
-    # errors are actionable and leave no partial record
+
     text, err = call("create_project", {"title": "Bad", "issues": [999]})
     check("create_project unknown issue link", err and "#999" in text)
     text, err = call("create_project", {"title": "Bad", "milestone": "Nope"})
@@ -492,7 +492,7 @@ def main():
     check("no partial project record after errors",
           not (repo / ".forkmesh/projects/3").exists())
 
-    # update_project appends signed events with native commit messages
+
     _, err = call("update_project", {"number": 2, "issues": [3],
                                      "milestone": "Sprint B"})
     check("update_project", not err)
@@ -516,7 +516,7 @@ def main():
     _, err = call("update_project", {"number": 2, "issues": [999]})
     check("update_project unknown issue link", err)
 
-    # ---- pulls (unchanged legacy path) --------------------------------------
+
     git("checkout", "-q", "-b", "feature")
     (repo / "feature.txt").write_text("new\n")
     git("add", "feature.txt")
@@ -531,8 +531,8 @@ def main():
     text, err = call("get_pr_diff", {"number": 1})
     check("get_pr_diff", not err and "feature.txt" in text)
 
-    # ---- connector token (adhoc #16) ----------------------------------------
-    # No connector file: the historical local-subprocess setup stays fully open.
+
+
     text, err = call("whoami", {})
     me = json.loads(text)
     check("whoami without a connector is open",
@@ -540,7 +540,7 @@ def main():
           not me["connector"] and me["node"] == pub_b64)
     check("whoami lists reachable repos", me["repos"] == ["repo"])
 
-    # Mint one the way the desktop client's Settings -> MCP tab does.
+
     connector_path.parent.mkdir(parents=True, exist_ok=True)
     token = "fmcp_" + base64.urlsafe_b64encode(b"k" * 32).decode().rstrip("=")
     connector_path.write_text(json.dumps({
@@ -574,8 +574,8 @@ def main():
     _, err = call("comment_on_issue", {"number": 1, "body": "with token"})
     check("write allowed with the token", not err)
 
-    # Revoking is deleting the file; every config still holding the string is
-    # demoted at once — and the node falls back to open local mode.
+
+
     connector_path.unlink()
     check("revoked connector falls back to open mode",
           srv.access_level() == "open")

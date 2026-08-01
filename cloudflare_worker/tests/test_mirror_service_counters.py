@@ -10,8 +10,8 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import headless_mirror_refresh as refresh  # noqa: E402
-import mirror_gateway as gateway  # noqa: E402
+import headless_mirror_refresh as refresh
+import mirror_gateway as gateway
 
 
 def test_gateway_initializes_truthful_zero_counters(tmp_path: Path):
@@ -64,8 +64,8 @@ def test_gateway_counters_persist_only_completed_clone_and_browse_requests(
                 "clonesServed": 1,
                 "websiteServed": 2,
                 "updatedAt": 1_765_000_000_000,
-                # When each kind of request was last served, and the bounded
-                # class of client served. The raw User-Agent never lands here.
+
+
                 "cloneServedAt": 1_765_000_000_000,
                 "cloneServedAgent": "git-client",
                 "websiteServedAt": 1_765_000_000_000,
@@ -83,8 +83,8 @@ def test_gateway_counters_persist_only_completed_clone_and_browse_requests(
         "mirror6/forkmesh"
     ]
     assert row["websiteServed"] == 3
-    # The website stamp advances with its own counter; the clone stamp and the
-    # client that earned it are untouched by an unrelated browse.
+
+
     assert row["websiteServedAt"] == 1_765_000_001_000
     assert row["websiteServedAgent"] == "client"
     assert row["cloneServedAt"] == 1_765_000_000_000
@@ -105,8 +105,8 @@ def test_gateway_counters_load_rows_written_before_the_served_stamps(
                     "websiteServed": 12,
                     "updatedAt": 1_765_000_000_000,
                 },
-                # A tampered row: neither an unknown agent string nor a
-                # non-positive stamp may reach the published record.
+
+
                 "mirror7/forkmesh": {
                     "clonesServed": 1,
                     "websiteServed": 0,
@@ -198,8 +198,8 @@ def test_refresh_publishes_exact_counters_and_rejects_unsafe_counter_files(
                     "updatedAt": 1_765_000_000_000,
                     "cloneServedAt": 1_764_999_000_000,
                     "cloneServedAgent": "git-client",
-                    # An agent class the gateway never writes stays unknown
-                    # rather than being published as-is.
+
+
                     "websiteServedAgent": "Mozilla/5.0",
                 },
             },

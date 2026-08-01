@@ -152,14 +152,14 @@ bool validExternalIdentityRequest(
     return true;
 }
 
-// Elevated size-map helper (adhoc #76). The Size map tab re-executes this very
-// binary through pkexec (or sudo where polkit is absent) so root can measure
-// the directories the desktop user cannot read; the request — folder, depth and
-// prune set — arrives in a file so stdin stays free for sudo's password, and
-// the tree goes back over stdout in the compact DirectorySizeScan binary
-// format, which carries the million-node trees a scan of "/" produces far more
-// cheaply than JSON. It deliberately touches nothing else: no settings, no
-// identity, no node, so nothing root-owned is left behind in the user's data.
+
+
+
+
+
+
+
+
 int runSizeMapScan(const QString &requestPath)
 {
     QFile request(requestPath);
@@ -178,9 +178,9 @@ int runSizeMapScan(const QString &requestPath)
         std::fprintf(stderr, "size-map-scan: not a directory\n");
         return 2;
     }
-    // Progress goes to stderr, one line per update, so the GUI can name the
-    // folder root is inside right now while stdout stays reserved for the tree
-    // (adhoc #112).
+
+
+
     const auto progress = [](const QString &current, qint64 bytes, int files) {
         const QByteArray line =
             forkmesh::encodeScanProgress(current, bytes, files);
@@ -355,19 +355,19 @@ int runPublicMirrorMaterializer(int argc, char *argv[])
     return 0;
 }
 
-// Headless = no GUI available / wanted. Triggered explicitly with --headless or
-// --cli, or auto-detected on Linux when there's no display server to connect to
-// (so installing on a server / VM "just works" instead of aborting on the xcb
-// plugin). We force the always-present "offscreen" Qt platform so QApplication
-// still constructs — the whole backend (mesh, repo serving, mirror sync) runs in
-// the event loop regardless of a display, and a stdin REPL drives it.
+
+
+
+
+
+
 bool detectHeadless(const QStringList &args)
 {
     if (args.contains(QStringLiteral("--headless")) ||
         args.contains(QStringLiteral("--cli")))
         return true;
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
-    // Honour an explicit platform choice (e.g. QT_QPA_PLATFORM=offscreen in CI).
+
     if (qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
         return qgetenv("QT_QPA_PLATFORM").startsWith("offscreen") ||
                qgetenv("QT_QPA_PLATFORM").startsWith("minimal");
@@ -411,13 +411,13 @@ QString earlyMainLogPath()
 #endif
 }
 
-// QApplication whose notify() wraps every event delivery in a try/catch. A C++
-// exception thrown out of a slot invoked by the event loop — e.g. a handler for
-// a tab click / currentChanged — is undefined behaviour in Qt6 and typically
-// takes the whole app down with nothing logged ("it crashes when I click a
-// tab"). Catching it here turns that silent crash into a logged fault (main log
-// + durable crash log via forkmesh::logCaughtFault) and keeps the app running
-// instead of dying. Signals (SIGSEGV etc.) still go through the CrashHandler.
+
+
+
+
+
+
+
 class ForkMeshApplication : public QApplication
 {
 public:
@@ -459,8 +459,8 @@ public:
             forkmesh::logCaughtFault(describe(receiver, event),
                                      QStringLiteral("(non-std exception)"));
         }
-        // Swallow the fault: returning to the event loop keeps the window alive
-        // rather than letting the exception unwind through Qt's C event loop.
+
+
         return false;
     }
 
@@ -482,11 +482,11 @@ private:
     }
 };
 
-// External signer used by tools/cloudflare_bootstrap.py. The bootstrapper sends
-// a public mirror-manifest request on stdin; this short-lived mode validates it,
-// signs the exact canonical payload with the existing local node identity, and
-// writes only the public key + detached signature to stdout. The private key
-// never crosses the process boundary, enters argv, or reaches Cloudflare.
+
+
+
+
+
 int runMirrorManifestSigner(int argc, char *argv[])
 {
     QCoreApplication app(argc, argv);
@@ -547,29 +547,29 @@ int runMirrorManifestSigner(int argc, char *argv[])
     return 0;
 }
 
-} // namespace
+}
 
 int main(int argc, char *argv[])
 {
-    // The elevated size-map helper runs as root under pkexec/sudo, so it is
-    // dispatched before anything else in main() can write to the desktop
-    // user's crash log, settings or single-instance lock (adhoc #76).
+
+
+
     for (int i = 1; i + 1 < argc; ++i) {
         if (qstrcmp(argv[i], "--size-map-scan") == 0)
             return runSizeMapScan(QString::fromLocal8Bit(argv[i + 1]));
     }
 
-    // First thing, before anything can fault: install the crash handlers so an
-    // unexpected exit/crash leaves a record in the network log. A compact signal
-    // breadcrumb and the full backtrace go to network_log.txt directly so the
-    // crash is visible in the log view on next startup without needing a
-    // separate file. Cheap; opens a couple fds plus fixed buffers.
+
+
+
+
+
     forkmesh::installCrashHandler(
         QString(),
         earlyMainLogPath());
 
-    // Collect args before QApplication so headless/root flags are visible while we
-    // still control the Qt platform plugin selection.
+
+
     QStringList rawArgs;
     rawArgs.reserve(argc);
     for (int i = 0; i < argc; ++i)
@@ -582,18 +582,18 @@ int main(int argc, char *argv[])
         }
     }
 
-    // `forkmesh --version` prints and exits before the Qt platform, root-gate
-    // and single-instance setup. The auto-updater runs a candidate binary with
-    // this flag as a smoke test, so it must succeed on a bare VPS with no
-    // display, as root, and while the old instance still holds the lock.
+
+
+
+
     if (rawArgs.contains(QStringLiteral("--version"))) {
         printf("ForkMesh %s\n", FORKMESH_VERSION);
         return 0;
     }
-    // Machine-readable provenance used by the fleet binary installer.  Keep it
-    // separate from --version so existing scripts retain their exact output,
-    // while a same-semver artifact from an older commit can no longer pass the
-    // install verification.
+
+
+
+
     if (rawArgs.contains(QStringLiteral("--build-commit"))) {
         printf("%s\n", FORKMESH_BUILD_COMMIT);
         static const QRegularExpression exactCommit(
@@ -618,60 +618,60 @@ int main(int argc, char *argv[])
     const bool allowRoot = rawArgs.contains(QStringLiteral("--allow-root")) ||
                            qEnvironmentVariableIsSet("FORKMESH_ALLOW_ROOT");
 
-    // Under headless, run on the offscreen platform so QApplication initialises
-    // without a display (unless the user already pinned a platform). This is what
-    // turns the "could not connect to display / xcb plugin" abort into a working
-    // CLI node.
+
+
+
+
     if (headless && !qEnvironmentVariableIsSet("QT_QPA_PLATFORM"))
         qputenv("QT_QPA_PLATFORM", "offscreen");
 
-    // Drop Qt's two known-noise warnings before anything can emit them: the
-    // offscreen/minimal propagateSizeHints() line (headless spams it into the
-    // interactive `forkmesh>` console) and QFontDatabase's "OpenType support
-    // missing for ..." fallback walk, which prints one line per installed font
-    // family every time a codepoint needs shaping the system fonts can't do.
-    // Everything else, including every warning the app itself logs, is forwarded
-    // untouched to Qt's default handler.
+
+
+
+
+
+
+
     forkmesh::installPlatformLogFilter();
 
-    // The embedded terminal (TerminalWidget) renders itself from a forkpty PTY —
-    // no xterm, no X11 reparenting — so it works the same on X11 and Wayland and
-    // we no longer force the xcb backend. Forcing xcb pushed Wayland sessions onto
-    // XWayland, which maps a black frame before the first paint (a jarring black
-    // screen on launch). Letting Qt pick the native platform shows the themed
-    // window immediately.
+
+
+
+
+
+
     ForkMeshApplication app(argc, argv);
     app.setApplicationName("ForkMesh");
     app.setOrganizationName("ForkMesh");
-    // App icon: the cube cropped out of the ForkMesh logo.
+
     app.setWindowIcon(QIcon(QStringLiteral(":/app/forkmesh.png")));
-    // On Wayland (the GNOME default) the dock/taskbar icon is NOT taken from
-    // setWindowIcon — the compositor matches the window's app-id to an installed
-    // .desktop file. This name must equal the basename of the desktop entry that
-    // install.sh writes (forkmesh.desktop) for GNOME to show our logo and let it
-    // be pinned. Harmless on X11/macOS/Windows.
+
+
+
+
+
     QGuiApplication::setDesktopFileName(QStringLiteral("forkmesh"));
     app.setStyle(QStyleFactory::create("Fusion"));
 
-    // Refuse to run a second instance for this user. This is the actual fix for
-    // "a new ForkMesh window opens seemingly at random": every trigger for that
-    // (a desktop session restore, a login-autostart entry racing a manually
-    // opened window, a double-click landing while a slow cold start is still
-    // loading) used to hand back a brand new, fully independent process — its
-    // own mesh backend and repo-hosting server reading/writing the same
-    // ~/.forkmesh data out from under the first one. Now a duplicate launch
-    // just raises the existing window and exits.
+
+
+
+
+
+
+
+
     if (!forkmesh::acquireSingleInstance(localSetupLink)) {
         qInfo().noquote()
             << "ForkMesh is already running; focusing the existing window.";
         return 0;
     }
 
-    // A mirror Actions helper can be killed after the catalog toggle is
-    // published but before its local settings transaction is committed. Revert
-    // any such owner-only journal before MainWindow reads repository records or
-    // secrets. Failure is deliberately startup-fatal: running against a partial
-    // configuration would make the recovery record meaningless.
+
+
+
+
+
     {
         QSettings recoverySettings;
         QString recoveryError;
@@ -692,24 +692,24 @@ int main(int argc, char *argv[])
         }
     }
 
-    // Bundle a colour-emoji font so 🎉/🙊/✅ paint in full colour in chat
-    // messages (and everywhere else) even on systems that ship no colour-emoji
-    // font of their own (common on Linux). Registering it and appending it to
-    // the application font's fallback family list makes Qt render colour glyphs
-    // for any emoji codepoint the primary UI family is missing, rather than the
-    // flat black-and-white boxes seen without it.
+
+
+
+
+
+
     QFontDatabase::addApplicationFont(QStringLiteral(":/fonts/NotoColorEmoji.ttf"));
     {
         QFont base = app.font();
 
-        // Prefer a modern, consistent UI family over the raw platform default
-        // (which on many Linux boxes is a dated bitmap-ish sans). We don't bundle
-        // a font — that would bloat the binary — so we just pick the first family
-        // from a prioritised list that the system actually has installed, and fall
-        // back to whatever Qt chose otherwise. This is a no-op on systems that ship
-        // none of them, so nothing regresses; where one is present (Segoe UI on
-        // Windows, SF Pro on macOS, Inter/Roboto/Noto on Linux) the whole app gets
-        // a cleaner, more uniform look.
+
+
+
+
+
+
+
+
         const QStringList installed = QFontDatabase::families();
         for (const QString &preferred : {QStringLiteral("Inter"),
                                          QStringLiteral("SF Pro Text"),
@@ -724,8 +724,8 @@ int main(int argc, char *argv[])
             }
         }
 
-        // Keep the chosen UI family first, then append colour-emoji fallbacks so
-        // any codepoint the primary family is missing still paints in full colour.
+
+
         QStringList families{base.family()};
         for (const QString &emoji : {QStringLiteral("Noto Color Emoji"),
                                      QStringLiteral("Apple Color Emoji"),
@@ -737,11 +737,11 @@ int main(int argc, char *argv[])
         app.setFont(base);
     }
 
-    // Host-stats reporting (CPU/RAM/disk in the Mirror nodes view) is off by
-    // default on the desktop but on for headless installs done from the Hosts
-    // tab, so an operator can monitor the servers they provisioned. Seed the
-    // toggles on the first headless launch; once set, the value persists and a
-    // later operator edit is never overwritten (adhoc #23).
+
+
+
+
+
     if (headless) {
         QSettings settings;
         for (const QString &key : {TelemetrySettings::kReportCpu,
@@ -750,20 +750,20 @@ int main(int argc, char *argv[])
             if (!settings.contains(key))
                 settings.setValue(key, true);
         }
-        // Auto-update (kAutoUpdateSetting, MainWindowInternal.h) is likewise on by
-        // default for a headless install — no one is around to click "Update,
-        // rebuild & restart" on an operator-run VM — but off by default on
-        // desktop; seed once, same as the telemetry toggles above.
+
+
+
+
         if (!settings.contains(QStringLiteral("update/autoUpdate")))
             settings.setValue(QStringLiteral("update/autoUpdate"), true);
     }
 
-    // Refuse to run as root: ForkMesh runs git, action workflows and shell
-    // steps, so running privileged is dangerous and unnecessary. This is a hard
-    // refusal with no opt-out — including under sudo, where the real uid is 0
-    // even though the effective uid may have been dropped. Headless can opt out
-    // with --allow-root / FORKMESH_ALLOW_ROOT (e.g. a single-purpose VM), and
-    // reports to stderr rather than a dialog nobody would see.
+
+
+
+
+
+
 #if defined(Q_OS_UNIX) && !defined(Q_OS_MACOS)
     if (geteuid() == 0 || getuid() == 0) {
         const char *refusal =
@@ -792,15 +792,15 @@ int main(int argc, char *argv[])
     }
 #endif
 
-    // Apply the saved theme (system/dark/light); when set to "system", follow
-    // the OS color scheme and switch live as it changes.
+
+
     MainWindow::applyTheme();
 #if QT_VERSION >= QT_VERSION_CHECK(6, 5, 0)
     QObject::connect(app.styleHints(), &QStyleHints::colorSchemeChanged, &app,
                      [](Qt::ColorScheme) { MainWindow::applyTheme(); });
 #endif
 
-    // Detailed startup timing to the terminal so a slow launch is diagnosable.
+
     QElapsedTimer startup;
     startup.start();
     qInfo().noquote() << QStringLiteral("[startup +%1ms] constructing MainWindow")
@@ -811,19 +811,19 @@ int main(int argc, char *argv[])
             window->openCloudflareSetupFromSystemLink(target);
     };
     app.setLocalLinkHandler(openLocalSetup);
-    // Tell the window it's running without a GUI so its auto-start path can
-    // register a fresh mirror's account non-interactively (the desktop pops a
-    // "Join ForkMesh" dialog for that, which a headless VM cannot click).
+
+
+
     window->setHeadlessMode(headless);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] MainWindow constructed")
                              .arg(startup.elapsed(), 5);
-    // A later launch attempt bounces off acquireSingleInstance() above and
-    // pings us instead; raise and focus our window in response. Under headless
-    // (offscreen platform) there is no window to focus — raise()/activateWindow()
-    // are no-ops there anyway, but the offscreen plugin logs "This plugin does
-    // not support raise()" on every call, which makes a successful re-run of a
-    // headless install (bouncing off an already-running node) look like an
-    // error in the SSH install log. Skip the no-op calls entirely headless.
+
+
+
+
+
+
+
     forkmesh::onSingleInstanceActivation([window, headless, openLocalSetup](
                                              const QString &target) {
         if (headless)
@@ -835,17 +835,17 @@ int main(int argc, char *argv[])
         window->raise();
         window->activateWindow();
     });
-    // show() works under the offscreen platform too (rendering to an offscreen
-    // surface) and drives the same deferred-startup path — including the
-    // headless/offscreen safety net in MainWindow::showEvent — so auto-restore and
-    // auto-connect behave identically headless and on the desktop.
+
+
+
+
     window->show();
     openLocalSetup(localSetupLink);
     qInfo().noquote() << QStringLiteral("[startup +%1ms] window shown; entering event loop")
                              .arg(startup.elapsed(), 5);
 
-    // In headless mode, the node runs the full backend but there's no GUI to
-    // interact with, so attach a stdin REPL to observe and drive it.
+
+
     HeadlessConsole *console = nullptr;
     if (headless)
         console = new HeadlessConsole(window, &app, &app);
@@ -853,10 +853,10 @@ int main(int argc, char *argv[])
 
     const int exitCode = app.exec();
     if (headless) {
-        // Offscreen Qt has crashed in widget teardown on SIGTERM while deleting
-        // the hidden text-edit-heavy UI tree. The process is exiting anyway, so
-        // let the OS reclaim those widgets after closeEvent/aboutToQuit have
-        // flushed logs and settings.
+
+
+
+
         std::fflush(stdout);
         std::fflush(stderr);
         std::_Exit(exitCode);

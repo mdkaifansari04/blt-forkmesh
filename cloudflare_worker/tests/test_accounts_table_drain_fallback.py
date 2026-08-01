@@ -24,16 +24,16 @@ def _load(extra):
     assert {n.name for n in selected} == FUNCS, "missing functions"
     mod = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     ns = dict(extra)
-    # Per-isolate memo the hot-path helpers reference (module-level in
-    # entry.py; a fresh one per load keeps tests isolated).
+
+
     ns.setdefault("_MIRRORED_ACCOUNT_BIS", set())
     exec(compile(mod, str(ENTRY), "exec"), ns)
     return ns
 
 
 def _harness(users=None, nodes=None):
-    users = users or {}         # user_bi -> {data, email_bi, is_admin}
-    nodes = nodes or {}         # node_bi -> {data, name}
+    users = users or {}
+    nodes = nodes or {}
 
     async def blind_index(_env, value):
         return "bi:" + str(value)

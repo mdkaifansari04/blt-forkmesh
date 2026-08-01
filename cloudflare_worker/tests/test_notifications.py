@@ -9,8 +9,8 @@ from _dashboard_bundle import assembled_dashboard_js
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 PUBLIC = ROOT / "public"
-# SCHEMA_STATEMENTS (D1 DDL) was extracted from entry.py into schema.py;
-# concatenate it so the schema source-contract assertions below still resolve.
+
+
 SCHEMA = ENTRY.parent / "schema.py"
 ENTRY_TEXT = (
     ENTRY.read_text(encoding="utf-8") + "\n" + SCHEMA.read_text(encoding="utf-8"))
@@ -50,7 +50,7 @@ def _load_notification_helpers():
 
 
 def _read(path: Path) -> str:
-    # dashboard.js is built from ordered public/dashboard/js/*.js fragments.
+
     if path.name == "dashboard.js":
         return assembled_dashboard_js()
     return path.read_text(encoding="utf-8")
@@ -83,8 +83,8 @@ def test_world_notification_table_has_owner_scoped_direct_delete():
             "async def notifications_handler"))
         :ENTRY_TEXT.index("async def mirror_requests_handler")
     ]
-    # The owner is proven either by a session (browser) or by an account-key
-    # signature that names this exact row (desktop, adhoc #77).
+
+
     assert "_alert_inbox_account_name(" in delete_block
     assert "resource=item_id) != node" in delete_block
     assert "recipient_bi=? AND dedupe_bi=?" in delete_block
@@ -130,8 +130,8 @@ def test_worker_indexes_notifications_from_existing_event_sources():
         "await notify_host_status(env, repo_bi, \"host_offline\"",
     ):
         assert marker in ENTRY_TEXT
-    # Legacy Worker-held bounty funding/payout mutation is frozen; public
-    # historical status polling must not emit a new event or move funds.
+
+
     bounty_handler = ENTRY_TEXT[
         ENTRY_TEXT.index("async def bounties_handler")
         :ENTRY_TEXT.index("\n\n# Cap on collaborators")
@@ -141,8 +141,8 @@ def test_worker_indexes_notifications_from_existing_event_sources():
 
 
 def test_dashboard_notifications_are_wired_to_real_api_not_mock_data():
-    # The markers live in the shared chrome (header + modals partials), so
-    # they ship on every composed page document.
+
+
     dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
@@ -166,8 +166,8 @@ def test_dashboard_notifications_are_wired_to_real_api_not_mock_data():
 
 
 def test_worker_exposes_signed_thread_subscription_route_and_schema():
-    # Subscriptions (issue #361): a signed subscribe/unsubscribe endpoint plus the
-    # table that backs it.
+
+
     urls_text = (ENTRY.parent / "urls.py").read_text(encoding="utf-8")
     assert 'REPO_SUBSCRIBE_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/subscribe$")' in urls_text
     assert "async def subscribe_handler" in ENTRY_TEXT
@@ -180,8 +180,8 @@ def test_worker_exposes_signed_thread_subscription_route_and_schema():
 
 
 def test_worker_auto_subscribes_commenters_and_fans_out_to_followers():
-    # Anyone who comments is auto-subscribed and existing followers are notified,
-    # for both issues and PRs.
+
+
     assert "_best_effort_inbox_side_effect(\n            notify_subscribers(" in ENTRY_TEXT
     assert 'env, owner, repo, "issue", number, actor' in ENTRY_TEXT
     assert "_best_effort_inbox_side_effect(\n            subscribe_thread(" in ENTRY_TEXT
@@ -197,13 +197,13 @@ def test_worker_auto_subscribes_commenters_and_fans_out_to_followers():
 
 def test_subscribed_notification_kind_exists():
     assert '"subscribed"' in ENTRY_TEXT
-    assert '"credits_refilled"' in ENTRY_TEXT  # issue #346 rides the same rail
+    assert '"credits_refilled"' in ENTRY_TEXT
 
 
 def test_heartbeat_reports_credits_refilled_from_the_node_itself():
-    # Issue #346: only the node knows when its own Claude Code usage window
-    # refilled after running out, so it rides the already-signed heartbeat
-    # (accounts/heartbeat) rather than a new endpoint.
+
+
+
     heartbeat_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _account_heartbeat"):
         ENTRY_TEXT.index("async def _account_treasury_address")
@@ -314,8 +314,8 @@ def test_thread_key_is_stable_and_scoped():
     ns = _load_notification_helpers()
     key = ns["_thread_key"]("alice", "repo", "issue", 7)
     assert key == "thread:alice/repo:issue:7"
-    # A brand-new submission (no durable number) collapses to a shared 0 key,
-    # which the subscribe/notify helpers guard against.
+
+
     assert ns["_thread_key"]("alice", "repo", "issue", 0).endswith(":issue:0")
     assert ns["_thread_key"]("a", "b", "pull", None).endswith(":pull:0")
 

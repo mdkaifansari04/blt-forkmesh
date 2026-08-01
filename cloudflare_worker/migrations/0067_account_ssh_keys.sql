@@ -1,6 +1,6 @@
--- User-managed SSH public keys for the independently operated Git SSH gateway.
--- Raw public-key lines and user labels are encrypted in `data`; account/key
--- lookups use keyed blind indexes. Private keys never enter ForkMesh.
+
+
+
 CREATE TABLE IF NOT EXISTS account_ssh_keys (
   key_id TEXT PRIMARY KEY,
   account_bi TEXT NOT NULL,

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Package the Linux ForkMesh binary as a self-contained AppImage with zsync
-# delta-update support (issue #370). Emits:
-#   <outdir>/forkmesh-linux-<arch>.AppImage         the installer
-#   <outdir>/forkmesh-linux-<arch>.AppImage.zsync   AppImageUpdate control file
-#
-# Signing/update env (all optional):
-#   FORKMESH_GPG_KEY   GPG key id/email — detached-sign the AppImage if set.
-#   FORKMESH_HOST      base URL baked into the embedded update-information so
-#                      AppImageUpdate knows where to fetch deltas from
-#                      (default: https://forkmesh.com).
-#
-# Degrades gracefully: if linuxdeploy/appimagetool are unavailable, falls back to
-# a runnable AppDir tarball so the release still ships *something* downloadable.
-# See /docs#installers-updates.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 set -euo pipefail
 
 binary="$1"; outdir="${2:-.}"
@@ -34,9 +34,9 @@ mkdir -p "$appdir/usr/bin" "$appdir/usr/share/applications" \
 cp "$binary" "$appdir/usr/bin/forkmesh"
 chmod 0755 "$appdir/usr/bin/forkmesh"
 
-# The token-only deployment flow is part of the installed application, not a
-# source-checkout feature. Copy the exact CMake-installed resource tree into the
-# AppDir before linuxdeploy/appimagetool seal it.
+
+
+
 install_root="${FORKMESH_PKG_INSTALL_ROOT:-}"
 resource_root="${install_root%/}/share/forkmesh"
 if [ -z "$install_root" ] || [ ! -f "$resource_root/tools/cloudflare_bootstrap.py" ] \
@@ -61,22 +61,22 @@ MimeType=x-scheme-handler/forkmesh;
 EOF
 cp "$appdir/forkmesh.desktop" "$appdir/usr/share/applications/forkmesh.desktop"
 
-# A 1x1 placeholder icon keeps appimagetool happy when the repo icon is absent.
+
 icon="$appdir/forkmesh.png"
 if [ -f "qt_client/resources/forkmesh.png" ]; then
   cp qt_client/resources/forkmesh.png "$icon"
 else
-  printf '\x89PNG\r\n\x1a\n' > "$icon"  # placeholder; replaced when a real icon exists
+  printf '\x89PNG\r\n\x1a\n' > "$icon"
 fi
 cp "$icon" "$appdir/usr/share/icons/hicolor/256x256/apps/forkmesh.png" 2>/dev/null || true
 
-# AppImageUpdate reads this "update-information" from the built AppImage and uses
-# it to fetch a zsync binary delta instead of the whole file on each update.
+
+
 update_info="zsync|${host%/}/${channel}/${name}.zsync"
 export UPDATE_INFORMATION="$update_info"
 
 if command -v linuxdeploy >/dev/null 2>&1; then
-  # Bundle the Qt runtime + platform plugin so the AppImage is self-contained.
+
   plugin_args=()
   command -v linuxdeploy-plugin-qt >/dev/null 2>&1 && plugin_args=(--plugin qt)
   log "linuxdeploy: bundling Qt runtime into AppDir"
@@ -95,15 +95,15 @@ else
   tar -C "$workdir" -czf "$out" ForkMesh.AppDir
 fi
 
-# zsync control file for delta updates (only meaningful for a real AppImage).
+
 if command -v zsyncmake >/dev/null 2>&1 && [ "${out##*.}" = "AppImage" ]; then
   log "zsyncmake: writing ${name}.zsync"
   ( cd "$outdir" && zsyncmake -u "$name" "$name" >&2 ) || \
     log "zsyncmake failed; AppImage ships without a delta control file"
 fi
 
-# Optional detached GPG signature (Authenticode/Gatekeeper equivalents live in
-# the Windows/macOS packagers).
+
+
 if [ -n "${FORKMESH_GPG_KEY:-}" ] && command -v gpg >/dev/null 2>&1; then
   log "gpg: detached-signing $out with key ${FORKMESH_GPG_KEY}"
   gpg --batch --yes --local-user "$FORKMESH_GPG_KEY" \

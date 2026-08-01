@@ -1,10 +1,10 @@
-// Small, dependency-free timer gate for the World presence socket.
-//
-// Keeping these three timers behind one owner makes the recovery rules
-// executable in isolation: one active handshake, one reconnect, and one
-// sustained-backpressure check. Callers still own protocol messages and socket
-// event listeners; this module only prevents stale callbacks from reviving a
-// replaced connection.
+
+
+
+
+
+
+
 export function createWorldSocketRecoveryTimers({
   setTimeoutImpl = globalThis.setTimeout.bind(globalThis),
   clearTimeoutImpl = globalThis.clearTimeout.bind(globalThis),

@@ -11,13 +11,13 @@
 namespace forkmesh::ui {
 
 namespace {
-// Width of the right-edge zone reserved for the ellipsis button. Wide enough to
-// be an easy click target and to keep the dots clear of the header label, which
-// gets this much extra room via sectionSizeFromContents().
+
+
+
 constexpr int kKebabWidth = 20;
-constexpr int kDotRadius = 1;  // 2px dots
-constexpr int kDotGap = 4;     // centre-to-centre spacing
-} // namespace
+constexpr int kDotRadius = 1;
+constexpr int kDotGap = 4;
+}
 
 KebabHeaderView::KebabHeaderView(Qt::Orientation orientation, QWidget *parent)
     : QHeaderView(orientation, parent)
@@ -34,8 +34,8 @@ QRect KebabHeaderView::kebabRect(const QRect &sectionRect) const
 
 QSize KebabHeaderView::sectionSizeFromContents(int logicalIndex) const
 {
-    // Reserve room for the dots so a content-fitted column never draws its
-    // label underneath the ellipsis.
+
+
     QSize size = QHeaderView::sectionSizeFromContents(logicalIndex);
     size.setWidth(size.width() + kKebabWidth);
     return size;
@@ -50,8 +50,8 @@ void KebabHeaderView::paintSection(QPainter *painter, const QRect &rect,
 
     const QRect zone = kebabRect(rect);
     const bool hovered = logicalIndex == m_hoverSection;
-    // Muted to match the header label (#8b949e); brightens on hover (#c9d1d9)
-    // so it reads as an interactive button under the cursor.
+
+
     const QColor color = hovered ? QColor(0xc9, 0xd1, 0xd9)
                                  : QColor(0x8b, 0x94, 0x9e);
 
@@ -75,8 +75,8 @@ void KebabHeaderView::mousePressEvent(QMouseEvent *event)
             const QRect sect(sectionViewportPosition(logical), 0,
                              sectionSize(logical), height());
             if (kebabRect(sect).contains(pos)) {
-                // Pop the menu just under the header section; consume the press
-                // so it doesn't also trigger a sort-by-header-click.
+
+
                 showColumnMenu(logical, mapToGlobal(QPoint(sect.left(), height())));
                 event->accept();
                 return;
@@ -123,8 +123,8 @@ void KebabHeaderView::showColumnMenu(int logicalIndex, const QPoint &globalPos)
     asc->setCheckable(true);
     desc->setCheckable(true);
     if (sortIndicatorSection() == logicalIndex) {
-        // The built-in indicator arrow is hidden on these headers, so the tick
-        // is the only cue for which way the column is currently sorted.
+
+
         if (sortIndicatorOrder() == Qt::AscendingOrder)
             asc->setChecked(true);
         else
@@ -134,7 +134,7 @@ void KebabHeaderView::showColumnMenu(int logicalIndex, const QPoint &globalPos)
     menu.addSeparator();
     QAction *select = menu.addAction(tr("Select column"));
     QAction *hide = menu.addAction(tr("Hide field"));
-    hide->setEnabled(visibleCount > 1); // never hide the last visible column
+    hide->setEnabled(visibleCount > 1);
     QAction *showAll = anyHidden ? menu.addAction(tr("Show all fields")) : nullptr;
 
     menu.addSeparator();
@@ -177,15 +177,15 @@ void installColumnHeaderMenu(QTableWidget *table)
     if (!table)
         return;
     auto *header = new KebabHeaderView(Qt::Horizontal, table);
-    // Let the "Move …" actions (and user drags) reorder columns.
+
     header->setSectionsMovable(true);
     table->setHorizontalHeader(header);
-    // Drop the built-in sort arrow -- the menu's checkmarks convey sort state
-    // instead, and it would otherwise collide with the dots at the section's
-    // right edge. Deferred because callers typically enable sorting *after* this
-    // (QTableView::setSortingEnabled re-shows the indicator), so hiding it now
-    // would be undone; the next event-loop turn lands after that.
+
+
+
+
+
     QTimer::singleShot(0, header, [header] { header->setSortIndicatorShown(false); });
 }
 
-} // namespace forkmesh::ui
+}

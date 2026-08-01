@@ -12,7 +12,7 @@ from urllib.error import HTTPError
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import github_issue_sync as sync_module  # noqa: E402
+import github_issue_sync as sync_module
 
 
 def source_issue(number=7, title="Fix routing", body="Public issue body"):

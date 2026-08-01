@@ -1,9 +1,9 @@
--- Server-authoritative aggregate time spent in the ForkMesh World.
---
--- account_bi is the existing keyed blind index for an account. The table has
--- no display name, IP address, route, movement history, or client-supplied
--- duration. A short-lived, server-signed World ticket is the only continuity
--- proof accepted by the Worker.
+
+
+
+
+
+
 CREATE TABLE IF NOT EXISTS world_user_activity (
     account_bi TEXT PRIMARY KEY,
     total_active_ms INTEGER NOT NULL DEFAULT 0

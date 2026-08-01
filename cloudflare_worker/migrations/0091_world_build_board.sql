@@ -1,7 +1,7 @@
--- Public build-board ordering and repository-issue queue.
--- Built-in titles remain in code. Assigned issues retain their bounded,
--- already-public title plus repository/number so they remain visible after
--- leaving the recent-issue window; no issue body or private metadata is kept.
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS world_build_board_items (
   item_key       TEXT PRIMARY KEY,

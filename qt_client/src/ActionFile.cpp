@@ -8,7 +8,7 @@
 
 namespace {
 
-// A parsed YAML value: scalar, mapping, or sequence. Deliberately minimal.
+
 struct Node {
     enum Type { Null, Scalar, Map, Seq };
     Type type = Null;
@@ -25,7 +25,7 @@ struct Node {
 
 struct Line {
     int indent;
-    QString text; // content with indentation stripped, never empty
+    QString text;
 };
 
 int leadingSpaces(const QString &raw)
@@ -36,16 +36,16 @@ int leadingSpaces(const QString &raw)
     return n;
 }
 
-// Split into significant lines, expanding tabs to spaces and dropping blank and
-// full-line comment lines. Block scalars are handled later from the raw text, so
-// here we keep enough structure to recurse by indentation.
+
+
+
 QList<Line> splitLines(const QString &content)
 {
     QList<Line> out;
     const QStringList raw = content.split(QLatin1Char('\n'));
     for (QString line : raw) {
         line.replace(QLatin1Char('\t'), QStringLiteral("    "));
-        // Drop trailing carriage returns from CRLF files.
+
         while (line.endsWith(QLatin1Char('\r')))
             line.chop(1);
         const QString trimmed = line.trimmed();
@@ -70,7 +70,7 @@ QString unquote(QString value)
     return value;
 }
 
-// Parse an inline flow sequence: [a, b, "c"]  -> Seq of scalars.
+
 Node parseFlowSeq(const QString &inner)
 {
     Node node;
@@ -88,8 +88,8 @@ Node parseFlowSeq(const QString &inner)
     return node;
 }
 
-// Capture a literal block scalar (introduced by `|`): every following line more
-// indented than parentIndent, with the block's common indentation removed.
+
+
 QString captureBlockScalar(const QList<Line> &lines, int &pos, int parentIndent)
 {
     QStringList block;
@@ -105,29 +105,29 @@ QString captureBlockScalar(const QList<Line> &lines, int &pos, int parentIndent)
     return block.join(QLatin1Char('\n'));
 }
 
-// Forward declaration: parse a block (map or sequence) whose items are indented
-// at exactly `indent`. Advances pos past the block.
+
+
 Node parseBlock(const QList<Line> &lines, int &pos, int indent);
 
-// Parse the value that follows a "key:" with nothing (or a comment) after the
-// colon — i.e. a nested block on the following lines.
+
+
 Node parseNestedValue(const QList<Line> &lines, int &pos, int parentIndent)
 {
     if (pos >= lines.size() || lines.at(pos).indent <= parentIndent) {
         Node empty;
-        return empty; // Null
+        return empty;
     }
     return parseBlock(lines, pos, lines.at(pos).indent);
 }
 
-// Parse "key: rest" / "key:" and store into map. Handles inline scalar, flow
-// sequence, block scalar marker, and nested blocks.
+
+
 void parseMapEntry(const QList<Line> &lines, int &pos, int indent, Node &map)
 {
     const QString text = lines.at(pos).text;
     const int colon = text.indexOf(QLatin1Char(':'));
     if (colon < 0) {
-        ++pos; // not a key: skip defensively
+        ++pos;
         return;
     }
     const QString key = unquote(text.left(colon));
@@ -165,8 +165,8 @@ Node parseBlock(const QList<Line> &lines, int &pos, int indent)
             const QString after = line.text.mid(1).trimmed();
             if (after.contains(QLatin1Char(':')) &&
                 !after.startsWith(QLatin1Char('['))) {
-                // "- key: value" introduces a map whose first entry is inline.
-                // Re-feed the remainder at a virtual indent past the dash.
+
+
                 const int dashCols = line.text.indexOf(after.at(0));
                 QList<Line> synthetic = lines;
                 Line first;
@@ -225,16 +225,16 @@ void collectSteps(const Node *stepsNode, QList<ActionStep> &steps)
     }
 }
 
-// The reserved label every node answers to, so `runs-on: any` stays explicit
-// rather than meaning "no node matches".
+
+
 const QString kAnyNodeLabel = QStringLiteral("any");
 
-} // namespace
+}
 
 bool ActionWorkflow::runsOnNode(const QStringList &nodeLabels) const
 {
     if (runsOn.isEmpty())
-        return true; // undedicated: runs wherever the push is seen
+        return true;
     for (const QString &wanted : runsOn) {
         if (wanted == kAnyNodeLabel)
             return true;
@@ -277,7 +277,7 @@ QStringList ActionFile::setPinnedNode(const QStringList &pins,
                                       const QStringList &paths,
                                       const QString &node)
 {
-    QMap<QString, QString> byPath; // sorted, so a rewrite is stable
+    QMap<QString, QString> byPath;
     for (const QString &entry : pins) {
         const int sep = entry.indexOf(QLatin1Char('\t'));
         if (sep > 0)
@@ -348,9 +348,9 @@ ActionWorkflow ActionFile::parse(const QString &relPath, const QString &content)
 
     wf.on = scalarOrList(root.child(QStringLiteral("on")));
 
-    // `runs-on:` may sit at the top level or on any job; a workflow's steps are
-    // flattened into one run, so the union of both is the set of nodes allowed
-    // to execute it.
+
+
+
     const auto addRunsOn = [&wf](const Node *node) {
         for (const QString &label : scalarOrList(node)) {
             const QString normalized = label.trimmed().toLower();
@@ -360,9 +360,9 @@ ActionWorkflow ActionFile::parse(const QString &relPath, const QString &content)
     };
     addRunsOn(root.child(QStringLiteral("runs-on")));
 
-    // Job ids in this same file: a GitHub-style `needs: build` between two jobs
-    // orders work we already flatten into one step list, so those entries must
-    // not be mistaken for a dependency on another workflow.
+
+
+
     QStringList jobIds;
     if (const Node *jobs = root.child(QStringLiteral("jobs")))
         if (jobs->type == Node::Map)
@@ -389,7 +389,7 @@ ActionWorkflow ActionFile::parse(const QString &relPath, const QString &content)
             for (auto it = env->map.constBegin(); it != env->map.constEnd(); ++it)
                 wf.env.insert(it.key(), it.value().scalar);
 
-    // Flattened top-level steps, then steps nested under each job.
+
     collectSteps(root.child(QStringLiteral("steps")), wf.steps);
     if (const Node *jobs = root.child(QStringLiteral("jobs")))
         if (jobs->type == Node::Map)
@@ -430,16 +430,16 @@ QString ActionFile::substitute(const QString &input,
                                const QMap<QString, QString> &vars)
 {
     QString result = input;
-    // ${{ vars.NAME }} with flexible whitespace — the explicit ForkMesh/CI
-    // context reference, always expanded (empty for unknown names, matching CI
-    // conventions).
+
+
+
     static const QRegularExpression ctx(
         QStringLiteral("\\$\\{\\{\\s*vars\\.([A-Za-z_][A-Za-z0-9_]*)\\s*\\}\\}"));
-    // ${NAME} — ambiguous with ordinary shell parameter expansion. Only expand
-    // it when NAME is a declared variable; otherwise leave it verbatim so the
-    // shell can substitute its own variables. (Expanding every ${NAME} here used
-    // to blank out a workflow's own shell variables — e.g. release.yml building
-    // "releases/${channel}/forkmesh-${os}-${arch}" into "releases//forkmesh--".)
+
+
+
+
+
     static const QRegularExpression brace(
         QStringLiteral("\\$\\{([A-Za-z_][A-Za-z0-9_]*)\\}"));
     struct Pass {
@@ -454,7 +454,7 @@ QString ActionFile::substitute(const QString &input,
             const QRegularExpressionMatch m = it.next();
             const QString name = m.captured(1);
             if (pass.onlyKnown && !vars.contains(name))
-                continue; // leave shell variables for the shell
+                continue;
             out += result.mid(last, m.capturedStart() - last);
             out += vars.value(name);
             last = m.capturedEnd();

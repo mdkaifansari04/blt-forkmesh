@@ -8,9 +8,9 @@
 
 namespace {
 
-// Fill cwd/gitBranch from the most recent complete line (every event line the
-// CLI writes carries them) and title from the head (the ai-title line sits near
-// the top). Cheap: a 64 KB tail read plus a small head read, no full parse.
+
+
+
 void readMeta(ExternalClaudeSession &s)
 {
     QFile f(s.path);
@@ -21,8 +21,8 @@ void readMeta(ExternalClaudeSession &s)
     const qint64 tailN = qMin<qint64>(size, 64 * 1024);
     f.seek(size - tailN);
     const QByteArray tail = f.readAll();
-    // Walk backwards over complete lines (skip the trailing partial line, if any)
-    // until one parses with a cwd.
+
+
     int nl = tail.lastIndexOf('\n');
     while (nl >= 0) {
         const int prev = tail.lastIndexOf('\n', nl - 1);
@@ -48,7 +48,7 @@ void readMeta(ExternalClaudeSession &s)
         s.title = QStringLiteral("Claude Code session");
 }
 
-} // namespace
+}
 
 namespace ClaudeSessionScan {
 
@@ -72,8 +72,8 @@ QList<ExternalClaudeSession> scan(const QString &repoLocalPath,
         const auto files = d.entryInfoList(QStringList{QStringLiteral("*.jsonl")},
                                            QDir::Files, QDir::Time);
         for (const QFileInfo &fi : files) {
-            // entryInfoList is newest-first, so once we pass the window every
-            // remaining file in this dir is older — stop scanning it.
+
+
             if (now - fi.lastModified().toMSecsSinceEpoch() > activeWindowMs)
                 break;
             ExternalClaudeSession s;
@@ -85,9 +85,9 @@ QList<ExternalClaudeSession> scan(const QString &repoLocalPath,
                 continue;
             const QString cwd = QDir(s.cwd).absolutePath();
             if (cwd != repo && !cwd.startsWith(repo + QLatin1Char('/')))
-                continue; // a different repo
+                continue;
             if (excludeCwds.contains(cwd))
-                continue; // ForkMesh is driving this one itself
+                continue;
             out.append(s);
         }
     }
@@ -104,7 +104,7 @@ QList<QJsonObject> readEvents(const QString &path, qint64 fromOffset, qint64 *ne
         return out;
     }
     if (fromOffset < 0 || fromOffset > f.size())
-        fromOffset = 0; // truncated/rotated since last read — start over
+        fromOffset = 0;
     f.seek(fromOffset);
     const QByteArray buf = f.readAll();
 
@@ -113,7 +113,7 @@ QList<QJsonObject> readEvents(const QString &path, qint64 fromOffset, qint64 *ne
     while (true) {
         const int nl = buf.indexOf('\n', start);
         if (nl < 0)
-            break; // leave the trailing partial line for next time
+            break;
         const QByteArray line = buf.mid(start, nl - start);
         consumed = nl + 1;
         start = nl + 1;
@@ -141,14 +141,14 @@ qint64 tailStartOffset(const QString &path, qint64 maxBytes)
     const QByteArray probe = f.read(qMin<qint64>(maxBytes, 1 << 20));
     const int nl = probe.indexOf('\n');
     if (nl >= 0)
-        off += nl + 1; // start on a clean line boundary
+        off += nl + 1;
     return off;
 }
 
 QList<qint64> findSessionPids(const QString &uuid, const QString &cwd)
 {
-    QList<qint64> exact; // matched the session uuid via --resume (precise)
-    QList<qint64> byCwd; // any `claude` process in the same working directory
+    QList<qint64> exact;
+    QList<qint64> byCwd;
 #if defined(Q_OS_LINUX)
     const QString wantCwd = cwd.isEmpty() ? QString() : QDir(cwd).absolutePath();
     const QByteArray wantUuid = uuid.toUtf8();
@@ -159,16 +159,16 @@ QList<qint64> findSessionPids(const QString &uuid, const QString &cwd)
         const qint64 pid = name.toLongLong(&isPid);
         if (!isPid)
             continue;
-        // The CLI process reports comm "claude"; check it first so we skip every
-        // other process before touching its cmdline/cwd.
+
+
         QFile comm(QStringLiteral("/proc/%1/comm").arg(name));
         if (!comm.open(QIODevice::ReadOnly))
             continue;
         if (comm.readAll().trimmed() != QByteArrayLiteral("claude"))
             continue;
 
-        // A resumed session names its uuid as a `--resume <uuid>` arg; cmdline is
-        // NUL-separated, so an exact arg compare avoids false substring hits.
+
+
         bool uuidMatch = false;
         if (!wantUuid.isEmpty()) {
             QFile cl(QStringLiteral("/proc/%1/cmdline").arg(name));
@@ -179,8 +179,8 @@ QList<qint64> findSessionPids(const QString &uuid, const QString &cwd)
             exact.append(pid);
             continue;
         }
-        // Fresh sessions don't expose their uuid, so fall back to the cwd — the
-        // /proc/<pid>/cwd symlink resolves to the process's working directory.
+
+
         if (!wantCwd.isEmpty() &&
             QFileInfo(QStringLiteral("/proc/%1/cwd").arg(name)).symLinkTarget() ==
                 wantCwd)
@@ -193,4 +193,4 @@ QList<qint64> findSessionPids(const QString &uuid, const QString &cwd)
     return exact.isEmpty() ? byCwd : exact;
 }
 
-} // namespace ClaudeSessionScan
+}

@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Build and run ForkMesh locally.
-#
-#   ./run.sh          build (incremental) and launch the app
-#   ./run.sh clean    clear the build cache (removes build/)
-#   ./run.sh rebuild  clear the cache, then build and launch
-#   ./run.sh test     build and run the headless backend tests
+
+
+
+
+
+
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# One build job per ~3 GiB of RAM, never more than the core count: cc1plus
-# peaks between 0.6 GB and 1.6 GB on the big MainWindow*.cpp translation units,
-# so a plain -j$(nproc) on a many-core box swamps physical RAM and shoves the
-# machine into swap. (Ninja builds also gate the heavy targets behind the
-# forkmesh_heavy job pool from CMakeLists.txt; this cap is the only guard for
-# the Makefile generator, which ignores pools.)
+
+
+
+
+
+
 build_jobs() {
     local cores=2 ram_kb=0 ram_jobs
     if command -v nproc >/dev/null 2>&1; then
@@ -49,9 +49,9 @@ cmake_args() {
     fi
 }
 
-# A CMakeCache.txt records the absolute source and binary dirs it was generated
-# in. When a checkout is copied/merged from another machine (or moved), those
-# paths no longer match and cmake aborts. Detect that and wipe the cache.
+
+
+
 check_stale_cache() {
     local cache="build/CMakeCache.txt"
     [ -f "$cache" ] || return 0
@@ -74,8 +74,8 @@ build() {
         args+=("$arg")
     done < <(cmake_args)
     cmake -B build "${args[@]}"
-    # An optional target ($1) builds just that (e.g. the tests) independently of
-    # the app; with no argument the default target (the app) is built.
+
+
     if [ -n "${1:-}" ]; then
         cmake --build build --parallel "$(build_jobs)" --target "$1"
     else
@@ -102,8 +102,8 @@ case "${1:-run}" in
         exec "$(forkmesh_bin)"
         ;;
     test)
-        # Build and run the test suites independently of the app. Force the test
-        # option on so a cached FORKMESH_BUILD_TESTS=OFF can't hide the targets.
+
+
         check_stale_cache
         args=()
         while IFS= read -r -d '' arg; do

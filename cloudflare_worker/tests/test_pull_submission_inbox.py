@@ -199,8 +199,8 @@ def test_legacy_pull_signature_cannot_authenticate_an_appended_commit_series():
 
     async def accept_only_legacy(_author, _signature, canonical):
         calls.append(canonical)
-        # The deliberately permissive fake makes the old four-field fallback
-        # succeed. The verifier must never reach it while commits are present.
+
+
         return len(calls) == 2
 
     verify = _load_pull_verifier({

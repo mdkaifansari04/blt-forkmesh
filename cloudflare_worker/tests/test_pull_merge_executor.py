@@ -12,7 +12,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import headless_mirror_refresh as refresh  # noqa: E402
+import headless_mirror_refresh as refresh
 
 
 def run(arguments, cwd):
@@ -140,8 +140,8 @@ def optional_git_ref(bare, ref):
 
 
 def assert_fsck_clean(bare):
-    # Exercise the production invocation exactly, then use ordinary fsck output
-    # to prove the test did not merely suppress dangling-object diagnostics.
+
+
     subprocess.run(
         [
             "git", "--git-dir", str(bare), "fsck", "--full", "--strict",
@@ -205,8 +205,8 @@ def test_clean_merge_updates_code_metadata_and_owner_job_atomically(tmp_path):
     assert "mergeHead: " + head in metadata
     before = pull_front_matter(original_metadata)
     after = pull_front_matter(metadata)
-    # PullStore intentionally leaves owner-applied lifecycle fields outside the
-    # author's signature. Every signature-covered input remains byte-identical.
+
+
     for field in (
         "title", "base", "head", "creationBaseOid", "creationHeadOid",
         "ts", "author", "authorName", "sig",
@@ -221,7 +221,7 @@ def test_clean_merge_updates_code_metadata_and_owner_job_atomically(tmp_path):
     assert not marker.exists()
     assert_fsck_clean(bare)
 
-    # A retry returns the durable result even though main has already moved.
+
     assert refresh._merge_execute_locked(cfg, req) == result
 
 
@@ -396,7 +396,7 @@ def test_job_records_contain_no_paths_commands_or_secrets(tmp_path):
     lowered = raw.lower()
     for word in ("path", "command", "secret", "token", "password"):
         assert word not in lowered
-    # Result/idempotency state is owner-only and is not a Git ref or object.
+
     assert not optional_git_ref(
         bare, "refs/forkmesh/merge-jobs/" + refresh._merge_request_token(req))
     assert_fsck_clean(bare)

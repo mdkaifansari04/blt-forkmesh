@@ -18,9 +18,9 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(WORKER / "src"))
 
-import edge_routing  # noqa: E402
-import mirror_gateway as gateway  # noqa: E402
-import urls  # noqa: E402
+import edge_routing
+import mirror_gateway as gateway
+import urls
 
 
 NOW = 1_784_920_000_000

@@ -287,8 +287,8 @@ def test_sky_module_keeps_rendering_and_lifecycle_work_bounded():
     ):
         assert method in source
 
-    # Fetch ownership stays in world.js. This rendering module has no timers,
-    # animation loop, or third-party request path of its own.
+
+
     for forbidden in (
         "fetch(",
         "XMLHttpRequest",

@@ -10,8 +10,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import schema  # noqa: E402
-import urls  # noqa: E402
+import schema
+import urls
 
 
 def test_private_chat_channel_migration_and_lazy_schema_match():

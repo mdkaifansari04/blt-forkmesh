@@ -19,8 +19,8 @@
     repoPullMetadataInflight: {},
     repoCollectionPages: {},
     session: null,
-    // Public-profile mode (/@name): the FOREIGN account whose profile the
-    // page is showing, or null when the profile pages show the session user.
+
+
     publicProfile: null,
     repoFileFinder: {
       repoKey: "",
@@ -41,31 +41,31 @@
     notificationUnread: 0,
     selectedNotificationId: "",
     issuesView: { filter: "open", items: [], query: "" },
-    // Projects tab (issue #384): projects link issues + a milestone and carry
-    // start/end dates; "gantt" is the default sub-view, "list" the fallback.
+
+
     projectsView: { filter: "open", mode: "gantt", items: [] },
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
     repoMirrors: [],
     repoLatestCommit: null,
     repoServedBy: null,
-    // Owner-only "Agents" tab (adhoc #225): owner verification by node account,
-    // no password required. selectedAgentId (adhoc #259) is the id of the agent
-    // whose detail page - live transcript + prompt - is currently open, or null
-    // for the session list.
+
+
+
+
     agentsView: { agents: [], selectedAgentId: null },
-    // Home left-rail "Active agent sessions" list (adhoc #81): aggregated,
-    // non-terminal agent runs across the repos the session can assign agents
-    // to. null until the first cross-repo fetch resolves so the panel can tell
-    // "loading" apart from "no active sessions".
+
+
+
+
     homeAgentSessions: null,
-    // Home right-rail "Latest from the blog" (adhoc #381): the newest posts
-    // parsed from /blog/rss.xml. null until the feed read resolves so the card
-    // can tell "loading" apart from "feed unavailable".
+
+
+
     homeBlogPosts: null,
-    // Organization aliases are not duplicate catalog publications: load the
-    // signed-in viewer's linked aliases separately so Top repositories can
-    // show the stable organization path with a clear owner label.
+
+
+
     homeOrganizationRepositories: [],
     repoCommitDetail: null,
     repoRecordDetail: null,

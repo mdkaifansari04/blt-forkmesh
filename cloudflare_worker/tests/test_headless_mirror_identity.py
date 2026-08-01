@@ -454,9 +454,9 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
             },
         },
     )
-    # The helper and Worker share the same integer/null catalog-v2 shape:
-    # opt-in metrics are bounded before signing and byte-pair usage cannot
-    # exceed its total.
+
+
+
     assert record["cpuPercent"] == 100
     assert (record["memUsedBytes"], record["memTotalBytes"]) == (800, 800)
     assert (record["diskUsedBytes"], record["diskTotalBytes"]) == (300, 1000)
@@ -471,7 +471,7 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
     normalized = dict(record)
     catalog_signature = normalized.pop("catalogSig")
     assert normalized.pop("catalogSigVersion") == 2
-    # Worker catalog-v2 verification removes this retained legacy-v1 field.
+
     assert normalized.pop("signature") == ""
     record_hash = hashlib.sha256(
         json.dumps(normalized, sort_keys=True, separators=(",", ":")).encode()
@@ -516,9 +516,9 @@ def test_operator_only_payloads_match_worker_canonicals(identity):
         "websiteServedAgent",
     }.intersection(unreported)
 
-    # Last-served stamps: signed when the gateway reported one, and only ever
-    # as a bounded client class. A raw User-Agent (a request fingerprint) and a
-    # non-positive stamp are dropped, matching the Worker's normalizer exactly.
+
+
+
     served = helper._normalized_public_catalog(
         {
             "owner": "forkmesh",

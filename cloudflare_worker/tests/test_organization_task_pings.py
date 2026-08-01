@@ -116,8 +116,8 @@ def test_worker_notifier_resolves_the_org_name_and_credits_the_actor():
     assert 'copy["title"]' in notifier
     assert 'body=copy["body"]' in notifier
     assert "meta=copy[\"meta\"]" in notifier
-    # The actor rides the ping so every surface can show who acted (and so the
-    # member who acted is not pinged about their own change).
+
+
     assert 'actor=safe_actor if valid_node_name(safe_actor) else ""' in notifier
     assert 'href="/world/"' in notifier
 

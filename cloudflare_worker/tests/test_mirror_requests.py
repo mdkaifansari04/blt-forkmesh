@@ -16,7 +16,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import mirrors  # noqa: E402
+import mirrors
 
 ENTRY = SRC / "entry.py"
 ENTRY_TEXT = (
@@ -26,7 +26,7 @@ QT_HEARTBEAT = ROOT.parent / "qt_client" / "src" / "MainWindowSetup.cpp"
 QT_HEADER = ROOT.parent / "qt_client" / "src" / "MainWindow.h"
 
 
-# --- pure helpers -----------------------------------------------------------
+
 
 def test_request_id_is_stable_and_scoped_to_repo_and_target():
     a = mirrors.mirror_request_id("Alice", "Repo", "Bob")
@@ -40,12 +40,12 @@ def test_add_mirror_request_dedupes_by_id_and_is_bounded():
     entry = {"id": "alice/r@bob", "owner": "alice", "repo": "r",
              "status": "pending", "ts": 1}
     reqs = mirrors.add_mirror_request(reqs, entry)
-    # Re-adding the same id replaces (newest-first) rather than duplicating.
+
     reqs = mirrors.add_mirror_request(
         reqs, {**entry, "ts": 2, "status": "pending"})
     assert len(reqs) == 1
     assert reqs[0]["ts"] == 2
-    # Bounded to MAX_MIRROR_REQUESTS newest entries.
+
     for i in range(mirrors.MAX_MIRROR_REQUESTS + 10):
         reqs = mirrors.add_mirror_request(
             reqs, {"id": "alice/r%d@bob" % i, "owner": "alice",
@@ -57,17 +57,17 @@ def test_set_status_and_accepted_and_ack_roundtrip():
     reqs = mirrors.add_mirror_request(
         [], {"id": "alice/r@bob", "owner": "alice", "repo": "r",
              "status": "pending", "ts": 1})
-    # Pending requests are NOT delivered to the node.
+
     assert mirrors.accepted_mirror_requests(reqs) == []
     reqs, updated = mirrors.set_mirror_request_status(
         reqs, "alice/r@bob", "accepted", ts=5)
     assert updated["status"] == "accepted" and updated["resolvedAt"] == 5
     delivered = mirrors.accepted_mirror_requests(reqs)
     assert delivered == [{"id": "alice/r@bob", "owner": "alice", "repo": "r"}]
-    # Acking the delivered id drops it so it isn't redelivered.
+
     reqs = mirrors.ack_mirror_requests(reqs, ["alice/r@bob"])
     assert mirrors.accepted_mirror_requests(reqs) == []
-    # A rejected request is never delivered and is untouched by acks.
+
     reqs2 = mirrors.add_mirror_request(
         [], {"id": "alice/r@carol", "owner": "alice", "repo": "r",
              "status": "pending", "ts": 1})
@@ -77,7 +77,7 @@ def test_set_status_and_accepted_and_ack_roundtrip():
     assert mirrors.ack_mirror_requests(reqs2, ["alice/r@carol"]) == reqs2
 
 
-# --- worker wiring ----------------------------------------------------------
+
 
 def test_worker_exposes_mirror_requests_route_and_handler():
     assert 'url.path in ("/api/mirror-requests", "/api/mirror-requests/")' in ENTRY_TEXT
@@ -86,14 +86,14 @@ def test_worker_exposes_mirror_requests_route_and_handler():
 
 
 def test_mirror_request_notification_kind_is_registered():
-    # In the allowlist (else notification_payload coerces it away) and email map.
+
     assert '"mirror_request",\n})' in ENTRY_TEXT or '"mirror_request"' in ENTRY_TEXT
     assert '"mirror_request": True' in ENTRY_TEXT
 
 
 def test_create_requires_owner_session_and_public_repo():
-    # Only the repo owner (proven by the session, not a body field) may ask,
-    # and only for a public, existing repo.
+
+
     handler = ENTRY_TEXT.split("async def mirror_requests_handler", 1)[1]
     handler = handler.split("async def subscribe_handler", 1)[0]
     assert "_authed_account_name(env, request, data)" in handler
@@ -101,7 +101,7 @@ def test_create_requires_owner_session_and_public_repo():
     assert "_repo_is_private(env, owner, repo)" in handler
     assert 'enqueue_notification(\n            env, target, "mirror_request"' in handler
     assert "add_mirror_request(" in handler
-    # Accept/reject path resolves the parked request and flips its status.
+
     assert 'action in ("accept", "reject")' in handler
     assert "set_mirror_request_status(" in handler
 
@@ -115,25 +115,25 @@ def test_heartbeat_delivers_accepted_requests_and_consumes_acks():
     assert 'data.get("mirrorRequestsAck")' in hb
 
 
-# --- dashboard wiring -------------------------------------------------------
+
 
 def test_dashboard_wires_ask_and_accept_reject_controls():
     js = assembled_dashboard_js()
-    # Owner-only "ask a node to mirror" control + its POST.
+
     assert "data-mirror-request-send" in js
     assert "async function askNodeToMirror" in js
     assert "renderMirrorRequestForm" in js
     assert 'fetch("/api/mirror-requests"' in js
-    # Accept/Reject on the incoming notification.
+
     assert "function mirrorRequestActionsHtml" in js
     assert "data-mirror-request-accept" in js
     assert "data-mirror-request-reject" in js
     assert "async function resolveMirrorRequest" in js
-    # New notification kind gets an icon (else it falls back to the bell).
+
     assert "mirror_request:" in js
 
 
-# --- desktop node wiring ----------------------------------------------------
+
 
 def test_desktop_node_mirrors_accepted_requests_and_acks_them():
     cpp = QT_HEARTBEAT.read_text(encoding="utf-8")

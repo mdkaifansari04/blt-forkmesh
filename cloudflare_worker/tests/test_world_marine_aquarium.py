@@ -165,8 +165,8 @@ def test_aquarium_bottom_right_control_panel_combines_all_four_actions():
     assert "handleAquariumLight" in SCENE
     assert "setBackdropOpaque(!current)" in SCENE
     assert "setLightEnabled(!current)" in SCENE
-    # The exhibit controls remain pinned within the lobby viewport instead of
-    # disappearing when the player leaves the narrow glass-side trigger.
+
+
     assert '"forkmesh-office-aquarium-control-anchor"' in SCENE
     assert "officeAquarium.controlAnchor" in SCENE
     assert "aquariumDistance / 9" in SCENE
@@ -231,7 +231,7 @@ def test_public_users_seed_a_bounded_activity_first_school():
     assert "const laneMin = recent ? 6.8 : 1.65" in aquarium
     assert "Math.log2(population + 1)" in aquarium
     assert "officeAquarium.setUsers(members)" in SCENE
-    # Names seed appearance but are not drawn or attached as visible labels.
+
     assert "makeLabelSprite" not in aquarium
     assert "fillText(user.name" not in aquarium
 

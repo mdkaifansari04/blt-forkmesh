@@ -1,18 +1,18 @@
-// Universal site header, mounted wherever a page places
-// <div data-forkmesh-header="simple"></div>. One renderer for every page
-// (except the home page, which keeps its own hero header), styled to match
-// the dashboard chrome: a hamburger menu holding every site link (grouped,
-// fully expanded), the brand mark with the live release version, the current
-// page title, a mirror-reward settings shortcut, the theme toggle, and a
-// session-aware account area — a logged-in visitor sees their account chip
-// (Dashboard / Profile / Log out) instead of hardcoded "Sign Up / Log In".
+
+
+
+
+
+
+
+
 (() => {
-  // ---- Site-wide light/dark theme -----------------------------------------
-  // The header is the one script every page already loads, so it doubles as
-  // the theme engine: stamp html.light / html.dark from the visitor's saved
-  // choice (same localStorage keys the dashboard and docs use) or, absent a
-  // choice, their OS preference. styles.css keys its palettes off these
-  // classes; pages without JavaScript simply stay dark.
+
+
+
+
+
+
   const THEME_KEYS = ["forkmesh.dashboard.theme", "forkmesh.theme"];
 
   function storedTheme() {
@@ -55,9 +55,9 @@
     applySiteTheme(theme);
   }
 
-  // Apply immediately at parse time (the script loads early on every page) so
-  // light-mode visitors don't get a dark flash, and follow OS changes live
-  // while the visitor hasn't made an explicit choice.
+
+
+
   applySiteTheme(resolveTheme());
   try {
     window.matchMedia("(prefers-color-scheme: light)")
@@ -66,8 +66,8 @@
       });
   } catch (_) {}
 
-  // Every site link lives in the hamburger menu, grouped and fully expanded —
-  // no nested "More" submenu to open.
+
+
   const NAV_HTML = `
     <nav class="forkmesh-simple-header-nav" aria-label="Primary">
       <div class="fm-nav-group">
@@ -146,7 +146,7 @@
     </header>
   `;
 
-  // Static markup only — user data never goes through innerHTML.
+
   const SIGNED_OUT_HTML = `
     <a class="fm-header-login" href="/login">Login</a>
     <a class="fm-header-signup" href="/signup">Sign Up</a>
@@ -200,11 +200,11 @@
   function logout() {
     let serverLogout = Promise.resolve();
     try {
-      // Server-side logout first: only the Worker can clear the HttpOnly
-      // forkmesh_admin cookie, and skipping this left the admin page readable
-      // after a marketing-page logout. Same call as the dashboard logout in
-      // dashboard/js/02-helpers.js — every web logout goes through this one
-      // endpoint.
+
+
+
+
+
       serverLogout = fetch("/api/accounts/logout", { method: "POST", keepalive: true }).catch(() => {});
     } catch (_) {}
     const cleanup = clearSignedInBrowserState();
@@ -238,7 +238,7 @@
         });
         if (response.status === 401) logout();
       } catch (_) {
-        // Network loss is not a logout. Only the session API's 401 is.
+
       } finally {
         checking = false;
       }
@@ -277,8 +277,8 @@
     return avatar;
   }
 
-  // Session-dependent right side. The signed-in branch is built with DOM
-  // methods (never innerHTML) so a stored account name can't inject markup.
+
+
   function buildAccountArea(container, session, options) {
     const stacked = Boolean(options && options.stacked);
     container.textContent = "";
@@ -322,14 +322,14 @@
     const dash = document.createElement("a");
     dash.href = "/dashboard";
     dash.textContent = "Dashboard";
-    // Both sides of the profile: /@name is the page everyone else sees;
-    // the dashboard's profile section is the private, editable view
-    // (avatar, bio, email, account status).
+
+
+
     const profile = document.createElement("a");
     profile.href = "/@" + encodeURIComponent(name.toLowerCase());
     profile.textContent = "Public profile";
-    // All account settings (profile, email, password, payout, nodes) live on
-    // the dashboard settings page — same entry the dashboard avatar menu has.
+
+
     const edit = document.createElement("a");
     edit.href = "/dashboard/settings";
     edit.textContent = "Settings";
@@ -367,9 +367,9 @@
     });
   }
 
-  // Live release version pill next to the logo, same as the dashboard header
-  // (and the same sessionStorage cache, so the two never disagree or double-
-  // fetch). Best-effort: stay hidden if /api/version is unavailable.
+
+
+
   const APP_VERSION_STORAGE = "forkmesh.appVersion";
   const APP_VERSION_TTL_MS = 60 * 60 * 1000;
 
@@ -402,14 +402,14 @@
     } catch (_) {}
   }
 
-  // ---- Chat activity badge -------------------------------------------------
-  // A small unread pill on the header's chat icon: counts new room messages
-  // and new user signups since this browser last opened /chat, so a fresh
-  // face can be welcomed from any page. Source of truth is the cheap,
-  // edge-cached /api/chat/activity counters; the "seen" baseline lives in
-  // localStorage and is (re)written by the chat page itself (chat.js) and by
-  // this script whenever the visitor is on /chat. A short sessionStorage
-  // cache keeps page-to-page navigation from re-fetching every load.
+
+
+
+
+
+
+
+
   const CHAT_ACTIVITY_ENDPOINT = "/api/chat/activity";
   const CHAT_ACTIVITY_STORAGE = "forkmesh.chatActivity";
   const CHAT_ACTIVITY_TTL_MS = 60 * 1000;
@@ -467,8 +467,8 @@
     try {
       seen = JSON.parse(localStorage.getItem(CHAT_ACTIVITY_SEEN_KEY) || "null");
     } catch (_) {}
-    // On the chat page everything is on screen; and a first-time visitor has
-    // no baseline, so seed one silently instead of badging all history.
+
+
     if (path === "/chat" || !seen) {
       writeChatSeen(activity);
       badge.hidden = true;
@@ -500,10 +500,10 @@
     };
     renderAccountAreas();
     startSessionWatch(renderAccountAreas);
-    // Keep every open section in agreement about the login state: a login or
-    // logout in another tab (dashboard, chat, home, …) fires a storage event
-    // here, so this header flips between Sign Up / Log In and the account chip
-    // without a manual reload.
+
+
+
+
     window.addEventListener("storage", (event) => {
       if (event.key === "forkmesh.session" || event.key === null) {
         renderAccountAreas();
@@ -512,9 +512,9 @@
 
     markCurrentPage(header);
 
-    // Current page title next to the brand, mirroring the dashboard's header
-    // context ("Dashboard"). Prefer the menu link for this path; fall back to
-    // the leading segment of the document title ("Pricing - ForkMesh").
+
+
+
     const context = header.querySelector(".fm-header-context");
     const current = panel.querySelector('a[aria-current="page"]');
     const fromTitle = (document.title || "").split(/\s+[·|\-–—]\s+/)[0].trim();
@@ -529,7 +529,7 @@
       saveTheme(document.documentElement.classList.contains("light")
                 ? "dark" : "light");
     });
-    applySiteTheme(resolveTheme()); // sync the freshly-rendered button's icon
+    applySiteTheme(resolveTheme());
 
     const burger = header.querySelector(".fm-header-burger");
     const setMenuOpen = (open) => {

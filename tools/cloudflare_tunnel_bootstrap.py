@@ -36,7 +36,7 @@ TOOLS = ROOT / "tools"
 if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
-from cloudflare_bootstrap import (  # noqa: E402
+from cloudflare_bootstrap import (
     BootstrapError,
     CloudflareAPI,
     MirrorManifestSigner,
@@ -177,9 +177,9 @@ class CloudflareTunnelAPI:
                     "configuration"
                 )
             return existing, False
-        # Cloudflare requires a 32-byte base64 tunnel secret when creating the
-        # remote tunnel. It remains in process memory for this one API call and
-        # is never returned, stored, or logged.
+
+
+
         tunnel_secret = base64.b64encode(secrets.token_bytes(32)).decode("ascii")
         created = self.client.request(
             "POST",
@@ -402,7 +402,7 @@ def launch_services(
     )
     tunnel: subprocess.Popen[Any] | None = None
     try:
-        # Fail fast if gateway validation/startup exits before cloudflared.
+
         time.sleep(0.2)
         if gateway.poll() is not None:
             return int(gateway.returncode or 1)

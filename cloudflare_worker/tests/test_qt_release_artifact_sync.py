@@ -1,4 +1,5 @@
 from pathlib import Path
+import re
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -19,7 +20,7 @@ def test_roster_artifact_adverts_trigger_release_blob_replication():
     assert "bool artifactsBehind = false;" in body
     assert "m.artifactCount > localArtifactCount" in body
     assert "replicateReleaseArtifacts(i);" in body
-    assert body.index("syncRepository(i, /*quiet=*/true);") < body.index(
+    assert re.search(r"syncRepository\(i,\s*true\);", body).start() < body.index(
         "replicateReleaseArtifacts(i);"
     )
 
@@ -41,8 +42,8 @@ def test_mirror_dropped_event_fallback_is_jittered_one_minute():
     )
     assert "-mirrorJitterSpanMs, mirrorJitterSpanMs + 1" in main
     mirror_timer = main[
-        main.index("// Keep mirrors fresh:")
-        : main.index("// Source-of-truth nodes pick up issues")
+        main.index("m_mirrorSyncTimer = new QTimer(this);")
+        : main.index("m_inboxPollTimer = new QTimer(this);")
     ]
     assert mirror_timer.count("m_mirrorSyncTimer = new QTimer(this);") == 1
     assert "autoSyncMirrorsIfRelayHealthy" in mirror_timer
@@ -62,9 +63,9 @@ def test_mirror_dropped_event_fallback_is_jittered_one_minute():
     ]
     assert "!m_syncingRepos.contains(i)" in periodic
     assert "m_syncingRepos.contains(i)" in roster
-    assert "syncRepository(i, /*quiet=*/true);" in roster
+    assert re.search(r"syncRepository\(i,\s*true\);", roster)
     assert "if (!m_syncingRepos.contains(matchIndex))" in peer
-    assert "syncRepository(matchIndex, /*quiet=*/true);" in peer
+    assert re.search(r"syncRepository\(matchIndex,\s*true\);", peer)
 
 
 def test_release_dialog_can_prune_previous_artifacts_after_publish():
@@ -131,9 +132,12 @@ def test_release_push_wakes_peers_and_starts_ssh_fanout_immediately():
     assert 'tagRef + QStringLiteral("^{commit}")' in push
     assert "m_backend->notifyMirrorUpdated(" in push
     assert "propagateRepoUpdate(index);" in push
-    assert "pushToSshMirrorRemotes(index, /*userInitiated=*/true, tag)" in push
+    ssh_call = re.search(
+        r"pushToSshMirrorRemotes\(index,\s*true,\s*tag\)", push
+    )
+    assert ssh_call
     assert push.index("m_backend->notifyMirrorUpdated(") < push.index(
-        "pushToSshMirrorRemotes(index, /*userInitiated=*/true, tag)"
+        ssh_call.group(0)
     )
     ssh_source = REPOS.read_text(encoding="utf-8")
     ssh_push = ssh_source[

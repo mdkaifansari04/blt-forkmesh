@@ -13,20 +13,20 @@ class QTcpServer;
 class QTcpSocket;
 class QTimer;
 
-// A deliberately small HTTP control bridge between the hosted ForkMesh World
-// and the desktop client's existing local speech-to-text pipeline.
-//
-// Security boundary:
-//   * the listener binds only to an OS loopback address;
-//   * a short-lived, one-use pairing capability is exchanged in an
-//     Authorization header, never a URL;
-//   * every capability is bound to one exact http(s) Origin;
-//   * mutating calls require a one-use request id;
-//   * the protocol has no request or response field capable of carrying audio.
-//
-// The browser asks the desktop client to start/stop its local microphone and
-// polls for transcript text. MainWindow owns capture/transcription and publishes
-// status and text through the slots below.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class WorldSpeechBridge final : public QObject
 {
     Q_OBJECT
@@ -39,15 +39,15 @@ public:
     bool isListening() const;
     quint16 port() const;
 
-    // Returns {secret, origin, expiresAt, port}. The plaintext secret exists only
-    // in this return value; the bridge retains a SHA-256 digest. Invalid origins
-    // produce an empty object.
+
+
+
     QJsonObject issuePairing(const QString &exactOrigin, int ttlSeconds = 120);
     void revokeAll();
 
-    // MainWindow feeds only local transcript text/status back to the paired
-    // browser. A stale capture id is ignored so a late process completion cannot
-    // overwrite a newer session.
+
+
+
     void publishPartial(const QString &captureId, const QString &text);
     void publishFinal(const QString &captureId, const QString &text);
     void publishError(const QString &captureId, const QString &safeMessage);

@@ -44,9 +44,9 @@ def _region(source, start, end):
 
 
 def test_filing_module_signs_the_same_open_event_as_the_dashboard_form():
-    # Every field below is load-bearing for verify_issue_event: a drift in the
-    # storage key splits one visitor into two authors, and a drift in the
-    # preimage or canonical string makes the relay reject the issue outright.
+
+
+
     for contract in (
         'export const WEB_ISSUE_KEY_STORAGE = "forkmesh.webIssueKey";',
         '`forkmesh-issue-event-v1\\nopen\\n0\\n${pub}\\n${ts}\\n${contentHash}`',
@@ -57,7 +57,7 @@ def test_filing_module_signs_the_same_open_event_as_the_dashboard_form():
         "titleIfNew: title,",
     ):
         assert contract in FILING
-    # ... and the dashboard's own signer, which the module mirrors.
+
     signer = _region(
         DASHBOARD_ISSUES, "async function submitWebIssue", "window.ForkMeshDashboardActions")
     assert 'forkmesh-issue-event-v1\\nopen\\n0\\n${pub}\\n${ts}\\n${contentHash}' in signer
@@ -69,12 +69,12 @@ def test_the_message_seeds_the_title_and_the_body_keeps_the_attribution():
     assert "export function issueTitleFromMessage(text)" in FILING
     title = _region(
         FILING, "export function issueTitleFromMessage", "// Attribution matters")
-    # First line only, and short enough for the worker's 240-char title bound.
+
     assert 'String(text || "").split(/\\r?\\n/)[0]' in title
     assert "first.length > 200" in title
     body = _region(
         FILING, "export function issueBodyFromMessage", "let repositoriesPromise")
-    # Whoever files the issue signs it, so the body records who actually spoke.
+
     assert "chat message by ${String(who || \"someone\")} at ${when}." in body
 
 
@@ -83,7 +83,7 @@ def test_the_full_chat_page_files_from_any_message():
     actions = _region(CHAT, "function buildRow(record, prev)", "function renderActiveChannel")
     assert '"Create an issue from this message",' in actions
     assert "beginIssueFromMessage(record, button)" in actions
-    # Not author-only: filing someone else's report is the point.
+
     assert "if (!record.deleted && record.text) {" in actions
     form = _region(CHAT, "function beginIssueFromMessage(", "function buildDateDivider")
     assert "issueTitleFromMessage(record.text)" in form
@@ -106,19 +106,19 @@ def test_the_dashboard_and_world_chats_file_from_any_message():
     assert "filing.issueTitleFromMessage(record.text)" in form
     assert "filing.issueBodyFromMessage({" in form
     assert "await fileWebIssue(" in form
-    # The composer already loaded /api/repositories for this page, so the form
-    # mirrors that picker rather than fetching the catalog a second time.
+
+
     assert "for (const option of fullRepository?.options || []) {" in form
 
 
 def test_the_world_bundle_loads_the_signer_on_demand():
-    # The World embeds dashboard-chat.js alone (no 800 KB dashboard bundle), so
-    # the shared module is imported lazily instead of assumed present.
+
+
     loader = _region(
         DASHBOARD_CHAT, "let issueFilingPromise = null;", "async function ed25519Verify")
     assert 'import("/chat-issue-filing.js")' in loader
-    # On the dashboard the page's own signer wins (it also handles agent
-    # assignment and offline pending issues).
+
+
     assert "window.ForkMeshDashboardActions?.submitWebIssue" in loader
     assert ".world-native-chat .chat-issue-form {" in WORLD_CSS
 
@@ -135,7 +135,7 @@ def test_the_desktop_message_menu_files_an_issue_too():
 
 
 def test_the_desktop_prefills_the_normal_compose_page():
-    # One compose page, pre-filled — not a second, divergent issue form.
+
     assert "void composeNewIssue(const QString &prefillTitle, const QString &prefillBody);" \
         in QT_HEADER
     assert "void promptIssueFromChatMessage(const QString &text, const QString &senderName," \
@@ -147,10 +147,10 @@ def test_the_desktop_prefills_the_normal_compose_page():
         QT_ISSUES,
         "void MainWindow::promptIssueFromChatMessage(",
         "void MainWindow::composeNewIssue(")
-    # Chat is not scoped to a repository, so ask when there is a choice.
+
     assert "QInputDialog::getItem(" in handler
     assert "if (m_repositories.size() > 1) {" in handler
     assert "openRepoDetail(repoIndex);" in handler
     assert "composeNewIssue(title, body);" in handler
-    # Same attribution wording as the web clients.
+
     assert '"chat message by "' in handler

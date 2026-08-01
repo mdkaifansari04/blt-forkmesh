@@ -1,9 +1,9 @@
 const { test, expect } = require("@playwright/test");
 
 
-// The dashboard chat has always honoured inbound "edit"/"delete" frames from
-// the desktop client and the full chat page; these cover the author-side
-// controls that produce them.
+
+
+
 function mockChatApis(page) {
   return page.route("**/api/**", (route) => {
     const url = new URL(route.request().url());
@@ -58,19 +58,19 @@ test("dashboard chat edits and deletes your own message", async ({ page }) => {
   await expect(row).toContainText("first draft of my message");
   await expect.poll(() => retainedFrames.length).toBe(1);
 
-  // Edit: the inline editor replaces the text, and the saved message carries
-  // an "(edited)" marker so readers see it was rewritten.
+
+
   await row.getByRole("button", { name: "Edit message" }).click();
   await row.locator("textarea").fill("second draft of my message");
   await row.getByRole("button", { name: "Save edit" }).click();
   await expect(row).toContainText("second draft of my message");
   await expect(row.locator(".chat-edited")).toHaveText("(edited)");
   await expect(row.locator("textarea")).toHaveCount(0);
-  // The edit rides the room as its own durable frame, like the desktop client.
+
   await expect.poll(() => retainedFrames.length).toBe(2);
 
-  // Delete: confirmed inline (never a blocking window.confirm, which would
-  // freeze the World's same-origin chat embed), then the row is gone.
+
+
   await row.getByRole("button", { name: "Delete message" }).click();
   await row.getByRole("button", { name: "Confirm delete" }).click();
   await expect(page.locator("#fullChatMessages")).not.toContainText(
@@ -80,9 +80,9 @@ test("dashboard chat edits and deletes your own message", async ({ page }) => {
 });
 
 
-// A peer's message is authored elsewhere, so it needs a second browser context
-// (its own localStorage, hence its own chat id) relaying through the same
-// mocked room: only the author gets the controls.
+
+
+
 test("dashboard chat offers no edit or delete on someone else's message", async ({
   browser,
 }) => {

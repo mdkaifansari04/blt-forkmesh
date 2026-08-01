@@ -249,7 +249,7 @@ def test_world_review_uses_exact_pull_ref_and_stays_internal_memory_only():
     assert "metadataAvailable: false" in APP
     assert "not labeled open" in APP
     assert "this.pullViewedFiles = new Map()" in APP
-    assert "data-world-pull-file-tree" not in APP  # semantic nav, not a fake widget
+    assert "data-world-pull-file-tree" not in APP
     assert "data-world-pull-file-path" in APP
     assert "data-world-pull-diff" in APP
     assert "data-world-pull-viewed-summary" in APP

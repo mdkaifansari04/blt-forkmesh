@@ -72,8 +72,8 @@ def test_handlers_offer_mirror_leases_and_drain_on_ack():
         assert "_authorized_mirror_issue_signing_key(" in source
         assert "_claim_collaboration_inbox_on_mirror(" in source
         assert table in source
-        # The mirror ack is a real drain now, and it records the mirror's
-        # post-merge refs attestation so the served state stays pinned.
+
+
         assert "_drain_collaboration_inbox_on_mirror(" in source
         assert "_record_mirror_attested_state(" in source
         assert '"retainedForSource": False' in source
@@ -125,9 +125,9 @@ def test_mirror_claim_is_exact_and_ack_deletes_only_leased_rows():
     assert count == 2
     deletes = [c for c in calls if c[1].startswith("DELETE FROM pull_inbox")]
     assert len(deletes) == 1
-    # The delete names the exact acknowledged rows and stays scoped to this
-    # mirror's lease, so a submission that lands mid-drain survives and a
-    # competing claimant can never sweep another mirror's rows.
+
+
+
     assert "id IN (?,?)" in deletes[0][1]
     assert "claimed_by_bi=?" in deletes[0][1]
     assert deletes[0][2] == ("repo-bi", 7, 9, claimant)
@@ -215,8 +215,8 @@ def test_mirror_state_attestation_joins_the_pin_history():
     ok = asyncio.run(ns["_record_mirror_attested_state"](
         object(), Request(), "o", "r", "mirror-node"))
     assert ok is True
-    # The canonical matches what the desktop signs on catalog publishes, bound
-    # to the acknowledging mirror node and the exact repo segment.
+
+
     assert seen["canonical"] == (
         "forkmesh-repostate-v1\nmirror-node\nr\n%s\n1000000" % digest
     ).encode()
@@ -273,8 +273,8 @@ def test_qt_mirror_acks_attest_served_state_and_keep_owner_only_rows():
     discussions = (
         QT_ROOT / "MainWindowDiscussions.cpp").read_text(encoding="utf-8")
 
-    # Every mirror ack carries the fresh signed refs attestation the relay
-    # pins, and the helper signs the same repostate canonical publishes use.
+
+
     for source in (issues, pulls, discussions):
         assert "appendMirrorStateAttestation(&" in source
     helper = pulls.split(
@@ -283,7 +283,7 @@ def test_qt_mirror_acks_attest_served_state_and_keep_owner_only_rows():
     assert "forkmesh-repostate-v1" in helper
     assert "mirrorStateHash(repo.mirrorPath)" in helper
 
-    # Owner-only side effects survive the drain: rows carrying a fediverse
-    # mention id or the owner's auto-agent request stay queued for the source
-    # node instead of being acknowledged by a mirror.
+
+
+
     assert "validMentionId || (mirrorIntake && meta.wantsAgent)" in issues

@@ -35,11 +35,11 @@ constexpr int kAvatarSize = 36;
 constexpr int kMaxMediaWidth = 360;
 constexpr int kPickerColumns = 6;
 
-// A rounded-rectangle fallback avatar: the sender's initial on a colored tile.
+
 QPixmap initialsAvatar(const QString &name, const QString &color)
 {
-    // Rendered at the device pixel ratio and tagged with it, so HiDPI screens
-    // composite the tile 1:1 instead of upscaling it into a pixelated blur.
+
+
     const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
     QPixmap pixmap(qMax(1, qRound(kAvatarSize * dpr)),
                    qMax(1, qRound(kAvatarSize * dpr)));
@@ -154,8 +154,8 @@ QString renderMentionedText(const QString &text,
     return html;
 }
 
-// Mirrors forkmesh::ui::currentThemeIsDark() (MainWindowInternal.h), kept as a
-// standalone copy here so this widget doesn't have to pull in that header.
+
+
 bool themeIsDark()
 {
     const QString pref =
@@ -167,8 +167,8 @@ bool themeIsDark()
     return QGuiApplication::styleHints()->colorScheme() != Qt::ColorScheme::Light;
 }
 
-// Ticks every message row's countdown ring on a single shared timer, rather
-// than one QTimer per row (a long-lived conversation can have hundreds).
+
+
 QTimer *expiryRingTicker()
 {
     static QTimer *timer = [] {
@@ -179,9 +179,9 @@ QTimer *expiryRingTicker()
     return timer;
 }
 
-// Small ring next to the timestamp showing how close a message is to its
-// 7-day retention cutoff (kChatMessageRetentionMs), after which it's pruned
-// from local history and the relay stops retaining it too.
+
+
+
 class ExpiryRing : public QWidget
 {
 public:
@@ -214,7 +214,7 @@ protected:
         if (frac > 0.004) {
             painter.setPen(Qt::NoPen);
             painter.setBrush(QColor(dark ? "#8b949e" : "#9a6700"));
-            // Sweep clockwise from 12 o'clock; Qt pie angles are 1/16°, CCW+.
+
             painter.drawPie(box, 90 * 16, -int(frac * 360.0 * 16));
         }
     }
@@ -245,7 +245,7 @@ private:
     static constexpr int kDiameter = 10;
 };
 
-} // namespace
+}
 
 MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
                        const QHash<QString, MemberInfo> &mentionProfiles,
@@ -256,8 +256,8 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     setObjectName("messageRow");
 
     auto *outer = new QHBoxLayout(this);
-    // A little more breathing room so messages don't hug the panel edges; the
-    // enclosing chat list has no margins of its own.
+
+
     outer->setContentsMargins(18, 7, 18, 7);
     outer->setSpacing(10);
 
@@ -282,8 +282,8 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         (message.edited ? " (edited)" : "") + "</span>");
     header->setTextFormat(Qt::RichText);
     header->setCursor(Qt::PointingHandCursor);
-    // Hovering the header (where the abbreviated time sits next to the name)
-    // reveals the full date and time the message was sent.
+
+
     header->setToolTip(sent.toString("dddd, MMMM d, yyyy  h:mm:ss AP"));
     header->installEventFilter(this);
     m_senderLabel = header;
@@ -294,28 +294,28 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     if (!message.deleted)
         headerRow->addWidget(new ExpiryRing(message.timestampMs), 0, Qt::AlignVCenter);
     headerRow->addStretch();
-    // Copy/Edit/Delete are tucked behind a single "..." menu button instead of
-    // sitting side-by-side, so the header row stays tidy even on a message that
-    // qualifies for all three.
+
+
+
     if (!message.deleted) {
         const bool showCopy = !message.text.isEmpty();
-        // Filing someone else's bug report is the common case, so "Create
-        // issue" is offered on every message with text, not just your own.
+
+
         const bool showCreateIssue = !message.text.isEmpty();
-        // Edit stays author-only (you can only rewrite your own words).
+
         const bool showEdit = message.self && !message.text.isEmpty();
-        // Delete is offered on EVERY message for an admin (a full moderation
-        // override that deletes any message, including the admin's own), and on
-        // your own messages otherwise. The admin path goes through
-        // moderateDeleteRequested, which deletes unconditionally; the self path
-        // is the ordinary author delete.
+
+
+
+
+
         const bool showModerateDelete = canModerate;
         const bool showSelfDelete = !canModerate && message.self;
         if (showCopy || showCreateIssue || showEdit || showModerateDelete ||
             showSelfDelete) {
             auto *menuButton = new QToolButton;
             menuButton->setObjectName("messageAction");
-            menuButton->setText(QString::fromUtf8("\xE2\x8B\xAF")); // "⋯"
+            menuButton->setText(QString::fromUtf8("\xE2\x8B\xAF"));
             menuButton->setCursor(Qt::PointingHandCursor);
             menuButton->setToolTip("More actions");
             menuButton->setPopupMode(QToolButton::InstantPopup);
@@ -420,8 +420,8 @@ void MessageRow::buildAttachment(QWidget *, QVBoxLayout *layout)
     const QString mime = m_message.fileMime;
     const QByteArray &data = m_message.fileData;
 
-    // Mark an inline image label as clickable so it can be opened full-size in
-    // the image detail viewer.
+
+
     auto makeClickable = [this](QLabel *label) {
         m_imageLabel = label;
         label->setCursor(Qt::PointingHandCursor);
@@ -463,7 +463,7 @@ void MessageRow::buildAttachment(QWidget *, QVBoxLayout *layout)
         }
     }
 
-    // Non-image (or undecodable image): a downloadable file chip.
+
     auto *chip = new QWidget;
     chip->setObjectName("fileChip");
     auto *chipLayout = new QHBoxLayout(chip);
@@ -534,7 +534,7 @@ void MessageRow::setReactions(const QMap<QString, QStringList> &reactionMap)
 {
     if (!m_reactionsBar)
         return;
-    // Clear existing chips (keep the trailing "+" button and stretch).
+
     while (m_reactionsBar->count() > 2) {
         QLayoutItem *item = m_reactionsBar->takeAt(0);
         if (item->widget())
@@ -554,7 +554,7 @@ void MessageRow::setReactions(const QMap<QString, QStringList> &reactionMap)
             chip->setIcon(QIcon(emoji));
             chip->setIconSize(QSize(16, 16));
         } else {
-            // Unknown value from another client: fall back to a text label.
+
             chip->setText(reactions::displayName(reaction) + " " +
                           QString::number(count));
         }
@@ -570,7 +570,7 @@ void MessageRow::setReactions(const QMap<QString, QStringList> &reactionMap)
 
 void MessageRow::showReactionPicker()
 {
-    // A Discord-style emoji palette: a floating grid of painted emoji.
+
     auto *popup = new QFrame(this, Qt::Popup);
     popup->setObjectName("reactionPicker");
     popup->setAttribute(Qt::WA_DeleteOnClose);
@@ -598,8 +598,8 @@ void MessageRow::showReactionPicker()
         ++index;
     }
     popup->adjustSize();
-    // Prefer opening above the cursor; fall back below and clamp to the
-    // screen so the palette never opens half off-screen.
+
+
     const QPoint cursor = QCursor::pos();
     QPoint pos = cursor - QPoint(10, popup->height() + 6);
     if (QScreen *screen = QGuiApplication::screenAt(cursor)) {

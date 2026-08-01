@@ -528,8 +528,8 @@ def test_gateway_rejects_receive_before_start_when_repository_is_over_quota(
         check=True,
         capture_output=True,
     )
-    # Logical size is counted as well as allocated blocks, so a sparse file
-    # cannot evade the application quota.
+
+
     oversized = repository / "objects" / "oversized"
     with oversized.open("wb") as stream:
         stream.truncate(17 * 1024 * 1024)
@@ -1158,7 +1158,7 @@ def test_worker_gateway_public_read_requires_both_public_indicators():
     )
     assert _run(handler(None, _Request(payload)))["status"] == 200
 
-    # Either disagreement fails closed and requires an owner/share/org ACL.
+
     for private_flag, visibility in (
         (True, "public"),
         (False, "private"),
@@ -1228,9 +1228,9 @@ def test_renamed_account_is_resolved_from_current_account_index():
     found, data = _run(namespace["_ssh_key_gateway_record"](None, key_id=row["key_id"]))
     assert found == row
     assert data["account"] == "new-name"
-    # The production helper resolves the principal from row.account_bi, not
-    # from the historical registration-time value, and overwrites the returned
-    # authorization context with the current name.
+
+
+
     function_source = ast.get_source_segment(
         ENTRY_TEXT,
         next(

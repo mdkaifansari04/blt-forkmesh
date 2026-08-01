@@ -34,21 +34,21 @@
 extern char **environ;
 
 namespace {
-// xterm's standard 16-color palette (normal + bright), used for SGR 30-37/90-97.
+
 const QColor kPalette[16] = {
-    QColor(0x1c, 0x1c, 0x1c), QColor(0xe0, 0x6c, 0x75), // black,  red
-    QColor(0x98, 0xc3, 0x79), QColor(0xe5, 0xc0, 0x7b), // green,  yellow
-    QColor(0x61, 0xaf, 0xef), QColor(0xc6, 0x78, 0xdd), // blue,   magenta
-    QColor(0x56, 0xb6, 0xc2), QColor(0xd6, 0xd6, 0xd6), // cyan,   white
-    QColor(0x5c, 0x63, 0x70), QColor(0xff, 0x8a, 0x90), // bright black/red
-    QColor(0xb5, 0xe8, 0x90), QColor(0xff, 0xe3, 0x95), // bright green/yellow
-    QColor(0x82, 0xc8, 0xff), QColor(0xe2, 0x96, 0xfb), // bright blue/magenta
-    QColor(0x79, 0xe2, 0xea), QColor(0xff, 0xff, 0xff), // bright cyan/white
+    QColor(0x1c, 0x1c, 0x1c), QColor(0xe0, 0x6c, 0x75),
+    QColor(0x98, 0xc3, 0x79), QColor(0xe5, 0xc0, 0x7b),
+    QColor(0x61, 0xaf, 0xef), QColor(0xc6, 0x78, 0xdd),
+    QColor(0x56, 0xb6, 0xc2), QColor(0xd6, 0xd6, 0xd6),
+    QColor(0x5c, 0x63, 0x70), QColor(0xff, 0x8a, 0x90),
+    QColor(0xb5, 0xe8, 0x90), QColor(0xff, 0xe3, 0x95),
+    QColor(0x82, 0xc8, 0xff), QColor(0xe2, 0x96, 0xfb),
+    QColor(0x79, 0xe2, 0xea), QColor(0xff, 0xff, 0xff),
 };
 const QColor kDefaultFg(0xd6, 0xd6, 0xd6);
 const QColor kDefaultBg(0x0b, 0x0b, 0x0b);
 
-// 256-color cube + grayscale ramp lookup for SGR 38;5;n / 48;5;n.
+
 QColor xtermColor(int n)
 {
     if (n < 16)
@@ -62,7 +62,7 @@ QColor xtermColor(int n)
     const int v = (n - 232) * 10 + 8;
     return QColor(v, v, v);
 }
-} // namespace
+}
 
 TerminalWidget::TerminalWidget(QWidget *parent) : QWidget(parent)
 {
@@ -130,14 +130,14 @@ void TerminalWidget::resizeGrid(int rows, int cols)
     m_wrapPending = false;
 }
 
-// ---- process lifecycle -----------------------------------------------------
+
 
 void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
                                 const QStringList &extraEnv)
 {
     stop();
 
-    // Reset the screen for a fresh run.
+
     m_altActive = false;
     m_scrollback.clear();
     m_viewOffset = 0;
@@ -155,13 +155,13 @@ void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
     for (Row &r : m_screen)
         clearRow(r);
 
-    // Everything the child touches is built *before* forking: after fork() only
-    // async-signal-safe calls are allowed (no malloc), so we can't convert
-    // QStrings or call setenv() in the child. We assemble the argv and a full
-    // envp here and merely chdir()/execvp() over there.
+
+
+
+
     const QByteArray cwdBytes = cwd.toLocal8Bit();
-    // Keep an interactive shell after the command exits so output stays readable
-    // and the user can poke around the worktree.
+
+
     QByteArray wrapped =
         commandLine.toUtf8() +
         "; ec=$?; echo; echo \"[ForkMesh: process exited ($ec)]\"; exec bash -i";
@@ -170,9 +170,9 @@ void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
     QByteArray a1 = QByteArrayLiteral("-lc");
     char *argv[] = {a0.data(), a1.data(), wrapped.data(), nullptr};
 
-    // Merge the current environment with TERM/COLORTERM and the caller's extras,
-    // overriding any duplicate keys. Stored in owned buffers kept alive until
-    // exec replaces the child image.
+
+
+
     QList<QByteArray> envStore;
     auto setVar = [&](const QByteArray &key, const QByteArray &val) {
         const QByteArray prefix = key + '=';
@@ -215,8 +215,8 @@ void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
         return;
 
     if (pid == 0) {
-        // Child: only async-signal-safe calls from here. The COW address space
-        // still holds the buffers built above, so the pointers stay valid.
+
+
         if (!cwdBytes.isEmpty() && ::chdir(cwdBytes.constData()) != 0)
             ::_exit(127);
         environ = envp.data();
@@ -224,7 +224,7 @@ void TerminalWidget::runCommand(const QString &commandLine, const QString &cwd,
         ::_exit(127);
     }
 
-    // Parent.
+
     m_master = master;
     m_childPid = pid;
     ::fcntl(m_master, F_SETFL, ::fcntl(m_master, F_GETFL, 0) | O_NONBLOCK);
@@ -259,7 +259,7 @@ void TerminalWidget::reap(bool emitSignal)
     if (m_childPid <= 0)
         return;
     int status = 0;
-    // Give the child a moment to exit after SIGHUP; escalate if it lingers.
+
     for (int i = 0; i < 40; ++i) {
         const pid_t r = ::waitpid((pid_t)m_childPid, &status, WNOHANG);
         if (r == (pid_t)m_childPid)
@@ -298,10 +298,10 @@ void TerminalWidget::onReadyRead()
         } else {
             if (errno == EINTR)
                 continue;
-            break; // EAGAIN: nothing left for now
+            break;
         }
     }
-    // New output sticks the viewport to the bottom.
+
     m_viewOffset = 0;
     update();
 
@@ -340,9 +340,9 @@ void TerminalWidget::scanForSignInUrl(const QByteArray &chunk)
 {
     if (m_signInUrlEmitted)
         return;
-    // The CLI prints one long unwrapped line; only the terminal's own render
-    // wraps it across rows, so scanning the raw child output (rather than the
-    // rendered grid) is the reliable way to recover the whole URL.
+
+
+
     m_urlScanBuffer.append(chunk);
     constexpr int kMaxScan = 8192;
     if (m_urlScanBuffer.size() > kMaxScan)
@@ -386,10 +386,10 @@ void TerminalWidget::applyWinSize()
     ws.ws_col = (unsigned short)m_cols;
     ws.ws_xpixel = (unsigned short)(m_cols * m_cellW);
     ws.ws_ypixel = (unsigned short)(m_rows * m_cellH);
-    ::ioctl(m_master, TIOCSWINSZ, &ws); // kernel raises SIGWINCH in the child
+    ::ioctl(m_master, TIOCSWINSZ, &ws);
 }
 
-// ---- geometry --------------------------------------------------------------
+
 
 void TerminalWidget::recomputeGrid()
 {
@@ -407,7 +407,7 @@ void TerminalWidget::resizeEvent(QResizeEvent *event)
     update();
 }
 
-// ---- screen operations -----------------------------------------------------
+
 
 void TerminalWidget::scrollUp(int top, int bottom, int n)
 {
@@ -417,7 +417,7 @@ void TerminalWidget::scrollUp(int top, int bottom, int n)
     if (top > bottom)
         return;
     for (int i = 0; i < n; ++i) {
-        // Lines leaving the top of the *primary* full screen go to scrollback.
+
         if (!m_altActive && top == 0 && bottom == m_rows - 1) {
             m_scrollback.append(buf[top]);
             if (m_scrollback.size() > 5000)
@@ -473,7 +473,7 @@ void TerminalWidget::putChar(char32_t ch)
     cell.inverse = m_curInverse;
     cell.underline = m_curUnderline;
     if (m_cx == m_cols - 1)
-        m_wrapPending = true; // defer the wrap until the next printable char
+        m_wrapPending = true;
     else
         ++m_cx;
 }
@@ -490,15 +490,15 @@ void TerminalWidget::eraseInDisplay(int mode)
         for (int x = 0; x <= x1 && x < m_cols; ++x)
             buf[y][x] = blank;
     };
-    if (mode == 0) { // cursor to end of screen
+    if (mode == 0) {
         clearFrom(m_cy, m_cx);
         for (int y = m_cy + 1; y < m_rows; ++y)
             clearRow(buf[y]);
-    } else if (mode == 1) { // start to cursor
+    } else if (mode == 1) {
         for (int y = 0; y < m_cy; ++y)
             clearRow(buf[y]);
         clearTo(m_cy, m_cx);
-    } else { // whole screen
+    } else {
         for (int y = 0; y < m_rows; ++y)
             clearRow(buf[y]);
     }
@@ -537,12 +537,12 @@ void TerminalWidget::useAltScreen(bool on)
     m_viewOffset = 0;
 }
 
-// ---- parser ----------------------------------------------------------------
+
 
 void TerminalWidget::feed(const QByteArray &bytes)
 {
     for (unsigned char b : bytes) {
-        // UTF-8 continuation handling while in Ground state.
+
         if (m_utf8Remaining > 0 && m_state == State::Ground) {
             if ((b & 0xC0) == 0x80) {
                 m_utf8 = (m_utf8 << 6) | (b & 0x3F);
@@ -550,7 +550,7 @@ void TerminalWidget::feed(const QByteArray &bytes)
                     putChar(m_utf8);
                 continue;
             }
-            m_utf8Remaining = 0; // malformed; fall through to reinterpret b
+            m_utf8Remaining = 0;
         }
 
         switch (m_state) {
@@ -571,7 +571,7 @@ void TerminalWidget::feed(const QByteArray &bytes)
                 m_utf8 = b & 0x07;
                 m_utf8Remaining = 3;
             } else {
-                putChar(b); // stray byte; render as-is
+                putChar(b);
             }
             break;
 
@@ -584,7 +584,7 @@ void TerminalWidget::feed(const QByteArray &bytes)
                 m_state = State::Osc;
                 m_csiParams.clear();
             } else if (b == '(' || b == ')' || b == '*' || b == '+') {
-                m_state = State::EscIntermediate; // charset designate: eat next
+                m_state = State::EscIntermediate;
             } else {
                 handleEsc(b);
                 m_state = State::Ground;
@@ -592,7 +592,7 @@ void TerminalWidget::feed(const QByteArray &bytes)
             break;
 
         case State::EscIntermediate:
-            m_state = State::Ground; // consume the charset id byte, ignore
+            m_state = State::Ground;
             break;
 
         case State::Csi:
@@ -604,16 +604,16 @@ void TerminalWidget::feed(const QByteArray &bytes)
                 handleCsi(b);
                 m_state = State::Ground;
             }
-            // other intermediates are ignored
+
             break;
 
         case State::Osc:
-            // Operating System Command (e.g. window title). Terminated by BEL
-            // or ST (ESC \). We don't act on these; just consume them.
+
+
             if (b == 0x07) {
                 m_state = State::Ground;
             } else if (b == 0x1B) {
-                m_state = State::Esc; // likely ST; handleEsc('\\') is a no-op
+                m_state = State::Esc;
             }
             break;
         }
@@ -628,8 +628,8 @@ void TerminalWidget::handleControl(char32_t ch)
         m_wrapPending = false;
         break;
     case '\n':
-    case 0x0B: // VT
-    case 0x0C: // FF
+    case 0x0B:
+    case 0x0C:
         newLine();
         m_wrapPending = false;
         break;
@@ -644,7 +644,7 @@ void TerminalWidget::handleControl(char32_t ch)
         m_cx = qMin(next, m_cols - 1);
         break;
     }
-    case 0x07: // BEL
+    case 0x07:
         break;
     default:
         break;
@@ -654,28 +654,28 @@ void TerminalWidget::handleControl(char32_t ch)
 void TerminalWidget::handleEsc(char32_t ch)
 {
     switch (ch) {
-    case 'M': // Reverse Index: move up, scrolling at the top margin.
+    case 'M':
         if (m_cy == m_scrollTop)
             scrollDown(m_scrollTop, m_scrollBottom, 1);
         else if (m_cy > 0)
             --m_cy;
         break;
-    case 'D': // Index
+    case 'D':
         newLine();
         break;
-    case 'E': // Next Line
+    case 'E':
         m_cx = 0;
         newLine();
         break;
-    case '7': // Save cursor
+    case '7':
         m_savedCx = m_cx;
         m_savedCy = m_cy;
         break;
-    case '8': // Restore cursor
+    case '8':
         m_cx = m_savedCx;
         m_cy = m_savedCy;
         break;
-    case 'c': // Reset
+    case 'c':
         for (Row &r : m_screen)
             clearRow(r);
         m_cx = m_cy = 0;
@@ -690,12 +690,12 @@ void TerminalWidget::handleEsc(char32_t ch)
 
 void TerminalWidget::handleCsi(char32_t finalByte)
 {
-    // Parse the numeric parameters (';'-separated).
+
     m_params.clear();
     if (!m_csiParams.isEmpty()) {
         const QList<QByteArray> parts = m_csiParams.split(';');
         for (const QByteArray &p : parts) {
-            // Sub-parameters (':') only matter for SGR truecolor; take the head.
+
             const QByteArray head = p.split(':').value(0);
             m_params.append(head.isEmpty() ? -1 : head.toInt());
         }
@@ -723,11 +723,11 @@ void TerminalWidget::handleCsi(char32_t finalByte)
         break;
     case 'J': eraseInDisplay(param(0, 0)); break;
     case 'K': eraseInLine(param(0, 0)); break;
-    case 'L': scrollDown(m_cy, m_scrollBottom, param(0, 1)); break; // insert lines
-    case 'M': scrollUp(m_cy, m_scrollBottom, param(0, 1)); break;   // delete lines
+    case 'L': scrollDown(m_cy, m_scrollBottom, param(0, 1)); break;
+    case 'M': scrollUp(m_cy, m_scrollBottom, param(0, 1)); break;
     case 'S': scrollUp(m_scrollTop, m_scrollBottom, param(0, 1)); break;
     case 'T': scrollDown(m_scrollTop, m_scrollBottom, param(0, 1)); break;
-    case '@': { // Insert blank chars
+    case '@': {
         QVector<Row> &buf = m_altActive ? m_alt : m_screen;
         const int n = param(0, 1);
         for (int i = 0; i < n; ++i)
@@ -735,7 +735,7 @@ void TerminalWidget::handleCsi(char32_t finalByte)
         buf[m_cy].resize(m_cols);
         break;
     }
-    case 'P': { // Delete chars
+    case 'P': {
         QVector<Row> &buf = m_altActive ? m_alt : m_screen;
         const int n = param(0, 1);
         for (int i = 0; i < n && m_cx < buf[m_cy].size(); ++i)
@@ -744,14 +744,14 @@ void TerminalWidget::handleCsi(char32_t finalByte)
             buf[m_cy].append(blankCell());
         break;
     }
-    case 'X': { // Erase chars
+    case 'X': {
         QVector<Row> &buf = m_altActive ? m_alt : m_screen;
         const int n = param(0, 1);
         for (int i = 0; i < n && m_cx + i < m_cols; ++i)
             buf[m_cy][m_cx + i] = blankCell();
         break;
     }
-    case 'r': // DECSTBM scroll region
+    case 'r':
         m_scrollTop = qBound(0, param(0, 1) - 1, m_rows - 1);
         m_scrollBottom = qBound(0, param(1, m_rows) - 1, m_rows - 1);
         if (m_scrollTop > m_scrollBottom) {
@@ -825,7 +825,7 @@ void TerminalWidget::applySgr()
         } else if (p == 49) {
             m_curBg = kDefaultBg;
         } else if (p == 38 || p == 48) {
-            // Extended color: 5;n (256) or 2;r;g;b (truecolor).
+
             QColor col;
             if (i + 1 < m_params.size() && m_params[i + 1] == 5) {
                 col = xtermColor(qBound(0, m_params.value(i + 2), 255));
@@ -846,7 +846,7 @@ void TerminalWidget::applySgr()
     }
 }
 
-// ---- selection / clipboard --------------------------------------------------
+
 
 int TerminalWidget::streamRowCount() const
 {
@@ -920,7 +920,7 @@ void TerminalWidget::clearSelection()
     update();
 }
 
-// ---- rendering -------------------------------------------------------------
+
 
 void TerminalWidget::paintEvent(QPaintEvent *)
 {
@@ -932,8 +932,8 @@ void TerminalWidget::paintEvent(QPaintEvent *)
 
     const QVector<Row> &buf = m_altActive ? m_alt : m_screen;
 
-    // Build the visible list of rows: scrollback (when scrolled up) + screen.
-    // m_viewOffset counts lines shifted up from the bottom; alt screen has none.
+
+
     const int sb = m_altActive ? 0 : m_scrollback.size();
     const int off = m_altActive ? 0 : qBound(0, m_viewOffset, sb);
 
@@ -944,7 +944,7 @@ void TerminalWidget::paintEvent(QPaintEvent *)
         std::swap(selStart, selEnd);
 
     for (int sy = 0; sy < m_rows; ++sy) {
-        // Index into the combined scrollback+screen stream.
+
         const int streamIdx = sb - off + sy;
         const Row *row = nullptr;
         if (streamIdx < sb)
@@ -986,7 +986,7 @@ void TerminalWidget::paintEvent(QPaintEvent *)
         }
     }
 
-    // Cursor (only when at the live bottom, visible, and we have focus-ish).
+
     if (m_cursorVisible && off == 0 && m_cx < m_cols && m_cy < m_rows) {
         const int px = m_cx * m_cellW;
         const int py = m_cy * m_cellH;
@@ -1005,7 +1005,7 @@ void TerminalWidget::paintEvent(QPaintEvent *)
     }
 }
 
-// ---- input -----------------------------------------------------------------
+
 
 void TerminalWidget::keyPressEvent(QKeyEvent *event)
 {
@@ -1014,7 +1014,7 @@ void TerminalWidget::keyPressEvent(QKeyEvent *event)
         return;
     }
 
-    // Any keystroke jumps the viewport back to the live bottom.
+
     if (m_viewOffset != 0) {
         m_viewOffset = 0;
         update();
@@ -1023,15 +1023,15 @@ void TerminalWidget::keyPressEvent(QKeyEvent *event)
     const int key = event->key();
     const Qt::KeyboardModifiers mods = event->modifiers();
 
-    // Copy (Ctrl+Shift+C). Plain Ctrl+C stays SIGINT, so this only fires with
-    // Shift held, mirroring the Ctrl+Shift+V paste binding below.
+
+
     if (mods.testFlag(Qt::ControlModifier) && mods.testFlag(Qt::ShiftModifier) &&
         key == Qt::Key_C) {
         copySelection();
         return;
     }
 
-    // Paste (Ctrl+Shift+V or Shift+Insert).
+
     if ((mods.testFlag(Qt::ControlModifier) && mods.testFlag(Qt::ShiftModifier) &&
          key == Qt::Key_V) ||
         (mods.testFlag(Qt::ShiftModifier) && key == Qt::Key_Insert)) {
@@ -1063,7 +1063,7 @@ void TerminalWidget::keyPressEvent(QKeyEvent *event)
     default:
         if (mods.testFlag(Qt::ControlModifier) && key >= Qt::Key_A &&
             key <= Qt::Key_Z) {
-            seq = QByteArray(1, (char)(key - Qt::Key_A + 1)); // Ctrl-A..Ctrl-Z
+            seq = QByteArray(1, (char)(key - Qt::Key_A + 1));
         } else if (!event->text().isEmpty()) {
             seq = event->text().toUtf8();
         }
@@ -1135,8 +1135,8 @@ void TerminalWidget::mouseReleaseEvent(QMouseEvent *event)
         return;
     }
     m_selecting = false;
-    // Selecting with the mouse copies immediately, matching the terminal
-    // convention users already expect (xterm/gnome-terminal select-to-copy).
+
+
     if (m_hasSelection)
         copySelection();
 }
@@ -1182,7 +1182,7 @@ void TerminalWidget::contextMenuEvent(QContextMenuEvent *event)
 
 bool TerminalWidget::event(QEvent *event)
 {
-    // Take Tab/Backtab as terminal input instead of focus navigation.
+
     if (event->type() == QEvent::KeyPress) {
         auto *ke = static_cast<QKeyEvent *>(event);
         if (ke->key() == Qt::Key_Tab || ke->key() == Qt::Key_Backtab) {

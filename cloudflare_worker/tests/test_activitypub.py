@@ -27,7 +27,7 @@ ap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ap)
 
 
-# --- Handles / identifiers ---------------------------------------------------
+
 
 def test_parse_acct_resource_forms():
     assert ap.parse_acct_resource("acct:alice@forkmesh.com") == (
@@ -51,8 +51,8 @@ def test_parse_acct_resource_rejects_malformed():
 def test_split_handle_user_vs_repo():
     assert ap.split_handle("alice") == ("user", "alice")
     assert ap.split_handle("owner.repo") == ("repo", "owner", "repo")
-    # Owner names cannot contain dots, so everything after the FIRST dot is
-    # the repo name — including repo names that themselves contain dots.
+
+
     assert ap.split_handle("owner.my.repo") == ("repo", "owner", "my.repo")
     assert ap.split_handle("Bad Handle") is None
     assert ap.split_handle("-leading") is None
@@ -67,7 +67,7 @@ def test_parse_local_actor_url():
         origin, origin + "/ap/repos/owner/repo") == ("repo", "owner", "repo")
     assert ap.parse_local_actor_url(origin, origin + "/ap/actor") == (
         "instance",)
-    # Fragments/trailing slashes are tolerated; foreign origins are not.
+
     assert ap.parse_local_actor_url(
         origin, origin + "/ap/users/alice#main-key") == ("user", "alice")
     assert ap.parse_local_actor_url(
@@ -89,10 +89,10 @@ def test_context_key():
     assert ap.context_key("o", "r", "commit", "abc123") == "o/r#commit#abc123"
 
 
-# --- Dates -------------------------------------------------------------------
+
 
 def test_http_date_is_imf_fixdate():
-    # 2026-07-10 00:00:00 UTC is a Friday.
+
     ms = 1783641600000
     value = ap.http_date(ms)
     assert value == "Fri, 10 Jul 2026 00:00:00 GMT"
@@ -108,7 +108,7 @@ def test_parse_http_date_ms_garbage():
     assert ap.parse_http_date_ms("not a date") == 0
 
 
-# --- Digest ------------------------------------------------------------------
+
 
 def test_digest_header_value_matches_mastodon_format():
     body = b'{"a":1}'
@@ -128,7 +128,7 @@ def test_digest_matches_case_and_multi():
     assert not ap.digest_matches("MD5=abc", body)
 
 
-# --- Signing string / Signature header -----------------------------------------
+
 
 def test_signing_string_request_target_and_headers():
     headers = {"host": "mastodon.social", "date": "Fri, 10 Jul 2026 00:00:00 GMT",
@@ -151,8 +151,8 @@ def test_signing_string_created_and_missing_header():
     assert base == ("(request-target): get /ap/users/alice?page=1\n"
                     "(created): 1700000000\n"
                     "host: x")
-    # A signed header that is absent from the request must fail, not sign an
-    # empty line.
+
+
     assert ap.signing_string("GET", "/", {}, ["host"]) is None
     assert ap.signing_string("GET", "/", {}, ["(created)"]) is None
 
@@ -176,14 +176,14 @@ def test_parse_signature_header_variants():
     assert parsed["created"] == 170
     assert parsed["expires"] == 200
     assert parsed["headers"][1] == "(created)"
-    # Missing headers param defaults to ["date"] per draft-cavage.
+
     parsed = ap.parse_signature_header('keyId="k",signature="s"')
     assert parsed["headers"] == ["date"]
     assert ap.parse_signature_header("") is None
     assert ap.parse_signature_header('algorithm="rsa-sha256"') is None
 
 
-# --- PEM ---------------------------------------------------------------------
+
 
 def test_pem_wrap_and_body_round_trip():
     der_b64 = base64.b64encode(b"\x01" * 100).decode()
@@ -194,7 +194,7 @@ def test_pem_wrap_and_body_round_trip():
     assert ap.pem_body(pem) == der_b64
 
 
-# --- Documents ------------------------------------------------------------------
+
 
 def test_webfinger_doc_shape():
     doc = ap.webfinger_doc("alice@forkmesh.com",
@@ -236,23 +236,23 @@ def test_actor_doc_shape():
 
 
 def test_actor_doc_attachments_and_property_value():
-    # Profile metadata rows: PropertyValue anchors carrying rel="me" so the
-    # linked page can reciprocate and earn Mastodon's verified check.
+
+
     pv = ap.property_value("Repository", "https://f.c/o/r")
     assert pv["type"] == "PropertyValue" and pv["name"] == "Repository"
     assert 'href="https://f.c/o/r"' in pv["value"]
     assert 'rel="me' in pv["value"]
-    assert ">f.c/o/r</a>" in pv["value"]  # scheme-stripped display label
+    assert ">f.c/o/r</a>" in pv["value"]
     doc = ap.actor_doc(
         "https://f.c/ap/repos/o/r", "Group", "o.r", "o/r", "",
         "https://f.c/o/r", "PEM",
         attachments=[pv, ap.property_value("Relay", "https://f.c")])
     assert [a["name"] for a in doc["attachment"]] == ["Repository", "Relay"]
-    # No attachments -> no empty attachment key.
+
     bare = ap.actor_doc("https://f.c/ap/users/a", "Person", "a", "a", "",
                         "https://f.c/@a", "PEM")
     assert "attachment" not in bare
-    # The instance actor advertises its relay too.
+
     inst = ap.instance_actor_doc("https://f.c", "f.c", "PEM")
     assert inst["attachment"][0]["name"] == "Relay"
 
@@ -265,7 +265,7 @@ def test_actor_doc_icon_and_banner():
     assert doc["icon"] == {"type": "Image", "mediaType": "image/png",
                            "url": "https://f.c/api/repo/o/r/media/logo.png?v=5"}
     assert doc["image"]["url"] == "https://f.c/assets/fediverse-banner.png"
-    # Absent URLs must not emit empty icon/image blocks.
+
     bare = ap.actor_doc("https://f.c/ap/users/a", "Person", "a", "a", "",
                         "https://f.c/@a", "PEM")
     assert "icon" not in bare and "image" not in bare
@@ -321,8 +321,8 @@ def test_delete_activity_is_tombstone():
     assert activity["actor"] == "https://forkmesh.com/ap/repos/o/r"
     assert activity["object"] == {
         "id": "https://forkmesh.com/ap/o/" + "cd" * 16, "type": "Tombstone"}
-    # Same audience the original Create reached, so every timeline that showed
-    # the Note gets the Tombstone.
+
+
     assert activity["to"] == [ap.AS_PUBLIC]
     assert activity["cc"] == ["https://forkmesh.com/ap/repos/o/r/followers"]
     assert activity["published"] == "2026-07-10T00:00:00Z"
@@ -343,7 +343,7 @@ def test_collection_doc():
     doc = ap.collection_doc("https://x/ap/users/a/followers", 3)
     assert doc["type"] == "OrderedCollection"
     assert doc["totalItems"] == 3
-    assert "first" not in doc  # no items given: opaque to remote enumerators
+    assert "first" not in doc
 
 
 def test_collection_doc_with_items_embeds_first_page():
@@ -356,7 +356,7 @@ def test_collection_doc_with_items_embeds_first_page():
         "https://remote/users/bob", "https://remote/users/carol"]
 
 
-# --- Remote extraction -----------------------------------------------------------
+
 
 def test_actor_essentials():
     doc = {
@@ -381,8 +381,8 @@ def test_actor_essentials():
 
 
 def test_actor_essentials_carries_public_profile_presentation():
-    # The avatar/bio a follower already publishes: cached so "who follows this
-    # repository" renders without re-fetching every remote actor.
+
+
     doc = {
         "id": "https://mastodon.social/users/bob",
         "inbox": "https://mastodon.social/users/bob/inbox",
@@ -395,7 +395,7 @@ def test_actor_essentials_carries_public_profile_presentation():
     assert ess["icon"] == "https://files.m.s/bob.png"
     assert ess["image"] == "https://files.m.s/header.png"
     assert ess["summary"] == "<p>Kernel hacker</p>"
-    # An actor with no avatar/bio yields empty strings, never None.
+
     bare = ap.actor_essentials(
         {"id": "https://m.s/users/x", "inbox": "https://m.s/users/x/inbox"})
     assert (bare["icon"], bare["image"], bare["summary"]) == ("", "", "")
@@ -417,7 +417,7 @@ def test_image_url_of_accepts_every_published_shape():
 def test_public_media_url_rejects_unroutable_and_hostile_urls():
     assert ap.public_media_url("https://files.m.s/a.png?v=2") == \
         "https://files.m.s/a.png?v=2"
-    # Fragments are dropped; the scheme/host are normalized.
+
     assert ap.public_media_url("https://Files.M.S/a.png#x") == \
         "https://files.m.s/a.png"
     for hostile in (
@@ -480,7 +480,7 @@ def test_note_essentials_mentions_and_images():
         {"url": "https://files.m.s/2.jpg", "mediaType": "image/jpeg",
          "name": ""},
     ]
-    # Absent/malformed tag+attachment stay empty lists, never crash.
+
     bare = ap.note_essentials({"id": "x", "type": "Note", "tag": "nope",
                                "attachment": 7})
     assert bare["mentions"] == [] and bare["images"] == []
@@ -493,7 +493,7 @@ def test_activity_object_id():
     assert ap.activity_object_id(7) == ""
 
 
-# --- Sanitization / rendering -------------------------------------------------
+
 
 def test_sanitize_remote_html():
     dirty = ('<script>alert(1)</script><p>Hello <b>world</b></p>'
@@ -556,14 +556,14 @@ def test_extract_body_images_caps_count_and_rejects_bad_payloads():
     text, images = ap.extract_body_images(body, max_images=4)
     assert len(images) == 4
     assert text.strip() == ""
-    # Malformed base64 and non-image mediaType are both dropped, not stored.
+
     bad_body = "![a](data:image/png;base64,not-base64!!) ![b](data:text/plain;base64,QQ==)"
     text, images = ap.extract_body_images(bad_body)
     assert images == []
     assert "data:" not in text
 
 
-# --- Domain blocklist ----------------------------------------------------------
+
 
 def test_valid_domain():
     assert ap.valid_domain("mastodon.social")
@@ -572,7 +572,7 @@ def test_valid_domain():
     assert not ap.valid_domain("nodot")
     assert not ap.valid_domain("https://mastodon.social")
     assert not ap.valid_domain("mastodon.social/path")
-    assert not ap.valid_domain("bad_domain.com")  # _ is a SQL LIKE wildcard
+    assert not ap.valid_domain("bad_domain.com")
     assert not ap.valid_domain("%.com")
     assert not ap.valid_domain("-lead.com")
     assert not ap.valid_domain("a." + "b" * 300)
@@ -588,7 +588,7 @@ def test_domain_blocked_by_includes_subdomains():
     assert not ap.domain_blocked_by("", blocked)
 
 
-# --- Retry policy -------------------------------------------------------------
+
 
 def test_retry_backoff_grows_and_caps():
     assert ap.retry_backoff_ms(1) == 5 * 60 * 1000

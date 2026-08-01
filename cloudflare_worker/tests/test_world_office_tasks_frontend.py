@@ -340,19 +340,19 @@ def test_a_confirmed_delete_leaves_every_list_and_a_refusal_is_announced():
         "function dropTask(taskId)",
         "if (removeOnSuccess) dropTask(taskId);",
         "await refresh({ quiet: true, force: true });",
-        # A read that started before the delete must not join it, and its
-        # older payload must not overwrite the newer list.
+
+
         'if ((!monitoring && !force) || typeof fetchJSON !== "function")',
         "if (refreshPromise && !force) return refreshPromise;",
         "const sequence = ++refreshSequence;",
         "if (sequence !== refreshSequence) return false;",
         "dedupe: !force,",
-        # The Office status line is invisible from the Local controls Work
-        # tab, so a rejected change is also toasted.
+
+
         "toast(errorMessage);",
     ):
         assert contract in tasks
-    # fetchJSON honors the dedupe opt-out the forced read relies on.
+
     assert "dedupe = true," in world
     assert "if (canDedupe && this.inflightRequests.has(requestKey))" in world
 

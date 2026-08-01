@@ -1,7 +1,7 @@
--- Repository issues promoted into the private Marketing initiatives wall.
---
--- Issue titles and repository coordinates are sealed. Only opaque organization
--- and source indexes plus bounded timestamps remain in plaintext.
+
+
+
+
 CREATE TABLE IF NOT EXISTS world_office_marketing_initiatives (
     initiative_id TEXT PRIMARY KEY CHECK (
         length(initiative_id) = 32

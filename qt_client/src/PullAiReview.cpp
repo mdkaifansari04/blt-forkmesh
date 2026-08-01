@@ -7,8 +7,8 @@
 
 namespace {
 
-// Split file contents into lines for anchor matching. A trailing newline does
-// not produce a phantom empty last line (files conventionally end with one).
+
+
 QStringList contentLines(const QString &content)
 {
     QStringList lines = content.split(QLatin1Char('\n'));
@@ -17,7 +17,7 @@ QStringList contentLines(const QString &content)
     return lines;
 }
 
-} // namespace
+}
 
 QString buildAiReviewPrompt(const QString &title, const QString &description,
                             const QString &patch, int maxDiffChars)
@@ -75,9 +75,9 @@ QList<AiReviewFinding> parseAiReviewFindings(const QString &text, bool *ok)
         *ok = false;
     QList<AiReviewFinding> findings;
 
-    // The reply should be a bare array, but tolerate a {"findings": [...]}
-    // wrapper and chatter/fences around the JSON by retrying on the outermost
-    // [...] slice.
+
+
+
     QJsonArray arr;
     const QJsonDocument doc = QJsonDocument::fromJson(text.trimmed().toUtf8());
     if (doc.isArray()) {
@@ -117,9 +117,9 @@ QList<AiReviewFinding> parseAiReviewFindings(const QString &text, bool *ok)
         f.comment = o.value(QLatin1String("comment")).toString().trimmed();
         if (f.path.isEmpty() || f.comment.isEmpty() || f.lineStart <= 0)
             continue;
-        // A committable quick fix needs both sides: the original anchors (and
-        // verifies) the replacement. The original must span exactly the
-        // reported range, or the anchor would lie about what gets replaced.
+
+
+
         const QJsonValue original = o.value(QLatin1String("original"));
         const QJsonValue fix = o.value(QLatin1String("fix"));
         if (original.isString() && fix.isString() &&
@@ -129,7 +129,7 @@ QList<AiReviewFinding> parseAiReviewFindings(const QString &text, bool *ok)
             if (origLines.size() == f.lineEnd - f.lineStart + 1) {
                 QStringList fixLines = fix.toString().split(QLatin1Char('\n'));
                 if (fixLines.size() == 1 && fixLines.first().isEmpty())
-                    fixLines.clear(); // "" fix = delete the lines
+                    fixLines.clear();
                 f.suggestionPatch =
                     buildSuggestionPatch(origLines, fixLines, f.lineStart);
             }
@@ -173,7 +173,7 @@ bool parseSuggestionPatch(const QString &patch, QStringList *original,
             if (replacement)
                 replacement->append(line.mid(1));
         }
-        // Anything else (blank separators, stray context) is ignored.
+
     }
     return original && !original->isEmpty();
 }
@@ -202,10 +202,10 @@ bool applySuggestionToContent(QString *content, int lineStart,
     };
     int start0 = lineStart - 1;
     if (!matchesAt(start0)) {
-        // The review's line numbers drifted (or were off by a little) — fall
-        // back to the unique occurrence of the original block anywhere in the
-        // file. Ambiguity or absence means the file no longer reads the way
-        // the review saw it, so refuse rather than guess.
+
+
+
+
         int found = -1;
         for (int at = 0; at + original.size() <= lines.size(); ++at) {
             if (!matchesAt(at))

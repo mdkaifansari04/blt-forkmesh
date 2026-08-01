@@ -53,8 +53,8 @@ public:
                 sockets.append(socket);
                 QObject::connect(socket, &QTcpSocket::disconnected, socket,
                                  &QObject::deleteLater);
-                // The first connection deliberately blackholes the HTTP
-                // upgrade. Every retry is accepted immediately.
+
+
                 if (connectionCount == 1)
                     continue;
                 QObject::connect(socket, &QTcpSocket::readyRead, socket,
@@ -255,9 +255,9 @@ void testDeterministicRecovery()
 }
 
 
-// The World office's channel rooms reach the desktop over signed history and
-// room-access endpoints. Pin the proof strings the account key signs (the
-// Worker verifies the same bytes), the conversation naming, and decryption.
+
+
+
 void testOfficeChannelMirror()
 {
     using namespace forkmesh::office;
@@ -335,7 +335,7 @@ void testOfficeChannelMirror()
           "a frame that failed to decrypt is dropped");
 }
 
-} // namespace
+}
 
 int main(int argc, char **argv)
 {

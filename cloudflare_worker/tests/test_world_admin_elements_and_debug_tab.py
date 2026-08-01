@@ -31,10 +31,10 @@ def test_scene_keeps_an_element_registry_every_piece_registers_into():
         "initialDisabledElements = [],",
     ):
         assert contract in SCENE
-    # The registry is exposed to the embedding page.
+
     assert "listWorldElements,\n    setWorldElementEnabled," in SCENE
-    # A broad sweep of named registrations: terrain, districts, boards,
-    # recreation, avatars, systems, and the dynamic populations.
+
+
     for element_id in (
         '"city-terrain"',
         '"town-landscape"',
@@ -66,17 +66,17 @@ def test_scene_keeps_an_element_registry_every_piece_registers_into():
 
 
 def test_disabling_an_element_removes_it_from_scene_raycast_and_frame_work():
-    # Scene graph and raycast list both empty out on detach…
+
     detach = SCENE.split("function detachElementRoot", 1)[1].split(
         "function attachElementRoot", 1
     )[0]
     assert "interactive.splice(index, 1);" in detach
     assert "parent?.remove?.(root);" in detach
-    # …and a stale shadow does not linger after the caster leaves.
+
     assert "renderer.shadowMap.needsUpdate = true;" in SCENE.split(
         "function setWorldElementEnabled", 1
     )[1].split("function listWorldElements", 1)[0]
-    # Per-frame work pauses with its element toggle.
+
     for gate in (
         'if (worldElementEnabled("remote-avatars")) updateRemotePlayers(delta, time);',
         'if (worldElementEnabled("forkbot")) updateForkbot(delta, time);',
@@ -92,8 +92,8 @@ def test_disabling_an_element_removes_it_from_scene_raycast_and_frame_work():
         'if (!worldElementEnabled("chat-bubbles")) return',
     ):
         assert gate in SCENE, f"missing per-frame gate: {gate}"
-    # A detached subtree cannot be clicked: visibility now requires a path to
-    # the Scene, and despawned dynamic roots are never resurrected.
+
+
     assert "if (!current.parent && !current.isScene) return false;" in SCENE
     assert "() => remotePlayers.get(remoteId) === avatar," in SCENE
     assert "() => nodeInfrastructure.get(id) === registeredCabinet," in SCENE
@@ -113,8 +113,8 @@ def test_elements_tab_is_available_to_everyone_device_local_and_wired_to_the_sce
         "initialDisabledElements: this.disabledWorldElements,",
     ):
         assert contract in APP
-    # Every visitor can flip switches, and choices persist on this device only
-    # — never into synced account preferences.
+
+
     toggle = APP.split("  setWorldElementEnabled(id, enabled) {", 1)[1].split(
         "\n  setAllWorldElementsEnabled(", 1
     )[0]
@@ -123,7 +123,7 @@ def test_elements_tab_is_available_to_everyone_device_local_and_wired_to_the_sce
     assert "disabledElements" not in APP.split("function defaultSettings()", 1)[
         1
     ].split("function mergeSettings", 1)[0]
-    # The tab stays visible regardless of the current account.
+
     restore = APP.split("  applyAdminElementsAccess() {", 1)[1].split(
         "\n  adminErrorStorageKey", 1
     )[0]
@@ -161,16 +161,16 @@ def test_debug_tab_shows_live_readings_with_suggestions_and_stays_open():
         "settingsDebugPaneElement()",
     ):
         assert contract in APP
-    # The same one-second diagnostics tick feeds the tab, whether or not the
-    # floating pill is visible, so the readings are genuinely real time.
+
+
     head = APP.split("  renderDiagnostics() {", 1)[1].split(
         "diagnosticsDetailReadouts(snapshot) {", 1
     )[0]
     assert "const debugPane = this.settingsDebugPaneElement();" in head
     assert "if (!floatingVisible && !debugPane) return;" in head
     assert "if (debugPane) this.renderDebugSettingsPane(debugPane, snapshot);" in head
-    # Suggestions grade against the same thresholds as the readouts and name
-    # the heaviest enabled elements an administrator can switch off to test.
+
+
     suggestions = APP.split("function worldDebugSuggestions(", 1)[1].split(
         "\nclass ", 1
     )[0]
@@ -178,10 +178,10 @@ def test_debug_tab_shows_live_readings_with_suggestions_and_stays_open():
     assert 'diagnosticLevel("calls"' in suggestions
     assert 'diagnosticLevel("triangles"' in suggestions
     assert "pixelRatio" in suggestions
-    # Clicking back into the world must not dismiss the Debug or Elements
-    # tabs — that is the whole point of watching them while playing.
+
+
     assert '!["debug", "elements"].includes(this.settingsTab || "") &&' in APP
-    # The floating pill checkbox moved out of the View pane into Debug.
+
     view_pane = APP.split('data-world-settings-pane="view"', 1)[1].split(
         "</section>", 1
     )[0]

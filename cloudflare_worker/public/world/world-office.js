@@ -16,9 +16,9 @@ const OFFICE_ENTRY_PATH = "/api/world/office/general/entry";
 const OFFICE_FLOORS_PATH = "/api/world/office/floors";
 const OFFICE_ATTENDANCE_PATH = "/api/world/office/attendance";
 const OFFICE_ATTENDANCE_HEARTBEAT_MS = 30_000;
-// Mirrors the Worker's OFFICE_ATTENDANCE_LIVE_TTL_MS: once our writes have been
-// quiet for this long the server has closed the open visit, and that visit id
-// can no longer be extended.
+
+
+
 const OFFICE_ATTENDANCE_LIVE_TTL_MS = 75_000;
 
 function newOfficeAttendanceVisitId() {
@@ -39,8 +39,8 @@ function newOfficeAttendanceVisitId() {
     .join("");
 }
 
-// True once the server can no longer be holding this visit open. Exported so
-// the resume rule is testable without a live Office session.
+
+
 export function officeAttendanceVisitExpired(seenAt, now) {
   const acknowledged = Number(seenAt) || 0;
   const observed = Number(now) || 0;
@@ -273,8 +273,8 @@ export function createWorldOfficeController({
         : direction === "heartbeat"
           ? "heartbeat"
           : "in";
-    // Keep IN and OUT ordered if someone walks straight through the lobby.
-    // One compact POST per transition replaces browser-local clock state.
+
+
     attendanceWrite = attendanceWrite
       .catch(() => null)
       .then(async () => {
@@ -284,15 +284,15 @@ export function createWorldOfficeController({
           { timeout: 6000 },
         );
         applyAttendance(payload);
-        // Server-acknowledged liveness for this visit id. A gap wider than the
-        // Worker's TTL means the visit was closed behind our back.
+
+
         if (action !== "out") attendanceSeenAt = Date.now();
         return payload;
       })
       .catch(async () => {
-        // A failed signed IN should still leave the public lobby's last-20
-        // ledger useful. This fallback is sequential, never concurrent with
-        // the authoritative POST response.
+
+
+
         if (
           loadPublicFallback &&
           action === "in" &&
@@ -314,18 +314,18 @@ export function createWorldOfficeController({
 
   function punchAttendanceTick() {
     if (!active || document.hidden || !attendanceAccount) return;
-    // The scene owns the physical building boundary. A delayed doorway
-    // callback must never let general World time leak into Office Hours.
+
+
     if (world.isOfficeInterior?.() === false) {
       stopAttendanceHeartbeat();
       void recordAttendance("out");
       return;
     }
-    // Heartbeats pause while the tab is hidden (and stop outright during a
-    // network outage), so the Worker's live-presence TTL closes the visit. A
-    // heartbeat can no longer extend that closed id: resume as a new visit
-    // instead, otherwise the member is stuck AWAY on the Office leaderboard and
-    // the rest of the stay they are physically still in never counts.
+
+
+
+
+
     if (officeAttendanceVisitExpired(attendanceSeenAt, Date.now())) {
       attendanceVisitId = newOfficeAttendanceVisitId();
       void recordAttendance("in");
@@ -342,11 +342,11 @@ export function createWorldOfficeController({
     );
   }
 
-  // Resume the moment the tab is looked at again rather than up to one heartbeat
-  // later, so a member who tabbed away is counted as present right away. Only
-  // the resume case is urgent: a visit the server still holds open is refreshed
-  // by the regular heartbeat, and punching on every tab switch would add
-  // avoidable Worker traffic.
+
+
+
+
+
   function onVisibilityChange() {
     if (document.hidden || !attendanceHeartbeat) return;
     if (!officeAttendanceVisitExpired(attendanceSeenAt, Date.now())) return;
@@ -354,8 +354,8 @@ export function createWorldOfficeController({
   }
 
   function initialOfficeAccess() {
-    // The lobby is physically public, but elevator grants remain fail-closed
-    // until the server validates a signed-in account in the background.
+
+
     return normalizeOfficeFloorAccess({});
   }
 
@@ -424,9 +424,9 @@ export function createWorldOfficeController({
         authorized = true;
         return true;
       } catch (_) {
-        // A stale/invalid signed session remains a public-lobby visit. Load
-        // its read-only ledger only for the initial entry path; an explicit
-        // post-membership refresh must not add unrelated network traffic.
+
+
+
         if (
           loadPublicFallback &&
           active &&
@@ -452,10 +452,10 @@ export function createWorldOfficeController({
     }
   }
 
-  // One explicit, server-authoritative refresh after the signed-in viewer's
-  // own organization-team membership changes. It waits for entry hydration
-  // rather than racing it, never records another attendance punch, and owns no
-  // interval/polling loop.
+
+
+
+
   async function refreshAuthorization() {
     const pending = floorAuthorizationPromise;
     if (pending) {
@@ -526,9 +526,9 @@ export function createWorldOfficeController({
   async function enterOffice(entry = {}) {
     const doorwayEntry = entry?.source === "doorway";
     try {
-      // The scene emits "doorway" only after the avatar fully clears the inner
-      // jamb. Do not reject a fast crossing merely because the later proximity
-      // tick still contains the previous frame.
+
+
+
       if (active || (!doorwayEntry && proximity !== "nearby")) return false;
       const activeSession = authenticatedSession();
       const entered = completeOfficeEntry({
@@ -539,8 +539,8 @@ export function createWorldOfficeController({
         world.setOfficeDoorStatus?.("open");
       }
       if (entered && activeSession) {
-        // Physical admission never waits on the network. Signed-in visitors
-        // receive team-floor and meeting permissions in the background.
+
+
         void refreshOfficeAuthorization(
           activeSession,
           authorizationGeneration,
@@ -592,9 +592,9 @@ export function createWorldOfficeController({
 
     const restored = world.restoreSavedViewState?.(view) === true;
     if (!restored && !wasActive) {
-      // Admission happened through the same attendance path as the door. If
-      // the target floor is unauthorized, return to town and close that visit
-      // instead of leaving a hidden lobby check-in behind.
+
+
+
       world.leaveOfficeInterior?.();
       completeOfficeExit();
     }

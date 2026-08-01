@@ -119,12 +119,12 @@ def test_unsigned_or_malformed_notices_never_reach_the_room():
     commit = "b2" * 20
     good = sign(None, "mirror2", "forkmesh", commit)
     rejected = [
-        # A forged or replayed-for-other-values control signature.
+
         _Request({"node": "mirror2", "repo": "forkmesh", "commit": commit},
                  headers={"x-forkmesh-world-control": "f" * 64}),
         _Request({"node": "mirror3", "repo": "forkmesh", "commit": commit},
                  headers={"x-forkmesh-world-control": good}),
-        # A non-hash commit cannot ride the frame even if signed for it.
+
         _Request({"node": "mirror2", "repo": "forkmesh",
                   "commit": "not-a-commit"},
                  headers={"x-forkmesh-world-control": sign(
@@ -156,17 +156,17 @@ def test_catalog_publish_announces_only_a_changed_public_head_after_purge():
     block = ENTRY_TEXT[start:ENTRY_TEXT.index(
         "def _repo_identity_from_clone_url")]
     call = block.index("await _world_broadcast_mirror_push(")
-    # Caches are purged before the announcement, so a viewer's immediate
-    # refresh reads the new head rather than the stale cached payload.
+
+
     assert block.index("await purge_catalog_related_caches()") < call
     guard = block[:call]
     assert 'record["visibility"] == "public"' in guard
     assert "new_commit != prior_commit" in guard
     assert 'record.get("changedFiles", [])' in block[call:call + 300]
     assert 're.fullmatch(r"[0-9a-f]{40,64}", new_commit)' in guard
-    # Best-effort: a World relay failure never fails the publication.
+
     assert "except Exception:" in block[call:call + 400]
-    # The room route exists on the Durable Object alongside manual-block.
+
     assert '"/api/world/mirror-push"' in ENTRY_TEXT
     assert "await self._mirror_push(request)" in ENTRY_TEXT
 
@@ -176,8 +176,8 @@ def test_client_treats_the_frame_as_a_doorbell_and_coalesces_one_refresh():
     assert "handleMirrorPush(message)" in APP
     handler = APP[APP.index("handleMirrorPush(message) {"):]
     handler = handler[:handler.index("\n  }")]
-    # The announced name is sanitized before any display and the frame never
-    # drives scene state directly — only a refresh of the signed payload.
+
+
     assert "sanitizePresenceText(message?.node" in handler
     assert "refreshMirrorCatalogs({ force: true })" in handler
     assert "clearTimeout(this.mirrorPushRefreshTimer)" in handler
@@ -189,9 +189,9 @@ def test_client_treats_the_frame_as_a_doorbell_and_coalesces_one_refresh():
 
 
 def test_scene_plays_a_bounded_disposed_surge_from_verified_commit_changes():
-    # The surge fires from updateNetworkNodes when a cabinet's commit changes
-    # between two signed payload snapshots — the same single trigger for the
-    # instant socket-driven refresh and the regular fallback poll.
+
+
+
     update = SCENE[SCENE.index("function updateNetworkNodes"):]
     update = update[:update.index("function focusNetworkNode")]
     assert "cabinet?.userData?.nodeRecord?.commit" in update
@@ -203,9 +203,9 @@ def test_scene_plays_a_bounded_disposed_surge_from_verified_commit_changes():
     assert "expiresAt: Date.now() + 120_000" in SCENE
     surge = SCENE[SCENE.index("function spawnPushSurge"):]
     surge = surge[:surge.index("function playRewardEvent")]
-    # A burst of simultaneous publishes stays within a fixed effect budget.
+
     assert "pushSurges.length >= 8" in surge
-    # The finished surge frees its geometry and materials like reward flights.
+
     animate = SCENE[SCENE.index("pushSurges.length - 1"):]
     animate = animate[:animate.index("updateCamera(delta)")]
     assert "pushSurges.splice(index, 1)" in animate

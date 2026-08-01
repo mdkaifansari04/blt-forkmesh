@@ -15,8 +15,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import world_community as policy  # noqa: E402
-import world_community_api as api  # noqa: E402
+import world_community as policy
+import world_community_api as api
 
 
 NOW = 1_800_000_000_000
@@ -725,8 +725,8 @@ async def test_shared_playback_clock_is_server_authoritative_and_conflict_safe()
     assert started["data"]["playback"]["coordinationOnly"] is True
     assert started["data"]["playback"]["requiresLocalPlaybackConsent"] is True
 
-    # A second authenticated client observes the same UTC-derived clock without
-    # receiving media bytes or an autoplay command.
+
+
     observed = await api.handle_media(
         runtime.use("GET", "bob", now=NOW + 2500),
         f"/api/world/media/spaces/{space_id}",

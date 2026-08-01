@@ -1627,8 +1627,8 @@ test("collapsed CHAT bar counts unread remote lines but never your own", async (
   const badge = page.locator("[data-world-chat-terminal-unread]");
   await expect(badge).toBeHidden();
 
-  // The embedded /dashboard/chat iframe mirrors every line to the World with
-  // postMessage; drive that same path directly.
+
+
   const mirror = (line) =>
     page.evaluate((message) => {
       window.postMessage(
@@ -1637,7 +1637,7 @@ test("collapsed CHAT bar counts unread remote lines but never your own", async (
       );
     }, line);
 
-  // Replayed history only refreshes the newest-line label.
+
   await mirror({ sender: "peer", text: "old news", history: true });
   await expect(badge).toBeHidden();
 
@@ -1646,13 +1646,13 @@ test("collapsed CHAT bar counts unread remote lines but never your own", async (
   await mirror({ sender: "peer", text: "anyone around?" });
   await expect(badge).toHaveText("2");
 
-  // Your own lines — from this browser (self) or the same account elsewhere
-  // (own) — are already read.
+
+
   await mirror({ sender: "me", text: "on my way", self: true });
   await mirror({ sender: "me", text: "from my phone", own: true });
   await expect(badge).toHaveText("2");
 
-  // Opening the bar clears it, and an open bar never accumulates.
+
   await page.locator("[data-world-chat-terminal]").evaluate((element) => {
     element.open = true;
   });
@@ -1828,8 +1828,8 @@ test("mobile World chat contains its rail, transcript, and prompt", async ({
   });
   await waitForWorld(page);
 
-  // Reproduce the worst case: DEBUG was expanded before the visitor opened the
-  // native full-height chat.
+
+
   await page.locator("[data-world-diagnostics]").evaluate((element) => {
     element.open = true;
   });
@@ -2289,8 +2289,8 @@ test("World chat keeps five replayed messages lazy and its prompt in view", asyn
   await page.routeWebSocket(
     "**/api/repo/mainnode/forkmesh/rooms/world-general/ws",
     (socket) => {
-      // Same-millisecond D1 rows are hash-tied, so mutations may be replayed
-      // before their targets. Exercise that ordering explicitly.
+
+
       socket.send(JSON.stringify(encryptWorldChatEnvelope({
         type: "edit",
         id: "edit-history-12",
@@ -2351,8 +2351,8 @@ test("World chat keeps five replayed messages lazy and its prompt in view", asyn
   await expect(page.locator(".chat-history-indicator")).toContainText(
     "7 earlier messages",
   );
-  // Oldest at the top, newest on the bottom rail, with the "earlier messages"
-  // handle above the first row and the feed parked at the latest line.
+
+
   const feedOrder = await page.locator("#fullChatMessages").evaluate((element) => {
     const rows = Array.from(element.querySelectorAll(".chat-message-row"));
     const indicator = element.querySelector(".chat-history-indicator");
@@ -2493,9 +2493,9 @@ test("ForkMesh Office walk-in opens chat only through the explicit fallback", as
 
   const worldURL = page.url();
   const pageCount = context.pages().length;
-  // The World's always-present embedded global chat connects independently of
-  // the Office. Capture that baseline so this journey proves that focusing or
-  // approaching the Office does not open an additional Office chat transport.
+
+
+
   const globalChatSocketCount = chatSocketURLs.length;
   expect(globalChatSocketCount).toBeGreaterThanOrEqual(1);
   await page.locator("forkmesh-world").evaluate((shell) => {
@@ -3239,8 +3239,8 @@ test("a first-frame doorway crossing enters before proximity catches up", async 
   await waitForWorld(page);
 
   const entry = await page.locator("forkmesh-world").evaluate(async (shell) => {
-    // Freeze between the doorway collision and the later proximity ticker,
-    // matching a fast dash/double-click arrival in that first frame.
+
+
     shell.world.setPaused(true);
     shell.world.player.position.set(0, 0.38, -169.53);
     const proximityBefore = shell.officeController.proximity;
@@ -3313,8 +3313,8 @@ test("Office doorway stays outside at the jamb and never blocks on access hydrat
       "forkmesh-office-door-status",
     );
     const doorway = status.getWorldPosition(status.position.clone());
-    // The avatar's center is just through the glass, but its full collision
-    // body has not cleared the inner jamb yet.
+
+
     shell.world.player.position.set(doorway.x, 0.38, doorway.z - 0.26);
     return {
       active: shell.officeController.active,
@@ -3424,8 +3424,8 @@ test("Office doorway retries a rejected crossing without requiring backward move
     shell.officeController.enterOffice = async (entry = {}) => {
       shell.__officeEntryAttempts += 1;
       if (shell.__officeEntryAttempts === 1) {
-        // Match a transient rejected/interrupted handoff. The controller's
-        // normal finally path clears pending; movement remains inward.
+
+
         shell.world.setOfficeDoorwayEntryPending(false);
         return false;
       }
@@ -3549,9 +3549,9 @@ test("Office entry preserves the live avatar and keeps zoom inside the tower", a
     ),
   ).toBeLessThan(6);
 
-  // From just inside the same doorway, offset the target far enough that the
-  // default orbit ray crosses the front plane beside the opening. It must hit
-  // the facade clamp rather than inheriting the centered portal exception.
+
+
+
   await page.locator("forkmesh-world").evaluate((shell) => {
     const interior = shell.world.scene.getObjectByName(
       "forkmesh-office-interior"
@@ -3670,8 +3670,8 @@ test("Office rooftop restores the full world zoom outside the elevator", async (
     zoom: 28,
   });
 
-  // Pull the orbit eye below its target to look sharply upward. It may retain
-  // full horizontal zoom, but it must never pass down through the roof slab.
+
+
   const canvas = page.locator("[data-world-canvas-wrap] canvas");
   const box = await canvas.boundingBox();
   expect(box).not.toBeNull();
@@ -4116,9 +4116,9 @@ test("Marketing studio furniture, wall features, reception, and open FM mark ali
   });
   expect(state.seating.seatedLocal[0]).toBeCloseTo(-5.15, 2);
   expect(state.seating.seatedLocal[2]).toBeCloseTo(0, 2);
-  // Avatar origins sit below the seat because their hips are modeled above
-  // the origin; the rendered hips remain on the chair and the folded feet
-  // reach the floor.
+
+
+
   expect(state.seating.seatedLocal[1]).toBeGreaterThan(15.5);
   expect(state.seating.seatedLocal[1]).toBeLessThan(16.38);
   await page.locator("forkmesh-world").evaluate((shell) => {
@@ -4231,8 +4231,8 @@ test("Noah greets desk approaches locally without per-frame bubble spam", async 
   expect(Math.abs(first.bubble[2] - first.noah[2])).toBeLessThan(0.05);
   expect(first.bubble[1]).toBeGreaterThan(first.noah[1]);
 
-  // Cross the hysteresis boundary and return during the cooldown. The existing
-  // local bubble remains; no new sprite/event is created on animation frames.
+
+
   await placeAtDeskDistance(-27);
   await page.waitForTimeout(100);
   await placeAtDeskDistance(-32);
@@ -4301,8 +4301,8 @@ test("FM sculpture uses mirrored through-cut panels at a deterministic yaw", asy
     };
   });
   expect(entryCapture.count).toBe(0);
-  // Motion keeps the six-face cube render deferred. Once movement stops, one
-  // settled capture includes the live avatar; continued idling does not loop.
+
+
   await page.keyboard.down("w");
   await page.waitForTimeout(250);
   const movingCapture = await page.locator("forkmesh-world").evaluate((shell) =>
@@ -4685,9 +4685,9 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     rooftop: true,
   });
 
-  // Calling the controller from elsewhere on the floor must not teleport the
-  // avatar into the elevator. Only a visitor physically inside the cabin may
-  // start a ride.
+
+
+
   const outsideCabin = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.travelToOfficeFloor("engineering")
   );
@@ -4734,10 +4734,10 @@ test("Office elevator exposes ten floors while enforcing team access", async ({
     },
     carHeight: 32,
   });
-  // The elevator changes the active floor while the camera can remain in the
-  // same near-LOD class. The story itself must make the destination visible;
-  // waiting for a later zoom update once caused a successful arrival to render
-  // an empty Office level.
+
+
+
+
   const arrivedFloor = await page.locator("forkmesh-world").evaluate((shell) => {
     const engineering = shell.world.scene.getObjectByName(
       "forkmesh-office-floor-engineering",
@@ -4817,7 +4817,7 @@ test("Local controls carry Work and Security tabs instead of a session card", as
     accountSessionFixture,
   });
   await waitForWorld(page);
-  // The owner-only avatar plate carries assigned work, never a session card.
+
   const board = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.setSelfWorkBoard({}),
   );
@@ -4829,7 +4829,7 @@ test("Local controls carry Work and Security tabs instead of a session card", as
     "true",
   );
 
-  // The View tab is the default, so the environment controls stay reachable.
+
   await expect(page.locator("[data-world-light-level]")).toBeVisible();
   await expect(page.locator("[data-world-session-list]")).toBeHidden();
 
@@ -4841,7 +4841,7 @@ test("Local controls carry Work and Security tabs instead of a session card", as
   await expect(sessions.nth(1)).toContainText("198.51.100.7");
   await expect(page.locator("[data-world-light-level]")).toBeHidden();
 
-  // Revoking another device leaves this one signed in and does not reload.
+
   await sessions
     .nth(1)
     .locator("[data-world-session-revoke]")
@@ -4872,7 +4872,7 @@ test("Local controls carry Work and Security tabs instead of a session card", as
       ).length,
     )
     .toBeGreaterThan(0);
-  // The row flips to Stop once the server-timed start lands.
+
   await expect(
     page.locator(
       '[data-world-organization-task-list] [data-world-office-task-action="stop"]',
@@ -5194,17 +5194,17 @@ test("detail panels overlay the desktop without dimming or reframing the World",
 
 async function freezeWorld(page) {
   await page.locator("forkmesh-world").evaluate((shell) => {
-    // The default theme is fixed full daylight. Wall-clock time never
-    // participates in scene lighting.
+
+
     shell.world.setTheme("world");
     shell.world.setLightLevel(100);
-    // Frame the Office for the baseline so the meeting-room work is visible in
-    // every viewport's shot (adhoc: PR #47). Retakes world-*.png baselines.
+
+
     shell.world.focusLandmark("office", { move: false });
   });
-  // The camera intentionally eases from its spawn position. Let that bounded
-  // interpolation converge before pausing so the WebGL baseline does not
-  // depend on how many startup frames a busy CI host happened to paint.
+
+
+
   await page.waitForTimeout(1600);
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.closeLandmark();
@@ -5548,7 +5548,7 @@ test("double-clicking the ground dashes the avatar to that spot", async ({
   const before = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getPosition(),
   );
-  // Well away from the avatar, still on the plaza floor.
+
   await page.mouse.dblclick(
     Math.round(box.x + box.width * 0.3),
     Math.round(box.y + box.height * 0.4),
@@ -5557,7 +5557,7 @@ test("double-clicking the ground dashes the avatar to that spot", async ({
   const after = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getPosition(),
   );
-  // A dash covers far more ground in 400ms than the walking cap would.
+
   expect(Math.hypot(after.x - before.x, after.z - before.z)).toBeGreaterThan(3);
 });
 
@@ -5707,8 +5707,8 @@ test("refresh restores one bounded identity-local position without private histo
   await waitForWorld(page);
 
   await page.locator("forkmesh-world").evaluate((shell) => {
-    // A normal Town Square position survives while private activity copy does
-    // not become part of the local position record.
+
+
     const position = {
       x: 16.3,
       y: 0.38,
@@ -6260,8 +6260,8 @@ test("a handshake is offered to one visitor and poses both avatars once accepted
   });
   await waitForWorld(page);
 
-  // A handshake is offered from the selected visitor's own profile, so it is
-  // always addressed at exactly one live peer.
+
+
   await page.locator("forkmesh-world").evaluate((shell) => {
     shell.openWorldMemberDetail({
       peerId: "peer-neighbor",
@@ -6279,7 +6279,7 @@ test("a handshake is offered to one visitor and poses both avatars once accepted
     page.getByRole("button", { name: "Handshake offered" }),
   ).toBeDisabled();
 
-  // The relay publishes the accepted pair to the room; both halves pose.
+
   relay.send(JSON.stringify({
     type: "interaction",
     kind: "handshake",
@@ -6303,7 +6303,7 @@ test("a handshake is offered to one visitor and poses both avatars once accepted
     page.getByRole("button", { name: "Offer handshake" }),
   ).toBeEnabled();
 
-  // An offer arriving from that peer turns the same panel into the answer.
+
   relay.send(JSON.stringify({
     type: "interaction",
     kind: "handshake-offer",
@@ -6319,7 +6319,7 @@ test("a handshake is offered to one visitor and poses both avatars once accepted
         target: "peer-neighbor",
       },
     ]);
-  // Answering consumes the offer: the panel goes back to offering one.
+
   await expect(
     page.getByRole("button", { name: "Offer handshake" }),
   ).toBeVisible();
@@ -6696,8 +6696,8 @@ test("thumbstick recenters when its terminal event arrives outside the control",
     ),
   ).toBe(true);
 
-  // Simulate a mobile browser delivering the terminal event at window rather
-  // than at the captured control. The element listener alone cannot see this.
+
+
   await page.evaluate(() => {
     window.dispatchEvent(
       new PointerEvent("pointercancel", {
@@ -6723,7 +6723,7 @@ test("thumbstick recenters when its terminal event arrives outside the control",
     ).toBe("0px");
   }
 
-  // A fresh touch must be accepted instead of being blocked by stale state.
+
   await dispatchThumbstickPointer("pointerdown", 2);
   await dispatchThumbstickPointer("pointermove", 2);
   await expect.poll(() =>
@@ -6949,7 +6949,7 @@ test("approved instances stay truthful", async ({
         ?.children?.length ?? -1
     );
   });
-  // Each approved relay contributes one tower and one label sprite.
+
   expect(instanceLayer).toBe(4);
 });
 
@@ -7379,9 +7379,9 @@ test("the flagship portal opens once mid-sync mirrors converge after entry", asy
     return shell?.repositoryMapState === "unavailable";
   });
 
-  // The lagging mirror finishes syncing: both eligible nodes now publish the
-  // same commit, so the alias becomes pinned. The portal must open from the
-  // bounded retry, without the visitor reloading or picking the repository.
+
+
+
   repositoryFixture.conflictingHealthyAlias = false;
 
   await page.waitForFunction(
@@ -7579,13 +7579,13 @@ test("the repository circle carries the stored star total and its fediverse foll
       {
         handle: "@sam@fosstodon.org",
         url: "https://fosstodon.org/users/sam",
-        // No cached actor document yet: name/avatar/bio are still empty.
+
         instance: "fosstodon.org",
         profileUrl: "https://fosstodon.org/users/sam",
         followedAt: 1_767_139_200_000,
       },
-      // Hostile rows: a non-https avatar and an internal host are dropped
-      // before anything reaches a texture loader.
+
+
       {
         handle: "@mallory@evil.test",
         url: "https://evil.test/users/mallory",
@@ -7629,7 +7629,7 @@ test("the repository circle carries the stored star total and its fediverse foll
       if (String(child.name || "").startsWith("repository-follower:")) {
         figures.push({
           name: child.name,
-          // Seated on the ground, inside the ring, turned back at the circle.
+
           y: Number(child.position.y.toFixed(2)),
           z: Number(child.position.z.toFixed(2)),
           facesCircle: Math.abs(child.rotation.y - Math.PI) < 0.001,
@@ -7653,10 +7653,10 @@ test("the repository circle carries the stored star total and its fediverse foll
     };
   });
 
-  // The star on top of the circle reports the relay's stored repo_stars total.
+
   expect(portal.starCountFromDatabase).toBe(1284);
   expect(portal.starCaptionPresent).toBe(true);
-  // The caption uses the authoritative total, not the capped list length.
+
   expect(portal.followerCount).toBe(9);
   expect(portal.captionPresent).toBe(true);
   expect(portal.figures.map(({ name }) => name)).toEqual([
@@ -7777,7 +7777,7 @@ test("visiting the repository sunburst frames it in third-person", async ({
   });
   expect(framed.camera.zoom).toBeLessThanOrEqual(0.55);
 
-  // First person stays available, just never automatic.
+
   await toggle.click();
   await expect(toggle).toHaveAttribute("aria-pressed", "true");
   expect(
@@ -7807,7 +7807,7 @@ test("zooming first-person all the way back restores third-person", async ({
   };
   await page.mouse.move(centre.x, centre.y);
 
-  // Widening the eyes stays in first person right up to the zoom-out floor.
+
   await page.mouse.wheel(0, 480);
   await expect
     .poll(() =>
@@ -7823,7 +7823,7 @@ test("zooming first-person all the way back restores third-person", async ({
   expect(floored.mode).toBe("first-person");
   expect(floored.zoom).toBeCloseTo(floored.minZoom, 5);
 
-  // One more notch back steps out of the avatar's head entirely.
+
   await page.mouse.wheel(0, 480);
   await expect(toggle).toHaveAttribute("aria-pressed", "false");
   await expect(toggle).toHaveAttribute(
@@ -7963,8 +7963,8 @@ test("a fresh map resolves exact pull metadata before slow issue scans", async (
   await prepareWorldPage(page, "world-pull-priority", {
     repositoryFixture: {
       issueTreeDelayMs: 900,
-      // Model a small mirror whose pull-metadata read would be rejected once
-      // lower-priority issue fanout has occupied its request capacity.
+
+
       rejectPullMetadataAfterIssueFanout: true,
     },
   });
@@ -8668,8 +8668,8 @@ test("a fresh member spawns seated in the open Members Circle", async ({
   expect(arrival.startHere.z).toBe(168);
   expect(arrival.startHere.rotation).toBeCloseTo(Math.PI, 5);
 
-  // Position storage contains coordinates but deliberately no activity label.
-  // A clean reload must recognize the bench ring and rebuild the seated pose.
+
+
   await page.reload();
   await waitForWorld(page);
   const reloaded = await page.locator("forkmesh-world").evaluate((shell) => ({
@@ -8963,7 +8963,7 @@ test("sound button is the master switch for local playback", async ({
     soundContext: null,
   });
 
-  // The same button can turn audio consent back on after a full shutdown.
+
   await page.locator("[data-world-sound-toggle]").click();
   await expect(page.locator("[data-world-sound-toggle]")).toHaveAttribute(
     "aria-pressed",
@@ -9256,9 +9256,9 @@ test("portrait coarse-pointer thumbstick and visual viewport remain usable", asy
   expect(hiddenFocusWarnings).toEqual([]);
 
   const control = page.locator("[data-world-thumbstick]");
-  // Leave enough time for more than one animation frame even when the release
-  // gate is sharing a loaded CI host; the assertion still requires real
-  // position movement from an actual CDP touch sequence.
+
+
+
   await dragThumbstick(page, control, { durationMs: 600 });
   const afterTouch = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.world.getPosition(),

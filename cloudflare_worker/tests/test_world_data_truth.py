@@ -29,8 +29,8 @@ def test_production_world_has_no_sample_repository_fallback_or_runnable_fake():
     assert 'this.repositoryCatalogState !== "ready"' in APP
     auto = APP.split("async autoLoadFlagshipRepositoryMap()", 1)[1].split(
         "async fetchRepositoryMapSnapshot", 1)[0]
-    # The real tree may render before mirror metadata converges; no sample or
-    # guessed tree is substituted, and the verified snapshot still replaces it.
+
+
     assert "if (!catalogCommits.size)" not in auto
     assert "requireComplete: false" in auto
     assert "this.world.updateRepositoryGraph?.([], [])" not in auto

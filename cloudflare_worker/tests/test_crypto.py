@@ -15,7 +15,7 @@ import hmac
 import struct
 import sys
 
-# --- Mirrors of entry.py -----------------------------------------------------
+
 
 
 def b32_decode(secret):
@@ -50,7 +50,7 @@ def _sha256_hex(s):
 
 
 def pull_comment_content(ev):
-    # Mirrors entry.py:pull_comment_content / PullStore::contentForSigning.
+
     t = ev.get("type", "")
     def int_field(name):
         return str(int(ev.get(name, 0)))
@@ -87,7 +87,7 @@ def pull_comment_content(ev):
 
 
 def pull_comment_canonical(number, ev):
-    # Mirrors entry.py:verify_pull_comment_event canonical construction.
+
     return (
         "forkmesh-pull-comment-v1\n" + ev.get("type", "") + "\n" + str(int(number)) +
         "\n" + ev.get("author", "") + "\n" + str(int(ev.get("ts", 0))) + "\n" +
@@ -96,7 +96,7 @@ def pull_comment_canonical(number, ev):
 
 
 def discussion_event_content(ev):
-    # Mirrors entry.py:discussion_event_content / DiscussionStore::contentForSigning.
+
     t = ev.get("type", "")
     if t == "open":
         return "\x00".join([
@@ -108,7 +108,7 @@ def discussion_event_content(ev):
 
 
 def discussion_event_canonical(number, ev):
-    # Mirrors entry.py:verify_discussion_event canonical construction.
+
     return (
         "forkmesh-discussion-event-v1\n" + ev.get("type", "") + "\n" +
         str(int(number)) + "\n" + ev.get("author", "") + "\n" +
@@ -117,7 +117,7 @@ def discussion_event_canonical(number, ev):
     )
 
 
-# --- Test runner -------------------------------------------------------------
+
 
 _failures = []
 
@@ -132,7 +132,7 @@ def check(name, got, expected):
 
 
 def main():
-    # RFC 4226 HOTP vectors — secret = ASCII "12345678901234567890".
+
     rfc4226_secret = b"12345678901234567890"
     rfc4226 = ["755224", "287082", "359152", "969429", "338314",
                "254676", "287922", "162583", "399871", "520489"]
@@ -140,7 +140,7 @@ def main():
         check("HOTP/RFC4226 count=%d" % counter,
               hotp(rfc4226_secret, counter), expected)
 
-    # RFC 6238 TOTP (SHA-1) — 6-digit truncation of the published 8-digit codes.
+
     secret_b32 = base64.b32encode(rfc4226_secret).decode()
     rfc6238 = [
         (59, "287082"),
@@ -153,7 +153,7 @@ def main():
     for t, expected in rfc6238:
         check("TOTP/RFC6238 T=%d" % t, totp(secret_b32, t), expected)
 
-    # PBKDF2-HMAC-SHA256 known-answer vectors (dkLen=32).
+
     check(
         "PBKDF2-SHA256 password/salt/1",
         pbkdf2_sha256(b"password", b"salt", 1).hex(),
@@ -164,14 +164,14 @@ def main():
         pbkdf2_sha256(b"password", b"salt", 2).hex(),
         "ae4d0c95af6b46d32d0adff928f06dd02a303f8ef3c251dfd6e2d85a95474c43",
     )
-    # Round-trip at the worker's real iteration count is deterministic.
+
     h1 = pbkdf2_sha256(b"hunter2", b"\x00" * 16, 100000)
     h2 = pbkdf2_sha256(b"hunter2", b"\x00" * 16, 100000)
     check("PBKDF2-SHA256 deterministic (100k)", h1, h2)
     check("PBKDF2-SHA256 rejects wrong password",
           pbkdf2_sha256(b"wrong", b"\x00" * 16, 100000) == h1, False)
 
-    # Blind index: deterministic, case/space-insensitive, distinct, fixed vector.
+
     k = "test-data-key"
     check("blind_index deterministic", blind_index(k, "Alice"), blind_index(k, "alice"))
     check("blind_index trims/lowercases", blind_index(k, "  ALICE  "), blind_index(k, "alice"))
@@ -188,9 +188,9 @@ def main():
         ).hexdigest(),
     )
 
-    # PR conversation + commit comment canonical strings: these MUST match the
-    # C++ vectors pinned in qt_client/tests/test_crypto.cpp byte-for-byte, so the
-    # client's signer and the worker's verifier agree.
+
+
+
     check(
         "pull-comment canonical vector",
         pull_comment_canonical(

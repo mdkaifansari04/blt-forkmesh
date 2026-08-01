@@ -44,9 +44,9 @@ def test_privacy_page_discloses_and_controls_optional_analytics():
 
 
 def test_all_public_html_pages_load_posthog():
-    # dashboard/partials/*.html are shell fragments (no <head>); they are
-    # composed into generated dashboard assets before deploy, and the shell
-    # they land in carries the snippet — so they are exempt.
+
+
+
     html_pages = sorted(
         p for p in PUBLIC_DIR.rglob("*.html")
         if "partials" not in p.relative_to(PUBLIC_DIR).parts
@@ -62,9 +62,9 @@ def test_all_public_html_pages_load_posthog():
 
 
 def test_worker_generated_pages_load_posthog():
-    # entry.py builds two HTML documents itself (everything else is served
-    # from public/): the email-verification confirmation page and the admin
-    # table browser. Both must carry the snippet like the static pages do.
+
+
+
     source = ENTRY.read_text(encoding="utf-8")
     for func in ("_verify_email_page", "render_admin_html"):
         match = re.search(

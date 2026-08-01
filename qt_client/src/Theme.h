@@ -2,28 +2,28 @@
 
 #include <QString>
 
-// ForkMesh theme — GitHub (Primer) dark:
-//   canvas  #0d1117   surface/inset #161b22   header/rail #010409
-//   border  #30363d / muted #21262d
-//   text    #e6edf3 / muted #8b949e          accent (links) #58a6ff
-//   success #238636 (hover #2ea043)          danger #da3633 / #f85149
+
+
+
+
+
 namespace Theme {
 
 inline const char *kPrimary = "#2ea043";
 inline const char *kTextTertiary = "#8b949e";
 
-// "Something is working right now" blue (adhoc #23, recoloured from orange by
-// adhoc #50): every busy spinner and every running-agent dot/glyph paints in
-// this one colour, so in-flight work reads as its own state instead of
-// borrowing success-green or the amber used for queued/waiting.
+
+
+
+
 inline const char *kRunning = "#58a6ff";
 
-// "Genie" (adhoc #38): a long-running run launched with the ForkMesh MCP
-// connector attached. Its own violet so a genie run's sparkle glyph never reads
-// as the orange "ordinary agent working" or the purple "merged" state.
+
+
+
 inline const char *kGenie = "#bc8cff";
 
-// Sender name colors, hashed per user (GitHub label-ish accents).
+
 inline const char *kSenderPalette[] = {"#f85149", "#e3b341", "#3fb950",
                                        "#58a6ff", "#bc8cff", "#db61a2",
                                        "#39c5cf", "#db6d28"};
@@ -33,18 +33,18 @@ inline const char *iconColorForButton(const QString &objectName, bool dark)
 {
     if (objectName == QStringLiteral("primaryButton") ||
         objectName == QStringLiteral("toolbarPrimaryButton") ||
-        // The magical Agents pill is a saturated gradient in both themes, so
-        // its glyph is white either way (adhoc #42).
+
+
         objectName == QStringLiteral("agentsMagicButton"))
         return "#ffffff";
-    // The "task" send button (adhoc #42, the old "genie"): violet, to match its
-    // pill.
+
+
     if (objectName == QStringLiteral("quickAddGenieButton"))
         return dark ? "#c084fc" : "#7c3aed";
     if (objectName == QStringLiteral("dangerButton"))
         return dark ? "#f85149" : "#cf222e";
-    // Outlined-green actions (the agent header's Branch/Worktree, adhoc #84):
-    // the danger button's twin, in the go colour.
+
+
     if (objectName == QStringLiteral("successButton"))
         return dark ? "#3fb950" : "#1a7f37";
     if (objectName == QStringLiteral("repoTab") ||
@@ -68,7 +68,7 @@ QToolTip {
     border: 1px solid #30363d; padding: 4px;
 }
 
-/* --- Setup page --- */
+
 #setupCard {
     background-color: #161b22;
     border: 1px solid #30363d;
@@ -91,10 +91,10 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:checked { border-color: #1f6feb; background: #1f6feb; }
 #modeHint { color: #8b949e; font-size: 12px; padding-left: 26px; background: transparent; }
-/* Relay host: pre-filled default, de-emphasized ("greyed out") but editable. */
+
 #relayHostEdit { color: #8b949e; }
 #relayHostEdit:focus { color: #e6edf3; }
-/* Join wizard header */
+
 #wizardStep { color: #3fb950; font-size: 11px; font-weight: 700; letter-spacing: 1px; background: transparent; }
 #wizardTitle { font-size: 20px; font-weight: 800; background: transparent; }
 
@@ -103,10 +103,10 @@ QLineEdit, QSpinBox, QComboBox {
     border: 1px solid #30363d;
     border-radius: 6px;
     padding: 8px 10px;
-    /* A squeezed layout must clip the box, never the text: without a content
-       floor the field compresses below the font height and chops descenders
-       (adhoc #113: the generated node name's "g" lost its tail on first run).
-       19px = the field's natural content height, so nothing grows. */
+
+
+
+
     min-height: 19px;
     selection-background-color: #1f6feb;
 }
@@ -156,8 +156,8 @@ QPushButton#ghostButton {
     font-weight: 500; padding: 4px 8px; text-align: left;
 }
 QPushButton#ghostButton:hover { color: #e6edf3; }
-/* The commit strip's "N Commits" toggle: ghost-button look, plus a lit
-   checked state while the commits panel is showing under the commit bar. */
+
+
 QPushButton#commitsToggle {
     background: transparent; border: 1px solid transparent; color: #8b949e;
     font-weight: 500; padding: 4px 8px; text-align: left; border-radius: 6px;
@@ -168,7 +168,7 @@ QPushButton#commitsToggle:checked {
     border: 1px solid #2ea043;
 }
 
-/* --- Network-log quick-filter chips --- */
+
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
 QPushButton#logFilterChip {
@@ -181,7 +181,7 @@ QPushButton#logFilterChip:checked {
     background-color: #21262d; color: #e6edf3; border-color: #2ea043;
 }
 
-/* --- Quick-add bar extras: social + donate buttons --- */
+
 QPushButton#donateButton {
     background-color: #9945ff; border: 1px solid #b07bff; color: #ffffff;
     font-weight: 700;
@@ -193,7 +193,7 @@ QPushButton#socialButton {
     font-weight: 600; padding: 8px 12px;
 }
 QPushButton#socialButton:hover { color: #e6edf3; border-color: #6e7681; }
-/* Compact icon-only social buttons, laid out beside the donate button (adhoc #117). */
+
 QPushButton#socialIconButton {
     background: transparent; border: 1px solid #30363d; color: #8b949e;
     border-radius: 6px; padding: 0;
@@ -201,7 +201,7 @@ QPushButton#socialIconButton {
 QPushButton#socialIconButton:hover { border-color: #6e7681; }
 #footerGitIdentity { color: #8b949e; font-size: 12px; }
 
-/* --- Bottom status bar: one text line tall, so everything in it is compact. */
+
 #appStatusBar { background-color: #010409; border-top: 1px solid #30363d; }
 #appStatusBar QLabel {
     background: transparent; color: #8b949e; font-size: 11px;
@@ -212,7 +212,7 @@ QPushButton#socialIconButton:hover { border-color: #6e7681; }
 }
 #appStatusBar QPushButton:hover { color: #58a6ff; }
 
-/* --- Nav rail --- */
+
 #navRail { background-color: #010409; border-right: 1px solid #30363d; }
 #navRail QLabel { background: transparent; }
 #navLogo { font-size: 18px; font-weight: 800; padding-bottom: 4px; }
@@ -223,7 +223,7 @@ QPushButton#navButton {
 QPushButton#navButton:hover { background-color: #161b22; color: #e6edf3; }
 QPushButton#navButton:checked { background-color: #21262d; color: #e6edf3; }
 
-/* --- Repo detail tabs --- */
+
 QPushButton#repoTab {
     background: transparent; border: none; border-bottom: 2px solid transparent;
     color: #8b949e; font-weight: 600; padding: 6px 10px;
@@ -231,10 +231,10 @@ QPushButton#repoTab {
 QPushButton#repoTab:hover { color: #e6edf3; }
 QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; }
 
-/* --- Repo files: explorer tree + editor tabs --- */
+
 #fileTree { background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px; }
 #fileTree::item { padding: 3px 2px; color: #c9d1d9; }
-/* Hover fill is painted by HoverRowDelegate so the row never shifts. */
+
 #fileTree::item:selected { background-color: #1f6feb; color: #ffffff; padding: 3px 2px; }
 #fileTabs::pane { border: 1px solid #30363d; border-radius: 6px; top: -1px; }
 #fileTabs QTabBar::tab {
@@ -273,21 +273,21 @@ QPushButton#repoTab:checked { color: #e6edf3; border-bottom: 2px solid #fd8c73; 
 #commitBarText { color: #e6edf3; }
 #overviewList { background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px; }
 #overviewList::item { padding: 6px 8px; color: #c9d1d9; }
-/* Hover fill is painted by HoverRowDelegate so the row never shifts. */
+
 #overviewList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 6px 8px; }
 #overviewList QHeaderView::section {
     background-color: #0d1117; color: #8b949e; padding: 4px 8px;
     border: none; border-bottom: 1px solid #21262d;
     border-right: 2px solid #010409; font-weight: 600;
 }
-/* Per-row size bar in the Code overview. */
+
 #sizeBarTrack { background-color: #21262d; border-radius: 3px; }
 #sizeBarFill { background-color: #3fb950; border-radius: 3px; }
 #readmeView {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
     padding: 8px; color: #e6edf3;
 }
-/* GitHub-style repo header + About sidebar */
+
 #repoHeaderTitle { font-size: 20px; font-weight: 400; }
 #publicBadge {
     color: #8b949e; border: 1px solid #30363d; border-radius: 10px;
@@ -306,29 +306,29 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #30363d; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #30363d; }
-/* Thin activity rail down the repo detail page's left edge (adhoc #357); its
-   Code/Git items paint themselves (ActivityRailButton). */
+
+
 #repoActivityRail { background-color: #010409; border-right: 1px solid #30363d; }
 #appNavigationRail, #appNavigationRailContent {
     background-color: #0d1117; border-right: 1px solid #30363d;
 }
-/* The rail reserves exactly this much width beside its items (railWidth() =
-   railItemWidth() + 6), so keep the slim bar in lockstep with that helper. */
+
+
 #appNavigationRail QScrollBar:vertical { width: 6px; }
 #appNavigationRail QScrollBar::handle:vertical { border-radius: 3px; }
 QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
     background-color: #21262d; color: #e6edf3;
 }
-/* Caption under the rail's Account avatar — same 10px demi-bold as the
-   captions ActivityRailButton paints, so every rail word matches. */
+
+
 #railItemLabel {
     background: transparent; color: #8b949e; font-size: 10px; font-weight: 600;
 }
 #commitsList {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 6px;
 }
-/* No per-row border: separators would slice across the commit-graph lanes;
-   the VS Code-style graph reads as continuous lines on a plain background. */
+
+
 #commitsList::item { padding: 8px; color: #e6edf3; }
 #commitsList::item:hover { background-color: #161b22; padding: 8px; }
 #commitsList::item:selected { background-color: #1f6feb; color: #ffffff; padding: 8px; }
@@ -339,7 +339,7 @@ QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
     padding: 10px; color: #e6edf3;
 }
 
-/* --- Server favicon rail --- */
+
 #serverRail { background-color: #010409; border-right: 1px solid #30363d; }
 QPushButton#serverButton {
     background-color: #21262d; border: 2px solid transparent;
@@ -356,13 +356,13 @@ QPushButton#serverAddButton:hover { background-color: #2ea043; color: #ffffff; }
 QPushButton#serverAddButton:pressed { background-color: #238636; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #8b949e; font-size: 18px;
-    /* Circular: the account avatar it carries is a circle, so the hover
-       highlight has to be one too (radius = half the 26px rail avatar). */
+
+
     border-radius: 13px;
 }
 QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3; }
 
-/* --- Breadcrumb bar --- */
+
 #breadcrumbBar { background-color: #0d1117; border-bottom: 1px solid #21262d; }
 #windowChromeBar {
     background-color: #0d1117; border-bottom: 1px solid #21262d;
@@ -376,26 +376,26 @@ QPushButton#serverFooterButton:hover { background-color: #161b22; color: #e6edf3
 #breadcrumb { background: transparent; font-size: 14px; font-weight: 600; }
 #issueDetailOverlay { background-color: #0d1117; }
 #connectionStatus { background: transparent; font-size: 13px; font-weight: 600; }
-/* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
+
 #connectionDot { border: 2px solid #0d1117; }
-/* Red "instance waiting to be linked" dot on the relay favicon (adhoc #97),
-   with the Approve button that sits beside it. */
+
+
 #relayJoinDot {
     background-color: #da3633; border: 1px solid #0d1117; border-radius: 5px;
 }
-/* Faint hairline separating the agent squares from the node dots (adhoc #124). */
+
 #chromeDotDivider { background-color: #30363d; }
 QPushButton#relayJoinApproveButton {
     background-color: #da3633; color: #ffffff; border: none;
     border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700;
 }
 QPushButton#relayJoinApproveButton:hover { background-color: #f85149; }
-/* Count label on the agents button (no red styling). */
+
 #agentsNavBadge {
     color: #656d76; font-size: 13px; font-weight: 600;
 }
-/* Primary section nav (Code / Chat / Notifications / Settings) — uniform,
-   always visible, with a clear selected state. */
+
+
 #topNavBar { background: transparent; }
 #navDivider { background-color: #21262d; border: none; }
 QPushButton#topNavButton {
@@ -421,8 +421,8 @@ QPushButton#windowChromeButton:hover {
 QPushButton#windowChromeCloseButton:hover {
     background-color: #da3633; color: #ffffff; border-color: #da3633;
 }
-/* Top-row switchers (relay / node / repo): dropdown (relay's shows its
-   favicon inline) + open-in-browser */
+
+
 QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #8b949e;
 }
@@ -430,10 +430,10 @@ QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     background: transparent; border: 1px solid #30363d; border-radius: 8px;
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-/* The relay switcher rides the window-chrome line and reads as a title, so it
-   carries no outline of its own (adhoc #407). Slim side padding: the button is
-   pinned to railItemWidth() so its favicon lines up with the activity rail's
-   icons below, and 12px a side would squeeze the 25px icon. */
+
+
+
+
 QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #e6edf3; font-size: 15px; font-weight: 700; padding: 5px 4px;
@@ -447,9 +447,9 @@ QPushButton#repoMenuButton:hover {
 #nodeSwitchProgress { background: transparent; border: none; }
 #nodeSwitchProgress::chunk { background-color: #58a6ff; border-radius: 1px; }
 #navCaption { background: transparent; color: #8b949e; font-size: 13px; font-weight: 600; }
-/* "Magical" Agents pill (adhoc #42): a violet-to-cyan gradient that separates
-   the fleet control from the flat chrome around it. The soft outer glow is a
-   QGraphicsDropShadowEffect applied in buildBreadcrumb() — QSS has no shadow. */
+
+
+
 QPushButton#agentsMagicButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
         stop:0 #7c3aed, stop:0.5 #a855f7, stop:1 #22d3ee);
@@ -490,7 +490,7 @@ QPushButton#notificationButtonAlert:hover {
     background-color: #1c1908; color: #f0b72f;
 }
 
-/* --- Home --- */
+
 #homeCard {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 12px;
 }
@@ -516,22 +516,22 @@ QPushButton#primaryButton:disabled {
     background-color: #21262d; color: #6e7681; border-color: #30363d;
 }
 
-/* --- Danger button (Leave node) --- */
+
 QPushButton#dangerButton {
     background: transparent; border: 1px solid #da3633; border-radius: 6px;
     color: #f85149; font-weight: 600;
 }
 QPushButton#dangerButton:hover { background-color: #da3633; color: #ffffff; }
 
-/* --- Success button: the danger button's outlined twin, in green (adhoc #84,
-   the agent detail header's Branch / Worktree actions) --- */
+
+
 QPushButton#successButton {
     background: transparent; border: 1px solid #2ea043; border-radius: 6px;
     color: #3fb950; font-weight: 600;
 }
 QPushButton#successButton:hover { background-color: #2ea043; color: #ffffff; }
 
-/* --- Sidebar --- */
+
 #sidebar { background-color: #0d1117; border-right: 1px solid #30363d; }
 #sidebar QLabel { background: transparent; }
 #workspaceName {
@@ -593,14 +593,14 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
-/* Green outline on whichever send button Enter currently activates (adhoc #89),
-   toggled by MainWindow::updateQuickAddEnterTarget(). */
+
+
 QPushButton#quickAddSendIcon[enterTarget="true"] {
     border: 1px solid #3fb950; background: rgba(63,185,80,0.08);
 }
-/* The "task" button (adhoc #42, relabelled in adhoc #120), stacked above
-   add/new: a violet pill so the pick-your-own-work button reads as a
-   different kind of send. */
+
+
+
 QPushButton#quickAddGenieButton {
     background: rgba(168,85,247,0.14); border: 1px solid rgba(192,132,252,0.55);
     color: #c084fc; padding: 4px; border-radius: 4px;
@@ -637,8 +637,8 @@ QPushButton#quickAddGenieButton:hover {
     gridline-color: #21262d;
 }
 #issueTable::item { padding: 4px 8px; color: #c9d1d9; }
-/* Row hover is a full-row light-green fill drawn by HoverRowDelegate; keep the
-   per-cell hover geometry identical to the base item so text never shifts. */
+
+
 #issueTable::item:hover { padding: 4px 8px; }
 #issueTable::item:selected { background-color: #1f6feb; color: #ffffff; padding: 4px 8px; }
 #issueTable QHeaderView::section {
@@ -647,7 +647,7 @@ QPushButton#quickAddGenieButton:hover {
     border-right: 2px solid #010409; font-weight: 700;
 }
 
-/* --- Kanban issue board --- */
+
 #issueBoardScroll { border: none; background: transparent; }
 #issueBoardColumn {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 8px;
@@ -664,7 +664,7 @@ QPushButton#quickAddGenieButton:hover {
 }
 #issueBoardList::item:selected { border-color: #1f6feb; color: #c9d1d9; }
 
-/* --- Chat area --- */
+
 #chatHeader {
     background-color: #0d1117;
     border-bottom: 1px solid #30363d;
@@ -673,7 +673,7 @@ QPushButton#quickAddGenieButton:hover {
 #channelTitle { font-size: 16px; font-weight: 700; }
 #encryptionLabel { color: #8b949e; font-size: 12px; }
 
-/* --- Node profile control panel --- */
+
 #nodeProfilePanel { background: transparent; }
 #nodeProfileContent { background-color: #0d1117; }
 #profileBanner { border-radius: 16px; }
@@ -722,7 +722,7 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #firewallBannerLabel {
     color: #f0b72f; font-size: 13px; background: transparent;
 }
-/* Clickable "N unread messages" strip above the transcript. */
+
 #chatUnreadBanner {
     background-color: #0d2136;
     border-bottom: 1px solid #1f6feb;
@@ -771,7 +771,7 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
 #reactionPicker {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
 }
-/* Agent detail "Info" popup: the session's field list (adhoc #61). */
+
 #agentMetaPopup {
     background-color: #161b22; border: 1px solid #30363d; border-radius: 10px;
 }
@@ -787,7 +787,7 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background: transparent; border: none; font-size: 18px; padding: 2px 6px;
 }
 #iconButton:hover { background-color: #21262d; border-radius: 6px; }
-/* Settings */
+
 #settingsTitle { font-size: 20px; font-weight: 800; }
 #avatarPreview {
     background-color: #0d1117; border: 1px solid #30363d; border-radius: 12px;
@@ -801,7 +801,7 @@ QPushButton#profileActionButton:pressed { background-color: #0d1117; }
     background-color: #010409; border: none;
     color: #8b949e; font-family: monospace; font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
+
 #logEventList {
     background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
     color: #8b949e; font-family: monospace; font-size: 12px;
@@ -841,8 +841,8 @@ QScrollBar::handle:horizontal:hover { background: #484f58; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }
 
-/* Draggable splitter handles — a clear, grabbable grip ridge that lights up
-   on hover/drag. Edges are transparent so it blends with any panel color. */
+
+
 QSplitter::handle:horizontal {
     width: 9px;
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -862,7 +862,7 @@ QSplitter::handle:pressed { background: #58a6ff; }
 
 QMessageBox, QInputDialog, QDialog { background-color: #161b22; }
 
-/* --- ForkMesh updated non-Home polish overrides --- */
+
 QPushButton[buttonSize="sm"] {
     min-height: 24px; max-height: 28px; padding: 3px 8px;
     font-size: 12px; border-radius: 6px;
@@ -913,8 +913,8 @@ QPushButton#serverAddButton:hover { color: #2ea043; border-color: #2ea043; backg
     border-radius: 8px;
 }
 #sectionCard QLabel, #settingsCard QLabel { background: transparent; }
-/* Shortcuts tab: each shortcut file is a clickable card (a QPushButton hosting
-   its own labels). */
+
+
 QPushButton#shortcutCard {
     background-color: #161b22;
     border: 1px solid #30363d;
@@ -937,7 +937,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #1b212
     font-family: monospace;
     font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
+
 #logEventList {
     background-color: #010409; border: 1px solid #30363d; border-radius: 6px;
     color: #8b949e; font-family: monospace; font-size: 12px;
@@ -972,14 +972,14 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #56d364; background: rgba(63,185,80,0.15); }
-/* Green outline on whichever send button Enter currently activates (adhoc #89),
-   toggled by MainWindow::updateQuickAddEnterTarget(). */
+
+
 QPushButton#quickAddSendIcon[enterTarget="true"] {
     border: 1px solid #3fb950; background: rgba(63,185,80,0.08);
 }
-/* The "task" button (adhoc #42, relabelled in adhoc #120), stacked above
-   add/new: a violet pill so the pick-your-own-work button reads as a
-   different kind of send. */
+
+
+
 QPushButton#quickAddGenieButton {
     background: rgba(168,85,247,0.14); border: 1px solid rgba(192,132,252,0.55);
     color: #c084fc; padding: 4px; border-radius: 4px;
@@ -988,9 +988,9 @@ QPushButton#quickAddGenieButton {
 QPushButton#quickAddGenieButton:hover {
     background: rgba(168,85,247,0.28); border-color: #d8b4fe; color: #e9d5ff;
 }
-/* Footer prompt bottom bar (adhoc #99): the Auto/Create-issue/Agent toggles get
-   a green filled checkmark instead of the generic blue-filled indicator, and the
-   Agent controls sit in a thin bordered box centred in the bar. */
+
+
+
 QCheckBox#quickAddAutoCheck::indicator,
 QCheckBox#quickAddCreateIssueCheck::indicator,
 QCheckBox#quickAddAgentCheck::indicator {
@@ -1007,14 +1007,14 @@ QCheckBox#quickAddAgentCheck::indicator:checked {
     border: none; background: transparent;
     font-size: 12px;
 }
-/* Slash-actions "/" box (adhoc #116), left of the Agent checkbox — a small
-   bordered square like the Claude Code extension's own actions button. */
+
+
 QPushButton#quickAddSlashButton {
     background: #0d1117; border: 1px solid #30363d; border-radius: 5px;
     color: #8b949e; font-weight: 600; font-size: 12px; padding: 0;
 }
 QPushButton#quickAddSlashButton:hover { border-color: #58a6ff; color: #e6edf3; }
-/* The popup itself: filter box on top, scrollable action list below. */
+
 #slashActionsPopup {
     background: #161b22; border: 1px solid #30363d; border-radius: 8px;
 }
@@ -1154,8 +1154,8 @@ QLineEdit#issueSearch, QComboBox#issueControlSm {
     max-height: 28px;
 }
 QLineEdit#issueSearch:focus, QComboBox#issueControlSm:focus { border-color: #58a6ff; }
-/* The commit-message compose field wears a clearly visible border so it reads
-   as an input box rather than blending into the source-control panel. */
+
+
 QLineEdit#messageInput {
     background-color: #0d1117;
     border: 1px solid #484f58;
@@ -1297,7 +1297,7 @@ QPlainTextEdit#markdownSource:focus { border-color: #58a6ff; }
     padding: 12px;
     color: #e6edf3;
 }
-/* Agent detail: log terminal + status pill + API-traffic panel */
+
 QPlainTextEdit#actionLog {
     background-color: #ffffff;
     border: 1px solid #d1d5db;
@@ -1324,12 +1324,12 @@ QPlainTextEdit#actionLog {
     color: #374151;
 }
 
-/* --- Item-view selection, applied last so it wins over the rules above ---
-   1. border:0 gives every ::item a stylesheet box, so QStyleSheetStyle applies
-      the same horizontal padding whether or not the row is selected. Without
-      it Qt only pads the selected item and the text jumps right on select.
-   2. Selection highlight is the brand green (#238636, the primary-button green)
-      instead of blue. */
+
+
+
+
+
+
 QAbstractItemView::item { border: 0px; }
 #issueTable { selection-background-color: #238636; selection-color: #ffffff; }
 #issueTable::item:selected,
@@ -1340,8 +1340,8 @@ QAbstractItemView::item { border: 0px; }
 QComboBox QAbstractItemView { selection-background-color: #238636; selection-color: #0d1117; }
 QComboBox QAbstractItemView::item:selected { color: #0d1117; }
 
-/* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
-   agent raw-output log. The rich transcript styles its own copy per scheme. */
+
+
 QPushButton#scrollJump {
     background-color: #161b22; color: #e6edf3;
     border: 1px solid #30363d; border-radius: 15px;
@@ -1351,10 +1351,10 @@ QPushButton#scrollJump:hover { background-color: #1f2630; }
 
 )";
 
-// GitHub (Primer) light:
-//   canvas #ffffff   subtle #f6f8fa   border #d0d7de
-//   text   #1f2328 / muted #656d76    accent (links) #0969da
-//   success #1f883d (hover #1a7f37)    danger #cf222e
+
+
+
+
 inline const char *kLightStyleSheet = R"(
 * { outline: none; }
 QWidget {
@@ -1368,7 +1368,7 @@ QToolTip {
     border: 1px solid #24292f; padding: 4px;
 }
 
-/* --- Setup page --- */
+
 #setupCard {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;
@@ -1391,10 +1391,10 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:checked { border-color: #0969da; background: #0969da; }
 #modeHint { color: #656d76; font-size: 12px; padding-left: 26px; background: transparent; }
-/* Relay host: pre-filled default, de-emphasized ("greyed out") but editable. */
+
 #relayHostEdit { color: #8c959f; }
 #relayHostEdit:focus { color: #1f2328; }
-/* Join wizard header */
+
 #wizardStep { color: #1a7f37; font-size: 11px; font-weight: 700; letter-spacing: 1px; background: transparent; }
 #wizardTitle { font-size: 20px; font-weight: 800; background: transparent; }
 
@@ -1403,8 +1403,8 @@ QLineEdit, QSpinBox, QComboBox {
     border: 1px solid #d0d7de;
     border-radius: 6px;
     padding: 8px 10px;
-    /* Same content floor as the dark theme: a squeezed layout must clip the
-       box, never the text (adhoc #113 descender clipping). */
+
+
     min-height: 19px;
     selection-background-color: #0969da;
     selection-color: #ffffff;
@@ -1455,8 +1455,8 @@ QPushButton#ghostButton {
     font-weight: 500; padding: 4px 8px; text-align: left;
 }
 QPushButton#ghostButton:hover { color: #1f2328; }
-/* The commit strip's "N Commits" toggle: ghost-button look, plus a lit
-   checked state while the commits panel is showing under the commit bar. */
+
+
 QPushButton#commitsToggle {
     background: transparent; border: 1px solid transparent; color: #656d76;
     font-weight: 500; padding: 4px 8px; text-align: left; border-radius: 6px;
@@ -1467,7 +1467,7 @@ QPushButton#commitsToggle:checked {
     border: 1px solid #1f883d;
 }
 
-/* --- Network-log quick-filter chips --- */
+
 #logFilterScroll, #logFilterScroll > QWidget,
 #logFilterScroll > QWidget > QWidget { background: transparent; border: none; }
 QPushButton#logFilterChip {
@@ -1480,7 +1480,7 @@ QPushButton#logFilterChip:checked {
     background-color: #eaeef2; color: #1f2328; border-color: #1f883d;
 }
 
-/* --- Nav rail --- */
+
 #navRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
 #navRail QLabel { background: transparent; }
 #navLogo { font-size: 18px; font-weight: 800; padding-bottom: 4px; }
@@ -1491,7 +1491,7 @@ QPushButton#navButton {
 QPushButton#navButton:hover { background-color: #eaeef2; color: #1f2328; }
 QPushButton#navButton:checked { background-color: #eaeef2; color: #1f2328; }
 
-/* --- Repo detail tabs --- */
+
 QPushButton#repoTab {
     background: transparent; border: none; border-bottom: 2px solid transparent;
     color: #656d76; font-weight: 600; padding: 6px 10px;
@@ -1499,10 +1499,10 @@ QPushButton#repoTab {
 QPushButton#repoTab:hover { color: #1f2328; }
 QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; }
 
-/* --- Repo files: explorer tree + editor tabs --- */
+
 #fileTree { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }
 #fileTree::item { padding: 3px 2px; color: #1f2328; }
-/* Hover fill is painted by HoverRowDelegate so the row never shifts. */
+
 #fileTree::item:selected { background-color: #0969da; color: #ffffff; padding: 3px 2px; }
 #fileTabs::pane { border: 1px solid #d0d7de; border-radius: 6px; top: -1px; }
 #fileTabs QTabBar::tab {
@@ -1541,21 +1541,21 @@ QPushButton#repoTab:checked { color: #1f2328; border-bottom: 2px solid #fd8c73; 
 #commitBarText { color: #1f2328; }
 #overviewList { background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px; }
 #overviewList::item { padding: 6px 8px; color: #1f2328; }
-/* Hover fill is painted by HoverRowDelegate so the row never shifts. */
+
 #overviewList::item:selected { background-color: #0969da; color: #ffffff; padding: 6px 8px; }
 #overviewList QHeaderView::section {
     background-color: #ffffff; color: #656d76; padding: 4px 8px;
     border: none; border-bottom: 1px solid #d8dee4;
     border-right: 2px solid #afb8c1; font-weight: 600;
 }
-/* Per-row size bar in the Code overview. */
+
 #sizeBarTrack { background-color: #eaeef2; border-radius: 3px; }
 #sizeBarFill { background-color: #2da44e; border-radius: 3px; }
 #readmeView {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
     padding: 8px; color: #1f2328;
 }
-/* GitHub-style repo header + About sidebar */
+
 #repoHeaderTitle { font-size: 20px; font-weight: 400; }
 #publicBadge {
     color: #656d76; border: 1px solid #d0d7de; border-radius: 10px;
@@ -1574,25 +1574,25 @@ QPushButton#repoAction {
 QPushButton#repoAction:hover { background-color: #f3f4f6; }
 QPushButton#repoAction::menu-indicator { width: 0; }
 #repoTabBar { border-bottom: 1px solid #d0d7de; }
-/* Thin activity rail down the repo detail page's left edge (adhoc #357). */
+
 #repoActivityRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
 #appNavigationRail, #appNavigationRailContent {
     background-color: #ffffff; border-right: 1px solid #d0d7de;
 }
-/* Slim rail scrollbar, matching railWidth() = railItemWidth() + 6. */
+
 #appNavigationRail QScrollBar:vertical { width: 6px; }
 #appNavigationRail QScrollBar::handle:vertical { border-radius: 3px; }
 QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
     background-color: #eaeef2; color: #1f2328;
 }
-/* Caption under the rail's Account avatar — matches the painted captions. */
+
 #railItemLabel {
     background: transparent; color: #656d76; font-size: 10px; font-weight: 600;
 }
 #commitsList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
 }
-/* No per-row border: separators would slice across the commit-graph lanes. */
+
 #commitsList::item { padding: 8px; color: #1f2328; }
 #commitsList::item:hover { background-color: #f6f8fa; padding: 8px; }
 #commitsList::item:selected { background-color: #0969da; color: #ffffff; padding: 8px; }
@@ -1603,7 +1603,7 @@ QTableWidget#issueTable[nodesDirectory="true"]::item:selected {
     padding: 10px; color: #1f2328;
 }
 
-/* --- Server favicon rail --- */
+
 #serverRail { background-color: #f6f8fa; border-right: 1px solid #d0d7de; }
 QPushButton#serverButton {
     background-color: #ffffff; border: 2px solid transparent;
@@ -1620,12 +1620,12 @@ QPushButton#serverAddButton:hover { background-color: #1f883d; color: #ffffff; }
 QPushButton#serverAddButton:pressed { background-color: #1a7f37; }
 QPushButton#serverFooterButton {
     background: transparent; border: none; color: #656d76; font-size: 18px;
-    /* Circular: matches the round 26px rail account avatar it carries. */
+
     border-radius: 13px;
 }
 QPushButton#serverFooterButton:hover { background-color: #eaeef2; color: #1f2328; }
 
-/* --- Breadcrumb bar --- */
+
 #breadcrumbBar { background-color: #ffffff; border-bottom: 1px solid #d8dee4; }
 #windowChromeBar {
     background-color: #ffffff; border-bottom: 1px solid #d8dee4;
@@ -1667,26 +1667,26 @@ QPushButton#windowChromeCloseButton:hover {
 #searchResultsTree::item:selected { background-color: #0969da; color: #ffffff; }
 #breadcrumb { background: transparent; color: #656d76; font-size: 14px; font-weight: 600; }
 #connectionStatus { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
-/* Presence dot overlaid on the avatar: ring matches the bar so it reads as a cut-out. */
+
 #connectionDot { border: 2px solid #ffffff; }
-/* Red "instance waiting to be linked" dot on the relay favicon (adhoc #97),
-   with the Approve button that sits beside it. */
+
+
 #relayJoinDot {
     background-color: #cf222e; border: 1px solid #ffffff; border-radius: 5px;
 }
-/* Faint hairline separating the agent squares from the node dots (adhoc #124). */
+
 #chromeDotDivider { background-color: #d0d7de; }
 QPushButton#relayJoinApproveButton {
     background-color: #cf222e; color: #ffffff; border: none;
     border-radius: 6px; padding: 4px 10px; font-size: 12px; font-weight: 700;
 }
 QPushButton#relayJoinApproveButton:hover { background-color: #a40e26; }
-/* Count label on the agents button (no red styling). */
+
 #agentsNavBadge {
     color: #8b949e; font-size: 13px; font-weight: 600;
 }
-/* Primary section nav (Code / Chat / Notifications / Settings) — uniform,
-   always visible, with a clear selected state. */
+
+
 #topNavBar { background: transparent; }
 #navDivider { background-color: #d0d7de; border: none; }
 QPushButton#topNavButton {
@@ -1702,8 +1702,8 @@ QPushButton#floatingLogButton {
     color: #24292f; font-size: 12px; font-weight: 600; padding: 4px 10px;
 }
 QPushButton#floatingLogButton:hover { background-color: #f3f4f6; color: #1f2328; }
-/* Top-row switchers (relay / node / repo): dropdown (relay's shows its
-   favicon inline) + open-in-browser */
+
+
 QPushButton#relayOpenButton, QPushButton#navHistoryButton {
     background: transparent; border: none; border-radius: 8px; color: #656d76;
 }
@@ -1711,10 +1711,10 @@ QPushButton#nodeMenuButton, QPushButton#repoMenuButton {
     background: transparent; border: 1px solid #d0d7de; border-radius: 8px;
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 12px;
 }
-/* The relay switcher rides the window-chrome line and reads as a title, so it
-   carries no outline of its own (adhoc #407). Slim side padding: the button is
-   pinned to railItemWidth() so its favicon lines up with the activity rail's
-   icons below, and 12px a side would squeeze the 25px icon. */
+
+
+
+
 QPushButton#relayMenuButton {
     background: transparent; border: none; border-radius: 8px;
     color: #1f2328; font-size: 15px; font-weight: 700; padding: 5px 4px;
@@ -1728,8 +1728,8 @@ QPushButton#repoMenuButton:hover {
 #nodeSwitchProgress { background: transparent; border: none; }
 #nodeSwitchProgress::chunk { background-color: #0969da; border-radius: 1px; }
 #navCaption { background: transparent; color: #656d76; font-size: 13px; font-weight: 600; }
-/* Same "magical" Agents pill as the dark sheet (adhoc #42), a shade deeper so
-   white text keeps its contrast against a light chrome bar. */
+
+
 QPushButton#agentsMagicButton {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
         stop:0 #6d28d9, stop:0.5 #9333ea, stop:1 #0891b2);
@@ -1770,7 +1770,7 @@ QPushButton#notificationButtonAlert:hover {
     background-color: #fff8c5; color: #7d4e00;
 }
 
-/* --- Home --- */
+
 #homeCard {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 12px;
 }
@@ -1796,22 +1796,22 @@ QPushButton#primaryButton:disabled {
     background-color: #eaeef2; color: #8c959f; border-color: #d0d7de;
 }
 
-/* --- Danger button (Leave node) --- */
+
 QPushButton#dangerButton {
     background: transparent; border: 1px solid #cf222e; border-radius: 6px;
     color: #cf222e; font-weight: 600;
 }
 QPushButton#dangerButton:hover { background-color: #cf222e; color: #ffffff; }
 
-/* --- Success button: the danger button's outlined twin, in green (adhoc #84,
-   the agent detail header's Branch / Worktree actions) --- */
+
+
 QPushButton#successButton {
     background: transparent; border: 1px solid #1a7f37; border-radius: 6px;
     color: #1a7f37; font-weight: 600;
 }
 QPushButton#successButton:hover { background-color: #1a7f37; color: #ffffff; }
 
-/* --- Sidebar --- */
+
 #sidebar { background-color: #ffffff; border-right: 1px solid #d0d7de; }
 #sidebar QLabel { background: transparent; }
 #workspaceName {
@@ -1873,12 +1873,12 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
-/* Green outline on whichever send button Enter currently activates (adhoc #89),
-   toggled by MainWindow::updateQuickAddEnterTarget(). */
+
+
 QPushButton#quickAddSendIcon[enterTarget="true"] {
     border: 1px solid #1a7f37; background: rgba(26,127,55,0.08);
 }
-/* Light-theme twin of the violet "task" pill (adhoc #42). */
+
 QPushButton#quickAddGenieButton {
     background: rgba(124,58,237,0.10); border: 1px solid rgba(124,58,237,0.45);
     color: #7c3aed; padding: 4px; border-radius: 4px;
@@ -1905,7 +1905,7 @@ QPushButton#quickAddGenieButton:hover {
     border-right: 2px solid #afb8c1; font-weight: 700;
 }
 
-/* --- Kanban issue board --- */
+
 #issueBoardScroll { border: none; background: transparent; }
 #issueBoardColumn {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 8px;
@@ -1922,7 +1922,7 @@ QPushButton#quickAddGenieButton:hover {
 }
 #issueBoardList::item:selected { border-color: #0969da; color: #1f2328; }
 
-/* --- Chat area --- */
+
 #chatHeader {
     background-color: #ffffff;
     border-bottom: 1px solid #d0d7de;
@@ -1931,7 +1931,7 @@ QPushButton#quickAddGenieButton:hover {
 #channelTitle { font-size: 16px; font-weight: 700; }
 #encryptionLabel { color: #656d76; font-size: 12px; }
 
-/* --- Node profile control panel --- */
+
 #nodeProfilePanel { background: transparent; }
 #nodeProfileContent { background-color: #ffffff; }
 #profileBanner { border-radius: 16px; }
@@ -1981,7 +1981,7 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #firewallBannerLabel {
     color: #7d4e00; font-size: 13px; background: transparent;
 }
-/* Clickable "N unread messages" strip above the transcript. */
+
 #chatUnreadBanner {
     background-color: #ddf4ff;
     border-bottom: 1px solid #54aeff;
@@ -2030,7 +2030,7 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #reactionPicker {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;
 }
-/* Agent detail "Info" popup: the session's field list (adhoc #61). */
+
 #agentMetaPopup {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 10px;
 }
@@ -2046,7 +2046,7 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background: transparent; border: none; font-size: 18px; padding: 2px 6px;
 }
 #iconButton:hover { background-color: #eaeef2; border-radius: 6px; }
-/* Settings */
+
 #settingsTitle { font-size: 20px; font-weight: 800; }
 #avatarPreview {
     background-color: #f6f8fa; border: 1px solid #d0d7de; border-radius: 12px;
@@ -2060,7 +2060,7 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
     background-color: #ffffff; border: none;
     color: #1f2328; font-family: monospace; font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
+
 #logEventList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
     color: #1f2328; font-family: monospace; font-size: 12px;
@@ -2068,7 +2068,7 @@ QPushButton#profileActionButton:pressed { background-color: #e1e6eb; }
 #logDock { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #logDock QLabel { background: transparent; }
 
-/* --- Bottom status bar: one text line tall, so everything in it is compact. */
+
 #appStatusBar { background-color: #f6f8fa; border-top: 1px solid #d0d7de; }
 #appStatusBar QLabel {
     background: transparent; color: #656d76; font-size: 11px;
@@ -2112,8 +2112,8 @@ QScrollBar::handle:horizontal:hover { background: #afb8c1; }
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }
 
-/* Draggable splitter handles — a clear, grabbable grip ridge that lights up
-   on hover/drag. Edges are transparent so it blends with any panel color. */
+
+
 QSplitter::handle:horizontal {
     width: 9px;
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -2133,7 +2133,7 @@ QSplitter::handle:pressed { background: #0969da; }
 
 QMessageBox, QInputDialog, QDialog { background-color: #ffffff; }
 
-/* --- ForkMesh updated non-Home polish overrides --- */
+
 QPushButton[buttonSize="sm"] {
     min-height: 24px; max-height: 28px; padding: 3px 8px;
     font-size: 12px; border-radius: 6px;
@@ -2184,8 +2184,8 @@ QPushButton#serverAddButton:hover { color: #1f883d; border-color: #1f883d; backg
     border-radius: 8px;
 }
 #sectionCard QLabel, #settingsCard QLabel { background: transparent; }
-/* Shortcuts tab: each shortcut file is a clickable card (a QPushButton hosting
-   its own labels). */
+
+
 QPushButton#shortcutCard {
     background-color: #ffffff;
     border: 1px solid #d0d7de;
@@ -2208,7 +2208,7 @@ QPushButton#shortcutCard:hover { border-color: #2ea043; background-color: #f6f8f
     font-family: monospace;
     font-size: 12px;
 }
-/* Compact ping feed above the network log (adhoc #77). */
+
 #logEventList {
     background-color: #ffffff; border: 1px solid #d0d7de; border-radius: 6px;
     color: #1f2328; font-family: monospace; font-size: 12px;
@@ -2243,12 +2243,12 @@ QPushButton#quickAddSendIcon {
     padding: 4px; border-radius: 4px;
 }
 QPushButton#quickAddSendIcon:hover { color: #1a7f37; background: rgba(26,127,55,0.12); }
-/* Green outline on whichever send button Enter currently activates (adhoc #89),
-   toggled by MainWindow::updateQuickAddEnterTarget(). */
+
+
 QPushButton#quickAddSendIcon[enterTarget="true"] {
     border: 1px solid #1a7f37; background: rgba(26,127,55,0.08);
 }
-/* Light-theme twin of the violet "task" pill (adhoc #42). */
+
 QPushButton#quickAddGenieButton {
     background: rgba(124,58,237,0.10); border: 1px solid rgba(124,58,237,0.45);
     color: #7c3aed; padding: 4px; border-radius: 4px;
@@ -2257,8 +2257,8 @@ QPushButton#quickAddGenieButton {
 QPushButton#quickAddGenieButton:hover {
     background: rgba(124,58,237,0.20); border-color: #7c3aed; color: #5b21b6;
 }
-/* Footer prompt bottom bar (adhoc #99): see the dark-theme block above for the
-   rationale — green filled checkmark indicators plus a thin bordered Agent box. */
+
+
 QCheckBox#quickAddAutoCheck::indicator,
 QCheckBox#quickAddCreateIssueCheck::indicator,
 QCheckBox#quickAddAgentCheck::indicator {
@@ -2275,8 +2275,8 @@ QCheckBox#quickAddAgentCheck::indicator:checked {
     border: none; background: transparent;
     font-size: 12px;
 }
-/* Slash-actions "/" box (adhoc #116): see the dark-theme block above for the
-   rationale — a small bordered square left of the Agent checkbox. */
+
+
 QPushButton#quickAddSlashButton {
     background: #ffffff; border: 1px solid #d0d7de; border-radius: 5px;
     color: #57606a; font-weight: 600; font-size: 12px; padding: 0;
@@ -2421,7 +2421,7 @@ QLineEdit#issueSearch, QComboBox#issueControlSm {
     max-height: 28px;
 }
 QLineEdit#issueSearch:focus, QComboBox#issueControlSm:focus { border-color: #0969da; }
-/* Clearly-bordered commit-message compose field (see the dark-theme note). */
+
 QLineEdit#messageInput {
     background-color: #ffffff;
     border: 1px solid #afb8c1;
@@ -2564,7 +2564,7 @@ QPlainTextEdit#markdownSource:focus { border-color: #0969da; }
     padding: 12px;
     color: #1f2328;
 }
-/* Agent detail: log terminal + status pill + API-traffic panel */
+
 QPlainTextEdit#actionLog {
     background-color: #f6f8fa;
     border: 1px solid #d0d7de;
@@ -2589,9 +2589,9 @@ QPlainTextEdit#actionLog {
     padding: 8px 12px;
 }
 
-/* --- Item-view selection (see the dark theme for the rationale) ---
-   border:0 stops the selected row's text from shifting; the highlight is the
-   light-theme brand green (#1f883d, the primary-button green) instead of blue. */
+
+
+
 QAbstractItemView::item { border: 0px; }
 #issueTable { selection-background-color: #1f883d; selection-color: #ffffff; }
 #issueTable::item:selected,
@@ -2602,8 +2602,8 @@ QAbstractItemView::item { border: 0px; }
 QComboBox QAbstractItemView { selection-background-color: #1f883d; selection-color: #1f2328; }
 QComboBox QAbstractItemView::item:selected { color: #1f2328; }
 
-/* Floating ▲/▼ jump-to-top/bottom buttons (ScrollJumpButtons), e.g. over the
-   agent raw-output log. The rich transcript styles its own copy per scheme. */
+
+
 QPushButton#scrollJump {
     background-color: #f6f8fa; color: #1f2328;
     border: 1px solid #d0d7de; border-radius: 15px;
@@ -2613,10 +2613,10 @@ QPushButton#scrollJump:hover { background-color: #eef1f5; }
 
 )";
 
-// The stylesheet matching the OS color scheme (dark by default).
+
 inline const char *styleSheetForDark(bool dark)
 {
     return dark ? kStyleSheet : kLightStyleSheet;
 }
 
-} // namespace Theme
+}

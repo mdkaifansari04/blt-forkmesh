@@ -1,8 +1,8 @@
--- Make the public Office ledger reflect live occupancy instead of leaving an
--- interrupted browser session looking permanently "IN BUILDING".
---
--- The floor id is a bounded public label. last_seen_at is a server timestamp;
--- it contains no session, device, address, or user-agent data.
+
+
+
+
+
 
 ALTER TABLE world_office_attendance
   ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0

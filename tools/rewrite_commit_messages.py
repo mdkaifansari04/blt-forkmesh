@@ -163,7 +163,7 @@ def identity_redactions(root: Path, commits: list[str]) -> list[re.Pattern]:
             for token in clean.split():
                 if len(token) >= 4:
                     candidates.add(token)
-    # Longest first prevents a first name from leaving the surname behind.
+
     return [
         re.compile(r"(?i)(?<![A-Za-z0-9])" + re.escape(value) +
                    r"(?![A-Za-z0-9])")
@@ -198,8 +198,8 @@ def summarize(message: bytes, redactions: list[re.Pattern]) -> str:
         candidate = pattern.sub(sentinel, candidate)
     candidate = candidate.replace(sentinel, REDACTION_TOKEN)
     candidate = re.sub(r"\s+", " ", candidate).strip(" \t\r\n-:;,.")
-    # Keep one sentence. The lookbehind lets common abbreviations and versions
-    # survive while still dropping explanatory paragraphs from old messages.
+
+
     sentence = re.split(
         r"(?<=[!?])\s+|(?<=[a-z0-9\]\)])\.\s+",
         candidate,
@@ -560,7 +560,7 @@ def rewrite(root: Path, requested: list[str], confirmation: str) -> int:
         scope_payload(root, refs, commits, backups, new_refs),
     )
     update_refs(root, refs, new_refs)
-    # Re-resolve every target after the atomic transaction.
+
     for ref, expected in new_refs.items():
         actual = run_git(root, "rev-parse", "--verify", ref).decode().strip()
         if actual != expected:

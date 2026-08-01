@@ -1,8 +1,8 @@
-/* The "Posted on" block rendered by /blog-social.js at the foot of a blog
-   post. Two post shells use it — the feature posts (feature-post.css: --line,
-   --soft, --cyan) and the announcement post (styles.css: --border,
-   --card-soft, --accent-bright) — so every colour falls back through both
-   before landing on a literal. */
+
+
+
+
+
 
 .blog-social {
   margin: 48px 0 0;
@@ -56,8 +56,8 @@
   text-decoration: underline;
 }
 
-/* An unannounced network still holds its slot: the row reads as empty rather
-   than disappearing, so a missing permalink is visible as a missing one. */
+
+
 .blog-social-item.is-empty {
   border-style: dashed;
   background: none;

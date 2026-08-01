@@ -10,8 +10,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import community_ads as policy  # noqa: E402
-import community_ads_api as api  # noqa: E402
+import community_ads as policy
+import community_ads_api as api
 
 
 NOW = 1_800_000_000_000

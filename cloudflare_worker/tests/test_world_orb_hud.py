@@ -150,16 +150,16 @@ def test_world_embed_has_separate_chat_and_task_buttons_and_routing_step():
 
 
 def test_chat_and_status_updates_share_the_native_transcript():
-    # Non-chat notices still land in the native transcript, and every event a
-    # visitor may see also raises a floating bubble right above the chat icon.
+
+
     assert "data-world-activity-stream" in WORLD
     assert 'data.type === "forkmesh:world-activity"' in WORLD
     assert 'if (kind !== "chat" && transcript) this.notifyChatArea(copy, kind)' in WORLD
     assert 'type: "forkmesh:chat-notification"' in WORLD
     assert "emitWorldActivity(text, \"status\")" in CHAT
     assert "appendSystem(text, false)" in CHAT
-    # Bubbles stack bottom-up from just above the chat launcher; chat lines
-    # are never forwarded to the transcript twice.
+
+
     assert "stream.prepend(article)" in WORLD
     assert '{ kind: "chat", sender }' in WORLD
     assert "flex-direction: column-reverse" in CSS

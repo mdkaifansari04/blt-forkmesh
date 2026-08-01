@@ -139,8 +139,8 @@ class FakeRuntime:
                 "name": "staff-chat",
                 "type": 0,
                 "parent_id": PRIVATE_CATEGORY,
-                # Discord stores the synchronized category overwrite on the
-                # child too; category permissions are copied, not inherited.
+
+
                 "permission_overwrites": [
                     {"id": GUILD, "type": 0, "deny": "1024"},
                 ],
@@ -358,8 +358,8 @@ class FakeRuntime:
         }
 
     async def discord_send(self, channel_id, content):
-        # Match the real adapter's non-pinging Discord payload; the policy
-        # module can only supply selected channel id + sanitized text.
+
+
         payload = {
             "content": content,
             "allowed_mentions": {"parse": []},
@@ -532,9 +532,9 @@ async def test_oauth_callback_accepts_browser_that_omits_transaction_cookie():
         "forkmesh", "oauth/start")
     state = parse_qs(
         urlparse(started["data"]["authorizationUrl"]).query)["state"][0]
-    # The one-time OAuth state, PKCE verifier, live ForkMesh session, owner
-    # role, exact redirect and requested guild remain bound in encrypted D1.
-    # A browser privacy policy may independently omit the strengthening cookie.
+
+
+
     runtime.oauth_transaction = ""
     completed = await discord_api.handle_oauth_callback(
         runtime.use("GET", query={
@@ -597,9 +597,9 @@ async def test_oauth_callback_consumes_state_if_oauth_settings_change_mid_flow()
         "forkmesh", "oauth/start")
     state = parse_qs(urlparse(started["data"]["authorizationUrl"]).query)["state"][0]
     runtime.oauth_transaction = started["oauthTransaction"]
-    # A deployment can rotate/remove the OAuth client configuration between
-    # the redirect and callback. The callback must still burn the one-time
-    # state before telling the browser that setup is required.
+
+
+
     runtime.oauth_configured = False
     response = await discord_api.handle_oauth_callback(
         runtime.use("GET", query={
@@ -1153,8 +1153,8 @@ async def test_org_delete_purges_discord_marker_task_and_all_child_rows():
         assert db.execute(
             f"SELECT COUNT(*) FROM {table} WHERE task_id=?", (marker_task,)
         ).fetchone()[0] == 0
-        # The selector is limited to the marker task; unrelated organization
-        # work/history is not silently deleted by a connector cleanup.
+
+
         assert db.execute(
             f"SELECT COUNT(*) FROM {table} WHERE task_id=?", (unrelated_task,)
         ).fetchone()[0] == 1

@@ -92,7 +92,7 @@ class FakeRequest:
         return self._body
 
 
-# --- ap_inbox_handler load-shedding ------------------------------------------
+
 
 def _inbox_env(log, known_remote=False):
     """Namespace for ap_inbox_handler with everything past the short-circuits
@@ -153,9 +153,9 @@ def _post(activity, headers=None):
 
 
 def test_ignored_activity_types_drop_before_signature_verification():
-    # No Signature header at all: reaching the verify path would 401, so a
-    # 202 proves the Like was shed before the signature dance (and its
-    # remote-actor fetch back to the sender's server).
+
+
+
     log = []
     ns = _inbox_env(log)
     for activity_type in ("Like", "Announce", "Update", "Accept", "Move"):
@@ -222,7 +222,7 @@ def test_self_delete_of_unknown_actor_issues_no_writes():
     })))
     assert resp.status == 202
     assert not any(e[0] == "forget" for e in log if isinstance(e, tuple))
-    # Existence was checked in both edge tables (reads, not writes).
+
     reads = [e for e in log if isinstance(e, tuple) and e[0] == "d1_first"]
     assert any("ap_remote_actors" in sql for _, sql in reads)
     assert any("ap_followers" in sql for _, sql in reads)
@@ -239,7 +239,7 @@ def test_self_delete_of_known_actor_still_forgets():
     assert ("forget", actor) in log
 
 
-# --- _ap_handle_follow: Accept delivery must survive a failure -----------------
+
 
 def _follow_env(log, deliver_status):
     async def _ap_resolve_local_target(env, origin, url):
@@ -326,14 +326,14 @@ def test_accepted_follow_delivers_accept_and_queues_nothing():
 
 def test_failed_accept_delivery_is_queued_for_cron_retry():
     log = []
-    ns = _follow_env(log, deliver_status=0)  # fetch failed / network error
+    ns = _follow_env(log, deliver_status=0)
     resp = _run(ns["_ap_handle_follow"](
         None, None, dict(_FOLLOW_ACTIVITY), dict(_REMOTE)))
-    assert resp.status == 202  # the follow itself is stored either way
+    assert resp.status == 202
     inserts = _outbox_inserts(log)
     assert len(inserts) == 1
     _, _, args = inserts[0]
-    assert args[0] == _REMOTE["inbox"]  # Accept goes to the personal inbox
+    assert args[0] == _REMOTE["inbox"]
     queued = json.loads(args[1])
     assert queued["actorKind"] == "repo"
     assert queued["actorHandle"] == "forkmesh.forkmesh"
@@ -342,7 +342,7 @@ def test_failed_accept_delivery_is_queued_for_cron_retry():
 
 def test_rate_limited_accept_delivery_is_queued_for_cron_retry():
     log = []
-    ns = _follow_env(log, deliver_status=429)  # Mastodon throttled us
+    ns = _follow_env(log, deliver_status=429)
     _run(ns["_ap_handle_follow"](
         None, None, dict(_FOLLOW_ACTIVITY), dict(_REMOTE)))
     assert len(_outbox_inserts(log)) == 1

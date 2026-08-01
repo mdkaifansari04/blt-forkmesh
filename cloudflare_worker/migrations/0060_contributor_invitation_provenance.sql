@@ -1,7 +1,7 @@
--- Invitation eligibility must not be asserted by a boolean in the send
--- request.  Each send references a durable, independently matched provenance
--- row.  Plaintext columns contain only keyed blind indexes; descriptive audit
--- context remains in the Worker's encrypted ``data`` blob.
+
+
+
+
 
 ALTER TABLE contributor_invitations
     ADD COLUMN contributor_bi TEXT NOT NULL DEFAULT '';
@@ -26,8 +26,8 @@ CREATE INDEX IF NOT EXISTS idx_contributor_invitation_provenance_match
     ON contributor_invitation_provenance(
         repo_id, contributor_bi, email_bi, revoked_at);
 
--- This is the concurrency boundary. A provenance row revoked after the
--- application's preflight read but before INSERT cannot authorize a send.
+
+
 CREATE TRIGGER IF NOT EXISTS trg_invitation_provenance_reservation
 BEFORE INSERT ON contributor_invitations
 WHEN NEW.status='pending'

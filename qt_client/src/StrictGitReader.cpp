@@ -24,7 +24,7 @@ Limits normalizedLimits(Limits limits)
     return limits;
 }
 
-} // namespace
+}
 
 bool appendBounded(QByteArray *destination, const QByteArray &chunk,
                    qsizetype maxDestinationBytes,
@@ -219,4 +219,4 @@ bool Reader::runInternal(const QString &dir, const QStringList &args,
     return true;
 }
 
-} // namespace StrictGitReadInternal
+}

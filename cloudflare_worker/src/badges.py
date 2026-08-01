@@ -12,8 +12,8 @@ import re
 
 _SLUG_RE = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
 
-# Ordered so the catalog and any UI built from it render in a stable,
-# meaningful sequence rather than dict-insertion happenstance.
+
+
 BADGE_DEFINITIONS = {
     "first_100_users": {
         "name": "Founding Member",

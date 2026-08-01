@@ -18,7 +18,7 @@
 namespace forkmesh::control {
 namespace {
 
-// POSIX single-quoting: the only way a value can leave a shell word here.
+
 QString shellSingleQuote(QString value)
 {
     value.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
@@ -98,15 +98,15 @@ QStringList installedToolCandidates(const QString &fileName,
         applicationDir.trimmed().isEmpty()
             ? QCoreApplication::applicationDirPath()
             : applicationDir.trimmed();
-    // Linux CMake installs use <prefix>/bin + <prefix>/share/forkmesh.
+
     candidates.append(
         QDir(appDir).absoluteFilePath(
             QStringLiteral("../share/forkmesh/tools/") + fileName));
-    // A macOS bundle uses ForkMesh.app/Contents/{MacOS,Resources}.
+
     candidates.append(
         QDir(appDir).absoluteFilePath(
             QStringLiteral("../Resources/forkmesh/tools/") + fileName));
-    // The per-user Windows/NSIS layout keeps resources beside the executable.
+
     candidates.append(
         QDir(appDir).absoluteFilePath(
             QStringLiteral("resources/forkmesh/tools/") + fileName));
@@ -324,7 +324,7 @@ QJsonArray scrubSavedHostPasswords(
     return cleanHosts;
 }
 
-} // namespace
+}
 
 HostSshCommand buildHostSshCommand(const QString &host,
                                    const QString &sshUser,
@@ -386,9 +386,9 @@ HostSshCommand buildHostSshCommand(const QString &host,
         QStringLiteral("-o"), QStringLiteral("UpdateHostKeys=yes"),
         QStringLiteral("-o"), QStringLiteral("ConnectTimeout=30"),
     };
-    // Pin authentication to a ForkMesh-managed key when the saved host records
-    // one (auto-provisioned Vultr mirrors). -i is argv-safe for any path;
-    // IdentitiesOnly stops the agent offering unrelated keys first.
+
+
+
     const QString identity = identityFile.trimmed();
     if (!identity.isEmpty()) {
         if (identity.contains(QChar::Null) ||
@@ -414,8 +414,8 @@ HostSshCommand buildHostSshCommand(const QString &host,
         command.environment.insert(QStringLiteral("SSHPASS"), sshPassword);
         arguments.prepend(QStringLiteral("ssh"));
         arguments.prepend(QStringLiteral("-e"));
-        // Let an agent/default key win when available, then use the
-        // session-only password. Never disable public-key authentication.
+
+
         arguments << QStringLiteral("-o")
                   << QStringLiteral(
                          "PreferredAuthentications=publickey,password");
@@ -440,8 +440,8 @@ HostSshCommand buildHostInteractiveSshCommand(const QString &host,
                                                  identityFile);
     if (command.program.isEmpty())
         return command;
-    // The last two words are always "user@host" and the remote command, and
-    // -tt has to precede both.
+
+
     command.arguments.insert(command.arguments.size() - 2,
                              QStringLiteral("-tt"));
     return command;
@@ -523,9 +523,9 @@ QString buildHostDiskUsageCommand(const QString &path, QString *error)
         }
         return {};
     }
-    // Both failure messages are encoded here rather than on the host: the
-    // remote side may have no base64 at all, and pre-encoding keeps the
-    // sentinel grammar identical for every outcome.
+
+
+
     const auto sentinelText = [](const char *message) {
         return QString::fromLatin1(
             QByteArray(message).toBase64(QByteArray::Base64Encoding));
@@ -535,8 +535,8 @@ QString buildHostDiskUsageCommand(const QString &path, QString *error)
     const QString noBase64 = sentinelText(
         "This host has no base64 command, so ForkMesh cannot read its size "
         "map safely.");
-    // Read-only by construction: one `du` over a single directory level, with
-    // every name handed back base64-encoded so it never becomes shell syntax.
+
+
     const QString script =
         QStringLiteral(
             "set -u\n"
@@ -581,10 +581,10 @@ QString buildHostMountUsageCommand()
         "points safely.");
     const QString noDf = sentinelText(
         "This host has no df command, so ForkMesh cannot read mount usage.");
-    // `df -P` guarantees one filesystem per logical record. The final field
-    // may contain spaces, so reconstruct it after shifting the five fixed
-    // fields. Only numeric capacity values and a base64 path cross the
-    // sentinel boundary.
+
+
+
+
     const QString script =
         QStringLiteral(
             "set -u\n"
@@ -819,10 +819,10 @@ QString sshConnectionFailureHint(int exitCode, const QString &outputTail,
         tail.contains(QStringLiteral("connection timed out")) ||
         tail.contains(QStringLiteral("operation timed out")) ||
         tail.contains(QStringLiteral("no route to host"));
-    // Packets vanishing towards an address that is not routable on the public
-    // internet is not a firewall at all — no network between here and there
-    // can carry them (adhoc #342). Say so instead of sending the operator off
-    // to audit security groups that were never involved.
+
+
+
+
     if (dropped) {
         const QString range = nonRoutableAddressNote(host);
         if (!range.isEmpty())
@@ -1324,7 +1324,7 @@ QString findPinnedTool(const QString &fileName, const QString &overrideName,
     return {};
 }
 
-} // namespace
+}
 
 QString findCloudflareTunnelBootstrapScript(
     const QString &sourceDir, const QString &applicationDir)
@@ -1478,8 +1478,8 @@ CloudflareBootstrapCommand buildCloudflareBootstrapCommand(
         command.arguments << QStringLiteral("--relay-label")
                           << request.relayLabel.trimmed();
     }
-    // Passing an explicit empty value creates a standalone/main relay; otherwise
-    // the bootstrapper links the new relay into the selected upstream mesh.
+
+
     command.arguments << QStringLiteral("--main-relay-url")
                       << request.mainRelayUrl.trimmed();
     if (request.dryRun)
@@ -1494,9 +1494,9 @@ CloudflareBootstrapCommand buildCloudflareBootstrapCommand(
                           << (shlexQuote(signerProgram.trimmed()) +
                               QStringLiteral(" --sign-mirror-manifest"));
     } else {
-        // A deployment can still provide routing without publishing a trust
-        // manifest. The UI normally supplies the local identity signer; this is
-        // only the explicit safe fallback when no identity exists.
+
+
+
         command.arguments << QStringLiteral("--skip-mirror-manifest");
     }
 
@@ -1515,10 +1515,10 @@ CloudflareBootstrapCommand buildCloudflareBootstrapCommand(
 
 namespace {
 
-// First stored value whose name matches one of `names`, case-insensitively and
-// in the caller's preference order. Values that span lines (or embed NULs) are
-// rejected: they are never a real credential and would break the child
-// environment they are destined for.
+
+
+
+
 QString storedCredential(const QMap<QString, QString> &variables,
                          const QStringList &names)
 {
@@ -1539,7 +1539,7 @@ QString storedCredential(const QMap<QString, QString> &variables,
     return {};
 }
 
-}  // namespace
+}
 
 QString cloudflareApiTokenFromVariables(
     const QMap<QString, QString> &variables)
@@ -1757,7 +1757,7 @@ QString redactProcessOutput(const QString &text,
 {
     QString safe = text;
     safe.remove(QChar(u'\0'));
-    // Strip terminal control sequences before inserting output into a rich UI.
+
     static const QRegularExpression ansi(
         QStringLiteral("\\x1B(?:\\[[0-?]*[ -/]*[@-~]|\\][^\\x07]*(?:\\x07|\\x1B\\\\))"));
     safe.remove(ansi);
@@ -1959,8 +1959,8 @@ QString validateVultrMirrorRequest(const QString &apiKey,
 
 bool vultrPlanHasIpv4(const QJsonObject &plan)
 {
-    // Vultr marks its IPv6-only tiers with a "-v6" id suffix ("vc2-1c-0.5gb-v6")
-    // and nothing else in the plan object distinguishes them.
+
+
     const QString id =
         plan.value(QStringLiteral("id")).toString().trimmed().toLower();
     if (id.isEmpty())
@@ -1971,25 +1971,25 @@ bool vultrPlanHasIpv4(const QJsonObject &plan)
 
 QJsonObject cheapestVultrPlan(const QJsonArray &plans)
 {
-    // ForkMesh keeps the authenticated public repository materialization in
-    // private temporary storage while the durable copy remains age-encrypted.
-    // Vultr's 512 MB plans mount /tmp at roughly half of RAM, which is smaller
-    // than the flagship repository and makes an otherwise successful install
-    // disappear during its first sync. One GiB is the minimum supported
-    // automatic mirror size; operators can still install manually on custom
-    // hosts whose temporary-storage layout meets the same runtime needs.
+
+
+
+
+
+
+
     constexpr double kMinimumMirrorRamMb = 1024.0;
     const auto hasUsLocation = [](const QJsonObject &plan) {
         static const QSet<QString> usRegions{
-            QStringLiteral("ewr"), // Newark, New Jersey / New York metro
-            QStringLiteral("atl"), // Atlanta
-            QStringLiteral("ord"), // Chicago
-            QStringLiteral("dfw"), // Dallas
-            QStringLiteral("mia"), // Miami
-            QStringLiteral("lax"), // Los Angeles
-            QStringLiteral("sea"), // Seattle
-            QStringLiteral("sjc"), // Silicon Valley
-            QStringLiteral("hon"), // Honolulu
+            QStringLiteral("ewr"),
+            QStringLiteral("atl"),
+            QStringLiteral("ord"),
+            QStringLiteral("dfw"),
+            QStringLiteral("mia"),
+            QStringLiteral("lax"),
+            QStringLiteral("sea"),
+            QStringLiteral("sjc"),
+            QStringLiteral("hon"),
         };
         for (const QJsonValue &value :
              plan.value(QStringLiteral("locations")).toArray()) {
@@ -2033,10 +2033,10 @@ QJsonObject cheapestVultrPlan(const QJsonArray &plans)
 
 QString vultrPlanRegion(const QJsonObject &plan)
 {
-    // Keep automatically provisioned World mirrors in the United States.
-    // Newark is the closest Vultr region to New York City, followed by
-    // Atlanta; the remaining US locations provide deterministic capacity
-    // fallbacks without silently placing a mirror on another continent.
+
+
+
+
     static const QStringList preferredUsRegions{
         QStringLiteral("ewr"),
         QStringLiteral("atl"),
@@ -2094,11 +2094,11 @@ QJsonObject latestVultrDebianOs(const QJsonArray &osList)
 bool localBinaryRunsOnVultrMirror(const QString &kernelType,
                                   const QString &cpuArch)
 {
-    // The installer accepts an uploaded binary only when the uploader's
-    // declared OS/arch match the target, and every mirror we create is x64
-    // Debian — so an upload is worth streaming exactly when this app is a
-    // linux/x86_64 build. Anything else (macOS, Windows, arm64) would be
-    // rejected remotely and fall back to the relay download anyway.
+
+
+
+
+
     const QString os = kernelType.trimmed().toLower();
     QString arch = cpuArch.trimmed().toLower();
     if (arch == QLatin1String("amd64") || arch == QLatin1String("x64"))
@@ -2120,8 +2120,8 @@ QJsonObject vultrInstanceCreatePayload(const QString &nodeName,
         {QStringLiteral("hostname"), nodeName.trimmed()},
         {QStringLiteral("sshkey_id"), QJsonArray{sshKeyId}},
         {QStringLiteral("backups"), QStringLiteral("disabled")},
-        // The mesh reaches mirrors over IPv4 only: never let Vultr hand back an
-        // instance whose sole address is a v6 one (adhoc #344).
+
+
         {QStringLiteral("enable_ipv6"), false},
         {QStringLiteral("activation_email"), false},
         {QStringLiteral("tags"),
@@ -2174,8 +2174,8 @@ QString nextMirrorNodeName(const QStringList &existingNames)
         if (match.hasMatch())
             highest = std::max(highest, match.captured(1).toInt());
     }
-    // Continue the fleet's own numbering (mirror1..mirror4 -> mirror5) and then
-    // walk forward past any name already taken, so the default never collides.
+
+
     for (int i = std::max(1, highest + 1); i <= 9999; ++i) {
         const QString candidate = QStringLiteral("mirror%1").arg(i);
         if (!used.contains(candidate))
@@ -2186,8 +2186,8 @@ QString nextMirrorNodeName(const QStringList &existingNames)
 
 QStringList vultrApiKeyVariableNames()
 {
-    // VULTR_API_TOKEN is what Settings > Quick setup has always written, so a
-    // key saved there resolves here too instead of being asked for again.
+
+
     return {
         QStringLiteral("VULTR_API_KEY"),
         QStringLiteral("VULTR_API_TOKEN"),
@@ -2203,9 +2203,9 @@ QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)
 
 bool vultrInstallNeedsLocalBinary(const QString &installOutput)
 {
-    // Matched on the installer's own wording for the two dead ends a retry
-    // cannot clear: nothing in the mesh is serving the repo, and no prebuilt
-    // release exists (or authenticates) for the instance's platform.
+
+
+
     static const QStringList markers = {
         QStringLiteral("No online ForkMesh node"),
         QStringLiteral("No prebuilt ForkMesh binary is published"),
@@ -2247,8 +2247,8 @@ QString vultrInstanceIdForAddress(const QJsonArray &instances,
                                      QStringLiteral("hostname")}) {
             const QString candidate =
                 instance.value(field).toString().trimmed().toLower();
-            // Vultr reports an unassigned address as "0.0.0.0"/"", which would
-            // otherwise let two booting instances "match" each other.
+
+
             if (candidate.isEmpty() ||
                 candidate == QLatin1String("0.0.0.0")) {
                 continue;
@@ -2261,7 +2261,7 @@ QString vultrInstanceIdForAddress(const QJsonArray &instances,
         if (!hit)
             continue;
         if (!match.isEmpty() && match != id)
-            return {}; // ambiguous — fail closed rather than destroy a guess
+            return {};
         match = id;
     }
     return match;
@@ -2297,8 +2297,8 @@ bool agentCliCredentialsAreEmpty(const AgentCliCredentials &credentials)
 
 namespace {
 
-// Environment variables are written into a sourced shell file, so only plain
-// upper-case names with a printable single-line value are ever accepted.
+
+
 bool agentCliEnvEntryIsUsable(const QString &name, const QString &value)
 {
     static const QRegularExpression namePattern(
@@ -2314,7 +2314,7 @@ bool agentCliEnvEntryIsUsable(const QString &name, const QString &value)
     return true;
 }
 
-} // namespace
+}
 
 QString describeAgentCliCredentials(const AgentCliCredentials &credentials)
 {
@@ -2337,11 +2337,11 @@ QString describeAgentCliCredentials(const AgentCliCredentials &credentials)
 QByteArray agentCliEnvFileContents(const QMap<QString, QString> &env)
 {
     QByteArray contents;
-    // QMap iterates in key order, so the file is byte-identical run to run.
+
     for (auto it = env.constBegin(); it != env.constEnd(); ++it) {
         if (!agentCliEnvEntryIsUsable(it.key(), it.value()))
             continue;
-        // Single-quoted, so nothing in a value can be read as shell syntax.
+
         contents += QStringLiteral("export %1=%2\n")
                         .arg(it.key(), shellSingleQuote(it.value()))
                         .toUtf8();
@@ -2397,9 +2397,9 @@ QByteArray buildAgentCliBootstrapPayload(const AgentCliCredentials &credentials,
 
 QString agentCliBootstrapRemoteCommand(bool withCredentials)
 {
-    // One fixed, secret-free command. The credential variant reads the stdin
-    // payload into a private temp file *first*, so stdin is at EOF before the
-    // piped installers run and no section can be mistaken for installer input.
+
+
+
     QStringList script;
     script << QStringLiteral("set -eu")
            << QStringLiteral("umask 077")
@@ -2419,9 +2419,9 @@ QString agentCliBootstrapRemoteCommand(bool withCredentials)
                   "curl -fsSL https://chatgpt.com/codex/install.sh | sh")
            << QStringLiteral(
                   "export PATH=\"$home/.local/bin:$home/.claude/bin:$PATH\"")
-           // Managed headless nodes run as forkmesh-node, not as the root SSH
-           // provisioner. Install immutable global copies for that service and
-           // direct copied login files into its private state home.
+
+
+
            << QStringLiteral("agent_home=\"$home\"")
            << QStringLiteral("agent_owner=\"\"")
            << QStringLiteral(
@@ -2444,9 +2444,9 @@ QString agentCliBootstrapRemoteCommand(bool withCredentials)
                                  "sec codex > \"$agent_home/.codex/auth.json\"; "
                                  "chmod 600 \"$agent_home/.codex/auth.json\"; "
                                  "echo \"Copied the controller Codex login.\"; fi")
-               // The API-key file is sourced from the shell startup files a
-               // ForkMesh SSH session (sh -lc) and an interactive login both
-               // read, so agent runs on this mirror inherit the keys.
+
+
+
                << QStringLiteral("if has env; then mkdir -p \"$agent_home/.forkmesh\"; "
                                  "sec env > \"$agent_home/.forkmesh/agent-env\"; "
                                  "chmod 600 \"$agent_home/.forkmesh/agent-env\"; "
@@ -2537,9 +2537,9 @@ QJsonObject vultrMirrorDnsRecordPayload(const QString &hostname,
         {QStringLiteral("type"), QStringLiteral("A")},
         {QStringLiteral("name"), name},
         {QStringLiteral("content"), address},
-        // DNS-only: the node is reached over SSH and its own listeners, and a
-        // proxied answer would break both. The direct HTTPS mirror endpoint
-        // keeps its own proxied Tunnel record.
+
+
+
         {QStringLiteral("proxied"), false},
         {QStringLiteral("ttl"), 1},
         {QStringLiteral("comment"), QStringLiteral("ForkMesh mirror node")},
@@ -2601,7 +2601,7 @@ QString cloudflareDnsRecordId(const QJsonArray &records,
     return found;
 }
 
-// --- Cloudflare API token check and rotation (adhoc #108) ------------------
+
 
 namespace {
 
@@ -2612,8 +2612,8 @@ const QRegularExpression &cloudflareIdPattern()
     return pattern;
 }
 
-// The scope string Cloudflare tags a permission group with, and the resource
-// key prefix a policy for it must use.
+
+
 QString cloudflareScopeString(const QString &scope)
 {
     if (scope == QLatin1String("account"))
@@ -2625,16 +2625,16 @@ QString cloudflareScopeString(const QString &scope)
     return {};
 }
 
-// Accept either a full Cloudflare envelope or the bare `result` object, so
-// callers can hand over whatever they already have.
+
+
 QJsonObject cloudflareResultObject(const QJsonObject &response)
 {
     const QJsonValue result = response.value(QStringLiteral("result"));
     return result.isObject() ? result.toObject() : response;
 }
 
-// Every resource key a token's policies name, flattened over the nested form
-// Cloudflare uses for "all zones in this account".
+
+
 QStringList cloudflarePolicyResourceKeys(const QJsonObject &tokenDetail)
 {
     QStringList keys;
@@ -2661,10 +2661,10 @@ QStringList cloudflarePolicyResourceKeys(const QJsonObject &tokenDetail)
     return keys;
 }
 
-// Resolve one permission group's id from GET /user/tokens/permission_groups.
-// A name is only accepted when the catalog entry also carries the scope the
-// requirement is bound to: several group names (e.g. "Logs Read") exist at both
-// account and zone scope with different ids.
+
+
+
+
 QString cloudflarePermissionGroupId(const QJsonArray &catalog,
                                     const QString &name, const QString &scope)
 {
@@ -2698,7 +2698,7 @@ QString cloudflarePermissionGroupId(const QJsonArray &catalog,
     return {};
 }
 
-} // namespace
+}
 
 QList<CloudflareTokenRequirement> cloudflareTokenRequirements()
 {
@@ -2837,8 +2837,8 @@ QStringList cloudflareTokenPermissionGroupNames(const QJsonObject &tokenDetail)
             .toArray();
     for (const QJsonValue &value : policies) {
         const QJsonObject policy = value.toObject();
-        // A deny policy subtracts access; reporting its groups as granted would
-        // be a false positive on exactly the permission that is missing.
+
+
         if (policy.value(QStringLiteral("effect")).toString().trimmed().toLower() ==
             QLatin1String("deny")) {
             continue;
@@ -2954,8 +2954,8 @@ QJsonObject cloudflareTokenCreatePayload(
             }
         }
         if (groupId.isEmpty()) {
-            // Optional capabilities are dropped rather than blocking rotation:
-            // a token that cannot read its own policies still deploys.
+
+
             if (!requirement.required)
                 continue;
             if (!haveResource) {
@@ -3027,8 +3027,8 @@ QString updatedEnvAssignment(const QString &contents, const QString &name,
         return contents;
     }
     const QString assignment = name + QLatin1Char('=') + value;
-    // Only a real assignment counts: a commented-out example keeps its place,
-    // and deploy.sh ignores it too.
+
+
     const QRegularExpression linePattern(
         QStringLiteral("^[ \\t]*") + QRegularExpression::escape(name) +
         QStringLiteral("[ \\t]*="));
@@ -3051,8 +3051,8 @@ QString updatedEnvAssignment(const QString &contents, const QString &name,
             ++index;
             continue;
         }
-        // A later duplicate would win when deploy.sh sources the file, so a
-        // rotation that left one behind would keep exporting the old token.
+
+
         lines.removeAt(index);
     }
     if (!replaced) {
@@ -3083,4 +3083,4 @@ QString maskedTokenSuffix(const QString &token)
     return trimmed.size() < 8 ? ellipsis : ellipsis + trimmed.right(4);
 }
 
-} // namespace forkmesh::control
+}

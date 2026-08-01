@@ -69,7 +69,7 @@ def test_non_dict_and_missing_run_are_rejected():
     assert _fields(None) is None
     assert _fields("nope") is None
     assert _fields(_payload(run="")) is None
-    assert _fields(_payload(run="!!!@@@")) is None  # no safe chars -> empty
+    assert _fields(_payload(run="!!!@@@")) is None
 
 
 def test_ok_is_coerced_to_zero_or_one():
@@ -80,7 +80,7 @@ def test_ok_is_coerced_to_zero_or_one():
 
 
 def test_markup_is_stripped_from_fields():
-    # A crafted detail must not be able to inject HTML into the admin dashboard.
+
     out = _fields(_payload(detail="<script>alert(1)</script>"))
     assert "<" not in out[8] and ">" not in out[8]
 
@@ -92,5 +92,5 @@ def test_fields_are_length_clamped():
 
 
 def test_sanitize_keeps_safe_platform_tokens():
-    assert _sanitize("openssl@3 (3.2)") == "openssl3 (3.2)"  # '@' dropped
+    assert _sanitize("openssl@3 (3.2)") == "openssl3 (3.2)"
     assert _sanitize("  arm64  ") == "arm64"

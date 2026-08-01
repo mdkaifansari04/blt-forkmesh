@@ -34,8 +34,8 @@ from worker_test_helpers import json_from_request_double
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-# clean_string was extracted from entry.py into catalog.py; parse both sources
-# so the AST loader below still finds it.
+
+
 CATALOG = ENTRY.parent / "catalog.py"
 SCHEMA = ENTRY.parent / "schema.py"
 SECURITY_SPEC = importlib.util.spec_from_file_location(
@@ -54,8 +54,8 @@ FUNCS = {
     "_verify_owner_signature", "_owner_signing_pubkeys",
     "_authorize_owner_account", "_owner_pubkey", "_login_locked_until",
     "_login_record_fail", "_login_clear", "method_name", "clean_string",
-    # Session-based owner authorization (agents tab): the caller proves identity
-    # with a revocable session, not a self-asserted ownerAccount string.
+
+
     "valid_node_name",
     "_account_owns_node", "_owned_nodes",
 }
@@ -81,8 +81,8 @@ CORRECT_PASSWORD = "correct horse battery staple"
 
 
 class _Headers:
-    # _account_session_record reads request.headers.get("authorization") only
-    # when the body carries no sessionToken; return empty so it falls through.
+
+
     @staticmethod
     def get(_name, default=None):
         return default
@@ -108,9 +108,9 @@ def _harness(accounts, enforce_e2ee=False):
     (dict copies) and blind_index is 'bi:' + value, matching the style already
     used by test_users_nodes_claim_link.py.
     """
-    repo_agents = {}   # (repo_bi, agent_id) -> {"data":..., "updated_at":...}
-    agent_prompts = []  # list of {"id","repo_bi","agent_id","data","queued_at"}
-    login_attempts = {}  # id_bi -> {"fails","first_fail_ts","locked_until"}
+    repo_agents = {}
+    agent_prompts = []
+    login_attempts = {}
     next_prompt_id = [1]
     now = [1_000_000_000]
 
@@ -133,8 +133,8 @@ def _harness(accounts, enforce_e2ee=False):
         rec = accounts.get(key)
         if rec is None:
             return "bi:" + key, None
-        # Real decrypted account records carry their own "name"; the fixtures key
-        # by name, so mirror that so session-name resolution matches production.
+
+
         rec = dict(rec)
         rec.setdefault("name", key)
         return "bi:" + key, rec
@@ -164,12 +164,12 @@ def _harness(accounts, enforce_e2ee=False):
         return "bi:" + name, record
 
     async def ed25519_verify(_pubkey, sig, _canonical):
-        # A stand-in signature scheme: only the literal "good-sig" verifies.
+
         return sig == "good-sig"
 
     async def _account_devices_list(_env, _account_bi):
-        # No extra desktop devices in these fixtures; drain auth falls back to
-        # the account's primary pubkey exactly as before.
+
+
         return []
 
     async def encrypt_row(_env, obj):
@@ -208,8 +208,8 @@ def _harness(accounts, enforce_e2ee=False):
             return
         if sql.startswith("INSERT INTO repo_agents"):
             repo_bi, agent_id, data, updated_at = args
-            # Mirrors the real repo_agents PRIMARY KEY (repo_bi, agent_id): a
-            # duplicate insert must raise, the same as D1's UNIQUE constraint.
+
+
             if (repo_bi, agent_id) in repo_agents:
                 raise AssertionError(
                     "UNIQUE constraint failed: repo_agents.repo_bi, repo_agents.agent_id")
@@ -296,7 +296,7 @@ def _harness(accounts, enforce_e2ee=False):
         "MAX_AGENT_PROMPT_IMAGES_TOTAL_BYTES": 2_400_000,
         "MAX_AGENT_TRANSCRIPT": 16000,
         "security_control": SECURITY_CONTROL,
-        # Session-token proof (agents-tab owner authorization).
+
         "hmac": hmac,
         "NODE_NAME_RE": re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$"),
         "MAX_NODE_NAME": 63,
@@ -312,10 +312,10 @@ def _harness(accounts, enforce_e2ee=False):
             }
         ns["_repo_privacy_policy"] = _repo_privacy_policy
     else:
-        # Explicit legacy fixture only: production's policy reader is
-        # mandatory/fail-closed.  These historical compatibility tests opt
-        # into the old branch deliberately rather than relying on a missing
-        # global to create a silent plaintext fallback.
+
+
+
+
         async def _legacy_repo_privacy_policy(_env, owner, repo):
             return {
                 "repoBi": "bi:" + owner + "/" + repo,
@@ -403,9 +403,9 @@ def test_post_agents_valid_signature_stores_sessions_visible_via_list():
 
 
 def test_post_agents_duplicate_ids_in_one_push_deduped_not_500():
-    # Regression: a push containing two sessions with the same id used to hit
-    # the repo_agents PRIMARY KEY (repo_bi, agent_id) on the second INSERT
-    # (DELETE only runs once before the loop), producing a 500 D1_ERROR.
+
+
+
     accounts = {"alice": _owner_account()}
     ns = _harness(accounts)
     env = object()
@@ -509,8 +509,8 @@ def test_prompt_enqueued_then_drained_by_desktop_get():
 
 
 def test_new_agent_prompt_carries_pasted_screenshots():
-    # adhoc #78: a "start agent" prompt from the website can attach pasted
-    # screenshots. They ride to the node as data: URLs on the drained prompt.
+
+
     accounts = {"alice": _owner_account()}
     ns = _harness(accounts)
     env = object()
@@ -531,7 +531,7 @@ def test_new_agent_prompt_carries_pasted_screenshots():
     ))
     prompts = drained["data"]["prompts"]
     assert len(prompts) == 1
-    # Only the valid data: URL survives; junk entries are dropped.
+
     assert prompts[0]["images"] == [good]
 
 
@@ -554,10 +554,10 @@ def test_new_agent_prompt_rejects_oversized_screenshot():
 
 
 def test_self_asserted_owner_without_session_is_rejected():
-    # The security fix: authorization requires a signed account session token, so
-    # an attacker who merely claims to be the owner (as the pre-fix client did,
-    # ownerAccount only) cannot list agents or inject a prompt into the owner's
-    # running coding agent. A forged/garbage token must also fail.
+
+
+
+
     accounts = {"alice": _owner_account()}
     ns = _harness(accounts)
     env = object()
@@ -684,9 +684,9 @@ def test_prompt_validates_text_and_queue_cap():
 
 
 def test_transcript_pushed_stripped_from_list_but_served_by_detail_endpoint():
-    # adhoc #259: the desktop pushes a bounded run-log tail per session for the
-    # website's agent detail page. It must NOT bloat the list payload, but the
-    # per-agent transcript endpoint returns it in full for the owner.
+
+
+
     accounts = {"alice": _owner_account()}
     ns = _harness(accounts)
     env = object()
@@ -882,8 +882,8 @@ def test_owner_sealed_prompt_requires_local_open_and_explicit_ack():
         "queuedAt": 1_000_000_000,
         "envelope": envelope,
     }]
-    # Owner-sealed prompts are not destructive-read: a client must first open
-    # and accept the ciphertext locally, then explicitly acknowledge its id.
+
+
     assert len(ns["_agent_prompts"]) == 1
 
     acked = asyncio.run(ns["agents_ack_handler"](
@@ -929,9 +929,9 @@ def test_worker_wires_up_all_three_agent_routes():
 
 
 def test_issues_handler_wants_agent_uses_authorization_helper():
-    # wantsAgent is gated by _authorize_owner_account (same as agents_list/prompt),
-    # which now authorizes via the caller's signed session token rather than a
-    # self-asserted ownerAccount string, so request is threaded through.
+
+
+
     start = ENTRY_TEXT.index('if meta_in.get("wantsAgent"):')
     wants_agent_body = ENTRY_TEXT[start:ENTRY_TEXT.index("meta = {", start)]
     assert "_authorize_owner_account(env, owner, data, request)" in wants_agent_body

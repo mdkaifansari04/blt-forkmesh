@@ -1,8 +1,8 @@
 (() => {
-  // Founders outreach console: admins (and accounts an admin added to the
-  // outreach team) compose and send one-off emails from the shared founders
-  // address. All state comes from /api/outreach; auth is the same signed
-  // session token the dashboard stores in localStorage.
+
+
+
+
   const $ = (sel) => document.querySelector(sel);
 
   let access = null;
@@ -33,7 +33,7 @@
     }
     const res = await fetch(path, options);
     let payload = {};
-    try { payload = await res.json(); } catch (_) { /* ignore */ }
+    try { payload = await res.json(); } catch (_) {   }
     return { ok: res.ok, status: res.status, body: payload };
   }
 
@@ -154,9 +154,9 @@
     }
   }
 
-  // Status pipeline: for each template type, how far the sends got —
-  // contacted (attempted), sent (delivered ok) and failed. Counts are derived
-  // from the same recent-sends log the left-hand list renders.
+
+
+
   function renderPipeline() {
     const wrap = $("#or-pipeline");
     if (!wrap || !access) return;

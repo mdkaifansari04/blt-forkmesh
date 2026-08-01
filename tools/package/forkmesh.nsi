@@ -1,9 +1,9 @@
-; NSIS installer template for the ForkMesh desktop client (issue #370).
-; Driven by tools/package/windows.sh, which passes:
-;   /DFORKMESH_VERSION=X.Y.Z  /DFORKMESH_SRCEXE=<built exe>
-;   /DFORKMESH_RESOURCES=<CMake-installed resources>
-;   /DFORKMESH_OUTFILE=<setup exe>
-; See /docs#installers-updates.
+
+
+
+
+
+
 
 !ifndef FORKMESH_VERSION
   !define FORKMESH_VERSION "0.0.0"
@@ -23,8 +23,8 @@
 Name "ForkMesh ${FORKMESH_VERSION}"
 OutFile "${FORKMESH_OUTFILE}"
 Unicode true
-; Per-user install: no admin elevation, no UAC prompt — matches the download-and-run
-; expectation and lets WinSparkle self-update without elevation.
+
+
 InstallDir "$LOCALAPPDATA\ForkMesh"
 RequestExecutionLevel user
 SetCompressor /SOLID lzma

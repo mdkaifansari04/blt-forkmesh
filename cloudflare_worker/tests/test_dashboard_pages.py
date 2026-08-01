@@ -18,11 +18,11 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import dashboard_shell  # noqa: E402
-import static_routes  # noqa: E402
+import dashboard_shell
+import static_routes
 
-from _dashboard_shell import assembled_dashboard_page  # noqa: E402
-from _dashboard_bundle import assembled_dashboard_js  # noqa: E402
+from _dashboard_shell import assembled_dashboard_page
+from _dashboard_bundle import assembled_dashboard_js
 
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 REDIRECT_LINES = (PUBLIC / "_redirects").read_text(encoding="utf-8").splitlines()
@@ -37,10 +37,10 @@ def test_every_page_document_is_built_and_deterministic():
 
 
 def test_client_bundles_carry_content_hash_cache_busters():
-    # Every built document must reference dashboard.js / dashboard-chat.js with a
-    # per-build content-hash ?v= so a new deploy is never served against a stale,
-    # week-old cached bundle. The hash must match the bundle's actual content, and
-    # the old never-changing ?v=public-profiles query must be gone.
+
+
+
+
     versions = dashboard_shell.asset_versions(
         lambda rel: (PUBLIC / rel).read_text(encoding="utf-8"),
         {"dashboard.js": assembled_dashboard_js()})
@@ -58,14 +58,14 @@ def test_each_page_document_has_exactly_one_view_and_its_page_marker():
     for page_id, meta in dashboard_shell.PAGES.items():
         html = assembled_dashboard_page(page_id)
         assert html.count("<section data-view=") == 1, page_id
-        # The data-view attribute keeps the legacy section name (settings ->
-        # "profile", repo -> "explore") so dashboard.js selectors kept working.
+
+
         assert ('<section data-view="%s"' % meta["section"]) in html, page_id
         assert ('data-page="%s"' % page_id) in html, page_id
         assert ('data-dashboard-section="%s"' % meta["section"]) in html, page_id
-        # The one view is active at parse time — no flash, no client toggle.
+
         assert 'class="view active' in html, page_id
-        # Shared chrome ships on every page.
+
         for marker in ("data-app-header", "data-sidebar-main-menu",
                        "data-profile-sidebar-template"):
             assert marker in html, (page_id, marker)
@@ -80,7 +80,7 @@ def test_sidebar_marks_the_active_page_at_build_time():
             assert active == 1, page_id
             assert ('data-nav="%s" data-nav-link aria-current="page"' % meta["nav"]) in sidebar, page_id
         else:
-            # Settings has no sidebar item of its own.
+
             assert active == 0, page_id
 
 
@@ -89,7 +89,7 @@ def test_sidebar_nav_is_real_links_not_section_buttons():
     for path in ("/dashboard", "/dashboard/profile", "/dashboard/repos",
                  "/dashboard/network", "/dashboard/chat"):
         assert ('href="%s"' % path) in html, path
-    # The old client-side section router markup is gone everywhere.
+
     for page_id in dashboard_shell.PAGES:
         assert "data-section=" not in assembled_dashboard_page(page_id), page_id
 
@@ -102,11 +102,11 @@ def test_routing_config_covers_every_page():
         assert (PUBLIC / asset).is_file(), asset
         if route == "/dashboard":
             continue
-        # Non-home pages are asset-served: excluded from worker-first and
-        # rewritten by _redirects.
+
+
         assert ("!" + route) in run_worker_first, route
         assert ("%s /%s 200" % (route, asset)) in REDIRECT_LINES, route
-    # Direct .html hits 404 — clean URLs are canonical.
+
     for asset in static_routes.DASHBOARD_PAGE_ASSETS.values():
         assert ("/" + asset) in static_routes.BLOCKED_STATIC_HTML_PATHS, asset
     assert ("/" + static_routes.DASHBOARD_REPO_ASSET) in static_routes.BLOCKED_STATIC_HTML_PATHS
@@ -122,8 +122,8 @@ def test_worker_serves_repo_document_and_redirects_legacy_urls():
     assert 'DASHBOARD_REPO_ASSET' in ENTRY_TEXT
     assert "dashboard_section_redirect(url.path, url.query)" in ENTRY_TEXT
     assert "_serve_dashboard_shell" not in ENTRY_TEXT
-    # Legacy section names all map to per-page paths (a 308 is permanent, so
-    # the mapping must stay in sync with PAGES routes).
+
+
     legacy = set(static_routes.DASHBOARD_SECTION_PATHS)
     assert legacy == {"home", "repos", "network", "chat", "profile",
                       "profile-overview", "profile-repositories"}
@@ -137,7 +137,7 @@ def test_bundle_has_no_legacy_section_router():
                  "SECTION_ROUTES", "function sectionUrl(",
                  "`/dashboard?section="):
         assert gone not in js, gone
-    # Per-page boot + within-page routers that remain.
+
     for kept in ("PAGE_INITS", "function initSharedChrome(",
                  "function initPageHistory(", "settingsSectionFromPath",
                  "function openRepoPage("):
@@ -153,5 +153,5 @@ def test_no_built_asset_still_links_legacy_section_urls():
     for path in sorted(PUBLIC.rglob("*.html")) + sorted(PUBLIC.glob("*.js")):
         text = path.read_text(encoding="utf-8")
         if path.name.endswith(".js") and "SECTION_PATHS" in text:
-            continue  # the boot shim maps legacy URLs; it does not emit them
+            continue
         assert 'href="/dashboard?section=' not in text, path

@@ -391,9 +391,9 @@ def apply_activity(
                 "records": state,
             }
         restored = dict(existing)
-        # A Remove deliberately erased the public projection.  Undo makes the
-        # record eligible for a refetch/redelivery instead of resurrecting
-        # content from a moderation-hidden cache.
+
+
+
         restored["lifecycle"] = "awaiting-redelivery"
         restored["moderation"] = {
             "state": "restored",

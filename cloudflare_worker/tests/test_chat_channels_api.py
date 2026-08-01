@@ -13,7 +13,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import chat_channels_api as api  # noqa: E402
+import chat_channels_api as api
 
 
 def run_async_test(function):
@@ -42,8 +42,8 @@ class FakeRuntime:
         self.revoked_rooms = []
         self.ids = 0
         self.fail_batch_at = None
-        # room key -> [(ts, encrypted body)], as the room Durable Object
-        # retained it. Bodies are opaque here exactly as they are in D1.
+
+
         self.retained = {}
         self.request_query = {}
 

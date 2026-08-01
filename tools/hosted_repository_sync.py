@@ -277,9 +277,9 @@ def _prepare_repository(
         changed = not secrets.compare_digest(
             before, _refs_hash(config, repository))
         if changed:
-            # A mirror fetch can leave packs reachable only from deleted
-            # upstream refs. Compact immediately after a real ref change so
-            # repeated force-pushes cannot recreate the disk-growth problem.
+
+
+
             _run(
                 [
                     str(config.git_program),
@@ -362,9 +362,9 @@ def prepare(config: refresh.RefreshConfig) -> dict[str, Any]:
                 or previous.get("name") != item["name"]
                 or not repository.is_dir()
             ):
-                # One provider repository becoming unavailable must not prevent
-                # every other verified import from being hosted. It remains an
-                # external metadata entry and is retried on the next timer run.
+
+
+
                 continue
             repository_changed = False
         state_hash = _refs_hash(config, Path(item["sourceRepository"]))
@@ -561,11 +561,11 @@ def register(config: refresh.RefreshConfig) -> dict[str, Any]:
         name = str(item.get("name") or "")
         if owner == config.node_owner and NAME_RE.fullmatch(name):
             _delete_catalog(config, owner, name)
-        # Persist forward progress after every successful (or intentionally
-        # ignored invalid) item. A late Worker cleanup error may arrive after
-        # the catalog row was already removed; the next run gets an idempotent
-        # deleted:false response and advances instead of replaying the entire
-        # queue forever.
+
+
+
+
+
         remaining = pending_items[index + 1 :]
         if remaining:
             _atomic_json(pending_path, {"repositories": remaining})

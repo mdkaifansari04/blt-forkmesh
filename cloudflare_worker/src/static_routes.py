@@ -58,13 +58,13 @@ RESERVED_ROUTE_PREFIXES = frozenset({
     "status",
     "referrals",
     "leaderboards",
-    # Referral share links (/r/<name>) are worker-owned counters.
+
     "r",
 })
 
-# Clean page URL -> the built per-page document that serves it. The Worker
-# only consults this for /dashboard itself and as a fallback for deep links;
-# the non-home pages are normally asset-served straight from _redirects.
+
+
+
 DASHBOARD_PAGE_ASSETS = {
     "/dashboard": "dashboard/index.html",
     "/dashboard/repos": "dashboard/repos/index.html",
@@ -75,13 +75,13 @@ DASHBOARD_PAGE_ASSETS = {
     "/dashboard/profile/repositories": "dashboard/profile/repositories/index.html",
 }
 
-# The repo-detail document, fetched by the Worker for every /owner/repo[...]
-# route. Deliberately not a navigable asset path of its own.
+
+
 DASHBOARD_REPO_ASSET = "dashboard/repo.html"
 
-# Legacy /dashboard?section=X names -> the clean per-page paths. 308s are
-# browser-cached permanently, so this mapping is a one-way door — keep it in
-# sync with dashboard_shell.PAGES routes.
+
+
+
 DASHBOARD_SECTION_PATHS = {
     "home": "/dashboard",
     "repos": "/dashboard/repos",

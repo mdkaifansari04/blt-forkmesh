@@ -33,7 +33,7 @@ def test_local_controls_expose_three_labelled_tabs():
     ):
         assert contract in WORLD
     assert ".world-settings-tabs" in CSS
-    # Panes are switched by the hidden attribute, so only one is readable.
+
     assert "pane.hidden = pane.dataset.worldSettingsPane !== selected" in WORLD
 
 
@@ -51,8 +51,8 @@ def test_security_tab_lists_sessions_with_addresses_and_logout_controls():
         'aria-live="polite"',
     ):
         assert contract in WORLD
-    # Session copy is account data rendered into innerHTML: every field is
-    # escaped, and revoking this device tears the local session down too.
+
+
     assert "escapeHTML(session.deviceLabel)" in WORLD
     assert "escapeHTML(session.ipAddress" in WORLD
     assert "await this.logoutFromWorld();" in WORLD
@@ -87,8 +87,8 @@ def test_work_tab_shows_assigned_task_stats_with_start_stop():
         "function taskBoardHTML(task)",
     ):
         assert contract in TASKS
-    # Issue assignment data reuses the already-loaded private notification
-    # stream; the task controller creates no second endpoint or poll.
+
+
     assert '"issue_assigned"' in WORLD
     assert "item?.meta?.number" in WORLD
     assert "this.notifications" in WORLD
@@ -104,7 +104,7 @@ def test_avatar_back_plate_carries_work_instead_of_the_session_card():
     assert 'item?.kind === "issue" ? "issue" : "task"' in SCENE
     assert 'item.kind === "issue"' in SCENE
     assert "HIDDEN FROM PEERS + SCREENSHOTS" in SCENE
-    # Built-in screenshots still hide the owner-only plate.
+
     assert "world.setSelfWorkBadgeVisibility?.(false)" in WORLD
     for retired in (
         "YOUR SESSION",

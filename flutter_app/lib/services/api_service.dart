@@ -7,9 +7,9 @@ import '../models/models.dart';
 import 'performance_monitor_service.dart';
 import 'settings_service.dart';
 
-/// Read access to the relay/worker REST API (the same endpoints the Qt client
-/// and the website use): the public catalog, per-repo issues/pulls/commits, and
-/// network stats. Derives the https host from the configured relay URL.
+
+
+
 class ApiService {
   ApiService(this._settings, {PerformanceMonitorService? performanceMonitor})
     : _performanceMonitor = performanceMonitor;
@@ -21,10 +21,10 @@ class ApiService {
   final SettingsService _settings;
   final PerformanceMonitorService? _performanceMonitor;
 
-  // Supplies the logged-in account's signed session token, or "" when logged
-  // out. Wired to AuthService.session in main.dart. When present it is sent as
-  // an `Authorization: Bearer` header so per-account endpoints (notifications,
-  // agent list/prompt) authorize this account instead of a self-asserted name.
+
+
+
+
   String Function()? sessionTokenProvider;
 
   Map<String, String> _withAuth(Map<String, String> headers) {
@@ -104,10 +104,10 @@ class ApiService {
     }
     final future = load();
     cache[key] = _CacheEntry(future, now);
-    // Observe failures only to evict the cache entry. Returning a second
-    // Future.error from an ignored catchError chain created an unhandled
-    // asynchronous exception even when the actual caller correctly caught the
-    // original request failure.
+
+
+
+
     unawaited(
       future.then<void>(
         (_) {},
@@ -178,10 +178,10 @@ class ApiService {
     return future;
   }
 
-  /// The shared room-chat passphrase, derived server-side from DATA_KEY and
-  /// handed only to authenticated clients (bearer token attached by _getJson).
-  /// Replaces the old public app-wide constant; every client feeds it into the
-  /// same PBKDF2 room-key derivation so they all converge on one AES key.
+
+
+
+
   Future<String> roomChatPassphrase() async {
     final data = await _getJson(_base('/api/chat/room-key'));
     if (data is Map && data['passphrase'] is String) {
@@ -217,12 +217,12 @@ class ApiService {
     });
   }
 
-  // --- Organizations -------------------------------------------------------
-  // The /api/orgs endpoints authorize by the session bearer token (attached by
-  // _withAuth) and return structured {"error": "<code>"} bodies on rejection.
-  // _orgRequest decodes that body and raises an OrgApiException carrying text
-  // from orgErrorMessage, instead of the generic HTTP error _decodeResponse
-  // throws, so the org UI can show a human-readable reason.
+
+
+
+
+
+
 
   static String _orgSeg(String value) =>
       Uri.encodeComponent(value.trim().toLowerCase());
@@ -282,7 +282,7 @@ class ApiService {
     );
   }
 
-  /// The organizations the signed-in account belongs to (`GET /api/orgs`).
+
   Future<List<OrgSummary>> myOrgs() async {
     final data = await _orgRequest('GET', _base('/api/orgs'));
     final list = data is Map<String, dynamic> && data['orgs'] is List
@@ -295,7 +295,7 @@ class ApiService {
         .toList();
   }
 
-  /// Create an org; the calling account becomes its first owner.
+
   Future<OrgSummary> createOrg({
     required String name,
     String displayName = '',
@@ -313,7 +313,7 @@ class ApiService {
     );
   }
 
-  /// Public org profile plus the viewer's role (`GET /api/orgs/<name>`).
+
   Future<OrgProfile> orgProfile(String org) async {
     final data = await _orgRequest('GET', _base('/api/orgs/${_orgSeg(org)}'));
     return OrgProfile.fromJson(
@@ -321,7 +321,7 @@ class ApiService {
     );
   }
 
-  /// Dissolve an org and all its rows (owners only).
+
   Future<void> deleteOrg(String org) =>
       _orgRequest('DELETE', _base('/api/orgs/${_orgSeg(org)}'), const {});
 
@@ -340,7 +340,7 @@ class ApiService {
         .toList();
   }
 
-  /// Add a member or change its role (owner/admin session).
+
   Future<void> setOrgMember(
     String org,
     String member, {
@@ -371,7 +371,7 @@ class ApiService {
         .toList();
   }
 
-  /// Create a team or update its permission (owner/admin session).
+
   Future<void> setOrgTeam(
     String org,
     String team, {
@@ -387,7 +387,7 @@ class ApiService {
     {'team': team.trim().toLowerCase()},
   );
 
-  /// The org members on one team (`GET /api/orgs/<org>/teams/<team>/members`).
+
   Future<List<OrgMember>> orgTeamMembers(String org, String team) async {
     final data = await _orgRequest(
       'GET',
@@ -403,7 +403,7 @@ class ApiService {
         .toList();
   }
 
-  /// Add an existing org member to a team (owner/admin session).
+
   Future<void> addOrgTeamMember(String org, String team, String member) =>
       _orgRequest(
         'POST',
@@ -433,8 +433,8 @@ class ApiService {
         .toList();
   }
 
-  /// Link one of your node's published repos under the org's `/<org>/<repo>`
-  /// namespace (owner/admin session; the node must be your own account).
+
+
   Future<void> linkOrgRepo(String org, String repo, {String node = ''}) =>
       _orgRequest('POST', _base('/api/orgs/${_orgSeg(org)}/repos'), {
         'repo': repo.trim().toLowerCase(),
@@ -604,9 +604,9 @@ class ApiService {
     ).whereType<Map<String, dynamic>>().map(PullRequest.fromJson).toList();
   }
 
-  /// Remote ActivityPub replies for a native thread. These are fetched from a
-  /// dedicated Worker projection and never merged into signed repository event
-  /// records.
+
+
+
   Future<List<FederatedReply>> federatedReplies(
     String owner,
     String name, {
@@ -802,10 +802,10 @@ class ApiService {
   Future<List<Issue>> publishedIssues(String owner, String name) {
     final key = '$owner/$name';
     return _cached(_issuesCache, key, () async {
-      // Issues are split by status into .forkmesh/issues/open/<n>/ and
-      // .forkmesh/issues/closed/<n>/ (pre-split repos keep <n>/ directly under
-      // the root), one signed-event issue-<n>.json record per folder. A split
-      // copy of a number wins over a stale legacy one.
+
+
+
+
       final dirByNumber = <String, String>{};
       for (final dir in await _numberedFolders(
         owner,
@@ -824,8 +824,8 @@ class ApiService {
           dirByNumber[dir] = '.forkmesh/issues/$sub/$dir';
         }
       }
-      // Repos from before the JSON tracker published markdown records at
-      // issues/<n>/issue.md; keep reading those when no JSON records exist.
+
+
       if (dirByNumber.isEmpty) return _legacyMarkdownIssues(owner, name);
       final items = await Future.wait(
         dirByNumber.entries.map((entry) async {
@@ -863,10 +863,10 @@ class ApiService {
       ..sort((a, b) => b.number.compareTo(a.number));
   }
 
-  // One .forkmesh/issues/{open,closed}/<n>/issue-<n>.json signed-event record
-  // -> Issue. The top-level fields mirror the desktop's Issue::toJson; the
-  // body and display author ride on the "open" event, matching the website's
-  // parseIssueJson.
+
+
+
+
   Issue? _issueFromRecordJson(String number, String text) {
     final decoded = jsonDecode(text);
     if (decoded is! Map<String, dynamic>) return null;
@@ -1214,7 +1214,7 @@ class ApiService {
     return end >= 0 ? lines.skip(end + 1).join('\n').trim() : md.trim();
   }
 
-  // Catalog endpoints sometimes wrap the array in {repositories:[...]} / {data:[...]}.
+
   List<dynamic> _asList(dynamic data) {
     if (data is List) return data;
     if (data is Map<String, dynamic>) {

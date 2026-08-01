@@ -1,7 +1,7 @@
--- Public UTC community-event announcements. Only platform administrators may
--- mutate them; public reads expose bounded announcement metadata and omit the
--- author blind index. Cancellation is retained briefly for the private audit
--- trail and never rendered as a live event.
+
+
+
+
 CREATE TABLE IF NOT EXISTS world_events (
     event_id TEXT PRIMARY KEY,
     status TEXT NOT NULL DEFAULT 'scheduled'

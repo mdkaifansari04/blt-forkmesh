@@ -36,8 +36,8 @@ def test_inbuilt_wallet_and_worker_escrow_creation_are_frozen():
 
 
 def test_desktop_merge_hook_is_a_fail_closed_compatibility_noop():
-    # Existing call sites may still invoke the merge hook, but its active body
-    # only clears stale preferences and returns without making a custody request.
+
+
     start = QT_TEXT.index("void MainWindow::autoBountyForMergedPull")
     body = QT_TEXT[start:QT_TEXT.index(
         "void MainWindow::pollBountyPayout", start)]

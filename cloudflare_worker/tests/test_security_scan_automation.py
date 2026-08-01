@@ -14,7 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import security_scan as scan_module  # noqa: E402
+import security_scan as scan_module
 
 
 def test_public_report_redacts_secret_values_and_source_excerpts(tmp_path):
@@ -65,8 +65,8 @@ def test_public_finding_id_never_hashes_secret_evidence(tmp_path):
         item for item in second_report["findings"]
         if item["category"] == "secret")
 
-    # Public correlation is location/rule based. Changing the secret in place
-    # neither changes the identifier nor exposes a value-derived verifier.
+
+
     assert first["id"] == second["id"]
     assert first["evidence"]["fingerprint"] == second["evidence"]["fingerprint"]
     serialized = json.dumps([first, second], sort_keys=True)

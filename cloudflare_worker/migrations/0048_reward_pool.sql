@@ -1,5 +1,5 @@
--- Non-custodial community reward scheduling and voluntary contribution state.
--- Private keys are neither accepted nor stored by any of these tables.
+
+
 
 CREATE TABLE IF NOT EXISTS reward_node_observations (
     node_bi TEXT PRIMARY KEY,

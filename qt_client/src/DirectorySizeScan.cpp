@@ -21,16 +21,16 @@ namespace forkmesh {
 namespace {
 
 constexpr int kUnreadableSampleLimit = 6;
-constexpr quint32 kScanResultMagic = 0x464d535a; // "FMSZ"
+constexpr quint32 kScanResultMagic = 0x464d535a;
 constexpr qint32 kScanResultVersion = 1;
-// Live-progress cadence: fast enough to read as motion, slow enough that a
-// warm-cache walk spends its time on the filesystem rather than on formatting
-// paths nobody could follow at that rate.
+
+
+
 constexpr qint64 kProgressIntervalMs = 80;
 const char kProgressSentinel[] = "FMSZ-PROGRESS ";
 
-// Rate limiter around the caller's progress callback, carrying the running
-// totals the tree itself only knows once the recursion unwinds.
+
+
 class ProgressEmitter
 {
 public:
@@ -46,7 +46,7 @@ public:
         ++m_files;
     }
 
-    // Called on entering every directory; most calls are dropped by the clock.
+
     void enter(const QString &path)
     {
         if (!m_callback)
@@ -68,9 +68,9 @@ private:
     bool m_reported = false;
 };
 
-// A directory needs both read (to list it) and execute (to stat what is in
-// it); missing either is what turns a scan of "/" into a handful of slices for
-// an unprivileged user.
+
+
+
 bool canDescend(const QFileInfo &info)
 {
     return info.isReadable() && info.isExecutable();
@@ -82,7 +82,7 @@ void scanInto(const QString &path, int depth,
               ProgressEmitter &progress, const DirectorySizeScanCancel &canceled)
 {
     if (canceled && canceled())
-        return; // Stop was clicked: unwind without descending further
+        return;
     progress.enter(path);
     const QFileInfoList entries = QDir(path).entryInfoList(
         QDir::Dirs | QDir::Files | QDir::NoDotAndDotDot | QDir::Hidden |
@@ -102,8 +102,8 @@ void scanInto(const QString &path, int depth,
                 scanInto(absolute, depth + 1, options, result, child, progress,
                          canceled);
             } else {
-                // Counted, not descended: the rescan-as-administrator offer is
-                // built from exactly these.
+
+
                 ++result.unreadableDirs;
                 if (result.unreadableSample.size() < kUnreadableSampleLimit)
                     result.unreadableSample.append(absolute);
@@ -142,7 +142,7 @@ void writeNode(QDataStream &stream, const SunburstNode &node)
 bool readNode(QDataStream &stream, SunburstNode &node, int depth)
 {
     if (depth > kSizeMapMaxDepth + 1)
-        return false; // a malformed stream can't be walked into the stack
+        return false;
     qint32 fileCount = 0;
     qint32 childCount = 0;
     stream >> node.name >> node.size >> fileCount >> childCount;
@@ -159,8 +159,8 @@ bool readNode(QDataStream &stream, SunburstNode &node, int depth)
     return true;
 }
 
-// mountinfo fields are escaped octally for the four characters that would
-// otherwise break the space-separated layout.
+
+
 QString unescapeMountField(const QString &field)
 {
     QString out;
@@ -180,7 +180,7 @@ QString unescapeMountField(const QString &field)
     return out;
 }
 
-} // namespace
+}
 
 DirectorySizeScanResult
 scanDirectorySizes(const QString &path, const DirectorySizeScanOptions &options,
@@ -202,7 +202,7 @@ scanDirectorySizes(const QString &path, const DirectorySizeScanOptions &options,
 bool scanNeedsElevation(const QString &path, const QSet<QString> &pruned)
 {
     if (runningAsRoot())
-        return false; // already root's view of the disk
+        return false;
     if (!canDescend(QFileInfo(path)))
         return true;
     const QFileInfoList entries = QDir(path).entryInfoList(
@@ -210,9 +210,9 @@ bool scanNeedsElevation(const QString &path, const QSet<QString> &pruned)
         QDir::NoSymLinks);
     for (const QFileInfo &info : entries) {
         if (info.fileName() == QLatin1String(".git"))
-            continue; // excluded from the map either way
+            continue;
         if (pruned.contains(info.absoluteFilePath()))
-            continue; // never descended into anyway
+            continue;
         if (!canDescend(info))
             return true;
     }
@@ -227,9 +227,9 @@ QSet<QString> mountPointsFromMountTable(const QByteArray &table)
         if (line.isEmpty())
             continue;
         const QStringList fields = line.split(QLatin1Char(' '), Qt::SkipEmptyParts);
-        // mountinfo: "36 25 0:29 / /proc rw,… - proc proc rw" — the mount point
-        // is field 5. mtab/proc-mounts: "proc /proc proc rw,… 0 0" — field 2.
-        // The separating "-" only exists in mountinfo, so it tells them apart.
+
+
+
         const bool mountInfo = fields.contains(QStringLiteral("-"));
         const int index = mountInfo ? 4 : 1;
         if (fields.size() <= index)
@@ -327,8 +327,8 @@ bool decodeScanResult(const QByteArray &payload, DirectorySizeScanResult *result
 
 QByteArray encodeScanProgress(const QString &path, qint64 bytes, int files)
 {
-    // Slashes stay literal so the line is still readable when the helper is run
-    // by hand from a terminal.
+
+
     return QByteArray(kProgressSentinel) + QByteArray::number(bytes) + ' ' +
            QByteArray::number(files) + ' ' +
            QUrl::toPercentEncoding(path, QByteArrayLiteral("/")) + '\n';
@@ -373,4 +373,4 @@ bool runningAsRoot()
 #endif
 }
 
-} // namespace forkmesh
+}

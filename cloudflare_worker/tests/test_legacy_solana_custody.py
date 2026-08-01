@@ -376,7 +376,7 @@ def test_every_historical_wallet_shape_scrubs_idempotently_to_public_evidence(
         assert seed not in sql
 
     connection = sqlite3.connect(database)
-    # Applying the exact reviewed patch twice is a no-op on the second pass.
+
     connection.executescript(sql)
     connection.executescript(sql)
     for table, pk_column, pk_value, *_rest in fixtures:

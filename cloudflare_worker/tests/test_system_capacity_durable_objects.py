@@ -76,9 +76,9 @@ def test_bindings_are_discovered_from_the_environment_not_a_hardcoded_list():
         idFromName=lambda name: name, newUniqueId=lambda: "id", get=lambda _id: None)
     env = SimpleNamespace(
         FORKMESH_WORLD=namespace_stub,
-        # A class bound after this code was written is still reported.
+
         FORKMESH_FUTURE_THING=namespace_stub,
-        # Neither D1, KV, AI, assets, nor plain string vars are namespaces.
+
         DB=SimpleNamespace(prepare=lambda sql: None, batch=lambda rows: None),
         SESSIONS=SimpleNamespace(get=lambda key: None, put=lambda k, v: None),
         AI=SimpleNamespace(run=lambda *_args: None),
@@ -90,7 +90,7 @@ def test_bindings_are_discovered_from_the_environment_not_a_hardcoded_list():
 
     assert namespace["durable_object_bindings"](env) == [
         "FORKMESH_FUTURE_THING", "FORKMESH_WORLD"]
-    # A hostile or unavailable environment degrades to "nothing discovered".
+
     assert namespace["durable_object_bindings"](object()) == []
 
 
@@ -121,8 +121,8 @@ def test_bindings_are_still_discovered_when_the_environment_hides_its_keys():
         },
     )
 
-    # Own-property names and attribute discovery are merged, so a binding that
-    # is not an own enumerable key of the environment is still reported.
+
+
     assert namespace["durable_object_bindings"](HiddenEnv()) == [
         "FORKMESH_NODES", "FORKMESH_WORLD"]
 
@@ -146,8 +146,8 @@ def test_relayed_bytes_are_batched_into_one_bounded_upsert():
 
     note(room, bytes_in=120, messages=1)
     note(room, bytes_out=480)
-    # The first frame after a wake-up banks immediately, so an object that
-    # hibernates again straight away still reports what it relayed.
+
+
     assert asyncio.run(flush(room)) is True
     sql, args = writes[0]
     assert "INSERT INTO durable_object_traffic" in sql
@@ -156,12 +156,12 @@ def test_relayed_bytes_are_batched_into_one_bounded_upsert():
     assert args[:5] == ("FORKMESH_MAINNODE_ROOM", 120, 480, 1, 1_000_000)
     assert args[5:] == (9_007_199_254_740_991,) * 3
 
-    # Flushed counts are not double-reported on the next flush.
+
     assert asyncio.run(flush(room, force=True)) is False
     assert len(writes) == 1
 
-    # A small, recent window is then kept in memory instead of writing every
-    # frame; closing a socket banks it before the object hibernates.
+
+
     note(room, bytes_in=64, messages=1)
     assert asyncio.run(flush(room)) is False
     assert len(writes) == 1
@@ -186,7 +186,7 @@ def test_traffic_accounting_never_breaks_a_live_relay():
     note = namespace["durable_object_traffic_note"]
     flush = namespace["durable_object_traffic_flush"]
 
-    # An unnamed object writes nothing; a database failure is swallowed.
+
     unnamed = SimpleNamespace(env=object())
     note(unnamed, bytes_in=10, messages=1)
     assert asyncio.run(flush(unnamed, force=True)) is False
@@ -228,9 +228,9 @@ def test_capacity_reports_every_binding_with_its_relayed_totals():
     )
     result = asyncio.run(namespace["_world_durable_objects"](object()))
 
-    # Discovered bindings are always listed; a binding with no traffic yet
-    # reports zero rather than disappearing, and a stale counter row for a
-    # binding that no longer exists is not reported at all.
+
+
+
     assert [record["binding"] for record in result] == [
         "FORKMESH_NODES", "FORKMESH_WORLD"]
     assert result[0]["bytesTotal"] == 0
@@ -292,8 +292,8 @@ def test_every_bound_durable_object_class_accounts_for_its_traffic():
         if isinstance(value, ast.Constant)
     }
 
-    # Every bound class declares the binding its byte counts belong to, so a
-    # newly bound Durable Object cannot silently report zero traffic forever.
+
+
     assert {accounted[class_name] for class_name in bindings.values()} == set(
         bindings)
 
@@ -307,7 +307,7 @@ def test_counter_table_is_content_free_in_schema_and_migration():
         assert "binding TEXT PRIMARY KEY" in source
         assert "bytes_in INTEGER NOT NULL DEFAULT 0" in source
         assert "bytes_out INTEGER NOT NULL DEFAULT 0" in source
-        # No room key, account, instance id, or payload column exists.
+
         for forbidden in ("room", "account", "instance", "data", "peer"):
             assert forbidden not in source[
                 source.index("durable_object_traffic"):
@@ -321,8 +321,8 @@ def test_world_client_renders_discovered_objects_and_their_traffic():
     assert "ticket?.systemCapacity?.durableObjects" in app
     assert "this.systemCapacityDurableObjects" in app
     assert "systemCapacityLiveConnections()" in app
-    # Live connection counts are keyed by binding so they merge onto the
-    # server's discovered records instead of duplicating them.
+
+
     assert 'live.set("FORKMESH_WORLD"' in app
     assert 'live.set("FORKMESH_MAINNODE_ROOM"' in app
     assert "function formatCapacityBytes" in scene

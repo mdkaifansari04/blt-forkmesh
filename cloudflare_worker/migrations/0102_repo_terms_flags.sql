@@ -1,8 +1,8 @@
--- Explicit platform moderation decisions for repository Terms violations.
---
--- The public catalog receives only active/category. The operator note remains
--- AES-GCM sealed in data and every mutation uses the purpose-built audited
--- is_admin control.
+
+
+
+
+
 CREATE TABLE IF NOT EXISTS repo_terms_flags (
     repo_bi TEXT PRIMARY KEY,
     active INTEGER NOT NULL DEFAULT 1 CHECK (active IN (0, 1)),

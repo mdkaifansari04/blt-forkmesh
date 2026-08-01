@@ -322,7 +322,7 @@ def test_floor_projection_grants_defaults_plus_server_derived_team_floors():
         "trust-safety",
         "unmapped-team",
     ]
-    # An account on no marketing team is not admitted to the Marketing floor.
+
     assert admitted["data"]["allowedFloorIds"] == [
         "lobby",
         "rooftop",
@@ -435,13 +435,13 @@ def test_floor_projection_rejects_other_org_aliases_and_orphan_grants():
     database.executemany(
         "INSERT INTO org_team_members (org_bi,team,member_bi) VALUES (?,?,?)",
         (
-            # The only valid authoritative grant.
+
             ("official", "frontend", alice_bi),
-            # A fully live lookalike team in Alice's own organization.
+
             ("self-created", "operations", alice_bi),
-            # Missing org_teams parent in the authoritative organization.
+
             ("official", "community", alice_bi),
-            # Live team but missing org_members parent for Bob.
+
             ("official", "security", bob_bi),
         ),
     )
@@ -767,8 +767,8 @@ def test_office_access_revalidation_skips_frames_inside_cadence_and_persists():
     assert socket.attachment.auth_checked_at == 31_000
     assert departures == []
 
-    # The persisted timestamp survives subsequent attachment reads and keeps
-    # every movement frame inside the next interval off D1.
+
+
     assert asyncio.run(room._access_current_if_due(
         socket, {}, 60_999, 60_000, 2)) is True
     assert checks == [31_000]
@@ -1018,14 +1018,14 @@ def test_second_device_replaces_the_same_member_in_a_meeting_room():
     asyncio.run(room.fetch(_office_ws_request(jett, "nonce-jett-2222")))
     second_device = room.live[-1]
 
-    # The member's earlier device is retired with the shared handover code,
-    # and nobody else in the room is disturbed.
+
+
     assert [(ws, code) for ws, code, _reason in room.departures] == [
         (first_device, 4009)]
     assert other_member in room.live
     assert first_device not in room.live
 
-    # The newest device sees one row per person, not a twin of itself.
+
     welcome = second_device.sent[0]
     assert welcome["type"] == "welcome"
     assert len(welcome["participants"]) == 1

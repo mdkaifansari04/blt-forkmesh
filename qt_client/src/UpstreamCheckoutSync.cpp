@@ -10,8 +10,8 @@ namespace forkmesh::upstream {
 
 namespace {
 
-// Plumbing calls are quick; the fetch itself negotiates and downloads a pack
-// over the relay and gets the long budget.
+
+
 constexpr int kPlumbingTimeoutMs = 30 * 1000;
 constexpr int kFetchTimeoutMs = 10 * 60 * 1000;
 
@@ -33,8 +33,8 @@ bool runGit(const QString &dir, const QStringList &args, QString *output,
            process.exitCode() == 0;
 }
 
-// tip is already part of target's history (moving tip -> target is a pure
-// fast-forward that abandons nothing).
+
+
 bool containedIn(const QString &repo, const QString &tip,
                  const QString &target)
 {
@@ -44,8 +44,8 @@ bool containedIn(const QString &repo, const QString &tip,
                   nullptr);
 }
 
-// Tracked-file cleanliness only: untracked files neither block a
-// fast-forward nor are touched by reset --hard.
+
+
 bool worktreeClean(const QString &worktreePath)
 {
     QString status;
@@ -57,8 +57,8 @@ bool worktreeClean(const QString &worktreePath)
     return status.trimmed().isEmpty();
 }
 
-// branch -> worktree directory, for every branch checked out anywhere (the
-// primary checkout plus linked worktrees such as the pulls metadata one).
+
+
 QHash<QString, QString> checkedOutBranches(const QString &repo)
 {
     QHash<QString, QString> result;
@@ -80,7 +80,7 @@ QHash<QString, QString> checkedOutBranches(const QString &repo)
     return result;
 }
 
-// "<name> <oid>" pairs for every ref under prefix.
+
 QHash<QString, QString> refTips(const QString &repo, const QString &prefix,
                                 int strip)
 {
@@ -105,14 +105,14 @@ QHash<QString, QString> refTips(const QString &repo, const QString &prefix,
     return result;
 }
 
-} // namespace
+}
 
 QString RefreshOutcome::summary() const
 {
     if (!error.isEmpty())
         return QStringLiteral("upstream refresh failed: %1").arg(error);
-    // Deliberately-kept diverged branches alone are steady state (an agent's
-    // in-flight work), not news — stay quiet unless a ref actually moved.
+
+
     if (!headFastForwarded && branchesUpdated == 0 && branchesPruned == 0)
         return QString();
     QStringList parts;
@@ -146,9 +146,9 @@ static RefreshOutcome refreshCore(const QString &checkoutPath,
                                  ? QStringLiteral("refs/remotes/origin")
                                  : QStringLiteral("refs/remotes/forkmesh-mesh");
     if (repointOrigin) {
-        // Track the live relay route and the full branch namespace:
-        // provisioned checkouts are single-branch clones whose refspec only
-        // covered main.
+
+
+
         if (!runGit(path,
                     {QStringLiteral("remote"), QStringLiteral("set-url"),
                      QStringLiteral("origin"), url},
@@ -171,11 +171,11 @@ static RefreshOutcome refreshCore(const QString &checkoutPath,
             return outcome;
         }
     } else {
-        // A personal working copy: never touch the user's remote
-        // configuration. One-shot fetch by URL into a scratch remote-tracking
-        // namespace; the forced refspec only ever moves that scratch view,
-        // and the per-branch logic below still refuses every non-fast-forward
-        // local update.
+
+
+
+
+
         if (!runGit(path,
                     {QStringLiteral("fetch"), QStringLiteral("--prune"),
                      QStringLiteral("--quiet"), url,
@@ -214,8 +214,8 @@ static RefreshOutcome refreshCore(const QString &checkoutPath,
         const bool fastForward =
             !have.isEmpty() && containedIn(path, have, target);
         if (!worktree.isEmpty()) {
-            // The branch is checked out somewhere; move it through its own
-            // worktree, and only when that worktree carries no local edits.
+
+
             if (!worktreeClean(worktree))
                 continue;
             bool moved = false;
@@ -246,7 +246,7 @@ static RefreshOutcome refreshCore(const QString &checkoutPath,
                        nullptr))
                 ++outcome.branchesUpdated;
         } else {
-            ++outcome.branchesKept; // local-only commits: never clobbered
+            ++outcome.branchesKept;
         }
     }
 
@@ -256,8 +256,8 @@ static RefreshOutcome refreshCore(const QString &checkoutPath,
             const QString &branch = it.key();
             if (upstream.contains(branch) || checkedOut.contains(branch))
                 continue;
-            // Gone upstream. Drop it only when everything it points at already
-            // lives in upstream main — stale claim markers, merged work.
+
+
             if (!upstreamMain.isEmpty() &&
                 containedIn(path, it.value(), upstreamMain)) {
                 if (runGit(path,
@@ -279,19 +279,19 @@ RefreshOutcome refreshManagedCheckoutFromUpstream(
     const QStringList &forcedBranches)
 {
     return refreshCore(checkoutPath, upstreamUrl, forcedBranches,
-                       /*repointOrigin=*/true, /*pruneGone=*/true);
+                        true,  true);
 }
 
 RefreshOutcome convergeSourceCheckoutFromMesh(const QString &checkoutPath,
                                               const QString &meshUrl)
 {
-    // The source of truth converging on submissions an online mirror merged
-    // while this node was away. Strictly additive: no remote reconfiguration,
-    // no branch pruning, no forced branches — every local ref moves only by
-    // fast-forward through a clean worktree, so local-only work always wins
-    // and simply supersedes the mesh on the next publish.
-    return refreshCore(checkoutPath, meshUrl, /*forcedBranches=*/{},
-                       /*repointOrigin=*/false, /*pruneGone=*/false);
+
+
+
+
+
+    return refreshCore(checkoutPath, meshUrl,  {},
+                        false,  false);
 }
 
-} // namespace forkmesh::upstream
+}

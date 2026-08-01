@@ -8,8 +8,8 @@ from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 MIRRORS = ENTRY.parent / "mirrors.py"
-# Mirror grouping / clone-selection helpers were extracted from entry.py into
-# mirrors.py; parse both sources so the AST loaders below still find them.
+
+
 _WORKER_SRC = ENTRY.read_text(encoding="utf-8") + "\n" + MIRRORS.read_text(encoding="utf-8")
 
 
@@ -146,8 +146,8 @@ def _row(key, owner, name, *, root="", visibility="public", hosted="", synced=""
     }
     if state_hash:
         data["stateHash"] = state_hash
-    # Node facts the publishing node mirrors into its catalog record (adhoc #56);
-    # only set when provided so legacy records without them are also exercised.
+
+
     for field, value in (("commit", commit), ("branch", branch),
                          ("platform", platform), ("version", version),
                          ("nodeId", node_id)):
@@ -190,10 +190,10 @@ def test_group_key_prefers_root_commit_and_falls_back_to_name():
 
 def test_same_group_matches_root_then_name():
     rooted = {"rootCommit": "ABC", "name": "forkmesh"}
-    # Identical root -> same group; differing non-empty root -> separate (fork).
+
     assert repo_mirror_same_group(rooted, {"rootCommit": "abc", "name": "forkmesh"})
     assert not repo_mirror_same_group(rooted, {"rootCommit": "def", "name": "forkmesh"})
-    # Missing root on either side falls back to a case-insensitive name match.
+
     assert repo_mirror_same_group(rooted, {"rootCommit": "", "name": "ForkMesh"})
     assert repo_mirror_same_group({"name": "forkmesh"}, {"rootCommit": "abc", "name": "forkmesh"})
     assert not repo_mirror_same_group(rooted, {"rootCommit": "", "name": "other"})
@@ -390,10 +390,10 @@ def test_payload_keeps_clone_url_mirror_with_mismatched_legacy_root():
 
 
 def test_payload_uses_clone_url_canonical_target_when_source_row_is_absent():
-    # The source-of-truth node can intentionally be offline and absent from the
-    # catalog. A mirror-only group still belongs under the cloneUrl namespace, so
-    # /api/repo/mainnode/forkmesh/mirrors must resolve even when only
-    # remote-clone rows owned by mirror nodes exist.
+
+
+
+
     now = 1_000_000
     rows = [
         _row("b", "mirror3", "forkmesh", root="abc", synced="995000",
@@ -426,10 +426,10 @@ def test_payload_uses_clone_url_canonical_target_when_source_row_is_absent():
 
 
 def test_payload_carries_node_facts_for_offline_mirrors():
-    # A node mirrors its latest commit / issue count / platform / version / id into
-    # its catalog record, so the Mirror nodes view can show those columns even while
-    # the node is offline (adhoc #56). A legacy record without them degrades to the
-    # unknown sentinels rather than erroring.
+
+
+
+
     now = 1_000_000
     rows = [
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000", size=10,
@@ -452,17 +452,17 @@ def test_payload_carries_node_facts_for_offline_mirrors():
     assert rich["version"] == "0.5.22"
     assert rich["id"] == "7ZMh_2s_IOTPxYz"
     assert rich["ownerUser"] == "alice"
-    # Clone / website-serve tallies the node has provided (issue: mirror-node counts).
+
     assert rich["clonesServed"] == 42
     assert rich["websiteServed"] == 118
-    # Release artifacts the node is hosting for download (adhoc #77).
+
     assert rich["artifactCount"] == 3
     assert rich["cpuPercent"] == 37
     assert (rich["memUsedBytes"], rich["memTotalBytes"]) == (300, 1000)
     assert (rich["diskUsedBytes"], rich["diskTotalBytes"]) == (800, 2000)
     assert rich["actionsEnabled"] is True
     assert rich["actionsState"] == "running"
-    # Legacy record (no node facts): empty strings and the -1 "unknown" sentinels.
+
     legacy = payload["mirrors"][1]
     assert legacy["commit"] == ""
     assert legacy["platform"] == ""
@@ -482,10 +482,10 @@ def test_payload_carries_node_facts_for_offline_mirrors():
 
 
 def test_payload_names_the_latest_commit_of_each_mirror():
-    # A node signs the subject/author/date of its head commit into its catalog
-    # record, so the Mirror nodes table and the World cabinets can say what the
-    # commit is instead of showing a bare hash (adhoc #337). A node that never
-    # published them stays truthfully unknown (None), never a blank string.
+
+
+
+
     now = 1_000_000
     rows = [
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000",
@@ -511,9 +511,9 @@ def test_payload_names_the_latest_commit_of_each_mirror():
 
 
 def test_payload_stamps_when_each_mirror_last_served_a_clone_or_web_read():
-    # The serve counters on the Mirror node cards each carry "when, and to what
-    # kind of client". A node that has served none of a kind, or predates the
-    # stamps, stays None instead of borrowing its publication time.
+
+
+
     now = 1_000_000
     rows = [
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000"),
@@ -603,10 +603,10 @@ def test_payload_fails_malformed_actions_state_closed_to_disabled():
 
 
 def test_payload_marks_mirrors_the_integrity_gate_rejects():
-    # A mirror must advertise a refs fingerprint some working-copy holder in its
-    # group attested (current pin or recent history) or the relay rejects every
-    # clone it serves ("repository failed integrity check"); the payload carries
-    # that verdict per node so the mirror list can show WHICH node is affected.
+
+
+
+
     now = 1_000_000
     rows = [
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000",
@@ -626,18 +626,18 @@ def test_payload_marks_mirrors_the_integrity_gate_rejects():
     )
     verdicts = {m["node"]: m["integrity"] for m in payload["mirrors"]}
     assert verdicts == {
-        "mainnode": "ok",        # the source matches its own attestation
-        "in-sync": "ok",         # matches the source's current pin (case-insensitive)
-        "lagging": "ok",         # matches a recent pin from the history window
-        "tampered": "rejected",  # matches nothing the source ever attested
-        "legacy": "unknown",     # no fingerprint published; gate checks live refs
+        "mainnode": "ok",
+        "in-sync": "ok",
+        "lagging": "ok",
+        "tampered": "rejected",
+        "legacy": "unknown",
     }
 
 
 def test_payload_downgrades_rejected_to_healing_when_source_online():
-    # Same mirrors as above, but the source of truth (mainnode) has a fresh
-    # healthy direct-HTTPS endpoint right now. The failing mirror can re-sync
-    # from that source, so its verdict is "healing", not "rejected".
+
+
+
     now = 1_000_000
     rows = [
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000",
@@ -657,13 +657,13 @@ def test_payload_downgrades_rejected_to_healing_when_source_online():
     )
     verdicts = {m["node"]: m["integrity"] for m in payload["mirrors"]}
     assert verdicts == {
-        "mainnode": "ok",       # the source matches its own attestation
-        "in-sync": "ok",        # matches the source's current pin
-        "lagging": "ok",        # matches a recent pin from the history window
-        "tampered": "healing",  # would be rejected, but the source is online
-        "legacy": "unknown",    # no fingerprint published
+        "mainnode": "ok",
+        "in-sync": "ok",
+        "lagging": "ok",
+        "tampered": "healing",
+        "legacy": "unknown",
     }
-    # With the source OFFLINE the tamper gate is back in force: hard "rejected".
+
     offline = build_repo_mirrors_payload(
         "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000,
         history={"a": ["old"]},
@@ -673,11 +673,11 @@ def test_payload_downgrades_rejected_to_healing_when_source_online():
 
 
 def test_payload_uses_explicit_org_backing_node_as_integrity_anchor():
-    # /forkmesh/forkmesh is an organization alias explicitly linked to
-    # mirror2/forkmesh. The direct HTTPS router treats that account-owned,
-    # signed backing record as the organization's canonical attestation. The
-    # mirror-status payload must use the same pin instead of a stale same-name
-    # local-node record, otherwise it contradicts the route it is describing.
+
+
+
+
+
     now = 1_000_000
     stale = "a" * 64
     current = "b" * 64
@@ -756,9 +756,9 @@ def test_linked_backing_node_without_attestation_fails_closed():
 
 
 def test_payload_integrity_fails_open_without_source_attestation():
-    # When no working-copy holder in the group ever attested a state, the gate
-    # falls back to the mirror's own pins (legacy behaviour): nothing to compare
-    # against, so nobody is flagged.
+
+
+
     now = 1_000_000
     rows = [
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000"),
@@ -772,10 +772,10 @@ def test_payload_integrity_fails_open_without_source_attestation():
 
 
 def test_payload_groups_mirror_with_missing_root_commit_by_name():
-    # A mirror cloned from the relay can have an unset HEAD and publish an empty
-    # rootCommit (issue #243). It must still group with the source of truth (which
-    # does advertise a root) instead of dropping into its own name-keyed bucket and
-    # vanishing from the owner's mirror-nodes list.
+
+
+
+
     now = 1_000_000
     rows = [
         _row("a", "mainnode", "forkmesh", root="abc", synced="990000", size=10),
@@ -786,8 +786,8 @@ def test_payload_groups_mirror_with_missing_root_commit_by_name():
         "mainnode", "forkmesh", rows, {}, {}, now, 600_000, 5_000
     )
 
-    # The empty-root mirror joins the source's root group by name; the genuine fork
-    # (a different non-empty root) stays out.
+
+
     assert payload["groupKey"] == "root:abc"
     assert [m["node"] for m in payload["mirrors"]] == ["mainnode", "kaif-node"]
 
@@ -887,14 +887,14 @@ def _load_handler(
         return data
 
     async def edge_cache_match(_key):
-        return None  # always a miss in these unit tests
+        return None
 
     async def edge_cache_put(_key, _response):
         calls.append("edge_cache_put")
 
     async def active_registered_node_bis(_env):
-        # Mirror membership is durable even when the live-node set is empty.
-        # Fresh endpoint/presence evidence below still controls online status.
+
+
         return set()
 
     namespace = {
@@ -961,8 +961,8 @@ def test_repo_mirrors_handler_get_returns_public_mirrors_payload():
         "FROM mirror_https_endpoints" in call for call in calls
     ) == 1
     assert any("FROM repo_first_hosted" in call for call in calls)
-    # The handler also gathers the attested-pin history so each mirror carries
-    # its clone-integrity verdict.
+
+
     assert any("FROM repo_state_history" in call for call in calls)
     assert all("integrity" in mirror for mirror in response["data"]["mirrors"])
 
@@ -1045,8 +1045,8 @@ def test_repo_mirrors_handler_applies_linked_org_integrity_anchor():
     } == {
         "mirror2": "ok",
         "mirror3": "ok",
-        # The appointed backing endpoint is live, so an out-of-pin local
-        # publisher is visibly auto-healing instead of permanently rejected.
+
+
         "jett": "healing",
     }
     assert any("FROM org_repos" in call for call in calls)
@@ -1169,7 +1169,7 @@ URLS_TEXT = (ENTRY.parent / "urls.py").read_text(encoding="utf-8")
 
 
 def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
-    # The route pattern lives in urls.py now; entry.py imports and dispatches it.
+
     assert "REPO_MIRRORS_RE = re.compile" in URLS_TEXT
     assert "REPO_MIRRORS_RE" in ENTRY_TEXT
     assert "repo_mirrors_handler" in ENTRY_TEXT
@@ -1180,12 +1180,12 @@ def test_worker_exposes_repo_mirrors_route_and_uses_payload_builder():
 
 
 def test_hydrate_live_host_probes_capped_concurrent_and_memoized():
-    # adhoc #167: hydrate used to await one DO probe per stale group member
-    # SEQUENTIALLY (up to HOST_COUNT_TIMEOUT_MS each) on every public
-    # info/refs. A group full of dead mirrors (fleet die-off) hung the request
-    # until the Workers runtime canceled it ("Cannot enter into task").
-    # Probes must be capped per request and memoized across calls so repeated
-    # requests walk a large group instead of re-probing all of it every time.
+
+
+
+
+
+
     probed = []
 
     async def repo_live_host_count(_env, owner, repo):
@@ -1218,25 +1218,25 @@ def test_hydrate_live_host_probes_capped_concurrent_and_memoized():
 
     presence = asyncio.run(
         hydrate(object(), "mainnode", "forkmesh", rows, {}, 1_000_000))
-    # Capped: 21 stale members, only the first 8 probed this request.
+
     assert len(probed) == 8
-    # The next two calls (same 30s memo window) continue where the last
-    # stopped instead of re-probing the memoized members.
+
+
     presence = asyncio.run(
         hydrate(object(), "mainnode", "forkmesh", rows, presence, 1_000_000))
     presence = asyncio.run(
         hydrate(object(), "mainnode", "forkmesh", rows, presence, 1_000_000))
     assert len(probed) == 21
-    assert len(set(probed)) == 21  # no member probed twice within the TTL
-    # A fourth call is fully memoized -- zero new subrequests.
+    assert len(set(probed)) == 21
+
     presence = asyncio.run(
         hydrate(object(), "mainnode", "forkmesh", rows, presence, 1_000_000))
     assert len(probed) == 21
-    # Presence reflects the ground truth gathered across the calls.
+
     assert "live" in presence
     assert not any(key.startswith("dead") for key in presence)
-    # The probes themselves must run concurrently (one timeout for the whole
-    # batch, not one per mirror) -- the sequential await is what hung info/refs.
+
+
     src = _WORKER_SRC[_WORKER_SRC.index(
         "async def hydrate_repo_group_live_hosts"):]
     src = src[:src.index("\nasync def ", 10)]

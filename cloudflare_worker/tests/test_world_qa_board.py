@@ -281,7 +281,7 @@ def test_qa_catalog_is_not_truncated_to_the_first_64_cards():
     assert "deck_cards = deck_cards[:128]" not in handler
     assert "LIMIT 64" not in handler
     assert handler.count("WORLD_QA_MAX_CARDS") >= 6
-    # The 3D desk remains constant-cost even when the catalog grows.
+
     assert "const pageSize = 5;" in WORLD
     assert "Math.ceil(filtered.length / pageSize)" in WORLD
 
@@ -367,6 +367,6 @@ def test_share_and_saved_views_live_in_the_fixed_square_right_rail():
     fixed_rail = CSS.rsplit("/* Fixed launcher geometry.", 1)[1]
     assert "grid-template-columns: 48px;" in fixed_rail
     assert ".world-saved-view-list:empty" in fixed_rail
-    # The ordinary right-click menu is untouched.
+
     assert 'renderer.domElement.addEventListener("contextmenu"' not in SCENE
     assert ".world-share-view-button" in CSS

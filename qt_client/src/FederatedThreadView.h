@@ -8,9 +8,9 @@ class QNetworkAccessManager;
 class QNetworkReply;
 class QVBoxLayout;
 
-// Read-only projection of remote ActivityPub replies. This widget never
-// creates IssueEvent/PullEvent/DiscussionEvent records and never writes to a
-// repository's signed native event log.
+
+
+
 class FederatedThreadView final : public QWidget
 {
 public:

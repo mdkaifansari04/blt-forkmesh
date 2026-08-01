@@ -13,8 +13,8 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import cloudflare_bootstrap as worker_bootstrap  # noqa: E402
-import cloudflare_tunnel_bootstrap as tunnel_bootstrap  # noqa: E402
+import cloudflare_bootstrap as worker_bootstrap
+import cloudflare_tunnel_bootstrap as tunnel_bootstrap
 
 
 PUBLIC_KEY = base64.urlsafe_b64encode(b"P" * 32).decode().rstrip("=")
@@ -238,12 +238,12 @@ def test_cloudflare_api_adapter_uses_remote_config_and_proxied_tunnel_dns():
         def __init__(self):
             self.calls = []
             self.responses = [
-                [],  # find tunnel
-                {"id": "tunnel-id"},  # create
-                {"config": {}},  # get config
-                {"version": 1},  # put config
-                [],  # list dns
-                {"id": "dns-id", "proxied": True},  # create dns
+                [],
+                {"id": "tunnel-id"},
+                {"config": {}},
+                {"version": 1},
+                [],
+                {"id": "dns-id", "proxied": True},
             ]
 
         def request(self, method, path, **kwargs):

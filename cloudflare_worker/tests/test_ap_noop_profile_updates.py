@@ -77,7 +77,7 @@ def _json_response(data, status=200, cache_seconds=None, cache_control=None,
     return FakeResponse(data, status=status, headers=dict(extra_headers or {}))
 
 
-# --- repo About POST ---------------------------------------------------------
+
 
 def _about_env(catalog_record, media_store, log):
     """Load the real repo_about_handler with an in-memory catalog of one
@@ -243,31 +243,31 @@ def test_media_only_change_broadcasts_without_desktop_roundtrip():
     assert resp.status == 200
     writes = _writes(log)
     assert any("INSERT INTO repo_media" in sql for sql in writes)
-    # The desktop only owns the textual About (info.json): a branding change
-    # must not queue an about_inbox round-trip, but followers must hear it.
+
+
     assert not any("about_inbox" in sql for sql in writes)
     assert ("broadcast", "repo", "alice.repo") in log
 
 
-# --- account profile save: broadcast gated on federated fields ---------------
+
 
 def test_account_profile_broadcast_is_gated_on_bio_and_privacy():
     profile_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _account_profile"):
         ENTRY_TEXT.index("async def _account_claim_node")
     ]
-    # The fingerprint is captured before the field mutations...
+
     fed_before = profile_body.index(
         'fed_before = (rec.get("profile_bio", ""),')
     assert fed_before < profile_body.index('if "solana" in data:')
-    # ...and the broadcast only fires when it moved.
+
     assert 'if fed_after != fed_before:' in profile_body
     guard = profile_body.index('if fed_after != fed_before:')
     call = profile_body.index('_ap_broadcast_actor_update', guard)
-    assert call - guard < 200  # the call sits inside the guard
+    assert call - guard < 200
 
 
-# --- outbox drain: Retry-After from a throttling remote ----------------------
+
 
 def test_deliver_body_parses_retry_after_only_when_throttled():
     async def _ap_signed_request(key_id, priv, method, url, body_str=None):
@@ -317,7 +317,7 @@ def test_drain_reschedules_no_sooner_than_retry_after():
     async def _ap_domain_blocked(env, host):
         return False
 
-    retry_after_ms = 3600 * 1000  # remote asked for an hour
+    retry_after_ms = 3600 * 1000
 
     async def _ap_deliver_body(env, actor_url, priv, inbox, body):
         return 429, retry_after_ms
@@ -339,11 +339,11 @@ def test_drain_reschedules_no_sooner_than_retry_after():
     assert len(updates) == 1
     sql, args = updates[0]
     assert sql.startswith("UPDATE ap_outbox")
-    # next_ts honours the remote's Retry-After, not just our 5m backoff.
+
     assert args[1] == now + retry_after_ms
 
 
-# --- host-meta: constant, schema-free, edge-parked ---------------------------
+
 
 def test_hostmeta_is_schema_free_and_edge_cached():
     store, puts = {}, []
@@ -361,8 +361,8 @@ def test_hostmeta_is_schema_free_and_edge_cached():
             self.status = status
             self.headers = headers or {}
 
-    # Deliberately NO ensure_schema / d1_* in the namespace: if the handler
-    # ever grows a schema or D1 dependency this test fails with NameError.
+
+
     ns = _load("ap_hostmeta_handler", extra_globals={
         "method_name": lambda request: request.method,
         "json_response": _json_response,
@@ -387,13 +387,13 @@ def test_hostmeta_route_is_registered():
     assert 'url.path == "/.well-known/host-meta"' in ENTRY_TEXT
 
 
-# --- public pages: edge-cached rel=me targets ---------------------------------
+
 
 def test_public_history_browse_uses_the_direct_https_gateway():
-    # The contribution graph's per-repo /history fetches carry
-    # fmv=<attested state hash>. The ordinary query string is forwarded to a
-    # healthy signed direct-HTTPS endpoint; there is no repository socket or
-    # Durable Object response cache in this path.
+
+
+
+
     route_body = ENTRY_TEXT[
         ENTRY_TEXT.index("host_match = REPO_HOST_RE.match"):
         ENTRY_TEXT.index("room = room_key_from_path(url.path)")
@@ -433,15 +433,15 @@ def test_profile_and_repo_pages_use_edge_cache_without_bypassing_privacy():
     for body in (profile_body, repo_body):
         assert "edge_cache_match(cache_key)" in body
         assert "edge_cache_put(cache_key, page)" in body
-    # Revalidate profile visibility before returning a cached public page. This
-    # fails closed if a privacy change lands before cache invalidation.
+
+
     assert (profile_body.index("ensure_schema")
             < profile_body.index("edge_cache_match"))
     assert (profile_body.index("_account_row")
             < profile_body.index("edge_cache_match"))
-    # A repo-page cache key is derived from the exact signed state/commit pin.
-    # Re-read and validate the public catalog row before cache lookup so a
-    # prior state's shell cannot be reused after a privacy/state transition.
+
+
+
     assert (repo_body.index("ensure_schema")
             < repo_body.index("edge_cache_match"))
     assert (repo_body.index("_catalog_record_matches_identity")
@@ -451,11 +451,11 @@ def test_profile_and_repo_pages_use_edge_cache_without_bypassing_privacy():
 
 
 def test_repo_page_injects_opengraph_card_with_stats_image():
-    # A share of the repo URL (a federated "new pull request" post, a Slack
-    # unfurl) must render the repo's rendered stats card (adhoc #46), not the
-    # old full-bleed logo: _serve_repo_page injects an og:image pointing at
-    # /api/repo/<owner>/<repo>/card.png plus large-image + dimension hints,
-    # and an og:description carrying the catalog description.
+
+
+
+
+
     repo_body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def _serve_repo_page"):
         ENTRY_TEXT.index("async def _serve_dashboard_asset")

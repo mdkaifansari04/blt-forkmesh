@@ -151,9 +151,9 @@ protected:
     }
 };
 
-// Verify a base64url Ed25519 signature against a base64url raw public key, the
-// same encoding ForkMeshIdentity uses, so the test mirrors the worker's
-// ed25519_verify rather than trusting the signer's own code path.
+
+
+
 bool verifyEd25519(const QString &pubB64Url, const QString &sigB64Url,
                    const QByteArray &message)
 {
@@ -290,13 +290,13 @@ QByteArray legacyPullCanonical(const PullRequest &pull)
            contentHash;
 }
 
-} // namespace
+}
 
 int main(int argc, char *argv[])
 {
-    // A small machine-readable mode used by the cross-runtime CTest.  It emits
-    // the exact random envelope produced by Qt; the Python side passes that
-    // object verbatim through the Worker's real validator.
+
+
+
     if (argc == 2 &&
         QByteArray(argv[1]) == QByteArrayLiteral("--emit-owner-envelope")) {
         const MirrorCrypto::Identity owner =
@@ -359,8 +359,8 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Bounded chat history (issue #428): a mirror node must not retain
-        // unlimited chat frames — or huge file payloads — in RAM.
+
+
         QList<QJsonObject> history;
         QStringList evicted;
         const int overflow = ChatHistoryLimits::kMaxEntriesPerChannel + 25;
@@ -378,8 +378,8 @@ int main(int argc, char *argv[])
                   QStringLiteral("m%1").arg(overflow - 1),
               "chat history keeps the newest entry after eviction");
 
-        // A handful of large file messages must not pin unbounded RAM: the
-        // char budget evicts older entries even when the count cap is far off.
+
+
         QList<QJsonObject> fileHistory;
         const QString bigPayload(ChatHistoryLimits::kMaxCharsPerChannel / 2, 'A');
         QStringList fileEvicted;
@@ -398,8 +398,8 @@ int main(int argc, char *argv[])
         check(!fileEvicted.isEmpty() && fileEvicted.first() == "f0",
               "char budget evicts oldest file messages first");
 
-        // One message bigger than the whole budget is kept, but without its
-        // file body, so a single huge transfer can't pin the budget's worth.
+
+
         QList<QJsonObject> oversized;
         QJsonObject huge{{"id", QStringLiteral("huge")},
                          {"channel", QStringLiteral("#general")},
@@ -413,8 +413,8 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Transient visitors (adhoc #404): a browser guest is forgotten after
-        // ten idle minutes, while nodes and accounts keep their offline row.
+
+
         using namespace ChatVisitorPresence;
         check(isTransientVisitor(QStringLiteral("guest"), QStringLiteral("jett")),
               "an advertised guest account kind marks a transient visitor");
@@ -466,8 +466,8 @@ int main(int argc, char *argv[])
     check(!signedProfile.value("signature").toString().isEmpty(),
           "signed profile includes a signature");
 
-    // Admin-moderation deletes are signed with signData() and authenticated by
-    // every peer via ForkMeshIdentity::verifySignature against the signer's key.
+
+
     {
         const QByteArray canonical =
             QByteArrayLiteral("forkmesh-admin-delete-v1\n#general\nmsg-1\n") +
@@ -479,10 +479,10 @@ int main(int argc, char *argv[])
         check(!ForkMeshIdentity::verifySignature(identity.publicKey(), sig,
                                                  canonical + "x"),
               "verifySignature rejects a tampered payload");
-        // Tamper with the FIRST base64 character, not the last: the trailing
-        // characters of a 64-byte signature carry bits that decode to nothing,
-        // so rewriting them sometimes yields the very same signature and the
-        // check flaked. Every bit of the first character is significant.
+
+
+
+
         const QString tamperedSignature =
             (sig.startsWith(QLatin1Char('A')) ? QStringLiteral("B")
                                               : QStringLiteral("A")) +
@@ -492,9 +492,9 @@ int main(int argc, char *argv[])
               "verifySignature rejects a tampered signature");
     }
 
-    // The #welcome greeting must survive a restart (a fresh ForkMeshIdentity
-    // reloading the same on-disk key), which was the point of colocating the
-    // flag with the identity key instead of QSettings (adhoc #109).
+
+
+
     {
         identity.markWelcomeAnnounced();
         ForkMeshIdentity reloaded;
@@ -503,10 +503,10 @@ int main(int argc, char *argv[])
               "welcome-announced flag survives a fresh identity load");
     }
 
-    // --- Identity key backup, export & rotation (issue #368) -------------
-    // Losing the machine must not mean losing the identity: the private key can
-    // be exported to a passphrase-encrypted keyfile and imported on a new node,
-    // reproducing the exact same public key (hence every signature binding).
+
+
+
+
     {
         const QString keyfile = identity.exportEncryptedKeyfile("correct horse");
         check(!keyfile.isEmpty(), "identity exports to an encrypted keyfile");
@@ -515,13 +515,13 @@ int main(int argc, char *argv[])
         check(ForkMeshIdentity::keyfilePublicKey(keyfile) == identity.publicKey(),
               "keyfilePublicKey reads the pubkey without the passphrase");
 
-        // Wrong passphrase must fail (GCM tag mismatch), never yield a key.
+
         ForkMeshIdentity wrongPass;
         check(!wrongPass.importEncryptedKeyfile(keyfile, "WRONG passphrase"),
               "importing with the wrong passphrase fails");
 
-        // Correct passphrase restores the same key: identical public key and a
-        // signature that verifies against the original identity's public key.
+
+
         ForkMeshIdentity restored;
         check(restored.importEncryptedKeyfile(keyfile, "correct horse"),
               "importing with the correct passphrase restores the identity");
@@ -537,8 +537,8 @@ int main(int argc, char *argv[])
         check(ForkMeshIdentity::keyfilePublicKey("not a keyfile").isEmpty(),
               "keyfilePublicKey rejects non-keyfile text");
 
-        // Rotation: the old key signs a successor pubkey. The record verifies
-        // against the old key and is bound to that exact successor.
+
+
         const QString successor =
             QStringLiteral("Zm9ya21lc2gtc3VjY2Vzc29yLWtleS0zMi1ieXRlcw");
         const QJsonObject rotate = identity.signRotation(successor);
@@ -572,9 +572,9 @@ int main(int argc, char *argv[])
     check(wrongCrypto.decryptObject(encrypted).isEmpty(),
           "room crypto rejects the wrong passphrase");
 
-    // --- Passphrase-free shared rooms (baked-in app key) -----------------
-    // Two independent instances built only from the room name must interoperate,
-    // so every node joins the same shared room with no passphrase.
+
+
+
     RoomCrypto sharedA("general");
     RoomCrypto sharedB("general");
     check(sharedA.isValid(), "passphrase-free room key derives");
@@ -587,11 +587,11 @@ int main(int argc, char *argv[])
     check(RoomCrypto("random").decryptObject(sharedEnv).isEmpty(),
           "a different room name does not decrypt the envelope");
 
-    // --- Cove vault crypto (password + per-cove salt) --------------------
-    // A 256-bit AES key derived from a shared password; the GCM tag is the
-    // password check. Two crypto objects built from the same password + salt
-    // must interoperate, a wrong password must fail to decrypt, and the same
-    // password with a different salt must derive a different key.
+
+
+
+
+
     {
         const QByteArray coveSalt = CoveCrypto::randomSalt();
         check(coveSalt.size() == 16, "cove salt is 16 random bytes");
@@ -614,12 +614,12 @@ int main(int argc, char *argv[])
               "the same password with a different salt cannot decrypt the cove");
     }
 
-    // --- Private-mirror crypto (hybrid X25519 + ML-KEM-768) --------------
-    // Issue #362: a private repo is mirrored as one opaque encrypted archive.
-    // The owner encrypts the archive under a random content key and wraps that
-    // key to each collaborator's hybrid identity. Only a wrapped recipient can
-    // recover the archive; a non-recipient, a tampered ciphertext, or one KEM
-    // half swapped between wraps must all fail closed.
+
+
+
+
+
+
     {
         MirrorCrypto::Identity owner = MirrorCrypto::generateIdentity();
         MirrorCrypto::Identity alice = MirrorCrypto::generateIdentity();
@@ -719,7 +719,7 @@ int main(int argc, char *argv[])
                   !openErr.isEmpty(),
               "a non-recipient identity cannot recover the archive");
 
-        // Flip one byte of the archive ciphertext: GCM must reject it.
+
         QJsonObject tamperedBody = envelope;
         QByteArray body = QByteArray::fromBase64(
             envelope.value("body").toString().toLatin1());
@@ -728,8 +728,8 @@ int main(int argc, char *argv[])
         check(MirrorCrypto::openArchive(tamperedBody, alice).isEmpty(),
               "a tampered archive body fails the GCM tag");
 
-        // Swap the ML-KEM ciphertext of alice's wrap for mallory's: the HKDF
-        // info binds both KEM outputs, so the mismatched KEK must fail closed.
+
+
         const QJsonObject solo = MirrorCrypto::sealArchive(
             archive, {mallory.publicBundle()}, nullptr);
         QJsonArray recips = envelope.value("recipients").toArray();
@@ -765,11 +765,11 @@ int main(int argc, char *argv[])
               "malformed recipient bundles do not produce a key id");
     }
 
-    // --- Durable opaque private-mirror replicas -------------------------
-    // Ciphertext is stored under a random id with owner-only permissions. A
-    // recipient removal rotates the content key and prevents that identity
-    // from opening the new epoch; private identity halves are never persisted
-    // alongside the replica.
+
+
+
+
+
     {
         QTemporaryDir store;
         MirrorCrypto::Identity owner = MirrorCrypto::generateIdentity();
@@ -933,9 +933,9 @@ int main(int argc, char *argv[])
                   QStringLiteral("primary-key")),
           "desktop capability persistence is scoped to the exact account and key");
 
-    // --- Issue event signing ---------------------------------------------
-    // Pin the canonical byte format so the C++ client, the Python seed
-    // generator, and the worker's ed25519_verify all agree.
+
+
+
     IssueEvent vector;
     vector.type = "open";
     vector.author = "TESTPUB";
@@ -949,8 +949,8 @@ int main(int argc, char *argv[])
     check(IssueStore::canonicalString(1, vector) == expected,
           "issue-event canonical string matches the cross-language vector");
 
-    // "title" event (issue rename): content is just the title. Pin it so the
-    // client and the worker's issue_event_content stay byte-identical.
+
+
     IssueEvent titleVec;
     titleVec.type = "title";
     titleVec.author = "TESTPUB";
@@ -962,9 +962,9 @@ int main(int argc, char *argv[])
     check(IssueStore::canonicalString(3, titleVec) == expectedTitle,
           "title-event canonical string matches the cross-language vector");
 
-    // "delete" event (used to delete a comment, or "self" to tombstone the
-    // whole issue): content is just the target event id. Pin it so the client
-    // and the worker's issue_event_content stay byte-identical.
+
+
+
     IssueEvent deleteVec;
     deleteVec.type = "delete";
     deleteVec.author = "TESTPUB";
@@ -976,9 +976,9 @@ int main(int argc, char *argv[])
     check(IssueStore::canonicalString(7, deleteVec) == expectedDelete,
           "delete-event canonical string matches the cross-language vector");
 
-    // --- PR conversation event signing -----------------------------------
-    // Pin the canonical byte format so the C++ client and the worker's
-    // verify_pull_comment_event stay byte-identical. The number is bound.
+
+
+
     PullEvent pullComment;
     pullComment.type = "comment";
     pullComment.author = "TESTPUB";
@@ -1074,9 +1074,9 @@ int main(int argc, char *argv[])
               expectedPullSuggestionState,
           "pull suggestion-state canonical string matches the cross-language vector");
 
-    // --- Discussion event signing ---------------------------------------
-    // Pin the canonical byte format so the C++ client and worker verifier
-    // stay byte-identical. The discussion number is bound.
+
+
+
     DiscussionEvent openDiscussion;
     openDiscussion.type = "open";
     openDiscussion.author = "TESTPUB";
@@ -1126,30 +1126,30 @@ int main(int argc, char *argv[])
     check(!inboxBackoff.shouldBackOff(discussionInboxKey, 2000),
           "successful discussion inbox sync clears the unsupported backoff");
 
-    // --- Exponential poll backoff ----------------------------------------
-    // NetworkBackoff spaces out retries after a run of failures. Delay for the
-    // nth failure is min(base*2^(n-1), cap) plus <base/8 jitter, so we assert on
-    // bounds that hold for any jitter value: still blocked strictly before the
-    // base delay, and definitely ready once base + its jitter span has elapsed.
+
+
+
+
+
     NetworkBackoff pollBackoff;
     const QString pollKey = "https://forkmesh.com/api/repo/alice/project/pulls";
     check(pollBackoff.ready(pollKey, 0),
           "a fresh poll channel is ready with no backoff");
-    pollBackoff.noteFailure(pollKey, 0, 1000, 8000); // 1st failure: ~1000ms
+    pollBackoff.noteFailure(pollKey, 0, 1000, 8000);
     check(!pollBackoff.ready(pollKey, 999),
           "poll backoff blocks a retry before the base delay elapses");
     check(pollBackoff.ready(pollKey, 1125),
           "poll backoff clears once the base delay (+jitter span) elapses");
-    pollBackoff.noteFailure(pollKey, 0, 1000, 8000); // 2nd failure: ~2000ms
+    pollBackoff.noteFailure(pollKey, 0, 1000, 8000);
     check(!pollBackoff.ready(pollKey, 1999),
           "a second consecutive failure at least doubles the backoff");
-    pollBackoff.noteFailure(pollKey, 0, 1000, 8000); // 3rd failure: ~4000ms
+    pollBackoff.noteFailure(pollKey, 0, 1000, 8000);
     check(!pollBackoff.ready(pollKey, 3999),
           "the backoff keeps growing exponentially with each failure");
-    // Independent channels don't inherit each other's backoff.
+
     check(pollBackoff.ready("https://forkmesh.com/api/accounts/heartbeat", 0),
           "poll backoff is tracked per channel");
-    // Many failures stay bounded by the cap, never exploding past it.
+
     for (int i = 0; i < 20; ++i)
         pollBackoff.noteFailure(pollKey, 0, 1000, 8000);
     check(pollBackoff.ready(pollKey, 9000),
@@ -1158,12 +1158,12 @@ int main(int argc, char *argv[])
     check(pollBackoff.ready(pollKey, 0),
           "a successful poll clears the exponential backoff");
 
-    // --- BackoffNetworkAccessManager: host-wide 429 gate (adhoc #78) -----
-    // An in-process reply stub stands in for the relay so createRequest's
-    // routing/gating logic runs end-to-end without needing a loopback listener
-    // (some CI/sandbox profiles deny bind()). /api/* paths are gated per-host,
-    // a 429 starts a cooldown during which further /api/* requests never reach
-    // the network handoff, and non-/api/ paths always bypass the gate.
+
+
+
+
+
+
     {
         StubBackoffNetworkAccessManager manager;
         const QString base = QStringLiteral("http://relay.test");
@@ -1224,8 +1224,8 @@ int main(int argc, char *argv[])
               "the accepted firewall rule whitelists subsequent requests");
     }
 
-    // A burn-up series must reconstruct historical state, including a close
-    // and a later reopening, rather than repeating today's status backwards.
+
+
     Issue firstIssue;
     firstIssue.createdAt = 1000;
     IssueEvent firstClosed;
@@ -1241,7 +1241,7 @@ int main(int argc, char *argv[])
     secondReopened.type = "status";
     secondReopened.status = "open";
     secondReopened.ts = 5000;
-    secondIssue.events = {secondReopened, secondClosed}; // intentionally unsorted
+    secondIssue.events = {secondReopened, secondClosed};
     const QList<IssueBurnupPoint> burnup =
         buildIssueBurnupSeries({firstIssue, secondIssue}, 1000, 5000, 4);
     check(burnup.size() == 5 && burnup.at(0).openCount == 1 &&
@@ -1253,7 +1253,7 @@ int main(int argc, char *argv[])
     check(firstIssueHistoryTimestamp({firstIssue, secondIssue}, 9999) == 1000,
           "issue burn-up finds the all-time starting point");
 
-    // Sign a real event with the node identity and verify it independently.
+
     IssueStore store(QString(), QString(), &identity, "tester");
     IssueEvent open;
     open.type = "open";
@@ -1272,7 +1272,7 @@ int main(int argc, char *argv[])
                          IssueStore::canonicalString(7, tampered)),
           "tampered issue-event signature is rejected");
 
-    // --- Repository contribution snapshot bounds --------------------------
+
     {
         using namespace RepoContributionSnapshotInternal;
 
@@ -1388,7 +1388,7 @@ int main(int argc, char *argv[])
               "strict Git budget accepts exact caps and rejects cumulative overflow");
     }
 
-    // --- Signed repository contribution snapshot --------------------------
+
     {
         const QString originalAppName = QCoreApplication::applicationName();
         QCoreApplication::setApplicationName(originalAppName + "SnapshotReviewer");
@@ -1445,8 +1445,8 @@ int main(int argc, char *argv[])
         check(setup, "snapshot test Git history is created");
 
         if (setup && reviewerLoaded) {
-            // Store commits are deliberately authored by the nonmatching Git
-            // identity so metadata writes do not become owner commit credit.
+
+
             check(runTestGit(dir, {QStringLiteral("config"),
                                    QStringLiteral("user.name"),
                                    QStringLiteral("Metadata Writer")}) &&
@@ -2141,9 +2141,9 @@ int main(int argc, char *argv[])
                           QStringLiteral("publishQueuedUpdate();")),
                   "rejected submitted contributions invalidate and retry once without dropping queued work");
 
-            // A persistently-overloaded relay (Cloudflare 1102 -> HTTP 503)
-            // must not be re-POSTed at a fixed 60s cadence forever: the retry
-            // delay escalates per consecutive failure and resets on success.
+
+
+
             check(publicationSource.contains(
                       QStringLiteral(
                           "catalogPublishRetryDelayMs(const QNetworkReply "
@@ -2231,7 +2231,7 @@ int main(int argc, char *argv[])
                 const RepoContributionPreparation reusedPreparation =
                     prepareRepoContributionSnapshot(
                         dependencyInput, firstDependency,
-                        /*cachedSnapshotAvailable=*/true);
+                         true);
                 const bool identityChanged = runTestGit(
                     dependencyRepo.path(),
                     {QStringLiteral("config"), QStringLiteral("user.email"),
@@ -2241,7 +2241,7 @@ int main(int argc, char *argv[])
                 const RepoContributionPreparation changedPreparation =
                     prepareRepoContributionSnapshot(
                         dependencyInput, firstDependency,
-                        /*cachedSnapshotAvailable=*/true);
+                         true);
                 const bool identityRestored = runTestGit(
                     dependencyRepo.path(),
                     {QStringLiteral("config"), QStringLiteral("user.email"),
@@ -2607,11 +2607,11 @@ int main(int argc, char *argv[])
                               .toString() == "partial",
                   "snapshot marks unreadable issue metadata partial");
 
-            // adhoc #6: the Issues tab counts loadAll's rows while the Mirror
-            // nodes tab counts countOpenIssues (which treats an unreadable blob
-            // as open). A corrupt/unreadable issue-N.json must therefore survive
-            // as an open placeholder in the permissive load, not vanish, or the
-            // tab silently shrinks below the mirror's count.
+
+
+
+
+
             IssueStore corruptStore(QString(), corruptIssueRepo.path(), nullptr);
             QString corruptError;
             const QList<Issue> corruptIssues = corruptStore.loadAll(&corruptError);
@@ -2620,19 +2620,19 @@ int main(int argc, char *argv[])
                       corruptIssues.first().status == QStringLiteral("open"),
                   "unreadable issue blob survives as an open placeholder row");
 
-            // Strict verification still drops the corrupt record and reports it
-            // rather than fabricating a placeholder.
+
+
             QString corruptStrictError;
             const QList<Issue> corruptStrict =
                 corruptStore.loadAllStrict(&corruptStrictError);
             check(corruptStrict.isEmpty() && !corruptStrictError.isEmpty(),
                   "strict issue load drops the corrupt record and reports it");
 
-            // adhoc #7: the node's OWN writable checkout (canWrite() == true) took
-            // a separate on-disk loop that silently dropped an unreadable
-            // issue-N.json, so the Issues tab undercounted below the mirror's open
-            // count for the source-of-truth node. It must keep the same open
-            // placeholder the read-only mirror load does.
+
+
+
+
+
             IssueStore writableStore(corruptIssueRepo.path(), QString(), &identity,
                                      "owner");
             check(writableStore.canWrite(),
@@ -3927,8 +3927,8 @@ int main(int argc, char *argv[])
                   "mirror-only snapshot ignores dangling HEAD and keeps exact data");
         }
 
-        // With no configured email, normalized author-name matching is the only
-        // permitted commit fallback.
+
+
         QTemporaryDir nameRepo;
         bool nameSetup = nameRepo.isValid() &&
                          runTestGit(nameRepo.path(),
@@ -3984,8 +3984,8 @@ int main(int argc, char *argv[])
                   "snapshot falls back to normalized name only when email is unset");
         }
 
-        // When neither repository nor global Git identity exists, commit rows
-        // are empty and commit coverage is explicitly partial.
+
+
         QTemporaryDir noIdentityRepo;
         bool noIdentitySetup =
             noIdentityRepo.isValid() &&
@@ -4034,8 +4034,8 @@ int main(int argc, char *argv[])
                   "snapshot marks commit coverage partial without a Git identity");
         }
 
-        // A dense but bounded history must be trimmed by whole oldest dates until
-        // its base64url transport fits, without making serialization unstable.
+
+
         QTemporaryDir denseRepo;
         bool denseSetup = denseRepo.isValid() &&
                           runTestGit(denseRepo.path(),
@@ -4112,9 +4112,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    // "dates" event (issue #384, planned start/end): content is
-    // "<startMs>\0<endMs>" as plain base-10 integers. Pin it so the client and
-    // the worker's issue_event_content stay byte-identical.
+
+
+
     IssueEvent datesVec;
     datesVec.type = "dates";
     datesVec.author = "TESTPUB";
@@ -4127,9 +4127,9 @@ int main(int argc, char *argv[])
     check(IssueStore::canonicalString(7, datesVec) == expectedDates,
           "issue dates-event canonical string matches the cross-language vector");
 
-    // --- Project event signing (issue #384) --------------------------------
-    // Pin the canonical byte format so the C++ client and the worker's
-    // verifier stay byte-identical. The project number is bound.
+
+
+
     {
         ProjectEvent openProject;
         openProject.type = "open";
@@ -4156,8 +4156,8 @@ int main(int argc, char *argv[])
                   expectedProjectDates,
               "project dates canonical string matches the cross-language vector");
 
-        // Linked issues sign as a comma-joined ascending list ("384,385") no
-        // matter the stored order, so both sides hash identical bytes.
+
+
         ProjectEvent projectIssues;
         projectIssues.type = "issues";
         projectIssues.author = "TESTPUB";
@@ -4171,7 +4171,7 @@ int main(int argc, char *argv[])
               "project issues canonical string sorts ascending and matches the "
               "cross-language vector");
 
-        // Sign a real project event with the node identity and verify it.
+
         ProjectStore projectStore(QString(), QString(), &identity, "tester");
         ProjectEvent signedProject =
             projectStore.makeSignedEvent(1, openProject);
@@ -4185,8 +4185,8 @@ int main(int argc, char *argv[])
               "tampered project-event signature is rejected");
     }
 
-    // Functional round-trip (issue #384): create a project in a real temp git
-    // repo, mutate its fields, and reload it — plus the issue "dates" event.
+
+
     {
         QTemporaryDir td;
         check(td.isValid(), "project store temp repo dir is valid");
@@ -4248,7 +4248,7 @@ int main(int argc, char *argv[])
               "issue dates fold into the reloaded metadata");
     }
 
-    // --- PullAiReview: prompt, findings JSON, quick-fix suggestions ------
+
     {
         const QString prompt = buildAiReviewPrompt(
             "Add feature", "Does things.",
@@ -4343,7 +4343,7 @@ int main(int argc, char *argv[])
               "a pure insertion is not representable as a suggestion");
     }
 
-    // --- Full IssueStore round-trip in a throwaway git repo --------------
+
     QTemporaryDir tmp;
     if (tmp.isValid()) {
         auto git = [&](const QStringList &args) {
@@ -4398,9 +4398,9 @@ int main(int argc, char *argv[])
                                             QString(), 0, {}, {}, &err);
         check(second == 2, "legacy issue folders do not affect new issue numbers");
 
-        // A pre-split .forkmesh/issues/<n>/ folder is migrated into the
-        // status-named subfolder (and committed) the next time issues load on
-        // the owning node.
+
+
+
         const QString preSplitDir =
             QDir(tmp.path()).filePath(QStringLiteral(".forkmesh/issues/77"));
         QDir().mkpath(preSplitDir);
@@ -4428,11 +4428,11 @@ int main(int argc, char *argv[])
                           }),
               "migrated legacy issue still loads with its folded status");
 
-        // Folder-authoritative status (adhoc #16): an issue still sitting in
-        // open/ whose record carries a stale status->closed event must load as
-        // OPEN, so the Issues-tab tally matches the open/ folder listing and the
-        // served/advertised open count instead of drifting below it (the
-        // 11-vs-7 skew the file browser exposes).
+
+
+
+
+
         const QString skewDir =
             QDir(tmp.path()).filePath(QStringLiteral(".forkmesh/issues/open/55"));
         QDir().mkpath(skewDir);
@@ -4455,11 +4455,11 @@ int main(int argc, char *argv[])
                           }),
               "an issue in open/ with a stale status->closed record counts as open");
 
-        // Deletion is shown, not hidden (adhoc #16). A delete/self event only
-        // deletes the issue when its own creator signed it; a delete from anyone
-        // else is an unauthorized attempt that leaves the issue open and counted
-        // but flagged. Every issue is returned by loadAll either way — the UI
-        // badges it — and the record is never rewritten.
+
+
+
+
+
         auto writeIssueWithDelete = [&](int number, const QString &creator,
                                         const QString &deleter) {
             const QString dir = QDir(tmp.path()).filePath(
@@ -4479,8 +4479,8 @@ int main(int argc, char *argv[])
                             .arg(QString::number(number), creator, deleter)
                             .toUtf8());
         };
-        writeIssueWithDelete(60, "creatorA", "stranger");  // unauthorized attempt
-        writeIssueWithDelete(61, "creatorB", "creatorB");  // creator self-delete
+        writeIssueWithDelete(60, "creatorA", "stranger");
+        writeIssueWithDelete(61, "creatorB", "creatorB");
         loaded = repo.loadAll();
         const auto find60 = std::find_if(loaded.begin(), loaded.end(),
             [](const Issue &i) { return i.number == 60; });
@@ -4493,7 +4493,7 @@ int main(int argc, char *argv[])
                   !find61->hasUnauthorizedDeleteAttempt(),
               "a creator's own self-delete marks the issue deleted but still shows it");
         {
-            // The record is left intact — the delete event is not stripped.
+
             QFile keptFile(QDir(tmp.path()).filePath(QStringLiteral(
                 ".forkmesh/issues/open/60/issue-60.json")));
             bool hasDelete = false;
@@ -4563,9 +4563,9 @@ int main(int argc, char *argv[])
         check(sawAgentClear, "agent clear event round-trips");
         check(loaded.first().status == "closed", "status reflects close event");
 
-        // Deleting a comment appends a signed "delete" event targeting the
-        // comment's id; the comment event itself is left in place (folding it
-        // out of the UI is a render-time concern) so history is preserved.
+
+
+
         const QString commentId = loaded.first().events.at(1).id;
         check(repo.deleteEvent(n, commentId, &err), "deleteEvent succeeds");
         const QList<Issue> afterCommentDelete = repo.loadAll();
@@ -4581,9 +4581,9 @@ int main(int argc, char *argv[])
         check(!withDeletedComment.isDeleted(),
               "deleting a single comment does not tombstone the whole issue");
 
-        // Fast "regular" delete: a creator's self-tombstone marks the issue
-        // deleted but loadAll still returns it (adhoc #16 — shown with a Deleted
-        // badge, not hidden), and its history stays intact in git.
+
+
+
         const int tomb = repo.createIssue("Tombstone me", "body", {}, QString(),
                                           0, {}, {}, &err);
         check(repo.tombstoneIssue(tomb, &err), "tombstoneIssue succeeds");
@@ -4604,8 +4604,8 @@ int main(int argc, char *argv[])
         check(std::none_of(afterDelete.begin(), afterDelete.end(),
                            [&](const Issue &i) { return i.number == n; }),
               "deleted issue no longer loads");
-        // The issue lived at open/<n> and then closed/<n>; the purge must strip
-        // every location (including the pre-split legacy path) from history.
+
+
         check(gitOutput({"log", "--all", "--",
                          QStringLiteral(".forkmesh/issues/%1").arg(n),
                          QStringLiteral(".forkmesh/issues/open/%1").arg(n),
@@ -4614,14 +4614,14 @@ int main(int argc, char *argv[])
                   .isEmpty(),
               "deleted issue is purged from git history");
 
-        // A mirror node files an issue: it arrives as a signed "open" event with
-        // a proposed number that collides with an existing issue. applyRemoteEvent
-        // must reassign a fresh number, keep the submitter as author, and apply
-        // the vouched issue-level metadata that rode along with the submission.
+
+
+
+
         const int base = repo.createIssue("Base", "b", {}, QString(), 0, {}, {}, &err);
         IssueEvent remoteOpen;
         remoteOpen.type = "open";
-        remoteOpen.id = QStringLiteral("open-%1").arg(base); // collides with base
+        remoteOpen.id = QStringLiteral("open-%1").arg(base);
         remoteOpen.title = "From a mirror";
         remoteOpen.body = "filed remotely";
         remoteOpen = repo.makeSignedEvent(base, remoteOpen);
@@ -4644,29 +4644,29 @@ int main(int argc, char *argv[])
                   mirrored->priority == 9,
               "remote issue applies vouched metadata (labels + priority)");
 
-        // Re-syncing the same submission (same signature) must be idempotent:
-        // the inbox can redeliver before the owner acknowledges it.
+
+
         const int before = repo.loadAll().size();
         check(repo.applyRemoteEvent(base, remoteOpen, "From a mirror", &err, meta),
               "re-applying the same remote open event succeeds");
         check(repo.loadAll().size() == before,
               "re-syncing a merged issue does not duplicate it");
 
-        // Settle any untracked state the IssueStore section above left behind
-        // (e.g. its issues/ folder) so the PullStore tests below start from a
-        // clean tree — beginPullBranch (agent edit / file edit / conflict
-        // resolve) requires one, and pulls/ commits no longer land in this
-        // working tree at all (issue #399) to incidentally sweep it up.
+
+
+
+
+
         git({"add", "-A"});
         git({"commit", "-q", "-m", "test: settle pre-pull-tests state",
             "--allow-empty"});
 
-        // --- PullStore conversation round-trip ---------------------------
+
         PullStore pulls(tmp.path(), QString(), &identity, "tester");
         const int pn = pulls.createPull(
             "A change", "Body", "main", "feature",
             "diff --git a/x b/x\n--- a/x\n+++ b/x\n@@ -1 +1 @@\n---flag\n+hi\n",
-            QString(), /*branchBacked=*/false, &err);
+            QString(),  false, &err);
         check(pn == 1, "createPull returns the first PR number");
         check(pulls.addComment(pn, "first comment", &err), "PR addComment succeeds");
         check(pulls.addReview(pn, "approved", "LGTM", &err), "PR addReview succeeds");
@@ -4723,9 +4723,9 @@ int main(int argc, char *argv[])
                   loadedPulls.first().deletions == 1,
               "PR stats count removed content beginning with two hyphens");
 
-        // A browser-created pull carries portable, signed change bytes rather
-        // than only mutable branch names. Exercise the exact Worker -> Qt wire
-        // shape (including legacy `body`) and prove the drained record merges.
+
+
+
         const QString webBase = QString::fromUtf8(
             gitOutput({"rev-parse", "--abbrev-ref", "HEAD"})).trimmed();
         const QString webBaseOid = QString::fromUtf8(
@@ -4796,7 +4796,7 @@ int main(int argc, char *argv[])
         check(webBaseOid != webHeadOid,
               "browser pull fixture resolves distinct immutable commits");
 
-        // A remote node files a review event via the inbox; it must append+commit.
+
         PullEvent remoteReview;
         remoteReview.type = "review";
         remoteReview.state = "changes_requested";
@@ -4810,7 +4810,7 @@ int main(int argc, char *argv[])
                   loadedPulls.first().reviewSummary() == "changes_requested",
               "a later changes-requested review supersedes approval");
 
-        // --- DiscussionStore round-trip ---------------------------------
+
         DiscussionStore discussions(tmp.path(), QString(), &identity, "tester");
         const int dn = discussions.createDiscussion(
             "Welcome", "Hello **discussion**", "Announcements", &err);
@@ -4916,10 +4916,10 @@ int main(int argc, char *argv[])
                   snapshot.files.value("src/b.cpp").unresolvedThreads == 1,
               "review model treats legacy line-comments as unresolved threads");
 
-        // --- Agent provenance from signed commit trailers (issue #365) --------
-        // A PR whose commit series carries the ForkMesh-Agent trailer is
-        // attributable to a tool/model without any local AgentSession; the
-        // per-file map lets the review UI filter by authorship.
+
+
+
+
         {
             const QString agentMbox =
                 "From 1111111 Mon Sep 17 00:00:00 2001\n"
@@ -4964,11 +4964,11 @@ int main(int argc, char *argv[])
                   "pullAgentProvenance treats an un-trailered PR as human-authored");
         }
 
-        // --- PullStore deletePullFile excises one file, keeps the rest -------
-        // Regression for issue #258: deleting a file used to rebuild the PR by
-        // replaying its commits onto the current base with `git am`, which drops
-        // commits already present on the base and so could wipe most of the PR.
-        // The delete now edits the stored diff/commits in place.
+
+
+
+
+
         {
             const QString baseBranch = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
@@ -4981,7 +4981,7 @@ int main(int argc, char *argv[])
             writeFile("beta.txt", "beta-1\n");
             git({"add", "alpha.txt", "beta.txt"});
             git({"commit", "-q", "-m", "add alpha and beta"});
-            writeFile("beta.txt", "beta-2\n"); // a commit that touches only beta
+            writeFile("beta.txt", "beta-2\n");
             git({"add", "beta.txt"});
             git({"commit", "-q", "-m", "tweak beta"});
             writeFile("gamma.txt", "gamma-1\n");
@@ -4995,7 +4995,7 @@ int main(int argc, char *argv[])
 
             const int dn = pulls.createPull("Three files", "body", baseBranch,
                                             "feat-258", delPatch, delMbox,
-                                            /*branchBacked=*/false, &err);
+                                             false, &err);
             check(dn > 0, "createPull stores a multi-file PR with a commit series");
             check(pulls.deletePullFile(dn, "beta.txt", &err),
                   "deletePullFile removes one file from the PR");
@@ -5018,7 +5018,7 @@ int main(int argc, char *argv[])
                       !afterDel.commits.contains("beta.txt"),
                   "a commit touching only the deleted file is dropped from the series");
 
-            // The trimmed commit series must still be a valid, appliable patch.
+
             check(pulls.mergePull(dn, &err, false),
                   "the PR still merges cleanly after a file was deleted from it");
             check(QFile::exists(tmp.path() + "/alpha.txt") &&
@@ -5027,11 +5027,11 @@ int main(int argc, char *argv[])
                   "merging applies the kept files and not the deleted one");
         }
 
-        // --- PullStore deletePull works with a dirty working tree -----------
-        // Regression for adhoc #214: a plain delete commits path-scoped
-        // (`commit -- pulls/<n>`), so unrelated tracked edits elsewhere (e.g.
-        // uncommitted changes on main) never enter it and must not block the
-        // deletion. Only the opt-in history rewrite needs a clean tree.
+
+
+
+
+
         {
             const QString baseBranch = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
@@ -5045,30 +5045,30 @@ int main(int argc, char *argv[])
                 "@@ -1 +1 @@\n-v1\n+v2\n";
             const int pn = pulls.createPull("Dirty tree", "body", baseBranch,
                                             "feat-214", patch214, QString(),
-                                            /*branchBacked=*/false, &err);
+                                             false, &err);
             check(pn > 0, "createPull stores a PR to delete against a dirty tree");
 
-            // Dirty the working tree with an unrelated tracked change.
+
             check(writeTestFile(tmp.path() + "/del214.txt", "dirty\n"),
                   "make an unrelated tracked change before deleting");
 
             QString delErr;
-            check(pulls.deletePull(pn, /*rewriteHistory=*/false, &delErr),
+            check(pulls.deletePull(pn,  false, &delErr),
                   "deletePull succeeds even with unrelated tracked changes");
             bool stillThere = false;
             for (const PullRequest &p : pulls.loadAll())
                 if (p.number == pn)
                     stillThere = true;
             check(!stillThere, "the deleted PR is gone from the store");
-            // Leave the tree clean for later blocks.
+
             git({"checkout", "-q", "--", "del214.txt"});
         }
 
-        // --- PullStore branch-backed PRs keep the diff out of the repo -------
-        // A PR whose head is a real branch stores only the signed pull.md
-        // pointer; its diff and full commit series are reconstructed from
-        // base..head, and the branch's own commits (with authorship) drive the
-        // merge — nothing about the diff is committed into the repo.
+
+
+
+
+
         {
             const QString baseBranch = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
@@ -5087,10 +5087,10 @@ int main(int argc, char *argv[])
 
             const int bn =
                 pulls.createPull("Branch backed", "body", baseBranch, "feat-bb",
-                                 QString(), QString(), /*branchBacked=*/true, &err);
+                                 QString(), QString(),  true, &err);
             check(bn > 0, "createPull stores a branch-backed PR");
-            // pulls/ metadata lives on its own linked worktree, not tmp.path()
-            // (issue #399) - it never lands on whatever's checked out there.
+
+
             const QString metaDir = pulls.metaWorkTree();
             auto metaGitOutput = [&](const QStringList &args) {
                 QProcess p;
@@ -5141,10 +5141,10 @@ int main(int argc, char *argv[])
                   "a merged branch-backed PR's diff stays viewable via the snapshot");
         }
 
-        // --- PullStore agent edit: multi-file changes on the PR's branch -----
-        // The "Fix all with AI" flow (adhoc #82): check out the PR's branch
-        // with the PR applied, let an agent edit any number of files, then
-        // commit the lot on the branch and regenerate the PR's patch.
+
+
+
+
         {
             const QString baseBranch = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
@@ -5160,12 +5160,12 @@ int main(int argc, char *argv[])
 
             const int an = pulls.createPull("Agent editable", "body", baseBranch,
                                             "feat-ai", QString(), QString(),
-                                            /*branchBacked=*/true, &err);
+                                             true, &err);
             check(an > 0, "createPull stores the agent-editable PR");
 
-            // The user's own checkout is dirty and sitting on the base branch —
-            // neither must matter (adhoc #437): the edit runs in a scratch
-            // worktree checked out at the PR's branch.
+
+
+
             writeFile("local-wip.txt", "uncommitted work\n");
             check(pulls.startPullAgentEdit(an, &err),
                   "startPullAgentEdit opens the PR's branch with a dirty base tree");
@@ -5209,8 +5209,8 @@ int main(int argc, char *argv[])
             check(!edited.patch.contains("local-wip.txt"),
                   "the base tree's uncommitted files stay out of the PR");
 
-            // An agent run that changes nothing must refuse to commit, drop its
-            // worktree, and leave the PR's branch exactly where it was.
+
+
             const QString beforeNoOp =
                 QString::fromUtf8(gitOutput({"rev-parse", "feat-ai"}).trimmed());
             check(pulls.startPullAgentEdit(an, &err),
@@ -5223,9 +5223,9 @@ int main(int argc, char *argv[])
             check(QString::fromUtf8(gitOutput({"rev-parse", "feat-ai"}).trimmed()) ==
                       beforeNoOp,
                   "a no-op agent edit leaves the PR's branch untouched");
-            // A stored-patch PR has no branch to edit at, so the scratch
-            // worktree starts at the base and replays the patch there — again
-            // without needing the user's checkout to be clean.
+
+
+
             check(writeTestFile(tmp.path() + "/ap1.txt", "v1\n"),
                   "write patch-PR fixture file");
             git({"add", "ap1.txt"});
@@ -5236,7 +5236,7 @@ int main(int argc, char *argv[])
                 "@@ -1 +1 @@\n-v1\n+v2\n";
             const int pn = pulls.createPull("Patch backed", "body", baseBranch,
                                             "feat-ai-patch", patchAp, QString(),
-                                            /*branchBacked=*/false, &err);
+                                             false, &err);
             check(pn > 0, "createPull stores the patch-backed PR");
             check(pulls.startPullAgentEdit(pn, &err),
                   "startPullAgentEdit replays a patch-backed PR into its worktree");
@@ -5257,9 +5257,9 @@ int main(int argc, char *argv[])
             check(patched.patch.contains("+v3"),
                   "the patch-backed PR's diff picks up the agent's edit");
 
-            // Conflict fixing uses the same isolation guarantee. Build a PR
-            // whose branch and current base changed the same line, then leave
-            // both tracked and untracked work in the user's checkout.
+
+
+
             check(writeTestFile(tmp.path() + "/agent-conflict.txt",
                                 QByteArray("shared\n")),
                   "write the conflict-agent base fixture");
@@ -5279,7 +5279,7 @@ int main(int argc, char *argv[])
             git({"commit", "-q", "-m", "change conflict-agent fixture on base"});
             const int cn = pulls.createPull(
                 "Agent conflict", "body", baseBranch, "feat-agent-conflict",
-                QString(), QString(), /*branchBacked=*/true, &err);
+                QString(), QString(),  true, &err);
             check(cn > 0, "createPull stores the conflict-agent PR");
             check(writeTestFile(tmp.path() + "/ap1.txt",
                                 QByteArray("uncommitted local edit\n")),
@@ -5320,18 +5320,18 @@ int main(int argc, char *argv[])
                       conflictResolved.patch.contains("resolved by agent"),
                   "the resolved PR stays open on its isolated agent-fix branch");
 
-            // Leave the tree clean again for the tests that follow.
+
             git({"checkout", "--", "ap1.txt"});
             QFile::remove(tmp.path() + "/local-wip.txt");
         }
 
-        // --- A branch-backed PR survives a corrupt stored blob by rebuilding
-        // --- its commits from the mirror's refs ------------------------------
-        // Reproduces the "corrupt binary patch" failure: a PR pushed from
-        // another node whose head branch has not landed in this working tree
-        // falls back to the committed commits.mbox, which the inbox can deliver
-        // truncated. Reconstructing the series from real git objects (the
-        // mirror) sidesteps the damaged blob entirely.
+
+
+
+
+
+
+
         {
             auto writeBytes = [&](const QString &rel, const QByteArray &bytes) {
                 check(writeTestFile(tmp.path() + "/" + rel, bytes),
@@ -5340,7 +5340,7 @@ int main(int argc, char *argv[])
             const QString cbBase = QString::fromUtf8(
                 gitOutput({"rev-parse", "--abbrev-ref", "HEAD"}).trimmed());
             git({"checkout", "-q", "-b", "feat-bin"});
-            QByteArray binary; // a genuine binary file → a "GIT binary patch"
+            QByteArray binary;
             for (int i = 0; i < 256; ++i)
                 binary.append(static_cast<char>(i));
             writeBytes("asset.bin", binary);
@@ -5351,7 +5351,7 @@ int main(int argc, char *argv[])
             PullStore plain(tmp.path(), QString(), &identity, "tester");
             const int pbn = plain.createPull("Binary change", "body", cbBase,
                                              "feat-bin", QString(), QString(),
-                                             /*branchBacked=*/true, &err);
+                                              true, &err);
             check(pbn > 0,
                   "createPull stores a branch-backed PR carrying a binary file");
             PullRequest seen;
@@ -5360,17 +5360,17 @@ int main(int argc, char *argv[])
                     seen = p;
             check(seen.commits.contains("GIT binary patch"),
                   "the binary file reconstructs as a real binary patch from refs");
-            // The flat diff must also carry the literal binary delta (derived with
-            // `git diff --binary`), not just "Binary files … differ" — otherwise
-            // the `git apply` merge fallback and the checkMergeable dry-run can't
-            // replay binary changes.
+
+
+
+
             check(seen.patch.contains("GIT binary patch"),
                   "the reconstructed flat patch embeds the binary delta, not just "
                   "a \"Binary files differ\" marker");
 
-            // Mirror the repo, then make this node look like one that holds the
-            // PR pointer but not its branch, with a truncated commits.mbox where
-            // the inbox would have dropped one.
+
+
+
             QTemporaryDir mirrorRoot;
             const QString mirror = mirrorRoot.path() + "/mirror.git";
             {
@@ -5380,14 +5380,14 @@ int main(int argc, char *argv[])
                 clone.waitForFinished(8000);
             }
             git({"branch", "-D", "feat-bin"});
-            // Also drop the materialized PR ref (issue #399): deleting the
-            // named branch alone no longer strands the commits (the ref keeps
-            // them reachable independently), so simulating "no reachable refs
-            // anywhere" needs both gone.
+
+
+
+
             git({"update-ref", "-d",
                 QStringLiteral("refs/pr/%1/head").arg(pbn)});
-            // pulls/ metadata lives on its own linked worktree, not tmp.path()
-            // (issue #399).
+
+
             const QString metaDir = plain.metaWorkTree();
             auto writeMetaBytes = [&](const QString &rel, const QByteArray &bytes) {
                 check(writeTestFile(metaDir + "/" + rel, bytes),
@@ -5405,14 +5405,14 @@ int main(int argc, char *argv[])
                     "patch\nliteral 256\nzcmZ!!CORRUPT!!\n\nliteral 0\n\n-- "
                     "\n2.0.0\n"));
 
-            // With no reachable refs, the corrupt blob is the only source: fail.
+
             PullStore noMirror(tmp.path(), QString(), &identity, "tester");
             QString blobErr;
             check(!noMirror.mergePull(pbn, &blobErr, false),
                   "a branch-backed PR with no reachable refs and a corrupt blob "
                   "fails to apply");
 
-            // With the mirror, the commits come from real objects and apply.
+
             PullStore viaMirror(tmp.path(), mirror, &identity, "tester");
             check(viaMirror.mergePull(pbn, &err, false),
                   "the PR merges once its commits are rebuilt from the mirror");
@@ -5423,11 +5423,11 @@ int main(int argc, char *argv[])
                   "mirror's commits");
         }
 
-        // --- checkMergeable previews a branch-backed PR via a real ref-merge --
-        // The mergeability check runs `git merge-tree` on the actual commits, so
-        // it reports a clean merge or names the conflicting files with no patch
-        // (and none of a `git apply --check`'s missing-blob / context-drift false
-        // conflicts).
+
+
+
+
+
         {
             auto writeFile = [&](const QString &rel, const QString &text) {
                 check(writeTestFile(tmp.path() + "/" + rel, text.toUtf8()),
@@ -5439,7 +5439,7 @@ int main(int argc, char *argv[])
             git({"add", "mt.txt"});
             git({"commit", "-q", "-m", "mt: seed"});
 
-            // A branch-backed PR that only adds a new file → merges cleanly.
+
             git({"checkout", "-q", "-b", "feat-mt-clean"});
             writeFile("mt-new.txt", "added\n");
             git({"add", "mt-new.txt"});
@@ -5447,7 +5447,7 @@ int main(int argc, char *argv[])
             git({"checkout", "-q", mtBase});
             const int cleanN =
                 pulls.createPull("mt clean", "body", mtBase, "feat-mt-clean",
-                                 QString(), QString(), /*branchBacked=*/true, &err);
+                                 QString(), QString(),  true, &err);
             check(cleanN > 0, "createPull stores the non-overlapping branch PR");
             bool clean = false;
             QStringList cf;
@@ -5455,8 +5455,8 @@ int main(int argc, char *argv[])
                   "checkMergeable reports a non-overlapping branch-backed PR as "
                   "clean (via merge-tree, no patch)");
 
-            // A branch-backed PR that rewrites line 2, then the base rewrites the
-            // same line differently → a genuine content conflict merge-tree finds.
+
+
             git({"checkout", "-q", "-b", "feat-mt-conflict", mtBase});
             writeFile("mt.txt", "orig-1\nFEATURE-2\norig-3\n");
             git({"add", "mt.txt"});
@@ -5467,7 +5467,7 @@ int main(int argc, char *argv[])
             git({"commit", "-q", "-m", "mt: base rewrites line 2"});
             const int confN =
                 pulls.createPull("mt conflict", "body", mtBase, "feat-mt-conflict",
-                                 QString(), QString(), /*branchBacked=*/true, &err);
+                                 QString(), QString(),  true, &err);
             check(confN > 0, "createPull stores the overlapping branch PR");
             bool clean2 = true;
             QStringList cf2;
@@ -5478,9 +5478,9 @@ int main(int argc, char *argv[])
                   "checkMergeable names the conflicting file from the ref-merge");
         }
 
-        // --- CoveStore round-trip ----------------------------------------
-        // Create an encrypted cove, confirm the committed file is opaque, then
-        // unlock it from a fresh envelope read and verify the documents.
+
+
+
         CoveStore coves(tmp.path(), QString(), &identity, "tester");
         check(coves.canWrite(), "cove store reports the temp work tree as writable");
         CoveDocument cdoc;
@@ -5542,7 +5542,7 @@ int main(int argc, char *argv[])
                   reloaded.accessMode == "password" && reloaded.createdAtMs > 0,
               "unlock recovers the creator, mode and notify flag from the payload");
 
-        // Appending an access entry and saving carries the trail in the payload.
+
         CoveAccessEntry visit;
         visit.who = identity.publicKey();
         visit.name = "tester";
@@ -5562,10 +5562,10 @@ int main(int argc, char *argv[])
         check(listed.size() == 1 && listed.first().name.isEmpty(),
               "listCoves enumerates envelopes without leaking the cove name");
 
-        // --- Account-scoped coves: anonymous v2 envelopes -----------------
-        // The ACL lives inside the ciphertext; access is granted by unwrapping a
-        // per-account key grant, and the envelope reveals no accounts, no mode
-        // and no member count (grant slots are padded with decoys).
+
+
+
+
         Cove teamCove;
         check(coves.createAccountCove("Team plans", "Alice", {"bob"}, false,
                                       {cdoc}, &teamCove, &err),
@@ -5602,8 +5602,8 @@ int main(int argc, char *argv[])
                   !CoveStore::accountCanAccess(asBob, "mallory"),
               "the decrypted ACL answers accountCanAccess after unlock");
 
-        // Inviting another account re-wraps the content key; the newcomer can
-        // then unlock while the envelope still names nobody.
+
+
         asBob.invitedAccounts << "carol";
         check(coves.saveAccountCove(asBob, &err),
               "saving an account cove with a new invitee succeeds");
@@ -5615,13 +5615,13 @@ int main(int argc, char *argv[])
                    .contains("carol"),
               "the re-sealed envelope still never names the invited accounts");
 
-        // --- Legacy v1 account coves still unlock (and upgrade on save) ---
-        // v1 stored the ACL in plaintext and derived the secret from it; write
-        // one by hand and confirm the modern reader still opens it.
+
+
+
         {
             const QString coveId = "11111111-2222-3333-4444-555555555555";
             const QByteArray salt = CoveCrypto::randomSalt();
-            const int rounds = 2048; // keep the test fast; v1 honors stored rounds
+            const int rounds = 2048;
             const QByteArray material =
                 QStringLiteral("forkmesh-account-cove-v1\n%1\n%2\n%3\n%4")
                     .arg(coveId, identity.publicKey(), "alice", "alice\nbob")
@@ -5682,9 +5682,9 @@ int main(int argc, char *argv[])
         }
     }
 
-    // AgentJail (adhoc #236): jailed launches get a memory cap prepended to the
-    // shell command and a private scratch environment; a zero/negative cap
-    // leaves the command untouched so unjailed runs are byte-identical.
+
+
+
     {
         const QString cmd = QStringLiteral("exec claude --model 'opus'");
         check(AgentJail::wrapCommand(cmd, 0) == cmd,
@@ -5719,9 +5719,9 @@ int main(int argc, char *argv[])
               "stream sessions get a per-session jail dir under temp");
     }
 
-    // AgentStore persists a Claude Code session's stream-json transcript so it
-    // survives an app restart (issue #41): events append one per line, reload in
-    // order, and clearEvents starts a fresh run.
+
+
+
     {
         QTemporaryDir tmp;
         check(tmp.isValid(), "agent store temp dir is valid");
@@ -5747,7 +5747,7 @@ int main(int argc, char *argv[])
         check(events.size() == 2 && events.at(1).value("seq").toInt() == 2,
               "transcript events reload in append order");
 
-        // Reopening the store mimics an app restart: the transcript is still there.
+
         AgentStore reopened(tmp.path());
         const QList<AgentSession> sessions = reopened.loadAllSessions();
         check(sessions.size() == 1 &&
@@ -5759,8 +5759,8 @@ int main(int argc, char *argv[])
               "clearEvents starts the next run with a clean transcript");
     }
 
-    // The Claude Code run summary the CLI reports on finish ("done · N turns ·
-    // Ms · $X") is stored on the session and survives a restart (issue #296).
+
+
     {
         QTemporaryDir tmp;
         check(tmp.isValid(), "run-summary store temp dir is valid");
@@ -5782,9 +5782,9 @@ int main(int argc, char *argv[])
               "turns, duration and cost reload intact after restart");
     }
 
-    // The quick-add "YOLO" toggle is stamped onto the session at launch (adhoc
-    // #12), so the auto-merge decision survives a restart and never depends on
-    // where the checkbox happens to sit when the run finishes.
+
+
+
     {
         QTemporaryDir tmp;
         check(tmp.isValid(), "yolo store temp dir is valid");
@@ -5804,17 +5804,17 @@ int main(int argc, char *argv[])
                   !sessions.first().merged,
               "the YOLO flag reloads intact after a restart, still unmerged");
 
-        // Sessions written before the flag existed must read back as opt-out —
-        // an absent "yolo" key can never turn into an unattended merge.
+
+
         QJsonObject legacy = session.toJson();
         legacy.remove("yolo");
         check(!AgentSession::fromJson(legacy).yolo,
               "a session JSON without the yolo key never auto-merges");
 
-        // Genie (adhoc #38) is stamped the same way: the launch attaches the MCP
-        // connector because the run was started as a genie, so the flag has to
-        // survive a restart (a resumed genie must get its tools back) and an
-        // older session file must not read as one.
+
+
+
+
         check(!AgentSession::fromJson(legacy).genie,
               "a session JSON without the genie key is not a genie run");
         session.genie = true;
@@ -5823,8 +5823,8 @@ int main(int argc, char *argv[])
         const QList<AgentSession> genieSessions = genieReopened.loadAllSessions();
         check(genieSessions.size() == 1 && genieSessions.first().genie,
               "the genie flag reloads intact after a restart");
-        // The sparkle glyph marks a genie only while it is still in flight; a
-        // finished or merged one reads exactly like every other run.
+
+
         AgentSession live = genieSessions.first();
         live.status = AgentStatus::Running;
         check(live.genieInFlight(), "a running genie is drawn with the genie glyph");
@@ -5843,11 +5843,11 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Workflow variable substitution must expand the explicit
-        // ${{ vars.NAME }} context form and any declared ${NAME} variables, but
-        // must NOT touch a workflow's own shell variables — otherwise a release
-        // step building "releases/${channel}/forkmesh-${os}-${arch}" from shell
-        // variables collapses to "releases//forkmesh--" (the reported bug).
+
+
+
+
+
         QMap<QString, QString> vars;
         vars.insert(QStringLiteral("TOKEN"), QStringLiteral("s3cr3t"));
 
@@ -5871,8 +5871,8 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Workflow `on:` triggers parse into the predicates the runner gates on:
-        // a release workflow fires on a published release, not on every push.
+
+
         const ActionWorkflow rel = ActionFile::parse(
             QStringLiteral(".forkmesh/release.yml"),
             QStringLiteral("name: Release\non: [release, workflow_dispatch]\n"
@@ -5893,9 +5893,9 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Dedicated nodes: `runs-on:` pins a workflow to named machines, so the
-        // mesh can send tests to one node, Cloudflare deploys to a mirror, and
-        // the iOS build to a Mac. Every other node must skip it entirely.
+
+
+
         const ActionWorkflow anywhere = ActionFile::parse(
             QStringLiteral(".forkmesh/ci.yml"),
             QStringLiteral("name: CI\non: [push]\n"
@@ -5944,9 +5944,9 @@ int main(int argc, char *argv[])
         check(any.runsOnNode({QStringLiteral("mirror2")}),
               "the reserved \"any\" label matches every node");
 
-        // The Actions tab's "Run on" dropdown pins a node without editing the
-        // YAML: the pin is stored on the repository record and stands in for the
-        // workflow's own runs-on labels.
+
+
+
         QStringList pins;
         check(ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/ci.yml"))
                   .isEmpty(),
@@ -5976,8 +5976,8 @@ int main(int argc, char *argv[])
                       QStringLiteral("mirror2"),
               "clearing one pin leaves the others alone");
 
-        // A pin decides on its own: the dedication check runs against the pinned
-        // label, so a workflow the file sends elsewhere still runs here.
+
+
         ActionWorkflow pinned;
         pinned.runsOn = QStringList{
             ActionFile::pinnedNode(pins, QStringLiteral(".forkmesh/deploy.yml"))};
@@ -5985,8 +5985,8 @@ int main(int argc, char *argv[])
                   !pinned.runsOnNode({QStringLiteral("mac1")}),
               "the pinned node is the only one that runs the workflow");
 
-        // This node's own labels: node name, mirror-executor name, platform, and
-        // whatever capability tags the operator typed in Settings.
+
+
         const QStringList labels = ActionFile::nodeLabels(
             QStringLiteral("Mac1"), QString(),
             QStringLiteral("ios, xcode  flutter,ios"));
@@ -6007,8 +6007,8 @@ int main(int argc, char *argv[])
     }
 
     {
-        // `needs:` orders one workflow behind another for the same commit, so a
-        // deploy can trust the CI run instead of repeating its test suite.
+
+
         const ActionWorkflow deploy = ActionFile::parse(
             QStringLiteral(".forkmesh/deploy.yml"),
             QStringLiteral("name: Deploy\non: [push]\n"
@@ -6027,9 +6027,9 @@ int main(int argc, char *argv[])
         check(jobLevel.needs == QStringList{QStringLiteral("CI tests")},
               "job-level needs block lists parse too");
 
-        // Jobs inside one file are flattened into a single step list, so a
-        // GitHub-style dependency between sibling jobs must not be read as a
-        // dependency on another workflow (which would never resolve).
+
+
+
         const ActionWorkflow siblings = ActionFile::parse(
             QStringLiteral(".forkmesh/build.yml"),
             QStringLiteral("name: Build\non: [push]\n"
@@ -6085,8 +6085,8 @@ int main(int argc, char *argv[])
                   detail.contains(ActionStatus::Failed),
               "a failed dependency blocks the dependent run and reports why");
 
-        // A dependency at a different commit is a different result entirely; the
-        // gate is per-commit, and a missing record must not wedge the queue.
+
+
         dependency.status = ActionStatus::Success;
         ActionRun otherCommit = dependency;
         otherCommit.commit = QStringLiteral("def456");
@@ -6101,7 +6101,7 @@ int main(int argc, char *argv[])
                   ActionNeeds::State::Ready,
               "a workflow with no needs is always ready");
 
-        // Re-running a workflow prepends a fresh record; the newest one wins.
+
         ActionRun rerun = dependency;
         rerun.id = 3;
         rerun.status = ActionStatus::Running;
@@ -6112,10 +6112,10 @@ int main(int argc, char *argv[])
               "the newest run of a dependency decides the gate");
     }
 
-    // --- Secret scanning -------------------------------------------------------
+
     {
-        // Helper: init a fresh git repo, commit fileContent, then call
-        // findSecretsInPush with no upstream ref (full tracked-file scan).
+
+
         const auto runSecretTest = [](const QByteArray &fileContent,
                                       const QString &expectedTitle) -> bool {
             QTemporaryDir td;
@@ -6146,83 +6146,83 @@ int main(int argc, char *argv[])
             return false;
         };
 
-        // Per-provider checks (file-scan path)
-        check(runSecretTest("GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",  // forkmesh-secret-scan:ignore-line
+
+        check(runSecretTest("GITHUB_TOKEN=ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
                             QStringLiteral("GitHub token")),
               "secret scan detects GitHub PAT (ghp_)");
-        check(runSecretTest("GITHUB_TOKEN=github_pat_AAAAAAAAAAAAAAAAAAAAAA\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("GITHUB_TOKEN=github_pat_AAAAAAAAAAAAAAAAAAAAAA\n",
                             QStringLiteral("GitHub fine-grained PAT")),
               "secret scan detects GitHub fine-grained PAT (github_pat_)");
-        check(runSecretTest("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n",
                             QStringLiteral("AWS access key")),
               "secret scan detects AWS long-term access key (AKIA)");
-        check(runSecretTest("KEY=ASIAQFI2EXAMPLE123456789012345\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("KEY=ASIAQFI2EXAMPLE123456789012345\n",
                             QStringLiteral("AWS temporary access key")),
               "secret scan detects AWS temporary STS key (ASIA)");
         check(runSecretTest(
-                  "SLACK_TOKEN=xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx\n",  // forkmesh-secret-scan:ignore-line
+                  "SLACK_TOKEN=xoxb-123456789012-123456789012-abcdefghijklmnopqrstuvwx\n",
                   QStringLiteral("Slack token")),
               "secret scan detects Slack token (xoxb-)");
         check(runSecretTest(
-                  "OPENAI_KEY=sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh\n",  // forkmesh-secret-scan:ignore-line
+                  "OPENAI_KEY=sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefgh\n",
                   QStringLiteral("OpenAI API key")),
               "secret scan detects OpenAI project key (sk-proj-)");
         check(runSecretTest(
-                  "OPENAI_KEY=sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv\n",  // forkmesh-secret-scan:ignore-line
+                  "OPENAI_KEY=sk-ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv\n",
                   QStringLiteral("OpenAI API key")),
               "secret scan detects OpenAI legacy key (sk- + 48 chars)");
         check(runSecretTest(
-                  "ANTHROPIC_KEY=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZabcde\n",  // forkmesh-secret-scan:ignore-line
+                  "ANTHROPIC_KEY=sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZabcde\n",
                   QStringLiteral("Anthropic API key")),
               "secret scan detects Anthropic API key (sk-ant-)");
-        check(runSecretTest("STRIPE_KEY=sk_live_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("STRIPE_KEY=sk_live_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",
                             QStringLiteral("Stripe secret key")),
               "secret scan detects Stripe secret key (sk_live_)");
-        check(runSecretTest("STRIPE_KEY=rk_test_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("STRIPE_KEY=rk_test_ABCDEFGHIJKLMNOPQRSTUVWXyz\n",
                             QStringLiteral("Stripe restricted key")),
               "secret scan detects Stripe restricted key (rk_test_)");
-        check(runSecretTest("GOOGLE_KEY=AIzaSyDOCAbC123dEf456GhI789jKl012-MnOAB\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("GOOGLE_KEY=AIzaSyDOCAbC123dEf456GhI789jKl012-MnOAB\n",
                             QStringLiteral("Google API key")),
               "secret scan detects Google API key (AIza)");
-        check(runSecretTest("GOOGLE_OAUTH=ya29.A0ARrda1ABCDEFGHIJKLMNOPQRSTUVWXYZ\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("GOOGLE_OAUTH=ya29.A0ARrda1ABCDEFGHIJKLMNOPQRSTUVWXYZ\n",
                             QStringLiteral("Google OAuth token")),
               "secret scan detects Google OAuth token (ya29.)");
-        check(runSecretTest("GOOGLE_SECRET=GOCSPX-ABCDEFGHIJKLMNOPQRSTUVWXabcde\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("GOOGLE_SECRET=GOCSPX-ABCDEFGHIJKLMNOPQRSTUVWXabcde\n",
                             QStringLiteral("Google OAuth client secret")),
               "secret scan detects Google OAuth client secret (GOCSPX-)");
         check(runSecretTest(
-                  "SG=SG.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",  // forkmesh-secret-scan:ignore-line
+                  "SG=SG.AAAAAAAAAAAAAAAAAAAAAA.BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",
                   QStringLiteral("SendGrid API key")),
               "secret scan detects SendGrid API key (SG.)");
-        check(runSecretTest("TWILIO=SKabcdef1234567890abcdef1234567890\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("TWILIO=SKabcdef1234567890abcdef1234567890\n",
                             QStringLiteral("Twilio auth token")),
               "secret scan detects Twilio auth token (SK + 32 hex chars)");
-        check(runSecretTest("NPM=npm_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("NPM=npm_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n",
                             QStringLiteral("npm access token")),
               "secret scan detects npm access token (npm_)");
-        check(runSecretTest("VAULT=hvs.CAESIABC123defGHI456jklMNO789pqr\n",  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("VAULT=hvs.CAESIABC123defGHI456jklMNO789pqr\n",
                             QStringLiteral("HashiCorp Vault token")),
               "secret scan detects HashiCorp Vault service token (hvs.)");
         check(runSecretTest(
-                  "CLOUDFLARE_API_TOKEN=aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLMN\n",  // forkmesh-secret-scan:ignore-line
+                  "CLOUDFLARE_API_TOKEN=aBcDeFgHiJkLmNoPqRsTuVwXyZaBcDeFgHiJkLMN\n",
                   QStringLiteral("Cloudflare API token")),
               "secret scan detects Cloudflare API token (env-var anchored)");
-        check(runSecretTest("-----BEGIN PRIVATE KEY-----\nMIIBIjANBg...\n"  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("-----BEGIN PRIVATE KEY-----\nMIIBIjANBg...\n"
                             "-----END PRIVATE KEY-----\n",
                             QStringLiteral("PEM private key")),
               "secret scan detects PKCS#8 PEM private key block");
-        check(runSecretTest("-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n"  // forkmesh-secret-scan:ignore-line
+        check(runSecretTest("-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n"
                             "-----END RSA PRIVATE KEY-----\n",
                             QStringLiteral("PEM private key")),
               "secret scan detects RSA PEM private key block");
         check(runSecretTest(
-                  "DATABASE_PASSWORD=\"s3cr3tPasswordThatIsLongEnough\"\n",  // forkmesh-secret-scan:ignore-line
+                  "DATABASE_PASSWORD=\"s3cr3tPasswordThatIsLongEnough\"\n",
                   QStringLiteral("Secret/token assignment")),
               "secret scan detects generic quoted secret assignment");
 
-        // The generic assignment rule has no provider prefix to anchor it, so
-        // recognisable placeholders (test fixtures, docs samples, template
-        // holes) must not block a push.
+
+
+
         check(!runSecretTest(
                   "password: \"correct-horse-battery-staple\"\n",
                   QStringLiteral("Secret/token assignment")),
@@ -6236,13 +6236,13 @@ int main(int argc, char *argv[])
         check(!runSecretTest("password=\"xxxxxxxxxxxxxxxxxxxxxxxx\"\n",
                              QStringLiteral("Secret/token assignment")),
               "secret scan ignores single-character filler runs");
-        // A provider-prefixed hit stays high-confidence even next to
-        // placeholder-ish wording.
-        check(runSecretTest("EXAMPLE_TOKEN=ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",  // forkmesh-secret-scan:ignore-line
+
+
+        check(runSecretTest("EXAMPLE_TOKEN=ghp_BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB\n",
                             QStringLiteral("GitHub token")),
               "secret scan still flags prefixed tokens in example wording");
 
-        // Benign content must not trigger a false positive
+
         {
             QTemporaryDir td;
             const QString dir = td.path();
@@ -6268,10 +6268,10 @@ int main(int argc, char *argv[])
                   "secret scan produces no false positives on benign content");
         }
 
-        // A line carrying the "forkmesh-secret-scan:ignore-line" marker is
-        // skipped even though it matches a pattern — this is how the
-        // scanner's own per-provider test fixtures (above) avoid flagging
-        // themselves when this file is scanned as part of a tracked repo.
+
+
+
+
         {
             QTemporaryDir td;
             const QString dir = td.path();
@@ -6287,7 +6287,7 @@ int main(int argc, char *argv[])
             git({QStringLiteral("config"), QStringLiteral("user.name"),
                  QStringLiteral("T")});
             check(writeTestFile(dir + QStringLiteral("/fixtures.cpp"),
-                                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE // forkmesh-secret-scan:ignore-line\n"),  // forkmesh-secret-scan:ignore-line
+                                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE // forkmesh-secret-scan:ignore-line\n"),
                   "write ignored secret-scan fixture file");
             git({QStringLiteral("add"), QStringLiteral("fixtures.cpp")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
@@ -6296,7 +6296,7 @@ int main(int argc, char *argv[])
                   "secret scan skips lines carrying the ignore-line marker");
         }
 
-        // Diff-scan path: secrets introduced in HEAD commit are detected
+
         {
             QTemporaryDir td;
             const QString dir = td.path();
@@ -6311,16 +6311,16 @@ int main(int argc, char *argv[])
                  QStringLiteral("t@t")});
             git({QStringLiteral("config"), QStringLiteral("user.name"),
                  QStringLiteral("T")});
-            // Base commit — clean
+
             check(writeTestFile(dir + QStringLiteral("/readme.txt"),
                                 "placeholder\n"),
                   "write diff-scan base fixture file");
             git({QStringLiteral("add"), QStringLiteral("readme.txt")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
                  QStringLiteral("base")});
-            // HEAD commit introduces a secret
+
             check(writeTestFile(dir + QStringLiteral("/creds.env"),
-                                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"),  // forkmesh-secret-scan:ignore-line
+                                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"),
                   "write diff-scan secret fixture file");
             git({QStringLiteral("add"), QStringLiteral("creds.env")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
@@ -6336,7 +6336,7 @@ int main(int argc, char *argv[])
                   "diff-scan reports no findings when HEAD has no new commits to push");
         }
 
-        // Diff-scan path: secrets removed in a commit must NOT trigger
+
         {
             QTemporaryDir td;
             const QString dir = td.path();
@@ -6351,14 +6351,14 @@ int main(int argc, char *argv[])
                  QStringLiteral("t@t")});
             git({QStringLiteral("config"), QStringLiteral("user.name"),
                  QStringLiteral("T")});
-            // Base commit WITH a secret (already in history)
+
             check(writeTestFile(dir + QStringLiteral("/creds.env"),
-                                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"),  // forkmesh-secret-scan:ignore-line
+                                "AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE\n"),
                   "write remediation base fixture file");
             git({QStringLiteral("add"), QStringLiteral("creds.env")});
             git({QStringLiteral("commit"), QStringLiteral("-m"),
                  QStringLiteral("base")});
-            // HEAD commit removes the secret (remediation commit)
+
             check(writeTestFile(dir + QStringLiteral("/creds.env"),
                                 "# credentials removed\n"),
                   "write remediation head fixture file");
@@ -6370,7 +6370,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    // --- Per-manifest dependency counts (adhoc #86) -----------------------
+
     {
         QTemporaryDir td;
         check(td.isValid(), "dependency-count temp repo created");
@@ -6386,8 +6386,8 @@ int main(int argc, char *argv[])
              QStringLiteral("t@t")});
         git({QStringLiteral("config"), QStringLiteral("user.name"),
              QStringLiteral("T")});
-        // The scanner reads line-by-line (one "name": "version" entry per
-        // line), so the fixture must be pretty-printed, not minified.
+
+
         check(writeTestFile(dir + QStringLiteral("/package.json"), R"JSON({
   "dependencies": {
     "left-pad": "1.0.0",
@@ -6439,9 +6439,9 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Agent metadata is the only unsealed local session state. Provider
-        // credentials are launch-time config and can never become workspace
-        // metadata or a shared owner-sealed session payload by field alias.
+
+
+
         AgentSession session;
         session.id = 42;
         session.owner = QStringLiteral("alice");
@@ -6465,9 +6465,9 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Background-activity bus (adhoc #421): the footer strip is driven purely
-        // by these tickets, so a lost or double-retired one leaves a spinner
-        // running forever (or hides work that is still going).
+
+
+
         QStringList seen;
         forkmesh::BackgroundActivity::setListener(
             [&seen](quint64 id, const QString &kind, const QString &detail,
@@ -6495,7 +6495,7 @@ int main(int argc, char *argv[])
               "each background ticket gets its own non-zero id");
         forkmesh::BackgroundActivity::end(first);
         forkmesh::BackgroundActivity::end(second);
-        forkmesh::BackgroundActivity::end(0); // no-op guard for untracked work
+        forkmesh::BackgroundActivity::end(0);
         check(seen == QStringList({
                   QStringLiteral("+:%1:git:git log:async").arg(first),
                   QStringLiteral("+:%1:net::async").arg(second),
@@ -6520,8 +6520,8 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Log outcome lines (adhoc #419/#421): the ✓ / ✕ marker reflects the
-        // declared execution lane, never how long the operation happened to run.
+
+
         const QString ok = forkmesh::backgroundOkGlyph();
         const QString no = forkmesh::backgroundNotGlyph();
         check(forkmesh::backgroundOutcomeLine(QStringLiteral("git"), 1, 1400,
@@ -6549,9 +6549,9 @@ int main(int argc, char *argv[])
                       QStringLiteral("1.0s"),
               "elapsed text stays short and never renders a negative clock skew");
 
-        // Both log views paint the message body in one colour, so the marker is
-        // recoloured after escaping — green for ✓, red for ✕, and only the first
-        // of each so a note that happens to contain one can't smear the line.
+
+
+
         const QString painted = forkmesh::colorizeBackgroundMarker(
             QStringLiteral("Background %1 net %2").arg(no, ok));
         check(painted.contains(QStringLiteral("#f85149")) &&
@@ -6562,10 +6562,10 @@ int main(int argc, char *argv[])
               "a line without a marker is passed through untouched");
     }
 
-    // --- Hourly local backups of the live database ----------------------
-    // The Settings -> Data backup panel restores whatever these helpers list,
-    // so the naming round-trip, the newest-first order, the retention cut and
-    // the tar argument order are the contract that makes recovery work.
+
+
+
+
     {
         QTemporaryDir backupRoot;
         const QDateTime taken =
@@ -6576,8 +6576,8 @@ int main(int argc, char *argv[])
               "a snapshot is named after the moment it was taken");
         check(forkmesh::backupTimestampFromName(name) == taken,
               "the timestamp round-trips out of the file name");
-        // Only our own archives may be listed: anything else in the folder is a
-        // file the user put there, and restoring or pruning it would be wrong.
+
+
         check(!forkmesh::backupTimestampFromName(
                    QStringLiteral("forkmesh-backup-20260728-091500-copy.tar.gz"))
                    .isValid() &&
@@ -6621,10 +6621,10 @@ int main(int argc, char *argv[])
               "nothing is pruned under the limit, and keep=0 still spares the "
               "newest snapshot");
 
-        // The hourly toggle's unset-default follows the Cloudflare API token:
-        // only a control node backs itself up without being asked, because
-        // every other install (desktop or VPS) would rather not spend a day of
-        // ~1GB tarballs it never opted into.
+
+
+
+
         check(forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
                   !forkmesh::autoBackupDefault(QString()) &&
                   !forkmesh::autoBackupDefault(QStringLiteral("   ")),
@@ -6643,9 +6643,9 @@ int main(int argc, char *argv[])
               "a snapshot stamped in the future (clock skew) doesn't fire a "
               "burst of backups");
 
-        // The archive must hold the app data + settings file and must never
-        // recurse into the mirrors, the browse cache or the backup folder
-        // itself; tar only honours --exclude when it precedes the members.
+
+
+
         QTemporaryDir dataRoot;
         const QString appData = QDir(dataRoot.path()).filePath("ForkMesh");
         QDir().mkpath(QDir(appData).filePath("backups"));
@@ -6685,20 +6685,20 @@ int main(int argc, char *argv[])
               "a fresh install with nothing on disk yet produces no tar run");
     }
 
-    // QFontDatabase logs "OpenType support missing for \"<family>\", script N"
-    // once per installed family every time it walks the fallback list for a
-    // codepoint the system fonts can't shape, burying the console. The log
-    // filter (installed for every launch, not just headless) must swallow
-    // exactly those lines and forward everything else.
+
+
+
+
+
     {
         QStringList captured;
         capturedMessages = &captured;
         QtMessageHandler previous = qInstallMessageHandler(captureMessages);
-        forkmesh::installPlatformLogFilter(); // chains to captureMessages
+        forkmesh::installPlatformLogFilter();
         qWarning("OpenType support missing for \"DejaVu Sans Mono\", script 9");
         qWarning("OpenType support missing for \"\", script 9");
         qWarning("forkmesh-419-control-line");
-        qInstallMessageHandler(previous); // restore so PASS/FAIL output prints
+        qInstallMessageHandler(previous);
         capturedMessages = nullptr;
 
         const QString joined = captured.join(QLatin1Char('\n'));
@@ -6713,9 +6713,9 @@ int main(int argc, char *argv[])
               "isFontDatabaseNoise matches only the font-database warning");
     }
 
-    // MCP connector (adhoc #16): the token is a bearer credential that lets an
-    // external agent write signed entries as this node, so minting, masking,
-    // persistence permissions and revocation all have to hold.
+
+
+
     {
         using namespace forkmesh::mcp;
         QTemporaryDir appData;
@@ -6748,9 +6748,9 @@ int main(int argc, char *argv[])
                   && loaded.label == QStringLiteral("laptop")
                   && loaded.createdMs == 1700000000000LL,
               "the saved connector round-trips");
-        // Qt reports the same POSIX bits as both the Owner and User flags, so
-        // assert on what actually matters: the owner can read/write it and
-        // nobody else can see it at all.
+
+
+
         const QFile::Permissions perms =
             QFile::permissions(connectorPath(appData.path()));
         check(perms.testFlag(QFile::ReadOwner) &&
@@ -6768,8 +6768,8 @@ int main(int argc, char *argv[])
                   loadConnector(appData.path()).token == token,
               "a malformed token is refused without clobbering the live one");
 
-        // A hand-edited/truncated file must read as "no connector" rather than
-        // as a connector whose token nothing can ever match.
+
+
         QFile broken(connectorPath(appData.path()));
         check(broken.open(QIODevice::WriteOnly | QIODevice::Truncate),
               "connector file reopened");
@@ -6822,12 +6822,12 @@ int main(int argc, char *argv[])
     }
 
     {
-        // Size map over a folder the user cannot fully read (adhoc #76): the
-        // mount table has to yield the pseudo filesystems Qt's QStorageInfo
-        // hides (or /proc/kcore's fictional terabytes swallow a scan of "/"),
-        // unreadable directories have to be counted rather than silently
-        // skipped, and the tree has to survive the trip back from the elevated
-        // helper process.
+
+
+
+
+
+
         using namespace forkmesh;
 
         const QByteArray mountInfo =
@@ -6879,8 +6879,8 @@ int main(int argc, char *argv[])
                       scan.unreadableSample.first().endsWith(
                           QStringLiteral("/locked")),
                   "an unlistable directory is reported, not silently dropped");
-            // What decides whether selecting a folder asks for the root password
-            // before scanning it at all (adhoc #112).
+
+
             check(scanNeedsElevation(tree.path(), {}),
                   "a folder holding an unlistable directory wants root up front");
             check(!scanNeedsElevation(
@@ -6894,7 +6894,7 @@ int main(int argc, char *argv[])
             check(!scanNeedsElevation(tree.path(), {}),
                   "already running as root, there is nothing left to ask for");
         }
-        // Restore, or QTemporaryDir cannot clean up after itself.
+
         QFile::setPermissions(root.absoluteFilePath(QStringLiteral("locked")),
                               QFileDevice::ReadOwner | QFileDevice::WriteOwner |
                                   QFileDevice::ExeOwner);
@@ -6921,9 +6921,9 @@ int main(int argc, char *argv[])
                   !decodeScanResult(QByteArray(), &decoded),
               "a truncated or foreign payload is never read as a tree");
 
-        // Live progress (adhoc #112): the walk names the folder it is inside so
-        // the tab can show it, and the same updates survive the trip out of the
-        // elevated helper on stderr.
+
+
+
         QStringList visited;
         qint64 lastBytes = -1;
         scanDirectorySizes(tree.path(), options,
@@ -6937,7 +6937,7 @@ int main(int argc, char *argv[])
         QString progressPath;
         qint64 progressBytes = 0;
         int progressFiles = 0;
-        // A newline in a filename would otherwise split one update into two.
+
         const QString awkward =
             tree.path() + QStringLiteral("/od d\nname 100%");
         check(decodeScanProgress(encodeScanProgress(awkward, 4096, 7),
@@ -6956,8 +6956,8 @@ int main(int argc, char *argv[])
                                       &progressFiles),
               "sudo's own chatter and a truncated line are not progress");
 
-        // Stop button: a canceled poll must unwind before the walk descends
-        // into anything, rather than finishing the tree and throwing it away.
+
+
         int cancelChecks = 0;
         const DirectorySizeScanResult stopped = scanDirectorySizes(
             tree.path(), options, {},
@@ -6969,9 +6969,9 @@ int main(int argc, char *argv[])
 
 #if defined(Q_OS_LINUX)
     {
-        // Counting an agent's own compilers (adhoc #57): the /proc walk has to
-        // find a grandchild by command name and ignore everything outside the
-        // tree it was asked about.
+
+
+
         using SystemStats::descendantsNamed;
         check(descendantsNamed(0, QStringLiteral("sleep")).count == 0 &&
                   descendantsNamed(QCoreApplication::applicationPid(), QString())
@@ -6979,8 +6979,8 @@ int main(int argc, char *argv[])
               "an invalid root PID or empty name counts nothing");
 
         QProcess child;
-        // `sh` execs the sleep, so the match is a grandchild of this process —
-        // the same shape as claude → bash → cc1plus.
+
+
         child.start(QStringLiteral("/bin/sh"),
                     {QStringLiteral("-c"), QStringLiteral("sleep 30")});
         if (child.waitForStarted(5000)) {
@@ -6991,7 +6991,7 @@ int main(int argc, char *argv[])
                 load = descendantsNamed(QCoreApplication::applicationPid(),
                                         QStringLiteral("sleep"));
                 if (load.count == 0)
-                    QThread::msleep(50); // sh hasn't exec'd the sleep yet
+                    QThread::msleep(50);
             }
             check(load.count >= 1 && load.residentBytes > 0,
                   "a descendant process is counted with its resident memory");

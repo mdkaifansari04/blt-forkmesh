@@ -1,6 +1,6 @@
-// Dashboard ForkMesh room chat integration.
-// Keeps the current dashboard UI, but uses the same encrypted room protocol as
-// the production chat from forkmesh-today/cloudflare_worker/public/chat.js.
+
+
+
 
 function mountForkMeshDashboardChat() {
   const ROOM_NAME = "general";
@@ -32,11 +32,11 @@ function mountForkMeshDashboardChat() {
     : ["mainnode", "forkmesh"];
   const ROOM_OWNER = workshopRepoParts[0];
   const ROOM_REPO = workshopRepoParts[1];
-  // A workshop uses its repository's own relay-derived passphrase and Durable
-  // Object room. Never multiplex a private repo/run channel into the Town
-  // Square ciphertext: every registered account can obtain that public room's
-  // key. The scoped key endpoint applies the repository ACL before release,
-  // and the scoped WebSocket route fails closed before Durable Object access.
+
+
+
+
+
   const ACTIVE_SPACE = Object.hasOwn(SPACE_CHANNELS, requestedSpace)
     ? requestedSpace
     : "";
@@ -76,17 +76,17 @@ function mountForkMeshDashboardChat() {
   const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
   const CLAUDE_SENDER_ID = "claude";
   const CODEX_SENDER_ID = "codex";
-  // The task board addresses one general bot instead of naming a vendor.
+
   const ORG_BOT_SENDER_ID = "agent";
-  // "codex"/"claude" survive only so a stored selection still routes to the
-  // general bot after the per-vendor options were removed.
+
+
   const AGENT_ASSIGNEE_VALUES = ["agent", "codex", "claude"];
   const CLAUDE_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@claude\b/i;
   const CODEX_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@codex\b/i;
-  // Mainnode base host for the room WebSocket. Defaults to the origin that
-  // served the dashboard, so a self-hosted mainnode talks to itself. Override
-  // with window.FORKMESH_RELAY_HOST to target a different relay (see
-  // public docs, "Self-hosting and development" (/docs#self-hosting).
+
+
+
+
   const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
   const MAX_TEXT = 16000;
   const MAX_NAME = 32;
@@ -230,9 +230,9 @@ function mountForkMeshDashboardChat() {
     return true;
   }
 
-  // The World's ForkBot avatar and CHAT bar ask this embed (parent frame,
-  // same-origin) to drop starting text into the composer — e.g. "@forkbot "
-  // so a visitor can start typing straight away. See world.js openChatTerminal.
+
+
+
   window.addEventListener("message", (event) => {
     if (event.origin !== location.origin) return;
     const data = event.data;
@@ -275,10 +275,10 @@ function mountForkMeshDashboardChat() {
 
   const enc = new TextEncoder();
   const dec = new TextDecoder();
-  // Stable per-browser chat id, shared with the full chat page (same storage
-  // key): the relay keeps no roster, so a fresh random id per load made every
-  // reload/tab of the same person a new "ghost" participant. Persisting it
-  // collapses them into one identity.
+
+
+
+
   const selfId = (() => {
     const STORAGE_KEY = "forkmesh.chat.selfId";
     try {
@@ -292,10 +292,10 @@ function mountForkMeshDashboardChat() {
     return fresh;
   })();
 
-  // Baseline behind the site-header chat badge, shared with chat.js and
-  // site-header.js. Every retained #general line this browser contributes
-  // advances it, so talking here never leaves an unread pill on the rest of
-  // the site. No baseline yet means the header seeds one silently.
+
+
+
+
   const CHAT_ACTIVITY_SEEN_KEY = "forkmesh.chat.activitySeen";
 
   function noteOwnChatActivity() {
@@ -317,9 +317,9 @@ function mountForkMeshDashboardChat() {
   let connecting = false;
   let openCallbacks = [];
   let cachedUserSession = null;
-  // Agent conversations are not ordinary room traffic. Access is resolved
-  // against the server-authorized Engineering team before history renders or
-  // the composer offers Claude/Codex mentions. Fail closed on every error.
+
+
+
   let orgAgentEngineeringAccess = false;
   let orgAgentAccessLoaded = false;
   const seen = new Set();
@@ -350,16 +350,16 @@ function mountForkMeshDashboardChat() {
   let discordSources = null;
   let discordBackoffUntil = 0;
   let discordBackoffAttempts = 0;
-  // messageId -> Map(emoji -> Map(reactorId -> reactorName)); identical to
-  // the full web/Qt protocol shape so reactions converge across every client.
+
+
   const reactions = new Map();
   const sideEntries = [];
   const attachmentControls = [];
   const attachmentUrls = new Set();
-  // Rolling buffer of recent decrypted messages, forwarded to ForkBot so it can
-  // resolve references like "that bug" from the conversation. The relay can
-  // decrypt the default shared-key room; this controls only the narrower
-  // context explicitly sent to ForkBot.
+
+
+
+
   const recentContext = [];
   const RECENT_CONTEXT_MAX = 20;
   function rememberContext(sender, text) {
@@ -373,18 +373,18 @@ function mountForkMeshDashboardChat() {
   let mentionCardEl = null;
   let activeMentionAnchor = null;
   let mentionHideTimer = null;
-  // People seen in this room (live frames and replayed history), keyed by
-  // lowercase handle: the relay keeps no roster, so this is what "who is here"
-  // means for the composer's @mention list. mentionDirectory holds registered
-  // accounts (fetched lazily on the first "@") so people who are offline right
-  // now can still be mentioned.
+
+
+
+
+
   const mentionPeople = new Map();
   const mentionDirectory = new Map();
   let mentionDirectoryFetchedMs = 0;
   let mentionDirectoryPending = null;
   let mentionSuggestEl = null;
-  // null when closed, else { input, items, index, start, end } where start/end
-  // bound the "@partial" token in the input's value.
+
+
   let mentionSuggest = null;
 
   function bytesToB64(bytes) {
@@ -471,11 +471,11 @@ function mountForkMeshDashboardChat() {
     return b64ToBytes(s);
   }
 
-  // Filing a chat message as a repository issue lives in a module shared with
-  // the full chat page (/chat-issue-filing.js) so the signed "open" event, the
-  // author key, and the attribution wording cannot drift between surfaces. It
-  // is imported on demand: the World loads this bundle alone, and neither the
-  // dashboard nor the World needs issue signing until someone asks for it.
+
+
+
+
+
   let issueFilingPromise = null;
 
   function issueFiling() {
@@ -488,8 +488,8 @@ function mountForkMeshDashboardChat() {
     return issueFilingPromise;
   }
 
-  // The dashboard page carries its own new-issue signer (which also handles
-  // agent assignment and offline pending issues), so prefer it when loaded.
+
+
   async function fileWebIssue(repository, title, body) {
     const shared = window.ForkMeshDashboardActions?.submitWebIssue;
     if (typeof shared === "function") return shared(repository, title, body);
@@ -712,9 +712,9 @@ function mountForkMeshDashboardChat() {
         : Number.isFinite(retryDate)
           ? Math.max(0, retryDate - Date.now())
           : 0;
-      // Some edge/provider 429 and 503 responses omit Retry-After. Waiting
-      // only for the ordinary one-minute poll in that case repeatedly fans
-      // out across every organization and extends the rate limit.
+
+
+
       if (response.status === 429 || response.status === 503) {
         discordBackoffAttempts = Math.min(6, discordBackoffAttempts + 1);
       }
@@ -751,9 +751,9 @@ function mountForkMeshDashboardChat() {
     const organizations = (Array.isArray(catalog?.orgs) ? catalog.orgs : [])
       .slice(0, DISCORD_MAX_ORGANIZATIONS);
     const sources = [];
-    // Connector discovery is deliberately sequential. A rate-limit response
-    // from the first organization must prevent more doomed requests from being
-    // launched at the same provider in the same tick.
+
+
+
     for (const record of organizations) {
       const organization = String(record?.name || "").trim();
       if (!organization) continue;
@@ -783,8 +783,8 @@ function mountForkMeshDashboardChat() {
         );
       } catch (error) {
         if (error?.status === 429 || error?.status === 503) throw error;
-        // One unavailable optional connector must not hide healthy connectors
-        // belonging to the same account.
+
+
       }
     }
     discordSources = sources;
@@ -802,10 +802,10 @@ function mountForkMeshDashboardChat() {
     try {
       const sources = await discoverDiscordSources();
       const messages = [];
-      // Discord applies rate limits across related connector routes. Fetching
-      // every channel concurrently turns one provider-wide 429 into a burst
-      // of identical failures, so read channels serially and stop immediately
-      // when the connector asks us to cool down.
+
+
+
+
       for (const source of sources) {
         const path =
           `/api/orgs/${encodeURIComponent(source.organization)}` +
@@ -826,8 +826,8 @@ function mountForkMeshDashboardChat() {
           );
         } catch (error) {
           if (error?.status === 429 || error?.status === 503) throw error;
-          // A missing channel is isolated; continue with the remaining
-          // configured channels without putting the whole connector on ice.
+
+
         }
       }
       const orderedMessages = messages
@@ -850,7 +850,7 @@ function mountForkMeshDashboardChat() {
         });
       }
     } catch (error) {
-      // Discord is optional. Keep the encrypted room usable and retry later.
+
       console.info("[ForkMesh chat] Discord refresh deferred", {
         reason: String(error?.message || "unavailable").slice(0, 160),
       });
@@ -912,10 +912,10 @@ function mountForkMeshDashboardChat() {
     return PUBLIC_WORLD_GENERAL && !userSession() ? "guest" : "user";
   }
 
-  // Everyone in the public World room shows under the plain name they assert.
-  // The old "World visitor · jett" prefix read as a second, different person
-  // sitting next to the signed-in "jett", so it is stripped from anything that
-  // still carries it (session names, replayed history frames).
+
+
+
+
   function publicWorldName(value) {
     return String(value || "")
       .replace(/^World visitor\s*·\s*/i, "")
@@ -923,13 +923,13 @@ function mountForkMeshDashboardChat() {
       .slice(0, MAX_NAME) || "guest";
   }
 
-  // The World floats each chat line above the speaker's avatar by matching the
-  // sender against that avatar's presence name (world.js
-  // handleWorldChatMessage). A signed-out visitor stands in the World as
-  // "Guest ####" — derived from the same per-tab guest id this same-origin
-  // iframe can read — so the embedded chat has to introduce itself under that
-  // name or a guest's bubble never finds its avatar. Keep this in step with
-  // guestId()/hashSuffix()/accountIdentity() in public/world/world.js.
+
+
+
+
+
+
+
   const WORLD_GUEST_ID_KEY = "forkmesh.world.guestId.v1";
   function worldGuestPresenceName() {
     if (requestedParams.get("worldEmbed") !== "1") return "";
@@ -1094,18 +1094,18 @@ function mountForkMeshDashboardChat() {
     appendMentionText(container, text);
   }
 
-  // ---- @mention autocomplete ---------------------------------------------
-  // Typing "@" (plus an optional partial name) in the composer pops a
-  // suggestion list; Tab (or Enter / click) accepts the highlighted name,
-  // arrows move, Escape dismisses. Mirrors the full chat page composer
-  // (chat.js) so both surfaces mention the same way — and so "@forkbot" is
-  // reachable without typing it exactly.
+
+
+
+
+
+
   const MENTION_DIRECTORY_ENDPOINT = "/api/accounts/users";
   const MENTION_DIRECTORY_TTL_MS = 60000;
   const MENTION_LIMIT = 8;
   const MENTION_STALE_MS = 180000;
-  // Only names the renderer would actually link (CHAT_MENTION_RE) are worth
-  // suggesting: guest display names carry spaces and never become mentions.
+
+
   const MENTIONABLE_NAME_RE = /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 
   function rememberMentionPerson(name, tsMs) {
@@ -1121,10 +1121,10 @@ function mountForkMeshDashboardChat() {
     });
   }
 
-  // Registered accounts, so someone who has not spoken in this room yet is
-  // still mentionable. Fetched on the first "@" only (an idle dashboard tab
-  // never pays for it) and refreshed at most once a minute. Resolves true when
-  // it added names, so an open popup can re-render with them.
+
+
+
+
   function refreshMentionDirectory() {
     if (mentionDirectoryPending) return mentionDirectoryPending;
     if (
@@ -1155,8 +1155,8 @@ function mountForkMeshDashboardChat() {
     return mentionDirectoryPending;
   }
 
-  // The "@partial" token the caret sits inside, or null. A mention starts at an
-  // "@" preceded by whitespace/start and uses the charset the renderer links.
+
+
   function mentionTokenAtCaret(inputEl) {
     if (!inputEl) return null;
     const caret = inputEl.selectionStart;
@@ -1165,7 +1165,7 @@ function mountForkMeshDashboardChat() {
     const match = /(^|\s)@([A-Za-z0-9-]{0,32})$/.exec(before);
     if (!match) return null;
     return {
-      start: caret - match[2].length - 1, // include the "@"
+      start: caret - match[2].length - 1,
       end: caret,
       partial: match[2].toLowerCase(),
     };
@@ -1179,7 +1179,7 @@ function mountForkMeshDashboardChat() {
     const self = mentionName(displayName());
     const byName = new Map();
     for (const person of mentionDirectory.values()) byName.set(person.name, person);
-    // Room presence wins over the directory entry: it carries a lastSeenMs.
+
     for (const person of mentionPeople.values()) byName.set(person.name, person);
     byName.set(FORKBOT_SENDER_ID, {
       name: FORKBOT_SENDER_ID,
@@ -1217,16 +1217,16 @@ function mountForkMeshDashboardChat() {
       mentionSuggestEl.className =
         "absolute left-0 right-0 z-30 mb-2 overflow-y-auto rounded-lg border " +
         "border-border bg-background p-1 shadow-lg";
-      // bottom/max-height inline: the dashboard ships a pre-compiled Tailwind
-      // subset that has no bottom-full / max-h-56 rule to lean on.
+
+
       mentionSuggestEl.style.bottom = "100%";
       mentionSuggestEl.style.maxHeight = "224px";
       mentionSuggestEl.hidden = true;
       mentionSuggestEl.setAttribute("role", "listbox");
       mentionSuggestEl.setAttribute("aria-label", "Mention a user");
     }
-    // Anchor to the composer pill the input lives in, so the list floats over
-    // the transcript instead of pushing the composer around.
+
+
     const host = inputEl.parentElement;
     if (host && mentionSuggestEl.parentElement !== host) {
       host.classList.add("relative");
@@ -1274,8 +1274,8 @@ function mountForkMeshDashboardChat() {
         dot.title = "Active in this room";
         item.append(dot);
       }
-      // mousedown, not click: click fires after the input's blur would have
-      // closed the popup.
+
+
       item.addEventListener("mousedown", (event) => {
         event.preventDefault();
         acceptMentionSuggest(index);
@@ -1577,9 +1577,9 @@ function mountForkMeshDashboardChat() {
     const records = historyRowIds
       .map((id) => rows.get(id))
       .filter(Boolean);
-    // World-embed history arrives out of order (the Discord bridge folds its
-    // own backlog in), so it is sorted here. Both modes read oldest first,
-    // newest last.
+
+
+
     return simpleWorldComposer
       ? records.sort((left, right) => left.tsMs - right.tsMs)
       : records;
@@ -1683,11 +1683,11 @@ function mountForkMeshDashboardChat() {
     return fullLog.scrollHeight - fullLog.scrollTop - fullLog.clientHeight <= 48;
   }
 
-  // The newest line lives at the bottom, so "keep up with the room" means
-  // keeping the feed scrolled all the way down. The World embed mounts its log
-  // inside a closed <details>, so the first render happens at zero height and
-  // the scroll only takes once layout lands - hence the follow-up frame and the
-  // resize re-pin below.
+
+
+
+
+
   function pinFullLogToNewest() {
     if (!fullLog) return;
     stickToNewest = true;
@@ -1800,12 +1800,12 @@ function mountForkMeshDashboardChat() {
     pinFullLogToNewest();
   }
 
-  // ---- edit / delete own messages ----------------------------------------
-  // The relay already replays "edit"/"delete" frames (handlePlain below, and
-  // the desktop client's kDurableTypes), so the dashboard only needs the
-  // author-side controls. Both frames are honoured by peers only when the
-  // sender id matches the original message's, so the same guard is applied
-  // here before anything is broadcast.
+
+
+
+
+
+
 
   function messageActionButton(label, onClick, { danger = false, ariaLabel } = {}) {
     const button = document.createElement("button");
@@ -1822,9 +1822,9 @@ function mountForkMeshDashboardChat() {
 
   function buildMessageActions(record) {
     const actions = document.createElement("div");
-    // .chat-message-actions is revealed on row hover / keyboard focus by the
-    // dashboard shell stylesheet (Tailwind's group-hover variant is not in the
-    // pre-built dashboard/tailwind.css, so the reveal is hand-written CSS).
+
+
+
     actions.className = "chat-message-actions ml-auto flex shrink-0 items-center gap-1";
     actions.append(
       messageActionButton("☺", (event) =>
@@ -1832,9 +1832,9 @@ function mountForkMeshDashboardChat() {
         ariaLabel: "Add reaction",
       }),
     );
-    // Anyone can turn any message into a repository issue — the useful case is
-    // filing someone else's bug report, so this is deliberately not author-only
-    // (the issue itself is signed by, and attributed to, whoever files it).
+
+
+
     if (record.text) {
       actions.append(
         messageActionButton("Issue", () => void beginIssueFromMessage(record), {
@@ -1967,8 +1967,8 @@ function mountForkMeshDashboardChat() {
     picker.querySelector("button")?.focus();
   }
 
-  // An "(edited)" marker so a rewritten message never silently replaces what
-  // peers already read (matches the full chat page).
+
+
   function markEdited(record, editedAt) {
     if (!record?.textEl) return;
     const stamp = Number(editedAt) || Date.now();
@@ -1982,9 +1982,9 @@ function mountForkMeshDashboardChat() {
     marker.title = `Edited ${new Date(stamp).toLocaleString()}`;
   }
 
-  // The action rows carry Tailwind's `flex` utility, which outranks the
-  // [hidden] preflight rule in the pre-built stylesheet — toggle display
-  // directly rather than the attribute.
+
+
+
   function showElement(el, visible) {
     if (el) el.style.display = visible ? "" : "none";
   }
@@ -2060,9 +2060,9 @@ function mountForkMeshDashboardChat() {
     runWhenConnected(() => send(plain));
   }
 
-  // Deleting is irreversible for every reader, so ask first — inline, because
-  // this chat also runs inside the World's same-origin embed where a blocking
-  // window.confirm() would freeze the host frame.
+
+
+
   function requestMessageDelete(record) {
     if (record.senderId !== selfId || !record.actionsEl) return;
     if (record.confirmEl) return;
@@ -2097,13 +2097,13 @@ function mountForkMeshDashboardChat() {
     runWhenConnected(() => send(plain));
   }
 
-  // ---- convert a message into a repository issue --------------------------
-  // A bug report typed into chat should not have to be retyped on the issues
-  // page, so every message carries an "Issue" control that opens an inline
-  // form: an editable title seeded from the first line, and the repository
-  // picker mirrored from the composer. The whole message becomes the body with
-  // an attribution line, and it is filed through the same signed "open" event
-  // the dashboard's new-issue form posts (fileWebIssue).
+
+
+
+
+
+
+
 
   function closeIssueForm(record) {
     record.issueFormEl?.remove();
@@ -2118,7 +2118,7 @@ function mountForkMeshDashboardChat() {
       return;
     }
     const filing = await issueFiling();
-    if (record.issueFormEl) return; // a second click won while the module loaded
+    if (record.issueFormEl) return;
     showElement(record.actionsEl, false);
     const form = document.createElement("div");
     form.className = "chat-issue-form mt-1 flex flex-col gap-1.5";
@@ -2129,8 +2129,8 @@ function mountForkMeshDashboardChat() {
     title.maxLength = 200;
     title.value = filing.issueTitleFromMessage(record.text);
     title.setAttribute("aria-label", "Issue title");
-    // The composer's picker is the only repository list this bundle loads
-    // (/api/repositories), so the form clones it instead of fetching again.
+
+
     const repository = document.createElement("select");
     repository.className =
       "w-full rounded-md border border-border bg-background px-2 py-1 text-xs";
@@ -2217,10 +2217,10 @@ function mountForkMeshDashboardChat() {
     }
   }
 
-  // The rail's mini chat mirrors the full view at a smaller scale: avatar +
-  // name + time header with the message below, ordered by each message's own
-  // timestamp so replayed history and live traffic interleave correctly with
-  // the newest at the bottom.
+
+
+
+
   function renderSideMessages() {
     if (!sideLog) return;
     if (!sideEntries.length) {
@@ -2275,9 +2275,9 @@ function mountForkMeshDashboardChat() {
     deferRender = false,
     metadata = null,
   ) {
-    // Insert in timestamp order (append is the common case) so the newest
-    // message is always the bottom row even when retained history replays
-    // after live messages have already landed.
+
+
+
     const entry = {
       kind,
       who,
@@ -2366,8 +2366,8 @@ function mountForkMeshDashboardChat() {
     appendSideMessage(
       "peer", who, text, id, `discord:${providerId}`, tsMs, null, false, metadata,
     );
-    // Provider text is display-only. It never enters ForkBot's prompt context
-    // unless a person explicitly quotes it into a ForkMesh message.
+
+
     return true;
   }
 
@@ -2430,11 +2430,11 @@ function mountForkMeshDashboardChat() {
     return true;
   }
 
-  // Inside the World embed, mirror each live chat line to the parent page so
-  // it can float the message above the speaker's avatar and fade it out
-  // (world.js handleWorldChatMessage). Same-origin only. History replays are
-  // marked so the parent updates only its collapsed CHAT bar with the most
-  // recent line — reconnects never resurrect old bubbles.
+
+
+
+
+
   const WORLD_EMBED_BUBBLES =
     requestedParams.get("worldEmbed") === "1" ||
     Boolean(document.querySelector("[data-world-native-chat]"));
@@ -2500,11 +2500,11 @@ function mountForkMeshDashboardChat() {
     return pending;
   }
 
-  // Authored by the signed-in account, but not necessarily by this browser —
-  // another tab, a phone, or the desktop client counts too. Kept apart from
-  // `self` (a strict senderId match) because only `self` may raise a bubble
-  // over the local avatar; a display name alone is not proof of identity.
-  // The World uses this to keep your own lines out of its unread count.
+
+
+
+
+
   function isOwnChatLine(sender, senderId) {
     if (senderId === selfId) return true;
     const account = String(userSession()?.nodeName || "").trim().toLowerCase();
@@ -2566,9 +2566,9 @@ function mountForkMeshDashboardChat() {
     }
   }
 
-  // Replayed entries can arrive out of order. Keep their newest surviving
-  // record for the physical World board; mutations are applied before this is
-  // emitted, so an edited/deleted latest line never leaks as stale activity.
+
+
+
   let newestHistoryTs = 0;
   function emitWorldChatHistory(entry) {
     if (!WORLD_EMBED_BUBBLES) return;
@@ -2634,8 +2634,8 @@ function mountForkMeshDashboardChat() {
     const attachment = attachmentFromEntry(entry);
     if (!text && !attachment) return;
     kind = entry.senderId === selfId ? "self" : kind;
-    // Anyone who has spoken here — including in replayed history — becomes a
-    // composer mention candidate.
+
+
     if (entry.senderId !== selfId) {
       rememberMentionPerson(who, live ? Date.now() : Number(entry.ts) || 0);
     }
@@ -2694,14 +2694,14 @@ function mountForkMeshDashboardChat() {
 
   function handlePlain(plain, historyReplay = false) {
     const type = plain.type;
-    // Mirror-mesh signals ride the same encrypted room as chat: a source node
-    // broadcasts "mirror-update" the instant its repo advances from the source
-    // of truth, and every mirror node replies "mirror-synced" once it has
-    // pulled that commit. Re-broadcast both as a window event so the dashboard's
-    // open repo can re-fetch host health live instead of waiting for a manual
-    // reload — this is what makes the Mirrors tab show nodes converge instantly.
-    // These frames are stamped accountKind "node", so handle them before the
-    // user-only guard below (which is meant for chat surfaces).
+
+
+
+
+
+
+
+
     if (type === "mirror-update" || type === "mirror-synced") {
       try {
         window.dispatchEvent(new CustomEvent("forkmesh:mirror-signal", {
@@ -2718,8 +2718,8 @@ function mountForkMeshDashboardChat() {
     if (type !== "history" && !allowedChatAccountKind(plain.accountKind)) return;
     plain = normalizedPublicWorldFrame(plain);
     const sender = String(plain.sender || "peer").slice(0, MAX_NAME);
-    // "hello"/"presence" frames are the only sign of someone who is here but
-    // has not typed yet; keep them in the mention list too.
+
+
     if (plain.senderId !== selfId) {
       rememberMentionPerson(
         sender,
@@ -2777,8 +2777,8 @@ function mountForkMeshDashboardChat() {
         removeMessage(plain.target);
       });
     } else if (type === "hello" && !plain.to) {
-      // Presence is shown in the World itself; do not add join noise to the
-      // message timeline or push the composer upward.
+
+
     } else if (type === "bye") {
       appendSystem(sender + " left");
     }
@@ -2797,9 +2797,9 @@ function mountForkMeshDashboardChat() {
     }
     const frames = await Promise.all(envelopes.map(decryptObject));
     const decoded = frames.filter(Boolean);
-    // D1 ties frames stored in the same millisecond by opaque cipher hash, so
-    // an edit/delete can replay before its original chat. Register every chat
-    // record first, then apply mutations in the received order.
+
+
+
     for (const plain of decoded) {
       if (plain.type === "chat") handlePlain(plain, true);
     }
@@ -2848,12 +2848,12 @@ function mountForkMeshDashboardChat() {
     await queued;
   }
 
-  // Durable message types the relay should retain (still encrypted) and replay
-  // to clients that join later — the same set the desktop node tags via
-  // kDurableTypes (ServerNode::sendEncrypted). Without this flag the relay's
-  // _maybe_retain drops the frame, so a message typed on the website is relayed
-  // live but never becomes part of the shared history nodes and other web
-  // visitors see on connect — leaving the website out of the shared chat.
+
+
+
+
+
+
   const DURABLE_TYPES = new Set(["chat", "edit", "delete", "reaction", "admin-delete"]);
 
   function send(plain) {
@@ -2865,11 +2865,11 @@ function mountForkMeshDashboardChat() {
       if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
       if (socket && socket.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify(envelope));
-        // You have already read what you just typed, so it must not light the
-        // site-header chat badge on every other page. That badge is a delta
-        // against a stored baseline, and only retained public-world frames
-        // reach the counter behind it (oversized file frames are dropped
-        // before retention).
+
+
+
+
+
         if (envelope.persist && PUBLIC_WORLD_GENERAL && !plain.file) {
           noteOwnChatActivity();
         }
@@ -2877,10 +2877,10 @@ function mountForkMeshDashboardChat() {
     });
   }
 
-  // The relay's room DO reaps sockets that send nothing for 3 minutes, and an
-  // idle dashboard tab used to send nothing — its chat silently went stale
-  // (no new messages) until the user typed. Reconnect with backoff and beat
-  // presence at the desktop's 60s cadence to stay live (mirrors chat.js).
+
+
+
+
   let reconnectDelayMs = 2000;
   let reconnectTimer = null;
 
@@ -2900,10 +2900,10 @@ function mountForkMeshDashboardChat() {
       showUserOnlyState();
       return;
     }
-    // WebCrypto (crypto.subtle) only exists in a secure context. On plain HTTP
-    // — a self-hosted node or LAN IP opened on mobile — it is undefined, so the
-    // room key can never derive. Say so plainly instead of the old blanket
-    // "Encryption unavailable", which read like a transient glitch.
+
+
+
+
     if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
       setStatus("Chat needs a secure (HTTPS) connection");
       return;
@@ -2915,8 +2915,8 @@ function mountForkMeshDashboardChat() {
       if (!roomKey) roomKey = await deriveRoomKey();
     } catch (err) {
       connecting = false;
-      // An expired/absent session token 401s the room-key fetch; tell the user
-      // to sign in again rather than blaming encryption.
+
+
       setStatus(err && err.code === "auth" ? "Sign in again to join chat" : "Encryption unavailable");
       return;
     }
@@ -2975,25 +2975,25 @@ function mountForkMeshDashboardChat() {
 
   function broadcastBotMessage(text, sender = FORKBOT_SENDER_ID) {
     const plain = makeBotPlain(text, sender);
-    // Claude/Codex prompts and replies are intentionally absent from the
-    // shared room. The Engineering-only session endpoint remains the durable
-    // transcript; this local line is merely immediate feedback to its author.
+
+
+
     if (!orgAgentIdentity(plain.sender, plain.senderId)) send(plain);
     seen.add(plain.id);
     appendMessage("peer", plain.sender, plain.text, plain.id, plain.senderId, plain.ts);
-    // The asking client appends directly (not via renderChatEntry), so mirror
-    // the reply to the World embed here too.
+
+
     emitWorldChatBubble(plain.sender, plain.senderId, plain.text);
   }
 
   async function maybeAskForkbot(text) {
-    // Anyone who can join the room can talk to ForkBot: signed-in users on
-    // the dashboard, and guests inside the public World room (the endpoint
-    // itself is sessionless).
+
+
+
     if (!canJoinChat()) return;
     if (!FORKBOT_MENTION_RE.test(text || "")) return;
-    // Drop the triggering line (sent separately as `message`) and ForkBot's own
-    // replies, and cap the rest so ForkBot sees the lead-up conversation.
+
+
     const context = recentContext
       .slice(0, -1)
       .filter((m) => m.sender.toLowerCase() !== "forkbot")
@@ -3090,9 +3090,9 @@ function mountForkMeshDashboardChat() {
     return queueOrgAgent(provider, prompt, botName, selectedScope);
   }
 
-  // One queue path for every bot request: the mention shortcuts pass a named
-  // provider, the task board passes "agent" and lets the Worker pick whichever
-  // runtime has an eligible mirror online.
+
+
+
   async function queueOrgAgent(
     provider,
     prompt,
@@ -3431,9 +3431,9 @@ function mountForkMeshDashboardChat() {
     return control;
   }
 
-  // Resolve an "<owner>/<name>" repository picker to the route the API wants.
-  // The composer's own picker is the common case; the per-message "issue" form
-  // clones it, so the parsing lives here rather than reading fullRepository.
+
+
+
   function repositoryFromSelect(select) {
     const value = String(select?.value || "");
     const match = value.match(
@@ -3654,9 +3654,9 @@ function mountForkMeshDashboardChat() {
 
   async function loadTaskRouting() {
     if (!taskAssignee || !taskTeam) return;
-    // Task routing is account-scoped: a guest has no session token, so the
-    // request can only ever come back 401. Skip it rather than logging an
-    // unauthorized fetch (and flashing a status) on every public World load.
+
+
+
     if (!userSession()) return;
     try {
       const payload = await taskApiRequest("GET", "/api/tasks");
@@ -3860,8 +3860,8 @@ function mountForkMeshDashboardChat() {
         });
         const task = created?.task || {};
         if (botTask) {
-          // The task is already on the board; queueing it on a node is the
-          // follow-up, and a failure there leaves the task list authoritative.
+
+
           const queued = await queueOrgAgent(
             "agent",
             `[task:${task.id}] ${title}\n\n${details}`.trim(),
@@ -4052,8 +4052,8 @@ function mountForkMeshDashboardChat() {
       });
     });
     inputEl.addEventListener("keydown", (event) => {
-      // While the mention list is open it owns Enter/Tab/arrows, so accepting a
-      // name never sends the half-typed message.
+
+
       if (mentionSuggest && mentionSuggest.input === inputEl) {
         if (event.key === "ArrowDown") {
           event.preventDefault();
@@ -4092,8 +4092,8 @@ function mountForkMeshDashboardChat() {
     });
     inputEl.addEventListener("click", () => updateMentionSuggest(inputEl));
     inputEl.addEventListener("keyup", (event) => {
-      // Caret moves that leave the value alone (no "input" event) can still
-      // enter or leave an "@token".
+
+
       if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) {
         updateMentionSuggest(inputEl);
       }
@@ -4297,8 +4297,8 @@ function mountForkMeshDashboardChat() {
     wireInput(fullInput, fullSend);
     wireTaskSend();
     wireInput(sideInput, sideSend);
-    // Connect right away so the room's message history (replayed by the relay
-    // on WebSocket open) is visible without the visitor first focusing an input.
+
+
     if (canJoinChat()) {
       setStatus("Not connected");
       connect();

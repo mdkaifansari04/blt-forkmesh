@@ -23,11 +23,11 @@
 #include <QVBoxLayout>
 #include <QWidget>
 
-// ---------------------------------------------------------------------------
-// ScreenshotMarkupWindow
-// ---------------------------------------------------------------------------
 
-// A small filled-circle swatch button for picking the ink colour.
+
+
+
+
 static QToolButton *makeColorSwatch(const QColor &color, QWidget *parent)
 {
     auto *btn = new QToolButton(parent);
@@ -35,7 +35,7 @@ static QToolButton *makeColorSwatch(const QColor &color, QWidget *parent)
     constexpr int sz = 22;
     btn->setFixedSize(sz, sz);
 
-    // DPR-scaled raster so the circle stays smooth on HiDPI screens.
+
     const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
     QPixmap pm(qMax(1, qRound(sz * dpr)), qMax(1, qRound(sz * dpr)));
     pm.setDevicePixelRatio(dpr);
@@ -60,12 +60,12 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     : QDialog(parent)
 {
     setWindowTitle(QStringLiteral("Annotate Screenshot"));
-    // ApplicationModal blocks every window in the app while open, so the user
-    // can't accidentally interact with the main window before annotating.
+
+
     setWindowModality(Qt::ApplicationModal);
     setAttribute(Qt::WA_DeleteOnClose);
 
-    // ---- Canvas ----
+
     m_canvas = new MarkupCanvas(screenshot, this);
 
     auto *scrollArea = new QScrollArea(this);
@@ -75,7 +75,7 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
 
-    // Size dialog to fit the screenshot, capped at 90 % of available screen.
+
     const QSize screenSz = QGuiApplication::primaryScreen()
                                ? QGuiApplication::primaryScreen()->availableSize()
                                : QSize(1920, 1080);
@@ -88,7 +88,7 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     resize(qMin(imgSz.width()  + kPad, maxW),
            qMin(imgSz.height() + kToolbarH + kFooterH + kPad, maxH));
 
-    // ---- Toolbar ----
+
     auto *toolbar = new QWidget(this);
     toolbar->setFixedHeight(kToolbarH);
     auto *toolbarLayout = new QHBoxLayout(toolbar);
@@ -167,16 +167,16 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     sep->setFrameShadow(QFrame::Sunken);
     toolbarLayout->addWidget(sep);
 
-    // Colour swatches
+
     const QList<QColor> colors = {
-        QColor(255,  50,  50), // red (default)
-        QColor(255, 165,   0), // orange
-        QColor(255, 230,   0), // yellow
-        QColor( 50, 200,  80), // green
-        QColor( 50, 130, 255), // blue
-        QColor(200,  50, 255), // purple
-        QColor(  0,   0,   0), // black
-        QColor(255, 255, 255), // white
+        QColor(255,  50,  50),
+        QColor(255, 165,   0),
+        QColor(255, 230,   0),
+        QColor( 50, 200,  80),
+        QColor( 50, 130, 255),
+        QColor(200,  50, 255),
+        QColor(  0,   0,   0),
+        QColor(255, 255, 255),
     };
     auto *colorGroup = new QButtonGroup(this);
     bool firstColor  = true;
@@ -203,7 +203,7 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     connect(undoShortcut, &QShortcut::activated,
             this, [this] { m_canvas->undo(); });
 
-    // ---- Footer ----
+
     auto *footer = new QWidget(this);
     footer->setFixedHeight(kFooterH);
     auto *footerLayout = new QHBoxLayout(footer);
@@ -235,7 +235,7 @@ ScreenshotMarkupWindow::ScreenshotMarkupWindow(const QImage &screenshot, QWidget
     footerLayout->addWidget(btnDiscard);
     footerLayout->addWidget(btnAdd);
 
-    // ---- Root layout ----
+
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(0);

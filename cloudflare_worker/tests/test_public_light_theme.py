@@ -32,9 +32,9 @@ FEATURE_POSTS = tuple(
 PUBLIC_THEME_PAGES = tuple(
     page
     for page in sorted(PUBLIC.rglob("*.html"))
-    # The legacy landing page, dashboard, and immersive 3D world own their
-    # chrome. World lighting is controlled by its Day/Sunset/Night/weather
-    # palette without mounting a second site header over the game HUD.
+
+
+
     if (
         page != PUBLIC / "index.html"
         and "dashboard" not in page.parts
@@ -406,8 +406,8 @@ def test_page_families_load_complete_light_theme_styles():
         PUBLIC / "pricing.html",
         "/pricing-theme.css",
     )
-    # New feature posts are additive; keep the coverage floor without making
-    # every published blog post require a brittle count update here.
+
+
     assert len(FEATURE_POSTS) >= 72
     for page in FEATURE_POSTS:
         html = assert_stylesheet_after_inline_styles(page, "/feature-post.css")

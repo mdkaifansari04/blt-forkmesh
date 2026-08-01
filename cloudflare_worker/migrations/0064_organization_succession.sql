@@ -1,8 +1,8 @@
--- Non-custodial organization succession. This schema can change only the
--- configured organization's owner/admin roles. It has no columns for funds,
--- addresses, keys, credentials, user-account contents/ownership, devices,
--- personal profile data, repository ownership, repository links, or
--- private-repository permissions. Public org-member names identify the policy.
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS org_succession_policies (
     org_bi TEXT PRIMARY KEY,
@@ -79,8 +79,8 @@ CREATE TABLE IF NOT EXISTS org_succession_events (
 CREATE INDEX IF NOT EXISTS idx_org_succession_events_history
     ON org_succession_events(org_bi, created_at);
 
--- Approvals are immutable and only independent, currently authorized members
--- may add one while the grace window is open.
+
+
 CREATE TRIGGER IF NOT EXISTS trg_org_succession_approval_authorized
 BEFORE INSERT ON org_succession_approvals
 BEGIN
@@ -108,7 +108,7 @@ BEGIN
     SELECT RAISE(ABORT, 'succession_approvals_append_only');
 END;
 
--- Event history is append-only, including cancellations and denied completion.
+
 CREATE TRIGGER IF NOT EXISTS trg_org_succession_event_no_update
 BEFORE UPDATE ON org_succession_events
 BEGIN
@@ -120,7 +120,7 @@ BEGIN
     SELECT RAISE(ABORT, 'succession_events_append_only');
 END;
 
--- A case may only leave grace once, and its authorization snapshot is immutable.
+
 CREATE TRIGGER IF NOT EXISTS trg_org_succession_case_immutable
 BEFORE UPDATE ON org_succession_cases
 WHEN NEW.case_id<>OLD.case_id
@@ -153,9 +153,9 @@ BEGIN
     SELECT RAISE(ABORT, 'succession_cases_append_only');
 END;
 
--- Completion rechecks the live roster and approval threshold inside D1. A
--- platform role, stale approval, removed member, changed successor, or early
--- completion cannot satisfy this trigger.
+
+
+
 CREATE TRIGGER IF NOT EXISTS trg_org_succession_completion_guard
 BEFORE UPDATE OF status ON org_succession_cases
 WHEN NEW.status='completed' AND OLD.status='grace'
@@ -185,7 +185,7 @@ BEGIN
     )<OLD.approval_threshold;
 END;
 
--- These are the only succession side effects: two role values in this org.
+
 CREATE TRIGGER IF NOT EXISTS trg_org_succession_role_transfer
 AFTER UPDATE OF status ON org_succession_cases
 WHEN NEW.status='completed' AND OLD.status='grace'
@@ -197,8 +197,8 @@ BEGIN
       AND role IN ('admin','member');
 END;
 
--- Organization deletion leaves history intact but cannot leave a live policy
--- behind for a later organization that reuses the same public name.
+
+
 CREATE TRIGGER IF NOT EXISTS trg_org_succession_org_delete
 BEFORE DELETE ON orgs
 WHEN EXISTS (

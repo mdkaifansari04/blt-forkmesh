@@ -65,10 +65,10 @@ function decodeEntity(name) {
   }
 }
 
-/**
- * Reduce Mastodon's sanitized HTML payloads to plain text. Output is inert
- * data: renderers must still HTML-escape it before injection.
- */
+
+
+
+
 export function mastodonPlainText(value, limit = 2400) {
   const text = String(value ?? "")
     .replace(/<br\s*\/?>/gi, "\n")
@@ -103,10 +103,10 @@ export function formatMastodonCount(value) {
   return String(number);
 }
 
-/**
- * Bound one public Mastodon account payload to the exact fields the World
- * panel renders. Returns null when the payload has no usable identity.
- */
+
+
+
+
 export function normalizeMastodonAccount(payload) {
   if (!payload || typeof payload !== "object") return null;
   const id = String(payload.id ?? "").trim().slice(0, 64);
@@ -137,10 +137,10 @@ export function normalizeMastodonAccount(payload) {
   };
 }
 
-/**
- * Bound one public status (toot) payload, unwrapping boosts to the original
- * author. Returns null for statuses with nothing renderable.
- */
+
+
+
+
 export function normalizeMastodonStatus(payload) {
   if (!payload || typeof payload !== "object") return null;
   const boost =

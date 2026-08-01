@@ -69,8 +69,8 @@ def _decode_text(value: bytes) -> str:
 
 
 def _positive_mpint(value: bytes) -> int:
-    # RFC 4251 mpints are signed two's-complement. RSA e/n must be positive and
-    # minimally encoded (a leading zero is allowed only to clear the sign bit).
+
+
     if not value or value[0] & 0x80:
         raise SshPublicKeyError("invalid_rsa_key")
     if len(value) > 1 and value[0] == 0 and not value[1] & 0x80:
@@ -131,7 +131,7 @@ def _validate_key_blob(key_type: str, blob: bytes) -> None:
             raise SshPublicKeyError("rsa_key_too_small")
         if bits > MAX_RSA_BITS:
             raise SshPublicKeyError("rsa_key_too_large")
-    else:  # pragma: no cover - the allowlist is checked before this function.
+    else:
         raise SshPublicKeyError("unsupported_key_type")
 
     if offset != len(blob):

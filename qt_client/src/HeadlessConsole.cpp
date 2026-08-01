@@ -24,16 +24,16 @@ HeadlessConsole::HeadlessConsole(MainWindow *window, QCoreApplication *app,
 {
     printBanner();
 
-    // Re-wire the live event feed whenever a backend is (re)created — e.g. after
-    // the `setup` command connects, or on an auto-reconnect.
+
+
     connect(window, &MainWindow::backendAttached, this,
             [this](ChatBackend *backend) { attachFeed(backend); });
     if (ChatBackend *backend = window->currentBackend())
         attachFeed(backend);
 
-    // A durable daemon must stop only on an explicit signal, never on a stray
-    // terminal hang-up. SIGINT/SIGTERM stay owned by CrashHandler so external
-    // service-manager stops leave a signal record in the network log.
+
+
+
 
 #if defined(Q_OS_UNIX)
     m_stdin = new QSocketNotifier(STDIN_FILENO, QSocketNotifier::Read, this);
@@ -105,7 +105,7 @@ void HeadlessConsole::logEvent(const QString &text)
     if (!m_echoEvents)
         return;
     const QString ts = QDateTime::currentDateTime().toString(QStringLiteral("HH:mm:ss"));
-    // Leading '\r' so the line overwrites the (un-newlined) prompt, then redraw it.
+
     m_out << '\r' << '[' << ts << "] " << text << Qt::endl;
     prompt();
 }
@@ -194,10 +194,10 @@ void HeadlessConsole::dispatch(const QString &raw)
         m_out.flush();
         m_window->headlessUpdateRestart();
     } else if (cmd == QLatin1String("daemon")) {
-        // Go into daemon mode on demand: release the interactive prompt so the
-        // operator can exit the shell (or close the SSH session) while the backend
-        // keeps serving. Same end state as losing stdin, but explicit. The node
-        // still stops on `quit` (no longer reachable from here), SIGINT or SIGTERM.
+
+
+
+
         detachStdin();
         m_out << "Entering daemon mode: the node keeps running in the background.\n"
                  "You can exit this shell now (Ctrl-D / close the terminal) without\n"
@@ -232,10 +232,10 @@ void HeadlessConsole::onStdinActivated()
     char buf[4096];
     const ssize_t n = ::read(STDIN_FILENO, buf, sizeof(buf));
     if (n <= 0) {
-        // EOF (Ctrl-D) or a closed input pipe — e.g. launched with `</dev/null`
-        // by a service manager. A durable daemon must NOT die just because its
-        // controlling input went away: detach the prompt and keep serving. The
-        // node still stops on `quit`, SIGINT or SIGTERM.
+
+
+
+
         detachStdin();
         m_out << Qt::endl
               << "stdin closed; continuing to run as a background daemon "
@@ -256,8 +256,8 @@ void HeadlessConsole::onStdinActivated()
 
 void HeadlessConsole::detachStdin()
 {
-    // A closed fd is permanently "ready", so leaving the notifier enabled would
-    // spin the event loop. Disable and drop it; the daemon runs on without it.
+
+
     if (m_stdin) {
         m_stdin->setEnabled(false);
         m_stdin->deleteLater();
@@ -267,12 +267,12 @@ void HeadlessConsole::detachStdin()
 
 void HeadlessConsole::runMeshLoopSelfTest()
 {
-    // The full loop lives in the `forkmesh-e2e` self-test binary (built by
-    // `cmake --build --target check`), which drives publish -> browse -> clone
-    // -> issue -> agent PR -> merge against an in-process relay stub with a stub
-    // agent. Running it as a subprocess keeps the test harness (and its stub
-    // relay) out of the shipping app while still letting an operator kick the
-    // whole loop from a headless node — the nightly reliability check (#352).
+
+
+
+
+
+
     const QString dir = QCoreApplication::applicationDirPath();
     const QString runner = QDir(dir).filePath(QStringLiteral("forkmesh-e2e"));
     const QString stubAgent =
@@ -298,8 +298,8 @@ void HeadlessConsole::runMeshLoopSelfTest()
         m_out << QString::fromUtf8(proc.readAllStandardOutput());
         m_out.flush();
     });
-    // Keep the node's event loop live (it keeps serving) while the self-test
-    // runs, instead of blocking on waitForFinished.
+
+
     QEventLoop loop;
     connect(&proc, QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             &loop, &QEventLoop::quit);

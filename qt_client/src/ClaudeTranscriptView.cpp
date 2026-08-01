@@ -46,18 +46,18 @@
 namespace {
 QString esc(const QString &s) { return s.toHtmlEscaped(); }
 
-// The transcript renders in the system monospace face throughout, like the
-// terminal the CLI actually runs in.
+
+
 QFont monoFont() { return QFontDatabase::systemFont(QFontDatabase::FixedFont); }
 
-// Search-match highlight colours, fixed rather than theme-derived so they read
-// clearly on both light and dark canvases (dark text on a warm fill). The
-// currently-selected match gets a stronger orange.
+
+
+
 const QString kMatchBg = QStringLiteral("#ffd33d");
 const QString kMatchFg = QStringLiteral("#1f2328");
 const QString kCurMatchBg = QStringLiteral("#ff8c42");
 
-// Count case-insensitive occurrences of needle in haystack.
+
 int countOccurrences(const QString &hay, const QString &needle)
 {
     int n = 0, from = 0;
@@ -71,10 +71,10 @@ int countOccurrences(const QString &hay, const QString &needle)
     return n;
 }
 
-// How many times query appears in a label's rendered text. Plain/auto labels are
-// searched directly; markdown/rich labels are searched through a QTextDocument so
-// the count matches what the user actually sees (markup excluded). A cheap reject
-// on the raw source first avoids building a document for the common no-match case.
+
+
+
+
 int countMatchesIn(const QString &orig, Qt::TextFormat fmt, const QString &query)
 {
     if (query.isEmpty() || orig.indexOf(query, 0, Qt::CaseInsensitive) < 0)
@@ -91,14 +91,14 @@ int countMatchesIn(const QString &orig, Qt::TextFormat fmt, const QString &query
         ++n;
     return n;
 }
-} // namespace
+}
 
 static QString capLabelText(const QString &text, bool collapseLines);
 
-// A foldable thinking section, CLI style: a muted italic header ("Thought for
-// 6s") that folds its body open/shut on click (▸/▾), with the body indented
-// under it. The body folds with a height animation, and a section can softly
-// pulse while it is live (the streaming "Thinking…" card).
+
+
+
+
 class Collapsible : public QFrame
 {
 public:
@@ -124,7 +124,7 @@ public:
         m_bodyWidget = new QWidget(this);
         m_bodyWidget->setStyleSheet(QStringLiteral("background:transparent;border:none;"));
         m_bodyLayout = new QVBoxLayout(m_bodyWidget);
-        m_bodyLayout->setContentsMargins(14, 2, 0, 0); // indent under the header
+        m_bodyLayout->setContentsMargins(14, 2, 0, 0);
         m_bodyLayout->setSpacing(6);
         v->addWidget(m_bodyWidget);
         m_bodyWidget->setVisible(m_open);
@@ -144,8 +144,8 @@ public:
         animateBody();
     }
 
-    // Softly breathe the whole section's opacity while it is live, then settle to
-    // fully opaque. Used for the streaming "Thinking…" card.
+
+
     void setPulsing(bool on)
     {
         if (!on) {
@@ -181,8 +181,8 @@ private:
     {
         if (!m_anim) {
             m_anim = new QPropertyAnimation(m_bodyWidget, "maximumHeight", this);
-            // stop() never emits finished, so a reconfigured run can't trip the
-            // previous one's settle step — we just read m_open here.
+
+
             QObject::connect(m_anim, &QPropertyAnimation::finished, this, [this] {
                 if (m_open)
                     m_bodyWidget->setMaximumHeight(QWIDGETSIZE_MAX);
@@ -210,26 +210,26 @@ private:
     QVBoxLayout *m_bodyLayout = nullptr;
     bool m_open = true;
     QString m_label;
-    QPropertyAnimation *m_anim = nullptr;  // body fold animation
-    QPropertyAnimation *m_pulse = nullptr; // live "breathing" while streaming
+    QPropertyAnimation *m_anim = nullptr;
+    QPropertyAnimation *m_pulse = nullptr;
 };
 
-// A word-wrapped QLabel that caches heightForWidth. A long transcript stacks
-// hundreds of word-wrapped Markdown/RichText labels inside a widget-resizable
-// QScrollArea, and Qt's layout re-runs heightForWidth — which re-lays-out each
-// label's QTextDocument — for *every* row each time a row is added or the view
-// is resized, calling it repeatedly within a single pass. With a big transcript
-// that O(rows) text relayout froze the GUI thread for seconds (issue #234).
-//
-// The height of a word-wrapped label only changes when its width, font, or text
-// changes. The cache maps width → height, keyed alongside the text length: any
-// content change a user can see (a streamed delta, a search-highlight span)
-// shifts the text length and drops every entry, so a stale height can't survive
-// a real reflow; font/style changes invalidate explicitly. Multiple widths are
-// kept because a single layout pass interleaves queries at different widths
-// (minimumHeightForWidth probes the minimum width, heightForWidth the real one)
-// — a one-slot cache thrashed between them and re-laid-out the document on
-// every call, which the stall watchdog caught as >500ms layout storms.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class CacheLabel : public QLabel
 {
 public:
@@ -246,8 +246,8 @@ public:
         if (it != m_heights.constEnd())
             return it.value();
         const int h = QLabel::heightForWidth(w);
-        // A continuous resize streams new widths; keep the map from growing
-        // without bound (a handful of live widths is the steady state).
+
+
         if (m_heights.size() >= 32)
             m_heights.clear();
         m_heights.insert(w, h);
@@ -261,7 +261,7 @@ protected:
         case QEvent::FontChange:
         case QEvent::ApplicationFontChange:
         case QEvent::StyleChange:
-            m_heights.clear(); // metrics may have shifted; recompute on next query
+            m_heights.clear();
             break;
         default:
             break;
@@ -271,14 +271,14 @@ protected:
 
 private:
     mutable int m_len = -1;
-    mutable QHash<int, int> m_heights; // width → cached heightForWidth
+    mutable QHash<int, int> m_heights;
 };
 
-// Defined further down; used by the peek block below to bound a pathological
-// single line / sheer volume before it reaches a word-wrapped label.
+
+
 static QString capLabelText(const QString &text, bool collapseLines);
 
-// A monospace, no-background label for a slice of tool output (matches makeMono).
+
 static CacheLabel *monoSlice(const QString &text, const QString &fg, bool capCollapse)
 {
     auto *l = new CacheLabel;
@@ -292,10 +292,10 @@ static CacheLabel *monoSlice(const QString &text, const QString &fg, bool capCol
     return l;
 }
 
-// A long tool-output block shown "peeked": the first two and last two lines stay
-// visible with a small clickable divider in between saying how many lines are
-// hidden (▸ ⋯ N lines); clicking it reveals — or re-hides — the middle. Output
-// short enough that nothing would be hidden renders as a plain block, no toggle.
+
+
+
+
 class OutputPeek : public QWidget
 {
 public:
@@ -339,7 +339,7 @@ public:
                          [this] { setOpen(!m_open); });
     }
 
-    // Reveal the middle (so a search match hidden inside it can be scrolled to).
+
     void expand() { setOpen(true); }
 
 private:
@@ -367,15 +367,15 @@ private:
     bool m_open = false;
 };
 
-// One transcript row: a narrow glyph gutter (the CLI's ● / > / ✻ marker) beside
-// the row's content. A user turn additionally paints a full-width background
-// band — gutter included — the way the CLI shades the whole prompt line.
+
+
+
 class RailItem : public QWidget
 {
 public:
     static constexpr int kRailW = 22;
-    static constexpr int kGap = 12;          // vertical space between items
-    static constexpr int kNodeY = kGap + 9;  // glyph aligned to the first text line
+    static constexpr int kGap = 12;
+    static constexpr int kNodeY = kGap + 9;
 
     RailItem(QWidget *content, ClaudeTranscriptView::RowGlyph glyph,
              const QString &glyphColor, const QString &bandColor,
@@ -394,7 +394,7 @@ public:
         auto *holder = new QWidget(this);
         holder->setStyleSheet(QStringLiteral("background:transparent;"));
         auto *hv = new QVBoxLayout(holder);
-        hv->setContentsMargins(0, kGap, 0, 0); // the inter-item gap
+        hv->setContentsMargins(0, kGap, 0, 0);
         hv->setSpacing(0);
         content->setParent(holder);
         hv->addWidget(content);
@@ -440,16 +440,16 @@ private:
     QString m_color, m_band;
 };
 
-// Decode an attachment already scaled to the width the view will show it at.
-// Runs on a worker thread (see ThumbImage): a full-resolution decode plus a
-// smooth downscale of a 4K screenshot costs hundreds of milliseconds, and doing
-// it on the GUI thread froze the window while a transcript rendered (adhoc #90).
-// setScaledSize lets the reader skip most of that work where the format allows.
+
+
+
+
+
 QImage decodeScaledAttachment(const QString &path, int cap)
 {
     QImageReader reader(path);
     reader.setAutoTransform(true);
-    const QSize src = reader.size(); // header only, no pixel decode
+    const QSize src = reader.size();
     if (src.isValid() && src.width() > cap)
         reader.setScaledSize(
             QSize(cap, qMax(1, qRound(double(cap) * src.height() / src.width()))));
@@ -459,12 +459,12 @@ QImage decodeScaledAttachment(const QString &path, int cap)
     return img;
 }
 
-// An image attached to a user turn, shown as a small thumbnail; clicking it
-// toggles between a thumbnail and a larger preview (issue #56).
-//
-// The decode happens off the GUI thread and the result is kept in the shared
-// QPixmapCache, so re-rendering a transcript (every reloadAgents() does) costs
-// a cache hit instead of a fresh decode + smooth scale of the original file.
+
+
+
+
+
+
 class ThumbImage : public QLabel
 {
 public:
@@ -475,7 +475,7 @@ public:
         setToolTip(QStringLiteral("Click to expand"));
         setStyleSheet(
             QStringLiteral("border:1px solid %1;border-radius:6px;").arg(border));
-        m_srcSize = QImageReader(path).size(); // header read; reserves the box
+        m_srcSize = QImageReader(path).size();
         m_stamp = QFileInfo(path).lastModified().toMSecsSinceEpoch();
         applyScale();
     }
@@ -501,8 +501,8 @@ private:
             showScaled(cached);
             return;
         }
-        // Hold the row at the height the finished thumbnail will take, so the
-        // transcript does not jump when the decode lands.
+
+
         if (m_srcSize.isValid() && m_srcSize.width() > 0) {
             const int w = qMin(m_srcSize.width(), cap);
             setMinimumSize(w, qMax(1, qRound(double(w) * m_srcSize.height() /
@@ -517,7 +517,7 @@ private:
                         return;
                     const QPixmap pm = QPixmap::fromImage(img);
                     QPixmapCache::insert(key, pm);
-                    if (m_wanted == cap) // a later toggle already superseded this
+                    if (m_wanted == cap)
                         showScaled(pm);
                 });
         watcher->setFuture(QtConcurrent::run(decodeScaledAttachment, m_path, cap));
@@ -525,7 +525,7 @@ private:
 
     void showScaled(const QPixmap &pm)
     {
-        setMinimumSize(0, 0); // the pixmap now drives the size hint
+        setMinimumSize(0, 0);
         setPixmap(pm);
     }
 
@@ -536,9 +536,9 @@ private:
     bool m_expanded = false;
 };
 
-// One clickable row of an inline-choice card (see addInlineChoices): unlike a
-// QPushButton this wraps long text, since the CLI's heuristically-detected
-// options are often full sentences rather than short labels.
+
+
+
 class ChoiceOption : public QFrame
 {
 public:
@@ -550,7 +550,7 @@ public:
         v->setContentsMargins(10, 8, 10, 8);
         auto *l = new QLabel(text);
         l->setWordWrap(true);
-        l->setAttribute(Qt::WA_TransparentForMouseEvents); // clicks reach the frame
+        l->setAttribute(Qt::WA_TransparentForMouseEvents);
         v->addWidget(l);
     }
 
@@ -572,19 +572,19 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
     m_container = new QWidget;
     m_col = new QVBoxLayout(m_container);
     m_col->setContentsMargins(8, 14, 14, 14);
-    m_col->setSpacing(0); // RailItems supply their own inter-item gap
+    m_col->setSpacing(0);
     m_bottomSpacer = new QWidget;
-    // Expanding (not fixed) so that when the transcript is shorter than the
-    // viewport the leftover height collects here instead of stretching the rows
-    // — otherwise a just-started session's lone "you" bubble blows up into a tall
-    // box with a big empty gap in it (issue #56).
+
+
+
+
     m_bottomSpacer->setMinimumHeight(8);
     m_bottomSpacer->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
     m_col->addWidget(m_bottomSpacer);
     setWidget(m_container);
 
-    // Floating jump-to-top / jump-to-bottom buttons over the viewport corner.
-    // The shared ScrollJumpButtons helper owns their placement and show/hide.
+
+
     m_jumpButtons = new ScrollJumpButtons(this);
     connect(m_jumpButtons, &ScrollJumpButtons::topClicked, this,
             &ClaudeTranscriptView::scrollToTop);
@@ -595,10 +595,10 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
     connect(sb, &QScrollBar::valueChanged, this, [this](int v) {
         QScrollBar *b = verticalScrollBar();
         m_stickBottom = v >= b->maximum() - 4;
-        // Infinite-scroll-upward: nearing the top with more history available
-        // asks the host for the next batch (see loadEarlierRequested()). Guarded
-        // by m_loadEarlierPending so a held-at-top scroll position doesn't spam
-        // requests before the previous batch has landed.
+
+
+
+
         if (m_skippedNotice && !m_loadEarlierPending && v <= b->minimum() + 200) {
             m_loadEarlierPending = true;
             emit loadEarlierRequested();
@@ -606,15 +606,15 @@ ClaudeTranscriptView::ClaudeTranscriptView(QWidget *parent) : QScrollArea(parent
     });
     connect(sb, &QScrollBar::rangeChanged, this, [this](int, int max) {
         if (m_prependCompensationPending) {
-            // The range just grew by whatever content prependEarlierEvents()
-            // inserted above the viewport; shift by the same amount so the rows
-            // the user was looking at stay put instead of sliding down.
+
+
+
             verticalScrollBar()->setValue(m_prependOldValue + (max - m_prependOldMax));
             m_prependCompensationPending = false;
             return;
         }
         if (m_stickBottom)
-            verticalScrollBar()->setValue(max); // keep pinned as content grows
+            verticalScrollBar()->setValue(max);
     });
 
     applyScheme();
@@ -646,23 +646,23 @@ void ClaudeTranscriptView::jumpToBottom()
 {
     m_stickBottom = true;
     if (m_scrollAnim)
-        m_scrollAnim->stop(); // don't let an in-flight smooth scroll pull us back
+        m_scrollAnim->stop();
     QScrollBar *sb = verticalScrollBar();
     sb->setValue(sb->maximum());
-    // After a rebuild the rows haven't laid out yet, so maximum() is still stale;
-    // m_stickBottom keeps us pinned when the deferred rangeChanged lands the real
-    // range (see the rangeChanged handler in the constructor).
+
+
+
 }
 
 void ClaudeTranscriptView::setSplitDiffs(bool on) { m_splitDiffs = on; }
 
-// A playful, ForkMesh-flavoured gerund for the live "what it's doing" ticker.
+
 void ClaudeTranscriptView::cycleActivityWord()
 {
     static const char *kWords[] = {
         "Thinking", "Pondering", "Cogitating", "Percolating", "Noodling",
         "Conjuring", "Ruminating", "Tinkering", "Synthesizing", "Scheming",
-        // …and the made-up fork/mesh ones:
+
         "Forking", "Meshing", "Enmeshing", "Forkmeshing", "Remeshing",
         "Reticulating meshes", "Untangling forks", "Weaving the mesh",
         "Spinning up forks", "Meshulating", "Defragging the mesh", "Reforking",
@@ -672,13 +672,13 @@ void ClaudeTranscriptView::cycleActivityWord()
     if (m_activityLabel)
         m_activityLabel->setText(
             QString::fromUtf8(kWords[QRandomGenerator::global()->bounded(n)])
-            + QString::fromUtf8("\xE2\x80\xA6")); // …
+            + QString::fromUtf8("\xE2\x80\xA6"));
 }
 
 void ClaudeTranscriptView::ensureActivity()
 {
     if (m_activity || m_liveThinking)
-        return; // the thinking card is its own live indicator
+        return;
     m_activityLabel = new QLabel;
     m_activityLabel->setFont(monoFont());
     m_activityLabel->setStyleSheet(QStringLiteral(
@@ -732,8 +732,8 @@ void ClaudeTranscriptView::applyScheme()
 void ClaudeTranscriptView::clear()
 {
     clearActivity();
-    // Drop search state without touching the labels (they are about to be
-    // deleted below); the host re-applies the query against the rebuilt tree.
+
+
     m_searchLabels.clear();
     m_searchQuery.clear();
     m_searchTotal = 0;
@@ -756,16 +756,16 @@ void ClaudeTranscriptView::clear()
     m_totalTokens = 0;
     m_totalCost = 0.0;
     emit statsChanged(0, 0.0);
-    while (m_col->count() > 1) { // keep the trailing spacer
+    while (m_col->count() > 1) {
         QLayoutItem *it = m_col->takeAt(0);
         if (QWidget *w = it->widget())
             w->deleteLater();
         delete it;
     }
-    // The colour scheme is applied at construction and on the OS scheme-change
-    // signal; it never changes during a clear. Re-running applyScheme() here just
-    // forced a full Qt stylesheet repolish of the (still-undeleted) widget tree,
-    // which is what showed up as multi-second event-loop stalls.
+
+
+
+
 }
 
 QString ClaudeTranscriptView::accentFor(const QString &name) const
@@ -790,14 +790,14 @@ QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor,
 {
     int pos;
     if (m_prependAt >= 0) {
-        // Loading earlier history: rows land at a fixed, advancing column index
-        // instead of the usual tail position, so a batch renders in order above
-        // whatever used to be first.
+
+
+
         pos = m_prependAt++;
     } else {
-        pos = m_col->count() - 1; // before the trailing spacer
-        // Keep the live activity ticker pinned as the last content row: new
-        // rows slot in just above it.
+        pos = m_col->count() - 1;
+
+
         if (m_activity) {
             const int ai = m_col->indexOf(m_activity);
             if (ai >= 0)
@@ -809,14 +809,14 @@ QWidget *ClaudeTranscriptView::addRow(QWidget *card, const QString &nodeColor,
                               bandColor);
     m_col->insertWidget(pos, item);
     fadeIn(item);
-    // Follow mode does the scrolling: the scrollbar's rangeChanged handler pins
-    // the view to the bottom as the new row expands the content; ScrollJumpButtons
-    // tracks the scrollbar itself to show/hide its arrows.
+
+
+
     return item;
 }
 
-// Token/cost bookkeeping for an event that is deliberately not rendered (the
-// tail-capped replay skips old rows): mirrors handleEvent's stats reads only.
+
+
 void ClaudeTranscriptView::accumulateStatsOnly(const QJsonObject &ev)
 {
     const QString type = ev.value(QStringLiteral("type")).toString();
@@ -827,7 +827,7 @@ void ClaudeTranscriptView::accumulateStatsOnly(const QJsonObject &ev)
     } else if (type == QLatin1String("result")) {
         const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
         if (cost > 0)
-            m_totalCost = cost; // result carries the run's cumulative cost
+            m_totalCost = cost;
     } else if (type == QLatin1String("_codex_usage")) {
         m_totalTokens = static_cast<qint64>(
             ev.value(QStringLiteral("total_tokens")).toDouble());
@@ -837,8 +837,8 @@ void ClaudeTranscriptView::accumulateStatsOnly(const QJsonObject &ev)
 void ClaudeTranscriptView::addSkippedNotice(int count)
 {
     if (m_skippedNotice) {
-        // Replacing an existing notice (a previous batch load updated the
-        // count) — drop it first so we don't end up with two.
+
+
         m_col->removeWidget(m_skippedNotice);
         m_skippedNotice->deleteLater();
         m_skippedNotice = nullptr;
@@ -883,16 +883,16 @@ void ClaudeTranscriptView::prependEarlierEvents(const QList<QJsonObject> &events
     m_prependOldValue = sb->value();
     m_prependCompensationPending = true;
 
-    // If this session is still streaming, m_activity/m_liveThinking currently
-    // hold the *real* live ticker/thinking card established by the tail's own
-    // replay. The batch we're about to replay is strictly older history, but it
-    // runs through the same handleEvent() state machine (ensureActivity() /
-    // clearActivity() / finalizeThinking()) — without shadowing, a historical
-    // turn boundary partway through the batch would delete the live ticker row
-    // out from under the user (and stop the shared m_activityTimer for good,
-    // since a non-null m_activity short-circuits the next real ensureActivity()
-    // call). Swap the live state out, let history replay against a fresh
-    // "nothing live" slate, then restore it untouched.
+
+
+
+
+
+
+
+
+
+
     QWidget *liveActivity = m_activity;
     QLabel *liveActivityLabel = m_activityLabel;
     QTimer *liveActivityTimer = m_activityTimer;
@@ -903,17 +903,17 @@ void ClaudeTranscriptView::prependEarlierEvents(const QList<QJsonObject> &events
     qint64 liveThinkingStart = m_thinkingStartMs;
     m_activity = nullptr;
     m_activityLabel = nullptr;
-    m_activityTimer = nullptr; // ensureActivity() allocates its own scratch timer
+    m_activityTimer = nullptr;
     m_liveThinking = nullptr;
     m_thinkingBody = nullptr;
     m_thinkingText.clear();
     m_thinkingTokens = 0;
     m_thinkingStartMs = 0;
 
-    setBulkPopulate(true); // no per-row fade-in for a whole batch landing at once
+    setBulkPopulate(true);
     m_prependAt = 0;
     if (stillSkipped > 0) {
-        addSkippedNotice(stillSkipped); // replaces the old notice, at the prepend head
+        addSkippedNotice(stillSkipped);
     } else if (m_skippedNotice) {
         m_col->removeWidget(m_skippedNotice);
         m_skippedNotice->deleteLater();
@@ -924,14 +924,14 @@ void ClaudeTranscriptView::prependEarlierEvents(const QList<QJsonObject> &events
         if (ev.value(QStringLiteral("type")).toString() == QLatin1String("_local_user"))
             addUserTurn(ev.value(QStringLiteral("text")).toString());
         else
-            handleEvent(ev, /*countStats=*/false); // already folded into totals
+            handleEvent(ev,  false);
     }
     m_prependAt = -1;
     setBulkPopulate(false);
 
-    // Settle anything the batch left dangling (it was cut off mid-turn): this
-    // ticker/thinking card belongs to now-static history, not live state, so
-    // fold it away rather than leaving it visibly stuck.
+
+
+
     if (m_activity) {
         m_col->removeWidget(m_activity);
         m_activity->deleteLater();
@@ -958,7 +958,7 @@ void ClaudeTranscriptView::prependEarlierEvents(const QList<QJsonObject> &events
 void ClaudeTranscriptView::fadeIn(QWidget *card)
 {
     if (m_bulkPopulate)
-        return; // replaying a stored session: rows appear at once, no per-row anim
+        return;
     auto *eff = new QGraphicsOpacityEffect(card);
     card->setGraphicsEffect(eff);
     auto *a = new QPropertyAnimation(eff, "opacity", card);
@@ -969,7 +969,7 @@ void ClaudeTranscriptView::fadeIn(QWidget *card)
     QPointer<QWidget> pc = card;
     connect(a, &QPropertyAnimation::finished, card, [pc] {
         if (pc)
-            pc->setGraphicsEffect(nullptr); // drop the effect once shown
+            pc->setGraphicsEffect(nullptr);
     });
     a->start(QAbstractAnimation::DeleteWhenStopped);
 }
@@ -989,7 +989,7 @@ void ClaudeTranscriptView::smoothScrollTo(int value)
     m_scrollAnim->start();
 }
 
-// ---- event dispatch --------------------------------------------------------
+
 
 void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
 {
@@ -1045,18 +1045,18 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
                               b.value(QStringLiteral("is_error")).toBool());
             }
         }
-        ensureActivity(); // a tool came back; the agent keeps going
+        ensureActivity();
     } else if (type == QLatin1String("rate_limit_event")) {
         const QJsonObject info = ev.value(QStringLiteral("rate_limit_info")).toObject();
-        // utilization arrives either as a 0..1 fraction or an already-scaled
-        // 0..100 percentage depending on the CLI build; scale a fraction but pass
-        // a percentage through so the gauge isn't 100x too high (adhoc #47).
+
+
+
         const double u = info.value(QStringLiteral("utilization")).toDouble();
         const int pct = qRound(u <= 1.0 ? u * 100.0 : u);
         const QString rlt = info.value(QStringLiteral("rateLimitType")).toString();
-        // The premium per-model weekly window (adhoc #96) is its own bar, so it
-        // must be recognised before the plain weekly test below — its type name
-        // carries "seven_day" too.
+
+
+
         const bool fable = rlt.contains(QStringLiteral("fable"))
                            || rlt.contains(QStringLiteral("opus"))
                            || rlt.contains(QStringLiteral("premium"));
@@ -1068,10 +1068,10 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
         emit usageChanged(kind, QStringLiteral("%1%").arg(pct), pct);
     } else if (type == QLatin1String("result")) {
         finalizeThinking(QString());
-        clearActivity(); // the turn is done
+        clearActivity();
         const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
         if (cost > 0 && countStats) {
-            m_totalCost = cost; // result carries the run's cumulative cost
+            m_totalCost = cost;
             emit statsChanged(m_totalTokens, m_totalCost);
         }
         addResult(ev);
@@ -1098,14 +1098,14 @@ void ClaudeTranscriptView::handleEvent(const QJsonObject &ev, bool countStats)
             emit statsChanged(m_totalTokens, m_totalCost);
         }
     } else if (type == QLatin1String("_local_ask_answer")) {
-        // Synthetic, host-injected event that records the user's answer to an
-        // AskUserQuestion card so the answered state is rebuilt on replay.
+
+
         markAskAnswered(ev.value(QStringLiteral("tool_use_id")).toString(),
                         ev.value(QStringLiteral("text")).toString());
     } else if (type == QLatin1String("_local_notice")) {
-        // Synthetic, host-injected status row — e.g. the auto model router
-        // explaining which model it picked and why (adhoc #91). Muted, like
-        // the "session started" divider; persists and replays with the stream.
+
+
+
         auto *l = new QLabel(ev.value(QStringLiteral("text")).toString());
         l->setTextFormat(Qt::PlainText);
         l->setWordWrap(true);
@@ -1178,13 +1178,13 @@ void ClaudeTranscriptView::addAssistantBlocks(const QJsonObject &message)
         if (t == QLatin1String("text")) {
             const QString text = b.value(QStringLiteral("text")).toString();
             if (!text.trimmed().isEmpty() && addAssistantText(text))
-                askedQuestion = true; // inline multiple-choice prose (issue #212)
+                askedQuestion = true;
         } else if (t == QLatin1String("tool_use")) {
             hadTool = true;
             const QString name = b.value(QStringLiteral("name")).toString();
             if (name == QLatin1String("AskUserQuestion")) {
-                // A clarifying question: render an interactive multiple-choice
-                // card the user answers in place, not a passive tool card.
+
+
                 askedQuestion = true;
                 addAskUserQuestion(b.value(QStringLiteral("id")).toString(),
                                    b.value(QStringLiteral("input")).toObject());
@@ -1194,9 +1194,9 @@ void ClaudeTranscriptView::addAssistantBlocks(const QJsonObject &message)
             }
         }
     }
-    // Tools running => keep the "what it's doing" ticker; a plain reply ends it.
-    // An AskUserQuestion turn stops on the tool call and waits for the user, so
-    // it's not "working" — drop the ticker even though a tool was used.
+
+
+
     if (askedQuestion)
         clearActivity();
     else if (hadTool)
@@ -1205,13 +1205,13 @@ void ClaudeTranscriptView::addAssistantBlocks(const QJsonObject &message)
         clearActivity();
 }
 
-// ---- thinking lifecycle ----------------------------------------------------
+
 
 void ClaudeTranscriptView::ensureLiveThinking()
 {
     if (m_liveThinking)
         return;
-    clearActivity(); // the thinking card becomes the live indicator
+    clearActivity();
     m_thinkingText.clear();
     m_lastFinalizedThinkingText.clear();
     m_thinkingTokens = 0;
@@ -1241,7 +1241,7 @@ void ClaudeTranscriptView::appendThinkingDelta(const QString &text)
     m_thinkingText += text;
     if (m_thinkingBody)
         m_thinkingBody->setText(m_thinkingText);
-    // live estimate from accumulated text; server setThinkingTokens overrides when available
+
     const int est = qMax(1, m_thinkingText.length() / 4);
     if (m_liveThinking)
         m_liveThinking->setHeaderText(
@@ -1287,7 +1287,7 @@ void ClaudeTranscriptView::finalizeThinking(const QString &fullText)
     m_thinkingStartMs = 0;
 }
 
-// ---- bubbles & cards -------------------------------------------------------
+
 
 Collapsible *ClaudeTranscriptView::makeCollapsible(const QString &header,
                                                   QWidget *body, bool expanded)
@@ -1298,12 +1298,12 @@ Collapsible *ClaudeTranscriptView::makeCollapsible(const QString &header,
     return c;
 }
 
-// Assistant prose renders as plain, full-width text (no card), matching the
-// Claude Code conversation view where only the user's turns are boxed.
+
+
 bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringList &options)
 {
-    // A markdown ordered-list item: "1. ..." or "1) ...", one per line. Capture
-    // the number too so we can require a real 1, 2, 3, … sequence.
+
+
     static const QRegularExpression item(
         QStringLiteral("(?m)^[ \\t]{0,3}(\\d{1,2})[.)][ \\t]+(.+)$"));
     QStringList found;
@@ -1314,9 +1314,9 @@ bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringLi
     auto it = item.globalMatch(markdown);
     while (it.hasNext()) {
         const QRegularExpressionMatch m = it.next();
-        // The items must sit back-to-back (only blank lines between them). A gap
-        // filled with prose means this is an explanation/plan whose paragraphs
-        // happen to start with numbers, not a block of choices.
+
+
+
         if (prevEnd >= 0
             && !QStringView(markdown).mid(prevEnd, m.capturedStart(0) - prevEnd)
                     .trimmed().isEmpty())
@@ -1325,21 +1325,21 @@ bool ClaudeTranscriptView::parseInlineChoices(const QString &markdown, QStringLi
         found << m.captured(2).trimmed();
         prevEnd = lastEnd = m.capturedEnd(0);
     }
-    // Require at least two options so a lone numbered line isn't a "choice".
+
     if (found.size() < 2 || !contiguous)
         return false;
-    // The options must be numbered sequentially from 1 (1, 2, 3, …). Scattered
-    // or restarting numbers are ordinary prose that merely begins with a digit.
+
+
     for (int i = 0; i < numbers.size(); ++i) {
         if (numbers.at(i) != i + 1)
             return false;
     }
-    // The question mark that makes this read like a clarifying question must
-    // appear in the lead-in prose before the options or on an option line —
-    // i.e. at or before the end of the list. A "?" only in text that *follows*
-    // the list (e.g. "I changed:\n1. A\n2. B\nWant me to run tests?") is a
-    // trailing yes/no follow-up, not a selection over these items, so it must
-    // not turn a completed-work summary into a multiple-choice card (adhoc #15).
+
+
+
+
+
+
     if (!QStringView(markdown).left(lastEnd).contains(QLatin1Char('?')))
         return false;
     options = found;
@@ -1361,7 +1361,7 @@ bool ClaudeTranscriptView::addAssistantText(const QString &markdown)
     QStringList options;
     if (parseInlineChoices(markdown, options)) {
         if (m_openInlineChoices)
-            lockInlineChoices(m_openInlineChoices); // the conversation moved on
+            lockInlineChoices(m_openInlineChoices);
         auto *wrap = new QWidget;
         wrap->setStyleSheet(QStringLiteral("background:transparent;"));
         auto *v = new QVBoxLayout(wrap);
@@ -1372,8 +1372,8 @@ bool ClaudeTranscriptView::addAssistantText(const QString &markdown)
         addRow(wrap, m_p.accent);
         return true;
     }
-    // The CLI's assistant bullet is the plain foreground colour; tools get the
-    // tinted dots.
+
+
     addRow(l, m_p.text);
     return false;
 }
@@ -1381,20 +1381,20 @@ bool ClaudeTranscriptView::addAssistantText(const QString &markdown)
 void ClaudeTranscriptView::addUserTurn(const QString &text)
 {
     if (m_openInlineChoices)
-        lockInlineChoices(m_openInlineChoices); // a reply arrived; stop offering it
+        lockInlineChoices(m_openInlineChoices);
 
-    // The CLI's prompt line: a full-width grey band with a ">" in the gutter
-    // (the band itself is painted by the row — see RailItem).
+
+
     auto *frame = new QWidget;
     frame->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *v = new QVBoxLayout(frame);
     v->setContentsMargins(0, 7, 10, 7);
     v->setSpacing(6);
 
-    // Lift any "Attached image: <path>" lines out of the prose and show each as a
-    // small clickable thumbnail (issue #56); the rest renders as plain text.
-    // The path is resolved through AgentPromptImages so an attachment written
-    // to the old temp directory still renders after a restart (adhoc #66).
+
+
+
+
     static const QRegularExpression imgLine(
         QStringLiteral("^Attached image:\\s*(.+?)\\s*$"));
     QStringList prose;
@@ -1404,9 +1404,9 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
         const QRegularExpressionMatch m = imgLine.match(line);
         const QString path =
             m.hasMatch() ? AgentPromptImages::resolve(m.captured(1)) : QString();
-        // canRead() sniffs the header only: deciding "this line is an image"
-        // must not decode the file on the GUI thread (ThumbImage does that on a
-        // worker), or a transcript with screenshots freezes the window.
+
+
+
         if (!path.isEmpty() && QImageReader(path).canRead())
             images << path;
         else
@@ -1427,13 +1427,13 @@ void ClaudeTranscriptView::addUserTurn(const QString &text)
     addRow(frame, m_p.muted, GlyphChevron, m_p.userBg);
 }
 
-// A tool call, CLI style: a "Name(args)" header with the input and any output
-// hanging below it off ⎿ connectors — a flat indented column, no boxes.
+
+
 void ClaudeTranscriptView::addToolUse(const QString &id, const QString &name,
                                       const QJsonObject &input)
 {
-    // The CLI titles a subagent by its agent type — "Explore(Find the…)" — and
-    // a todo update as "Update Todos".
+
+
     QString shown = name;
     if (name == QLatin1String("Task")) {
         const QString sub =
@@ -1471,7 +1471,7 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
         return;
     ToolCard &tc = it.value();
     if (!tc.io || tc.hasResult)
-        return; // a result already attached
+        return;
     if (tc.suppressResult) {
         tc.hasResult = true;
         return;
@@ -1484,8 +1484,8 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
     }
     tc.hasResult = true;
     if (tc.summarizeResult && !isError) {
-        // The header already names the file/pattern; the raw dump folds down to
-        // the CLI's "⎿ N lines" note (a single short line shows as itself).
+
+
         const QStringList lines = text.trimmed().split(QLatin1Char('\n'));
         QString summary;
         if (lines.size() > 1)
@@ -1504,8 +1504,8 @@ void ClaudeTranscriptView::addToolResult(const QString &id, const QString &text,
         tc.io->addWidget(connectorRow(l));
         return;
     }
-    // Peek the output: first/last two lines visible, the middle behind a toggle
-    // that says how many lines it hides (dimmed like the CLI; errors tinted red).
+
+
     QWidget *out = new OutputPeek(text, isError ? m_p.del : m_p.muted, m_p);
     tc.io->addWidget(connectorRow(out));
 }
@@ -1535,18 +1535,18 @@ void ClaudeTranscriptView::appendToolOutput(const QString &id,
     tc.liveOutput->setText(capLabelText(tc.liveOutputText, true));
 }
 
-// Claude Code's AskUserQuestion tool: render an interactive multiple-choice card
-// (Anthropic Agent SDK "Handle approvals and user input" shape — a `questions`
-// array, each with a question/header/options[label,description]/multiSelect) so
-// the user can answer the clarifying question right in the transcript. Each
-// option is a checkable button; a free-text "Other" field covers answers the
-// options don't. On submit it emits questionAnswered(id, answer, sensitive); the
-// host responds through the active CLI protocol and records a redacted
-// "_local_ask_answer" event so the answered state replays on rebuild.
+
+
+
+
+
+
+
+
 void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
                                               const QJsonObject &input)
 {
-    clearActivity(); // the agent is now waiting on the user, not working
+    clearActivity();
 
     auto *card = new QFrame;
     card->setStyleSheet(QStringLiteral(
@@ -1561,8 +1561,8 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
         "color:%1;font-weight:700;background:transparent;border:none;").arg(m_p.accent));
     v->addWidget(heading);
 
-    // Everything interactive lives in one container so answering can lock it all
-    // at once (see markAskAnswered).
+
+
     auto *controls = new QWidget;
     controls->setStyleSheet(QStringLiteral("background:transparent;"));
     auto *cv = new QVBoxLayout(controls);
@@ -1570,7 +1570,7 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
     cv->setSpacing(16);
     v->addWidget(controls);
 
-    // One question's live widgets, captured for the submit handler.
+
     struct QState {
         QString question;
         bool multi = false;
@@ -1613,7 +1613,7 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
             "color:%1;font-weight:600;background:transparent;border:none;").arg(m_p.text));
         qv2->addWidget(qlabel);
 
-        // Exclusive for single-select (radio behaviour), free for multi-select.
+
         auto *group = new QButtonGroup(controls);
         group->setExclusive(!st.multi);
 
@@ -1649,9 +1649,9 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
         qv2->addWidget(other);
         st.other = other;
 
-        // Keep the free-text field and the option buttons from fighting for a
-        // single-select answer: typing clears the picked option, and picking an
-        // option clears the free text. Multi-select stacks them, so leave it.
+
+
+
         if (!st.multi) {
             connect(other, &QLineEdit::textEdited, group, [group](const QString &t) {
                 if (t.isEmpty())
@@ -1715,17 +1715,17 @@ void ClaudeTranscriptView::addAskUserQuestion(const QString &id,
         }
         const QString answer = lines.join(QStringLiteral("\n"));
         if (answer.isEmpty())
-            return; // nothing chosen yet — keep the card open
-        markAskAnswered(id, answer); // instant local feedback
+            return;
+        markAskAnswered(id, answer);
         emit questionAnswered(id, answer, cardSensitive);
     });
 
     addRow(card, m_p.accent);
 }
 
-// Lock a (possibly rebuilt) AskUserQuestion card and show the chosen reply.
-// Idempotent: called both from the submit handler and from the replayed
-// "_local_ask_answer" event.
+
+
+
 void ClaudeTranscriptView::markAskAnswered(const QString &id, const QString &answer)
 {
     auto it = m_askCards.find(id);
@@ -1748,10 +1748,10 @@ void ClaudeTranscriptView::markAskAnswered(const QString &id, const QString &ans
     }
 }
 
-// A lighter card for a heuristically-detected inline clarifying question (see
-// parseInlineChoices): one clickable row per option. Clicking sends that
-// option's full text as the reply — there's no tool_use_id to satisfy, so the
-// host just forwards it as a normal follow-up prompt (issue #212).
+
+
+
+
 QWidget *ClaudeTranscriptView::addInlineChoices(const QStringList &options)
 {
     auto *box = new QWidget;
@@ -1781,7 +1781,7 @@ QWidget *ClaudeTranscriptView::addInlineChoices(const QStringList &options)
 void ClaudeTranscriptView::lockInlineChoices(QWidget *box)
 {
     if (!box || !box->isEnabled())
-        return; // already locked
+        return;
     box->setEnabled(false);
     auto *fx = new QGraphicsOpacityEffect(box);
     fx->setOpacity(0.5);
@@ -1821,7 +1821,7 @@ void ClaudeTranscriptView::addResult(const QJsonObject &ev)
     addRow(l, err ? m_p.del : m_p.add);
 }
 
-// ---- per-tool rendering ----------------------------------------------------
+
 
 QString ClaudeTranscriptView::toolSubtitle(const QString &name,
                                            const QJsonObject &input) const
@@ -1861,7 +1861,7 @@ QString ClaudeTranscriptView::toolSubtitle(const QString &name,
 QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &input)
 {
     if (name == QLatin1String("Bash")) {
-        // "$ command", the way the CLI previews shell commands.
+
         const QString cmd =
             input.value(QStringLiteral("command")).toString().trimmed();
         return cmd.isEmpty() ? nullptr
@@ -1886,8 +1886,8 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
         return holder;
     }
     if (name == QLatin1String("TodoWrite")) {
-        // The CLI's checklist: done items struck through and dimmed, the item in
-        // progress bold behind a filled marker, pending items plain.
+
+
         QStringList rows;
         for (const QJsonValue &tv : input.value(QStringLiteral("todos")).toArray()) {
             const QJsonObject t = tv.toObject();
@@ -1940,7 +1940,7 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
     }
     if (name == QLatin1String("Read") || name == QLatin1String("Grep")
         || name == QLatin1String("Glob") || name == QLatin1String("WebSearch"))
-        return nullptr; // the subtitle already says the file/pattern/query
+        return nullptr;
     if (!input.isEmpty())
         return makeMono(QString::fromUtf8(
                             QJsonDocument(input).toJson(QJsonDocument::Indented))
@@ -1949,8 +1949,8 @@ QWidget *ClaudeTranscriptView::toolBody(const QString &name, const QJsonObject &
     return nullptr;
 }
 
-// "Name(args)" — bold tool name with the muted argument in parens, the way the
-// CLI titles a tool call; the row's gutter supplies the ● glyph.
+
+
 QWidget *ClaudeTranscriptView::dotHeader(const QString &name, const QString &subtitle)
 {
     auto *l = new CacheLabel;
@@ -1968,8 +1968,8 @@ QWidget *ClaudeTranscriptView::dotHeader(const QString &name, const QString &sub
     return l;
 }
 
-// The CLI's "  ⎿  result" shape: a muted L-connector in a small gutter with the
-// content hanging beside it.
+
+
 QWidget *ClaudeTranscriptView::connectorRow(QWidget *content)
 {
     auto *row = new QWidget;
@@ -1987,17 +1987,17 @@ QWidget *ClaudeTranscriptView::connectorRow(QWidget *content)
     return row;
 }
 
-// Bound text destined for a word-wrapped QLabel so a pathological tool input/result
-// (a minified bundle, a base64 blob, a megabyte of command output on one line)
-// can't freeze the UI: QLabel lays its document out synchronously on the GUI
-// thread, and one very long logical line makes QTextLine line-breaking
-// pathologically slow even when the line *count* is tiny (adhoc #169). Caps the
-// line count (when collapsing), elides runaway single lines, and caps the grand
-// total. The raw-log surface and on-disk transcript still keep the full text.
+
+
+
+
+
+
+
 static QString capLabelText(const QString &text, bool collapseLines)
 {
-    constexpr int kMaxLines = 16;        // matches the long-output collapse below
-    constexpr int kMaxLineChars = 2000;  // one wrapped line stays cheap to lay out
+    constexpr int kMaxLines = 16;
+    constexpr int kMaxLineChars = 2000;
     constexpr int kMaxTotalChars = 20000;
     const QStringList lines = text.split(QLatin1Char('\n'));
     const bool longText = collapseLines && lines.size() > kMaxLines;
@@ -2013,13 +2013,13 @@ static QString capLabelText(const QString &text, bool collapseLines)
     return shown;
 }
 
-// Monospace content with no panel background — it sits inside a tool card box.
+
 QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLong)
 {
-    // capLabelText caps the *display* string: it elides a single pathologically
-    // long logical line (a minified bundle / base64 blob) that QTextLine lays out
-    // synchronously, on top of the line-count collapse — and CacheLabel caches the
-    // resulting size so repaints stay cheap.
+
+
+
+
     const QString shown = capLabelText(text, collapsedIfLong);
     auto *l = new CacheLabel;
     l->setTextFormat(Qt::PlainText);
@@ -2032,14 +2032,14 @@ QWidget *ClaudeTranscriptView::makeMono(const QString &text, bool collapsedIfLon
     return l;
 }
 
-// A monospace code/output block. Renders as PLAIN text (no HTML escaping) so
-// shell metacharacters like " and > show literally instead of as entities.
+
+
 QWidget *ClaudeTranscriptView::makeCode(const QString &text, bool collapsedIfLong)
 {
-    // capLabelText caps the *display* string: it elides a single pathologically
-    // long logical line (a minified bundle / base64 blob) that QTextLine lays out
-    // synchronously, on top of the line-count collapse — and CacheLabel caches the
-    // resulting size so repaints stay cheap.
+
+
+
+
     const QString shown = capLabelText(text, collapsedIfLong);
     auto *l = new CacheLabel;
     l->setTextFormat(Qt::PlainText);
@@ -2066,7 +2066,7 @@ QWidget *ClaudeTranscriptView::makeDiff(const QString &oldText, const QString &n
 
     QString html;
     if (m_splitDiffs) {
-        // Side-by-side: old on the left, new on the right, aligned row-for-row.
+
         html = QStringLiteral("<table style='border-collapse:collapse;"
                               "font-family:monospace;white-space:pre;width:100%'>");
         auto cell = [&](const QString &s, const QString &color, const QString &bg) {
@@ -2121,13 +2121,13 @@ QWidget *ClaudeTranscriptView::makeDiff(const QString &oldText, const QString &n
     return l;
 }
 
-// ---- transcript search (adhoc #201) ----------------------------------------
 
-// Build the highlighted HTML for one label from its pristine text. Plain/auto
-// labels are escaped and wrapped (preserving whitespace) so matches can be
-// spanned; markdown/rich labels are re-rendered through a QTextDocument with a
-// background applied to each match, preserving their formatting. currentLocalOcc
-// is the 0-based index (within this label) of the selected match, or -1.
+
+
+
+
+
+
 QString ClaudeTranscriptView::highlightedTextFor(const QString &orig,
                                                  Qt::TextFormat fmt,
                                                  int currentLocalOcc) const
@@ -2154,7 +2154,7 @@ QString ClaudeTranscriptView::highlightedTextFor(const QString &orig,
             from = i + qlen;
             ++occ;
         }
-        // pre-wrap keeps newlines/indentation of mono blocks while still wrapping.
+
         return QStringLiteral("<div style='white-space:pre-wrap'>%1</div>").arg(out);
     }
 
@@ -2184,11 +2184,11 @@ void ClaudeTranscriptView::rebuildSearchMatches()
     m_searchTotal = 0;
     if (m_searchQuery.isEmpty() || !m_container || !m_col)
         return;
-    // Walk rows in actual layout order (top to bottom), not QObject child-
-    // insertion order: "load earlier" prepends a batch of older rows above
-    // ones already in the tree, so the two orders can now disagree — a row's
-    // *own* subtree is still built all at once, so findChildren within it
-    // stays correct, only the across-row order needed fixing.
+
+
+
+
+
     for (int i = 0; i < m_col->count(); ++i) {
         QLayoutItem *item = m_col->itemAt(i);
         QWidget *row = item ? item->widget() : nullptr;
@@ -2254,15 +2254,15 @@ void ClaudeTranscriptView::scrollToCurrentMatch()
     QLabel *l = currentMatchLabel();
     if (!l)
         return;
-    // Reveal the match if it sits inside a folded section (a "Thought" card) or
-    // the hidden middle of a peeked output block.
+
+
     for (QWidget *w = l->parentWidget(); w; w = w->parentWidget()) {
         if (auto *c = dynamic_cast<Collapsible *>(w))
             c->setExpanded(true);
         else if (auto *o = dynamic_cast<OutputPeek *>(w))
             o->expand();
     }
-    m_stickBottom = false; // jumping to a match takes us off the live tail
+    m_stickBottom = false;
     ensureWidgetVisible(l, 40, 80);
 }
 

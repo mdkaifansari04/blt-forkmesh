@@ -487,13 +487,13 @@
               document.head.append(styles);
 
               const syncWorldEmbedViewport = () => {
-                /*
-                 * In an iframe, some mobile engines expose the top-level
-                 * visualViewport height even when this frame is shorter. Never
-                 * let that value make the chat root taller than its own layout
-                 * viewport; a smaller visual viewport (the software keyboard)
-                 * is still honored.
-                 */
+
+
+
+
+
+
+
                 const layoutHeight = window.innerHeight;
                 const visualHeight = window.visualViewport?.height;
                 const frameHeight =

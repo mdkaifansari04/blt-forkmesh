@@ -911,9 +911,9 @@ def test_qt_silent_auth_does_not_treat_cached_password_as_signed_hosting_auth():
         : qt.index("// POST /api/accounts/login")
     ]
 
-    # Cached markers are only trusted when the relay gave no authoritative
-    # 200 answer (unreachable, rate-limited, erroring). An answered lookup
-    # must prove the desktop pubkey above to authenticate.
+
+
+
     assert "if (cachedHere && status != 200 &&" in silent_auth
     assert "restoreDesktopCapability(accountName)" in silent_auth
     assert "cachedHere && (status == 0 || activeAccount)" not in silent_auth
@@ -932,7 +932,7 @@ def test_qt_login_labels_the_device_it_registers():
 
     assert 'loginRequest.insert(QStringLiteral("deviceLabel")' in login
     assert "machineNodeName()" in login
-    # The relay stores whatever label the desktop sends on the device row.
+
     assert 'clean_string(data.get("deviceLabel", ""), 120)' in ENTRY.read_text(
         encoding="utf-8")
 
@@ -944,23 +944,23 @@ def test_qt_logout_revokes_the_website_session_and_re_authenticates():
         : repos.index("void MainWindow::loginToUserAccount")
     ]
 
-    # Logging out on the desktop must also drop the website session...
+
     assert "revokeAccountSession();" in logout
     assert 'postAccountSync(QStringLiteral("logout")' in logout
     assert 'QJsonObject{{QStringLiteral("sessionToken"), token}}' in logout
-    # ...and come back through the password login, which is what tells the
-    # website about this desktop's key (silent key auth never reaches it).
+
+
     assert "promptRelogin(previousAccount);" in logout
     assert "runLoginFlow(accountName)" in logout
     assert "startSession();" in logout
-    # A headless node has nobody to answer the password prompt.
+
     assert "if (m_headless)\n        return false;" in logout
 
 
 def test_signed_private_publish_and_direct_routing_stay_account_key_bound():
     entry = ENTRY.read_text(encoding="utf-8")
-    # Catalog publication and direct-route registration live in split
-    # MainWindow TUs. The retired repository socket has no credential.
+
+
     qt = "\n".join(
         p.read_text(encoding="utf-8")
         for p in sorted(QT_MAIN.parent.glob("MainWindow*.cpp"))

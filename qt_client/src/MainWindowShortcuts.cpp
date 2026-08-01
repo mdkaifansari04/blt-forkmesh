@@ -1,16 +1,16 @@
-// MainWindowShortcuts: MainWindow feature methods, split out of MainWindow.cpp.
-// Per-repo Shortcuts tab (adhoc #118).
-//
-// Shortcuts are plain files in the checkout's .forkmesh/shortcuts/ folder —
-// shell scripts today, with prompts/skills riding along as editable text — so
-// they version and sync with the repo like workflows do. The tab lists each
-// file as a clickable card: a script click runs it through bash with stdout/
-// stderr streamed live into the page's output pane; other kinds open in the
-// editor. New / edit / delete round out the CRUD.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -19,9 +19,9 @@ using namespace forkmesh::ui;
 
 namespace {
 
-// A shortcut is "runnable" when it looks like a shell script; everything else
-// (prompt .md/.txt, skill files, …) is treated as text a card click opens for
-// editing instead of executing.
+
+
+
 bool shortcutIsScript(const QString &filePath)
 {
     const QFileInfo info(filePath);
@@ -44,8 +44,8 @@ QString shortcutKind(const QString &filePath)
     return QStringLiteral("file");
 }
 
-// Card title/subtitle from the file's header: a "# name:" / "# description:"
-// comment when present, else the file name and its first comment line.
+
+
 void shortcutMeta(const QString &filePath, QString *name, QString *description)
 {
     *name = QFileInfo(filePath).fileName();
@@ -66,7 +66,7 @@ void shortcutMeta(const QString &filePath, QString *name, QString *description)
     }
 }
 
-} // namespace
+}
 
 QString MainWindow::shortcutsDirPath() const
 {
@@ -120,8 +120,8 @@ QWidget *MainWindow::buildShortcutsTab()
     hint->setWordWrap(true);
     layout->addWidget(hint);
 
-    // Cards scroll in their own area so a long list never squeezes the output
-    // pane; loadShortcutsPanel rebuilds the host's rows.
+
+
     m_shortcutCardsHost = new QWidget;
     auto *cardsLayout = new QVBoxLayout(m_shortcutCardsHost);
     cardsLayout->setContentsMargins(0, 0, 0, 0);
@@ -167,7 +167,7 @@ void MainWindow::loadShortcutsPanel()
     if (!m_shortcutCardsHost)
         return;
     auto *cardsLayout = static_cast<QVBoxLayout *>(m_shortcutCardsHost->layout());
-    while (cardsLayout->count() > 1) { // keep the trailing stretch
+    while (cardsLayout->count() > 1) {
         QLayoutItem *item = cardsLayout->takeAt(0);
         if (item->widget())
             item->widget()->deleteLater();
@@ -200,10 +200,10 @@ void MainWindow::loadShortcutsPanel()
         QString name, description;
         shortcutMeta(path, &name, &description);
 
-        // The card is itself a button — clicking anywhere runs a script or
-        // opens anything else in the editor. Its labels are made transparent
-        // to the mouse so clicks land on the card; the edit/delete buttons
-        // stay clickable on top of it.
+
+
+
+
         auto *card = new QPushButton;
         card->setObjectName("shortcutCard");
         card->setCursor(Qt::PointingHandCursor);
@@ -320,8 +320,8 @@ void MainWindow::runShortcut(const QString &filePath)
             });
     connect(process, &QProcess::errorOccurred, this,
             [finish, process](QProcess::ProcessError) {
-                // finished() still follows a Crashed error; only a failed start
-                // never reaches it, so complete here just for that case.
+
+
                 if (process->state() == QProcess::NotRunning &&
                     process->error() == QProcess::FailedToStart)
                     finish(QStringLiteral("failed to start bash"));
@@ -336,8 +336,8 @@ void MainWindow::stopShortcut()
     if (m_shortcutOutput)
         m_shortcutOutput->appendPlainText(QStringLiteral("^C stopping…"));
     m_shortcutProcess->terminate();
-    // Escalate if the process ignores SIGTERM; the finished() handler resets
-    // the UI whichever signal lands.
+
+
     QPointer<QProcess> process = m_shortcutProcess;
     QTimer::singleShot(3000, this, [process] {
         if (process && process->state() != QProcess::NotRunning)
@@ -393,7 +393,7 @@ void MainWindow::openShortcutEditor(const QString &filePath)
 
     QString targetPath = filePath;
     if (creating) {
-        // Keep the name a plain file inside the shortcuts folder.
+
         const QString name =
             QFileInfo(nameEdit->text().trimmed()).fileName();
         if (name.isEmpty() || name.startsWith(QLatin1Char('.'))) {

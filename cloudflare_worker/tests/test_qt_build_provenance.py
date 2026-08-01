@@ -85,7 +85,7 @@ def test_build_provenance_tracks_clean_root_and_rejects_dirty_inputs(tmp_path):
     assert result.returncode == 0, result.stderr
     assert _reported_commit(build) == commit
 
-    # A dirty file outside qt_client still affects packaged artifact resources.
+
     (repo / "cloudflare_worker/input.txt").write_text("dirty\n")
     result = _run_generator(repo, build)
     assert result.returncode == 0, result.stderr
@@ -101,8 +101,8 @@ def test_build_provenance_tracks_clean_root_and_rejects_dirty_inputs(tmp_path):
     assert _reported_commit(build) == "dirty"
     (repo / "cloudflare_worker/untracked.txt").unlink()
 
-    # Output-only release metadata neither changes code provenance nor creates
-    # the impossible artifact -> metadata commit -> artifact cycle.
+
+
     metadata = repo / ".forkmesh/releases/latest/release.json"
     metadata.parent.mkdir(parents=True)
     metadata.write_text("{}\n")

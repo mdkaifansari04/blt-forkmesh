@@ -63,7 +63,7 @@ def _harness(rec, pubkey_lookup=None, expected_canonical=None):
         revoked.append(name_bi)
 
     async def ed25519_verify(pubkey, sig, canonical):
-        # Only the currently-bound old key with the sentinel signature verifies.
+
         verified.append((pubkey, sig, canonical))
         if sig != "goodsig" or pubkey != "old-pubkey":
             return False

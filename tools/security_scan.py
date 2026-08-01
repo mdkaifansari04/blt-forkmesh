@@ -246,8 +246,8 @@ def scan_secrets(
                 if key in seen:
                     continue
                 seen.add(key)
-                # The match proves the rule fired, but the matched value is
-                # neither copied nor hashed into any public artifact.
+
+
                 findings.append(
                     make_finding(
                         category="secret",
@@ -456,9 +456,9 @@ def _pylock_dependencies(path: Path, root: Path) -> set[Dependency]:
 
 
 def _pub_lock_dependencies(path: Path, root: Path) -> set[Dependency]:
-    # pubspec.lock is simple YAML, but pulling in a YAML parser solely for the
-    # inventory would expand the scanner's supply chain.  The generated lockfile
-    # format has stable two-space package keys and four-space version fields.
+
+
+
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
     except OSError:
@@ -776,8 +776,8 @@ def publish_scan_ingest(
                     delay = min(8.0, 0.75 * (2**attempt))
                 sleeper(delay)
                 continue
-            # Do not read or print an endpoint response body. It may contain
-            # deployment diagnostics that do not belong in public logs.
+
+
             raise ScanError(
                 f"security scan ingest returned HTTP {exc.code}"
             ) from exc
@@ -820,8 +820,8 @@ def build_report(
             scope_limitations.append(
                 "The OSV advisory service was unavailable; dependency results are incomplete."
             )
-            # The exception detail is intentionally not included in the public
-            # artifact because upstream responses can contain request metadata.
+
+
             print(f"security scan note: {exc}", file=sys.stderr)
 
     findings.sort(
@@ -1070,8 +1070,8 @@ def main(argv: list[str] | None = None) -> int:
         return compact
 
     try:
-        # Loading the schema catches accidental invalid JSON in the published
-        # contract even when the optional jsonschema package is unavailable.
+
+
         json.loads(args.schema.read_text(encoding="utf-8"))
         json.loads(args.clipboard_schema.read_text(encoding="utf-8"))
         report = build_report(

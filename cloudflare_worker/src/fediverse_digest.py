@@ -42,8 +42,8 @@ def _public_url(value):
         return ""
     if parsed.username or parsed.password:
         return ""
-    # Query strings can contain private search/form values. Event links use a
-    # stable public path and optional fragment only.
+
+
     return parsed._replace(query="", params="").geturl()
 
 
@@ -104,9 +104,9 @@ def repository_event(
     )
     if reference:
         path += "/" + quote(reference, safe="-._~")
-    # Only an explicit public title may describe the event. Comment/review
-    # bodies can contain drafts, mentions, or security detail, so ``body`` is
-    # accepted for call-site compatibility but intentionally never retained.
+
+
+
     del body
     summary = _clean_text(title, 120)
     label = event_type.replace("_", " ")

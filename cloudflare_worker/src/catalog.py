@@ -158,15 +158,15 @@ def safe_catalog_record(data):
         return None
 
     now = clean_string(data.get("updatedAt", ""), 32)
-    # Visibility fails closed. Older/malformed publishers that omit the field
-    # may hide a public repository until they republish, but they can never make
-    # a private repository discoverable by accident.
+
+
+
     visibility = (
         "public" if data.get("visibility") == "public" else "private"
     )
-    # On-disk mirror size (bytes) the publishing node reports. Clamped to a sane
-    # non-negative integer; 0 when absent or unparseable. Drives the size figures
-    # and "data hosted" leaderboards on the network page.
+
+
+
     try:
         size_bytes = max(0, min(int(data.get("sizeBytes", 0) or 0), 1 << 50))
     except (TypeError, ValueError):
@@ -234,21 +234,21 @@ def safe_catalog_record(data):
         "hostedSince": clean_string(data.get("hostedSince", ""), 32),
         "lastSync": clean_string(data.get("lastSync", ""), 32),
         "updatedAt": now,
-        # Stable identity (first/root commit) shared by every mirror of this repo,
-        # so the network page can group mirrors under different owners into one
-        # card. Falls back to the repo name on the website when absent.
+
+
+
         "rootCommit": clean_string(data.get("rootCommit", ""), 64),
         "source": clean_string(data.get("source", "local-node"), 40),
-        # Node facts mirrored from the publishing node's live advert, so the Mirror
-        # nodes view can show latest commit / issues / platform / version / id for a
-        # node even while it's offline (adhoc #56). Point-in-time, like sizeBytes.
+
+
+
         "commit": clean_string(data.get("commit", ""), 64),
         "branch": clean_string(data.get("branch", ""), 120),
         "issueCount": clean_string(data.get("issueCount", ""), 12),
-        # Highest issue number ever assigned (closed/deleted included), so the
-        # relay can propose the desktop's real next number for a ForkBot issue
-        # (see _forkbot_next_issue_number). Distinct from issueCount, which is
-        # only the open count.
+
+
+
+
         "issueMaxNumber": clean_string(data.get("issueMaxNumber", ""), 12),
         "commitCount": clean_string(data.get("commitCount", ""), 12),
         "branchCount": clean_string(data.get("branchCount", ""), 12),
@@ -260,32 +260,32 @@ def safe_catalog_record(data):
         "platform": clean_string(data.get("platform", ""), 16),
         "version": clean_string(data.get("version", ""), 32),
         "nodeId": clean_string(data.get("nodeId", ""), 64),
-        # How many clones and website (browse/fetch) requests this node has served
-        # for the repo. Purely local counters otherwise, mirrored here so the Mirror
-        # nodes view can show a node's contribution even while it's offline.
+
+
+
         "clonesServed": clean_string(data.get("clonesServed", ""), 12),
         "websiteServed": clean_string(data.get("websiteServed", ""), 12),
         "maintainer": public_key,
         "signature": clean_string(data.get("signature", ""), 220),
-        # Owner-signed fingerprint of the repo's served refs (sha256 over the
-        # canonical heads+tags advertisement; see advertised_refs_canonical). The
-        # relay pins this and refuses to serve any mirror whose live advertisement
-        # doesn't hash to it — so a tampered or rolled-back mirror can't be cloned.
+
+
+
+
         "stateHash": clean_string(data.get("stateHash", ""), 64),
         "stateSig": clean_string(data.get("stateSig", ""), 220),
     }
-    # Keep this pair absent on legacy records so their catalog-v2 signatures
-    # still verify. New reports are a strict, signed capability/status only:
-    # arbitrary Actions configuration never reaches the stored public record.
+
+
+
     if actions_fields:
         record["actionsEnabled"] = actions_enabled
         record["actionsState"] = actions_state
     if changed_files:
         record["changedFiles"] = changed_files
-    # Keep absent telemetry absent (rather than adding null fields) so a
-    # catalog-v2 signature produced by an older, opted-out client continues to
-    # verify after this schema extension. Consumers still expose unknown values
-    # as null in their response shape.
+
+
+
+
     cpu_percent = clean_optional_integer(data.get("cpuPercent"), 100)
     if cpu_percent is not None:
         record["cpuPercent"] = cpu_percent
@@ -295,19 +295,19 @@ def safe_catalog_record(data):
     if disk_total is not None:
         record["diskUsedBytes"] = disk_used
         record["diskTotalBytes"] = disk_total
-    # The publishing machine's node name (node/machineName on the desktop),
-    # distinct from the owning account. Same optional-extension rule: absent
-    # (never empty) when unset so older clients' signatures keep verifying.
+
+
+
     machine_name = clean_string(data.get("machineName", ""), 63)
     if machine_name:
         record["machineName"] = machine_name
     runtime_mode = clean_string(data.get("runtimeMode", ""), 12).lower()
     if runtime_mode in {"desktop", "headless"}:
         record["runtimeMode"] = runtime_mode
-    # Subject / author / date of the advertised head commit, so the Mirror nodes
-    # view and the World cabinets can name a node's latest commit instead of
-    # showing a bare hash. Same optional-extension rule: absent when the node
-    # couldn't read it (or is an older client), never an empty string.
+
+
+
+
     commit_subject = clean_string(data.get("commitSubject", ""), 120)
     if commit_subject:
         record["commitSubject"] = commit_subject
@@ -317,24 +317,24 @@ def safe_catalog_record(data):
     commit_at = clean_string(data.get("commitAt", ""), 16)
     if commit_at:
         record["commitAt"] = commit_at
-    # When the node last served a clone / a website read for this repo, and the
-    # bounded class of client it served (never a raw User-Agent). Same optional
-    # -extension rule: absent when the node never served one, or never reported.
+
+
+
     for field in ("cloneServedAt", "websiteServedAt"):
         served_at = clean_string(data.get(field, ""), 16)
         if served_at.isdigit() and int(served_at) > 0:
             record[field] = served_at
-    # Bounded client classes only: the serving gateway generalizes the raw
-    # User-Agent (a fingerprint) into one of these before it is ever signed.
+
+
     serve_agent_classes = (
         "forkmesh-node", "git-client", "bot-tool", "browser", "client")
     for field in ("cloneServedAgent", "websiteServedAgent"):
         agent = clean_string(data.get(field, ""), 16)
         if agent in serve_agent_classes:
             record[field] = agent
-    # Agent runtimes are optional, signed catalog-v2 capabilities. Keep the
-    # field absent for older clients and nodes with no supported binary so
-    # routing fails closed without invalidating legacy signatures.
+
+
+
     agent_providers = []
     raw_agent_providers = data.get("agentProviders")
     if isinstance(raw_agent_providers, list):

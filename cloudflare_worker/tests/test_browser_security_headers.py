@@ -44,9 +44,9 @@ def test_only_embedded_application_documents_allow_same_origin_frames():
     assert "X-Frame-Options: DENY" in global_rule
     assert "https://static.cloudflareinsights.com" in global_rule
 
-    # Chat renders inside World frames; issue and pull details render inside
-    # the World workbench; World renders inside the site-footer band. All stay
-    # same-origin only.
+
+
+
     for path in (
         "/dashboard/chat*",
         "/chat",
@@ -66,7 +66,7 @@ def test_only_embedded_application_documents_allow_same_origin_frames():
         assert "https://cdn.jsdelivr.net" in rule
         assert "https://static.cloudflareinsights.com" in rule
 
-    # The World application shell must never be cached across deployments.
+
     for path in ("/world", "/world/*"):
         assert "Cache-Control: no-store, max-age=0, must-revalidate" in _rule(path)
 
@@ -89,5 +89,5 @@ def test_policy_does_not_grant_sensitive_device_capabilities():
         "browsing-topics=()",
     ):
         assert blocked in permissions
-    # Speech is an explicit, same-origin opt-in feature.
+
     assert "microphone=(self)" in permissions

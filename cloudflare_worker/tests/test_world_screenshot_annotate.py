@@ -14,8 +14,8 @@ QT_MARKUP = (
 
 
 def test_topbar_offers_a_camera_capture_button():
-    # The camera button lives in the top nav next to the view and sound
-    # toggles and routes through the shared delegated click handler.
+
+
     assert 'data-world-screenshot' in APP
     assert 'title="Capture and annotate a screenshot"' in APP
     assert '📷' in APP
@@ -24,8 +24,8 @@ def test_topbar_offers_a_camera_capture_button():
 
 
 def test_capture_is_drag_selected_and_cancelable():
-    # Capture starts as a full-viewport crosshair overlay with a drag
-    # marquee; Escape cancels and tiny drags never produce a screenshot.
+
+
     assert "world-shot-overlay" in APP
     assert "world-shot-marquee" in APP
     assert "Drag to select the area to capture" in APP
@@ -36,39 +36,39 @@ def test_capture_is_drag_selected_and_cancelable():
 
 
 def test_capture_rerenders_the_webgl_frame_before_readback():
-    # The renderer runs without preserveDrawingBuffer, so the crop must
-    # paint a fresh frame and read it back synchronously.
+
+
     assert "world.renderer.render(world.scene, world.camera)" in APP
     assert "drawImage" in APP
 
 
 def test_capture_composites_the_hud_over_the_rendered_frame():
-    # The HUD is DOM painted over the canvas, so a capture rasterizes the
-    # world root into the crop instead of shipping a bare 3D frame.
+
+
     assert "renderHudImage" in APP
     assert "await this.captureWorldRegion(rect)" in APP
     assert 'this.$("[data-world-root]")' in APP
     assert "foreignObject" in APP
     assert "hudStylesheetText" in APP
-    # Capture chrome and the live canvas are excluded from the clone.
+
     assert "[data-world-canvas-wrap], .world-shot-overlay" in APP
-    # Foreign-object rendering never fetches subresources.
+
     assert "inlineHudImages" in APP
     assert "readAsDataURL" in APP
 
 
 def test_hud_raster_stays_transparent_over_the_rendered_frame():
-    # .fm-world paints an opaque backdrop behind the canvas. The HUD layer is
-    # drawn on top of the WebGL readback, so the clone must drop that fill or
-    # the capture returns chrome on a flat colour with no game world.
+
+
+
     assert "background: #081510" in CSS
     assert 'clone.style.background = "transparent"' in APP
     assert 'clone.style.backgroundColor = "transparent"' in APP
 
 
 def test_annotator_matches_the_desktop_markup_toolset():
-    # Same tools, palette, and affordances as the desktop
-    # Screenshot & Markup window.
+
+
     assert "Annotate Screenshot" in APP
     for tool in ("Pencil", "Line", "Arrow", "Rectangle", "Ellipse", "Text"):
         assert tool in APP, tool

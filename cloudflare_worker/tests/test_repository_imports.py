@@ -691,7 +691,7 @@ def test_dashboard_separates_external_stubs_from_live_mirror_catalog():
     assert "mirrorNotice" in REPO_LIST_JS
     assert "data-external-mirror-volunteer" in REPO_LIST_JS
     assert "loadExternalRepositories();" in REPO_INIT_JS
-    # The generated, actually served page must include the source partial.
+
     assert "External repositories &amp; stubs" in BUILT_DASHBOARD
 
 
@@ -705,7 +705,7 @@ def test_dashboard_provider_import_token_is_explicitly_ephemeral():
     assert 'fetch("/api/repository-imports"' in REPO_LIST_JS
     assert "providerToken" in REPO_LIST_JS
     assert 'tokenInput.value = ""' in REPO_LIST_JS
-    # Tokens must never be placed in persistent browser storage.
+
     token_section = REPO_LIST_JS[
         REPO_LIST_JS.index("const providerToken"):
         REPO_LIST_JS.index("tokenInput.value =") + len('tokenInput.value = ""')

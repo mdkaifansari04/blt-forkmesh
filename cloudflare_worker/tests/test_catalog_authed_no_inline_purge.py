@@ -48,7 +48,7 @@ def _run(url, *, cached=False):
     async def d1_all(env, sql, *args):
         if "FROM repositories" in sql:
             return [{"key_bi": "bi", "owner_bi": "obi", "data": repo}]
-        return []  # host_presence -> nobody live
+        return []
 
     async def purge_blocked_catalog(env):
         calls["purge_blocked"] += 1
@@ -63,10 +63,10 @@ def _run(url, *, cached=False):
         return data
 
     async def active_nodes(env):
-        return None  # None => the active-node filter is skipped
+        return None
 
     async def verify_token(env, viewer, ts, sig):
-        return viewer  # any signed viewer authenticates in this harness
+        return viewer
 
     async def edge_cache_match(_key):
         return "CACHED" if cached else None
@@ -118,13 +118,13 @@ def test_authenticated_catalog_skips_inline_purges():
         "https://forkmesh.internal/api/repositories"
         "?viewer=alice&ts=%d&sig=deadbeef" % NOW)
     assert result["ok"] is True
-    # Authenticated request must not do inline write-side housekeeping.
+
     assert calls == {"purge_blocked": 0, "purge_stale": 0}
 
 
 def test_anonymous_cache_miss_does_not_purge_inline():
     _result, calls = _run("https://forkmesh.internal/api/repositories")
-    # Housekeeping is cron-only now — no inline sweep even on an anon miss.
+
     assert calls == {"purge_blocked": 0, "purge_stale": 0}
 
 

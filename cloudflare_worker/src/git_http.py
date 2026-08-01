@@ -19,16 +19,16 @@ def pkt_line(payload):
 
 
 def advertised_refs_canonical(data):
-    # Canonical, hashable fingerprint of the served branches + tags, derived from
-    # a `git upload-pack --advertise-refs` body (the bytes a host streams back for
-    # info/refs, WITHOUT the "# service=" header the worker prepends). Output is
-    # "<sha> <refname>" lines for refs/heads/* and refs/tags/* only, sorted BY
-    # REFNAME, joined by "\n" — byte-for-byte identical to the desktop node's
-    # mirrorStateHash() input and the mirror tools' refs_canonical() (git
-    # for-each-ref --sort=refname over the same namespaces). HEAD, peeled tags
-    # ("...^{}"), and per-line capabilities (after the first NUL) are dropped.
-    # Assumes the traditional (protocol v0) advertisement; the host never sets
-    # GIT_PROTOCOL=version=2, so refs are always listed inline.
+
+
+
+
+
+
+
+
+
+
     data = bytes(data or b"")
     refs = []
     i = 0
@@ -38,15 +38,15 @@ def advertised_refs_canonical(data):
             length = int(data[i:i + 4], 16)
         except ValueError:
             break
-        if length == 0:        # flush-pkt ("0000") — section/stream boundary
+        if length == 0:
             i += 4
             continue
         if length < 4 or i + length > n:
-            break              # malformed; stop rather than misread
+            break
         line = data[i + 4:i + length].rstrip(b"\n")
         i += length
         nul = line.find(b"\x00")
-        if nul != -1:          # strip capabilities advertised on the first ref
+        if nul != -1:
             line = line[:nul]
         parts = line.split(b" ", 1)
         if len(parts) != 2:
@@ -58,11 +58,11 @@ def advertised_refs_canonical(data):
         if not (name.startswith("refs/heads/") or name.startswith("refs/tags/")):
             continue
         refs.append(sha + " " + name)
-    # Order by refname, not by the whole "<sha> <refname>" line: the desktop
-    # (PublicMirrorRuntime::refsSha256FromForEachRef) and the mirror tools all
-    # canonicalize with `for-each-ref --sort=refname`, and a sha-first sort
-    # diverges from that the moment two refs' name order differs from their
-    # object-id order — which would fail every pin comparison.
+
+
+
+
+
     refs.sort(key=lambda line: line.split(" ", 1)[1])
     return "\n".join(refs)
 
@@ -99,10 +99,10 @@ def decode_git_request_body(data, content_encoding, max_bytes=8 * 1024 * 1024):
         for item in (content_encoding or "").split(",")
         if item.strip()
     ]
-    # Content encodings are decoded in reverse application order. Git uses gzip
-    # once its upload-pack request crosses http.postBuffer; forwarding those raw
-    # bytes makes upload-pack parse the gzip header as a pkt-line and fail with
-    # "bad line length character".
+
+
+
+
     for encoding in reversed(encodings):
         if encoding == "identity":
             continue

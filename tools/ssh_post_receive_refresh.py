@@ -42,7 +42,7 @@ try:
     from cryptography.hazmat.primitives.asymmetric.ed25519 import (
         Ed25519PublicKey,
     )
-except ImportError as exc:  # pragma: no cover - minimal-host failure
+except ImportError as exc:
     raise SystemExit(
         "ForkMesh SSH refresh: the cryptography package is required"
     ) from exc
@@ -279,8 +279,8 @@ def _safe_environment() -> dict[str, str]:
         "PATH": "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
         "LANG": "C",
         "LC_ALL": "C",
-        # This is the packaged, service-owned disk-backed materialization
-        # directory. Never forward an ambient or config-derived TMPDIR.
+
+
         "TMPDIR": FIXED_RUNTIME_TMPDIR,
     }
 
@@ -322,7 +322,7 @@ def notify(
     hook_input = input_stream.read(MAX_HOOK_INPUT_BYTES + 1)
     if len(hook_input) > MAX_HOOK_INPUT_BYTES:
         raise RefreshBridgeError("post-receive input is too large")
-    # Ref names and object IDs are intentionally discarded without parsing.
+
     del hook_input
 
     temporary = parent / (".pending-" + secrets.token_hex(12))
@@ -450,8 +450,8 @@ def _write_state(
             } else "refresh",
             "updatedAt": int(now_ms),
             "nextRetryAt": max(0, int(next_retry_at)),
-            # Deliberately generic: command output, repository names, refs,
-            # paths, credentials, and exception strings never enter this file.
+
+
             "lastError": (
                 "publication_phase_failed" if status == "retry-pending" else ""
             ),
@@ -566,9 +566,9 @@ def _refresh_with_retry(
         except RefreshBridgeError:
             if attempt + 1 >= REFRESH_MAX_ATTEMPTS:
                 raise
-            # The fixed pause counts against the existing 30-minute refresh
-            # deadline. If it would consume the remaining budget, fail closed
-            # instead of launching an effectively unbounded second command.
+
+
+
             if deadline - monotonic() <= REFRESH_RETRY_DELAY_SECONDS:
                 raise
             sleeper(REFRESH_RETRY_DELAY_SECONDS)
@@ -802,8 +802,8 @@ def wait_for_signed_health(
                 _parse_gateway_identity(config.gateway_config_path)
             )
         except RefreshBridgeError:
-            # A validated generation is installed by atomic replacement. Treat
-            # that tiny replacement window as startup-not-ready and retry.
+
+
             remaining = deadline - monotonic()
             if remaining > 0:
                 sleeper(min(HEALTH_RETRY_SECONDS, remaining))
@@ -842,9 +842,9 @@ def _claim_trigger(
     clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000,
 ) -> Path | None:
     processing = _processing_path(config)
-    # Recover work left claimed if the oneshot was killed or the machine
-    # restarted between claim and completion. systemd serializes this service,
-    # so an existing processing marker is never a concurrent worker.
+
+
+
     if _safe_marker(processing):
         return processing
     if _safe_marker(config.trigger_path):
@@ -941,8 +941,8 @@ def _run_locked(
         and reconcile
         and _safe_marker(_retry_path(config))
     ):
-        # The periodic reconciliation timer also drives persistent retries, but
-        # respects their bounded backoff rather than spinning a failing unit.
+
+
         return {"ok": False, "event": "ssh_push_refresh_retry_deferred"}
     phase = "refresh"
     _write_state(

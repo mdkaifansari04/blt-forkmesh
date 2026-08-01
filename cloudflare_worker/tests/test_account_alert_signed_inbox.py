@@ -23,7 +23,7 @@ from urllib.parse import parse_qs, urlparse
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
-# clean_string lives in catalog.py; parse both so it can be extracted too.
+
 SOURCE_TEXT = ENTRY_TEXT + "\n" + CATALOG.read_text(encoding="utf-8")
 
 FUNCS = {
@@ -101,9 +101,9 @@ def _harness(accounts, ts_ok=True, session_name=""):
         return record.get("pubkey", "") if record else ""
 
     async def ed25519_verify(pubkey, sig, canonical):
-        # A node "signs" by presenting a digest over the exact canonical string
-        # it signed, keyed by its public key. Digested rather than embedded so
-        # the proof's newlines never have to survive a URL round trip.
+
+
+
         return bool(pubkey) and sig == _fake_sig(pubkey, canonical)
 
     async def _authed_account_name(_env, _request, _data=None):
@@ -137,7 +137,7 @@ def _signed_url(namespace, path, proof_name, node="alice", pubkey="PK-alice",
 
 def _signed_delete_url(namespace, item_id, node="alice", pubkey="PK-alice",
                        ts="1700000000000"):
-    # The delete proof binds the row id, so the canonical string carries it.
+
     canonical = (namespace["ACCOUNT_ALERT_DELETE_PROOF"] + "\n" + node + "\n"
                  + item_id + "\n" + ts)
     sig = _fake_sig(pubkey, canonical.encode())
@@ -165,7 +165,7 @@ def test_list_and_read_proofs_authorize_their_own_operation():
         method="POST",
         url=_signed_url(namespace, "/api/notifications",
                         "ACCOUNT_ALERT_READ_PROOF")))) == "alice"
-    # The trailing-slash spelling of the same collection is the same route.
+
     assert asyncio.run(resolve(env, _Request(
         method="GET",
         url=_signed_url(namespace, "/api/notifications/",
@@ -197,11 +197,11 @@ def test_deleting_an_alert_needs_its_own_proof_bound_to_the_row():
     assert asyncio.run(resolve(env, _Request(
         method="DELETE",
         url=_signed_delete_url(namespace, row)), row)) == "alice"
-    # The same signature presented for a different row proves nothing.
+
     assert asyncio.run(resolve(env, _Request(
         method="DELETE",
         url=_signed_delete_url(namespace, row)), other)) == ""
-    # …and neither does a delete with no row named at all.
+
     assert asyncio.run(resolve(env, _Request(
         method="DELETE",
         url=_signed_delete_url(namespace, row)), "")) == ""
@@ -216,7 +216,7 @@ def test_a_read_or_list_proof_is_never_replayable_as_a_delete():
             method="DELETE",
             url=_signed_url(
                 namespace, "/api/notifications", proof)), row)) == "", proof
-    # The delete proof is likewise inert on the read verbs.
+
     for method in ("GET", "POST"):
         assert asyncio.run(resolve(env, _Request(
             method=method,
@@ -262,12 +262,12 @@ def test_bad_signature_stale_stamp_and_ineligible_accounts_are_refused():
     )
     assert asyncio.run(resolve(env, _Request(url=forged))) == ""
 
-    # A signature that verifies for a different key is still somebody else's.
+
     assert asyncio.run(resolve(env, _Request(url=_signed_url(
         namespace, path, "ACCOUNT_ALERT_LIST_PROOF",
         pubkey="PK-mallory")))) == ""
 
-    # Missing triple, unknown account, suspended account, non-user account.
+
     assert asyncio.run(resolve(env, _Request(
         url="https://forkmesh.test/api/notifications"))) == ""
     assert asyncio.run(resolve(env, _Request(url=_signed_url(
@@ -280,7 +280,7 @@ def test_bad_signature_stale_stamp_and_ineligible_accounts_are_refused():
         namespace, path, "ACCOUNT_ALERT_LIST_PROOF",
         node="orgaccount")))) == ""
 
-    # An expired stamp is refused even with an otherwise valid signature.
+
     stale, stale_env = _harness({"alice": _user()}, ts_ok=False)
     assert asyncio.run(stale["_account_alert_signed_session"](
         stale_env,
@@ -292,15 +292,15 @@ def test_the_session_token_still_wins_and_the_signature_only_fills_the_gap():
     signed, env = _harness({"alice": _user()})
     resolve = signed["_alert_inbox_account_name"]
 
-    # No session, valid signature: the desktop is recognized.
+
     assert asyncio.run(resolve(env, _Request(
         method="GET",
         url=_signed_url(signed, "/api/notifications",
                         "ACCOUNT_ALERT_LIST_PROOF")))) == "alice"
-    # No session, no signature: nothing is authorized.
+
     assert asyncio.run(resolve(env, _Request(
         url="https://forkmesh.test/api/notifications?node=alice"))) == ""
-    # A browser session is answered without consulting the signature at all.
+
     browser, browser_env = _harness({"alice": _user()}, session_name="bob")
     assert asyncio.run(browser["_alert_inbox_account_name"](
         browser_env,
@@ -313,8 +313,8 @@ def test_the_inbox_handler_uses_the_shared_gate_for_every_verb():
         "async def mirror_requests_handler(", start)]
     assert handler.count("_alert_inbox_account_name(") == 3
     assert "_authed_account_name(" not in handler
-    # The DELETE branch hands the row id to the gate, so the signature it
-    # accepts is the one that named this row (adhoc #77).
+
+
     delete_branch = handler[handler.index('if method == "DELETE":'):]
     assert "resource=item_id" in delete_branch
 

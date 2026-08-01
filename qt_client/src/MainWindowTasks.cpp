@@ -1,4 +1,4 @@
-// Organization-private task catalog and management surface.
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -35,12 +35,12 @@ QString taskErrorText(const QJsonObject &payload, const QString &fallback)
     return error;
 }
 
-// The canonical prefix this desktop signs with its account key for one task
-// request when it holds no account session token. Empty when the relay accepts
-// no key-signed form of the request: editing, deleting, timers, and QA verdicts
-// deliberately still require a real session. `resource` receives the task id
-// for a proof that names one. Must stay in lockstep with
-// _org_task_signed_session in the worker's entry.py.
+
+
+
+
+
+
 QString organizationTaskProof(const QByteArray &method, const QString &path,
                               QString *resource)
 {
@@ -61,9 +61,9 @@ QString organizationTaskProof(const QByteArray &method, const QString &path,
     return kOrgTaskCompleteProof;
 }
 
-// Tasks that are not finished — the number the rail badge shows. Counted
-// exactly the way applyOrganizationTasks counts it while filling the table, so
-// a badge refreshed without the page built agrees with one refreshed with it.
+
+
+
 int openOrganizationTaskCount(const QJsonArray &tasks)
 {
     int open = 0;
@@ -182,7 +182,7 @@ QString taskDetailHtml(const QJsonObject &task)
     return html;
 }
 
-} // namespace
+}
 
 QWidget *MainWindow::buildOrganizationTasksSection()
 {
@@ -442,24 +442,24 @@ void MainWindow::requestOrganizationTasks(
             QByteArrayLiteral("Authorization"),
             QByteArrayLiteral("Bearer ") + m_accountSessionToken.toUtf8());
     } else {
-        // Only a desktop that signed in with a password holds a session token.
-        // The ordinary launch is authenticateSilently(), which proves this
-        // install owns the account's key and mints no token at all — so
-        // without the signed fallback the whole tab reported "Sign in to an
-        // organization account" to an operator who was already signed in
-        // (adhoc #52). The relay accepts the signature for reading the board
-        // and for the two writes a desktop makes for its own run; anything
-        // else still needs a real session.
+
+
+
+
+
+
+
+
         QString resource;
         const QString proof = organizationTaskProof(method, path, &resource);
         if (proof.isEmpty() ||
             !authenticateOrgTaskRequest(url, request, proof, resource)) {
-            // Distinguish "not signed in at all" from "signed in with this
-            // device's key, but this change (delete, edit, QA, another
-            // member's timer, ...) deliberately needs a real session." The
-            // first message told an operator who was plainly using their own
-            // account to "sign in" to it, which reads as a no-op bug when the
-            // actual, actionable step is a password login (adhoc #108).
+
+
+
+
+
+
             handler(false, {},
                     m_accountAuthenticated
                         ? QString::fromUtf8(
@@ -508,9 +508,9 @@ void MainWindow::requestOrganizationTasks(
                           status > 0
                               ? QStringLiteral("HTTP %1").arg(status)
                               : reply->errorString());
-                // "invalid session" reads as a bug to an operator who is
-                // plainly signed in: what the relay actually rejected is this
-                // machine's key. Say so, and name the one action that fixes it.
+
+
+
                 if (keySigned && status == 401)
                     error += QString::fromUtf8(
                         " \xE2\x80\x94 this machine's key is not authorized "
@@ -550,8 +550,8 @@ void MainWindow::refreshOrganizationTasks()
         });
 }
 
-// Paint the open-task count onto the Tasks rail button and remember it, so the
-// next launch has a number to show before the relay has answered anything.
+
+
 void MainWindow::setOrganizationTaskBadge(int openCount)
 {
     QSettings().setValue(kOrganizationTaskOpenCountSetting, openCount);
@@ -559,8 +559,8 @@ void MainWindow::setOrganizationTaskBadge(int openCount)
         button->setBadgeCount(openCount);
 }
 
-// Launch-time counterpart: show the last count we knew about immediately. The
-// background refresh below replaces it as soon as the relay answers.
+
+
 void MainWindow::restoreOrganizationTaskBadge()
 {
     if (auto *button = dynamic_cast<ActivityRailButton *>(m_tasksNavButton)) {
@@ -569,16 +569,16 @@ void MainWindow::restoreOrganizationTaskBadge()
     }
 }
 
-// Refresh the count without requiring a visit to the Tasks page. The page is
-// built lazily, so on a fresh launch there is no status label and no table to
-// fill — count the payload directly then. A failed read (offline, or an account
-// with no private catalog) deliberately leaves the restored badge alone.
+
+
+
+
 void MainWindow::refreshOrganizationTaskBadge()
 {
     if (m_organizationTasksLoading)
         return;
     if (m_organizationTasksStatus && m_organizationTasksTable) {
-        refreshOrganizationTasks(); // page exists: keep table and badge in step
+        refreshOrganizationTasks();
         return;
     }
     m_organizationTasksLoading = true;
@@ -1289,10 +1289,10 @@ void MainWindow::deleteOrganizationTask()
                 refreshOrganizationTasks();
                 return;
             }
-            // A failed delete left the task sitting right where it was, with
-            // only a status label above the table to explain why — easy to
-            // miss, which read as "delete did nothing" (adhoc #108). Put the
-            // reason somewhere the operator cannot scroll past.
+
+
+
+
             QMessageBox::warning(this, QStringLiteral("Delete task"), error);
         });
 }

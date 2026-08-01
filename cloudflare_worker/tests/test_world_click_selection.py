@@ -20,8 +20,8 @@ def test_avatar_click_uses_public_identity_and_opens_the_side_panel():
     assert "openWorldMemberDetail(member = {}" in WORLD
     assert 'detail.dataset.openLandmark = "world-member";' in WORLD
     assert "privacy-filtered member, presence, and public profile fields" in WORLD
-    # The general member panel must not inherit the administrator-only guest
-    # transport details exposed by a different, explicitly privileged control.
+
+
     start = WORLD.index("openWorldMemberDetail(member = {}")
     member_panel = WORLD[start:WORLD.index("mirrorNodeActionsHTML(node)", start)]
     assert "ipAddress" not in member_panel

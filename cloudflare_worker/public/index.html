@@ -42,9 +42,9 @@
       type="application/xml"
       href="https://forkmesh.com/sitemap.xml"
     />
-    <!-- The regular product/source-code homepage remains available to guests
-         and signed-in visitors alike. ForkMesh World is embedded below and
-         also has a dedicated /world/ route; dashboard navigation stays explicit. -->
+
+
+
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://forkmesh.com/" />
     <meta property="og:site_name" content="ForkMesh" />
@@ -716,8 +716,8 @@
         transform: translateY(1px);
       }
 
-      /* Logged-in account chip rendered into the hero auth buttons by
-         home-header-auth.js. */
+
+
       .home-auth-avatar {
         display: inline-flex;
         align-items: center;
@@ -2060,8 +2060,8 @@
       }
     </style>
       <link rel="stylesheet" href="/site-footer.css" />
-    <script src="/site-footer.js?v=acdada792fa2" defer></script>
-    <script src="/home-header-auth.js?v=77163e4940c7" defer></script>
+    <script src="/site-footer.js?v=80298ae130ff" defer></script>
+    <script src="/home-header-auth.js?v=8895fb04569e" defer></script>
   </head>
   <body class="min-h-full bg-background text-foreground">
     <main class="overflow-hidden">
@@ -2246,11 +2246,11 @@
       <section
         class="hero-section relative isolate overflow-hidden bg-background"
       >
-      <!-- <img
-        src="/assets/video/network.jpg"
-        alt=""
-        class="absolute top-0 left-0 w-full h-full"
-      /> -->
+
+
+
+
+
         <div
           aria-hidden="true"
           class="hero-scene pointer-events-none absolute inset-x-0 top-0 z-0 overflow-hidden"
@@ -3489,7 +3489,7 @@
               `${online} ${online === 1 ? "user" : "users"} live in ForkMesh World`,
             );
           } catch (_) {
-            // The Join World action remains available during a count outage.
+
           } finally {
             busy = false;
           }

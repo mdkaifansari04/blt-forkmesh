@@ -1,9 +1,9 @@
--- Shared lobby attendance for the in-world Office.
---
--- One authenticated IN punch opens one visit row; its OUT punch closes that
--- same row. The account blind index authorizes the write and the public
--- account name supplies the lobby display. Raw addresses, user-agent strings,
--- session credentials, and device identifiers are deliberately not stored.
+
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS world_office_attendance (
   visit_id     TEXT PRIMARY KEY CHECK (
@@ -21,8 +21,8 @@ CREATE TABLE IF NOT EXISTS world_office_attendance (
   out_at       INTEGER CHECK (out_at IS NULL OR out_at >= in_at)
 );
 
--- This is the race-safe idempotency boundary for duplicate background IN
--- requests: an account can have at most one open visit.
+
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_world_office_attendance_open
   ON world_office_attendance(account_bi)
   WHERE out_at IS NULL;

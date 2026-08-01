@@ -58,12 +58,12 @@ function safeRecord(record, kind) {
   };
 }
 
-/**
- * Build bounded, commit-matched graph entities from an authorized repository
- * snapshot. The function never invents individual issue/PR records: when the
- * commit-pinned record directory was unavailable it emits an explicitly
- * aggregate collection node using only the returned count.
- */
+
+
+
+
+
+
 export function buildRepositoryGraphEntities(active = {}) {
   const owner = cleanText(active.owner, "", 40);
   const repo = cleanText(active.repo, "", 60);

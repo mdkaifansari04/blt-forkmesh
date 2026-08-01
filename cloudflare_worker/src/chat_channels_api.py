@@ -386,11 +386,11 @@ async def _readable_channel(runtime, account_bi, channel_id, is_admin):
 
 
 async def _history(runtime, account_bi, channel_id, is_admin):
-    # Read-only replay of one channel room for clients that hold no WebSocket
-    # into it (the desktop app mirroring the World office's rooms). Bodies stay
-    # exactly as the room retained them — AES-GCM envelopes only the room key
-    # opens — so this endpoint hands out no plaintext; the caller decrypts with
-    # the passphrase returned alongside, which the same authorization gates.
+
+
+
+
+
     row, record = await _readable_channel(
         runtime, account_bi, channel_id, is_admin)
     if not row:

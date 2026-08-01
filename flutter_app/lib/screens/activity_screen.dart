@@ -7,7 +7,7 @@ import '../services/relay_service.dart';
 import '../theme.dart';
 import '../widgets/fm_ui.dart';
 
-/// Network activity: live network stats and the relay connection log.
+
 class ActivityScreen extends StatefulWidget {
   const ActivityScreen({super.key});
 

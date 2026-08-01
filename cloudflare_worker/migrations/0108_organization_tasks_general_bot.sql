@@ -1,9 +1,9 @@
--- The task board no longer asks whether a task goes to Claude or to Codex: it
--- carries one general bot and the Worker picks whichever runtime has an
--- eligible mirror online. Widening a CHECK constraint requires a table
--- rebuild, so the catalog is recreated with 'agent' allowed and the two legacy
--- vendor kinds are folded into it. Sealed payloads are copied verbatim, so no
--- task copy, assignee label, or check-in note is decrypted here.
+
+
+
+
+
+
 
 DROP TRIGGER IF EXISTS trg_organization_task_limit;
 DROP INDEX IF EXISTS idx_organization_tasks_org_updated;

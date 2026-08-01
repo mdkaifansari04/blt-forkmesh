@@ -1,8 +1,8 @@
--- Native mirror-node daily security scan scheduling.
---
--- Repository identities and lease capabilities are blind indexes. Commit and
--- runner metadata remain in the encrypted data blob; no local diagnostics,
--- source excerpts, credentials, or reusable bearer token are stored.
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS repo_security_scan_leases (
     repo_bi TEXT PRIMARY KEY,

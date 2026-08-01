@@ -63,7 +63,7 @@ class _Request:
         self.headers = _Headers(headers)
 
 
-# --- WebCrypto SHA-256 digest stub (hashlib) --------------------------------
+
 class _FakeSubtle:
     async def digest(self, _algo, data):
         return hashlib.sha256(bytes(data)).digest()
@@ -109,7 +109,7 @@ def _harness(accounts, data_key="a-real-secret-data-key"):
         return "bi:" + key, rec
 
     async def ed25519_verify(pubkey, sig, _canonical):
-        # A node "signs" by presenting sig == "sig-for:<pubkey>".
+
         return bool(pubkey) and sig == "sig-for:" + pubkey
 
     async def _repository_access_context(
@@ -257,7 +257,7 @@ def test_session_token_gets_the_passphrase():
         env, _Request(headers={"authorization": "Bearer " + token})))
     assert resp["status"] == 200
     assert isinstance(resp["data"]["passphrase"], str)
-    assert len(resp["data"]["passphrase"]) == 64  # sha256 hex
+    assert len(resp["data"]["passphrase"]) == 64
     assert resp["data"]["room"] == "general"
     assert resp["data"]["access"] == "authenticated-repository"
 
@@ -269,7 +269,7 @@ def test_node_signature_gets_the_passphrase():
     resp = asyncio.run(ns["chat_room_key_handler"](env, _Request(url=url)))
     assert resp["status"] == 200
     assert len(resp["data"]["passphrase"]) == 64
-    # A wrong signature is rejected.
+
     bad = asyncio.run(ns["chat_room_key_handler"](env, _Request(
         url="https://forkmesh.test/api/chat/room-key?node=alice&ts=1&sig=nope")))
     assert bad["status"] == 401
@@ -282,8 +282,8 @@ def test_passphrase_is_deterministic_and_key_derived_not_raw_data_key():
         env, _Request(headers={"authorization": "Bearer " + token})))["data"]["passphrase"]
     b = asyncio.run(ns["chat_room_key_handler"](
         env, _Request(headers={"authorization": "Bearer " + token})))["data"]["passphrase"]
-    assert a == b  # every client must derive the same room key
-    # The passphrase must be a one-way digest, never the DATA_KEY itself.
+    assert a == b
+
     assert a != "super-secret-data-key"
     assert "super-secret-data-key" not in a
     expected = hashlib.sha256(
@@ -355,5 +355,5 @@ def test_placeholder_data_key_fails_closed():
         asyncio.run(ns["chat_room_key_handler"](
             env, _Request(headers={"authorization": "Bearer " + token})))
     except RuntimeError:
-        return  # _require_data_secret refuses a placeholder key
+        return
     raise AssertionError("expected RuntimeError on placeholder DATA_KEY")

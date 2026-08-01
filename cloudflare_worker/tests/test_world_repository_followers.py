@@ -60,12 +60,12 @@ def _load_function(name, namespace):
     raise AssertionError(name + " not found")
 
 
-# --- storage ------------------------------------------------------------------
+
 
 def test_migration_and_lazy_schema_agree_on_cached_profile_columns():
     db = sqlite3.connect(":memory:")
-    # Replay the pre-0078 table, then the migration: an existing deployment and
-    # a lazily-ensured fresh database must end up with the same columns.
+
+
     db.executescript(
         "CREATE TABLE ap_remote_actors ("
         " actor_id TEXT PRIMARY KEY, inbox TEXT, shared_inbox TEXT,"
@@ -97,8 +97,8 @@ def test_cached_actor_write_sanitizes_avatar_and_bio():
     write = ENTRY.split("INSERT INTO ap_remote_actors", 1)
     assert len(write) == 2
     prelude = write[0][-800:]
-    # The avatar is validated as a public https media URL and the bio is
-    # flattened from untrusted remote HTML, before either is persisted.
+
+
     assert "ap.public_media_url(ess.get(\"icon\"))" in prelude
     assert "ap_threads.sanitize_remote_content(ess.get(\"summary\")" in prelude
     assert "avatar_url=excluded.avatar_url" in write[1]
@@ -127,7 +127,7 @@ def _profile_sweep(rows, fetched, fails=()):
     async def _ap_remote_actor(_env, actor_id, force_refresh=False):
         assert force_refresh is True
         fetched.append(actor_id)
-        # An unreachable server leaves the cached row exactly as it was.
+
         return None if actor_id in fails else {"actor_id": actor_id}
 
     return _load_function("_ap_refresh_follower_profiles", {
@@ -140,7 +140,7 @@ def test_profile_sweep_only_refreshes_followers_missing_their_presentation():
     fetched = []
     sweep = _profile_sweep(
         [
-            # Oldest cache first, and only rows still missing avatar/bio.
+
             ("https://m.s/users/old", None, None, 10),
             ("https://f.o/users/mid", "", None, 20),
             ("https://h.io/users/done", "https://h.io/a.png", "bio", 5),
@@ -152,8 +152,8 @@ def test_profile_sweep_only_refreshes_followers_missing_their_presentation():
 
 
 def test_profile_sweep_window_rotates_past_unreachable_servers():
-    # Two dead servers hold the oldest cache entries forever (a failed fetch
-    # never updates the row), so window 0 must not be the only batch that runs.
+
+
     rows = [
         ("https://dead.one/users/a", None, None, 1),
         ("https://dead.two/users/b", None, None, 2),
@@ -172,8 +172,8 @@ def test_profile_sweep_window_rotates_past_unreachable_servers():
         _profile_sweep(rows, rotated, dead)(object(), 2, 1)) == 2
     assert rotated == ["https://live.one/users/c", "https://live.two/users/d"]
 
-    # A window past the end of a short backlog sweeps from the front instead of
-    # idling the tick.
+
+
     beyond = []
     assert asyncio.run(
         _profile_sweep(rows, beyond, dead)(object(), 2, 9)) == 0
@@ -191,14 +191,14 @@ def test_profile_sweep_runs_on_its_own_bounded_cron_slot():
     assert "AP_PROFILE_REFRESH_BATCH = 3" in ENTRY
 
 
-# --- the public follower list -------------------------------------------------
+
 
 def test_about_follower_query_joins_the_cached_actor_document():
     followers = ENTRY.split("SELECT follower_id, follower_handle", 1)
     assert len(followers) == 2
     query = followers[1][:2400]
     assert "LEFT JOIN ap_remote_actors ON actor_id = follower_id" in query
-    # Newest first, still capped: a popular repo never ships thousands of rows.
+
     assert "ORDER BY created_at DESC LIMIT 50" in query
     for field in ("\"avatarUrl\"", "\"about\"", "\"instance\"",
                   "\"profileUrl\"", "\"followedAt\""):
@@ -208,8 +208,8 @@ def test_about_follower_query_joins_the_cached_actor_document():
 
 
 def test_public_media_url_is_the_only_avatar_gate_the_client_trusts():
-    # The relay refuses anything a browser should not fetch on the viewer's
-    # behalf, so an actor document cannot smuggle a scheme or a private host in.
+
+
     assert ap.public_media_url("https://files.m.s/a.png") == \
         "https://files.m.s/a.png"
     for hostile in ("javascript:alert(1)", "data:image/png;base64,AA",
@@ -218,7 +218,7 @@ def test_public_media_url_is_the_only_avatar_gate_the_client_trusts():
         assert ap.public_media_url(hostile) == "", hostile
 
 
-# --- the World client ---------------------------------------------------------
+
 
 def test_world_reads_followers_from_the_public_about_card():
     loader = WORLD.split("async loadRepositoryFollowers(", 1)
@@ -226,13 +226,13 @@ def test_world_reads_followers_from_the_public_about_card():
     body = loader[1][:2600]
     assert "/about" in body
     assert "normalizeRepositoryFollowers(fediverse.followersList)" in body
-    # The relay's reported total stays authoritative for the caption; the list
-    # itself is capped.
+
+
     assert "followers.length" in body
-    # A private repository is never probed for followers.
+
     assert "status: \"unavailable\"" in body
     assert "isPrivate" in body
-    # Both repository-map entry paths hydrate the gallery.
+
     assert WORLD.count("this.loadRepositoryFollowers(") >= 2
 
 
@@ -244,7 +244,7 @@ def test_follower_normalizer_bounds_every_remote_field():
     assert "safePublicHTTPSURL(entry.profileUrl || entry.url)" in body
     for field in ("handle", "name", "about", "instance"):
         assert f"sanitizeNotificationText(entry.{field}" in body, field
-    # Deduped and capped, so a hostile relay answer cannot flood the scene.
+
     assert "seen.has(key)" in body
     assert "followers.length >= 24" in body
 
@@ -257,15 +257,15 @@ def test_scene_records_carry_live_star_and_follower_state():
     assert "this.repositoryFollowerStates.get(key)" in body
     assert "starCount:" in body
     assert "fediverseFollowers:" in body
-    # The scene is handed the merged records, not the raw catalog snapshot.
+
     assert "this.repositoriesWithLiveSocialState()," in WORLD
-    # The coalescing timer must not be cancelled by an unrelated presence sync:
-    # a stale non-zero handle would silently freeze every later rebuild.
+
+
     presence = WORLD.split("syncInactivePresence() {", 1)[1][:600]
     assert "clearTimeout(this.repositoryStarSceneSyncTimer)" not in presence
 
 
-# --- the scene ----------------------------------------------------------------
+
 
 def test_star_draws_the_stored_total_in_black():
     star = re.search(
@@ -275,11 +275,11 @@ def test_star_draws_the_stored_total_in_black():
     )
     assert star, "repository star texture not found"
     body = star.group(0)
-    assert "#07120e" in body                      # black digits
+    assert "#07120e" in body
     assert "count.toLocaleString(\"en-US\")" in body
-    # An unknown total renders a dash; it is never invented or rounded to zero.
+
     assert '"—"' in body
-    # The digits shrink to stay inside the star instead of overflowing it.
+
     assert "measureText(value).width" in body
 
 
@@ -295,15 +295,15 @@ def test_follower_gallery_orbits_real_follower_icons_around_file_circle():
     assert "gallery.position.set(0, 0.55, 0.18)" in body
     assert "caption.material.depthTest = false" in body
     assert "node.add(gallery)" in body
-    # Followers are social records, not in-world physical visitors.
+
     assert "makeRepositoryFollowerFigure" not in body
     assert "figure.rotation.y" not in body
-    # The caption reports the authoritative total and says when it is showing
-    # only part of it.
+
+
     assert "FEDIVERSE ${" in body
     assert "SHOWING ${visibleFollowers.length}" in body
     assert "NOBODY FOLLOWS THIS REPOSITORY YET" in body
-    # Only the selected public repository draws the icon orbit.
+
     assert "isActive && !record.isPrivate" in body
 
 
@@ -324,12 +324,12 @@ def test_remote_avatar_load_is_anonymous_and_optional():
     body = loader[1][:900]
     assert "image.crossOrigin = \"anonymous\"" in body
     assert "image.referrerPolicy = \"no-referrer\"" in body
-    # A server without CORS headers simply leaves the generated initials plate.
+
     assert "image.onerror" in body
     icon = SCENE.split("function makeRepositoryFollowerIcon(", 1)[1][:1600]
-    # An icon detached by a catalog rebuild is dropped, never repainted.
+
     assert "if (!icon.parent) return;" in icon
-    # File wedges never occlude the identity badge at common camera angles.
+
     assert "depthTest: false" in icon
     assert "icon.renderOrder = 40" in icon
     assert "new THREE.PlaneGeometry(1, 1)" in icon

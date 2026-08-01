@@ -8,9 +8,9 @@ import '../theme.dart';
 import '../widgets/fm_ui.dart';
 import 'org_detail_screen.dart';
 
-/// Lists the organizations the signed-in account belongs to and lets it create
-/// a new one. Mirrors the Worker's `/api/orgs` collection; tapping an org opens
-/// [OrgDetailScreen] for member/team/repo management.
+
+
+
 class OrgsScreen extends StatefulWidget {
   const OrgsScreen({super.key});
 
@@ -338,8 +338,8 @@ class _CreateOrgSheetState extends State<_CreateOrgSheet> {
   }
 }
 
-/// A lightweight header used by the org screens: a back button, title, optional
-/// subtitle, and a trailing action slot.
+
+
 class OrgScreenHeader extends StatelessWidget {
   const OrgScreenHeader({
     super.key,
@@ -370,7 +370,7 @@ class OrgScreenHeader extends StatelessWidget {
   }
 }
 
-/// A pill for an org role (owner/admin/member) coloured by privilege.
+
 class OrgRoleBadge extends StatelessWidget {
   const OrgRoleBadge({super.key, required this.role});
 
@@ -387,7 +387,7 @@ class OrgRoleBadge extends StatelessWidget {
   }
 }
 
-/// The compact filled text field shared by the org create/edit forms.
+
 class OrgTextField extends StatelessWidget {
   const OrgTextField({
     super.key,
@@ -429,7 +429,7 @@ class OrgTextField extends StatelessWidget {
   }
 }
 
-/// Human-readable text for an error thrown by an [ApiService] org call.
+
 String _messageFor(Object? error) {
   if (error is OrgApiException) return error.message;
   return 'Something went wrong. Check your connection and try again.';

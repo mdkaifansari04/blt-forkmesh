@@ -28,8 +28,8 @@ RestrictRealtime=true
 RestrictSUIDSGID=true
 LockPersonality=true
 MemoryDenyWriteExecute=true
-# The root orchestrator drops every other capability, but it must read the
-# mirror-owned 0600 gateway generation before accepting its signed health.
+
+
 CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_SETGID CAP_SETUID
 SystemCallArchitectures=native
 TasksMax=16

@@ -32,8 +32,8 @@ ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
-# The repo-actor `url` test exercises the real document builders.
-import importlib.util as _ilu  # noqa: E402
+
+import importlib.util as _ilu
 _ap_spec = _ilu.spec_from_file_location(
     "activitypub", ROOT / "src" / "activitypub.py")
 _ap = _ilu.module_from_spec(_ap_spec)
@@ -139,7 +139,7 @@ def _fake_request(url, method="GET"):
     return SimpleNamespace(url=url, method=method)
 
 
-# --- Collections ---------------------------------------------------------------
+
 
 def _collection_env(edge, d1_log, federates=True, followers_public=False):
     globs = _base_globals(edge, d1_log)
@@ -194,8 +194,8 @@ def test_collection_followers_hidden_by_default_for_users():
     resp = _run(ns["ap_collection_handler"](
         None, _fake_request("https://forkmesh.com/ap/users/alice/followers"),
         "user", "alice", "followers"))
-    assert resp.data["items"] is None  # opted out: bare collection
-    assert not any("ORDER BY" in q for q in d1_log)  # no items row fetch
+    assert resp.data["items"] is None
+    assert not any("ORDER BY" in q for q in d1_log)
 
 
 def test_collection_followers_enumerate_when_user_opts_in():
@@ -204,8 +204,8 @@ def test_collection_followers_enumerate_when_user_opts_in():
     resp = _run(ns["ap_collection_handler"](
         None, _fake_request("https://forkmesh.com/ap/users/alice/followers"),
         "user", "alice", "followers"))
-    assert resp.data["items"] == []  # opted in, fake d1_all returns none
-    assert any("ORDER BY" in q for q in d1_log)  # items row fetch ran
+    assert resp.data["items"] == []
+    assert any("ORDER BY" in q for q in d1_log)
 
 
 def test_collection_repo_followers_always_enumerate():
@@ -214,7 +214,7 @@ def test_collection_repo_followers_always_enumerate():
     resp = _run(ns["ap_collection_handler"](
         None, _fake_request("https://forkmesh.com/ap/repos/acme/widgets/followers"),
         "repo", "acme.widgets", "followers"))
-    assert resp.data["items"] == []  # repo watchers are already public
+    assert resp.data["items"] == []
 
 
 def test_collection_warm_hit_revalidates_visibility_before_using_cache():
@@ -227,7 +227,7 @@ def test_collection_warm_hit_revalidates_visibility_before_using_cache():
     second = _run(ns["ap_collection_handler"](
         None, request, "user", "alice", "outbox"))
     assert second is first
-    assert d1_log == ["ensure_schema"]  # gate only; no COUNT(*)
+    assert d1_log == ["ensure_schema"]
 
 
 def test_collection_not_found_is_negative_cached():
@@ -237,15 +237,15 @@ def test_collection_not_found_is_negative_cached():
     resp = _run(ns["ap_collection_handler"](
         None, _fake_request(url), "user", "ghost", "followers"))
     assert resp.status == 404
-    assert edge.puts == [url]  # parked at the edge under the canonical key…
+    assert edge.puts == [url]
     d1_log.clear()
     second = _run(ns["ap_collection_handler"](
         None, _fake_request(url), "user", "ghost", "followers"))
-    assert second is resp  # …and the probe storm replays from it
+    assert second is resp
     assert d1_log == []
 
 
-# --- Actor documents -------------------------------------------------------------
+
 
 def _actor_env(edge, d1_log, resolves=True):
     globs = _base_globals(edge, d1_log)
@@ -296,11 +296,11 @@ def test_actor_doc_404_is_negative_cached():
     d1_log.clear()
     second = _run(ns["_ap_actor_doc_response"](
         None, _fake_request(url), "user", "ghost"))
-    assert second is resp  # Mastodon's re-resolve on follow costs no D1
+    assert second is resp
     assert d1_log == []
 
 
-# --- WebFinger --------------------------------------------------------------------
+
 
 def _webfinger_env(edge, d1_log):
     globs = _base_globals(edge, d1_log)
@@ -343,8 +343,8 @@ def test_webfinger_spelling_variants_share_one_edge_entry():
         None, _fake_request(base + "acct%3Aalice%40forkmesh.com")))
     assert first.status == 200
     d1_log.clear()
-    # Same resource, different spelling (no acct: prefix, upper case) — the
-    # normalized key must hit the entry stored by the first request.
+
+
     second = _run(ns["ap_webfinger_handler"](
         None, _fake_request(base + "Alice%40ForkMesh.com")))
     assert second is first
@@ -365,7 +365,7 @@ def test_webfinger_invalid_resource_is_rejected_without_caching():
     assert d1_log == []
 
 
-# --- Update broadcast invalidation --------------------------------------------------
+
 
 def test_broadcast_actor_update_drops_cached_actor_doc_and_page():
     edge, d1_log = FakeEdgeCache(), []
@@ -383,7 +383,7 @@ def test_broadcast_actor_update_drops_cached_actor_doc_and_page():
         return {"pubkeyPem": "PEM", "privkey": "K"}
 
     async def d1_all(env, sql, *args):
-        return []  # no followers — bail after the invalidation
+        return []
 
     async def _ap_build_actor_doc(env, origin, kind, handle, rec):
         return {"id": actor_url}
@@ -399,14 +399,14 @@ def test_broadcast_actor_update_drops_cached_actor_doc_and_page():
     ns = _load("_ap_broadcast_actor_update", extra_globals=globs)
     _run(ns["_ap_broadcast_actor_update"](
         None, _fake_request(actor_url), "user", "alice"))
-    # Both the actor doc and its rel=me verification page leave the cache.
+
     assert edge.store == {}
 
 
-# --- Media endpoints (issue #416 round 3) ------------------------------------------
-# Every remote server that resolves the repo actor fetches its avatar/banner,
-# and every server receiving a Note fetches its image attachments — the last
-# unauthenticated fetch surfaces that still hit D1 on every request.
+
+
+
+
 
 class FakeJsResponse:
     @staticmethod
@@ -427,9 +427,9 @@ def _media_globals(edge, d1_log):
         "edge_cache_match_media": edge_cache_match_media,
         "decrypt_row": decrypt_row,
         "JsResponse": FakeJsResponse,
-        # Uint8Array.new(_to_js(bytes)) copies the WASM view into a JS-owned
-        # buffer so the body survives being read off the GIL; the stub just
-        # returns the bytes back (bytes() copies) to mirror that.
+
+
+
         "Uint8Array": SimpleNamespace(new=lambda v: bytes(v)),
         "to_js": lambda v: v,
         "_to_js": lambda v: v,
@@ -511,13 +511,13 @@ def test_repo_media_cold_hit_stores_under_versioned_url():
     first = _run(ns["repo_media_handler"](
         None, _fake_request(url), "forkmesh", "forkmesh", "logo"))
     assert first.status == 200
-    assert edge.puts == [url]  # the ?v= buster is part of the key
+    assert edge.puts == [url]
     d1_log.clear()
     second = _run(ns["repo_media_handler"](
         None, _fake_request(url), "forkmesh", "forkmesh", "logo"))
     assert second is first
-    # The signed repository visibility is always checked before a cached
-    # branding asset can be returned.
+
+
     assert d1_log == ["ensure_schema"]
 
 
@@ -533,11 +533,11 @@ def test_repo_media_not_found_is_not_cached():
     assert edge.store == {}
 
 
-# --- Repo actor `url` points at the fediverse profile page (adhoc #50) --------
-# Clicking a repo handle on Mastodon (a mention, or the profile external-link)
-# sends the user to the actor's `url`. It used to be the raw git page, dropping
-# social-timeline visitors onto a code forge; it is now the /@owner.repo
-# fediverse profile, with the git page kept as the verified "Repository" row.
+
+
+
+
+
 
 def _actor_doc_globals():
     async def _ap_user_federates(env, name):
@@ -547,11 +547,11 @@ def _actor_doc_globals():
         return "bi:" + value
 
     async def d1_first(env, sql, *args):
-        # The repositories row: public, with an encrypted blob we decrypt below.
+
         return {"is_private": 0, "data": "BLOB"}
 
     async def d1_all(env, sql, *args):
-        return []  # no uploaded logo/banner media
+        return []
 
     async def decrypt_row(env, data):
         return {"description": "A federated repo"}
@@ -588,10 +588,10 @@ def test_repo_actor_url_is_fediverse_profile_page_not_git_page():
     doc = _run(ns["_ap_build_actor_doc"](
         None, "https://forkmesh.com", "repo", "owner.repo",
         {"pubkeyPem": "PEM", "createdAt": 123}))
-    # `url` (Mastodon's click-through target) is the social profile page...
+
     assert doc["url"] == "https://forkmesh.com/@owner.repo"
-    # ...while the actor id and the verified "Repository" row still point at
-    # the git page so the code stays reachable and the green check survives.
+
+
     assert doc["id"] == "https://forkmesh.com/ap/repos/owner/repo"
     repo_row = next(a for a in doc["attachment"]
                     if a.get("name") == "Repository")

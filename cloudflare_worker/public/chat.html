@@ -21,7 +21,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
     <link rel="manifest" href="/favicon/site.webmanifest" />
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js?v=4fff78946d89" defer></script>
+    <script src="/site-header.js?v=48c851a962ec" defer></script>
     <script>
       (() => {
         const keys = ["forkmesh.dashboard.theme", "forkmesh.theme"];
@@ -72,14 +72,14 @@
         -webkit-font-smoothing: antialiased;
       }
 
-      /* ── layout: nav on top, three panes below ── */
+
       .chat-shell {
         display: flex;
         flex-direction: column;
-        height: 100vh; /* fallback for browsers without dvh */
-        height: 100dvh; /* mobile: track the dynamic viewport so the input bar
-                           and full message log stay on-screen as the browser's
-                           URL/tool bar shows and hides */
+        height: 100vh;
+        height: 100dvh;
+
+
         max-width: 1400px;
         margin: 0 auto;
       }
@@ -91,8 +91,8 @@
         grid-template-columns: 220px minmax(0, 1fr) 240px;
       }
 
-      /* ── universal site header wrapper: pin it to the shell's top row and
-         give it the page's border, matching the panes below. ── */
+
+
       .chat-site-header {
         flex-shrink: 0;
         border-bottom: 1px solid var(--border);
@@ -117,7 +117,7 @@
 
       #chat-name:focus { border-color: var(--accent); }
 
-      /* ── left pane: rooms ── */
+
       .chat-rooms-pane {
         min-height: 0;
         display: flex;
@@ -433,7 +433,7 @@
         text-align: center;
       }
 
-      /* ── middle pane ── */
+
       .chat-main-pane {
         min-width: 0;
         min-height: 0;
@@ -488,7 +488,7 @@
 
       #chat-clear:hover { color: var(--fg); border-color: #444; }
 
-      /* ── message log ── */
+
       #chat-log {
         flex: 1;
         min-height: 0;
@@ -517,8 +517,8 @@
 
       .chat-empty-icon { opacity: 0.3; }
 
-      /* Discord-style rows: avatar + header (name/time) + text, consecutive
-         messages from the same sender collapse under one header. */
+
+
       .chat-msg {
         position: relative;
         display: flex;
@@ -553,7 +553,7 @@
 
       .chat-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
-      /* Continuation rows keep the text aligned under the header row. */
+
       .chat-msg.is-continuation .chat-avatar { visibility: hidden; height: 0; margin: 0; }
       .chat-msg.is-continuation { padding-top: 1px; padding-bottom: 1px; }
 
@@ -596,7 +596,7 @@
 
       .chat-text { color: var(--fg); }
 
-      /* ── reactions ── */
+
       .chat-reactions {
         display: flex;
         flex-wrap: wrap;
@@ -676,7 +676,7 @@
 
       .chat-emoji-picker button:hover { background: var(--accent-dim); transform: scale(1.15); }
 
-      /* ── mentions ── */
+
       .chat-mention {
         display: inline-block;
         border-radius: 5px;
@@ -722,9 +722,9 @@
         font-style: italic;
       }
 
-      /* ── input bar ── */
+
       .chat-input-bar {
-        position: relative; /* anchors the @mention suggestion popup */
+        position: relative;
         flex-shrink: 0;
         display: flex;
         align-items: center;
@@ -734,7 +734,7 @@
         background: var(--surface);
       }
 
-      /* ── @mention autocomplete ── */
+
       .chat-mention-suggest {
         position: absolute;
         bottom: calc(100% + 6px);
@@ -921,7 +921,7 @@
       #chat-send:hover { opacity: 0.85; }
       #chat-send:active { opacity: 0.7; }
 
-      /* ── e2e note ── */
+
       .chat-e2e-note {
         flex-shrink: 0;
         text-align: center;
@@ -937,7 +937,7 @@
         text-underline-offset: 2px;
       }
 
-      /* ── right pane: people ── */
+
       .chat-people-pane {
         min-height: 0;
         display: flex;
@@ -1132,7 +1132,7 @@
         white-space: nowrap;
       }
 
-      /* ── responsive ── */
+
       @media (max-width: 980px) {
         .chat-panes { grid-template-columns: 200px minmax(0, 1fr); }
         .chat-people-pane { display: none; }
@@ -1199,7 +1199,7 @@
   <body>
     <div class="chat-shell">
 
-      <!-- universal site header (session-aware; see site-header.js) -->
+
       <div class="chat-site-header">
         <div data-forkmesh-header="simple"></div>
       </div>
@@ -1214,7 +1214,7 @@
           </div>
         </div>
 
-        <!-- left: rooms -->
+
         <aside class="chat-rooms-pane" aria-label="Rooms">
           <div class="chat-pane-title chat-pane-title-row">
             <span>Rooms</span>
@@ -1230,7 +1230,7 @@
           </section>
         </aside>
 
-        <!-- middle: conversation -->
+
         <main class="chat-main-pane">
           <div class="chat-main-head">
             <span class="chat-channel-heading">
@@ -1361,7 +1361,7 @@
           </div>
         </main>
 
-        <!-- right: people and message threads -->
+
         <aside class="chat-people-pane chat-context-pane" aria-label="People and threads">
           <section class="chat-people-view" data-chat-context="people">
             <div class="chat-pane-title" id="chat-people-title">People</div>

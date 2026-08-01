@@ -18,10 +18,10 @@ reverse).
 import re
 
 RELEASE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
-# Lowercase hex sha256 — the content address of a blob and the integrity anchor.
+
 SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 GIT_COMMIT_RE = re.compile(r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$")
-# Recognise vMAJOR.MINOR.PATCH[-prerelease] for `latest` ordering.
+
 RELEASE_SEMVER_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-.](.+))?$")
 
 
@@ -32,8 +32,8 @@ def valid_release_tag(value):
 
 
 def valid_asset_name(value):
-    # An asset's download filename. Must be one path segment with no traversal,
-    # separators, or control characters so it can never escape the release dir.
+
+
     value = value or ""
     if not (1 <= len(value) <= 255) or value in (".", ".."):
         return False
@@ -51,9 +51,9 @@ def valid_git_commit(value):
 
 
 def cas_blob_relpath(sha256_hex):
-    # Where a blob's bytes live in the per-node content-addressed store, relative
-    # to .forkmesh/release-blobs/. Fan out by the first byte to keep directories
-    # shallow. Returns None for a non-sha256 input so callers reject it.
+
+
+
     h = (sha256_hex or "").strip().lower()
     if not SHA256_HEX_RE.match(h):
         return None
@@ -61,10 +61,10 @@ def cas_blob_relpath(sha256_hex):
 
 
 def release_asset_line(asset):
-    # One deterministic line per asset for the signable manifest. The fields are
-    # the asset's IMMUTABLE identity (name + the exact bytes it resolves to);
-    # mutable presentation (download_count) and release notes are intentionally
-    # absent so editing them never invalidates the signature.
+
+
+
+
     return "\x00".join([
         asset.get("name", "") or "",
         (asset.get("blob_sha256", "") or "").lower(),
@@ -77,21 +77,21 @@ def release_asset_line(asset):
 
 
 def release_manifest_content(manifest):
-    # The canonical, signable body of a release. Binds the repo, the tag, the
-    # commit the tag pointed to at finalize (so a later force-push can't silently
-    # redefine the release), the independently-recorded commit embedded in the
-    # artifact, and the full asset set sorted by line for order independence.
-    # name/body/prerelease are NOT included: they are the editable metadata of
-    # an otherwise immutable release.
+
+
+
+
+
+
     repo = manifest.get("repo", "") or ""
     tag = manifest.get("tag", "") or ""
     tag_commit = manifest.get("tag_commit", "") or ""
     build_commit = manifest.get("build_commit", "") or ""
     assets = manifest.get("assets") or []
     asset_lines = sorted(release_asset_line(a) for a in assets)
-    # Preserve the exact v1 canonical bytes for legacy manifests that predate
-    # build_commit. New manifests sign it as a distinct field; tag_commit keeps
-    # its longstanding peeled-tag-target meaning.
+
+
+
     header_fields = [repo, tag, tag_commit]
     if build_commit:
         header_fields.append(build_commit)
@@ -101,8 +101,8 @@ def release_manifest_content(manifest):
 
 
 def release_signing_message(repo, tag, author, ts, content_hash):
-    # The exact bytes signed/verified for a release manifest, matching the
-    # "forkmesh-<thing>-v1\n…\n<sha256 of content>" form used by issue/PR events.
+
+
     return (
         "forkmesh-release-v1\n" + repo + "\n" + tag + "\n" + author + "\n" +
         str(ts) + "\n" + content_hash
@@ -110,9 +110,9 @@ def release_signing_message(repo, tag, author, ts, content_hash):
 
 
 def generate_shasums(assets):
-    # A `sha256sum -c`-compatible SHASUMS256.txt ("<hash>  <name>", two spaces =
-    # text mode), sorted by name. Derived from the asset content addresses, so it
-    # is covered by the manifest signature and can't be tampered independently.
+
+
+
     lines = []
     for asset in sorted(assets, key=lambda a: a.get("name", "") or ""):
         digest = (asset.get("blob_sha256", "") or "").lower()
@@ -123,8 +123,8 @@ def generate_shasums(assets):
 
 
 def release_semver_key(tag):
-    # Orderable key for `latest` resolution. A final release sorts ABOVE any
-    # prerelease of the same x.y.z. Returns None for non-semver tags (skipped).
+
+
     match = RELEASE_SEMVER_RE.match((tag or "").strip())
     if not match:
         return None
@@ -136,9 +136,9 @@ def release_semver_key(tag):
 
 
 def resolve_latest_release(releases):
-    # The release the `…/releases/latest/<asset>` alias points to: the highest
-    # semver among published, non-draft, non-prerelease releases. Computed (never
-    # a committed pointer) so it can't drift from the actual release set.
+
+
+
     best = None
     best_key = None
     for release in releases:
@@ -157,9 +157,9 @@ def resolve_latest_release(releases):
 
 
 def asset_upload_decision(release_state, existing_asset, new_sha256):
-    # Resolve a same-name (re-)upload (issue #304 §7). On a draft, replacing an
-    # asset is allowed; on a published/yanked (immutable) release, only a
-    # byte-identical re-upload is a no-op — a different hash is a conflict.
+
+
+
     new_sha = (new_sha256 or "").lower()
     if existing_asset is None:
         return "create"

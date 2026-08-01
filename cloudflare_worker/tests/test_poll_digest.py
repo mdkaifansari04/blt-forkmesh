@@ -7,8 +7,8 @@ from _dashboard_bundle import assembled_dashboard_js
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY_TEXT = (ROOT / "src" / "entry.py").read_text(encoding="utf-8")
-# dashboard.js is built from ordered public/dashboard/js/*.js fragments before
-# deploy (see src/dashboard_bundle.py).
+
+
 DASHBOARD_JS = assembled_dashboard_js()
 
 
@@ -19,15 +19,15 @@ def test_worker_registers_poll_route_and_handler():
 
 
 def test_poll_handler_returns_cheap_change_tokens():
-    # Grab just the handler body.
+
     start = ENTRY_TEXT.index("async def poll_handler(env, request):")
     body = ENTRY_TEXT[start:start + 2600]
-    # Build rev + profile + notification digests, all in one response.
+
     assert '"rev": _build_rev(env)' in body
     assert '"profile"' in body
     assert '"notif"' in body
-    # Notifications are summarised with an aggregate query, NOT by decrypting
-    # every row (that was the per-request cost we are removing from the tick).
+
+
     assert "COUNT(*)" in body and "MAX(ts)" in body
     assert "decrypt_row" not in body
 

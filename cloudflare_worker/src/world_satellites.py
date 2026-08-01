@@ -100,8 +100,8 @@ def _catalog_id(value):
         _fail("invalid_catalog_id")
     if int(text) > 999_999_999:
         _fail("invalid_catalog_id")
-    # Keep this as text. In particular, never force six-to-nine digit catalog
-    # numbers through the legacy five-character TLE representation.
+
+
     return text
 
 

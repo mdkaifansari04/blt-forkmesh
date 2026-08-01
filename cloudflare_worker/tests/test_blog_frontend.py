@@ -77,9 +77,9 @@ def test_blog_page_uses_editorial_feature_archive_shell():
 
 
 def test_blog_page_mounts_the_universal_site_header():
-    # The blog's page-specific topbar (brand + hardcoded "Sign Up / Log In")
-    # was replaced by the shared session-aware header, which shows the
-    # logged-in account chip instead of the auth links.
+
+
+
     html = _read(BLOG_PAGE)
 
     assert 'href="/site-header.css"' in html
@@ -156,8 +156,8 @@ def test_blog_social_renderer_shows_unfilled_networks_as_empty():
         '{ key: "mastodon", label: "Mastodon" }',
         '{ key: "twitter", label: "X (Twitter)" }',
         'const EMPTY_LABEL = "Not posted yet";',
-        # A blank attribute — and anything that is not an http(s) permalink —
-        # renders as the empty slot instead of becoming an anchor.
+
+
         'return /^https?:\\/\\//i.test(raw) ? raw : "";',
         'empty.className = "blog-social-empty";',
         'link.rel = "noopener noreferrer me";',
@@ -194,7 +194,7 @@ def test_forkmesh_forever_post_embeds_a_deployable_captioned_video():
         assert marker in html
 
     assert FORKMESH_FOREVER_VIDEO.is_file()
-    # Workers Static Assets reject any individual file larger than 25 MiB.
+
     assert FORKMESH_FOREVER_VIDEO.stat().st_size < 25 * 1024 * 1024
     assert FORKMESH_FOREVER_CAPTIONS.is_file()
     assert _read(FORKMESH_FOREVER_CAPTIONS).startswith("WEBVTT\n")

@@ -1,11 +1,11 @@
 name: Deploy Cloudflare Worker
 on: [push]
-# CI/CD gate: the Worker test suite "CI tests" already ran for this commit, so
-# wait for that run instead of repeating it here. The deploy starts only after
-# it succeeds; if it fails (or is rejected) this run is skipped and nothing
-# reaches Cloudflare. A commit where that workflow never ran on this node
-# (dedicated elsewhere, disabled, or absent) is not gated — there is no result
-# to wait for.
+
+
+
+
+
+
 needs: [.forkmesh/ci.yml]
 jobs:
   deploy:
@@ -34,14 +34,14 @@ jobs:
             echo "Deploying; cloudflare_worker/ changes detected:"
             printf '%s\n' "$worker_changes"
           fi
-      # .env.production is gitignored, so materialize it from this node's ForkMesh
-      # Variables/Secrets (Settings -> Secrets & Coves). ForkMesh fills in the
-      # ${{ vars.NAME }} references below from that store before running the step;
-      # GitHub-Actions ${{ secrets.NAME }} and step-level `env:` are NOT understood
-      # here, so reference vars.* instead. deploy.sh then reads .env.production,
-      # exports CLOUDFLARE_* for wrangler, and pushes the Worker secrets. The
-      # quoted 'EOF' writes the substituted values verbatim (no shell re-expansion),
-      # so a token/password containing $ or backticks survives intact.
+
+
+
+
+
+
+
+
       - name: Write production env
         run: |
           [ -f .forkmesh-skip-deploy ] && exit 0

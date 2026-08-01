@@ -41,11 +41,11 @@ Future<void> main() async {
       performanceMonitor: performanceMonitor,
     ),
   );
-  // Let API calls carry the logged-in account's session token so per-account
-  // endpoints authorize this account rather than a self-asserted node name.
+
+
   api.sessionTokenProvider = () => auth.session?.sessionToken ?? '';
-  // Shared chat rooms fetch their key from the relay (server-derived from
-  // DATA_KEY) instead of a baked-in constant.
+
+
   relay.roomPassphraseProvider = () => api.roomChatPassphrase();
   final inbox = InboxService(
     settings,
@@ -53,7 +53,7 @@ Future<void> main() async {
     performanceMonitor: performanceMonitor,
   );
 
-  // Auto-join the relay on launch, like the Qt client.
+
   unawaited(relay.connect());
 
   runApp(
@@ -145,10 +145,10 @@ class _ForkMeshAppState extends State<ForkMeshApp> {
               ? const HomeShell()
               : AuthMockFlow(
                   onAuthenticated: () {
-                    // Real login/signup writes AuthService.session before this
-                    // callback runs. Only create the preview session for the
-                    // empty-field design-preview path so it cannot overwrite a
-                    // valid Worker account on the profile page.
+
+
+
+
                     if (!auth.isAuthenticated) {
                       auth.authenticatePreview();
                     }

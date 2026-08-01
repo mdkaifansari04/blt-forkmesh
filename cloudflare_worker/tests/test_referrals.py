@@ -149,7 +149,7 @@ def test_referral_migration_is_counters_only_and_matches_lazy_schema():
     }
     assert columns == {"referrer_bi", "name", "clicks", "signups", "last_ts"}
     assert "CREATE TABLE IF NOT EXISTS referral_stats" in SCHEMA
-    # Privacy contract: only per-referrer aggregates, never who was referred.
+
     assert "referred_bi" not in columns
     assert "ip_address" not in columns
 
@@ -264,9 +264,9 @@ def test_link_preview_crawlers_get_a_card_with_the_live_counters():
     assert 'content="summary_large_image"' in body
     assert "7 clicks and 2 signups so far." in body
     assert "Join ForkMesh with @alice" in body
-    # A human who trips the heuristic still reaches the signup funnel.
+
     assert 'url=/signup?ref=alice' in body
-    # Preview fetches never move the counters, and are never cached stale.
+
     assert "no-store" in resp.headers["cache-control"]
     row = db.execute(
         "SELECT clicks FROM referral_stats WHERE referrer_bi='bi-alice'"
@@ -308,7 +308,7 @@ def test_preview_agent_matching_covers_the_common_unfurlers():
     for agent in (BROWSER_UA, "", None,
                   "Mozilla/5.0 (X11; Linux x86_64) Firefox/126.0"):
         assert not is_preview(_request(agent)), agent
-    assert not is_preview(object())  # header access failures fall back to human
+    assert not is_preview(object())
 
 
 def test_preview_counts_read_straight_from_the_counter_row():

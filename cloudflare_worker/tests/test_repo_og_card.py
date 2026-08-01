@@ -22,7 +22,7 @@ spec.loader.exec_module(og_card)
 ENTRY_SRC = (SRC / "entry.py").read_text(encoding="utf-8")
 URLS_SRC = (SRC / "urls.py").read_text(encoding="utf-8")
 
-NOW_S = 1_780_000_000  # fixed "now" so age formatting is deterministic
+NOW_S = 1_780_000_000
 
 SAMPLE = {
     "owner": "forkmesh",
@@ -59,7 +59,7 @@ def decode_png_rgb(png):
             assert (depth, color, interlace) == (8, 2, 0)
         elif ctype == b"IDAT":
             idat += chunk
-        # verify chunk CRCs while we are here
+
         crc = struct.unpack(">I", png[pos - 4:pos])[0]
         assert crc == zlib.crc32(ctype + chunk) & 0xFFFFFFFF
     raw = zlib.decompress(idat)
@@ -67,7 +67,7 @@ def decode_png_rgb(png):
     assert len(raw) == h * (1 + stride)
     rows = []
     for y in range(h):
-        assert raw[y * (1 + stride)] == 0  # our encoder never filters
+        assert raw[y * (1 + stride)] == 0
         start = y * (1 + stride) + 1
         rows.append(raw[start:start + stride])
     return w, h, rows
@@ -77,7 +77,7 @@ def pixel(rows, x, y):
     return tuple(rows[y][x * 3:x * 3 + 3])
 
 
-# --- Renderer ----------------------------------------------------------------
+
 
 def test_card_is_a_valid_og_sized_png():
     png = og_card.render_repo_card(SAMPLE, NOW_S)
@@ -88,12 +88,12 @@ def test_card_is_a_valid_og_sized_png():
 def test_card_paints_background_panel_and_logo():
     png = og_card.render_repo_card(SAMPLE, NOW_S)
     _, _, rows = decode_png_rgb(png)
-    # Page background outside the panel, panel fill + border inside.
+
     assert pixel(rows, 2, 2) == (1, 4, 9)
     assert pixel(rows, 29, 29) == (48, 54, 61)
     assert pixel(rows, 600, 60) == (13, 17, 23)
-    # The logo blit must land in the top-right corner area: something there is
-    # neither background nor panel fill.
+
+
     logo_region = {
         pixel(rows, x, y)
         for x in range(og_card.CARD_W - 28 - og_card._LOGO_W,
@@ -101,8 +101,8 @@ def test_card_paints_background_panel_and_logo():
         for y in range(68, 68 + og_card._LOGO_H, 4)
     }
     assert logo_region - {(1, 4, 9), (13, 17, 23), (48, 54, 61)}
-    # And it stays small: the left half of the card at logo height is text on
-    # panel fill, not logo pixels (the old full-bleed logo failure mode).
+
+
     assert pixel(rows, 320, 300) in {(13, 17, 23), (240, 246, 252)}
 
 
@@ -110,11 +110,11 @@ def test_card_renders_title_text_pixels():
     with_title = og_card.render_repo_card(SAMPLE, NOW_S)
     without = og_card.render_repo_card(dict(SAMPLE, owner="x", repo="y"),
                                        NOW_S)
-    assert with_title != without  # title actually reaches the pixels
+    assert with_title != without
     _, _, rows = decode_png_rgb(with_title)
     fg = sum(1 for x in range(72, 1000)
              for y in range(96, 138) if pixel(rows, x, y) == (240, 246, 252))
-    assert fg > 500  # a real run of bright title pixels
+    assert fg > 500
 
 
 def test_missing_stats_render_as_zeros_not_errors():
@@ -141,7 +141,7 @@ def test_font_table_covers_printable_ascii():
     assert len(og_card._FONT) == (127 - 32) * 5
 
 
-# --- Formatters ----------------------------------------------------------------
+
 
 def test_format_count_compacts_and_tolerates_catalog_strings():
     assert og_card.format_count("") == "0"
@@ -171,7 +171,7 @@ def test_format_age_accepts_ms_seconds_and_iso():
     assert og_card.format_age(str(NOW_S - 30), NOW_S) == "now"
 
 
-# --- entry.py wiring ------------------------------------------------------------
+
 
 def test_route_regex_matches_card_path():
     import re
@@ -188,10 +188,10 @@ def test_entry_dispatches_card_route_to_handler():
 
 
 def test_repo_page_og_tags_point_at_card():
-    # The old behavior (og:image = full-bleed logo) must be gone...
+
     assert 'og_image = origin + "/assets/logo.png"' not in ENTRY_SRC
-    # ...replaced by the rendered card, with large-image hints so Mastodon
-    # renders it full width instead of as a thumbnail.
+
+
     assert 'og_image += "?v=" + quote(social_version, safe="")' in ENTRY_SRC
     assert "social_version = _repository_social_version(repo_record)" in ENTRY_SRC
     assert "_build_rev(self.env)" not in ENTRY_SRC[
@@ -211,7 +211,7 @@ def test_card_handler_is_public_get_and_edge_cached():
     assert "render_repo_card" in handler
 
 
-# --- Referral share-link card (adhoc #313) -------------------------------------
+
 
 REFERRAL_SAMPLE = {
     "name": "jett",
@@ -262,7 +262,7 @@ def test_referral_card_route_and_handler_are_wired():
     assert "REFERRAL_CARD_RE.match(url.path)" in ENTRY_SRC
     handler = ENTRY_SRC.split("async def referral_card_handler", 1)[1]
     handler = handler.split("async def ", 1)[0]
-    # Unknown/inactive referrers render nothing; live counters, edge-cached.
+
     assert "_referral_account" in handler and "not_found" in handler
     assert "_referral_counts" in handler
     assert "render_referral_card" in handler
@@ -270,13 +270,13 @@ def test_referral_card_route_and_handler_are_wired():
 
 
 def test_binary_response_bodies_are_copied_into_js_owned_buffers():
-    # A bare _to_js(bytes) is a VIEW into Python's WASM memory. A binary
-    # Response body is streamed to the client (and read by edge-cache put)
-    # AFTER the handler returns and the GIL is released; reading that view off
-    # the GIL is a runtime crash ("Attempted to use PyProxy when Python GIL not
-    # held") that poisons the isolate for every later invocation, including the
-    # once-a-minute cron tick. Every binary body must round-trip through
-    # Uint8Array.new to land in a JS-owned buffer first (adhoc #203).
+
+
+
+
+
+
+
     assert "JsResponse.new(_to_js(bytes(" not in ENTRY_SRC
     for site in ("bytes(data)", "bytes(raw)", "bytes(png)"):
         assert "Uint8Array.new(_to_js(%s))" % site in ENTRY_SRC

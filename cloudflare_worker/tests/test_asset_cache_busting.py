@@ -19,18 +19,18 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import dashboard_shell  # noqa: E402
+import dashboard_shell
 
-from _dashboard_bundle import assembled_dashboard_js  # noqa: E402
+from _dashboard_bundle import assembled_dashboard_js
 
-# Served from public/ but deliberately unversioned.
+
 UNVERSIONED_SCRIPTS = (
-    # A loader shim; the real payload comes from PostHog's own CDN.
+
     "posthog.js",
-    # ES module entry. Its static imports (chat-crypto.js, chat-attachments.js,
-    # chat-room-transport.js) carry their own URLs inside the JS, so stamping
-    # the entry alone would bust it while its graph kept serving stale — busting
-    # it properly needs a module-graph hash, which this pass does not do.
+
+
+
+
     "chat.js",
 )
 
@@ -61,13 +61,13 @@ def test_every_first_party_script_carries_the_shared_content_hash():
             if name in UNVERSIONED_SCRIPTS:
                 assert not query, (rel, name)
                 continue
-            # A bundle referenced by a page but missing from the single source
-            # of truth would silently ship uncacheable-busted.
+
+
             assert name in dashboard_shell.CACHE_BUSTED_BUNDLES, (rel, name)
             assert version == versions[name], (rel, name)
             seen.add(name)
-    # Every listed bundle is actually referenced somewhere — no dead entries
-    # quietly hashing a file nothing loads.
+
+
     assert seen == set(dashboard_shell.CACHE_BUSTED_BUNDLES)
 
 

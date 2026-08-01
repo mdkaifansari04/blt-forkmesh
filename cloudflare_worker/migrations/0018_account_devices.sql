@@ -1,6 +1,6 @@
--- Account devices/nodes: one human account can have multiple enabled desktop
--- nodes/devices with explicit capabilities. Worker also creates this lazily in
--- ensure_schema(); this migration keeps file-based D1 schema in sync.
+
+
+
 CREATE TABLE IF NOT EXISTS account_devices (
   device_bi TEXT PRIMARY KEY,
   account_bi TEXT NOT NULL,

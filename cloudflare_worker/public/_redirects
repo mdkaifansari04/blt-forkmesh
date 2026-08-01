@@ -1,17 +1,17 @@
 / /index.html 200
 /favicon.ico /favicon/favicon.ico 200
 /dashboard /dashboard/index.html 200
-# Per-page dashboard documents (built by tools/build_dashboard_assets.py) are
-# asset-served: their clean paths are excluded from run_worker_first.
+
+
 /dashboard/repos /dashboard/repos/index.html 200
 /dashboard/network /dashboard/network/index.html 200
 /dashboard/chat /dashboard/chat/index.html 200
 /dashboard/settings /dashboard/settings/index.html 200
 /dashboard/profile /dashboard/profile/index.html 200
 /dashboard/profile/repositories /dashboard/profile/repositories/index.html 200
-# /dashboard/:owner/:repo and clean repo shortcuts (/owner/repo, /owner/repo/tree,
-# /owner/repo/blob, and feature tabs) are handled in the Worker. Static asset
-# prefixes stay asset-first through run_worker_first exceptions in wrangler.toml.
+
+
+
 /blog /blog.html 200
 /login /login.html 200
 /signup /signup.html 200
@@ -28,14 +28,14 @@
 /docs/:slug/ /docs/:slug/index.html 200
 /blog/ /blog 308
 /blogs /blog 308
-# The RSS feed is Worker-built (run_worker_first owns /blog/rss.xml). These
-# rules are the safety net: if the assets router ever sees one of these paths
-# first, it must not fall into the /blog/:slug post rewrites below.
+
+
+
 /blog/rss.xml /rss.xml 308
 /blog/feed.xml /rss.xml 308
 /feed.xml /rss.xml 308
-# Blog posts are directory indexes, but Workers Static Assets has
-# html_handling="none" so /blog/<slug>/ needs an explicit rewrite.
+
+
 /blog/:slug /blog/:slug/ 308
 /blog/:slug/ /blog/:slug/index.html 200
 /network /network.html 200
@@ -53,7 +53,3 @@
 /privacy /privacy.html 200
 /terms /terms.html 200
 /status /status.html 200
-# Repo shortcut URLs are deliberately NOT redirected here. A /:owner/:repo rule
-# also matches real two-segment static assets like /assets/logo.png and
-# /favicon/site.webmanifest because Cloudflare applies _redirects before serving
-# matching static files.

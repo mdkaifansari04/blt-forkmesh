@@ -1,16 +1,16 @@
 #pragma once
 
-// Self-contained Claude coding agent used by ForkMesh's "Claude Code" provider.
-//
-// ForkMesh used to shell out to the `claude` CLI, which required that binary to
-// be installed. Instead we materialize this Python script at runtime and run it
-// with the system python3. It talks to the Anthropic Messages API directly,
-// reading the key from ANTHROPIC_API_KEY (injected into the process environment
-// by AgentRunner), and drives a minimal agentic tool-use loop whose `bash` tool
-// lets the model read and edit files in the worktree. ForkMesh captures stdout
-// as the session log and diffs the worktree afterward to build the patch.
-//
-// Only the Python standard library is used, so no `pip install` is needed.
+
+
+
+
+
+
+
+
+
+
+
 
 #include <QString>
 
@@ -38,7 +38,7 @@ def log(text):
 
 
 def read_prompt():
-    # Prompt may arrive as an argument path or on stdin.
+
     for arg in sys.argv[1:]:
         if arg and os.path.isfile(arg):
             with open(arg, "r", encoding="utf-8") as handle:
@@ -103,9 +103,9 @@ def call_api(api_key, model, max_tokens, messages):
         return json.loads(response.read().decode("utf-8"))
 
 
-# Network-traffic markers. ForkMesh's agent detail page parses lines beginning
-# with "==> [net]" to draw a live graphic of API calls and token flow, so keep
-# the in=/out= fields machine-readable.
+
+
+
 def net_request(turn, model, msg_count):
     log("==> [net] \U0001F310 request #%d → POST api.anthropic.com/v1/messages "
         "(model=%s, messages=%d)" % (turn, model, msg_count))
@@ -166,7 +166,7 @@ def main():
             if block.get("type") == "text":
                 text = block.get("text", "").strip()
                 if text:
-                    log("\n● %s" % text)  # ● assistant message
+                    log("\n● %s" % text)
             elif block.get("type") == "tool_use":
                 command = block.get("input", {}).get("command", "")
                 log("\n$ %s" % command)

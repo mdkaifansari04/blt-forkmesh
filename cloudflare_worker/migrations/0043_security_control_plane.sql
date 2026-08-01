@@ -1,8 +1,8 @@
--- Least-privilege roles, privacy keys, abuse/quarantine controls, audit logs,
--- and non-custodial transfer intents.
---
--- No table in this migration stores a wallet private key, raw IP address, or
--- owner decryption key.
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS role_grants (
     account_bi TEXT NOT NULL,

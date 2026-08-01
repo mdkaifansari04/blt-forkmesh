@@ -328,9 +328,9 @@ ts: 10
   test(
     'published issues read the split .forkmesh/issues JSON layout',
     () async {
-      // Issues are split by status into .forkmesh/issues/open/<n>/ and
-      // .forkmesh/issues/closed/<n>/ (pre-split repos keep <n>/ at the root);
-      // each folder holds one issue-<n>.json signed-event record.
+
+
+
       String record(int number, String status, String title, String body) =>
           jsonEncode({
             'schema': 'forkmesh-issue-v1',

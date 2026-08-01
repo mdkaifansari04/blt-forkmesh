@@ -18,8 +18,8 @@ import zlib
 from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src"
-# pull_badge_png rasterizes via og_card's stdlib canvas; put src on the path so
-# pull_badge's lazy ``import og_card`` resolves.
+
+
 sys.path.insert(0, str(SRC))
 spec = importlib.util.spec_from_file_location(
     "pull_badge", SRC / "pull_badge.py")
@@ -59,7 +59,7 @@ diff --git a/docs/README.md b/docs/README.md
 """
 
 
-# --- patch_file_stats --------------------------------------------------------
+
 
 def test_patch_file_stats_counts_per_file():
     files = badge.patch_file_stats(SAMPLE_PATCH)
@@ -71,7 +71,7 @@ def test_patch_file_stats_counts_per_file():
 
 
 def test_patch_file_stats_ignores_headers_and_empty_patch():
-    # +++/--- file headers must not count as changed lines.
+
     assert badge.patch_file_stats("") == []
     assert badge.patch_file_stats(None) == []
     only_headers = ("diff --git a/x b/x\n--- a/x\n+++ b/x\n")
@@ -79,7 +79,7 @@ def test_patch_file_stats_ignores_headers_and_empty_patch():
         {"path": "x", "adds": 0, "dels": 0}]
 
 
-# --- glyphs -------------------------------------------------------------------
+
 
 def test_file_glyph_known_special_and_fallback():
     assert badge.file_glyph("src/a.ts") == ("TS", "#3178c6")
@@ -91,7 +91,7 @@ def test_file_glyph_known_special_and_fallback():
     assert label == "FILE"
 
 
-# --- directory labels ---------------------------------------------------------
+
 
 def test_dir_label_shows_last_segment_only():
     assert badge._dir_label("one/two/three") == "three"
@@ -104,7 +104,7 @@ def test_dir_label_caps_to_eight_chars():
     assert badge._dir_label("cloudflare_worker/src") == "src"
 
 
-# --- pull_badge_svg -----------------------------------------------------------
+
 
 def test_badge_svg_header_and_directory_groups():
     files = badge.patch_file_stats(SAMPLE_PATCH)
@@ -112,12 +112,12 @@ def test_badge_svg_header_and_directory_groups():
     assert svg.startswith("<svg ")
     assert "Add auth" in svg
     assert "#245 · by jett" in svg
-    # Totals: 5 additions, 2 deletions, 3 files.
+
     assert ">+5</text>" in svg
     assert ">-2</text>" in svg
     assert "Additions" in svg and "Deletions" in svg and "Files changed" in svg
-    # Directory clusters get a "(N files)" label showing just the folder
-    # name (not the whole path); root files land under "/".
+
+
     assert "auth  (2 files)" in svg
     assert "docs  (1 file)" in svg
 
@@ -125,7 +125,7 @@ def test_badge_svg_header_and_directory_groups():
 def test_badge_svg_pending_number_and_escaping():
     svg = badge.pull_badge_svg(
         'Fix <tag> & "quote"', "a&b", [{"path": "a.js", "adds": 1, "dels": 0}])
-    # No maintainer-assigned number yet -> generic byline, nothing broken.
+
     assert "pull request · by a&amp;b" in svg
     assert "&lt;tag&gt; &amp; &quot;quote&quot;" in svg
     assert "<tag>" not in svg
@@ -137,37 +137,37 @@ def test_badge_svg_caps_tiles_and_stays_small():
     svg = badge.pull_badge_svg("Big", "bot", files)
     dropped = 200 - badge.MAX_BADGE_FILES
     assert ("+%d more files not shown" % dropped) in svg
-    # Totals still describe the whole PR, not just the tiles shown.
+
     assert (">%d</text>" % 200) in svg
-    # The badge must fit the federated-note media budget (64 KB, see
-    # MAX_NOTE_IMAGE_BYTES in activitypub.py) with room to spare.
+
+
     assert len(svg.encode("utf-8")) < 64 * 1024
 
 
 def test_badge_svg_binary_file_gets_neutral_bar():
     svg = badge.pull_badge_svg(
         "Bin", "x", [{"path": "logo.png", "adds": 0, "dels": 0}])
-    assert 'fill="#30363d"' in svg  # neutral bar, no green/red split
-    assert "logo.png" not in svg or True  # tile shows a glyph, not the path
+    assert 'fill="#30363d"' in svg
+    assert "logo.png" not in svg or True
 
 
-# --- pull_badge_png -----------------------------------------------------------
+
 
 def test_badge_png_is_a_square_png():
     files = badge.patch_file_stats(SAMPLE_PATCH)
     png = badge.pull_badge_png("Add auth", "jett", files, number=245)
-    # A real PNG (so fediverse clients render it, not "Preview not available")
-    # and square (so timelines show it as an image tile, not a wide strip).
+
+
     w, h = _png_size(png)
     assert w == h == badge._PNG_SIZE
-    # Decodable: the IDAT inflates to width*height*3 + one filter byte per row.
+
     idat = png[png.index(b"IDAT") + 4:]
     raw = zlib.decompress(idat)
     assert len(raw) == h * (1 + w * 3)
 
 
 def test_badge_png_pending_number_and_empty_files():
-    # No maintainer number and no files must still produce a valid PNG.
+
     png = badge.pull_badge_png("Fix", "", [])
     assert _png_size(png) == (badge._PNG_SIZE, badge._PNG_SIZE)
 
@@ -177,11 +177,11 @@ def test_badge_png_caps_tiles_to_the_square():
              for i in range(300)]
     png = badge.pull_badge_png("Big", "bot", files)
     assert _png_size(png) == (badge._PNG_SIZE, badge._PNG_SIZE)
-    # The badge stays well under the federated-note media budget (64 KB).
+
     assert len(png) < 64 * 1024
 
 
-# --- entry.py wiring (text assertions: entry.py imports js) --------------------
+
 
 ENTRY = (SRC / "entry.py").read_text(encoding="utf-8")
 
@@ -190,7 +190,7 @@ def test_publish_accepts_and_prepends_extra_images():
     start = ENTRY.index("async def _ap_publish_repo_event(")
     body = ENTRY[start:ENTRY.index("\n\n\n", start)]
     assert "extra_images=None" in body
-    # Badge leads the attachment list so it becomes the visible preview.
+
     assert ("images = [img for img in (extra_images or []) if img] + images"
             in body)
 
@@ -199,10 +199,10 @@ def test_pull_open_publish_attaches_badge_png():
     start = ENTRY.index("async def pulls_handler(")
     body = ENTRY[start:ENTRY.index('"pull", "open"', start) + 400]
     assert "patch_file_stats(pull.get(\"patch\", \"\") or \"\")" in body
-    # The federated badge is a real PNG — fediverse clients won't preview an
-    # SVG attachment (adhoc #83).
+
+
     assert "pull_badge_png(" in body
     assert '"mediaType": "image/png"' in body
     assert "extra_images=[badge] if badge else None" in body
-    # Best-effort: a badge failure must never block the PR submission.
+
     assert "except Exception:" in body

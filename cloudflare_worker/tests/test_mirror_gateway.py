@@ -21,7 +21,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import mirror_gateway as gateway  # noqa: E402
+import mirror_gateway as gateway
 
 
 PUBLIC_KEY = base64.urlsafe_b64encode(b"N" * 32).decode().rstrip("=")
@@ -1265,8 +1265,8 @@ def test_real_git_clone_cannot_advertise_or_fetch_internal_merge_objects(
         "git", "--git-dir", str(repository.git_dir), "update-ref",
         "refs/forkmesh/merge-staging/test-job/base", secret,
     ], tmp_path)
-    # Repository-local settings are hostile input at this boundary. Explicit
-    # command-line policy must override attempts to expose arbitrary objects.
+
+
     run([
         "git", "--git-dir", str(repository.git_dir), "config",
         "uploadpack.allowAnySHA1InWant", "true",
@@ -1383,7 +1383,7 @@ def test_http_adapter_streams_ordinary_https_origin_contract_without_redirect(
 ):
     app, _commit, _release_hash, logs = application
     server = gateway.MirrorGatewayServer(("127.0.0.1", 0), app)
-    # The server owns application cleanup after this point.
+
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:

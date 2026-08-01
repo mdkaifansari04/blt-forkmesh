@@ -42,9 +42,9 @@ HttpResponse request(quint16 port, const QByteArray &method,
     QObject::connect(&socket, &QTcpSocket::disconnected, &loop,
                      &QEventLoop::quit);
     QObject::connect(&socket, &QTcpSocket::readyRead, &loop, [&] {
-        // The server closes every response, so disconnected normally ends the
-        // loop. This guard also handles a complete response on platforms where
-        // close delivery is deferred.
+
+
+
         if (socket.bytesAvailable() > 0 &&
             socket.peek(socket.bytesAvailable()).contains("\r\n\r\n"))
             QTimer::singleShot(20, &loop, &QEventLoop::quit);
@@ -130,7 +130,7 @@ void waitMs(int milliseconds)
     QTimer::singleShot(milliseconds, &loop, &QEventLoop::quit);
     loop.exec();
 }
-} // namespace
+}
 
 int main(int argc, char **argv)
 {

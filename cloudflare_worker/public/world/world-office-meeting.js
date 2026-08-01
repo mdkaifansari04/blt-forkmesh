@@ -17,13 +17,13 @@ const GENERAL_ROOM = Object.freeze({
   visibility: "public",
   kind: "general",
 });
-// The room expires a participant after 90 seconds without a frame. A
-// 40-second keepalive leaves ten seconds beyond one missed tick while cutting
-// idle Durable Object wakeups and their authorization reads in half.
+
+
+
 const OFFICE_PING_MS = 40000;
-// The room retired this socket because the same account joined the meeting
-// from another device. One account keeps one seat, so this is a handover to
-// report rather than a meeting that ended.
+
+
+
 const OFFICE_ACCOUNT_TAKEOVER_CODE = 4009;
 const OFFICE_MOVEMENT_SEND_INTERVAL_MS = 1000;
 const OFFICE_MOVEMENT_RETRY_MS = 250;
@@ -141,17 +141,17 @@ export function createOfficeMovementQueue({
       yaw: frame.yaw,
       moving: frame.moving === true,
     };
-    // The stopped frame closes the interpolation window and must not wait for
-    // the ordinary movement cadence. If the socket is backed up, flush() keeps
-    // this final (latest) frame queued and retries it once the buffer drains.
+
+
+
     if (!pending.moving) {
       cancelTimer();
       return flush();
     }
     if (!isReady()) return false;
-    // A cadence or backpressure retry is already scheduled. Replacing
-    // `pending` is sufficient; restarting that timer for every scene frame
-    // would let continuous movement postpone the flush forever.
+
+
+
     if (timer !== null) return true;
     const elapsed = Math.max(0, now() - lastSentAt);
     if (elapsed >= sendInterval) return flush();
@@ -316,9 +316,9 @@ export function createWorldOfficeMeeting({
     root.classList.add("world-office-active");
     scene.enterOfficeLobby();
     setOpen(roomPanel, false);
-    // Entry is spatial now: visitors arrive in the physical lobby and use
-    // the glass elevator plus the meeting board on Marketing. Keeping the old
-    // centered room chooser closed preserves the uninterrupted World view.
+
+
+
     setOpen(lobby, false);
     setLobbyStatus(
       "Ride the glass elevator to a floor your team is on. " +
@@ -455,10 +455,10 @@ export function createWorldOfficeMeeting({
       return;
     }
     const participant = await verifiedBubbleParticipant(plain);
-    // Only the ephemeral key published through the authoritative meeting
-    // socket may bind chat to an avatar. An arbitrary encrypted-room member
-    // cannot claim a live participant's senderId/name, reserve a message id,
-    // or place a bubble over somebody else's head.
+
+
+
+
     if (!participant) return;
     seenMessages.add(messageId);
     const sender = participant.name;

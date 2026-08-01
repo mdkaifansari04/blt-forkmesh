@@ -23,9 +23,9 @@ READ_MESSAGE_HISTORY_PERMISSION = 1 << 16
 ADMINISTRATOR_PERMISSION = 1 << 3
 MANAGE_GUILD_PERMISSION = 1 << 5
 OAUTH_STATE_TTL_MS = 10 * 60 * 1000
-# We deliberately retain no refresh token. The grant is stable organization
-# consent (revocable through Disconnect); fresh OAuth is needed to change the
-# bound guild, not for every channel edit.
+
+
+
 OAUTH_GRANT_TTL_MS = 0
 ORG_ROLES = frozenset({"owner", "admin", "member"})
 _SNOWFLAKE_RE = re.compile(r"^[0-9]{17,20}$")
@@ -94,9 +94,9 @@ def _normalize_config(data):
     if not isinstance(data, dict):
         return None, "invalid_configuration"
     if set(data) - {"guildId", "channelIds"}:
-        # In particular, a supplied `token` cannot become a future persisted
-        # field by accident.  Bot credentials belong exclusively in Worker
-        # secrets, never dashboard requests or D1.
+
+
+
         return None, "unsupported_configuration_field"
     guild_id = _snowflake(data.get("guildId"))
     channel_ids = _normalize_channel_ids(data.get("channelIds"))
@@ -272,10 +272,10 @@ async def _ensure_setup_task(runtime, context, state):
         return ""
     now = runtime.now()
     sealed = await runtime.seal(_setup_task_record(task, context["actor"]))
-    # Repair a marker that survived a transient task insert failure, then
-    # reopen/update the one card to the newest setup state.  INSERT OR IGNORE
-    # makes concurrent repair safe, while the fixed primary key prevents a
-    # duplicate task even under a stale read.
+
+
+
+
     await runtime.d1_run(
         "INSERT OR IGNORE INTO organization_tasks "
         "(task_id,org_bi,department,team,destination,assignee_kind,status,"
@@ -464,10 +464,10 @@ async def _load_grant(runtime, org_bi, now=0):
     )
     if grant and membership and membership.get("role") == "owner":
         return grant, row
-    # Consent belongs to the current organization owner, not merely to the
-    # account that happened to be owner when OAuth completed. Revoke all
-    # connector state immediately after a handoff, demotion, or membership
-    # removal so a former owner cannot leave a live Discord bridge behind.
+
+
+
+
     await runtime.d1_run(
         "DELETE FROM organization_discord_connectors WHERE org_bi=?", org_bi)
     await runtime.d1_run(
@@ -492,7 +492,7 @@ def _new_oauth_secret(runtime):
 
 def _code_challenge(verifier):
     digest = hashlib.sha256(str(verifier or "").encode("utf-8")).digest()
-    # RFC 7636 base64url encoding without padding.
+
     import base64
     return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
@@ -500,9 +500,9 @@ def _code_challenge(verifier):
 async def _oauth_grant_required(runtime, context):
     """Fail closed before every bot API call until a recent owner grant exists."""
 
-    # Existing encrypted organization consent stays usable if OAuth client
-    # secrets rotate. OAuth configuration is required only to create/change a
-    # grant, never as a dependency for an already verified bridge.
+
+
+
     grant, _row = await _load_grant(runtime, context["orgBi"], runtime.now())
     if grant:
         return grant, None
@@ -540,11 +540,11 @@ async def _store_oauth_state(runtime, context, guild_id):
     verifier = _new_oauth_secret(runtime)
     if not state or not verifier:
         return "", "", ""
-    # Keep the same one-time state in the secure HttpOnly callback cookie.
-    # Discord normally returns `state` in the query, but its advanced bot
-    # installation flow can return a malformed/empty state for some clients.
-    # The cookie provides a same-browser fallback without weakening the D1
-    # one-time claim, PKCE, session, owner, redirect, or guild checks.
+
+
+
+
+
     transaction = state
     session_id = str(await runtime.session_id() or "")
     if not session_id:
@@ -676,8 +676,8 @@ def _public_channels(payload, roles, guild_id):
             continue
         parent_id = _snowflake(item.get("parent_id"))
         parent = by_id.get(parent_id) if parent_id else None
-        # A partial provider payload must never turn an attached channel into
-        # an apparently parentless public channel.
+
+
         if parent_id and parent is None:
             continue
         if not _is_public_channel(
@@ -830,8 +830,8 @@ async def _member_status(runtime, context):
         "configured": bool(config) and state == "configured",
         "state": state,
         "connector": _config_projection(config),
-        # A non-owner can see that a setup is pending, but cannot enumerate a
-        # guild or change the organization's connector policy.
+
+
         "humanTask": None,
     }
 
@@ -872,8 +872,8 @@ async def _oauth_start(runtime, context, data):
     state, challenge, transaction = await _store_oauth_state(
         runtime, context, guild_id)
     if not state or not challenge or not transaction:
-        # A state missing the validated ForkMesh session binding must never be
-        # sent to Discord; a later callback would otherwise be ambiguous.
+
+
         return _response(runtime, {"error": "session_binding_required"}, 401)
     await runtime.audit(
         context["actor"], "organization.discord_oauth_start",
@@ -910,10 +910,10 @@ async def _consume_oauth_state(runtime):
     claim = "consumed:" + _new_oauth_secret(runtime)
     if not encrypted or claim == "consumed:":
         return None, "invalid_record_storage"
-    # D1's Worker API documents write-operation result sets as empty, so
-    # DELETE ... RETURNING cannot be consumed through PreparedStatement.first.
-    # Claim with a compare-and-swap, then read the marker back: only one
-    # concurrent callback can own this exact encrypted row.
+
+
+
+
     await runtime.d1_run(
         "UPDATE organization_discord_oauth_states SET data=?,expires_at=0 "
         "WHERE state_hash=? AND data=? AND expires_at=?",
@@ -935,12 +935,12 @@ async def _consume_oauth_state(runtime):
         return None, "invalid_record_decrypt"
     if not hmac.compare_digest(str(record.get("state") or ""), state):
         return None, "invalid_record_state"
-    # Do not gate the callback on the optional browser transaction cookie.
-    # Privacy controls can omit it, and a second connection attempt can replace
-    # it while Discord is still returning the first valid authorization. The
-    # 256-bit state remains one-time and encrypted at rest; PKCE, the active
-    # ForkMesh session, owner role, exact redirect URI, requested guild, and
-    # Discord permission proof are all independently mandatory below.
+
+
+
+
+
+
     verifier = str(record.get("verifier") or "")
     if not _OAUTH_STATE_RE.fullmatch(verifier):
         return None, "invalid_record_verifier"
@@ -969,8 +969,8 @@ async def _oauth_callback_context(runtime, record):
         "accountBi": str(account_bi),
         "actor": actor,
         "orgBi": org_bi,
-        # The callback's safe redirect does not need the org alias.  Keep this
-        # field opaque in audit calls rather than trusting a URL segment.
+
+
         "org": "organization",
         "role": "owner",
     }
@@ -1009,9 +1009,9 @@ async def handle_oauth_callback(runtime):
     await runtime.ensure_schema()
     if str(runtime.method() or "GET").upper() != "GET":
         return runtime.oauth_callback_response("invalid")
-    # Consume an otherwise valid state on *every* callback, including a user
-    # denial or a just-rotated OAuth client secret, so a stale authorization
-    # attempt cannot later be replayed.
+
+
+
     record, invalid_outcome = await _consume_oauth_state(runtime)
     if str(runtime.query("error") or ""):
         return runtime.oauth_callback_response("denied")
@@ -1092,9 +1092,9 @@ async def _put_config(runtime, context, data):
         )
         return _response(runtime, {"error": "owner_required"}, 403)
     config_data = dict(data or {})
-    # Session compatibility payloads may carry this existing ForkMesh bearer
-    # marker.  It is consumed only by the runtime session resolver and is
-    # explicitly removed before validation/encryption.
+
+
+
     config_data.pop("sessionToken", None)
     config, error = _normalize_config(config_data)
     if error:
@@ -1155,8 +1155,8 @@ async def _delete_config(runtime, context):
         "DELETE FROM organization_discord_connectors WHERE org_bi=?",
         context["orgBi"],
     )
-    # Disconnect revokes organization consent as well as the channel allowlist.
-    # A later reconnect must complete a new owner OAuth authorization.
+
+
     await runtime.d1_run(
         "DELETE FROM organization_discord_oauth_grants WHERE org_bi=?",
         context["orgBi"],
@@ -1297,11 +1297,11 @@ async def _list_messages(runtime, context):
         projected = _message_projection(item, channel_id)
         if projected:
             messages.append(projected)
-    # A list of messages with no readable content can be an expected
-    # attachment-only history, but it is also the practical signal Discord
-    # gives when Message Content privileged intent is unavailable.  Surface a
-    # precise, non-fatal configuration task instead of rendering an unexplained
-    # empty chat pane.  We do not infer or persist anything about the messages.
+
+
+
+
+
     content_missing = bool(messages) and all(
         not str(item.get("content") or "") for item in messages)
     payload = {

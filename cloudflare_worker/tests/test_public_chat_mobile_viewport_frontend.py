@@ -29,8 +29,8 @@ def test_chat_shell_declares_both_viewport_heights():
 
 
 def test_dvh_overrides_vh_fallback_on_mobile():
-    # CSS takes the last declaration a browser understands, so the dynamic
-    # viewport unit (dvh) must come AFTER the vh fallback or 100vh wins and the
-    # input bar / full history scroll off-screen on mobile.
+
+
+
     block = _chat_shell_block()
     assert block.index("height: 100vh;") < block.index("height: 100dvh;")

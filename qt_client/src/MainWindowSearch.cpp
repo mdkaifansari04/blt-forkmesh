@@ -1,21 +1,21 @@
-// MainWindowSearch: repo-scoped global search (Ctrl+K), split out of
-// MainWindow.cpp. Issue #360 (Roadmap Phase 3).
-//
-// One overlay searches three things at once, scoped to the currently-open repo:
-//   - Issues     — titles, bodies and comments (from IssueStore events)
-//   - Pull reqs  — titles, descriptions and conversation (from PullStore events)
-//   - Code       — `git grep` over the repo's working tree/mirror
-//
-// The parse + grep run entirely on a detached worker thread (runOffThread), so a
-// big repo never freezes the window; a per-keystroke generation guard drops a
-// stale result when the query has already moved on. Result counts and the grep
-// output are capped hard — repo-scoped only, no per-record fan-out — so the
-// overlay stays cheap even on a large tree. Each result row is clickable and
-// jumps to the matching issue, PR, or file+line.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -24,25 +24,25 @@ using namespace forkmesh::ui;
 
 namespace {
 
-// Hard caps so the overlay can never balloon into a huge payload or a slow list
-// rebuild, whatever the query matches.
+
+
 constexpr int kMaxIssueHits = 40;
 constexpr int kMaxPullHits = 40;
 constexpr int kMaxCodeHits = 80;
 constexpr int kGrepTimeoutMs = 8000;
 
-// One search result, filled on the worker thread and rendered on the GUI thread.
+
 struct SearchHit {
-    QString kind;    // "issue" | "pull" | "code"
-    int number = 0;  // issue/pull number
-    QString path;    // code: repo-relative path
-    int line = 0;    // code: 1-based line number
-    QString primary; // main row text
-    QString detail;  // dimmer context (matched-in note or the matched code line)
+    QString kind;
+    int number = 0;
+    QString path;
+    int line = 0;
+    QString primary;
+    QString detail;
 };
 
-// A short single-line snippet of `haystack` around the first match of `needle`,
-// so a body/comment hit shows where it landed instead of just "matched".
+
+
 QString snippetAround(const QString &haystack, const QString &needle)
 {
     QString flat = haystack;
@@ -58,9 +58,9 @@ QString snippetAround(const QString &haystack, const QString &needle)
     return out;
 }
 
-// Search a signed issue/PR body log for the query. Returns true and fills *where
-// with a short context note the first time the query is found in title/body/
-// comments.
+
+
+
 bool matchIssue(const Issue &issue, const QString &q, QString *where)
 {
     if (issue.title.contains(q, Qt::CaseInsensitive)) {
@@ -97,7 +97,7 @@ bool matchPull(const PullRequest &pr, const QString &q, QString *where)
     return false;
 }
 
-} // namespace
+}
 
 void MainWindow::openGlobalSearch()
 {
@@ -132,8 +132,8 @@ void MainWindow::openGlobalSearch()
     m_searchList->setUniformItemSizes(false);
     layout->addWidget(m_searchList, 1);
 
-    // Debounce keystrokes so we don't re-parse the stores and spawn a `git grep`
-    // on every letter — only after the user pauses briefly.
+
+
     auto *debounce = new QTimer(&dialog);
     debounce->setSingleShot(true);
     debounce->setInterval(180);
@@ -142,7 +142,7 @@ void MainWindow::openGlobalSearch()
     connect(debounce, &QTimer::timeout, this,
             [this] { runGlobalSearch(m_searchInput->text()); });
 
-    // Enter/click on a result closes the overlay and jumps to the match.
+
     auto activate = [this, &dialog](QListWidgetItem *item) {
         if (!item)
             return;
@@ -164,8 +164,8 @@ void MainWindow::openGlobalSearch()
     m_searchInput->setFocus();
     dialog.exec();
 
-    // The dialog and its child widgets are torn down on return; clear the
-    // dangling pointers so a late off-thread apply (see runGlobalSearch) no-ops.
+
+
     ++m_searchGen;
     m_searchDialog = nullptr;
     m_searchInput = nullptr;
@@ -188,9 +188,9 @@ void MainWindow::runGlobalSearch(const QString &rawQuery)
     }
     m_searchStatus->setText(QStringLiteral("Searching for “%1”…").arg(query));
 
-    // Capture everything the worker needs by value — nothing GUI-owned is touched
-    // inside the work lambda. The stores are read-only here (no signing), so the
-    // identity pointer is only ever read.
+
+
+
     const RepositoryRecord &repo =
         writableRecordFor(m_repositories.at(m_repoDetailIndex));
     const QString localPath = repo.localPath;
@@ -204,7 +204,7 @@ void MainWindow::runGlobalSearch(const QString &rawQuery)
         [=]() -> QVector<SearchHit> {
             QVector<SearchHit> hits;
 
-            // Issues + PRs: parse the stores and match titles/bodies/comments.
+
             const IssueStore issues(localPath, mirrorPath, identity, userName);
             int issueCount = 0;
             for (const Issue &issue : issues.loadAll()) {
@@ -244,10 +244,10 @@ void MainWindow::runGlobalSearch(const QString &rawQuery)
                 ++pullCount;
             }
 
-            // Code: one `git grep` over the tracked tree at the current ref, which
-            // works for both a real checkout and a bare mirror. Fixed-string,
-            // case-insensitive; issue metadata and pulls/ are excluded so their
-            // records don't double up the matches already surfaced above.
+
+
+
+
             if (!gitDir.isEmpty()) {
                 QProcess grep;
                 grep.start(QStringLiteral("git"),
@@ -258,8 +258,8 @@ void MainWindow::runGlobalSearch(const QString &rawQuery)
                             QStringLiteral(":!.forkmesh/issues"),
                             QStringLiteral(":!pulls")});
                 if (grep.waitForFinished(kGrepTimeoutMs)) {
-                    // `git grep <rev>` prefixes each line with "<rev>:"; strip it,
-                    // then split the remaining "path:line:text".
+
+
                     static const QRegularExpression rowRe(
                         QStringLiteral("^(.+?):(\\d+):(.*)$"));
                     const QString prefix = ref + QLatin1Char(':');
@@ -293,8 +293,8 @@ void MainWindow::runGlobalSearch(const QString &rawQuery)
             return hits;
         },
         [this, gen, query](const QVector<SearchHit> &hits) {
-            // Drop a result the user has already typed past, or one that arrives
-            // after the overlay closed.
+
+
             if (gen != m_searchGen || !m_searchList || !m_searchStatus)
                 return;
 

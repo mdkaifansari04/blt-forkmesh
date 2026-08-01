@@ -1,8 +1,8 @@
-  // Every top-level page is its own document now (/dashboard, /dashboard/repos,
-  // /dashboard/network, ...) — navigation between them is a real page load via
-  // plain <a href> links, so there is no client-side section router anymore.
-  // The only client-routed state left is within-page: repo tabs/tree/blob on
-  // the repo page, and the settings sub-tabs below.
+
+
+
+
+
 
   const SETTINGS_SECTIONS = ["public-profile", "account", "ssh-keys", "appearance", "notifications", "payout", "nodes", "organizations", "danger"];
 
@@ -10,8 +10,8 @@
     return SETTINGS_SECTIONS.includes(section) ? section : "public-profile";
   }
 
-  // The settings sub-tab addressed by the URL (/dashboard/settings/<tab>), so a
-  // refresh keeps the tab instead of snapping back to public-profile.
+
+
   function settingsSectionFromPath() {
     const parts = location.pathname.split("/").filter(Boolean);
     return normalizeSettingsSection(parts[0] === "dashboard" && parts[1] === "settings" ? parts[2] || "" : "");
@@ -22,8 +22,8 @@
     if (!state.settingsView) state.settingsView = {};
     state.settingsView.section = activeSection;
     if (push) {
-      // Reflect the tab in the URL so refresh/back keep it. public-profile is
-      // the default, so it stays on the bare /dashboard/settings URL.
+
+
       navigateHistory(activeSection === "public-profile"
         ? "/dashboard/settings"
         : `/dashboard/settings/${activeSection}`);
@@ -48,15 +48,15 @@
       settingsMain.scrollIntoView({ block: "start", behavior: "smooth" });
     }
 
-    // The Organizations tab is data-driven and only fetched when first opened.
+
     if (activeSection === "organizations") initOrgsSection();
     if (activeSection === "ssh-keys") loadSshKeys();
-    // Session state changes on other devices, so re-entering this tab always
-    // performs a fresh no-store read instead of keeping a page-lifetime copy.
+
+
     if (activeSection === "account") loadAccountSessions({ force: true });
   }
 
-  // ---- Active account sessions ---------------------------------------------
+
   let accountSessionsLoaded = false;
   let accountSessionsLoading = null;
 
@@ -111,8 +111,8 @@
       </article>`).join("");
   }
 
-  // Coarse kinds only — the Worker stores when an account was emailed and
-  // whether the provider accepted it, never the subject or body.
+
+
   const ACCOUNT_EMAIL_KIND_LABELS = {
     verification: "Email verification",
     password_reset: "Password reset",
@@ -230,10 +230,10 @@
     }
   }
 
-  // ---- SSH public keys (settings tab) ---------------------------------------
-  // Public keys are account-scoped and encrypted at rest by the Worker. The
-  // browser never handles a private key; every push is authorized again by the
-  // Worker and executed by a separately operated node-side SSH gateway.
+
+
+
+
   let sshKeysLoaded = false;
   let sshKeysLoading = null;
 
@@ -368,18 +368,18 @@
     }
   }
 
-  // ---- Organizations (settings tab) -----------------------------------------
-  // Client for the /api/orgs endpoints (mirrors the Flutter app's org UI):
-  // list/create the orgs you belong to, then a master/detail panel to manage
-  // one org's members, teams, and linked repos. All rendered lazily into
-  // [data-orgs-root] the first time the Organizations settings tab is opened.
+
+
+
+
+
   const ORG_ROLE_OPTIONS = ["owner", "admin", "member"];
   const ORG_TEAM_PERMISSIONS = ["read", "write", "maintain", "admin"];
   const ORG_WORLD_ACCESS_OPTIONS = ["public", "restricted", "private"];
-  // Keep these aliases aligned with world-office-tower.js and the Worker's
-  // OFFICE_FLOOR_TEAM_ALIASES. The server remains authoritative for elevator
-  // access; this organization-admin matrix explains every floor group a user
-  // can belong to and highlights access granted by their current teams.
+
+
+
+
   const ORG_OFFICE_FLOOR_GROUPS = Object.freeze([
     { id: "marketing", label: "Marketing", aliases: ["marketing", "marketing-team", "growth", "brand", "comms", "communications"] },
     { id: "engineering", label: "Engineering", aliases: ["engineering", "engineers", "development", "developers", "platform", "frontend", "backend"] },
@@ -392,8 +392,8 @@
     { id: "executive", label: "Executive", aliases: ["executive", "executives", "leadership", "organization-leadership", "org-leadership"] },
   ]);
 
-  // Worker org-endpoint error codes -> human text. Unknown codes fall through
-  // to a generic message so the UI never shows a raw slug.
+
+
   const ORG_ERROR_TEXT = {
     invalid_org_name: "Invalid name. Use lowercase letters, numbers and dashes.",
     invalid_team_name: "Invalid team name. Use lowercase letters, numbers and dashes.",
@@ -428,9 +428,9 @@
     return ORG_ERROR_TEXT[code] || (code ? "Request failed (" + code + ")." : "Request failed.");
   }
 
-  // fetchJson only does cached GETs; org writes need POST/DELETE with the
-  // session bearer token and must surface the structured {error} body, so they
-  // go through this dedicated helper instead.
+
+
+
   async function orgApiRequest(method, path, body) {
     const token = state.session?.sessionToken || "";
     const headers = { accept: "application/json" };
@@ -1422,8 +1422,8 @@
   }
 
   function currentSection() {
-    // The legacy section name is baked into the page document at build time
-    // (dashboard_shell.PAGES[page]["section"] -> data-dashboard-section).
+
+
     return $("[data-dashboard-root]")?.dataset?.dashboardSection
       || $("[data-view].active")?.dataset?.view
       || "home";
@@ -1460,11 +1460,11 @@
     headerContext.textContent = "Dashboard";
   }
 
-  // ---- Public-profile mode (/@name) ---------------------------------------
-  // The worker serves the SAME prebuilt profile documents at /@name; the
-  // profile-page machinery renders whatever profileSubject() returns, so
-  // public mode is: fetch the named account's public payload, park it in
-  // state.publicProfile, and strip the owner-only chrome.
+
+
+
+
+
 
   function publicProfileNameFromPath() {
     const match = /^\/@([a-z][a-z0-9-]{0,62})(?:\/repositories)?\/?$/
@@ -1476,9 +1476,9 @@
     return state.publicProfile || state.session;
   }
 
-  // On /@name pages the profile markup belongs to the fetched PUBLIC profile;
-  // the shared-chrome boot path still calls the profile renderers with the
-  // session, which must not overwrite (or briefly flash) the wrong identity.
+
+
+
   function profileMarkupOwnedByPublicProfile(session) {
     const publicName = publicProfileNameFromPath();
     return Boolean(publicName) && session !== state.publicProfile &&
@@ -1500,29 +1500,29 @@
     }
     const profile = sessionFromAccountPayload(body, { nodeName: name });
     profile.nodeName = profile.nodeName || name;
-    // Never show a mailbox on someone else's page — the handle is the
-    // public identity here.
+
+
     profile.email = "@" + profile.nodeName;
     profile.isFollowing = Boolean(body?.social?.isFollowing);
     state.publicProfile = profile;
     renderProfilePage(profile);
     applyPublicProfileChrome(profile);
-    // Repository lists still use the catalog, while the native contribution
-    // card reads its own account ledger after the public subject is installed.
+
+
     renderProfileContributionGraph();
     renderProfileRepositories();
   }
 
   function applyPublicProfileChrome(profile) {
     const name = profile.nodeName;
-    // Tabs point at the public URLs, not the session dashboard pages.
+
     $$("[data-profile-tabs] a[href='/dashboard/profile']").forEach((a) => {
       a.href = "/@" + encodeURIComponent(name);
     });
     $$("[data-profile-tabs] a[href='/dashboard/profile/repositories']").forEach((a) => {
       a.href = "/@" + encodeURIComponent(name) + "/repositories";
     });
-    // Owner-only affordances become a Follow button (or disappear).
+
     $$("[data-profile-about-edit]").forEach((el) => el.classList.add("hidden"));
     $$("[data-profile-about-owner]").forEach((el) => { el.textContent = name; });
     $$("[data-profile-sidebar-slot] a[href='/dashboard/settings']").forEach((edit) => {
@@ -1568,11 +1568,11 @@
   }
 
   function nodeNeedsReconnect(session) {
-    // A guest has nothing to reconnect; a node-kind session IS the node.
+
     const signedIn = Boolean(session && (session.nodeName || session.email));
     if (!signedIn || session.kind === "node") return false;
-    // Only flag when the account affirmatively has zero linked nodes. An absent
-    // list means "unknown" (older payload), not "none" — stay quiet then.
+
+
     return Array.isArray(session.nodes) && session.nodes.length === 0;
   }
 
@@ -1580,15 +1580,15 @@
     const hint = $("[data-email-verification-hint]");
     if (!hint) return;
     hint.textContent = message ? " " + message : "";
-    // Only utilities already present in the built dashboard/tailwind.css.
+
     hint.className = kind === "bad" ? "text-red-300"
       : kind === "good" ? "text-emerald-300"
         : "text-amber-300";
   }
 
-  // An unverified address blocks node renames and every account email, and the
-  // resend control used to be buried in the profile modal behind a password
-  // prompt. Surface it on every dashboard page until the address is confirmed.
+
+
+
   function renderEmailVerificationBanner(session) {
     const banner = $("[data-email-verification-banner]");
     if (!banner) return;
@@ -1642,19 +1642,19 @@
         adminUrl += (adminUrl.includes("?") ? "&" : "?") +
           "admin=" + encodeURIComponent(session.nodeName);
       }
-      // Only show the button once we actually have somewhere to send it -
-      // an admin session without adminUrl (ADMIN_PATH not picked up from the
-      // Worker env yet) would otherwise show a button that links to "#".
+
+
+
       adminButton.classList.toggle("hidden", !adminUrl);
       adminButton.href = adminUrl || "#";
     }
-    // Reconnect affordance next to the avatar: a signed-in user account with no
-    // node linked has nothing authenticated to drain its issues/chats/etc. to a
-    // desktop, so surface the re-link flow (the Settings > Nodes claim/link
-    // panel) instead of leaving the data stuck online. Shown only when we can
-    // affirmatively tell there are zero linked nodes (session.nodes present and
-    // empty) for a user-like account — never for a node session or when the
-    // link state is simply unknown, to avoid a false alarm.
+
+
+
+
+
+
+
     const reconnect = $("[data-node-reconnect]");
     if (reconnect) {
       reconnect.classList.toggle("hidden", !nodeNeedsReconnect(session));
@@ -1837,7 +1837,7 @@
         }
       }
     } catch {
-      // Use the curated fallback below when browser support is unavailable.
+
     }
     return PROFILE_TIMEZONE_FALLBACKS;
   }
@@ -2086,7 +2086,7 @@
     try {
       sessionStorage.setItem(profileContributionCacheKey(requestKey), JSON.stringify({ data, savedAt: Date.now() }));
     } catch (_) {
-      // A disabled or full session store only removes the offline fallback.
+
     }
   }
 
@@ -2612,9 +2612,9 @@
     return /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(String(value || ""));
   }
 
-  // A node's Ed25519 public key (raw 32 bytes, base64url, unpadded) - the
-  // value the desktop app's own profile card labels "Node ID" (issue #351),
-  // so the claim-node input below must accept it alongside the account name.
+
+
+
   function validNodePubkey(value) {
     return /^[A-Za-z0-9_-]{43}$/.test(String(value || ""));
   }
@@ -2853,13 +2853,13 @@
     renderProfileFediverse(session);
   }
 
-  // ---- Fediverse presence ------------------------------------------------
-  // A profile with a linked Mastodon handle surfaces that account here: the
-  // account's header image becomes a banner across the overview page and the
-  // newest public posts fill a sidebar card. The browser talks straight to
-  // the user's home instance (public CORS API, credentials omitted) so none
-  // of this spends the worker's request quota, and a 10-minute localStorage
-  // snapshot keeps repeat visits from hammering small instances.
+
+
+
+
+
+
+
   const PROFILE_FEDIVERSE_CACHE_PREFIX = "forkmesh.profileFediverse:v1:";
   const PROFILE_FEDIVERSE_CACHE_TTL_MS = 10 * 60 * 1000;
   const PROFILE_FEDIVERSE_POST_LIMIT = 3;
@@ -2881,9 +2881,9 @@
     }
   }
 
-  // Mastodon serves statuses and notes as sanitized HTML; the card renders
-  // plain text only. A detached textarea decodes entities without ever
-  // constructing elements from the remote markup.
+
+
+
   function fediversePlainText(value, limit = 280) {
     const stripped = String(value ?? "")
       .replace(/<br\s*\/?>/gi, "\n")
@@ -2947,7 +2947,7 @@
         base + "/api/v1/accounts/" + encodeURIComponent(id) +
         "/statuses?limit=10&exclude_replies=true");
     } catch {
-      // The account still renders; the posts list just stays empty.
+
     }
     const posts = (Array.isArray(statuses) ? statuses : [])
       .map((status) => {
@@ -2967,8 +2967,8 @@
       })
       .filter((post) => post.url && (post.text || post.imageCount))
       .slice(0, PROFILE_FEDIVERSE_POST_LIMIT);
-    // Instances answer with a placeholder "missing.png" header when the
-    // account never uploaded one — that is not a banner worth showing.
+
+
     const header = fediverseHttpsUrl(account.header_static || account.header);
     return {
       at: Date.now(),
@@ -3006,8 +3006,8 @@
         link.textContent = "@" + data.acct;
         link.href = data.url;
       }
-      // Pops the feed out into its own window so it can sit beside the
-      // dashboard instead of replacing the tab.
+
+
       const popout = card.querySelector("[data-profile-fediverse-popout]");
       if (popout) {
         popout.onclick = () => {
@@ -3068,8 +3068,8 @@
         renderProfileFediverseData(handle, data);
       })
       .catch(() => {
-        // Instance unreachable (CORS, rate limit, downtime): keep whatever
-        // the stale snapshot already painted instead of flashing it away.
+
+
       })
       .finally(() => profileFediverseLoading.delete(handle));
   }
@@ -3252,9 +3252,9 @@
     return "Could not send the verification email. Try again in a moment.";
   }
 
-  // Re-sending a confirmation link only needs the signed-in session, so it goes
-  // to /api/accounts/resend-verification rather than the password-gated profile
-  // POST. The Worker records every send on the account and pings administrators.
+
+
+
   async function resendVerification(options = {}) {
     const hintSelector = options.hintSelector || "";
     const buttonSelector = options.buttonSelector || "[data-email-verification-resend]";
@@ -3394,9 +3394,9 @@
     }
   }
 
-  // Users vs nodes (adhoc #53): claim a node (e.g. a headless mirror you
-  // installed) by its node ID, then confirm the code that appears on that
-  // node itself to complete the link.
+
+
+
   function renderClaimNodePanel(session) {
     const list = $("[data-claim-node-list]");
     if (!list) return;
@@ -3419,8 +3419,8 @@
 
   async function claimNode() {
     const input = $("[data-claim-node-input]");
-    // Not lowercased up front: a node's public-key ID is case-sensitive, and
-    // only the plain-name form is meant to be case-insensitive.
+
+
     const nodeId = (input?.value || "").trim();
     const password = profilePassword("[data-claim-node-password]");
     if (!validNodeName(nodeId.toLowerCase()) && !validNodePubkey(nodeId)) {
@@ -3535,11 +3535,11 @@
     }
   }
 
-  // "Link this node to your account" (adhoc #120): the desktop app opens
-  // /dashboard?link_node=<node>&link_ts=<ts>&link_sig=<sig> - a short-lived
-  // grant signed with the node's own key. The signature proves node-key
-  // control and consents to the link, so whoever is logged in HERE becomes the
-  // owner with no password re-entry or confirmation code.
+
+
+
+
+
   function pendingLinkGrant() {
     const params = new URLSearchParams(location.search);
     const nodeName = (params.get("link_node") || "").trim();
@@ -3550,12 +3550,12 @@
   }
 
   function offerLinkGrant(grant) {
-    // Strip the one-time grant from the address bar first so refresh/back
-    // can't replay it (and it doesn't linger in the visible URL), then show
-    // the settings page's Nodes panel and ask for one explicit "Authenticate &
-    // link" click. The grant overrides any existing association, so the click
-    // is the moment of consent on the browser side. (Boot redirects the grant
-    // to the settings document before calling this, so the panel exists here.)
+
+
+
+
+
+
     const params = new URLSearchParams(location.search);
     for (const key of ["link_node", "link_ts", "link_sig"]) params.delete(key);
     const rest = params.toString();

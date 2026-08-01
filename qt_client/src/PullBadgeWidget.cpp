@@ -11,26 +11,26 @@
 #include <algorithm>
 
 namespace {
-// Badge geometry. One tile is the file-type icon square plus the ratio bar
-// beneath it; a row also reserves space for the directory connector line and
-// its label, so directories read as labeled clusters like the concept mock.
+
+
+
 constexpr int kMargin = 18;
 constexpr int kHeaderH = 92;
 constexpr int kTile = 44;
 constexpr int kTilePitch = kTile + 12;
 constexpr int kBarH = 5;
-constexpr int kRowPitch = kTile + 46; // tile + bar + line + label + gap
+constexpr int kRowPitch = kTile + 46;
 
-// GitHub-dark accents, matching the hardcoded colors used across the PR
-// header markup (m_pullMeta) and the web/AP renderings of the same badge.
+
+
 const QColor kGreen(0x3f, 0xb9, 0x50);
 const QColor kRed(0xf8, 0x51, 0x49);
 const QColor kPurple(0xa3, 0x71, 0xf7);
 const QColor kMuted(0x8b, 0x94, 0x9e);
 
-// Directory connector labels show just the last path segment (not the whole
-// path) capped to 8 chars, so "one/two/three" reads as "three" instead of
-// overflowing the narrow tile cluster it sits under.
+
+
+
 QString dirBadgeLabel(const QString &dir)
 {
     QString name = dir == QStringLiteral("/") ? dir : dir.section('/', -1);
@@ -38,7 +38,7 @@ QString dirBadgeLabel(const QString &dir)
         name = name.left(8) + QChar(0x2026);
     return name;
 }
-} // namespace
+}
 
 PullBadgeWidget::PullBadgeWidget(QWidget *parent) : QWidget(parent)
 {
@@ -55,7 +55,7 @@ void PullBadgeWidget::setPull(const QString &title, int number,
     m_additions = additions;
     m_deletions = deletions;
     m_files = files;
-    // Sorting by path clusters each directory into one contiguous tile run.
+
     std::sort(m_files.begin(), m_files.end(),
               [](const FileEntry &a, const FileEntry &b) {
                   return a.path.toLower() < b.path.toLower();
@@ -79,7 +79,7 @@ void PullBadgeWidget::relayout()
     int row = 0, col = 0;
     int index = 0;
     while (index < m_files.size()) {
-        // Collect the current directory's run of files.
+
         const QString path = m_files.at(index).path;
         const QString dir =
             path.contains('/') ? path.section('/', 0, -2) : QStringLiteral("/");
@@ -92,8 +92,8 @@ void PullBadgeWidget::relayout()
                 break;
             ++count;
         }
-        // A group that would split mid-row but fits on a fresh one starts
-        // there, keeping directories visually contiguous.
+
+
         if (col && col + count > cols && count <= cols) {
             ++row;
             col = 0;
@@ -161,7 +161,7 @@ void PullBadgeWidget::paintEvent(QPaintEvent *)
         return;
     }
 
-    // --- Header: title, "#N · by author", and the change totals.
+
     QFont titleFont = font();
     titleFont.setBold(true);
     titleFont.setPointSizeF(font().pointSizeF() + 3);
@@ -218,7 +218,7 @@ void PullBadgeWidget::paintEvent(QPaintEvent *)
                      QFontMetrics(font()).height()),
                Qt::AlignLeft | Qt::AlignVCenter, byline);
 
-    // --- Tiles: file-type icon square + additions:deletions ratio bar.
+
     for (const Tile &tile : std::as_const(m_tiles)) {
         const FileEntry &file = m_files.at(tile.fileIndex);
         QPainterPath rr;
@@ -244,12 +244,12 @@ void PullBadgeWidget::paintEvent(QPaintEvent *)
                 p.fillRect(QRect(barRect.left() + greenW, barRect.top(),
                                  barRect.width() - greenW, kBarH), kRed);
         } else {
-            p.fillRect(barRect, line); // binary / no counted lines
+            p.fillRect(barRect, line);
         }
         p.setClipping(false);
     }
 
-    // --- Directory connector lines + labels.
+
     p.setFont(smallFont);
     for (const GroupSegment &seg : std::as_const(m_segments)) {
         p.setPen(QPen(line, 1));
@@ -262,8 +262,8 @@ void PullBadgeWidget::paintEvent(QPaintEvent *)
         if (!seg.labeled)
             continue;
         p.setPen(kMuted);
-        // Let the label spill a little past a narrow segment (a 1-2 file
-        // directory is narrower than its own name) instead of clipping it.
+
+
         const QRect labelRect(seg.lineRect.left() - 26,
                               seg.lineRect.top() + 4,
                               seg.lineRect.width() + 52, smallFm.height() + 2);
@@ -278,7 +278,7 @@ bool PullBadgeWidget::event(QEvent *e)
     if (e->type() == QEvent::ToolTip) {
         auto *help = static_cast<QHelpEvent *>(e);
         for (const Tile &tile : std::as_const(m_tiles)) {
-            // Include the bar strip below the icon in the hit area.
+
             if (tile.rect.adjusted(0, 0, 0, kBarH + 4).contains(help->pos())) {
                 const FileEntry &file = m_files.at(tile.fileIndex);
                 QToolTip::showText(

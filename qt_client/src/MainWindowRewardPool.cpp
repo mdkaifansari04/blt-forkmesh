@@ -1,9 +1,9 @@
-// First-instance-owner community reward-pool controls. The Worker creates
-// auditable public transfer intents; this desktop verifies and signs one exact
-// System Program transfer after explicit owner confirmation, broadcasts it
-// directly to the locally configured Solana RPC, then reports finalized public
-// chain state back to the Worker. Private key bytes never cross the encrypted
-// vault/signer boundary.
+
+
+
+
+
+
 
 #include "MainWindow.h"
 
@@ -151,7 +151,7 @@ QString jsonSlotString(const QJsonValue &value)
     return {};
 }
 
-} // namespace
+}
 
 QWidget *MainWindow::buildRewardPoolControlCard()
 {
@@ -862,7 +862,7 @@ void MainWindow::reviewAndSignRewardIntent()
                      formatLamports(transfer.lamports)));
     }
     QString recipientPreview;
-    // Escape each row without escaping the intentional line breaks.
+
     QStringList escapedRows;
     for (const QString &row : recipients.mid(0, 5))
         escapedRows.append(row.toHtmlEscaped());

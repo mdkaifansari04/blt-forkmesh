@@ -30,8 +30,8 @@ def check(name, cond):
 
 
 def _handler(headers):
-    # Build a Handler without running BaseHTTPRequestHandler.__init__ (which does
-    # socket I/O); record what _send would have returned.
+
+
     h = bpr.Handler.__new__(bpr.Handler)
     h.headers = headers
     sent = {}
@@ -42,7 +42,7 @@ def _handler(headers):
 HOST = f"127.0.0.1:{bpr.PORT}"
 ORIGIN = f"http://127.0.0.1:{bpr.PORT}"
 
-# GET / diff read: good Host allowed, foreign Host (DNS-rebind) blocked.
+
 h, sent = _handler({"Host": HOST})
 check("GET loopback host allowed", h._local_guard() is True and not sent)
 
@@ -53,7 +53,7 @@ check("GET foreign host blocked (403)",
 h, sent = _handler({"Host": f"evil.example.com:{bpr.PORT}"})
 check("GET rebind host:port blocked", h._local_guard() is False)
 
-# POST create-pr: requires loopback Host AND (absent | loopback) Origin.
+
 h, sent = _handler({"Host": HOST})
 check("POST no Origin allowed (curl/CLI)",
       h._local_guard(require_origin=True) is True and not sent)

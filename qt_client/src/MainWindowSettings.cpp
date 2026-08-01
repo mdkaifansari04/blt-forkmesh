@@ -1,9 +1,9 @@
-// MainWindowSettings: MainWindow feature methods, split out of MainWindow.cpp.
-// Settings, firewall, and diagnostics.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+
+
+
+
+
 
 #include "ControlNode.h"
 #include "ForkMeshVersion.h"
@@ -25,7 +25,7 @@
 
 using namespace forkmesh::ui;
 
-// ----------------------------------------------------------------- settings
+
 
 QWidget *MainWindow::buildSettingsSection()
 {
@@ -37,20 +37,20 @@ QWidget *MainWindow::buildSettingsSection()
     auto *profileLabel = new QLabel("PROFILE");
     profileLabel->setObjectName("sectionLabel");
 
-    // Username (the account) and this machine's node name are two different
-    // things: a user signs in once and can own many nodes; the machine you're
-    // sitting at is just one of them. They used to share a single "Node name"
-    // field, which is exactly the conflation being unwound here.
+
+
+
+
     m_settingsNameEdit = new QLineEdit;
     m_settingsNameEdit->setMaxLength(32);
     m_settingsNameEdit->setPlaceholderText("Username");
     m_settingsNameEdit->setToolTip(
         "Your ForkMesh user account. One user account can own many nodes; "
         "changing this changes who you are, not this machine's node name.");
-    // This section is built lazily on first open — long after startup signed us
-    // in — so seed the field with the account we're signed in as here; the
-    // login/setup flows keep it fresh from then on. Without this the Username
-    // sat blank while the top-bar chip showed the signed-in user (adhoc #267).
+
+
+
+
     m_settingsNameEdit->setText(settingsAccountName());
     connect(m_settingsNameEdit, &QLineEdit::editingFinished, this,
             [this] { onProfileNameChanged(m_settingsNameEdit->text()); });
@@ -65,14 +65,14 @@ QWidget *MainWindow::buildSettingsSection()
     m_settingsMachineNodeEdit->setText(machineNodeName());
     connect(m_settingsMachineNodeEdit, &QLineEdit::editingFinished, this, [this] {
         saveMachineNodeName(m_settingsMachineNodeEdit->text());
-        // Reflect the sanitized (or defaulted) value back into the field.
+
         m_settingsMachineNodeEdit->setText(machineNodeName());
     });
 
-    // Capability tags for Actions: a workflow with `runs-on: ios` only runs on a
-    // node carrying that label, so a mesh can dedicate one machine to iOS builds
-    // and another to Cloudflare deploys. The node name and platform are always
-    // labels; this field only adds to them.
+
+
+
+
     m_settingsNodeLabelsEdit = new QLineEdit;
     m_settingsNodeLabelsEdit->setMaxLength(200);
     m_settingsNodeLabelsEdit->setPlaceholderText(
@@ -120,8 +120,8 @@ QWidget *MainWindow::buildSettingsSection()
     avatarRow->addWidget(generateButton);
     avatarRow->addStretch();
 
-    // This is a public payout address only. It is not a wallet-import field and
-    // must never persist private key material, a seed, or a recovery phrase.
+
+
     m_settingsSolanaEdit = new QLineEdit;
     m_settingsSolanaEdit->setMaxLength(64);
     m_settingsSolanaEdit->setPlaceholderText(
@@ -155,7 +155,7 @@ QWidget *MainWindow::buildSettingsSection()
         saveSolanaAddress(addr);
         if (m_solanaEdit && m_solanaEdit->text().trimmed() != addr)
             m_solanaEdit->setText(addr);
-        // Share with peers on the next connect; refresh the sponsor banner now.
+
         updateSolanaNotice();
         updateHomeStats();
     });
@@ -177,10 +177,10 @@ QWidget *MainWindow::buildSettingsSection()
     refreshSettingsEmailVerifiedBadge();
     form->addRow("Avatar", avatarRow);
 
-    // #368: identity key backup. The Ed25519 key under the app data dir is the
-    // one thing that can't be regenerated — lose it and every signature,
-    // catalog record and bounty binding is orphaned. Offer an encrypted export
-    // (keyfile + QR) and import, and nag until the user has taken a backup.
+
+
+
+
     m_identityBackupNag = new QLabel;
     m_identityBackupNag->setObjectName("identityBackupNag");
     m_identityBackupNag->setWordWrap(true);
@@ -207,10 +207,10 @@ QWidget *MainWindow::buildSettingsSection()
     m_autostartCheck->setToolTip(
         "Start ForkMesh automatically when you log in to this computer.");
 
-    // Surface exactly how and where autostart is installed, plus an explicit
-    // "Remove auto startup" button (issue #393). The bare checkbox used to hide
-    // a failed removal — showing the concrete mechanism/path lets the user see
-    // a stale entry and delete it directly.
+
+
+
+
     m_autostartInfo = new QLabel;
     m_autostartInfo->setObjectName("modeHint");
     m_autostartInfo->setWordWrap(true);
@@ -226,8 +226,8 @@ QWidget *MainWindow::buildSettingsSection()
     autostartRemoveRow->addWidget(m_autostartRemoveButton);
     autostartRemoveRow->addStretch();
 
-    // Reflect the real on-disk state in the label + button after every change,
-    // so the UI never claims autostart is off while the entry is still present.
+
+
     auto refreshAutostartInfo = [this]() {
         const bool on = isAutostartEnabled();
         m_autostartInfo->setText(
@@ -238,9 +238,9 @@ QWidget *MainWindow::buildSettingsSection()
     };
     refreshAutostartInfo();
 
-    // After enabling/disabling, re-seed the checkbox from disk so it matches
-    // reality even if the write or delete failed — the original bug was that
-    // unchecking left the entry in place and ForkMesh kept starting (#393).
+
+
+
     auto applyAutostart = [this, refreshAutostartInfo](bool enable) {
         if (!setAutostartEnabled(enable)) {
             QMessageBox::warning(
@@ -264,12 +264,12 @@ QWidget *MainWindow::buildSettingsSection()
     connect(m_autostartRemoveButton, &QPushButton::clicked, this,
             [applyAutostart]() { applyAutostart(false); });
 
-    // Auto-update (adhoc #120): quietly check for a new version and update,
-    // rebuild and relaunch when one is found — the same flow as the manual
-    // "Update, rebuild & restart" button below, just automatic. Off by default
-    // on desktop so a personal machine never relaunches out from under you
-    // unannounced; on by default for headless installs (seeded in main.cpp),
-    // since an operator-run VM has no one around to click update.
+
+
+
+
+
+
     auto *autoUpdateCheck = new QCheckBox("Automatically update ForkMesh");
     autoUpdateCheck->setChecked(
         QSettings().value(kAutoUpdateSetting, false).toBool());
@@ -282,9 +282,9 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoUpdateSetting, enabled);
     });
 
-    // There is no "open repositories on tab" preference any more (adhoc #119): a
-    // repo opens on its Code overview, and a relaunch restores the tab last
-    // viewed. See kRepoLandingTab.
+
+
+
 
     auto *autoSwitchToAgentCheck =
         new QCheckBox("Switch to Agents tab when a new agent is created");
@@ -375,8 +375,8 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kDisbursementAlertSetting, enabled);
     });
 
-    // The remaining alert categories. Each is off by default (notifyEnabled())
-    // and re-enabled here, so a fresh install is silent until the user opts in.
+
+
     auto alertCheck = [this](const QString &label, const QString &key,
                              const QString &tip) {
         auto *box = new QCheckBox(label);
@@ -486,8 +486,8 @@ QWidget *MainWindow::buildSettingsSection()
     auto *ideStatus = new QLabel(this);
     ideStatus->setObjectName("statusLine");
     ideStatus->setWordWrap(true);
-    // Refresh the detect-status line; reused on toggle and on a short poll so the
-    // user sees the extension appear without reopening Settings.
+
+
     auto refreshIdeStatus = [this, ideStatus, ideIntegrationCheck] {
         if (!ideIntegrationCheck->isChecked()) {
             ideStatus->setText(
@@ -510,8 +510,8 @@ QWidget *MainWindow::buildSettingsSection()
                 refreshIdeStatus();
                 updateIssueIdeButtons();
             });
-    // Poll while Settings is open so detection (and the issue buttons) update
-    // live as the IDE/extension comes and goes.
+
+
     auto *idePoll = new QTimer(ideStatus);
     idePoll->setInterval(5000);
     connect(idePoll, &QTimer::timeout, this, [this, refreshIdeStatus] {
@@ -521,9 +521,9 @@ QWidget *MainWindow::buildSettingsSection()
     idePoll->start();
     refreshIdeStatus();
 
-    // Voice input: download & build whisper.cpp for local, offline speech-to-text
-    // so the prompt box can be dictated. Once installed a mic appears beside the
-    // prompt (see updateVoiceInputButton()).
+
+
+
     auto *voiceLabel = new QLabel("VOICE INPUT");
     voiceLabel->setObjectName("sectionLabel");
     auto *voiceHint = new QLabel(
@@ -534,8 +534,8 @@ QWidget *MainWindow::buildSettingsSection()
         "appears next to the prompt box.");
     voiceHint->setObjectName("statusLine");
     voiceHint->setWordWrap(true);
-    // Engine selector: whisper.cpp (default) or NVIDIA Parakeet. The model combo
-    // beside it swaps to match the chosen engine.
+
+
     m_voiceEngineCombo = new QComboBox;
     m_voiceEngineCombo->addItem(QStringLiteral("Whisper (whisper.cpp)"),
                                 QStringLiteral("whisper"));
@@ -601,12 +601,12 @@ QWidget *MainWindow::buildSettingsSection()
     voiceRow->addWidget(m_parakeetModelCombo);
     voiceRow->addWidget(m_whisperInstallButton);
     voiceRow->addStretch();
-    refreshWhisperStatus(); // toggles which model combo is shown
+    refreshWhisperStatus();
 
-    // Microphone picker (adhoc #10): choose which input device the recorder
-    // captures from. Populated from the installed recorder's device list; the
-    // first entry is the system default. Persisted to kVoiceInputDeviceSetting,
-    // which audioRecorderFor() reads when it starts a capture.
+
+
+
+
     m_voiceDeviceCombo = new QComboBox;
     m_voiceDeviceCombo->setToolTip(
         "Microphone the recorder captures from. \"System default\" follows your "
@@ -633,10 +633,10 @@ QWidget *MainWindow::buildSettingsSection()
     voiceDeviceRow->addWidget(m_voiceDeviceCombo, 1);
     voiceDeviceRow->addStretch();
 
-    // Test-mic check (adhoc #14): record from the chosen device and show a live
-    // level bar, so you can confirm the mic is actually captured (and watch the
-    // level move as you speak) without going through whisper transcription. Works
-    // even before whisper.cpp is installed — it only needs a recorder.
+
+
+
+
     m_voiceTestMicButton = new QPushButton("Test mic");
     m_voiceTestMicButton->setObjectName("ghostButton");
     m_voiceTestMicButton->setCursor(Qt::PointingHandCursor);
@@ -661,9 +661,9 @@ QWidget *MainWindow::buildSettingsSection()
     voiceTestRow->addWidget(m_voiceTestMicButton);
     voiceTestRow->addWidget(m_voiceTestMeter, 1);
 
-    // Hosted World -> local speech-to-text pairing. The exact public origin is
-    // safe to persist; the one-use capability and browser-session capability
-    // remain memory-only and are revoked when the bridge/client stops.
+
+
+
     auto *worldVoiceLabel = new QLabel("WORLD VOICE BRIDGE");
     worldVoiceLabel->setObjectName("sectionLabel");
     auto *worldVoiceHint = new QLabel(
@@ -762,9 +762,9 @@ QWidget *MainWindow::buildSettingsSection()
         updateNavRebuildButton();
     });
 
-    // Diagnostic: mirror every HTTP request the app makes into the network log
-    // (verb + status + URL). Off by default; handy for confirming what the
-    // background traffic actually is (adhoc #74).
+
+
+
     auto *verboseNetLogCheck =
         new QCheckBox("Log every network request in the network log");
     verboseNetLogCheck->setChecked(
@@ -777,10 +777,10 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kVerboseNetworkLogSetting, enabled);
     });
 
-    // Per-PR bounties (issue #347): reward every merged pull request's author
-    // with a fixed bounty through a one-time funding QR. The removed legacy
-    // "wallet" mode put signing authority in the Worker and must never be
-    // selectable for new rewards.
+
+
+
+
     auto *bountyLabel = new QLabel("PR BOUNTIES");
     bountyLabel->setObjectName("sectionLabel");
     auto *autoBountyCheck =
@@ -823,8 +823,8 @@ QWidget *MainWindow::buildSettingsSection()
     bountyModeCombo->addItem("Legacy per-PR mode (disabled)",
                              QStringLiteral("perPr"));
     QSettings bountySettings;
-    // One-way local migration: never silently reactivate the removed Worker-held
-    // signing path from an older preference.
+
+
     if (bountySettings
             .value(kAutoPrBountyModeSetting, QStringLiteral("perPr"))
             .toString() != QLatin1String("perPr"))
@@ -848,8 +848,8 @@ QWidget *MainWindow::buildSettingsSection()
 
     const auto syncBountyEnabled = [autoBountyCheck, bountyAmount,
                                     bountyModeCombo] {
-        // The Worker-held escrow implementation is frozen. This deliberately
-        // remains disabled even if an old settings file had the feature on.
+
+
         autoBountyCheck->setChecked(false);
         bountyAmount->setEnabled(false);
         bountyModeCombo->setEnabled(false);
@@ -871,10 +871,10 @@ QWidget *MainWindow::buildSettingsSection()
             });
     syncBountyEnabled();
 
-    // Per-metric toggles for this node's host stats (CPU/RAM/disk) shown in the
-    // Mirror nodes view. Off by default on the desktop so a personal machine
-    // doesn't broadcast its load; headless installs are seeded on at startup so
-    // hosts stay monitorable (adhoc #23). Re-sampled within ~10s of a change.
+
+
+
+
     auto *nodeStatsLabel = new QLabel("NODE STATS");
     nodeStatsLabel->setObjectName("sectionLabel");
     auto *nodeStatsHint = new QLabel(
@@ -902,10 +902,10 @@ QWidget *MainWindow::buildSettingsSection()
             QSettings().setValue(key, enabled);
             if (m_backend)
                 m_backend->advertiseMirrorsNow();
-            // The backend coalesces its freshly sampled self-roster update for
-            // 200 ms. Publish after that value reaches m_homeRoster so enabling
-            // shows a real reading and disabling promptly removes the formerly
-            // public field from each signed catalog record.
+
+
+
+
             QTimer::singleShot(500, this, [this] {
                 for (int i = 0; i < m_repositories.size(); ++i)
                     publishRepository(i, false);
@@ -922,9 +922,9 @@ QWidget *MainWindow::buildSettingsSection()
     agentsHint->setObjectName("statusLine");
     agentsHint->setWordWrap(true);
 
-    // Default agent: which provider the quick-add bar and issue-detail "Assign
-    // agent" picker start on. Stored as the canonical provider id so the pickers
-    // (built elsewhere) can seed themselves via selectDefaultAgentProvider().
+
+
+
     m_defaultAgentProviderCombo = new QComboBox;
     m_defaultAgentProviderCombo->addItem(QStringLiteral("Codex"), kCodexProvider);
     m_defaultAgentProviderCombo->addItem(QStringLiteral("OpenAI API"),
@@ -941,15 +941,15 @@ QWidget *MainWindow::buildSettingsSection()
                 const QString provider =
                     m_defaultAgentProviderCombo->currentData().toString();
                 QSettings().setValue(kDefaultAgentProviderSetting, provider);
-                // Keep the live pickers in step with the new default.
+
                 selectDefaultAgentProvider(m_quickAddAgentProvider);
                 selectDefaultAgentProvider(m_issueAgentProvider);
                 selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
             });
 
-    // When the watchdog catches the GUI thread freezing, hand the captured
-    // backtrace to a coding agent so the freeze gets fixed without anyone filing
-    // it by hand. On by default (adhoc #205).
+
+
+
     auto *autoStallAgentCheck =
         new QCheckBox("Auto-create an agent task to fix new UI stalls");
     autoStallAgentCheck->setChecked(
@@ -962,14 +962,14 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoAgentOnStallSetting, enabled);
     });
 
-    // Branch conflicts are no longer fixed automatically (adhoc #446): the
-    // agents list flags a conflicting branch with an orange conflict button and
-    // the agent is only steered into merging base when that button is clicked,
-    // so there's no setting here any more.
 
-    // When a repo's tests or build fail, automatically send the failure back
-    // to the agent that last worked on that branch instead of waiting for a
-    // manual dispatch. On by default.
+
+
+
+
+
+
+
     auto *autoFixFailuresCheck =
         new QCheckBox("Auto-fix test and build failures");
     autoFixFailuresCheck->setChecked(
@@ -982,9 +982,9 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoFixFailuresSetting, enabled);
     });
 
-    // Jail agents at launch (adhoc #236): each run gets its own scratch
-    // environment (a private per-run tmp/cache) and a memory cap applied
-    // before the CLI starts. Off by default.
+
+
+
     auto *jailAgentsCheck =
         new QCheckBox("Jail agents (own environment + memory cap)");
     jailAgentsCheck->setChecked(
@@ -1010,9 +1010,9 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAgentJailMemoryMbSetting, mb);
     });
 
-    // Cap on how many agents run at once (adhoc #433). Anything started past the
-    // cap waits in the queue with a clock icon and launches as slots free up, so
-    // assigning a batch of issues can't spawn a CLI per issue all at once.
+
+
+
     auto *maxRunningAgentsEdit = new QLineEdit;
     maxRunningAgentsEdit->setPlaceholderText(
         QString::number(kDefaultMaxRunningAgents));
@@ -1027,8 +1027,8 @@ QWidget *MainWindow::buildSettingsSection()
                                        maxRunningAgentsEdit->text().toInt());
                 maxRunningAgentsEdit->setText(QString::number(limit));
                 QSettings().setValue(kMaxRunningAgentsSetting, limit);
-                // Raising the cap should start waiting sessions right away
-                // rather than at the next completion.
+
+
                 scheduleAgentQueuePump();
             });
 
@@ -1116,9 +1116,9 @@ QWidget *MainWindow::buildSettingsSection()
                              qMax(256, m_agentMaxOutputEdit->text().toInt()));
     });
 
-    // Instruction preamble prepended to every agent prompt (the prompt that
-    // drives Claude and the other providers). Stored verbatim; clearing the box
-    // restores the built-in default on the next run.
+
+
+
     m_agentPromptPreambleEdit = new QPlainTextEdit;
     m_agentPromptPreambleEdit->setPlainText(agentPromptPreamble());
     m_agentPromptPreambleEdit->setMaximumHeight(140);
@@ -1133,10 +1133,10 @@ QWidget *MainWindow::buildSettingsSection()
                              m_agentPromptPreambleEdit->toPlainText());
     });
 
-    // Instruction used by the Issues "Prioritize from README" button (issue
-    // #286). The README and the open-issue list are appended after this text, so
-    // it only governs how the default agent is asked to rank the backlog.
-    // Clearing the box restores the built-in default on the next run.
+
+
+
+
     m_prioritizePromptEdit = new QPlainTextEdit;
     m_prioritizePromptEdit->setPlainText(prioritizePromptSetting());
     m_prioritizePromptEdit->setMaximumHeight(140);
@@ -1165,8 +1165,8 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->addRow("OpenAI command", m_codexCommandEdit);
     agentForm->addRow("Claude command", m_claudeCommandEdit);
 
-    // Provider credentials are device-local. A host signs in through Claude's
-    // own flow on that host; ForkMesh never makes a portable account bundle.
+
+
     auto *claudeAccountBtn =
         new QPushButton("Set up Claude Code on this device…");
     claudeAccountBtn->setObjectName("ghostButton");
@@ -1187,8 +1187,8 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->addRow("Agent prompt", m_agentPromptPreambleEdit);
     agentForm->addRow("Prioritize prompt", m_prioritizePromptEdit);
 
-    // Agent API spend/usage stats: moved out of the Agent sessions list (adhoc
-    // #118) so that tab only shows the session table and its toolbar.
+
+
     auto *usageLabel = new QLabel("USAGE & SPEND");
     usageLabel->setObjectName("sectionLabel");
     auto *usageHint = new QLabel(
@@ -1268,8 +1268,8 @@ QWidget *MainWindow::buildSettingsSection()
     m_agentLimitsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     usageText->addWidget(m_agentLimitsLabel);
 
-    // Issue #346: a headless node has no one watching its screen, so the only
-    // way to know Claude Code can resume after running out is to be told.
+
+
     auto *emailOnRefillCheck =
         new QCheckBox("Email me when Claude Code credits refill after running out");
     emailOnRefillCheck->setChecked(
@@ -1282,19 +1282,19 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kEmailOnCreditsRefillSetting, enabled);
     });
     usageText->addWidget(emailOnRefillCheck);
-    // Issue #115: restore the last-known spend figures immediately so they are
-    // visible on restart before any network refresh completes.
+
+
     applyCachedSpendLabels();
     refreshAgentLimitLabel();
-    // Tick once a minute so the countdowns stay current while the tab is open.
+
     m_agentLimitsTimer = new QTimer(this);
     m_agentLimitsTimer->setInterval(60 * 1000);
     connect(m_agentLimitsTimer, &QTimer::timeout, this,
             &MainWindow::refreshAgentLimitLabel);
     m_agentLimitsTimer->start();
 
-    // Mirror storage location: where bare mirrors of repos are kept. Mirrors act
-    // as the local "remote" a fork pushes to (see issue: fork from the client).
+
+
     auto *storageLabel = new QLabel("MIRROR STORAGE");
     storageLabel->setObjectName("sectionLabel");
     m_mirrorRootEdit = new QLineEdit(repositoryMirrorRoot());
@@ -1329,10 +1329,10 @@ QWidget *MainWindow::buildSettingsSection()
     previewCacheRow->addWidget(m_previewCacheRootEdit, 1);
     previewCacheRow->addWidget(previewCacheChangeButton);
 
-    // Auto-sync incoming issues (issue #193): when on, the periodic inbox poll
-    // merges and commits issues filed on this node's repos as they arrive — but
-    // only while the working tree is clean, so it never interleaves issue
-    // commits with the owner's in-progress edits.
+
+
+
+
     auto *issuesSyncLabel = new QLabel("ISSUES");
     issuesSyncLabel->setObjectName("sectionLabel");
     auto *autoSyncIssuesCheck =
@@ -1349,11 +1349,11 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoSyncIssuesSetting, enabled);
     });
 
-    // Auto-sync on merge (adhoc #110): several owners were surprised that hitting
-    // "Merge" published the merge commit to main with no confirming click. Off by
-    // default — the merge lands locally and waits behind the floating "Sync"
-    // button. On → merging pushes to the served mirror and notifies peers right
-    // away, the old behaviour.
+
+
+
+
+
     auto *pullsSyncLabel = new QLabel("PULL REQUESTS");
     pullsSyncLabel->setObjectName("sectionLabel");
     auto *autoSyncMergeCheck =
@@ -1370,9 +1370,9 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoSyncOnMergeSetting, enabled);
     });
 
-    // Start a repository under this node: either spin up a brand-new empty repo
-    // (git init) or adopt an existing local Git folder. Both then mirror + publish
-    // under the account, exactly like the import flow below.
+
+
+
     auto *repositoriesLabel = new QLabel("REPOSITORIES");
     repositoriesLabel->setObjectName("sectionLabel");
     auto *repositoriesHint = new QLabel(
@@ -1405,9 +1405,9 @@ QWidget *MainWindow::buildSettingsSection()
     repoButtonRow->addWidget(addLocalRepoButton);
     repoButtonRow->addStretch();
 
-    // Import a repo from GitHub/GitLab: clone it into a local working copy, then
-    // mirror + publish it under this node like any local repo. An optional access
-    // token per host authenticates the clone to dodge unauthenticated rate limits.
+
+
+
     auto *importLabel = new QLabel("IMPORT REPOSITORY");
     importLabel->setObjectName("sectionLabel");
     auto *importHint = new QLabel(
@@ -1464,9 +1464,9 @@ QWidget *MainWindow::buildSettingsSection()
     importTokenForm->addRow("GitHub token", githubTokenEdit);
     importTokenForm->addRow("GitLab token", gitlabTokenEdit);
 
-    // Variables / secrets shared by all action workflows on this node. Values
-    // are injected into each run's environment (e.g. CLOUDFLARE_API_TOKEN) and
-    // redacted from run logs.
+
+
+
     auto *varsLabel = new QLabel("VARIABLES / SECRETS");
     varsLabel->setObjectName("sectionLabel");
     auto *varsHint = new QLabel(
@@ -1478,7 +1478,7 @@ QWidget *MainWindow::buildSettingsSection()
     varsHint->setWordWrap(true);
 
     m_varsTable = new QTableWidget(0, 2);
-    installColumnHeaderMenu(m_varsTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_varsTable);
     m_varsTable->setHorizontalHeaderLabels({"Name", "Value"});
     m_varsTable->horizontalHeader()->setStretchLastSection(true);
     m_varsTable->verticalHeader()->setVisible(false);
@@ -1486,7 +1486,7 @@ QWidget *MainWindow::buildSettingsSection()
     m_varsTable->setSelectionMode(QAbstractItemView::SingleSelection);
     m_varsTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_varsTable->setMaximumHeight(160);
-    makeColumnsResizable(m_varsTable); // spreadsheet-style draggable columns (#263)
+    makeColumnsResizable(m_varsTable);
 
     auto *varAddButton = new QPushButton("Add\xE2\x80\xA6");
     auto *varEditButton = new QPushButton("Edit\xE2\x80\xA6");
@@ -1515,13 +1515,13 @@ QWidget *MainWindow::buildSettingsSection()
             &MainWindow::exportVariables);
     connect(varImportButton, &QPushButton::clicked, this,
             &MainWindow::importVariables);
-    // Double-clicking a row is the natural "edit this one" gesture.
+
     connect(m_varsTable, &QTableWidget::cellDoubleClicked, this,
             [this](int, int) { addOrEditVariable(true); });
     connect(m_varsRevealButton, &QPushButton::clicked, this,
             &MainWindow::toggleVariablesRevealed);
-    // Click a revealed value to copy it to the clipboard. Masked rows do
-    // nothing — there is nothing useful to copy while hidden.
+
+
     connect(m_varsTable, &QTableWidget::cellClicked, this,
             [this](int row, int column) {
                 if (column != 1 || !m_varsRevealed)
@@ -1553,17 +1553,17 @@ QWidget *MainWindow::buildSettingsSection()
     auto *leaveButton = new QPushButton("Leave node");
     leaveButton->setObjectName("dangerButton");
     leaveButton->setCursor(Qt::PointingHandCursor);
-    // Same action as the profile panel's "Disconnect": mesh only, the account
-    // stays signed in. Spelled out so it is never confused with the account
-    // logout sitting two buttons along (adhoc #63).
+
+
+
     leaveButton->setToolTip(
         "Disconnect this machine from the mesh and return to the setup "
         "screen. Your ForkMesh account stays signed in on this machine.");
     setOcticon(leaveButton, "sign-out", 16);
     connect(leaveButton, &QPushButton::clicked, this, [this] { leaveSession(); });
 
-    // Rebuild & restart now lives here, next to Leave node, rather than in the
-    // server rail.
+
+
     m_rebuildButton = new QPushButton("Rebuild & restart");
     m_rebuildButton->setObjectName("ghostButton");
     m_rebuildButton->setCursor(Qt::PointingHandCursor);
@@ -1572,9 +1572,9 @@ QWidget *MainWindow::buildSettingsSection()
     connect(m_rebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_rebuildButton); quickRebuildRestart(); });
 
-    // Log in to a user account with email + password, without leaving the app.
-    // A user account can own many nodes, so this signs this machine in to an
-    // existing account (universal cross-device access).
+
+
+
     auto *loginButton = new QPushButton("Log in to a user account…");
     loginButton->setObjectName("ghostButton");
     loginButton->setCursor(Qt::PointingHandCursor);
@@ -1585,10 +1585,10 @@ QWidget *MainWindow::buildSettingsSection()
     connect(loginButton, &QPushButton::clicked, this,
             [this] { loginToUserAccount(); });
 
-    // Log out clears the signed-in account so you can log back in (as the same
-    // or a different account). "of account" is part of the label: this is the
-    // only one of the app's three sign-out-ish buttons that drops the account
-    // rather than just the mesh session (adhoc #63).
+
+
+
+
     auto *logoutButton = new QPushButton("Log out of account");
     logoutButton->setObjectName("ghostButton");
     logoutButton->setCursor(Qt::PointingHandCursor);
@@ -1604,9 +1604,9 @@ QWidget *MainWindow::buildSettingsSection()
     m_rebuildStatus->setWordWrap(true);
     m_rebuildStatus->hide();
 
-    // Uninstall: erase every trace of ForkMesh from this computer and quit.
-    // Kept at the far right of the footer, past the stretch, so it sits apart
-    // from the everyday actions and is hard to hit by accident.
+
+
+
     auto *uninstallButton = new QPushButton("Uninstall ForkMesh");
     uninstallButton->setObjectName("dangerButton");
     uninstallButton->setCursor(Qt::PointingHandCursor);
@@ -1631,13 +1631,13 @@ QWidget *MainWindow::buildSettingsSection()
     layout->setSpacing(10);
     layout->addWidget(title);
 
-    // Group related settings under tabs rather than one long two-column scroll.
-    // Each tab scrolls on its own; the title above and the account-action footer
-    // below stay pinned so they're reachable from any tab.
+
+
+
     auto *tabs = new QTabWidget;
     tabs->setObjectName("settingsTabs");
     tabs->setDocumentMode(true);
-    // Wrap a tab's content widget in a frameless, vertically-scrolling page.
+
     auto addTab = [tabs](QWidget *body, const QString &name) {
         auto *scroll = new QScrollArea;
         scroll->setObjectName("settingsTabScroll");
@@ -1648,11 +1648,11 @@ QWidget *MainWindow::buildSettingsSection()
         tabs->addTab(scroll, name);
     };
 
-    // Profile (adhoc #274): the avatar / power-switch page that used to only be
-    // reachable by clicking the avatar button. The panel itself is built once
-    // with the full-page profile section and moved in here by
-    // syncSettingsProfileTab() whenever this tab is showing, so it is not
-    // wrapped in addTab()'s scroll area (it scrolls itself).
+
+
+
+
+
     m_settingsProfileHost = new QWidget;
     auto *profileHostLayout = new QHBoxLayout(m_settingsProfileHost);
     profileHostLayout->setContentsMargins(0, 0, 0, 0);
@@ -1662,11 +1662,11 @@ QWidget *MainWindow::buildSettingsSection()
     connect(tabs, &QTabWidget::currentChanged, this,
             [this](int) { syncSettingsProfileTab(); });
 
-    // Quick Setup: everything a brand-new instance needs, on one page with a
-    // single Apply button (adhoc #318).
+
+
     addTab(buildQuickSetupTab(), "Quick Setup");
 
-    // General: identity, appearance and launch behaviour.
+
     auto *generalTab = new QWidget;
     auto *generalCol = new QVBoxLayout(generalTab);
     generalCol->setContentsMargins(2, 14, 2, 14);
@@ -1703,7 +1703,7 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addStretch();
     addTab(generalTab, "General");
 
-    // Repositories: creating/importing repos and where mirrors live.
+
     auto *reposTab = new QWidget;
     auto *reposCol = new QVBoxLayout(reposTab);
     reposCol->setContentsMargins(2, 14, 2, 14);
@@ -1732,7 +1732,7 @@ QWidget *MainWindow::buildSettingsSection()
     reposCol->addStretch();
     addTab(reposTab, "Repositories");
 
-    // Notifications: every desktop-alert opt-in.
+
     auto *notifyTab = new QWidget;
     auto *notifyCol = new QVBoxLayout(notifyTab);
     notifyCol->setContentsMargins(2, 14, 2, 14);
@@ -1768,7 +1768,7 @@ QWidget *MainWindow::buildSettingsSection()
     notifyCol->addStretch();
     addTab(notifyTab, "Pings");
 
-    // Agents & IDE: model keys/commands and editor integration.
+
     auto *agentsTab = new QWidget;
     auto *agentsCol = new QVBoxLayout(agentsTab);
     agentsCol->setContentsMargins(2, 14, 2, 14);
@@ -1790,8 +1790,8 @@ QWidget *MainWindow::buildSettingsSection()
     agentsCol->addStretch();
     addTab(agentsTab, "Agents & IDE");
 
-    // Voice: local speech-to-text engine setup, mic device and test — its own
-    // tab so it's easy to land on directly (see openVoiceSettings(), adhoc #132).
+
+
     auto *voiceTab = new QWidget;
     auto *voiceCol = new QVBoxLayout(voiceTab);
     voiceCol->setContentsMargins(2, 14, 2, 14);
@@ -1812,7 +1812,7 @@ QWidget *MainWindow::buildSettingsSection()
     m_voiceSettingsTabIndex = tabs->count();
     addTab(voiceTab, "Voice");
 
-    // Secrets & Coves: shared action variables and encrypted coves.
+
     auto *secretsTab = new QWidget;
     auto *secretsCol = new QVBoxLayout(secretsTab);
     secretsCol->setContentsMargins(2, 14, 2, 14);
@@ -1826,16 +1826,16 @@ QWidget *MainWindow::buildSettingsSection()
     secretsCol->addStretch();
     addTab(secretsTab, "Secrets & Coves");
 
-    // MCP: connector token + the config to paste into an external agent, so
-    // anything speaking MCP can work this node's issues and PRs (adhoc #16).
-    // Built in its own translation unit (MainWindowMcp.cpp).
+
+
+
     addTab(buildMcpConnectorTab(), "MCP");
 
-    // Security: private vulnerability reporting form.
+
     addTab(buildVulnReportTab(), "Security");
 
-    // Data: where configuration data lives, per-directory breakdown, backup and
-    // cleanup. Built in its own translation unit (MainWindowData.cpp).
+
+
     addTab(buildDataSection(), "Data");
 
     m_settingsTabs = tabs;
@@ -1843,18 +1843,18 @@ QWidget *MainWindow::buildSettingsSection()
     layout->addWidget(m_rebuildStatus);
     layout->addLayout(footerRow);
     reloadVariablesTable();
-    setSettingsAvatar(QByteArray()); // show the current/generated avatar
+    setSettingsAvatar(QByteArray());
     return page;
 }
 
-// ------------------------------------------------------------- quick setup
+
 
 namespace {
 
-// Resolve a stored action variable by exact (case-insensitive) name, with the
-// same hygiene as the Cloudflare credential helpers: blank or multi-line
-// values are ignored so a pasted credential file can never smuggle extra
-// lines into a child environment.
+
+
+
+
 QString quickSetupStoredVariable(const QMap<QString, QString> &vars,
                                  const QString &name)
 {
@@ -1867,7 +1867,7 @@ QString quickSetupStoredVariable(const QMap<QString, QString> &vars,
     return QString();
 }
 
-// The world themes the /world frontend ships (THEME_OPTIONS in world-data.js).
+
 const struct { const char *id; const char *label; } kQuickSetupWorldThemes[] = {
     {"world", "Full daylight"},
     {"rain", "Daylight + rain"},
@@ -1877,17 +1877,17 @@ const struct { const char *id; const char *label; } kQuickSetupWorldThemes[] = {
     {"low-light", "Local low light"},
 };
 
-} // namespace
+}
 
-// Quick Setup: one page that takes a brand-new instance from zero to
-// configured. It gathers the identity fields, the provisioning credentials
-// action workflows need (Cloudflare for deploys and tunnels, Vultr for
-// creating mirror nodes) and the world's look and naming, then applies them
-// all with one button. Credentials land in the shared Variables / Secrets
-// store — the one injected into every action run's environment and redacted
-// from logs — so the deploy and mirror-provisioning workflows pick them up
-// unchanged. Blank or unchanged fields are skipped on apply, so re-applying
-// this page never wipes a value that is already set.
+
+
+
+
+
+
+
+
+
 QWidget *MainWindow::buildQuickSetupTab()
 {
     auto *body = new QWidget;
@@ -1905,8 +1905,8 @@ QWidget *MainWindow::buildQuickSetupTab()
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
 
-    // Prefill every field from the store it ultimately writes to, so the page
-    // doubles as a review of what is already configured.
+
+
     const QMap<QString, QString> storedVars = ActionStore::variables();
 
     auto *identityLabel = new QLabel("IDENTITY");
@@ -2077,7 +2077,7 @@ QWidget *MainWindow::buildQuickSetupTab()
             statusLabel->show();
         };
 
-        // Validate up front so a bad field never half-applies the page.
+
         const QString accent = accentEdit->text().trimmed();
         if (!accent.isEmpty() && !QColor(accent).isValid()) {
             setStatus("World accent color must be a color like #ff7847.", true);
@@ -2102,7 +2102,7 @@ QWidget *MainWindow::buildQuickSetupTab()
                 m_settingsMachineNodeEdit->setText(machineNodeName());
             applied << QStringLiteral("node name");
         }
-        // Reflect the sanitized (or defaulted) value back into the field.
+
         nodeEdit->setText(machineNodeName());
 
         const QString wantedTheme = appThemeCombo->currentData().toString();
@@ -2119,7 +2119,7 @@ QWidget *MainWindow::buildQuickSetupTab()
             applied << QStringLiteral("app theme");
         }
 
-        // Credentials and world variables all land in one store update.
+
         QMap<QString, QString> vars = ActionStore::variables();
         bool varsChanged = false;
         auto putVariable = [&vars, &varsChanged, &applied](
@@ -2159,11 +2159,11 @@ QWidget *MainWindow::buildQuickSetupTab()
             reloadVariablesTable();
         }
 
-        // The Vultr key goes through the shared helper so this page and the
-        // Hosts page's one-click mirror agree on where it lives: the canonical
-        // VULTR_API_KEY variable plus cloudflare_worker/.env.production. It
-        // runs after the store update above so it reads that fresh map back
-        // instead of overwriting it (adhoc #127).
+
+
+
+
+
         QString vultrError;
         if (!rememberVultrApiKey(vultrTokenEdit->text().trimmed(), &vultrError)
                  .isEmpty()) {
@@ -2249,7 +2249,7 @@ void MainWindow::backUpIdentityKey()
     qrLabel->setAlignment(Qt::AlignCenter);
     l->addWidget(qrLabel);
 
-    // Prompt for a passphrase and return the encrypted keyfile text, or {}.
+
     auto exportKeyfile = [this, &dialog]() -> QString {
         bool ok = false;
         const QString pass = QInputDialog::getText(
@@ -2488,9 +2488,9 @@ QByteArray MainWindow::effectiveUserAvatar()
 
 void MainWindow::pushAccountAvatar()
 {
-    // Only persist an avatar the user actually chose — never the generated
-    // identicon effectiveUserAvatar() falls back to. Needs a login session
-    // token to authenticate the write.
+
+
+
     if (m_accountSessionToken.isEmpty() || m_userAvatar.isEmpty())
         return;
     postAccountSync(
@@ -2505,11 +2505,11 @@ void MainWindow::pushAccountAvatar()
 
 void MainWindow::adoptWebAccountAvatar(const QByteArray &png)
 {
-    // Take the picture the account is showing on the website. The public user
-    // directory refreshChatUserDirectory() polls already carries every
-    // account's avatarPng, so following a change made on the web costs no extra
-    // request. Guarded on being signed in: a local profile that merely shares
-    // the name must never have its picture replaced from the directory.
+
+
+
+
+
     if (!m_accountAuthenticated || png.isEmpty() || png == m_userAvatar)
         return;
     m_userAvatar = png;
@@ -2521,9 +2521,9 @@ void MainWindow::adoptWebAccountAvatar(const QByteArray &png)
 
 void MainWindow::updateAvatarButton()
 {
-    // The top-bar node avatar button is gone (only the user avatar remains);
-    // this still refreshes the issue composer's avatar/name whenever the
-    // node or user avatar changes.
+
+
+
     refreshIssueComposerAvatar();
 }
 
@@ -2531,9 +2531,9 @@ void MainWindow::updateUserAvatarButton()
 {
     if (!m_userAvatarNavButton)
         return;
-    // Circular, like the website renders an account's picture (adhoc #19).
-    // 24px, so the rail's Account item reads at the same visual weight as its
-    // 20px octicon siblings (adhoc #117).
+
+
+
     const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 24, 0.5);
     if (!pm.isNull())
         m_userAvatarNavButton->setIcon(QIcon(pm));
@@ -2544,9 +2544,9 @@ void MainWindow::updateUserAvatarButton()
 void MainWindow::refreshIssueComposerAvatar()
 {
     if (m_issueComposerAvatar) {
-        // Show the user's avatar next to the comment composer so it matches the
-        // "Commenting as <user>" label (and the identity a comment is filed under)
-        // rather than the node's badge.
+
+
+
         const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 36);
         if (pm.isNull()) {
             m_issueComposerAvatar->setPixmap(QPixmap());
@@ -2557,9 +2557,9 @@ void MainWindow::refreshIssueComposerAvatar()
         }
     }
 
-    // The "Commenting as" label is built once with the composer, so it can go
-    // stale once the account name resolves after login. Keep it in sync
-    // whenever the avatar (and thus the identity) refreshes.
+
+
+
     if (m_issueComposerTitle) {
         m_issueComposerTitle->setText(
             QStringLiteral("Commenting as <b>%1</b>")
@@ -2569,8 +2569,8 @@ void MainWindow::refreshIssueComposerAvatar()
 
 QWidget *MainWindow::makeComposerIdentity(QLabel **outAvatar, const QString &verb)
 {
-    // Freshly built each time a composer is shown (composer widgets are rebuilt
-    // on navigation), so it always reflects the current avatar and username.
+
+
     auto *row = new QWidget;
     auto *layout = new QHBoxLayout(row);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -2581,8 +2581,8 @@ QWidget *MainWindow::makeComposerIdentity(QLabel **outAvatar, const QString &ver
     avatar->setAlignment(Qt::AlignCenter);
     avatar->setFixedSize(28, 28);
     avatar->setScaledContents(true);
-    // The composer posts under the user identity (topBarUserName), so show the
-    // matching user avatar here instead of the node badge.
+
+
     const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 28);
     if (!pm.isNull()) {
         avatar->setText(QString());
@@ -2612,7 +2612,7 @@ void MainWindow::setSettingsAvatar(const QByteArray &pngData)
 {
     if (!m_settingsAvatarPreview)
         return;
-    // Fall back to the deterministic generated avatar when none is set.
+
     const QByteArray data = pngData.isEmpty() ? effectiveAvatar() : pngData;
     QPixmap pixmap;
     if (!pixmap.loadFromData(data))
@@ -2644,7 +2644,7 @@ void MainWindow::chooseAvatar()
     QImage image(path);
     if (image.isNull())
         return;
-    // Center-crop to a square, scale down, and re-encode as a small PNG.
+
     const int squareSide = qMin(image.width(), image.height());
     image = image.copy((image.width() - squareSide) / 2,
                        (image.height() - squareSide) / 2, squareSide, squareSide)
@@ -2659,17 +2659,17 @@ void MainWindow::chooseAvatar()
 
 void MainWindow::quickRebuildRestart()
 {
-    // Restart immediately even with agents in progress: agent sessions are
-    // resumable (the `claude` process is relaunched and re-attached on startup),
-    // so a mid-run restart no longer loses work and there's no reason to make the
-    // user wait for the fleet to go idle (adhoc #176). This supersedes the old
-    // queue-behind-agents gate (adhoc #75/#91/#104/#111/#116/#134/#143).
+
+
+
+
+
     m_rebuildRestartQueued = false;
     if (m_rebuildQueuePollTimer)
         m_rebuildQueuePollTimer->stop();
     setRestartSpinHourglass(false);
-    // Incremental rebuild + relaunch (no cache wipe) for fast iteration. Reuses
-    // the Settings rebuild button/status as the progress target.
+
+
     beginRestartLog();
     showUpdateLog();
     logRestart(QStringLiteral("quick rebuild & restart started"));
@@ -2687,19 +2687,19 @@ void MainWindow::quickRebuildRestart()
     }
     if (m_rebuildButton)
         m_rebuildButton->setEnabled(false);
-    // Dev iteration loop: build unoptimized (Debug => -O0) so the 20k-line
-    // MainWindow.cpp compiles in ~13s instead of ~42s at -O2. The user-facing
-    // Quick update path stays Release. Note: alternating between this and a
-    // Release update reconfigures the shared build dir and forces one full
-    // rebuild on the switch.
+
+
+
+
+
     buildAndRelaunch(clientDir, QString(), QString(), QStringLiteral("Debug"));
 }
 
 void MainWindow::maybeStartQueuedRebuild()
 {
-    // A manual rebuild & restart is waiting for agents to finish. Once the last
-    // one goes idle, run it — but not while a rebuild is already underway (the
-    // rebuild button is disabled for its duration).
+
+
+
     if (!m_rebuildRestartQueued) {
         if (m_rebuildQueuePollTimer)
             m_rebuildQueuePollTimer->stop();
@@ -2737,7 +2737,7 @@ void MainWindow::rebuildAndRelaunch()
         m_rebuildButton->setEnabled(true);
         return;
     }
-    // Clear the build cache for a clean from-scratch rebuild, then relaunch.
+
     setUpdateStatus("Clearing build cache...");
     QDir(clientDir + "/build").removeRecursively();
     buildAndRelaunch(clientDir);
@@ -2745,36 +2745,36 @@ void MainWindow::rebuildAndRelaunch()
 
 void MainWindow::maybeAutoUpdate()
 {
-    // On by default for headless nodes (no operator is around to click "Update,
-    // rebuild & restart" on a VM), off by default on desktop. main.cpp seeds the
-    // value on first headless launch, but we also default to m_headless here so a
-    // node still auto-updates if that seed never persisted (e.g. an unwritable
-    // config dir). An explicit operator opt-out writes false and is respected.
+
+
+
+
+
     if (!QSettings().value(kAutoUpdateSetting, m_headless).toBool())
         return;
     if (m_autoUpdateChecking)
-        return; // a check from an earlier tick is still in flight
+        return;
     if (m_rebuildButton && !m_rebuildButton->isEnabled())
-        return; // a rebuild (manual or auto) is already running
+        return;
     if (anyAgentRunning())
-        return; // never yank an in-progress agent session out from under itself
+        return;
 
     const QString clientDir = updateClientDir();
     if (!QDir(clientDir).exists("CMakeLists.txt"))
-        return; // no local checkout yet; first install goes through the manual/headless flow
+        return;
 
     QString upstream;
     if (!gitOutput(clientDir,
                    {"rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"},
                    &upstream) ||
         upstream.isEmpty())
-        return; // no upstream branch configured to compare against
+        return;
 
-    // Fetch quietly in the background (no blocking wait — this can take a while
-    // on a slow connection) and only fall through to the visible update flow
-    // when it actually finds a new tagged release, so a node never rebuilds and
-    // relaunches for every ordinary commit landing on main — only when a real
-    // release is cut (adhoc #50).
+
+
+
+
+
     m_autoUpdateChecking = true;
     auto *fetch = new QProcess(this);
     fetch->setWorkingDirectory(clientDir);
@@ -2793,12 +2793,12 @@ void MainWindow::maybeAutoUpdate()
             [this, clientDir, finish](int exitCode, QProcess::ExitStatus status) {
                 finish();
                 if (status != QProcess::NormalExit || exitCode != 0)
-                    return; // offline, or the remote is unreachable right now; retry next tick
+                    return;
 
-                // Newest release tag, same "sort=-creatordate" idiom the Releases
-                // tab uses to pick the current release. No tags at all means this
-                // checkout predates tagged releases; leave it alone rather than
-                // updating on ordinary commits.
+
+
+
+
                 QString latestTag;
                 if (!gitOutput(clientDir,
                                {"for-each-ref", "--sort=-creatordate", "--count=1",
@@ -2813,15 +2813,15 @@ void MainWindow::maybeAutoUpdate()
                     tagCommit.isEmpty())
                     return;
 
-                // Already on (or ahead of) the latest release: nothing to do,
-                // even if unreleased commits have since landed on main.
+
+
                 if (gitOutput(clientDir,
                               {"merge-base", "--is-ancestor", tagCommit, "HEAD"},
                               nullptr))
                     return;
 
-                // Re-check: the fetch may have taken a while, so the gating
-                // conditions could have changed while it was in flight.
+
+
                 if ((m_rebuildButton && !m_rebuildButton->isEnabled()) ||
                     anyAgentRunning())
                     return;
@@ -2829,10 +2829,10 @@ void MainWindow::maybeAutoUpdate()
                 logSystem(QStringLiteral("Auto-update: release %1 is available; "
                                          "updating in the background.")
                              .arg(latestTag));
-                // Prefer the release's prebuilt artifact: rebuilding from
-                // source next to the live node is what killed the fleet on
-                // v0.6.2 (OOM/disk during the build, and no supervisor to
-                // restart a node that dies mid-update).
+
+
+
+
                 if (tryPrebuiltAutoUpdate(clientDir, latestTag,
                                           tagCommit.trimmed()))
                     return;
@@ -2848,8 +2848,8 @@ void MainWindow::attachBackend(ChatBackend *backend)
     m_backend = backend;
     m_lastChatDisplayName.clear();
     m_lastChatAvatar.clear();
-    // Force refreshRepositoryList to re-push the mirror adverts to this backend even
-    // if the repo signature hasn't changed since the last one (adhoc #83 skip cache).
+
+
     m_mirrorAdvertSig.clear();
 
     connect(backend, &ChatBackend::messageArrived, this, &MainWindow::onMessage);
@@ -2895,14 +2895,14 @@ void MainWindow::attachBackend(ChatBackend *backend)
         m_setupError->setText(message);
         m_setupError->show();
     });
-    // Let a headless console attach its live event feed to this backend.
+
     emit backendAttached(backend);
     refreshChatUserDirectory();
 }
 
-// --- Headless / CLI support -------------------------------------------------
-// Read-only views and control entry points used by HeadlessConsole when the app
-// runs with no display. Everything routes through the same logic the GUI uses.
+
+
+
 
 bool MainWindow::headlessConnected() const
 {
@@ -2918,9 +2918,9 @@ QString MainWindow::headlessNodeName() const
 
 void MainWindow::headlessStart(const QString &name, const QString &solana)
 {
-    // Equivalent to typing a name and pressing the GUI connect button: fill the
-    // (offscreen) setup widgets and run the normal startSession path. The Ed25519
-    // identity auto-generates on first load, so a fresh VM needs only a name.
+
+
+
     const QString trimmed = name.trimmed().toLower();
     if (m_nameEdit)
         m_nameEdit->setText(trimmed);
@@ -2928,8 +2928,8 @@ void MainWindow::headlessStart(const QString &name, const QString &solana)
         if (forkmesh::control::isValidSolanaPublicAddress(solana)) {
             m_solanaEdit->setText(solana.trimmed());
         } else {
-            // Do not echo the rejected value: it may be private wallet material
-            // accidentally supplied where only a public address is allowed.
+
+
             m_solanaEdit->clear();
             logSystem(QStringLiteral(
                 "Ignored an invalid headless payout address; only a public "
@@ -2949,10 +2949,10 @@ void MainWindow::headlessSyncNow()
 
 void MainWindow::headlessUpdateRestart()
 {
-    // Same code path as the GUI "Update, rebuild & restart" button. The update log
-    // dialog it opens is invisible under the offscreen platform, but every phase is
-    // also echoed to the terminal by logRestart()/qInfo(), so a headless operator
-    // sees the full progress. On success the process relaunches itself and quits.
+
+
+
+
     updateRebuildRestart();
 }
 
@@ -2992,9 +2992,9 @@ QStringList MainWindow::headlessStatusLines() const
     lines << QStringLiteral("Repos:     %1").arg(m_repositories.size());
     lines << QStringLiteral("Repository signals: bounded HTTPS sync");
 
-    // Aggregate the collaboration totals across every permanent repo this node
-    // holds, so an operator can see at a glance how much is on the node without
-    // opening the GUI: pull requests, discussions, branches and commits.
+
+
+
     int pulls = 0, discussions = 0, branches = 0, commits = 0;
     for (const RepositoryRecord &r : m_repositories) {
         if (r.previewOnly)
@@ -3100,9 +3100,9 @@ QString MainWindow::headlessResourceLine() const
 QStringList MainWindow::headlessMirrorLines() const
 {
     QStringList lines;
-    // Lead with this node's CPU / memory so an operator watching a durable
-    // headless daemon can see how much the node is consuming while it serves its
-    // mirrors (issue #287).
+
+
+
     lines << QStringLiteral("node load: %1").arg(headlessResourceLine());
     for (const RepositoryRecord &r : m_repositories) {
         if (r.previewOnly || r.mirrorPath.isEmpty())
@@ -3135,20 +3135,20 @@ void MainWindow::leaveSession(const QString &)
         m_backend = nullptr;
     }
     updateConnectionStatus();
-    // Leaving the mesh used to dump the user back on the setup screen; that
-    // screen is gone (adhoc #115), so stay in the app — the status line already
-    // reports the disconnect and the top-bar pill reappears if the account went
-    // with it.
+
+
+
+
     updateSignInButton();
     m_userName.clear();
 
     m_homeRoster.clear();
     m_peerLastSeenMs.clear();
-    refreshRepositoryList(); // clears node online status from the repos panel
+    refreshRepositoryList();
     updateHomeStats();
 }
 
-// ------------------------------------------------------------------ firewall
+
 
 void MainWindow::showFirewallBanner(const QString &displayCommand,
                                     const QString &privilegedCommand)
@@ -3185,8 +3185,8 @@ void MainWindow::allowFirewall()
                     QString::fromUtf8(process->readAllStandardError()).trimmed();
                 process->deleteLater();
                 if (exitCode == 0) {
-                    // Ports are open immediately; existing sockets start
-                    // receiving, so discovery recovers within a few seconds.
+
+
                     m_firewallBannerLabel->setText(
                         "Firewall opened. Peers should connect "
                         "within a few seconds.");
@@ -3209,15 +3209,15 @@ void MainWindow::allowFirewall()
         m_firewallAllowButton->setEnabled(true);
         m_firewallAllowButton->setText("Try again");
     });
-    // pkexec shows a graphical password prompt and runs the command as root.
+
     process->start("pkexec", {"sh", "-c", m_firewallPrivilegedCommand});
 }
 
-// ------------------------------------------------------------- voice input
 
-// Reflect whether the selected voice engine is installed (or installing) on the
-// Settings button + status line, and show the model combo that matches the engine.
-// Safe to call even when the Settings widgets don't exist.
+
+
+
+
 void MainWindow::refreshWhisperStatus()
 {
     const bool parakeet = voiceEngine() == QStringLiteral("parakeet");
@@ -3227,7 +3227,7 @@ void MainWindow::refreshWhisperStatus()
         (m_parakeetInstallProc &&
          m_parakeetInstallProc->state() != QProcess::NotRunning);
     const bool ready = voiceInputReady();
-    // Only the active engine's model combo is relevant.
+
     if (m_whisperModelCombo)
         m_whisperModelCombo->setVisible(!parakeet);
     if (m_parakeetModelCombo)
@@ -3260,17 +3260,17 @@ void MainWindow::refreshWhisperStatus()
     }
 }
 
-// Settings "Test mic" (adhoc #14): start/stop a self-contained recording from the
-// chosen microphone and drive the level bar from the growing capture, so the user
-// can confirm the mic is actually being hooked into and watch the level move as
-// they speak. Independent of whisper.cpp — it only needs a recorder.
+
+
+
+
 void MainWindow::toggleMicTest()
 {
     if (!m_voiceTestMicButton)
         return;
 
-    // Already testing: stop. The recorder finalizes on SIGTERM; cleanup runs from
-    // its finished handler (or here if it never started).
+
+
     if (m_voiceTestRecording) {
         stopMicTest();
         return;
@@ -3303,8 +3303,8 @@ void MainWindow::toggleMicTest()
                 if (m_voiceTestProc == proc)
                     stopMicTest();
                 proc->deleteLater();
-                // The recorder never opened the device (no WAV / header only):
-                // surface why so the user knows the mic isn't being hooked into.
+
+
                 if (!captured && !err.isEmpty())
                     logSystem("Mic test: capture failed \xE2\x80\x94 " +
                               err.right(200));
@@ -3320,7 +3320,7 @@ void MainWindow::toggleMicTest()
 
     proc->start(rec.program, rec.args);
     if (!proc->waitForStarted(3000))
-        return; // errorOccurred handles cleanup
+        return;
 
     m_voiceTestRecording = true;
     m_voiceTestPos = 0;
@@ -3336,9 +3336,9 @@ void MainWindow::toggleMicTest()
     m_voiceTestMicButton->setText("Stop test");
 }
 
-// Drive the test-mic level bar from the freshly-captured tail of the WAV. Mirrors
-// updateVoiceLevelMeter(): attack fast, release slow, square-rooted so ordinary
-// speech moves the bar visibly.
+
+
+
 void MainWindow::updateMicTestMeter()
 {
     if (!m_voiceTestMeter)
@@ -3356,15 +3356,15 @@ void MainWindow::updateMicTestMeter()
         m_voiceTestMeter->setValue(next);
 }
 
-// Stop the test recording, reset the bar, and clean up the temp WAV.
+
 void MainWindow::stopMicTest()
 {
     m_voiceTestRecording = false;
     if (m_voiceTestTimer)
         m_voiceTestTimer->stop();
     if (m_voiceTestProc && m_voiceTestProc->state() != QProcess::NotRunning) {
-        // Detach the finished handler's path before terminating so it doesn't
-        // re-enter stopMicTest() while we're already tearing down.
+
+
         QProcess *p = m_voiceTestProc;
         m_voiceTestProc = nullptr;
         p->terminate();
@@ -3379,27 +3379,27 @@ void MainWindow::stopMicTest()
         QFile::remove(m_voiceTestWavPath);
 }
 
-// Clone (or update), build, and fetch a model for whisper.cpp, streaming the
-// build log to the live network log. On success the mic button appears next to
-// the prompt. Runs as a detached-from-Settings QProcess so closing Settings
-// doesn't abort the build.
+
+
+
+
 void MainWindow::installWhisperCpp()
 {
     if (m_whisperInstallProc &&
         m_whisperInstallProc->state() != QProcess::NotRunning)
-        return; // already running
+        return;
 
     const QString dir = whisperDir();
     const QString model = m_whisperModelCombo
                               ? m_whisperModelCombo->currentData().toString()
                               : whisperModelName();
-    // Persist the choices now so detection (whisperDir/whisperModelName) lines up
-    // with what this build produces.
+
+
     QSettings().setValue(kWhisperDirSetting, dir);
     QSettings().setValue(kWhisperModelSetting, model);
 
-    // One self-contained build script. Idempotent: re-running pulls the latest,
-    // rebuilds, and re-fetches the model only if missing.
+
+
     static const char *kScript = R"sh(
 set -e
 DIR="$1"; MODEL="$2"
@@ -3467,8 +3467,8 @@ echo "whisper.cpp ready"
             });
     connect(proc, &QProcess::errorOccurred, this,
             [this, proc](QProcess::ProcessError err) {
-                // finished() handles every error except FailedToStart (where the
-                // process never ran and finished is not emitted).
+
+
                 if (err != QProcess::FailedToStart || m_whisperInstallProc != proc)
                     return;
                 m_whisperInstallProc = nullptr;
@@ -3484,8 +3484,8 @@ echo "whisper.cpp ready"
                  QStringLiteral("sh"), dir, model});
 }
 
-// Install whichever engine the Settings selector points at. Keeps the single
-// "Download & install" button wired to the right provisioner.
+
+
 void MainWindow::installVoiceEngine()
 {
     if (voiceEngine() == QStringLiteral("parakeet"))
@@ -3494,15 +3494,15 @@ void MainWindow::installVoiceEngine()
         installWhisperCpp();
 }
 
-// Provision NVIDIA Parakeet for local dictation: build a self-contained Python
-// venv and install a Parakeet runner into it (parakeet-mlx on Apple Silicon, NeMo
-// elsewhere), then drop a transcribe.py wrapper the mic shells out to. Streams the
-// pip log to the network log; runs detached from Settings like installWhisperCpp.
+
+
+
+
 void MainWindow::installParakeet()
 {
     if (m_parakeetInstallProc &&
         m_parakeetInstallProc->state() != QProcess::NotRunning)
-        return; // already running
+        return;
 
     const QString dir = parakeetDir();
     const QString model = m_parakeetModelCombo
@@ -3511,10 +3511,10 @@ void MainWindow::installParakeet()
     QSettings().setValue(kVoiceEngineSetting, QStringLiteral("parakeet"));
     QSettings().setValue(kParakeetModelSetting, model);
 
-    // The wrapper the mic runs per clip: it loads Parakeet (MLX where available,
-    // else NeMo) and writes the transcript to the output path. Written from here so
-    // detection (parakeetInstalled()) and transcription both find it. Kept ASCII so
-    // it embeds cleanly as a raw C++ string.
+
+
+
+
     static const char *kTranscribePy = R"py(
 import sys
 
@@ -3556,8 +3556,8 @@ if __name__ == "__main__":
             f.write(kTranscribePy);
     }
 
-    // Build the venv and install the runner. macOS gets parakeet-mlx (fast, local);
-    // other platforms get NeMo's ASR stack. Idempotent: re-running upgrades.
+
+
     static const char *kScript = R"sh(
 set -e
 DIR="$1"
@@ -3635,45 +3635,45 @@ echo "Parakeet ready"
                  QStringLiteral("sh"), dir});
 }
 
-// -------------------------------------------------------------- diagnostics
+
 
 namespace {
-// Classify a network-log message into a colored, single-word category badge so
-// the log reads at a glance. Failures always win (red); otherwise notable
-// keywords decide the accent. Returns the accent color (hex) and badge text.
+
+
+
 struct NetworkLogStyle {
     QString accent;
     QString badge;
 };
 
-// Each entry: substring to look for (lower-case) -> {accent, badge}. First
-// match wins, so order from most specific to most general. Kept at namespace
-// scope (not local to networkLogStyleFor) so accentForBadge() below can also
-// look a badge's colour up by name for the quick-filter chips.
+
+
+
+
 struct Rule {
     const char *needle;
     const char *accent;
     const char *badge;
 };
 
-// Red is reserved for ERROR so the log reads "red == something failed" at a
-// glance; every other category (including HOST, previously pink) gets a
-// distinct non-red accent.
+
+
+
 const Rule kNetworkLogRules[] = {
-        // App start/stop/rebuild-restart markers — keep above "fork" so
-        // "ForkMesh" in the start line doesn't get tagged FORK.
+
+
         {"session started", "#f2cc60", "SESSION"},
         {"session ended", "#f2cc60", "SESSION"},
         {"quick update started", "#f2cc60", "SESSION"},
         {"rebuild & restart started", "#f2cc60", "SESSION"},
         {"restarting now", "#f2cc60", "SESSION"},
-        // Firewall messages mention "ForkMesh's ports" — keep above "fork" so
-        // they don't get swept into the FORK badge by that substring.
+
+
         {"firewall", "#f2cc60", "NETWORK"},
-        // The footer strip's ✓ / ✕ outcome lines name the kind of work they
-        // summarise ("git", "net", "sync" …), so they must be classified before
-        // the per-kind rules below claim them — and their own chip makes them
-        // filterable as a group (adhoc #419).
+
+
+
+
         {"background ", "#8b949e", "BGTASK"},
         {"pull request", "#3fb950", "PULL"},
         {"pull #", "#3fb950", "PULL"},
@@ -3684,18 +3684,18 @@ const Rule kNetworkLogRules[] = {
         {"funded", "#d29922", "BOUNTY"},
         {"mirror", "#39c5cf", "MIRROR"},
         {"sync", "#39c5cf", "SYNC"},
-        // Account heartbeat pings hit "https://forkmesh.com/..." like every
-        // other request, so without this they'd fall into the generic FORK
-        // bucket below purely from the domain name.
+
+
+
         {"account", "#8b949e", "ACCOUNT"},
-        // Split the fork lifecycle the same way pull requests split into
-        // PULL (opened) vs MERGE (closed) — "forked into" (done) above the
-        // generic "fork" (in progress / location) so they read distinctly.
+
+
+
         {"forked into", "#3fb950", "FORKED"},
-        // These all mention the "forkmesh/forkmesh" repo name, so without a
-        // dedicated rule above the generic "fork" match below they'd all be
-        // swept into an uninformative green FORK badge. Give each its own
-        // label so the log reads as what actually happened.
+
+
+
+
         {"actions: ", "#f0883e", "ACTIONS"},
         {"integrity pin", "#79c0ff", "PIN"},
         {"host: ", "#76e3ea", "HOST"},
@@ -3705,17 +3705,17 @@ const Rule kNetworkLogRules[] = {
         {"commit", "#58a6ff", "GIT"},
         {"patch", "#58a6ff", "GIT"},
         {"fork", "#3fb950", "FORK"},
-        // Ad-hoc agent starts ("Started a X agent on your prompt...") mention no
-        // issue at all, so keep this above the generic "issue" match below —
-        // otherwise a prompt-only run would misleadingly badge as ISSUE.
+
+
+
         {"on your prompt", "#bc8cff", "PROMPT"},
         {"issue", "#bc8cff", "ISSUE"},
         {"admin", "#db6d28", "ADMIN"},
         {"identity", "#79c0ff", "IDENTITY"},
         {"encryption", "#79c0ff", "CRYPTO"},
-        // Split the generic NODE bucket the same way: a peer joining, raw
-        // mainnode traffic and a connection-status change are different
-        // events and shouldn't all read as the same green "NODE" badge.
+
+
+
         {"node connected", "#3fb950", "PEER"},
         {"network: ", "#f2cc60", "NETWORK"},
         {"status: ", "#56d364", "STATUS"},
@@ -3726,44 +3726,44 @@ const Rule kNetworkLogRules[] = {
         {"saved", "#3fb950", "SAVE"},
 };
 
-// Badge/accent for a recorded UI freeze. Amber, matching the footer's stall
-// alert icon, and looked up from one place so the log entry and the quick-filter
-// chip always agree.
+
+
+
 const char *const kStallBadge = "STALL";
 const char *const kStallAccent = "#d29922";
 
 NetworkLogStyle networkLogStyleFor(const QString &message)
 {
     const QString lower = message.toLower();
-    // A watchdog-recorded UI stall gets its own badge so freezes stand out in the
-    // log (and can be filtered to). Checked ahead of the error precedence below:
-    // the entry names the blocking operation, whose breadcrumb can itself contain
-    // "failed"/"unable" and would otherwise mis-badge the stall as ERROR.
+
+
+
+
     if (lower.contains(QLatin1String("ui stalled")))
         return {QString::fromLatin1(kStallAccent), QString::fromLatin1(kStallBadge)};
-    // Errors / failures take precedence over any category — red is reserved
-    // for these so it always means "something failed."
+
+
     if (lower.contains("fail") || lower.contains("error") ||
         lower.contains("could not") || lower.contains("couldn't") ||
         lower.contains("no live") || lower.contains("denied") ||
         lower.contains("blocks ") || lower.contains("unable")) {
         return {QStringLiteral("#f85149"), QStringLiteral("ERROR")};
     }
-    // Category should reflect *what drove the request*, not the payload the
-    // server happened to return. The verbose "net" log line embeds a peeked
-    // response snippet as "[body: …]", and a repository object always carries
-    // fields like "solana" and "lastSync" — so matching the rules against the
-    // body mis-badged a catalog publish as WALLET (from the "solana" JSON key)
-    // or SYNC (from "lastSync"). Drop the bracketed body before classifying so
-    // the badge comes from the verb/URL/event instead (adhoc #182). The error
-    // precedence check above still runs on the full message, because a failure
-    // reply's explanation is often only in that server-sent body.
+
+
+
+
+
+
+
+
+
     QString forRules = lower;
     const int bodyStart = forRules.indexOf(QLatin1String("[body:"));
     if (bodyStart >= 0) {
-        // The body snippet can itself contain ']' (JSON arrays), so cut to the
-        // last ']' — the closing bracket we appended, since the trailing URL
-        // and event text don't contain one.
+
+
+
         const int bodyEnd = forRules.lastIndexOf(QLatin1Char(']'));
         if (bodyEnd > bodyStart)
             forRules.remove(bodyStart, bodyEnd - bodyStart + 1);
@@ -3775,9 +3775,9 @@ NetworkLogStyle networkLogStyleFor(const QString &message)
     return {QStringLiteral("#6e7681"), QStringLiteral("INFO")};
 }
 
-// Direct badge-name -> accent lookup (as opposed to networkLogStyleFor's
-// substring match against a message), used to colour the quick-filter chips
-// the same as the log entries they filter.
+
+
+
 QString accentForBadge(const QString &badge)
 {
     if (badge == QLatin1String("ERROR"))
@@ -3793,8 +3793,8 @@ QString accentForBadge(const QString &badge)
     return QStringLiteral("#8b949e");
 }
 
-// Stored format: "yyyy-MM-dd HH:mm:ss  message". Parses leniently so any
-// legacy/odd line still renders (as a plain message with no timestamp).
+
+
 void parseStoredLogLine(const QString &storedLine, QString &date, QString &time,
                          QString &message)
 {
@@ -3825,9 +3825,9 @@ QString formatDayDividerHtml(const QString &date, bool dark)
              (pretty.isEmpty() ? date : pretty).toHtmlEscaped(), dividerDashColor);
 }
 
-// Wraps http(s) URLs in the (already HTML-escaped) message with <a> tags so
-// they render as clickable links that open in the system browser (adhoc #42),
-// without disturbing the surrounding escaped text.
+
+
+
 QString linkifyEscapedMessage(const QString &escaped)
 {
     static const QRegularExpression urlRe(
@@ -3837,8 +3837,8 @@ QString linkifyEscapedMessage(const QString &escaped)
     auto it = urlRe.globalMatch(escaped);
     while (it.hasNext()) {
         const QRegularExpressionMatch m = it.next();
-        // Trailing punctuation commonly follows a URL in log prose ("...stats.")
-        // and shouldn't be swallowed into the link itself.
+
+
         QString url = m.captured(0);
         int len = url.size();
         while (len > 0 &&
@@ -3856,9 +3856,9 @@ QString linkifyEscapedMessage(const QString &escaped)
     return html;
 }
 
-// The host of the first http(s) URL in a (raw, unescaped) log message, or an
-// empty string when the entry references no network source. Used to fetch and
-// show that site's favicon at the front of the entry.
+
+
+
 QString firstUrlHost(const QString &message)
 {
     static const QRegularExpression hostRe(
@@ -3875,8 +3875,8 @@ QString formatLogLineHtml(const QString &time, const QString &message, bool dark
     const QString timeColor =
         dark ? QStringLiteral("#6e7681") : QStringLiteral("#656d76");
     const NetworkLogStyle style = networkLogStyleFor(message);
-    // The site favicon (when the entry hit a network source) leads the line so
-    // requests read at a glance as "who they went to".
+
+
     QString html = iconHtml;
     if (!time.isEmpty())
         html += QStringLiteral("<span style='color:%1'>%2</span>&nbsp;&nbsp;")
@@ -3890,12 +3890,12 @@ QString formatLogLineHtml(const QString &time, const QString &message, bool dark
                          linkifyEscapedMessage(message.toHtmlEscaped())));
     return html;
 }
-} // namespace
+}
 
-// Register (or refresh) the document image resource behind a "favicon://<host>"
-// reference so `view`'s <img> tags resolve. Uses the cached site favicon when
-// available, otherwise the hardcoded mark for the host (or its letter badge) so
-// the icon column is never blank.
+
+
+
+
 void MainWindow::registerLogFaviconResource(const QString &host, QTextEdit *view)
 {
     if (!view || host.isEmpty())
@@ -3910,9 +3910,9 @@ void MainWindow::registerLogFaviconResource(const QString &host, QTextEdit *view
     } else if (hasBuiltinFavicon(host)) {
         pix = builtinFavicon(host, 16);
     } else {
-        // Never leave the 14px box empty: the host's letter badge stands in
-        // until (or in place of) a fetched icon, so every network line in the
-        // log reads with an icon (adhoc #436).
+
+
+
         pix = letterFavicon(host, 16);
     }
     view->document()->addResource(
@@ -3920,9 +3920,9 @@ void MainWindow::registerLogFaviconResource(const QString &host, QTextEdit *view
         QUrl(QStringLiteral("favicon://") + host), pix);
 }
 
-// Called when a favicon finishes downloading: swap the real icon in for the
-// stand-in and mark both log views dirty so already-rendered entries repaint
-// with it.
+
+
+
 void MainWindow::refreshLogFavicon(const QString &host)
 {
     if (host.isEmpty() || !m_faviconCache.contains(host))
@@ -3937,17 +3937,17 @@ void MainWindow::refreshLogFavicon(const QString &host)
     }
 }
 
-// The leading <img> for a log entry that hit a network source (empty for lines
-// with no URL). Ensures the favicon resource is registered on `view` and kicks
-// off a fetch on first sighting of a host.
+
+
+
 QString MainWindow::logFaviconTag(const QString &message, QTextEdit *view)
 {
     const QString host = firstUrlHost(message);
     if (host.isEmpty() || !view)
         return QString();
-    // Stand-in now, real icon once fetched.
+
     registerLogFaviconResource(host, view);
-    fetchFaviconForHost(host); // no-op if already cached / in flight / builtin
+    fetchFaviconForHost(host);
     return QStringLiteral("<img src='favicon://%1' width='14' height='14' "
                           "style='vertical-align:middle'>&nbsp;")
         .arg(host);
@@ -3961,16 +3961,16 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
     const int lockedPosition =
         m_logScrollLocked && scrollBar ? scrollBar->value() : -1;
 
-    // The badge accents read on either canvas, but the timestamp, day divider
-    // and message body need per-theme greys/text so the log isn't grey text
-    // washed out on the light (#ffffff) background. Dark keeps its lighter ink
-    // on the near-black canvas; light uses GitHub's near-black body text.
+
+
+
+
     const bool dark = currentThemeIsDark();
 
     QString date, time, message;
     parseStoredLogLine(storedLine, date, time, message);
 
-    // Day divider whenever the calendar date changes from the previous line.
+
     if (!date.isEmpty() && date != m_lastLogRenderDate) {
         m_lastLogRenderDate = date;
         m_settingsLog->append(formatDayDividerHtml(date, dark));
@@ -3984,17 +3984,17 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         scrollBar->setValue(lockedPosition);
 }
 
-// Loads the next older page of matching lines when the user scrolls to the
-// top of the network log, so history beyond the initial segment (adhoc #15)
-// is reachable by scrolling back instead of being capped at whatever first
-// rendered.
+
+
+
+
 void MainWindow::loadOlderNetworkLogSegment()
 {
     if (!m_settingsLog || m_logRenderFrom <= 0 || m_logViewMutating)
         return;
     m_logViewMutating = true;
 
-    QStringList segment; // oldest -> newest
+    QStringList segment;
     int idx = m_logRenderFrom;
     while (idx > 0 && segment.size() < kNetworkLogSegmentSize) {
         --idx;
@@ -4010,9 +4010,9 @@ void MainWindow::loadOlderNetworkLogSegment()
     }
 
     const bool dark = currentThemeIsDark();
-    // Seed empty (not m_lastLogRenderDate, which tracks the log's true bottom)
-    // so this segment's own first line gets its own divider — the line that
-    // was previously topmost already has one from when it was first rendered.
+
+
+
     QString runningDate;
     QString html;
     for (const QString &storedLine : std::as_const(segment)) {
@@ -4037,8 +4037,8 @@ void MainWindow::loadOlderNetworkLogSegment()
     cursor.movePosition(QTextCursor::Start);
     cursor.insertHtml(html);
 
-    // Keep the viewport anchored on the content the user was already looking
-    // at instead of jumping to the very top (or bottom) of the now-longer log.
+
+
     if (sb)
         sb->setValue(oldVal + (sb->maximum() - oldMax));
     m_logViewMutating = false;
@@ -4053,7 +4053,7 @@ void MainWindow::onNetworkLogScrolled(int value)
 
 QString MainWindow::logBadgeFor(const QString &storedLine) const
 {
-    // Stored format: "yyyy-MM-dd HH:mm:ss  message" — classify by the message.
+
     const QString message =
         (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' '))
             ? storedLine.mid(21)
@@ -4063,7 +4063,7 @@ QString MainWindow::logBadgeFor(const QString &storedLine) const
 
 QString MainWindow::logAccentFor(const QString &storedLine) const
 {
-    // Stored format: "yyyy-MM-dd HH:mm:ss  message" — classify by the message.
+
     const QString message =
         (storedLine.size() >= 21 && storedLine.at(10) == QLatin1Char(' '))
             ? storedLine.mid(21)
@@ -4075,7 +4075,7 @@ void MainWindow::rebuildLogFilterButtons()
 {
     if (!m_logFilterRow)
         return;
-    // Tear down the previous chips (and their exclusive group).
+
     QLayoutItem *item = nullptr;
     while ((item = m_logFilterRow->takeAt(0)) != nullptr) {
         if (QWidget *w = item->widget())
@@ -4091,8 +4091,8 @@ void MainWindow::rebuildLogFilterButtons()
                           const QString &tip = QString()) {
         auto *chip = new QPushButton(logFilterChipLabel(label, category));
         chip->setObjectName("logFilterChip");
-        // Remembered so updateLogFilterChipCounts() can refresh just the number
-        // on each chip instead of tearing the whole row down per log line.
+
+
         chip->setProperty("logChipName", label);
         chip->setProperty("logChipCategory", category);
         chip->setCheckable(true);
@@ -4102,9 +4102,9 @@ void MainWindow::rebuildLogFilterButtons()
                          : category.isEmpty()
                              ? QStringLiteral("Show every event")
                              : QStringLiteral("Show only %1 events").arg(label));
-        // Tint each chip with the same accent its badge uses in the log body
-        // (adhoc #15) so the filter row reads as the log's own legend instead
-        // of a flat, uniformly grey button row.
+
+
+
         const QString accent =
             category.isEmpty() ? QStringLiteral("#8b949e") : accentForBadge(category);
         const QColor accentColor(accent);
@@ -4126,14 +4126,14 @@ void MainWindow::rebuildLogFilterButtons()
     };
 
     addChip(QStringLiteral("All"), QString());
-    // Stalls get a permanent chip right beside All, even before one has been
-    // recorded: it's the diagnostic people go looking for when the window felt
-    // frozen, so it shouldn't only appear once the app has already misbehaved.
-    // (Every other category chip is discovered from the buffered history.)
+
+
+
+
     addChip(QString::fromLatin1(kStallBadge), QString::fromLatin1(kStallBadge),
             QStringLiteral("Show only recorded UI stalls — moments the window "
                            "froze, with the operation that blocked it"));
-    // Show present categories in a stable, readable order.
+
     static const char *order[] = {
         "SESSION", "STATUS", "PEER",  "NODE",   "FORK",  "FORKED", "MIRROR",
         "SYNC",    "ACCOUNT", "HOST", "ACTIONS", "PIN", "GIT",
@@ -4149,10 +4149,10 @@ void MainWindow::rebuildLogFilterButtons()
     m_logFilterRow->addStretch();
 }
 
-// How many buffered events a chip covers, appended to its name (adhoc #64) so
-// the row doubles as a tally of what the log actually contains. A count of zero
-// — the pinned STALL chip on a healthy session — shows the bare name rather
-// than a "0", which would read as a broken counter.
+
+
+
+
 QString MainWindow::logFilterChipLabel(const QString &name,
                                        const QString &category) const
 {
@@ -4161,9 +4161,9 @@ QString MainWindow::logFilterChipLabel(const QString &name,
     return count > 0 ? QStringLiteral("%1 %2").arg(name).arg(count) : name;
 }
 
-// Repaint the counts in place. logSystem() runs on every network event, so a
-// full rebuildLogFilterButtons() per line (two dozen buttons destroyed and
-// recreated) would be wasteful — and would drop the chip the user is hovering.
+
+
+
 void MainWindow::updateLogFilterChipCounts()
 {
     if (!m_logFilterRow)
@@ -4194,7 +4194,7 @@ QStringList MainWindow::testLogFilterChipLabels() const
 void MainWindow::testResetNetworkLog()
 {
     m_networkLog.clear();
-    m_logFilterCounts.clear(); // the chip counts describe the buffer we just emptied
+    m_logFilterCounts.clear();
     m_networkLogDiskLines = 0;
     QFile::remove(networkLogPath());
     rebuildLogFilterButtons();
@@ -4206,15 +4206,15 @@ void MainWindow::rebuildNetworkLogView()
 {
     if (!m_settingsLog)
         return;
-    // Also guards the scrollbar's valueChanged (see m_logViewMutating) against
-    // reacting to the clear()/appendHtml calls below.
+
+
     m_logViewMutating = true;
     m_settingsLog->clear();
     m_lastLogRenderDate.clear();
 
-    // Render only the newest segment up front; older history loads lazily as
-    // the user scrolls to the top (see loadOlderNetworkLogSegment).
-    QStringList segment; // oldest -> newest
+
+
+    QStringList segment;
     int idx = m_networkLog.size();
     while (idx > 0 && segment.size() < kNetworkLogSegmentSize) {
         --idx;
@@ -4226,10 +4226,10 @@ void MainWindow::rebuildNetworkLogView()
     m_logRenderFrom = idx;
     for (const QString &line : std::as_const(segment))
         appendNetworkLogLine(line);
-    // A filter that matches nothing (the pinned STALL chip on a healthy session,
-    // most often) would otherwise render as a blank pane that reads like a bug.
-    // Say so instead, and remember it so the next matching line replaces the
-    // notice rather than appending underneath it.
+
+
+
+
     m_logFilterEmptyNotice = segment.isEmpty() && !m_logFilter.isEmpty();
     if (m_logFilterEmptyNotice) {
         const QString muted = currentThemeIsDark() ? QStringLiteral("#8b949e")
@@ -4243,18 +4243,18 @@ void MainWindow::rebuildNetworkLogView()
 
 void MainWindow::openFullLogAtFooterLine(const QString &rawLine)
 {
-    // Drop any active category filter first so the clicked entry is guaranteed to
-    // be in the rendered segment (a filtered view might omit it), and reflect that
-    // in the chips.
+
+
+
     const bool hadFilter = !m_logFilter.isEmpty();
     if (hadFilter) {
         m_logFilter.clear();
         rebuildLogFilterButtons();
     }
-    // Open the Log section. On its first visit showSection() renders the deferred
-    // history and clears m_networkLogViewStale; force a rebuild here only when it
-    // didn't (already visited, or we just cleared a filter) so the full tail —
-    // which contains this line — is on screen to scroll to.
+
+
+
+
     showSection(4);
     if (m_logNavButton)
         m_logNavButton->setChecked(true);
@@ -4265,17 +4265,17 @@ void MainWindow::openFullLogAtFooterLine(const QString &rawLine)
     if (!m_settingsLog)
         return;
 
-    // The footer stores the full dated line ("yyyy-MM-dd HH:mm:ss  message"); the
-    // Log view renders the timestamp separately, so match on the message body.
+
+
     QString message = rawLine.trimmed();
     if (message.size() >= 21 && message.at(10) == QLatin1Char(' '))
         message = message.mid(21);
     if (message.isEmpty())
         return;
 
-    // Search backward from the end so the newest occurrence (the one the footer
-    // was showing) wins when a message repeats, then bring it into view. The
-    // match stays selected so the clicked entry is easy to spot.
+
+
+
     m_settingsLog->moveCursor(QTextCursor::End);
     if (m_settingsLog->find(message, QTextDocument::FindBackward))
         m_settingsLog->ensureCursorVisible();
@@ -4322,8 +4322,8 @@ void MainWindow::saveNetworkLog()
 
 void MainWindow::logSystem(const QString &text)
 {
-    // Some callers (e.g. flashMessage("") to dismiss the toast) pass empty or
-    // whitespace-only text; skip those instead of leaving a blank log entry.
+
+
     if (text.trimmed().isEmpty())
         return;
 
@@ -4336,32 +4336,32 @@ void MainWindow::logSystem(const QString &text)
     m_networkLog.append(line);
     bool chipsChanged = false;
     while (m_networkLog.size() > kNetworkLogLimit) {
-        // The counts describe the buffered history, so a line ageing out of it
-        // gives its category's chip back a tally point (and retires the chip
-        // entirely once it was the last line of its kind).
+
+
+
         const QString dropped = logBadgeFor(m_networkLog.first());
         if (--m_logFilterCounts[dropped] <= 0) {
             m_logFilterCounts.remove(dropped);
             chipsChanged = true;
         }
         m_networkLog.removeFirst();
-        // m_logRenderFrom indexes into m_networkLog; trimming the front shifts
-        // every index down by one, so keep it pointed at the same line.
+
+
         if (m_logRenderFrom > 0)
             --m_logRenderFrom;
     }
 
-    // A category we haven't seen yet earns its own quick-filter chip.
+
     const QString badge = networkLogStyleFor(plain).badge;
     if (++m_logFilterCounts[badge] == 1)
         chipsChanged = true;
     if (chipsChanged)
-        rebuildLogFilterButtons(); // no-ops until the log section is built
+        rebuildLogFilterButtons();
     else
-        updateLogFilterChipCounts(); // just repaint the numbers
-    // Only render the line if it passes the active filter. The first line to
-    // pass while the "No X events recorded." notice is up rebuilds the view so
-    // the notice goes away instead of sitting above the entry.
+        updateLogFilterChipCounts();
+
+
+
     if (m_logFilter.isEmpty() || m_logFilter == badge) {
         if (m_logFilterEmptyNotice)
             rebuildNetworkLogView();
@@ -4369,14 +4369,14 @@ void MainWindow::logSystem(const QString &text)
             appendNetworkLogLine(line);
     }
 
-    // Mirror the newest event onto the always-on footer log line so the latest
-    // activity is visible at the bottom of the app even when the Log tab is closed.
-    // Pass the full dated line (not just the message) so the bottom strip shows the
-    // same timestamped log line as the Log view.
+
+
+
+
     setFooterUpdateLine(line);
 
-    // Persist incrementally so the history survives a restart (even an unclean
-    // one). Periodically rewrite the file to trim it back to the in-memory cap.
+
+
     QFile lf(networkLogPath());
     if (lf.open(QIODevice::Append | QIODevice::Text)) {
         lf.write(line.toUtf8());
@@ -4387,37 +4387,37 @@ void MainWindow::logSystem(const QString &text)
     }
 }
 
-// Toast pill caps the inline message at this many characters; longer text is
-// elided to one line and revealed in full via the Expand button. Sized to the
-// footer mini-log panel the pill now fills (see m_topMessageContainer); the
-// label clips rather than elides below that, and Expand is always one click away.
+
+
+
+
 static constexpr int kToastMaxChars = 160;
 
-// Auto-dismiss windows for the top toast. Every toast counts down visibly so the
-// notification area never flashes a message away unannounced. Success
-// confirmations clear quickly; errors linger far longer (but still show a
-// countdown) so a failure can be read and copied before it fades — its full text
-// is also preserved in the network log regardless.
+
+
+
+
+
 static constexpr int kToastSuccessSeconds = 5;
 static constexpr int kToastErrorSeconds = 20;
 
-// Cap on how many error toasts can back up in m_topMessageQueue; a runaway
-// retry loop firing errors faster than they can be read shouldn't grow this
-// without bound. The oldest queued message is dropped once the cap is hit.
+
+
+
 static constexpr int kToastQueueLimit = 20;
 
-// The toast is docked in the footer's mini-log panel, and the Git workspace
-// hides that whole footer to give the diff the full window height. Report that
-// so a message raised there still reaches the user (via the floating overlay)
-// instead of being painted into a hidden panel.
+
+
+
+
 bool MainWindow::topMessageDockVisible() const
 {
     return m_footerDock && m_footerDock->isVisible();
 }
 
-// Park a message behind the toast that is currently counting down, dropping the
-// oldest once the queue is full. Used both by a burst of errors and by the
-// stream of pings this area mirrors (adhoc #77).
+
+
+
 void MainWindow::queueTopMessage(const QString &text, bool error)
 {
     const QString trimmed = text.simplified();
@@ -4426,41 +4426,41 @@ void MainWindow::queueTopMessage(const QString &text, bool error)
     m_topMessageQueue.append(qMakePair(trimmed, error));
     while (m_topMessageQueue.size() > kToastQueueLimit)
         m_topMessageQueue.removeFirst();
-    renderTopMessageCountdown(); // repaint the "(+N more)" suffix
+    renderTopMessageCountdown();
 }
 
-// True while a toast is on screen with its countdown still running: a new
-// background event must queue instead of stomping what is being read.
+
+
 bool MainWindow::topMessageBusy() const
 {
     return m_topMessage && m_topMessage->isVisible() && m_topMessageTimer &&
            m_topMessageTimer->isActive();
 }
 
-// (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
-// A long message shows as an elided one-liner so it can never widen the window;
-// expanding it wraps the full text so the toast grows in place (no modal).
+
+
+
 void MainWindow::renderTopMessage()
 {
     if (!m_topMessage)
         return;
-    // Green for success, red for failure; compact pill in the centre of the bar.
+
     const QString fg = m_topMessageError ? "#f85149" : "#3fb950";
-    const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")  // ✕
-                                            : QString::fromUtf8("\xE2\x9C\x93"); // ✓
-    // The inline toast always stays a single elided one-liner; expanding never
-    // wraps or grows it. The full text is revealed in the floating overlay below
-    // instead, so it can't widen the window or push the layout around.
+    const QString glyph = m_topMessageError ? QString::fromUtf8("\xE2\x9C\x95")
+                                            : QString::fromUtf8("\xE2\x9C\x93");
+
+
+
     QString display = m_topMessageRaw;
     if (m_topMessageElided)
         display = display.left(kToastMaxChars - 1).trimmed()
-                  + QString::fromUtf8("\xE2\x80\xA6"); // …
+                  + QString::fromUtf8("\xE2\x80\xA6");
     m_topMessage->setWordWrap(false);
-    // The base HTML carries the message; auto-dismissing successes append a
-    // ticking countdown suffix on top of it (see renderTopMessageCountdown).
-    // When a click target is set, the message text itself becomes an underlined
-    // link (routed by the m_topMessage linkActivated handler) so e.g. an "agent is
-    // waiting for you" toast is clickable straight through to that agent.
+
+
+
+
+
     QString body = display.toHtmlEscaped();
     if (!m_topMessageHref.isEmpty())
         body = QStringLiteral(
@@ -4469,8 +4469,8 @@ void MainWindow::renderTopMessage()
     m_topMessageBaseHtml = QStringLiteral("<span style='color:%1'>%2 %3</span>")
                                .arg(fg, glyph, body);
     m_topMessage->setText(m_topMessageBaseHtml);
-    // The expand toggle's glyph tracks the state: chevron-down to reveal more,
-    // chevron-up to collapse back to the one-liner.
+
+
     if (m_topMessageExpand) {
         setOcticon(m_topMessageExpand,
                    m_topMessageExpanded ? "chevron-up" : "chevron-down", 14);
@@ -4478,9 +4478,9 @@ void MainWindow::renderTopMessage()
                                            ? QStringLiteral("Collapse the message")
                                            : QStringLiteral("Show the full message"));
     }
-    // Float the full, wrapped message on top of the layout when expanded — or
-    // whenever the footer that hosts the inline pill is hidden, so a Git-workspace
-    // failure is still seen. Hide the panel again when collapsed and docked.
+
+
+
     if (m_topMessageOverlay && m_topMessageOverlayText) {
         if (m_topMessageExpanded || !topMessageDockVisible()) {
             m_topMessageOverlayText->setText(
@@ -4495,9 +4495,9 @@ void MainWindow::renderTopMessage()
     }
 }
 
-// Size the floating expanded-toast panel to its content (capped to a readable
-// width) and anchor it to the inline toast, centred on it but clamped to stay
-// inside the window. Called on expand and on window resize.
+
+
+
 void MainWindow::positionTopMessageOverlay()
 {
     if (!m_topMessageOverlay || !m_topMessageContainer)
@@ -4510,8 +4510,8 @@ void MainWindow::positionTopMessageOverlay()
         h = m_topMessageOverlay->sizeHint().height();
     h = qMin(h, qMax(120, height() - 2 * margin));
     m_topMessageOverlay->setFixedHeight(h);
-    // With the footer hidden the pill has no meaningful geometry to anchor to, so
-    // the panel sits where the mini-log would have been: bottom-left of the window.
+
+
     if (!topMessageDockVisible()) {
         m_topMessageOverlay->move(margin, qMax(margin, height() - h - margin));
         return;
@@ -4519,9 +4519,9 @@ void MainWindow::positionTopMessageOverlay()
     const QPoint top = m_topMessageContainer->mapTo(this, QPoint(0, 0));
     int x = top.x() + m_topMessageContainer->width() / 2 - w / 2;
     x = qBound(margin, x, qMax(margin, width() - w - margin));
-    // Prefer just below the pill, as before — but the toast now lives in the
-    // footer, so there is normally no room down there and the panel opens
-    // upward instead of running off the bottom of the window.
+
+
+
     const int below = top.y() + m_topMessageContainer->height() + 6;
     const int y = (below + h + margin <= height()) ? below
                                                    : qMax(margin, top.y() - h - 6);
@@ -4531,10 +4531,10 @@ void MainWindow::positionTopMessageOverlay()
 void MainWindow::resizeEvent(QResizeEvent *event)
 {
     QMainWindow::resizeEvent(event);
-    // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
+
     if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
         positionTopMessageOverlay();
-    // The red error-ping border hugs the window edges (adhoc #77).
+
     if (m_errorBorderOverlay && m_errorBorderOverlay->isVisible())
         m_errorBorderOverlay->setGeometry(rect());
 }
@@ -4542,13 +4542,13 @@ void MainWindow::resizeEvent(QResizeEvent *event)
 void MainWindow::flashMessage(const QString &text, bool error,
                               const QString &clickHref)
 {
-    // A real result supersedes any in-flight progress pill (showLoadStatus).
+
     m_loadStatusShowing = false;
-    // Carry an optional click target so the whole toast can act as a link (e.g. an
-    // "agent is waiting for you" toast jumps to that agent). Cleared by default so
-    // an ordinary toast is never left clickable from a previous message.
+
+
+
     m_topMessageHref = clickHref;
-    // Always keep a copy in the network log for history.
+
     logSystem(text);
     if (!m_topMessage)
         return;
@@ -4558,10 +4558,10 @@ void MainWindow::flashMessage(const QString &text, bool error,
         dismissTopMessage();
         return;
     }
-    // A second error arriving while one is already counting down would otherwise
-    // instantly replace it, so a burst of quick failures (retries, batched
-    // errors) could flash by unread. Queue it instead; advanceTopMessageQueue
-    // shows it with its own full countdown once the current toast finishes.
+
+
+
+
     if (error && m_topMessage->isVisible() && m_topMessageError &&
         m_topMessageTimer && m_topMessageTimer->isActive()) {
         queueTopMessage(trimmed, true);
@@ -4569,21 +4569,21 @@ void MainWindow::flashMessage(const QString &text, bool error,
     }
     m_topMessageError = error;
     m_topMessageRaw = trimmed;
-    // Keep the pill compact: a long message (a multi-line git error, say) must not
-    // stretch the top bar and drag the whole window wide. Show an elided one-liner;
-    // the full text is preserved in m_topMessageRaw and is revealed inline by the
-    // Expand button (see renderTopMessage) or copied via Copy.
+
+
+
+
     m_topMessageElided = trimmed.size() > kToastMaxChars;
-    m_topMessageExpanded = false; // every new message starts collapsed
+    m_topMessageExpanded = false;
     renderTopMessage();
     m_topMessage->show();
     if (m_topMessageContainer)
         m_topMessageContainer->show();
 
     if (!m_topMessageTimer) {
-        // Ticks once a second so the countdown is visible; when the count runs out
-        // it dismisses the whole toast (label plus any Copy / ✕ / Expand
-        // affordances) rather than firing a single timeout.
+
+
+
         m_topMessageTimer = new QTimer(this);
         connect(m_topMessageTimer, &QTimer::timeout, this, [this] {
             if (!m_topMessage)
@@ -4595,11 +4595,11 @@ void MainWindow::flashMessage(const QString &text, bool error,
             renderTopMessageCountdown();
         });
     }
-    // Every toast counts down visibly so the notification area never flashes a
-    // message away without the user knowing how long it stayed (or what it was).
-    // Errors keep their Copy / ✕ buttons and get a much longer window, so a
-    // failure stays readable and grabbable for a bug report before it fades; its
-    // full text also remains in the network log (logSystem above) regardless.
+
+
+
+
+
     if (error) {
         if (m_topMessageCopy)
             m_topMessageCopy->show();
@@ -4615,25 +4615,25 @@ void MainWindow::flashMessage(const QString &text, bool error,
     }
     renderTopMessageCountdown();
     m_topMessageTimer->start(1000);
-    // The Expand affordance appears only when the message was truncated, so the
-    // user can read it in full inline instead of via a popup.
+
+
     if (m_topMessageExpand)
         m_topMessageExpand->setVisible(m_topMessageElided);
 }
 
-// Repaint the toast as its base message plus a dimmed "· Ns" countdown suffix,
-// reflecting how many seconds remain before an auto-dismissing toast fades.
+
+
 void MainWindow::renderTopMessageCountdown()
 {
     if (!m_topMessage)
         return;
-    // "·" is a byte-escaped glyph, so it must go through fromUtf8 (QStringLiteral
-    // would mangle the multibyte sequence).
+
+
     const QString suffix =
         QString::fromUtf8(" <span style='color:#6e7681'>\xC2\xB7 %1s</span>")
             .arg(m_topMessageSecondsLeft);
-    // Tell the user more errors are waiting behind this one, so a fading toast
-    // doesn't feel like it silently dropped the rest of a quick burst.
+
+
     QString queuedSuffix;
     if (!m_topMessageQueue.isEmpty())
         queuedSuffix = QStringLiteral(" <span style='color:#6e7681'>(+%1 more)</span>")
@@ -4641,25 +4641,25 @@ void MainWindow::renderTopMessageCountdown()
     m_topMessage->setText(m_topMessageBaseHtml + suffix + queuedSuffix);
 }
 
-// Hide the top toast and its error affordances (Expand / Copy / dismiss). This
-// is a hard reset: any errors still waiting behind the current one are dropped
-// too (their full text remains in the network log regardless).
+
+
+
 void MainWindow::dismissTopMessage()
 {
     m_loadStatusShowing = false;
     m_topMessageExpanded = false;
-    m_topMessageHref.clear(); // the next toast opts back in to clickability if it wants it
+    m_topMessageHref.clear();
     m_topMessageQueue.clear();
     if (m_topMessageTimer)
-        m_topMessageTimer->stop(); // don't keep ticking the countdown on a hidden toast
+        m_topMessageTimer->stop();
     if (m_topMessage) {
         m_topMessage->hide();
-        m_topMessage->setWordWrap(false); // back to a one-liner for the next toast
+        m_topMessage->setWordWrap(false);
     }
     if (m_topMessageContainer)
         m_topMessageContainer->hide();
     if (m_topMessageOverlay)
-        m_topMessageOverlay->hide(); // drop the floating expanded panel with the toast
+        m_topMessageOverlay->hide();
     if (m_topMessageExpand)
         m_topMessageExpand->hide();
     if (m_topMessageCopy)
@@ -4668,9 +4668,9 @@ void MainWindow::dismissTopMessage()
         m_topMessageClose->hide();
 }
 
-// Show the next queued message (its own full countdown, per flashMessage), or
-// fully dismiss the toast if nothing is waiting. Called when the current
-// toast's countdown runs out or the user dismisses it early.
+
+
+
 void MainWindow::advanceTopMessageQueue()
 {
     if (m_topMessageQueue.isEmpty()) {
@@ -4678,8 +4678,8 @@ void MainWindow::advanceTopMessageQueue()
         return;
     }
     const QPair<QString, bool> next = m_topMessageQueue.takeFirst();
-    // Hide first: flashMessage would otherwise see a toast that is still
-    // visible and queue this one straight back behind itself.
+
+
     if (m_topMessage)
         m_topMessage->hide();
     if (m_topMessageTimer)
@@ -4699,7 +4699,7 @@ void MainWindow::notifyIfInactive(const QString &title, const QString &body)
     postNotification(title, cleanBody);
 }
 
-// ----------------------------------------------------------------- security tab
+
 
 QWidget *MainWindow::buildVulnReportTab()
 {

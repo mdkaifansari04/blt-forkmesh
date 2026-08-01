@@ -18,9 +18,9 @@ string concatenation, so it is trivially unit-testable against the on-disk
 fragments.
 """
 
-# Ordered fragments of the single dashboard IIFE. Concatenated verbatim (with no
-# separator) they reproduce the original dashboard.js byte-for-byte. Keep this in
-# lexical/source order; renaming or reordering changes the shipped script.
+
+
+
 FRAGMENTS = (
     "01-state.js",
     "02-helpers.js",

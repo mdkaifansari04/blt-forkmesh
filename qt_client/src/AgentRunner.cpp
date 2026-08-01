@@ -81,9 +81,9 @@ bool branchExists(const QString &dir, const QString &branchName)
                       &ignored, nullptr);
 }
 
-// Returns the filesystem path of the worktree currently checked out to `branch`
-// (other than the main checkout), or an empty string if none. Used to find a
-// worktree a previous, interrupted run left behind.
+
+
+
 QString worktreePathForBranch(const QString &repoPath, const QString &branch)
 {
     if (branch.trimmed().isEmpty())
@@ -112,11 +112,11 @@ QString worktreePathForBranch(const QString &repoPath, const QString &branch)
     return QString();
 }
 
-// Drop any worktree a previous run left checked out to `branch` and prune stale
-// registrations, so a fresh `git worktree add` for this branch can succeed. A
-// run interrupted by an app restart never reaches cleanupWorktree(), so without
-// this the branch stays "already checked out" at the old (often deleted) path
-// and the resumed run would fail to create its worktree (issue #242).
+
+
+
+
+
 void releaseBranchWorktree(const QString &repoPath, const QString &branch)
 {
     const QString leaked = worktreePathForBranch(repoPath, branch);
@@ -133,9 +133,9 @@ void releaseBranchWorktree(const QString &repoPath, const QString &branch)
 
 QString providerTitle(const QString &provider)
 {
-    // "claude-code" runs the real CLI; other "claude*" sessions are the Claude
-    // API script; "codex" is the local Codex CLI path, and legacy "openai"
-    // sessions keep their old label.
+
+
+
     if (provider == QLatin1String("claude-code"))
         return QStringLiteral("Claude Code");
     if (provider == QLatin1String("codex"))
@@ -145,10 +145,10 @@ QString providerTitle(const QString &provider)
     return QStringLiteral("OpenAI API");
 }
 
-// Approximate USD price per 1,000,000 tokens, used only to surface a rough
-// "how much did this task cost" figure. Claude numbers are the published
-// Anthropic per-million-token rates; the OpenAI fallback is a single rough
-// estimate since those models aren't priced here.
+
+
+
+
 struct TokenPrice {
     double inputPerMillion;
     double outputPerMillion;
@@ -162,14 +162,14 @@ TokenPrice priceFor(const QString &provider, const QString &model)
             return {1.0, 5.0};
         if (m.contains(QLatin1String("sonnet")))
             return {3.0, 15.0};
-        // Opus (the default Claude model) and anything unrecognised.
+
         return {5.0, 25.0};
     }
-    // OpenAI and any other provider.
+
     return {1.25, 10.0};
 }
 
-} // namespace
+}
 
 AgentRunner::AgentRunner(AgentStore *store, QObject *parent)
     : QObject(parent), m_store(store)
@@ -212,8 +212,8 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
     m_session.maxOutputTokens = m_config.maxOutputTokens;
     m_session.promptTokens += estimateTokens(m_prompt);
     refreshUsage();
-    // Record the spend at the start of this run so the run's incremental cost
-    // can be reported as a diff when it finishes.
+
+
     m_session.spendBeforeUsd = m_session.costUsd;
     m_store->saveSession(m_session);
     emit statusChanged(m_session.id, m_session.status);
@@ -236,9 +236,9 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
                  QStringLiteral("No command is configured for this agent."));
         return;
     }
-    // Accept either a working-tree checkout (has .git) or a bare mirror (has a
-    // HEAD at its root): a node that only mirrors a repo runs agents straight off
-    // the mirror, building the branch in a throwaway worktree (adhoc #191).
+
+
+
     if (!QDir(m_repoPath).exists(QStringLiteral(".git")) &&
         !QDir(m_repoPath).exists(QStringLiteral("HEAD"))) {
         complete(false, AgentStatus::Failed,
@@ -265,8 +265,8 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
             return;
         }
         m_session.baseRef = QString::fromUtf8(base).trimmed();
-        // The PR targets the branch the agent forked from (typically main), not the
-        // frozen commit SHA. Fall back to the SHA only when HEAD is detached.
+
+
         QByteArray branch;
         if (runCapture(m_repoPath,
                        {QStringLiteral("rev-parse"), QStringLiteral("--abbrev-ref"),
@@ -283,11 +283,11 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
     }
     m_store->saveSession(m_session);
 
-    // A run interrupted by an app restart can leave a worktree behind that still
-    // holds this session's branch (and in-flight edits it never saved as a
-    // patch). Recover those edits into the session patch — but only when nothing
-    // is saved yet, so a real prior patch is never clobbered — then release the
-    // stale worktree so this run can re-create one cleanly (issue #242).
+
+
+
+
+
     if (existingSessionBranch && !m_session.baseRef.isEmpty()) {
         const QString leaked = worktreePathForBranch(m_repoPath, m_session.branchName);
         if (!leaked.isEmpty() && QDir(leaked).exists() &&
@@ -378,10 +378,10 @@ void AgentRunner::launch(Phase phase, const QString &program,
         QDir().mkpath(m_config.isolatedHome);
         env.insert(QStringLiteral("CODEX_HOME"), m_config.isolatedHome);
     }
-    // Jail (adhoc #236): point the agent's scratch state (tmp/cache) at a
-    // private directory beside the worktree — outside it, so the redirected
-    // files can never end up in the agent's diff. The memory cap itself is
-    // applied by wrapCommand in runAgentProcess.
+
+
+
+
     if (phase == Phase::Agent && m_config.jailMemoryMb > 0) {
         const QStringList jailEnv =
             AgentJail::envEntries(m_worktree + QStringLiteral("-jail"));
@@ -390,11 +390,11 @@ void AgentRunner::launch(Phase phase, const QString &program,
             env.insert(kv.left(eq), kv.mid(eq + 1));
         }
     }
-    // Both remaining providers (OpenAI API and Claude API) authenticate with an
-    // API key supplied in Settings. We inherit the user's shell environment, which
-    // may already carry an ANTHROPIC_API_KEY/OPENAI_API_KEY that's stale or belongs
-    // to a different account. Unset those first so the agent never silently uses an
-    // inherited key, then reset only the one ForkMesh configured.
+
+
+
+
+
     const QString provider = m_session.provider;
     env.remove(QStringLiteral("ANTHROPIC_API_KEY"));
     env.remove(QStringLiteral("ANTHROPIC_AUTH_TOKEN"));
@@ -463,9 +463,9 @@ void AgentRunner::launch(Phase phase, const QString &program,
                     complete(false, AgentStatus::Failed, m_process->errorString());
             });
 
-    // Footer background strip (adhoc #421): the run shows up as "agent" while
-    // the CLI works and "git" while the worktree is being prepared. The ticket is
-    // tied to the child's destruction, which onProcessFinished/stop() both reach.
+
+
+
     const quint64 activity = forkmesh::BackgroundActivity::begin(
         phase == Phase::Agent ? QStringLiteral("agent") : QStringLiteral("git"),
         QStringLiteral("Agent session #%1: %2").arg(m_session.id).arg(program));
@@ -537,8 +537,8 @@ void AgentRunner::onProcessFinished(int exitCode)
         return;
     }
 
-    // Attribute the commits this run produced to the agent before capturing the
-    // patch, so the provenance trailer is carried by the signed commit series.
+
+
     stampAgentProvenance();
 
     QByteArray diff;
@@ -654,8 +654,8 @@ void AgentRunner::complete(bool ok, const QString &status, const QString &messag
     }
     emitLog((ok ? QStringLiteral("==> SUCCESS: ") : QStringLiteral("==> ")) + message);
     refreshUsage();
-    // Snapshot the spend after this run and log the difference so the cost of
-    // this particular run is visible in the agent log.
+
+
     m_session.spendAfterUsd = m_session.costUsd;
     const double runCost = m_session.spendAfterUsd - m_session.spendBeforeUsd;
     emitLog(QStringLiteral(
@@ -696,8 +696,8 @@ QString AgentRunner::agentProvenanceValue() const
         tool = QStringLiteral("agent");
     const QString model = m_config.model.trimmed();
     QString value = model.isEmpty() ? tool : tool + QLatin1Char('/') + model;
-    // Keep the trailer value shell-safe (it is embedded in a single-quoted
-    // `git commit --trailer` command below) and free of newlines.
+
+
     value.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._+/ -]")),
                   QString());
     return value;
@@ -707,9 +707,9 @@ void AgentRunner::stampAgentProvenance()
 {
     if (m_worktree.isEmpty() || m_session.baseRef.isEmpty())
         return;
-    // Only stamp when the run actually committed something. Uncommitted changes
-    // would make `git rebase` refuse, so skip cleanly in that case too — the diff
-    // is still captured from the working tree.
+
+
+
     QByteArray dirty;
     if (runCapture(m_worktree, {QStringLiteral("status"), QStringLiteral("--porcelain")},
                    &dirty, nullptr) &&
@@ -727,9 +727,9 @@ void AgentRunner::stampAgentProvenance()
         return;
 
     const QString value = agentProvenanceValue();
-    // Rewrite each new commit's message to append the trailer. `--trailer`'s
-    // default addIfDifferentNeighbor policy makes a re-run (resumed session)
-    // idempotent, so already-stamped commits are left untouched.
+
+
+
     const QString exec =
         QStringLiteral("git commit --amend --no-edit --trailer 'ForkMesh-Agent: %1'")
             .arg(value);
@@ -738,7 +738,7 @@ void AgentRunner::stampAgentProvenance()
                   {QStringLiteral("-C"), m_worktree, QStringLiteral("rebase"),
                    m_session.baseRef, QStringLiteral("--exec"), exec});
     if (!process.waitForFinished(60000) || process.exitCode() != 0) {
-        // Leave history untouched rather than a half-finished rebase.
+
         QProcess::execute(QStringLiteral("git"),
                           {QStringLiteral("-C"), m_worktree,
                            QStringLiteral("rebase"), QStringLiteral("--abort")});
@@ -789,8 +789,8 @@ QString AgentRunner::launchIdentityInstruction(const QString &provider,
 QString AgentRunner::buildPrompt() const
 {
     QStringList prompt;
-    // Instruction preamble: the user-editable prompt saved in Settings → Agents,
-    // falling back to the built-in default when left blank.
+
+
     QString preamble = m_config.promptPreamble.trimmed();
     if (preamble.isEmpty())
         preamble = defaultPromptPreamble();
@@ -801,7 +801,7 @@ QString AgentRunner::buildPrompt() const
     prompt << QStringLiteral("Repository: %1/%2").arg(m_session.owner, m_session.name);
     const QString task = m_config.taskOverride.trimmed();
     if (!task.isEmpty()) {
-        // Ad-hoc composer run: no issue thread, just the typed task.
+
         prompt << QStringLiteral("Task: %1").arg(m_session.issueTitle);
         prompt << QStringLiteral("");
         prompt << task;
@@ -888,7 +888,7 @@ QString AgentRunner::detectAuthIssue(const QString &chunk)
         return QString();
     const QString low = chunk.toLower();
     const bool claude = m_session.provider.startsWith(QLatin1String("claude"));
-    // Strong, specific markers so normal agent output doesn't trip this.
+
     const auto has = [&](const char *needle) { return low.contains(QLatin1String(needle)); };
     if (claude &&
         (has("invalid api key") || has("authentication_error") ||

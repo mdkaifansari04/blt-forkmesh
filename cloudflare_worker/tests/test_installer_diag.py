@@ -31,7 +31,7 @@ def _run(diag_calls, no_diag=False):
         bindir.mkdir()
         log = tmp / "diag.log"
         curl = bindir / "curl"
-        # Fake curl: record only the JSON passed after --data, one line per call.
+
         curl.write_text(
             "#!/bin/sh\n"
             "data=\n"
@@ -49,7 +49,7 @@ def _run(diag_calls, no_diag=False):
             'FORKMESH_DIAG_URL="https://example.test/api/install-diag"\n'
             + _diag_block()
             + diag_calls
-            + "\nwait\n"  # let the backgrounded fake curl finish before exit
+            + "\nwait\n"
         )
         env = os.environ.copy()
         env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
@@ -71,7 +71,7 @@ def test_diag_emits_anonymous_event():
     assert '"run":"' in out
     assert '"version":"9.9.9 (test)"' in out
     assert '"detail":"none"' in out
-    # Coarse platform facts are present; nothing account/email/IP-identifying is.
+
     assert '"os":"' in out and '"arch":"' in out
 
 
@@ -89,5 +89,5 @@ def test_opt_out_suppresses_all_reports():
 
 def test_run_id_is_present_and_nonempty():
     out = _run("diag start 1").strip()
-    # The run id is a random per-run token, not blank.
+
     assert '"run":""' not in out

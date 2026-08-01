@@ -21,9 +21,9 @@
     <link rel="stylesheet" href="styles.css" />
     <script src="static-page.js" defer></script>
       <link rel="stylesheet" href="/site-footer.css" />
-    <script src="/site-footer.js?v=acdada792fa2" defer></script>
+    <script src="/site-footer.js?v=80298ae130ff" defer></script>
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js?v=4fff78946d89" defer></script>
+    <script src="/site-header.js?v=48c851a962ec" defer></script>
   </head>
   <body>
     <div data-forkmesh-header="simple"></div>
@@ -307,9 +307,9 @@
           bannerSub.textContent = data.now
             ? "Last checked " + new Date(data.now).toLocaleTimeString()
             : "";
-          // A stale health sample means the sampling cron is behind, not that
-          // the site is down — say so explicitly, since the gap shows up as
-          // grey no-data squares in the strips.
+
+
+
           const lastSample = data.current && data.current.lastCronSampleTs;
           if (data.now && typeof lastSample === "number") {
             const behindMins = Math.floor((data.now - lastSample) / 60000);
@@ -488,10 +488,10 @@
             head.appendChild(metrics);
             row.appendChild(head);
 
-            // Click-to-expand panel spelling out exactly what this system's
-            // health check tests (checkDescription from the API) and the raw
-            // recorded-sample numbers behind the percentages — so the page
-            // never asks anyone to trust an unexplained green dot.
+
+
+
+
             const infoPanel = document.createElement("div");
             infoPanel.className = "status-row-detail-panel";
             infoPanel.hidden = true;
@@ -591,10 +591,10 @@
               stack.className = "status-day-stack";
               const cell = document.createElement("div");
               const hours = day.hours && day.hours.length ? day.hours : [];
-              // A day only ever has < 24 hours when it's the current, still-
-              // in-progress day (see hoursElapsed) — never treat that as
-              // "no data": render the elapsed hours plus dimmed placeholders
-              // for the hours that simply haven't happened yet.
+
+
+
+
               const isPartialToday = isLastDay && hours.length > 0 && hours.length < 24;
               const dayChecks = day.checks || 0;
               const dayFailures = day.failures || 0;
@@ -679,10 +679,10 @@
             }
             row.appendChild(hourBar);
 
-            // Third row: the last 60 one-minute checks. Unlike the hour bar
-            // above, the backend already returns exactly 60 buckets (oldest
-            // to newest, including "future" for the still-in-progress
-            // minute), so there's no client-side synthesis needed here.
+
+
+
+
             const minuteBar = document.createElement("div");
             minuteBar.className = "status-minute-bar";
             const minuteList = system.minutes || [];

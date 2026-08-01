@@ -24,7 +24,7 @@ QString base64Url(const QByteArray &data)
                       QByteArray::OmitTrailingEquals));
 }
 
-} // namespace
+}
 
 ForkMeshIdentity::~ForkMeshIdentity()
 {
@@ -93,10 +93,10 @@ bool ForkMeshIdentity::generate(const QString &keyPath)
         return false;
     }
     if (!QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner)) {
-        // Best-effort hardening: on a filesystem without POSIX permissions this
-        // can fail, which would leave the private identity key group/world
-        // readable. Warn loudly rather than fail identity creation (which some
-        // network-mounted home directories would otherwise trip on).
+
+
+
+
         qWarning("ForkMesh: could not restrict permissions on identity key %s; "
                  "it may be readable by other users on this machine.",
                  qUtf8Printable(keyPath));
@@ -249,7 +249,7 @@ bool ForkMeshIdentity::verifySignature(const QString &publicKeyB64url,
         publicKeyB64url.toLatin1(), QByteArray::Base64UrlEncoding);
     const QByteArray sig = QByteArray::fromBase64(
         signatureB64url.toLatin1(), QByteArray::Base64UrlEncoding);
-    // Ed25519 keys are 32 bytes, signatures 64 bytes.
+
     if (rawKey.size() != 32 || sig.size() != 64)
         return false;
 
@@ -297,7 +297,7 @@ QByteArray ForkMeshIdentity::deviceBindCanonical(
            '\n' + timestamp.toUtf8();
 }
 
-// --- Backup, export & rotation (issue #368) -------------------------------
+
 
 QByteArray ForkMeshIdentity::rawPrivateSeed() const
 {
@@ -319,7 +319,7 @@ QString ForkMeshIdentity::exportEncryptedKeyfile(const QString &passphrase) cons
     if (!m_key || passphrase.isEmpty())
         return {};
     const QByteArray seed = rawPrivateSeed();
-    if (seed.size() != 32) // Ed25519 raw private seed
+    if (seed.size() != 32)
         return {};
 
     const QByteArray salt = CoveCrypto::randomSalt();
@@ -337,7 +337,7 @@ QString ForkMeshIdentity::exportEncryptedKeyfile(const QString &passphrase) cons
         {"kdf", "pbkdf2-hmac-sha256"},
         {"salt", QString::fromLatin1(salt.toBase64())},
         {"rounds", rounds},
-        {"pubkey", m_publicKey}, // clear-text: identifies, never unlocks
+        {"pubkey", m_publicKey},
         {"createdAt", QString::number(QDateTime::currentMSecsSinceEpoch())},
         {"cipher", cipher}};
     return QString::fromUtf8(
@@ -387,16 +387,16 @@ bool ForkMeshIdentity::installRawSeed(const QByteArray &seed)
         return false;
     }
     if (!QFile::setPermissions(keyPath, QFile::ReadOwner | QFile::WriteOwner)) {
-        // Best-effort hardening: on a filesystem without POSIX permissions this
-        // can fail, which would leave the private identity key group/world
-        // readable. Warn loudly rather than fail identity creation (which some
-        // network-mounted home directories would otherwise trip on).
+
+
+
+
         qWarning("ForkMesh: could not restrict permissions on identity key %s; "
                  "it may be readable by other users on this machine.",
                  qUtf8Printable(keyPath));
     }
     m_keyDir = dir;
-    // A restored key is, by definition, one the user already holds a backup of.
+
     markBackedUp();
     return readKey(keyPath) && refreshPublicKey();
 }

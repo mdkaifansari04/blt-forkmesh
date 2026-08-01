@@ -1,6 +1,6 @@
--- ForkMesh D1 migration 0027 - public profile follow graph.
--- Rows are keyed by blind indexes for indexed lookups while storing the public
--- profile names needed for display and namespace rename maintenance.
+
+
+
 
 CREATE TABLE IF NOT EXISTS profile_follows (
     follower_bi TEXT NOT NULL,

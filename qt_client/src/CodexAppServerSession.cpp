@@ -43,7 +43,7 @@ QString approvalPolicyForMode(const QString &mode)
     const QString key = normalizedMode(mode);
     if (key.contains(QStringLiteral("ask")))
         return QStringLiteral("untrusted");
-    // "Edit automatically" contains "auto", but is the on-request preset.
+
     if (key.contains(QStringLiteral("edit")) ||
         key.contains(QStringLiteral("plan")))
         return QStringLiteral("on-request");
@@ -61,11 +61,11 @@ QString sandboxForMode(const QString &mode)
 
 QStringList gitMetadataRoots(const QString &cwd)
 {
-    // A linked worktree's .git is a file which points outside cwd.  Git needs
-    // to write both that per-worktree directory (index.lock, HEAD.lock) and
-    // its common directory (refs, objects) when committing.  Allow only those
-    // resolved metadata directories; the rest of the checkout remains covered
-    // by the ordinary workspace-write sandbox.
+
+
+
+
+
     const QFileInfo dotGit(QDir(cwd).filePath(QStringLiteral(".git")));
     if (!dotGit.isFile())
         return {};
@@ -137,7 +137,7 @@ void mergeObject(QJsonObject &target, const QJsonObject &source)
         target.insert(it.key(), it.value());
 }
 
-} // namespace
+}
 
 CodexAppServerSession::CodexAppServerSession(QObject *parent) : QObject(parent) {}
 
@@ -216,7 +216,7 @@ void CodexAppServerSession::start(const QString &cwd,
 #ifdef Q_OS_WIN
     proc->start(QStringLiteral("codex"), {QStringLiteral("app-server")});
 #else
-    // A login shell gives GUI launches the same PATH as an interactive terminal.
+
     proc->start(QStringLiteral("bash"),
                 {QStringLiteral("-lc"),
                  AgentJail::wrapCommand(QStringLiteral("exec codex app-server"),
@@ -571,9 +571,9 @@ void CodexAppServerSession::handleResponse(const QJsonObject &message)
                    method == QStringLiteral("thread/start") ||
                    method == QStringLiteral("thread/resume")) {
             if (method == QStringLiteral("thread/resume")) {
-                // The host may still have the old persisted thread id. Mark the
-                // run terminal before finished() so it is not re-queued into an
-                // endless resume-failure loop.
+
+
+
                 emit event(QJsonObject{
                     {QStringLiteral("type"), QStringLiteral("result")},
                     {QStringLiteral("subtype"), QStringLiteral("error")},
@@ -583,9 +583,9 @@ void CodexAppServerSession::handleResponse(const QJsonObject &message)
                     {QStringLiteral("thread_id"), m_resumeThreadId},
                     {QStringLiteral("num_turns"), 0}});
             }
-            // A session cannot recover from a failed handshake or missing
-            // thread. Preserve the normal finished() path so the host clears
-            // its Running state and reports the launch failure.
+
+
+
             QProcess *proc = m_proc;
             if (proc) {
                 proc->closeWriteChannel();

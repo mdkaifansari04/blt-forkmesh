@@ -29,8 +29,8 @@ export class IssueItem extends vscode.TreeItem {
   }
 }
 
-// Header row showing the installed extension version. Clicking it (or the
-// inline button contributed for its contextValue) updates & reloads ForkMesh.
+
+
 export class VersionItem extends vscode.TreeItem {
   constructor(version: string) {
     super(`ForkMesh v${version}`, vscode.TreeItemCollapsibleState.None);

@@ -1,11 +1,11 @@
-/* Universal site header (see site-header.js), styled to match the dashboard
-   chrome: a 56px bar with a bottom border, bordered square controls, and a
-   hamburger menu holding every site link grouped and fully expanded.
-   Self-contained: private tokens (not the host page's own --background /
-   --foreground vars) drive the navigation chrome, but site-header.js still
-   stamps html.light / html.dark on every page, and the light-mode block
-   below repoints those private tokens so the header follows the visitor's
-   chosen theme instead of staying dark forever. */
+
+
+
+
+
+
+
+
 
 .forkmesh-simple-header {
   --fm-header-bg: #090909;
@@ -87,7 +87,7 @@ html.light .fm-header-mobile-account .fm-header-signup {
   font-weight: 600;
 }
 
-/* ── hamburger (all pages, all widths — it holds the full site menu) ── */
+
 .fm-header-burger {
   display: inline-flex;
   flex-direction: column;
@@ -116,7 +116,7 @@ html.light .fm-header-mobile-account .fm-header-signup {
   background: var(--fm-header-fg);
 }
 
-/* ── grouped, fully-expanded site menu ── */
+
 .fm-header-mobile {
   position: absolute;
   top: calc(100% + 8px);
@@ -188,7 +188,7 @@ html.light .fm-header-mobile-account .fm-header-signup {
   font-weight: 700;
 }
 
-/* ── dropdown menus (account chip) ── */
+
 .fm-header-menu {
   position: relative;
   display: inline-flex;
@@ -236,7 +236,7 @@ html.light .fm-header-mobile-account .fm-header-signup {
   background: rgba(127, 127, 127, 0.14);
 }
 
-/* ── right side: payout shortcut, theme toggle, account ── */
+
 .fm-header-right {
   display: flex;
   align-items: center;
@@ -324,7 +324,7 @@ html.light .fm-header-mobile-account .fm-header-signup {
   border-color: var(--fm-header-muted);
 }
 
-/* ── chat icon + unread badge ── */
+
 .fm-header-chat {
   position: relative;
   display: inline-flex;
@@ -367,7 +367,7 @@ html.light .fm-header-mobile-account .fm-header-signup {
   box-sizing: border-box;
 }
 
-/* ── account area ── */
+
 .fm-header-account {
   display: flex;
   align-items: center;
@@ -446,7 +446,7 @@ html.light .fm-header-mobile-account .fm-header-signup {
   flex-direction: column;
 }
 
-/* ── responsive: mirror the dashboard header's breakpoints ── */
+
 @media (max-width: 899.9px) {
   .fm-header-account .fm-header-account-name { display: none; }
 }

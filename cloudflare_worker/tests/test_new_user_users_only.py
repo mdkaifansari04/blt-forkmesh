@@ -62,8 +62,8 @@ def test_user_save_goes_only_through_identity_tables():
     ns, calls = _harness()
     rec = {"name": "alice", "kind": "user", "pass_hash": "h"}
     asyncio.run(ns["_save_account"](object(), "bi:alice", rec, email_bi="e"))
-    assert calls["sql"] == []                        # never touched accounts
-    assert calls["mirrors"] == [("bi:alice", "alice")]  # went into users
+    assert calls["sql"] == []
+    assert calls["mirrors"] == [("bi:alice", "alice")]
 
 
 def test_node_save_goes_only_through_identity_tables():

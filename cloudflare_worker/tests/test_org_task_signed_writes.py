@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlparse
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 CATALOG = ENTRY.parent / "catalog.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
-# clean_string lives in catalog.py; parse both so it can be extracted too.
+
 SOURCE_TEXT = ENTRY_TEXT + "\n" + CATALOG.read_text(encoding="utf-8")
 
 FUNCS = {
@@ -107,9 +107,9 @@ def _harness(accounts, ts_ok=True, devices=None):
         return record.get("pubkey", "") if record else ""
 
     async def ed25519_verify(pubkey, sig, canonical):
-        # A node "signs" by presenting a digest over the exact canonical string
-        # it signed, keyed by its public key. Digested rather than embedded so
-        # the proof's newlines never have to survive a URL round trip.
+
+
+
         return bool(pubkey) and sig == _fake_sig(pubkey, canonical)
 
     async def blind_index(_env, value):
@@ -181,7 +181,7 @@ def test_open_and_complete_proofs_authorize_their_own_operation():
 
 def test_completion_proof_is_bound_to_the_task_it_names():
     namespace, env = _harness({"alice": _user()})
-    # A proof signed for one task replayed against another must not resolve.
+
     replayed = _signed_url(
         namespace, "/api/tasks/%s/complete" % OTHER_TASK_ID,
         "ORG_TASK_COMPLETE_PROOF", resource=TASK_ID)
@@ -189,7 +189,7 @@ def test_completion_proof_is_bound_to_the_task_it_names():
         namespace["_org_task_signed_session"](env, _Request(url=replayed)))
     assert (account_bi, record) == ("", None)
 
-    # Nor may an open proof stand in for a completion.
+
     crossed = _signed_url(
         namespace, "/api/tasks/%s/complete" % TASK_ID,
         "ORG_TASK_OPEN_PROOF", resource=TASK_ID)
@@ -210,7 +210,7 @@ def test_list_proof_reads_the_board_and_nothing_else():
     assert account_bi == "bi:alice"
     assert record["name"] == "alice"
 
-    # Reading one task by id, or any sub-resource, still needs a session.
+
     for path in ("/api/tasks/%s" % TASK_ID, "/api/tasks/%s/qa" % TASK_ID):
         assert asyncio.run(resolve(env, _Request(
             method="GET",
@@ -222,7 +222,7 @@ def test_list_proof_reads_the_board_and_nothing_else():
             url=_signed_url(
                 namespace, path, "ORG_TASK_LIST_PROOF")))) == ("", None), path
 
-    # A read proof must never be replayable as a write, in either direction.
+
     assert asyncio.run(resolve(env, _Request(
         url=_signed_url(
             namespace, "/api/tasks", "ORG_TASK_LIST_PROOF")))) == ("", None)
@@ -258,12 +258,12 @@ def test_registered_device_key_reads_the_board_after_a_restart():
     assert account_bi == "bi:alice"
     assert record["name"] == "alice"
 
-    # Opening a task from that same machine is signed the same way.
+
     assert asyncio.run(resolve(env, _Request(
         url=_signed_url(namespace, "/api/tasks", "ORG_TASK_OPEN_PROOF",
                         pubkey="PK-alice-laptop"))))[0] == "bi:alice"
 
-    # A revoked/disabled device, and one without owner_sign, stay locked out.
+
     for pubkey in ("PK-alice-retired", "PK-alice-readonly"):
         assert asyncio.run(resolve(env, _Request(
             method="GET",
@@ -276,7 +276,7 @@ def test_signature_authorizes_only_the_three_named_operations():
     namespace, env = _harness({"alice": _user()})
     resolve = namespace["_org_task_signed_session"]
 
-    # Edits and deletes are never signature-authorized, whichever proof signs.
+
     for method in ("PATCH", "DELETE", "PUT"):
         for proof in ("ORG_TASK_OPEN_PROOF", "ORG_TASK_LIST_PROOF"):
             account_bi, record = asyncio.run(resolve(env, _Request(
@@ -284,7 +284,7 @@ def test_signature_authorizes_only_the_three_named_operations():
                 url=_signed_url(namespace, "/api/tasks", proof))))
             assert (account_bi, record) == ("", None), (method, proof)
 
-    # Neither are the other task sub-actions, whichever proof is presented.
+
     for action in ("start", "stop", "checkin", "qa"):
         path = "/api/tasks/%s/%s" % (TASK_ID, action)
         for proof in ("ORG_TASK_OPEN_PROOF", "ORG_TASK_COMPLETE_PROOF"):
@@ -308,12 +308,12 @@ def test_bad_signature_stale_stamp_and_ineligible_accounts_are_refused():
     )
     assert asyncio.run(resolve(env, _Request(url=forged))) == ("", None)
 
-    # A signature that verifies for a different key is still somebody else's.
+
     wrong_key = _signed_url(
         namespace, open_path, "ORG_TASK_OPEN_PROOF", pubkey="PK-mallory")
     assert asyncio.run(resolve(env, _Request(url=wrong_key))) == ("", None)
 
-    # Missing triple, unknown account, suspended account, non-user account.
+
     assert asyncio.run(resolve(env, _Request(
         url="https://forkmesh.test/api/tasks"))) == ("", None)
     assert asyncio.run(resolve(env, _Request(url=_signed_url(
@@ -326,7 +326,7 @@ def test_bad_signature_stale_stamp_and_ineligible_accounts_are_refused():
         namespace, open_path, "ORG_TASK_OPEN_PROOF",
         node="orgaccount")))) == ("", None)
 
-    # An expired stamp is refused even with an otherwise valid signature.
+
     stale, stale_env = _harness({"alice": _user()}, ts_ok=False)
     assert asyncio.run(stale["_org_task_signed_session"](
         stale_env,
@@ -348,7 +348,7 @@ def test_signed_request_never_falls_back_to_cookie_authority():
     fallback = session.index("_account_session_record")
     assert signed < fallback, "cookie fallback must sit behind the signed check"
     assert "return await _org_task_signed_session(" in session
-    # The relaxed origin check and the signed session must read the same triple.
+
     assert "self._signed_query()" in runtime[:runtime.index("def query(")]
 
 

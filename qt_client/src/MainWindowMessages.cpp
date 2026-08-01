@@ -1,9 +1,9 @@
-// MainWindowMessages: MainWindow feature methods, split out of MainWindow.cpp.
-// Headless/status messages and the files view.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -16,7 +16,7 @@
 
 using namespace forkmesh::ui;
 
-// ------------------------------------------------------------------ messages
+
 
 static QString chatUserDisplayName(const MemberInfo &member);
 
@@ -61,16 +61,16 @@ QString MainWindow::senderColor(const QString &sender) const
 
 MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
 {
-    // A deleted message leaves no trace in the transcript: drop the whole row
-    // (avatar, sender header, and body) rather than rendering a tombstone. The
-    // message stays in m_history (marked deleted) for dedup/sync; it just isn't
-    // shown.
+
+
+
+
     if (message.deleted)
         return nullptr;
 
-    // Admins get a Delete control on EVERY message — anyone's and their own — as
-    // a full moderation override (MessageRow routes it through the unconditional
-    // admin-delete path).
+
+
+
     QHash<QString, MemberInfo> mentionProfiles;
     for (const MemberInfo &member : std::as_const(m_chatDirectoryUsers))
         addMentionProfile(mentionProfiles, member);
@@ -101,9 +101,9 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
             &MainWindow::saveIncomingFile);
     connect(row, &MessageRow::imageActivated, this,
             &MainWindow::showChatImageDetail);
-    // Clicking a sender's avatar or name in chat opens their node profile. The
-    // profile panel lives in the Home section, so switch there first — otherwise
-    // the panel updates behind the Chat section and nothing appears to happen.
+
+
+
     connect(row, &MessageRow::senderClicked, this,
             [this](const QString &id, const QString &name) {
                 showSection(0);
@@ -126,7 +126,7 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
                 showSection(0);
                 showNodeProfile(id, name);
             });
-    // Insert before the trailing stretch.
+
     m_messageLayout->insertWidget(m_messageLayout->count() - 1, row);
     m_visibleRows.insert(message.id, row);
     return row;
@@ -134,7 +134,7 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
 
 void MainWindow::renderConversationRows()
 {
-    // Drop existing rows (keep the trailing stretch at the end).
+
     m_visibleRows.clear();
     while (m_messageLayout->count() > 1) {
         QLayoutItem *item = m_messageLayout->takeAt(0);
@@ -149,16 +149,16 @@ void MainWindow::renderConversationRows()
 void MainWindow::rebuildConversationView()
 {
     renderConversationRows();
-    // Switching into a conversation always lands at the newest message.
+
     scrollToBottom();
 }
 
 void MainWindow::scrollToBottom()
 {
     m_stickToBottom = true;
-    // The rangeChanged handler scrolls once the new rows expand the range, but
-    // when the range is unchanged (e.g. it already fit) no signal fires, so
-    // pin to the current maximum after layout settles too.
+
+
+
     QTimer::singleShot(0, this, [this] {
         QScrollBar *bar = m_messageScroll->verticalScrollBar();
         bar->setValue(bar->maximum());
@@ -171,27 +171,27 @@ void MainWindow::onMessage(const ChatMessage &message)
     if (conversation.isEmpty())
         return;
 
-    // Drop messages already past the 7-day retention window. Peers replay their
-    // whole in-session history on every reconnect; the id-dedupe below only
-    // covers messages still in the bounded history file, so an expired message
-    // that fell out of it (or a lost file) would otherwise resurrect as "new",
-    // re-lighting the unread badge on every restart for something the user read
-    // days ago. The hourly sweep would evict it again anyway.
+
+
+
+
+
+
     if (message.timestampMs <=
         QDateTime::currentMSecsSinceEpoch() - kChatMessageRetentionMs)
         return;
 
-    // Skip messages we already have (e.g. loaded from disk then replayed by a
-    // peer on reconnect) so history isn't duplicated.
+
+
     if (!message.id.isEmpty()) {
         if (m_historyIds.contains(message.id))
             return;
         m_historyIds.insert(message.id);
     }
 
-    // Open a DM tab on first contact. For an incoming DM the author *is* the
-    // other party (senderId == peerId), so that names the conversation; our
-    // own echoed messages (senderId != peerId) must not rename it.
+
+
+
     if (isDirectConversation(conversation)) {
         const QString peerId = dmPeerId(conversation);
         if (message.senderId == peerId && !message.senderName.isEmpty())
@@ -202,10 +202,10 @@ void MainWindow::onMessage(const ChatMessage &message)
         }
     }
 
-    // Keep history sorted oldest-to-newest by send time, so the transcript
-    // always reads with the most recent message at the bottom even when a
-    // message arrives out of order (e.g. a peer replaying missed history after
-    // a reconnect delivers something older than what's already shown).
+
+
+
+
     QList<ChatMessage> &conversationHistory = m_history[conversation];
     int insertAt = conversationHistory.size();
     while (insertAt > 0 && conversationHistory.at(insertAt - 1).timestampMs > message.timestampMs)
@@ -213,27 +213,27 @@ void MainWindow::onMessage(const ChatMessage &message)
     conversationHistory.insert(insertAt, message);
     const bool appendedAtEnd = insertAt == conversationHistory.size() - 1;
 
-    // Keep the live transcript current when this conversation is loaded, even if
-    // the chat view isn't on screen right now (so returning to it shows the new
-    // rows without a rebuild).
+
+
+
     if (conversation == m_currentConversation) {
         const bool wasAtBottom = m_stickToBottom;
         if (appendedAtEnd)
             addMessageRow(message);
         else
-            renderConversationRows(); // landed earlier in the transcript
-        // Follow new arrivals only when already reading the latest; the
-        // rangeChanged handler does the actual scrolling once the row lays out.
+            renderConversationRows();
+
+
         if (wasAtBottom)
             scrollToBottom();
     }
-    // `self` only recognizes this node's own id, so a message this user typed
-    // on the website, in the World, or on a second device came back looking
-    // like someone else's and lit the unread badge for something they had just
-    // written. chatDisplayName() is the very name this account stamps on its
-    // own outgoing frames, so match incoming senders against it too. Unread and
-    // notification bookkeeping only — nothing that grants an edit or a delete
-    // leans on this weaker, unsigned check.
+
+
+
+
+
+
+
     const QString ownChatName = chatDisplayName().trimmed();
     const bool ownMessage =
         message.self ||
@@ -241,9 +241,9 @@ void MainWindow::onMessage(const ChatMessage &message)
          message.senderName.trimmed().compare(ownChatName, Qt::CaseInsensitive)
              == 0);
 
-    // Mark unread (and light the chat button) for any incoming message the user
-    // isn't actively reading — either a different conversation, or the chat view
-    // isn't the focused, on-screen tab. Own messages never mark unread.
+
+
+
     if (!ownMessage &&
         !(conversation == m_currentConversation && isChatViewVisible())) {
         m_unread.insert(conversation);
@@ -253,9 +253,9 @@ void MainWindow::onMessage(const ChatMessage &message)
     }
     updateChatButton();
 
-    // #welcome traffic is the new-user roll-call (maybeAnnounceWelcome), so a
-    // fresh line there raises a "New user joined" ping whose link brings the
-    // reader straight to the channel (adhoc #88).
+
+
+
     if (!ownMessage && conversation == kWelcomeChannel &&
         message.timestampMs >
             QDateTime::currentMSecsSinceEpoch() - kWelcomePingFreshMs) {
@@ -276,13 +276,13 @@ void MainWindow::onMessage(const ChatMessage &message)
                                   : "in " + conversation;
         const QString preview =
             message.hasFile() ? "File: " + message.fileName : message.text;
-        // Chat is an event like any other: file it on the Pings page and raise
-        // it in the area above the log, with a row that opens the conversation
-        // it came from (adhoc #77). The desktop toast below stays gated by its
-        // own setting; this in-app record is not. Only messages that just
-        // arrived qualify — a peer replaying days of history this node has
-        // never seen must not land as hundreds of "new events" — and #welcome
-        // already raised its own ping above.
+
+
+
+
+
+
+
         constexpr qint64 kChatPingFreshMs = 10 * 60 * 1000;
         if (conversation != kWelcomeChannel &&
             message.timestampMs >
@@ -393,8 +393,8 @@ QString MainWindow::adminDeleteCanonical(const QString &conversation,
                                          const QString &adminPubkey,
                                          qint64 ts) const
 {
-    // Must match both sides byte-for-byte. Binds the delete to this exact
-    // message, conversation, admin key and timestamp.
+
+
     return QStringLiteral("forkmesh-admin-delete-v1\n") + conversation + "\n" +
            messageId + "\n" + adminPubkey + "\n" + QString::number(ts);
 }
@@ -417,8 +417,8 @@ void MainWindow::confirmAdminDeleteMessage(const QString &messageId)
         adminDeleteCanonical(conversation, messageId, pubkey, ts).toUtf8());
     if (sig.isEmpty())
         return;
-    // Trust ourselves: apply locally now, and broadcast the signed request so
-    // every peer can verify and apply it too.
+
+
     m_knownAdminPubkeys.insert(pubkey);
     m_backend->applyAdminDelete(conversation, messageId);
     m_backend->sendAdminDelete(conversation, messageId, ts, sig);
@@ -432,18 +432,18 @@ void MainWindow::onAdminDeleteRequested(const QString &conversation,
 {
     if (messageId.isEmpty() || adminId.isEmpty() || sig.isEmpty())
         return;
-    // 1) The signature must be valid for the claimed admin key. This stops any
-    //    room member from forging an admin delete (chat frames are otherwise
-    //    unsigned), since they can't produce a signature for the admin's key.
+
+
+
     const QByteArray canonical =
         adminDeleteCanonical(conversation, messageId, adminId, ts).toUtf8();
     if (!ForkMeshIdentity::verifySignature(adminId, sig, canonical)) {
         logSystem(QStringLiteral("Ignored an admin delete with a bad signature."));
         return;
     }
-    // 2) The signer must actually be an admin. Trust a cached confirmation, else
-    //    ask the relay (the source of truth for admin status) and confirm the
-    //    account's published key matches the signer before applying.
+
+
+
     if (m_knownAdminPubkeys.contains(adminId)) {
         m_backend->applyAdminDelete(conversation, messageId);
         return;
@@ -467,7 +467,7 @@ void MainWindow::onAdminDeleteRequested(const QString &conversation,
                 const bool isAdmin = rec.value("isAdmin").toBool();
                 const QString pubkey = rec.value("pubkey").toString();
                 if (!isAdmin || pubkey != adminId)
-                    return; // not an admin, or the key doesn't match: reject
+                    return;
                 m_knownAdminPubkeys.insert(adminId);
                 m_backend->applyAdminDelete(conv, mid);
             });
@@ -479,8 +479,8 @@ void MainWindow::onAvatar(const QString &peerId, const QByteArray &pngData)
     if (!pixmap.loadFromData(pngData))
         return;
     m_avatars.insert(peerId, pixmap);
-    // Cache to disk so this avatar survives a restart and stays visible after
-    // the peer goes offline (when they stop re-broadcasting it).
+
+
     const QString path = avatarCachePath(peerId);
     if (!path.isEmpty()) {
         QDir().mkpath(QFileInfo(path).absolutePath());
@@ -491,12 +491,12 @@ void MainWindow::onAvatar(const QString &peerId, const QByteArray &pngData)
             f.write(pngData);
         }
     }
-    // Update any visible rows authored by this peer.
+
     for (auto it = m_visibleRows.constBegin(); it != m_visibleRows.constEnd(); ++it) {
         if (it.value()->senderId() == peerId)
             it.value()->setAvatar(pixmap);
     }
-    // Repaint the users column so its avatar tile picks up the image.
+
     refreshChatMembers();
 }
 
@@ -518,10 +518,10 @@ void MainWindow::setChannels(const QStringList &channels)
     for (const QString &channel : channels)
         if (!forkmesh::office::isOfficeConversation(channel))
             m_channels.append(channel);
-    // The World office's channel rooms sit in the same sidebar as the mesh
-    // rooms. OfficeChannelMirror carries them independently of the primary
-    // chat backend, so they are merged in here instead —
-    // including when this is re-entered with m_channels itself (adhoc #412).
+
+
+
+
     for (const QString &conversation : std::as_const(m_officeConversations))
         if (!m_channels.contains(conversation))
             m_channels.append(conversation);
@@ -531,14 +531,14 @@ void MainWindow::setChannels(const QStringList &channels)
     refreshChannelList();
     updateHomeStats();
     if (m_currentConversation.isEmpty() && !m_channels.isEmpty())
-        m_channelList->setCurrentRow(0); // triggers switchConversation
+        m_channelList->setCurrentRow(0);
 }
 
 void MainWindow::setRoster(const QList<MemberInfo> &members)
 {
-    // Build an index of freshly-received (online) members so we can detect which
-    // previously-known nodes have gone offline. Also un-remove any node that is
-    // back online (it was explicitly removed but has reconnected).
+
+
+
     QSet<QString> freshIds, freshNames;
     for (const MemberInfo &m : members) {
         if (!m.id.isEmpty()) {
@@ -549,9 +549,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             freshNames.insert(m.name);
     }
 
-    // Remember when each peer was last seen live, so a transient visitor can be
-    // aged out below. Keyed by id, falling back to the name for a peer that
-    // somehow has none.
+
+
+
     const auto peerKey = [](const MemberInfo &m) {
         return m.id.isEmpty() ? m.name.trimmed().toLower() : m.id;
     };
@@ -562,9 +562,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             m_peerLastSeenMs.insert(key, nowMs);
     }
 
-    // Merge fresh (online) members with previously-known nodes that dropped out
-    // of the roster, so the Node dropdown keeps them selectable when offline.
-    // Skip nodes that were explicitly removed via removeChatMember.
+
+
+
     QList<MemberInfo> newRoster = members;
     for (const MemberInfo &prev : std::as_const(m_homeRoster)) {
         if (prev.self)
@@ -575,11 +575,11 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             (!prev.id.isEmpty() && freshIds.contains(prev.id)) ||
             (!prev.name.isEmpty() && freshNames.contains(prev.name));
         if (!stillPresent) {
-            // Guests and World visitors are browser tabs, not nodes: retaining
-            // them offline forever filled the users column with dozens of dead
-            // "Guest ####" rows, so forget them once they have gone quiet for
-            // the idle window (adhoc #404). A visitor we have no sighting for
-            // yet starts its clock now.
+
+
+
+
+
             if (ChatVisitorPresence::isTransientVisitor(prev.accountKind,
                                                         prev.name)) {
                 const QString key = peerKey(prev);
@@ -595,8 +595,8 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         }
     }
 
-    // Keep the sighting map bounded to peers the roster still carries: every
-    // visitor id we ever saw would otherwise stay in it for the whole run.
+
+
     QHash<QString, qint64> keptSightings;
     keptSightings.reserve(newRoster.size());
     for (const MemberInfo &m : std::as_const(newRoster)) {
@@ -607,10 +607,10 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     }
     m_peerLastSeenMs = keptSightings;
 
-    // #33: optionally pop a desktop notification when another node comes online.
-    // Capture who was online before this update (m_homeRoster still holds the
-    // previous roster), and skip the very first fill so we don't alert for every
-    // node that was already online when we connected.
+
+
+
+
     const bool firstRoster = m_homeRoster.isEmpty();
     const QString ownId = m_profileIdentity.publicKey();
     const QString ownName = accountOwner();
@@ -628,9 +628,9 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     const bool firstPeerRoster = previouslyOnline.isEmpty();
     if (!firstPeerRoster &&
         QDateTime::currentMSecsSinceEpoch() >= m_nodeAlertGraceUntilMs) {
-        // Never notify about our own node coming online. The roster's "self"
-        // flag isn't always set (e.g. on reconnect), so also match our own node
-        // id (public key) and account name defensively.
+
+
+
         const bool showNodeConnectAlert =
             QSettings().value(kNodeConnectAlertSetting, false).toBool();
         for (const MemberInfo &m : members) {
@@ -640,23 +640,23 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
                 continue;
             if (!ownName.isEmpty() && m.name.compare(ownName, Qt::CaseInsensitive) == 0)
                 continue;
-            // A plain user account (accountKind "user") is a person, not a
-            // serving node — e.g. a desktop signed in as a user rather than a
-            // linked node, or ForkBot's relayed chat identity. Announcing it as
-            // "Node connected" is misleading (adhoc #37 hit this same mix-up in
-            // the node switcher); missing accountKind (older peers) still
-            // counts as a node for backward compatibility.
+
+
+
+
+
+
             if (m.accountKind == QLatin1String("user"))
                 continue;
-            // Anonymous chat guests are people passing through, not nodes
-            // (adhoc #308). A first-run desktop guest still advertises its
-            // machine's nodeName (adhoc #113), so that machine still counts.
+
+
+
             if (isTemporaryChatGuest(m))
                 continue;
             if (!previouslyOnline.contains(m.id)) {
-                // This is a node alert: name the machine (nodeName first).
-                // A first-run desktop's chat alias is "Guest ####" while its
-                // machine keeps the generated node name (adhoc #113).
+
+
+
                 QString displayName = nodeListIdentityKey(m).trimmed();
                 if (displayName.isEmpty())
                     displayName = m.id;
@@ -670,12 +670,12 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
     }
 
     m_homeRoster = newRoster;
-    // Now that the room link is live (a roster only arrives once connected), a
-    // brand-new node sends its one-time greeting to the identity-specific
-    // welcome room — once, ever (issue #192).
+
+
+
     maybeAnnounceWelcome();
     refreshChatMembers();
-    // Keep DM tab titles in sync with renamed/rediscovered live members.
+
     for (const MemberInfo &member : members) {
         if (m_dmNames.contains(member.id) && m_dmNames.value(member.id) != member.name) {
             m_dmNames.insert(member.id, member.name);
@@ -685,16 +685,16 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         }
     }
 
-    // Nodes live in the top-bar Node dropdown; refresh it (and the repo list)
-    // to reflect live connection status.
+
+
     refreshRepositoryList();
     updateHomeStats();
     updateConnectionStatus();
-    // Keep the open repo's Mirror nodes view (and its tab count) live as peers
-    // come and go or re-advertise fresher mirrors. Coalesced: the rebuild runs
-    // ~10 synchronous git reads plus per-row lookups, and roster updates arrive
-    // in bursts while presence flickers, so rebuild at most twice a second
-    // instead of once per event (stall log: loadMirrorNodesPanel <- setRoster).
+
+
+
+
+
     if (m_repoDetailIndex >= 0) {
         if (!m_mirrorPanelRosterTimer) {
             m_mirrorPanelRosterTimer = new QTimer(this);
@@ -708,52 +708,52 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
         if (!m_mirrorPanelRosterTimer->isActive())
             m_mirrorPanelRosterTimer->start();
     }
-    // A re-advertised roster can mean the source of truth just moved: pull any
-    // repo whose served state is now behind a peer's, immediately, instead of
-    // waiting for the next heartbeat/auto-sync.
+
+
+
     if (!firstRoster)
         syncMirrorsBehindRoster();
 }
 
 QString MainWindow::welcomeChannelForIdentity() const
 {
-    // One shared welcome room for everyone now (see maybeAnnounceWelcome for who
-    // actually posts a greeting).
+
+
     return kWelcomeChannel;
 }
 
 void MainWindow::maybeAnnounceWelcome()
 {
-    // Self-announce, not peer-detect: only the joining node posts, so the room
-    // gets exactly one "X joined" line instead of one per node that saw them.
-    // The greeting is broadcast (and stored in room history for later joiners),
-    // so even an empty network keeps a record of who arrived.
+
+
+
+
     if (m_welcomeAnnounced || !m_backend)
         return;
     const QString id = m_profileIdentity.publicKey();
     if (id.isEmpty())
         return;
-    // Only new *users* with a verified email greet the network. Plain nodes and
-    // accounts whose email isn't confirmed never post — this is what stops the
-    // stream of node/unverified "just joined" lines the old #welcome-nodes /
-    // #welcome-users rooms collected. Checked before the one-time flag is
-    // touched so an account that verifies its email later this session still
-    // gets to greet on a subsequent roster tick.
+
+
+
+
+
+
     if (!m_profileIsUserAccount ||
         !accountEmailVerified(settingsAccountName()))
         return;
-    // The flag lives next to the identity key itself (not QSettings, which can
-    // live in a separate, less-persistent config location on some deployments —
-    // e.g. a headless node whose identity dir is on a persistent volume but
-    // whose settings dir isn't, which was re-triggering this greeting on every
-    // restart). Colocating the two means the greeting can only fire again if the
-    // identity itself was also lost, which is exactly when it should.
+
+
+
+
+
+
     if (m_profileIdentity.hasAnnouncedWelcome()) {
-        m_welcomeAnnounced = true; // greeted in an earlier run; don't repeat
+        m_welcomeAnnounced = true;
         return;
     }
-    // Migrate the legacy QSettings flag: a node that greeted before the flag
-    // moved must not greet again on its first run after upgrading.
+
+
     if (QSettings().value(kLegacyWelcomeAnnouncedSettingPrefix + id, false)
             .toBool()) {
         m_profileIdentity.markWelcomeAnnounced();
@@ -786,25 +786,25 @@ static QString chatUserKey(const MemberInfo &member)
 }
 
 namespace {
-// One node belonging to a user, rendered as a small OS badge under the name.
+
 struct ChatNodeBadge {
-    QString label;    // node name, shown in the tooltip
-    QString platform; // linux/macos/windows/… -> osBadgeIcon glyph
+    QString label;
+    QString platform;
     bool online = false;
 };
 
-// A chat participant collapsed across every node they run, so one person shows
-// up once instead of once per node (issue #411).
+
+
 struct ChatUserGroup {
-    MemberInfo primary;         // canonical row (prefers the directory user)
-    QString key;                // grouping key (owning account, when known)
-    QString anchorId;           // a real node id, for disambiguating look-alikes
-    QList<ChatNodeBadge> nodes; // this user's nodes, live and directory-listed
-    QSet<QString> nodeKeys;     // lower(nodeName|id) already added, to dedupe
+    MemberInfo primary;
+    QString key;
+    QString anchorId;
+    QList<ChatNodeBadge> nodes;
+    QSet<QString> nodeKeys;
     bool online = false;
 };
 
-// The account a directory entry represents: its owner, else its own name.
+
 QString directoryUserKey(const MemberInfo &u)
 {
     if (u.self)
@@ -813,22 +813,22 @@ QString directoryUserKey(const MemberInfo &u)
     return (owner.isEmpty() ? u.name.trimmed() : owner).toLower();
 }
 
-// Same account key, ignoring the "self" shortcut: the users column groups every
-// row by account name, so the directory has to be indexed by that name too.
+
+
 QString directoryAccountKey(const MemberInfo &u)
 {
     const QString owner = u.ownerUser.trimmed();
     return (owner.isEmpty() ? u.name.trimmed() : owner).toLower();
 }
-} // namespace
+}
 
 void MainWindow::refreshChatUserDirectory()
 {
     if (!m_networkAccess || m_chatDirectoryFetchInFlight)
         return;
-    // Keep polling so a brand-new signup appears in the users column within a
-    // minute, like the website's chat does (adhoc #208/#209). Cheap: the worker
-    // edge-caches /api/accounts/users and invalidates that cache on signup.
+
+
+
     if (!m_chatDirectoryTimer) {
         m_chatDirectoryTimer = new QTimer(this);
         m_chatDirectoryTimer->setInterval(60 * 1000);
@@ -902,15 +902,15 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
             QPixmap avatar;
             if (avatar.loadFromData(png))
                 m_avatars.insert(member.id, avatar);
-            // Our own row is the account's picture as the website shows it —
-            // adopt it so the rail avatar matches the web (adhoc #19).
+
+
             if (member.self)
                 adoptWebAccountAvatar(png);
         }
         next.insert(key, member);
     }
-    // Surface signups that happened while we were running (skip the first fill,
-    // which would "announce" every existing account).
+
+
     if (m_chatDirectoryLoaded) {
         for (auto it = next.constBegin(); it != next.constEnd(); ++it) {
             if (!m_chatDirectoryUsers.contains(it.key()) && !it.value().self)
@@ -920,9 +920,9 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
     }
     m_chatDirectoryLoaded = true;
     m_chatDirectoryUsers = next;
-    // The public user directory is also the database-backed source of each
-    // account's linked node fleet. Keep the Nodes page in step so offline nodes
-    // do not disappear merely because they are absent from this chat roster.
+
+
+
     if (m_nodesTable)
         refreshNodesTable();
     if (m_networkReposTable && !m_networkReposLastPayload.isEmpty())
@@ -939,13 +939,13 @@ void MainWindow::mergeChatUserDirectory(const QJsonArray &users)
 
 void MainWindow::refreshChatMembers()
 {
-    // Keep the @-mention candidates in step with the roster (this runs on every
-    // roster update), even before the room-members popup itself exists.
+
+
     refreshMentionCandidates();
     if (!m_chatMembersLayout)
         return;
 
-    // Clear every card but keep the trailing stretch (the last layout item).
+
     while (m_chatMembersLayout->count() > 1) {
         QLayoutItem *item = m_chatMembersLayout->takeAt(0);
         if (QWidget *w = item->widget())
@@ -953,11 +953,11 @@ void MainWindow::refreshChatMembers()
         delete item;
     }
 
-    // The backend directory knows which nodes each user owns. Map every owned
-    // node name back to its user so an unlinked node (no ownerUser on the wire)
-    // still collapses under its owner instead of showing as its own "user".
-    QHash<QString, QString> nodeOwner;      // lower(nodeName) -> user key
-    QHash<QString, QStringList> ownedNodes; // user key -> owned node names
+
+
+
+    QHash<QString, QString> nodeOwner;
+    QHash<QString, QStringList> ownedNodes;
     for (const MemberInfo &u : std::as_const(m_chatDirectoryUsers)) {
         const QString key = directoryUserKey(u);
         const QStringList names =
@@ -970,10 +970,10 @@ void MainWindow::refreshChatMembers()
         }
     }
 
-    // Group by the owning account: ownerUser when advertised, else the node's
-    // owner resolved through the directory, else the display name. Two genuinely
-    // different people with the same name keep separate groups (and get a
-    // disambiguating id below); a person's several nodes fold into one.
+
+
+
+
     auto groupKeyFor = [&](const MemberInfo &m) -> QString {
         const QString owner = m.ownerUser.trimmed().toLower();
         if (!owner.isEmpty())
@@ -984,11 +984,11 @@ void MainWindow::refreshChatMembers()
         const QString nameL = m.name.trimmed().toLower();
         if (!nameL.isEmpty() && nodeOwner.contains(nameL))
             return nodeOwner.value(nameL);
-        // "You" must fold into your OWN account's group (its directory entry and
-        // owned nodes), not form a separate "\x01self" island — otherwise the
-        // local user showed up as a second participant next to their own account
-        // (a duplicate "jett"). Only fall back to a self-only key if the account
-        // name is somehow unknown.
+
+
+
+
+
         if (m.self) {
             const QString selfOwner = accountOwner().trimmed().toLower();
             if (!selfOwner.isEmpty())
@@ -998,7 +998,7 @@ void MainWindow::refreshChatMembers()
     };
 
     QList<ChatUserGroup> groups;
-    QHash<QString, int> groupIndex; // key -> index in `groups`
+    QHash<QString, int> groupIndex;
     auto addMember = [&](MemberInfo member) {
         const bool online = member.self ? (m_backend != nullptr) : member.online;
         member.online = online;
@@ -1023,16 +1023,16 @@ void MainWindow::refreshChatMembers()
             idx = *it;
             ChatUserGroup &g = groups[idx];
             g.online = g.online || online;
-            // Prefer the directory entry as the canonical row (stable account
-            // name + avatar), but never let it hide that a node is live.
+
+
             const bool curDirectory =
                 g.primary.id.startsWith(QStringLiteral("user:"));
             if (isDirectory && !curDirectory) {
                 const bool wasOnline = g.primary.online;
                 member.online = wasOnline || online;
-                // Keep the "you" marker when the canonical row becomes the
-                // directory entry, so the merged self group still sorts first
-                // and renders as you.
+
+
+
                 member.self = member.self || g.primary.self;
                 g.primary = member;
             }
@@ -1042,8 +1042,8 @@ void MainWindow::refreshChatMembers()
                 m_avatars.insert(g.primary.id, m_avatars.value(member.id));
         }
 
-        // A directory entry's nodeName is a joined list, not a single node; its
-        // nodes are expanded from ownedNodes below. Live peers are real nodes.
+
+
         if (!isDirectory) {
             ChatUserGroup &g = groups[idx];
             if (g.anchorId.isEmpty() && !member.id.isEmpty())
@@ -1066,9 +1066,9 @@ void MainWindow::refreshChatMembers()
             }
         }
     };
-    // Resolve the live roster to registered accounts first. Roster identities
-    // that have no database directory row are transient nodes/Guest users and
-    // must never appear in the room's user picker.
+
+
+
     QHash<QString, QList<MemberInfo>> liveByUser;
     for (const MemberInfo &member : std::as_const(m_homeRoster)) {
         if (!member.self && !member.online)
@@ -1084,9 +1084,9 @@ void MainWindow::refreshChatMembers()
         m_officeChannelMirror &&
         m_officeChannelMirror->isPrivateConversation(m_currentConversation);
     if (privateOfficeRoom) {
-        // The channel list is authorized for this account and returns the
-        // private room's stored database membership. It is deliberately not
-        // inferred from the global presence roster.
+
+
+
         for (const QString &username :
              m_officeChannelMirror->membersForConversation(
                  m_currentConversation)) {
@@ -1095,8 +1095,8 @@ void MainWindow::refreshChatMembers()
                 roomUserKeys.insert(key);
         }
     } else if (isDirectConversation(m_currentConversation)) {
-        // A direct room contains the two registered accounts, not everyone
-        // currently visible on the relay.
+
+
         const QString selfKey = accountOwner().trimmed().toLower();
         if (m_chatDirectoryUsers.contains(selfKey))
             roomUserKeys.insert(selfKey);
@@ -1114,13 +1114,13 @@ void MainWindow::refreshChatMembers()
             break;
         }
     } else {
-        // Public mesh/office rooms (#general and friends) are open to every
-        // registered account, so the users column lists the whole database
-        // directory instead of only whoever happens to be online right now
-        // (adhoc #129). Presence still drives the online dot, the sort order
-        // and the node badges below; it just no longer decides membership.
-        // Guests and unregistered node aliases have no directory row, so they
-        // still stay out.
+
+
+
+
+
+
+
         for (auto it = m_chatDirectoryUsers.constBegin();
              it != m_chatDirectoryUsers.constEnd(); ++it)
             roomUserKeys.insert(it.key());
@@ -1137,15 +1137,15 @@ void MainWindow::refreshChatMembers()
             addMember(member);
     }
 
-    // The users column lists people, and the only people are the registered
-    // accounts /api/accounts/users returns. Everything else that turns up on the
-    // roster — anonymous "Guest 3923" browser tabs, World visitors, bare nodes
-    // with no owning account — is not a user and is dropped here instead of
-    // padding the column (and its count) with rows nobody can look up.
-    //
-    // Only applied once the directory has actually loaded: before the first
-    // successful fetch (or if it fails) an empty directory must not blank the
-    // column. Our own row always stays, even if our account isn't listed yet.
+
+
+
+
+
+
+
+
+
     if (m_chatDirectoryLoaded) {
         QSet<QString> accountKeys;
         for (const MemberInfo &u : std::as_const(m_chatDirectoryUsers)) {
@@ -1162,11 +1162,11 @@ void MainWindow::refreshChatMembers()
                                                !accountKeys.contains(g.key);
                                     }),
                      groups.end());
-        groupIndex.clear(); // indices no longer line up; not used past here
+        groupIndex.clear();
     }
 
-    // Fill in any owned nodes we didn't see live, as offline badges, so a user's
-    // full fleet shows even when some (or all) of it is offline.
+
+
     for (ChatUserGroup &g : groups) {
         for (const QString &n : ownedNodes.value(g.key)) {
             const QString nl = n.trimmed().toLower();
@@ -1190,8 +1190,8 @@ void MainWindow::refreshChatMembers()
                                                 Qt::CaseInsensitive) < 0;
               });
 
-    // Which display names are shared by more than one user? Only those rows need
-    // a small id underneath to tell the look-alikes apart.
+
+
     QHash<QString, int> nameCounts;
     for (const ChatUserGroup &g : std::as_const(groups))
         ++nameCounts[g.primary.name.toLower()];
@@ -1199,8 +1199,8 @@ void MainWindow::refreshChatMembers()
     for (const ChatUserGroup &group : std::as_const(groups)) {
         const MemberInfo &member = group.primary;
 
-        // The whole card is clickable: it opens the user's profile popup with
-        // their join date and account info (adhoc #209).
+
+
         auto *card = new ClickableIssueBody;
         card->setCursor(Qt::PointingHandCursor);
         card->setToolTip(QStringLiteral("View profile"));
@@ -1224,7 +1224,7 @@ void MainWindow::refreshChatMembers()
         row->setContentsMargins(4, 4, 4, 4);
         row->setSpacing(10);
 
-        // Avatar: real one if known, else a generated letter tile.
+
         QPixmap avatar = m_avatars.value(member.id);
         if (avatar.isNull())
             avatar = letterFavicon(member.name);
@@ -1254,7 +1254,7 @@ void MainWindow::refreshChatMembers()
         nameLabel->setToolTip(tooltip);
         col->addWidget(nameLabel, 0);
 
-        // Disambiguate look-alike usernames with a short, stable id.
+
         if (nameCounts.value(member.name.toLower()) > 1) {
             QString raw = group.anchorId.isEmpty() ? group.key : group.anchorId;
             if (raw.startsWith(QStringLiteral("user:")))
@@ -1273,7 +1273,7 @@ void MainWindow::refreshChatMembers()
             }
         }
 
-        // The user's nodes as small OS badges, one per node (issue #411).
+
         if (!group.nodes.isEmpty()) {
             auto *nodesRow = new QWidget;
             auto *nl = new QHBoxLayout(nodesRow);
@@ -1326,9 +1326,9 @@ void MainWindow::refreshChatMembers()
     }
 }
 
-// Profile popup for a chat users-column row (adhoc #209): identity, when they
-// joined, their nodes, and richer account info (bio, location, followers…)
-// fetched live from the public accounts API.
+
+
+
 void MainWindow::showChatUserProfile(const MemberInfo &member,
                                      const QStringList &nodeLines)
 {
@@ -1343,7 +1343,7 @@ void MainWindow::showChatUserProfile(const MemberInfo &member,
     dialog->setWindowTitle(member.name);
     dialog->setMinimumWidth(380);
 
-    // --- Header: avatar + name + online state.
+
     QPixmap avatar = m_avatars.value(member.id);
     if (avatar.isNull())
         avatar = letterFavicon(member.name);
@@ -1379,8 +1379,8 @@ void MainWindow::showChatUserProfile(const MemberInfo &member,
     headRow->addWidget(icon, 0, Qt::AlignTop);
     headRow->addLayout(headText, 1);
 
-    // --- Details table, re-rendered when the async account lookup fills in
-    // the rest. Rows we don't know yet are simply absent.
+
+
     auto *details = new QLabel;
     details->setTextFormat(Qt::RichText);
     details->setWordWrap(true);
@@ -1394,8 +1394,8 @@ void MainWindow::showChatUserProfile(const MemberInfo &member,
     };
     auto facts = std::make_shared<ProfileFacts>();
     facts->joinedMs = member.createdAtMs;
-    // The directory user carries createdAt; a live node picked before its
-    // directory entry may not — the same-account directory row fills it.
+
+
     if (facts->joinedMs <= 0) {
         const MemberInfo dirUser = m_chatDirectoryUsers.value(account);
         facts->joinedMs = dirUser.createdAtMs;
@@ -1448,7 +1448,7 @@ void MainWindow::showChatUserProfile(const MemberInfo &member,
     };
     renderDetails();
 
-    // Bio paragraph, filled by the lookup when the account has one.
+
     auto *bioLabel = new QLabel;
     bioLabel->setWordWrap(true);
     bioLabel->setVisible(false);
@@ -1456,13 +1456,13 @@ void MainWindow::showChatUserProfile(const MemberInfo &member,
     auto *loadingLabel = new QLabel(QString::fromUtf8("Loading profile\xE2\x80\xA6"));
     loadingLabel->setStyleSheet(QStringLiteral("color:#8b949e; font-size:11px;"));
 
-    // --- Actions: DM them (needs a live node), open the full web profile.
+
     auto *buttonRow = new QHBoxLayout;
     buttonRow->setContentsMargins(0, 0, 0, 0);
     buttonRow->setSpacing(8);
     if (!member.self) {
-        // A DM needs a live peer: prefer the clicked entry's own id when it is
-        // a real node, else any online roster node owned by this account.
+
+
         QString peerId, peerName;
         if (!member.id.isEmpty() &&
             !member.id.startsWith(QStringLiteral("user:")) && member.online) {
@@ -1522,9 +1522,9 @@ void MainWindow::showChatUserProfile(const MemberInfo &member,
     layout->addStretch(1);
     layout->addLayout(buttonRow);
 
-    // --- Fill in the rest from the public account lookup (join date for live
-    // nodes, bio, location, follower counts, admin badge). Guarded with
-    // QPointers: the reply may land after the popup was closed.
+
+
+
     if (m_networkAccess && !account.isEmpty()) {
         QNetworkRequest request(accountsApiUrl(account));
         request.setRawHeader("Accept", "application/json");
@@ -1580,14 +1580,14 @@ void MainWindow::removeChatMember(const QString &id, const QString &name)
     if (id.isEmpty())
         return;
 
-    // Mark before forgetMember fires rosterChanged, so the retain loop in
-    // setRoster skips this id and doesn't bring it back as an offline entry.
+
+
     m_removedPeerIds.insert(id);
 
     if (m_backend)
         m_backend->forgetMember(id);
 
-    // Drop any open direct chat with them and leave that conversation.
+
     const QString conversation = dmKey(id);
     m_openDms.removeAll(id);
     m_dmNames.remove(id);
@@ -1619,8 +1619,8 @@ void MainWindow::removeChatMember(const QString &id, const QString &name)
         }
     }
 
-    // Remove the stale roster entry now; a fresh roster update re-adds them if
-    // they join the network again.
+
+
     QList<MemberInfo> remaining;
     for (const MemberInfo &m : std::as_const(m_homeRoster))
         if (m.id != id)
@@ -1636,8 +1636,8 @@ void MainWindow::refreshChannelList()
     QSignalBlocker blocker(m_channelList);
     m_channelList->clear();
     for (const QString &channel : std::as_const(m_channels)) {
-        // Private rooms get a padlock so they read differently from public
-        // channels in the same list.
+
+
         const QString prefix = (m_unread.contains(channel) ? "\xE2\x97\x8F " : "") +
                                (m_privateChannels.contains(channel)
                                     ? QString::fromUtf8("\xF0\x9F\x94\x92 ")
@@ -1677,8 +1677,8 @@ void MainWindow::switchConversation(const QString &conversation)
     m_currentConversation = conversation;
     m_unread.remove(conversation);
     m_unreadCounts.remove(conversation);
-    // Unread state persists across restarts now, so reading a conversation has
-    // to reach disk too — otherwise a restart resurrects the cleared badge.
+
+
     scheduleChatSave();
 
     QString title = conversation;
@@ -1694,7 +1694,7 @@ void MainWindow::switchConversation(const QString &conversation)
     refreshTypingLabel();
     refreshChatMembers();
 
-    // Selection lives in exactly one sidebar list at a time.
+
     if (isDirectConversation(conversation)) {
         QSignalBlocker blocker(m_channelList);
         m_channelList->clearSelection();
@@ -1715,7 +1715,7 @@ void MainWindow::openDirectChat(const QString &peerId, const QString &peerName)
         m_openDms.append(peerId);
         refreshDmList();
     }
-    showChatView(); // chat has no tab now — surface the chat view explicitly
+    showChatView();
     switchConversation(dmKey(peerId));
     m_messageInput->setFocus();
 }
@@ -1744,13 +1744,13 @@ void MainWindow::promptAddPrivateChannel()
     if (!ok || trimmed.isEmpty() || trimmed == "#")
         return;
     m_backend->createPrivateChannel(trimmed);
-    // Jump into the new room. createPrivateChannel prepends '#' if missing, so
-    // match that when switching to it.
+
+
     QString key = trimmed;
     if (!key.startsWith('#'))
         key.prepend('#');
     switchConversation(key);
-    // Offer to invite people right away.
+
     promptInviteToPrivateChannel();
 }
 
@@ -1765,8 +1765,8 @@ void MainWindow::promptInviteToPrivateChannel()
         return;
     }
 
-    // Invites still require a live backend peer id, so offer online members only,
-    // de-duplicated by user name so one person's several nodes appear once.
+
+
     QMenu menu(this);
     QSet<QString> seen;
     bool any = false;
@@ -1816,8 +1816,8 @@ void MainWindow::promptDeleteRoom(const QString &channel)
     persistPrivateChannels();
     m_unread.remove(channel);
     m_unreadCounts.remove(channel);
-    // Leaving the room we're viewing: fall back to the first remaining channel
-    // (or clear the view if none are left).
+
+
     if (m_currentConversation == channel) {
         m_currentConversation.clear();
         const QString fallback = m_channels.value(0);
@@ -1850,9 +1850,9 @@ void MainWindow::persistPrivateChannels()
     QSettings().setValue(QStringLiteral("chat/privateChannels"), list);
 }
 
-// Office conversations use a separate ticketed socket. This predicate keeps
-// unsupported operations (typing/reactions/attachments) off the mesh backend;
-// plain text is routed through OfficeChannelMirror below.
+
+
+
 bool MainWindow::isOfficeConversation(const QString &conversation) const
 {
     return forkmesh::office::isOfficeConversation(conversation);
@@ -1897,9 +1897,9 @@ void MainWindow::sendMessageToPrompt(const QString &text)
 {
     if (text.isEmpty())
         return;
-    // The footer's bottom-right prompt box, not the chat input: a message worth
-    // reusing is almost always a task for an agent, so it lands where the
-    // app-wide "Send to Prompt" selection action puts text (adhoc #108).
+
+
+
     appendTextToActivePrompt(text);
 }
 
@@ -1907,10 +1907,10 @@ void MainWindow::showEmojiPicker(QWidget *anchor)
 {
     if (!m_messageInput)
         return;
-    // A curated grid of common emoji, encoded as UTF-8 (the codebase's
-    // convention — a color-emoji font is bundled so these render in color).
+
+
     static const char *const kEmoji[] = {
-        "\xF0\x9F\x98\x80" /*😀*/, "\xF0\x9F\x98\x81", "\xF0\x9F\x98\x82",
+        "\xF0\x9F\x98\x80"  , "\xF0\x9F\x98\x81", "\xF0\x9F\x98\x82",
         "\xF0\x9F\xA4\xA3", "\xF0\x9F\x98\x8A", "\xF0\x9F\x98\x8D",
         "\xF0\x9F\x98\x8E", "\xF0\x9F\x98\x89", "\xF0\x9F\x99\x82",
         "\xF0\x9F\x98\xA2", "\xF0\x9F\x98\xAD", "\xF0\x9F\x98\xA1",
@@ -1958,12 +1958,12 @@ void MainWindow::showEmojiPicker(QWidget *anchor)
 
 void MainWindow::maybeAskForkbot(const QString &conversation, const QString &text)
 {
-    // Mirror of the web chat's maybeAskForkbot: only the message's own author
-    // triggers the bot (so several connected clients never double-fire it),
-    // only in public channels (a private room's members deliberately excluded
-    // the relay — the bot round-trip would leak the text to it), and the
-    // recent conversation rides along so ForkBot can resolve references like
-    // "that bug" the same way it does for web users.
+
+
+
+
+
+
     static const QRegularExpression forkbotMention(
         QStringLiteral("(?:^|[^A-Za-z0-9_-])@?forkbot\\b"),
         QRegularExpression::CaseInsensitiveOption);
@@ -1974,13 +1974,13 @@ void MainWindow::maybeAskForkbot(const QString &conversation, const QString &tex
     if (!forkbotMention.match(text).hasMatch())
         return;
 
-    // The lead-up conversation, oldest first: the last few non-ForkBot lines
-    // before the triggering message (which sendChat just appended via
-    // emitChat -> onMessage, so it is the final history entry — drop it; the
-    // relay receives it separately as `message`).
+
+
+
+
     QJsonArray context;
     const QList<ChatMessage> &history = m_history.value(conversation);
-    const int end = history.size() - 1; // exclude the triggering message
+    const int end = history.size() - 1;
     for (int i = qMax(0, end - 12); i < end; ++i) {
         const ChatMessage &entry = history.at(i);
         if (entry.senderId == QLatin1String("forkbot") || entry.text.isEmpty())
@@ -2013,16 +2013,16 @@ void MainWindow::maybeAskForkbot(const QString &conversation, const QString &tex
             resp.value(QStringLiteral("botMessage")).toString().trimmed();
         if (botMessage.isEmpty() || !m_backend)
             return;
-        // Relay the reply into the room as forkbot so every surface (desktop
-        // + web) sees the same answer.
+
+
         m_backend->sendBotChat(channel, botMessage);
     });
 }
 
 void MainWindow::onComposerEdited(const QString &text)
 {
-    // Offer @-mention completions as the user types (independent of the typing
-    // indicator, which needs a live backend + conversation).
+
+
     updateMentionPopup();
     if (!m_backend || m_currentConversation.isEmpty())
         return;
@@ -2034,10 +2034,10 @@ void MainWindow::onComposerEdited(const QString &text)
     m_typingStopTimer->start(2500);
 }
 
-// The word ending at the caret that an @-mention is being typed into, or empty
-// when the caret isn't inside one. `tokenStart` (when given) receives the index
-// of the leading '@'. An '@' only opens a mention at the start of the line or
-// after whitespace, so emails and "a@b" mid-word don't trigger the popup.
+
+
+
+
 static QString mentionTokenAt(const QString &text, int cursor, int *tokenStart)
 {
     if (tokenStart)
@@ -2055,8 +2055,8 @@ static QString mentionTokenAt(const QString &text, int cursor, int *tokenStart)
     return text.mid(start + 1, cursor - start - 1);
 }
 
-// Names a message can @-mention: every known user except ourselves, de-duped
-// and sorted so the popup is stable. Self is excluded — you don't ping yourself.
+
+
 void MainWindow::refreshMentionCandidates()
 {
     if (!m_mentionModel)
@@ -2100,7 +2100,7 @@ void MainWindow::updateMentionPopup()
         m_mentionCompleter->popup()->hide();
         return;
     }
-    // Width the popup to its widest entry; complete() anchors it under the input.
+
     QRect rect = m_messageInput->rect();
     rect.setWidth(m_mentionCompleter->popup()->sizeHintForColumn(0) + 24);
     m_mentionCompleter->complete(rect);
@@ -2164,7 +2164,7 @@ void MainWindow::refreshTypingLabel()
     }
 }
 
-// ------------------------------------------------------------------- files
+
 
 void MainWindow::attachFile()
 {
@@ -2180,7 +2180,7 @@ void MainWindow::attachFile()
         QMessageBox::warning(this, "Share a file", "Could not read " + path);
         return;
     }
-    // Keep LAN transfers reasonable; the wire frame caps at ~96 MB.
+
     const qint64 maxBytes = 64ll * 1024 * 1024;
     if (file.size() > maxBytes) {
         QMessageBox::warning(this, "Share a file",
@@ -2194,15 +2194,15 @@ void MainWindow::attachFile()
     m_backend->sendFile(m_currentConversation, info.fileName(), mime, data);
 }
 
-// Open a chat image attachment full-size in a lightbox dialog. The inline row
-// only shows a downscaled preview; this restores the original pixels (scaled down
-// only if larger than the screen) inside a scrollable, frameless viewer.
+
+
+
 void MainWindow::showChatImageDetail(const QString &fileName,
                                      const QByteArray &data)
 {
     QPixmap pixmap;
     if (!pixmap.loadFromData(data)) {
-        // Not a decodable image after all — fall back to the save dialog.
+
         saveIncomingFile(fileName, data);
         return;
     }
@@ -2213,8 +2213,8 @@ void MainWindow::showChatImageDetail(const QString &fileName,
     dialog->setWindowTitle(fileName.isEmpty() ? QStringLiteral("Image")
                                               : fileName);
 
-    // Cap the displayed size to most of the available screen so huge images
-    // don't open larger than the monitor; smaller images show at native size.
+
+
     QSize maxSize(1200, 800);
     if (QScreen *screen = QGuiApplication::primaryScreen()) {
         const QSize avail = screen->availableSize();
@@ -2264,9 +2264,9 @@ void MainWindow::showChatImageDetail(const QString &fileName,
     dialog->show();
 }
 
-// If the clipboard holds an image (e.g. a screenshot), share it in the current
-// conversation as a PNG attachment and return true. Used to support Ctrl+V in
-// the composer; returns false so a normal text paste proceeds as usual.
+
+
+
 bool MainWindow::trySendClipboardImage()
 {
     if (!m_backend || m_currentConversation.isEmpty() ||

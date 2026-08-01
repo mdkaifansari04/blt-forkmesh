@@ -131,7 +131,7 @@ DiscussionEvent eventFromFrontMatter(const FrontMatter &fm)
     return ev;
 }
 
-} // namespace
+}
 
 QJsonObject DiscussionEvent::toJson() const
 {
@@ -494,8 +494,8 @@ bool DiscussionStore::deleteComment(int number, const QString &eventId,
         return false;
     }
 
-    // Drop the matching comment event. Index 0 is the opening post, which is not
-    // deletable through this path.
+
+
     int removed = -1;
     for (int i = 1; i < discussion.events.size(); ++i) {
         const DiscussionEvent &ev = discussion.events.at(i);
@@ -511,9 +511,9 @@ bool DiscussionStore::deleteComment(int number, const QString &eventId,
     }
     discussion.events.removeAt(removed);
 
-    // writeDiscussionFile re-numbers the surviving comments from scratch, so the
-    // stale NNNN-comment.md left over by the now-smaller count must be cleared
-    // first, or the deleted comment would resurface on the next load.
+
+
+
     QDir dir(discussionDir(number));
     for (const QString &name : dir.entryList(QDir::Files, QDir::Name)) {
         if (commentFileRe().match(name).hasMatch())

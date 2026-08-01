@@ -28,10 +28,10 @@ constexpr int kGitRewriteTimeoutMs = 120000;
 
 QString issuesRootRel() { return QStringLiteral(".forkmesh/issues"); }
 
-// Issues are split by status: open ones live under .forkmesh/issues/open/<n>/,
-// closed ones under .forkmesh/issues/closed/<n>/ (the folder moves when the
-// status flips). Pre-split repos kept everything at .forkmesh/issues/<n>/;
-// readers accept that legacy layout too.
+
+
+
+
 QString openDirName() { return QStringLiteral("open"); }
 QString closedDirName() { return QStringLiteral("closed"); }
 
@@ -50,8 +50,8 @@ QString issueMediaDirName(int number)
     return QString::number(number);
 }
 
-// Candidate repo-relative folders for issue <n>, in the order readers probe
-// them: open/<n>, closed/<n>, then the pre-split legacy <n>.
+
+
 QStringList issueDirRelCandidates(int number)
 {
     const QString name = issueMediaDirName(number);
@@ -62,8 +62,8 @@ QStringList issueDirRelCandidates(int number)
             issuesRootRel() + QLatin1Char('/') + name};
 }
 
-// Numeric issue folders directly under `dir` (a status subdir or the legacy
-// root).
+
+
 QList<int> numericDirEntries(const QString &dir)
 {
     QList<int> numbers;
@@ -78,8 +78,8 @@ QList<int> numericDirEntries(const QString &dir)
     return numbers;
 }
 
-// Run git in `dir`, capturing stdout. Returns false (with optional error text)
-// on non-zero exit or timeout. Mirrors RepoHost's helper.
+
+
 bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nullptr,
             QString *errText = nullptr, int timeoutMs = kGitTimeoutMs)
 {
@@ -106,10 +106,10 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
     return true;
 }
 
-// Like runGit, but feeds `input` to the process's stdin. Used for batched reads
-// (`git cat-file --batch`) so a whole tree of blobs is fetched in one process
-// instead of one `git show` per file. waitForFinished services both channels, so
-// large input/output won't deadlock the pipes.
+
+
+
+
 bool runGitInput(const QString &dir, const QStringList &args, const QByteArray &input,
                  QByteArray *output, QString *errText = nullptr,
                  int timeoutMs = kGitTimeoutMs)
@@ -290,10 +290,10 @@ bool copiedEveryAttachment(const QStringList &srcPaths,
     return false;
 }
 
-// Content-addressed filename shared by copyAttachments() (which writes the
-// file under this name) and readAttachmentsForRemoteSubmit() (which has no
-// working tree to write into, but must derive the identical name so the
-// signed IssueEvent::attachments list matches what the owner materializes).
+
+
+
+
 QString attachmentNameFor(const QByteArray &data, const QString &srcPath)
 {
     const QString sha8 = QString::fromLatin1(
@@ -380,9 +380,9 @@ bool strictIssueObjectValid(const QJsonObject &object, int expectedNumber)
     return true;
 }
 
-} // namespace
+}
 
-// ---- IssueEvent (JSON is the wire format for the relay inbox) ---------------
+
 
 QJsonObject IssueEvent::toJson() const
 {
@@ -459,7 +459,7 @@ IssueEvent IssueEvent::fromJson(const QJsonObject &obj)
     return ev;
 }
 
-// ---- Issue -----------------------------------------------------------------
+
 
 QJsonObject Issue::toJson() const
 {
@@ -513,10 +513,10 @@ Issue Issue::fromJson(const QJsonObject &obj)
 
 bool Issue::isDeleted() const
 {
-    // Authoritative deletion: the issue's own creator (the open event's author)
-    // signed the delete/self event. A tombstone from anyone else is not honoured
-    // here (see hasUnauthorizedDeleteAttempt) — owners remove others' issues with
-    // the hard "Delete with history", which erases the folder outright.
+
+
+
+
     QString creator;
     for (const IssueEvent &ev : events)
         if (ev.type == "open") {
@@ -532,9 +532,9 @@ bool Issue::isDeleted() const
 
 bool Issue::hasUnauthorizedDeleteAttempt() const
 {
-    // A delete/self event signed by someone other than the creator: someone
-    // tried to delete an issue they didn't open. The issue stays open and
-    // counted; the UI flags the attempt instead of hiding the issue.
+
+
+
     QString creator;
     for (const IssueEvent &ev : events)
         if (ev.type == "open") {
@@ -547,7 +547,7 @@ bool Issue::hasUnauthorizedDeleteAttempt() const
     return false;
 }
 
-// ---- IssueStore ------------------------------------------------------------
+
 
 IssueStore::IssueStore(QString workTreePath, QString mirrorPath,
                        const ForkMeshIdentity *identity, QString authorName)
@@ -576,7 +576,7 @@ QString IssueStore::issueDirPath(const QString &workTree, int number)
         if (QDir(abs).exists())
             return abs;
     }
-    // Not on disk yet: a new issue starts out open.
+
     return QDir(workTree).filePath(candidates.first());
 }
 
@@ -590,7 +590,7 @@ QString IssueStore::issueFilePath(int number) const
     return QDir(issueDir(number)).filePath(issueJsonFileName(number));
 }
 
-// ---- Signing ---------------------------------------------------------------
+
 
 QString IssueStore::contentForSigning(const IssueEvent &ev)
 {
@@ -675,29 +675,29 @@ QString IssueStore::substituteAttachmentPlaceholders(
     return replaceAttachmentPlaceholders(body, srcPaths, placeholders, attachmentNames);
 }
 
-// ---- Loading ---------------------------------------------------------------
+
 
 QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &tick) const
 {
     if (!canWrite())
         return loadFromMirror(error);
 
-    // Fold any pre-split .forkmesh/issues/<n>/ folders into open//closed/
-    // before reading, so existing repos are reorganized the first time their
-    // issues are loaded on the owning node.
+
+
+
     migrateLegacyLayout();
 
     QList<Issue> issues;
     QList<int> numbers;
     QSet<int> seen;
-    // The status folder an issue lives in is the source of truth for open/closed
-    // (adhoc #14: "the layout itself encodes each issue's state"), matching
-    // countOpenIssues / the advertised + served counts. Record which folder each
-    // number came from so it can win over an event/record status that a missed
-    // folder-move left stale — otherwise an issue still sitting in open/ but
-    // whose record says "closed" would drop the Issues-tab count below the open/
-    // folder count the file browser and Mirror nodes tab show (the 11-vs-7 skew).
-    QHash<int, QString> folderStatus; // number -> "open"/"closed"; empty = legacy
+
+
+
+
+
+
+
+    QHash<int, QString> folderStatus;
     const QList<QPair<QString, QString>> roots{
         {issuesDir() + QLatin1Char('/') + openDirName(), QStringLiteral("open")},
         {issuesDir() + QLatin1Char('/') + closedDirName(), QStringLiteral("closed")},
@@ -716,18 +716,18 @@ QList<Issue> IssueStore::loadAll(QString *error, const std::function<void()> &ti
             const QString folder = folderStatus.value(number);
             if (!folder.isEmpty())
                 issue.status = folder;
-            // Show every issue, including tombstoned ones (adhoc #16): the caller
-            // renders a "deleted" or "unauthorized deletion" badge from
-            // isDeleted()/hasUnauthorizedDeleteAttempt() rather than hiding it.
+
+
+
             issues.append(issue);
         } else {
-            // The issue folder exists (mirrorOpenIssueCount counts it, treating an
-            // unreadable/unparseable blob as open), but we couldn't open or parse
-            // issue-<n>.json. Keep a flagged open placeholder instead of silently
-            // dropping the row and undercounting the Issues tab below the Mirror
-            // nodes tab — the same reconciliation loadFromMirror does for the
-            // read-only path (commit 70768d95). Without this the node's own
-            // writable checkout disagreed with its mirror's open count.
+
+
+
+
+
+
+
             Issue placeholder;
             placeholder.number = number;
             placeholder.status = QStringLiteral("open");
@@ -769,9 +769,9 @@ QList<Issue> IssueStore::loadAllStrictAtRef(const QString &ref,
 
 QString IssueStore::contentSignature() const
 {
-    // Resolve the issue metadata subtree to its git object id. The oid is a
-    // content hash of the whole subtree, so it moves iff some issue/event/label/
-    // milestone file changed — exactly when a reload would surface something new.
+
+
+
     const QString dir = canWrite() ? m_workTree : m_mirror;
     if (dir.isEmpty())
         return QString();
@@ -787,8 +787,8 @@ QString IssueStore::contentSignature() const
     const QString trimmed = QString::fromUtf8(oid).trimmed();
     if (!trimmed.isEmpty())
         parts << issuesRootRel() + QLatin1Char('=') + trimmed;
-    // Prefix with the source path so two repos with no issues (both empty oid) — or
-    // a coincidental oid match — can't be mistaken for "unchanged" across a switch.
+
+
     return dir + QLatin1Char('\n') + parts.join(QLatin1Char('\n'));
 }
 
@@ -808,13 +808,13 @@ bool IssueStore::readIssueFile(int number, Issue &out) const
     return true;
 }
 
-// ---- Mirror (read-only) ----------------------------------------------------
+
 
 QString IssueStore::mirrorRef() const
 {
-    // The mirror doesn't change while a single store reads it, but mirrorRef() is
-    // hit once per blob fetched from the mirror. Resolving it via git every time
-    // spawns hundreds of subprocesses on the GUI thread; memoize for our lifetime.
+
+
+
     if (m_mirrorRefResolved)
         return m_cachedMirrorRef;
     m_mirrorRefResolved = true;
@@ -891,8 +891,8 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
         if (wantedOids.isEmpty())
             return contentByOid;
 
-        // Batch-fetch every blob in one process. Output framing per object is
-        // "<oid> <type> <size>\n<size bytes>\n".
+
+
         QByteArray batchInput;
         for (const QString &oid : wantedOids)
             batchInput += oid.toUtf8() + '\n';
@@ -913,7 +913,7 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
             }
             const QList<QByteArray> header = batch.mid(pos, nl - pos).split(' ');
             pos = nl + 1;
-            if (header.size() < 3) { // "<oid> missing" or malformed, no body follows
+            if (header.size() < 3) {
                 recordStrictError(
                     QStringLiteral("An issue metadata blob is missing."));
                 continue;
@@ -927,7 +927,7 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
             }
             contentByOid.insert(QString::fromUtf8(header.at(0)),
                                 batch.mid(pos, size));
-            pos += size + 1; // skip body and its trailing newline
+            pos += size + 1;
         }
         if (contentByOid.size() != wantedOids.size()) {
             recordStrictError(
@@ -936,14 +936,14 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
         return contentByOid;
     };
 
-    // One JSON blob per issue at .forkmesh/issues/{open,closed}/<n>/issue-<n>.json
-    // (or .forkmesh/issues/<n>/ on a pre-split mirror).
+
+
     QByteArray listing;
-    // number -> "open"/"closed" derived from the status folder the blob lives
-    // in. The folder is authoritative for the open/closed tally (adhoc #14), so
-    // it wins over a stale in-record status below — keeping the count aligned
-    // with the open/ folder listing and the served/advertised open count rather
-    // than drifting below it (the 11-vs-7 skew).
+
+
+
+
+
     QHash<int, QString> folderStatus;
     if (readGit({"ls-tree", "-r", ref, issuesRootRel() + "/"}, &listing)) {
         QMap<int, QString> issueJsonOids;
@@ -961,9 +961,9 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
             if (!path.startsWith(prefix))
                 continue;
             QString rel = path.mid(prefix.size());
-            // Skip the open//closed/ status segment (legacy pre-split repos
-            // have the numbered folder directly under the root), remembering
-            // which side it was so the folder can override the record status.
+
+
+
             QString relFolderStatus;
             if (rel.startsWith(openDirName() + QLatin1Char('/'))) {
                 rel = rel.mid(openDirName().size() + 1);
@@ -990,11 +990,11 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
         }
 
         QHash<QString, QByteArray> contentByOid = fetchOids(wantedOids);
-        // A single batched read can occasionally drop objects (framing hiccup);
-        // retry just the misses once so a transient gap doesn't quietly shrink
-        // the Issues tab below the mirror's open count. Strict callers verify
-        // exact content and want the discrepancy reported, so they skip the
-        // retry (and keep the drop-plus-error behaviour below).
+
+
+
+
+
         if (!strict) {
             QSet<QString> missingOids;
             for (auto it = issueJsonOids.constBegin();
@@ -1008,15 +1008,15 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
             }
         }
         for (auto it = issueJsonOids.constBegin(); it != issueJsonOids.constEnd(); ++it) {
-            // Stand-in row for an issue folder the mirror is counting but whose
-            // JSON we still couldn't read or parse. mirrorOpenIssueCount and
-            // RepoHost::countOpenIssues both treat an unreadable blob as open,
-            // so keep a flagged placeholder (counted as open) rather than
-            // silently dropping it and disagreeing with the Mirror nodes tab.
+
+
+
+
+
             auto keepPlaceholder = [&](const QString &reason) {
                 recordStrictError(reason);
                 if (strict)
-                    return; // strict verification drops and reports instead
+                    return;
                 Issue placeholder;
                 placeholder.number = it.key();
                 placeholder.status = QStringLiteral("open");
@@ -1047,16 +1047,16 @@ QList<Issue> IssueStore::loadFromMirror(QString *error, bool strict,
             if (issue.number <= 0)
                 issue.number = it.key();
             recomputeMetadata(issue);
-            // Folder wins over a stale record status for the open/closed tally.
-            // Strict verification compares records byte-for-byte for signed
-            // snapshots, so it keeps the record's own status untouched.
+
+
+
             if (!strict) {
                 const QString folder = folderStatus.value(it.key());
                 if (!folder.isEmpty())
                     issue.status = folder;
             }
-            // Show every issue, tombstoned or not (adhoc #16) — the UI badges
-            // deletions instead of hiding them.
+
+
             issues.append(issue);
         }
     } else {
@@ -1110,7 +1110,7 @@ QList<IssueMilestone> IssueStore::loadMilestones() const
     return milestones;
 }
 
-// ---- Writing ---------------------------------------------------------------
+
 
 bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
 {
@@ -1121,11 +1121,11 @@ bool IssueStore::writeIssueFile(const Issue &issue, QString *error) const
     }
     Issue stored = issue;
     recomputeMetadata(stored);
-    // The folder encodes the current status: open issues live under open/<n>,
-    // closed ones under closed/<n>. When the status no longer matches where the
-    // issue sits on disk (a status flip, or a pre-split legacy folder), move
-    // the whole folder — attachments ride along, and the caller's commit()
-    // stages the rename with everything else.
+
+
+
+
+
     const QString desired =
         QDir(issuesDir())
             .filePath(statusDirNameFor(stored.status) + QLatin1Char('/') +
@@ -1156,7 +1156,7 @@ void IssueStore::recomputeMetadata(Issue &issue) const
         if (ev.type == "open")
             issue.title = ev.title;
         else if (ev.type == "title" && !ev.title.isEmpty())
-            issue.title = ev.title;  // later title events rename the issue
+            issue.title = ev.title;
         else if (ev.type == "status")
             issue.status = ev.status;
         else if (ev.type == "labels")
@@ -1177,8 +1177,8 @@ void IssueStore::recomputeMetadata(Issue &issue) const
         } else if (ev.type == "assignees")
             issue.assignees = ev.assignees;
         else if (ev.type == "vote" && !ev.author.isEmpty())
-            // Voters may now spend multiple credits on the same issue, so every
-            // signed vote event counts (no longer one-per-author).
+
+
             ++voteCount;
     }
     issue.votes = voteCount;
@@ -1193,7 +1193,7 @@ QStringList IssueStore::copyAttachments(int number, const QStringList &srcPaths)
         if (!in.open(QIODevice::ReadOnly))
             continue;
         const QByteArray data = in.readAll();
-        // Images live directly in the issue folder (no attachments/ subdir).
+
         const QString name = attachmentNameFor(data, src);
         QFile out(issueDir(number) + "/" + name);
         if (out.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
@@ -1245,8 +1245,8 @@ bool IssueStore::commit(const QString &message, QString *error) const
 
 int IssueStore::nextNumber() const
 {
-    // Closed and legacy (pre-split) issues still occupy their numbers, so the
-    // max spans all three locations.
+
+
     int max = 0;
     const QStringList roots{issuesDir() + QLatin1Char('/') + openDirName(),
                             issuesDir() + QLatin1Char('/') + closedDirName(),
@@ -1268,10 +1268,10 @@ void IssueStore::migrateLegacyLayout() const
     for (int number : legacy) {
         const QString from =
             QDir(issuesDir()).filePath(issueMediaDirName(number));
-        // Read the record straight from the legacy folder (not via
-        // issueFilePath, which prefers an already-split copy) to pick its side;
-        // an unreadable record files under open/, matching how every reader
-        // counts it.
+
+
+
+
         QString status = QStringLiteral("open");
         QFile jsonFile(QDir(from).filePath(issueJsonFileName(number)));
         if (jsonFile.open(QIODevice::ReadOnly)) {
@@ -1285,7 +1285,7 @@ void IssueStore::migrateLegacyLayout() const
                 .filePath(statusDirNameFor(status) + QLatin1Char('/') +
                           issueMediaDirName(number));
         if (QDir(to).exists())
-            continue; // both layouts hold this number; readers prefer the split copy
+            continue;
         QDir().mkpath(QFileInfo(to).absolutePath());
         if (QDir().rename(from, to))
             moved = true;
@@ -1295,7 +1295,7 @@ void IssueStore::migrateLegacyLayout() const
                nullptr);
 }
 
-// ---- Mutations -------------------------------------------------------------
+
 
 int IssueStore::createIssue(const QString &title, const QString &body,
                             const QStringList &labels, const QString &milestone,
@@ -1405,8 +1405,8 @@ bool IssueStore::addVote(int number, QString *error)
             *error = QStringLiteral("Issue #%1 not found.").arg(number);
         return false;
     }
-    // Multiple votes per author are allowed now (each spends a voting credit on
-    // the client), so we no longer reject a repeat vote from the same node.
+
+
     IssueEvent ev;
     ev.type = "vote";
     ev = makeSignedEvent(number, ev);
@@ -1437,8 +1437,8 @@ bool IssueStore::editEvent(int number, const QString &eventId, const QString &ne
     IssueEvent ev;
     ev.type = "edit";
     ev.target = eventId;
-    // An edit overwrites the target's attachment set, so carry forward the ones
-    // being kept (already in the issue folder) and copy in any newly added.
+
+
     ev.attachments = keepAttachments;
     const QStringList copiedAttachments = copyAttachments(number, newAttachmentSrcPaths);
     if (!copiedEveryAttachment(newAttachmentSrcPaths, copiedAttachments, error))
@@ -1693,7 +1693,7 @@ bool IssueStore::tombstoneIssue(int number, QString *error)
     if (!readIssueFile(number, issue))
         return false;
     if (issue.isDeleted())
-        return true; // already tombstoned; nothing to do
+        return true;
     IssueEvent ev;
     ev.type = "delete";
     ev.target = "self";
@@ -1708,16 +1708,16 @@ bool IssueStore::deleteIssue(int number, QString *error)
 {
     if (!canWrite())
         return false;
-    // Purge every place the issue may (have) lived: open/<n>, closed/<n>, and
-    // the pre-split legacy <n> — history rewritten below can hold any of them.
+
+
     const QStringList relPaths = issueDirRelCandidates(number);
     QString err;
     if (hasUnrelatedTrackedChanges(m_workTree, relPaths, error))
         return false;
 
-    // First commit a normal deletion so the work tree is clean for history
-    // rewriting. The rewrite below prunes this commit along with prior
-    // issue-only commits.
+
+
+
     runGit(m_workTree,
            QStringList{"rm", "-r", "--ignore-unmatch", "--"} + relPaths, nullptr,
            nullptr);
@@ -1727,11 +1727,11 @@ bool IssueStore::deleteIssue(int number, QString *error)
             *error = QStringLiteral("Could not remove issue folder.");
         return false;
     }
-    // Commit scoped to the issues root, not the candidate paths: a pathspec
-    // that never matched any tracked file (the issue only ever lived in one of
-    // the three locations) makes `git commit -- <path>` fail outright, and
-    // hasUnrelatedTrackedChanges above already guarantees nothing else under
-    // the root is dirty.
+
+
+
+
+
     if (!runGit(m_workTree,
                 QStringList{"commit", "-m", QStringLiteral("delete issue"), "--",
                             issuesRootRel()},
@@ -1796,7 +1796,7 @@ bool IssueStore::deleteIssue(int number, QString *error)
     return true;
 }
 
-// ---- Label / milestone definition lists ------------------------------------
+
 
 bool IssueStore::saveLabels(const QList<IssueLabel> &labels, QString *error)
 {
@@ -1827,7 +1827,7 @@ bool IssueStore::saveMilestones(const QList<IssueMilestone> &milestones, QString
     return commit(QStringLiteral("issues: update milestones"), error);
 }
 
-// ---- Cross-user sync (merge an inbound signed event) -----------------------
+
 
 bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
                                   const QString &titleIfNew, QString *error,
@@ -1837,12 +1837,12 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
     if (!canWrite())
         return false;
 
-    // A brand-new issue ("open") authored elsewhere (e.g. filed from a mirror).
-    // The proposed number is only a hint: the open event's id is number-derived
-    // ("open-N"), so it isn't a stable identity. We dedup on the signature (which
-    // binds content+number+author+ts) across ALL issues so a re-synced submission
-    // never duplicates, and we always assign a free number so a collision can't
-    // staple a second open event onto an existing issue.
+
+
+
+
+
+
     if (ev.type == "open") {
         const QList<Issue> all = loadAll();
         for (const Issue &i : all)
@@ -1853,12 +1853,12 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
                 const bool sameAuthorTs = ev.sig.isEmpty() && e.author == ev.author &&
                                           e.ts == ev.ts && e.title == ev.title;
                 if (sameSig || sameAuthorTs)
-                    return true; // already merged this submission
+                    return true;
             }
 
         Issue probe;
         if (number <= 0 || readIssueFile(number, probe))
-            number = nextNumber(); // proposed slot taken (or unset) -> reassign
+            number = nextNumber();
 
         Issue issue;
         issue.number = number;
@@ -1867,8 +1867,8 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
         issue.createdAt = ev.ts;
         issue.author = ev.author;
         issue.authorName = ev.authorName;
-        // Issue-level metadata isn't part of the open-event signature; apply it
-        // as vouched data that rode along with the submission.
+
+
         issue.labels = meta.labels;
         issue.milestone = meta.milestone;
         issue.priority = qBound(0, meta.priority, 99);
@@ -1895,7 +1895,7 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
         issue.createdAt = ev.ts;
         issue.author = ev.author;
         issue.authorName = ev.authorName;
-        // A non-open event for a missing issue: synthesize a placeholder open.
+
         IssueEvent placeholder;
         placeholder.type = "open";
         placeholder.id = QStringLiteral("open-%1").arg(number);
@@ -1905,14 +1905,14 @@ bool IssueStore::applyRemoteEvent(int number, const IssueEvent &ev,
         placeholder.ts = ev.ts;
         issue.events.append(placeholder);
     }
-    // A delete/self event from someone other than the issue's creator is kept
-    // but does not delete the issue: Issue::isDeleted only honours the creator's
-    // own tombstone, and the UI flags an unauthorized attempt (adhoc #16). We
-    // still record it (its signature is verified upstream) so the attempt is
-    // visible rather than silently dropped.
-    // Voters may cast several votes (one per credit), so we no longer collapse
-    // to one-per-author. We still ignore an event we've already merged (same id)
-    // so re-syncing the inbox doesn't double-count the same vote.
+
+
+
+
+
+
+
+
     if (!ev.id.isEmpty()) {
         for (const IssueEvent &existing : std::as_const(issue.events))
             if (existing.id == ev.id)

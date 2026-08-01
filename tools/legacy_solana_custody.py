@@ -43,7 +43,7 @@ try:
         Ed25519PrivateKey,
     )
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-except ImportError:  # pragma: no cover - exercised by CLI environments only.
+except ImportError:
     AESGCM = None
     Ed25519PrivateKey = None
     serialization = None
@@ -70,8 +70,8 @@ INSECURE_DATA_KEYS = {
     "forkmesh-dev-data-key-change-me",
 }
 
-# These are historical compatibility locations only. The current Worker must
-# never add a wallet key to any of them.
+
+
 TABLE_SPECS = (
     ("accounts", "name_bi", (("donation_secret", "donation_address"),)),
     ("users", "user_bi", (("donation_secret", "donation_address"),)),
@@ -375,9 +375,9 @@ def scan_legacy_records(
                                 stored=stored,
                             )
                         )
-                    # Never declare a row clean merely because it used a
-                    # key-field alias this tool cannot safely export. Unknown
-                    # shapes need an explicitly reviewed tool update.
+
+
+
                     unrecognized = dict(record)
                     for key_field, _address_field in field_pairs:
                         unrecognized.pop(key_field, None)
@@ -796,8 +796,8 @@ def build_scrub_sql(
                     _sql_literal(record.pk_value),
                     _sql_literal(record.stored),
                 ),
-                # A missing row is idempotent only when the exact public
-                # reconciliation evidence from a prior application exists.
+
+
                 "SELECT CASE WHEN changes()=1 OR ("
                 "NOT EXISTS(SELECT 1 FROM %s WHERE %s=%s) AND "
                 "EXISTS(SELECT 1 FROM legacy_custody_reconciliation "
@@ -816,8 +816,8 @@ def build_scrub_sql(
         else:
             cleaned = dict(record.record)
             cleaned.pop(record.key_field, None)
-            # Historical raw signed bytes are unnecessary after custody transfer
-            # and could otherwise remain a rebroadcast temptation.
+
+
             cleaned.pop("payout_tx", None)
             cleaned["legacy_custody_migrated_at"] = prepared_at
             cleaned["legacy_custody_artifact_sha256"] = artifact_digest
@@ -833,8 +833,8 @@ def build_scrub_sql(
                     _sql_literal(record.pk_value),
                     _sql_literal(record.stored),
                 ),
-                # The same reviewed SQL is idempotent, but a divergent row is
-                # never accepted. abs(INT64_MIN) aborts the D1 transaction.
+
+
                 "SELECT CASE WHEN changes()=1 OR EXISTS("
                 "SELECT 1 FROM %s WHERE %s=%s AND data=%s"
                 ") THEN 1 "
@@ -1182,8 +1182,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         args.handler(args)
     except CustodyMigrationError as error:
-        # Every raised message is a fixed redaction-safe code. Never print an
-        # exception repr or traceback: either could include a secret-bearing row.
+
+
         print("error: %s" % error, file=sys.stderr)
         return 2
     except FileExistsError:

@@ -141,7 +141,7 @@ RunResult runWorkflow(const QString &repository, const QString &commit,
     return result;
 }
 
-} // namespace
+}
 
 int main(int argc, char **argv)
 {
@@ -160,10 +160,10 @@ int main(int argc, char **argv)
                        temp.filePath(QStringLiteral("settings")));
     QSettings().clear();
 
-    // Pre-v2 storage replaced every non [A-Za-z0-9.-] character with "_".
-    // These two distinct repositories therefore shared both run and approval
-    // storage. The v2 key must split their records without copying that
-    // ambiguous trust decision to either repository.
+
+
+
+
     ActionRun collisionA;
     collisionA.id = 11;
     collisionA.owner = QStringLiteral("team/a");
@@ -455,9 +455,9 @@ int main(int argc, char **argv)
                       QStringLiteral("Action output exceeded")),
               "workflow output is bounded and reports truncation");
 
-        // A step cannot read its own cgroup (no /sys in the namespace), so the
-        // runner publishes the CPU and memory budget it enforces. Builds size
-        // -j from it instead of from the host's core count (adhoc #329).
+
+
+
         const QString budgetWorkflow = QStringLiteral(
             "name: Build budget\non: push\nsteps:\n"
             "  - name: sandbox publishes its own cpu and memory budget\n"

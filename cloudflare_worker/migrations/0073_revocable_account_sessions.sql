@@ -1,4 +1,4 @@
--- Server-revocable, non-replayable-at-rest account sessions.
+
 CREATE TABLE IF NOT EXISTS account_sessions (
     session_id TEXT PRIMARY KEY,
     account_bi TEXT NOT NULL,

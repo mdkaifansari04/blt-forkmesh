@@ -184,7 +184,7 @@ def test_private_blind_owner_mismatch_is_not_a_decryption_oracle():
 
 def test_encrypted_visibility_remains_authoritative_and_fails_closed():
     context, decryptions = _harness({
-        # Historical migrations could leave this stale/public.
+
         "owner_bi": "bi:alice",
         "is_private": 0,
         "data": _record("private"),
@@ -251,9 +251,9 @@ def test_committed_logo_requires_public_repo_exact_commit_and_root_image():
 
 
 def test_committed_root_logo_response_ships_fallback_artwork():
-    # The committed URL is streamed by a mirror, so it can fail after the card
-    # rendered. The same response carries the approved/generated artwork so a
-    # client swaps in place instead of showing a broken image.
+
+
+
     handler = SOURCE[
         SOURCE.index("async def native_repository_logo_handler")
         : SOURCE.index("async def _repo_about_public")

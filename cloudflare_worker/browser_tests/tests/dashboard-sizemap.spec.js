@@ -115,8 +115,8 @@ test("size-map file leaf opens with a fine-pointer click", async ({ page }) => {
   await expectLeafActivation(page, async (leaf) => {
     const box = await leaf.boundingBox();
     expect(box).not.toBeNull();
-    // A full-circle ring's geometric center is the sunburst hole; activate a
-    // point in the visible outer arc, as a pointer user would.
+
+
     await leaf.click({ position: { x: box.width / 2, y: 10 } });
   });
 });

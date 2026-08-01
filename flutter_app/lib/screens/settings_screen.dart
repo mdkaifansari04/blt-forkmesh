@@ -9,8 +9,8 @@ import '../theme.dart';
 import '../widgets/fm_ui.dart';
 import 'orgs_screen.dart';
 
-/// Profile, relay connection, and import-token settings. Mirrors the Qt client's
-/// Settings section (the subset the Flutter app currently uses).
+
+
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
 

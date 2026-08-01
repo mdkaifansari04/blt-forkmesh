@@ -60,10 +60,10 @@ class FakeApiService extends ApiService {
   }) async {}
 }
 
-// The login form now performs a real Worker /api/accounts/login round trip
-// (pull #4), so widget tests authenticate through this offline stand-in: a
-// successful login flips isAuthenticated and notifies, which is what
-// ForkMeshApp's Consumer<AuthService> watches to enter the home shell.
+
+
+
+
 class FakeAuthService extends AuthService {
   FakeAuthService(super.settings, super.identity, super.prefs);
 
@@ -160,8 +160,8 @@ void main() {
     await tester.tap(finder);
   }
 
-  // Walks the real login form: credentials are required now, and Continue
-  // resolves through the (fake) AuthService before onAuthenticated fires.
+
+
   Future<void> submitLogin(WidgetTester tester) async {
     await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
     await tester.pumpAndSettle();
@@ -258,9 +258,9 @@ void main() {
       buildFlow(onAuthenticated: () => authenticated = true, auth: auth),
     );
 
-    // A partially filled form never authenticates: real validation asks for
-    // the missing credential. (A fully EMPTY form takes the kDebugMode
-    // design-preview shortcut instead — covered in the next test.)
+
+
+
     await tester.tap(find.widgetWithText(OutlinedButton, 'Log in'));
     await tester.pumpAndSettle();
     await tester.enterText(
@@ -288,9 +288,9 @@ void main() {
   testWidgets('empty form takes the debug design-preview shortcut', (
     tester,
   ) async {
-    // Continue on a fully empty form fires onAuthenticated directly in debug
-    // builds (the design-preview path); release builds fall through to the
-    // normal validation. The preview never touches the real AuthService.
+
+
+
     SharedPreferences.setMockInitialValues({});
     final settings = await SettingsService.create();
     final identity = await Identity.loadOrCreate();
@@ -307,7 +307,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(authenticated, isTrue);
-    expect(auth.isAuthenticated, isFalse); // no real session was created
+    expect(auth.isAuthenticated, isFalse);
   });
 
   testWidgets('auth flow registers and renders the real ForkMesh logo asset', (
@@ -563,14 +563,14 @@ void main() {
     final sheet = find.byKey(const ValueKey('tools-sheet-panel'));
     expect(sheet, findsOneWidget);
     final screenHeight = tester.view.physicalSize.height;
-    // Sized to its content, capped at half the screen plus the bottom
-    // safe-area inset (34 in this fake view) that the list pads for.
+
+
     expect(
       tester.getSize(sheet).height,
       lessThanOrEqualTo(screenHeight * 0.5 + 34),
     );
     expect(tester.getBottomLeft(sheet).dy, screenHeight);
-    // The last tool row is fully visible - nothing is clipped.
+
     expect(
       tester.getBottomLeft(find.text('Monitor')).dy,
       lessThanOrEqualTo(screenHeight),

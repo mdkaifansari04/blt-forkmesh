@@ -40,7 +40,7 @@ bool isAllowedDestination(const QString &destination)
            destination == QStringLiteral("issue") ||
            destination == QStringLiteral("note");
 }
-} // namespace
+}
 
 WorldSpeechBridge::WorldSpeechBridge(QObject *parent) : QObject(parent)
 {
@@ -201,8 +201,8 @@ void WorldSpeechBridge::onNewConnection()
 {
     while (m_server && m_server->hasPendingConnections()) {
         QTcpSocket *socket = m_server->nextPendingConnection();
-        // QTcpServer is loopback-bound; retain this defense if Qt ever returns an
-        // unexpected peer address through a platform-specific dual-stack socket.
+
+
         if (!socket->peerAddress().isLoopback()) {
             socket->abort();
             socket->deleteLater();
@@ -257,7 +257,7 @@ void WorldSpeechBridge::onReadyRead(QTcpSocket *socket)
         return;
 
     const QByteArray raw = it.value().left(headerEnd + 4 + contentLength);
-    m_buffers.remove(socket); // one request per connection; no request smuggling
+    m_buffers.remove(socket);
     Request request;
     QByteArray error;
     if (!parseRequest(raw, &request, &error)) {
@@ -376,8 +376,8 @@ void WorldSpeechBridge::dispatch(QTcpSocket *socket, const Request &request)
                     origin);
             return;
         }
-        // Consume before responding. Retrying/replaying the pairing token can
-        // never mint a second browser session.
+
+
         m_pairings.erase(match);
         const QString sessionToken = randomSecret();
         const qint64 expires = nowMs() + qint64(kSessionTtlSeconds) * 1000;
@@ -651,9 +651,9 @@ bool WorldSpeechBridge::consumeRequestId(SessionRecord *session,
              .match(id)
              .hasMatch())
         return false;
-    // Never discard old nonces while a capability is live: clearing the set
-    // would make an early mutation replayable. A tab that somehow performs this
-    // many mutations during a ten-minute session must pair again.
+
+
+
     if (session->requestIds.size() >= kMaxRequestIds)
         return false;
     session->requestIds.insert(id);

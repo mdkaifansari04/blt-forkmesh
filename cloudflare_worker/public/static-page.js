@@ -4,9 +4,9 @@
       localStorage.getItem("forkmesh.dashboard.theme") ||
       localStorage.getItem("forkmesh.theme") ||
       (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-    // styles.css palettes key off BOTH classes now: html.dark (the default
-    // palette) and html.light (the light palette added with site-wide theme
-    // support) — stamp them together so every styles.css page responds.
+
+
+
     document.documentElement.classList.toggle("dark", chosen === "dark");
     document.documentElement.classList.toggle("light", chosen !== "dark");
     document.documentElement.style.colorScheme =
@@ -41,9 +41,9 @@
     });
   }
 
-  // The last-known counts are cached so the header pill and stat cards render
-  // instantly on a cold load instead of sitting at "Checking…"/"—" until the
-  // first poll returns (stale-while-revalidate). Values are non-negative numbers.
+
+
+
   function readCachedStat(key) {
     try {
       const raw = localStorage.getItem(`forkmesh.stats.${key}`);
@@ -58,7 +58,7 @@
     try {
       localStorage.setItem(`forkmesh.stats.${key}`, String(value));
     } catch (error) {
-      /* storage disabled or quota exceeded — caching is best-effort */
+
     }
   }
 
@@ -124,10 +124,10 @@
 
   applyTheme();
 
-  // Mobile navigation: the shared .global-nav is hidden on narrow screens, so
-  // inject a hamburger that reveals it as a dropdown panel. Without this the
-  // header links (Repositories, Network, Docs, Sign Up…) are unreachable on
-  // phones. Runs on every page carrying the shared header.
+
+
+
+
   (function initMobileNav() {
     const header = document.querySelector(".site-header");
     const nav = header && header.querySelector(".global-nav");
@@ -151,7 +151,7 @@
       event.stopPropagation();
       setOpen(!header.classList.contains("nav-open"));
     });
-    // Collapse after following a link, or when tapping outside the menu.
+
     nav.addEventListener("click", (event) => {
       if (event.target.closest("a")) setOpen(false);
     });
@@ -165,10 +165,10 @@
     });
   })();
 
-  // Reveal the header "Admin" link for a signed-in admin. The adminUrl is
-  // derived from the Worker's ADMIN_PATH env and carried in the session that
-  // login/dashboard persist to localStorage, so static pages can surface the
-  // same shortcut the dashboard header shows without a fresh round-trip.
+
+
+
+
   function readStoredSession() {
     try {
       return JSON.parse(localStorage.getItem("forkmesh.session") || "null");
@@ -198,8 +198,8 @@
   async function hydrateAdminLink() {
     const session = readStoredSession();
     const adminUrl = applyAdminLink(session);
-    // An older session may be flagged admin but predate adminUrl being carried
-    // through — backfill it from the account endpoint so the shortcut appears.
+
+
     if (session && session.isAdmin && !adminUrl && session.nodeName &&
         location.protocol !== "file:") {
       try {
@@ -215,7 +215,7 @@
           applyAdminLink(next);
         }
       } catch (error) {
-        /* offline or logged out — leave the link hidden */
+
       }
     }
   }
@@ -239,14 +239,14 @@
 
   const clientsCount = document.querySelector("#clients-count");
   const clientsDot = document.querySelector("#clients-dot");
-  // Live counts come from a single cached aggregate endpoint. Fetch it once on
-  // load after rendering cached values; do not keep a periodic client timer open.
+
+
   const STATS_PATH = "/api/network/stats";
   const payoutWalletsEl = document.querySelector("#network-wallets");
 
-  // The header pill reflects everything that is live on the network — open host
-  // tunnels plus chat clients — so it doesn't read "0 online" while a host is
-  // clearly up. The per-metric breakdown stays in the network stat cards.
+
+
+
   function renderOnline(online) {
     const label = online === 1 ? "1 node online" : `${online} nodes online`;
     if (clientsCount) clientsCount.textContent = label;
@@ -291,10 +291,10 @@
     }
   }
 
-  // Render the last-known counts immediately (stale-while-revalidate) so the
-  // header pill and stat cards aren't blank "Checking…"/"—" placeholders on a
-  // cold load; the one-shot fetch below refreshes them as soon as live data
-  // arrives.
+
+
+
+
   function primeCachedStats() {
     if (location.protocol === "file:") return;
     const clients = readCachedStat("clients");

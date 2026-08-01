@@ -296,9 +296,9 @@ def _validate_rich(rich, expected_repository=None):
             20,
             allowed=FINDING_STATUSES,
         )
-        # Scanner artifacts are immutable observations, not human decisions.
-        # Confirmed/dismissed states may only come from the separately
-        # authorized, encrypted review overlay.
+
+
+
         if finding_status != "unreviewed":
             _fail(field + ".falsePositiveStatus")
         if "advisoryIds" in finding:
@@ -481,7 +481,7 @@ def validate_ingest_envelope(payload, expected_repository=None):
     _validate_clipboard(payload.get("clipboard"))
     if payload.get("clipboard") != clipboard_from_rich(payload.get("rich")):
         _fail("clipboard")
-    # Canonical round-trip creates a detached, JSON-only snapshot for storage.
+
     return json.loads(canonical_json(payload))
 
 

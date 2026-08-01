@@ -6,8 +6,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CHAT = (ROOT / "qt_client/src/MainWindowChat.cpp").read_text(encoding="utf-8")
 HEADER = (ROOT / "qt_client/src/MainWindow.h").read_text(encoding="utf-8")
-# The remote installer script itself lives in the pure control-node helper, so
-# the Hosts button and the one-click Vultr flow cannot drift apart (adhoc #418).
+
+
 CONTROL = (ROOT / "qt_client/src/ControlNode.cpp").read_text(encoding="utf-8")
 
 
@@ -33,7 +33,7 @@ def test_agent_install_uses_pinned_ssh_and_official_user_scoped_installers():
     assert "SSH could not reach %1 on port 22" in installer
     assert "The mirror rejected its saved ForkMesh SSH " in installer
     assert '"key. Re-provision or replace that host key, "' in installer
-    # The per-host button installs binaries only; it never copies a login.
+
     assert "/*copyCredentials=*/false" in installer
 
     script = CONTROL.split(
@@ -43,7 +43,7 @@ def test_agent_install_uses_pinned_ssh_and_official_user_scoped_installers():
     assert "https://chatgpt.com/codex/install.sh" in script
     assert "claude --version" in script
     assert "codex --version" in script
-    # Split over two source lines, so match the half that carries the meaning.
+
     assert "still required on this mirror." in script
 
 
@@ -51,7 +51,7 @@ def test_agent_logins_are_copied_only_on_stdin_and_only_when_asked():
     bootstrap = CONTROL.split(
         "QByteArray buildAgentCliBootstrapPayload(", 1
     )[1][:4000]
-    # Credentials are base64 sections on stdin; nothing reaches argv.
+
     assert "toBase64()" in bootstrap
     script = CONTROL.split(
         "QString agentCliBootstrapRemoteCommand(bool withCredentials)", 1
@@ -68,7 +68,7 @@ def test_agent_logins_are_copied_only_on_stdin_and_only_when_asked():
     driver = CHAT.split("void MainWindow::runAgentCliInstall(", 1)[1][:8000]
     assert "proc->write(payload)" in driver
     assert "payload.fill('\\0')" in driver
-    # Only names are logged, never a credential value.
+
     assert "forkmesh::control::describeAgentCliCredentials" in driver
 
 
@@ -78,7 +78,7 @@ def test_one_click_vultr_mirror_can_sign_the_new_node_in():
     vultr = CHAT.split("void MainWindow::startVultrHostInstall(", 1)[1][:8000]
     assert "m_vultrInstallAgentClis" in vultr
     assert "runAgentCliInstall(" in vultr
-    # A missing login installs the binaries anyway; it never blocks the mirror.
+
     assert "agentCliCredentialsAreEmpty" in vultr
 
 
@@ -95,23 +95,23 @@ def test_vultr_api_key_is_saved_once_vultr_accepts_it():
     remember = control.split("QStringList MainWindow::rememberVultrApiKey(", 1)[
         1
     ].split("\nvoid MainWindow::adoptRotatedCloudflareToken(", 1)[0]
-    # Both stores: the device variable and the deploy machine's .env.production.
+
     assert "ActionStore::setVariables(variables)" in remember
     assert "forkmesh::control::siteDeployEnvFilePath(" in remember
     assert "writeEnvAssignments(envPath, {{canonical, key}}, &envError," in remember
-    # A stale alias must not keep shadowing the key that was just proven good.
+
     assert "forkmesh::control::vultrApiKeyVariableNames()" in remember
     assert "haveCanonical" in remember
-    # A failed file write is retried by the next call, not recorded as done.
+
     assert "if (!retryable)" in remember
 
-    # Saved only after Vultr itself authenticated the key, never on a 4xx.
+
     api_call = CHAT.split("void MainWindow::vultrApiCall(", 1)[1][:4000]
     assert "Vultr API error (HTTP %1): %2" in api_call
     assert api_call.index(
         "rememberVultrApiKey(apiKey, &rememberError)"
     ) > api_call.index("Vultr API error (HTTP %1): %2")
-    # Both entry points prefill from the store, so neither asks twice.
+
     assert (
         "forkmesh::control::vultrApiKeyFromVariables(ActionStore::variables())"
         in CHAT

@@ -48,7 +48,7 @@ def _load():
 
 
 def _harness(devices):
-    # devices: list of {"device_bi","account_bi","last_seen"}
+
     store = list(devices)
 
     async def d1_all(_env, sql, *args):
@@ -76,8 +76,8 @@ def _harness(devices):
 
 
 def test_prunes_stale_superseded_key_but_keeps_the_current_one():
-    old = NOW - 200 * DAY_MS   # stale, superseded (a reinstall left it behind)
-    cur = NOW - 1 * DAY_MS      # the live/most-recent key for this account
+    old = NOW - 200 * DAY_MS
+    cur = NOW - 1 * DAY_MS
     ns, store = _harness([
         {"device_bi": "old", "account_bi": "jett", "last_seen": old},
         {"device_bi": "cur", "account_bi": "jett", "last_seen": cur},
@@ -85,12 +85,12 @@ def test_prunes_stale_superseded_key_but_keeps_the_current_one():
     removed = asyncio.run(ns["purge_stale_account_devices"](object()))
     assert removed == 1
     ids = {d["device_bi"] for d in store}
-    assert ids == {"cur"}  # current key survives, stale duplicate is gone
+    assert ids == {"cur"}
 
 
 def test_never_deletes_an_accounts_only_or_most_recent_device():
-    # Even a long-idle device is kept when it is the account's newest — deleting
-    # it would strip the node's only signing key and silently 401 its drains.
+
+
     old = NOW - 300 * DAY_MS
     ns, store = _harness([
         {"device_bi": "solo", "account_bi": "solo-acct", "last_seen": old},

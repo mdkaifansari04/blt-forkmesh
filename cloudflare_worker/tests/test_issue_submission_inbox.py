@@ -116,8 +116,8 @@ def test_issue_post_succeeds_when_notification_fanout_fails():
         "subscribe_thread": failing_side_effect,
         "notify_repo_host": noop_notify_repo_host,
         "notify_repo_mirrors": noop_notify_repo_host,
-        # Fediverse publish is best-effort exactly like the notification
-        # fan-out: a dead ActivityPub path must never 500 an accepted issue.
+
+
         "_ap_publish_repo_event": failing_side_effect,
         "quote": quote,
         "base64": base64,

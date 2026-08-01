@@ -10,9 +10,9 @@ import asyncio
 from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-# d1_all/d1_first issue their query through _d1_read, which replays a transient
-# D1 platform fault (see test_d1_transient_errors.py), so its helper chain has
-# to come along for these conversion tests to execute the real code path.
+
+
+
 _WANT_FUNCS = ("js_nullish", "d1_row_to_dict", "d1_all", "d1_first",
                "_d1_read", "_is_transient_d1_error", "_safe_error_text")
 _WANT_CONSTS = ("_D1_TRANSIENT_MARKERS", "_D1_SUSTAINED_MARKERS")

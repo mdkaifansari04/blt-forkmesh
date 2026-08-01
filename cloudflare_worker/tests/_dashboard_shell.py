@@ -18,8 +18,8 @@ _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-import dashboard_bundle  # noqa: E402
-import dashboard_shell  # noqa: E402
+import dashboard_bundle
+import dashboard_shell
 
 PUBLIC = _ROOT / "public"
 
@@ -29,8 +29,8 @@ def _read(rel: str) -> str:
 
 
 def _asset_versions() -> dict:
-    # Reproduce the build tool's content-hash cache-busting off the same source
-    # so composed pages match the built documents byte-for-byte.
+
+
     return dashboard_shell.asset_versions(
         _read, {"dashboard.js": dashboard_bundle.compose_from_reader(_read)})
 

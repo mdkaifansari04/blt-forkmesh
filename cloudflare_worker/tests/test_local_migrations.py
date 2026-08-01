@@ -191,8 +191,8 @@ def test_release_downloads_user_agent_migration_bootstraps_fresh_local_db():
 
 
 def _unique_email_setup(connection):
-    # Minimal accounts/users tables + the old non-unique email indexes that
-    # migration 0041 replaces, seeded with duplicate and keyless-email rows.
+
+
     connection.executescript(
         """
         CREATE TABLE accounts (name_bi TEXT PRIMARY KEY, data TEXT NOT NULL,
@@ -228,7 +228,7 @@ def test_unique_email_migration_dedupes_keeping_first_and_enforces_uniqueness():
         connection.executescript(migration)
 
         for table, key in (("accounts", "name_bi"), ("users", "user_bi")):
-            # The first duplicate row is kept, the later one is deleted.
+
             kept = {
                 row[0]
                 for row in connection.execute(
@@ -236,11 +236,11 @@ def test_unique_email_migration_dedupes_keeping_first_and_enforces_uniqueness():
                 )
             }
             assert kept == {"first"}, table
-            # Non-duplicate and keyless rows are all preserved.
-            total = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-            assert total == 4, table  # first, other, keyless1, keyless2
 
-            # A fresh duplicate email is now rejected by the unique index...
+            total = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            assert total == 4, table
+
+
             try:
                 connection.execute(
                     f"INSERT INTO {table} ({key}, data, email_bi) "
@@ -249,7 +249,7 @@ def test_unique_email_migration_dedupes_keeping_first_and_enforces_uniqueness():
                 raise AssertionError(f"{table} allowed a duplicate email")
             except sqlite3.IntegrityError:
                 pass
-            # ...but additional keyless (NULL-email) rows are still allowed.
+
             connection.execute(
                 f"INSERT INTO {table} ({key}, data, email_bi) "
                 f"VALUES ('keyless3', '{{}}', NULL)"
@@ -275,12 +275,12 @@ def test_drop_accounts_migration_removes_only_the_legacy_table():
         }
         assert "accounts" not in tables
         assert "users" in tables
-        # The users rows (the authoritative store) are untouched.
+
         total = connection.execute("SELECT COUNT(*) FROM users").fetchone()[0]
         assert total == 5
 
-        # Re-running is a no-op (DROP TABLE IF EXISTS), matching how
-        # ensure_schema replays the same statement on lazily-created DBs.
+
+
         connection.executescript(migration)
     finally:
         connection.close()

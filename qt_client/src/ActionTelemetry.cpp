@@ -58,7 +58,7 @@ QByteArray recordBytes(const char *event, quint64 id, const QString &kind,
     return bytes;
 }
 
-} // namespace
+}
 
 struct ActionTelemetry::Writer {
     std::mutex mutex;
@@ -87,8 +87,8 @@ struct ActionTelemetry::Writer {
             std::lock_guard<std::mutex> lock(mutex);
             if (!thread.joinable() || stopping)
                 return;
-            // A diagnostics disk that is unavailable must not turn unbounded
-            // telemetry into a memory leak. Keep the newest 4096 records.
+
+
             if (pending.size() >= 4096)
                 pending.pop_front();
             pending.emplace_back(std::move(bytes));
@@ -129,9 +129,9 @@ struct ActionTelemetry::Writer {
                     output.write(record.constData(), record.size());
                 output.flush();
             }
-            // When stopping, the next loop iteration's predicate fires
-            // immediately, drains anything queued during this write, then exits
-            // through the batch.empty() check above.
+
+
+
         }
     }
 };
@@ -146,8 +146,8 @@ void ActionTelemetry::initialize(const QString &path)
 {
     if (path.isEmpty())
         return;
-    // One-time directory creation/rotation happens during MainWindow setup.
-    // Every action record after this point is writer-thread-only.
+
+
     QDir().mkpath(QFileInfo(path).absolutePath());
     constexpr qint64 kMaxBytes = 8 * 1024 * 1024;
     if (QFileInfo(path).size() > kMaxBytes) {
@@ -190,4 +190,4 @@ void ActionTelemetry::shutdown()
     writer()->stop();
 }
 
-} // namespace forkmesh
+}

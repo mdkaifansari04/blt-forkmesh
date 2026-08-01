@@ -1,6 +1,6 @@
--- Repo stars: which accounts have starred which repo. Keyed by blind indexes
--- (same convention as profile_follows) so the count/membership check never
--- needs to decrypt anything.
+
+
+
 CREATE TABLE IF NOT EXISTS repo_stars (
     repo_bi TEXT NOT NULL,
     account_bi TEXT NOT NULL,

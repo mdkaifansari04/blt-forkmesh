@@ -11,8 +11,8 @@ namespace {
 
 using std::vector;
 
-// Standard QR error-correction tables, indexed [eclIndex][version] (version 0
-// is an unused sentinel). eclIndex: 0=L, 1=M, 2=Q, 3=H.
+
+
 const int8_t ECC_CODEWORDS_PER_BLOCK[4][41] = {
     {-1, 7, 10, 15, 20, 26, 18, 20, 24, 30, 18, 20, 24, 26, 30, 22, 24, 28, 30,
      28, 28, 28, 28, 30, 30, 26, 28, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30, 30,
@@ -48,7 +48,7 @@ int eclIndex(QrCode::Ecl e)
     return 1;
 }
 
-// Value used in the format-information bits (differs from the table index).
+
 int eclFormatBits(QrCode::Ecl e)
 {
     switch (e) {
@@ -80,7 +80,7 @@ int getNumDataCodewords(int ver, int ecl)
         - ECC_CODEWORDS_PER_BLOCK[ecl][ver] * NUM_EC_BLOCKS[ecl][ver];
 }
 
-// --- Reed–Solomon over GF(2^8), reducing polynomial 0x11D. ------------------
+
 
 uint8_t rsMultiply(uint8_t x, uint8_t y)
 {
@@ -138,7 +138,7 @@ vector<int> alignmentPositions(int ver)
     return result;
 }
 
-// Append ECC codewords to data, split into blocks and interleaved per spec.
+
 vector<uint8_t> addEccAndInterleave(const vector<uint8_t> &data, int ver, int ecl)
 {
     int numBlocks = NUM_EC_BLOCKS[ecl][ver];
@@ -155,7 +155,7 @@ vector<uint8_t> addEccAndInterleave(const vector<uint8_t> &data, int ver, int ec
         k += datLen;
         const vector<uint8_t> ecc = rsComputeRemainder(dat, divisor);
         if (i < numShortBlocks)
-            dat.push_back(0); // placeholder column for interleaving alignment
+            dat.push_back(0);
         dat.insert(dat.end(), ecc.begin(), ecc.end());
         blocks.push_back(std::move(dat));
     }
@@ -163,7 +163,7 @@ vector<uint8_t> addEccAndInterleave(const vector<uint8_t> &data, int ver, int ec
     vector<uint8_t> result;
     for (size_t i = 0; i < blocks[0].size(); i++) {
         for (size_t j = 0; j < blocks.size(); j++) {
-            // Skip the placeholder cell of every short block.
+
             if (i != static_cast<size_t>(shortBlockLen - blockEccLen) ||
                 j >= static_cast<size_t>(numShortBlocks))
                 result.push_back(blocks[j][i]);
@@ -172,7 +172,7 @@ vector<uint8_t> addEccAndInterleave(const vector<uint8_t> &data, int ver, int ec
     return result;
 }
 
-// --- The matrix builder. ----------------------------------------------------
+
 
 struct Matrix {
     int ver;
@@ -231,7 +231,7 @@ struct Matrix {
             setFunction(size - 1 - i, 8, getBit(bits, i));
         for (int i = 8; i < 15; i++)
             setFunction(8, size - 15 + i, getBit(bits, i));
-        setFunction(8, size - 8, true); // always-dark module
+        setFunction(8, size - 8, true);
     }
 
     void drawVersion()
@@ -266,17 +266,17 @@ struct Matrix {
             for (int j = 0; j < n; j++) {
                 if ((i == 0 && j == 0) || (i == 0 && j == n - 1) ||
                     (i == n - 1 && j == 0))
-                    continue; // overlaps the finder patterns
+                    continue;
                 drawAlignment(align[i], align[j]);
             }
         }
-        drawFormatBits(eclFmt, 0); // placeholder mask, redrawn later
+        drawFormatBits(eclFmt, 0);
         drawVersion();
     }
 
     void drawCodewords(const vector<uint8_t> &data)
     {
-        size_t i = 0; // bit index into data
+        size_t i = 0;
         for (int right = size - 1; right >= 1; right -= 2) {
             if (right == 6)
                 right = 5;
@@ -318,7 +318,7 @@ struct Matrix {
     void addHistory(int run, std::array<int, 7> &hist) const
     {
         if (hist[0] == 0)
-            run += size; // light border before the first run
+            run += size;
         for (int i = 6; i > 0; i--)
             hist[i] = hist[i - 1];
         hist[0] = run;
@@ -338,7 +338,7 @@ struct Matrix {
             addHistory(run, hist);
             run = 0;
         }
-        run += size; // light border after the final run
+        run += size;
         addHistory(run, hist);
         return countPatterns(hist);
     }
@@ -411,20 +411,20 @@ struct Matrix {
     }
 };
 
-// Append the low `n` bits of `val` to a bit vector, MSB first.
+
 void appendBits(vector<bool> &bb, uint32_t val, int n)
 {
     for (int i = n - 1; i >= 0; i--)
         bb.push_back(((val >> i) & 1) != 0);
 }
 
-} // namespace
+}
 
 std::vector<std::vector<bool>> QrCode::encode(const QByteArray &data, Ecl ecl)
 {
     const int ecl_i = eclIndex(ecl);
 
-    // Smallest version whose data capacity holds the byte-mode segment.
+
     int ver = 0;
     for (int v = 1; v <= 40; v++) {
         int capacityBits = getNumDataCodewords(v, ecl_i) * 8;
@@ -436,11 +436,11 @@ std::vector<std::vector<bool>> QrCode::encode(const QByteArray &data, Ecl ecl)
         }
     }
     if (ver == 0)
-        return {}; // does not fit in any version
+        return {};
 
     const int ccBits = (ver <= 9) ? 8 : 16;
     vector<bool> bb;
-    appendBits(bb, 0x4, 4); // byte mode indicator
+    appendBits(bb, 0x4, 4);
     appendBits(bb, static_cast<uint32_t>(data.size()), ccBits);
     for (unsigned char c : data)
         appendBits(bb, c, 8);
@@ -465,7 +465,7 @@ std::vector<std::vector<bool>> QrCode::encode(const QByteArray &data, Ecl ecl)
     m.drawFunctionPatterns(eclFmt);
     m.drawCodewords(allCodewords);
 
-    // Choose the mask with the lowest penalty.
+
     int bestMask = 0;
     long minPenalty = LONG_MAX;
     for (int mask = 0; mask < 8; mask++) {
@@ -476,7 +476,7 @@ std::vector<std::vector<bool>> QrCode::encode(const QByteArray &data, Ecl ecl)
             minPenalty = p;
             bestMask = mask;
         }
-        m.applyMask(mask); // undo (XOR is its own inverse)
+        m.applyMask(mask);
     }
     m.applyMask(bestMask);
     m.drawFormatBits(eclFmt, bestMask);

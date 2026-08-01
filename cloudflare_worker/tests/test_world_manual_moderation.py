@@ -354,7 +354,7 @@ def test_guest_network_detail_is_ephemeral_admin_only_frontend_data():
     assert 'String(remote?.accountStatus || "Guest") !== "Guest"' in scene
     assert "CLICK TO COPY" in scene
     assert "navigator.clipboard.writeText" in app
-    # Raw network strings are never columns in the persistent moderation table.
+
     migration = MIGRATION.read_text(encoding="utf-8").lower()
     assert "client_ip" not in migration
     assert "user_agent" not in migration

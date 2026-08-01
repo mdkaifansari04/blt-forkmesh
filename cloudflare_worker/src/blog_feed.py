@@ -33,18 +33,18 @@ FEED_DESCRIPTION = (
 )
 FEED_LANGUAGE = "en-us"
 FEED_IMAGE = SITE_URL + "/assets/blog/features/desktop-node-mirrors.webp"
-# A generous ceiling on a hand-generated index: the whole catalog fits well
-# under it, and a mangled page can never produce an unbounded document.
+
+
 FEED_LIMIT = 200
 MAX_TITLE = 200
 MAX_SUMMARY = 600
 MAX_CATEGORY = 120
 
-# One feature card on the static blog index. The cards are uniform generated
-# markup: anchor, artwork, meta line, title, then the blurb. The image is
-# optional so a card that ships without art still becomes a feed item, and
-# data-published (the post's publication day) is optional so an undated card
-# still parses — it simply ships without a pubDate.
+
+
+
+
+
 _CARD_RE = re.compile(
     r'<a class="blog1-card" href="(?P<href>/blog/[^"]+)"'
     r'(?:\s+data-published="(?P<published>[^"]*)")?[^>]*>'
@@ -168,18 +168,18 @@ def _item_xml(entry):
     if image:
         safe = escape_xml(image)
         mime = image_mime_type(image)
-        # enclosure is the classic reader hook, media:content the one modern
-        # readers and social previews look for. length is unknown for a
-        # static asset we do not HEAD, and 0 is the accepted placeholder.
+
+
+
         parts.append(
             '      <enclosure url="%s" length="0" type="%s"/>' % (safe, mime))
         parts.append(
             '      <media:content url="%s" medium="image" type="%s"/>'
             % (safe, mime))
         parts.append('      <media:thumbnail url="%s"/>' % safe)
-    # The rendered body readers show: artwork first, then the same preview
-    # text, so an item reads like the card it came from. "]]>" cannot appear
-    # in our own generated copy, but a stray one would end the section early.
+
+
+
     body = []
     if image:
         body.append(

@@ -26,32 +26,32 @@
 namespace {
 
 constexpr int kSeenCacheLimit = 4096;
-// Cap on the message-id -> conversation/sender maps used for edit/delete
-// lookups. Anything older than the newest few thousand messages can no longer
-// be edited or deleted through this node, which is fine — its history entry
-// has been evicted long before then (issue #428).
+
+
+
+
 constexpr int kMessageIndexLimit = 4096;
-// Peers unseen for this long are erased outright (not just hidden from the
-// roster like kPeerStaleMs does). Every transient visitor id otherwise leaves
-// a Peer entry — mirror adverts included — in m_peers forever (issue #428).
-constexpr qint64 kPeerReapMs = 3600000; // 1 hour
+
+
+
+constexpr qint64 kPeerReapMs = 3600000;
 const QString kKnownRosterGroup = QStringLiteral("mainnode/knownRoster");
-// Each connected node rebroadcasts a lightweight presence frame on this cadence
-// so peers keep its "last seen" fresh; a peer not heard from for longer than the
-// stale window is treated as offline and dropped from the roster. This is what
-// reaps nodes that vanished without a clean "bye" (crash, network loss) instead
-// of leaving them shown as online indefinitely.
-constexpr int kPresenceIntervalMs = 60000;   // 60s broadcast
-constexpr qint64 kPeerStaleMs = 180000;       // 3 missed beats -> offline
-// Half-open-link watchdog (same guard as the repository update channel): if
-// nothing at all has arrived for this long while the link is believed up — not
-// even a pong for the 25s keepalive pings — the TCP socket is a zombie (NAT
-// timeout, silent relay drop). Writes into it still "succeed", so Qt may never
-// emit disconnected() and a headless node would sit "connected" with an empty
-// roster forever while the mesh shows it offline. Tear it down and reconnect.
-constexpr qint64 kStaleRxMs = 70000; // ~2.8x the 25s ping interval
-// A server that accepts TCP/TLS but never answers the WebSocket upgrade would
-// otherwise hang the node forever: the ping timer only starts after the 101.
+
+
+
+
+
+constexpr int kPresenceIntervalMs = 60000;
+constexpr qint64 kPeerStaleMs = 180000;
+
+
+
+
+
+
+constexpr qint64 kStaleRxMs = 70000;
+
+
 constexpr qint64 kHelloAdvertiseMinIntervalMs = 30000;
 constexpr qint64 kHelloReplyMinIntervalMs = 120000;
 constexpr qint64 kStatusRepeatMinIntervalMs = 60000;
@@ -66,7 +66,7 @@ constexpr qsizetype kMaxFileBytes = 64ll * 1024 * 1024;
 constexpr qsizetype kMaxBase64FileChars = 90ll * 1024 * 1024;
 constexpr qsizetype kMaxAvatarBytes = 256 * 1024;
 
-// This node's operating system, advertised to peers.
+
 QString currentPlatform()
 {
 #if defined(Q_OS_ANDROID)
@@ -136,11 +136,11 @@ QString boundedText(const QJsonObject &object, const char *key, int maxChars)
 constexpr int kMaxMirrorRepos = 500;
 constexpr int kMaxRepoNameChars = 160;
 
-// Serialize advertised mirrors into the two wire fields used by `hello`:
-//   "mirrors"     — a plain array of "owner/name" (read by every peer, old or new)
-//   "mirrorHeads" — an object "owner/name" -> {c:commit, b:branch, t:syncedMs}
-// carrying the HEAD each mirror holds. Splitting it this way keeps older peers
-// (which only know "mirrors") working while newer peers gain freshness detail.
+
+
+
+
+
 void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
 {
     QJsonArray names;
@@ -153,18 +153,18 @@ void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
         head.insert("c", m.commit);
         head.insert("b", m.branch);
         head.insert("t", m.updatedMs);
-        head.insert("s", m.source); // shared upstream identity for grouping
-        head.insert("z", double(m.sizeBytes)); // on-disk mirror size in bytes
-        head.insert("i", m.issueCount); // issues this mirror holds (-1 = unknown)
-        // More per-node tallies for the Mirror nodes view (-1 = unknown/older peer).
-        head.insert("k", m.commitCount);     // commits on the served branch
-        head.insert("h", m.branchCount);     // local branches (refs/heads)
-        head.insert("p", m.pullCount);       // pull requests
-        head.insert("d", m.discussionCount); // discussions
-        head.insert("w", m.worktreeCount);   // working-copy worktrees (agent tasks)
-        head.insert("a", m.artifactCount);   // release artifacts hosted for download
-        // Who made the advertised commit and what it says, so peers can show the
-        // latest commit by name instead of a bare hash they may not hold.
+        head.insert("s", m.source);
+        head.insert("z", double(m.sizeBytes));
+        head.insert("i", m.issueCount);
+
+        head.insert("k", m.commitCount);
+        head.insert("h", m.branchCount);
+        head.insert("p", m.pullCount);
+        head.insert("d", m.discussionCount);
+        head.insert("w", m.worktreeCount);
+        head.insert("a", m.artifactCount);
+
+
         head.insert("m", m.commitIdentity.subject.left(kMaxCommitSubjectChars));
         head.insert("n", m.commitIdentity.author.left(kMaxCommitAuthorChars));
         head.insert("e", double(m.commitIdentity.committedAtMs));
@@ -174,8 +174,8 @@ void writeMirrors(QJsonObject &message, const QList<MirrorAdvert> &mirrors)
     message.insert("mirrorHeads", heads);
 }
 
-// Inverse of writeMirrors: rebuild the advertised mirror list from a hello,
-// preferring the rich "mirrorHeads" detail and falling back to bare names.
+
+
 QList<MirrorAdvert> readMirrors(const QJsonObject &message)
 {
     const QJsonObject heads = message.value("mirrorHeads").toObject();
@@ -263,7 +263,7 @@ QString stableOrRandomNodeId(const QString &stableNodeId)
     return QUuid::createUuid().toString(QUuid::WithoutBraces);
 }
 
-} // namespace
+}
 
 ServerNode::ServerNode(const QString &userName, const QString &nodeName,
                        const QString &ownerUser, const QString &stableNodeId,
@@ -284,11 +284,11 @@ ServerNode::ServerNode(const QString &userName, const QString &nodeName,
       m_nodeId(stableOrRandomNodeId(stableNodeId)),
       m_crypto(m_roomName)
 {
-    // m_crypto was seeded with the legacy baked-in app key. When the relay's
-    // server-held shared key is available, re-key with it (via the passphrase
-    // constructor) so the room key is no longer a public constant. Empty keeps
-    // the fallback so chat still works if the key fetch hasn't completed yet
-    // (setRoomPassphrase() re-keys once it arrives).
+
+
+
+
+
     if (!roomPassphrase.isEmpty())
         m_crypto = RoomCrypto(m_roomName, roomPassphrase);
 
@@ -297,7 +297,7 @@ ServerNode::ServerNode(const QString &userName, const QString &nodeName,
     m_rosterStorageKey =
         QString::fromLatin1(QCryptographicHash::hash(material, QCryptographicHash::Sha256)
                                 .toHex());
-    m_endpoints = {m_url}; // default to the single URL; setEndpoints() adds failovers
+    m_endpoints = {m_url};
     loadKnownPeers();
     loadHiddenChannels();
 }
@@ -386,17 +386,17 @@ bool ServerNode::start()
     }
 
     if (!m_pingTimer) {
-        // A periodic WebSocket ping keeps the relay (and Cloudflare's edge)
-        // from dropping the connection while the node is idle. The pong's
-        // round trip doubles as a free latency sample (latencySampled) so the
-        // relay radar doesn't need its own HTTP probe while we're connected.
+
+
+
+
         m_pingTimer = new QTimer(this);
         m_pingTimer->setInterval(25000);
         connect(m_pingTimer, &QTimer::timeout, this, [this] {
-            // Zombie-link watchdog: if nothing has come back since before the
-            // previous ping went out — not even its pong — the socket is
-            // half-open and disconnected() may never fire on its own. Take the
-            // normal reconnect path instead of pinging into the void forever.
+
+
+
+
             const qint64 now = QDateTime::currentMSecsSinceEpoch();
             const qint64 lastAlive = qMax(m_lastRxMs, m_wsConnectedAtMs);
             if (m_wsReady && lastAlive > 0 && now - lastAlive > kStaleRxMs) {
@@ -413,19 +413,19 @@ bool ServerNode::start()
     }
 
     if (!m_presenceTimer) {
-        // Heartbeat into the room so peers keep our last-seen fresh, and sweep
-        // our own roster so peers that went stale (no "bye") stop showing online.
+
+
         m_presenceTimer = new QTimer(this);
         m_presenceTimer->setInterval(kPresenceIntervalMs);
         connect(m_presenceTimer, &QTimer::timeout, this, [this] {
             sendPresence();
             reapStalePeers();
-            updateRosterAndStatus(); // re-evaluate staleness even with no traffic
+            updateRosterAndStatus();
         });
     }
 
     m_userStopped = false;
-    // A fresh join starts from the most-preferred mainnode with fast retries.
+
     if (!m_endpoints.isEmpty()) {
         m_endpointIndex = 0;
         m_url = m_endpoints.first();
@@ -456,7 +456,7 @@ void ServerNode::failCurrentConnection()
 
 void ServerNode::openConnection()
 {
-    // Tear down any previous socket (e.g. a failed attempt) before reconnecting.
+
     discardCurrentSocket();
     m_attemptActive = false;
     m_wsReady = false;
@@ -474,10 +474,10 @@ void ServerNode::openConnection()
         return;
     }
 
-    // Bound the whole connect + TLS + WebSocket-upgrade sequence. A server
-    // that accepts the TCP connection but never answers the upgrade leaves no
-    // timer running (ping/presence only start after the 101), so without this
-    // the node would hang in "Connecting…" forever.
+
+
+
+
     if (!m_connectTimeoutTimer) {
         m_connectTimeoutTimer = new QTimer(this);
         m_connectTimeoutTimer->setSingleShot(true);
@@ -506,15 +506,15 @@ void ServerNode::openConnection()
 
 void ServerNode::scheduleReconnect()
 {
-    // The connect timeout only polices the attempt in flight; while we're
-    // waiting out the backoff there is nothing for it to abort, and letting it
-    // fire mid-wait would log a spurious "timed out". openConnection re-arms it.
+
+
+
     if (m_connectTimeoutTimer)
         m_connectTimeoutTimer->stop();
     if (m_userStopped || !m_networkAvailable)
-        return; // the user left the node; don't keep retrying
+        return;
     if (m_reconnectTimer && m_reconnectTimer->isActive())
-        return; // a retry is already pending
+        return;
 
     if (!m_reconnectTimer) {
         m_reconnectTimer = new QTimer(this);
@@ -522,31 +522,31 @@ void ServerNode::scheduleReconnect()
         connect(m_reconnectTimer, &QTimer::timeout, this, [this] {
             if (m_userStopped || !m_networkAvailable)
                 return;
-            // Fail over to the next configured mainnode before each retry so a
-            // dead/quota-limited endpoint is skipped instead of hammered forever
-            // (issue #364). With a single endpoint this is a no-op.
+
+
+
             advanceEndpoint();
             emit statusChanged("Reconnecting to " + m_url.host() + "...");
             openConnection();
         });
     }
 
-    // Retry quickly at first so the node reconnects promptly after a brief
-    // relay redeploy (adhoc #192), then back off exponentially — 1s, 2s, 4s …
-    // capped at 5 minutes — while the relay keeps refusing. A cap of 60s
-    // (the original adhoc #66 value) is reached after only ~6 attempts
-    // (about a minute), so a Cloudflare daily-quota 429 that lasts hours
-    // spent the rest of the outage hammering the relay every ~60-75s —
-    // barely different from no backoff at all, and the jitter on a fixed
-    // base made consecutive waits look random rather than growing (adhoc
-    // #68). Stretching the ramp out and raising the ceiling keeps genuine
-    // exponential growth visible for longer and cuts the steady-state
-    // request rate once it does plateau. Jitter keeps many nodes from
-    // reconnecting in lockstep; the counter resets once an upgrade succeeds.
-    // With multiple mainnodes, probe them all at the fast rate before the delay
-    // grows: the backoff shift advances once per full cycle through the endpoint
-    // list (issue #364), so failover to a healthy peer stays quick while a
-    // network-wide outage still ramps down to the 5-minute ceiling.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     const int endpointCount = qMax(1, int(m_endpoints.size()));
     const int shift = qMin(m_reconnectAttempts / endpointCount, 9);
     ++m_reconnectAttempts;
@@ -590,18 +590,18 @@ void ServerNode::connectSocketSignals()
         if (socket != m_socket)
             return;
         emit systemMessage("Mainnode socket error: " + socket->errorString());
-        // Some errors do not emit disconnected, while others emit both.
-        // Detach this exact socket before aborting it so either signal path
-        // converges on one reconnect.
+
+
+
         failCurrentConnection();
     });
 }
 
 void ServerNode::handleLinkLost()
 {
-    // Shared teardown for a socket drop, whichever way it was noticed: the
-    // disconnected() signal, or the ping timer's stale-rx watchdog (a
-    // half-open socket never emits disconnected on its own).
+
+
+
     if (!m_attemptActive && !m_wsReady)
         return;
     m_attemptActive = false;
@@ -656,13 +656,13 @@ void ServerNode::onSocketReadyRead()
         const QByteArray header = m_readBuffer.left(headerEnd);
         m_readBuffer.remove(0, headerEnd + 4);
         if (!header.startsWith("HTTP/1.1 101") && !header.startsWith("HTTP/1.0 101")) {
-            // A non-101 here is almost always transient — the mainnode is
-            // redeploying, quota-limited (Cloudflare 429 page) or briefly
-            // returning an error/HTML page. Treat it like any other dropped
-            // link and reconnect with backoff instead of a fatal error, which
-            // would kick the user all the way back to the onboarding screen
-            // every time the relay is deployed. Include the status line so a
-            // quota 429 is distinguishable from a genuine routing bug.
+
+
+
+
+
+
+
             const int lineEnd = header.indexOf("\r\n");
             const QString statusLine = QString::fromLatin1(
                 (lineEnd < 0 ? header : header.left(lineEnd)).left(80)).trimmed();
@@ -677,7 +677,7 @@ void ServerNode::onSocketReadyRead()
         m_wsReady = true;
         m_attemptActive = true;
         m_wsConnectedAtMs = QDateTime::currentMSecsSinceEpoch();
-        m_reconnectAttempts = 0; // link is healthy again; retry fast next drop
+        m_reconnectAttempts = 0;
         if (m_reconnectTimer)
             m_reconnectTimer->stop();
         if (m_connectTimeoutTimer)
@@ -736,14 +736,14 @@ void ServerNode::onSocketReadyRead()
             for (int i = 0; i < payload.size(); ++i)
                 payload[i] = payload.at(i) ^ mask.at(i % 4);
         }
-        if (opcode == 0x9) { // ping from server -> reply with pong
+        if (opcode == 0x9) {
             ++m_rxControlFrames;
             m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
             emit networkDiagnosticsChanged();
             sendControlFrame(0xA, payload);
             continue;
         }
-        if (opcode == 0xA) { // pong: keepalive acknowledged
+        if (opcode == 0xA) {
             ++m_rxControlFrames;
             m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
             if (m_pingSentMs > 0) {
@@ -853,7 +853,7 @@ void ServerNode::sendTextFrame(const QByteArray &payload, const QString &type,
 
 void ServerNode::sendControlFrame(int opcode, const QByteArray &payload)
 {
-    // Ping/pong control frames (payload <= 125 bytes), client-masked per RFC 6455.
+
     if (!m_socket || !m_wsReady || payload.size() > 125)
         return;
     if (m_socket->bytesToWrite() >
@@ -930,9 +930,9 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
                         {"senderId", m_nodeId},
                         {"sender", m_userName.left(kMaxDisplayNameChars)},
                         {"ts", double(QDateTime::currentMSecsSinceEpoch())}};
-    // Web/dashboard chat surfaces only render frames stamped accountKind
-    // "user"; without this a desktop user's messages never appeared on the
-    // website even though they relayed fine.
+
+
+
     if (!m_accountKind.isEmpty())
         message.insert("accountKind", m_accountKind);
     if (!m_nodeName.isEmpty())
@@ -945,9 +945,9 @@ QJsonObject ServerNode::makeMessage(const QString &type) const
         message.insert("platform", m_platform);
     if (!m_version.isEmpty())
         message.insert("version", m_version);
-    // Host resource telemetry for the Mirror nodes view's CPU/RAM/disk bars. Sent
-    // on every frame so peers refresh it on any heartbeat; unknown fields are
-    // omitted. Compact keys keep the per-frame overhead tiny (~60 bytes).
+
+
+
     if (m_memTotalBytes > 0 || m_diskTotalBytes > 0 || m_cpuPercent >= 0.0) {
         QJsonObject sys;
         if (m_memTotalBytes > 0) {
@@ -972,10 +972,10 @@ void ServerNode::sendEncrypted(const QJsonObject &plain, bool showActivity)
         emit systemMessage("Mainnode encryption failed; message was not sent.");
         return;
     }
-    // Tag durable conversation messages so the relay can retain them (still
-    // encrypted) and replay them to nodes that join later — giving new users
-    // some recent history even when no other node is online. Ephemeral frames
-    // (typing/presence/hello/history/avatar) and private DMs are never retained.
+
+
+
+
     const QString type = plain.value("type").toString();
     const bool durable = isDurableMainnodeType(type);
     if (durable)
@@ -989,18 +989,18 @@ void ServerNode::sendEncrypted(const QJsonObject &plain, bool showActivity)
 
 void ServerNode::sampleSystemStats()
 {
-    // Re-sample at most once per ~10s so a burst of chat sends (each of which
-    // builds a frame via makeMessage) doesn't repeatedly stat the filesystem.
-    // The heartbeats (hello/presence) call this; chat sends reuse the cache.
+
+
+
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_lastStatsSampleMs != 0 && now - m_lastStatsSampleMs < 10000)
         return;
     m_lastStatsSampleMs = now;
 
-    // Each metric is sampled (and thus advertised + shown on our self row) only
-    // when its display toggle is on. Disabled metrics reset to the "unknown"
-    // sentinel so makeMessage() omits them and the nodes view draws no bar
-    // (adhoc #23). Re-read every sample so a runtime toggle takes effect.
+
+
+
+
     QSettings settings;
     const bool showCpu = settings.value(TelemetrySettings::kReportCpu, false).toBool();
     const bool showMem = settings.value(TelemetrySettings::kReportMemory, false).toBool();
@@ -1017,9 +1017,9 @@ void ServerNode::sampleSystemStats()
     }
 
     if (showDisk) {
-        // Measure the volume that holds our app data (where mirrors live); fall
-        // back to the home directory so a meaningful figure shows even without
-        // app data.
+
+
+
         QString diskPath =
             QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         if (diskPath.isEmpty() || !QDir(diskPath).exists())
@@ -1075,18 +1075,18 @@ void ServerNode::sendPresence()
     if (!m_wsReady)
         return;
     sampleSystemStats();
-    // A bare keep-alive: makeMessage already carries senderId/name/platform, so
-    // peers refresh our last-seen on receipt. Ephemeral (not persisted) and not
-    // logged as activity, unlike hello, so it stays quiet on the network log.
+
+
+
     sendEncrypted(makeMessage("presence"), false);
 }
 
 void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
 {
-    // Re-advertise when the set of repos OR any freshness detail changed. A
-    // source node can advertise the new working-tree commit before its served
-    // bare mirror catches up; when that sync finishes the commit is unchanged
-    // but updatedMs moves, and peers need that second hello to retry the fetch.
+
+
+
+
     bool changed = repos.size() != m_mirroredRepos.size();
     for (int i = 0; !changed && i < repos.size(); ++i)
         changed = repos.at(i).ownerName != m_mirroredRepos.at(i).ownerName ||
@@ -1113,7 +1113,7 @@ void ServerNode::setMirroredRepos(const QList<MirrorAdvert> &repos)
         return;
     m_mirroredRepos = repos;
     if (m_wsReady)
-        sendHello(); // re-advertise so peers see the updated mirror set
+        sendHello();
 }
 
 void ServerNode::notifyMirrorUpdated(const QString &ownerName,
@@ -1123,13 +1123,13 @@ void ServerNode::notifyMirrorUpdated(const QString &ownerName,
         return;
     QJsonObject message = makeMessage("mirror-update");
     message.insert("repo", ownerName.trimmed().left(160));
-    // Carry the new HEAD so peers see exactly which commit is different and can
-    // confirm when their fetch reaches it, without a separate advert round trip.
+
+
     if (!commit.trimmed().isEmpty())
         message.insert("commit", commit.trimmed().left(64));
-    // Pre-mark our own id so the relay's echo back to us isn't surfaced as a
-    // self-notification. This is an ephemeral frame (not in kDurableTypes), so
-    // the relay won't retain or replay it.
+
+
+
     markSeen(message.value("id").toString());
     sendEncrypted(message, false);
 }
@@ -1139,10 +1139,10 @@ void ServerNode::notifyMirrorSynced(const QString &ownerName,
 {
     if (ownerName.trimmed().isEmpty() || !m_wsReady)
         return;
-    // The closing half of the round trip: after pulling a mirror-update signal
-    // forward, announce that this node's mirror now holds `commit`, so the
-    // source and other peers learn it converged the instant the fetch lands
-    // rather than at the next advert/auto-sync tick. Ephemeral, like the update.
+
+
+
+
     QJsonObject message = makeMessage("mirror-synced");
     message.insert("repo", ownerName.trimmed().left(160));
     if (!commit.trimmed().isEmpty())
@@ -1165,18 +1165,18 @@ void ServerNode::requestMirrorRefresh(const QString &source,
         message.insert("source", cleanSource);
     if (!cleanOwnerName.isEmpty())
         message.insert("repo", cleanOwnerName);
-    // Pre-mark our own id so the relay's echo back to us doesn't make this node
-    // rebuild and reply to its own request.
+
+
     markSeen(message.value("id").toString());
     sendEncrypted(message, false);
 }
 
 void ServerNode::advertiseMirrorsNow()
 {
-    // This explicit refresh is also used after an operator changes a host
-    // telemetry privacy toggle. Bypass the normal 10-second sampling throttle,
-    // refresh our own roster row, and then advertise exactly the newly enabled
-    // metrics (or omit the newly disabled ones).
+
+
+
+
     m_lastStatsSampleMs = 0;
     sampleSystemStats();
     updateRosterAndStatus();
@@ -1198,8 +1198,8 @@ void ServerNode::notifyCoveOpened(const QString &creatorKey, const QString &cove
     message.insert("openerName", openerName.left(80));
     message.insert("coveTs", double(ts));
     message.insert("sig", signature.left(200));
-    // Pre-mark our own id so the relay's echo back to us isn't re-processed. This
-    // is an ephemeral frame (not in kDurableTypes), so the relay won't retain it.
+
+
     markSeen(message.value("id").toString());
     sendEncrypted(message, false);
 }
@@ -1216,9 +1216,9 @@ void ServerNode::notifyCoveInvited(const QString &inviteeAccount, const QString 
     message.insert("coveName", coveName.left(160));
     message.insert("inviterName", inviterName.left(80));
     message.insert("coveTs", double(ts));
-    // Ephemeral frame (not in kDurableTypes): if the invitee is offline they'll
-    // still see the cove next time they list the repo's coves, so this is a
-    // best-effort live nudge, not the source of truth for the invite.
+
+
+
     markSeen(message.value("id").toString());
     sendEncrypted(message, false);
 }
@@ -1245,13 +1245,13 @@ void ServerNode::setAccountKind(const QString &kind)
 
 void ServerNode::setRoomPassphrase(const QString &passphrase)
 {
-    // The passphrase fetch is async and races the initial connect (it's kicked
-    // off from the first heartbeat, which only fires once start() has already
-    // returned), so this backend is commonly still on the constructor's
-    // fallback key by the time the real one shows up. Re-key so this session
-    // matches the server-derived key every other client (web included) uses —
-    // without this, Qt and web would encrypt with different keys and silently
-    // fail to decrypt each other's messages.
+
+
+
+
+
+
+
     if (passphrase.isEmpty())
         return;
     m_crypto = RoomCrypto(m_roomName, passphrase);
@@ -1259,13 +1259,13 @@ void ServerNode::setRoomPassphrase(const QString &passphrase)
 
 void ServerNode::sendBotChat(const QString &channel, const QString &text)
 {
-    // A ForkBot reply relayed on behalf of this client (the bot has no room
-    // connection of its own). Mirrors the web clients' makeForkbotPlain frame:
-    // sender/senderId "forkbot", accountKind "user" so every surface — web
-    // and desktop — renders it. Never inject one into a private channel: those
-    // channels use application-level invite scoping, and sending their context
-    // to the bot endpoint would widen that audience. They do not cryptographically
-    // exclude the relay because the default room passphrase is relay-derived.
+
+
+
+
+
+
+
     const QString trimmed = text.trimmed();
     if (trimmed.isEmpty() || m_privateChannels.contains(channel))
         return;
@@ -1373,9 +1373,9 @@ void ServerNode::sendAdminDelete(const QString &conversation, const QString &mes
 {
     if (messageId.isEmpty() || signature.isEmpty())
         return;
-    // The UI signed a canonical string that binds this exact ts/messageId/
-    // conversation to the admin's key; carry the same ts (overriding the one
-    // makeMessage stamps) so every receiver reconstructs the identical string.
+
+
+
     QJsonObject message = makeMessage("admin-delete");
     message.insert("ts", double(ts));
     message.insert("conversation", conversation);
@@ -1387,7 +1387,7 @@ void ServerNode::sendAdminDelete(const QString &conversation, const QString &mes
 void ServerNode::applyAdminDelete(const QString &conversation,
                                   const QString &messageId)
 {
-    // Called by the UI only after it verified the signature and admin status.
+
     applyDeleteUnchecked(conversation, messageId);
 }
 
@@ -1448,8 +1448,8 @@ void ServerNode::sendTyping(const QString &conversation, bool active)
 
 QString ServerNode::hiddenChannelsSettingKey() const
 {
-    // Scope the deleted-rooms list to this room/relay so different networks
-    // don't share hidden state.
+
+
     return QStringLiteral("chat/hiddenChannels/") + m_rosterStorageKey;
 }
 
@@ -1458,8 +1458,8 @@ void ServerNode::loadHiddenChannels()
     const QStringList hidden =
         QSettings().value(hiddenChannelsSettingKey()).toStringList();
     m_hiddenChannels = QSet<QString>(hidden.begin(), hidden.end());
-    // Drop any hidden room the default channel list seeded, so a room deleted in
-    // a previous run doesn't come back on the next launch.
+
+
     for (const QString &name : hidden)
         m_channels.removeAll(name);
 }
@@ -1478,8 +1478,8 @@ void ServerNode::addChannel(const QString &channel)
         return;
     if (!name.startsWith('#'))
         name.prepend('#');
-    // A room the user deleted stays deleted, even if something tries to re-add
-    // it (default-channel seeding, a peer hello, etc.).
+
+
     if (m_hiddenChannels.contains(name))
         return;
     if (!m_channels.contains(name)) {
@@ -1504,7 +1504,7 @@ void ServerNode::removeChannel(const QString &channel)
     m_privateChannels.remove(name);
     if (m_channels.removeAll(name) > 0)
         emit channelsChanged(m_channels);
-    // Purge any retained history so a re-add can't replay old messages.
+
     m_channelHistory.remove(name);
     m_channelHistoryChars.remove(name);
 }
@@ -1516,7 +1516,7 @@ void ServerNode::createPrivateChannel(const QString &channel)
         return;
     if (!name.startsWith('#'))
         name.prepend('#');
-    // Creating a room by this name is an explicit re-add: clear any prior delete.
+
     if (m_hiddenChannels.remove(name))
         saveHiddenChannels();
     m_privateChannels.insert(name);
@@ -1525,7 +1525,7 @@ void ServerNode::createPrivateChannel(const QString &channel)
         emit channelsChanged(m_channels);
     }
     emit privateChannelJoined(name);
-    // Deliberately NOT broadcast: a private room only reaches peers we invite.
+
 }
 
 void ServerNode::inviteToChannel(const QString &peerId, const QString &channel)
@@ -1535,24 +1535,24 @@ void ServerNode::inviteToChannel(const QString &peerId, const QString &channel)
         return;
     if (!name.startsWith('#'))
         name.prepend('#');
-    // Only private rooms are invite-based; a public channel is already visible
-    // to everyone, so an "invite" to one is meaningless.
+
+
     if (!m_privateChannels.contains(name))
         return;
     QJsonObject message = makeMessage("invite");
     message.insert("to", peerId);
     message.insert("channel", name);
     markSeen(message.value("id").toString());
-    // Persist so an invitee who is offline right now still receives it when they
-    // reconnect (non-target members ignore it via the "to" check).
+
+
     sendEncrypted(message, true);
-    // Bring the invitee up to speed with the room's existing history.
+
     sendChannelHistoryTo(peerId, name);
 }
 
 void ServerNode::shutdown()
 {
-    m_userStopped = true; // intentional leave: stop the auto-reconnect loop
+    m_userStopped = true;
     if (m_reconnectTimer)
         m_reconnectTimer->stop();
     if (m_pingTimer)
@@ -1594,9 +1594,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
         rememberPeer(senderId, sender, nodeName, ownerUser, accountKind,
                      solanaAddress, platform, version);
 
-    // Host resource telemetry (CPU/RAM/disk) the sender advertised; refresh the
-    // peer's cached figures so the Mirror nodes view's bars track live load.
-    // rememberPeer just (re)created the peer, so it's safe to look up by id.
+
+
+
     if (!senderId.isEmpty() && message.contains("sys") &&
         m_peers.contains(senderId)) {
         const QJsonObject sys = message.value("sys").toObject();
@@ -1625,20 +1625,20 @@ void ServerNode::handlePlain(const QJsonObject &message)
         }
         if (changed)
             emit channelsChanged(m_channels);
-        // Record which repos this peer advertises mirroring, plus the HEAD each
-        // mirror currently holds (for the network's mirror-freshness view).
+
+
         if (m_peers.contains(senderId)) {
             const QList<MirrorAdvert> mirrors = readMirrors(message);
             m_peers[senderId].mirrorDetails = mirrors;
             m_peers[senderId].mirrors = mirrorNames(mirrors);
             updateRosterAndStatus();
         }
-        // A broadcast hello (no "to") is a peer announcing themselves on a
-        // fresh connect or reconnect. Existing peers must answer with their own
-        // presence so the newcomer rebuilds its roster — otherwise it would not
-        // see anyone already in the room until they next spoke. The reply is
-        // directed at the newcomer and carries "to"; directed hellos are not
-        // answered again, so two peers can't ping-pong hellos forever.
+
+
+
+
+
+
         if (message.value("to").toString().isEmpty()) {
             const qint64 now = QDateTime::currentMSecsSinceEpoch();
             const qint64 last = m_lastHelloReplyMs.value(senderId, 0);
@@ -1651,9 +1651,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
                         channels.append(channel);
                 QJsonObject reply = makeMessage("hello");
                 reply.insert("channels", channels);
-                // So the newcomer sees our mirrors too. Repeated reconnects from
-                // the same peer are rate-limited above; otherwise a flapping node
-                // makes every existing member send a full hello burst.
+
+
+
                 writeMirrors(reply, m_mirroredRepos);
                 reply.insert("to", senderId);
                 sendEncrypted(reply, false);
@@ -1661,11 +1661,11 @@ void ServerNode::handlePlain(const QJsonObject &message)
         }
     } else if (type == "chat") {
         const QString channel = message.value("channel").toString();
-        // A private-room message from a room we weren't invited to is ignored,
-        // the same honour-model as a direct message addressed to someone else.
+
+
         if (message.value("private").toBool() && !m_channels.contains(channel))
             return;
-        // A message in a room the user deleted stays out — don't resurrect it.
+
         if (m_hiddenChannels.contains(channel))
             return;
         if (!m_channels.contains(channel))
@@ -1673,15 +1673,15 @@ void ServerNode::handlePlain(const QJsonObject &message)
         storeHistory(message);
         emitChat(message);
     } else if (type == "invite") {
-        // Someone added us to a private room. Join it locally (invite-only, so
-        // we keep it out of our own hello/channel broadcasts too) and surface it.
+
+
         if (message.value("to").toString() == m_nodeId) {
             QString channel = message.value("channel").toString().left(120);
             if (!channel.isEmpty()) {
                 if (!channel.startsWith('#'))
                     channel.prepend('#');
                 if (m_hiddenChannels.contains(channel))
-                    return; // stay out of a room we deleted
+                    return;
                 m_privateChannels.insert(channel);
                 if (!m_channels.contains(channel)) {
                     m_channels.append(channel);
@@ -1753,9 +1753,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
         const QString emoji = message.value("emoji").toString();
         const QString reactorId = message.value("reactorId").toString();
         const QString reactorName = message.value("reactorName").toString();
-        // Only track reactions for messages we actually hold (everything the
-        // UI shows is indexed via emitChat/emitDm); a frame targeting an
-        // arbitrary unknown id must not grow m_reactions without bound.
+
+
+
         if (m_messageConversation.contains(target)) {
             if (message.value("added").toBool())
                 m_reactions[target][emoji].insert(reactorId, reactorName);
@@ -1774,9 +1774,9 @@ void ServerNode::handlePlain(const QJsonObject &message)
         if (messageIsAuthoredBy(target, senderId))
             applyDelete(message.value("conversation").toString(), target, senderId);
     } else if (type == "admin-delete") {
-        // A signed moderation delete. We can't authorise it here (admin status
-        // lives server-side); hand it to the UI to verify the signature against
-        // senderId and confirm that node is an admin, then apply.
+
+
+
         const QString target = message.value("target").toString();
         const QString sig = message.value("sig").toString();
         const qint64 ts = qint64(message.value("ts").toDouble());
@@ -1800,8 +1800,8 @@ void ServerNode::handlePlain(const QJsonObject &message)
             const QJsonObject entry = value.toObject();
             if (!messageHasSafePayload(entry))
                 continue;
-            // Never surface replayed private-room history for a room we aren't a
-            // member of (mirrors the live "chat" guard above).
+
+
             if (entry.value("private").toBool() &&
                 !m_channels.contains(entry.value("channel").toString()))
                 continue;
@@ -1826,8 +1826,8 @@ void ServerNode::sendHistoryTo(const QString &peerId)
     QJsonArray entries;
     for (auto it = m_channelHistory.constBegin(); it != m_channelHistory.constEnd();
          ++it) {
-        // A blanket hello-reply must not leak private rooms: only the members
-        // we've explicitly invited (via inviteToChannel) receive their history.
+
+
         if (m_privateChannels.contains(it.key()))
             continue;
         for (const QJsonObject &entry : it.value())
@@ -1928,9 +1928,9 @@ void ServerNode::rememberPeer(const QString &peerId, const QString &name,
 
 void ServerNode::updateRosterAndStatus()
 {
-    // Coalesce: incoming frames (typing/presence/hello/chat) each touch the
-    // roster, but the membership rarely actually changes. Emit at most once per
-    // short window so the UI status/roster don't thrash on every frame.
+
+
+
     if (!m_rosterEmitTimer) {
         m_rosterEmitTimer = new QTimer(this);
         m_rosterEmitTimer->setSingleShot(true);
@@ -1944,8 +1944,8 @@ void ServerNode::updateRosterAndStatus()
 
 void ServerNode::flushRosterAndStatus()
 {
-    // Refresh our own telemetry so the self row's CPU/RAM/disk bars are populated
-    // even before the first heartbeat fires (throttled internally to ~10s).
+
+
     sampleSystemStats();
     MemberInfo self;
     self.id = m_nodeId;
@@ -1971,8 +1971,8 @@ void ServerNode::flushRosterAndStatus()
     for (auto it = m_peers.constBegin(); it != m_peers.constEnd(); ++it) {
         if (!it->online)
             continue;
-        // Drop peers that stopped sending frames (presence/hello/chat) long ago:
-        // a disconnect without a "bye" otherwise leaves them stuck online forever.
+
+
         if (now - it->lastSeenMs > kPeerStaleMs)
             continue;
         MemberInfo member;
@@ -2039,9 +2039,9 @@ void ServerNode::indexMessage(const QString &id, const QString &conversation,
         m_messageIndexOrder.enqueue(id);
     m_messageConversation.insert(id, conversation);
     m_messageSender.insert(id, senderId);
-    // Ids already dropped by history eviction linger in the queue until they
-    // reach the front; dropping them again is a no-op, and the maps can never
-    // outgrow the queue, so the cap still holds.
+
+
+
     while (m_messageIndexOrder.size() > kMessageIndexLimit)
         dropMessageIndex(m_messageIndexOrder.dequeue());
 }
@@ -2057,9 +2057,9 @@ void ServerNode::reapStalePeers()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     for (auto it = m_peers.begin(); it != m_peers.end();) {
-        // A guest or World visitor is a browser tab that will never come back
-        // under the same id, so it is erased after ten idle minutes rather than
-        // held for the full hour a real node gets (adhoc #404).
+
+
+
         const qint64 reapAfter =
             ChatVisitorPresence::isTransientVisitor(it->accountKind, it->name)
                 ? ChatVisitorPresence::kVisitorIdleMs
@@ -2099,9 +2099,9 @@ void ServerNode::updateStoredMessage(const QString &messageId, const QString &te
                 message.insert("text", text.left(kMaxTextChars));
                 message.insert("edited", true);
             }
-            // Keep the channel's running cost total (see storeHistory) exact
-            // across in-place edits — a delete shrinks the entry, an edit can
-            // grow it.
+
+
+
             const auto total = m_channelHistoryChars.find(it.key());
             if (total != m_channelHistoryChars.end())
                 *total += ChatHistoryLimits::entryCost(message) - costBefore;

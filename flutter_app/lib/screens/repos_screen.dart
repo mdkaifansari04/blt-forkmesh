@@ -52,7 +52,7 @@ extension _RepoSortLabel on _RepoSort {
   }
 }
 
-/// The public catalog of repositories across the network (Code section).
+
 class ReposScreen extends StatefulWidget {
   const ReposScreen({super.key});
 

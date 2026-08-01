@@ -11,7 +11,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from static_routes import dashboard_section_redirect  # noqa: E402
+from static_routes import dashboard_section_redirect
 
 WRANGLER = tomllib.loads((ROOT / "wrangler.toml").read_text(encoding="utf-8"))
 ENTRY_TEXT = (SRC / "entry.py").read_text(encoding="utf-8")
@@ -30,8 +30,8 @@ def test_homepage_no_longer_client_redirects():
     assert 'location.replace("/dashboard")' not in INDEX_HTML
     assert "forkmesh.session" not in INDEX_HTML
     assert 'data-world-mode="public"' in WORLD_HTML
-    # The World embed moved from a mid-page index.html section to a
-    # site-footer.js band pinned to the bottom of every page (adhoc #280).
+
+
     footer_js = _read("site-footer.js")
     assert 'src="/world/"' not in INDEX_HTML
     assert 'src="/world/"' in footer_js
@@ -64,15 +64,15 @@ def test_regular_homepage_revalidates_without_varying_on_cookie():
 
 
 def test_presence_cookie_lifecycle_is_complete():
-    # Set on login/signup and on dashboard session writes, with Secure on https.
+
     for rel in ("login.js", "signup.js", "dashboard.js"):
         text = _read(rel)
         assert COOKIE_SET in text, rel
         assert '(location.protocol === "https:" ? "; Secure" : "")' in text, rel
-    # Cleared on dashboard logout, on the marketing-page header logout (the
-    # pre-refactor gap: it only removed localStorage, leaving / redirecting),
-    # and by the dashboard guest branch as a self-heal when localStorage says
-    # logged out but the cookie survived.
+
+
+
+
     assert COOKIE_CLEAR in _read("site-header.js")
     assert _read("dashboard.js").count(COOKIE_CLEAR) >= 2
 
@@ -86,13 +86,13 @@ def test_legacy_section_urls_redirect_permanently():
     assert dashboard_section_redirect("/dashboard", "section=profile-overview") == "/dashboard/profile"
     assert (dashboard_section_redirect("/dashboard", "section=profile-repositories")
             == "/dashboard/profile/repositories")
-    # Leftover params survive the redirect — ?repo=, ?mock=, link grants.
+
     assert (dashboard_section_redirect("/dashboard", "section=repos&mock=1")
             == "/dashboard/repos?mock=1")
     assert (dashboard_section_redirect(
         "/dashboard", "link_node=x&link_ts=1&link_sig=s&section=profile")
         == "/dashboard/settings?link_node=x&link_ts=1&link_sig=s")
-    # No redirect without a recognized section, and never off /dashboard.
+
     assert dashboard_section_redirect("/dashboard", "section=bogus") is None
     assert dashboard_section_redirect("/dashboard", "") is None
     assert dashboard_section_redirect("/dashboard", "mock=1") is None
@@ -100,8 +100,8 @@ def test_legacy_section_urls_redirect_permanently():
 
 
 def test_desktop_link_grant_urls_still_reach_the_nodes_panel():
-    # The desktop app hard-codes /dashboard?link_node=... — boot forwards the
-    # grant (params untouched) to the settings document where the panel lives.
+
+
     js = _read("dashboard.js")
     assert 'location.replace("/dashboard/settings" + location.search)' in js
     assert "pendingLinkGrant()" in js

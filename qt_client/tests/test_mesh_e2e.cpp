@@ -1,25 +1,25 @@
-// Nightly end-to-end mesh-loop test (issue #352).
-//
-// Exercises one continuous full-product loop the way a real ForkMesh mesh does:
-//
-//   publish -> direct browse/clone -> issue -> agent PR -> merge
-//
-// Every past reliability outage (relay OOM, stale presence, stalled releases)
-// would have tripped one of these steps. The test wires the *real* client-side
-// building blocks — IssueStore + ForkMeshIdentity (signed issue events) —
-// against an in-process RelayStub that speaks the same HTTPS Git + issue-inbox
-// protocol the
-// Cloudflare Worker relay does. Nothing here depends on the network, an API
-// quota, or a model: the agent step shells out to a deterministic stub binary
-// (FORKMESH_E2E_STUB_AGENT) so we assert the PR plumbing, not the agent.
-//
-// The RelayStub deliberately re-implements the *observable* relay contract
-// (mirrored from cloudflare_worker/src/entry.py): the direct gateway's Git
-// smart-HTTP responses (info/refs advertisement + git-upload-pack POST),
-// a /api/repositories catalog, a blob-browse endpoint, and a signed-issue
-// inbox POST verified with the exact same canonical string the worker uses
-// (verify_issue_event <-> IssueStore::canonicalString). The matching worker
-// side of that contract is asserted in cloudflare_worker/tests.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #include "../src/ForkMeshIdentity.h"
 #include "../src/IssueStore.h"
@@ -69,10 +69,10 @@ void check(bool ok, const QString &what)
     out.flush();
 }
 
-// Pump the shared event loop until `done` is true or the timeout elapses. Every
-// actor here — RelayStub, the driver's QNetworkAccessManager and its
-// git subprocesses — lives on this one thread, so the driver must never block:
-// it cooperatively pumps so control events and HTTPS responses keep flowing.
+
+
+
+
 bool pumpUntil(const std::function<bool()> &done, int timeoutMs)
 {
     QElapsedTimer timer;
@@ -92,9 +92,9 @@ QByteArray pktLine(const QByteArray &payload)
            payload;
 }
 
-// ---------------------------------------------------------------------------
-// RelayStub: the minimal relay contract the client half of the loop touches.
-// ---------------------------------------------------------------------------
+
+
+
 class RelayStub : public QObject
 {
 public:
@@ -142,7 +142,7 @@ private:
         if (headerEnd < 0)
             return;
         const QByteArray header = buf.left(headerEnd);
-        // Plain HTTP: for POST we must have the whole body before dispatching.
+
         const int contentLength = headerValue(header, "content-length").toInt();
         const int total = headerEnd + 4 + contentLength;
         if (buf.size() < total)
@@ -220,9 +220,9 @@ private:
             return;
         }
 
-        // TLS is terminated outside this loopback harness. These handlers model
-        // the direct-HTTPS mirror endpoint itself and never consult the
-        // persistent control socket.
+
+
+
         if (path.endsWith("/info/refs")) {
             QByteArray data;
             const bool ok = runDirectGit(
@@ -277,7 +277,7 @@ private:
             return;
         }
 
-        // Direct browse: normal HTTP response, no socket request or payload.
+
         if (path.endsWith("/blob")) {
             const QUrlQuery query(url);
             const QString blobPath = query.queryItemValue("path");
@@ -306,13 +306,13 @@ private:
             return;
         }
 
-        // Signed-issue inbox POST: verify with the same canonical the worker uses.
+
         if (path.endsWith("/issues") && method == "POST") {
             const QJsonObject payload = QJsonDocument::fromJson(body).object();
             const QJsonObject eventJson = payload.value("event").toObject();
             const int number = payload.value("number").toInt();
             IssueEvent ev = IssueEvent::fromJson(eventJson);
-            ev.body = eventJson.value("body").toString(); // sent for the sig, not stored
+            ev.body = eventJson.value("body").toString();
             const bool sigOk = ForkMeshIdentity::verifySignature(
                 ev.author, ev.sig, IssueStore::canonicalString(number, ev));
             if (!sigOk) {
@@ -336,9 +336,9 @@ private:
     QList<QJsonObject> m_inbox;
 };
 
-// ---------------------------------------------------------------------------
-// Driver helpers
-// ---------------------------------------------------------------------------
+
+
+
 bool runGit(const QString &dir, const QStringList &args, QByteArray *out = nullptr,
             QString *errText = nullptr)
 {
@@ -355,8 +355,8 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *out = nullp
             *errText = QStringLiteral("git failed to start");
         return false;
     }
-    // Pump so the loopback direct-HTTP exchange keeps flowing while Git runs;
-    // waitForFinished would starve the server's event loop.
+
+
     if (!pumpUntil([&finished] { return finished; }, 30000)) {
         proc.kill();
         if (errText)
@@ -412,7 +412,7 @@ HttpResult httpPostJson(QNetworkAccessManager &nam, const QString &url,
     return result;
 }
 
-} // namespace
+}
 
 int main(int argc, char **argv)
 {
@@ -437,7 +437,7 @@ int main(int argc, char **argv)
     const QString mirrorDir = tmp.filePath(QStringLiteral("mirror.git"));
     const QString cloneDir = tmp.filePath(QStringLiteral("clone"));
 
-    // --- Scratch repo (the thing we publish) --------------------------------
+
     QDir().mkpath(workDir);
     QString gitErr;
     bool setup = runGit(QString(), {"init", "-q", "-b", "main", workDir}) &&
@@ -461,19 +461,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // --- Identity (signs the issue) -----------------------------------------
+
     ForkMeshIdentity identity;
     check(identity.load() && identity.isValid(),
           QStringLiteral("node identity generated"));
 
-    // --- Relay + direct repository endpoint ---------------------------------
+
     RelayStub relay;
     check(relay.listen(), QStringLiteral("relay stub listening on loopback"));
     relay.publish(owner, repo, mirrorDir);
 
     QNetworkAccessManager nam;
 
-    // --- Step 1: publish shows up in /api/repositories ----------------------
+
     bool cataloged = pumpUntil(
         [&] {
             HttpResult r = httpGet(nam, relay.base() + "/api/repositories");
@@ -491,7 +491,7 @@ int main(int argc, char **argv)
         8000);
     check(cataloged, QStringLiteral("published repo appears live in /api/repositories"));
 
-    // --- Step 2: browse through the normal direct gateway response ----------
+
     {
         HttpResult r = httpGet(
             nam, relay.base() + "/api/repo/" + owner + "/" + repo + "/blob?path=README.md");
@@ -503,12 +503,12 @@ int main(int argc, char **argv)
               QStringLiteral("direct gateway browse returns repository contents without the socket"));
     }
 
-    // --- Step 3: Git clone through direct smart HTTP ------------------------
+
     {
         const QString cloneUrl = relay.base() + "/" + owner + "/" + repo;
         QString cloneErr;
-        // -c protocol.version=0 keeps the negotiation on the v0 advertisement the
-        // direct endpoint returns from `upload-pack --advertise-refs`.
+
+
         const bool cloned = runGit(
             QString(),
             {"-c", "protocol.version=0", "clone", "-q", cloneUrl, cloneDir}, nullptr,
@@ -524,7 +524,7 @@ int main(int argc, char **argv)
             err << "  clone error: " << cloneErr << '\n';
     }
 
-    // --- Step 4: file a signed issue via POST .../issues --------------------
+
     const int issueNumber = 1;
     {
         IssueStore store(workDir, mirrorDir, &identity, QStringLiteral("e2e"));
@@ -550,7 +550,7 @@ int main(int argc, char **argv)
               QStringLiteral("signed issue accepted into the relay inbox"));
     }
 
-    // --- Step 5: owner drains the inbox and commits the issue ---------------
+
     {
         bool drained = false;
         if (relay.inbox().size() == 1) {
@@ -568,7 +568,7 @@ int main(int argc, char **argv)
               QStringLiteral("drained issue is stored as one JSON file under .forkmesh"));
     }
 
-    // --- Step 6: run the stub agent -> it produces a PR branch --------------
+
     const QString branch = QStringLiteral("agent/issue-%1").arg(issueNumber);
     {
         const QString stubAgent = qEnvironmentVariable("FORKMESH_E2E_STUB_AGENT");
@@ -591,10 +591,10 @@ int main(int argc, char **argv)
               QStringLiteral("stub agent produced a PR branch with a change"));
     }
 
-    // --- Step 7: merge the resulting PR -------------------------------------
+
     {
-        // The PR head lives in the clone; fetch it into the source and merge —
-        // exactly the plumbing a maintainer's "merge PR" runs (branch-backed PR).
+
+
         QString mergeErr;
         bool merged =
             runGit(workDir, {"fetch", "-q", cloneDir, branch + ":" + branch},

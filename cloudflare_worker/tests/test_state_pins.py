@@ -10,8 +10,8 @@ from pathlib import Path
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 MIRRORS = ENTRY.parent / "mirrors.py"
-# Mirror grouping / clone-selection helpers were extracted from entry.py into
-# mirrors.py; parse both sources so the AST loaders below still find them.
+
+
 _WORKER_SRC = ENTRY.read_text(encoding="utf-8") + "\n" + MIRRORS.read_text(encoding="utf-8")
 
 
@@ -55,7 +55,7 @@ def test_unpublished_target_is_unpinned():
 def test_source_is_checked_against_its_own_pin_and_history():
     target = _rec("source", state="AAA")
     pins = clone_state_pins(target, "kS", [], {"kS": ["bbb", "ccc"]})
-    assert pins == {"aaa", "bbb", "ccc"}  # normalized lowercase
+    assert pins == {"aaa", "bbb", "ccc"}
 
 
 def test_source_without_any_attestation_is_unpinned():
@@ -63,9 +63,9 @@ def test_source_without_any_attestation_is_unpinned():
 
 
 def test_mirror_is_validated_against_source_pins_not_its_own():
-    # The mirror self-attests "evil" — that hash must NOT be acceptable when a
-    # working-copy holder in its group has attested the real state. This is the
-    # whole point: a tampered mirror can always republish a matching self-pin.
+
+
+
     mirror = _rec("mirror", source="remote-clone", state="evil")
     rows = [_row("kS", _rec("source", state="good")), _row("kM", mirror)]
     pins = clone_state_pins(mirror, "kM", rows, {})
@@ -74,8 +74,8 @@ def test_mirror_is_validated_against_source_pins_not_its_own():
 
 
 def test_mirror_lagging_the_source_matches_pin_history():
-    # Source pushed + republished (pin now "new"); a mirror still serving the
-    # previous state must clone fine because "old" is in the recent history.
+
+
     mirror = _rec("mirror", source="remote-clone", state="old")
     rows = [_row("kS", _rec("source", state="new")), _row("kM", mirror)]
     pins = clone_state_pins(mirror, "kM", rows, {"kS": ["old"]})
@@ -83,17 +83,17 @@ def test_mirror_lagging_the_source_matches_pin_history():
 
 
 def test_pin_history_window_absorbs_active_issue_churn():
-    # Every issue/PR/discussion action republishes the catalog with a fresh
-    # state hash, so a repo under active collaboration churns pins fast. The
-    # window must be deep enough that a mirror lagging by many issue edits
-    # between its periodic re-syncs still serves .forkmesh/issues/ instead of
-    # falling out of the accepted set and forcing the "unavailable until a live
-    # desktop host serves" fallback. Guard against the window regressing to the
-    # handful-of-publishes depth that produced that symptom.
+
+
+
+
+
+
+
     assert STATE_PIN_HISTORY >= 100
 
-    # A mirror pinned to a state that is dozens of publishes behind the source
-    # still resolves as long as that state is inside the retained history.
+
+
     history = ["s%d" % i for i in range(STATE_PIN_HISTORY)]
     mirror = _rec("mirror", source="remote-clone", state="s90")
     rows = [_row("kS", _rec("source", state="newest")), _row("kM", mirror)]
@@ -102,26 +102,26 @@ def test_pin_history_window_absorbs_active_issue_churn():
 
 
 def test_fork_source_does_not_pin_the_mirror():
-    # A different root commit is a different logical repo; its attestations
-    # must not become acceptable states for this mirror's group.
+
+
     mirror = _rec("mirror", source="remote-clone", state="own")
     rows = [_row("kF", _rec("forker", state="forked", root="otherroot"))]
-    # No same-group source exists -> legacy fallback to the mirror's own pin.
+
     assert clone_state_pins(mirror, "kM", rows, {}) == {"own"}
 
 
 def test_mirror_with_no_attesting_source_falls_back_to_self_pin():
     mirror = _rec("mirror", source="remote-clone", state="own")
-    rows = [_row("kS", _rec("source", state=""))]  # source never attested
+    rows = [_row("kS", _rec("source", state=""))]
     assert clone_state_pins(mirror, "kM", rows, {}) == {"own"}
-    # ...and with no self pin either, the repo is simply unpinned (fail-open).
+
     bare = _rec("mirror", source="remote-clone", state="")
     assert clone_state_pins(bare, "kM", rows, {}) is None
 
 
 def test_legacy_record_without_source_field_counts_as_local_node():
-    # Records published before the `source` field existed default to
-    # local-node on write, and clone_state_pins applies the same default.
+
+
     legacy = {"owner": "old", "name": "forkmesh", "stateHash": "lll",
               "rootCommit": "root1"}
     mirror = _rec("mirror", source="remote-clone", state="own")
@@ -140,7 +140,7 @@ def test_multiple_working_copy_holders_union_their_pins():
 
 
 def _entry_text():
-    # schema DDL now lives in schema.py; concatenate it for the source checks.
+
     return (ENTRY.read_text(encoding="utf-8") + "\n"
             + (ENTRY.parent / "schema.py").read_text(encoding="utf-8"))
 
@@ -158,15 +158,15 @@ def _method_source(class_name, method_name):
 
 
 def test_publish_records_source_pins_into_history():
-    # Only working-copy holders' verified attestations enter the history that
-    # mirrors are validated against, pruned to the newest STATE_PIN_HISTORY.
+
+
     text = _entry_text()
     assert "INSERT INTO repo_state_history" in text
     assert "record.get(\"source\") == \"local-node\"" in text
     assert "prior_state_hash" in text
     assert "history_states" in text
     assert "STATE_PIN_HISTORY" in text
-    # Renaming an account carries its attested history to the new namespace.
+
     assert "UPDATE repo_state_history SET key_bi=" in text
 
 

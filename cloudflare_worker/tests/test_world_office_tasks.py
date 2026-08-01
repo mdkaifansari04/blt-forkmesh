@@ -478,7 +478,7 @@ async def test_follow_up_references_parent_and_inherits_assignee_and_routing():
         runtime.use("POST", "alice", {
             "title": "Verify the production repair",
             "parentTaskId": parent["id"],
-            # Client attempts cannot redirect a follow-up to someone else.
+
             "assigneeKind": "user",
             "assignee": "bob",
         }),
@@ -506,7 +506,7 @@ async def test_member_can_submit_exact_non_custodial_sol_bounty_bid():
             "bountyAmountSol": "0.125000000",
             "department": "community",
             "destination": "department",
-            # A bid cannot impersonate this supplied assignee.
+
             "assigneeKind": "user",
             "assignee": "carol",
         }),
@@ -597,7 +597,7 @@ async def test_universal_tasks_route_to_agents_and_private_qa():
             "department": "engineering",
             "destination": "repository",
             "repository": "forkmesh/forkmesh",
-            # A legacy per-vendor kind still routes to the one general bot.
+
             "assigneeKind": "codex",
             "sendToQa": True,
             "howToTest": "Open the World and verify the result.",
@@ -661,7 +661,7 @@ async def test_queued_bot_tasks_return_to_the_task_list():
     assert linked["status"] == 200
     assert linked["data"]["task"]["agentSessionId"]
 
-    # A reader who did not create the task cannot pull it off the node queue.
+
     forbidden = await tasks_api.handle(
         runtime.use("POST", "bob", {}),
         f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}/return",
@@ -691,7 +691,7 @@ async def test_queued_bot_tasks_return_to_the_task_list():
         for entry in runtime.audits
     )
 
-    # A task that is already back on the list is no longer queued anywhere.
+
     again = await tasks_api.handle(
         runtime.use("POST", "mary", {}),
         f"{tasks_api.UNIVERSAL_PREFIX}/{task_id}/return",
@@ -708,8 +708,8 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
         runtime.use("GET"), tasks_api.PREFIX)
     assert unauthenticated["status"] == 401
 
-    # Platform status is deliberately not part of the authorization adapter.
-    # A platform administrator outside the organization cannot infer tasks.
+
+
     outsider = await tasks_api.handle(
         runtime.use("GET", "rootadmin"), tasks_api.PREFIX)
     assert outsider["status"] == 403
@@ -756,8 +756,8 @@ async def test_org_authorization_manager_roles_and_filtered_reads():
     assert "members" in manager_list["data"]
     assert "inactive" not in manager_list["data"]["members"]
     assert manager_list["data"]["members"] == ["bob", "carol"]
-    # Managers can assign only to Marketing members, but private Marketing
-    # roster/attendance/proof data stays hidden unless the actor is on Marketing.
+
+
     assert manager_list["data"]["marketingMembers"] == []
     assert manager_list["data"]["attendanceDays"] == []
     assert manager_list["data"]["proofs"] == []
@@ -1365,8 +1365,8 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     assert "claude-code@workstation" not in stored
     assert "Auto mode" not in stored
 
-    # The bot has no member assignee_bi, so the desktop that opened the task —
-    # a plain member without manager rights — reports the run as finished.
+
+
     done = await tasks_api.handle(
         runtime.use("POST", "wendy", {
             "completionNote": "claude-code@workstation finished with success.",
@@ -1380,14 +1380,14 @@ async def test_desktop_prompt_task_records_and_seals_agent_run_provenance():
     assert done["status"] == 200
     finished = done["data"]["task"]
     assert finished["status"] == "done"
-    # The launch stamp survives; only the fields the finish reported change.
+
     assert finished["agent"]["startedBy"] == "claude-code@workstation"
     assert finished["agent"]["finishedBy"] == "claude-code@workstation"
     assert finished["agent"]["model"] == "sonnet"
     assert finished["agent"]["mode"] == "Auto mode"
     assert finished["agent"]["strength"] == "xhigh"
 
-    # An unrelated member still cannot close somebody else's agent run out.
+
     other = await tasks_api.handle(
         runtime.use("POST", "bob", {"title": "Another agent run",
                                     "department": "engineering",
@@ -1426,11 +1426,11 @@ async def test_agent_run_provenance_is_bounded_and_edit_safe():
     task = opened["data"]["task"]
     assert len(task["agent"]["startedBy"]) <= tasks_api.MAX_AGENT_FIELD
     assert "<" not in task["agent"]["model"]
-    # A reference that cannot be a bounded opaque token is dropped, not stored.
+
     assert task["agent"]["sessionId"] == ""
     assert task["agentSessionId"] == ""
 
-    # A manager editing the copy never rewrites who ran the task or how.
+
     edited = await tasks_api.handle(
         runtime.use("PATCH", "alice", {
             "title": "Bounded provenance, retitled",
@@ -1441,7 +1441,7 @@ async def test_agent_run_provenance_is_bounded_and_edit_safe():
     assert edited["status"] == 200
     assert edited["data"]["task"]["agent"]["strength"] == "high"
 
-    # A task with no agent record reports none rather than an empty shell.
+
     plain = await tasks_api.handle(
         runtime.use("POST", "mary", {
             "title": "Human task",

@@ -1,13 +1,13 @@
-// Performance budgets for the desktop client (issue #357): startup
-// (MainWindow ctor -> first paint) and repo-detail tab switches were both
-// found and fixed "by feel" (see the Commits-tab and lazy-list-tab work).
-// This suite puts a machine-checked floor under both so the next regression
-// fails CI instead of waiting to be noticed.
-//
-// Deliberately its own binary, separate from forkmesh-window-tests: that
-// suite is known-flaky in some sandboxed environments, and a perf gate must
-// be skippable per-environment (FORKMESH_SKIP_PERF_TESTS=1) without losing
-// window-tests' functional coverage.
+
+
+
+
+
+
+
+
+
+
 
 #include "../src/MainWindow.h"
 #include "../src/MainWindowInternal.h"
@@ -72,10 +72,10 @@ bool initGitRepo(QTemporaryDir &repo)
            runGitChecked(repo.path(), {"commit", "-q", "--allow-empty", "-m", "initial"});
 }
 
-// Drives the tab switch exactly as testClickRepoDetailTab does for a real
-// click, then pumps the event loop the way the app's own paint cycle would,
-// and reports the wall-clock cost of that switch (including any first-open
-// lazy build/load the tab does).
+
+
+
+
 qint64 measureTabSwitch(MainWindow &window, int tabId)
 {
     QElapsedTimer timer;
@@ -86,7 +86,7 @@ qint64 measureTabSwitch(MainWindow &window, int tabId)
     return timer.elapsed();
 }
 
-} // namespace
+}
 
 int main(int argc, char *argv[])
 {
@@ -114,9 +114,9 @@ int main(int argc, char *argv[])
     QSettings::setPath(QSettings::IniFormat, QSettings::UserScope,
                        settingsDir.path());
 
-    // Same app-data isolation as forkmesh-window-tests: AppDataLocation reads
-    // XDG_DATA_HOME at call time, so set it before QApplication (and thus
-    // before MainWindow's initAgents()).
+
+
+
     QTemporaryDir dataDir;
     if (!dataDir.isValid()) {
         qCritical("FAIL: could not create temporary data directory");
@@ -142,10 +142,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // --- Startup: MainWindow ctor -> first paint, under the offscreen QPA
-    // plugin this suite (like forkmesh-window-tests) runs on in CI. Target
-    // from issue #357: < 1000ms; overridable per-environment for recalibration
-    // without a recompile.
+
+
+
+
     const qint64 startupBudgetMs =
         envBudgetMs("FORKMESH_PERF_STARTUP_BUDGET_MS", 1000);
     QElapsedTimer startupTimer;
@@ -157,10 +157,10 @@ int main(int argc, char *argv[])
     checkBudget(QStringLiteral("startup (ctor -> first paint)"),
                 startupTimer.elapsed(), startupBudgetMs);
 
-    // --- Pathological rich-text diff: a single generated file used to bypass
-    // per-file streaming and block QTextDocument layout for 2-12 seconds. The
-    // renderer now keeps a bounded rich-text preview while the authoritative
-    // patch remains in Git/PR state.
+
+
+
+
     QString hugeDiffHtml =
         QStringLiteral("<a name=\"file-0\"></a><div class='fileblock'>"
                        "<div class='fileheader'>large/generated.json</div>"
@@ -191,10 +191,10 @@ int main(int argc, char *argv[])
         ++failures;
     }
 
-    // --- Repo-detail tab switches, including each tab's first (lazy-build)
-    // open -- the Commits tab and the "and more" list tabs (Worktrees,
-    // Releases, Mirror nodes) were exactly the ones found slow by feel.
-    // Target from issue #357: < 150ms; overridable per-environment.
+
+
+
+
     const qint64 tabBudgetMs = envBudgetMs("FORKMESH_PERF_TABSWITCH_BUDGET_MS", 150);
 
     QTemporaryDir repoDir;
@@ -231,8 +231,8 @@ int main(int argc, char *argv[])
         ++failures;
     }
 
-    // The action journal must contain a matching start/finish pair and must have
-    // flushed before shutdown returns.
+
+
     const QString actionLog = dataDir.filePath(QStringLiteral("actions.jsonl"));
     forkmesh::ActionTelemetry::initialize(actionLog);
     const quint64 probe = forkmesh::BackgroundActivity::begin(

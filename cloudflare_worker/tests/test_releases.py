@@ -22,9 +22,9 @@ from pathlib import Path
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-# Route regexes (RELEASE_BLOB_RE, REPO_RELEASE_DOWNLOADS_RE) live in urls.py now.
+
 URLS = Path(__file__).resolve().parents[1] / "src" / "urls.py"
-# The pure release helpers + their regexes live in releases.py now.
+
 RELEASES = Path(__file__).resolve().parents[1] / "src" / "releases.py"
 
 
@@ -79,7 +79,7 @@ H2 = "b" * 64
 H3 = "c" * 64
 
 
-# --- name / tag / hash validation -----------------------------------------
+
 
 def test_valid_release_tag():
     assert valid_release_tag("v1.2.3")
@@ -106,7 +106,7 @@ def test_valid_asset_name_rejects_traversal():
 
 def test_valid_sha256_hex():
     assert valid_sha256_hex(H1)
-    assert valid_sha256_hex(H1.upper())  # normalised to lowercase
+    assert valid_sha256_hex(H1.upper())
     assert not valid_sha256_hex("xyz")
     assert not valid_sha256_hex("a" * 63)
 
@@ -118,17 +118,17 @@ def test_valid_git_commit():
     assert not valid_git_commit("not-a-commit")
 
 
-# --- content-addressed storage layout -------------------------------------
+
 
 def test_cas_blob_relpath_layout():
     assert cas_blob_relpath(H1) == "sha256/aa/%s/data" % H1
-    # Uppercase input is normalised so a blob is stored once regardless of case.
+
     assert cas_blob_relpath(H1.upper()) == cas_blob_relpath(H1)
     assert cas_blob_relpath("not-a-hash") is None
     assert cas_blob_relpath("") is None
 
 
-# --- canonical signable manifest ------------------------------------------
+
 
 def _manifest():
     return {
@@ -136,9 +136,9 @@ def _manifest():
         "tag": "v1.2.3",
         "tag_commit": "deadbeef" * 5,
         "build_commit": "feedface" * 5,
-        "name": "Widget 1.2.3",          # editable — must NOT affect content
-        "body": "release notes here",    # editable — must NOT affect content
-        "prerelease": False,             # editable — must NOT affect content
+        "name": "Widget 1.2.3",
+        "body": "release notes here",
+        "prerelease": False,
         "assets": [
             {"name": "widget-linux", "blob_sha256": H1, "size": 100,
              "os": "linux", "arch": "x86_64"},
@@ -161,19 +161,19 @@ def test_manifest_content_ignores_editable_metadata():
     edited["name"] = "Totally different title"
     edited["body"] = "rewritten notes"
     edited["prerelease"] = True
-    # Editing presentation metadata must not change the signed body, so the
-    # existing signature stays valid (design §5: immutable release, editable meta).
+
+
     assert release_manifest_content(edited) == base
 
 
 def test_manifest_content_changes_when_bytes_change():
     base = release_manifest_content(_manifest())
     tampered = _manifest()
-    tampered["assets"][0]["blob_sha256"] = H3  # swap an artifact's bytes
+    tampered["assets"][0]["blob_sha256"] = H3
     assert release_manifest_content(tampered) != base
 
     retagged = _manifest()
-    retagged["tag_commit"] = "f" * 40  # force-moved tag → different signed body
+    retagged["tag_commit"] = "f" * 40
     assert release_manifest_content(retagged) != base
 
     rebuilt = _manifest()
@@ -200,20 +200,20 @@ def test_signing_message_is_stable():
     )
 
 
-# --- checksum generation ---------------------------------------------------
+
 
 def test_generate_shasums_format_and_order():
     assets = [
         {"name": "widget-macos", "blob_sha256": H2},
         {"name": "widget-linux", "blob_sha256": H1},
-        {"name": "incomplete", "blob_sha256": ""},   # skipped (no bytes yet)
+        {"name": "incomplete", "blob_sha256": ""},
     ]
     out = generate_shasums(assets)
     assert out == "%s  widget-linux\n%s  widget-macos\n" % (H1, H2)
     assert generate_shasums([]) == ""
 
 
-# --- `latest` resolution ---------------------------------------------------
+
 
 def test_release_semver_key_orders_prerelease_below_final():
     assert release_semver_key("v1.2.3") > release_semver_key("v1.2.3-rc1")
@@ -225,9 +225,9 @@ def test_release_semver_key_orders_prerelease_below_final():
 def test_resolve_latest_skips_draft_prerelease_yanked():
     releases = [
         {"tag": "v1.0.0", "state": "published"},
-        {"tag": "v1.2.0", "draft": True},                       # not published
-        {"tag": "v2.0.0-rc1", "prerelease": True},              # prerelease
-        {"tag": "v1.9.0", "state": "yanked"},                   # withdrawn
+        {"tag": "v1.2.0", "draft": True},
+        {"tag": "v2.0.0-rc1", "prerelease": True},
+        {"tag": "v1.9.0", "state": "yanked"},
         {"tag": "v1.5.0", "state": "published"},
     ]
     latest = resolve_latest_release(releases)
@@ -237,7 +237,7 @@ def test_resolve_latest_skips_draft_prerelease_yanked():
     assert resolve_latest_release([{"tag": "v3.0.0-beta", "prerelease": True}]) is None
 
 
-# --- download route --------------------------------------------------------
+
 
 def test_release_blob_route():
     m = RELEASE_BLOB_RE.match("/api/repo/alice/widget/releases/blob/sha256/" + H1)
@@ -245,10 +245,10 @@ def test_release_blob_route():
     assert m.group(1) == "alice"
     assert m.group(2) == "widget"
     assert m.group(3) == H1
-    # Reject non-sha256 and traversal attempts in the hash segment.
+
     assert RELEASE_BLOB_RE.match("/api/repo/a/b/releases/blob/sha256/short") is None
     assert RELEASE_BLOB_RE.match(
-        "/api/repo/a/b/releases/blob/sha256/" + "A" * 64) is None  # must be lowercase
+        "/api/repo/a/b/releases/blob/sha256/" + "A" * 64) is None
     assert RELEASE_BLOB_RE.match("/api/repo/a/b/releases/blob/md5/" + H1) is None
 
 
@@ -261,16 +261,16 @@ def test_release_downloads_route():
         "/api/repo/alice/widget/releases/blob/sha256/" + H1) is None
 
 
-# --- same-name re-upload (§7) ---------------------------------------------
+
 
 def test_asset_upload_decision():
     existing = {"blob_sha256": H1}
-    # New name on a draft → create.
+
     assert asset_upload_decision("draft", None, H1) == "create"
-    # Same name, same bytes → idempotent no-op in any state.
+
     assert asset_upload_decision("draft", existing, H1) == "noop"
     assert asset_upload_decision("published", existing, H1) == "noop"
-    # Same name, different bytes: allowed on a draft, rejected once published.
+
     assert asset_upload_decision("draft", existing, H2) == "replace"
     assert asset_upload_decision("published", existing, H2) == "conflict"
     assert asset_upload_decision("yanked", existing, H2) == "conflict"

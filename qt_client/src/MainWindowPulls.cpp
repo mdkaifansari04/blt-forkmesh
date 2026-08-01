@@ -1,9 +1,9 @@
-// MainWindowPulls: MainWindow feature methods, split out of MainWindow.cpp.
-// Pull requests, including AI conflict auto-resolution.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -16,22 +16,22 @@
 using namespace forkmesh::ui;
 
 namespace {
-// Item-data roles for the PR commits list (renderPullCommits). kCommitShaRole is
-// the openable full SHA (the commit resolves in the local repo); kCommitCopyShaRole
-// is a copy-only SHA for cross-node commits not present locally, so right-click can
-// still copy them without making the row open a missing commit.
+
+
+
+
 constexpr int kCommitShaRole = Qt::UserRole;
 constexpr int kCommitMessageRole = Qt::UserRole + 1;
 constexpr int kCommitCopyShaRole = Qt::UserRole + 2;
-// File-list item role (issue #365): true when an agent-stamped commit touched the
-// file, so the authorship filter can hide/show it without re-reading the mbox.
+
+
 constexpr int kPullFileAgentRole = Qt::UserRole + 1;
 
-// Locates a named HTML anchor (<a name="...">) inside a QTextDocument.
-// QTextDocument::find only searches visible text, and an anchor carries none,
-// so finding one means walking fragments and checking their char format for it
-// directly. Used by applyAutoMarkViewedOnScroll to find each file's on-screen
-// position without an anchor-to-position API.
+
+
+
+
+
 bool locateAnchorCursor(QTextDocument *doc, const QString &name, QTextCursor &out)
 {
     for (QTextBlock block = doc->begin(); block.isValid(); block = block.next()) {
@@ -47,21 +47,21 @@ bool locateAnchorCursor(QTextDocument *doc, const QString &name, QTextCursor &ou
     }
     return false;
 }
-} // namespace
+}
 
-// ---- Pull requests ---------------------------------------------------------
+
 
 QWidget *MainWindow::buildPullsTab()
 {
     auto *page = new QWidget;
 
-    // Left: toolbar + sortable PR table.
+
     auto *listPane = new QWidget;
     listPane->setMinimumWidth(360);
     auto *heading = new QLabel("Pull requests");
     heading->setObjectName("channelTitle");
-    // "Hide detail" toggle (issue #274): collapse the detail panel so the PR
-    // list spans the full tab width. Re-checking restores it for the open row.
+
+
     m_pullHideDetailButton = new QPushButton("Hide detail");
     m_pullHideDetailButton->setObjectName("ghostButton");
     m_pullHideDetailButton->setCursor(Qt::PointingHandCursor);
@@ -77,7 +77,7 @@ QWidget *MainWindow::buildPullsTab()
             if (m_pullDetail)
                 m_pullDetail->hide();
         } else if (m_pullDetail && m_currentPullNumber > 0) {
-            m_pullDetail->show(); // reopen for the still-selected row
+            m_pullDetail->show();
         }
     });
     auto *headingRow = new QHBoxLayout;
@@ -124,7 +124,7 @@ QWidget *MainWindow::buildPullsTab()
 
     m_pullTable = new QTableWidget(0, 10);
     m_pullTable->setObjectName("issueTable");
-    installColumnHeaderMenu(m_pullTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_pullTable);
     enableHoverRowHighlight(m_pullTable);
     m_pullTable->setHorizontalHeaderLabels(
         {"#", "Title", "Base \xE2\x86\x90 Head", "Status", "Files", "\xC2\xB1",
@@ -152,7 +152,7 @@ QWidget *MainWindow::buildPullsTab()
     listLayout->addWidget(m_pullSearch);
     listLayout->addWidget(m_pullTable, 1);
 
-    // Right: PR detail — header + changed-files explorer + diff viewer.
+
     m_pullDetail = new QWidget;
     m_pullTitle = new QLabel("Select a pull request");
     m_pullTitle->setObjectName("channelTitle");
@@ -185,7 +185,7 @@ QWidget *MainWindow::buildPullsTab()
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
     }
-    // Unified <-> side-by-side toggle for this PR's diff (shared preference).
+
     m_pullSplitButton->setCheckable(true);
     m_pullSplitButton->setChecked(diffSplitPref());
     setOcticon(m_pullSplitButton, "diff", 16);
@@ -210,8 +210,8 @@ QWidget *MainWindow::buildPullsTab()
     m_pullLinkIssueButton->setToolTip("Link an issue to this pull request");
     connect(m_pullLinkIssueButton, &QPushButton::clicked, this,
             &MainWindow::linkIssueToPullFromPullPage);
-    // Copy a forkmesh:// permalink to this PR (issue #154): pasted into a comment
-    // it renders as a link back here via autolinkReferences().
+
+
     auto *pullCopyLinkButton = new QPushButton("Copy link");
     pullCopyLinkButton->setObjectName("ghostButton");
     pullCopyLinkButton->setProperty("buttonSize", "sm");
@@ -224,8 +224,8 @@ QWidget *MainWindow::buildPullsTab()
             copyReferenceLink(QStringLiteral("pull"),
                               QString::number(m_currentPullNumber));
     });
-    // View this PR's page on the public website, mirroring the repo's own
-    // "browsable at" link (repositoryWebUrl()).
+
+
     auto *pullViewWebsiteButton = new QPushButton("View on website");
     pullViewWebsiteButton->setObjectName("ghostButton");
     pullViewWebsiteButton->setProperty("buttonSize", "sm");
@@ -243,13 +243,13 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullCloseButton, "circle-slash", 16);
     setOcticon(m_pullReopenButton, "issue-reopened", 16);
     m_pullReopenButton->setToolTip("Reopen this pull request");
-    m_pullReopenButton->hide(); // only shown when the PR is closed or merged
+    m_pullReopenButton->hide();
     setOcticon(m_pullSendToSourceButton, "upload", 16);
     m_pullSendToSourceButton->setToolTip(
         "Deliver this pull request to the repository owner's inbox. The relay "
         "holds it, so it reaches the source of truth even while that node is "
         "offline.");
-    m_pullSendToSourceButton->hide(); // only shown on mirror nodes (can't merge here)
+    m_pullSendToSourceButton->hide();
     setOcticon(m_pullDeleteButton, "trash", 16);
     m_pullDeleteButton->setToolTip("Permanently delete this pull request");
     setOcticon(m_pullDeleteBranchButton, "trash", 16);
@@ -262,31 +262,31 @@ QWidget *MainWindow::buildPullsTab()
     m_pullPreviewButton->setToolTip(
         "Check out this pull request, build the app from it, and launch the result "
         "as an isolated preview \xE2\x80\x94 try the change running before merging");
-    m_pullPreviewButton->hide(); // only shown for buildable ForkMesh checkouts
+    m_pullPreviewButton->hide();
     connect(m_pullPreviewButton, &QPushButton::clicked, this,
             &MainWindow::buildAndPreviewCurrentPull);
     m_pullUpdateButton->setToolTip("Merge the base branch into this pull request branch");
     m_pullResolveButton->setToolTip(
         "Open a merge editor to resolve this pull request's conflicts and commit "
         "the fix to its branch (the PR stays open, ready to merge)");
-    m_pullResolveButton->hide(); // only shown when the PR has conflicts
+    m_pullResolveButton->hide();
     connect(m_pullResolveButton, &QPushButton::clicked, this,
             &MainWindow::resolveCurrentPullConflicts);
-    // One-click AI conflict resolution: an agent rewrites the conflicting files
-    // and the fix is committed straight to the PR's branch (no new PR). The three
-    // providers (Claude API, OpenAI API, Claude Code) live in a single dropdown
-    // so the PR header stays compact (issue #150).
+
+
+
+
     setOcticon(m_pullFixButton, "rocket", 16);
     m_pullFixButton->setToolTip(
         "Let an agent resolve these conflicts and commit the fix to this pull "
         "request's branch \xE2\x80\x94 watch it run on the Agents tab");
-    m_pullFixButton->hide(); // only shown when the PR has conflicts
+    m_pullFixButton->hide();
     m_pullFixMenu = new QMenu(m_pullFixButton);
     m_pullFixMenu->setToolTipsVisible(true);
     m_pullFixClaudeAction = m_pullFixMenu->addAction(QStringLiteral("Claude API"));
     m_pullFixOpenAiAction = m_pullFixMenu->addAction(QStringLiteral("OpenAI API"));
     m_pullFixClaudeCodeAction =
-        m_pullFixMenu->addAction(QStringLiteral("CC")); // Claude Code (adhoc #38)
+        m_pullFixMenu->addAction(QStringLiteral("CC"));
     connect(m_pullFixClaudeAction, &QAction::triggered, this,
             [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude")); });
     connect(m_pullFixOpenAiAction, &QAction::triggered, this,
@@ -294,11 +294,11 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullFixClaudeCodeAction, &QAction::triggered, this,
             [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude-code")); });
     m_pullFixButton->setMenu(m_pullFixMenu);
-    // Continue the agent session that authored this branch, same as the agent
-    // detail view's "Fix conflicts with agent" button: it keeps the run's own
-    // context/history and full tool access instead of a fresh, conflict-only
-    // rewrite. Only shown when such a session is attached (see
-    // updatePullActionState / agentSessionForPull).
+
+
+
+
+
     m_pullFixConflictsButton->setObjectName("primaryButton");
     setOcticon(m_pullFixConflictsButton, "git-merge", 16);
     m_pullFixConflictsButton->hide();
@@ -316,12 +316,12 @@ QWidget *MainWindow::buildPullsTab()
         "branch (the PR stays open, ready to merge)");
     connect(m_pullDeleteFileButton, &QPushButton::clicked, this,
             &MainWindow::deleteCurrentPullFile);
-    // AI code review (adhoc #82): a prominent "Review with AI" button on every
-    // open PR. Findings come back as review threads attached to the lines of
-    // code they concern; safe fixes carry a one-click "Apply fix & commit"
-    // suggestion. "Fix all with AI" appears once unresolved review threads
-    // exist and hands the whole list — including findings without a quick fix —
-    // to a Claude Code agent that commits to the PR's branch.
+
+
+
+
+
+
     m_pullReviewAiButton = new QPushButton("Review with AI");
     m_pullFixAllAiButton = new QPushButton("Fix all with AI");
     for (QPushButton *b : {m_pullReviewAiButton, m_pullFixAllAiButton}) {
@@ -341,17 +341,17 @@ QWidget *MainWindow::buildPullsTab()
         "Let a Claude Code agent work through every unresolved review finding "
         "\xE2\x80\x94 including the ones without a quick fix \xE2\x80\x94 and "
         "commit the fixes to this pull request's branch");
-    m_pullFixAllAiButton->hide(); // only shown when unresolved findings exist
+    m_pullFixAllAiButton->hide();
     connect(m_pullFixAllAiButton, &QPushButton::clicked, this,
             &MainWindow::fixCurrentPullFindingsWithAgent);
-    // The title gets its own line above the action buttons (issue #261): with this
-    // many buttons a single shared row squeezed the title into a sliver. The button
-    // row below packs left (trailing stretch) so it reads as a toolbar.
+
+
+
     auto *pullHeaderRow = new QHBoxLayout;
     pullHeaderRow->setContentsMargins(0, 0, 0, 0);
     pullHeaderRow->addWidget(m_pullSplitButton, 0, Qt::AlignTop);
-    // The AI review pair leads the toolbar so it reads as the page's headline
-    // action (adhoc #82).
+
+
     pullHeaderRow->addWidget(m_pullReviewAiButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullFixAllAiButton, 0, Qt::AlignTop);
     pullHeaderRow->addWidget(m_pullPreviewButton, 0, Qt::AlignTop);
@@ -377,9 +377,9 @@ QWidget *MainWindow::buildPullsTab()
     m_pullMeta->setWordWrap(true);
     m_pullMeta->setTextInteractionFlags(Qt::TextSelectableByMouse |
                                         Qt::LinksAccessibleByMouse);
-    // The "agent" reference (adhoc #78) jumps to the producing session's detail;
-    // the base/head branch names open that branch's row in the Branches tab so a
-    // branch is clickable here too (issue #204).
+
+
+
     connect(m_pullMeta, &QLabel::linkActivated, this, [this](const QString &href) {
         if (href.startsWith(kAgentLinkScheme))
             switchToAgentsTab(href.mid(kAgentLinkScheme.size()).toInt());
@@ -387,8 +387,8 @@ QWidget *MainWindow::buildPullsTab()
             switchToBranch(QUrl::fromPercentEncoding(
                 href.mid(kBranchLinkScheme.size()).toUtf8()));
     });
-    // Merge-readiness banner: a dry-run of the patch tells the reviewer whether
-    // it applies cleanly (or which files conflict) before they hit Merge.
+
+
     m_pullMergeStatus = new QLabel;
     m_pullMergeStatus->setObjectName("statusLine");
     m_pullMergeStatus->setTextFormat(Qt::RichText);
@@ -426,13 +426,13 @@ QWidget *MainWindow::buildPullsTab()
 
     m_pullFiles = new QListWidget;
     m_pullFiles->setObjectName("overviewList");
-    enableHoverRowHighlight(m_pullFiles); // green outline selection (issue #252)
+    enableHoverRowHighlight(m_pullFiles);
     m_pullFiles->setMinimumWidth(180);
     connect(m_pullFiles, &QListWidget::currentItemChanged, this,
             [this](QListWidgetItem *item, QListWidgetItem *) {
-                // The whole PR is rendered into one scrollable view; picking a
-                // file just scrolls to its section (issue #250). The guard skips
-                // that scroll when the selection is itself following the scroll.
+
+
+
                 if (item && !m_pullSuppressFileScroll)
                     scrollPullDiffToFile(item->data(Qt::UserRole).toString());
                 if (!item) {
@@ -443,10 +443,10 @@ QWidget *MainWindow::buildPullsTab()
                 }
             });
 
-    // ---- Files changed page: file explorer | diff viewer.
-    // The diff viewer shows every changed file in one scrollable view; Prev/Next
-    // jump the scroll between consecutive changes (hunks) across all of the
-    // files, and the file list selects whichever file is on screen (issue #250).
+
+
+
+
     m_pullPrevButton = new QPushButton;
     m_pullPrevButton->setToolTip("Previous change");
     setOcticon(m_pullPrevButton, "chevron-up", 14);
@@ -457,18 +457,18 @@ QWidget *MainWindow::buildPullsTab()
     setOcticon(m_pullNextButton, "chevron-down", 14);
     connect(m_pullNextButton, &QPushButton::clicked, this,
             [this] { pullSelectAdjacentChange(1); });
-    // +/- zoom for the diff text size (shared by every diff view via diffStyleSheet).
+
     m_diffFontPt = qBound(8, QSettings().value(kDiffFontPtSetting, 12).toInt(), 28);
-    auto *diffZoomOut = new QPushButton(QString::fromUtf8("\xE2\x88\x92")); // −
+    auto *diffZoomOut = new QPushButton(QString::fromUtf8("\xE2\x88\x92"));
     diffZoomOut->setToolTip("Smaller diff text");
     connect(diffZoomOut, &QPushButton::clicked, this, [this] { adjustDiffFont(-1); });
     auto *diffZoomIn = new QPushButton(QStringLiteral("+"));
     diffZoomIn->setToolTip("Larger diff text");
     connect(diffZoomIn, &QPushButton::clicked, this, [this] { adjustDiffFont(1); });
-    // Files are marked viewed automatically once their end reaches the viewport.
-    // Keep the preference object for existing settings compatibility, but the PR
-    // review page now consistently follows the requested read-as-you-scroll
-    // behavior instead of making it contingent on a toolbar toggle.
+
+
+
+
     m_pullAutoViewedButton = new QPushButton;
     m_pullAutoViewedButton->setCheckable(true);
     m_pullAutoViewedButton->setChecked(true);
@@ -479,7 +479,7 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullAutoViewedButton, &QPushButton::clicked, this, [this](bool on) {
         setAutoMarkViewedOnScrollPref(on);
         if (on)
-            applyAutoMarkViewedOnScroll(); // catch up on the current scroll position
+            applyAutoMarkViewedOnScroll();
     });
     for (QPushButton *b : {m_pullPrevButton, m_pullNextButton, diffZoomOut, diffZoomIn,
                           m_pullAutoViewedButton}) {
@@ -498,8 +498,8 @@ QWidget *MainWindow::buildPullsTab()
     filesHeader->addWidget(m_pullPrevButton);
     filesHeader->addWidget(m_pullNextButton);
 
-    // Authorship filter (issue #365): narrow the file list to agent- or
-    // human-authored files. Only shown for PRs whose commits mix the two.
+
+
     m_pullFileAuthorFilter = new QComboBox;
     m_pullFileAuthorFilter->addItem(QStringLiteral("All authors"));
     m_pullFileAuthorFilter->addItem(QStringLiteral("Agent-authored"));
@@ -521,16 +521,16 @@ QWidget *MainWindow::buildPullsTab()
     m_pullDiff = new QTextBrowser;
     m_pullDiff->setObjectName("diffView");
     m_pullDiff->setOpenExternalLinks(false);
-    m_pullDiff->setOpenLinks(false); // we handle "cmt:" anchors ourselves
+    m_pullDiff->setOpenLinks(false);
     connect(m_pullDiff, &QTextBrowser::anchorClicked, this,
             &MainWindow::onPullDiffAnchorClicked);
     registerDiffView(m_pullDiff);
 
-    // Sticky header overlay (adhoc #56): a compact bar pinned to the top of the
-    // diff viewport that mirrors the current file's header — filename, +/- stat,
-    // a Pac-Man progress chart, and a Viewed toggle — so those controls stay put
-    // while the file's body scrolls beneath. Parented to the viewport so it
-    // floats over the text and doesn't move as the document scrolls.
+
+
+
+
+
     m_pullStickyHeader = new QFrame(m_pullDiff->viewport());
     m_pullStickyHeader->setObjectName("diffStickyHeader");
     {
@@ -579,9 +579,9 @@ QWidget *MainWindow::buildPullsTab()
         m_pullStickyHeader->hide();
     }
 
-    // Debounce the auto-mark-viewed scan off scroll ticks: re-rendering (which
-    // collapses newly-viewed files) is too heavy to run on every pixel of a
-    // fast scroll, so wait for scrolling to settle before checking.
+
+
+
     m_pullAutoViewedDebounce = new QTimer(this);
     m_pullAutoViewedDebounce->setSingleShot(true);
     m_pullAutoViewedDebounce->setInterval(400);
@@ -589,10 +589,10 @@ QWidget *MainWindow::buildPullsTab()
             &MainWindow::applyAutoMarkViewedOnScroll);
     connect(m_pullDiff->verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this] {
-                // Cheap, every-tick: advance the sticky header / Pac-Man / list
-                // selection so they track the scroll smoothly.
+
+
                 updatePullDiffScrollState();
-                // Heavy, debounced: collapse fully-seen files into "Viewed".
+
                 m_pullAutoViewedDebounce->start();
             });
 
@@ -604,9 +604,9 @@ QWidget *MainWindow::buildPullsTab()
     diffSplit->setStretchFactor(1, 1);
     diffSplit->setSizes({240, 600});
 
-    // ---- Find bar (issue #333): Ctrl+F over the Files-changed pane toggles a
-    // bar that highlights every occurrence of the typed text in the combined
-    // diff and steps between matches. Hidden until summoned.
+
+
+
     m_pullDiffSearchInput = new QLineEdit;
     m_pullDiffSearchInput->setObjectName("issueSearch");
     m_pullDiffSearchInput->setPlaceholderText("Find in diff\xE2\x80\xA6");
@@ -656,11 +656,11 @@ QWidget *MainWindow::buildPullsTab()
     filesPageLayout->addWidget(m_pullDiffSearchBar);
     filesPageLayout->addWidget(diffSplit);
 
-    // Scoped to this pane (WidgetWithChildren): the Git view's range pane has
-    // its own find bar on the same key, and two window-wide Ctrl+F shortcuts
-    // would be ambiguous — Qt would then fire neither (adhoc #107). Selecting
-    // the Files sub-tab focuses the diff (see the sub-tab wiring) so the key
-    // works straight away.
+
+
+
+
+
     auto *findShortcut = new QShortcut(QKeySequence::Find, filesPage);
     findShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(findShortcut, &QShortcut::activated, this,
@@ -671,11 +671,11 @@ QWidget *MainWindow::buildPullsTab()
     connect(closeSearchShortcut, &QShortcut::activated, this,
             [this] { togglePullDiffSearch(false); });
 
-    // ---- Commits page: every commit that makes up this PR; clicking one opens
-    // it in the repo's commit view.
+
+
     m_pullCommitsList = new QListWidget;
     m_pullCommitsList->setObjectName("overviewList");
-    enableHoverRowHighlight(m_pullCommitsList); // green outline selection (issue #252)
+    enableHoverRowHighlight(m_pullCommitsList);
     connect(m_pullCommitsList, &QListWidget::itemClicked, this,
             [this](QListWidgetItem *item) {
                 const QString sha = item ? item->data(kCommitShaRole).toString()
@@ -685,8 +685,8 @@ QWidget *MainWindow::buildPullsTab()
                 showOverviewCommits();
                 showCommit(sha);
             });
-    // Right-click a commit to copy its full hash or message — the row only shows
-    // the abbreviated hash, so this is how the full SHA gets out (issue #46).
+
+
     m_pullCommitsList->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_pullCommitsList, &QWidget::customContextMenuRequested, this,
             [this](const QPoint &pos) {
@@ -718,7 +718,7 @@ QWidget *MainWindow::buildPullsTab()
                 }
             });
 
-    // ---- Checks page: action runs for this PR's commits + a manual trigger.
+
     m_pullRunChecksButton = new QPushButton("Run checks against this PR");
     m_pullRunChecksButton->setObjectName("ghostButton");
     m_pullRunChecksButton->setProperty("buttonSize", "sm");
@@ -734,7 +734,7 @@ QWidget *MainWindow::buildPullsTab()
     checksToolbar->addStretch();
     m_pullChecksTable = new QTableWidget(0, 4);
     m_pullChecksTable->setObjectName("issueTable");
-    installColumnHeaderMenu(m_pullChecksTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_pullChecksTable);
     enableHoverRowHighlight(m_pullChecksTable);
     m_pullChecksTable->setHorizontalHeaderLabels(
         {"Status", "Workflow", "Commit", "Duration"});
@@ -775,8 +775,8 @@ QWidget *MainWindow::buildPullsTab()
     checksPageLayout->addLayout(checksToolbar);
     checksPageLayout->addWidget(checksSplit, 1);
 
-    // ---- Conversation page: review thread, an inline checks summary, and the
-    // composer — all in one scroll area so the whole section scrolls together.
+
+
     m_pullThreadContainer = new QWidget;
     m_pullThreadLayout = new QVBoxLayout(m_pullThreadContainer);
     m_pullThreadLayout->setContentsMargins(0, 0, 0, 0);
@@ -796,8 +796,8 @@ QWidget *MainWindow::buildPullsTab()
             m_pullSubStack->setCurrentIndex(2);
     });
 
-    // Linked issues card: shown inline in the thread, with links that jump to the
-    // referenced issue on the Issues tab.
+
+
     m_pullLinksValue = new QLabel;
     m_pullLinksValue->setObjectName("issueTimelineCard");
     m_pullLinksValue->setTextFormat(Qt::RichText);
@@ -838,7 +838,7 @@ QWidget *MainWindow::buildPullsTab()
             [this] { submitPullReview(QStringLiteral("changes_requested")); });
     auto *composerButtons = new QHBoxLayout;
     composerButtons->setContentsMargins(0, 0, 0, 0);
-    // Speak the comment with the voice engine, just like the footer prompt mic.
+
     composerButtons->addWidget(makeVoiceButton(m_pullComposer), 0, Qt::AlignLeft);
     composerButtons->addStretch();
     composerButtons->addWidget(m_pullRequestChangesButton);
@@ -852,10 +852,10 @@ QWidget *MainWindow::buildPullsTab()
     composerBlockLayout->addWidget(m_pullComposer);
     composerBlockLayout->addLayout(composerButtons);
 
-    // Conflicting-files card: surfaces, inline above the comment composer, which
-    // files of a conflicted PR no longer apply to the base. Populated (and shown
-    // only when the PR is conflicted) in updatePullActionState(). The link jumps
-    // to the Files changed tab so the reviewer can inspect them.
+
+
+
+
     m_pullConflictDetails = new QLabel;
     m_pullConflictDetails->setObjectName("issueTimelineCard");
     m_pullConflictDetails->setTextFormat(Qt::RichText);
@@ -881,8 +881,8 @@ QWidget *MainWindow::buildPullsTab()
     conversationInnerLayout->addWidget(m_pullConflictDetails);
     conversationInnerLayout->addWidget(composerBlock);
 
-    // Agent revision row: shown only when this PR was created by an agent session.
-    // Lets the reviewer type feedback and send it back to the agent for revisions.
+
+
     m_pullAgentRevisionRow = new QWidget;
     m_pullAgentRevisionRow->setObjectName("agentRevisionRow");
     auto *agentRevisionLayout = new QHBoxLayout(m_pullAgentRevisionRow);
@@ -905,7 +905,7 @@ QWidget *MainWindow::buildPullsTab()
             this, &MainWindow::sendPullRevisionToAgent);
     connect(m_pullAgentRevisionEdit, &QLineEdit::returnPressed,
             this, &MainWindow::sendPullRevisionToAgent);
-    m_pullAgentRevisionRow->hide(); // only visible when this PR has a linked agent
+    m_pullAgentRevisionRow->hide();
     conversationInnerLayout->addWidget(m_pullAgentRevisionRow);
 
     conversationInnerLayout->addStretch();
@@ -916,9 +916,9 @@ QWidget *MainWindow::buildPullsTab()
     m_pullThreadScroll->setObjectName("issuePageScroll");
     m_pullThreadScroll->setFrameShape(QFrame::NoFrame);
 
-    // Badge tab (adhoc #44): the PR's visual fingerprint — one file-type icon
-    // tile per changed file with a green/red additions:deletions bar, grouped
-    // by directory. Scrolls because large PRs wrap over many tile rows.
+
+
+
     m_pullBadgeWidget = new PullBadgeWidget;
     auto *badgeScroll = new QScrollArea;
     badgeScroll->setWidgetResizable(true);
@@ -926,14 +926,14 @@ QWidget *MainWindow::buildPullsTab()
     badgeScroll->setObjectName("issuePageScroll");
     badgeScroll->setFrameShape(QFrame::NoFrame);
 
-    // ---- Sub-tab bar + stack (Conversation / Commits / Checks / Files
-    // changed / Badge).
+
+
     m_pullSubStack = new QStackedWidget;
-    m_pullSubStack->addWidget(m_pullThreadScroll); // 0 Conversation
-    m_pullSubStack->addWidget(m_pullCommitsList);  // 1 Commits
-    m_pullSubStack->addWidget(checksPage);         // 2 Checks
-    m_pullSubStack->addWidget(filesPage);          // 3 Files changed
-    m_pullSubStack->addWidget(badgeScroll);        // 4 Badge
+    m_pullSubStack->addWidget(m_pullThreadScroll);
+    m_pullSubStack->addWidget(m_pullCommitsList);
+    m_pullSubStack->addWidget(checksPage);
+    m_pullSubStack->addWidget(filesPage);
+    m_pullSubStack->addWidget(badgeScroll);
 
     m_pullSubTabs = new QButtonGroup(this);
     m_pullSubTabs->setExclusive(true);
@@ -965,10 +965,10 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTabBadge = qobject_cast<QPushButton *>(m_pullSubTabs->button(4));
     connect(m_pullSubTabs, &QButtonGroup::idClicked, this, [this](int id) {
         m_pullSubStack->setCurrentIndex(id);
-        if (id == 2) { // refresh the Checks table when it's brought forward
-            // Copy the PR out before rendering: renderPullChecks pumps the
-            // event loop, which can reassign m_currentPulls and invalidate the
-            // loop's iterators mid-iteration (adhoc #119).
+        if (id == 2) {
+
+
+
             PullRequest current;
             for (const PullRequest &pr : std::as_const(m_currentPulls))
                 if (pr.number == m_currentPullNumber)
@@ -976,12 +976,12 @@ QWidget *MainWindow::buildPullsTab()
             if (current.number > 0)
                 renderPullChecks(current);
         }
-        if (id == 3) { // Files changed brought forward: show the sticky header now,
-            // not only after the first scroll (adhoc #56). Defer so the diff
-            // viewport has laid out at its shown size before we measure it.
+        if (id == 3) {
+
+
             QTimer::singleShot(0, this, &MainWindow::updatePullDiffScrollState);
-            // The pane's Ctrl+F is widget-scoped now (adhoc #107); focusing the
-            // diff makes it live from the first key.
+
+
             if (m_pullDiff)
                 m_pullDiff->setFocus();
         }
@@ -998,8 +998,8 @@ QWidget *MainWindow::buildPullsTab()
     detailLayout->addLayout(subTabRow);
     detailLayout->addWidget(m_pullSubStack, 1);
 
-    // Open full width: the table fills the page until a pull request is
-    // selected, at which point showPull() reveals the detail pane beside it.
+
+
     m_pullDetail->hide();
 
     auto *splitter = new QSplitter(Qt::Horizontal);
@@ -1065,7 +1065,7 @@ void MainWindow::reloadPulls()
     if (m_repoDetailIndex < 0 ||
         m_repoDetailIndex >= m_repositories.size())
         return;
-    ++m_pullLoadGen; // supersede an older push-driven worker result
+    ++m_pullLoadGen;
     const PullStore store = pullStoreForCurrentRepo();
     applyLoadedPulls(store, store.loadAll(), store.baseTip());
 }
@@ -1111,23 +1111,23 @@ void MainWindow::applyLoadedPulls(const PullStore &store,
                                   const QString &baseTip)
 {
     m_currentPulls = std::move(pulls);
-    // Pre-compute which open PRs no longer apply cleanly so refreshPullList() can
-    // badge their rows. Done here (not per refresh) so typing in the search box
-    // doesn't re-spawn the dry-run apply for every open PR. Only meaningful when
-    // we have a working tree to test the patch against.
-    //
-    // Bump the generation so any in-flight async conflict pass aborts, and reset
-    // the pending queue: a fresh reload rebuilds both the badges and the work to do.
+
+
+
+
+
+
+
     const quint64 gen = ++m_pullConflictGen;
     m_pendingPullConflictChecks.clear();
     m_pullConflictByNumber.clear();
     if (store.canWrite()) {
-        // The dry-run apply only changes when the base tip or a PR's patch moves,
-        // so cache it: otherwise every reloadPulls() (each push, search keystroke
-        // path, or merge of a different PR) re-queues `git apply --check` for every
-        // open PR. Invalidate wholesale when the repo or the base tip changes;
-        // per-PR entries re-check when the patch fingerprint differs. Cache misses
-        // are resolved asynchronously below rather than inline.
+
+
+
+
+
+
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         const QString cacheKey = repo.owner + QLatin1Char('/') + repo.name +
                                  QLatin1Char('@') + baseTip;
@@ -1144,17 +1144,17 @@ void MainWindow::applyLoadedPulls(const PullStore &store,
             const auto cached = m_pullConflictCache.constFind(pr.number);
             if (cached != m_pullConflictCache.constEnd() &&
                 cached->fingerprint == fingerprint) {
-                // Cache hit: badge straight from the stored result.
+
                 if (cached->conflict)
                     m_pullConflictByNumber.insert(pr.number, true);
             } else {
-                // Cold/stale entry: defer the (slow) `git apply --check` dry-run to
-                // the async pass below so a full reload never blocks the GUI thread.
+
+
                 m_pendingPullConflictChecks.append(qMakePair(pr.number, fingerprint));
             }
         }
-        // Drop cache entries for PRs that have since closed/merged or been deleted
-        // so the map can't grow without bound across a long session.
+
+
         for (auto it = m_pullConflictCache.begin();
              it != m_pullConflictCache.end();) {
             if (openNumbers.contains(it.key()))
@@ -1168,26 +1168,26 @@ void MainWindow::applyLoadedPulls(const PullStore &store,
         refreshPullList();
         updatePullActionState();
     }
-    // Pull status decorates Agents rows. Repaint from the already-loaded session
-    // cache when that tab is visible; do not reload sessions or run Git here.
+
+
     if (m_repoDetailStack && m_repoDetailStack->currentIndex() == 3)
         refreshAgentTable();
-    // Fill in any uncached conflict badges off the critical path, one PR per
-    // event-loop turn, so a cold cache never freezes the UI (the list above is
-    // already on screen; the badges drop in as each dry-run finishes).
+
+
+
     if (!m_pendingPullConflictChecks.isEmpty())
         QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
 }
 
 void MainWindow::processPendingPullConflicts(quint64 gen)
 {
-    // A newer reloadPulls() (repo switch, push, merge, ...) supersedes this pass.
+
     if (gen != m_pullConflictGen || m_pendingPullConflictChecks.isEmpty())
         return;
-    // One dry-run runs off-thread at a time. A redundant drain (a double
-    // singleShot, or queuePullConflictCheck firing while a worker runs) just
-    // returns here — the in-flight worker reschedules us when it finishes, so the
-    // queue still drains in order.
+
+
+
+
     if (m_pullConflictCheckInFlight)
         return;
     const QPair<int, QString> item = m_pendingPullConflictChecks.takeFirst();
@@ -1195,18 +1195,18 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     const QString fingerprint = item.second;
     const PullStore store = pullStoreForCurrentRepo();
     if (!store.canWrite()) {
-        // No working tree to test the patch against; skip and drain the rest.
+
         if (gen == m_pullConflictGen && !m_pendingPullConflictChecks.isEmpty())
             QTimer::singleShot(0, this, [this, gen] { processPendingPullConflicts(gen); });
         return;
     }
-    // A single cold `git apply --check` can run well over the 1.5s stall
-    // threshold, so run it on a worker thread rather than on the GUI thread. The
-    // old keepGuiAlive path pumped the event loop in place, which could itself
-    // re-enter a heavy QTextDocumentLayout and block just as long (see stall
-    // reports). PullStore is copied by value and only shells out to git, so the
-    // worker touches no shared Qt state; results come back via shared_ptr to the
-    // finished handler, which runs on the main thread.
+
+
+
+
+
+
+
     m_pullConflictCheckInFlight = true;
     auto clean = std::make_shared<bool>(false);
     auto mergeable = std::make_shared<bool>(false);
@@ -1214,7 +1214,7 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
     QThread *worker = QThread::create([store, number, clean, mergeable,
                                        conflictFiles]() mutable {
         *mergeable = store.checkMergeable(number, clean.get(), conflictFiles.get(),
-                                          nullptr, /*keepGuiAlive=*/false);
+                                          nullptr,  false);
     });
     connect(worker, &QThread::finished, this,
             [this, worker, gen, number, fingerprint, clean, mergeable,
@@ -1222,8 +1222,8 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
                 m_pullConflictCheckInFlight = false;
                 worker->deleteLater();
                 const bool conflict = *mergeable && !*clean;
-                // Apply the result only if this repo/list is still current; a
-                // reloadPulls() may have bumped the generation while git ran.
+
+
                 if (gen == m_pullConflictGen) {
                     m_pullConflictCache.insert(
                         number, {fingerprint, conflict, *conflictFiles});
@@ -1232,15 +1232,15 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
                     else
                         m_pullConflictByNumber.remove(number);
                     setPullConflictBadge(number, conflict);
-                    // If this dry-run was for the PR currently on screen, refresh
-                    // its merge UI now that the result is cached.
+
+
                     if (number == m_currentPullNumber)
                         updatePullActionState();
                 }
-                // Drain the next pending check under the *current* generation,
-                // whether or not this result was superseded: a superseding
-                // reloadPulls() rebuilt the queue and is waiting on this worker to
-                // release the in-flight guard.
+
+
+
+
                 if (!m_pendingPullConflictChecks.isEmpty()) {
                     const quint64 current = m_pullConflictGen;
                     QTimer::singleShot(0, this, [this, current] {
@@ -1253,14 +1253,14 @@ void MainWindow::processPendingPullConflicts(quint64 gen)
 
 void MainWindow::queuePullConflictCheck(int number, const QString &fingerprint)
 {
-    // Already queued for this PR? The pending entry will produce a fresh result,
-    // so don't append a duplicate dry-run.
+
+
     for (const QPair<int, QString> &p : std::as_const(m_pendingPullConflictChecks))
         if (p.first == number)
             return;
-    // Whenever the pending list is non-empty a drain is already running or
-    // scheduled (reloadPulls / processPendingPullConflicts keep that invariant),
-    // so only kick off a new pass when we're appending to an idle queue.
+
+
+
     const bool wasIdle = m_pendingPullConflictChecks.isEmpty();
     m_pendingPullConflictChecks.append(qMakePair(number, fingerprint));
     if (wasIdle) {
@@ -1276,9 +1276,9 @@ QString MainWindow::pullConflictBadgeTooltip(int number) const
     if (cached == m_pullConflictCache.constEnd() ||
         cached->conflictFiles.isEmpty())
         return base;
-    // Say the reason why the badge is showing: list the conflicting files so the
-    // flag is self-explanatory without opening the PR. Cap the list so a huge
-    // conflict doesn't produce an unreadable tooltip.
+
+
+
     const QStringList &files = cached->conflictFiles;
     constexpr int kMaxListed = 10;
     QStringList lines;
@@ -1336,7 +1336,7 @@ void MainWindow::refreshPullList()
         }
         visiblePulls.append(&pr);
     }
-    // One model reset avoids a rowsInserted/layout cycle for every PR.
+
     m_pullTable->setRowCount(visiblePulls.size());
     for (int row = 0; row < visiblePulls.size(); ++row) {
         const PullRequest &pr = *visiblePulls.at(row);
@@ -1353,8 +1353,8 @@ void MainWindow::refreshPullList()
         st->setForeground(QColor(pr.status == "merged"  ? "#a371f7"
                                  : pr.status == "closed" ? "#f85149"
                                                          : "#3fb950"));
-        // Badge open PRs whose patch no longer applies to the base with a small
-        // conflict icon so the list flags them without opening the detail pane.
+
+
         if (m_pullConflictByNumber.value(pr.number, false)) {
             st->setIcon(themedOcticon("alert", QColor("#f85149"), 13));
             st->setToolTip(pullConflictBadgeTooltip(pr.number));
@@ -1367,7 +1367,7 @@ void MainWindow::refreshPullList()
                              new QTableWidgetItem(QStringLiteral("+%1 -%2")
                                                       .arg(formatCount(pr.additions))
                                                       .arg(formatCount(pr.deletions))));
-        // Author: the node that filed the PR (the submitter for inbox PRs).
+
         const QString author =
             pr.authorName.trimmed().isEmpty()
                 ? (pr.author.isEmpty() ? QString::fromUtf8("\xE2\x80\x94")
@@ -1376,9 +1376,9 @@ void MainWindow::refreshPullList()
         auto *authorItem = new QTableWidgetItem(author);
         authorItem->setToolTip(pr.author);
         m_pullTable->setItem(row, 6, authorItem);
-        // An agent attached to this PR — by recorded PR number, or through the
-        // head branch it ran on (issue #257). Badge the title so the list flags
-        // it at a glance, and surface the task's cost.
+
+
+
         const AgentSession *agent = agentSessionForPull(pr.number, pr.head);
         if (agent) {
             titleItem->setIcon(agentStatusOcticon(*agent, 14));
@@ -1389,8 +1389,8 @@ void MainWindow::refreshPullList()
                         : QStringLiteral("branch %1").arg(pr.head)));
         } else if (const PullAgentProvenance prov = pullAgentProvenance(pr);
                    prov.isAgent) {
-            // No local session (e.g. an agent PR from another node), but the signed
-            // commit trailer still attributes authorship (issue #365).
+
+
             titleItem->setIcon(themedOcticon("person", QColor("#a371f7"), 14));
             titleItem->setToolTip(
                 QStringLiteral("Agent-authored \xE2\x80\x94 %1")
@@ -1408,9 +1408,9 @@ void MainWindow::refreshPullList()
         }
         m_pullTable->setItem(row, 7, costItem);
 
-        // Created date: full ISO-ish "yyyy-MM-dd HH:mm" sorts chronologically
-        // as plain text and shows the exact moment at a glance; the tooltip
-        // carries the friendly "x ago" form. Mirrors the issue list.
+
+
+
         auto *created = new QTableWidgetItem(
             pr.ts > 0
                 ? QDateTime::fromMSecsSinceEpoch(pr.ts).toString("yyyy-MM-dd HH:mm")
@@ -1418,8 +1418,8 @@ void MainWindow::refreshPullList()
         created->setToolTip(formatIssueRelativeTime(pr.ts));
         m_pullTable->setItem(row, 8, created);
 
-        // Modified date: the most recent activity on the PR (latest signed
-        // event, falling back to the created time).
+
+
         qint64 updatedAt = pr.ts;
         for (const PullEvent &ev : pr.events)
             updatedAt = qMax(updatedAt, ev.ts);
@@ -1556,12 +1556,12 @@ void MainWindow::renderPullReviewSummary(PullRequest pr)
 
 void MainWindow::showPull(int number)
 {
-    // Snapshot the PR into a local value rather than holding a pointer into
-    // m_currentPulls: rendering below pumps the event loop (diff render, file
-    // list, setCurrentRow), and a deferred agent session finishing in that
-    // window can re-enter reloadPulls(), reassigning m_currentPulls and freeing
-    // the element a raw pointer would dangle into — the copy stays valid across
-    // any such reload (crash: free() invalid pointer via renderPullThread).
+
+
+
+
+
+
     PullRequest foundPull;
     bool havePull = false;
     for (const PullRequest &pr : m_currentPulls)
@@ -1573,7 +1573,7 @@ void MainWindow::showPull(int number)
     m_currentPullNumber = found ? number : -1;
     m_pullFiles->clear();
     m_pullFileDiffs.clear();
-    togglePullDiffSearch(false); // opening a different PR clears any find-in-diff state
+    togglePullDiffSearch(false);
     m_pullFileAuthorship.clear();
     if (m_pullFileAuthorFilter)
         m_pullFileAuthorFilter->hide();
@@ -1582,7 +1582,7 @@ void MainWindow::showPull(int number)
         m_pullTitle->setText("Select a pull request");
         m_pullMeta->clear();
         m_pullDiff->clear();
-        m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
+        m_pullDiffRenderKey.clear();
         if (m_pullCommitsList)
             m_pullCommitsList->clear();
         renderPullThread(PullRequest());
@@ -1602,8 +1602,8 @@ void MainWindow::showPull(int number)
         return;
     }
 
-    // Keep the detail panel collapsed while "Hide detail" is engaged (issue
-    // #274); its contents below still update for when the user reopens it.
+
+
     if (m_pullDetail && !m_pullDetailHidden)
         m_pullDetail->show();
     if (m_pullComposer) {
@@ -1615,11 +1615,11 @@ void MainWindow::showPull(int number)
         if (b)
             b->setEnabled(true);
     m_pullTitle->setText(QStringLiteral("#%1  %2").arg(found->number).arg(found->title));
-    // Filled via a single multi-arg call rather than chained .arg() calls:
-    // branchLinkHtml() percent-encodes the branch name into the href (e.g. "/"
-    // becomes "%2F"), and a later standalone .arg() call rescans the whole
-    // string, mistaking that literal "%2" for an unfilled placeholder and
-    // shifting every substitution after it by one.
+
+
+
+
+
     m_pullMeta->setText(
         QString::fromUtf8("<b>%1</b> \xE2\x86\x90 <b>%2</b> \xC2\xB7 %3 \xC2\xB7 %4 files "
                        "<span style='color:#3fb950'>+%5</span> "
@@ -1630,9 +1630,9 @@ void MainWindow::showPull(int number)
                  (found->authorName.isEmpty() ? found->author.left(10)
                                               : found->authorName)
                      .toHtmlEscaped()));
-    // Surface where the head branch sits relative to its base: when it trails the
-    // base, say by how much so the reviewer knows there's something to pull in
-    // before merging (the "Update branch" button merges the base in — issue #72).
+
+
+
     if (found->status == QLatin1String("open")) {
         const PullStore store = pullStoreForCurrentRepo();
         bool behind = false;
@@ -1658,9 +1658,9 @@ void MainWindow::showPull(int number)
         m_pullMeta->setText(m_pullMeta->text() +
                             QString::fromUtf8(" \xC2\xB7 <span style='color:#f85149'>"
                                            "\xE2\x9A\xA0 Changes requested</span>"));
-    // If an agent task produced this PR — by recorded PR number or through its
-    // head branch (issue #257) — link the header back to that session on the
-    // Agents tab (adhoc #78) and surface its estimated cost.
+
+
+
     if (const AgentSession *agent =
             agentSessionForPull(found->number, found->head)) {
         const QString href = kAgentLinkScheme + QString::number(agent->id);
@@ -1673,10 +1673,10 @@ void MainWindow::showPull(int number)
             QString::fromUtf8(" \xC2\xB7 %1 cost ~%2")
                 .arg(link, agentCostText(agent->costUsd)));
     }
-    // The description is shown as the Conversation's opening card (renderPullThread),
-    // so it is not repeated in the header.
 
-    // Split the unified diff into per-file sections.
+
+
+
     const PullReviewSnapshot reviewSnapshot = buildPullReviewSnapshot(*found);
     QString currentFile;
     QStringList currentLines;
@@ -1688,7 +1688,7 @@ void MainWindow::showPull(int number)
     for (const QString &line : found->patch.split('\n')) {
         if (line.startsWith("diff --git ")) {
             flush();
-            // "diff --git a/<path> b/<path>"
+
             currentFile = line.section(" b/", 1);
         }
         if (!currentFile.isEmpty())
@@ -1696,8 +1696,8 @@ void MainWindow::showPull(int number)
     }
     flush();
 
-    // Per-file authorship from the signed commit trailers, so the file list can be
-    // filtered by whether an agent touched each file (issue #365).
+
+
     m_pullFileAuthorship = pullFileAuthorship(*found);
 
     for (auto it = m_pullFileDiffs.constBegin(); it != m_pullFileDiffs.constEnd(); ++it) {
@@ -1723,9 +1723,9 @@ void MainWindow::showPull(int number)
         m_pullFiles->addItem(item);
     }
     m_pullFiles->sortItems();
-    // Feed the Badge tab (adhoc #44): per-file additions/deletions counted
-    // from each file's diff section, with the same file-type icon the file
-    // list uses.
+
+
+
     if (m_pullBadgeWidget) {
         QList<PullBadgeWidget::FileEntry> badgeFiles;
         badgeFiles.reserve(m_pullFileDiffs.size());
@@ -1751,8 +1751,8 @@ void MainWindow::showPull(int number)
                                         : found->authorName,
             found->additions, found->deletions, badgeFiles);
     }
-    // Offer the authorship filter only when the PR actually mixes agent and human
-    // authorship — otherwise there is nothing to narrow.
+
+
     if (m_pullFileAuthorFilter) {
         bool anyAgent = false, anyHuman = false;
         for (auto it = m_pullFileAuthorship.constBegin();
@@ -1762,18 +1762,18 @@ void MainWindow::showPull(int number)
         m_pullFileAuthorFilter->setCurrentIndex(0);
         m_pullFileAuthorFilter->setVisible(anyAgent && anyHuman);
     }
-    fitFileListToWidestEntry(m_pullFiles); // open wide enough for the longest path
+    fitFileListToWidestEntry(m_pullFiles);
     if (m_pullFiles->count() > 0) {
-        // Render every file into the one scrollable view, then select the first
-        // file without scrolling the diff (it already starts at the top).
+
+
         renderPullDiff();
         m_pullSuppressFileScroll = true;
         m_pullFiles->setCurrentRow(0);
         m_pullSuppressFileScroll = false;
     } else {
         m_pullDiff->setPlainText("(no changes)");
-        m_pullDiff->setProperty("fm_diffSource", QString()); // not a rendered diff
-        m_pullDiffRenderKey.clear(); // widget no longer shows a rendered diff
+        m_pullDiff->setProperty("fm_diffSource", QString());
+        m_pullDiffRenderKey.clear();
         m_pullFileAnchors.clear();
         m_pullFileOrder.clear();
         m_pullStickyLabelHtml.clear();
@@ -1791,8 +1791,8 @@ void MainWindow::showPull(int number)
     updatePullActionState();
 }
 
-// Show only files matching the selected authorship (issue #365): index 1 keeps
-// agent-authored files, 2 keeps human-authored, 0 shows everything.
+
+
 void MainWindow::applyPullFileAuthorFilter()
 {
     if (!m_pullFiles || !m_pullFileAuthorFilter)
@@ -1804,7 +1804,7 @@ void MainWindow::applyPullFileAuthorFilter()
         const bool show = mode == 0 || (mode == 1 && agent) || (mode == 2 && !agent);
         item->setHidden(!show);
     }
-    // Keep a visible row selected so the diff view follows the filter.
+
     if (QListWidgetItem *cur = m_pullFiles->currentItem();
         !cur || cur->isHidden()) {
         for (int row = 0; row < m_pullFiles->count(); ++row)
@@ -1836,18 +1836,18 @@ void MainWindow::switchToPullTab(int pullNumber)
     showPull(pullNumber);
 }
 
-// Open a pull request's commits, changed files and diff in the Git view's range
-// pane (adhoc #107): the PR counterpart of switchToBranch. The pane renders the
-// PR's review threads and comment gutters (see renderBranchDiffPatch) and its
-// "PR #N" button jumps on to the full pull request page. A PR whose head branch
-// still exists locally gets the live scope list (all changes / uncommitted /
-// per-commit); one whose branch is gone (merged & pruned, or cross-node) shows
-// its stored patch.
+
+
+
+
+
+
+
 void MainWindow::openPullDiffInGitView(int pullNumber)
 {
-    // The PR widgets and state (m_currentPulls, m_currentPullNumber) live in the
-    // Pulls tab; make sure it exists and is anchored on this PR so the comment /
-    // thread / viewed plumbing all acts on the right one.
+
+
+
     ensureRepoDetailTabBuilt(4);
     m_currentPullNumber = pullNumber;
     reloadPulls();
@@ -1856,7 +1856,7 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
         for (int row = 0; row < m_pullTable->rowCount(); ++row) {
             QTableWidgetItem *number = m_pullTable->item(row, 0);
             if (number && number->data(Qt::UserRole).toInt() == pullNumber) {
-                m_pullTable->selectRow(row); // fires showPull(pullNumber)
+                m_pullTable->selectRow(row);
                 rowSelected = true;
                 break;
             }
@@ -1865,16 +1865,16 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     if (!rowSelected)
         showPull(pullNumber);
 
-    // Copy the PR out of m_currentPulls before any git call below:
-    // localBranchExists pumps the event loop, which can reload the pulls list
-    // and dangle a held reference (the adhoc #106/#119 UAF family).
+
+
+
     PullRequest pr;
     for (const PullRequest &p : std::as_const(m_currentPulls))
         if (p.number == pullNumber)
             pr = p;
     if (pr.number != pullNumber) {
-        // Nothing to review here (e.g. the PR vanished); fall back to the PR
-        // page, which explains itself.
+
+
         switchToPullTab(pullNumber);
         return;
     }
@@ -1884,12 +1884,12 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     setCommitWorkspacePage(kCommitWorkspaceRangePage);
     const QString dir = repoGitDir();
     if (!pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head)) {
-        // Live branch: the full range pane (scope list, uncommitted changes,
-        // per-commit diffs) against the repo's refs.
+
+
         showBranchDiff(pr.head);
     } else {
-        // Branch gone: render the PR's stored patch directly. Mirror the reset
-        // showBranchDiff does, minus the git reads that need the branch.
+
+
         m_branchDiffBranch = pr.head;
         updateBranchDetailActions(pr.head);
         if (m_branchScopeList) {
@@ -1905,13 +1905,13 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
         m_branchDiffLastPatch = pr.patch.toUtf8();
         m_branchDiffLastEmpty = QStringLiteral("This pull request has no changes.");
         m_branchDiffLastValid = true;
-        ++m_branchScopeDiffGen; // orphan any in-flight scope render
+        ++m_branchScopeDiffGen;
         renderBranchDiffPatch(pr.patch, m_branchDiffLastEmpty,
                               QStringLiteral("pull/") + QString::number(pullNumber));
     }
     if (m_branchDiffView)
         m_branchDiffView->setFocus();
-    // Fill the Git view's left rail the same deferred way switchToBranch does.
+
     QTimer::singleShot(0, this, [this] {
         if (commitsListIsCurrent())
             refreshSourceControl();
@@ -1920,12 +1920,12 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     });
 }
 
-// Property holding a diff view's last-set source HTML, so a font-size change can
-// re-render it in place at the new size without re-running its renderer (#254).
+
+
 static const char *kDiffSourceProp = "fm_diffSource";
 
-// Track a diff viewer for the shared text-size zoom: the +/- buttons and
-// Ctrl+wheel re-render every registered view at the new size (issue #254).
+
+
 void MainWindow::registerDiffView(QTextEdit *view)
 {
     if (!view || m_diffViews.contains(view))
@@ -1933,17 +1933,17 @@ void MainWindow::registerDiffView(QTextEdit *view)
     m_diffViews.append(view);
     if (view->toolTip().isEmpty())
         view->setToolTip(QStringLiteral("Ctrl+scroll to change the text size"));
-    // Every diff view wraps at the widget edge: the rendered tables are
-    // width-constrained and their code cells pre-wrap, so the whole diff
-    // (including side-by-side) stays inside the visible window instead of
-    // running past the right edge behind a horizontal scrollbar.
+
+
+
+
     view->setLineWrapMode(QTextEdit::WidgetWidth);
-    view->viewport()->installEventFilter(this); // Ctrl+wheel, see eventFilter
+    view->viewport()->installEventFilter(this);
     if (auto *browser = qobject_cast<QTextBrowser *>(view))
         browser->setOpenLinks(false);
-    // Whatever this view derives from the *complete* document (file positions for
-    // the sticky headers, search matches) has to be recomputed once a streamed
-    // diff has finished filling in behind the visible window (adhoc #421).
+
+
+
     addDiffStreamFinishedHook(view, [this, view] { onDiffStreamFinished(view); });
     connect(view, &QObject::destroyed, this, [this](QObject *o) {
         auto *dead = static_cast<QTextEdit *>(o);
@@ -1952,11 +1952,11 @@ void MainWindow::registerDiffView(QTextEdit *view)
     });
 }
 
-// Set a diff viewer's HTML, remembering the source so adjustDiffFont can later
-// re-render it at a new text size. Use this for every diff viewer's content so
-// the zoom works everywhere (issue #254). The layout is progressive: the visible
-// window is rendered now and the rest streams in, so even a multi-megabyte diff
-// shows immediately without blocking the GUI thread (adhoc #421).
+
+
+
+
+
 void MainWindow::setDiffHtml(QTextEdit *view, const QString &html)
 {
     if (!view)
@@ -1965,13 +1965,13 @@ void MainWindow::setDiffHtml(QTextEdit *view, const QString &html)
     renderDiffStreamed(view, html, diffStyleSheet(m_diffFontPt));
 }
 
-// A diff view's document is complete (nothing left streaming): refresh the state
-// that is read out of the whole document rather than just what is on screen.
+
+
 void MainWindow::onDiffStreamFinished(QTextEdit *view)
 {
     if (!view)
         return;
-    // A zoom re-render restores the reader's place once the diff is back.
+
     const auto scroll = m_diffRestoreScroll.find(view);
     if (scroll != m_diffRestoreScroll.end()) {
         if (QScrollBar *vbar = view->verticalScrollBar())
@@ -1979,13 +1979,13 @@ void MainWindow::onDiffStreamFinished(QTextEdit *view)
         m_diffRestoreScroll.erase(scroll);
     }
     if (view == m_pullDiff) {
-        m_pullFileTops.clear(); // file positions moved as the rest landed
+        m_pullFileTops.clear();
         m_pullStickyFile.clear();
         if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
             pullDiffSearchRecompute();
         updatePullDiffScrollState();
     } else if (view == m_branchDiffView) {
-        m_branchFileTops.clear(); // file positions moved as the rest landed
+        m_branchFileTops.clear();
         m_branchStickyFile.clear();
         rebuildBranchDiffSpans();
         if (m_branchDiffSearchBar && m_branchDiffSearchBar->isVisible())
@@ -1993,8 +1993,8 @@ void MainWindow::onDiffStreamFinished(QTextEdit *view)
     }
 }
 
-// +/- or Ctrl+wheel zoom: change the diff text size and re-render every diff
-// viewer that currently shows a diff, in place, at the new size (issue #254).
+
+
 void MainWindow::adjustDiffFont(int delta)
 {
     const int next = qBound(8, m_diffFontPt + delta, 28);
@@ -2007,32 +2007,32 @@ void MainWindow::adjustDiffFont(int delta)
             continue;
         const QString src = view->property(kDiffSourceProp).toString();
         if (src.isEmpty())
-            continue; // plain text (e.g. "(no changes)") -- nothing to re-scale
+            continue;
         QScrollBar *vbar = view->verticalScrollBar();
         const int scroll = vbar ? vbar->value() : 0;
-        // Re-render through the streaming path: a big diff re-lays out in the
-        // background, so the reader's place is restored from the finished hook
-        // (the document is still filling in right after the first paint).
+
+
+
         if (scroll > 0)
             m_diffRestoreScroll.insert(view, scroll);
         setDiffHtml(view, src);
         if (vbar)
             vbar->setValue(qMin(scroll, vbar->maximum()));
     }
-    m_pullDiffRenderKey.clear(); // the pull view's skip-relayout cache is now stale
-    m_scmDiffRenderKey.clear();  // ditto for the working-tree changes diff
-    // The re-scaled m_pullDiff got a fresh document too; rescan an open find
-    // bar's matches against it (issue #333). Same for the range pane's bar.
+    m_pullDiffRenderKey.clear();
+    m_scmDiffRenderKey.clear();
+
+
     if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
         pullDiffSearchRecompute();
     if (m_branchDiffSearchBar && m_branchDiffSearchBar->isVisible())
         branchDiffSearchRecompute();
 }
 
-// Collect a PR's already-posted review threads for every file, keyed by
-// path\x1fside:line, so a diff renderer can drop each beneath the line it
-// annotates even though every file shares one rendered view (#250). Shared by
-// the PR Files-changed page and the Git view's range pane (adhoc #107).
+
+
+
+
 QHash<QString, QString> MainWindow::buildPullLineNotes(const PullRequest &pr)
 {
     QHash<QString, QString> notes;
@@ -2042,9 +2042,9 @@ QHash<QString, QString> MainWindow::buildPullLineNotes(const PullRequest &pr)
             text.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
             return text;
         };
-        // Whether this node can take a thread's one-click fix right now: the
-        // apply commits to the PR's branch, so it needs an open PR and a
-        // working tree (adhoc #82).
+
+
+
         const bool canApplyFixes = pr.status == QLatin1String("open") &&
                                    pullStoreForCurrentRepo().canWrite();
         const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
@@ -2122,7 +2122,7 @@ QHash<QString, QString> MainWindow::buildPullLineNotes(const PullRequest &pr)
                         " &nbsp; <a href='thread:resolve:%1'>Resolve</a>")
                                 .arg(thread.id.toHtmlEscaped());
                 }
-                // One-click commit of the thread's suggestion patch (adhoc #82).
+
                 if (canApplyFixes && !thread.resolved && thread.hasSuggestion &&
                     thread.suggestionState != QLatin1String("applied"))
                     note += QStringLiteral(" &nbsp; <a href='thread:applyfix:%1'>"
@@ -2150,10 +2150,10 @@ void MainWindow::renderPullDiff()
     if (pr)
         notes = buildPullLineNotes(*pr);
 
-    // Render the whole PR — every changed file — into one scrollable view. The
-    // PR patch carries no git object context for image previews, so pass empty
-    // dir/base/head (the renderer just lays out the text diff). A non-empty
-    // anchorFile turns on the clickable comment gutters for every file.
+
+
+
+
     QList<DiffFileEntry> files;
     const QSet<QString> viewed =
         loadDiffViewed(QStringLiteral("pull/") + QString::number(m_currentPullNumber));
@@ -2161,14 +2161,14 @@ void MainWindow::renderPullDiff()
     const QString html = renderDiffHtml(fullPatch, files, QString(), QString(),
                                         QString(), QStringLiteral("*"), notes, viewed);
 
-    // Map each file path to its "file-N" anchor so the list and Prev/Next can
-    // scroll straight to a file's section in the combined view. m_pullFileOrder
-    // keeps the same paths in on-screen order for auto-mark-viewed-on-scroll,
-    // which needs to know what's above/below the current file.
+
+
+
+
     m_pullFileAnchors.clear();
     m_pullFileOrder.clear();
     m_pullStickyLabelHtml.clear();
-    m_pullFileTops.clear(); // positions change on re-render; force a recompute
+    m_pullFileTops.clear();
     for (const DiffFileEntry &f : files) {
         m_pullFileAnchors.insert(f.path, f.anchor);
         m_pullFileOrder.append(f.path);
@@ -2179,12 +2179,12 @@ void MainWindow::renderPullDiff()
     const QString body =
         html.isEmpty() ? QStringLiteral("<p style='color:#8b949e'>(no changes)</p>") : html;
 
-    // Laying out a large diff's HTML table in QTextDocument can block the GUI
-    // thread for a second or more. A background PR refresh re-runs showPull(),
-    // which repopulates the file list and re-renders the diff. Skip the
-    // re-layout when nothing the document depends on (the PR, theme/font via the
-    // stylesheet, split toggle, review notes and viewed state via the html) has
-    // changed.
+
+
+
+
+
+
     const QString key = QString::number(m_currentPullNumber) +
                         QLatin1Char('\x1f') + styleSheet + QLatin1Char('\x1f') +
                         body;
@@ -2193,18 +2193,18 @@ void MainWindow::renderPullDiff()
     m_pullDiffRenderKey = key;
 
     setDiffHtml(m_pullDiff, body);
-    // setDiffHtml just replaced the document, invalidating any cursors an open
-    // find bar was holding onto (issue #333) — rescan against the new one.
+
+
     if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
         pullDiffSearchRecompute();
-    // The document (and its layout) was replaced; force the sticky header to
-    // re-read the new file positions on the next event-loop turn, once the
-    // layout has settled (adhoc #56).
+
+
+
     m_pullStickyFile.clear();
     QTimer::singleShot(0, this, &MainWindow::updatePullDiffScrollState);
 }
 
-// Scroll the all-files diff so the given file's section sits at the top.
+
 void MainWindow::scrollPullDiffToFile(const QString &filePath)
 {
     if (!m_pullDiff)
@@ -2212,15 +2212,15 @@ void MainWindow::scrollPullDiffToFile(const QString &filePath)
     const QString anchor = m_pullFileAnchors.value(filePath);
     if (anchor.isEmpty())
         return;
-    // The file may still be queued behind the visible window on a big diff; its
-    // anchor only exists once the rest has landed (adhoc #421).
+
+
     flushDiffStream(m_pullDiff);
     m_pullDiff->scrollToAnchor(anchor);
 }
 
-// Select a file in the changed-files list without letting currentItemChanged
-// scroll the diff back to that file's header (the selection here is *following*
-// the scroll, not driving it).
+
+
+
 void MainWindow::selectPullFileInList(const QString &filePath)
 {
     if (!m_pullFiles)
@@ -2239,12 +2239,12 @@ void MainWindow::selectPullFileInList(const QString &filePath)
     }
 }
 
-// Walk the rendered diff once and record each file header's absolute document
-// y-position into m_pullFileTops (aligned to m_pullFileOrder; -1 if not found).
-// Locating an anchor scans the document, so gathering them one-by-one per file
-// is O(files x doc); this collects them all in a single pass and the result is
-// cached until the next re-render — the per-scroll-tick sticky update then just
-// reads the cache. Word-wrap is off, so a viewport resize doesn't move them.
+
+
+
+
+
+
 void MainWindow::computePullFileTops()
 {
     m_pullFileTops.assign(m_pullFileOrder.size(), -1);
@@ -2277,8 +2277,8 @@ void MainWindow::computePullFileTops()
     }
 }
 
-// Pin the sticky header across the top of the diff viewport at its natural
-// height (adhoc #56). Called on every scroll tick and on viewport resize.
+
+
 void MainWindow::layoutPullStickyHeader()
 {
     if (!m_pullStickyHeader || !m_pullDiff)
@@ -2288,12 +2288,12 @@ void MainWindow::layoutPullStickyHeader()
                                     m_pullStickyHeader->sizeHint().height());
 }
 
-// Runs on every scroll tick of the all-files diff (cheap; no re-render). Figures
-// out which file sits at the top of the viewport, mirrors its header into the
-// sticky bar, advances the Pac-Man chart by how much of that file has scrolled
-// past, and selects the file in the list so the list follows the scroll
-// (adhoc #56, issue #250). The "mark viewed" re-render is left to the debounced
-// applyAutoMarkViewedOnScroll so this stays smooth.
+
+
+
+
+
+
 void MainWindow::updatePullDiffScrollState()
 {
     if (!m_pullDiff || !m_pullStickyHeader)
@@ -2310,15 +2310,15 @@ void MainWindow::updatePullDiffScrollState()
     QTextDocument *doc = m_pullDiff->document();
     const int docHeight = doc->documentLayout()->documentSize().height();
 
-    // Absolute document y-position of each file header, in on-screen order.
-    // Cached (see computePullFileTops) so this per-scroll-tick handler doesn't
-    // re-scan the whole document; rebuilt lazily if the cache is stale.
+
+
+
     if (m_pullFileTops.size() != m_pullFileOrder.size())
         computePullFileTops();
     const QList<int> &tops = m_pullFileTops;
 
-    // The file at the top of the viewport is the first one whose section still
-    // reaches below the top edge.
+
+
     int idx = -1, fileTop = 0, fileBottom = 0;
     for (int i = 0; i < m_pullFileOrder.size(); ++i) {
         if (tops[i] < 0)
@@ -2338,9 +2338,9 @@ void MainWindow::updatePullDiffScrollState()
     }
     const QString path = m_pullFileOrder.at(idx);
 
-    // How much of the file has been seen: the fraction of its extent that has
-    // passed above the viewport's bottom edge, clamped to [0,1]. Hits 1.0 when
-    // the file's end scrolls into view.
+
+
+
     double progress = 1.0;
     if (fileBottom > fileTop)
         progress = double(viewBottom - fileTop) / double(fileBottom - fileTop);
@@ -2352,14 +2352,14 @@ void MainWindow::updatePullDiffScrollState()
     if (path != m_pullStickyFile) {
         m_pullStickyFile = path;
         m_pullStickyPath->setText(m_pullStickyLabelHtml.value(path));
-        // The list follows the scroll: select whichever file is now on screen.
+
         selectPullFileInList(path);
     }
     m_pullStickyViewed->setText(isViewed
                                     ? QString::fromUtf8("\xE2\x98\x91 Viewed")
                                     : QString::fromUtf8("\xE2\x98\x90 Viewed"));
-    // A completed / already-viewed file reads as done (full green Pac-Man);
-    // otherwise the chart tracks scroll progress in blue and greens on arrival.
+
+
     m_pullStickyPacman->setColor(progress >= 0.999 || isViewed
                                      ? QColor(0x3f, 0xb9, 0x50)
                                      : QColor(0x58, 0xa6, 0xff));
@@ -2372,10 +2372,10 @@ void MainWindow::updatePullDiffScrollState()
     }
 
     layoutPullStickyHeader();
-    // Do not cover the real per-file header while it is still visible. This is
-    // what produced the doubled filename/Viewed controls in the old top bar.
-    // The compact sticky bar takes over only after the natural header scrolls
-    // away.
+
+
+
+
     if (viewTop <= fileTop + m_pullStickyHeader->sizeHint().height()) {
         m_pullStickyHeader->hide();
         return;
@@ -2384,14 +2384,14 @@ void MainWindow::updatePullDiffScrollState()
     m_pullStickyHeader->raise();
 }
 
-// Debounced off the diff view's scrollbar (see m_pullAutoViewedDebounce): marks
-// every file the reviewer has scrolled fully through — its end has reached the
-// viewport bottom — as "Viewed" (only while m_pullAutoViewedButton is checked),
-// matching GitHub's "Automatically mark files as viewed" toggle and the sticky
-// header's Pac-Man chart, which fills to 100% on the same threshold (adhoc #56).
-// Re-renders once for the whole batch — not per file — and then restores the
-// scroll position to whichever file is still on screen, since collapsing viewed
-// files above it shifts the document up.
+
+
+
+
+
+
+
+
 void MainWindow::applyAutoMarkViewedOnScroll()
 {
     if (!m_pullDiff || m_currentPullNumber < 0 || m_pullFileOrder.isEmpty())
@@ -2405,9 +2405,9 @@ void MainWindow::applyAutoMarkViewedOnScroll()
     QTextDocument *doc = m_pullDiff->document();
     const int docHeight = doc->documentLayout()->documentSize().height();
 
-    // Absolute document y-position (viewport-independent) of each file's header,
-    // in on-screen order; -1 when a file's anchor wasn't found (e.g. dropped from
-    // a size-capped render).
+
+
+
     QList<int> tops;
     tops.reserve(m_pullFileOrder.size());
     for (const QString &path : std::as_const(m_pullFileOrder)) {
@@ -2421,16 +2421,16 @@ void MainWindow::applyAutoMarkViewedOnScroll()
     const QString context =
         QStringLiteral("pull/") + QString::number(m_currentPullNumber);
     const QSet<QString> viewed = loadDiffViewed(context);
-    QString currentFile; // first file the reviewer hasn't fully scrolled through
+    QString currentFile;
     QStringList newlyViewed;
     for (int i = 0; i < m_pullFileOrder.size(); ++i) {
         if (tops[i] < 0)
             continue;
-        // A file's content runs to the next file's header, or the document end
-        // for the last file.
+
+
         const int bottom = (i + 1 < tops.size() && tops[i + 1] >= 0) ? tops[i + 1]
                                                                      : docHeight;
-        // Fully seen once its end has reached the viewport's bottom edge.
+
         if (bottom <= viewBottom) {
             if (!viewed.contains(m_pullFileOrder.at(i)))
                 newlyViewed << m_pullFileOrder.at(i);
@@ -2450,9 +2450,9 @@ void MainWindow::applyAutoMarkViewedOnScroll()
 
 void MainWindow::pullSelectAdjacentChange(int delta)
 {
-    // Every file is in one scrollable view, so a change is just the next/previous
-    // hunk header anywhere in the PR — pullScrollToAdjacentHunk handles crossing
-    // file boundaries on its own.
+
+
+
     pullScrollToAdjacentHunk(delta);
 }
 
@@ -2463,13 +2463,13 @@ bool MainWindow::pullScrollToAdjacentHunk(int delta)
     QScrollBar *vbar = m_pullDiff->verticalScrollBar();
     if (!vbar)
         return false;
-    // Next/Prev reaches past the visible window, so land the whole diff first.
+
     flushDiffStream(m_pullDiff);
-    // Walk every hunk header — each renders as "@@ -old +new @@ …", so the
-    // "@@ -" prefix occurs once per hunk — and jump to the nearest one strictly
-    // below (next) or above (prev) the current scroll position. Anchoring on the
-    // viewport, not a persisted cursor, keeps Prev/Next consistent after the
-    // reviewer scrolls the diff by hand (issue #250).
+
+
+
+
+
     const int curTop = vbar->value();
     int target = delta > 0 ? std::numeric_limits<int>::max()
                            : std::numeric_limits<int>::min();
@@ -2481,8 +2481,8 @@ bool MainWindow::pullScrollToAdjacentHunk(int delta)
         QTextCursor lineCur(cur);
         lineCur.setPosition(cur.selectionStart());
         lineCur.movePosition(QTextCursor::StartOfLine);
-        // cursorRect is in viewport coordinates; add the scroll offset to get the
-        // hunk's position within the document.
+
+
         const int y = m_pullDiff->cursorRect(lineCur).top() + curTop;
         if (delta > 0) {
             if (y > curTop + 4)
@@ -2493,13 +2493,13 @@ bool MainWindow::pullScrollToAdjacentHunk(int delta)
     }
     if (delta > 0 ? target == std::numeric_limits<int>::max()
                   : target == std::numeric_limits<int>::min())
-        return false; // no further hunk in that direction
+        return false;
     vbar->setValue(std::clamp(target - 4, vbar->minimum(), vbar->maximum()));
     return true;
 }
 
-// Show or hide the find-in-diff bar (issue #333). Hiding clears both the
-// search text and the highlights, so re-opening it always starts fresh.
+
+
 void MainWindow::togglePullDiffSearch(bool show)
 {
     if (!m_pullDiffSearchBar || !m_pullDiffSearchInput)
@@ -2509,15 +2509,15 @@ void MainWindow::togglePullDiffSearch(bool show)
         m_pullDiffSearchInput->setFocus();
         m_pullDiffSearchInput->selectAll();
     } else {
-        m_pullDiffSearchInput->clear(); // triggers pullDiffSearchRecompute to clear highlights
+        m_pullDiffSearchInput->clear();
         if (m_pullDiff)
             m_pullDiff->setFocus();
     }
 }
 
-// Re-scan the combined diff for the current search text and highlight every
-// match. Called on every keystroke and after each re-render, since a
-// re-render replaces the document and invalidates previously-found cursors.
+
+
+
 void MainWindow::pullDiffSearchRecompute()
 {
     if (!m_pullDiff)
@@ -2528,13 +2528,13 @@ void MainWindow::pullDiffSearchRecompute()
     const QString term =
         m_pullDiffSearchInput ? m_pullDiffSearchInput->text() : QString();
     if (!term.isEmpty()) {
-        // Search covers the whole PR, not just the rendered window (adhoc #421).
+
         flushDiffStream(m_pullDiff);
         QTextCursor cur = m_pullDiff->document()->find(term);
         while (!cur.isNull()) {
             m_pullDiffSearchMatches.append(cur);
             if (m_pullDiffSearchMatches.size() >= 5000)
-                break; // safety cap on pathological match counts
+                break;
             cur = m_pullDiff->document()->find(term, cur);
         }
         if (!m_pullDiffSearchMatches.isEmpty())
@@ -2548,9 +2548,9 @@ void MainWindow::pullDiffSearchRecompute()
         pullDiffSearchGoTo(0);
 }
 
-// Step the active match by delta (wrapping), re-highlight, and scroll it into
-// view. delta of 0 just scrolls to the current match (used right after a
-// recompute).
+
+
+
 void MainWindow::pullDiffSearchGoTo(int delta)
 {
     if (!m_pullDiff || m_pullDiffSearchMatches.isEmpty())
@@ -2566,9 +2566,9 @@ void MainWindow::pullDiffSearchGoTo(int delta)
                                   m_pullDiffSearchIndex, m_pullDiffSearchCount,
                                   false);
 
-    // Same viewport-relative-to-absolute trick as pullScrollToAdjacentHunk:
-    // cursorRect is always reported relative to the current viewport, so
-    // adding the current scroll offset gives the match's absolute position.
+
+
+
     const QTextCursor &target = m_pullDiffSearchMatches.at(m_pullDiffSearchIndex);
     QTextCursor lineCur(target);
     lineCur.setPosition(target.selectionStart());
@@ -2596,8 +2596,8 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
             applyPullSuggestionFix(threadId);
         return;
     }
-    // "viewed:<path>" toggles a file's reviewed state and re-renders the diff,
-    // keeping the toggled file in view (its section collapses/expands in place).
+
+
     if (url.scheme() == QLatin1String("viewed")) {
         const QString path = url.path();
         const QString context =
@@ -2608,7 +2608,7 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
         scrollPullDiffToFile(path);
         return;
     }
-    // "filecomment:<path>" posts a file-level comment on the pull request.
+
     if (url.scheme() == QLatin1String("filecomment")) {
         if (m_currentPullNumber < 0)
             return;
@@ -2642,9 +2642,9 @@ void MainWindow::onPullDiffAnchorClicked(const QUrl &url)
         showPull(m_currentPullNumber);
         return;
     }
-    // Anchor format: "cmt:<path>?s=<side>&l=<line>" (side is old|new). The path
-    // is carried in the anchor so the comment lands on the right file even though
-    // every file shares one rendered view (issue #250).
+
+
+
     if (url.scheme() != QLatin1String("cmt"))
         return;
     const QString filePath = url.path();
@@ -2777,22 +2777,22 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
     avatar->setObjectName("issueAvatar");
     avatar->setAlignment(Qt::AlignCenter);
     avatar->setFixedSize(36, 36);
-    // Prefer the author's real picture over the initials tile, matching the
-    // issue timeline. Peer avatars are broadcast over chat and cached in
-    // m_avatars keyed by the Ed25519 pubkey that also signs events (authorId);
-    // our own avatar may not be in that cache yet, so fall back to
-    // effectiveAvatar() for our own cards. Authors we have no real picture for
-    // (peers and agents whose avatar hasn't been broadcast) get the deterministic
-    // procedural face used for contributor and assignee avatars, keyed by their
-    // pubkey, so every PR card shows an avatar instead of bare initials.
+
+
+
+
+
+
+
+
     QPixmap authorAvatar;
     if (!authorId.isEmpty()) {
         const QPixmap cached = m_avatars.value(authorId);
         if (!cached.isNull())
             authorAvatar = roundedRectPixmap(cached, 36, 36 * 0.28);
         else if (authorId == m_profileIdentity.publicKey())
-            // Our own posts show the user avatar (jett), matching the identity we
-            // broadcast over chat — not the node's procedural badge.
+
+
             authorAvatar = roundedAvatar(effectiveUserAvatar(), 36);
     }
     if (authorAvatar.isNull()) {
@@ -2860,13 +2860,13 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
         bodyLabel->setText(autolinkReferences(body));
         bodyLabel->setWordWrap(true);
         bodyLabel->setTextInteractionFlags(Qt::TextBrowserInteraction);
-        // Reference links (#N, commit SHAs, forkmesh:// permalinks) resolve in app;
-        // real external links fall through to the system browser.
+
+
         bodyLabel->setOpenExternalLinks(false);
         connect(bodyLabel, &QLabel::linkActivated, this,
                 [this](const QString &href) {
-                    // "applyfix:<threadId>" is the review-suggestion quick fix
-                    // (adhoc #82); everything else is a normal body reference.
+
+
                     if (href.startsWith(QLatin1String("applyfix:")))
                         applyPullSuggestionFix(href.mid(9));
                     else
@@ -2876,7 +2876,7 @@ void MainWindow::addConversationCard(QVBoxLayout *layout, const QString &author,
         cardLayout->addWidget(bodyLabel);
     }
     rowLayout->addWidget(card, 1);
-    // Insert before the trailing stretch.
+
     layout->insertWidget(layout->count() - 1, row);
 }
 
@@ -2889,8 +2889,8 @@ void MainWindow::renderPullThread(const PullRequest &pr)
             w->deleteLater();
         delete item;
     }
-    // Trailing stretch first: addConversationCard inserts each card just above
-    // it, so cards flow oldest-to-newest (top to bottom).
+
+
     m_pullThreadLayout->addStretch();
     if (pr.number == 0) {
         if (m_pullLinksValue)
@@ -2898,7 +2898,7 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         return;
     }
 
-    // Linked issues card (reflects "closes #N" references and explicit links).
+
     if (m_pullLinksValue) {
         const QList<int> issues = issuesLinkedFromPull(pr);
         if (issues.isEmpty()) {
@@ -2917,7 +2917,7 @@ void MainWindow::renderPullThread(const PullRequest &pr)
         }
     }
 
-    // The PR description as the opening card.
+
     const QString opener = pr.authorName.isEmpty() ? pr.author.left(10) : pr.authorName;
     QString linkOwner = QStringLiteral("repo");
     QString linkRepo = QStringLiteral("pull");
@@ -2934,9 +2934,9 @@ void MainWindow::renderPullThread(const PullRequest &pr)
             .arg(opener.toHtmlEscaped(), formatIssueRelativeTime(pr.ts)),
         pr.description, QString(), pullLink + QStringLiteral("#open"), pr.author);
 
-    // Threads whose suggestion can still be applied and committed in one click
-    // (adhoc #82): unresolved, not yet applied, on an open PR this node can
-    // commit to. Their cards get an "Apply fix & commit" action.
+
+
+
     QSet<QString> applicableFixes;
     if (pr.status == QLatin1String("open") &&
         pullStoreForCurrentRepo().canWrite()) {
@@ -2965,8 +2965,8 @@ void MainWindow::renderPullThread(const PullRequest &pr)
                                                   : QStringLiteral("#58a6ff");
             if (!ev.suggestionPatch.isEmpty()) {
                 body += QStringLiteral("\n\n```diff\n%1\n```").arg(ev.suggestionPatch);
-                // One-click commit of the suggested fix (adhoc #82); the card's
-                // link handler routes "applyfix:" to applyPullSuggestionFix.
+
+
                 if (applicableFixes.contains(ev.threadId))
                     body += QString::fromUtf8(
                                 "\n\n[\xE2\x9A\xA1 Apply fix & commit](applyfix:%1)")
@@ -3002,8 +3002,8 @@ void MainWindow::renderPullThread(const PullRequest &pr)
                 verb = QStringLiteral("reviewed");
             }
         }
-        // Pass the decorated body — the suggestion diff and its apply link were
-        // appended above (passing ev.body here silently dropped them).
+
+
         addConversationCard(
             m_pullThreadLayout, who,
             QStringLiteral("<b>%1</b> %2 <span style='color:#8b949e'>%3</span>")
@@ -3033,27 +3033,27 @@ void MainWindow::renderPullCommits(PullRequest pr)
 {
     if (!m_pullCommitsList)
         return;
-    // `pr` is taken by value: the runGitCapture() below pumps the event loop
-    // (under a GitKeepAlive scope), and that pump can re-enter reload paths that
-    // reassign m_currentPulls. pr.base/pr.head/pr.commits are read *after* the
-    // pump, so a reference into m_currentPulls would dangle and those reads would
-    // be use-after-frees — the same crash class that took runIdsForPull by value
-    // in adhoc #119. The copy stays valid across any nested reload.
+
+
+
+
+
+
     m_pullCommitsList->clear();
     const QString dir = repoGitDir();
-    // PRs are patch-based; list the commits on the head branch since the base
-    // when both refs resolve in this repo. Otherwise show a single synthetic row.
+
+
     bool listed = false;
-    // Resolve which repo this PR belongs to, so each commit row can carry the
-    // result of any action (CI) runs whose pushed commit matches it (issue #46).
+
+
     QString repoOwner, repoName;
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         repoOwner = m_repositories.at(m_repoDetailIndex).owner;
         repoName = m_repositories.at(m_repoDetailIndex).name;
     }
-    // Most significant action status across the runs for one commit SHA: a failure
-    // outranks a run still going, which outranks a queued/pending run, which
-    // outranks a plain success. Empty when no run targeted this commit.
+
+
+
     const auto checkStatusFor = [&](const QString &sha) -> QString {
         if (sha.isEmpty() || repoOwner.isEmpty())
             return QString();
@@ -3081,17 +3081,17 @@ void MainWindow::renderPullCommits(PullRequest pr)
         }
         return best;
     };
-    // Leading glyph that conveys a commit's check result at a glance.
+
     const auto checkGlyph = [](const QString &status) -> QString {
         if (status == ActionStatus::Success)
-            return QString::fromUtf8("\xE2\x9C\x93 "); // check mark
+            return QString::fromUtf8("\xE2\x9C\x93 ");
         if (status == ActionStatus::Failed || status == ActionStatus::Rejected ||
             status == ActionStatus::Cancelled || status == ActionStatus::Skipped)
-            return QString::fromUtf8("\xE2\x9C\x97 "); // ballot X
+            return QString::fromUtf8("\xE2\x9C\x97 ");
         if (status == ActionStatus::Running)
-            return QString::fromUtf8("\xE2\x97\x8F "); // filled circle
+            return QString::fromUtf8("\xE2\x97\x8F ");
         if (status == ActionStatus::Queued || status == ActionStatus::AwaitingApproval)
-            return QString::fromUtf8("\xE2\x97\x8B "); // hollow circle
+            return QString::fromUtf8("\xE2\x97\x8B ");
         return QString();
     };
     if (!dir.isEmpty() && !pr.base.isEmpty() && !pr.head.isEmpty()) {
@@ -3109,8 +3109,8 @@ void MainWindow::renderPullCommits(PullRequest pr)
                 if (f.size() < 6)
                     continue;
                 const QString &sha = f.at(0);
-                // Relative "x ago" from the committer timestamp, alongside the
-                // absolute date+time (issue #275) the row already carried.
+
+
                 const QString rel = formatShortRelativeTime(f.at(5).toLongLong());
                 const QString status = checkStatusFor(sha);
                 QString text = checkGlyph(status);
@@ -3121,14 +3121,14 @@ void MainWindow::renderPullCommits(PullRequest pr)
                 auto *item = new QListWidgetItem(text);
                 item->setData(kCommitShaRole, sha);
                 item->setData(kCommitMessageRole, f.at(2));
-                // Tooltip: full SHA, author + full timestamp, and the check result.
+
                 QString tip = QString::fromUtf8("%1\n%2 committed %3")
                                   .arg(sha, f.at(3), f.at(4));
                 if (!rel.isEmpty())
                     tip += QString::fromUtf8(" (%1 ago)").arg(rel);
                 if (!status.isEmpty())
                     tip += QString::fromUtf8("\nChecks: %1").arg(actionStatusText(status));
-                // Agent-authored commit: the ForkMesh-Agent trailer (issue #365).
+
                 const QString agentTrailer = f.size() > 6 ? f.at(6).trimmed() : QString();
                 if (!agentTrailer.isEmpty()) {
                     item->setIcon(themedOcticon("person", QColor("#a371f7"), 14));
@@ -3140,9 +3140,9 @@ void MainWindow::renderPullCommits(PullRequest pr)
             }
         }
     }
-    // Cross-node fallback: the head ref isn't present on this node (the log above
-    // found nothing), but the signed format-patch mbox carries every commit with
-    // its original author/date/subject — parse those so attribution still shows.
+
+
+
     if (!listed && !pr.commits.isEmpty()) {
         static const QRegularExpression boundary(
             QStringLiteral("^From ([0-9a-f]{7,40}) "));
@@ -3153,9 +3153,9 @@ void MainWindow::renderPullCommits(PullRequest pr)
         const auto flush = [&] {
             if (subject.isEmpty() && author.isEmpty())
                 return;
-            // The mbox Date: header is RFC 2822; reformat to a compact date+time
-            // so the row carries it like the local-log path above (issue #275),
-            // falling back to the raw header if it doesn't parse.
+
+
+
             QString when = date;
             qint64 committedSecs = 0;
             const QDateTime dt = QDateTime::fromString(date, Qt::RFC2822Date);
@@ -3176,8 +3176,8 @@ void MainWindow::renderPullCommits(PullRequest pr)
             if (!rel.isEmpty())
                 text += QString::fromUtf8(" \xC2\xB7 %1 ago").arg(rel);
             auto *item = new QListWidgetItem(text);
-            // The commit isn't on this node, so the row can't open it — but the
-            // signed mbox still carries its SHA, so right-click can copy it.
+
+
             if (!sha.isEmpty())
                 item->setData(kCommitCopyShaRole, sha);
             item->setData(kCommitMessageRole, subj);
@@ -3211,12 +3211,12 @@ void MainWindow::renderPullCommits(PullRequest pr)
                 continue;
             }
             if (!inHeaders) {
-                // Commit-message body: catch the provenance trailer (issue #365).
+
                 if (line.startsWith(QLatin1String("ForkMesh-Agent:")))
                     agentTrailer = line.mid(15).trimmed();
                 continue;
             }
-            if (line.isEmpty()) { // blank line ends the header block
+            if (line.isEmpty()) {
                 inHeaders = false;
             } else if (line.startsWith(QLatin1String("From: "))) {
                 author = line.mid(6).section(QLatin1String(" <"), 0, 0).trimmed();
@@ -3240,8 +3240,8 @@ void MainWindow::renderPullCommits(PullRequest pr)
     }
 }
 
-// Full commit hashes that make up this PR (base..head), when both refs resolve
-// in the open repo. Used to tie action runs to the PR and to count commits.
+
+
 QStringList MainWindow::pullCommitShas(const PullRequest &pr) const
 {
     QStringList shas;
@@ -3256,26 +3256,26 @@ QStringList MainWindow::pullCommitShas(const PullRequest &pr) const
     return shas;
 }
 
-// Ids of action runs whose pushed commit belongs to this PR (any of its commits
-// or its resolved head tip), scoped to the open repo's owner/name. Newest first,
-// matching m_actionRuns ordering.
+
+
+
 QList<int> MainWindow::runIdsForPull(PullRequest pr) const
 {
     QList<int> ids;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return ids;
-    // `pr` is taken by value and owner/name are copied up front: pullCommitShas()
-    // and the rev-parse below both run synchronous git reads that pump the event
-    // loop (under a GitKeepAlive scope), and that pump can re-enter
-    // action/refresh paths which reassign m_repositories and m_currentPulls. A
-    // reference into either would then dangle and the reads after the pump would
-    // be use-after-frees (adhoc #106, adhoc #119 — pr.head below crashed when a
-    // caller's reference into m_currentPulls was freed by a nested reload).
+
+
+
+
+
+
+
     const QString repoOwner = m_repositories.at(m_repoDetailIndex).owner;
     const QString repoName = m_repositories.at(m_repoDetailIndex).name;
     const QStringList commitShas = pullCommitShas(pr);
     QSet<QString> shas(commitShas.cbegin(), commitShas.cend());
-    // Also include the head tip in case base..head couldn't be enumerated.
+
     const QString dir = repoGitDir();
     if (!dir.isEmpty() && !pr.head.isEmpty()) {
         QByteArray tip;
@@ -3305,7 +3305,7 @@ void MainWindow::renderPullChecks(PullRequest pr)
             m_pullChecksLog->clear();
         return;
     }
-    // Preserve the user's selected run across live refreshes.
+
     int keepRunId = -1;
     if (const QModelIndexList sel = m_pullChecksTable->selectionModel()->selectedRows();
         !sel.isEmpty())
@@ -3350,8 +3350,8 @@ void MainWindow::renderPullChecks(PullRequest pr)
             "this PR\" to queue this repository's push workflows."));
 }
 
-// Compact pass/fail/running line shown inline at the end of the Conversation,
-// with a link that jumps to the Checks tab. Hidden when there are no runs.
+
+
 void MainWindow::renderPullChecksSummary(PullRequest pr)
 {
     if (!m_pullChecksSummary)
@@ -3375,7 +3375,7 @@ void MainWindow::renderPullChecksSummary(PullRequest pr)
         else if (run->status == ActionStatus::Running)
             ++running;
         else
-            ++pending; // queued / awaiting approval
+            ++pending;
     }
     const int total = passed + failed + running + pending;
     if (total == 0) {
@@ -3420,11 +3420,11 @@ void MainWindow::runChecksForCurrentPull()
     if (m_currentPullNumber < 0 || m_repoDetailIndex < 0 ||
         m_repoDetailIndex >= m_repositories.size())
         return;
-    // Copy the PR and repo out of their containers: the rev-parse below pumps
-    // the event loop and queueWorkflowsForCommit can cancel a superseded run
-    // (nested QProcess::waitForFinished pump). Either pump can re-enter reload
-    // paths that reassign m_currentPulls / m_repositories, leaving a pointer or
-    // reference into them dangling (adhoc #119).
+
+
+
+
+
     PullRequest pr;
     for (const PullRequest &p : std::as_const(m_currentPulls))
         if (p.number == m_currentPullNumber)
@@ -3432,7 +3432,7 @@ void MainWindow::runChecksForCurrentPull()
     if (pr.number <= 0 || pr.head.isEmpty())
         return;
     const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
-    // Resolve the PR head to a concrete commit the runner can check out.
+
     const QString dir = repoGitDir();
     QByteArray tip;
     if (dir.isEmpty() ||
@@ -3464,9 +3464,9 @@ void MainWindow::buildAndPreviewCurrentPull()
         setRepoDetailNotice("This pull request has no head branch to build.", true);
         return;
     }
-    // Copy what we need out of the PR now: runGitCapture below pumps the GUI
-    // event loop, and a reloadPulls() serviced during the pump reassigns
-    // m_currentPulls, dangling `pr` (git-pump UAF family, adhoc #149).
+
+
+
     const QString head = pr->head;
     const int number = pr->number;
     const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
@@ -3475,8 +3475,8 @@ void MainWindow::buildAndPreviewCurrentPull()
         setRepoDetailNotice("No local copy of this repository to build from.", true);
         return;
     }
-    // Resolve the PR head to a concrete commit (as runChecksForCurrentPull does)
-    // so the worktree is checked out at exactly what the PR proposes.
+
+
     QByteArray tip;
     if (!runGitCapture(gitDir, {QStringLiteral("rev-parse"), head}, &tip,
                        nullptr) ||
@@ -3487,9 +3487,9 @@ void MainWindow::buildAndPreviewCurrentPull()
     }
     const QString commit = QString::fromUtf8(tip).trimmed();
 
-    // A stable per-PR worktree under temp, reused across rebuilds so the CMake
-    // build directory (untracked, so a plain checkout never disturbs it) survives
-    // and later previews build incrementally.
+
+
+
     QString slug = repo.owner + QLatin1Char('-') + repo.name;
     slug.replace(QRegularExpression(QStringLiteral("[^A-Za-z0-9._-]")),
                  QStringLiteral("_"));
@@ -3500,15 +3500,15 @@ void MainWindow::buildAndPreviewCurrentPull()
     const QString buildDir = clientDir + QStringLiteral("/build");
     const bool haveWorktree = QFileInfo::exists(previewDir + QStringLiteral("/.git"));
 
-    // A live build-log dialog (one at a time; replace any previous run's window).
+
     if (m_pullPreviewDialog) {
         m_pullPreviewDialog->deleteLater();
         m_pullPreviewDialog = nullptr;
     }
     auto *dialog = new QDialog(this);
     m_pullPreviewDialog = dialog;
-    // Closing the window cancels the in-flight build (its QProcess children are
-    // parented to the dialog) and clears our handle to it.
+
+
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     connect(dialog, &QObject::destroyed, this, [this] { m_pullPreviewDialog = nullptr; });
     dialog->setWindowTitle(
@@ -3547,9 +3547,9 @@ void MainWindow::buildAndPreviewCurrentPull()
         logPtr->moveCursor(QTextCursor::End);
     };
 
-    // What to do once the build succeeds: launch the freshly built binary as an
-    // isolated node (its own XDG dirs) so the preview never touches the running
-    // app's identity, repos or settings.
+
+
+
     auto launchPreview = [this, dlg, statusPtr, appendLog, buildDir, previewDir,
                           number] {
         const QString binary = builtExecutablePath(buildDir);
@@ -3584,14 +3584,14 @@ void MainWindow::buildAndPreviewCurrentPull()
         }
     };
 
-    // A fresh worktree needs its parent dir clearing first (its registration is
-    // dropped by the `worktree prune` step the pipeline opens with).
+
+
     if (!haveWorktree) {
-        QDir(previewDir).removeRecursively(); // clear any stale, unregistered dir
+        QDir(previewDir).removeRecursively();
         QDir().mkpath(QFileInfo(previewDir).absolutePath());
     }
-    // Sequential build pipeline streamed into the dialog. Captured by a shared
-    // recursive lambda so each step starts the next only on success.
+
+
     auto steps = std::make_shared<QList<PullPreviewStep>>(
         pullPreviewSteps(gitDir, previewDir, clientDir, buildDir, commit,
                          haveWorktree, ramCappedBuildJobs()));
@@ -3600,7 +3600,7 @@ void MainWindow::buildAndPreviewCurrentPull()
     *runNext = [this, steps, runNext, dlg, statusPtr, appendLog,
                 launchPreview](int index) {
         if (!dlg)
-            return; // dialog closed — abandon the build
+            return;
         if (index >= steps->size()) {
             launchPreview();
             return;
@@ -3701,9 +3701,9 @@ void MainWindow::sendPullRevisionToAgent()
         return;
     }
 
-    // Find the agent session linked to this PR — by PR number or through its head
-    // branch (issue #257). Resolve via the shared helper, then re-find the mutable
-    // session so it can be re-queued.
+
+
+
     QString head;
     for (const PullRequest &pr : m_currentPulls)
         if (pr.number == m_currentPullNumber) {
@@ -3718,17 +3718,17 @@ void MainWindow::sendPullRevisionToAgent()
         return;
     }
 
-    // Post the feedback as a PR comment so it appears in the thread.
+
     PullStore store = pullStoreForCurrentRepo();
     if (store.canWrite()) {
         QString error;
         store.addComment(m_currentPullNumber, feedback, &error);
     }
 
-    // Re-find the session only now: addComment pumps the GUI event loop while
-    // waiting on git, and a reloadAgents() serviced during the pump rebuilds
-    // m_agentSessions — a pointer taken before it would dangle (git-pump UAF
-    // family, adhoc #149).
+
+
+
+
     AgentSession *session = findAgentSession(linkedId);
     if (!session) {
         flashMessage(QStringLiteral("No agent session found for this pull request."),
@@ -3736,7 +3736,7 @@ void MainWindow::sendPullRevisionToAgent()
         return;
     }
 
-    // Append the revision note to the agent log and re-queue.
+
     m_agentStore->appendLog(
         *session,
         QStringLiteral("\n==> Revision feedback from PR #%1:\n%2")
@@ -3813,20 +3813,20 @@ void MainWindow::updatePullActionState()
         }
     }
     const bool mergeable = writable && have && open;
-    // An unresolved "request changes" review holds the merge: a human reviewer's
-    // objection gates the button until it's approved (or the review cleared) —
-    // just as a failed check would, but for review state (issue #359).
+
+
+
     const bool reviewBlocks = !independentReviewReady;
     bool behind = false;
     if (mergeable)
         store.isBranchBehindBase(m_currentPullNumber, &behind);
-    // Dry-run the patch so the reviewer sees conflicts before merging. reloadPulls()
-    // already ran this apply for every open PR and cached the result, so reuse the
-    // cached entry for the current PR instead of re-spawning `git apply --check`
-    // here (that synchronous re-check blocked the UI for ~2s on every selection).
-    // On a cache miss don't run the dry-run inline — that's the slow call that
-    // froze the GUI. Queue it for the async pass and show a neutral "checking"
-    // state; processPendingPullConflicts() re-runs us once the result lands.
+
+
+
+
+
+
+
     bool mergeClean = true;
     bool conflictPending = false;
     QStringList conflictFiles;
@@ -3926,15 +3926,15 @@ void MainWindow::updatePullActionState()
                                              "its branch, then merge.")
                             : QStringLiteral("Apply and merge this pull request"));
     }
-    // "Merge + delete branch" gates on the same merge-readiness as Merge (it
-    // merges first), and on no delete worker already running.
+
+
     if (m_pullMergeDeleteButton)
         m_pullMergeDeleteButton->setEnabled(mergeable && mergeClean &&
                                             !conflictPending && !reviewBlocks &&
                                             !m_pullDeleteInProgress);
-    // "Build & preview" only makes sense when this repo's local checkout is a
-    // ForkMesh source tree we know how to build (qt_client/CMakeLists.txt) and the
-    // PR has a head branch to check out. Hidden everywhere else.
+
+
+
     if (m_pullPreviewButton) {
         const bool buildable =
             m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
@@ -3946,9 +3946,9 @@ void MainWindow::updatePullActionState()
         m_pullPreviewButton->setEnabled(canPreview);
     }
     const bool conflicted = mergeable && !mergeClean;
-    // Conflicting-files card in the conversation, above the comment composer:
-    // list every file that no longer applies so the reviewer sees what to fix
-    // without leaving the thread. Hidden whenever the PR merges cleanly.
+
+
+
     if (m_pullConflictDetails) {
         if (!conflicted) {
             m_pullConflictDetails->hide();
@@ -3980,18 +3980,18 @@ void MainWindow::updatePullActionState()
             m_pullConflictDetails->show();
         }
     }
-    // A running AI fix holds the working tree in a git-am session for this PR, so
-    // every conflict action stays disabled until it lands or aborts.
+
+
     const bool aiFixBusy = m_aiFix && m_aiFix->number == m_currentPullNumber;
     if (m_pullResolveButton) {
         m_pullResolveButton->setVisible(conflicted);
         m_pullResolveButton->setEnabled(conflicted && !aiFixBusy);
     }
     if (m_pullFixButton) {
-        // The button shows whenever the PR conflicts; each dropdown entry then
-        // enables only when its provider is usable. The API providers need a key
-        // in Settings; Claude Code authenticates through the local `claude` CLI
-        // login, so it stays available without one.
+
+
+
+
         const bool haveClaudeKey =
             !QSettings().value(kClaudeApiKeySetting).toString().trimmed().isEmpty();
         const bool haveOpenAiKey =
@@ -4018,10 +4018,10 @@ void MainWindow::updatePullActionState()
                                "`claude` login)"));
     }
     if (m_pullFixConflictsButton) {
-        // Only offer to continue the agent that actually authored this branch
-        // (found by PR number or head branch, issue #257) and only while it still
-        // has a worktree to run in and isn't already busy — mirrors the agent
-        // detail view's "Fix conflicts with agent" button (adhoc #28).
+
+
+
+
         const AgentSession *agent =
             conflicted ? agentSessionForPull(m_currentPullNumber, head) : nullptr;
         const bool continuable =
@@ -4044,11 +4044,11 @@ void MainWindow::updatePullActionState()
                                  : QStringLiteral("agent"),
                            base.isEmpty() ? QStringLiteral("main") : base));
     }
-    // AI review (adhoc #82): "Review with AI" shows on any open PR with a diff —
-    // it only reads the patch, so mirror nodes get it too (their findings travel
-    // to the owner's inbox as signed events). "Fix all with AI" appears once
-    // unresolved review threads exist; the agent commits to the PR's branch, so
-    // it needs a working tree.
+
+
+
+
+
     if (m_pullReviewAiButton) {
         const bool reviewable = have && open && !patch.trimmed().isEmpty();
         m_pullReviewAiButton->setVisible(reviewable);
@@ -4079,9 +4079,9 @@ void MainWindow::updatePullActionState()
         m_pullReopenButton->setVisible(writable && have && (closed || merged));
         m_pullReopenButton->setEnabled(writable && have && (closed || merged));
     }
-    // "Send to source of truth" only makes sense on a mirror node (no working tree
-    // to merge in): the owner holds the real pulls/ tree, so re-deliver the open PR
-    // to their inbox where the relay queues it until they come online.
+
+
+
     if (m_pullSendToSourceButton) {
         const bool offerSend = !writable && have && open;
         m_pullSendToSourceButton->setVisible(offerSend);
@@ -4091,8 +4091,8 @@ void MainWindow::updatePullActionState()
         m_pullDeleteButton->setEnabled(writable && have);
     if (m_pullDeleteBranchButton)
         m_pullDeleteBranchButton->setEnabled(writable && have);
-    // Show the agent revision row only when this PR was produced by an agent
-    // session (by PR number or through its head branch — issue #257).
+
+
     if (m_pullAgentRevisionRow) {
         const bool hasAgent =
             have && agentSessionForPull(m_currentPullNumber, head) != nullptr;
@@ -4136,8 +4136,8 @@ void MainWindow::importPatchAsPull()
         return;
     }
 
-    // Derive a title: prefer the format-patch "Subject:" line (minus the
-    // [PATCH] prefix), else fall back to the file name.
+
+
     QString title;
     for (const QString &line : patch.split(QLatin1Char('\n'))) {
         if (line.startsWith(QLatin1String("Subject:"))) {
@@ -4146,7 +4146,7 @@ void MainWindow::importPatchAsPull()
             break;
         }
         if (line.startsWith(QLatin1String("diff --git ")))
-            break; // reached the diff with no Subject
+            break;
     }
     if (title.isEmpty())
         title = QFileInfo(path).completeBaseName();
@@ -4154,7 +4154,7 @@ void MainWindow::importPatchAsPull()
     const QStringList branches = repoBranches();
     const QString base = repoDefaultBranch(branches);
 
-    // Sanity-check that the patch applies to the base before opening the PR.
+
     QString applyErr;
     QProcess check;
     check.setProgram("git");
@@ -4173,7 +4173,7 @@ void MainWindow::importPatchAsPull()
             return;
     }
 
-    // Synthesize a head label from the title; the patch itself carries the change.
+
     QString head = QStringLiteral("imported/") +
                    title.toLower().replace(QRegularExpression(QStringLiteral("[^a-z0-9]+")),
                                            QStringLiteral("-"));
@@ -4184,7 +4184,7 @@ void MainWindow::importPatchAsPull()
     QString error;
     const int number = store.createPull(
         title, QStringLiteral("Imported from patch file `%1`.").arg(QFileInfo(path).fileName()),
-        base, head, patch, QString(), /*branchBacked=*/false, &error);
+        base, head, patch, QString(),  false, &error);
     if (number < 0) {
         setRepoDetailNotice(error.isEmpty() ? "Could not create the pull request."
                                             : error,
@@ -4219,10 +4219,10 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
-    // A value copy, not a reference: this function pumps the GUI event loop
-    // repeatedly (runGitCapture, dialog.exec()), and m_repositories can be
-    // reallocated while pumped, dangling a held reference (git-pump UAF family,
-    // adhoc #149). The one write-back below goes through the index explicitly.
+
+
+
+
     RepositoryRecord currentRepo = m_repositories.at(m_repoDetailIndex);
     const QString dir = sourceDir.trimmed().isEmpty() ? repoGitDir() : sourceDir.trimmed();
     if (dir.isEmpty()) {
@@ -4262,7 +4262,7 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
             refreshRepositoryList();
         }
     }
-    // Enumerate branches for the base/head pickers.
+
     QByteArray out;
     QStringList branches;
     if (runGitCapture(dir, {"branch", "--format=%(refname:short)"}, &out, nullptr))
@@ -4376,9 +4376,9 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
     pr.base = base;
     pr.head = head;
     pr.patch = QString::fromUtf8(diff);
-    // For a branch-range PR, also carry the format-patch series so the owner can
-    // replay it with `git am` and keep each commit's author/date/message. A
-    // working-tree diff has no commits, so it stays a flat patch (git apply).
+
+
+
     if (fromRange) {
         QByteArray mbox;
         if (runGitCapture(dir, {"format-patch", "--stdout", base + ".." + head}, &mbox,
@@ -4391,7 +4391,7 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
         QString error;
         const int number = store.createPull(pr.title, pr.description, pr.base, pr.head,
                                              pr.patch, pr.commits,
-                                             /*branchBacked=*/fromRange, &error);
+                                              fromRange, &error);
         if (number < 0) {
             QMessageBox::warning(this, "New pull request", error);
             return;
@@ -4402,11 +4402,11 @@ void MainWindow::promptNewPullFromSource(const QString &sourceDir,
     } else {
         RepositoryRecord targetRepo = currentRepo;
         targetRepo.owner = targetOwner;
-        // Cross-node submission: label the head with this node's name so the
-        // owner can tell which mirror node the PR came from (two nodes may both
-        // submit from "main"). The owner merges from the carried patch/commits,
-        // never by resolving head, so "<node>:<branch>" is purely informational
-        // on their side. Prefix before signing so the signature covers the label.
+
+
+
+
+
         const QString nodeName = accountNameFromInput(m_userName, QString());
         if (!nodeName.isEmpty() && !pr.head.contains(QLatin1Char(':')))
             pr.head = nodeName + QLatin1Char(':') + pr.head;
@@ -4477,19 +4477,19 @@ void MainWindow::mergeCurrentPull()
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
     autoBountyForMergedPull(current);
-    // adhoc #100: mergePull just landed a new commit in this checkout, so the top
-    // "Sync" button and the Changes panel would otherwise stay stale (showing 0
-    // pending commits) until a manual refresh — force both to recheck now.
+
+
+
     refreshSourceControl(true);
     reloadPulls();
-    // Issue #291: flag the agent session behind this PR as landed in main (after
-    // reloadPulls so the agent table's PR column also reflects the merge).
+
+
     markAgentSessionsMerged(current.number, current.head);
-    // Adhoc #110: only push the merge (closed PR + any linked issue closes) to the
-    // mirror and notify peers when the owner has opted into auto-sync-on-merge.
-    // Off by default: the merge stays local, refreshSourceControl above has
-    // already surfaced it on the floating "Sync" button, and nothing reaches main
-    // until the owner clicks it.
+
+
+
+
+
     if (QSettings().value(kAutoSyncOnMergeSetting, false).toBool()) {
         propagateRepoUpdate(m_repoDetailIndex);
     } else {
@@ -4498,12 +4498,12 @@ void MainWindow::mergeCurrentPull()
     }
 }
 
-// Modal merge-conflict editor shared by the pull-request and branch merge flows.
-// Lists the conflicted files, lets the reviewer accept ours/theirs/both per
-// region or edit freely, and enables Commit only once every marker is gone.
-// Files are read from / written to workTree. Returns true if the user committed
-// (commitFn succeeded); false if they cancelled — the caller owns starting the
-// merge and, on a false return, aborting it.
+
+
+
+
+
+
 bool MainWindow::runMergeConflictEditor(
     const QString &title, const QString &introHtml, const QString &workTree,
     const QStringList &conflictedFiles, const QString &commitButtonText,
@@ -4520,7 +4520,7 @@ bool MainWindow::runMergeConflictEditor(
 
     auto *fileList = new QListWidget;
     fileList->setObjectName("overviewList");
-    enableHoverRowHighlight(fileList); // green outline selection (issue #252)
+    enableHoverRowHighlight(fileList);
     fileList->setMinimumWidth(220);
 
     auto *editor = new QPlainTextEdit;
@@ -4544,11 +4544,11 @@ bool MainWindow::runMergeConflictEditor(
     theirsBtn->setToolTip("Take their version of this conflict");
     bothBtn->setToolTip("Keep both sides (ours first, then theirs)");
     allTheirsBtn->setToolTip("Take their version of every conflict in every file");
-    // Tint the accept buttons to echo ConflictHighlighter's side colours: blue
-    // for "ours", green for "theirs", so they read against the highlighted diff.
-    // Give them their own objectName: the per-widget stylesheet below targets
-    // that ID so it outranks the global "#ghostButton { background: transparent }"
-    // rule on specificity (an ID selector), otherwise the tint never shows.
+
+
+
+
+
     oursBtn->setObjectName("conflictOursBtn");
     theirsBtn->setObjectName("conflictTheirsBtn");
     allTheirsBtn->setObjectName("conflictAllTheirsBtn");
@@ -4612,7 +4612,7 @@ bool MainWindow::runMergeConflictEditor(
     outer->addWidget(split, 1);
     outer->addLayout(buttonRow);
 
-    // ---- State + helpers ----------------------------------------------------
+
     auto currentPath = std::make_shared<QString>();
     const auto hasMarkers = [](const QString &text) {
         return text.startsWith(QLatin1String("<<<<<<< ")) ||
@@ -4670,7 +4670,7 @@ bool MainWindow::runMergeConflictEditor(
             });
     connect(editor, &QPlainTextEdit::textChanged, &dlg, [=] { refreshStatus(); });
 
-    // Apply ours(0)/theirs(1)/both(2) to the conflict at the cursor.
+
     const auto applyResolution = [=](int which) {
         QStringList lines = editor->toPlainText().split('\n');
         const QList<ConflictRegion> regions = findConflicts(lines);
@@ -4709,13 +4709,13 @@ bool MainWindow::runMergeConflictEditor(
     connect(theirsBtn, &QPushButton::clicked, &dlg, [=] { applyResolution(1); });
     connect(bothBtn, &QPushButton::clicked, &dlg, [=] { applyResolution(2); });
 
-    // Bulk action: take their side of every conflict across every file, not just
-    // the one at the cursor. Each resolved file is written straight to the work
-    // tree; the visible editor is then reloaded for the current file.
+
+
+
     const auto takeAllTheirs = [](const QString &text) {
         QStringList lines = text.split('\n');
         const QList<ConflictRegion> regions = findConflicts(lines);
-        // Rewrite from the last region back so earlier line offsets stay valid.
+
         for (int i = regions.size() - 1; i >= 0; --i) {
             const ConflictRegion r = regions.at(i);
             const QStringList theirs =
@@ -4725,7 +4725,7 @@ bool MainWindow::runMergeConflictEditor(
         return lines.join('\n');
     };
     connect(allTheirsBtn, &QPushButton::clicked, &dlg, [=] {
-        saveCurrent(); // flush the visible editor to disk before re-reading
+        saveCurrent();
         for (int i = 0; i < fileList->count(); ++i) {
             const QString rel = fileList->item(i)->data(Qt::UserRole).toString();
             const QString resolved = takeAllTheirs(readFile(rel));
@@ -4795,12 +4795,12 @@ bool MainWindow::runMergeConflictEditor(
     return committed;
 }
 
-// ---- AI conflict auto-resolution ------------------------------------------
-// One-click alternative to the manual merge editor: a low-cost model rewrites
-// each conflicting file and the result is committed straight to the PR's own
-// branch (no new PR). The whole thing is surfaced as a live agent session so the
-// user can watch it work; PullStore's git-am session is held open across the
-// async API round-trips and finalized once every file resolves.
+
+
+
+
+
+
 
 void MainWindow::aiFixLog(const QString &text)
 {
@@ -4808,7 +4808,7 @@ void MainWindow::aiFixLog(const QString &text)
         return;
     if (AgentSession *s = findAgentSession(m_aiFix->sessionId))
         m_agentStore->appendLog(*s, text);
-    onAgentLog(m_aiFix->sessionId, text); // live-append if this session is shown
+    onAgentLog(m_aiFix->sessionId, text);
 }
 
 void MainWindow::aiFixSetSessionStatus(const QString &status, const QString &error)
@@ -4834,12 +4834,12 @@ void MainWindow::aiFixSetSessionStatus(const QString &status, const QString &err
         showAgentSession(m_aiFix->sessionId);
 }
 
-// ---- AI code review (adhoc #82) ---------------------------------------------
-// "Review with AI" sends the PR's diff to a model in one shot. Each finding the
-// model reports lands as a signed review thread anchored to the file+line it
-// concerns; findings where the model supplied both the original lines and a
-// replacement carry a suggestion patch the reviewer applies and commits in one
-// click. A summary review event records the run's outcome in the conversation.
+
+
+
+
+
+
 
 void MainWindow::reviewCurrentPullWithAi()
 {
@@ -4861,9 +4861,9 @@ void MainWindow::reviewCurrentPullWithAi()
         return;
     }
 
-    // Provider: a configured API key wins (one request over the diff suffices
-    // and the reply is easiest to keep to strict JSON); without one, fall back
-    // to the Claude Code CLI, which authenticates through its local login.
+
+
+
     const QString claudeKey =
         QSettings().value(kClaudeApiKeySetting).toString().trimmed();
     const QString openAiKey =
@@ -4878,7 +4878,7 @@ void MainWindow::reviewCurrentPullWithAi()
         model = QStringLiteral("gpt-4.1-mini");
     }
 
-    // A visible agent session so the run shows up on the Agents tab.
+
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     AgentSession session;
     session.owner = repo.owner;
@@ -4892,8 +4892,8 @@ void MainWindow::reviewCurrentPullWithAi()
     session = m_agentStore->createSession(session);
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
     m_agentStore->saveSession(session);
-    // Refresh the in-memory list now so the session shows up on the Agents
-    // tab immediately, without yanking the user away from this PR view.
+
+
     reloadAgents();
 
     m_aiReview = new AiPullReview;
@@ -4928,7 +4928,7 @@ void MainWindow::reviewCurrentPullWithAi()
     }
 
     const bool claude = provider == QLatin1String("claude");
-    // Findings are a few KB of JSON even on a big PR; 8K output is plenty.
+
     constexpr int kReviewOutTokens = 8000;
     QNetworkReply *reply = nullptr;
     if (claude) {
@@ -4964,7 +4964,7 @@ void MainWindow::reviewCurrentPullWithAi()
     connect(reply, &QNetworkReply::finished, this, [this, reply, claude] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
-        if (!m_aiReview) // torn down (e.g. app closing) — nothing to do
+        if (!m_aiReview)
             return;
         if (reply->error() != QNetworkReply::NoError) {
             aiReviewFail(
@@ -4984,7 +4984,7 @@ void MainWindow::reviewCurrentPullWithAi()
             const qint64 out = usage.value("output_tokens").toInt();
             m_aiReview->inTokens += in;
             m_aiReview->outTokens += out;
-            m_aiReview->costUsd += in / 1e6 * 5.0 + out / 1e6 * 25.0; // Opus 4.8
+            m_aiReview->costUsd += in / 1e6 * 5.0 + out / 1e6 * 25.0;
         } else {
             text = openAiResponseText(obj);
             qint64 in = 0, out = 0;
@@ -4996,10 +4996,10 @@ void MainWindow::reviewCurrentPullWithAi()
     });
 }
 
-// Claude Code path for the review: run the local `claude` CLI once with the
-// review prompt. It has repo context (cwd is the checkout when one exists) but
-// is told to change nothing and print only the findings JSON; the chatter its
-// wrapper adds is tolerated by parseAiReviewFindings' bracket extraction.
+
+
+
+
 void MainWindow::aiReviewRunClaudeCode(const QString &prompt)
 {
     if (!m_aiReview)
@@ -5102,9 +5102,9 @@ void MainWindow::aiReviewRunClaudeCode(const QString &prompt)
 #endif
 }
 
-// Turn the model's reply into review threads on the PR. Owner nodes commit the
-// signed events straight into pulls/<N>/; mirror nodes route them through the
-// relay inbox like any hand-written review comment.
+
+
+
 void MainWindow::aiReviewHandleReply(const QString &text)
 {
     if (!m_aiReview)
@@ -5117,7 +5117,7 @@ void MainWindow::aiReviewHandleReply(const QString &text)
                          .arg(text.left(400)));
         return;
     }
-    // A runaway reply must not flood the PR with threads.
+
     constexpr int kMaxFindings = 25;
     if (findings.size() > kMaxFindings)
         findings = findings.mid(0, kMaxFindings);
@@ -5166,9 +5166,9 @@ void MainWindow::aiReviewHandleReply(const QString &text)
                                  : QStringLiteral(" (quick fix)")));
     }
 
-    // A summary review event so the conversation records the outcome. Posted as
-    // "commented" — an AI approving/blocking under the node's own signature
-    // would distort the human review summary.
+
+
+
     QString summary;
     if (findings.isEmpty())
         summary = QString::fromUtf8(
@@ -5240,7 +5240,7 @@ void MainWindow::aiReviewLog(const QString &text)
         return;
     if (AgentSession *s = findAgentSession(m_aiReview->sessionId))
         m_agentStore->appendLog(*s, text);
-    onAgentLog(m_aiReview->sessionId, text); // live-append if shown
+    onAgentLog(m_aiReview->sessionId, text);
 }
 
 void MainWindow::aiReviewSetSessionStatus(const QString &status,
@@ -5267,11 +5267,11 @@ void MainWindow::aiReviewSetSessionStatus(const QString &status,
         showAgentSession(m_aiReview->sessionId);
 }
 
-// One-click "Apply fix & commit" on a review thread's suggestion (adhoc #82):
-// re-checks out the PR's branch with the PR applied, applies the suggestion
-// patch (verifying the exact lines it replaces, relocating if the recorded
-// line drifted), commits the edit to the branch and records the suggestion as
-// applied + the thread as resolved. The PR stays open and mergeable.
+
+
+
+
+
 void MainWindow::applyPullSuggestionFix(const QString &threadId)
 {
     if (m_currentPullNumber < 0 || threadId.isEmpty())
@@ -5333,9 +5333,9 @@ void MainWindow::applyPullSuggestionFix(const QString &threadId)
         return;
     }
 
-    // Record the applied state with the commit that carries it (the PR
-    // branch's refreshed tip), and resolve the thread like an accepted
-    // suggestion elsewhere would be.
+
+
+
     QString appliedSha;
     const QString workTree =
         writableRecordFor(m_repositories.at(m_repoDetailIndex)).localPath;
@@ -5358,11 +5358,11 @@ void MainWindow::applyPullSuggestionFix(const QString &threadId)
                      .arg(m_currentPullNumber));
 }
 
-// "Fix all with AI" (adhoc #82): check the PR's branch out with the PR applied
-// and hand every unresolved review thread — the quick-fixable ones and the
-// ones that need real work alike — to a Claude Code run that edits the tree;
-// finishPullAgentEdit commits the lot back to the branch. Reuses the m_aiFix
-// machinery (process handling, session log, finish/fail) in agentEdit mode.
+
+
+
+
+
 void MainWindow::fixCurrentPullFindingsWithAgent()
 {
     if (m_aiFix) {
@@ -5385,8 +5385,8 @@ void MainWindow::fixCurrentPullFindingsWithAgent()
     if (current.number == 0)
         return;
 
-    // Every unresolved thread goes into the prompt: path:lines, the comments,
-    // and any suggested fix (the agent may apply or better it).
+
+
     const PullReviewSnapshot snapshot = buildPullReviewSnapshot(current);
     QStringList findingBlocks;
     QStringList paths;
@@ -5432,11 +5432,11 @@ void MainWindow::fixCurrentPullFindingsWithAgent()
         return;
     }
 
-    // Open the PR's branch with the PR applied; the store carries that state
-    // across the async run, so it lives on the heap until finish/fail. The edit
-    // normally lands in a scratch worktree on the PR's branch (adhoc #437), so
-    // the agent runs there rather than in the user's checkout — which may be
-    // dirty or on another branch.
+
+
+
+
+
     auto *store = new PullStore(pullStoreForCurrentRepo());
     QString error;
     if (!store->startPullAgentEdit(number, &error)) {
@@ -5522,8 +5522,8 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
         return;
     const int number = m_currentPullNumber;
 
-    // "claude-code" drives the real `claude` CLI (no API key, authenticates via the
-    // local login); the two API providers POST each file to their endpoint.
+
+
     const bool claudeCode = provider == QLatin1String("claude-code");
     const bool claude = provider == QLatin1String("claude");
     const QString model =
@@ -5552,9 +5552,9 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
         return;
     }
 
-    // Open the PR's isolated resolve branch and lay down the conflict markers.
-    // The store instance must outlive the async API calls (it carries the git-am
-    // state), so it lives on the heap and is freed in finish/fail.
+
+
+
     auto *store = new PullStore(pullStoreForCurrentRepo());
     QStringList conflicted;
     bool resolvedClean = false;
@@ -5566,14 +5566,14 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
         return;
     }
 
-    // Spin up a visible agent session so the run shows up on the Agents tab with a
-    // live "Running" indicator the moment work starts.
+
+
     AgentSession session;
     session.owner = repo.owner;
     session.name = repo.name;
-    session.issueNumber = 0; // PR-scoped, not issue-scoped
+    session.issueNumber = 0;
     session.issueTitle = QStringLiteral("Resolve conflicts on PR #%1").arg(number);
-    session.provider = provider; // "claude" | "openai" | "claude-code"
+    session.provider = provider;
     session.prNumber = number;
     session.branchName = QStringLiteral("pull/%1").arg(number);
     session.status = AgentStatus::Running;
@@ -5603,8 +5603,8 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     m_aiFix->files = conflicted;
     m_aiFix->claudeCode = claudeCode;
 
-    // Immediate "being worked on" indicator on the PR banner, plus jump to the
-    // Agents tab so the user can watch it run.
+
+
     if (m_pullMergeStatus) {
         m_pullMergeStatus->setText(QString::fromUtf8(
             "<span style='color:#58a6ff'>\xF0\x9F\xA4\x96 %1 is resolving conflicts\xE2\x80\xA6 "
@@ -5615,8 +5615,8 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
     switchToAgentsTab(session.id);
 
     if (resolvedClean) {
-        // No markers to edit — startConflictMerge already committed the apply on
-        // the branch; just finalize.
+
+
         aiFixLog(QStringLiteral(
             "==> Patch applied cleanly with no conflicts left to resolve.\n"));
         aiFixFinish();
@@ -5632,12 +5632,12 @@ void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)
         aiFixResolveNextFile();
 }
 
-// "Fix conflicts with agent" on the PR page: rather than spinning up a fresh,
-// conflict-only run (fixCurrentPullConflictsWithAi above), continue the actual
-// agent session that authored this branch — same prompt and flow as the agent
-// detail view's own "Fix conflicts with agent" button, so the agent keeps its
-// full context/history and tool access (it can rebuild, run tests, etc. before
-// committing). Only reachable when updatePullActionState found such a session.
+
+
+
+
+
+
 void MainWindow::fixCurrentPullConflictsWithOriginatingAgent()
 {
     if (m_currentPullNumber < 0)
@@ -5692,8 +5692,8 @@ void MainWindow::aiFixResolveNextFile()
     }
     const QString content = QString::fromUtf8(f.readAll());
     f.close();
-    // A single-shot rewrite can't reliably reproduce a very large file within the
-    // output budget, so bail to manual resolution rather than truncate.
+
+
     if (content.size() > 60000) {
         aiFixFail(QStringLiteral(
                       "%1 is too large to auto-resolve \xE2\x80\x94 use \"Resolve "
@@ -5720,8 +5720,8 @@ void MainWindow::aiFixResolveNextFile()
             "file contents \xE2\x80\x94 no explanation, no markdown code fences."
             "\n\n----- BEGIN FILE -----\n%2\n----- END FILE -----")
             .arg(rel, content);
-    // Budget enough output to reproduce the whole file (~1 token per 3 chars) with
-    // headroom, capped so a low-cost model stays low-cost.
+
+
     const int outTok = qBound(1024, content.size() / 3 + 1024, 16000);
 
     QNetworkReply *reply = nullptr;
@@ -5758,7 +5758,7 @@ void MainWindow::aiFixResolveNextFile()
     connect(reply, &QNetworkReply::finished, this, [this, reply, claude] {
         const QByteArray body = reply->readAll();
         reply->deleteLater();
-        if (!m_aiFix) // torn down (e.g. app closing) — nothing to do
+        if (!m_aiFix)
             return;
         if (reply->error() != QNetworkReply::NoError) {
             aiFixFail(QStringLiteral("API error: %1").arg(apiErrorSummary(reply, body)));
@@ -5777,7 +5777,7 @@ void MainWindow::aiFixResolveNextFile()
             const qint64 out = usage.value("output_tokens").toInt();
             m_aiFix->inTokens += in;
             m_aiFix->outTokens += out;
-            m_aiFix->costUsd += in / 1e6 * 1.0 + out / 1e6 * 5.0; // Haiku 4.5 rates
+            m_aiFix->costUsd += in / 1e6 * 1.0 + out / 1e6 * 5.0;
         } else {
             text = openAiResponseText(obj);
             qint64 in = 0, out = 0;
@@ -5789,19 +5789,19 @@ void MainWindow::aiFixResolveNextFile()
     });
 }
 
-// Claude Code path: rather than POST each file to an API, run the real `claude`
-// CLI once over the whole conflict-marked tree. The same git-am session is open,
-// so the agent edits files in place and finishConflictMerge commits the result.
+
+
+
 void MainWindow::aiFixRunClaudeCode()
 {
     if (!m_aiFix)
         return;
 
-    // A focused prompt. Conflict mode: resolve the listed files' conflict
-    // markers and nothing else (the git-am session is open in this very tree).
-    // Review-fix mode (adhoc #82): the pre-built findings prompt from
-    // fixCurrentPullFindingsWithAgent. Either way the agent must not run git or
-    // commit — finishConflictMerge/finishPullAgentEdit stage and commit after.
+
+
+
+
+
     const QString promptPath =
         m_aiFix->workTree + (m_aiFix->agentEdit
                                  ? QStringLiteral("/.forkmesh-review-fix-prompt.md")
@@ -5836,15 +5836,15 @@ void MainWindow::aiFixRunClaudeCode()
     pf.write(promptText.toUtf8());
     pf.close();
 
-    // Expand the configured Claude Code command, substituting the prompt file.
+
     QString promptQuoted = promptPath;
     promptQuoted.replace(QLatin1Char('\''), QStringLiteral("'\\''"));
     promptQuoted = QLatin1Char('\'') + promptQuoted + QLatin1Char('\'');
     QString command = claudeCodeCommandSetting();
-    // Pass the model the user picked in the "Fix with agent" dropdown (adhoc #60)
-    // through to the CLI as --model. The alias ("opus"/"sonnet"/"haiku") is added
-    // before the prompt redirection so it stays ahead of any trailing `< file`;
-    // an empty model leaves the CLI on its own default.
+
+
+
+
     if (!m_aiFix->model.isEmpty())
         command += QStringLiteral(" --model ") + m_aiFix->model;
     if (command.contains(QStringLiteral("{promptFile}")))
@@ -5856,15 +5856,15 @@ void MainWindow::aiFixRunClaudeCode()
     m_aiFix->process = process;
     process->setProcessChannelMode(QProcess::MergedChannels);
     process->setWorkingDirectory(m_aiFix->workTree);
-    // The prompt is delivered in argv (or redirected from the prompt file inside
-    // the command itself), so this run never reads our stdin. Point stdin at the
-    // null device so `claude` doesn't sit waiting on an empty, never-closed stdin
-    // pipe for 3s and emit a "no stdin data received" warning before proceeding.
+
+
+
+
     process->setStandardInputFile(QProcess::nullDevice());
 
-    // Claude Code authenticates through its own login; strip any inherited API key
-    // so it never silently uses a stale/foreign one, and widen PATH to the usual
-    // user install dirs (matches AgentRunner).
+
+
+
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.remove(QStringLiteral("ANTHROPIC_API_KEY"));
     const QString home = QDir::homePath();
@@ -5916,11 +5916,11 @@ void MainWindow::aiFixRunClaudeCode()
                                                  "resolving the conflicts")));
                     return;
                 }
-                // Conflict mode only: the CLI claims success — make sure no
-                // marker survived before finishConflictMerge commits (it rejects
-                // markers too, but a clear message here is friendlier). A
-                // review-fix run starts from a marker-free tree, so there is
-                // nothing to scan for.
+
+
+
+
+
                 if (!agentEdit) {
                     for (const QString &rel : files) {
                         QFile f(workTree + QLatin1Char('/') + rel);
@@ -5969,7 +5969,7 @@ void MainWindow::aiFixApplyResolved(const QString &resolvedIn)
         return;
     const QString rel = m_aiFix->files.at(m_aiFix->index);
     QString resolved = resolvedIn;
-    // Strip an accidental ```lang ... ``` fence if the model added one.
+
     if (resolved.startsWith(QStringLiteral("```"))) {
         const int nl = resolved.indexOf(QLatin1Char('\n'));
         if (nl >= 0)
@@ -5983,7 +5983,7 @@ void MainWindow::aiFixApplyResolved(const QString &resolvedIn)
         aiFixFail(QStringLiteral("The model returned no content for %1.").arg(rel));
         return;
     }
-    // The model must not have left any conflict markers behind.
+
     if (resolved.contains(QStringLiteral("<<<<<<< ")) ||
         resolved.contains(QStringLiteral("\n>>>>>>> ")) ||
         resolved.startsWith(QStringLiteral(">>>>>>> "))) {
@@ -6010,8 +6010,8 @@ void MainWindow::aiFixFinish()
 {
     if (!m_aiFix)
         return;
-    // Branch-merge mode: commit the resolved merge onto the checked-out branch,
-    // then restore the branch we came from. No PullStore involved.
+
+
     if (m_aiFix->branchMerge) {
         const QString dir = m_aiFix->workTree;
         const QString branch = m_aiFix->branch;
@@ -6070,8 +6070,8 @@ void MainWindow::aiFixFinish()
                  .arg(QString::number(m_aiFix->costUsd, 'f', 4)));
     aiFixSetSessionStatus(AgentStatus::Success);
 
-    // Leave a trace in the PR conversation so reviewers know the branch moved
-    // and can re-check + resolve the threads the agent addressed (adhoc #82).
+
+
     if (agentEdit) {
         QString commentError;
         m_aiFix->store->addComment(
@@ -6115,8 +6115,8 @@ void MainWindow::aiFixFail(const QString &message)
 {
     if (!m_aiFix)
         return;
-    // Branch-merge mode: abort the in-progress merge and restore the branch we
-    // came from. No PullStore involved.
+
+
     if (m_aiFix->branchMerge) {
         const QString dir = m_aiFix->workTree;
         const QString branch = m_aiFix->branch;
@@ -6141,7 +6141,7 @@ void MainWindow::aiFixFail(const QString &message)
     const bool agentEdit = m_aiFix->agentEdit;
     aiFixLog(QStringLiteral("!! %1\n").arg(message));
     aiFixSetSessionStatus(AgentStatus::Failed, message);
-    m_aiFix->store->abortConflictMerge(); // restore the working tree + drop the branch
+    m_aiFix->store->abortConflictMerge();
 
     delete m_aiFix->store;
     delete m_aiFix;
@@ -6182,10 +6182,10 @@ void MainWindow::resolveCurrentPullConflicts()
         return;
     }
 
-    // Shared tail run after the fix lands on the PR's branch. The PR stays open
-    // and becomes cleanly mergeable; issue-closing and bounty payout happen only
-    // on the later, explicit Merge (see mergeCurrentPull). The refreshed PR is
-    // propagated so peers/the contributor see the conflict-resolved version.
+
+
+
+
     const auto finalizeResolved = [this, current] {
         logSystem(QStringLiteral("Resolved conflicts on pull request #%1's branch; "
                                  "it is updated and ready to merge.")
@@ -6203,13 +6203,13 @@ void MainWindow::resolveCurrentPullConflicts()
         return;
     }
     if (resolvedClean) {
-        // Applied with no markers to edit — the fix is already committed on the
-        // PR's branch; just finalize.
+
+
         finalizeResolved();
         return;
     }
 
-    // Hand off to the shared merge editor; commit = finish the PR-branch merge.
+
     const QString intro = QStringLiteral(
         "Resolve each conflict, then commit the fix to the pull request's branch. "
         "<b>Ours</b> is your base branch; <b>theirs</b> is the pull request. You "
@@ -6255,7 +6255,7 @@ void MainWindow::editCurrentPullFile()
     }
     const QString relPath = item->data(Qt::UserRole).toString();
 
-    // Check out the PR's branch with the PR applied and read the file to edit.
+
     PullStore store = pullStoreForCurrentRepo();
     QString content;
     QString error;
@@ -6264,7 +6264,7 @@ void MainWindow::editCurrentPullFile()
         return;
     }
 
-    // ---- Editor dialog -----------------------------------------------------
+
     QDialog dlg(this);
     dlg.setWindowTitle(
         QString::fromUtf8("Edit %1 \xE2\x80\x94 pull #%2").arg(relPath).arg(number));
@@ -6311,8 +6311,8 @@ void MainWindow::editCurrentPullFile()
             dlg.accept();
             return;
         }
-        // Either nothing changed (the branch was already torn down) or a real
-        // failure — surface it and end the session; the safe move is to close.
+
+
         QMessageBox::warning(&dlg, "Edit file", err);
         dlg.reject();
     });
@@ -6386,11 +6386,11 @@ void MainWindow::deleteCurrentPullFile()
 
 void MainWindow::closeIssuesLinkedFromPull(const PullRequest &pr)
 {
-    // issuesLinkedFromPull() is the single source of truth for what this PR
-    // resolves: an agent session's attached issue (matched by PR number or head
-    // branch — issue #257) plus any "closes #N" reference in the PR text or
-    // comments. Re-scanning only the text here would silently skip an agent branch
-    // whose attached issue is never mentioned in prose.
+
+
+
+
+
     const QList<int> closed = closeIssuesForMerge(
         issuesLinkedFromPull(pr),
         QStringLiteral("Closed by merged pull request #%1.").arg(pr.number),
@@ -6449,18 +6449,18 @@ QList<int> MainWindow::closeIssuesForMerge(const QList<int> &numbers,
 QList<int> MainWindow::issuesLinkedFromPull(const PullRequest &pr) const
 {
     QSet<int> linked;
-    // An agent-created PR carries the issue number directly (matched by PR number
-    // or through its head branch — issue #257).
+
+
     if (const AgentSession *session = agentSessionForPull(pr.number, pr.head))
         if (session->issueNumber > 0)
             linked.insert(session->issueNumber);
-    // Plus any "closes #N" style reference in the PR text.
+
     static const QRegularExpression issueRefRe(
         QStringLiteral("\\bissue[-\\s]+#?(\\d+)\\b|"
                        "\\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\\b\\s*:?\\s*#(\\d+)"),
         QRegularExpression::CaseInsensitiveOption);
-    // Scan the PR text and every comment/review body so explicit "Linked issue
-    // #N" notes posted into the conversation are picked up too.
+
+
     QStringList haystackParts{pr.title, pr.description, pr.head, pr.base};
     for (const PullEvent &ev : pr.events)
         if (!ev.body.isEmpty())
@@ -6484,12 +6484,12 @@ QList<int> MainWindow::pullsLinkedToIssue(int issueNumber) const
     if (issueNumber <= 0)
         return {};
     QSet<int> linked;
-    // Primary direction: any PR whose references point back at this issue.
+
     for (const PullRequest &pr : m_currentPulls)
         if (issuesLinkedFromPull(pr).contains(issueNumber))
             linked.insert(pr.number);
-    // Secondary direction: explicit "pull request #M" / "PR #M" notes left in
-    // this issue's own thread.
+
+
     static const QRegularExpression pullRefRe(
         QStringLiteral("\\b(?:pull[-\\s]request|pr)[-\\s]*#?(\\d+)\\b"),
         QRegularExpression::CaseInsensitiveOption);
@@ -6526,7 +6526,7 @@ void MainWindow::postIssueLinkComment(int issueNumber, const QString &body)
                           .arg(error));
         return;
     }
-    // Read-only mirror: deliver a signed comment to the maintainer's inbox.
+
     const int idx = issuesRepoIndex();
     if (idx < 0 || !m_networkAccess)
         return;
@@ -6575,8 +6575,8 @@ void MainWindow::linkAgentPullToIssue(const AgentSession &session, int prNumber)
     const int ri = repoIndexFor(session.owner, session.name);
     if (ri < 0)
         return;
-    // The agent's PR already lives in this repo, so its issue store is writable on
-    // this node too; write the link note straight into the issue's thread.
+
+
     const RepositoryRecord &repo = writableRecordFor(m_repositories.at(ri));
     IssueStore store(repo.localPath, repo.mirrorPath, &m_profileIdentity, m_userName);
     if (!store.canWrite())
@@ -6617,7 +6617,7 @@ void MainWindow::linkPullToIssueFromIssuePage()
     }
     int chosen = -1;
     if (numbers.isEmpty()) {
-        // No (unlinked) PRs loaded: let the user type a number directly.
+
         bool ok = false;
         const int n = QInputDialog::getInt(
             this, QStringLiteral("Link pull request"),
@@ -6707,122 +6707,122 @@ void MainWindow::linkIssueToPullFromPullPage()
 
 void MainWindow::fundBountiesForMergedPull(const PullRequest &pr)
 {
-    // Historical issue-bounty records remain visible, but the Worker-held
-    // escrow create/payout contract is frozen. Never create or advertise a new
-    // deposit address from this compatibility hook.
+
+
+
     Q_UNUSED(pr);
     return;
 
-#if 0 // Historical Worker-held bounty escrow implementation; never compiled.
-    const int idx = issuesRepoIndex();
-    if (idx < 0 || !m_networkAccess)
-        return;
-    const RepositoryRecord repo = m_repositories.at(idx);
-    if (!hasOwnerSigningCapability(repo.owner))
-        return;
-    IssueStore store = issueStoreForCurrentRepo();
-    if (!store.canWrite())
-        return;
+#if 0
 
-    QHash<int, Issue> byNumber;
-    for (const Issue &issue : store.loadAll())
-        byNumber.insert(issue.number, issue);
 
-    for (const int number : issuesLinkedFromPull(pr)) {
-        const Issue issue = byNumber.value(number);
-        if (issue.number <= 0 || issue.bountyUsd <= 0 ||
-            issue.bountyStatus == QLatin1String("paid"))
-            continue;
-        const double amount = issue.bountyUsd;
-        const QString question =
-            QStringLiteral("Issue #%1 has a $%2 bounty. Show the funding QR now?\n\n"
-                           "Send the SOL to the escrow address; on payout 90% goes "
-                           "to the pull request author and 10% to the ForkMesh "
-                           "treasury.")
-                .arg(number)
-                .arg(QString::number(amount, 'f', 2));
-        if (QMessageBox::question(this, QStringLiteral("Fund bounty"), question) !=
-            QMessageBox::Yes)
-            continue;
 
-        // Bounties are pledged on the issue without paying up front; the escrow
-        // deposit address is minted here, at merge time, and its funding QR is
-        // shown so the maintainer can fund the now-completed work. The PR author
-        // is passed as the payee so the worker can split a funded escrow to the
-        // author + treasury automatically (no second manual step).
-        // The relay only lets the repo owner create a bounty and authorize its
-        // payee, so sign owner/repo/number/payee/ts with the node identity. The
-        // payee identifier is the PR author's node name (the relay resolves it to
-        // their registered payout wallet); lowercased to match the relay's
-        // canonical form.
-        const QString payeeNode = pr.authorName.trimmed().toLower();
-        const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-        const QByteArray canonical =
-            ("forkmesh-bounty-create-v1\n" + repo.owner + "\n" + repo.name + "\n" +
-             QString::number(number) + "\n" + payeeNode + "\n" + ts).toUtf8();
-        const QString sig = m_profileIdentity.signData(canonical);
-        const QJsonObject payload{{"action", "create"},
-                                  {"owner", repo.owner},
-                                  {"repo", repo.name},
-                                  {"number", number},
-                                  {"amountUsd", amount},
-                                  {"payeeNode", payeeNode},
-                                  {"ts", ts},
-                                  {"sig", sig}};
-        QNetworkRequest request(bountyApiUrl(repo));
-        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        QNetworkReply *reply = m_networkAccess->post(
-            request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-        const QString payeeDisplay = pr.authorName.trimmed();
-        connect(reply, &QNetworkReply::finished, this,
-                [this, reply, repo, number, amount, payeeDisplay] {
-                    const QByteArray body = reply->readAll();
-                    reply->deleteLater();
-                    const QJsonObject obj = QJsonDocument::fromJson(body).object();
-                    const QString address = obj.value("address").toString();
-                    if (reply->error() != QNetworkReply::NoError || address.isEmpty()) {
-                        flashMessage(
-                            QStringLiteral("Could not create the bounty deposit for "
-                                           "#%1: %2")
-                                .arg(number)
-                                .arg(obj.value("error").toString(
-                                    reply->errorString())),
-                            true);
-                        return;
-                    }
-                    const QString uri = obj.value("uri").toString(
-                        QStringLiteral("solana:%1").arg(address));
-                    // The worker prices the USD bounty into SOL (via the live SOL
-                    // price) and bakes the amount into the Solana Pay URI; show
-                    // that exact SOL figure so the funder sends the right amount.
-                    const QString amountSol = obj.value("amountSol").toString();
-                    // Record the escrow address on the issue (still unpaid).
-                    IssueStore writeStore = issueStoreForCurrentRepo();
-                    QString error;
-                    writeStore.setBounty(number, amount, address,
-                                         QStringLiteral("open"), &error);
-                    logSystem(QString::fromUtf8("Bounty escrow for issue #%1 ready to "
-                                             "fund ($%2 \xE2\x89\x88 %3 SOL).")
-                                  .arg(number)
-                                  .arg(QString::number(amount, 'f', 2))
-                                  .arg(amountSol));
-                    if (m_repoDetailIndex == issuesRepoIndex())
-                        reloadIssues();
-                    // The dialog shows the QR, polls for the deposit, and on
-                    // confirmation records the paid split; if the funder closes it
-                    // early, a background watcher (and the worker cron) still pay.
-                    showBountyQrDialog(repo, number, uri, address, amount,
-                                       amountSol, QString(), payeeDisplay);
-                });
-    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #endif
 }
 
 void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
 {
-    // Migrate stale preferences without contacting the frozen custody API.
-    // A future PR-reward implementation must provide an externally signed,
-    // independently verifiable transfer contract before this hook is enabled.
+
+
+
     Q_UNUSED(pr);
     QSettings legacySettings;
     const bool wasEnabled =
@@ -6839,193 +6839,193 @@ void MainWindow::autoBountyForMergedPull(const PullRequest &pr)
             "wallet or escrow request was sent."));
     return;
 
-#if 0 // Historical Worker-held automatic bounty implementation; never compiled.
-    // Issue #347: reward every merged PR's author with the configured fixed
-    // bounty, independent of any issue bounty. Only the repo owner can create a
-    // bounty (the worker requires an owner signature), so this is a no-op on a
-    // node that doesn't own the repo.
-    if (!QSettings().value(kAutoPrBountyEnabledSetting, false).toBool())
-        return;
-    if (!m_networkAccess || !m_profileIdentity.isValid())
-        return;
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-        return;
-    const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
-    if (repo.owner.isEmpty() || repo.owner != accountOwner() ||
-        !hasOwnerSigningCapability(repo.owner))
-        return;
-    const QString payeeNode = pr.authorName.trimmed().toLower();
-    if (payeeNode.isEmpty())
-        return;
-    // The bounty amount reuses the USD-priced issue-bounty pipeline (min $1).
-    const double amount = QSettings().value(kAutoPrBountyAmountSetting, 1.0).toDouble();
-    if (amount < 1.0)
-        return;
-    const bool walletMode =
-        QSettings().value(kAutoPrBountyModeSetting).toString() ==
-        QLatin1String("wallet");
-    const int number = pr.number;
+#if 0
 
-    // Owner-signed create, keyed to the PR (kind "pr"). The canonical matches the
-    // issue-bounty flow (it binds owner/repo/number/payee); "pr" only affects the
-    // worker's storage key so an issue and a PR sharing a number don't collide.
-    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
-    const QByteArray canonical =
-        ("forkmesh-bounty-create-v1\n" + repo.owner + "\n" + repo.name + "\n" +
-         QString::number(number) + "\n" + payeeNode + "\n" + ts).toUtf8();
-    const QJsonObject payload{{"action", "create"},
-                              {"owner", repo.owner},
-                              {"repo", repo.name},
-                              {"number", number},
-                              {"kind", QStringLiteral("pr")},
-                              {"amountUsd", amount},
-                              {"payeeNode", payeeNode},
-                              {"fromWallet", walletMode},
-                              {"ts", ts},
-                              {"sig", m_profileIdentity.signData(canonical)}};
-    QNetworkRequest request(bountyApiUrl(repo));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    QNetworkReply *reply = m_networkAccess->post(
-        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    const QString payeeDisplay = pr.authorName.trimmed();
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, number, amount, walletMode, payeeDisplay] {
-        const QByteArray body = reply->readAll();
-        reply->deleteLater();
-        const QJsonObject obj = QJsonDocument::fromJson(body).object();
-        if (reply->error() != QNetworkReply::NoError) {
-            const QString err = obj.value("error").toString(reply->errorString());
-            if (err == QLatin1String("insufficient_wallet_balance"))
-                flashMessage(
-                    QStringLiteral("Pull #%1 merged, but the inbuilt bounty wallet "
-                                   "is low on SOL — top it up in Settings to pay "
-                                   "its $%2 reward.")
-                        .arg(number)
-                        .arg(QString::number(amount, 'f', 2)),
-                    true);
-            else if (err == QLatin1String("no_wallet"))
-                flashMessage(
-                    QStringLiteral("Pull #%1 merged, but no inbuilt bounty wallet is "
-                                   "funded yet — set one up in Settings.")
-                        .arg(number),
-                    true);
-            else if (err == QLatin1String("payee_unresolved"))
-                flashMessage(
-                    QStringLiteral("Pull #%1 merged, but its author has no Solana "
-                                   "payout address, so no bounty was paid.")
-                        .arg(number),
-                    true);
-            else
-                flashMessage(
-                    QStringLiteral("Could not reward pull #%1: %2").arg(number).arg(err),
-                    true);
-            return;
-        }
-        if (walletMode) {
-            // The worker debits the inbuilt wallet and pays out in one step.
-            logSystem(QStringLiteral("Rewarded pull #%1's author with a $%2 bounty "
-                                     "from the inbuilt wallet (tx %3).")
-                          .arg(number)
-                          .arg(QString::number(amount, 'f', 2))
-                          .arg(obj.value("payoutSig").toString().left(12)));
-            flashMessage(QStringLiteral("Paid pull #%1's author a $%2 bounty from the "
-                                        "inbuilt wallet.")
-                             .arg(number)
-                             .arg(QString::number(amount, 'f', 2)));
-            return;
-        }
-        // Pay-per-PR: mint the escrow and show the funding QR for this merge.
-        const QString address = obj.value("address").toString();
-        if (address.isEmpty()) {
-            flashMessage(QStringLiteral("Could not create the reward deposit for "
-                                        "pull #%1.").arg(number),
-                         true);
-            return;
-        }
-        const QString uri = obj.value("uri").toString(
-            QStringLiteral("solana:%1").arg(address));
-        const QString amountSol = obj.value("amountSol").toString();
-        logSystem(QString::fromUtf8("Reward escrow for pull #%1 ready to fund "
-                                    "($%2 \xE2\x89\x88 %3 SOL).")
-                      .arg(number)
-                      .arg(QString::number(amount, 'f', 2))
-                      .arg(amountSol));
-        showBountyQrDialog(repo, number, uri, address, amount, amountSol,
-                           QStringLiteral("pr"), payeeDisplay);
-    });
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #endif
 }
 
 void MainWindow::pollBountyPayout(const RepositoryRecord &repo, int number,
                                   double amount, const QString &kind)
 {
-    // Read/write polling used to trigger a Worker-held escrow payout as a side
-    // effect. The endpoint is migration-only, so do not contact it.
+
+
     Q_UNUSED(repo);
     Q_UNUSED(number);
     Q_UNUSED(amount);
     Q_UNUSED(kind);
     return;
 
-#if 0 // Historical status polling could trigger a custodial payout; disabled.
-    if (!m_networkAccess)
-        return;
-    const bool isPr = kind == QLatin1String("pr");
-    // Poll the escrow status; the worker auto-splits a funded escrow to the
-    // author + treasury when status is checked. Stop once paid (or give up after
-    // a generous window — the cron backstop still pays it out either way).
-    auto *attempts = new int(0);
-    auto *timer = new QTimer(this);
-    timer->setInterval(8000);
-    connect(timer, &QTimer::timeout, this,
-            [this, repo, number, amount, isPr, attempts, timer] {
-        if (!m_networkAccess || ++(*attempts) > 75) { // ~10 minutes
-            timer->stop();
-            timer->deleteLater();
-            delete attempts;
-            return;
-        }
-        QJsonObject payload{{"action", "status"},
-                            {"owner", repo.owner},
-                            {"repo", repo.name},
-                            {"number", number}};
-        if (isPr)
-            payload.insert("kind", QStringLiteral("pr"));
-        QNetworkRequest request(bountyApiUrl(repo));
-        request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-        QNetworkReply *reply = m_networkAccess->post(
-            request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-        connect(reply, &QNetworkReply::finished, this,
-                [this, reply, repo, number, amount, isPr, attempts, timer] {
-            const QByteArray body = reply->readAll();
-            reply->deleteLater();
-            const QJsonObject obj = QJsonDocument::fromJson(body).object();
-            if (obj.value("status").toString() != QLatin1String("paid"))
-                return;
-            timer->stop();
-            timer->deleteLater();
-            delete attempts;
-            const QString subject = isPr ? QStringLiteral("pull request #%1")
-                                         : QStringLiteral("issue #%1");
-            if (!isPr) {
-                IssueStore writeStore = issueStoreForCurrentRepo();
-                QString error;
-                writeStore.setBounty(number, amount,
-                                     obj.value("payee").toString(),
-                                     QStringLiteral("paid"), &error);
-                if (m_repoDetailIndex == issuesRepoIndex())
-                    reloadIssues();
-            }
-            logSystem(QStringLiteral("Bounty for %1 funded and split to the "
-                                     "author + treasury (tx %2).")
-                          .arg(subject.arg(number))
-                          .arg(obj.value("payoutSig").toString().left(12)));
-            flashMessage(QStringLiteral("Bounty for %1 paid out to the author "
-                                        "+ treasury.")
-                             .arg(subject.arg(number)));
-        });
-    });
-    timer->start();
+#if 0
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #endif
 }
 
@@ -7066,9 +7066,9 @@ void MainWindow::sendCurrentPullToSource()
     }
     if (!pr)
         return;
-    // The PR was synced from the mirror with its original author/signature intact;
-    // deliver it as-authored so the owner's inbox can verify it. Without a
-    // signature there's nothing the source of truth would accept.
+
+
+
     if (pr->sig.isEmpty() || pr->author.isEmpty()) {
         QMessageBox::warning(
             this, "Send to source of truth",
@@ -7076,9 +7076,9 @@ void MainWindow::sendCurrentPullToSource()
             "to the source of truth.");
         return;
     }
-    // Copy before the modal question below: its nested event loop can service a
-    // reloadPulls()/repo reload that reassigns m_currentPulls / m_repositories,
-    // dangling `pr` and a repo reference (git-pump UAF family, adhoc #149).
+
+
+
     const PullRequest pull = *pr;
     const RepositoryRecord repo = m_repositories.at(m_repoDetailIndex);
     if (QMessageBox::question(
@@ -7094,9 +7094,9 @@ void MainWindow::sendCurrentPullToSource()
     submitPullToInbox(pull, repo);
 }
 
-// Toggle the pull-delete buttons together so none can launch a second history
-// rewrite while one worker thread is running. The proper enable state is
-// restored by updatePullActionState() (via reloadPulls) once the worker settles.
+
+
+
 void MainWindow::setPullDeleteButtonsEnabled(bool enabled)
 {
     if (m_pullDeleteButton)
@@ -7113,12 +7113,12 @@ bool MainWindow::confirmPullDeletion(const QString &prompt, bool *rewriteHistory
 {
     QMessageBox box(QMessageBox::Warning, QStringLiteral("Delete pull request"),
                     prompt, QMessageBox::Ok | QMessageBox::Cancel, this);
-    // Opt-in, off by default: the plain delete just removes the PR record (and is
-    // fast); ticking this also runs the slow filter-branch scrub of the diff text.
+
+
     auto *purge = new QCheckBox(
         QStringLiteral("Also scrub the PR's diff from git history (slow)"));
     purge->setChecked(false);
-    box.setCheckBox(purge); // QMessageBox takes ownership
+    box.setCheckBox(purge);
     const bool confirmed = box.exec() == QMessageBox::Ok;
     if (rewriteHistory)
         *rewriteHistory = confirmed && purge->isChecked();
@@ -7137,8 +7137,8 @@ void MainWindow::deleteCurrentPull()
     bool rewriteHistory = false;
     if (!m_pullDeleteConfirmPending) {
         m_pullDeleteConfirmPending = true;
-        // Show a message box confirmation instead of inline notice (the pull
-        // detail panel has no equivalent inline notice widget).
+
+
         const QString prompt =
             QStringLiteral("Permanently delete pull request #%1? This cannot be undone.")
                 .arg(m_currentPullNumber);
@@ -7148,11 +7148,11 @@ void MainWindow::deleteCurrentPull()
             return;
     }
 
-    // The plain delete just drops the PR folder at the tip and is fast. Only the
-    // opt-in history rewrite (filter-branch + gc + reflog expire) is slow enough to
-    // freeze the UI — either way, run it on a worker thread (deletePull only touches
-    // git, no event signing, so a copied store is safe) and report back on the main
-    // thread.
+
+
+
+
+
     const int deleted = m_currentPullNumber;
     m_pullDeleteInProgress = true;
     setPullDeleteButtonsEnabled(false);
@@ -7197,10 +7197,10 @@ void MainWindow::deleteCurrentPull()
     worker->start();
 }
 
-// Delete the pull request and the local head branch it was opened from, in one
-// confirmed step. The branch only exists on the node that authored the PR, so
-// removing it is best-effort: a PR imported from another node (no local branch)
-// still deletes cleanly.
+
+
+
+
 void MainWindow::deleteCurrentPullAndBranch()
 {
     if (m_currentPullNumber < 0)
@@ -7210,7 +7210,7 @@ void MainWindow::deleteCurrentPullAndBranch()
             QStringLiteral("A pull request deletion is already running."));
         return;
     }
-    // Resolve the PR's head branch before anything is removed.
+
     QString head, base;
     for (const PullRequest &p : std::as_const(m_currentPulls)) {
         if (p.number == m_currentPullNumber) {
@@ -7219,8 +7219,8 @@ void MainWindow::deleteCurrentPullAndBranch()
             break;
         }
     }
-    // Never touch the base branch (or the branch currently checked out): only a
-    // distinct feature branch is a safe target.
+
+
     const bool haveBranch =
         !head.isEmpty() && head != base && head != currentRef();
 
@@ -7238,13 +7238,13 @@ void MainWindow::deleteCurrentPullAndBranch()
         return;
 
     deletePullAndBranchAsync(m_currentPullNumber, head, haveBranch, rewriteHistory,
-                             /*propagate=*/false);
+                              false);
 }
 
-// Bulk-delete every merged PR in the current repo, and its head branch where
-// safe, in one confirmed step. The deletions run one at a time — each chains
-// to the next through deletePullAndBranchAsync's onDone callback — so the
-// PullStore worker thread is never shared across concurrent deletes.
+
+
+
+
 void MainWindow::deleteAllMergedPullsAndBranches()
 {
     if (m_pullDeleteInProgress) {
@@ -7280,22 +7280,22 @@ void MainWindow::deleteAllMergedPullsAndBranches()
             return;
         }
         const PullRequest pr = queue->takeFirst();
-        // Never touch the base branch (or the branch currently checked out): only
-        // a distinct feature branch is a safe target.
+
+
         const bool haveBranch =
             !pr.head.isEmpty() && pr.head != pr.base && pr.head != currentRef();
         ++*deletedCount;
         deletePullAndBranchAsync(pr.number, pr.head, haveBranch, rewriteHistory,
-                                 /*propagate=*/false, [step] { (*step)(); });
+                                  false, [step] { (*step)(); });
     };
     (*step)();
 }
 
-// Merge the pull request, then delete it and its head branch in one confirmed
-// step — the "merge, delete PR + branch" workflow (issue #261). The merge runs
-// first and synchronously; only if it succeeds do we drop the PR record and its
-// branch. The deletion (and best-effort branch removal) reuses the same worker
-// flow as deleteCurrentPullAndBranch.
+
+
+
+
+
 void MainWindow::mergeAndDeleteCurrentPull()
 {
     if (m_currentPullNumber < 0)
@@ -7331,8 +7331,8 @@ void MainWindow::mergeAndDeleteCurrentPull()
         return;
     }
 
-    // Never touch the base branch (or the branch currently checked out): only a
-    // distinct feature branch is a safe target.
+
+
     const QString head = current.head;
     const bool haveBranch =
         !head.isEmpty() && head != current.base && head != currentRef();
@@ -7350,8 +7350,8 @@ void MainWindow::mergeAndDeleteCurrentPull()
     if (!confirmPullDeletion(prompt, &rewriteHistory))
         return;
 
-    // Merge first, synchronously. If it fails (e.g. fresh conflicts) bail out
-    // before touching the PR record or its branch.
+
+
     PullStore store = pullStoreForCurrentRepo();
     QString error;
     if (!store.mergePull(m_currentPullNumber, &error)) {
@@ -7362,33 +7362,33 @@ void MainWindow::mergeAndDeleteCurrentPull()
     closeIssuesLinkedFromPull(current);
     fundBountiesForMergedPull(current);
     autoBountyForMergedPull(current);
-    // adhoc #100: mergePull just landed a new commit in this checkout, so the top
-    // "Sync" button and the Changes panel would otherwise stay stale until a
-    // manual refresh — force both to recheck now.
+
+
+
     refreshSourceControl(true);
-    // Issue #291: flag the agent session behind this PR before its branch/record
-    // are deleted below (after which it can no longer be detected on reload).
+
+
     markAgentSessionsMerged(m_currentPullNumber, head);
 
-    // Now delete the merged PR and its branch. Adhoc #110: only propagate the
-    // merge (and the PR's removal) to peers when auto-sync-on-merge is on;
-    // otherwise it all waits behind the floating "Sync" button, which pushes the
-    // pulls branch and merge commit together on the next click.
+
+
+
+
     const bool autoSyncOnMerge =
         QSettings().value(kAutoSyncOnMergeSetting, false).toBool();
     if (!autoSyncOnMerge)
         logSystem(QStringLiteral("Merge landed locally — click \"Sync\" to publish "
                                  "it to main (auto-sync-on-merge is off)."));
     deletePullAndBranchAsync(m_currentPullNumber, head, haveBranch, rewriteHistory,
-                             /*propagate=*/autoSyncOnMerge);
+                              autoSyncOnMerge);
 }
 
-// Shared worker: delete the PR record (optionally scrubbing its diff from
-// history) on a background thread, then best-effort remove its local head branch
-// and reload the lists on the main thread. The plain delete just drops the PR
-// folder (and the branch ref) and is fast; only the opt-in history rewrite
-// (filter-branch + gc + reflog expire) is slow enough to need a worker — either
-// way deletePull only touches git (no event signing) so a copied store is safe.
+
+
+
+
+
+
 void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
                                           bool haveBranch, bool rewriteHistory,
                                           bool propagate,
@@ -7436,9 +7436,9 @@ void MainWindow::deletePullAndBranchAsync(int number, const QString &head,
                 if (m_currentPullNumber == deleted)
                     m_currentPullNumber = -1;
 
-                // Best-effort branch removal; -D force-deletes since the user
-                // confirmed and the PR carrying the work is gone. A missing branch
-                // is not an error here.
+
+
+
                 QString branchErrorNotice;
                 if (haveBranch && haveWorkTree && !dir.isEmpty()) {
                     QString branchErr;
@@ -7547,7 +7547,7 @@ void MainWindow::syncPullsInbox()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
-    drainPullsInboxFor(m_repositories.at(m_repoDetailIndex), /*interactive=*/true);
+    drainPullsInboxFor(m_repositories.at(m_repoDetailIndex),  true);
 }
 
 void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
@@ -7565,17 +7565,17 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
         QDir(repo.mirrorPath).exists();
     if (!ownerIntake && !mirrorIntake)
         return;
-    // The relay remains the authority: a desktop-capable account may sign the
-    // public owner in this RepositoryRecord, and the Worker accepts it only for
-    // a directly owned repo or a public linked repo whose organization role is
-    // owner/admin. This is what lets an org admin drain an org-alias inbox
-    // without treating organization membership as a private-repo grant.
+
+
+
+
+
     if (!hasOwnerSigningCapability())
         return;
 
     QUrl url = pullsApiUrl(repo);
-    // Auto-polls back off exponentially while the relay is failing (offline /
-    // HTTP 429); a manual "Sync inbox" (interactive) always tries immediately.
+
+
     const QString signer =
         mirrorIntake ? accountOwner().trimmed().toLower()
                      : repoSegment(repo.owner, QStringLiteral("owner"));
@@ -7682,7 +7682,7 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
         RepositoryRecord materialized = repo;
         materialized.localPath = worktree.path();
         applyPullsInboxPayload(
-            materialized, pending, interactive, /*mirrorIntake=*/true);
+            materialized, pending, interactive,  true);
         runGitCapture(
             repo.mirrorPath,
             {QStringLiteral("worktree"), QStringLiteral("remove"),
@@ -7694,9 +7694,9 @@ void MainWindow::drainPullsInboxFor(RepositoryRecord repo, bool interactive)
     });
 }
 
-// Merge pending pull submissions into the local store, ack the inbox, and
-// raise notifications. `pending` comes from either a per-repo GET /pulls
-// drain reply or the repo's slice of the consolidated GET /api/sync response.
+
+
+
 void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
                                         const QJsonArray &pending,
                                         bool interactive,
@@ -7726,8 +7726,8 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
                 ? QString::number(
                       static_cast<qint64>(obj.value("id").toDouble()))
                 : QString();
-        // A submission is either a whole new PR ("pull") or a conversation
-        // event on an existing PR ("event" + "number").
+
+
         if (obj.contains("event")) {
             const int number = obj.value("number").toInt();
             const PullEvent ev =
@@ -7775,11 +7775,11 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
         m_repositories.at(m_repoDetailIndex).name == repo.name;
     if (onThisRepo)
         reloadPulls();
-    // Incoming PRs just landed in the working copy: push them to the mirror
-    // and notify peers now so every node's count converges promptly.
+
+
     if (!mirrorIntake && merged > 0) {
         propagateRepoUpdate(repoIndexFor(repo.owner, repo.name));
-        // An inbound PR or review may @mention the owner running this node.
+
         scanRepoMentionsFor(writable);
     } else if (mirrorIntake && merged > 0) {
         m_mirrorAdvertSig.clear();
@@ -7812,8 +7812,8 @@ void MainWindow::pollOwnedInboxes()
 {
     if (!m_networkAccess || !hasOwnerSigningCapability())
         return;
-    // Drain each owned repo's inboxes once. Dedup by owner/name so a preview and
-    // its owned copy don't both poll the same inbox.
+
+
     QSet<QString> seen;
     for (const RepositoryRecord &repo : m_repositories) {
         if (repo.previewOnly)
@@ -7825,29 +7825,29 @@ void MainWindow::pollOwnedInboxes()
         IssueStore probe(writable.localPath, writable.mirrorPath, &m_profileIdentity,
                          m_userName);
         if (!probe.canWrite())
-            continue; // not the owner of this repo; nothing to drain
+            continue;
         seen.insert(key);
-        // Auto-sync incoming issues only when the option is on (Settings →
-        // Repositories) and the working tree is clean, so issue commits never
-        // land on top of in-progress edits. Otherwise leave them in the inbox
-        // for a manual "Sync inbox" (issue #193).
+
+
+
+
         const bool autoSyncIssues =
             QSettings().value(kAutoSyncIssuesSetting, true).toBool();
         if (autoSyncIssues && worktreeTrackedClean(writable.localPath))
-            drainIssuesInboxFor(repo, /*interactive=*/false);
-        drainPullsInboxFor(repo, /*interactive=*/false);
-        drainDiscussionsInboxFor(repo, /*interactive=*/false);
+            drainIssuesInboxFor(repo,  false);
+        drainPullsInboxFor(repo,  false);
+        drainDiscussionsInboxFor(repo,  false);
     }
 }
 
-// owner/ts/sig query params carrying a freshly-signed forkmesh-issues-pull-v1
-// drain token — the shared auth for inbox GET/DELETE and GET /api/sync.
+
+
 QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
 {
-    // `owner` may be a public organization alias. The server resolves the
-    // alias and verifies this device against the linked org's current
-    // owner/admin membership; locally we only require a valid desktop signing
-    // capability and never infer authorization from the alias string.
+
+
+
+
     if (!hasOwnerSigningCapability())
         return QUrlQuery();
     const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
@@ -7860,12 +7860,12 @@ QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
     return query;
 }
 
-// A mirror-intake ack permanently drains the acknowledged inbox rows, so the
-// state the mirror now serves must stay clone-admissible while the source of
-// truth is offline. Sign the mirror's post-merge refs fingerprint with the
-// same forkmesh-repostate-v1 canonical a catalog publish uses; the relay
-// verifies it against this account's keys and adds the digest to the repo's
-// accepted pin history.
+
+
+
+
+
+
 void MainWindow::appendMirrorStateAttestation(QUrlQuery *query,
                                               const RepositoryRecord &repo,
                                               const QString &signer) const
@@ -7888,9 +7888,9 @@ void MainWindow::appendMirrorStateAttestation(QUrlQuery *query,
                         m_profileIdentity.signData(canonical));
 }
 
-// Coalesce pushed relay event frames (NodeEventSocket) and explicit local
-// refresh requests into a single /api/sync fetch: a burst of web submissions
-// lands as one drain two seconds later, not one request per frame.
+
+
+
 void MainWindow::scheduleRelaySync()
 {
     if (!hasOwnerSigningCapability())
@@ -7906,19 +7906,19 @@ void MainWindow::scheduleRelaySync()
         m_relaySyncDebounce->start();
 }
 
-// One signed GET /api/sync returns everything the relay holds for this
-// account across every owned repo — pending issue/pull/discussion/commit
-// inbox items and queued agent prompts — and the shared apply* helpers merge
-// each slice exactly as the old per-topic drains did. Runs when a relay event
-// frame arrives (scheduleRelaySync) and on the slow m_inboxPollTimer fallback
-// tick that covers dropped events and reconnect gaps.
+
+
+
+
+
+
 void MainWindow::performRelaySync()
 {
     if (!m_networkAccess)
         return;
-    // A mirror account owns no source repository rows in /api/sync, but it can
-    // securely materialize public issue leases for repos it currently serves.
-    // Run that independent intake on the same push/fallback cadence.
+
+
+
     pollMirrorIssueInboxes();
     const QString account = m_accountName.isEmpty()
         ? QSettings().value(kAccountNameSetting).toString().trimmed()
@@ -7926,7 +7926,7 @@ void MainWindow::performRelaySync()
     if (!hasOwnerSigningCapability(account) || !m_profileIdentity.isValid())
         return;
     if (!m_relaySyncSupported) {
-        // Older relay without /api/sync: keep the legacy per-topic polling.
+
         pollOwnedInboxes();
         drainAgentPrompts();
         return;
@@ -7951,20 +7951,20 @@ void MainWindow::performRelaySync()
                 reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
             if (status == 404 ||
                 reply->error() == QNetworkReply::ContentNotFoundError) {
-                // Relay predates /api/sync: fall back to per-topic polling for
-                // the rest of this run (the fallback tick keeps calling us).
+
+
                 m_relaySyncSupported = false;
                 pollOwnedInboxes();
                 drainAgentPrompts();
                 return;
             }
             if (status == 401 || status == 403) {
-                // The relay rejected this node's signed drain: its key is not one
-                // the account currently trusts (never linked, or a key the relay
-                // has since dropped). This used to fail totally silently, so a
-                // node just "stopped syncing" with no clue — issues/chats/etc.
-                // piled up online and never arrived. Surface it once, pointing at
-                // the re-link flow, instead of only backing off.
+
+
+
+
+
+
                 static bool s_relaySyncAuthWarned = false;
                 if (!s_relaySyncAuthWarned) {
                     s_relaySyncAuthWarned = true;
@@ -8005,21 +8005,21 @@ void MainWindow::performRelaySync()
                 continue;
             const RepositoryRecord repo = m_repositories.at(idx);
             const RepositoryRecord writable = writableRecordFor(repo);
-            // Same gates as pollOwnedInboxes: issues only merge into a clean
-            // working tree with the auto-sync option on; the apply helpers
-            // themselves skip repos this node can't write.
+
+
+
             if (autoSyncIssues && worktreeTrackedClean(writable.localPath))
                 applyIssuesInboxPayload(repo, entry.value("issues").toArray(),
-                                        /*interactive=*/false);
+                                         false);
             applyPullsInboxPayload(repo, entry.value("pulls").toArray(),
-                                   /*interactive=*/false);
+                                    false);
             applyDiscussionsInboxPayload(repo,
                                          entry.value("discussions").toArray(),
-                                         /*interactive=*/false);
+                                          false);
             applyAgentPromptsPayload(repo, entry.value("agentPrompts").toArray());
-            // About edit made on the website (gear icon): write it into the
-            // repo's committed .forkmesh/info.json via the same code path as
-            // the in-app About dialog, so web and desktop show one truth.
+
+
+
             const QJsonObject aboutUpdate = entry.value("aboutUpdate").toObject();
             if (!aboutUpdate.isEmpty()) {
                 QString aboutError;

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Package the macOS ForkMesh client as a codesigned, notarized .dmg (issue #370).
-# Emits:
-#   <outdir>/forkmesh-macos-<arch>.dmg
-#
-# The input may be a .app bundle or a bare Mach-O executable (wrapped into a
-# minimal .app). Signing/notarization env (all optional — unsigned when absent):
-#   FORKMESH_APPLE_DEV_ID       "Developer ID Application: NAME (TEAMID)" identity
-#   FORKMESH_APPLE_ID           Apple ID for notarytool
-#   FORKMESH_APPLE_TEAM_ID      Apple Developer team id
-#   FORKMESH_APPLE_APP_PASSWORD app-specific password for notarytool
-#   FORKMESH_SPARKLE_ED_KEY     Ed25519 pub key (SUPublicEDKey) baked into Info.plist
-#
-# Updates are handled in-app by Sparkle 2, which polls the EdDSA-signed appcast
-# written by generate-appcast.sh. See /docs#installers-updates.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 set -euo pipefail
 
 src="$1"; outdir="${2:-.}"
@@ -34,7 +34,7 @@ fi
 workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 
-# Resolve to a .app bundle, wrapping a bare executable if needed.
+
 if [ -d "$src" ] && [[ "$src" == *.app ]]; then
   app="$workdir/ForkMesh.app"
   cp -R "$src" "$app"
@@ -62,9 +62,9 @@ else
 EOF
 fi
 
-# CMake-produced .app bundles already have an Info.plist, while the bare-binary
-# path above creates one. Register the same secret-free local-control scheme in
-# both cases before signing so browser info-booth links reach the Qt client.
+
+
+
 plist="$app/Contents/Info.plist"
 plistbuddy="/usr/libexec/PlistBuddy"
 "$plistbuddy" -c "Delete :CFBundleURLTypes" "$plist" >/dev/null 2>&1 || true
@@ -83,7 +83,7 @@ if [ ! -f "$resource_root/tools/cloudflare_bootstrap.py" ] \
   exit 1
 fi
 
-# --- codesign + notarize ----------------------------------------------------
+
 if [ -n "${FORKMESH_APPLE_DEV_ID:-}" ]; then
   log "codesign: hardened-runtime signing with '${FORKMESH_APPLE_DEV_ID}'"
   codesign --force --deep --options runtime --timestamp \
@@ -92,7 +92,7 @@ else
   log "no FORKMESH_APPLE_DEV_ID — shipping UNSIGNED .app (Gatekeeper will warn)"
 fi
 
-# Build the .dmg from the (signed) app.
+
 if command -v create-dmg >/dev/null 2>&1; then
   create-dmg --volname "ForkMesh ${version}" --app-drop-link 400 120 \
     "$out" "$app" >&2 || hdiutil create -volname "ForkMesh ${version}" \

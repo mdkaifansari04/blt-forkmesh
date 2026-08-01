@@ -203,8 +203,8 @@ async def handle_fediverse(runtime, path):
         )
         return _response(runtime, {"ok": True, "deleted": target})
 
-    # PATCH supports bounded partial updates, but the administrator must
-    # re-affirm the public/consent boundary on every update.
+
+
     if not policy.has_public_consent_attestation(data):
         return _response(
             runtime,
@@ -329,8 +329,8 @@ async def handle_media(runtime, path):
     method = runtime.method()
     data = {}
     if method in ("POST", "PATCH", "DELETE"):
-        # DELETE routes do not require a body, but accept a bounded empty JSON
-        # object for clients that put their session token there.
+
+
         data, body_error = await _body(runtime)
         if body_error is not None:
             return body_error
@@ -1020,8 +1020,8 @@ async def cleanup_media_records(runtime):
         "WHERE status='active' AND last_activity_at<?",
         now, now, active_cutoff,
     )
-    # Delete children before the archived parent; this remains correct even if
-    # a D1 deployment does not enable SQLite foreign-key cascades.
+
+
     for table in (
             "world_media_roles", "world_media_items",
             "world_media_playback",

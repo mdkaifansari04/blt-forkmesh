@@ -88,8 +88,8 @@ QString boundedLogTail(
             encoded.remove(0, 1);
         }
     }
-    // Round-trip through UTF-8 so even a malformed surrogate in an in-memory
-    // QString becomes a valid replacement character before JSON serialization.
+
+
     QString tail = QString::fromUtf8(encoded);
     encoded.fill('\0');
     encoded.clear();
@@ -204,7 +204,7 @@ bool sameParentAfterWrite(const QString &path,
 #endif
 }
 
-} // namespace
+}
 
 namespace detail {
 
@@ -256,7 +256,7 @@ SummaryWritePolicy classifySummaryWritePolicy(
     return SummaryWritePolicy::RootGatewayHandoff;
 }
 
-} // namespace detail
+}
 
 QJsonObject buildSummary(const QString &node,
                          const QList<ActionRun> &runs,
@@ -337,10 +337,10 @@ QJsonObject buildSummary(const QString &node,
          nowMs + kSummaryLeaseMilliseconds},
         {QStringLiteral("runs"), serialized},
     };
-    // The gateway's complete owner-only input is capped at 256 KiB. Preserve
-    // the newest run tails at their full 16 KiB where possible, trimming older
-    // tails only when the complete exact JSON document would exceed that
-    // independent bound.
+
+
+
+
     QByteArray encoded =
         QJsonDocument(result).toJson(QJsonDocument::Compact);
     QJsonArray fittedRuns = serialized;
@@ -472,4 +472,4 @@ bool writeStateFile(const QString &path,
         kMaximumStateBytes);
 }
 
-} // namespace forkmesh::mirror_actions
+}

@@ -13,13 +13,13 @@ constexpr int kKeyBytes = 32;
 constexpr int kNonceBytes = 12;
 constexpr int kTagBytes = 16;
 constexpr int kPbkdfRounds = 210000;
-// Room frame cap — MUST match the worker's MAX_TEXT_BYTES (4 MB) so both ends
-// agree on what they'll relay; we reject oversize frames before encrypting.
+
+
 constexpr qsizetype kMaxPlainBytes = 4ll * 1024 * 1024;
-// Legacy fallback for construction before the authenticated relay-derived
-// passphrase arrives. Every build can derive it, as can the relay, so it offers
-// no confidentiality from either. Normal startup re-keys through
-// ServerNode::setRoomPassphrase once the authenticated fetch completes.
+
+
+
+
 const char kAppRoomKey[] = "forkmesh-shared-room-key-v1";
 
 QByteArray saltForRoom(const QString &roomName)
@@ -39,7 +39,7 @@ QByteArray randomBytes(int count)
     return out;
 }
 
-// Derive the 32-byte AES key from a password and the room-scoped salt.
+
 bool deriveRoomKey(const QByteArray &pass, const QString &roomName, QByteArray &out)
 {
     out.resize(kKeyBytes);
@@ -53,7 +53,7 @@ bool deriveRoomKey(const QByteArray &pass, const QString &roomName, QByteArray &
     return false;
 }
 
-} // namespace
+}
 
 RoomCrypto::RoomCrypto(const QString &roomName)
 {

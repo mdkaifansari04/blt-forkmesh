@@ -85,24 +85,24 @@ def test_docs_pages_use_home_link_instead_of_github():
     for page in DOCS_PAGES:
         html = _read(page)
 
-        # Home navigation now comes from the universal header's brand link
-        # (rendered by site-header.js); the point of this test is that no
-        # GitHub links crept back in.
+
+
+
         assert ">GitHub<" not in html
         assert "ForkMesh repository" not in html
         assert 'href="/mainnode/forkmesh"' not in html
 
 
 def test_docs_pages_mount_the_universal_site_header():
-    # The shared header is the sole visible theme controller.
-    # The docs toolbar keeps only its search and product tabs beneath it.
+
+
     for page in DOCS_PAGES:
         html = _read(page)
 
         assert 'href="/site-header.css"' in html
         assert 'src="/site-header.js?v=' in html
         assert '<div data-forkmesh-header="simple"></div>' in html
-        # The duplicated chrome is gone; docs-specific tools stay.
+
         assert 'aria-label="Docs header"' not in html
         assert ">Contact Us<" not in html
         assert 'id="theme-toggle"' not in html

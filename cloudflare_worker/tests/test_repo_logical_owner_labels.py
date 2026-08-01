@@ -150,11 +150,11 @@ console.log("ok");
 
 
 def test_repository_links_follow_the_organization_label():
-    # adhoc #132: a card that reads "forkmesh/forkmesh" must also navigate
-    # there. Organization aliases are routable (org_alias_rewrite maps
-    # /<org>/<repo> and /api/repo/<org>/<repo>/... onto the serving node), so
-    # the link can carry the label. A user identity has no such rewrite, so
-    # those links stay on the physical /<node>/<repo> route.
+
+
+
+
+
     output = _run(
         "state, groupRepositories, groupLinkUrl, repoLinkUrl,"
         " homeFeedRepositoryCard",
@@ -225,8 +225,8 @@ def test_root_logo_failure_falls_back_instead_of_breaking_the_image():
         DASHBOARD_JS.index("function hydrateNativeRepositoryLogos(root)")
         : DASHBOARD_JS.index("function repoActivitySparkline(")
     ]
-    # The committed root logo is a mirror-served URL, so a load failure must
-    # degrade to the generated artwork and then to the repository icon.
+
+
     assert "image.onerror" in hydrate
     assert "image.dataset.logoFallbackUsed" in hydrate
     assert "hideNativeRepositoryLogo(image)" in hydrate
@@ -237,5 +237,5 @@ def test_root_logo_failure_falls_back_instead_of_breaking_the_image():
     ]
     assert "body?.logo?.dataUrl" in loader
     assert "body?.logo?.fallbackDataUrl" in loader
-    # Both candidates go through the same data-URL/raw-path allowlist.
+
     assert loader.count("nativeRepositoryLogoDataUrl(") == 2

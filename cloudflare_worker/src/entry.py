@@ -38,9 +38,9 @@ from workers import DurableObject, Response, WorkerEntrypoint
 import organization_discord
 from discord_rate import DiscordRateCoordinator
 
-# Solana read-only plumbing (address/base64url codecs, JSON-RPC, price reads)
-# lives in its own module. Wallet signing is intentionally not imported into the
-# Worker: reward transfers are prepared as intents for a local external signer.
+
+
+
 from solana import (
     _base58_encode,
     _b64url_encode,
@@ -49,31 +49,31 @@ from solana import (
 
 MAX_ROOM_NAME = 80
 MAX_CONNECTIONS = 128
-# Room frame cap. Kept small (4 MB) to limit relay amplification/abuse; chat plus
-# small inline images/files fit, larger attachments are rejected. MUST match the
-# client's RoomCrypto kMaxPlainBytes so both ends agree.
+
+
+
 MAX_TEXT_BYTES = 4 * 1024 * 1024
-# Per-socket room message rate limit: at most this many frames per window.
+
 ROOM_MSG_WINDOW_MS = 10 * 1000
 ROOM_MSG_MAX_PER_WINDOW = 20
-# Chat room sockets send regular encrypted presence/hello frames. If a reinstall
-# or network break leaves an old WebSocket hibernated in the room, stop counting
-# and forwarding to it instead of letting ghost peers inflate the roster.
+
+
+
 ROOM_CLIENT_STALE_MS = 3 * 60 * 1000
-# Catalog write throttle per owner, and a hard cap on records an owner may hold.
+
 CATALOG_WRITE_COOLDOWN_MS = 500
 CATALOG_MAX_RECORDS_PER_OWNER = 100
-# Per-repository control-channel request rate limit. Repository bytes use the
-# direct-HTTPS gateway and never consume this socket budget.
+
+
 HOST_RATE_WINDOW_MS = 10 * 1000
 HOST_RATE_MAX_PER_WINDOW = 200
-# Per-owner node event channel (ForkMeshNodes). An owner's desktop/headless
-# nodes hold one hibernated WebSocket each; the relay pushes payload-free
-# {"type":"event","topic"} frames so a node runs its signed GET /api/sync the
-# moment the source of truth changes instead of waiting out the fallback poll.
+
+
+
+
 NODE_EVENT_MAX_SOCKETS = 64
-# App-level keepalive cadence is ~4 min on the client; protocol pings keep the
-# TCP path alive without waking the Durable Object between beats.
+
+
 NODE_SOCKET_STALE_MS = 15 * 60 * 1000
 NODE_EVENT_MSG_WINDOW_MS = 10 * 1000
 NODE_EVENT_MSG_MAX_PER_WINDOW = 20
@@ -82,32 +82,32 @@ SENTRY_CLIENT = "forkmesh-cloudflare-python/1.0"
 SENTRY_CRON_MONITOR_SLUG = "forkmesh-relay"
 SENTRY_CRON_CHECKIN_MARGIN_MINUTES = 1
 SENTRY_CRON_MAX_RUNTIME_MINUTES = 5
-# The completion heartbeat is written after every successful cron invocation.
-# Three missed one-minute ticks are enough to alert without treating normal
-# trigger jitter or a deploy handoff as an outage.
+
+
+
 CRON_WATCHDOG_GRACE_MS = 3 * 60 * 1000
 CRON_WATCHDOG_RETRY_MS = 5 * 60 * 1000
 CRON_WATCHDOG_NAME = "scheduled-completion-v1"
-# The Cron Trigger only seeds this singleton. Its Durable Object alarm owns the
-# minute loop and re-arms itself before doing any work, so a killed Python
-# scheduled wrapper cannot leave maintenance stopped until the next deploy.
+
+
+
 CRON_RUNNER_NAME = "scheduled-runner-v1"
 CRON_RUNNER_INTERVAL_MS = 60 * 1000
 CRON_RUNNER_KICK_DELAY_MS = 1000
 CRON_RUNNER_ALARM_OFFSET_MS = 1500
-# Native AbortSignal timeouts do not create nested Pyodide asyncio tasks. Keep
-# every cron-reachable control-plane request well inside a minute.
+
+
 CRON_OUTBOUND_FETCH_TIMEOUT_SECONDS = 12
 CLOUDFLARE_ATTENTION_LOG_WINDOW_MS = 2 * 60 * 1000
 CLOUDFLARE_ATTENTION_LOG_LIMIT = 50
 CLOUDFLARE_ATTENTION_LOG_MAX_CHARS = 12 * 1024
-# Retained chat history (encrypted) so late-joining nodes see some backlog.
-CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000  # keep the last 7 days
-CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
-# A 1 MiB attachment becomes about 1.87 MB after its file bytes and encrypted
-# envelope are each base64 encoded. Keep the row below D1's 2,000,000-byte hard
-# limit, then bound the aggregate so attachment traffic cannot grow one room
-# without limit.
+
+CHAT_HISTORY_RETAIN_MS = 7 * 24 * 60 * 60 * 1000
+CHAT_HISTORY_MAX_PER_ROOM = 500
+
+
+
+
 CHAT_HISTORY_MAX_BODY = 1_900_000
 CHAT_HISTORY_MAX_BYTES_PER_ROOM = 16 * 1024 * 1024
 CHAT_HISTORY_INGRESS_WINDOW_MS = 10 * 1000
@@ -121,9 +121,9 @@ CHAT_DIRECT_MESSAGE_DO_RE = re.compile(
     r"v([1-9][0-9]*)/(ws|revoke)$")
 OFFICE_MEETING_TICKET_TTL_MS = 60 * 1000
 OFFICE_ENTRY_TICKET_TTL_MS = 5 * 60 * 1000
-# Revalidate an Office socket's exact revocable account session at most once
-# per interval. Movement and presence frames inside the interval stay entirely
-# inside the Durable Object, avoiding a D1 read for every animation update.
+
+
+
 OFFICE_ACCESS_RECHECK_MS = 30 * 1000
 OFFICE_CHANNEL_WS_RE = re.compile(
     r"^/api/world/office/channels/([0-9a-f]{32})/ws/?$")
@@ -135,9 +135,9 @@ LOCAL_DEMO_NAME = "demo-node"
 LOCAL_DEMO_PASSWORD = "forkmesh-demo"
 MAX_CATALOG_REPOS = 200
 MAX_ERROR_LOG = 5000
-# Uncaught browser exceptions share the operational error_log after aggressive
-# server-side redaction. The public collector is rate-limited from its own
-# bounded rows so one broken or hostile browser cannot displace server errors.
+
+
+
 CLIENT_ERROR_MAX_BODY = 8 * 1024
 CLIENT_ERROR_RATE_WINDOW_MS = 60 * 1000
 CLIENT_ERROR_RATE_PER_CLIENT = 8
@@ -146,19 +146,19 @@ CLIENT_ERROR_SURFACES = frozenset({
     "home", "world", "dashboard", "documentation", "blog", "network",
     "chat", "account", "repository", "public-page",
 })
-# "crash" rows come from the world's crash guard: a page instance that ended
-# without pagehide (GPU/OOM kill, tab discard) or a lost WebGL context, with
-# the last heartbeat's diagnostics in the message.
+
+
+
 CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection", "crash"})
-# Anonymous installer diagnostics: one row per reported install step. Bounded the
-# same way as the error log so the unauthenticated POST endpoint can't grow D1.
+
+
 MAX_INSTALL_DIAG = 5000
-INSTALL_DIAG_RETAIN_MS = 30 * 24 * 60 * 60 * 1000  # surface a 30-day window
-# Private vulnerability reports: bounded so the open endpoint can't grow D1.
+INSTALL_DIAG_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
+
 MAX_SECURITY_REPORTS = 1000
 SECURITY_AUDIT_RETAIN_MS = 365 * 24 * 60 * 60 * 1000
-# Anonymous website and World-kiosk feedback. Bounded like telemetry and install
-# diagnostics so the unauthenticated endpoint cannot grow D1 forever.
+
+
 MAX_FEEDBACK = 5000
 FEEDBACK_MAX_BODY = 16 * 1024
 FEEDBACK_MAX_MESSAGE = 2000
@@ -180,81 +180,81 @@ MAX_PROFILE_LINK_LABEL = 60
 MAX_PROFILE_LINK_URL = 300
 PROFILE_TXT_PREFIX = "forkmesh-profile="
 MAX_FILES = 5000
-# Issue inbox: a single signed event body is small text; cap it and the number
-# of un-merged submissions a repo's inbox will hold.
+
+
 MAX_ISSUE_BYTES = 64 * 1024
 MAX_PENDING_ISSUES = 500
-# A mirror gets a bounded window to commit and acknowledge the exact issue
-# rows it read. If that device disappears, another authorized online mirror
-# can reclaim them without operator intervention.
+
+
+
 ISSUE_INBOX_CLAIM_TTL_MS = 5 * 60 * 1000
-# Screenshots a node with no write access attaches to an issue/comment ride
-# along as base64 bytes in the inbox item (it has no working tree to copy them
-# into — see the desktop's IssueStore::readAttachmentsForRemoteSubmit); capped
-# per-file and per-submission so one inbox row can't balloon.
+
+
+
+
 MAX_ISSUE_ATTACHMENTS = 6
 MAX_ISSUE_ATTACHMENT_BYTES = 2 * 1024 * 1024
 ISSUE_ATTACHMENT_NAME_RE = re.compile(
     r"^[0-9a-f]{8}\.(png|jpg|jpeg|gif|webp|bmp|svg|bin)$")
-# Per-author cap across the issue/pull/commit/discussion inboxes, so one signing
-# key can't fill a repo's whole inbox to the global cap and block everyone else.
+
+
 MAX_PENDING_PER_AUTHOR = 50
-# Pull-request inbox: a PR carries a unified diff (text), capped larger than an
-# issue body but still bounded. Raised to 100 MB so a PR with a large diff (e.g.
-# generated files or vendored code) isn't rejected at submission.
+
+
+
 MAX_PULL_BYTES = 100 * 1024 * 1024
 MAX_PENDING_PULLS = 200
-# Discussion inbox: signed open/comment events for read-only contributors.
+
 MAX_DISCUSSION_BYTES = 64 * 1024
 MAX_PENDING_DISCUSSIONS = 500
-# Agent-session sync (adhoc #182): desktop -> website push of Claude Code agent
-# sessions for a repo, and website -> desktop queued prompts for a running one.
+
+
 MAX_AGENT_SESSIONS = 300
-# Per-isolate digest of the last stored agent-session snapshot per repo, so a
-# byte-identical safety-net push skips the full DELETE + re-encrypt + reinsert.
+
+
 _AGENT_PUSH_DIGESTS = {}
 MAX_AGENT_STRING = 300
 MAX_AGENT_TITLE = 240
 MAX_AGENT_PROMPT_TEXT = 8000
 MAX_PENDING_AGENT_PROMPTS = 50
-# Pasted/attached screenshots that ride along with a "start agent" prompt from
-# the website (adhoc #78). Stored as data: URLs on the queued prompt so the
-# owner's node can drop them into the agent's working tree. Bounded so a queued
-# prompt row (and the /api/sync payload that carries it) stays modest.
+
+
+
+
 MAX_AGENT_PROMPT_IMAGES = 3
 MAX_AGENT_PROMPT_IMAGE_BYTES = 1_400_000
 MAX_AGENT_PROMPT_IMAGES_TOTAL_BYTES = 2_400_000
-# Bounded tail of an agent session's run log the desktop pushes for the website
-# detail page's live transcript (adhoc #259). Kept modest so the full-replace
-# sessions push stays small even with several sessions per repo.
+
+
+
 MAX_AGENT_TRANSCRIPT = 16000
-# ForkBot: first chat-native AI action. The relay still does not decrypt room
-# frames; web chat clients forward explicit forkbot mentions to this endpoint.
+
+
 FORKBOT_NAME = "forkbot"
 FORKBOT_AUTHOR = "forkbot"
 FORKBOT_DEFAULT_OWNER = "forkmesh"
 FORKBOT_DEFAULT_REPO = "forkmesh"
 FORKBOT_MAX_COMMAND = 4000
 FORKBOT_AI_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct"
-# Recent conversation the client forwards with a ForkBot mention so ForkBot can
-# resolve references like "that bug" / "the thing above" instead of only seeing
-# the one @forkbot line. Bounded so a client can't blow the AI prompt budget.
+
+
+
 FORKBOT_CONTEXT_MAX_MESSAGES = 12
 FORKBOT_CONTEXT_MAX_CHARS = 600
-# Issue listing from chat ("forkbot list the last N issues"): default when the
-# user gives no count, and a hard cap so one chat line can't request a page-size
-# direct-HTTPS blob fan-out.
+
+
+
 FORKBOT_LIST_DEFAULT = 5
 FORKBOT_LIST_MAX = 20
-# How many search hits ForkBot echoes into the chat (the gateway's git-grep reply
-# is already capped much higher; chat just wants the top of it).
+
+
 FORKBOT_SEARCH_MAX = 5
-# Internal fetch through the normal direct-HTTPS repository route. The timeout
-# accommodates real Git work such as a bounded grep.
+
+
 FORKBOT_GATEWAY_TIMEOUT_MS = 10000
-# Notification inbox: Worker indexes public-safe notification state while the
-# canonical issue/PR/discussion/release records remain in signed repo files or
-# pending inboxes. Stored rows are encrypted and bounded per recipient.
+
+
+
 MAX_NOTIFICATIONS_PER_RECIPIENT = 500
 MAX_NOTIFICATIONS_FETCH = 100
 NOTIFICATION_RETAIN_MS = 90 * 24 * 60 * 60 * 1000
@@ -278,11 +278,11 @@ NOTIFICATION_KINDS = frozenset({
     "organization_task_started",
     "organization_task_activity",
     "account_email_sent",
-    # First sighting of an operational error group (adhoc #77). Admin-only.
+
     "error_group",
 })
-# Transactional account mail an administrator is pinged about, coarse kind ->
-# human label. Kinds absent here (cron digests) are counted but never pinged.
+
+
 ACCOUNT_EMAIL_PING_LABELS = {
     "verification": "Verification",
     "password_reset": "Password reset",
@@ -323,13 +323,13 @@ NOTIFICATION_EMAIL_DEFAULTS = {
     "pending_reward": True,
     "org_succession": True,
 }
-# Email digest bridge (issue #361): the cron rolls a recipient's unread
-# notifications into one email so a reply reaches people who don't have the app
-# open. Only recipients with a *verified* email get one (issue #320 fixed the
-# verification flow, a hard dependency). A notification is only digested once it
-# is a couple of minutes old, so a user actively reading in-app clears it before
-# any mail goes out; and at most one digest per recipient per interval. Any
-# notification kind rides this rail — including issue #346's credits_refilled.
+
+
+
+
+
+
+
 NOTIFICATION_DIGEST_INTERVAL_MS = 60 * 60 * 1000
 NOTIFICATION_DIGEST_MIN_AGE_MS = 3 * 60 * 1000
 NOTIFICATION_DIGEST_MAX_ITEMS = 20
@@ -337,12 +337,12 @@ NOTIFICATION_DIGEST_MAX_RECIPIENTS = 200
 GENERAL_CHAT_EMAIL_INTERVAL_MS = 24 * 60 * 60 * 1000
 GENERAL_CHAT_EMAIL_LOOKBACK_MS = 24 * 60 * 60 * 1000
 GENERAL_CHAT_EMAIL_MAX_RECIPIENTS = 200
-# HTTP route patterns (git smart-HTTP, repo APIs, accounts) live in urls.py so the
-# router's match table is one small, scannable module instead of buried in this
-# 11k-line file. The Worker runtime bundles sibling modules in src/, so this
-# import resolves both on Cloudflare and in the test suite (which parses urls.py
-# the same way it parses this file).
-from urls import (  # noqa: E402
+
+
+
+
+
+from urls import (
     ROOM_RE,
     REPO_ROOM_RE,
     CHAT_CHANNELS_RE,
@@ -421,10 +421,10 @@ from urls import (  # noqa: E402
     REPO_STAR_RE,
 )
 
-# Static route ownership rules: repo shortcuts are Python-owned so hard refresh
-# on /owner/repo serves the dashboard shell; direct implementation-file URLs
-# such as /login.html stay non-public.
-from static_routes import (  # noqa: E402
+
+
+
+from static_routes import (
     BLOCKED_STATIC_HTML_PATHS,
     DASHBOARD_PAGE_ASSETS,
     DASHBOARD_REPO_ASSET,
@@ -432,12 +432,12 @@ from static_routes import (  # noqa: E402
     looks_like_repo_route,
 )
 
-# Release manifest + content-addressed blob helpers (tag/asset validation, the
-# CAS blob path layout, the canonical signable manifest body, semver ordering)
-# live in releases.py — another pure, js-free sibling module the runtime bundles
-# and the test suite imports directly. Only verify_release_manifest stays below,
-# since it reaches into this file's Ed25519/sha256 crypto.
-from releases import (  # noqa: E402
+
+
+
+
+
+from releases import (
     RELEASE_TAG_RE,
     RELEASE_SEMVER_RE,
     SHA256_HEX_RE,
@@ -454,10 +454,10 @@ from releases import (  # noqa: E402
     asset_upload_decision,
 )
 
-# Git smart-HTTP wire helpers (pkt-line, ref-advertisement canonicalization,
-# request-body decoding) and the repo-blob content-type/filename mapping live
-# in their own stdlib-only module — see git_http.py.
-from git_http import (  # noqa: E402
+
+
+
+from git_http import (
     REPO_BLOB_CONTENT_TYPES,
     advertised_refs_canonical,
     decode_git_request_body,
@@ -467,15 +467,15 @@ from git_http import (  # noqa: E402
     repo_blob_filename,
 )
 
-# SSH key parsing and URL construction are deliberately pure helpers. Raw SSH
-# is terminated by an independently operated node-side gateway, never by this
-# HTTP Worker; the Worker only stores encrypted public keys and answers the
-# gateway's authenticated authorization checks.
-import ssh_keys as ssh_auth  # noqa: E402
 
-# Mirror grouping, clone-fallback selection, and state-pin helpers are a
-# self-contained, builtin-only cluster — see mirrors.py.
-from mirrors import (  # noqa: E402
+
+
+
+import ssh_keys as ssh_auth
+
+
+
+from mirrors import (
     STATE_PIN_HISTORY,
     _mirror_ms,
     accepted_mirror_requests,
@@ -497,26 +497,26 @@ from mirrors import (  # noqa: E402
     served_mirror_groups,
 )
 
-# Catalog-record sanitization (string cleaning, path-segment validation, the
-# public catalog-record builder) lives in catalog.py -- another pure, js-free
-# sibling module the runtime bundles and the test suite parses directly.
-from catalog import (  # noqa: E402
+
+
+
+from catalog import (
     MAX_REPO_SEGMENT,
     clean_string,
     safe_catalog_record,
     safe_contribution_transport,
     safe_segment,
 )
-import contributions  # noqa: E402
+import contributions
 
-# The D1 table/index DDL list ensure_schema() runs lives in schema.py.
-from schema import SCHEMA_STATEMENTS  # noqa: E402
 
-# Signed-event crypto + canonicalization -- the Ed25519/SHA-256 verify
-# primitives and the per-event canonical-content builders (which must
-# byte-match the desktop client's *Store contentForSigning/canonicalString)
-# live in events.py, another one-directional sibling module (adhoc #279).
-from events import (  # noqa: E402
+from schema import SCHEMA_STATEMENTS
+
+
+
+
+
+from events import (
     DISCUSSION_CATEGORIES,
     DISCUSSION_CATEGORY_MAP,
     b64url_decode,
@@ -533,158 +533,158 @@ from events import (  # noqa: E402
     verify_release_manifest,
 )
 
-# ActivityPub federation protocol spine (WebFinger/NodeInfo/actor/Note builders,
-# draft-cavage HTTP-signature strings, the Digest header format, remote-document
-# extraction + HTML sanitization) lives in activitypub.py — a pure, js-free
-# sibling module the test suite imports directly. Only the WebCrypto RSA glue,
-# the D1-backed actor/follower/delivery state and the HTTP handlers live below.
-import activitypub as ap  # noqa: E402
-import activitypub_threads as ap_threads  # noqa: E402
-import edge_routing as https_routing  # noqa: E402
-import fediverse_digest as fedi_digest  # noqa: E402
-import reward_policy  # noqa: E402
-# Objective evidence, one-account-one-vote governance, and contextual-only
-# community placement policy live outside the route spine.
-import community_ads_api  # noqa: E402
-# Verified public fediverse feedback remains review-only until an authorized
-# owner explicitly queues it and the owner node confirms materialization.
-import fediverse_mentions_api  # noqa: E402
-# Non-custodial organization succession is isolated from account, repository,
-# device, agent, and financial handlers. The API receives no platform-admin
-# authorization primitive and can mutate only organization membership roles.
-import organization_succession_api  # noqa: E402
-# Least-privilege roles, owner-sealed envelope validation, and metadata-only
-# audit sanitization live in a pure sibling module. Keeping these allowlists
-# out of the route handlers makes them independently testable.
-import security_controls as security_control  # noqa: E402
-# Strict public-artifact validation and bounded encrypted D1 history for daily
-# repository security scans lives in a pure sibling module.
-import security_scan_ingest  # noqa: E402
-# Transient multiplayer protocol sanitization. This pure module owns the
-# allowlist for every public world-presence field; the Durable Object below
-# never relays arbitrary client JSON.
-import world as world_protocol  # noqa: E402
-# Fixed-footprint HyperLogLog helpers for the public Arrival Grid's approximate
-# unique counts. Raw edge request attributes never cross into this pure module.
-import world_visitors as world_visitor_metrics  # noqa: E402
-# Public-only Fediverse directory and authenticated media-space orchestration
-# live behind a small adapter so they reuse this Worker's established sessions,
-# blind indexes, D1 helpers, and metadata-only audit trail.
-import world_community_api  # noqa: E402
-# Community announcements are UTC D1 records with public cached reads and
-# platform-admin-only audited mutations; no production event is hardcoded in
-# the Three.js client.
-import world_events_api  # noqa: E402
-# Persisted Code Workshop reports and participant events use the same narrow
-# authenticated/encrypted D1 adapter as the other World collaboration APIs.
-import world_social_feeds  # noqa: E402
-import world_satellites  # noqa: E402
-import world_workshops  # noqa: E402
-# Organization-scoped Office marketing tasks use a separate HTTP/D1 subsystem.
-# It never receives platform-admin authorization or an Office Durable Object,
-# and its human-readable task/check-in data is encrypted at rest.
-import world_office_tasks  # noqa: E402
-import world_build_board  # noqa: E402
-import world_link_kiosk  # noqa: E402
-# Private administrator-created channel policy is kept in a pure module and
-# receives only this Worker's narrow session, crypto, D1, and audit adapter.
-import chat_channels_api  # noqa: E402
-# Direct messages have a stricter participant-only authorization policy and
-# therefore use a separate pure API module instead of channel admin semantics.
-import chat_direct_messages_api  # noqa: E402
-# Pull-request badge (adhoc #44/#83): a pure, js-free generator for the visual
-# "fingerprint" attached to federated PR-opened notes. The federated copy is a
-# square PNG — fediverse clients won't preview an SVG attachment.
-from pull_badge import patch_file_stats, pull_badge_png  # noqa: E402
 
-# Social-preview (OpenGraph) info-card renderer — pure-stdlib PNG drawing,
-# another js-free sibling module the test suite imports directly.
-import og_card  # noqa: E402
 
-# The blog's RSS 2.0 feed, derived from the shipped static blog index. Serves
-# /blog/rss.xml and, through world_social_feeds, the world's blog banner.
-import blog_feed  # noqa: E402
 
-# The fixed achievement-badge catalog (slug -> name/description/icon) and slug
-# validation are pure data/logic, so they live in their own js-free sibling
-# module; the D1-backed award/list/grant handlers stay below (adhoc #370).
-import badges as badge_catalog  # noqa: E402
+
+
+import activitypub as ap
+import activitypub_threads as ap_threads
+import edge_routing as https_routing
+import fediverse_digest as fedi_digest
+import reward_policy
+
+
+import community_ads_api
+
+
+import fediverse_mentions_api
+
+
+
+import organization_succession_api
+
+
+
+import security_controls as security_control
+
+
+import security_scan_ingest
+
+
+
+import world as world_protocol
+
+
+import world_visitors as world_visitor_metrics
+
+
+
+import world_community_api
+
+
+
+import world_events_api
+
+
+import world_social_feeds
+import world_satellites
+import world_workshops
+
+
+
+import world_office_tasks
+import world_build_board
+import world_link_kiosk
+
+
+import chat_channels_api
+
+
+import chat_direct_messages_api
+
+
+
+from pull_badge import patch_file_stats, pull_badge_png
+
+
+
+import og_card
+
+
+
+import blog_feed
+
+
+
+
+import badges as badge_catalog
 
 
 def _repository_import_module():
-    # Provider-import policy is large and used only by import/logo routes.
-    # Loading it on first use keeps ordinary World/API isolates behaviorally
-    # identical while avoiding its module globals during Worker startup.
+
+
+
     import repository_imports
     return repository_imports
 
 
 def _world_infrastructure_module():
-    # Capacity inventory is administrator-only. Keep its grouping/measurement
-    # policy out of ordinary request startup and load it with the first admin
-    # World ticket.
+
+
+
     import world_infrastructure
     return world_infrastructure
 
-# Largest git-req-chunk (push pack fragment) forwarded to the host in one WS
-# message; matches the host's 256 KiB git-chunk ceiling so neither side trips
-# the relay's ~1 MiB message cap.
+
+
+
 GIT_REQ_CHUNK = 256 * 1024
 TUNNEL_TIMEOUT_MS = 20000
 HOST_COUNT_TIMEOUT_MS = 5000
 GIT_TIMEOUT_MS = 60000
 GIT_ADVERTISE_TIMEOUT_MS = 15000
 GIT_ADVERTISE_ROUTE_TIMEOUT_MS = 20000
-# Most files one /blobs batch may read. One batched request replaces the
-# website's per-record /blob fan-out (50+ parallel HTTP calls per page view,
-# which tripped the per-repo rate limit); the DO spreads the reads over the
-# live tunnel concurrently instead.
+
+
+
+
 MAX_BLOB_BATCH = 60
-# Aggregate homepage/network stats. Cached at the edge so a burst of visitors
-# costs one computation per colo per TTL instead of a Durable Object fan-out per
-# visit. The flagship room whose live client count the homepage shows.
-NETWORK_STATS_TTL = 20  # seconds the /api/network/stats response is cached
+
+
+
+NETWORK_STATS_TTL = 20
 FLAGSHIP_ROOM_KEY = "repo:mainnode/forkmesh:room:general"
 PUBLIC_WORLD_GENERAL_ROOM = "world-general"
 PUBLIC_WORLD_GENERAL_ROOM_KEY = (
     "repo:mainnode/forkmesh:room:" + PUBLIC_WORLD_GENERAL_ROOM
 )
-# A host counts as "online" if it has been active within this window. The window
-# self-heals presence rows orphaned by a host that vanished without a clean close;
-# active hosts refresh their row at most once per HOST_PRESENCE_REFRESH_MS.
+
+
+
 HOST_PRESENCE_STALE_MS = 10 * 60 * 1000
 HOST_PRESENCE_REFRESH_MS = 60 * 1000
-# Public Git availability is now proven by signed, server-observed direct HTTPS
-# endpoint checks. This window intentionally matches the old presence headline
-# so the status page's semantics remain stable while its evidence gets stronger.
+
+
+
 HTTPS_MIRROR_STATUS_FRESH_MS = 10 * 60 * 1000
-# Registered desktop/headless node accounts older than this are no longer
-# considered live. Liveness is transient routing evidence, not a catalog
-# retention policy: owner-signed repository rows remain visible as offline.
-# Housekeeping may remove an old physical node row only when it has neither a
-# repository catalog row nor a registered direct-HTTPS endpoint.
+
+
+
+
+
 REGISTERED_NODE_ACTIVE_MS = 60 * 60 * 1000
 STALE_NODE_PURGE_INTERVAL_MS = 60 * 1000
 STALE_NODE_PURGE_BATCH = 100
-# Reinstalling or rotating a desktop node's key mints a NEW account_devices row
-# (device_bi is keyed on the pubkey), so one account slowly accretes a row per
-# historical key — the DB side of the "one person, many identities" sprawl. A
-# device untouched for this long is pruned, but only when the account still has a
-# newer key to sign with, so a node's live/most-recent key (the one the drain
-# gate now reuses; see _owner_signing_pubkeys) is never removed.
-STALE_DEVICE_RETAIN_MS = 60 * 24 * 60 * 60 * 1000  # 60 days
+
+
+
+
+
+
+STALE_DEVICE_RETAIN_MS = 60 * 24 * 60 * 60 * 1000
 STALE_DEVICE_PURGE_BATCH = 200
-# How long a downed repo's clone traffic stays pinned to one chosen mirror (see
-# clone_sticky). Long enough that a clone's info/refs and upload-pack POST land
-# on the same node; short enough that the load still rotates across mirrors.
+
+
+
 CLONE_STICKY_MS = 5 * 60 * 1000
 
 
-# Public node name = username = a single DNS-like label: lowercase letters,
-# digits, and hyphens; must start with a letter and end with a letter or digit;
-# no underscores, no spaces, <= 63 chars. This is the user's public handle and
-# their repo namespace, so it is validated identically in the web and desktop
-# clients.
+
+
+
+
+
 NODE_NAME_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 MENTION_RE = re.compile(r"(?<![A-Za-z0-9._%+-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b")
 DOMAIN_NAME_RE = re.compile(
@@ -693,45 +693,45 @@ MASTODON_HANDLE_RE = re.compile(
     r"^@?[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,62}[A-Za-z0-9_])?@[A-Za-z0-9.-]+\.[A-Za-z]{2,63}$")
 MAX_NODE_NAME = 63
 
-# A node's Ed25519 public key (raw 32 bytes, base64url, unpadded) — the value
-# the desktop app's profile card itself labels "Node ID". The claim-node flow
-# (issue #351) accepts this as an alternative to the account's chosen name,
-# since that's what users copy when the app tells them their "node ID".
+
+
+
+
 NODE_PUBKEY_RE = re.compile(r"^[A-Za-z0-9_-]{43}$")
-# ACCOUNTS_RE is imported from urls.py with the rest of the route table.
+
 LOGIN_MAX_SKEW_MS = 5 * 60 * 1000
-# Login brute-force throttle: after LOGIN_MAX_FAILS failures (counted within a
-# rolling window) the identifier is locked out for LOGIN_LOCKOUT_MS.
+
+
 LOGIN_MAX_FAILS = 10
 LOGIN_FAIL_WINDOW_MS = 15 * 60 * 1000
 LOGIN_LOCKOUT_MS = 15 * 60 * 1000
-# Per-source-IP account-creation throttle: at most SIGNUP_MAX_PER_IP new accounts
-# from one IP per rolling SIGNUP_RATE_WINDOW_MS, to blunt mass signup / name
-# squatting. Login has its own lockout; catalog writes have their own cooldown.
+
+
+
 SIGNUP_RATE_WINDOW_MS = 60 * 60 * 1000
 SIGNUP_MAX_PER_IP = 5
 ADMIN_SESSION_TTL_MS = 12 * 60 * 60 * 1000
-# How long a password-reset link stays valid after it is emailed.
+
 PASSWORD_RESET_TTL_MS = 60 * 60 * 1000
-# Users-vs-nodes linking (adhoc #53). A website claim's confirmation code (shown
-# on the node, typed into the site) lives this long; an installer link code
-# (shown by install.sh, typed into the installing desktop app) lives longer
-# because the fresh node still has to build/launch/register before it can
-# present the code.
+
+
+
+
+
 CLAIM_CODE_TTL_MS = 10 * 60 * 1000
 CLAIM_CODE_MAX_ATTEMPTS = 5
-# An admin-initiated ownership takeover (adhoc #141) rides back to the target
-# node on its own heartbeat, same as a claim code, but the node may be offline
-# for a while before it's seen and approved/denied, so it gets a long window.
+
+
+
 OWNERSHIP_TRANSFER_TTL_MS = 24 * 60 * 60 * 1000
 LINK_CODE_TTL_MS = 30 * 60 * 1000
 LINK_CODE_RE = re.compile(r"^[0-9]{6}$")
 MAX_AVATAR_BYTES = 256 * 1024
 MAX_AVATAR_B64 = 4 * ((MAX_AVATAR_BYTES + 2) // 3)
 PNG_HEADER = b"\x89PNG\r\n\x1a\n"
-# Repo branding (fediverse actor avatar/header). Each image lives in its own
-# encrypted repo_media row, so the caps only need to keep ONE image (b64 +
-# AES-GCM + b64 again ≈ 1.8x raw) under D1's 2 MB per-value limit.
+
+
+
 MAX_REPO_LOGO_BYTES = 256 * 1024
 MAX_REPO_BANNER_BYTES = 1024 * 1024
 
@@ -775,11 +775,11 @@ def notification_payload(kind, title, body="", repo="", href="", actor="",
     }
 
 
-# Organization task activity, in ping copy. The board itself is private to the
-# organization, so the ping is the only place most members read the event: it
-# has to answer who did it, what they did it to, which organization it belongs
-# to and where the task sits, rather than the bare "Organization task activity"
-# line it used to carry (adhoc #147).
+
+
+
+
+
 ORGANIZATION_TASK_ACTION_COPY = {
     "created": "created",
     "started": "started",
@@ -823,9 +823,9 @@ def organization_task_ping_copy(org, actor, action, task):
         priority = 0
 
     where = (" in " + org_name) if org_name else ""
-    # The task name is the only part of the title that can run long, so it is
-    # the part trimmed to keep who/what/which-org inside the 160-char cap
-    # notification_payload() enforces.
+
+
+
     room = 160 - len("%s %s \"\"%s" % (who, verb, where))
     short_title = (
         task_title if len(task_title) <= max(8, room)
@@ -901,25 +901,25 @@ def _clean_notification_preferences(raw, rec=None):
 
 
 def repo_web_href(owner, repo):
-    # Clean, shareable repo link (/owner/repo) for notification "Open context"
-    # buttons. 404.html bounces this to the dashboard's repo view and dashboard.js
-    # keeps the clean path in the address bar, so links read forkmesh.com/owner/repo
-    # rather than the old forkmesh.com/dashboard?repo=owner/repo form.
+
+
+
+
     return "/" + quote(owner) + "/" + quote(repo)
 
 
-# The signed-event crypto + canonical-content helpers (b64url_decode,
-# ed25519_verify, sha256_hex, the verify_* verifiers and *_content
-# canonicalizers) were extracted into events.py (adhoc #279); imported above.
+
+
+
 
 
 def git_bytes_response(data, content_type):
     return JsResponse.new(
-        # Copy into a JS-owned buffer: a bare _to_js(bytes) is a view into
-        # Python's WASM memory, and the client streams this body AFTER the
-        # handler returns and the GIL is released — reading the view then is a
-        # runtime crash ("PyProxy when Python GIL not held"), not an exception,
-        # and it poisons the isolate for every later invocation (incl. cron).
+
+
+
+
+
         Uint8Array.new(_to_js(bytes(data))),
         to_js(
             {
@@ -946,19 +946,19 @@ async def js_fetch_with_timeout(resource, init, timeout_seconds):
 
 
 def new_socket_id():
-    # Stable per-socket id stored in the hibernation attachment, so we can skip
-    # the sender on broadcast without relying on object identity (which does not
-    # survive a Durable Object eviction).
+
+
+
     rnd = js_crypto.getRandomValues(Uint8Array.new(4))
     return "%d-%d" % (int(Date.now()),
                       (rnd[0] << 24) | (rnd[1] << 16) | (rnd[2] << 8) | rnd[3])
 
 
 def new_world_peer_id():
-    # World ids are random per connection and deliberately contain no account,
-    # node, address, timestamp, or device identifier. Use the full 128-bit
-    # peer-id allowance so even a long-lived room cannot plausibly collide two
-    # controllers and merge their movement streams.
+
+
+
+
     rnd = js_crypto.getRandomValues(Uint8Array.new(16))
     return "".join("%02x" % int(rnd[index]) for index in range(16))
 
@@ -984,14 +984,14 @@ def json_response(data, status=200, cache_seconds=None, cache_control=None,
     if cache_control is not None:
         headers["cache-control"] = cache_control
     elif cache_seconds is not None:
-        # Lets both the Cloudflare edge cache (via the Cache API) and the browser
-        # reuse this response for cache_seconds, collapsing repeated polls.
+
+
         headers["cache-control"] = "public, max-age=%d" % cache_seconds
     if extra_headers:
         headers.update(extra_headers)
-    # Compact separators: pretty-printing every API reply cost measurable
-    # Pyodide CPU and bytes on hot paths (/api/sync, catalog) — a real factor
-    # in the 2026-07-11 free-plan 1102 overload.
+
+
+
     return Response(json.dumps(data, separators=(",", ":")),
                     status=status, headers=headers)
 
@@ -1054,10 +1054,10 @@ def _legacy_custody_not_ready_response():
     }, status=503, cache_control="no-store, max-age=0, must-revalidate")
 
 
-# --- Edge cache (Cache API) helpers -----------------------------------------
-# Dynamic Worker responses are not edge-cached automatically; we cache the few
-# read-heavy aggregate endpoints explicitly so a burst of visitors collapses to
-# one origin computation per colo per TTL. Keys are synthetic absolute URLs.
+
+
+
+
 
 async def edge_cache_match(cache_key):
     try:
@@ -1068,10 +1068,10 @@ async def edge_cache_match(cache_key):
 
 
 async def edge_cache_put(cache_key, response):
-    # cache.put consumes the body it is handed, so store a clone and return the
-    # original to the caller. Accepts both the workers.Response wrapper and a
-    # raw JS Response (the binary media endpoints build the latter).
-    # Best-effort: a cache failure must not fail the read.
+
+
+
+
     try:
         js_resp = getattr(response, "js_object", None) or response
         await js_caches.default.put(cache_key, js_resp.clone())
@@ -1080,9 +1080,9 @@ async def edge_cache_put(cache_key, response):
 
 
 async def edge_cache_match_media(cache_key, fallback_type):
-    # Binary edge-cache read for the media endpoints, which respond with raw
-    # JS Responses rather than the workers.Response wrapper the JSON helpers
-    # return. Rebuilt like git_advert_cache_get so the body streams cleanly.
+
+
+
     try:
         hit = await js_caches.default.match(cache_key)
     except Exception:
@@ -1110,16 +1110,16 @@ async def edge_cache_delete(cache_key):
         pass
 
 
-# Seconds a clone ref-advertisement (info/refs) is held in the colo edge cache.
-# The cache key already carries the repo's attested state hash, so an entry
-# self-invalidates the instant the refs change (its key stops being requested);
-# this TTL is only a backstop that lets a colo re-fetch if a state-hash update is
-# ever missed. See git_advert_cache_key and Default._clone_advert_cache_key.
+
+
+
+
+
 GIT_ADVERT_CACHE_TTL = 300
-# Repository-page JSON is persisted in Workers KV and cached at the edge under
-# an owner-attested refs digest. The digest changes whenever any published ref
-# changes, so these immutable values never need a time-based expiry: a new
-# commit produces a new key and the prior generation becomes unreachable.
+
+
+
+
 REPOSITORY_METADATA_CACHE_TTL = 365 * 24 * 60 * 60
 REPOSITORY_METADATA_CACHE_MAX_BYTES = 8 * 1024 * 1024
 REPOSITORY_METADATA_CACHE_PREFIX = (
@@ -1128,9 +1128,9 @@ REPOSITORY_METADATA_CACHE_PREFIX = (
 
 
 async def git_advert_cache_get(cache_key):
-    # Return a cached clone advertisement as a fresh no-cache response. git must
-    # re-validate info/refs on every fetch, so the bytes handed to the client
-    # keep git's own no-store semantics even though the edge copy is reused.
+
+
+
     try:
         hit = await js_caches.default.match(cache_key)
     except Exception:
@@ -1151,11 +1151,11 @@ async def git_advert_cache_get(cache_key):
 
 
 async def git_advert_cache_put(cache_key, response, ttl=GIT_ADVERT_CACHE_TTL):
-    # Store a cacheable clone of the advertisement. The live response carries
-    # git's "no-cache, max-age=0" headers, which the Cache API refuses to store,
-    # so the stored copy is rebuilt with a public max-age; the original response
-    # is returned to the client untouched. Best-effort — a cache failure must not
-    # fail the clone.
+
+
+
+
+
     try:
         js_resp = getattr(response, "js_object", None) or response
         clone = js_resp.clone()
@@ -1195,7 +1195,7 @@ def repository_metadata_cache_key(context, operation, query):
     repo_bi = str(context.get("repoBi") or "")
     if not pins or not repo_bi:
         return ""
-    # Git refs are case-sensitive; preserve their spelling in the key.
+
     ref = str(query.get("ref") or "").strip()
     if (
         ref
@@ -1322,8 +1322,8 @@ async def repository_metadata_cache_get(env, cache_key):
         json.loads(raw)
     except Exception:
         return None
-    # Refill this colo's fastest cache from the persistent global copy. Both
-    # layers use the same state-addressed key and may therefore live forever.
+
+
     try:
         cacheable = JsResponse.new(raw, to_js({
             "status": 200,
@@ -1365,7 +1365,7 @@ async def repository_metadata_cache_put(env, cache_key, response, status):
             or content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES
         ):
             return
-        # Validate before a mirror response can become a durable shared value.
+
         json.loads(raw)
         cacheable = JsResponse.new(raw, to_js({
             "status": 200,
@@ -1380,7 +1380,7 @@ async def repository_metadata_cache_put(env, cache_key, response, status):
         namespace = getattr(env, "REPOSITORY_METADATA", None)
         writes = [js_caches.default.put(cache_key, cacheable)]
         if namespace is not None:
-            # No expiration: commit/ref changes address a brand-new key.
+
             writes.append(namespace.put(cache_key, raw))
         await asyncio.gather(*writes, return_exceptions=True)
     except Exception:
@@ -1388,8 +1388,8 @@ async def repository_metadata_cache_put(env, cache_key, response, status):
 
 
 async def purge_catalog_related_caches():
-    # One concurrent sweep instead of four sequential awaits — this runs on
-    # every catalog write, inside the request's critical path.
+
+
     await asyncio.gather(*(
         edge_cache_delete(key)
         for key in (
@@ -1400,14 +1400,14 @@ async def purge_catalog_related_caches():
         )), return_exceptions=True)
 
 
-# Versioned so neither the fail-closed visibility contract nor signed-endpoint
-# availability reuses an edge entry produced by the historical plaintext flag /
-# host_presence catalog.
+
+
+
 CATALOG_CACHE_KEY = (
     "https://forkmesh.internal/api/repositories"
     "?privacy=v2&availability=signed-v1&terms=v1"
 )
-# Guest (viewer-less) GET /api/accounts/<name> payloads, keyed by name.
+
 ACCOUNT_LOOKUP_CACHE_PREFIX = "https://forkmesh.internal/api/accounts/"
 PROFILE_CONTRIBUTION_CACHE_PREFIX = (
     "https://forkmesh.internal/api/profile-contributions/"
@@ -1416,9 +1416,9 @@ PROFILE_CONTRIBUTION_CACHE_TTL = 30
 NETWORK_STATS_CACHE_KEY = "https://forkmesh.internal/api/network/stats"
 NETWORK_LEADERBOARDS_CACHE_KEY = "https://forkmesh.internal/api/network/leaderboards"
 NETWORK_OVERVIEW_CACHE_KEY = "https://forkmesh.internal/api/network/overview"
-# Seconds the repositories list is cached at the edge. Every write path calls
-# purge_catalog_related_caches, so a longer TTL only delays third-party edits;
-# 10s meant a full (purge + multi-table) rebuild every 10s per colo under load.
+
+
+
 CATALOG_TTL = 30
 
 
@@ -1445,23 +1445,23 @@ async def repo_live_host_count(env, owner, repo):
 
 
 def _node_events_do_name(owner):
-    # One Durable Object per OWNER account (not per repo): a node syncs all of
-    # its repos with one GET /api/sync, so one event channel per owner is the
-    # natural granularity and keeps the DO count bounded by accounts, not repos.
+
+
+
     return "nodes:" + str(owner or "").strip().lower()
 
 
 async def notify_repo_host(env, owner, repo, topic):
-    # Push a minimal "something changed" event frame to the owner's connected
-    # desktop/headless node(s) through the ForkMeshNodes Durable Object. The
-    # frame carries no payload — just a topic — and the node responds with one
-    # signed GET /api/sync, so the source of truth updates the instant a web
-    # submission lands instead of on the next fallback poll. Best-effort: an
-    # offline node simply picks the change up from its slow fallback sync, so
-    # a failure here must never fail the write that triggered it. (Unlike the
-    # retired ForkMeshHost tunnel, this channel never carries repository bytes
-    # or control commands — a compromised relay can at most make a node run
-    # one extra signed sync.)
+
+
+
+
+
+
+
+
+
+
     owner = safe_segment(owner)
     repo = safe_segment(repo)
     if not owner or not repo:
@@ -1500,14 +1500,14 @@ async def notify_repo_mirrors(env, owner, repo, topic):
 
 
 async def node_events_handler(env, request):
-    # GET /api/nodes/events?owner=&ts=&sig= (WebSocket upgrade only) — a
-    # desktop/headless node's live event channel. Auth reuses the same signed
-    # forkmesh-issues-pull-v1 drain token as GET /api/sync (_authorize_owner),
-    # checked here BEFORE any Durable Object is selected. The socket only ever
-    # receives payload-free {"type":"event","topic"} frames; all data still
-    # flows through the existing signed HTTPS sync, so this adds no new
-    # repository byte or control transport (the retired-tunnel contracts in
-    # test_https_mirror_routing_integration.py are unaffected).
+
+
+
+
+
+
+
+
     upgrade = (request.headers.get("upgrade") or "").lower()
     if upgrade != "websocket":
         return json_response({"error": "upgrade_required"}, status=426)
@@ -1516,9 +1516,9 @@ async def node_events_handler(env, request):
     if not owner or not await _authorize_owner(env, request, owner):
         return json_response({"error": "unauthorized"}, status=401)
     node_id = env.FORKMESH_NODES.idFromName(_node_events_do_name(owner))
-    # Same retry-twice guard as the chat room router: a platform abort of the
-    # DO is transient, and the upgrade request carries no body so re-driving
-    # durable_object_request is safe.
+
+
+
     last_error = None
     for _attempt in range(2):
         node_object = env.FORKMESH_NODES.get(node_id)
@@ -1534,19 +1534,19 @@ async def node_events_handler(env, request):
         extra_headers=EXPECTED_DEGRADED_HEADERS)
 
 
-# Per-isolate memo of recent DO live-host probes: key_bi -> {"ts", "hosts"}
-# ("hosts" is None when the probe failed/timed out). hydrate_repo_group_live_
-# hosts used to await one Durable Object probe PER stale group member
-# SEQUENTIALLY (up to HOST_COUNT_TIMEOUT_MS each) on every public info/refs,
-# browse and /mirrors request. A logical repo group with many offline mirrors
-# (a fleet die-off purges their host_presence rows, so every member stays
-# "stale" forever) turned each request into minutes of awaiting dead tunnels —
-# the Workers runtime then canceled the request as hung, surfacing the Pyodide
-# "Cannot enter into task" error on git-upload-pack info/refs (adhoc #167, the
-# same info/refs-hang family as adhoc #144/#153). Probes now run concurrently,
-# are capped per request (also protecting the per-request subrequest budget),
-# and every completed probe — including a failed one — is memoized briefly so
-# a clone burst doesn't re-probe the same dead mirrors on every request.
+
+
+
+
+
+
+
+
+
+
+
+
+
 _LIVE_HOST_PROBE_MEMO = {}
 LIVE_HOST_PROBE_MEMO_TTL_MS = 30 * 1000
 HYDRATE_PROBE_MAX = 8
@@ -1554,10 +1554,10 @@ HYDRATE_PROBE_MAX = 8
 
 async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
                                         presence, now):
-    # host_presence is an eventually-refreshed D1 cache. For routing and the
-    # public mirror list, the DO's connected host count is the ground truth. Probe
-    # only the logical repo group for this request and patch the in-memory
-    # presence map before candidate selection.
+
+
+
+
     owner_l = str(owner or "").strip().lower()
     repo_l = str(repo or "").strip().lower()
     if not owner_l or not repo_l:
@@ -1570,8 +1570,8 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
             target = rec
             break
     if target is None:
-        # Fallback mirrors can still be selected by name when the named source
-        # has no catalog row yet.
+
+
         target = {"owner": owner, "name": repo, "rootCommit": ""}
     stale = []
     for row in catalog_rows or []:
@@ -1579,10 +1579,10 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
         key = str(row.get("key_bi") or "")
         if not key or not repo_mirror_same_group(target, rec):
             continue
-        # Fresh D1 presence (heartbeat within the last 30s) is trustworthy —
-        # skip the per-mirror Durable Object probe subrequest for those. Only
-        # stale/missing entries get the ground-truth DO check; this bounded
-        # the N-subrequest fan-out that ran on every /mirrors request.
+
+
+
+
         if now - int(presence.get(key, 0) or 0) < 30 * 1000:
             continue
         memo = _LIVE_HOST_PROBE_MEMO.get(key)
@@ -1595,19 +1595,19 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
                     presence.pop(key, None)
             continue
         stale.append((key, rec))
-    # Probe concurrently (each already bounded by HOST_COUNT_TIMEOUT_MS inside
-    # repo_live_host_count, so the whole batch costs one timeout, not one per
-    # mirror) and capped per request. Members beyond the cap keep their stale
-    # presence this request; because probed members land in the memo, the next
-    # request's stale list starts where this one stopped, so a large group is
-    # covered across a few requests instead of hanging any single one.
+
+
+
+
+
+
     probes = stale[:HYDRATE_PROBE_MAX]
     results = await asyncio.gather(*(
         repo_live_host_count(env, rec.get("owner"), rec.get("name"))
         for _key, rec in probes), return_exceptions=True)
     for (key, _rec), hosts in zip(probes, results):
         if not isinstance(hosts, int):
-            hosts = None  # failed/timed-out probe: memoized, presence untouched
+            hosts = None
         _LIVE_HOST_PROBE_MEMO[key] = {"ts": now, "hosts": hosts}
         if hosts is None:
             continue
@@ -1619,10 +1619,10 @@ async def hydrate_repo_group_live_hosts(env, owner, repo, catalog_rows,
 
 
 async def next_clone_rotation(env, repo_bi):
-    # Advance and read back this repo's round-robin cursor so consecutive clone
-    # fallbacks rotate across its mirrors instead of all hitting the freshest one.
-    # Best-effort: any failure yields 0 (the freshest-first pick), so a flaky
-    # counter never blocks a redirect.
+
+
+
+
     try:
         await ensure_schema(env)
         await d1_run(
@@ -1638,7 +1638,7 @@ async def next_clone_rotation(env, repo_bi):
 
 
 async def _flagship_client_count(env):
-    # One internal request to the flagship room's count endpoint (not a WebSocket).
+
     try:
         room_id = env.FORKMESH_MAINNODE_ROOM.idFromName(FLAGSHIP_ROOM_KEY)
         room = env.FORKMESH_MAINNODE_ROOM.get(room_id)
@@ -1646,9 +1646,9 @@ async def _flagship_client_count(env):
             "https://forkmesh.internal/api/repo/mainnode/forkmesh/rooms/general/clients"
         )
         data = await resp.json()
-        # workers.Response.json() may cross the Python/JS boundary as either a
-        # native dict or a JsProxy depending on where the response was created;
-        # accept both shapes (see the host-count read in select_install_source).
+
+
+
         clients = (data.get("clients", 0) if isinstance(data, dict)
                    else getattr(data, "clients", 0))
         return int(clients or 0)
@@ -1657,8 +1657,8 @@ async def _flagship_client_count(env):
 
 
 async def network_stats(env, include_payouts=False):
-    # Aggregate homepage stats: repo count (D1), live host count (presence table),
-    # and flagship-room client count (one internal request). Cached at the edge.
+
+
     cache_key = NETWORK_STATS_CACHE_KEY + ("?payouts=1" if include_payouts else "")
     cached = await edge_cache_match(cache_key)
     if cached is not None:
@@ -1676,18 +1676,18 @@ async def network_stats(env, include_payouts=False):
     except Exception:
         pass
 
-    # Named list of the nodes that are actually online right now (same signal the
-    # uptime cron samples), so the dashboard rail can show *who* is live instead of
-    # painting the 48h uptime leaderboard green — a node offline now must not look
-    # active, and a node that just came up must appear even with no accrued minutes.
-    #
-    # The headline "Nodes" count is the size of THIS set — the distinct, publicly
-    # known nodes (a catalog record or a registered account) that are live — rather
-    # than a raw COUNT of host_presence rows. A plain row count over-reports: one
-    # node hosting several repos counts many times, and an ad-hoc/private tunnel
-    # with no public catalog record inflates the total with a node we never name.
-    # Deriving the count from the named set is what makes the Network panel agree
-    # with the Mirror nodes list on who is online (adhoc #93).
+
+
+
+
+
+
+
+
+
+
+
+
     try:
         online_nodes = sorted(
             {label for label in (await _live_online_nodes(env, now)).values() if label}
@@ -1764,11 +1764,11 @@ async def _network_payout_nodes(env):
         has_wallet = bool(wallet and SOLANA_RE.match(wallet))
         online = bool(row.get("online_ts"))
         first_wallet = has_wallet and wallet not in seen_wallets
-        # Balance is public display metadata only. Funding a payout address is
-        # never an eligibility or wallet-verification requirement.
+
+
         balance = await _solana_balance_lamports(env, wallet) if has_wallet else None
-        # A node only shares the split if it mirrors a repo for another node, so
-        # its eligibility on /network/ must reflect that too (issue #94).
+
+
         mirrors_repo = mirroring is None or bool(name and name.lower() in mirroring)
         eligible = bool(online and first_wallet and mirrors_repo)
         if has_wallet:
@@ -1791,9 +1791,9 @@ async def _network_payout_nodes(env):
             "payoutEligible": eligible,
             "eligibilityReason": reason,
         })
-    # Main relay: surface only federated candidates whose original node-signed
-    # evidence still verifies and is fresh. Historical wallet-only rows never
-    # appear payout-eligible.
+
+
+
     if _is_main_relay(env):
         try:
             now = int(Date.now())
@@ -1863,11 +1863,11 @@ async def _network_payout_nodes(env):
     return nodes
 
 
-# --- Online-activity history (24h graph on /network/) -----------------------
-# A per-minute cron records how many nodes are online into the current hour's
-# bucket, so each hour's value is "node-minutes online" that hour.
 
-ONLINE_SAMPLE_WINDOW_MS = 2 * 60 * 1000  # treat a node seen in the last 2 min as online
+
+
+
+ONLINE_SAMPLE_WINDOW_MS = 2 * 60 * 1000
 ONLINE_HISTORY_RETAIN_MS = 48 * 60 * 60 * 1000
 ONLINE_HISTORY_MAX_NODES = 50
 
@@ -1887,13 +1887,13 @@ async def _live_online_nodes(env, now):
         now - HOST_PRESENCE_STALE_MS,
     )
     for row in host_rows:
-        # A host_presence row is written for ANY owner/repo URL that gets served
-        # (touch_host_presence keys on a blind index of the path), so it includes
-        # repos that were never published to the catalog — ad-hoc hosts. Those
-        # rows don't join to a repository, and the public /network/ graph used to
-        # surface them as anonymous "repo <hash>" phantom nodes. Only count hosts
-        # serving a published, public, non-blocked repo, keyed by owner — the same
-        # filtering the catalog and leaderboards apply.
+
+
+
+
+
+
+
         owner_bi = row.get("owner_bi")
         if not owner_bi or not row.get("data") or int(row.get("is_private") or 0):
             continue
@@ -1946,9 +1946,9 @@ async def _live_online_nodes(env, now):
 
 
 async def record_online_sample(env):
-    # Called once a minute by the scheduled (cron) handler. "Online nodes" is the
-    # set of fresh signed direct-HTTPS endpoints together with account
-    # heartbeats and bounded legacy presence rows.
+
+
+
     await ensure_schema(env)
     now = int(Date.now())
     nodes = await _live_online_nodes(env, now)
@@ -1961,9 +1961,9 @@ async def record_online_sample(env):
         hour_ts, online, online,
     )
     if nodes:
-        # One multi-row upsert for every online node instead of a statement per
-        # node — each awaited D1 round trip counts against the cron tick's
-        # per-invocation limits (see record_status_sample).
+
+
+
         node_args = []
         for node_key, label in nodes.items():
             node_args.extend([hour_ts, node_key, label])
@@ -1977,7 +1977,7 @@ async def record_online_sample(env):
             "label = excluded.label",
             *node_args,
         )
-    # Retention prunes only need to run occasionally: first sample of each hour.
+
     if now - hour_ts < 60 * 1000:
         await d1_run(
             env, "DELETE FROM online_hourly WHERE hour_ts < ?",
@@ -1993,16 +1993,16 @@ ONLINE_HISTORY_CACHE_KEY = "https://forkmesh.internal/api/network/online-history
 
 
 async def online_history(env):
-    # network.html polls this every minute per open tab (alongside the
-    # already-cached leaderboards); serve the burst from the colo edge like
-    # its siblings. The data is hourly buckets, so 30s staleness is free.
+
+
+
     cached = await edge_cache_match(ONLINE_HISTORY_CACHE_KEY)
     if cached is not None:
         return cached
     await ensure_schema(env)
     now = int(Date.now())
     cur_hour = (now // 3600000) * 3600000
-    start = cur_hour - 23 * 3600000  # last 24 hourly buckets, oldest first
+    start = cur_hour - 23 * 3600000
     rows = await d1_all(
         env,
         "SELECT hour_ts, node_minutes FROM online_hourly WHERE hour_ts >= ? "
@@ -2088,21 +2088,21 @@ async def network_overview(env):
     return resp
 
 
-# --- System status page (/status) -------------------------------------------
-# A per-minute cron folds one health check per system into today's UTC-day
-# bucket, so the public /status page can show a 30-day history per system
-# (statuspage.io style) without any extra always-on monitoring infra. Every
-# system reuses a signal the relay already tracks:
-#   - database: a trivial D1 round trip.
-#   - git_hosting: at least one identity-bound direct HTTPS mirror has a fresh,
-#     signed ForkMesh repository integrity proof.
-#   - website / api / realtime: unhandled/5xx errors logged this minute
-#     (log_error, see Default.fetch) bucketed by the path they hit, so an
-#     incident in one area doesn't paint the whole site down.
-#   - durable_objects: room requests killed by Cloudflare's free-tier DO
-#     duration cap (log_durable_object_abort), tracked separately from the
-#     rest of "realtime" so plan-limit aborts have their own visible history
-#     instead of being buried in general realtime noise.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
@@ -2114,10 +2114,10 @@ STATUS_SYSTEMS = [
     ("realtime", "Realtime sync (chat & tunnels)"),
     ("durable_objects", "Durable Objects (free-tier duration limit)"),
 ]
-# What each per-minute health sample actually verifies, shown when a /status
-# visitor expands a system row. These must describe the real check
-# record_status_sample runs — the systems share one sampler cron but each has
-# its own signal, and the page must never imply a probe that doesn't exist.
+
+
+
+
 STATUS_SYSTEM_CHECKS = {
     "website": (
         "Scans the last minute of the worker error log for unhandled "
@@ -2169,12 +2169,12 @@ STATUS_SYSTEM_CHECKS = {
 }
 STATUS_HISTORY_DAYS = 30
 STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
-STATUS_SAMPLE_WINDOW_MS = 60 * 1000  # one cron tick
+STATUS_SAMPLE_WINDOW_MS = 60 * 1000
 STATUS_HOUR_MS = 60 * 60 * 1000
 STATUS_DAY_MS = 24 * STATUS_HOUR_MS
-STATUS_MINUTES_SHOWN = 60  # width of the per-minute strip on /status
-# Kept a little past what's shown so a slow reader's page load always has a
-# full 60 buckets to render even a few minutes after the newest cron tick.
+STATUS_MINUTES_SHOWN = 60
+
+
 STATUS_MINUTE_RETAIN_MS = 90 * 60 * 1000
 STATUS_MIRROR_PREFIX = "mirror:"
 STATUS_MIRROR_MAX = 50
@@ -2182,12 +2182,12 @@ FLAGSHIP_REPOSITORY_URL = "https://forkmesh.com/forkmesh/forkmesh"
 FLAGSHIP_MONITOR_ID = "forkmesh/forkmesh"
 INSTALLER_MONITOR_ID = "installer-delivery"
 INSTALLER_CHECK_INTERVAL_MS = 10 * 60 * 1000
-# Worker/static activation can briefly interrupt the flagship's mirror-routed
-# tree and blob reads. Do not turn that expected handoff into an outage.
+
+
 STATUS_DEPLOY_GRACE_MS = 5 * 60 * 1000
-# A crashed deploy client must not suppress genuine incidents indefinitely.
-# deploy.sh refreshes started_at for every rollout, so anything older than this
-# is a stale semaphore and monitoring fails open.
+
+
+
 STATUS_DEPLOY_MAX_MS = 30 * 60 * 1000
 
 STATUS_MONITOR_GUIDANCE = {
@@ -2299,12 +2299,12 @@ async def _flagship_repository_probe(env):
             else (status, "")
         )
 
-    # Scheduled Workers cannot hairpin through their own public hostname
-    # reliably (Cloudflare returns a synthetic 404/52x before the request
-    # reaches the Worker). Read the same static shell from the bound asset
-    # service and invoke the same authenticated mirror router used by the
-    # public tree/blob endpoints. Repository bytes still come from active
-    # nodes; none are substituted from D1 or a Worker-side copy.
+
+
+
+
+
+
     shell_response = await env.ASSETS.fetch(JsRequest.new(
         "https://forkmesh.internal/dashboard/repo.html"))
     shell_status, shell_text = await bounded_response(
@@ -2399,11 +2399,11 @@ async def _installer_delivery_probe(env):
         return False, "No reachable mirror is available to the installer"
 
     async def source_fallback():
-        # `install.sh` deliberately falls back to a source build when a
-        # platform binary is unpublished or temporarily unavailable. Validate
-        # the essential build inputs through the same live mirror router so the
-        # status row tracks whether the documented one-liner still has a viable
-        # path, not whether its optional fast path is populated.
+
+
+
+
+
         required = {
             "qt_client/CMakeLists.txt": "project(ForkMesh",
             "qt_client/src/main.cpp": "#include <QApplication>",
@@ -2525,21 +2525,21 @@ async def _installer_delivery_status(env, now):
     return is_up, reason
 
 
-# Platform operational-alert state. It uses the flagship repository identity
-# as a stable storage key, but only the is_admin console may mutate it.
-# Everything defaults to OFF so nobody silently inherits the alert pager.
+
+
+
 REPO_ALERT_SETTING_DEFAULTS = {
-    # "[ForkMesh outage]" / "[ForkMesh recovered]" mail for the systems on
-    # /status and the independent cron watchdog. One switch covers both
-    # directions: a recovery notice only makes sense to whoever got the outage.
+
+
+
     "statusEmails": False,
 }
 
 
 async def _repo_alert_settings_bi(env, owner, repo):
-    # Same keying rules as _ap_repo_settings_bi (distinct namespace, both
-    # halves lowercased, org aliases resolved to the backing node) so the row
-    # an admin writes under the org name is the row the send path reads.
+
+
+
     alias_owner = globals().get("_ap_org_alias_owner")
     if callable(alias_owner):
         owner = await alias_owner(env, owner, repo)
@@ -2556,8 +2556,8 @@ async def _repo_alert_settings_get(env, owner, repo):
             env, "SELECT data FROM repo_alert_settings WHERE repo_bi=?",
             await _repo_alert_settings_bi(env, owner, repo))
     except BaseException:
-        # A lazily-ensured DB without the table reads as "all off", which is
-        # the safe direction: no mail rather than unsuppressable mail.
+
+
         return settings
     if row:
         try:
@@ -2614,7 +2614,7 @@ def _sanitize_attention_log_text(value, maximum=600):
     text = "".join(
         character if character.isprintable() else " "
         for character in str(value or ""))
-    # URLs retain the useful route but never a query/fragment carrying a token.
+
     text = re.sub(r"(https?://[^\s?#]+)[?#][^\s]*", r"\1?[redacted]", text)
     text = re.sub(
         r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]+",
@@ -2759,9 +2759,9 @@ def _attention_email_with_logs(text, html, log_tail):
 
 
 def _status_alert_manage_url(env, system_id=""):
-    # Alert mail is controlled only from the platform is_admin console. Build
-    # the destination from the configured secret path instead of leaking the
-    # control back into a repository-owner page.
+
+
+
     admin_path = _admin_path(env)
     if not admin_path:
         return "https://forkmesh.com/dashboard"
@@ -2851,9 +2851,9 @@ def _cron_watchdog_email_content(env, recovered, outage_started_at, now):
 
 async def _send_cron_watchdog_email(
         env, recovered, outage_started_at, now):
-    # Suppressed reports delivered: the caller must record the transition and
-    # stop re-arming its retry alarm, otherwise turning the setting off would
-    # leave the watchdog retrying a send it will never make.
+
+
+
     try:
         if not await _status_alert_emails_enabled(env):
             return True
@@ -2941,9 +2941,9 @@ async def _record_status_monitor_transitions(
                 and int(now) - int(outage_started_at)
                 < STATUS_DEPLOY_GRACE_MS
             ):
-                # Wait for a sustained failure. This also protects the handoff
-                # from the retiring Worker version, which cannot see the new
-                # deployment timestamp yet.
+
+
+
                 should_notify = False
             elif (
                 is_up
@@ -2951,8 +2951,8 @@ async def _record_status_monitor_transitions(
                 and not previous_up
                 and prior_notified != "down"
             ):
-                # A probe that recovered inside the grace window never paged,
-                # so it must not send a confusing recovery-only email.
+
+
                 notified = "up"
                 should_notify = False
         if should_notify:
@@ -2984,9 +2984,9 @@ async def _record_status_monitor_transitions(
     )
     if not pending:
         return
-    # notified_state is deliberately left untouched while alert mail is off:
-    # whatever is red when an admin turns it on gets one email then, instead
-    # of the switch silently swallowing the transition that is still current.
+
+
+
     if not await _status_alert_emails_enabled(env):
         return
     recipients = await _repository_monitor_admin_emails(env)
@@ -3148,8 +3148,8 @@ def _status_minute(minute_ts, current_minute_ts, row):
     """
     minute_ts = int(minute_ts)
     if minute_ts >= current_minute_ts and row is None:
-        # This minute's cron tick hasn't landed yet (the common case for the
-        # newest bucket) — not evidence of an outage, just not elapsed.
+
+
         return {"minuteTs": minute_ts, "status": "future", "reason": None}
     if row is None:
         return {
@@ -3309,10 +3309,10 @@ async def _claim_status_sample_minute(env, now):
 
 
 async def record_status_sample(env):
-    # Called once a minute by the platform Cron Trigger (scheduled()) and by
-    # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
-    # exactly one of them record each minute. Best-effort per system so one
-    # failing check can't blank the rest of the page.
+
+
+
+
     await ensure_schema(env)
     now = int(Date.now())
     if not await _claim_status_sample_minute(env, now):
@@ -3400,26 +3400,26 @@ async def record_status_sample(env):
                 row_status = int(row.get("status") or 0)
             except (TypeError, ValueError):
                 row_status = 0
-            # A DO duration-cap abort is a real room failure, so it still
-            # counts toward "realtime" below — but it also gets its own
-            # bucket so free-tier plan-limit aborts have a dedicated, visible
-            # history instead of being buried among other realtime incidents.
-            # Matches both the tagged 503s log_durable_object_abort records
-            # and the raw AbortError tracebacks capture_worker_exception logs
-            # for DO calls that aren't wrapped in a retry (same substring the
-            # doDurationAborts24h snapshot below keys on).
+
+
+
+
+
+
+
+
             if "Exceeded allowed duration" in message:
                 failed["durable_objects"] = True
                 hit_count["durable_objects"] += 1
                 if first_hit["durable_objects"] is None:
                     first_hit["durable_objects"] = (row.get("status"), path, message.strip())
-            # 502/503/504 on a direct-mirror content path (release blob, repo
-            # browse, git clone) means the selected endpoint is unreachable —
-            # upstream availability, which the signed HTTPS health check
-            # (the git_hosting signal) already tracks. It is not evidence the
-            # Worker/API is down, and a single offline node's blob being
-            # re-requested every few minutes used to paint the whole "api"
-            # system red on /status. A 500 on the same path still counts.
+
+
+
+
+
+
+
             if row_status in (502, 503, 504) and (
                     RELEASE_BLOB_RE.match(path) or REPO_HOST_RE.match(path) or
                     GIT_INFO_RE.match(path) or GIT_PACK_RE.match(path)):
@@ -3456,17 +3456,17 @@ async def record_status_sample(env):
                     text += " (+%d more)" % (hit_count[bucket] - 1)
                 reason[bucket] = text
     except Exception:
-        # A query hiccup here is not itself evidence of an outage — don't
-        # fabricate a false incident from it.
+
+
         ok["website"] = ok["api"] = ok["errors"] = True
         ok["realtime"] = ok["durable_objects"] = True
 
-    # Each registered mirror that has supplied a valid ForkMesh repository
-    # proof gets its own /status row. This registry contains cryptographically
-    # bound node identities; unlike account_presence or host_presence it cannot
-    # turn a user/chat name or an ad-hoc repository request into a fake node.
-    # Keep recently disconnected mirrors in the sample set for the 30-day
-    # history window so an outage becomes red instead of making the row vanish.
+
+
+
+
+
+
     status_systems = list(STATUS_SYSTEMS)
     try:
         mirror_rows = await d1_all(
@@ -3521,12 +3521,12 @@ async def record_status_sample(env):
                         mirror_name + " is reachable but is not serving an "
                         "accepted forkmesh/forkmesh source revision")
     except Exception as exc:
-        # The aggregate Git-hosting row already reports a registry query
-        # failure. Do not fabricate per-node identities when the authoritative
-        # registry itself could not be read. Workers Logs stays off, so the
-        # failure goes straight to Sentry (best-effort — never let telemetry
-        # sink the sample; an error_log row here would also turn a registry
-        # hiccup into a red "errors" minute).
+
+
+
+
+
+
         try:
             await capture_sentry_error(
                 env, 500, "scheduled", "/cron/record-status-sample",
@@ -3535,24 +3535,24 @@ async def record_status_sample(env):
         except BaseException:
             pass
 
-    # One multi-row upsert per table (3 statements total) instead of the old
-    # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
-    # worker where every awaited D1 round trip counts against tight per-
-    # invocation limits — blowing them killed the whole tick and the /status
-    # page recorded the missing sample as downtime.
+
+
+
+
+
     daily_args = []
     hourly_args = []
     minute_args = []
     for system_id, _label in status_systems:
         failure = 0 if ok.get(system_id, True) else 1
         daily_args.extend([day_ts, system_id, failure])
-        # reason is only set when this sample failed; on success it's left NULL
-        # so the COALESCE below keeps whatever failure reason was last recorded
-        # this hour, rather than blanking it out.
+
+
+
         hourly_args.extend([hour_ts, system_id, failure, reason.get(system_id)])
-        # A minute is the raw sample itself (not a counter): one cron tick per
-        # minute per system, so ON CONFLICT just overwrites in the rare case a
-        # tick somehow re-fires for the same minute.
+
+
+
         minute_args.extend(
             [minute_ts, system_id, 0 if failure else 1, reason.get(system_id)])
     n = len(status_systems)
@@ -3583,14 +3583,14 @@ async def record_status_sample(env):
         "ok = excluded.ok, reason = excluded.reason",
         *minute_args,
     )
-    # Alerts are optional follow-up work. Persist the minute first so a slow
-    # mail provider or notification failure cannot erase public status data.
+
+
     try:
         await _record_status_monitor_transitions(
             env, ok, reason, now, status_systems)
     except Exception as exc:
-        # Same reasoning as the registry read above: Sentry-only visibility,
-        # never an error_log row and never a raised sample.
+
+
         try:
             await capture_sentry_error(
                 env, 500, "scheduled", "/cron/record-status-sample",
@@ -3598,8 +3598,8 @@ async def record_status_sample(env):
                 + _safe_error_text(exc), error=exc)
         except BaseException:
             pass
-    # Retention prunes only need to run occasionally, not 60x/hour: sweep on
-    # the first sample of each hour.
+
+
     if now - hour_ts < STATUS_SAMPLE_WINDOW_MS:
         await d1_run(
             env, "DELETE FROM system_status_daily WHERE day_ts < ?",
@@ -3625,10 +3625,10 @@ async def status_history(env, view="full"):
     now = int(Date.now())
     cur_day = (now // 86400000) * 86400000
     start = cur_day - (STATUS_HISTORY_DAYS - 1) * 86400000
-    # Day cells, uptime and coverage all come from the hourly buckets (which
-    # sum to the same recorded counts the daily table holds, with per-hour
-    # granularity the 24h window needs); the daily table remains as the
-    # cron's cheap long-term aggregate.
+
+
+
+
     hour_rows = await d1_all(
         env,
         "SELECT hour_ts, system, checks, failures, reason FROM system_status_hourly "
@@ -3658,9 +3658,9 @@ async def status_history(env, view="full"):
         by_system_minute.setdefault(system_id, {})[int(row["minute_ts"])] = row
         last_sample_ts = max(last_sample_ts, int(row["minute_ts"]))
 
-    # Dynamic mirror systems are written by record_status_sample only after a
-    # node supplies a valid signed repository proof. Build the public roster
-    # from those recorded IDs, never from user/account presence.
+
+
+
     recorded_system_ids = set(by_system_hour) | set(by_system_minute)
     mirror_systems = []
     for system_id in recorded_system_ids:
@@ -3677,9 +3677,9 @@ async def status_history(env, view="full"):
 
     systems = []
     for system_id, label in status_systems:
-        # Uptime is computed over RECORDED samples only; expected-but-missing
-        # samples (the sampling cron didn't run) are reported separately as
-        # coverage, never counted as downtime. See _status_effective_hour.
+
+
+
         days = []
         total_checks = total_failures = total_expected = 0
         checks_24h = failures_24h = expected_24h = 0
@@ -3723,12 +3723,12 @@ async def status_history(env, view="full"):
                 "uptimePct": uptime, "coveragePct": coverage,
                 "hours": hours, "hoursElapsed": len(hours),
             })
-        # Current state comes from the newest RAW MINUTE probe. An hourly
-        # aggregate answers "did anything fail during this hour?", not "is it
-        # reachable now"; using it for the badge left recovered systems yellow
-        # and displayed an hour-old reason as though it were current. A failed
-        # latest probe is a hard red/down state. A passing latest probe is
-        # green and clears the old reason immediately.
+
+
+
+
+
+
         latest_minute_row = None
         minute_records = by_system_minute.get(system_id, {})
         if minute_records:
@@ -3754,8 +3754,8 @@ async def status_history(env, view="full"):
                 "last two minutes.")
             reason_ts = latest_minute_ts
         else:
-            # Backward-compatible fallback for an existing deployment while
-            # minute sampling is first being populated.
+
+
             status = None
 
         latest_hour = None
@@ -3828,17 +3828,17 @@ async def status_history(env, view="full"):
             "reasonTs": reason_ts,
         })
 
-    # Current-state snapshot (issue #356): the headline health metrics rendered
-    # at the top of the page — flagship repository directly reachable, the
-    # distinct online node count (same signal as the /network/ headline),
-    # catalog size, and errors logged in the last 24h. Each
-    # read is best-effort so one failing query can't blank the summary, and it
-    # all rides on the single /api/status fetch a page view already makes.
+
+
+
+
+
+
     current = {}
-    # When the last recorded health sample was taken. A stale value means the
-    # sampling CRON is down (not the site) — the page uses this to say so
-    # instead of letting missing samples masquerade as an outage. 0 = no
-    # samples in the visible window at all.
+
+
+
+
     current["lastCronSampleTs"] = last_sample_ts or None
     try:
         repo_row = await d1_first(env, "SELECT COUNT(*) AS n FROM repositories")
@@ -3861,13 +3861,13 @@ async def status_history(env, view="full"):
     except Exception:
         current["errors24h"] = None
     try:
-        # Dedicated counter for the platform killing a Durable Object request
-        # mid-flight ("Exceeded allowed duration in Durable Objects free
-        # tier."). Matches both the tagged 503s the routers record via
-        # log_durable_object_abort and the raw tracebacks
-        # capture_worker_exception logged before the routers were guarded, so
-        # the operator can tell plan-limit churn apart from real bugs inside
-        # the generic errors24h count.
+
+
+
+
+
+
+
         do_row = await d1_first(
             env,
             "SELECT COUNT(*) AS n FROM error_log "
@@ -3878,10 +3878,10 @@ async def status_history(env, view="full"):
     except Exception:
         current["doDurationAborts24h"] = None
     try:
-        # forkmesh_verified_at is written only after an account-bound endpoint
-        # signs a fresh challenge whose refs hash matches the owner-attested
-        # public forkmesh/forkmesh catalog state. This avoids treating a
-        # control WebSocket heartbeat as proof that Git bytes are available.
+
+
+
+
         endpoint_row = await d1_first(
             env,
             "SELECT MAX(forkmesh_verified_at) AS ts "
@@ -3902,11 +3902,11 @@ async def status_history(env, view="full"):
         current["mainnodeStaleMs"] = HTTPS_MIRROR_STATUS_FRESH_MS
 
     if view == "world":
-        # The in-world canvas needs the same current state, 30 daily cells,
-        # latest 24 hourly cells, and latest 60 minute cells as /status. It
-        # does not need every hour nested beneath every one of the 30 days.
-        # Projecting that history here cuts the recurring browser payload by
-        # an order of magnitude without weakening the public status page.
+
+
+
+
+
         projected = []
         for system in systems:
             days = list(system.get("days") or [])
@@ -3947,22 +3947,22 @@ async def status_history(env, view="full"):
     )
 
 
-# --- Leaderboards (/network/) ----------------------------------------------
-# Public ranking boards backing issue #11. Each board has a persisted data
-# source: node uptime (online_hourly_nodes), public repos per owner + most-
-# mirrored project + longest-hosted repo (repositories / repo_first_hosted),
-# contributor activity (contributor_activity, tallied as issues/PRs/commits are
-# submitted), and historical completed-transfer totals (funds_received). The
-# Worker cannot sign or sweep a wallet.
 
-LEADERBOARD_LIMIT = 10  # rows returned per board
+
+
+
+
+
+
+
+LEADERBOARD_LIMIT = 10
 
 
 async def _record_contributor(env, author, kind):
-    # Bump a contributor's running activity tally. kind is one of
-    # "issues"/"pulls"/"commits". Called as signed issue/PR/commit events are
-    # accepted into the inbox; best-effort so a tally failure never blocks the
-    # submission. author is the public contributor name.
+
+
+
+
     name = clean_string(author or "", MAX_NODE_NAME)
     if not name or kind not in ("issues", "pulls", "commits"):
         return
@@ -3983,8 +3983,8 @@ async def _record_contributor(env, author, kind):
 
 
 async def _record_funds_received(env, scope, key, name, lamports):
-    # Accumulate disbursed lamports per recipient for the funds-received boards.
-    # Best-effort: never let a bookkeeping failure abort a money transfer.
+
+
     if not key or int(lamports or 0) <= 0:
         return
     try:
@@ -4003,13 +4003,13 @@ async def _record_funds_received(env, scope, key, name, lamports):
 
 
 def _catalog_updated_ms(rec):
-    # Best-effort parse of a catalog record's free-form updatedAt string, so we
-    # can tell which of a node's several repo mirrors last reported in (used to
-    # pick the "latest" commit/platform/version for the node as a whole). Any
-    # unparseable value sorts last rather than raising.
+
+
+
+
     try:
         ms = float(Date.parse(str(rec.get("updatedAt") or "")))
-        return ms if ms == ms else -1  # NaN check (NaN != NaN)
+        return ms if ms == ms else -1
     except Exception:
         return -1
 
@@ -4021,9 +4021,9 @@ async def network_leaderboards(env):
     await ensure_schema(env)
     now = int(Date.now())
 
-    # --- Uptime: rank nodes by total minutes online over the retained window.
-    # online_hourly_nodes is pruned to ONLINE_HISTORY_RETAIN_MS, so this is
-    # inherently a "last 48h" board. label is plaintext (the node's own name).
+
+
+
     window_start = now - ONLINE_HISTORY_RETAIN_MS
     uptime_rows = await d1_all(
         env,
@@ -4047,11 +4047,11 @@ async def network_leaderboards(env):
     ]
     uptime_board.sort(key=lambda n: (-n["minutes"], n["name"]))
 
-    # --- Repos / mirrors / longest-hosted: one pass over the public catalog
-    # (public only, blocked identities excluded). counts -> repos-per-owner;
-    # mirror_owners -> distinct owners hosting a repo of a given name (a repo
-    # mirrored by many nodes shows up under many owners); first-hosted timestamps
-    # come from repo_first_hosted joined on key_bi.
+
+
+
+
+
     first_rows = await d1_all(env, "SELECT repo_bi, ts FROM repo_first_hosted")
     first_hosted = {str(r.get("repo_bi")): int(r.get("ts") or 0)
                     for r in first_rows if r.get("repo_bi")}
@@ -4064,13 +4064,13 @@ async def network_leaderboards(env):
     counts = {}
     mirror_owners = {}
     hosted_board = []
-    largest_board = []          # per owner/repo, by reported mirror size
-    bytes_by_owner = {}         # owner -> total bytes hosted across their repos
-    # Per-node detail card for the Network page's "Connected nodes" list: sums
-    # the per-repo counters a node reports (adhoc #56's commit/issues/platform/
-    # version/id fields) across every repo it mirrors, and keeps the commit/
-    # branch/platform/version/sync-time from whichever of its repos reported in
-    # most recently — so a multi-repo node shows one coherent "latest" state.
+    largest_board = []
+    bytes_by_owner = {}
+
+
+
+
+
     node_details = {}
     counter_fields = (
         "issueCount", "commitCount", "branchCount", "pullCount",
@@ -4123,9 +4123,9 @@ async def network_leaderboards(env):
             detail[field] = int(detail.get(field) or 0) + counter
             reported_counts = detail["_reportedCounterCounts"]
             reported_counts[field] = int(reported_counts.get(field) or 0) + 1
-        # When this node last served a clone / website read, across all of its
-        # repositories, with the client class reported alongside that serve.
-        # A point in time is carried as the newest one, never summed.
+
+
+
         for stamp_field, agent_field in (
             ("cloneServedAt", "cloneServedAgent"),
             ("websiteServedAt", "websiteServedAgent"),
@@ -4171,10 +4171,10 @@ async def network_leaderboards(env):
             if k not in (
                 "_updatedMs", "_recordCount", "_reportedCounterCounts")
         }
-        # Unknown stays JSON null instead of becoming a misleading aggregate
-        # zero. A total is known only when every included repository reported
-        # that field; otherwise a partial sum would understate the node total.
-        # A real zero reported by every repository remains zero.
+
+
+
+
         for field in counter_fields:
             if int(reported_counts.get(field) or 0) != record_count:
                 public_detail[field] = None
@@ -4184,21 +4184,21 @@ async def network_leaderboards(env):
     repo_board = [{"name": o, "repos": c} for o, c in counts.items()]
     repo_board.sort(key=lambda n: (-n["repos"], n["name"]))
 
-    # --- Most mirrored: repo names hosted under more than one owner.
+
     mirror_board = [{"name": nm, "mirrors": len(owners)}
                     for nm, owners in mirror_owners.items() if len(owners) > 1]
     mirror_board.sort(key=lambda n: (-n["mirrors"], n["name"]))
 
-    # --- Longest hosted: oldest first-hosted timestamp wins.
+
     hosted_board.sort(key=lambda n: (-n["ageMs"], n["name"]))
 
-    # --- Largest repos / most data hosted: from the size each node reports for
-    # its mirror. largest_board ranks individual repos; data_board sums per owner.
+
+
     largest_board.sort(key=lambda n: (-n["bytes"], n["name"]))
     data_board = [{"name": o, "bytes": b} for o, b in bytes_by_owner.items()]
     data_board.sort(key=lambda n: (-n["bytes"], n["name"]))
 
-    # --- Contributor activity: cumulative issues + PRs + commits per author.
+
     contrib_rows = await d1_all(
         env,
         "SELECT name, issues, pulls, commits, total FROM contributor_activity "
@@ -4214,9 +4214,9 @@ async def network_leaderboards(env):
         for r in contrib_rows if int(r.get("total") or 0) > 0
     ]
 
-    # --- Funds received: separate boards for mainnodes, contributors, projects.
-    # Recipients of node/contributor payouts are stored by wallet; resolve a
-    # friendly node name where we can, else show a shortened address.
+
+
+
     funds = await _funds_received_boards(env)
 
     resp = json_response(
@@ -4247,20 +4247,20 @@ async def network_leaderboards(env):
     return resp
 
 
-# --- Referral program ---------------------------------------------------------
-# Every registered user account owns the share link /r/<name>. A click on the
-# link bumps that account's counter and bounces to /signup?ref=<name>; a
-# completed signup carrying that ref bumps the signup counter. Only aggregate
-# per-referrer counters exist (see referral_stats in schema.py) — who followed
-# a link or who signed up through it is never recorded.
+
+
+
+
+
+
 REFERRAL_LEADERBOARD_CACHE_KEY = (
     "https://forkmesh.internal/api/referrals/leaderboard"
 )
-REFERRAL_LEADERBOARD_TTL = 30  # seconds per colo; counters tolerate the lag
+REFERRAL_LEADERBOARD_TTL = 30
 
 
-# Resolve a raw referral code to (name, blind index) — only active, real user
-# accounts participate, so junk /r/ paths and node accounts count nothing.
+
+
 async def _referral_account(env, raw_name):
     name = clean_string(raw_name or "", MAX_NODE_NAME).strip().lower()
     if not valid_node_name(name):
@@ -4297,11 +4297,11 @@ async def _referral_counts(env, name_bi):
         return 0, 0, 0
 
 
-# Link-preview crawlers: when a share link is posted to Mastodon, every server
-# that sees the post fetches the URL, and Slack/Discord/Twitter do the same.
-# They get the preview page below instead of the 302 - and they never move the
-# counters, because a boost fanning a post out to 200 servers is not 200
-# clicks. Deliberately coarse: a false positive costs one uncounted click.
+
+
+
+
+
 REFERRAL_PREVIEW_AGENTS = (
     "bot", "crawler", "spider", "preview", "mastodon", "pleroma", "akkoma",
     "misskey", "friendica", "lemmy", "activitypub", "facebookexternalhit",
@@ -4319,11 +4319,11 @@ def _is_link_preview_agent(request):
 
 
 def _referral_preview_page(origin, name, clicks, signups):
-    # Minimal HTML whose only job is to carry the OpenGraph tags; the card PNG
-    # they point at is rendered per request from the same counters, so the
-    # unfurl shows how far this link has actually travelled instead of the
-    # generic "Create account - ForkMesh" signup preview (adhoc #313). Humans
-    # who trip the crawler heuristic still land on signup via the refresh.
+
+
+
+
+
     target = "/signup?ref=" + quote(name)
     summary = "%s click%s and %s signup%s so far." % (
         clicks, "" if clicks == 1 else "s",
@@ -4365,9 +4365,9 @@ def _referral_preview_page(origin, name, clicks, signups):
            _html_escape(summary)))
 
 
-# GET /r/<name>: count the click, then land on signup with the ref attached so
-# the eventual account creation can credit the referrer. Link-preview crawlers
-# get an OpenGraph page carrying this referrer's live counters instead.
+
+
+
 async def referral_click(env, raw_name, request=None):
     await ensure_schema(env)
     name = ""
@@ -4380,14 +4380,14 @@ async def referral_click(env, raw_name, request=None):
                     _ap_origin(env, request), name, clicks, signups),
                 status=200, headers={
                     "content-type": "text/html; charset=utf-8",
-                    # Counters are live: never let a shared cache freeze the
-                    # numbers a re-crawl is supposed to refresh.
+
+
                     "cache-control": "no-store, max-age=0, must-revalidate",
                 })
         if name_bi:
             await _referral_bump(env, name, name_bi, "clicks")
     except Exception:
-        pass  # a broken counter must never break the signup funnel
+        pass
     target = "/signup" + ("?ref=" + quote(name) if name else "")
     return Response("", status=302, headers={
         "location": target,
@@ -4395,12 +4395,12 @@ async def referral_click(env, raw_name, request=None):
     })
 
 
-REFERRAL_CARD_TTL = 60  # seconds per colo; short so re-unfurls look live
+REFERRAL_CARD_TTL = 60
 
 
-# GET /api/referrals/<name>/card.png: the og:image of the preview page above -
-# the referrer's handle plus their live click/signup counters, rendered the
-# same way as the repo info card (see og_card.py).
+
+
+
 async def referral_card_handler(env, request, raw_name):
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -4421,9 +4421,9 @@ async def referral_card_handler(env, request, raw_name):
         "signups": signups,
         "lastTs": last_ts,
     }, time.time())
-    # Uint8Array.new copies into a JS-owned buffer: a bare _to_js(bytes) view
-    # into WASM memory read off the GIL crashes the isolate (see
-    # repo_card_handler).
+
+
+
     resp = JsResponse.new(Uint8Array.new(_to_js(bytes(png))), to_js({
         "status": 200,
         "headers": {
@@ -4435,21 +4435,21 @@ async def referral_card_handler(env, request, raw_name):
     return resp
 
 
-# Credit a completed signup to the referrer named in the signup payload.
-# Called after the account is saved; self-referrals count nothing.
+
+
 async def _record_referral_signup(env, new_name, raw_ref):
     try:
         ref_name, ref_bi = await _referral_account(env, raw_ref)
         if not ref_bi or ref_name == new_name:
             return
         await _referral_bump(env, ref_name, ref_bi, "signups")
-        # "Connector" badge: award the referrer the first time one of their
-        # links converts into a real signup.
+
+
         _clicks, signups, _last_ts = await _referral_counts(env, ref_bi)
         if signups == 1:
             await _award_badge(env, ref_name, ref_bi, "first_referral")
     except Exception:
-        pass  # attribution is best-effort; the account itself already exists
+        pass
 
 
 REFERRAL_LEADERBOARD_LIMIT = 10
@@ -4479,20 +4479,20 @@ async def referral_leaderboard(env):
     return resp
 
 
-# --- Inbound website referrals ------------------------------------------------
-# Which other websites link people here. Counted from the Referer header of
-# ordinary page loads as one aggregate row per hostname. The latest bounded
-# referring URL is retained for the public board, with credentials/fragments
-# removed and sensitive query values redacted. No visitor record, IP, user
-# agent, or ForkMesh landing path is retained.
+
+
+
+
+
+
 SITE_REFERRER_LEADERBOARD_CACHE_KEY = (
     "https://forkmesh.internal/api/referrals/sites"
 )
-SITE_REFERRER_LEADERBOARD_TTL = 60  # seconds per colo; counters tolerate lag
+SITE_REFERRER_LEADERBOARD_TTL = 60
 SITE_REFERRER_LEADERBOARD_LIMIT = 10
-# Referer is attacker-controlled (classic analytics referrer spam), so the
-# table is capped: the hourly prune keeps the busiest hosts and drops the long
-# tail a spammer would grow. Existing hosts keep counting either way.
+
+
+
 SITE_REFERRER_RETAIN_HOSTS = 500
 MAX_SITE_REFERRER_HOST = 100
 MAX_SITE_REFERRER_URL = 1024
@@ -4506,8 +4506,8 @@ _SITE_REFERRER_HOST_RE = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
     r"(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$")
 
-# Names that are this instance itself, a sibling service, or a dev host: an
-# internal hop is not another website sending us a visitor.
+
+
 SITE_REFERRER_SELF_HOSTS = frozenset({
     "forkmesh.com", "b.forkmesh.com", "forkmesh.internal", "localhost",
 })
@@ -4536,9 +4536,9 @@ def _site_referrer_host(referer, self_host=""):
     if not host or len(host) > MAX_SITE_REFERRER_HOST:
         return ""
     if not _SITE_REFERRER_HOST_RE.match(host):
-        return ""  # single-label names, IPv6 literals, credentials, junk
+        return ""
     if host.replace(".", "").isdigit():
-        return ""  # bare IPv4 literal
+        return ""
     if host.endswith(".local") or host.endswith(".internal"):
         return ""
     if host in SITE_REFERRER_SELF_HOSTS:
@@ -4548,7 +4548,7 @@ def _site_referrer_host(referer, self_host=""):
         own = own[4:]
     if own and (host == own or host.endswith("." + own)
                 or own.endswith("." + host)):
-        return ""  # this deployment, a sibling subdomain, or its parent zone
+        return ""
     return host
 
 
@@ -4574,8 +4574,8 @@ def _site_referrer_url(referer, expected_host):
             or parsed.password
         ):
             return ""
-        # Non-default ports make an origin materially different and are not
-        # accepted by the public hostname board.
+
+
         port = parsed.port
         if port is not None and not (
             (parsed.scheme == "https" and port == 443)
@@ -4598,7 +4598,7 @@ def _site_referrer_url(referer, expected_host):
             parsed.path or "/",
             parsed.params,
             safe_query,
-            "",  # fragments are client-local and never needed on this board
+            "",
         ))
         return value[:MAX_SITE_REFERRER_URL]
     except Exception:
@@ -4614,8 +4614,8 @@ def _is_page_navigation(request):
         accept = str(headers.get("accept") or "").lower()
     except Exception:
         return False
-    # The Sec-Fetch-* pair is absent on older browsers; Accept alone then
-    # decides, which is the same signal the rest of the site uses.
+
+
     if dest and dest != "document":
         return False
     if mode and mode != "navigate":
@@ -4632,7 +4632,7 @@ async def record_site_referral(env, request, url, status):
         if not _is_page_navigation(request):
             return
         if _is_link_preview_agent(request):
-            return  # unfurlers re-fetch shared links; that is not a visit
+            return
         host = _site_referrer_host(
             request.headers.get("referer"), getattr(url, "hostname", "") or "")
         if not host:
@@ -4693,9 +4693,9 @@ async def leaderboards_overview(env):
     only normalizes their already-public rows so clients cannot drift on which
     boards exist, how they are titled, or which value each board ranks.
     """
-    # These four public sources are independent. Resolve them concurrently so
-    # the combined endpoint costs the slowest cache/database read, not the sum
-    # of all four, which keeps both the page and World island quick at startup.
+
+
+
     network_response, referral_response, site_response, users_response = (
         await asyncio.gather(
             network_leaderboards(env),
@@ -4824,10 +4824,10 @@ async def prune_site_referrers(env):
         SITE_REFERRER_RETAIN_HOSTS)
 
 
-# Per-post blog reach stays aggregate-only. A 64-register HLL is enough for a
-# readable approximate count while fixing each post's uniqueness footprint at
-# 64 rows. The transient edge address/coarse client category is HMACed with a
-# slug-specific domain; neither input nor digest is retained.
+
+
+
+
 BLOG_POST_PATH_RE = re.compile(r"^/blog/([a-z0-9][a-z0-9-]{0,79})/?$")
 BLOG_POST_UNIQUE_PRECISION = 6
 BLOG_POST_REFERRER_LIMIT = 10
@@ -4883,7 +4883,7 @@ async def record_blog_visit(env, request, url, status):
                 "visits=visits+1,last_ts=excluded.last_ts",
                 slug, host, now)
     except Exception:
-        # Reach counters are never allowed to delay or break a blog response.
+
         pass
 
 
@@ -4937,8 +4937,8 @@ def _short_wallet(addr):
 
 
 async def _wallet_name_map(env):
-    # Build wallet -> friendly node name from local nodes and federated
-    # presence, so funds-received boards can label payout wallets. Best-effort.
+
+
     mapping = {}
     try:
         rows = await d1_all(env, "SELECT name, data FROM nodes")
@@ -4998,10 +4998,10 @@ async def _funds_received_boards(env):
 async def install_source(env):
     await ensure_schema(env)
     now = int(Date.now())
-    # Install candidates must be able to serve the flagship over the same
-    # direct-HTTPS path the clone will actually use. A control/presence socket
-    # says nothing about repository-byte availability, so require a fresh,
-    # signed forkmesh/forkmesh proof from a healthy non-abuse-blocked endpoint.
+
+
+
+
     endpoint_rows = await d1_all(
         env,
         """SELECT node_bi,node_name,checked_at,latency_ms
@@ -5079,8 +5079,8 @@ async def install_source(env):
             item["latencyMs"], -item["totalMinutes"], item["node"]),
     )
     best = ranked[0]
-    # Health can change after selection, so hand the installer a bounded
-    # failover list. "node" stays for older installers that read one value.
+
+
     node_list = [item["node"] for item in ranked[:8]]
     return json_response(
         {"ok": True, "node": best["node"], "nodes": node_list,
@@ -5096,11 +5096,11 @@ def method_name(request):
 
 async def durable_object_request(request, target_url=None, include_body=False,
                                  body=None):
-    # DurableObject.fetch may outlive the Python call frame. Passing the Python
-    # Request proxy directly across that JS boundary can trip Pyodide's
-    # "PyProxy when Python GIL not held" crash under load. Rebuild a JS-owned
-    # Request from primitive strings/bytes for control/no-body paths, including
-    # WebSocket upgrades. Repository payloads do not use Durable Objects.
+
+
+
+
+
     headers = {}
     for name in (
         "upgrade", "connection", "sec-websocket-version", "sec-websocket-key",
@@ -5115,23 +5115,23 @@ async def durable_object_request(request, target_url=None, include_body=False,
             headers[name] = value
     init = {"method": method_name(request), "headers": headers}
     if include_body:
-        # A caller that buffered the single-use body stream (to replay the
-        # request on another node) passes the bytes; otherwise read them here.
+
+
         payload = bytes(await request.bytes()) if body is None else bytes(body)
         init["body"] = Uint8Array.new(_to_js(payload))
     return JsRequest.new(str(target_url or request.url), to_js(init))
 
 
-# A Durable Object binding name as wrangler.toml declares it. The same grammar
-# gates both discovery (which env properties may be reported) and accounting
-# (which binding names may reach D1).
+
+
+
 DURABLE_OBJECT_BINDING_RE = re.compile(r"[A-Z][A-Z0-9_]{0,63}")
-# Content-free relay accounting behind the System Capacity card. A Durable
-# Object counts the bytes it relays in the live instance and folds them into
-# one small D1 row per binding: once on the first frame after a wake-up (an
-# idle object may hibernate again immediately, losing in-memory counters),
-# then at most once a minute or once a batch of bytes has gone by. Even a busy
-# room therefore costs a handful of writes an hour.
+
+
+
+
+
+
 DURABLE_OBJECT_TRAFFIC_FLUSH_MS = 60 * 1000
 DURABLE_OBJECT_TRAFFIC_FLUSH_BYTES = 262_144
 DURABLE_OBJECT_TRAFFIC_MAX = 9_007_199_254_740_991
@@ -5257,8 +5257,8 @@ async def durable_object_traffic_flush(do, force=False):
             DURABLE_OBJECT_TRAFFIC_MAX,
         )
     except Exception:
-        # Capacity counters are optional telemetry. A migrating or overloaded
-        # database must never break a live relay; the window is simply lost.
+
+
         return False
     return True
 
@@ -5285,8 +5285,8 @@ def world_request_country(request):
                     raw_country = None
         if raw_country is not None:
             return world_protocol.approximate_country_code(raw_country)
-    # pywrangler/local test requests may not expose request.cf. Cloudflare
-    # overwrites CF-IPCountry at the edge when IP Geolocation is enabled.
+
+
     try:
         raw_country = request.headers.get("cf-ipcountry") or ""
     except Exception:
@@ -5376,25 +5376,25 @@ async def world_durable_object_request(
             headers[name] = value
     country = world_request_country(request)
     if country:
-        # Clients cannot spoof this internal header: the incoming request is
-        # rebuilt from the explicit allowlist above.
+
+
         headers["x-forkmesh-country"] = country
     claim = trusted_claim if isinstance(trusted_claim, dict) else {}
     if claim:
-        # This compact public claim is constructed by this Worker only after a
-        # short-lived HMAC ticket has been verified. The incoming request's
-        # similarly named headers are deliberately never copied.
+
+
+
         public_claim = world_protocol.trusted_presence_claim(
             claim.get("name", ""), claim.get("accountStatus", "Guest"),
             claim.get("nodeCount", 0))
         private_claim = {
             **public_claim,
-            # This flag is verified from the signed, short-lived World ticket.
-            # The Durable Object uses it only to tailor moderation handles to
-            # an administrator's socket; it is not public presence metadata.
+
+
+
             "isAdmin": claim.get("isAdmin") is True,
-            # One live use per signed ticket prevents a copied socket URL from
-            # creating a second verified-looking avatar in this room.
+
+
             "ticketNonce": str(claim.get("ticketNonce") or ""),
         }
         encoded_claim = base64.urlsafe_b64encode(
@@ -5405,9 +5405,9 @@ async def world_durable_object_request(
     for target_type in ("ip", "agent"):
         token = str(tokens.get(target_type) or "")
         if re.fullmatch(r"[a-f0-9]{64}", token):
-            # Opaque tokens are the only values used by the persistent manual
-            # block plane. Raw connection detail crosses separately below only
-            # into ephemeral socket memory for the verified-admin guest view.
+
+
+
             headers["x-forkmesh-world-%s-token" % target_type] = token
     client_ip = _account_session_client_ip(request)
     if client_ip:
@@ -5420,8 +5420,8 @@ async def world_durable_object_request(
     if raw_agent:
         headers["x-forkmesh-world-private-agent"] = raw_agent
     source_url = urlparse(request.url)
-    # Strip query/fragment data as an additional privacy boundary. The world
-    # protocol has no tokens or user-selected URL state.
+
+
     target_url = (
         source_url.scheme + "://" + source_url.netloc + source_url.path)
     return JsRequest.new(
@@ -5467,29 +5467,29 @@ async def office_durable_object_request(request, claims, target_url=None):
 
 
 WORLD_TICKET_TTL_MS = 60 * 1000
-# A browser refreshes its authenticated World ticket every five minutes. The
-# previous server-signed ticket may prove one uninterrupted visible interval
-# for up to seven minutes, leaving room for timer jitter without treating a
-# later return as continuous activity.
+
+
+
+
 WORLD_USER_ACTIVITY_CONTINUATION_MAX_MS = 7 * 60 * 1000
 WORLD_USER_ACTIVITY_MAX_TOTAL_MS = 9_000_000_000_000_000
 WORLD_USER_ACTIVITY_MAX_GENERATION = 9_000_000_000_000_000
 WORLD_USER_ACTIVITY_HEADER = "x-forkmesh-world-activity"
 WORLD_USER_ACTIVITY_PUBLIC_BUCKET_MS = 60 * 1000
 WORLD_INACTIVE_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
-# Private close code sent to the socket an account just replaced by signing in
-# somewhere else. It is a normal handover, not an error or a moderation action,
-# so the displaced browser stops its reconnect ladder instead of racing the
-# device the person is actually using.
+
+
+
+
 WORLD_ACCOUNT_TAKEOVER_CODE = 4009
 WORLD_MANUAL_BLOCK_MIN_MS = 60 * 1000
 WORLD_MANUAL_BLOCK_MAX_MS = 24 * 60 * 60 * 1000
 WORLD_MANUAL_BLOCK_DEFAULT_MS = 15 * 60 * 1000
 WORLD_MANUAL_BLOCK_RETAIN_MS = 30 * 24 * 60 * 60 * 1000
 WORLD_MANUAL_TOKEN_DAY_MS = 24 * 60 * 60 * 1000
-# An opted-in seating card represents somebody who has actually been away, not
-# somebody who selected "Away" while still walking around the world. A fresh
-# authenticated world visit resets this quiet-period clock.
+
+
+
 WORLD_INACTIVE_DELAY_MS = 15 * 60 * 1000
 def _world_ticket_signature(env, payload):
     return hmac.new(
@@ -5538,8 +5538,8 @@ def _world_ticket_decode(env, ticket):
         claim.get("nodeCount", 0))
     if not public["name"] or public["accountStatus"] == "Guest":
         return None
-    # `isAdmin` is accepted only from the HMAC-authenticated ticket body. It is
-    # never accepted from a browser presence frame.
+
+
     public["isAdmin"] = claim.get("isAdmin") is True
     nonce = str(claim.get("nonce") or "")
     if not re.fullmatch(r"[A-Za-z0-9_-]{8,32}", nonce):
@@ -5709,7 +5709,7 @@ async def _world_account_claim(env, request, data=None):
     elif bool(rec.get("email_verified")):
         account_status = "Registered"
     else:
-        # An active but unverified account receives no elevated public badge.
+
         account_status = "Guest"
     if account_status == "Guest":
         return None
@@ -5717,9 +5717,9 @@ async def _world_account_claim(env, request, data=None):
         name, account_status, node_count)
     claim["isAdmin"] = bool(
         await _has_role(env, name, "platform_administrator"))
-    # The account creation timestamp is already public on /api/accounts/{name};
-    # carrying it on the ticket lets the world badge render "joined … ago"
-    # without every avatar firing its own profile lookup.
+
+
+
     try:
         joined_at = int(rec.get("created_at") or 0)
     except (TypeError, ValueError):
@@ -5774,14 +5774,14 @@ async def world_ticket_handler(env, request):
         await ensure_schema(env)
         account_bi = await blind_index(env, claim["name"])
     except Exception:
-        # Tickets remain available during a rolling D1 migration. Activity is
-        # conservatively uncounted until its aggregate table is ready.
+
+
         account_bi = ""
 
-    # If this account previously opted into the inactive seating area, a fresh
-    # authenticated world visit makes that card ineligible immediately. Keep
-    # the consent/configuration record so it can reappear after the account has
-    # actually been away; do not require the user to opt in on every visit.
+
+
+
+
     try:
         if not account_bi:
             raise RuntimeError("world_activity_schema_unavailable")
@@ -5792,8 +5792,8 @@ async def world_ticket_handler(env, request):
             now, now + WORLD_INACTIVE_RETAIN_MS, account_bi,
         )
     except Exception:
-        # Presence tickets must still work if a rolling deployment has not yet
-        # installed the optional inactivity table.
+
+
         pass
     activity = {
         "totalActiveMs": 0,
@@ -5810,15 +5810,15 @@ async def world_ticket_handler(env, request):
             env, account_bi, now, continuation)
         if activity["creditedMs"] > 0:
             await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
-        # "World Explorer" badge: _award_badge is an idempotent INSERT OR
-        # IGNORE, so re-checking this on every ticket past the threshold is
-        # harmless — no need to detect the exact crossing tick.
+
+
+
         if activity["totalActiveMs"] >= WORLD_FIRST_HOUR_BADGE_MS:
             await _award_badge(env, claim["name"], account_bi,
                                "world_first_hour")
     except Exception:
-        # Aggregate activity is optional telemetry. Authentication and
-        # multiplayer entry must continue while D1 is unavailable or migrating.
+
+
         pass
     ticket_claim = {
         **claim,
@@ -5836,9 +5836,9 @@ async def world_ticket_handler(env, request):
         "totalActiveMs": activity["totalActiveMs"],
         "activityObservedAt": activity["observedAt"],
     }
-    # Platform-administrator status is derived server-side from the verified
-    # account session. Omit the field entirely for every other caller so the
-    # table inventory cannot be inferred from a guest or regular-user ticket.
+
+
+
     if claim.get("isAdmin") is True:
         try:
             response_data["systemCapacity"] = {
@@ -5847,8 +5847,8 @@ async def world_ticket_handler(env, request):
                 "d1Storage": await _world_d1_storage(env),
             }
         except Exception:
-            # Capacity telemetry is optional; authentication and multiplayer
-            # entry continue to work while D1 is unavailable or migrating.
+
+
             response_data["systemCapacity"] = {
                 "tables": [],
                 "durableObjects": [],
@@ -5901,7 +5901,7 @@ async def world_client_profile_handler(env, request):
         rec["world_os"] = profile["os"]
         rec["world_client_at"] = int(Date.now())
         await _save_account(env, name_bi, rec)
-        # The bench figures are drawn from the edge-cached public directory.
+
         await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
     return json_response(
         {"ok": True, **profile},
@@ -5916,10 +5916,10 @@ def _world_inactive_public_id(account_bi):
     ).hexdigest()[:20]
 
 
-# Coarse recency ladder for the avatar chest activity light and the wallet
-# QR's transaction ring. Each label reads "within this window"; anything past
-# ten days is "stale". These are buckets, never timestamps: the finest public
-# step is a whole hour, far coarser than a last-seen instant.
+
+
+
+
 WORLD_ACTIVITY_LIGHT_BUCKETS = (
     (60 * 60 * 1000, "hour"),
     (5 * 60 * 60 * 1000, "5h"),
@@ -6017,7 +6017,7 @@ async def world_inactive_handler(env, request):
                 "availability": status,
                 "lastActive": _world_inactive_recency(
                     row.get("updated_at"), now),
-                # Drives the seating card's chest activity light.
+
                 "activityBucket": _world_activity_light_bucket(inactive_age),
             })
         return json_response(
@@ -6054,8 +6054,8 @@ async def world_inactive_handler(env, request):
         return json_response({"error": "invalid_session"}, status=401)
     selection = world_protocol.sanitize_inactivity_record(data)
     if selection is None:
-        # A false/absent consent flag is an explicit removal, never a hidden
-        # retained record.
+
+
         await d1_run(
             env, "DELETE FROM world_inactive_presence WHERE account_bi=?",
             account_bi)
@@ -6096,10 +6096,10 @@ async def world_inactive_handler(env, request):
     )
 
 
-# Seconds one address's wallet chip (balance + tx-recency bucket) is held in
-# the colo edge cache. The chip is decorative, so staleness is cheap and the
-# cache bounds the RPC cost to one pair of public reads per address per TTL
-# per colo no matter how many avatars wear the same wallet.
+
+
+
+
 WORLD_WALLET_BADGE_TTL = 600
 WORLD_WALLET_CACHE_PREFIX = "https://forkmesh.internal/api/world/wallet?address="
 
@@ -6142,29 +6142,29 @@ async def world_wallet_badge_handler(env, request):
         "sol": (lamports / LAMPORTS_PER_SOL) if lamports is not None else None,
         "txBucket": tx_bucket,
     }, cache_seconds=WORLD_WALLET_BADGE_TTL)
-    # Only a successful read is worth pinning for the whole TTL; a dead RPC
-    # window should retry on the next request instead of caching the outage.
+
+
     if lamports is not None or tx_bucket:
         await edge_cache_put(cache_key, resp)
     return resp
 
 
-# --- Town Square approximate unique visitor counter -------------------------
-# The public plaque uses fixed-footprint HyperLogLog sketches, not a visitor
-# ledger. Cloudflare's edge-observed address and a deliberately coarse
-# browser/OS/device category exist only long enough to derive domain-separated
-# keyed digests. Temporal context rotates at UTC midnight while all-time uses a
-# separate stable context. D1 receives only register numbers and ranks: no raw
-# address, raw User-Agent, account, cookie, digest, country, route, or movement
-# history.
-#
-# A 1,024-register all-time sketch remains fixed forever. Ten-minute temporal
-# sketches are retained for 50 hours, enough for today's, yesterday's and
-# same-hour-yesterday comparisons. This is deliberately approximate: shared
-# networks and matching coarse clients collapse together, network/client
-# changes can count one person again, and DATA_KEY rotation can make returning
-# visitors appear new to the all-time sketch. A rolling hour that crosses UTC
-# midnight can count a returning visitor on each side of the privacy rotation.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 WORLD_VISIT_BUCKET_MS = 10 * 60 * 1000
 WORLD_VISIT_RETAIN_MS = 50 * 60 * 60 * 1000
 WORLD_VISITORS_CACHE_KEY = "https://forkmesh.internal/api/world/visitors"
@@ -6173,17 +6173,17 @@ async def _world_unique_visitor_tokens(env, request, now):
     """Derive stable/all-time and UTC-day digests without retaining inputs."""
     try:
         headers = request.headers
-        # CF-Connecting-IP is authored by Cloudflare for an inbound Worker
-        # request. Never fall back to X-Forwarded-For, query data, cookies, or a
-        # caller-provided JSON field: those can contain a forged address.
+
+
+
         address = world_visitor_metrics.canonical_edge_address(
             headers.get("cf-connecting-ip") or "")
         raw_agent = str(headers.get("user-agent") or "")[:2048]
     except Exception:
         return ""
     if not address:
-        # A non-edge/local request cannot be deduplicated safely. Silently skip
-        # it rather than collapsing every address-less request into one record.
+
+
         return ""
     category = world_visitor_metrics.generalized_user_agent(raw_agent)
     day = int(now) // (24 * 60 * 60 * 1000)
@@ -6196,8 +6196,8 @@ async def _world_unique_visitor_tokens(env, request, now):
         "world-unique-visitor-day-v1:%d\n%s\n%s"
         % (day, address, category),
     )
-    # `address`, `raw_agent`, and both digests die with this request. Only the
-    # HLL register/rank projections below may cross the D1 boundary.
+
+
     return {
         "allTime": all_time_token,
         "daily": daily_token,
@@ -6249,8 +6249,8 @@ async def _world_unique_register_sets(env, now):
     previous_hour_start, previous_hour_end = windows["pastHourYesterday"]
     cutoff = int(now) - WORLD_VISIT_RETAIN_MS
 
-    # Old temporal rows have no identity field and can be deleted outright.
-    # The all-time sketch at bucket -1 is fixed at 1,024 possible rows.
+
+
     await d1_run(
         env,
         "DELETE FROM world_visit_unique_hll "
@@ -6339,14 +6339,14 @@ async def world_visitors_handler(env, request):
 
 WORLD_SOCIAL_POSTS_CACHE_KEY = (
     "https://forkmesh.internal/api/world/social-posts")
-# Ten minutes, matching the Mastodon kiosk cadence: every world visitor in a
-# colo shares one Twitter fetch and one Reddit fetch per TTL, so the banners
-# cannot become another 100k-req/day quota pressure.
+
+
+
 WORLD_SOCIAL_POSTS_TTL = 600
 
-# Public orbital elements are refreshed only by the scheduled Worker. Browser
-# reads can use D1's last-known-good copy but can never trigger CelesTrak
-# traffic, which keeps one World tab from multiplying upstream requests.
+
+
+
 WORLD_SATELLITE_CACHE_KEY = (
     "https://forkmesh.internal/api/world/satellites?v=1"
 )
@@ -6358,9 +6358,9 @@ WORLD_SATELLITE_FETCH_TIMEOUT_SECONDS = 20
 
 
 BLOG_RSS_CACHE_KEY = "https://forkmesh.internal/blog/rss.xml"
-# The blog index is a build artifact, so the feed only changes on deploy; half
-# an hour at the edge keeps subscriber polling (and the world banner's own
-# ten-minute refresh) off the origin without making a new post wait.
+
+
+
 BLOG_RSS_TTL = 1800
 
 
@@ -6649,9 +6649,9 @@ async def _world_satellite_refresh_failure(env, now, status, error):
             int(now), safe_status, code,
         )
     except Exception:
-        # An absent row is normal before the first successful refresh. A D1
-        # bookkeeping failure must not turn an upstream outage into a cron
-        # exception storm.
+
+
+
         pass
     return {
         "ok": False,
@@ -6683,7 +6683,7 @@ async def refresh_world_satellite_snapshot(env, now_ms=None):
             "fetchedAt": int((row or {}).get("fetched_at") or 0),
         }
 
-    # Keep the valid data/digest untouched while the request is in flight.
+
     if row:
         await d1_run(
             env,
@@ -6698,8 +6698,8 @@ async def refresh_world_satellite_snapshot(env, now_ms=None):
             {
                 "method": "GET",
                 "headers": {"accept": "application/json"},
-                # CelesTrak asks machine clients to stop on a 301 rather than
-                # silently following an obsolete or incorrect URL.
+
+
                 "redirect": "manual",
             },
             WORLD_SATELLITE_FETCH_TIMEOUT_SECONDS,
@@ -6794,11 +6794,11 @@ async def world_satellites_handler(env, request):
             raise world_satellites.SatelliteDataError(
                 "satellite_snapshot_digest_mismatch")
     except world_satellites.SatelliteDataError:
-        # Orbit data is optional scenery. A fresh deployment may legitimately
-        # wait for its first scheduled CelesTrak refresh, and a corrupt cached
-        # snapshot must still fail closed, but neither condition should turn the
-        # World's normal GET into a noisy 503. Serve a bounded empty snapshot;
-        # deterministic stars and planets remain visible until cron seeds D1.
+
+
+
+
+
         response = json_response(
             {
                 "ok": True,
@@ -7271,9 +7271,9 @@ async def _office_attendance_recent(env, observed_at=None):
             Date.now() if observed_at is None else observed_at)
     except (TypeError, ValueError):
         observed_at = 0
-    # An OUT request can be interrupted by navigation or a lost connection.
-    # A bounded server heartbeat is the live-presence source of truth: expire
-    # those abandoned rows before projecting the public board.
+
+
+
     live_cutoff = observed_at - OFFICE_ATTENDANCE_LIVE_TTL_MS
     await d1_run(
         env,
@@ -7591,9 +7591,9 @@ async def office_attendance_handler(env, request):
     floor_id = _office_attendance_floor(data.get("floor"))
     initial_floor_id = floor_id or "lobby"
     if action == "in":
-        # A page/physical entry owns one visit id. Retrying that same IN remains
-        # idempotent, while a new page entry closes an abandoned open punch at
-        # its last heartbeat instead of inheriting its elapsed time.
+
+
+
         if visit_id:
             await d1_run(
                 env,
@@ -7650,8 +7650,8 @@ async def office_attendance_handler(env, request):
             visit_id,
         )
     else:
-        # Close, in place, only this account's newest open visit. Repeated OUT
-        # requests are harmless because the row no longer matches out_at NULL.
+
+
         await d1_run(
             env,
             "UPDATE world_office_attendance "
@@ -7876,9 +7876,9 @@ async def office_floor_access_handler(env, request):
         if slug
     })
     team_set = set(teams)
-    # Only the lobby and the rooftop patio are common floors. Marketing is a
-    # department story like every other one: it is granted below solely when
-    # this account actually belongs to that team.
+
+
+
     allowed = ["lobby", "rooftop"]
     for floor_id, aliases in OFFICE_FLOOR_TEAM_ALIASES.items():
         if team_set.intersection(aliases):
@@ -8211,8 +8211,8 @@ class _WorldCommunityRuntime:
         return int(Date.now())
 
     def new_id(self):
-        # The random id contains no account, address, time, path, or provider
-        # information and is safe to use as the public resource identifier.
+
+
         return _ap_uuid()
 
     def instance_id(self):
@@ -8314,9 +8314,9 @@ class _WorldCommunityRuntime:
         return await decrypt_row(self.env, value)
 
     async def repository_access(self, owner, repo, _actor):
-        # Named public repository reads are available to signed-in workshop
-        # participants. Private/missing names fail closed and require the same
-        # owner-session authorization as every other named owner surface.
+
+
+
         _repo_bi, row = await _security_scan_repository_row(
             self.env, owner, repo)
         if not row:
@@ -8454,12 +8454,12 @@ class _OfficeMarketingTasksRuntime:
         return (node, ts, sig) if node and ts and sig else None
 
     def same_origin(self):
-        # A credential the caller had to present explicitly is not ambient
-        # browser authority and therefore is not vulnerable to cross-site
-        # request forgery: an organization bot token, the account-session
-        # bearer, or a key-signed desktop write. Each still has to validate in
-        # session(). Browser sessions carry the session in a cookie, so they
-        # retain the strict origin check.
+
+
+
+
+
+
         if self.bot_context or self._signed_query():
             return True
         header = str(
@@ -8519,11 +8519,11 @@ class _OfficeMarketingTasksRuntime:
                 "name": (provider or "organization") + "-bot",
                 "status": "active",
             }
-        # A desktop that authenticated silently holds its account's Ed25519 key
-        # and no session token at all, so a prompt could never open its task
-        # without this. Once a triple is on the URL it is the only credential
-        # considered: never fall through to the cookie, or a cross-site POST
-        # could borrow one by appending a junk signature.
+
+
+
+
+
         if self._signed_query():
             return await _org_task_signed_session(self.env, self.request)
         return await _account_session_record(
@@ -8676,8 +8676,8 @@ class _OfficeMarketingTasksRuntime:
         safe_action = clean_string(
             action or "updated", 32
         ).strip().lower().replace("_", " ")
-        # The org name is what makes the ping legible outside the board, so it
-        # is read back from the row this org_bi indexes rather than left out.
+
+
         org_row = await d1_first(
             self.env, "SELECT name FROM orgs WHERE org_bi=?", str(org_bi or ""))
         record = dict(task if isinstance(task, dict) else {})
@@ -8700,9 +8700,9 @@ class _OfficeMarketingTasksRuntime:
                 "organization_task_activity",
                 copy["title"],
                 body=copy["body"],
-                # Naming the actor both fills the Actor column on every ping
-                # surface and stops the member who acted being pinged about
-                # their own change (enqueue_notification drops self-pings).
+
+
+
                 actor=safe_actor if valid_node_name(safe_actor) else "",
                 href="/world/",
                 source=str(task_id or ""),
@@ -8891,9 +8891,9 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
         account_bi, record = await super().session(data)
         if account_bi and record:
             return account_bi, record
-        # Desktop clients authenticate with their account key, not a session
-        # token, so the World office's channel rooms can also be read from the
-        # Qt app (see _chat_channel_signed_session for the read-only bound).
+
+
+
         return await _chat_channel_signed_session(self.env, self.request)
 
     async def room_access(self, channel_id, key_version, account_bi, actor):
@@ -8902,11 +8902,11 @@ class _ChatChannelsRuntime(_WorldCommunityRuntime):
         )
         ticket = _chat_channel_ticket(
             self.env, channel_id, key_version, account_bi)
-        # Browser requests carry a revocable account-session id. The desktop
-        # client authenticates this read with its account key instead, so give
-        # that already-authorized path a stable opaque session id rather than
-        # passing an empty value into _office_meeting_ticket (which rejects it
-        # and previously escaped as Cloudflare Error 1101).
+
+
+
+
+
         session_id = (
             _request_account_session_id(self.request)
             or _desktop_office_session_id(account_bi, actor)
@@ -9347,8 +9347,8 @@ async def remote_mcp_handler(env, request):
 
 async def world_build_board_handler(env, request, path):
     runtime = _OfficeMarketingTasksRuntime(env, request)
-    # Reject unauthorized mutations before touching a repository mirror. A
-    # forged POST must not turn the issue list into a gateway-probing primitive.
+
+
     if method_name(request) == "POST":
         account_bi, record = await runtime.session({})
         actor = clean_string(
@@ -9408,11 +9408,11 @@ async def world_deploy_status_handler(env, request):
 
 
 WORLD_QA_DECK_REVISION = "2026-07-29-full-catalog-28"
-# The physical desk paints only five cards per page, but its catalog must
-# include every bounded source: built-ins, dynamically routed QA items, and
-# the organization's encrypted QA-ready tasks. Organization tasks are capped
-# at 2,000 and the routed board is independently bounded, so 4,096 is a hard
-# response ceiling rather than an arbitrary visible-card truncation.
+
+
+
+
+
 WORLD_QA_MAX_CARDS = 4096
 WORLD_QA_CARDS = (
     ("world-compact-debug-chat-orbs",
@@ -9837,9 +9837,9 @@ async def world_qa_handler(env, request):
             return json_response({"ok": False, "error": "origin_not_allowed"},
                                  status=403)
         try:
-            # A failed private task may include one compact screenshot. The
-            # image is validated and encrypted below; keep the whole request
-            # bounded well below the general upload ceiling.
+
+
+
             data = await bounded_json_request(request, 640 * 1024)
         except RequestBodyTooLarge:
             return json_response({"ok": False, "error": "payload_too_large"},
@@ -10640,10 +10640,10 @@ def clean_avatar_png(value):
     return base64.b64encode(raw).decode(), ""
 
 
-# Owners (or repo names) that must never appear in the public catalog / under
-# /network/, and may never register host presence. Seeded with a known phantom
-# account that kept re-publishing; extend without a code change via the
-# BLOCKED_CATALOG_OWNERS env var (comma/space separated, case-insensitive).
+
+
+
+
 _BLOCKED_CATALOG_DEFAULT = {"7cbaf0dc"}
 
 
@@ -10662,8 +10662,8 @@ def _is_blocked_catalog_identity(env, *values):
 
 
 async def purge_blocked_catalog(env):
-    # Delete any catalog rows (and their host-presence rows) belonging to a
-    # blocked owner, so phantom entries already in D1 disappear and stay gone.
+
+
     for owner in _blocked_catalog_set(env):
         owner_bi = await blind_index(env, owner)
         rows = await d1_all(
@@ -10676,13 +10676,13 @@ async def purge_blocked_catalog(env):
 
 
 async def purge_stale_account_devices(env):
-    # Prune the reinstall/rotate device sprawl (see STALE_DEVICE_RETAIN_MS):
-    # account_devices rows untouched for the retention window, but ONLY when the
-    # same account still has a newer device row. That guarantees a node's current
-    # key is never deleted — deleting the key the node signs with would silently
-    # 401 its drains, the very bug _owner_signing_pubkeys fixes. A pruned key that
-    # a user later rotates back to is simply re-registered on the next login
-    # (_register_account_device upserts). Returns the number of rows removed.
+
+
+
+
+
+
+
     now = int(Date.now())
     cutoff = now - STALE_DEVICE_RETAIN_MS
     rows = await d1_all(
@@ -10701,7 +10701,7 @@ async def purge_stale_account_devices(env):
             "WHERE account_bi=? AND COALESCE(last_seen,0) > ? LIMIT 1",
             account_bi, seen)
         if not newer:
-            continue  # the account's most-recent key — keep it so it can sign
+            continue
         await d1_run(
             env, "DELETE FROM account_devices WHERE device_bi=?",
             row.get("device_bi"))
@@ -10710,9 +10710,9 @@ async def purge_stale_account_devices(env):
 
 
 async def active_registered_node_bis(env, now=None):
-    # A node is active if either its physical node row has recent activity, its
-    # signed account heartbeat is recent, or its signed direct-HTTPS endpoint is
-    # fresh and healthy. The last union preserves bounded upgrade compatibility.
+
+
+
     await ensure_schema(env)
     now = int(now if now is not None else Date.now())
     cutoff = now - REGISTERED_NODE_ACTIVE_MS
@@ -10743,26 +10743,26 @@ async def active_registered_node_bis(env, now=None):
 
 
 async def _decrypted_public_catalog(env, now):
-    # Decrypted {key_bi, is_private, data} rows for every retained public repo,
-    # memoized per-isolate for PUBLIC_CATALOG_MEMO_TTL_MS — see the comment on
-    # _PUBLIC_CATALOG_MEMO for why this must not re-decrypt the whole catalog on
-    # every call. Online/serving eligibility is checked separately from fresh
-    # signed endpoint evidence; an offline owner must not disappear here.
+
+
+
+
+
     cached = _PUBLIC_CATALOG_MEMO
     if cached["rows"] is not None and now - cached["ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
         return cached["rows"]
-    # Single-flight refill: under a clone burst every concurrent request lands
-    # here the moment the TTL lapses, and each used to start its OWN full scan
-    # + sequential decrypt_row() pass — recreating, once per TTL window, the
-    # event-loop congestion this memo exists to prevent ("Cannot enter into
-    # task" on git-upload-pack info/refs). The first caller claims the refresh
-    # slot (no await between check and claim, so the claim is atomic on the
-    # single-threaded loop) and refills; concurrent callers keep the stale
-    # rows, which only feed best-effort mirror selection. Deliberately NOT a
-    # shared future/lock: a request resuming inside I/O another request
-    # started dies with "Cannot perform I/O on behalf of a different request"
-    # (see ensure_schema). A cold isolate (rows is None) still refills from
-    # every caller — there is nothing stale to serve them.
+
+
+
+
+
+
+
+
+
+
+
+
     if cached["rows"] is not None and \
             now - cached["refresh_ts"] < PUBLIC_CATALOG_MEMO_TTL_MS:
         return cached["rows"]
@@ -10792,8 +10792,8 @@ async def _decrypted_public_catalog(env, now):
         _CATALOG_ROW_DECRYPT_MEMO.clear()
         _CATALOG_ROW_DECRYPT_MEMO.update(decrypted)
     except BaseException:
-        # Release the slot (covers CancelledError from a canceled request) so
-        # the next caller retries instead of waiting out a phantom refresh.
+
+
         cached["refresh_ts"] = 0
         raise
     cached["rows"] = catalog_rows
@@ -10802,11 +10802,11 @@ async def _decrypted_public_catalog(env, now):
 
 
 async def purge_stale_registered_nodes(env, force=False):
-    # Remove expired transient presence and bound only truly orphaned physical
-    # node registrations. Repository catalog rows are durable owner-signed
-    # identity: temporary downtime must never cascade into namespace deletion.
-    # A stale node that still owns a repository or direct-HTTPS endpoint remains
-    # registered and is simply reported offline until fresh evidence returns.
+
+
+
+
+
     await ensure_schema(env)
     now = int(Date.now())
     if not force and now - int(_stale_node_purge.get("ts") or 0) < STALE_NODE_PURGE_INTERVAL_MS:
@@ -10852,74 +10852,74 @@ async def purge_stale_registered_nodes(env, force=False):
     return removed
 
 
-# --- D1 storage --------------------------------------------------------------
-# Durable Objects are reserved for transient relaying (chat rooms + the live
-# file/git tunnel). Everything that must persist lives in D1, and every row is
-# encrypted at rest: each table stores HMAC "blind index" columns (for lookups
-# and uniqueness) plus a single AES-GCM-encrypted JSON `data` blob. The worker
-# holds DATA_KEY, so this protects data at rest but is not zero-knowledge.
+
+
+
+
+
+
 
 PBKDF2_ITERS = 100000
 SOLANA_RE = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{32,44}$")
 
-# Legacy deposit-record constants remain only for read-only historical status
-# and the offline migration tool. Signup is free; no deployed Worker creates
-# deposit wallets, holds a wallet signing key, or sweeps funds.
+
+
+
 LAMPORTS_PER_SOL = 1000000000
-# Historical records without an explicit amount use this compatibility value
-# for display/reconciliation only. No live endpoint requests it.
+
+
 MIN_JOIN_LAMPORTS = 5_000_000
-# Per-isolate memo of the decrypted public repo catalog. _select_browse_mirror
-# runs on EVERY public info/refs request (git clone's round-robin mirror
-# pick) and previously re-ran a full D1 scan plus a sequential AES-GCM
-# decrypt_row() per public repo on each call — under a clone burst (CI, many
-# contributors pulling at once) that held the single Worker event loop long
-# enough for the runtime to cancel a request as hung ("Cannot enter into
-# task"), same failure mode already fixed elsewhere via per-isolate memoization
-# (see the 2026-07-11 free-plan overload notes). A short TTL is fine: this only
-# feeds best-effort mirror selection, not the integrity-checked ref content.
+
+
+
+
+
+
+
+
+
 _PUBLIC_CATALOG_MEMO = {"ts": 0, "rows": None, "refresh_ts": 0}
 PUBLIC_CATALOG_MEMO_TTL_MS = 5000
-# Ciphertext -> decrypted record, reused ACROSS catalog memo refills. The 5s
-# memo above stopped every request from re-decrypting the catalog, but the one
-# request that claims each refill still paid a full AES-GCM decrypt_row() per
-# public repo — pure Pyodide CPU (base64 + JS-boundary crossings per row) that
-# grows with the catalog and landed on whichever request lapsed the TTL. Under
-# clone traffic that is an info/refs request, and a large catalog pushed that
-# single request past the Workers CPU limit ("Worker exceeded CPU time limit"
-# on GET .../info/refs, adhoc #183 — the same clone-path family as #144/#153/
-# #167). A row's encrypted blob is rewritten (fresh IV) on every update, so an
-# unchanged blob is byte-identical and its previous plaintext is still valid:
-# a refill now only decrypts rows whose ciphertext actually changed. Records
-# are shared read-only by catalog consumers (they already share them for a TTL
-# window via the memo above) and must not be mutated. Rebuilt from the rows
-# seen each refill, so deleted rows drop out and the memo stays bounded by the
-# live catalog (plus a hard cap as a backstop).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 _CATALOG_ROW_DECRYPT_MEMO = {}
 CATALOG_ROW_DECRYPT_MEMO_MAX = 4096
 DONATION_ADDRESS_TTL_MS = 60 * 60 * 1000
-# Historical expiry metadata is retained for migration/reconciliation only.
+
 DONATION_ADDRESS_DELETE_GRACE_MS = 60 * 60 * 1000
-# Reserve one approximate transaction fee when checking whether the external
-# community pool can support a locally reviewed transfer plan.
+
+
 REWARD_POOL_FEE_RESERVE_LAMPORTS = 5000
-# A node counts as online for payouts if it has sent a heartbeat within this
-# window (reuses the host-presence staleness window).
+
+
 ACCOUNT_PRESENCE_STALE_MS = 10 * 60 * 1000
 HEARTBEAT_SOLANA_BALANCE_TIMEOUT_MS = 1500
-# Per-isolate throttle for the heartbeat's optional public balance probe:
-# wallet -> last probe ms. Five minutes avoids an RPC subrequest on every
-# 60-second heartbeat. Balance never gates eligibility.
+
+
+
 HEARTBEAT_SOLANA_BALANCE_MIN_MS = 5 * 60 * 1000
 _HEARTBEAT_BALANCE_PROBES = {}
-# Community reward-pool planning (issue #308): the Worker may read one configured
-# public address and create unsigned distribution intents. Its owner signs those
-# intents on their own device; no Worker secret or cron path can sign or sweep.
-CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS = 60 * 60 * 1000  # plan hourly
-# Reward timing, amount, observed uptime, and optional contribution threshold
-# are operator-configurable within conservative bounds. Randomized rounds pay
-# one eligible node; "instant" voluntary contributions use a separate all-node
-# intent and never bypass these eligibility checks.
+
+
+
+CENTRAL_FUND_DISTRIBUTION_INTERVAL_MS = 60 * 60 * 1000
+
+
+
+
 REWARD_DEFAULT_AMOUNT_LAMPORTS = 100_000
 REWARD_DEFAULT_JITTER_MS = 45 * 60 * 1000
 REWARD_DEFAULT_MIN_UPTIME_MS = 30 * 60 * 1000
@@ -10929,9 +10929,9 @@ REWARD_CONTRIBUTION_MIN_LAMPORTS = 10_000
 REWARD_CONTRIBUTION_MAX_LAMPORTS = 100 * LAMPORTS_PER_SOL
 REWARD_CONTRIBUTION_EXPIRES_MS = 60 * 60 * 1000
 REWARD_PENDING_EXPIRES_MS = 24 * 60 * 60 * 1000
-# Legacy Solana messages are size-bounded. Eight ordinary System transfers per
-# transaction leaves headroom for signatures/account metadata; larger all-node
-# distributions become an explicitly numbered multi-intent batch.
+
+
+
 REWARD_TRANSFERS_PER_INTENT = 8
 
 _schema_ready = False
@@ -10947,21 +10947,21 @@ LEGACY_WALLET_CUSTODY_TABLES = (
     "central_fund",
 )
 
-# Derived WebCrypto keys are pure functions of the DATA_KEY secret, which is
-# constant for an isolate's lifetime. Deriving them (SHA-256 digest + importKey,
-# two async WebCrypto round trips each) on every blind_index / encrypt_row /
-# decrypt_row call was the dominant per-request CPU cost on hot polled endpoints
-# (/api/notifications, /api/accounts/<name>). Cache the imported CryptoKeys,
-# keyed by the current secret so a secret rotation still takes effect.
+
+
+
+
+
+
 _data_key_cache = {"secret": None, "key": None}
 _hmac_key_cache = {"secret": None, "key": None}
 _room_key_cache = {"secret": None, "value": None}
 
 
-# Compatibility columns required by indexes in SCHEMA_STATEMENTS. These run
-# before the CREATE statements so an existing table can be upgraded before an
-# index references its new columns. A fresh database has no table yet, so the
-# failed ALTER is ignored and the current CREATE TABLE supplies the columns.
+
+
+
+
 SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     "ALTER TABLE ap_outbox ADD COLUMN dedupe_bi TEXT",
     "ALTER TABLE ap_comments ADD COLUMN parent_remote_id_bi TEXT",
@@ -10970,9 +10970,9 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
          'active', 'edited', 'tombstoned', 'moderated',
          'awaiting-redelivery'
        ))""",
-    # Direct-message lazy upgrades must precede SCHEMA_STATEMENTS: that list
-    # creates indexes/triggers over these columns, and CREATE TABLE IF NOT
-    # EXISTS cannot add them to a database that predates migration 0084.
+
+
+
     """ALTER TABLE chat_direct_conversations
        ADD COLUMN message_count INTEGER NOT NULL DEFAULT 0
        CHECK (message_count >= 0)""",
@@ -10982,8 +10982,8 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     """ALTER TABLE chat_direct_participants
        ADD COLUMN initiated INTEGER NOT NULL DEFAULT 0
        CHECK (initiated IN (0, 1))""",
-    # These columns must exist before SCHEMA_STATEMENTS creates their live and
-    # scoped attendance indexes on databases that predate migration 0090.
+
+
     """ALTER TABLE world_office_attendance
        ADD COLUMN last_seen_at INTEGER NOT NULL DEFAULT 0
        CHECK (last_seen_at >= 0)""",
@@ -10993,38 +10993,38 @@ SCHEMA_PRE_CREATE_ALTER_STATEMENTS = [
     """ALTER TABLE world_office_attendance
        ADD COLUMN visit_scope TEXT NOT NULL DEFAULT 'legacy'
        CHECK (visit_scope IN ('legacy', 'office'))""",
-    # Organization tasks share one explicit ordering across the World,
-    # dashboard, bot API, and remote MCP surface.
+
+
     """ALTER TABLE organization_tasks
        ADD COLUMN priority INTEGER NOT NULL DEFAULT 50
        CHECK (priority BETWEEN 1 AND 99)""",
 ]
 
-# Post-CREATE column additions for tables that predate them. Idempotent: a
-# re-run raises "duplicate column name", which the applier swallows.
+
+
 SCHEMA_ALTER_STATEMENTS = [
-    # Private repos flag (won't be added by CREATE TABLE IF NOT EXISTS).
+
     "ALTER TABLE repositories ADD COLUMN is_private INTEGER NOT NULL DEFAULT 0",
-    # Plaintext blind index of the (signature-verified) submitter on each inbox
-    # row, so a per-author quota can be enforced with a COUNT instead of
-    # decrypting every pending row.
+
+
+
     "ALTER TABLE issue_inbox ADD COLUMN submitter_bi TEXT",
-    # Mirror drain leases. Deploy migrations add their compound index; the
-    # lazy compatibility path stays correct with the existing repo index.
+
+
     "ALTER TABLE issue_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE issue_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE issue_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE issue_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
-    # Completed Office tasks retain their encrypted copy, accumulated time,
-    # and audit history while remaining impossible to restart.
+
+
     """ALTER TABLE world_office_marketing_tasks
        ADD COLUMN completed_at INTEGER NOT NULL DEFAULT 0
        CHECK (completed_at >= 0)""",
     """CREATE INDEX IF NOT EXISTS idx_world_office_marketing_tasks_completion
        ON world_office_marketing_tasks(
            org_bi, completed_at, updated_at DESC)""",
-    # Assigned issue titles are already public repository metadata; retain a
-    # bounded copy so the build-board card survives the recent-issues window.
+
+
     """ALTER TABLE world_build_board_items
        ADD COLUMN title TEXT NOT NULL DEFAULT ''
        CHECK (length(title) <= 160)""",
@@ -11038,32 +11038,32 @@ SCHEMA_ALTER_STATEMENTS = [
     "ALTER TABLE discussion_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE discussion_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE discussion_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
-    # Raw User-Agent of each release download, shown in the admin list (migration 0034).
+
     "ALTER TABLE release_downloads ADD COLUMN ua TEXT",
-    # Operator-settable flag granting a user access to the /outreach console
-    # without a roster row (migration 0040). Mirrors is_admin.
+
+
     "ALTER TABLE users ADD COLUMN enable_outreach INTEGER NOT NULL DEFAULT 0",
-    # Early local builds created membership rows before their encrypted display
-    # payload was added. Existing blind-index grants remain valid; new writes
-    # always provide this ciphertext column.
+
+
+
     "ALTER TABLE chat_channel_members ADD COLUMN data TEXT",
-    # Reward eligibility independently re-verifies the exact signed health
-    # evidence. Keeping the normalized operation list lets that verifier
-    # recompute the signed digest and required-operation subset instead of
-    # trusting a mutable forkmesh_active boolean.
+
+
+
+
     """ALTER TABLE mirror_https_endpoints
        ADD COLUMN forkmesh_operations_json TEXT NOT NULL DEFAULT '[]'""",
-    # Edge-observed sign-in address of each account session, shown only to the
-    # owner of that account in the World security tab and account settings.
+
+
     "ALTER TABLE account_sessions ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''",
-    # Account whose own session was making the request that failed (migration
-    # 0108). Empty for anonymous traffic; the admin error view names it per row
-    # and per group so a recurring failure can be traced to the affected user.
+
+
+
     "ALTER TABLE error_log ADD COLUMN actor TEXT NOT NULL DEFAULT ''",
 ]
 
-# Fingerprint of the DDL this build would apply. Stored in schema_meta after a
-# full apply so later cold isolates can skip the replay with one SELECT.
+
+
 _SCHEMA_FINGERPRINT = hashlib.sha256(
     "\n".join(
         SCHEMA_PRE_CREATE_ALTER_STATEMENTS
@@ -11074,15 +11074,15 @@ _SCHEMA_FINGERPRINT = hashlib.sha256(
 
 
 async def ensure_schema(env):
-    # A Worker isolate serves many requests concurrently on one event loop, so
-    # this must never block on a cross-request coordination primitive: an
-    # asyncio.Lock shared between concurrently-running requests here used to
-    # let one request's await resume inside another request's I/O context,
-    # which Cloudflare rejects ("Cannot perform I/O on behalf of a different
-    # request") on the very next await in the waiting request. Every request
-    # instead takes the cheap fingerprint SELECT fast path independently
-    # (schema.py's CREATE statements are all IF NOT EXISTS / idempotent), so
-    # concurrent cold-isolate requests never touch a shared awaitable.
+
+
+
+
+
+
+
+
+
     if _schema_ready:
         return
     await _apply_schema(env)
@@ -11126,12 +11126,12 @@ async def _assert_legacy_wallet_custody_ready(env):
 
 async def _apply_schema(env):
     global _schema_ready
-    # Fast path: the deploy's migrate.sh (and any prior isolate's full apply)
-    # records the applied DDL's fingerprint. One SELECT replaces the ~110
-    # sequential statements below — which, replayed on every cold isolate, were
-    # the dominant startup cost for both requests and the per-minute cron (the
-    # cron routinely blew its resource limits and the /status page recorded the
-    # missing samples as downtime).
+
+
+
+
+
+
     try:
         row = await d1_first(
             env, "SELECT v FROM schema_meta WHERE k='fingerprint'")
@@ -11143,11 +11143,11 @@ async def _apply_schema(env):
             _schema_ready = True
             return
     except Exception as exc:
-        # Only a genuinely absent schema_meta table means "first run against
-        # this DB". A transient D1 failure (overload / internal error) must
-        # propagate instead: falling through here made every request replay
-        # the full DDL right when the DB was already struggling, amplifying
-        # the overload into a death spiral.
+
+
+
+
+
         if "no such table" not in str(exc).lower():
             raise
     for sql in SCHEMA_PRE_CREATE_ALTER_STATEMENTS:
@@ -11189,18 +11189,18 @@ def d1_row_to_dict(row):
     return dict(row)
 
 
-# D1 occasionally fails a single query with an opaque backend fault —
-# "D1_ERROR: internal error; reference = <id>" — the same one-off platform blip
-# shape Durable Objects raise (see log_durable_object_abort). It is not a state
-# the database stays in, so replaying the query once clears it. Letting it
-# escape instead turned a single hiccup on the public profile read into a
-# Worker 1101/500 error group (GET /api/accounts/<name>).
-#
-# Overload is deliberately excluded: "D1 DB is overloaded" IS a sustained
-# state, and replaying reads into it is exactly the amplification that made the
-# 2026-07-11 free-plan incident a death spiral (the same reasoning keeps
-# _apply_schema from re-running its DDL on a struggling database). Those still
-# fail fast, and the router below turns them into a backpressure 503.
+
+
+
+
+
+
+
+
+
+
+
+
 _D1_TRANSIENT_MARKERS = ("internal error", "network connection lost")
 _D1_SUSTAINED_MARKERS = ("overload", "too many")
 
@@ -11257,20 +11257,20 @@ async def d1_run(env, sql, *args):
     await stmt.run()
 
 
-# --- Encryption-at-rest + blind index ---------------------------------------
 
-# Known placeholder values that must never reach production: application rows
-# include credentials and historical migration records, and publicly known
-# at-rest encryption would be equivalent to storing those values in plaintext.
+
+
+
+
 _INSECURE_DATA_KEYS = frozenset({
     "", "forkmesh-dev-data-key", "forkmesh-dev-data-key-change-me",
 })
 
 
 def _require_data_secret(env):
-    # Fail closed: a missing or placeholder DATA_KEY would silently encrypt every
-    # protected application row under a public key. Set a real Worker secret:
-    #   uvx --from workers-py pywrangler secret put DATA_KEY
+
+
+
     secret = (getattr(env, "DATA_KEY", "") or "").strip()
     if secret in _INSECURE_DATA_KEYS:
         raise RuntimeError(
@@ -11320,7 +11320,7 @@ async def decrypt_row(env, stored, key=None):
 
 
 async def _hmac_key(env):
-    # A distinct key context so the blind-index HMAC key isn't the AES key.
+
     secret = _require_data_secret(env) + ":blind-index"
     if _hmac_key_cache["secret"] == secret and _hmac_key_cache["key"] is not None:
         return _hmac_key_cache["key"]
@@ -11336,20 +11336,20 @@ async def _hmac_key(env):
 
 async def _room_chat_passphrase(
         env, owner="mainnode", repo="forkmesh", room="general"):
-    # A repository-scoped room-chat passphrase, derived ONE-WAY from DATA_KEY
-    # with its own domain separation (same pattern as the blind-index HMAC key).
-    # The legacy authenticated mainnode/forkmesh room deliberately retains the
-    # v1 derivation so its retained chat remains readable across this rollout.
-    # Public World #general uses a separate, explicitly public derivation and a
-    # separate Durable Object room. Giving that key to a guest therefore cannot
-    # decrypt authenticated channels or any repository-scoped room.
-    #
-    # Neither key is a source-code constant. The public room key is intentionally
-    # available to guests, while authenticated room keys require repository
-    # authorization. This is NOT confidentiality from the relay: its operator
-    # holds DATA_KEY and can derive both. SHA-256 is preimage-resistant, so
-    # exposing the public passphrase does not expose DATA_KEY or protected
-    # application records guarded by the same at-rest key.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     owner = safe_segment(owner)
     repo = safe_segment(repo)
     room = safe_segment(room, MAX_ROOM_NAME)
@@ -11378,11 +11378,11 @@ async def _room_chat_passphrase(
 
 
 async def _room_key_requester(env, request, owner, repo):
-    # Resolve the authenticated account/node requesting one repository-scoped
-    # passphrase. Browser/mobile callers use their bearer session. A desktop
-    # node signs a v2 canonical string that binds the proof to this exact
-    # repository. The v1 proof remains accepted only for the well-known public
-    # mainnode/forkmesh room so already-installed clients can upgrade cleanly.
+
+
+
+
+
     actor = await _authed_account_name(env, request)
     if actor:
         return actor
@@ -11410,20 +11410,20 @@ async def _room_key_requester(env, request, owner, repo):
     return ""
 
 
-# Canonical prefixes a desktop client signs with its account's Ed25519 key to
-# read the chat-channel API without a browser session token (the Qt app holds
-# keys, not sessions). Each proof names the exact resource it opens.
+
+
+
 CHAT_CHANNEL_LIST_PROOF = "forkmesh-chat-channels-v1"
 CHAT_CHANNEL_ACCESS_PROOF = "forkmesh-chat-channel-access-v1"
 CHAT_CHANNEL_HISTORY_PROOF = "forkmesh-chat-channel-history-v1"
 
 
 async def _chat_channel_signed_session(env, request):
-    # Resolve the account behind a key-signed chat-channel read. Reads only: a
-    # signature never creates, joins, or moderates a channel. The account must
-    # still be an active user, and every channel-scoped authorization
-    # (membership/visibility/admin) is applied by the API exactly as it is for
-    # a session-token caller.
+
+
+
+
+
     if method_name(request) != "GET":
         return "", None
     url = urlparse(request.url)
@@ -11460,20 +11460,20 @@ async def _chat_channel_signed_session(env, request):
     return account_bi, record
 
 
-# Canonical prefixes a desktop signs with its account's Ed25519 key to open and
-# close an organization task for a prompt it just launched. A desktop that
-# authenticated silently holds keys and no session token, so without these the
-# Agents composer's Task toggle could never reach the board (adhoc #18).
+
+
+
+
 ORG_TASK_OPEN_PROOF = "forkmesh-org-task-open-v1"
 ORG_TASK_COMPLETE_PROOF = "forkmesh-org-task-complete-v1"
-# The same key, reading the board it can already write to. Without this the
-# desktop Tasks tab was empty for every operator who launched normally instead
-# of typing a password, because it had no session token to present (adhoc #52).
+
+
+
 ORG_TASK_LIST_PROOF = "forkmesh-org-task-list-v1"
-# The same key, signing for the one credential a desktop's "genie" button needs
-# (adhoc #49): a task-only remote-MCP bearer for the task board. An install that
-# can already open and close tasks with its key should not have to send its
-# operator to the website to copy a token by hand.
+
+
+
+
 GENIE_CREDENTIAL_PROOF = "forkmesh-genie-credential-v1"
 ORG_TASK_COMPLETE_RE = re.compile(
     r"^/api/tasks/([a-f0-9]{32})/complete/?$")
@@ -11508,8 +11508,8 @@ async def _org_task_signed_session(env, request):
     complete = ORG_TASK_COMPLETE_RE.match(url.path)
     collection = ORG_TASK_COLLECTION_RE.match(url.path)
     if method == "GET":
-        # Reads have no write proof to reuse: a GET signed with the open proof
-        # must not be replayable as a task creation, so listing gets its own.
+
+
         if not collection:
             return "", None
         canonical = (
@@ -11526,15 +11526,15 @@ async def _org_task_signed_session(env, request):
         ).encode()
     else:
         return "", None
-    # Every key the account may sign as, not just its primary pubkey: a desktop
-    # that logged in with a password registers THIS machine's key in
-    # account_devices, while rec["pubkey"] keeps naming whichever install
-    # created the account. That session token lives only in memory, so the next
-    # launch authenticates silently and signs the board read with the device
-    # key — and a gate that trusted only the primary answered invalid_session,
-    # which is why the Tasks tab loaded until the app was restarted (adhoc #63).
-    # Same family as the /api/sync drain gate; see _owner_signing_pubkeys for
-    # why reusing the stored device keys is account-bound and safe.
+
+
+
+
+
+
+
+
+
     if not await _verify_owner_signature(env, node, sig, canonical):
         return "", None
     account_bi, record = await _account_row(env, node)
@@ -11567,9 +11567,9 @@ async def _genie_credential_signed_session(env, request):
     canonical = (
         GENIE_CREDENTIAL_PROOF + "\n" + node + "\n" + str(ts)
     ).encode()
-    # Same durable desktop identity as _org_task_signed_session: a reinstalled
-    # or password-logged-in machine signs with its account_devices key, which is
-    # never promoted to the account's primary pubkey (adhoc #63).
+
+
+
     if not await _verify_owner_signature(env, node, sig, canonical):
         return "", None
     account_bi, record = await _account_row(env, node)
@@ -11583,11 +11583,11 @@ async def _genie_credential_signed_session(env, request):
     return account_bi, record
 
 
-# The same account key, reading and clearing its own alert inbox. The desktop's
-# Alerts page mirrors the website's bell, and an install that authenticated
-# silently holds keys and no session token — so without these the linked inbox
-# would answer "unauthorized" to the very operator who owns it (adhoc #59, the
-# notification twin of ORG_TASK_LIST_PROOF).
+
+
+
+
+
 ACCOUNT_ALERT_LIST_PROOF = "forkmesh-account-alert-list-v1"
 ACCOUNT_ALERT_READ_PROOF = "forkmesh-account-alert-read-v1"
 ACCOUNT_ALERT_DELETE_PROOF = "forkmesh-account-alert-delete-v1"
@@ -11621,8 +11621,8 @@ async def _account_alert_signed_session(env, request, resource=""):
     elif method == "POST":
         canonical_prefix = ACCOUNT_ALERT_READ_PROOF + "\n" + node
     else:
-        # The row being deleted is part of what was signed, so a captured
-        # delete cannot be replayed against a different notification.
+
+
         item_id = clean_string(resource or "", 160).lower()
         if not item_id:
             return ""
@@ -11655,18 +11655,18 @@ async def _alert_inbox_account_name(env, request, data=None, resource=""):
 
 
 async def _room_key_authorized(env, request):
-    # Compatibility wrapper retained for isolated callers/tests. Authorization
-    # for the endpoint itself is repository-scoped in chat_room_key_handler.
+
+
     return bool(await _room_key_requester(
         env, request, "mainnode", "forkmesh"))
 
 
 async def chat_room_key_handler(env, request):
-    # Serve the isolated public World #general passphrase to any visitor, or a
-    # repository-scoped room passphrase to an authenticated participant.
-    # Missing and unauthorized private repositories share one 404 response, and
-    # the private catalog record is not decrypted until its blind-index ACL gate
-    # has passed.
+
+
+
+
+
     await ensure_schema(env)
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -11711,13 +11711,13 @@ CHAT_ACTIVITY_TTL = 30
 
 
 async def chat_activity_handler(env, request):
-    # Lightweight public digest behind the site-wide header chat badge: how many
-    # retained #general messages exist and how many user accounts are registered.
-    # Counts only — chat_history bodies stay encrypted and user rows are never
-    # decrypted (email_bi is only set on email-bearing user accounts, so it
-    # separates users from keyless node reservations without touching `data`).
-    # Edge-cached so every page load across the site collapses to one D1 read
-    # pair per colo per TTL.
+
+
+
+
+
+
+
     del request
     cached = await edge_cache_match(CHAT_ACTIVITY_CACHE_KEY)
     if cached is not None:
@@ -11748,14 +11748,14 @@ async def chat_activity_handler(env, request):
 
 
 async def blind_index(env, value):
-    # Deterministic, searchable HMAC of a normalized identifier (never plaintext).
+
     key = await _hmac_key(env)
     norm = (value or "").strip().lower().encode()
     sig = await js_crypto.subtle.sign("HMAC", key, _to_js(norm))
     return bytes(Uint8Array.new(sig).to_py()).hex()
 
 
-# --- Password (PBKDF2-SHA256) -----------------------------------------------
+
 
 async def hash_password(password):
     salt = js_crypto.getRandomValues(Uint8Array.new(16))
@@ -11791,7 +11791,7 @@ async def verify_password(password, salt_b64, hash_b64):
         return False
 
 
-# --- TOTP (RFC 6238, HMAC-SHA1, 6 digits, 30s) ------------------------------
+
 
 def _b32_decode(secret):
     s = (secret or "").strip().upper().replace(" ", "")
@@ -11822,13 +11822,13 @@ async def totp_verify(secret_b32, code):
     if not code.isdigit() or len(code) != 6:
         return False
     counter = int(Date.now()) // 1000 // 30
-    for delta in (-1, 0, 1):  # allow one step of clock skew either way
+    for delta in (-1, 0, 1):
         if hmac.compare_digest(await _totp_at(secret_b32, counter + delta), code):
             return True
     return False
 
 
-# --- Catalog (repositories table) -------------------------------------------
+
 
 async def _contribution_owner_user_bi(env, account_bi, account_rec):
     """Resolve a publishing user, linked node owner, or unlinked node fallback."""
@@ -12014,9 +12014,9 @@ async def _contribution_write_catalog_state(
         ))
     await _contribution_run_batch(env, statements)
     if is_private:
-        # A repository that becomes private must not retain even an encrypted
-        # automatic-publication queue. Keep the compatibility guard for the
-        # isolated contribution test harness, which loads this helper alone.
+
+
+
         purge_digests = globals().get("_ap_purge_repo_digest_queues")
         if callable(purge_digests):
             await purge_digests(
@@ -12178,14 +12178,14 @@ async def _contribution_ingest_snapshot(
     if str(snapshot["capturedAt"]) != record.get("updatedAt"):
         return {"accepted": False, "warning": "contribution_time_mismatch"}
 
-    # Fast path for a re-attestation republish: it re-sends the SAME snapshot, so
-    # its content hash -> generation_bi is unchanged. If that generation is
-    # already the active one for this repo, the ingest is a pure no-op (the
-    # staging batch below is all INSERT OR IGNORE plus a captured_at<? UPDATE that
-    # can't advance for an equal capturedAt). Skip the expensive signature verify,
-    # actor lookups, staging batch, and prune entirely — re-running the full
-    # ingest on every drifted-pin re-attest was a major driver of the Worker CPU
-    # (Cloudflare 1102) overload the desktop then hammered with retries.
+
+
+
+
+
+
+
+
     generation_bi = await blind_index(
         env, "profile-generation:" + source_repo_bi + ":" + snapshot_hash)
     active_row = await d1_first(
@@ -12823,8 +12823,8 @@ async def _contribution_profile_api(env, request, raw_name):
 
 
 async def catalog_rate_check(env, owner_bi):
-    # Throttle catalog writes per owner: at most one write per cooldown window.
-    # Returns a 429 response when throttled, else None (and records this write).
+
+
     now = int(Date.now())
     row = await d1_first(
         env, "SELECT ts FROM catalog_rate WHERE owner_bi=?", owner_bi)
@@ -12851,16 +12851,16 @@ async def catalog_rate_check(env, owner_bi):
 
 
 async def signup_rate_check(env, ip_bi):
-    # Throttle account creation per source IP: at most SIGNUP_MAX_PER_IP within a
-    # rolling SIGNUP_RATE_WINDOW_MS. Returns a 429 response when over the limit,
-    # else None (and records this creation). A missing IP (local/dev, or a proxy
-    # path with no CF header) is not throttled — we only rate-limit what we can
-    # attribute — so genuine tests and self-hosting stay unaffected.
+
+
+
+
+
     if not ip_bi:
         return None
     now = int(Date.now())
-    # One UPSERT owns reset+increment+readback. Parallel signup requests can no
-    # longer all observe the same old count and overwrite one another.
+
+
     row = await d1_first(
         env,
         "INSERT INTO signup_rate (ip_bi,count,window_start_ts) VALUES (?,1,?) "
@@ -12995,11 +12995,11 @@ async def catalog_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
     if method == "GET":
-        # A logged-in owner may sign a short-lived forkmesh-catalog-view-v1 token to
-        # additionally receive their OWN private repos (anonymous callers, and the
-        # static website with no key, still get the public-only list). The result is
-        # per-viewer, so an authenticated request must never read from or write to
-        # the SHARED public edge cache — that would leak private repos to everyone.
+
+
+
+
+
         params = parse_qs(urlparse(
             str(getattr(request, "url", "") or "")).query)
         admin_query = _admin_query(params.get("admin", [""])[0])
@@ -13019,26 +13019,26 @@ async def catalog_handler(env, request):
             cached = await edge_cache_match(CATALOG_CACHE_KEY)
             if cached is not None:
                 return cached
-        # Best-effort D1 housekeeping (drop blocked phantoms, prune stale nodes)
-        # only on the cheap, edge-cached anonymous miss. The response is already
-        # correct without it — blocked entries are skipped by
-        # _is_blocked_catalog_identity — and the staggered cron sweeps D1 on its
-        # own schedule. An
-        # authenticated (per-viewer, never-cached) request must NOT run these:
-        # replaying a burst of DELETEs plus host-offline notifications inline on
-        # every catalog load held the single Worker event loop long enough for
-        # the runtime to cancel the request as hung ("Cannot enter into task").
-        # Housekeeping moved off the request path entirely (2026-07-11): the
-        # staggered cron already runs purge_blocked_catalog (minute%15==9) and
-        # purge_stale_registered_nodes (minute%15==4), and the response is
-        # correct without them — blocked entries are skipped by
-        # _is_blocked_catalog_identity, while stale signed catalog entries stay
-        # visible with offline availability. Running purges on every 10s cache
-        # miss helped melt the free plan during the 2026-07-11 overload.
-        # Public repos are listed for everyone; an authenticated viewer additionally
-        # gets the private repos they own (matched by blind index) AND any private
-        # repo another owner has shared with them (issue #9, via the repo_shares
-        # ACL). No other owner's un-shared private repos are ever returned.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         if authed_viewer:
             viewer_bi = await blind_index(env, authed_viewer)
             rows = await d1_all(
@@ -13052,13 +13052,13 @@ async def catalog_handler(env, request):
                 env,
                 "SELECT key_bi, owner_bi, data FROM repositories "
                 "WHERE is_private = 0")
-        # Repository sockets and their host_presence heartbeat were retired when
-        # repository bytes moved to signed direct-HTTPS mirrors. Derive catalog
-        # availability from that same trust boundary: a fresh, non-blocked
-        # endpoint whose account-bound Ed25519 challenge proved the flagship
-        # refs and required operations. node_bi and repositories.owner_bi use
-        # the same blind-index domain, so no plaintext node join or client probe
-        # is needed here.
+
+
+
+
+
+
+
         cutoff = int(Date.now()) - HTTPS_MIRROR_STATUS_FRESH_MS
         live_rows = await d1_all(
             env,
@@ -13091,11 +13091,11 @@ async def catalog_handler(env, request):
             if rec:
                 owner_bi = r.get("owner_bi")
                 visibility = rec.get("visibility")
-                # Never trust the historical plaintext flag by itself:
-                # migration 0011 defaulted pre-existing rows to public. Only a
-                # signed record explicitly marked public is anonymous catalog
-                # data. A private record selected through a stale flag still
-                # requires an owner/share ACL recheck.
+
+
+
+
+
                 if visibility not in ("public", "private"):
                     continue
                 if not owner_bi:
@@ -13116,21 +13116,21 @@ async def catalog_handler(env, request):
                         )
                         if not shared:
                             continue
-                # Defense in depth: never surface a blocked identity even if a
-                # row slipped in before the purge ran.
+
+
                 if _is_blocked_catalog_identity(
                         env, rec.get("owner"), rec.get("name")):
                     continue
                 rec["liveHost"] = (
                     str(owner_bi or "") in live_endpoint_nodes
                 )
-                # Plaintext flag so clients can badge private repos without
-                # re-deriving it from the visibility string.
+
+
                 rec["isPrivate"] = rec.get("visibility") == "private"
-                # A private repo surfaced to a viewer who is NOT its owner can only
-                # be here because it was shared with them (issue #9). The client
-                # badges it and clones it with the grantee view token, not the
-                # owner one.
+
+
+
+
                 rec["sharedWithMe"] = bool(
                     authed_viewer and rec["isPrivate"]
                     and rec.get("owner") != authed_viewer)
@@ -13138,20 +13138,20 @@ async def catalog_handler(env, request):
                 rec["termsFlagged"] = bool(terms_category)
                 if terms_category:
                     rec["termsCategory"] = terms_category
-                # Publish an SSH clone/push URL only when a separate gateway
-                # host and its Worker authorization token are both configured.
-                # The URL is never a claim that this HTTP Worker terminates SSH.
+
+
+
                 if ssh_gateway["configured"]:
                     ssh_url = _ssh_repository_url(
                         env, rec.get("owner", ""), rec.get("name", ""))
                     if ssh_url:
                         rec["sshUrl"] = ssh_url
-                # Only this ACL-authorized, no-store catalog response may reveal
-                # the random client locator for an encrypted private archive.
-                # Anonymous/public catalog rows never reach this branch for a
-                # private repository, and the locator itself contains no owner
-                # or repository name. It is still not a bearer credential:
-                # archive reads independently require the owner/share signature.
+
+
+
+
+
+
                 if rec["isPrivate"]:
                     access_id = await _https_mirror_private_catalog_access_id(
                         env, r["key_bi"], int(rec.get("keyEpoch") or 0))
@@ -13162,12 +13162,12 @@ async def catalog_handler(env, request):
                 repos.append(rec)
                 repository_owner_rows.append((rec, owner_bi))
         await _catalog_logical_owners(env, repository_owner_rows)
-        # Second pass: mark each repo cloneable when its own host is offline but a
-        # peer mirroring the same logical repo is online — the relay serves that
-        # mirror in place through the repo's own URL (adhoc #61), so the website
-        # shows the repo as available (and which nodes are live) instead of a
-        # bare "host offline". served_mirror_groups sees the whole public list, so
-        # this works even when the freshest live node is a different owner's mirror.
+
+
+
+
+
+
         served = served_mirror_groups(repos)
         for rec in repos:
             rec["cloneOnline"] = repo_clone_online(rec, served)
@@ -13186,9 +13186,9 @@ async def catalog_handler(env, request):
                 "funds, and publication does not guarantee a reward."
             ),
         }
-        # Per-viewer responses (with private repos) must never touch the shared
-        # public cache — and must say no-store themselves so no downstream cache
-        # holds them either; only the public-only list is cacheable.
+
+
+
         if authed_viewer or bypass_cache:
             return json_response(
                 payload,
@@ -13208,15 +13208,15 @@ async def catalog_handler(env, request):
                 {"error": "owner_name_and_maintainer_required"}, status=400
             )
         owner = record["owner"]
-        # Blocked phantom identities can never (re)enter the catalog.
+
         if _is_blocked_catalog_identity(env, owner, record["name"]):
             return json_response({"error": "blocked"}, status=403)
-        # Repos are namespaced under a registered account, and only that account's
-        # key holder may write its namespace. This ties repo identity to the
-        # account (fixes duplicate forks) and prevents impersonation. A registered
-        # account is REQUIRED — there is no self-asserted-maintainer fallback.
-        # One account fetch serves both the pubkey check and the node touch
-        # below (the old code fetched + decrypted the same record twice).
+
+
+
+
+
+
         _, publish_owner_rec = await _account_row(env, owner)
         primary_owner_pub = (publish_owner_rec.get("pubkey", "")
                              if publish_owner_rec else "")
@@ -13232,9 +13232,9 @@ async def catalog_handler(env, request):
         except (TypeError, ValueError):
             catalog_sig_version = 0
         if catalog_sig_version == 2:
-            # V2 binds every normalized record field, including visibility and
-            # the served-ref fingerprint. A relay or replay holder cannot turn
-            # a private publication into a public one while reusing a signature.
+
+
+
             signed_record = dict(record)
             signed_record.pop("signature", None)
             record_hash = hashlib.sha256(json.dumps(
@@ -13242,9 +13242,9 @@ async def catalog_handler(env, request):
                 separators=(",", ":")).encode()).hexdigest()
             canonical = ("forkmesh-catalog-v2\n" + record_hash).encode()
         else:
-            # Legacy signatures did not bind visibility. They remain accepted
-            # only for explicitly public repositories; private publication must
-            # upgrade before the relay stores any confidential metadata.
+
+
+
             if record["visibility"] != "public":
                 return json_response(
                     {
@@ -13292,10 +13292,10 @@ async def catalog_handler(env, request):
         except Exception:
             pass
 
-        # Repo-state attestation: the same owner key signs the fingerprint of the
-        # refs it serves, so the relay can later reject a tampered/stale mirror.
-        # Reject the whole write if a present attestation doesn't verify (a bad
-        # one must never be pinned); absent is allowed for backward compatibility.
+
+
+
+
         state_hash = record.get("stateHash", "")
         state_sig = record.get("stateSig", "")
         if state_hash or state_sig:
@@ -13307,31 +13307,31 @@ async def catalog_handler(env, request):
                     owner_pub, state_sig, state_canonical)):
                 return json_response({"error": "bad_state_signature"}, status=401)
 
-        # Anti-spam: throttle writes per owner and cap how many repos one owner may
-        # publish, so a single key can't flood the catalog.
+
+
         limited = await catalog_rate_check(env, owner_bi)
         if limited is not None:
             return limited
 
         key_bi = await blind_index(env, owner + "/" + record["name"])
-        # The owner deleted this repository from the website, but the node that
-        # hosts it still republishes on every heartbeat. Refuse those automatic
-        # publishes so the delete sticks (adhoc #91). The signature above has
-        # already proven this is the owner's key, so an explicit user-initiated
-        # publish from the desktop is allowed to lift the tombstone.
+
+
+
+
+
         if await _repo_delete_tombstone_active(env, key_bi):
             if clean_string(data.get("publishIntent", ""), 16) != "user":
                 return json_response(
                     {"error": "repository_deleted"}, status=410)
             await _clear_repo_delete_tombstone(env, key_bi)
-        # Per-owner record cap (an update to an existing repo is always allowed).
+
         prior_row = await d1_first(
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
         exists = prior_row is not None
         prior_commit = ""
         prior_state_hash = ""
-        # Reject rollbacks: a replayed older record must not be able to repin an
-        # earlier (validly-signed) repo state and downgrade the served refs.
+
+
         if exists:
             prior = await decrypt_row(env, prior_row["data"]) or {}
             prior_commit = clean_string(prior.get("commit", ""), 64)
@@ -13367,26 +13367,26 @@ async def catalog_handler(env, request):
                     key_bi,
                 )
             except Exception:
-                # Optional snapshot failures do not roll back an authorized
-                # repository publication.
+
+
                 contribution_result = {
                     "accepted": False,
                     "warning": "contribution_ingestion_failed",
                 }
-        # A working-copy holder's verified attestation also lands in the pin
-        # history, which is what lets an honest mirror lag the source by a few
-        # publishes without failing the clone integrity gate (clone_state_pins).
-        # Mirrors' ("remote-clone") self-attestations are deliberately NOT
-        # recorded — they must match a source pin. Best-effort: a failure here
-        # must never fail the publish itself.
+
+
+
+
+
+
         if state_hash and record.get("source") == "local-node":
             try:
-                # Preserve the state being replaced explicitly. Older releases
-                # wrote history best-effort after replacing the catalog row, so
-                # an upgraded repository can otherwise lose its only
-                # last-known-good handoff pin on the first new publication.
-                # The previous record was already owner-signature-verified when
-                # accepted; remote-clone self-pins never enter this path.
+
+
+
+
+
+
                 history_states = [
                     digest for digest in (
                         prior_state_hash,
@@ -13412,9 +13412,9 @@ async def catalog_handler(env, request):
                 )
             except Exception:
                 pass
-        # Cap: keep only the most-recent MAX_CATALOG_REPOS. COUNT first — the
-        # old unconditional fetch-and-decrypt of EVERY catalog blob on every
-        # publish was pure per-request overhead (the cap is almost never hit).
+
+
+
         total_row = await d1_first(
             env, "SELECT COUNT(*) AS c FROM repositories")
         if total_row and (total_row.get("c", 0) or 0) > MAX_CATALOG_REPOS:
@@ -13427,12 +13427,12 @@ async def catalog_handler(env, request):
             for stale_key, _ in decoded[MAX_CATALOG_REPOS:]:
                 await _delete_repo_scoped_state(env, stale_key)
                 await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", stale_key)
-        # Endpoint registration deliberately resets health to pending. Once this
-        # account-bound publication has durably pinned the public flagship state,
-        # immediately challenge only the publishing node so clone availability
-        # does not depend on a later cron tick. The helper is best-effort: an
-        # unreachable or invalid proof remains fail-closed in endpoint state but
-        # never rolls back an otherwise valid catalog publication.
+
+
+
+
+
+
         await _https_mirror_refresh_catalog_publisher_health(env, record)
         await purge_catalog_related_caches()
         if (
@@ -13441,15 +13441,15 @@ async def catalog_handler(env, request):
             try:
                 await _promote_hosted_repository_import(env, record)
             except Exception:
-                # Import metadata and its notification are useful secondary
-                # effects. The signed native catalog is still authoritative
-                # and must not be rolled back if this bounded linkage fails.
+
+
+
                 pass
-        # A public record whose advertised head moved means freshly pushed code
-        # just landed on this mirror node. Announce it to the live World room —
-        # after the cache purge above, so a viewer's immediate refresh reads
-        # the new head. Best-effort and already bounded by catalog_rate_check:
-        # a World relay hiccup must never fail an authorized publication.
+
+
+
+
+
         new_commit = record.get("commit", "")
         if (record["visibility"] == "public" and exists
                 and re.fullmatch(r"[0-9a-f]{40,64}", new_commit)
@@ -13479,12 +13479,12 @@ async def catalog_handler(env, request):
         if not owner or not name:
             return json_response({"error": "owner_name_required"}, status=400)
 
-        # The desktop still signs the catalog-delete canonical with the
-        # repository owner's Ed25519 key. The web Settings tab has no access to
-        # that private key, so it instead proves the logged-in account session
-        # and the same account->node ownership relationship used by About
-        # editing. A valid session for some other account is never a substitute
-        # for the signature.
+
+
+
+
+
+
         session_actor = await _authed_account_name(env, request)
         session_authorized = bool(
             session_actor
@@ -13517,9 +13517,9 @@ async def catalog_handler(env, request):
                 audit_target, "failed", {"reason": "storage_error"})
             raise
         if not row:
-            # No catalog row right now, but the owner node may still be about
-            # to republish one (that race is exactly what makes a web delete
-            # look like it did nothing). Tombstone it anyway.
+
+
+
             if session_authorized:
                 await _record_repo_delete_tombstone(
                     env, key_bi, await blind_index(env, owner))
@@ -13568,17 +13568,17 @@ async def catalog_handler(env, request):
                     env, owner, "repository.delete", "repository",
                     audit_target, "denied", {"reason": "bad_signature"})
                 return json_response({"error": "bad_signature"}, status=401)
-        # Deleting a single repo must purge it as completely as the
-        # whole-account teardown does, or leftover scoped state (inboxes,
-        # host presence, agent state, bounties, chat history) keeps the repo
-        # alive in practice even though its catalog row is gone.
+
+
+
+
         try:
-            # A delete made from the website has to outlive the owner node's
-            # next heartbeat: that node still holds the mirror and republishes
-            # automatically, which used to re-create the row within a minute
-            # (adhoc #91). The desktop's own owner-signed delete needs no
-            # tombstone — it is the publisher, and it also uses this endpoint
-            # to move a repo to a renamed owner.
+
+
+
+
+
+
             if session_authorized:
                 await _record_repo_delete_tombstone(
                     env, key_bi, await blind_index(env, owner))
@@ -13666,7 +13666,7 @@ def _native_repository_logo_record(record, owner, repo):
         "name": str(repo or ""),
         "fullName": str(owner or "") + "/" + str(repo or ""),
         "metadata": metadata,
-        # Missing or malformed visibility stays private/fail-closed.
+
         "isPrivate": source.get("visibility") != "public",
         "commit": clean_string(source.get("commit", ""), 64).lower(),
     }
@@ -13714,11 +13714,11 @@ def _committed_repository_logo_url(record, owner, repo):
 
 
 async def _native_repository_logo_context(env, request, owner, repo):
-    # Reuse the normal repository read boundary so logo GETs have exactly the
-    # same owner/share behavior as repository content. The shared gate rejects
-    # plaintext-private rows before decryption, treats the encrypted signed
-    # visibility as authoritative, and normalizes missing and unauthorized
-    # names to the same empty result.
+
+
+
+
+
     context = await _repository_access_context(
         env, request, owner, repo)
     if not isinstance(context, dict):
@@ -13758,10 +13758,10 @@ async def native_repository_logo_handler(
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
         if committed_logo_url:
-            # The committed URL is streamed by a mirror, so it can fail while
-            # the rest of the card renders (offline or lagging host). Ship the
-            # approved/generated artwork with it so a client can swap in place
-            # instead of leaving a broken image where the logo belongs.
+
+
+
+
             fallback = await service._official_logo(env, repository_id)
             fallback = (
                 fallback
@@ -13835,15 +13835,15 @@ def _repository_logo_image_response(logo, public=True):
 
 
 async def _repo_about_public(env, request, owner, repo):
-    # Public About/branding card + fediverse stats: the repo page's social
-    # badge header and Watch button read this. No auth — same visibility as
-    # the catalog entry itself.
-    # Organization API paths are internally rewritten to the backing node
-    # before this handler runs. Recover the public owner from the untouched
-    # Request URL, but only when the durable org link still resolves to the
-    # canonical owner passed by the router. Catalog/privacy/settings reads
-    # continue to use the backing owner; the actor identity and public media
-    # URLs must keep the organization name.
+
+
+
+
+
+
+
+
+
     display_owner = owner
     try:
         public_path = urlparse(request.url).path
@@ -13915,13 +13915,13 @@ async def _repo_about_public(env, request, owner, repo):
             env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
             actor_bi)
         followers = (row or {}).get("c", 0) or 0
-        # The newest followers, so the repo page can show WHO is watching —
-        # follower_id/handle are public fediverse identifiers (the remote
-        # server publishes the same follow), capped so a popular repo never
-        # ships thousands of rows in an About card. The cached remote actor
-        # document (LEFT JOIN: absent until that actor is first fetched) adds
-        # the presentation every fediverse client already shows for them —
-        # display name, avatar, bio, profile URL.
+
+
+
+
+
+
+
         rows = await d1_all(
             env,
             "SELECT follower_id, follower_handle, created_at, display_name,"
@@ -13934,8 +13934,8 @@ async def _repo_about_public(env, request, owner, repo):
             follower_handle = str(follower.get("follower_handle") or "")
             parsed = urlparse(follower_url)
             if not follower_handle and follower_url:
-                # Older rows may lack the resolved handle; a readable
-                # fallback beats a bare URL in the UI.
+
+
                 name = parsed.path.rstrip("/").rpartition("/")[2]
                 if name and parsed.hostname:
                     follower_handle = "@%s@%s" % (
@@ -13966,8 +13966,8 @@ async def _repo_about_public(env, request, owner, repo):
         "defaultLogoUrl": generated_logo.get("dataUrl") or AP_AVATAR_PATH,
         "defaultBannerUrl": AP_BANNER_PATH,
         "fediverse": {
-            # enabled = "this repo currently federates": the instance switch
-            # AND the owner's per-repo switch.
+
+
             "enabled": fedi_enabled and ap_settings["federate"],
             "handle": "@%s@%s" % (handle, _ap_domain_of(origin)),
             "actorUrl": _ap_actor_url(origin, AP_ACTOR_REPO, handle),
@@ -13988,12 +13988,12 @@ async def repo_about_handler(env, request, owner, repo):
         data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
-    # Only the repo owner (proven by their session token, not a self-asserted
-    # ownerAccount string) may edit repo metadata. A platform role is not a
-    # decryption/content-management grant. The Qt
-    # desktop has no browser session; it proves the owner account's registered
-    # Ed25519 key instead (same trust gate as ap-publish / the inbox drains,
-    # with a distinct canonical so its tokens can't be replayed elsewhere).
+
+
+
+
+
+
     actor = await _authed_account_name(env, request, data)
     owner_key_authed = False
     if not actor and data.get("ownerSig") and data.get("ts"):
@@ -14011,22 +14011,22 @@ async def repo_about_handler(env, request, owner, repo):
     if not await _owner_pubkey(env, owner):
         return json_response({"error": "account_required"}, status=403)
 
-    # Absent = unchanged, so a settings-only save (Qt fediverse switches)
-    # never blanks the description.
+
+
     description_provided = "description" in data
     description = clean_string(data.get("description", ""), 240)
-    # Optional project website shown under the description (and written into
-    # the repo's .forkmesh/info.json by the owner's node). Absent = unchanged;
-    # empty string = remove. Only http(s) URLs are accepted.
+
+
+
     website_provided = "website" in data
     website = clean_string(data.get("website", ""), 240).strip()
     if website_provided and website and not re.match(
             r"^https?://[^\s]+$", website):
         return json_response({"error": "invalid_website"}, status=400)
-    # Optional repo branding for the fediverse actor (and anything else that
-    # wants it): PNG logo (avatar) + banner (profile header). Absent field =
-    # leave unchanged; empty string = remove. Validated before any write so a
-    # bad image never half-applies the About edit.
+
+
+
+
     media_updates = {}
     for field, kind, cap in (("logoPng", "logo", MAX_REPO_LOGO_BYTES),
                              ("bannerPng", "banner", MAX_REPO_BANNER_BYTES)):
@@ -14049,10 +14049,10 @@ async def repo_about_handler(env, request, owner, repo):
         updated += 1
         if first is None:
             first = record
-        # Re-saving the About dialog with unchanged values must be a no-op:
-        # every write here cascades into a catalog cache purge, an about_inbox
-        # round-trip through the owner's desktop, and an Update(Group)
-        # broadcast to every fediverse follower.
+
+
+
+
         if ((not description_provided or
              str(record.get("description") or "") == description) and
                 (not website_provided or
@@ -14086,9 +14086,9 @@ async def repo_about_handler(env, request, owner, repo):
                     media_bi, kind)
                 media_changed = True
             continue
-        # Identical bytes keep the stored updated_at: bumping it would rotate
-        # the ?v= cache-buster in the actor doc and make every follower server
-        # re-download an image that did not change.
+
+
+
         stored = await decrypt_row(env, existing.get("data")) if existing \
             else None
         if stored and stored.get("png") == png_b64:
@@ -14102,10 +14102,10 @@ async def repo_about_handler(env, request, owner, repo):
             media_bi, kind, await encrypt_row(env, {"png": png_b64}),
             int(Date.now()))
         media_changed = True
-    # Per-repo fediverse switches ride the same About save (web gear form and
-    # the Qt dialog both send a `fediverse` object). Absent = unchanged; an
-    # unchanged value writes nothing, so a plain description re-save never
-    # touches the AP tables or the edge cache.
+
+
+
+
     ap_settings = None
     fedi_data = data.get("fediverse")
     if isinstance(fedi_data, dict):
@@ -14122,9 +14122,9 @@ async def repo_about_handler(env, request, owner, repo):
                 " data=excluded.data, updated_at=excluded.updated_at",
                 await _ap_repo_settings_bi(env, owner, repo),
                 json.dumps(ap_settings), int(Date.now()))
-            # The actor doc, its collections and the webfinger lookup are
-            # edge-cached (and misses park a 404): drop them so a federation
-            # switch takes effect now, not after the TTL.
+
+
+
             origin = _ap_origin(env, request)
             ap_handle = ap.repo_handle(
                 str(owner).lower(), str(repo).lower())
@@ -14137,16 +14137,16 @@ async def repo_about_handler(env, request, owner, repo):
                 await edge_cache_delete(cache_key)
             if not (ap_settings["federate"]
                     and ap_settings["broadcastEvents"]):
-                # Opt-out is immediate and destructive: queued public metadata
-                # cannot later leak in a stale digest after settings change.
+
+
                 purge_digests = globals().get(
                     "_ap_purge_repo_digest_queues")
                 if callable(purge_digests):
                     await purge_digests(env, owner, repo)
     if text_changed:
-        # Queue the edit for the owner's desktop node, which writes it into the
-        # repo's committed .forkmesh/info.json (the same file the desktop app's
-        # own About editor maintains) on its next sync. Latest edit wins.
+
+
+
         about_update = {
             "about": description if description_provided
             else clean_string((first or {}).get("description", "") or "", 240),
@@ -14166,14 +14166,14 @@ async def repo_about_handler(env, request, owner, repo):
             notify_repo_host(env, owner, repo, "about"))
         await purge_catalog_related_caches()
     if text_changed or media_changed:
-        # Tell existing fediverse followers the profile changed (Update
-        # activity), so the new logo/banner/description shows up on remote
-        # servers now, not whenever their actor cache happens to expire.
+
+
+
         await _best_effort_inbox_side_effect(_ap_broadcast_actor_update(
             env, request, AP_ACTOR_REPO,
             ap.repo_handle(str(owner).lower(), str(repo).lower())))
-    # Return only the fields the caller just set — never the full decrypted
-    # catalog record (which carries private-repo cloneUrl/visibility/stateHash).
+
+
     media_rows = await d1_all(
         env, "SELECT kind FROM repo_media WHERE repo_bi=?", media_bi)
     media_kinds = {r.get("kind") for r in (media_rows or [])}
@@ -14200,10 +14200,10 @@ async def repo_mirrors_handler(env, request, owner, repo):
             and await privacy_reader(env, owner, repo)):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
-    # The router internally rewrites an organization URL to its backing node.
-    # Recover the untouched public identity for response/cache presentation;
-    # backing node identity remains an authorization detail and must not turn
-    # /forkmesh/forkmesh into a user-owned /jett/forkmesh repository in UIs.
+
+
+
+
     public_owner = str(owner or "").strip().lower()
     public_repo = str(repo or "").strip().lower()
     try:
@@ -14223,8 +14223,8 @@ async def repo_mirrors_handler(env, request, owner, repo):
             public_owner = requested_owner
     except Exception:
         pass
-    # Public, poll-heavy payload (repo page + desktop mirror panel): serve
-    # from the edge for a few seconds so a burst of viewers costs one build.
+
+
     cache_key = ("https://forkmesh.internal/api/repo/%s/%s/mirrors"
                  % (quote(public_owner), quote(public_repo)))
     cached = await edge_cache_match(cache_key)
@@ -14250,12 +14250,12 @@ async def repo_mirrors_handler(env, request, owner, repo):
         })
 
     now = int(Date.now())
-    # Repository bytes moved off the retired host WebSocket to signed direct
-    # HTTPS endpoints. Read the fresh endpoint leases once and map them onto
-    # this catalog group directly; the old hydrate path issued up to eight
-    # redundant per-owner D1 probes and memoized a transient zero for 30s,
-    # making a recovered mirror flicker offline after its signed lease was
-    # already healthy again.
+
+
+
+
+
+
     endpoint_rows = await d1_all(
         env,
         """SELECT node_name,base_url,checked_at,latency_ms,region,healthy,
@@ -14276,11 +14276,11 @@ async def repo_mirrors_handler(env, request, owner, repo):
             int(row.get("checked_at") or 0)
             >= now - HTTPS_MIRROR_STATUS_FRESH_MS
             and (
-                # Older rows/tests predate signed endpoint attestation. The
-                # database migration backfills every security column
-                # together, so an entirely absent set is a legacy fresh
-                # presence row; a partially populated row must still satisfy
-                # every modern integrity gate.
+
+
+
+
+
                 not any(
                     key in row
                     for key in (
@@ -14316,10 +14316,10 @@ async def repo_mirrors_handler(env, request, owner, repo):
         for r in first_rows
         if r.get("repo_bi")
     }
-    # Recent owner-attested state pins, so the payload can mark which mirrors
-    # the clone integrity gate is rejecting (same gathering as _state_pins).
-    # Scoped to this request's catalog group — the old full-table scan read
-    # every repo's pin history on every /mirrors poll.
+
+
+
+
     history = {}
     group_keys = [str(r.get("key_bi") or "") for r in catalog_rows
                   if r.get("key_bi")]
@@ -14357,13 +14357,13 @@ async def repo_mirrors_handler(env, request, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     payload["owner"] = public_owner
     payload["repo"] = public_repo
-    # Router-counted serve tallies (mirror_serve_counters). Nodes stopped
-    # seeing per-request traffic when the per-repository WebSocket transport
-    # was retired, so records they publish carry only pre-retirement legacy
-    # tallies (or 0/-1). The Worker counts every read it routes in
-    # _https_mirror_route_advance; overlay those counts on top of whatever
-    # legacy figure the node still publishes — the two eras never overlap, so
-    # the sum is the node's true lifetime contribution.
+
+
+
+
+
+
+
     serve_counts = {}
     try:
         count_rows = await d1_all(
@@ -14382,11 +14382,11 @@ async def repo_mirrors_handler(env, request, owner, repo):
                 )
     except Exception:
         serve_counts = {}
-    # Owner column: a headless mirror's catalog record carries no ownerUser of
-    # its own, but the node account may be claim-linked to a user (adhoc #53:
-    # the node record's `owner` field names the linked user). Resolve that link
-    # here so every surface — web repo page and the desktop Mirror nodes panel —
-    # shows the human owner without each publisher having to know it.
+
+
+
+
+
     for mirror in payload.get("mirrors", []):
         node_name = str(mirror.get("node") or "").strip().lower()
         counted = serve_counts.get(node_name)
@@ -14437,15 +14437,15 @@ async def repo_mirrors_handler(env, request, owner, repo):
             mirror["ownerUser"] = node_name
         else:
             mirror["ownerUser"] = str(node_rec.get("owner") or "").strip()
-    # Node cabinets and the repository Mirrors panel poll while visible. Keep a
-    # tiny shared edge window to collapse bursts without leaving an integrity
-    # transition or completed sync stuck on screen for ten seconds.
+
+
+
     response = json_response(payload, cache_seconds=3)
     await edge_cache_put(cache_key, response)
     return response
 
 
-# --- Release download counts -------------------------------------------------
+
 
 async def record_release_download(env, repo_bi, sha256, ua=""):
     """Log one completed release-asset download. Best-effort; never raises —
@@ -14484,7 +14484,7 @@ async def release_downloads_handler(env, request, owner, repo):
     return json_response({"ok": True, "counts": counts})
 
 
-# --- Public waitlist (waitlist table) ---------------------------------------
+
 
 def _waitlist_normalize_email(value):
     email = str(value or "").strip().lower()
@@ -14519,7 +14519,7 @@ async def waitlist_handler(env, request):
     return json_response({"ok": True}, status=201)
 
 
-# --- Accounts (users/nodes tables) — name + solana + password + TOTP --------
+
 
 def _account_kind(rec):
     rec = rec or {}
@@ -14530,19 +14530,19 @@ def _account_kind(rec):
 
 
 def _account_has_legacy_wallet_key(rec):
-    # Compatibility detector only. A historical account blob can still contain
-    # a donation wallet seed until the offline migration scrubs it. No active
-    # Worker write may copy that seed into a new ciphertext.
+
+
+
     return isinstance(rec, dict) and bool(rec.get("donation_secret"))
 
 
 async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
                                           ip_bi=None, is_admin=None,
                                           touch_seen=False):
-    # Authoritative store for account records: the physical users/nodes tables
-    # (migration 0025). The legacy accounts table these once mirrored was
-    # dropped by migration 0042; old clients keep using /api/accounts/* but
-    # every record lives here now, keyed by blind_index(name) on both tables.
+
+
+
+
     if _account_has_legacy_wallet_key(rec):
         raise RuntimeError("legacy_custody_migration_required")
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
@@ -14573,9 +14573,9 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
 
     pubkey = clean_string(rec.get("pubkey", ""), 120)
     if pubkey or kind == "node":
-        # A node-kind record without a pubkey is a keyless reservation (name
-        # parked before the key binds at finalize); it must still persist here
-        # now that the nodes table is the only store for node records.
+
+
+
         owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
         if not owner and kind == "user":
             owner = name
@@ -14599,34 +14599,34 @@ async def _mirror_account_identity_tables(env, name_bi, rec, email_bi=None,
 
 
 async def touch_registered_node(env, name_bi, rec=None):
-    # A real node activity signal (registration/finalize, signed heartbeat,
-    # desktop login, or host WebSocket connect). Plain account reads repair the
-    # users/nodes mirror but deliberately do NOT refresh this timestamp; otherwise
-    # merely browsing stale profiles would keep abandoned nodes alive forever.
+
+
+
+
     if not name_bi:
         return
     if (rec and not _account_has_legacy_wallet_key(rec)
             and clean_string(rec.get("pubkey", ""), 120)
             and name_bi not in _MIRRORED_ACCOUNT_BIS):
-        # First touch this isolate: full mirror repair (also stamps last_seen).
+
         await _mirror_account_identity_tables(
             env, name_bi, rec, touch_seen=True)
         if len(_MIRRORED_ACCOUNT_BIS) < 10000:
             _MIRRORED_ACCOUNT_BIS.add(name_bi)
         return
-    # Mirror already repaired this isolate (or no rec): the 1-statement
-    # last_seen stamp is all a heartbeat/connect needs — the full mirror
-    # rewrite (2 encrypts + 2 upserts) on every beat helped melt the free
-    # plan on 2026-07-11.
+
+
+
+
     await d1_run(
         env, "UPDATE nodes SET last_seen=? WHERE node_bi=?",
         int(Date.now()), name_bi)
 
 
 async def _account_identity_rec_by_bi(env, name_bi):
-    # Authoritative-store lookup by blind_index(name): user_bi and node_bi are
-    # both blind_index(name), so one key resolves either table. Returns the
-    # decrypted record, or None.
+
+
+
     if not name_bi:
         return None
     row = await d1_first(env, "SELECT data FROM users WHERE user_bi=?", name_bi)
@@ -14637,14 +14637,14 @@ async def _account_identity_rec_by_bi(env, name_bi):
     return await decrypt_row(env, row.get("data"))
 
 
-# name_bis whose users/nodes rows this isolate already refreshed via
-# touch_registered_node's full rewrite. The rewrite costs 1-2 encrypt_row +
-# 2 upserts — repeating it on every activity signal was a top contributor
-# to the 2026-07-11 free-plan CPU overload, so after the first touch a
-# heartbeat only stamps last_seen. Write paths call
-# _mirror_account_identity_tables directly (via _save_account), so a stale
-# entry here can never mask a real update; a recycled isolate simply
-# rewrites once more.
+
+
+
+
+
+
+
+
 _MIRRORED_ACCOUNT_BIS = set()
 
 
@@ -14668,10 +14668,10 @@ async def _account_row_by_pubkey(env, pubkey):
 
 
 async def _resolve_claimable_node(env, raw_id):
-    # A claim-node "node ID" may be the account's chosen name (the common
-    # case) or its Ed25519 public key, which the desktop app's own profile
-    # card labels "Node ID" (issue #351). Returns (node_bi, node_rec,
-    # node_name) or (None, None, "") when neither resolves.
+
+
+
+
     candidate = (raw_id or "").strip()
     name = candidate.lower()
     if valid_node_name(name):
@@ -14693,7 +14693,7 @@ def _ts_ok(ts):
 
 
 async def verify_view_token(env, owner, repo, ts, sig):
-    # Only the owner account's key holder can browse/clone a private repo.
+
     if not owner or not repo or not sig or not _ts_ok(ts):
         return False
     pubkey = await _owner_pubkey(env, owner)
@@ -14704,13 +14704,13 @@ async def verify_view_token(env, owner, repo, ts, sig):
 
 
 async def verify_push_token(env, owner, repo, ts, sig):
-    # Write gate for git push over the relay (issue #358): only the owner
-    # account's registered key may run receive-pack against the served mirror
-    # (collaborator keys are a later extension). It uses a fresh timestamp and
-    # Ed25519 over an explicit canonical string with a distinct prefix. This
-    # timestamp-signed binding is deliberately the
-    # simplest thing that stays in the existing trust model (no server-side nonce
-    # state); the freshness window is the short-lived element.
+
+
+
+
+
+
+
     if not owner or not repo or not sig or not _ts_ok(ts):
         return False
     pubkey = await _owner_pubkey(env, owner)
@@ -14721,9 +14721,9 @@ async def verify_push_token(env, owner, repo, ts, sig):
 
 
 async def _basic_auth_push_ok(env, owner, repo, request):
-    # git supplies the push token in HTTP Basic auth (password="<ts>.<sig>"),
-    # from the push URL or a credential helper. The username selects whose key
-    # signed it; only the owner may push for now (collaborator keys later).
+
+
+
     header = request.headers.get("authorization") or ""
     if not header.lower().startswith("basic "):
         return False
@@ -14736,20 +14736,20 @@ async def _basic_auth_push_ok(env, owner, repo, request):
     if not ts or not sig:
         return False
     if username and username != owner:
-        # A non-owner username selects the org-team path (issue #388): the
-        # pusher signs with their OWN key and must hold write+ permission on
-        # the repo through an organization it is linked under.
+
+
+
         return await verify_org_push_token(env, username, owner, repo, ts, sig)
     return await verify_push_token(env, owner, repo, ts, sig)
 
 
 async def verify_catalog_view_token(env, viewer, ts, sig):
-    # Listing gate: lets a logged-in owner additionally see their OWN private repos
-    # in the catalog, which is otherwise public-only. Not bound to a single repo
-    # (it authorizes a listing, not one clone) and uses a distinct canonical string
-    # so a per-repo forkmesh-view-v1 token can't be replayed as a listing token and
-    # vice versa. Returns the viewer's account name on success, "" otherwise — an
-    # unknown/garbled viewer simply falls back to the public-only catalog.
+
+
+
+
+
+
     if not viewer or not sig or not _ts_ok(ts):
         return ""
     pubkey = await _owner_pubkey(env, viewer)
@@ -14762,10 +14762,10 @@ async def verify_catalog_view_token(env, viewer, ts, sig):
 
 
 async def _repo_shared_with(env, owner, repo, grantee):
-    # True when the owner has shared `owner/repo` with the `grantee` account
-    # (issue #9). repo_bi is keyed the same way as repositories.key_bi so it joins
-    # a private repo to its collaborator rows. Best-effort: any error => not shared
-    # (fail closed; a transient DB hiccup must never grant access it shouldn't).
+
+
+
+
     if not owner or not repo or not grantee:
         return False
     try:
@@ -14782,15 +14782,15 @@ async def _repo_shared_with(env, owner, repo, grantee):
 
 
 async def verify_share_view_token(env, viewer, owner, repo, ts, sig):
-    # Read gate for a private repo shared with a DIFFERENT account (issue #9). The
-    # grantee signs with their OWN key — the owner never hands out its key — and
-    # access is granted only while the owner keeps an active repo_shares row for
-    # them. Distinct canonical prefix so an owner forkmesh-view-v1 token, a host
-    # token, or a catalog-listing token can never be replayed here, and vice versa.
+
+
+
+
+
     if not viewer or not owner or not repo or not sig or not _ts_ok(ts):
         return False
     if viewer == owner:
-        return False  # the owner authenticates via verify_view_token, not here
+        return False
     pubkey = await _owner_pubkey(env, viewer)
     if not pubkey:
         return False
@@ -14802,10 +14802,10 @@ async def verify_share_view_token(env, viewer, owner, repo, ts, sig):
 
 
 async def _repo_is_private(env, owner, repo):
-    # Anonymous serving is permitted only by an explicit public catalog row.
-    # Missing/malformed records and database failures fail closed. This makes a
-    # private repository indistinguishable from an unpublished repository to
-    # unauthenticated callers and prevents an outage from becoming a data leak.
+
+
+
+
     try:
         await ensure_schema(env)
         key_bi = await blind_index(env, owner + "/" + repo)
@@ -14826,16 +14826,16 @@ async def _repo_is_private(env, owner, repo):
             return True
         if int(row.get("is_private", 1) or 0) != 0:
             return True
-        # Migration 0011 historically defaulted existing rows to public.
-        # Validate that the signed encrypted record itself explicitly says
-        # public before serving; an old row with missing/garbled visibility is
-        # hidden until its owner republishes it under the v2 catalog contract.
+
+
+
+
         decryptor = globals().get("decrypt_row")
         if callable(decryptor):
             record = await decryptor(env, row.get("data"))
             return not record or record.get("visibility") != "public"
-        # Isolated compatibility harnesses may omit decrypt_row. Production
-        # always has it, so this fallback cannot reopen the deployed boundary.
+
+
         return False
     except Exception:
         return True
@@ -14889,8 +14889,8 @@ async def _repository_access_context(
                 return True
             return await _basic_auth_view_ok(env, owner, repo, request)
 
-        # owner_bi is a non-reversible blind index. Check it before decrypting a
-        # plaintext-private row so a corrupt/mismatched row remains invisible.
+
+
         if plaintext_private:
             expected_owner_bi = await blind_index(env, owner)
             if str(row.get("owner_bi") or "") != str(expected_owner_bi):
@@ -14920,11 +14920,11 @@ async def _repository_access_context(
 
 
 async def _basic_auth_view_ok(env, owner, repo, request):
-    # Git smart-HTTP carries the view token in HTTP Basic auth (password=
-    # "<ts>.<sig>"), which git supplies from the clone URL or a credential helper.
-    # The username selects whose key signed the token: the owner itself
-    # (forkmesh-view-v1) or a collaborator the repo was shared with, who signs
-    # with their OWN key (forkmesh-share-view-v1, issue #9).
+
+
+
+
+
     header = request.headers.get("authorization") or ""
     if not header.lower().startswith("basic "):
         return False
@@ -14950,12 +14950,12 @@ def _basic_auth_challenge():
 
 
 async def _save_account(env, name_bi, rec, email_bi=None, ip_bi=None):
-    # Persist the encrypted record into the users/nodes tables; pass email_bi to
-    # (re)index for email login and ip_bi to (re)index the signup IP for
-    # duplicate detection. Both are only written when supplied, so a caller that
-    # doesn't have them in hand never clobbers a
-    # value set at finalize. is_admin is never written here, so a value set
-    # directly in the DB survives ordinary account updates.
+
+
+
+
+
+
     await _mirror_account_identity_tables(
         env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
 
@@ -14992,9 +14992,9 @@ async def _move_bounties_namespace(env, old_owner, new_owner, repo,
         rec = await decrypt_row(env, row.get("data", "")) or {}
         if (rec.get("owner") != old_owner or rec.get("repo") != repo):
             continue
-        # Namespace migration re-encrypts the whole record. Refuse to do that
-        # while a historical escrow key is still present; the offline custody
-        # migration must export, reconcile, and scrub it first.
+
+
+
         if rec.get("secret") or not rec.get("legacy_custody_migrated_at"):
             return "legacy_custody_migration_required"
         try:
@@ -15184,9 +15184,9 @@ async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
             rec,
         )
         await _move_repo_shares(env, old_repo_bi, new_repo_bi, new_owner, repo)
-        # Carry the attested pin history to the new namespace so mirrors of a
-        # renamed source keep clearing the integrity gate without waiting for
-        # fresh publishes to rebuild it.
+
+
+
         try:
             await d1_run(
                 env, "UPDATE repo_state_history SET key_bi=? WHERE key_bi=?",
@@ -15265,9 +15265,9 @@ async def _rename_account_namespace(env, name_bi, rec, new_name):
         env, name_bi, old_name, new_name_bi, new_name)
     await _move_chat_channel_memberships(
         env, name_bi, new_name_bi, new_name)
-    # A username move changes the participant blind index and pair identity.
-    # Close old DM rooms instead of leaving orphaned membership or silently
-    # merging conversations under a different account identity.
+
+
+
     await _delete_chat_direct_conversations(env, name_bi)
     await d1_run(
         env, "UPDATE account_presence SET name_bi=? WHERE name_bi=?",
@@ -15327,12 +15327,12 @@ async def _delete_bounties_namespace(env, owner, repo):
                 row.get("bounty_bi"))
 
 
-# A repository deleted from the website stays deleted. The owner's node keeps
-# the local mirror and republishes its catalog record on every heartbeat, so
-# without a tombstone the row reappeared within a minute and the web delete
-# looked like it had silently done nothing (adhoc #91). The tombstone refuses
-# automatic republishes; an explicit user-initiated publish from the desktop
-# clears it, so the owner can always share the repo again.
+
+
+
+
+
+
 REPO_DELETE_TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000
 
 
@@ -15344,8 +15344,8 @@ async def _repo_delete_tombstone_active(env, repo_bi):
             "expires_at>?",
             repo_bi, int(Date.now()))
     except Exception:
-        # An unreadable tombstone table must never block publishing; the
-        # website delete degrades to its old behaviour instead.
+
+
         return False
     return bool(row)
 
@@ -15394,10 +15394,10 @@ async def _delete_repo_scoped_state(env, repo_bi):
         env, "DELETE FROM repo_security_scans WHERE repo_bi=?", repo_bi)
     await d1_run(
         env, "DELETE FROM repo_security_scan_reviews WHERE repo_bi=?", repo_bi)
-    # Invalidate the per-isolate agent-snapshot digest: a re-published repo
-    # gets the same deterministic repo_bi back, and a memoized digest would
-    # otherwise make the desktop's identical re-push a silent no-op forever
-    # (empty repo_agents while the desktop believes its sessions published).
+
+
+
+
     _AGENT_PUSH_DIGESTS.pop(repo_bi, None)
     await d1_run(env, "DELETE FROM agent_prompts WHERE repo_bi=?", repo_bi)
 
@@ -15424,9 +15424,9 @@ async def _delete_repo_namespace(env, owner_bi, owner):
                 "DELETE FROM funds_received WHERE scope='project' AND key=?",
                 owner + "/" + repo)
     await d1_run(env, "DELETE FROM catalog_rate WHERE owner_bi=?", owner_bi)
-    # The account itself is going away, so its website-delete tombstones have
-    # nothing left to protect — keeping them would only block a re-registered
-    # account of the same name from publishing the same repo names.
+
+
+
     await d1_run(env, "DELETE FROM repo_deletions WHERE owner_bi=?", owner_bi)
     await purge_catalog_related_caches()
 
@@ -15471,9 +15471,9 @@ async def _delete_account_namespace(env, name_bi, rec):
         env, "DELETE FROM account_ssh_keys WHERE account_bi=?", name_bi)
     await d1_run(
         env, "DELETE FROM account_sessions WHERE account_bi=?", name_bi)
-    # Remove every account-keyed auxiliary row as well as the primary identity.
-    # These tables contain no independently owned resource that should survive
-    # a complete account deletion.
+
+
+
     for table in (
             "repo_stars",
             "feedback_email_sends",
@@ -15861,19 +15861,19 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         "status": rec.get("status", "active"),
         "avatarPng": rec.get("avatar_png", ""),
         "avatarUpdatedAt": rec.get("avatar_updated_at", 0),
-        # Public boolean only; the email address itself never enters the
-        # directory or World. It drives the verified pin on the avatar front.
+
+
         "emailVerified": bool(rec.get("email_verified")),
         "createdAt": rec.get("created_at", 0),
         "kind": "user",
         "nodes": _owned_nodes(rec),
-        # Aggregate-only and rounded down to whole minutes. The public
-        # directory deliberately exposes neither a last-seen timestamp nor the
-        # current activity interval used by an authenticated World tab.
+
+
+
         "totalActiveMs": _world_public_total_active_ms(total_active_ms),
-        # The bench figure's chest activity light: a seven-step recency
-        # bucket the caller already derived from the raw touch timestamp, so
-        # this function never sees (or could leak) that timestamp itself.
+
+
+
         "activityBucket": activity_bucket,
         **_account_world_client_fields(rec),
     }
@@ -15881,19 +15881,19 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
 
 USERS_DIRECTORY_CACHE_KEY = "https://forkmesh.internal/api/accounts/users"
 USERS_DIRECTORY_TTL = 30
-# The World campfire paints its member total straight from this body, so a
-# browser-held copy leaves the fire showing an old count until a hard refresh.
-# The edge copy still collapses the origin decrypt work; the bytes handed to
-# the client are never stored, so a plain reload always repaints the real
-# roster. Every caller already throttles its own polling well past the edge
-# TTL, so dropping the browser copy adds no extra polling.
+
+
+
+
+
+
 USERS_DIRECTORY_CLIENT_CACHE_CONTROL = "no-store, max-age=0, must-revalidate"
 
 
 async def _users_directory_cache_get():
-    # Return the edge-held roster as a fresh no-store response, the same
-    # rebuild git_advert_cache_get does: the stored copy carries a public
-    # max-age so the Cache API will keep it, which must not reach the browser.
+
+
+
     try:
         hit = await js_caches.default.match(USERS_DIRECTORY_CACHE_KEY)
     except Exception:
@@ -15910,14 +15910,14 @@ async def _users_directory_cache_get():
 
 
 async def _account_users_directory(env, request):
-    # Public chat roster directory: user profiles only, with no email, password,
-    # device, admin, or signature material. Live node presence is still carried
-    # by the encrypted room roster; this endpoint fills in offline users.
-    # Edge-cached: the chat page polls this to surface new signups, and each
-    # origin hit decrypts up to 1000 rows — collapse the polls per colo per TTL.
-    # A signup deletes the cached copy so the new account shows without waiting
-    # out the TTL. Edge-only: the response is no-store, so no browser ever
-    # holds a roster of its own (adhoc #434).
+
+
+
+
+
+
+
+
     del request
     cached = await _users_directory_cache_get()
     if cached is not None:
@@ -15931,8 +15931,8 @@ async def _account_users_directory(env, request):
         "ORDER BY u.username COLLATE NOCASE LIMIT ?",
         1000,
     )
-    # A bucket label only, joined in from its own query so this function
-    # body never handles the raw touch timestamp behind it.
+
+
     activity_buckets = await _world_user_activity_buckets(env)
     for row in rows or []:
         rec = await decrypt_row(env, row.get("data", ""))
@@ -15948,14 +15948,14 @@ async def _account_users_directory(env, request):
             rec, row.get("total_active_ms", 0),
             activity_buckets.get(row.get("user_bi"), "")))
 
-    # The campfire seats members in this same array order, one bench per
-    # account for the session — so this is sorted by join date (oldest
-    # first) rather than left in the query's alphabetical fetch order.
+
+
+
     out.sort(key=lambda user: user.get("createdAt", 0))
 
     payload = {"ok": True, "users": out}
-    # Two bodies on purpose: the stored one carries the public max-age the
-    # Cache API needs to keep it, the returned one carries no-store.
+
+
     await edge_cache_put(
         USERS_DIRECTORY_CACHE_KEY,
         json_response(payload, cache_seconds=USERS_DIRECTORY_TTL),
@@ -16021,8 +16021,8 @@ async def _account_session_token(env, name, device_label="", client_ip=""):
         now,
         now - 24 * 60 * 60 * 1000,
     )
-    # Bound stolen-device persistence and table growth. Retain only the newest
-    # sessions for this account before adding the next one.
+
+
     await d1_run(
         env,
         "DELETE FROM account_sessions WHERE session_id IN ("
@@ -16087,8 +16087,8 @@ def _request_account_session_token(request, payload=None):
         auth = request.headers.get("authorization") or ""
         if auth.lower().startswith("bearer "):
             token = clean_string(auth[7:], 512).strip()
-    # Browser localStorage retains only this non-secret marker. Cookie auth is
-    # selected explicitly rather than trying to validate it as a bearer.
+
+
     if token == "cookie":
         token = ""
     cookie_auth = not token
@@ -16202,18 +16202,18 @@ async def _account_session_record(env, request, data=None):
 
 
 async def _authed_account_name(env, request, data=None):
-    # The account name proven by a valid session token — the POST-body
-    # `sessionToken` field or an `Authorization: Bearer` header — lowercased, or
-    # "" when there is no valid session. Endpoints that act on a per-account
-    # resource (notifications, the poll digest, repo metadata) use this so they
-    # authorize on a signed session, never on a self-asserted `node`/`ownerAccount`
-    # string a caller can set to anyone's name.
+
+
+
+
+
+
     _, rec = await _account_session_record(env, request, data)
     return (rec.get("name", "") if rec else "").strip().lower()
 
 
-# Legacy reservations may still carry an unexpired historical deposit record.
-# This helper recognizes only that migration-era state; new signup is free.
+
+
 def _donation_in_progress(rec):
     if not rec.get("donation_address") or rec.get("donation_confirmed"):
         return False
@@ -16287,9 +16287,9 @@ async def _world_moderation_tokens(env, request, now=None):
     day = now // WORLD_MANUAL_TOKEN_DAY_MS
     address = _transient_client_address(request)
     try:
-        # The exact value is used only as keyed-HMAC input in this call frame.
-        # Capping it prevents an oversized header from becoming hash work; it is
-        # never returned, forwarded, logged, or persisted.
+
+
+
         transient_agent = str(
             request.headers.get("user-agent") or "")[:2048]
     except Exception:
@@ -16301,9 +16301,9 @@ async def _world_moderation_tokens(env, request, now=None):
     if transient_agent:
         tokens["agent"] = await blind_index(
             env, "world-manual-agent-v1:%d:%s" % (day, transient_agent))
-    # `address` and `transient_agent` die with this call. Only keyed, rotating
-    # tokens may be forwarded or persisted; public badge display continues to
-    # use the existing generalized browser/OS allowlist.
+
+
+
     return tokens
 
 
@@ -16491,8 +16491,8 @@ async def world_moderation_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate")
 
     now = int(Date.now())
-    # Subject tokens rotate daily. Do not pretend a block can outlive the token
-    # it targets, even when the requested bounded duration crosses UTC midnight.
+
+
     token_expires = ((now // WORLD_MANUAL_TOKEN_DAY_MS) + 1
                      ) * WORLD_MANUAL_TOKEN_DAY_MS
     expires_at = min(now + duration, token_expires)
@@ -16523,9 +16523,9 @@ async def world_moderation_handler(env, request):
         disconnected = await _world_disconnect_manual_block(
             env, target_type, subject_token, expires_at)
     except Exception:
-        # Admission checks are D1-backed, so a transient DO control failure does
-        # not undo the block. Existing sockets will also disappear on their
-        # normal stale/close boundary.
+
+
+
         disconnected = 0
     await _audit_sensitive_action(
         env, actor, "world.manual_block", "world_" + target_type,
@@ -16594,12 +16594,12 @@ async def world_admin_delete_node_handler(env, request):
     node_row = await d1_first(
         env, "SELECT node_bi,name FROM nodes WHERE node_bi=?", target_bi)
     if not record or not node_row:
-        # Public mirror catalogs distinguish an operator account name, a
-        # machine label, and a cryptographic node id. Older World panels used
-        # the machine label as if it were the account key, so deletion could
-        # fail with node_not_found even while the cabinet was visibly online.
-        # Resolve either bounded public identifier back to the canonical node
-        # row, then perform every destructive operation on that canonical key.
+
+
+
+
+
+
         resolved = await d1_first(
             env,
             "SELECT node_bi,name FROM nodes "
@@ -16615,10 +16615,10 @@ async def world_admin_delete_node_handler(env, request):
                 record = resolved_record
                 node_row = resolved
     if not node_row:
-        # A half-removed node can remain visible through its durable repository
-        # catalog or signed HTTPS endpoint after the account row is gone.
-        # Resolve that endpoint without requiring the already-missing account
-        # ciphertext, then finish the same idempotent scoped cleanup.
+
+
+
+
         endpoint = await d1_first(
             env,
             "SELECT node_bi,node_name FROM mirror_https_endpoints "
@@ -16670,8 +16670,8 @@ async def world_admin_delete_node_handler(env, request):
     identity_bis = {
         value for value in (requested_bi, target_bi) if value
     }
-    # Finish every node-scoped namespace even when an earlier attempt already
-    # removed one of the primary rows. Deleting twice is intentionally safe.
+
+
     for identity_bi in identity_bis:
         await d1_run(
             env, "DELETE FROM reward_node_observations WHERE node_bi=?",
@@ -16721,8 +16721,8 @@ async def world_admin_delete_node_handler(env, request):
         cache_control="no-store, max-age=0, must-revalidate")
 
 
-# Simple web signup: create an active account from node name + email + password.
-# Solana payout details are intentionally handled later from the dashboard profile.
+
+
 async def _account_signup(env, request):
     try:
         data = await bounded_json_request(request)
@@ -16737,7 +16737,7 @@ async def _account_signup(env, request):
         return json_response({"error": "valid_email_required"}, status=400)
     if len(password) < 8:
         return json_response({"error": "password_too_short"}, status=400)
-    # Same org-namespace guard as _account_reserve (issue #388).
+
     _, org_holder = await _org_row(env, name)
     if org_holder:
         return json_response({"error": "node_name_taken"}, status=409)
@@ -16754,8 +16754,8 @@ async def _account_signup(env, request):
     if dup and dup.get("name_bi") != name_bi:
         return json_response({"error": "email_taken"}, status=409)
 
-    # Per-IP account-creation throttle (checked only once the name/email are
-    # otherwise creatable, so a rejected duplicate doesn't burn the quota).
+
+
     signup_ip = _transient_client_address(request)
     throttled = await signup_rate_check(
         env, await blind_index(env, signup_ip) if signup_ip else None)
@@ -16778,7 +16778,7 @@ async def _account_signup(env, request):
     old_signup = rec.get("signup")
     if isinstance(old_signup, dict) and old_signup.get("at"):
         signup_meta["at"] = int(old_signup.get("at") or signup_meta["at"])
-    # Overwrite any legacy raw ip/ua keys the next time an account is saved.
+
     rec["signup"] = signup_meta
     ip_bi = await blind_index(env, signup_ip) if signup_ip else None
     await _save_account(env, name_bi, rec, email_bi=email_bi, ip_bi=ip_bi)
@@ -16786,14 +16786,14 @@ async def _account_signup(env, request):
         sent = await _send_verification_email(env, request, name, rec["email"])
         if not sent:
             await _enqueue_verification(env, name_bi, name, rec["email"])
-    # Drop the cached chat roster/activity so open chat pages and header badges
-    # pick up the new account on their next poll instead of a TTL later.
+
+
     await edge_cache_delete(USERS_DIRECTORY_CACHE_KEY)
     await edge_cache_delete(CHAT_ACTIVITY_CACHE_KEY)
-    # Credit the referrer named by the /r/<name> share link, if any.
+
     await _record_referral_signup(env, name, data.get("ref", ""))
-    # "Founding Member" badge: this account's row is already saved above, so
-    # counting now tells whether it landed inside the first 100 real signups.
+
+
     user_count = await d1_first(
         env,
         "SELECT COUNT(*) AS c FROM users "
@@ -16855,9 +16855,9 @@ async def _account_follow(env, request, target_name, method):
     target = clean_string(target_name, MAX_NODE_NAME).lower()
     if not valid_node_name(target):
         return json_response({"error": "not_found"}, status=404)
-    # Any active, non-private account is followable — node accounts included,
-    # matching the fediverse layer (_ap_user_federates) and the public
-    # user-or-org page, which both treat the node name as a public identity.
+
+
+
     target_bi, target_rec = await _account_row(env, target)
     if (not target_rec or target_rec.get("status") != "active" or
             bool(target_rec.get("profile_private"))):
@@ -16884,9 +16884,9 @@ async def _account_follow(env, request, target_name, method):
     return json_response({"ok": True, "name": target, **social})
 
 
-# Claim a public node name. The desktop client signs the claim with its Ed25519
-# identity (binding the name to a key); the website may reserve without a key.
-# Legacy confirmed-deposit flags are honored only to avoid reclaiming old names.
+
+
+
 async def _account_reserve(env, request):
     try:
         data = await bounded_json_request(request)
@@ -16898,9 +16898,9 @@ async def _account_reserve(env, request):
     signature = clean_string(data.get("sig", ""), 200)
     if not valid_node_name(name):
         return json_response({"error": "invalid_node_name"}, status=400)
-    # Org names share the /<name>/<repo> URL namespace (issue #388): a name an
-    # organization holds can never become a node name, or the org-alias URL
-    # rewrite would be ambiguous.
+
+
+
     _, org_holder = await _org_row(env, name)
     if org_holder:
         return json_response({"error": "node_name_taken"}, status=409)
@@ -16911,16 +16911,16 @@ async def _account_reserve(env, request):
         if existing.get("status") == "active" or existing.get("donation_confirmed"):
             return json_response({"error": "node_name_taken"}, status=409)
         held_by_other = bool(ex_pub) and (not pubkey or ex_pub != pubkey)
-        # A reservation bound to a different key only blocks the name while its
-        # migration-era expiry window is still live. Otherwise it is abandoned,
-        # so a fresh install can reclaim the name.
+
+
+
         if held_by_other and _donation_in_progress(existing):
             return json_response({"error": "node_name_taken"}, status=409)
         if held_by_other:
-            # Reclaiming an abandoned reservation: drop the previous holder's
-            # stale state so the new owner starts a clean, key-bound signup.
+
+
             existing = None
-        # else: a stale/own reservation — allow re-reserving it (idempotent).
+
 
     if pubkey:
         if not _ts_ok(ts):
@@ -16948,9 +16948,9 @@ async def _account_reserve(env, request):
         {"ok": True, "nodeName": name, "status": "reserved"}, status=201)
 
 
-# Legacy step-2 helpers remain below as unreachable migration documentation.
-# The live endpoint returns 410: signup is free, and reward/fund transfers are
-# unsigned plans completed by an explicitly configured owner-device signer.
+
+
+
 
 
 def _amount_sol(lamports):
@@ -16967,11 +16967,11 @@ def _solana_pay_uri(address, amount_lamports, reference="", message="Join ForkMe
     return uri
 
 
-# --- Low-level balance check ------------------------------------------------
-# Returns the address balance in lamports, or None if the RPC call failed (so
-# callers can distinguish "zero balance" from "couldn't check"). This is the
-# lowest-level on-chain read available: a single getBalance, no transaction
-# history scan or third-party indexer.
+
+
+
+
+
 async def _solana_balance_lamports(env, address):
     if not address or not SOLANA_RE.match(address):
         return None
@@ -16999,9 +16999,9 @@ async def _account_donation_address(env, request):
     }, status=410, cache_control="no-store")
 
 
-# Read-only compatibility view for a historical deposit. It projects public
-# status and may read the public on-chain balance, but never rewrites the row,
-# inspects its retained key field, signs, or broadcasts.
+
+
+
 async def _account_donation_status(env, request):
     if not _is_main_relay(env):
         return await _federated_donation_status(env, request)
@@ -17041,10 +17041,10 @@ async def _account_donation_status(env, request):
 
 
 def _signup_metadata(request):
-    # The raw address is used transiently to derive users.ip_bi for duplicate
-    # signup throttling; it is never copied into the encrypted account blob.
-    # User-agent is reduced to a broad client category, and country to an
-    # approximate two-letter edge-derived code.
+
+
+
+
     return {
         "country": world_request_country(request),
         "clientCategory": _generalized_client_category(request),
@@ -17052,8 +17052,8 @@ def _signup_metadata(request):
     }
 
 
-# Step 3: after a confirmed donation, set the email + password that unlock
-# universal (any-surface) login. Email + password hash are stored encrypted.
+
+
 async def _account_finalize(env, request):
     try:
         data = await bounded_json_request(request)
@@ -17071,11 +17071,11 @@ async def _account_finalize(env, request):
     if not rec:
         return json_response({"error": "no_such_account"}, status=404)
 
-    # A key-bound (desktop) account proves ownership with its Ed25519 signature;
-    # email/password are optional (it logs in by key). A keyless (web) signup just
-    # sets an email + password — signup is free (no donation required), and the
-    # verification email sent below (Mailtrap) is what confirms a real human is
-    # behind the name.
+
+
+
+
+
     key_bound = bool(rec.get("pubkey"))
     if key_bound:
         if not _ts_ok(ts):
@@ -17085,11 +17085,11 @@ async def _account_finalize(env, request):
         if not await ed25519_verify(rec["pubkey"], signature, canonical):
             return json_response({"error": "bad_signature"}, status=401)
     elif pubkey:
-        rec["pubkey"] = pubkey  # bind a key now if a web user supplied one
+        rec["pubkey"] = pubkey
 
-    # Email + password unlock cross-device (password) login. They're required for
-    # keyless signups and optional for key-bound ones (which log in by key); when
-    # either is supplied they're validated and the email is indexed for login.
+
+
+
     set_credentials = bool(email) or bool(password) or not key_bound
     email_bi = None
     if set_credentials:
@@ -17112,13 +17112,13 @@ async def _account_finalize(env, request):
     else:
         rec["kind"] = "user"
     rec["status"] = "active"
-    # Optional public self-custodial payout address for reward consideration.
+
     if solana and SOLANA_RE.match(solana):
         rec["solana"] = solana
     rec["email_verified"] = bool(rec.get("email_verified", False))
     rec.setdefault("created_at", int(Date.now()))
-    # Keep only coarse signup metadata; the transient address is converted to a
-    # keyed blind index and never persisted in the account's decryptable blob.
+
+
     signup_ip = _transient_client_address(request)
     signup_meta = _signup_metadata(request)
     old_signup = rec.get("signup")
@@ -17132,18 +17132,18 @@ async def _account_finalize(env, request):
             await touch_registered_node(env, name_bi, rec)
         except Exception:
             pass
-    # Send a verification email (Mailtrap). If the email service is unconfigured
-    # or the send fails, fall back to the admin queue so an admin can still verify
-    # by hand. A free key-bound join with no email yet has nothing to verify.
+
+
+
     if rec.get("email") and not rec["email_verified"]:
         sent = await _send_verification_email(env, request, name, rec["email"])
         if not sent:
             await _enqueue_verification(env, name_bi, name, rec["email"])
-    # Installer link code (adhoc #53): a hosts/SSH install prints a code on the
-    # fresh machine and hands it to the daemon, which presents it here when it
-    # registers. If the installing desktop's signed offer already arrived the
-    # node is linked to that user right now; otherwise the node's half is
-    # parked until the offer lands (see _redeem_or_park_link_code).
+
+
+
+
+
     link_code = clean_string(data.get("linkCode", ""), 16).strip()
     if key_bound and LINK_CODE_RE.match(link_code):
         result = await _redeem_or_park_link_code(
@@ -17174,12 +17174,12 @@ async def _account_profile(env, request):
         "profileLocation", "profileTimezone", "profilePrivate",
         "followersPublic", "mastodon",
         "profileLinks", "nodeName", "email", "identifier", "sessionToken",
-        # The dashboard always sends a (usually empty) `password` field even on
-        # pages with no password input. Whitelist it so a session-authed
-        # public-profile save doesn't get shunted into the credentials branch
-        # and rejected with invalid_credentials. Privileged writes still carry
-        # a non-whitelisted key (solana, deleteAccount, …) and stay on the
-        # password-verified path.
+
+
+
+
+
+
         "password",
     }
     session_bi, session_rec = await _account_session_record(env, request, data)
@@ -17218,11 +17218,11 @@ async def _account_profile(env, request):
         return json_response({"ok": True, "accountDeleted": True})
 
     changed = False
-    # The Person actor doc only ever surfaces the bio and the profile-private
-    # federation gate (_ap_build_actor_doc), so remember just those: the
-    # Update(Person) broadcast below must not fire for payout/avatar/
-    # notification tweaks — every no-op broadcast fans out one delivery per
-    # follower server and pulls a rel=me refetch storm back at us.
+
+
+
+
+
     fed_before = (rec.get("profile_bio", ""), bool(rec.get("profile_private")),
                   bool(rec.get("profile_followers_public")))
     if "solana" in data:
@@ -17392,9 +17392,9 @@ async def _account_profile(env, request):
 
     if changed:
         await _save_account(env, name_bi, rec)
-        # Public-profile and chat-directory caches carry avatar/profile/device
-        # metadata. Purge them on every profile edit; in particular, a privacy
-        # opt-out must stop new public reads immediately in this colo.
+
+
+
         profile_name = clean_string(
             rec.get("name", ""), MAX_NODE_NAME).lower()
         await asyncio.gather(
@@ -17403,9 +17403,9 @@ async def _account_profile(env, request):
             edge_cache_delete(USERS_DIRECTORY_CACHE_KEY),
             return_exceptions=True,
         )
-        # Fediverse followers of this profile get an Update(Person) so bio
-        # changes propagate to remote servers immediately — but only when a
-        # federated field actually changed (see fed_before above).
+
+
+
         fed_after = (rec.get("profile_bio", ""),
                      bool(rec.get("profile_private")),
                      bool(rec.get("profile_followers_public")))
@@ -17427,24 +17427,24 @@ async def _account_profile(env, request):
     )
 
 
-# --- Users vs nodes: claiming & linking (adhoc #53) --------------------------
-#
-# Two ways a user (an account with login credentials) becomes the owner of a
-# node (a key-bound-only account, e.g. a headless mirror registration):
-#
-#  1. Website claim: the user enters the node's ID (its account name) on the
-#     dashboard. The worker parks a short confirmation code on the node's
-#     record; the node learns of it in its next signed heartbeat reply and
-#     shows the code on the machine itself. Typing that code back into the
-#     website proves the user can see the node, and the records are linked.
-#
-#  2. Installer link code: a hosts/SSH install prints a code on the fresh
-#     machine and hands it to the launched daemon, which presents it when it
-#     registers. The desktop app that drove the install offers the same code
-#     signed by its own key; whichever side reaches the worker first parks its
-#     half in link_codes and the second side completes the link. The new node
-#     is attached to the USER behind the installing account (the account
-#     itself when it is a user, else that node's own recorded owner).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 def _generate_confirm_code():
@@ -17478,10 +17478,10 @@ def _transfer_pending(rec, now):
 
 
 async def _resolve_user_by_password(env, data):
-    # Web-auth gate for the claim endpoints, matching _account_profile: a
-    # state-changing dashboard action re-proves the password on each request
-    # (the static site keeps no server-side session). Returns (name_bi, rec)
-    # for an active credentialed account, else (None, None).
+
+
+
+
     identifier = clean_string(
         data.get("identifier", "") or data.get("email", "") or
         data.get("user", ""), 254).strip().lower()
@@ -17510,11 +17510,11 @@ async def _resolve_user_by_password(env, data):
 
 
 async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
-    # The one place ownership is written: node.owner = user and the node joins
-    # the user's nodes list. The user's record is loaded fresh so a stale
-    # caller copy can't clobber it. When the node was already owned (the
-    # browser link-grant flow may re-home a node), it leaves the previous
-    # owner's nodes list so the fleet views stay truthful.
+
+
+
+
+
     prev_owner = node_rec.get("owner") or ""
     node_rec["owner"] = user_name
     node_rec.pop("claim_pending", None)
@@ -17535,8 +17535,8 @@ async def _link_node_to_user(env, node_name, node_bi, node_rec, user_name):
         user_rec["nodes"] = nodes
         await _save_account(env, user_bi, user_rec)
         if not was_operator:
-            # "Mirror Operator" badge: this is the account's first node, the
-            # real event that makes it a mirror operator.
+
+
             await _award_badge(env, user_name, user_bi, "mirror_operator")
 
 
@@ -17559,7 +17559,7 @@ async def _account_claim_node(env, request):
     if not node_rec or node_rec.get("status") != "active":
         return json_response({"error": "no_such_node"}, status=404)
     if _account_kind(node_rec) != "node":
-        # An account that can log in is a user in its own right, not claimable.
+
         return json_response({"error": "not_a_node"}, status=403)
     if node_rec.get("owner") == user_name:
         return json_response({"ok": True, "alreadyLinked": True,
@@ -17574,8 +17574,8 @@ async def _account_claim_node(env, request):
         "attempts": 0,
     }
     await _save_account(env, node_bi, node_rec)
-    # The code itself is deliberately NOT returned: it only ever travels
-    # worker -> node (heartbeat reply) -> the person standing at both screens.
+
+
     return json_response({"ok": True, "pending": True, "nodeId": node_id,
                           "expiresAt": now + CLAIM_CODE_TTL_MS}, status=201)
 
@@ -17604,8 +17604,8 @@ async def _account_claim_confirm(env, request):
     if not pending or pending.get("user") != user_name:
         return json_response({"error": "no_pending_claim"}, status=404)
     if not code or code != pending.get("code"):
-        # A 6-digit code must not be guessable within its TTL: a few misses
-        # invalidate the claim entirely (restart it from the dashboard).
+
+
         attempts = int(pending.get("attempts") or 0) + 1
         if attempts >= CLAIM_CODE_MAX_ATTEMPTS:
             node_rec.pop("claim_pending", None)
@@ -17621,12 +17621,12 @@ async def _account_claim_confirm(env, request):
 
 
 async def _redeem_or_park_link_code(env, code, node=None, user=None, pubkey=None):
-    # Order-independent rendezvous for installer link codes: called with node=
-    # from the fresh node's registration and with user= from the installing
-    # desktop's signed offer. When the opposite half is already parked (and
-    # fresh), complete the link and burn the code; otherwise park this half.
-    # Returns {"linked": True, "node": ..., "user": ...} when the link
-    # completed now, else {"linked": False}.
+
+
+
+
+
+
     code_bi = await blind_index(env, "link:" + code)
     now = int(Date.now())
     row = await d1_first(
@@ -17670,11 +17670,11 @@ async def _redeem_or_park_link_code(env, code, node=None, user=None, pubkey=None
 
 
 async def _account_reclaim_node(env, request):
-    # Fresh host reinstall with a reused node name: the account may already be
-    # active and bound to the previous local Ed25519 key, so reserve/finalize
-    # cannot run. Pair the installer link code with a signature from the new key;
-    # once the installing user's signed offer is present, re-home this node to
-    # that user and rotate the node account's hosting key.
+
+
+
+
+
     try:
         data = await bounded_json_request(request)
     except Exception:
@@ -17711,9 +17711,9 @@ async def _account_reclaim_node(env, request):
 
 
 async def _account_link_node(env, request):
-    # The installing desktop's half of the installer link-code flow: the code
-    # printed by install.sh on the fresh machine, offered here signed by the
-    # installing account's own key.
+
+
+
     try:
         data = await bounded_json_request(request)
     except Exception:
@@ -17745,14 +17745,14 @@ async def _account_link_node(env, request):
 
 
 async def _account_link_self(env, request):
-    # A node links ITSELF to a user account, driven from that node's own desktop
-    # app ("Log in as a user" in the node profile). The request proves BOTH
-    # secrets at once: control of the node's key (Ed25519 signature) and the
-    # user's credentials (identifier + password), so the link completes
-    # immediately with no confirmation code — holding both IS the authorization.
-    # This is the in-app counterpart to the website's claim-node/claim-confirm
-    # code flow, which only proves the password and needs the on-node code to
-    # prove the claimer can see the machine.
+
+
+
+
+
+
+
+
     try:
         data = await bounded_json_request(request)
     except Exception:
@@ -17775,7 +17775,7 @@ async def _account_link_self(env, request):
                  "\n" + ts).encode()
     if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
-    # Only now spend a password verification (the node signature gates it).
+
     _, user_rec = await _resolve_user_by_password(env, data)
     if not user_rec:
         return json_response({"error": "invalid_credentials"}, status=401)
@@ -17783,7 +17783,7 @@ async def _account_link_self(env, request):
     if node_name == user_name:
         return json_response({"error": "cannot_link_self"}, status=400)
     if _account_kind(node_rec) != "node":
-        # An account that can log in is a user in its own right, not linkable.
+
         return json_response({"error": "not_a_node"}, status=403)
     if node_rec.get("owner") == user_name:
         return json_response({"ok": True, "linked": True, "alreadyLinked": True,
@@ -17799,20 +17799,20 @@ async def _account_link_self(env, request):
 
 
 async def _account_link_grant(env, request):
-    # The node profile's "Link this node to your account" button (adhoc #120):
-    # the desktop app signs a short-lived grant with the node's own key and
-    # opens it as a /dashboard URL in the browser, where the already-logged-in
-    # user redeems it here. The signature proves node-key control and names an
-    # explicit consent ("attach me to whoever redeems this"), so unlike
-    # claim-node no password re-entry or confirmation code is needed — the
-    # browser session just names the user. Freshness (LOGIN_MAX_SKEW_MS) plus
-    # single use keep a leaked URL from being replayable.
-    #
-    # Unlike claim-node/link-self this OVERRIDES the node's current
-    # association: an already-owned node is re-homed to the redeeming user
-    # (leaving the old owner's fleet), and even a node whose account is itself
-    # a user can be taken possession of — the node's key signed the grant, so
-    # the machine's operator has authorized the hand-over.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     try:
         data = await bounded_json_request(request)
     except Exception:
@@ -17833,8 +17833,8 @@ async def _account_link_grant(env, request):
     if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
     if node_name == user_name:
-        # The browser is logged in as this very node's account: nothing to
-        # attach, it already belongs to itself.
+
+
         return json_response({"ok": True, "linked": True, "alreadyLinked": True,
                               "selfAccount": True, "nodeId": node_name,
                               "user": user_name,
@@ -17843,16 +17843,16 @@ async def _account_link_grant(env, request):
     if not user_rec or user_rec.get("status") != "active":
         return json_response({"error": "no_such_user"}, status=404)
     if _account_kind(user_rec) != "user":
-        # Only an account that can log in can own nodes; a bare node session in
-        # the browser can't take possession of another node.
+
+
         return json_response({"error": "not_a_user"}, status=403)
     if node_rec.get("owner") == user_name:
         return json_response({"ok": True, "linked": True, "alreadyLinked": True,
                               "nodeId": node_name, "user": user_name,
                               "nodes": _owned_nodes(user_rec)})
-    # Burn the grant before linking so it is strictly one-time even if the node
-    # is unlinked again inside the signature's freshness window. Parked in
-    # link_codes keyed on the full grant; rows age out like installer codes.
+
+
+
     grant_bi = await blind_index(env, "grant:" + node_name + ":" + ts + ":" +
                                  signature)
     now = int(Date.now())
@@ -17874,7 +17874,7 @@ async def _account_link_grant(env, request):
 
 
 async def _login_locked_until(env, id_bi):
-    # Returns the lock-expiry ms if the identifier is currently locked, else 0.
+
     row = await d1_first(
         env, "SELECT locked_until FROM login_attempts WHERE id_bi=?", id_bi)
     if not row:
@@ -17887,10 +17887,10 @@ async def _login_locked_until(env, id_bi):
 
 
 async def _login_record_fail(env, id_bi):
-    # Atomically increment/reset one source or source+identifier budget. The
-    # returned lock applies only to subsequent *failed* attempts; correct
-    # credentials are always verified and can clear the budget, preventing an
-    # attacker from locking a known victim out by name alone.
+
+
+
+
     now = int(Date.now())
     row = await d1_first(
         env,
@@ -17933,8 +17933,8 @@ async def _login_attempt_keys(env, request, identifier):
         keys.append(await blind_index(
             env, "login-pair:" + source_bi + ":" + identifier))
     else:
-        # Local/self-hosted requests without edge address metadata retain a
-        # bounded identifier budget, but valid credentials still bypass it.
+
+
         keys.append(await blind_index(env, "login-local:" + identifier))
     return keys
 
@@ -17950,15 +17950,15 @@ async def _login_failure_response(env, attempt_keys, error):
             highest_fail_count = max(
                 highest_fail_count, int(result.get("fails") or 0))
         else:
-            # Compatibility with an older/local rate-limit adapter.
+
             locked_until = max(locked_until, int(result or 0))
     now = int(Date.now())
     if locked_until > now:
         retry_ms = max(1000, locked_until - now)
     elif highest_fail_count >= 3:
-        # Progressive source/pair backoff starts before the hard ceiling. This
-        # response is emitted only after credentials have failed verification;
-        # a subsequent correct password is still checked immediately.
+
+
+
         retry_ms = min(
             60 * 1000,
             1000 * (2 ** min(6, highest_fail_count - 3)),
@@ -18212,7 +18212,7 @@ async def _account_login(env, request):
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
 
-    # Log in by email or node name (the "universal access" credential).
+
     identifier = clean_string(
         data.get("nodeName", "") or data.get("identifier", "") or
         data.get("email", ""), 254).strip().lower()
@@ -18225,9 +18225,9 @@ async def _account_login(env, request):
     await _ensure_local_demo_account(
         env, request, identifier, password)
 
-    # Failed attempts consume atomic source and source+identifier budgets. They
-    # never block verification of correct credentials, so an attacker cannot
-    # lock a known victim out merely by submitting their identifier.
+
+
+
     id_bi = await blind_index(env, identifier) if identifier else ""
     if not id_bi:
         return json_response({"error": "invalid_credentials"}, status=401)
@@ -18257,9 +18257,9 @@ async def _account_login(env, request):
     if not ok:
         return await _login_failure_response(
             env, attempt_keys, "invalid_credentials")
-    # TOTP is only enforced for accounts that have enrolled it. A bad code counts
-    # toward the lockout but the password was already correct, so the distinct
-    # error here doesn't aid account enumeration.
+
+
+
     if rec.get("totp_enrolled"):
         if not await totp_verify(rec.get("totp_secret", ""), totp):
             return await _login_failure_response(
@@ -18267,11 +18267,11 @@ async def _account_login(env, request):
     for attempt_key in attempt_keys:
         await _login_clear(env, attempt_key)
 
-    # Multi-device account model: password/TOTP authenticates the human account;
-    # a supplied pubkey identifies/registers this particular desktop node. Any
-    # number of desktop nodes may be enabled for the same account. The legacy
-    # accounts.pubkey remains as the primary/first desktop key for compatibility,
-    # but a different registered desktop key is no longer a login failure.
+
+
+
+
+
     name_bi = await blind_index(env, rec.get("name", ""))
     device = None
     desktop_capable = False
@@ -18531,9 +18531,9 @@ async def _account_sessions(env, request, target_session_id=""):
             {
                 "ok": True,
                 "sessions": sessions,
-                # Account-level activity for the settings screen: when this
-                # account was last active anywhere (sessions, linked devices,
-                # nodes) and when it was last emailed, with the send outcome.
+
+
+
                 "account": {
                     "lastSeenAt": await _account_last_seen(
                         env, account_bi,
@@ -18568,8 +18568,8 @@ async def _account_sessions(env, request, target_session_id=""):
         audit_target = "all-other-devices"
         audit_scope = "others"
     elif target_session_id == "all":
-        # "Log out everywhere" also drops the calling device, so a lost or
-        # shared browser can be cleared in one action.
+
+
         await _account_revoke_sessions(env, account_bi)
         revoke_current = True
         audit_target = "all-devices"
@@ -18611,15 +18611,15 @@ async def _account_sessions(env, request, target_session_id=""):
 
 
 async def _account_admin_session(env, request):
-    # Re-mint the HttpOnly `forkmesh_admin` page cookie from a still-valid
-    # account session token, so an admin the app already treats as logged in
-    # (localStorage session + 30-day forkmesh_session marker) doesn't have to
-    # retype their password just to open the admin dashboard. The 12h admin
-    # cookie is set only by _account_login and lapses long before the login
-    # session does, which is why the admin page used to bounce a logged-in
-    # admin back to /login (adhoc #163). The session token — issued only to an
-    # already-authenticated caller and refreshed on every account poll — proves
-    # identity here; is_admin gates the grant, so this never escalates.
+
+
+
+
+
+
+
+
+
     try:
         data = await bounded_json_request(request)
     except Exception:
@@ -18648,9 +18648,9 @@ def _random_bytes(n):
     return bytes(js_crypto.getRandomValues(Uint8Array.new(n)).to_py())
 
 
-# A running node calls this on an interval to stay eligible for the reward
-# split. Signed with the account's key so only the key holder can mark its node
-# online; optionally updates the payout Solana address.
+
+
+
 async def _account_heartbeat(env, request):
     try:
         data = await bounded_json_request(request)
@@ -18690,12 +18690,12 @@ async def _account_heartbeat(env, request):
     if not await ed25519_verify(pubkey, signature, canonical):
         return json_response({"error": "bad_signature"}, status=401)
 
-    # Issue #346: the node itself is the only thing that knows when its local
-    # Claude Code usage window refilled after running out, so it rides this
-    # already-signed heartbeat to ask for a notification (opt-in on the
-    # desktop side). Not part of the signed canonical string, same as solana/
-    # avatarPng above — worst case a stale replay re-flags a notification the
-    # recipient already has, not a forgeable action on someone else's account.
+
+
+
+
+
+
     credits_kind = clean_string(data.get("creditsRefilled", ""), 10)
     if credits_kind in ("5h", "weekly"):
         window = "5-hour" if credits_kind == "5h" else "weekly"
@@ -18708,9 +18708,9 @@ async def _account_heartbeat(env, request):
             dedupe="credits_refilled:" + credits_kind,
         )
 
-    # Nodes can update the email preferences for the user account that owns
-    # them. A linked owner controls all owned-node digest behavior from one
-    # account record; unowned nodes update themselves.
+
+
+
     prefs_bi = name_bi
     prefs_rec = rec
     owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
@@ -18744,7 +18744,7 @@ async def _account_heartbeat(env, request):
         if prefs_bi == name_bi:
             rec = prefs_rec
 
-    # Keep the payout address current if the node sent a valid one.
+
     if wallet_mutation:
         rec["solana"] = solana
         await _save_account(env, name_bi, rec)
@@ -18767,19 +18767,19 @@ async def _account_heartbeat(env, request):
     except Exception:
         pass
 
-    # Report this node's payout-wallet balance in the heartbeat reply so the
-    # client doesn't have to poll Solana itself. We track the last public balance
-    # seen; an increase means an incoming transfer arrived. This user-owned
-    # balance is display metadata and never gates reward eligibility.
+
+
+
+
     wallet = rec.get("solana", "")
     balance_lamports = None
     balance_increased = False
-    # Throttle the external Solana RPC to once per wallet per 5 minutes per
-    # isolate: one subrequest on EVERY 60s heartbeat from every node was pure
-    # overhead (donations are surfaced within minutes either way).
+
+
+
     now_ms = int(Date.now())
-    # Keyed by account+wallet: accounts sharing a payout wallet must each
-    # keep their own balance-change baseline.
+
+
     probe_key = str(name_bi) + ":" + wallet
     last_probe = _HEARTBEAT_BALANCE_PROBES.get(probe_key, 0)
     if (wallet and SOLANA_RE.match(wallet)
@@ -18824,11 +18824,11 @@ async def _account_heartbeat(env, request):
         response["balanceLamports"] = balance_lamports
         response["balanceFundsState"] = "user-owned-external-wallet"
         response["balanceIncreased"] = balance_increased
-    # A freshly launched federated instance's join request rides back on the
-    # admin's own signed heartbeat (adhoc #97), the same rail as the claim /
-    # ownership payloads below: the desktop shows a red dot over the relay
-    # favicon plus an Approve button. Count only — relay details are fetched on
-    # demand through the signed admin-relays endpoint when the admin clicks.
+
+
+
+
+
     if is_admin and _is_main_relay(env):
         try:
             pending_row = await d1_first(
@@ -18836,10 +18836,10 @@ async def _account_heartbeat(env, request):
             response["pendingRelays"] = int((pending_row or {}).get("n") or 0)
         except Exception:
             pass
-    # A pending website claim (adhoc #53) rides back on the signed heartbeat:
-    # only the node's key holder ever sees the confirmation code, and the node
-    # shows it on its own screen for the claiming user to type into the site.
-    # Expired claims are cleaned off the record here.
+
+
+
+
     claim = _claim_pending(rec, int(Date.now()))
     if claim:
         response["claim"] = {"user": claim.get("user", ""),
@@ -18847,20 +18847,20 @@ async def _account_heartbeat(env, request):
     elif rec.get("claim_pending"):
         rec.pop("claim_pending", None)
         await _save_account(env, name_bi, rec)
-    # An admin-initiated ownership takeover (adhoc #141) rides back the same
-    # way: only the node's own signed heartbeat carries it, so only whoever is
-    # actually logged into that machine ever sees the prompt.
+
+
+
     transfer = _transfer_pending(rec, int(Date.now()))
     if transfer:
         response["ownershipTransfer"] = {"admin": transfer.get("admin", "")}
     elif rec.get("ownership_transfer_pending"):
         rec.pop("ownership_transfer_pending", None)
         await _save_account(env, name_bi, rec)
-    # Accepted peer mirror requests (issue #385) ride back on this node's own
-    # signed heartbeat, the same rail as claim/ownership above: the desktop node
-    # clones each repo it agreed to mirror. It reports the ids it has acted on in
-    # `mirrorRequestsAck` (not part of the signed canonical, like creditsRefilled)
-    # so an accepted request stops being redelivered once the node has it.
+
+
+
+
+
     ack_ids = data.get("mirrorRequestsAck")
     if isinstance(ack_ids, list) and rec.get("mirror_requests"):
         remaining = ack_mirror_requests(rec.get("mirror_requests"), ack_ids)
@@ -18875,10 +18875,10 @@ async def _account_heartbeat(env, request):
 
 
 async def _mirroring_owners(env):
-    # Set of owner names that actually mirror a repo for another node, used to
-    # keep single-repo-only nodes out of reward consideration (issue #94). Best
-    # effort: on any read error return None so callers keep their prior behaviour
-    # (fail open) rather than starving every node of its share.
+
+
+
+
     try:
         rows = await d1_all(
             env, "SELECT data FROM repositories WHERE is_private = 0")
@@ -18898,10 +18898,10 @@ async def _mirroring_owners(env):
 
 
 async def _online_payout_addresses(env):
-    # Deduplicated payout addresses of currently-online, active accounts that
-    # actually mirror a repo for another node. A node hosting only its own
-    # un-mirrored repos adds no redundancy, so it is left out of consideration
-    # (issue #94). Stale presence rows self-heal here so the table stays bounded.
+
+
+
+
     cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
     try:
         await d1_run(env, "DELETE FROM account_presence WHERE ts < ?", cutoff)
@@ -18923,7 +18923,7 @@ async def _online_payout_addresses(env):
         if not rec or rec.get("status") != "active":
             continue
         owner = clean_string(row.get("name") or rec.get("name", ""), MAX_NODE_NAME)
-        # Only nodes that mirror a repo shared with another node earn a share.
+
         if mirroring is not None and owner.lower() not in mirroring:
             continue
         solana = (rec.get("solana") or "").strip()
@@ -18931,16 +18931,16 @@ async def _online_payout_addresses(env):
             continue
         seen.add(solana)
         addresses.append(solana)
-    # Federated rewards intentionally do not use this historical address-only
-    # helper. They enter both randomized and instant plans exclusively through
-    # _eligible_reward_snapshot's signed, fresh attestation path.
+
+
+
     return addresses
 
 
-# --- Community reward-pool address (issue #308) ------------------------------
-# A public configured address may receive voluntary contributions. The Worker
-# reads its balance and prepares unsigned distribution intents; the instance
-# owner's self-custodial desktop signer alone can authorize a transfer.
+
+
+
+
 REWARD_CLUSTER_GENESIS_HASHES = {
     "mainnet-beta": "5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d",
     "devnet": "EtWTRABZaYq6iMfeYKouRu166VU2xqa1wcaWoxPkrZBG",
@@ -19000,15 +19000,15 @@ async def _reward_solana_rpc(env, method, params):
     return await _solana_rpc(_RewardRpcEnvironment(env), method, params)
 
 
-# Per-isolate memo of the reward-pool network proof. The proof is two Solana
-# RPC round trips (getGenesisHash + getAccountInfo) whose answers are stable
-# configuration facts — a cluster's genesis hash is immutable and the funded
-# pool account does not stop existing — yet it used to run on EVERY
-# /api/accounts/central-fund view. Public RPC endpoints rate-limit, so each
-# transient 429/timeout surfaced as a 503 on the page (2026-07-24 error-log
-# burst). A verified (network, rpc_url, address) triple is trusted for the
-# fresh TTL without touching the RPC, and kept as a stale fallback when a
-# re-proof attempt fails, bounded so a truly dead RPC still fails closed.
+
+
+
+
+
+
+
+
+
 _REWARD_POOL_VERIFY_MEMO = {"key": None, "ts": 0}
 REWARD_POOL_VERIFY_FRESH_MS = 60 * 60 * 1000
 REWARD_POOL_VERIFY_STALE_MAX_MS = 24 * 60 * 60 * 1000
@@ -19041,9 +19041,9 @@ async def _reward_pool_network_verified(env, address):
             REWARD_CLUSTER_GENESIS_HASHES[network],
         )
     ):
-        # A wrong-cluster ANSWER is disqualifying and clears the fallback; a
-        # missing answer (rate limit, timeout → None) is transient and may
-        # still serve from the bounded stale window.
+
+
+
         if isinstance(genesis, dict):
             memo["key"] = None
             return False
@@ -19418,9 +19418,9 @@ def _reward_pool_address(env):
 
 
 async def _central_fund_record(env):
-    # The pool address is public configuration. Its private key lives in the
-    # instance owner's local signer and is never generated, uploaded or loaded
-    # by Cloudflare.
+
+
+
     address = _reward_pool_address(env)
     if (
         not SOLANA_RE.match(address)
@@ -19441,15 +19441,15 @@ async def _central_fund_record(env):
 
 
 async def _save_central_fund(env, rec):
-    # Compatibility symbol: central-fund state is now derived from public
-    # configuration + append-only signing intents, never an encrypted key row.
+
+
     del env, rec
     return False
 
 
 async def _central_fund_public(env):
-    # Public contribution payload: configured address, selected-network balance,
-    # direct contribution choices, and independently verifiable finalized history.
+
+
     rec = await _central_fund_record(env)
     if not rec:
         return None
@@ -19674,9 +19674,9 @@ async def _central_fund_public(env):
 
 
 async def _distribute_central_fund(env):
-    # Cron first commits an auditable jittered round, then (after that public
-    # time) freezes fresh eligibility and uses a finalized Solana blockhash to
-    # select exactly one node. It only writes an unsigned plan.
+
+
+
     if not _is_main_relay(env):
         return False
     rec = await _central_fund_record(env)
@@ -19684,7 +19684,7 @@ async def _distribute_central_fund(env):
         return False
     now = int(Date.now())
     config = _reward_config(env)
-    # Expired unsigned work cannot stall later rounds indefinitely.
+
     await d1_run(
         env,
         "UPDATE chain_intents SET status='expired' "
@@ -19891,8 +19891,8 @@ async def _solana_contribution_details(env, signature, *, pool_address,
             account_keys.append(str(key.get("pubkey") or ""))
         else:
             account_keys.append(str(key or ""))
-    # The per-intent Solana Pay reference prevents one public transaction from
-    # being claimed under a different contribution choice.
+
+
     if reference_address not in account_keys:
         return False
     actual = []
@@ -20413,8 +20413,8 @@ async def _solana_transaction_matches_plan(env, signature, plan):
     for instruction in instructions:
         if not isinstance(instruction, dict):
             return False
-        # The local signer is intentionally limited to ordinary System Program
-        # transfers. Any opaque/custom instruction makes the intent unverifiable.
+
+
         program = str(instruction.get("program") or "").lower()
         parsed = instruction.get("parsed")
         if program != "system" or not isinstance(parsed, dict):
@@ -21035,8 +21035,8 @@ async def expire_pending_rewards(env):
         "WHERE status='pending_wallet' AND expires_at<=?",
         now,
     )
-    # A signing plan not completed before the allocation deadline expires too;
-    # the source wallet never sent funds, so this releases the reservation.
+
+
     await d1_run(
         env,
         "UPDATE chain_intents SET status='expired' "
@@ -21055,16 +21055,16 @@ async def expire_pending_rewards(env):
     )
 
 
-# --- Disabled legacy issue-bounty storage -----------------------------------
-# Worker-created escrow wallets and automatic payouts are frozen. These helpers
-# remain solely to read/migrate historical records; new bounty funding must use
-# an external self-custodial wallet and a reviewed program or multisig.
+
+
+
+
 
 
 async def _bounty_bi(env, owner, repo, number, kind=""):
-    # kind "" is an issue bounty (key "<owner>/<repo>#<number>", unchanged);
-    # kind "pr" is a per-pull-request bounty (key "…#pr-<number>"), so an issue
-    # and a pull request that happen to share a number never collide.
+
+
+
     prefix = (kind + "-") if kind else ""
     return await blind_index(
         env, owner + "/" + repo + "#" + prefix + str(int(number)))
@@ -21079,7 +21079,7 @@ async def _load_bounty(env, bounty_bi):
 
 
 def _bounty_public(rec):
-    # Never leak the deposit key; only payout-safe fields go back to clients.
+
     legacy_frozen = (
         rec.get("status") != "paid"
         and not bool(rec.get("legacy_custody_migrated_at"))
@@ -21105,7 +21105,7 @@ def _bounty_public(rec):
         "fundsLocation": "historical-external-address",
         "payee": rec.get("payee", ""),
         "payoutSig": rec.get("payout_sig", ""),
-        # Never return a payable URI for a frozen historical address.
+
         "uri": "",
     }
 
@@ -21120,10 +21120,10 @@ async def bounties_handler(env, request, owner, repo):
         return json_response({"error": "invalid_json"}, status=400)
     action = (data.get("action") or "create").strip()
 
-    # A historical bounty row must not turn a private repository name into a
-    # probeable status oracle. Resolve the repository and its normal owner/share
-    # boundary before deriving or reading the bounty blind index; missing and
-    # unauthorized private repositories deliberately share the same 404 shape.
+
+
+
+
     viewer = await _authed_account_name(env, request, data)
     if await _repository_access_context(
             env, request, owner, repo, viewer=viewer) is None:
@@ -21146,8 +21146,8 @@ async def bounties_handler(env, request, owner, repo):
         number = 0
     if number <= 0:
         return json_response({"error": "number_required"}, status=400)
-    # kind "" is an issue bounty; "pr" is a per-pull-request bounty (issue #347),
-    # keyed separately so an issue and a PR sharing a number never collide.
+
+
     kind = clean_string(data.get("kind", ""), 8)
     if kind not in ("", "pr"):
         kind = ""
@@ -21158,8 +21158,8 @@ async def bounties_handler(env, request, owner, repo):
         return json_response({"error": "no_bounty"}, status=404)
 
     if action == "status":
-        # Public historical status only. Work on a projection so polling never
-        # re-encrypts a retained key-bearing row.
+
+
         rec = dict(rec)
         if rec.get("status") != "paid" and rec.get("address"):
             balance = await _solana_balance_lamports(env, rec["address"])
@@ -21174,7 +21174,7 @@ async def bounties_handler(env, request, owner, repo):
     return json_response({"error": "bad_action"}, status=400)
 
 
-# Cap on collaborators per repo, so one owner can't fill the table with shares.
+
 MAX_REPO_GRANTEES = 100
 
 
@@ -21206,9 +21206,9 @@ async def _active_public_recipient_bundles(env, account_bis):
     bundles = {}
     for row in rows or []:
         account_bi = str(row.get("account_bi") or "")
-        # ORDER BY makes the first valid row the newest for this account.  If a
-        # newer malformed row exists, continue so an older *valid and active*
-        # registration can still be used.
+
+
+
         if not account_bi or account_bi in bundles:
             continue
         try:
@@ -21231,11 +21231,11 @@ async def _active_public_recipient_bundles(env, account_bis):
 
 
 async def shares_handler(env, request, owner, repo):
-    # Private-repo collaborator ACL (issue #9). Every operation is authorized by
-    # the OWNER account's key — only the owner may grant/revoke/list who a private
-    # repo is shared with. A grantee then sees the repo in their authenticated
-    # catalog and clones it with their own key (verify_share_view_token); none of
-    # that is gated here, only the membership list is.
+
+
+
+
+
     await ensure_schema(env)
     method = method_name(request)
     repo_bi = await blind_index(env, owner + "/" + repo)
@@ -21248,8 +21248,8 @@ async def shares_handler(env, request, owner, repo):
         return json_response({"error": "account_required"}, status=403)
 
     if method == "GET":
-        # List current grantees for the owner's Collaborators UI. Owner-signed so
-        # the membership of a private repo isn't world-readable.
+
+
         params = parse_qs(urlparse(request.url).query)
         ts = clean_string(params.get("ts", [""])[0], 20)
         sig = clean_string(params.get("sig", [""])[0], 200)
@@ -21286,8 +21286,8 @@ async def shares_handler(env, request, owner, repo):
             recipients.append({"grantee": grantee, **bundle})
         return json_response({
             "ok": True,
-            # Retain the names-only field for older owner clients.  It is still
-            # behind the owner signature and never enters a public catalog.
+
+
             "grantees": grantees,
             "recipients": recipients,
             "encryptionReady": not missing,
@@ -21300,8 +21300,8 @@ async def shares_handler(env, request, owner, repo):
             data = await bounded_json_request(request)
         except Exception:
             data = {}
-        # DELETE is accepted as an alias for action=remove so the verb can carry
-        # intent even when a client can't easily attach a body to a DELETE.
+
+
         action = "remove" if method == "DELETE" else \
             (clean_string(data.get("action", "add"), 12) or "add")
         if action not in ("add", "remove"):
@@ -21319,8 +21319,8 @@ async def shares_handler(env, request, owner, repo):
             return json_response({"error": "grantee_required"}, status=400)
         if grantee == owner:
             return json_response({"error": "cannot_share_with_self"}, status=400)
-        # The action is bound into the signature so an "add" token can never be
-        # replayed as a "remove" (or vice versa).
+
+
         canonical = ("forkmesh-share-v1\n" + owner + "\n" + repo + "\n" +
                      grantee + "\n" + action + "\n" + str(ts)).encode()
         try:
@@ -21357,8 +21357,8 @@ async def shares_handler(env, request, owner, repo):
                 audit_target, "success")
             return json_response({"ok": True, "grantee": grantee, "shared": False})
 
-        # add: the grantee must be a real account (so a token signed by their key
-        # can ever verify), and the per-repo cap must not be exceeded.
+
+
         try:
             if not await _owner_pubkey(env, grantee):
                 await _audit_sensitive_action(
@@ -21369,8 +21369,8 @@ async def shares_handler(env, request, owner, repo):
                 env, [grantee_bi])
             recipient = recipient_bundles.get(grantee_bi)
             if not recipient:
-                # Do not create an ACL that the owner cannot immediately turn
-                # into an exact encrypted recipient set.
+
+
                 await _audit_sensitive_action(
                     env, owner, audit_action, "repository_collaborator",
                     audit_target, "denied",
@@ -21436,20 +21436,20 @@ async def shares_handler(env, request, owner, repo):
     return json_response({"error": "method_not_allowed"}, status=405)
 
 
-# --- Organizations + teams (issue #388) --------------------------------------
-# Users create organizations, add accounts to them, and group members into
-# teams that hold one repository permission over every repo linked under the
-# org. Org owners/admins administer the org itself and implicitly hold 'admin'
-# repo permission; plain members hold 'read'; team membership raises that to
-# the team's permission. The org name fronts the linked repos' URLs — the
-# /<org>/<repo> git endpoints and /api/repo/<org>/<repo>/... are rewritten to
-# the hosting node's namespace before routing (see org_alias_rewrite), so
-# mirror nodes and clients keep operating on the canonical node namespace
-# while the public URL shows the organization's name.
+
+
+
+
+
+
+
+
+
+
 
 ORG_ROLES = ("owner", "admin", "member")
-# Repository permission ladder, weakest to strongest (issue #388: read /
-# write / maintain / admin). Tuple order IS the ranking.
+
+
 TEAM_PERMISSIONS = ("read", "write", "maintain", "admin")
 MAX_ORGS_PER_ACCOUNT = 10
 MAX_ORG_MEMBERS = 200
@@ -21457,11 +21457,11 @@ MAX_ORG_TEAMS = 50
 MAX_ORG_REPOS = 200
 ORG_WORLD_ACCESS_VALUES = ("public", "restricted", "private")
 
-# Org repo-alias resolution memo: "org/repo" -> (node owner or "", ts),
-# per-isolate so the hot repo/git routes don't pay a D1 read per request
-# (including the common negative case: the owner segment is a plain node
-# name). Short TTL so a new link/unlink takes effect quickly; mutating
-# handlers clear it inline for same-isolate read-your-writes.
+
+
+
+
+
 _ORG_ALIAS_MEMO = {}
 ORG_ALIAS_MEMO_TTL_MS = 30 * 1000
 ORG_ALIAS_MEMO_MAX = 512
@@ -21517,8 +21517,8 @@ def _org_world_access_allowed(level, viewer_role):
 
 
 def team_permission_rank(permission):
-    # Index into TEAM_PERMISSIONS, -1 for unknown — so comparisons read as
-    # rank(x) >= rank("write") and an unknown permission never qualifies.
+
+
     try:
         return TEAM_PERMISSIONS.index((permission or "").strip().lower())
     except ValueError:
@@ -21526,8 +21526,8 @@ def team_permission_rank(permission):
 
 
 async def _org_row(env, org):
-    # (org_bi, orgs row or None) for an org name. org_bi is keyed under an
-    # "org:" prefix so it can never collide with an account blind index.
+
+
     org = (org or "").strip().lower()
     org_bi = await blind_index(env, "org:" + org)
     row = await d1_first(
@@ -21536,7 +21536,7 @@ async def _org_row(env, org):
 
 
 async def _org_role(env, org_bi, account):
-    # The account's role in the org ('owner'/'admin'/'member') or "".
+
     if not account:
         return ""
     member_bi = await blind_index(env, account)
@@ -21547,9 +21547,9 @@ async def _org_role(env, org_bi, account):
 
 
 async def _org_permission(env, org_bi, account):
-    # The strongest repository permission `account` holds in the org: role
-    # owner/admin => 'admin', plain membership => 'read', team membership
-    # raises 'read' to the best team's permission. "" for non-members.
+
+
+
     role = await _org_role(env, org_bi, account)
     if role in ("owner", "admin"):
         return "admin"
@@ -21571,8 +21571,8 @@ async def _org_permission(env, org_bi, account):
 
 
 async def _org_write_allowed(env, owner, repo, pusher):
-    # True when some org links owner/repo and the pusher holds write-or-better
-    # permission there. Fail closed: any error must never grant push access.
+
+
     if not owner or not repo or not pusher:
         return False
     try:
@@ -21591,16 +21591,16 @@ async def _org_write_allowed(env, owner, repo, pusher):
 
 
 async def verify_org_push_token(env, pusher, owner, repo, ts, sig):
-    # Org-team write gate for git push (issue #388): a member of an org team
-    # with write+ permission on a linked repo may run receive-pack against it,
-    # signing with their OWN key (the node owner never hands out its key).
-    # Distinct canonical prefix so an owner push token or a share-view token
-    # can never be replayed here, and vice versa. owner/repo are the CANONICAL
-    # node namespace — the org alias is rewritten away before the push gate.
+
+
+
+
+
+
     if not pusher or not owner or not repo or not sig or not _ts_ok(ts):
         return False
     if pusher == owner:
-        return False  # the owner authenticates via verify_push_token, not here
+        return False
     pubkey = await _owner_pubkey(env, pusher)
     if not pubkey:
         return False
@@ -21612,9 +21612,9 @@ async def verify_org_push_token(env, pusher, owner, repo, ts, sig):
 
 
 async def _org_repo_node(env, org, repo):
-    # Node owner serving /<org>/<repo>, or "" when the pair is not a
-    # registered alias. Fail closed on any error: "" simply means "not an org
-    # URL" and the request proceeds unrewritten.
+
+
+
     org = (org or "").strip().lower()
     repo = (repo or "").strip().lower()
     if not org or not repo:
@@ -21643,16 +21643,16 @@ async def _org_repo_node(env, org, repo):
 
 
 async def org_alias_rewrite(env, request, url):
-    # Organization repo aliases (issue #388): the /<org>/<repo> git endpoints
-    # and every /api/repo/<org>/<repo>/... path serve the linked node's repo
-    # under the organization's name. The rewrite is worker-internal — no
-    # redirect, the org name stays in the address bar and clone URL — and runs
-    # before any route matching, so everything downstream (auth canonicals,
-    # direct gateway routing and blind indexes) sees the canonical
-    # /<node>/<repo> path exactly as if the node
-    # URL had been requested. Org names can never collide with account names
-    # (both creation paths reject the other namespace), so an existing node's
-    # URL is never rewritten. Returns the rewritten (request, url) or None.
+
+
+
+
+
+
+
+
+
+
     match = (REPO_API_PREFIX_RE.match(url.path) or GIT_INFO_RE.match(url.path)
              or GIT_PACK_RE.match(url.path) or GIT_RECEIVE_RE.match(url.path))
     if not match:
@@ -21667,13 +21667,13 @@ async def org_alias_rewrite(env, request, url):
     new_path = (url.path[:match.start(1)] + quote(node) +
                 url.path[match.end(1):])
     new_url = url._replace(path=new_path).geturl()
-    # Route internally with the canonical parsed URL while preserving the
-    # original Request object.  Fetch's second Request constructor argument is
-    # a RequestInit mapping, not another Request; passing the Worker Request
-    # there aborts the Python isolate.  Downstream handlers receive owner/repo
-    # from the rewritten URL, while retaining the single-use body, trusted
-    # request.cf metadata, headers, and the public alias URL presented by the
-    # caller.
+
+
+
+
+
+
+
     return request, urlparse(new_url)
 
 
@@ -21767,9 +21767,9 @@ class _OrganizationSuccessionRuntime:
         return str(account_bi or ""), name
 
     async def owner_activity(self, owner_bi, stored_at):
-        # Only generalized last-seen maxima are used; no device identifier,
-        # label, platform, location, user-agent, or personal payload enters
-        # succession storage or responses.
+
+
+
         device = await d1_first(
             self.env,
             "SELECT COALESCE(MAX(last_seen),0) AS last_seen "
@@ -21824,11 +21824,11 @@ async def process_organization_succession_warnings(env):
         _OrganizationSuccessionRuntime(env), limit=50)
 
 
-# --- Organization Discord connector ----------------------------------------
-# The Discord API token stays exclusively in the Worker secret binding.  The
-# policy module receives only the narrow operations below, so a dashboard body,
-# D1 value, audit event, or future connector field cannot accidentally expose
-# or reuse it as an application credential.
+
+
+
+
+
 DISCORD_API_ORIGIN = "https://discord.com/api/v10"
 DISCORD_OAUTH_API_ORIGIN = "https://discord.com/api"
 DISCORD_OAUTH_AUTHORIZE_ORIGIN = "https://discord.com/oauth2/authorize"
@@ -21849,11 +21849,11 @@ _DISCORD_CHANNEL_MESSAGES_POST_PATH_RE = re.compile(
 _DISCORD_OAUTH_TOKEN_PATH = "/oauth2/token"
 _DISCORD_OAUTH_IDENTITY_PATH = "/users/@me"
 _DISCORD_OAUTH_GUILDS_PATH = "/users/@me/guilds"
-# One best-effort coordinator is shared by every connector request handled by
-# this Worker isolate. It is intentionally not a durable cross-colo global
-# limiter and carries only short-lived rate metadata plus minimized public
-# channel/@everyone-role projections—never credentials, OAuth values, raw
-# private catalogs, or message history.
+
+
+
+
+
 _discord_rate_coordinator = DiscordRateCoordinator()
 
 
@@ -21998,7 +21998,7 @@ async def _discord_provider_request(env, method, path, body=None):
     options = {
         "method": method,
         "headers": headers,
-        # Never forward the credential across a provider redirect.
+
         "redirect": "manual",
     }
     if body is not None:
@@ -22026,8 +22026,8 @@ async def _discord_provider_request(env, method, path, body=None):
             data = json.loads(raw) if raw else None
         except Exception:
             data = None
-        # Keep only the narrow rate headers used by the shared coordinator;
-        # provider response headers never reach the dashboard or audit trail.
+
+
         rate_headers = {}
         for name in (
                 "x-ratelimit-bucket", "x-ratelimit-reset-after",
@@ -22056,8 +22056,8 @@ async def _discord_provider_request(env, method, path, body=None):
             "data": data,
             "retryAfterMs": max(
                 max(0, min(retry_after, 3_600_000)), coordinated_retry),
-            # Internal-only metadata consumed by ForkMeshDiscordGate. The
-            # outer adapter strips these fields before returning to policy.
+
+
             "rateBucket": rate_headers.get("x-ratelimit-bucket", "")[:100],
             "rateGlobal": bool(
                 rate_headers.get("x-ratelimit-global")
@@ -22105,8 +22105,8 @@ async def _discord_api_request(env, method, path, body=None):
                 0, min(3_600_000, int(result.get("retryAfterMs") or 0))),
         }
     except Exception:
-        # Production and dev both bind the gate. Missing/broken bindings fail
-        # closed; the stateless Worker must never bypass the global limiter.
+
+
         return {"status": 0, "data": None, "retryAfterMs": 0}
 
 
@@ -22136,7 +22136,7 @@ async def _discord_oauth_request(env, method, path, form=None, access_token=""):
     options = {
         "method": method,
         "headers": headers,
-        # OAuth bearer credentials must never cross a provider redirect.
+
         "redirect": "manual",
     }
     if method == "POST":
@@ -22311,10 +22311,10 @@ class _OrganizationDiscordRuntime:
             "client_id": config["clientId"],
             "redirect_uri": config["redirectUri"],
             "response_type": "code",
-            # Keep the user authorization-code grant separate from Discord's
-            # callback-less bot-install shortcut. Combining `bot` here causes
-            # some Discord clients to return an install result without the
-            # code/state required to verify the organization owner.
+
+
+
+
             "scope": "identify guilds",
             "state": state,
             "code_challenge": challenge,
@@ -22349,9 +22349,9 @@ class _OrganizationDiscordRuntime:
             "invalid_context", "invalid_code",
         }:
             outcome = "invalid"
-        # Strip OAuth code/state/error from the browser address before any
-        # World UI loads. The one-time callback cookie is cleared regardless of
-        # outcome, and the response is non-cacheable/non-referring.
+
+
+
         return Response("", status=303, headers={
             "location": "/world/?discord=" + outcome,
             "cache-control": "no-store, max-age=0, must-revalidate",
@@ -22378,8 +22378,8 @@ class _OrganizationDiscordRuntime:
         guild_id = _discord_snowflake(guild_id)
         if not guild_id or not isinstance(channels, list):
             return
-        # The policy module has already removed private/NSFW/thread metadata;
-        # cache only its small id/name/type public projection.
+
+
         _discord_rate_coordinator.catalog_put(
             "public-channels:" + guild_id, channels, int(Date.now()))
 
@@ -22392,8 +22392,8 @@ class _OrganizationDiscordRuntime:
         if int(result.get("status") or 0) != 200:
             return result
         roles = result.get("data") if isinstance(result.get("data"), list) else []
-        # Only the @everyone base role participates in ForkMesh's public
-        # channel calculation. Discard every other role before short caching.
+
+
         projected = []
         for role in roles:
             if not isinstance(role, dict) or _discord_snowflake(role.get("id")) != guild_id:
@@ -22424,8 +22424,8 @@ class _OrganizationDiscordRuntime:
             })
         data = result.get("data") if isinstance(result, dict) else None
         access_token = str((data or {}).get("access_token") or "")
-        # Do not return provider response fields such as refresh_token,
-        # scope, or token_type beyond this transient call frame.
+
+
         return {
             "status": int((result or {}).get("status") or 0),
             "accessToken": access_token[:4096],
@@ -22457,8 +22457,8 @@ class _OrganizationDiscordRuntime:
         channel_id = _discord_snowflake(channel_id)
         if not channel_id:
             return {"status": 400, "data": None, "retryAfterMs": 0}
-        # Explicitly disable all Discord mention parsing.  A ForkMesh owner can
-        # choose where a text message goes, never who it pings.
+
+
         return await _discord_api_request(
             self.env,
             "POST",
@@ -22541,12 +22541,12 @@ async def world_organizations_handler(env, request):
 
 
 async def orgs_handler(env, request):
-    # POST /api/orgs creates an organization for the logged-in account (who
-    # becomes its first 'owner' member); GET lists the orgs the session
-    # account belongs to. Org names share the /<name>/<repo> URL namespace
-    # with accounts, so creation rejects any name an account holds — and the
-    # account reserve/signup paths reject org names — keeping the org-alias
-    # URL rewrite collision-free.
+
+
+
+
+
+
     await ensure_schema(env)
     method = method_name(request)
     if method == "GET":
@@ -22575,8 +22575,8 @@ async def orgs_handler(env, request):
     name = clean_string(data.get("name", ""), MAX_NODE_NAME).lower()
     if not valid_node_name(name):
         return json_response({"error": "invalid_org_name"}, status=400)
-    # The name must be free in BOTH namespaces: any account row (active or
-    # mid-signup) blocks it, and so does an existing org.
+
+
     _, existing_account = await _account_row(env, name)
     if existing_account:
         return json_response({"error": "org_name_taken"}, status=409)
@@ -22611,9 +22611,9 @@ async def orgs_handler(env, request):
 
 
 async def org_handler(env, request, org):
-    # GET: public org profile (identity, counts, linked repos — the same
-    # visibility as the public account lookup). DELETE: dissolve the org and
-    # all its rows — org owners only.
+
+
+
     await ensure_schema(env)
     method = method_name(request)
     org_bi, row = await _org_row(env, org)
@@ -22763,17 +22763,17 @@ async def org_handler(env, request, org):
                 env, "DELETE FROM org_team_collaborators WHERE org_bi=?",
                 org_bi)
             await d1_run(env, "DELETE FROM org_teams WHERE org_bi=?", org_bi)
-            # Disconnect all Discord connector material before the deterministic
-            # org id can ever be reused. This includes encrypted consent and
-            # one-time OAuth state, so recreating an alias cannot inherit a
-            # former organization's external bridge.
+
+
+
+
             await d1_run(
                 env, "DELETE FROM organization_discord_connectors WHERE org_bi=?",
                 org_bi)
-            # The setup-task marker is the authoritative scope for the
-            # connector's human-action tasks. Remove every dependent record
-            # before the task rows themselves so a deleted organization cannot
-            # leave orphaned check-ins, QA verdicts, replies, or attachments.
+
+
+
+
             await d1_run(
                 env, "DELETE FROM organization_task_checkins WHERE task_id IN "
                 "(SELECT task_id FROM organization_discord_setup_tasks "
@@ -22829,11 +22829,11 @@ async def org_handler(env, request, org):
 
 
 async def org_members_handler(env, request, org):
-    # GET: role-gated office roster according to the organization's world
-    # visibility policy. POST: add an account or change its role — this is the
-    # "invite": the new member is notified, like a repo share. DELETE: remove
-    # a member. Writes require an owner/admin session; only owners may grant,
-    # demote, or remove owners/admins, and the last owner can never leave.
+
+
+
+
+
     await ensure_schema(env)
     method = method_name(request)
     org_bi, row = await _org_row(env, org)
@@ -22853,9 +22853,9 @@ async def org_members_handler(env, request, org):
                 access["offices"], viewer_role):
             return json_response({"error": "forbidden"}, status=403)
         if not viewer_role:
-            # A public office hallway does not let an organization expose each
-            # member's profile on that person's behalf. Anonymous visitors get
-            # an aggregate only; named office cards remain member-visible.
+
+
+
             count = await d1_first(
                 env,
                 "SELECT COUNT(*) AS n FROM org_members WHERE org_bi=?",
@@ -22872,9 +22872,9 @@ async def org_members_handler(env, request, org):
             "SELECT name, role, created_at FROM org_members WHERE org_bi=? "
             "ORDER BY created_at ASC",
             org_bi)
-        # Each member's team list rides along so a roster reader never has to
-        # fan out one request per team. This is the same org-internal layout
-        # the per-team member listing already shows any member.
+
+
+
         team_rows = await d1_all(
             env,
             "SELECT name, team FROM org_team_members WHERE org_bi=? "
@@ -22959,7 +22959,7 @@ async def org_members_handler(env, request, org):
     role = clean_string(data.get("role", "member"), 12).lower() or "member"
     if role not in ORG_ROLES:
         return json_response({"error": "bad_role"}, status=400)
-    # Only owners hand out (or take away) the administrative roles.
+
     if caller_role != "owner" and (role in ("owner", "admin") or
                                    existing_role in ("owner", "admin")):
         await _audit_sensitive_action(
@@ -23025,10 +23025,10 @@ async def _org_owner_count(env, org_bi):
 
 
 async def org_teams_handler(env, request, org):
-    # Teams: named member subsets holding one repository permission over the
-    # org's linked repos. GET lists them (org members only — the permission
-    # layout is org-internal); POST creates a team or updates its permission;
-    # DELETE removes a team. Writes require an owner/admin session.
+
+
+
+
     await ensure_schema(env)
     method = method_name(request)
     org_bi, row = await _org_row(env, org)
@@ -23139,10 +23139,10 @@ async def org_teams_handler(env, request, org):
 
 
 async def org_team_members_handler(env, request, org, team):
-    # Who is on one team. GET is org-member visible; POST adds an EXISTING org
-    # member to the team (team membership can only ever raise a member's
-    # permission, never smuggle in an outsider); DELETE removes. Writes
-    # require an owner/admin session.
+
+
+
+
     await ensure_schema(env)
     method = method_name(request)
     org_bi, row = await _org_row(env, org)
@@ -23271,12 +23271,12 @@ async def org_team_members_handler(env, request, org, team):
 
 
 async def org_repos_handler(env, request, org):
-    # The alias map behind /<org>/<repo> URLs. GET is public routing data.
-    # POST links a repo: the caller must be an org owner/admin AND the linked
-    # node namespace must be the caller's own account or a node demonstrably
-    # owned by that account — you can only bring your own fleet's published
-    # repos under an org, so an org can never hijack another node's URL.
-    # DELETE unlinks (owner/admin).
+
+
+
+
+
+
     await ensure_schema(env)
     method = method_name(request)
     org_bi, row = await _org_row(env, org)
@@ -23288,10 +23288,10 @@ async def org_repos_handler(env, request, org):
             env,
             "SELECT repo, node_owner FROM org_repos WHERE org_bi=? ORDER BY repo",
             org_bi)
-        # Organization aliases are public routing data only for explicitly
-        # public repositories. A linked private repository is omitted unless
-        # the signed-in viewer already owns it or has an explicit repo share;
-        # org membership alone is not a plaintext/decryption grant.
+
+
+
+
         _, viewer_rec = await _account_session_record(env, request)
         viewer = (
             str((viewer_rec or {}).get("name") or "").strip().lower())
@@ -23315,11 +23315,11 @@ async def org_repos_handler(env, request, org):
                 if not allowed:
                     continue
             public_record = {"repo": linked_repo, "node": node_owner}
-            # The gateway authorizes an organization SSH path by resolving it
-            # back to this linked node before checking the allowlist. Publish
-            # that stable organization URL here (rather than leaking the
-            # backing-node path into the repo page) only when the backing
-            # repository is explicitly enabled for SSH.
+
+
+
+
+
             ssh_url = _ssh_alias_repository_url(
                 env, org_name, node_owner, linked_repo)
             if ssh_url:
@@ -23516,8 +23516,8 @@ async def org_fediverse_handler(env, request, org):
             item.get("node_owner"), MAX_NODE_NAME).strip().lower()
         if not repo or not source_owner:
             continue
-        # Organization membership is not a private-repository content grant.
-        # Private links are omitted, exactly like the public org repo list.
+
+
         if await _repo_is_private(env, source_owner, repo):
             continue
         owner_settings = await _ap_repo_settings_get(
@@ -23546,15 +23546,15 @@ async def org_fediverse_handler(env, request, org):
     }, cache_control="no-store")
 
 
-# --- Admins + manual email verification -------------------------------------
-# A user is "set as administrator" via the users.is_admin column in the DB
-# (UPDATE users SET is_admin=1 WHERE username='<user>'). Admins' clients are
-# notified when a new user joins and can verify the new user's email by hand
-# until an email service (e.g. SES) is wired up.
+
+
+
+
+
 
 async def _is_admin(env, name):
-    # Admin status lives in the users.is_admin column. Grant it directly in the
-    # DB: UPDATE users SET is_admin=1 WHERE username='<user>'.
+
+
     name = (name or "").strip().lower()
     if not name:
         return False
@@ -23563,7 +23563,7 @@ async def _is_admin(env, name):
         row = await d1_first(
             env, "SELECT is_admin FROM users WHERE user_bi=?", name_bi)
     except Exception:
-        return False  # column may predate migration 0006
+        return False
     return bool(row and int(row.get("is_admin", 0) or 0))
 
 
@@ -23574,8 +23574,8 @@ async def _has_role(env, name, role, scope_type="platform", scope=""):
     if not name or not role or not security_control.role_scope_allowed(
             role, scope_type):
         return False
-    # Preserve the existing administrator flag as the platform-administrator
-    # grant only. It does not imply moderator/security-reviewer/decryption roles.
+
+
     if (role == "platform_administrator" and scope_type == "platform"
             and await _is_admin(env, name)):
         return True
@@ -23665,8 +23665,8 @@ async def security_roles_handler(env, request):
             "role": security_control.normalize_role(row.get("role")),
             "scopeType": security_control.normalize_scope_type(
                 row.get("scope_type")),
-            # Scope identifiers are blind indexes. Only the grantee/admin sees
-            # the token, and no private repository name is recoverable from it.
+
+
             "scopeToken": str(row.get("scope_bi") or ""),
             "grantedAt": int(row.get("granted_at") or 0),
             "expiresAt": int(row.get("expires_at") or 0),
@@ -23793,12 +23793,12 @@ async def cleanup_sensitive_audit_records(env):
         now - SECURITY_AUDIT_RETAIN_MS)
 
 
-# --- Achievement badges (adhoc #370) -----------------------------------------
-# Public recognition marks, similar in shape to org teams: a fixed catalog
-# (badges.py) awarded once per account, either automatically at a real
-# platform event (see the call sites of _award_badge below) or by a platform
-# administrator. Awards are permanent — later losing eligibility does not
-# revoke an already-earned badge.
+
+
+
+
+
+
 FIRST_100_USERS_LIMIT = 100
 WORLD_FIRST_HOUR_BADGE_MS = 60 * 60 * 1000
 
@@ -23847,9 +23847,9 @@ async def badges_catalog_handler(env, request):
 
 
 async def account_badges_handler(env, request, raw_name):
-    # GET: the badges one account has earned (public — same visibility as the
-    # public account lookup). POST/DELETE: a platform administrator grants or
-    # revokes one badge.
+
+
+
     await ensure_schema(env)
     name = clean_string(raw_name or "", MAX_NODE_NAME).strip().lower()
     if not valid_node_name(name):
@@ -23899,8 +23899,8 @@ async def account_badges_handler(env, request, raw_name):
 
 
 async def _admin_authorized(env, node, ts, sig, canonical):
-    # The requesting admin proves control of their node's key, and the account
-    # must have is_admin set. Returns the admin's record on success, else None.
+
+
     node = (node or "").strip().lower()
     if not await _is_admin(env, node) or not _ts_ok(ts):
         return None
@@ -23997,8 +23997,8 @@ async def _admin_delete_unverified_account(env, request, raw_target):
         return json_response({"error": "email_already_verified"}, status=409)
     if not clean_string(target_rec.get("email", ""), 254).strip():
         return json_response({"error": "account_has_no_email"}, status=409)
-    # Never let the convenience gesture erase another administrator. Revoking
-    # an administrator remains an explicit security-control-plane operation.
+
+
     if await _is_admin(env, target):
         await _audit_sensitive_action(
             env, actor, "admin.unverified_account_delete", "account",
@@ -24021,11 +24021,11 @@ async def _admin_delete_unverified_account(env, request, raw_target):
     )
 
 
-# --- Transactional email (Mailtrap) -----------------------------------------
-# Signup confirmation goes out through Mailtrap's HTTP sending API. The token is
-# a Worker secret (MAILTRAP_API_TOKEN, pushed from .env.production by deploy.sh).
-# When it's unset the sender is a no-op, so a fork without an email provider
-# still works — callers fall back to the admin verification queue.
+
+
+
+
+
 MAILTRAP_SEND_URL = "https://send.api.mailtrap.io/api/send"
 FORKMESH_SITE_URL = "https://forkmesh.com/"
 
@@ -24085,19 +24085,19 @@ async def _send_email(env, to_email, subject, text, html=None,
         return False
 
 
-# --- Account email activity ---------------------------------------------------
-#
-# Every account-directed send stamps the recipient's own (encrypted) record with
-# when the mail went out, a coarse kind, and whether the provider accepted it,
-# so the account screen can answer "when were they last emailed, and did it
-# land?" without a second log table. Subject and body are never stored here, and
-# the stamp is private to the account: it rides the authenticated sessions read,
-# not the public profile lookup.
-#
-# The stamp also carries a running total plus a short bounded history of the
-# most recent sends. That history is what the "send it again" verification
-# button rate-limits itself against — a send that the provider rejected still
-# counts, so a failing mail provider can't be hammered from the dashboard.
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 ACCOUNT_EMAIL_STATUS_DELIVERED = "delivered"
 ACCOUNT_EMAIL_STATUS_FAILED = "failed"
@@ -24226,16 +24226,16 @@ def _account_email_activity(rec):
             ACCOUNT_EMAIL_STATUS_DELIVERED if rec.get("last_email_ok")
             else ACCOUNT_EMAIL_STATUS_FAILED),
         "lastEmailKind": clean_string(rec.get("last_email_kind", ""), 40),
-        # Older records predate the counter; one stamped send is the floor.
+
         "emailSendCount": max(1, count),
     }
 
 
-# --- External GitHub/GitLab/Codeberg metadata imports -----------------------
-#
-# Provider imports live in a separate D1 namespace from the mirror catalog.
-# repository_imports.py owns the provider-neutral policy/service layer; these
-# small adapters supply Worker HTTP, account authorization, and mirror proof.
+
+
+
+
+
 
 async def _repository_provider_fetch(env, provider, path, token=""):
     from js import fetch as js_fetch
@@ -24255,23 +24255,23 @@ async def _repository_provider_fetch(env, provider, path, token=""):
         if token:
             headers["authorization"] = "Bearer " + token
     elif provider == "codeberg":
-        # Codeberg runs Forgejo's Gitea-compatible API. Its access token is
-        # request-scoped exactly like the other provider credentials and is
-        # never persisted or forwarded across a redirect.
+
+
+
         if token:
             headers["authorization"] = "token " + token
     elif token:
-        # GitLab personal/project access tokens are scoped request credentials.
-        # They are never included in a record, log, exception, or D1 write.
+
+
         headers["private-token"] = token
     url = repository_import.provider_api_origin(provider) + path
     try:
         response = await js_fetch(
             url, to_js({"method": "GET", "headers": headers,
-                        # Never forward a request-scoped provider credential
-                        # across an HTTP redirect. Metadata endpoints are
-                        # canonical; a moved repository can be re-imported
-                        # from its new canonical web URL.
+
+
+
+
                         "redirect": "manual"}))
         status = int(getattr(response, "status", 0) or 0)
         response_headers = {}
@@ -24311,8 +24311,8 @@ async def _repository_provider_fetch(env, provider, path, token=""):
             "headers": response_headers,
         }
     except Exception:
-        # Never include exception text: a provider/runtime failure can echo
-        # request headers, including the one-use authorization token.
+
+
         return {"status": 502, "data": {}, "headers": {}}
 
 
@@ -24397,10 +24397,10 @@ async def _repository_import_mirror_status(
         )
         if not row:
             return {"verified": False}
-        # Linking a public external stub to a private catalog entry would make
-        # the public status disclose that the private repo exists. Do not trust
-        # the historical plaintext flag by itself: migration 0011 defaulted
-        # old/ambiguous rows to public.
+
+
+
+
         catalog_record = await decrypt_row(env, row.get("data"))
         visibility = (catalog_record or {}).get("visibility")
         if visibility not in ("public", "private"):
@@ -24471,10 +24471,10 @@ async def repository_imports_handler(env, request, path):
 
 
 async def _email_verify_token(env, name, email):
-    # Stateless, deterministic confirm token bound to (name, email). Only the
-    # server can compute it (keyed by DATA_KEY via the blind-index HMAC key, with
-    # its own domain-separation prefix), so a valid token in the link proves the
-    # recipient controls the mailbox — no token column or extra storage needed.
+
+
+
+
     key = await _hmac_key(env)
     msg = ("forkmesh-email-verify-v1\n" + (name or "") + "\n" + (email or "")).encode()
     sig = await js_crypto.subtle.sign("HMAC", key, _to_js(msg))
@@ -24544,15 +24544,15 @@ async def _send_verification_email(env, request, name, email):
     return ok
 
 
-# --- "Send it again" for an unverified email ---------------------------------
-#
-# The profile POST is the privileged write path, so it demands the account
-# password — reasonable for a payout address, pure friction for re-sending a
-# confirmation link, and accounts were staying unverified because of it. This
-# endpoint takes the signed-in session and nothing else. The account's own send
-# history (see _stamp_account_email) is what bounds the retry rate: a queued
-# send counts exactly like a delivered one, so a failing provider cannot be
-# hammered from the dashboard.
+
+
+
+
+
+
+
+
+
 
 VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000
 VERIFICATION_RESEND_WINDOW_MS = 24 * 60 * 60 * 1000
@@ -24593,10 +24593,10 @@ async def _account_resend_verification(env, request):
     sent = await _send_verification_email(env, request, name, email)
     if not sent:
         await _enqueue_verification(env, name_bi, name, email)
-    # _send_verification_email already stamped (and pinged the admins about) a
-    # freshly loaded copy of this record. Mirror the stamp onto the stale copy
-    # held here purely to shape the response — it is never saved, so the
-    # persisted counter stays authoritative.
+
+
+
+
     payload = {
         "ok": True,
         "verificationSent": bool(sent),
@@ -24610,18 +24610,18 @@ async def _account_resend_verification(env, request):
         payload, cache_control="no-store, max-age=0, must-revalidate")
 
 
-# --- "How are we doing?" founder feedback email -------------------------------
-#
-# Sent ONCE per user account, ~24h after signup, from founders@forkmesh.com so
-# a plain reply lands with the founders. The feedback_email_sends row is both
-# the once-only guard and the admin-visible send log; it is claimed BEFORE the
-# send (and released on a definite failure) so a crash can never double-send.
-# Existing accounts older than 24h are naturally back-filled by the same
-# eligibility rule on the first runs after deploy.
+
+
+
+
+
+
+
+
 
 FEEDBACK_EMAIL_DELAY_MS = 24 * 60 * 60 * 1000
-FEEDBACK_EMAIL_BATCH = 8            # per hourly cron tick, bounds subrequests
-FEEDBACK_EMAIL_SCAN = 200           # accounts examined per tick
+FEEDBACK_EMAIL_BATCH = 8
+FEEDBACK_EMAIL_SCAN = 200
 FEEDBACK_EMAIL_FROM = "founders@forkmesh.com"
 FEEDBACK_EMAIL_FROM_NAME = "ForkMesh Founders"
 
@@ -24685,9 +24685,9 @@ def _feedback_email_content(name):
 
 async def _send_feedback_emails(env):
     now = int(Date.now())
-    # Users with no send row yet; the LEFT JOIN keeps re-scans cheap as the
-    # sent set grows. Eligibility (user kind, active, verified email, 24h old)
-    # lives in the encrypted record, so decrypt a bounded batch per tick.
+
+
+
     rows = await d1_all(
         env,
         "SELECT u.user_bi AS name_bi, u.data FROM users u"
@@ -24715,8 +24715,8 @@ async def _send_feedback_emails(env):
         name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
         if not name:
             continue
-        # Claim first so a crash mid-send can never double-send; release the
-        # claim on a definite send failure so the next tick retries.
+
+
         await d1_run(
             env,
             "INSERT OR IGNORE INTO feedback_email_sends"
@@ -24739,13 +24739,13 @@ async def _send_feedback_emails(env):
 
 
 async def _password_reset_token(env, name, email, pass_hash, expires):
-    # Stateless, deterministic reset token bound to (name, email, current
-    # password hash, expiry). Only the server can compute it (keyed by DATA_KEY
-    # via the blind-index HMAC key, with its own domain-separation prefix), so a
-    # valid token in the link proves the recipient controls the mailbox — no
-    # token column needed. Binding the *current* pass_hash makes the link
-    # single-use: once the password changes the token no longer verifies. The
-    # expiry (also carried in the link) bounds how long a leaked link is usable.
+
+
+
+
+
+
+
     key = await _hmac_key(env)
     msg = ("forkmesh-password-reset-v1\n" + (name or "") + "\n" + (email or "") +
            "\n" + (pass_hash or "") + "\n" + str(expires)).encode()
@@ -24783,14 +24783,14 @@ async def _send_password_reset_email(env, request, name, email, pass_hash):
     return ok
 
 
-# --- Founders outreach console (/outreach) -----------------------------------
-# A small "outreach team" can send one-off emails (sponsorship / partnership
-# asks and other outreach) from the shared founders address through the same
-# Mailtrap sender the transactional mail uses. Admin accounts are always
-# allowed; anyone else must be added to the outreach_team roster by an admin.
-# Every send is written to outreach_log (recipient + subject encrypted at
-# rest) and per-sender daily volume is capped, so a leaked session can't
-# quietly turn the founders address into a spam cannon.
+
+
+
+
+
+
+
+
 OUTREACH_FROM_EMAIL = "founders@forkmesh.com"
 OUTREACH_FROM_NAME = "ForkMesh Founders"
 OUTREACH_DAILY_LIMIT = 50
@@ -24798,9 +24798,9 @@ OUTREACH_MAX_SUBJECT = 200
 OUTREACH_MAX_BODY = 10000
 OUTREACH_LOG_LIST_LIMIT = 50
 
-# Starting points the compose form offers; [bracketed] placeholders are filled
-# in by the sender before sending. Plain text only — outreach mail should read
-# like a person wrote it, not like a marketing blast.
+
+
+
 OUTREACH_TEMPLATES = [
     {
         "key": "blank",
@@ -24896,10 +24896,10 @@ async def _outreach_member(env, name):
 
 
 async def _outreach_enabled(env, name):
-    # Per-user access flag (users.enable_outreach), the operator-settable
-    # sibling of is_admin. Grant it directly in the DB to give a user the
-    # /outreach console without a roster row: UPDATE users SET
-    # enable_outreach=1 WHERE username='<user>'.
+
+
+
+
     name = (name or "").strip().lower()
     if not name:
         return False
@@ -24908,7 +24908,7 @@ async def _outreach_enabled(env, name):
         row = await d1_first(
             env, "SELECT enable_outreach FROM users WHERE user_bi=?", name_bi)
     except Exception:
-        return False  # column may predate migration 0040
+        return False
     return bool(row and int(row.get("enable_outreach", 0) or 0))
 
 
@@ -24938,8 +24938,8 @@ async def _outreach_access(env, name, is_admin, allowed):
         "configured": bool((getattr(env, "MAILTRAP_API_TOKEN", "") or "").strip()),
     }
     if not allowed:
-        # Non-members learn only that they lack access — not the templates,
-        # roster, or send history.
+
+
         return json_response(payload)
     payload["templates"] = OUTREACH_TEMPLATES
     payload["sentToday"] = await _outreach_sent_today(env, name)
@@ -25048,8 +25048,8 @@ async def outreach_handler(env, request):
             return json_response({"error": "invalid_json"}, status=400)
         if not isinstance(data, dict):
             return json_response({"error": "invalid_json"}, status=400)
-    # Every outreach route needs a logged-in account session (bearer token or
-    # sessionToken in the POST body); membership/admin gates layer on top.
+
+
     _, rec = await _account_session_record(env, request, data)
     if not rec:
         return json_response({"error": "unauthorized"}, status=401)
@@ -25082,11 +25082,11 @@ async def outreach_handler(env, request):
     return json_response({"error": "not_found"}, status=404)
 
 
-# Step 1 of a password reset: a user who forgot their password gives their email
-# (or node name); if it matches an active account with an email on file we send a
-# time-bound reset link. Always returns {ok:true} — never revealing whether the
-# identifier matched an account — so the endpoint can't be used to enumerate
-# which emails/nodes are registered.
+
+
+
+
+
 async def _account_forgot_password(env, request):
     try:
         data = await bounded_json_request(request)
@@ -25113,10 +25113,10 @@ async def _account_forgot_password(env, request):
     return json_response({"ok": True})
 
 
-# Step 2 of a password reset: the emailed link posts back the node name, expiry,
-# token and a new password. The token is recomputed from the account's current
-# pass_hash + the expiry, so a stale/used/tampered link fails, and the new
-# password is PBKDF2-hashed and stored.
+
+
+
+
 async def _account_reset_password(env, request):
     try:
         data = await bounded_json_request(request)
@@ -25149,8 +25149,8 @@ async def _account_reset_password(env, request):
     rec["pass_hash"] = phash
     await _save_account(env, name_bi, rec)
     await _account_revoke_sessions(env, name_bi)
-    # A successful reset also lifts any brute-force lockout so the user can log in
-    # right away, whether they log in by node name or by email.
+
+
     await _login_clear(env, name_bi)
     if rec.get("email"):
         await _login_clear(env, await blind_index(env, rec.get("email", "")))
@@ -25158,9 +25158,9 @@ async def _account_reset_password(env, request):
 
 
 def _verify_email_page(message, status):
-    # color-scheme: light dark lets the browser render its default light or
-    # dark canvas to match the visitor's OS preference (no site CSS needed on
-    # this one-line confirmation page).
+
+
+
     body = ("<!doctype html><meta charset=utf-8>"
             "<meta name=\"color-scheme\" content=\"light dark\">"
             "<script src=\"/posthog.js\"></script>"
@@ -25195,10 +25195,10 @@ async def _verify_email(env, request):
         "sign up again.</p>", 400)
 
 
-# --- Relay federation -------------------------------------------------------
-# Relays exchange signed presence/availability metadata. Historical donation
-# proxy endpoints are hard-frozen and require offline custody migration; no
-# relay-to-relay request creates a wallet, moves funds, or exposes a seed.
+
+
+
+
 
 FEDERATION_CANON = "forkmesh-federation-v1"
 FEDERATION_NODES_MAX_BYTES = 2 * 1024 * 1024
@@ -25215,8 +25215,8 @@ def _is_main_relay(env):
 
 
 async def _new_ed25519_identity():
-    # Fresh Ed25519 keypair as (raw pubkey base64url, seed base64url) — the same
-    # base64url-raw shape the desktop identity and ed25519_verify use.
+
+
     pair = await js_crypto.subtle.generateKey(
         to_js({"name": "Ed25519"}), True, _to_js(["sign", "verify"]))
     pub_raw = await js_crypto.subtle.exportKey("raw", pair.publicKey)
@@ -25229,9 +25229,9 @@ async def _new_ed25519_identity():
 
 
 async def ed25519_sign(pubkey_b64url, seed_b64url, data_bytes):
-    # Sign relay-federation metadata with the relay's non-wallet identity key.
-    # This key cannot authorize a Solana transaction and is domain-separated
-    # from every wallet/reward flow.
+
+
+
     try:
         jwk = {"kty": "OKP", "crv": "Ed25519", "x": pubkey_b64url,
                "d": seed_b64url, "ext": True, "key_ops": ["sign"]}
@@ -25245,8 +25245,8 @@ async def ed25519_sign(pubkey_b64url, seed_b64url, data_bytes):
 
 
 async def _relay_identity(env):
-    # This (federated) relay's own signing identity, auto-generated once and kept
-    # in D1 so the operator needs no key management — only MAIN_RELAY_URL.
+
+
     row = await d1_first(env, "SELECT data FROM relay_self WHERE id=1")
     if row:
         ident = await decrypt_row(env, row.get("data"))
@@ -25308,9 +25308,9 @@ async def _call_main_relay(env, path, body_dict):
         except Exception:
             return None
 
-    # Callers still pass the legacy /api/federation/* names; prefer the
-    # canonical /api/relay-mesh/* route and fall back once for a main relay
-    # that hasn't been redeployed with the alias yet.
+
+
+
     reply = await _post(path.replace("/api/federation/", "/api/relay-mesh/", 1))
     if reply is None or reply.get("_status") == 404:
         reply = await _post(path)
@@ -25318,7 +25318,7 @@ async def _call_main_relay(env, path, body_dict):
 
 
 async def _verify_relay_sig(env, request, body_str):
-    # Verify a relay->main request's Ed25519 signature (no approval check).
+
     pubkey = (request.headers.get("x-relay-pubkey") or "").strip()
     ts = (request.headers.get("x-relay-ts") or "").strip()
     sig = (request.headers.get("x-relay-sig") or "").strip()
@@ -25332,8 +25332,8 @@ async def _verify_relay_sig(env, request, body_str):
 
 
 async def _relay_authorized(env, request, body_str):
-    # As _verify_relay_sig, but also require the relay to be approved. Returns the
-    # relay's blind index on success, else None.
+
+
     pubkey = await _verify_relay_sig(env, request, body_str)
     if not pubkey:
         return None
@@ -25447,7 +25447,7 @@ async def world_relay_instances_handler(env, request):
        extra_headers={"x-content-type-options": "nosniff"})
 
 
-# --- Main-relay federation endpoints ----------------------------------------
+
 
 async def _federation_register(env, request):
     if not _is_main_relay(env):
@@ -25479,8 +25479,8 @@ async def _federation_register(env, request):
     return json_response({"ok": True, "status": "pending"})
 
 
-# Launch-time join ping (adhoc #97): one announce per isolate per minute is
-# plenty — the endpoint only re-sends this relay's own idempotent registration.
+
+
 _FEDERATION_ANNOUNCE_MIN_MS = 60 * 1000
 _federation_announce_at = [0]
 
@@ -25742,9 +25742,9 @@ async def _federation_nodes(env, request):
                 + "\0" + item["healthSignature"]
             ).encode("utf-8")
         ).hexdigest()
-        # One node identity cannot retain an older wallet row alongside its
-        # current report; duplicate-wallet/operator/device checks still apply
-        # globally when the reward snapshot is frozen.
+
+
+
         await d1_run(
             env,
             "DELETE FROM federated_presence "
@@ -25811,9 +25811,9 @@ async def _federation_nodes(env, request):
 
 
 async def federation_handler(env, request):
-    # Solana payout relay mesh. Canonical routes live under /api/relay-mesh/*;
-    # /api/federation/* is the legacy alias kept so not-yet-updated federated
-    # relays keep working (normalized to the legacy names matched below).
+
+
+
     await ensure_schema(env)
     url = urlparse(request.url)
     if method_name(request) != "POST":
@@ -25856,7 +25856,7 @@ async def _federation_central_fund(env, request):
     return json_response(payload)
 
 
-# --- Federated-relay proxy (the "flow through main relay") -------------------
+
 
 async def _federated_donation_address(env, request):
     del env, request
@@ -25912,13 +25912,13 @@ async def _federated_donation_status(env, request):
     }, cache_control="no-store")
 
 
-# --- Federation cron --------------------------------------------------------
+
 
 async def _federation_report_nodes(env):
-    # Federated relay: forward only evidence this relay independently verified:
-    # account-bound registration plus the exact fresh node-signed
-    # forkmesh/forkmesh health challenge. A wallet-only presence report is
-    # deliberately impossible.
+
+
+
+
     now = int(Date.now())
     cutoff = now - ACCOUNT_PRESENCE_STALE_MS
     health_cutoff = now - _reward_config(env)["healthFreshMs"]
@@ -25991,9 +25991,9 @@ async def _federation_cron(env):
                 {"label": label, "baseUrl": base})
             await _federation_report_nodes(env)
         return
-    # Main relay only expires stale presence. Legacy federated deposit rows are
-    # intentionally untouched: moving their funds requires the offline custody
-    # migration and no scheduled Worker path may consume their retained seeds.
+
+
+
     cutoff = int(Date.now()) - ACCOUNT_PRESENCE_STALE_MS
     try:
         await d1_run(env, "DELETE FROM federated_presence WHERE ts < ?", cutoff)
@@ -26001,7 +26001,7 @@ async def _federation_cron(env):
         pass
 
 
-# --- Admin: relay allowlist -------------------------------------------------
+
 
 async def _admin_relays(env, request):
     params = parse_qs(urlparse(request.url).query)
@@ -26050,18 +26050,18 @@ async def _admin_relay_approve(env, request):
     return json_response({"ok": True, "status": status})
 
 
-# --- Admin: node ownership takeover (adhoc #141) -----------------------------
-# An admin can request to take ownership of any node. The request only parks a
-# pending marker on the target node's own record; it does NOT transfer
-# ownership by itself. The marker rides back to that node on its own signed
-# heartbeat (same channel as a website claim code), the desktop app pops a
-# confirm/deny prompt, and only a signature from the node's own key — i.e. the
-# node the current owner is actually logged into — can approve or deny it.
+
+
+
+
+
+
+
 
 async def _park_ownership_transfer(env, target, new_owner):
-    # Shared core of every ownership-takeover trigger (signed node request or
-    # the operator console): validate the target is a claimable node and park
-    # the pending marker. Returns (ok, message_or_result_dict).
+
+
+
     if not valid_node_name(target):
         return False, "invalid_node_id"
     if target == new_owner:
@@ -26070,7 +26070,7 @@ async def _park_ownership_transfer(env, target, new_owner):
     if not target_rec or target_rec.get("status") != "active":
         return False, "no_such_node"
     if _account_kind(target_rec) != "node":
-        # An account that can log in is a user in its own right, not takeable.
+
         return False, "not_a_node"
     if target_rec.get("owner") == new_owner:
         return True, {"alreadyOwned": True, "nodeId": target}
@@ -26115,9 +26115,9 @@ async def _admin_request_ownership(env, request):
 
 
 async def _account_ownership_transfer_confirm(env, request):
-    # Called from the target node's own desktop app in response to the
-    # heartbeat-delivered prompt, signed with the node's own key — the same
-    # proof-of-control the node uses for its heartbeat, not the admin's.
+
+
+
     try:
         data = await bounded_json_request(request)
     except Exception:
@@ -26340,8 +26340,8 @@ async def ssh_keys_handler(env, request, key_id=""):
             key_bi,
         )
         if existing:
-            # Do not disclose whether another account owns the same key or
-            # whether it was revoked; either case requires a fresh keypair.
+
+
             return json_response(
                 {"error": "ssh_key_already_registered"}, status=409,
                 cache_control="no-store")
@@ -26480,9 +26480,9 @@ async def _ssh_key_gateway_record(env, key_id="", public_key=""):
         if not hmac.compare_digest(
                 registered["publicKey"], supplied["publicKey"]):
             return None, None
-    # Resolve the current account name from the indexed account row. The
-    # encrypted key envelope deliberately preserves its registration-time
-    # metadata, while account rename updates this row's account_bi.
+
+
+
     account_rec = await _account_identity_rec_by_bi(
         env, row.get("account_bi"))
     account = clean_string(
@@ -26494,9 +26494,9 @@ async def _ssh_key_gateway_record(env, key_id="", public_key=""):
         or _account_kind(account_rec) != "user"
     ):
         return None, None
-    # Return a copy with the current principal. Registration-time encrypted
-    # metadata is useful evidence but must never control authorization after an
-    # account rename.
+
+
+
     current = dict(data)
     current["account"] = account
     return row, current
@@ -26579,9 +26579,9 @@ async def ssh_gateway_authorize_handler(env, request):
     account = clean_string(
         key_data.get("account", ""), MAX_NODE_NAME).lower()
 
-    # An SSH URL may use an organization alias. Resolve it to the canonical
-    # node namespace before repository lookup, permission enforcement, and the
-    # path returned to the gateway.
+
+
+
     canonical_owner = await _org_repo_node(env, owner, repo) or owner
     is_org_alias = canonical_owner != owner
     route_owner = owner if is_org_alias else canonical_owner
@@ -26713,9 +26713,9 @@ async def _account_central_fund(env, request):
         if reply and reply.get("address"):
             reply.pop("_status", None)
             return json_response(reply)
-        # Expected degraded states — the main relay unreachable, or no pool
-        # configured — not worker failures; the client already renders
-        # "unavailable" for them.
+
+
+
         return json_response(
             {"address": ""}, status=503,
             extra_headers=EXPECTED_DEGRADED_HEADERS)
@@ -26833,30 +26833,30 @@ async def accounts_handler(env, request):
     match = ACCOUNTS_RE.match(url.path)
     if match and method == "GET":
         name = clean_string(match.group(1), MAX_NODE_NAME).lower()
-        # The viewer-less lookup is what every /@name view, fediverse
-        # click-through and dashboard page boot fires, and it cost 6-8 D1
-        # ops (record decrypt + admin check + three follow COUNTs + mirror
-        # count + presence) per hit: park the guest variant at the edge.
-        # viewer=<name> responses stay per-caller (isFollowing) and skip the
-        # cache; _ap_broadcast_actor_update purges the key on profile edits.
+
+
+
+
+
+
         viewer_less = "viewer" not in parse_qs(urlparse(request.url).query)
         lookup_cache_key = ACCOUNT_LOOKUP_CACHE_PREFIX + quote(name)
-        # Users and nodes are separate tables: this public profile lookup reads
-        # from those authoritative per-kind stores (keyless reservations live
-        # in nodes too, so the signup availability check below still sees a
-        # reserved name as taken).
+
+
+
+
         name_bi = await blind_index(env, name)
         rec = await _account_identity_rec_by_bi(env, name_bi)
         if not rec:
-            # Availability misses are deliberately uncached: the signup
-            # form's name check must see a just-taken name immediately.
+
+
             return json_response(
                 {"ok": True, "exists": False, "available": True, "name": name})
         profile_private = bool(rec.get("profile_private"))
         if profile_private:
-            # A query-string `viewer` is display-only and can be spoofed; only
-            # a real bearer session may reveal a private profile. Node profiles
-            # are also visible to the user account that explicitly owns them.
+
+
+
             _, viewer_rec = await _account_session_record(env, request)
             viewer_account = clean_string(
                 (viewer_rec or {}).get("name", ""),
@@ -26872,9 +26872,9 @@ async def accounts_handler(env, request):
                 )
             )
             if not owner_view:
-                # Name availability necessarily remains visible to prevent
-                # duplicate registration, but no profile, device, status,
-                # activity, social, key, or ownership fields are disclosed.
+
+
+
                 taken = (
                     rec.get("status") == "active"
                     or bool(rec.get("donation_confirmed")))
@@ -26885,34 +26885,34 @@ async def accounts_handler(env, request):
                     "name": target_name or name,
                     "profilePrivate": True,
                 }, cache_control="no-store")
-        # Positive cache entries are consulted only after the current encrypted
-        # record has confirmed the profile is public. This prevents an old warm
-        # entry from surviving a privacy toggle.
+
+
+
         cacheable_guest = viewer_less and not profile_private
         if cacheable_guest:
             cached = await edge_cache_match(lookup_cache_key)
             if cached is not None:
                 return cached
-        # Public lookup never returns email/secret material. Active accounts and
-        # migration-era confirmed records keep their names unavailable.
+
+
         taken = rec.get("status") == "active" or bool(rec.get("donation_confirmed"))
-        # isAdmin + pubkey let any client authenticate a signed admin-moderation
-        # action (e.g. a chat admin-delete) made by this account's identity key.
-        # kind/owner/nodes let the dashboard's claim form tell "that's a user
-        # account, not a claimable node" (and "already owned") before starting a
-        # claim, and let a node's own profile list the nodes linked to its user
-        # account; node ownership is public catalog-adjacent data like the name
-        # itself (same fields _account_public_payload already exposes).
-        # emailVerified is a boolean only (no address) so the dashboard's
-        # periodic self-profile poll (refreshPublicProfile, which reuses this
-        # same lookup) can pick up a verification that happened in another
-        # tab instead of showing "verify your email" forever (issue #320).
+
+
+
+
+
+
+
+
+
+
+
         kind = _account_kind(rec)
         online = False
         if kind == "node":
-            # account_presence is the same heartbeat table the network page
-            # uses for online/offline; the /@name node page shows it as
-            # node-specific info the way a user page shows followers.
+
+
+
             presence = await d1_first(
                 env, "SELECT ts FROM account_presence WHERE name_bi=?", name_bi)
             online = bool(presence and int(presence.get("ts") or 0) >=
@@ -26929,18 +26929,18 @@ async def accounts_handler(env, request):
                    "online": online,
                    "owner": rec.get("owner", ""),
                    "nodes": _owned_nodes(rec),
-                   # A payout address is intentionally public profile data. Qt
-                   # uses this exact web-user value for its top-bar balance
-                   # instead of a machine-local node setting.
+
+
+
                    "solana": ((rec.get("solana") or "").strip()
                               if SOLANA_RE.match(
                                   (rec.get("solana") or "").strip())
                               else ""),
                    "hasPayoutAddress": bool(
                        SOLANA_RE.match((rec.get("solana") or "").strip()))}
-        # viewer=<name> lets the public-profile page show the caller's own
-        # Follow/Following state. Display-only: a spoofed viewer can only see
-        # a wrong button label; actual follow writes are session-token gated.
+
+
+
         viewer = clean_string(
             parse_qs(urlparse(request.url).query).get("viewer", [""])[0],
             MAX_NODE_NAME).lower()
@@ -26948,10 +26948,10 @@ async def accounts_handler(env, request):
             env, rec.get("name", name), viewer)
         payload = {**payload, "social": social, **social}
         payload = {**payload, **_account_profile_fields(rec)}
-        # The account explicitly controls these three coarse World fields.
-        # Including them in this no-store/public profile lookup lets a newly
-        # arrived avatar paint its flag immediately instead of waiting for the
-        # next directory-cache cycle.
+
+
+
+
         payload = {**payload, **_account_world_client_fields(rec)}
         if cacheable_guest:
             resp = json_response(payload, cache_seconds=60)
@@ -26961,30 +26961,30 @@ async def accounts_handler(env, request):
     return json_response({"error": "not_found"}, status=404)
 
 
-# --- Repository submission inboxes (encrypted) ------------------------------
 
-# =============================================================================
-# --- ActivityPub federation (fediverse interop) -------------------------------
-#
-# Makes local users (@alice@<domain>) and repositories (@owner.repo@<domain>)
-# followable from Mastodon-compatible servers, publishes signed-inbox events
-# (issues, PR/discussion/commit activity) plus owner-pushed announcements
-# (releases, merges) as Notes to followers, and ingests remote replies as
-# clearly-marked "federated comments" — kept OUTSIDE the Ed25519-signed event
-# log, since a fediverse reply can never carry a forkmesh author signature.
-#
-# Wire compatibility follows Mastodon/Wildebeest: RSA-2048 actor keys published
-# as publicKeyPem, draft-cavage HTTP signatures over
-# "(request-target) host date digest content-type", Digest: SHA-256=<b64>.
-# Delivery is queue-free (free plan): a publish inserts one ap_outbox row per
-# unique destination inbox, best-effort drains a few inline via the request,
-# and the per-minute cron drains the backlog with capped exponential backoff.
-# Operator configuration lives in ap_settings/ap_blocked_domains, managed via
-# the signed admin API (/api/accounts/admin-ap, /api/accounts/admin-ap-update):
-# a global enable switch plus a remote-domain blocklist (defederation).
-# The Solana payout relay mesh is a separate system at /api/relay-mesh/*
-# (legacy alias /api/federation/*); the fediverse layer lives under /ap/*.
-# =============================================================================
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 AP_ACTOR_USER = "user"
 AP_ACTOR_REPO = "repo"
@@ -26993,24 +26993,24 @@ AP_INSTANCE_HANDLE = "instance"
 AP_MAX_INBOX_BYTES = 128 * 1024
 AP_MAX_COMMENTS_PER_THREAD = 500
 AP_MAX_FOLLOWERS_PER_ACTOR = 5000
-# The `first` page embedded directly in a followers/following collection
-# (collection_doc) — a fixed cap keeps the response small even for popular
-# actors instead of paginating with next/prev links.
+
+
+
 AP_COLLECTION_PAGE_SIZE = 200
 AP_REMOTE_ACTOR_TTL_MS = 24 * 60 * 60 * 1000
 AP_DATE_SKEW_MS = 12 * 60 * 60 * 1000
-# Inline sends per publish; the rest waits for the cron drain. Kept small so a
-# signed-inbox POST never burns its subrequest budget on fediverse fan-out.
+
+
 AP_IMMEDIATE_DELIVERIES = 5
 AP_CRON_DELIVERIES = 20
 AP_DIGEST_CRON_BATCH = 12
-# Follower avatars/bios backfilled per tick (one signed GET each), and the
-# number of rotating selection windows the sweep cycles through.
+
+
 AP_PROFILE_REFRESH_BATCH = 3
 AP_PROFILE_REFRESH_WINDOWS = 8
 AP_FEDI_KINDS = ("issue", "pull", "discussion", "commit", "release")
-# Brand images served from Static Assets, shown as every actor's avatar and
-# profile header on Mastodon-compatible servers.
+
+
 AP_AVATAR_PATH = "/assets/fediverse-avatar.png"
 AP_BANNER_PATH = "/assets/fediverse-banner.png"
 
@@ -27018,9 +27018,9 @@ _AP_RSA_ALG = {"name": "RSASSA-PKCS1-v1_5", "hash": "SHA-256"}
 
 
 def _ap_origin(env, request=None):
-    # Absolute https origin for actor/object ids. PUBLIC_BASE_URL wins (set on
-    # self-hosted relays); otherwise the request's own host; cron falls back to
-    # the canonical production domain.
+
+
+
     base = (getattr(env, "PUBLIC_BASE_URL", "") or "").strip().rstrip("/")
     if base.startswith("https://") or base.startswith("http://"):
         return base
@@ -27038,9 +27038,9 @@ def _ap_domain_of(origin):
     return origin.split("://", 1)[-1]
 
 
-# Operator configuration (admin-managed via /api/accounts/admin-ap*): a global
-# on/off switch plus the remote-domain blocklist. Cached per isolate briefly so
-# every /ap request and publish hook doesn't re-read two tables.
+
+
+
 _AP_SETTINGS_CACHE = {"ts": 0, "enabled": True, "blocked": set()}
 AP_SETTINGS_TTL_MS = 60 * 1000
 
@@ -27087,7 +27087,7 @@ def _ap_uuid():
 async def _ap_generate_keypair():
     params = to_js({"name": "RSASSA-PKCS1-v1_5", "modulusLength": 2048,
                     "hash": "SHA-256"})
-    params.publicExponent = _to_js(bytes([1, 0, 1]))  # 65537
+    params.publicExponent = _to_js(bytes([1, 0, 1]))
     pair = await js_crypto.subtle.generateKey(
         params, True, _to_js(["sign", "verify"]))
     spki = await js_crypto.subtle.exportKey("spki", pair.publicKey)
@@ -27130,8 +27130,8 @@ async def _ap_actor_bi(env, kind, handle):
 
 
 async def _ap_local_actor(env, kind, handle, create=False):
-    # A local actor's keypair, minted lazily on the first fediverse lookup so
-    # users/repos nobody follows never get a row.
+
+
     actor_bi = await _ap_actor_bi(env, kind, handle)
     row = await d1_first(
         env, "SELECT data FROM ap_actors WHERE actor_bi=?", actor_bi)
@@ -27151,9 +27151,9 @@ async def _ap_local_actor(env, kind, handle, create=False):
         " VALUES (?,?,?,?,?) ON CONFLICT(actor_bi) DO NOTHING",
         actor_bi, kind, pub_pem, await encrypt_row(env, rec),
         rec["createdAt"])
-    # Re-read: a concurrent first-lookup may have won the insert race with a
-    # different keypair, and the stored row is the canonical one (the pubkey
-    # is already being served to the remote server that triggered it).
+
+
+
     row = await d1_first(
         env, "SELECT data FROM ap_actors WHERE actor_bi=?", actor_bi)
     stored = await decrypt_row(env, row.get("data")) if row else None
@@ -27190,11 +27190,11 @@ async def _ap_instance_actor(env, create=False):
 
 
 async def _ap_user_federates(env, name):
-    # Any active, non-private account federates as a Person — node-owner
-    # accounts included, not just login ("user"-kind) accounts: the node name
-    # is the public authoring identity on issues/PRs, so it is what fediverse
-    # followers expect to find at @name@<domain>. The web follow API
-    # (_account_follow) accepts the same targets.
+
+
+
+
+
     name = (name or "").strip().lower()
     if not valid_node_name(name):
         return False
@@ -27204,27 +27204,27 @@ async def _ap_user_federates(env, name):
 
 
 async def _ap_org_alias_owner(env, owner, repo):
-    # Organization repo aliases (issue #388): a fediverse actor is addressed by
-    # the org handle (@org.repo@host), but the backing repo — its repositories
-    # row, media, per-repo AP settings and issue inbox — lives under the linked
-    # node, never under the org name. Resolve org->node for those data reads so
-    # federation keeps working after a repo is fronted by an org, while the
-    # public actor identity (handle, reply author, web URLs) stays the org. A
-    # plain node URL (no alias) resolves to itself, so this is a safe no-op on
-    # every non-org path.
+
+
+
+
+
+
+
+
     node = await _org_repo_node(env, owner, repo)
     return node or owner
 
 
 async def _ap_repo_is_official_actor(env, owner, repo):
-    # Mirror catalog rows are routing replicas, never their own public social
-    # identities. Official repositories are locally published records or an
-    # organization alias backed by one; remote/external clone records are not.
-    # Do not call _ap_org_alias_owner/_org_repo_node here. Actor inventory
-    # reconciliation runs from ensure_schema(), while _org_repo_node itself
-    # calls ensure_schema(); that recursion makes alias resolution fail closed
-    # during a cold start and used to delete valid org actors plus every
-    # follower row. Read the already-created durable link directly instead.
+
+
+
+
+
+
+
+
     owner_l = str(owner or "").strip().lower()
     repo_l = str(repo or "").strip().lower()
     org_bi = await blind_index(env, "org:" + owner_l)
@@ -27248,10 +27248,10 @@ async def _ap_repo_is_official_actor(env, owner, repo):
     if not row:
         return False
     rec = await decrypt_row(env, row.get("data"))
-    # A durable org link promotes its backing repository to the org's one
-    # official public identity even when the backing catalog row is tagged as
-    # a remote clone. That tag describes the hosting node's copy; it must not
-    # cause startup reconciliation to delete the org actor and its followers.
+
+
+
+
     if is_org_alias:
         return _catalog_record_matches_identity(rec, data_owner, repo_l)
     source = str((rec or {}).get("source") or "").strip().lower()
@@ -27259,20 +27259,20 @@ async def _ap_repo_is_official_actor(env, owner, repo):
 
 
 async def _ap_prune_actor_inventory(env):
-    # Actor visibility is enforced by the public resolution/federation gates,
-    # not by erasing the durable social graph during schema startup. Catalog
-    # records and org aliases can be temporarily unavailable or misclassified;
-    # deleting here previously turned that transient state into permanent loss
-    # of followers, actors, signing identities, and posts. Keep this hook for
-    # callers from older deployments, but make reconciliation non-destructive.
+
+
+
+
+
+
     return
 
 
 async def _ap_repo_federates(env, owner, repo):
-    # Only published, public repos federate. A missing catalog row means the
-    # repo was never published — unlike the git-clone path (which stays open
-    # for ad-hoc hosts), an unpublished repo has no fediverse presence. The
-    # owner can also switch federation off per repo (web/Qt repo settings).
+
+
+
+
     data_owner = await _ap_org_alias_owner(env, owner, repo)
     official_reader = globals().get("_ap_repo_is_official_actor")
     if callable(official_reader) and not await official_reader(
@@ -27283,8 +27283,8 @@ async def _ap_repo_federates(env, owner, repo):
         if await privacy_reader(env, data_owner, repo):
             return False
     else:
-        # Isolated compatibility harnesses may omit _repo_is_private.
-        # Production always uses its signed-record, fail-closed decision.
+
+
         key_bi = await blind_index(env, data_owner + "/" + repo)
         row = await d1_first(
             env, "SELECT is_private FROM repositories WHERE key_bi=?", key_bi)
@@ -27293,22 +27293,22 @@ async def _ap_repo_federates(env, owner, repo):
     return (await _ap_repo_settings_get(env, data_owner, repo))["federate"]
 
 
-# Per-repo fediverse switches the owner manages from the web and Qt repo
-# settings. Defaults are "all on" so a repo without a row (every repo before
-# migration 0035) federates exactly as before.
+
+
+
 AP_REPO_SETTING_DEFAULTS = {
-    "federate": True,        # actor/webfinger exist at all
-    "broadcastEvents": True,  # issues/PRs/releases posted to followers
-    "acceptComments": True,  # remote replies ingested as federated comments
+    "federate": True,
+    "broadcastEvents": True,
+    "acceptComments": True,
 }
 
 
 async def _ap_repo_settings_bi(env, owner, repo):
-    # Distinct namespace + full lowercasing on both halves: callers reach this
-    # with URL-cased (About handler) and handle-cased (AP gates) names, and
-    # they must all land on the same row. Org-alias handles resolve to the
-    # backing node so a mention gate keys on the same row the owner's repo
-    # settings wrote under the node name (issue #388).
+
+
+
+
+
     owner = await _ap_org_alias_owner(env, owner, repo)
     return await blind_index(
         env, "ap-repo-settings:%s/%s" % (str(owner or "").strip().lower(),
@@ -27368,7 +27368,7 @@ async def _ap_digest_queue_record(env, scope):
         return scope_bi, None, None
     rec = await decrypt_row(env, row.get("data")) or {}
     if not isinstance(rec, dict) or rec.get("scope") != scope:
-        # Fail closed if the encrypted payload does not match its blind key.
+
         return scope_bi, row, None
     return scope_bi, row, rec
 
@@ -27390,9 +27390,9 @@ async def _ap_enqueue_digest_scope(
         (rec or {}).get("events") if rec else [], event)
     if not events:
         return False
-    # A new queue waits a full cadence so several meaningful events can be
-    # combined. After a prior post, the next due time remains anchored to that
-    # post rather than sliding forward with every incoming event.
+
+
+
     if row:
         next_ts = int(row.get("next_ts") or 0)
         if next_ts <= 0:
@@ -27434,9 +27434,9 @@ async def _ap_enqueue_repo_digest(
     queued = await _ap_enqueue_digest_scope(
         env, owner, repo, owner, canonical)
 
-    # An organization alias has its own repo actor/followers and therefore its
-    # own daily cadence. Org admins may suppress that alias, but cannot enable
-    # it when the backing repository owner disabled federation.
+
+
+
     rows = await d1_all(
         env,
         "SELECT r.org_bi AS org_bi, o.name AS name, s.data AS settings "
@@ -27526,8 +27526,8 @@ async def _ap_publish_digest_row(env, row):
     rec = await decrypt_row(env, (row or {}).get("data")) or {}
     scope = str(rec.get("scope") or "")
     if not scope_bi or not scope or not await _ap_digest_scope_allowed(env, rec):
-        # A repo made private, an owner opt-out, or an unlinked/disabled org
-        # must revoke queued metadata rather than leave it probeable.
+
+
         if scope_bi:
             await d1_run(
                 env, "DELETE FROM ap_digest_queues WHERE scope_bi=?", scope_bi)
@@ -27549,8 +27549,8 @@ async def _ap_publish_digest_row(env, row):
     handle = ap.repo_handle(scope_owner, repo.lower())
     local = await _ap_local_actor(env, AP_ACTOR_REPO, handle)
     if not local:
-        # Preserve lazy actor creation: a repo nobody follows does not mint an
-        # RSA key merely because it had local activity.
+
+
         return False
     followers = await d1_all(
         env,
@@ -27610,8 +27610,8 @@ async def _ap_publish_digest_row(env, row):
         "data=?, updated_at=? WHERE scope_bi=?",
         (next_ts, now, await encrypt_row(env, rec), now, scope_bi),
     ))
-    # D1 batch is transactional: event ids are removed only in the same durable
-    # commit that creates the deterministic Note and retryable outbox rows.
+
+
     await _contribution_run_batch(env, statements)
     return True
 
@@ -27634,34 +27634,34 @@ async def _ap_process_digest_queues(env, limit=AP_DIGEST_CRON_BATCH):
     return published
 
 
-# The unauthenticated ActivityPub read endpoints (webfinger, nodeinfo, actor
-# docs, collections, objects) are what fediverse servers and crawlers hammer
-# in bursts — every server that sees a federated post resolves the actor and
-# its collections, and each of those hits used to reach D1. Under a burst
-# that pressure is what pushed the free-plan worker/D1 into "Too many
-# requests" (issue #416, round two of adhoc #9). They already sent public
-# max-age headers, but dynamic Worker responses are never edge-cached
-# implicitly, so store them in the colo cache explicitly: a burst collapses
-# to one origin computation per colo per TTL. Keyed by the canonical public
-# URL; only successful (200) documents are stored.
+
+
+
+
+
+
+
+
+
+
 
 async def _ap_negative_response(cache_key, error="not_found"):
-    # Park a 404 at the edge briefly. Probes for handles that don't federate
-    # (deleted accounts, crawlers, Mastodon re-resolving after a failed
-    # follow) otherwise re-run the full D1 federation gate on every hit, and
-    # they arrive in the same bursts the 200s do.
+
+
+
+
     resp = json_response({"error": error}, status=404, cache_seconds=120)
     await edge_cache_put(cache_key, resp)
     return resp
 
 
 async def ap_hostmeta_handler(env, request):
-    # Mastodon's resolver falls back to GET /.well-known/host-meta whenever a
-    # webfinger lookup fails, so during any failure window each missed
-    # resolution used to cost a SECOND request that walked the entire route
-    # chain into the terminal JSON 404 — a self-amplifying loop. The document
-    # is a constant pointer at our webfinger template: no schema, no D1, and
-    # a day at the edge.
+
+
+
+
+
+
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
     origin = _ap_origin(env, request)
@@ -27693,8 +27693,8 @@ async def ap_webfinger_handler(env, request):
     our_domain = _ap_domain_of(origin)
     if domain != our_domain:
         return json_response({"error": "not_found"}, status=404)
-    # Key on the parsed acct (already lowercase-normalized), so the many
-    # spellings of the same resource share one cache entry.
+
+
     cache_key = ("%s/.well-known/webfinger?resource=acct:%s@%s"
                  % (origin, handle, domain))
     cached = await edge_cache_match(cache_key)
@@ -27722,9 +27722,9 @@ async def ap_webfinger_handler(env, request):
             kind = AP_ACTOR_REPO
             actor_handle = ap.repo_handle(parsed[1], parsed[2])
             acct_name = actor_handle
-    # Resolve visibility before reading edge cache. Otherwise a public actor
-    # document could remain discoverable after its account/repository is made
-    # private, for the remainder of the old cache entry's TTL.
+
+
+
     if cached is not None:
         return cached
     actor_url = _ap_actor_url(origin, kind, actor_handle)
@@ -27737,10 +27737,10 @@ async def ap_webfinger_handler(env, request):
     return resp
 
 
-# NodeInfo usage counts, cached per isolate. Every fediverse server that hears
-# about this instance polls /nodeinfo/2.1, and each hit ran two COUNT(*) table
-# scans — pure statistics that don't need to be fresher than the cache TTL,
-# and one of the first things to fall over when D1 is under pressure.
+
+
+
+
 _NODEINFO_CACHE = {"ts": 0, "users": 0, "posts": 0}
 NODEINFO_CACHE_TTL_MS = 10 * 60 * 1000
 
@@ -27779,7 +27779,7 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
     """The actor document, shared by the GET endpoint and the Update
     broadcast (profile/branding changes). Returns None when the actor does
     not federate (missing/private/blocked account or repo)."""
-    # Brand defaults; repos with uploaded branding override below.
+
     icon_url = origin + AP_AVATAR_PATH
     image_url = origin + AP_BANNER_PATH
     if kind == AP_ACTOR_INSTANCE:
@@ -27791,8 +27791,8 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
             return None
         actor_type, display = "Person", handle
         profile_url = origin + "/@" + handle
-        # Surface the account's own bio as the fediverse summary so the
-        # Mastodon profile card mirrors the /@name page.
+
+
         _, account_rec = await _account_row(env, handle)
         bio = clean_string(
             (account_rec or {}).get("profile_bio", "") or "", 500).strip()
@@ -27800,8 +27800,8 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
                    else "ForkMesh profile of @%s." % handle)
     else:
         owner, _, repo = handle.partition(".")
-        # Org handles read their repo data from the linked node (issue #388),
-        # but display, profile URL and web links stay under the org name below.
+
+
         data_owner = await _ap_org_alias_owner(env, owner, repo)
         key_bi = await blind_index(env, data_owner + "/" + repo)
         repo_row = await d1_first(
@@ -27817,15 +27817,15 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
             return None
         actor_type, display = "Group", owner + "/" + repo
         repo_web_url = origin + repo_web_href(owner, repo)
-        # The actor's canonical `url` is the repo's fediverse profile page (a
-        # feed of its federated posts), not the raw git-forge page: Mastodon
-        # sends a user who clicks the repo handle — in a mention, or via the
-        # profile's external-link — to this `url`, and dropping them onto a
-        # code page straight from a social timeline is jarring (adhoc #50).
-        # The git page stays one row away ("Repository", below) and is linked
-        # prominently on the profile page itself.
+
+
+
+
+
+
+
         profile_url = origin + "/@" + handle
-        # Owner-set About description becomes the fediverse bio.
+
         catalog_rec = await decrypt_row(env, repo_row.get("data"))
         description = clean_string(
             (catalog_rec or {}).get("description", "") or "", 240).strip()
@@ -27833,9 +27833,9 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
                    else ("ForkMesh repository %s/%s. Follow for new issues, "
                          "pull requests, discussions and releases.")
                    % (owner, repo))
-        # Owner-uploaded branding (repo About tab): logo = avatar, banner =
-        # header. updated_at rides along as a cache-buster so Mastodon
-        # refetches when the image changes.
+
+
+
         media_rows = await d1_all(
             env, "SELECT kind, updated_at FROM repo_media WHERE repo_bi=?",
             key_bi)
@@ -27847,10 +27847,10 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
                 icon_url = media_url
             elif media.get("kind") == "banner":
                 image_url = media_url
-        # The native repository logo API always has an original,
-        # locally-generated fallback. Use its real image projection when no
-        # owner-uploaded fediverse logo exists, rather than giving every
-        # repository the instance avatar.
+
+
+
+
         if icon_url == origin + AP_AVATAR_PATH:
             versioner = globals().get("_repository_social_version")
             logo_version = (
@@ -27859,22 +27859,22 @@ async def _ap_build_actor_doc(env, origin, kind, handle, rec):
                 origin, quote(owner), quote(repo))
             if logo_version:
                 icon_url += "&v=" + quote(logo_version, safe="")
-    # Profile metadata rows: the canonical page link (VERIFIABLE — the served
-    # page carries a reciprocal rel="me" back to this same URL, which is also
-    # the actor's `url`, so Mastodon's link verification turns it green) and
-    # the relay this actor lives on (origin-derived, so self-hosted relays
-    # advertise their own domain).
-    # The verified profile row links the human page ("Repository" = a repo's
-    # git page, "Profile" = a user's /@name page). For repos that page is no
-    # longer the actor's `url`, so the reciprocal rel="me" that earns the green
-    # check lives on the git page (see _serve_repo_page), pointing at this actor.
+
+
+
+
+
+
+
+
+
     web_link = repo_web_url if kind == AP_ACTOR_REPO else profile_url
     attachments = [
         ap.property_value(
             "Repository" if kind == AP_ACTOR_REPO else "Profile", web_link),
-        # Plain text, deliberately: an anchor here made every follower
-        # server's link verifier fetch the worker-served homepage on each
-        # verification round, for a row that can never earn the green check.
+
+
+
         ap.property_text("Relay", _ap_domain_of(origin)),
     ]
     return ap.actor_doc(
@@ -27890,13 +27890,13 @@ async def _ap_actor_doc_response(env, request, kind, handle):
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
     origin = _ap_origin(env, request)
-    # Keyed on the canonical actor URL so every route shape that serves this
-    # document (/ap/users/x, /@x with an ActivityPub Accept header, /ap/actor)
-    # shares one edge entry.
+
+
+
     cache_key = _ap_actor_url(origin, kind, handle)
-    # Only official repositories are followable local actors. The relay still
-    # has an internal signing identity for secure ActivityPub fetches, but it
-    # does not occupy ap_actors or expose a user/instance actor inventory.
+
+
+
     if kind == AP_ACTOR_USER:
         return await _ap_negative_response(cache_key)
     cached = await edge_cache_match(cache_key)
@@ -27910,7 +27910,7 @@ async def _ap_actor_doc_response(env, request, kind, handle):
     if not await _ap_enabled(env):
         return _ap_disabled_response()
     if kind != AP_ACTOR_INSTANCE:
-        # Cheap federation gate before minting keys for a 404.
+
         parsed = await _ap_resolve_local_target(
             env, origin, _ap_actor_url(origin, kind, handle))
         if not parsed:
@@ -27943,29 +27943,29 @@ async def _ap_broadcast_actor_update(env, request, kind, handle):
     actor_bi = await _ap_actor_bi(env, kind, handle)
     rec = await _ap_local_actor(env, kind, handle)
     if not rec:
-        return  # never followed / fetched — nothing to update
+        return
     origin = _ap_origin(env, request)
     actor_url = _ap_actor_url(origin, kind, handle)
-    # Drop the edge-cached actor doc so refetches see the new profile — even
-    # with no followers to notify, a remote server may hold the URL and poll
-    # it (best-effort: other colos age out within the TTL). The rel=me page
-    # the actor points at is edge-cached too (_serve_profile_page /
-    # _serve_repo_page), so drop the canonical page keys alongside it.
+
+
+
+
+
     await edge_cache_delete(actor_url)
     if kind == AP_ACTOR_USER:
         await edge_cache_delete(origin + "/@" + quote(handle))
         await edge_cache_delete(origin + "/@" + quote(handle) + "/repositories")
         await edge_cache_delete(ACCOUNT_LOOKUP_CACHE_PREFIX + quote(handle))
-        # Toggling "make my followers/following public" (Settings) changes
-        # what ap_collection_handler returns for the same cached URL, so drop
-        # it too — otherwise the old bare-collection response (or stale
-        # items) lingers for the rest of its 300s TTL.
+
+
+
+
         await edge_cache_delete(actor_url + "/followers")
         await edge_cache_delete(actor_url + "/following")
     elif kind == AP_ACTOR_REPO:
         page_owner, _, page_repo = handle.partition(".")
-        # The git page carries the rel="me" the green check verifies; the
-        # /@owner.repo profile page is the actor's `url` and its post feed.
+
+
         await edge_cache_delete(origin + repo_web_href(page_owner, page_repo))
         await edge_cache_delete(origin + "/@" + handle)
     followers = await d1_all(
@@ -28027,10 +28027,10 @@ async def ap_collection_handler(env, request, kind, handle, which):
             env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
             actor_bi)
         total = (row or {}).get("c", 0) or 0
-        # Repo watchers are already public (the About/Watch popover lists
-        # them), so repo actors always enumerate. User actors only enumerate
-        # when the account owner opted in via Settings — otherwise remote
-        # servers correctly read the bare collection as "not made visible".
+
+
+
+
         show_items = True
         if kind == AP_ACTOR_USER:
             _, account_rec = await _account_row(env, handle)
@@ -28096,13 +28096,13 @@ async def ap_object_handler(env, request, object_uuid):
 
 
 async def ap_object_media_handler(env, request, object_uuid, index):
-    # Re-serves one image that was embedded as a "data:" URL in the source
-    # issue/comment body, at a real URL — remote servers fetch a Note's
-    # attachment URLs directly and can't resolve a data: URI.
+
+
+
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
-    # Every remote server that receives the Note fetches its attachment URLs,
-    # and the bytes are immutable — serve the burst from the colo cache.
+
+
     idx = int(index)
     cache_key = "%s/ap/o/%s/media/%d" % (
         _ap_origin(env, request), object_uuid, idx)
@@ -28137,9 +28137,9 @@ async def ap_object_media_handler(env, request, object_uuid, index):
         raw = base64.b64decode(item.get("data", ""), validate=True)
     except Exception:
         return json_response({"error": "not_found"}, status=404)
-    # Uint8Array.new copies into a JS-owned buffer; a bare _to_js(bytes) view
-    # into WASM memory would be read off the GIL (edge-cache put / client
-    # stream, after this handler returns) and crash the isolate.
+
+
+
     resp = JsResponse.new(Uint8Array.new(_to_js(bytes(raw))), to_js({
         "status": 200,
         "headers": {
@@ -28151,12 +28151,12 @@ async def ap_object_media_handler(env, request, object_uuid, index):
     return resp
 
 
-# --- Outbound HTTP: signed fetch, remote actors, delivery ---------------------
+
 
 async def _ap_signed_request(key_id, priv_b64, method, url, body_str=None,
                              accept="application/activity+json"):
-    # One signed outbound HTTP request (draft-cavage). GETs sign
-    # (request-target) host date accept; POSTs add digest + content-type.
+
+
     parts = urlparse(url)
     if parts.scheme != "https" or not parts.netloc:
         return None
@@ -28201,8 +28201,8 @@ async def _ap_instance_key(env):
 
 
 async def _ap_remote_actor(env, actor_id, force_refresh=False):
-    # Cached remote actor document (inbox + public key). Fetches are signed
-    # with the instance actor so "secure mode" servers answer.
+
+
     actor_id = (actor_id or "").split("#")[0].rstrip("/")
     if not actor_id.startswith("https://"):
         return None
@@ -28225,16 +28225,16 @@ async def _ap_remote_actor(env, actor_id, force_refresh=False):
     except Exception:
         return row or None
     ess = ap.actor_essentials(doc)
-    # The document must describe the URL we fetched (same host at minimum) so
-    # a malicious document can't impersonate another server's actor.
+
+
     if not ess or urlparse(ess["id"]).netloc != urlparse(actor_id).netloc:
         return row or None
     handle = ess["preferredUsername"]
     if handle:
         handle = handle + "@" + urlparse(ess["id"]).netloc
-    # Public presentation, cached alongside the routing fields: the avatar URL
-    # must be an https media URL (never a data: payload or a private host), and
-    # the bio is untrusted remote HTML flattened to bounded plain text.
+
+
+
     avatar_url = ap.public_media_url(ess.get("icon"))
     summary = ap_threads.sanitize_remote_content(ess.get("summary"), 500)
     await d1_run(
@@ -28281,8 +28281,8 @@ async def _ap_refresh_follower_profiles(env, limit, window=0):
     offset = max(0, int(window)) * limit
     rows = await d1_all(env, candidates, limit, offset)
     if not rows and offset:
-        # Backlog smaller than this window: sweep from the front instead of
-        # idling the tick.
+
+
         rows = await d1_all(env, candidates, limit, 0)
     refreshed = 0
     for row in rows or []:
@@ -28322,8 +28322,8 @@ async def _ap_deliver_body(env, actor_url, priv_b64, inbox_url, body_str):
 
 
 async def _ap_drain_outbox(env, limit):
-    # Deliver due ap_outbox rows. Success (or a permanently-gone inbox, or the
-    # attempt cap) deletes the row; anything else reschedules with backoff.
+
+
     if not await _ap_enabled(env):
         return
     now = int(Date.now())
@@ -28358,7 +28358,7 @@ async def _ap_drain_outbox(env, limit):
                 row.get("id"))
 
 
-# --- Outbound publishing -------------------------------------------------------
+
 
 async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
                                  ref, title, body, author_name,
@@ -28388,23 +28388,23 @@ async def _ap_publish_repo_event(env, request, owner, repo, kind, event_type,
     origin = _ap_origin(env, request)
     web_url = origin + repo_web_href(owner, repo)
     author = clean_string(author_name or "", MAX_NODE_NAME).lower()
-    # Handles (and thus actor ids) are lowercase-normalized so the same repo
-    # always federates as one stable actor URL regardless of link casing.
-    # The explicit/manual compatibility path preserves its historical actor
-    # fan-out: the repo actor obeys both per-repo switches, while the author's
-    # own actor is governed by that user's federation presence.
+
+
+
+
+
     settings = await _ap_repo_settings_get(env, owner, repo)
     candidates = []
     if settings["federate"] and settings["broadcastEvents"]:
         candidates.append((AP_ACTOR_REPO, ap.repo_handle(owner, repo.lower())))
     if author and valid_node_name(author):
         candidates.append((AP_ACTOR_USER, author))
-    # Attached issue/comment images travel as inline "![name](data:...)"
-    # markdown (there's no separate upload channel); pull them out so they
-    # federate as real Image attachments instead of unrenderable base64 text.
+
+
+
     clean_body, images = ap.extract_body_images(body or "")
-    # Caller-supplied media (the generated pull-request badge PNG, adhoc #44)
-    # leads the attachment list so it becomes the visible preview.
+
+
     images = [img for img in (extra_images or []) if img] + images
     text = ap.event_note_text(
         kind, event_type, owner, repo, ref, clean_string(title, 240),
@@ -28588,8 +28588,8 @@ async def world_profile_social_handler(env, request):
     if not actor or not actor_bi:
         return json_response({"error": "actor_unavailable"}, status=503)
 
-    # Keep accidental double-clicks bounded without making the composer feel
-    # sluggish. This count is over encrypted objects' public timestamps only.
+
+
     now = int(Date.now())
     recent = await d1_first(
         env,
@@ -28689,7 +28689,7 @@ async def world_profile_social_handler(env, request):
     }, status=201, cache_control="no-store")
 
 
-# --- Inbound: the shared/actor inbox --------------------------------------------
+
 
 async def _ap_forget_remote(env, actor_id):
     await d1_run(env, "DELETE FROM ap_followers WHERE follower_id=?", actor_id)
@@ -28739,8 +28739,8 @@ async def _ap_handle_follow(env, request, activity, remote):
         local["actorBi"], remote["actor_id"], remote.get("inbox", ""),
         remote.get("shared_inbox", "") or "", remote.get("handle", "") or "",
         now)
-    # Auto-accept (no manual follow approval), delivered synchronously — one
-    # subrequest, and Mastodon marks the follow pending until it arrives.
+
+
     actor_url = _ap_actor_url(origin, kind, handle)
     follow_ref = {
         "id": str(activity.get("id", "") or ""),
@@ -28753,10 +28753,10 @@ async def _ap_handle_follow(env, request, activity, remote):
     status, _ = await _ap_deliver_body(
         env, actor_url, local["privkey"], inbox_url, accept_body)
     if inbox_url and not (200 <= status < 400) and status not in (404, 410):
-        # The remote server keeps the follow "pending" (spinner) until the
-        # Accept lands, and it does NOT retry a Follow we already 202'd — so
-        # a lost Accept used to leave the follow stuck forever. Queue it for
-        # the cron drain, which retries with the normal backoff.
+
+
+
+
         out_data = await encrypt_row(env, {
             "body": accept_body, "actorKind": kind, "actorHandle": handle,
             "actorUrl": actor_url})
@@ -28851,20 +28851,20 @@ def _ap_activity_is_public(activity):
 
 
 async def _ap_handle_create(env, request, activity, remote):
-    # A remote reply to one of our published Notes becomes a federated comment
-    # on the underlying thread; a post that @-mentions one of our repo actors
-    # becomes verified public activity awaiting optional, explicit owner
-    # review. Nothing in this inbound path files an issue automatically.
-    # Anything else is acknowledged and dropped (we host repos, not timelines).
+
+
+
+
+
     note = ap.note_essentials(activity.get("object"))
     if not note:
         return json_response({"ok": True}, status=202)
-    # HTTP signatures authenticate the sender, not the intended audience.
-    # Direct/private Notes must never enter a public thread or World feed.
+
+
     if not _ap_activity_is_public(activity):
         return json_response({"ok": True}, status=202)
-    # The note's author must be the signing actor (same host is not enough:
-    # one compromised account must not be able to speak for a whole server).
+
+
     if note["attributedTo"].split("#")[0].rstrip("/") != remote["actor_id"]:
         return json_response({"error": "author_mismatch"}, status=401)
     origin = _ap_origin(env, request)
@@ -28876,8 +28876,8 @@ async def _ap_handle_create(env, request, activity, remote):
             return await _ap_handle_repo_mention(
                 env, request, note, remote, mention[0], mention[1])
         return json_response({"ok": True}, status=202)
-    # Owner switched federated comments (or the whole actor) off: acknowledge
-    # and drop, same as any non-reply — redelivery storms must not 4xx.
+
+
     reply_settings = await _ap_repo_settings_get(
         env, context.get("owner", ""), context.get("repo", ""))
     if not reply_settings["federate"] or not reply_settings["acceptComments"]:
@@ -28897,8 +28897,8 @@ async def _ap_handle_create(env, request, activity, remote):
     if not normalized.get("ok"):
         return json_response({"ok": True}, status=202)
     rec = normalized["record"]
-    # The HTTP delivery signature was verified above, but that is explicitly
-    # not a ForkMesh Ed25519 native-event signature.
+
+
     rec["provenance"]["deliverySignatureVerified"] = True
     rec["provenance"]["nativeSignatureVerified"] = False
     await d1_run(
@@ -28980,8 +28980,8 @@ async def _ap_handle_remove(env, activity, remote):
     row, existing, _ = await _ap_comment_by_remote_id(env, target_id)
     if not row or not existing:
         return json_response({"ok": True}, status=202)
-    # Lemmy community moderators use a different actor from the comment
-    # author. Accept moderation only from the same already-verified instance.
+
+
     actor_host = urlparse(remote.get("actor_id", "")).hostname or ""
     if actor_host.lower() != existing.get("sourceInstance", "").lower():
         return json_response({"error": "moderator_instance_mismatch"},
@@ -29035,8 +29035,8 @@ async def _ap_send_mention_reply(env, request, owner, repo, remote, note,
         ap.note_html_from_text(text), now,
         web_url=origin + repo_web_href(owner, repo) + "/issues",
         in_reply_to=note["id"])
-    # Address the author directly (still public, so the exchange is visible
-    # in the thread); the Mention tag is what triggers their notification.
+
+
     reply["to"] = [remote["actor_id"]]
     reply["cc"] = [ap.AS_PUBLIC, actor_url + "/followers"]
     tag = {"type": "Mention", "href": remote["actor_id"]}
@@ -29100,9 +29100,9 @@ async def _ap_handle_repo_mention(env, request, note, remote, owner, repo):
     settings = await _ap_repo_settings_get(env, data_owner, repo)
     if not settings["federate"] or not settings["acceptComments"]:
         return dropped
-    # A legacy deployment may already have auto-filed this note. Preserve that
-    # historical dedupe marker so a redelivery cannot reintroduce it as a new
-    # manual-review candidate.
+
+
+
     mention_bi = await blind_index(env, "ap-mention:" + note["id"])
     seen = await d1_first(
         env, "SELECT ts FROM ap_mentions WHERE remote_id_bi=?", mention_bi)
@@ -29163,10 +29163,10 @@ async def _ap_handle_delete(env, activity, remote=None):
 
 
 async def ap_inbox_handler(env, request):
-    # Shared + per-actor ActivityPub inbox: verify the draft-cavage HTTP
-    # signature (keyId fetched from the remote server) and the body digest,
-    # then dispatch on activity type. Processing is synchronous — no queues on
-    # the free plan — and every path is a handful of D1 statements.
+
+
+
+
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
@@ -29191,12 +29191,12 @@ async def ap_inbox_handler(env, request):
         return json_response({"error": "domain_blocked"}, status=403)
     object_id = ap.activity_object_id(activity.get("object")).rstrip("/")
 
-    # Actor self-delete: the remote document is already gone, so the key can
-    # no longer be fetched. Clean up local edges without a wasted subrequest —
-    # a spoofed self-delete can at worst drop a follower edge that re-follows.
-    # Mastodon broadcasts every account deletion to every instance it has ever
-    # seen, so nearly all of these are for actors we don't know: check first
-    # (two indexed reads) instead of always issuing two D1 writes.
+
+
+
+
+
+
     if activity_type == "Delete" and object_id == actor_id:
         known = await d1_first(
             env, "SELECT actor_id FROM ap_remote_actors WHERE actor_id=?",
@@ -29209,23 +29209,23 @@ async def ap_inbox_handler(env, request):
             await _ap_forget_remote(env, actor_id)
         return json_response({"ok": True}, status=202)
 
-    # Anything we'd acknowledge-and-drop after verifying (Like/Announce/
-    # Accept/...) is dropped before the signature dance instead: the
-    # verify path costs a signed GET back to the sender's server (plus D1
-    # reads/writes to cache its actor), so fediverse-wide Like/boost floods
-    # both melted our origin AND hammered Mastodon with actor refetches —
-    # the "too many requests" loop of issue #416.
+
+
+
+
+
+
     if activity_type not in (
             "Follow", "Undo", "Create", "Update", "Delete", "Remove"):
         return json_response({"ok": True}, status=202)
     if activity_type == "Create":
-        # Two Note shapes matter: replies to our own /ap/o/<uuid> objects
-        # (federated comments) and posts whose Mention tags point at one of
-        # our repo actors (candidate issue requests). Everything else is
-        # dropped here, before the remote-actor fetch (the handler re-checks
-        # after verification). A nested Lemmy reply also qualifies when its
-        # parent is an already-stored remote reply; that costs one indexed D1
-        # read but avoids verifying unrelated fediverse traffic.
+
+
+
+
+
+
+
         note = ap.note_essentials(activity.get("object"))
         qualifies = bool(note and (
             ap.parse_local_object_url(origin, note["inReplyTo"])
@@ -29253,8 +29253,8 @@ async def ap_inbox_handler(env, request):
         request.headers.get("signature") or "")
     if not parsed_sig:
         return json_response({"error": "signature_required"}, status=401)
-    # The signature must cover the request target and the body digest, or it
-    # proves nothing about this delivery.
+
+
     if ("(request-target)" not in parsed_sig["headers"]
             or "digest" not in parsed_sig["headers"]):
         return json_response({"error": "weak_signature"}, status=401)
@@ -29296,7 +29296,7 @@ async def ap_inbox_handler(env, request):
                     and await _ap_rsa_verify(
                         remote["pubkey_pem"], parsed_sig["signature"], base))
     if not verified:
-        # The remote key may have rotated since we cached it — refresh once.
+
         remote = await _ap_remote_actor(env, key_url, force_refresh=True)
         verified = bool(remote and remote.get("pubkey_pem")
                         and await _ap_rsa_verify(
@@ -29317,28 +29317,28 @@ async def ap_inbox_handler(env, request):
         return await _ap_handle_delete(env, activity, remote)
     if activity_type == "Remove":
         return await _ap_handle_remove(env, activity, remote)
-    # Like/Announce/Accept/... are acknowledged and dropped above.
+
     return json_response({"ok": True}, status=202)
 
 
-# --- Client-facing endpoints ----------------------------------------------------
+
 
 async def repo_media_handler(env, request, owner, repo, media_kind):
-    # Owner-uploaded repo branding, served publicly (it is the repo's fediverse
-    # avatar/header, fetched by every remote server). Same visibility gate as
-    # the actor itself.
+
+
+
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
-    # Privacy is checked before edge cache lookup: a once-public logo must not
-    # remain observable for the cache TTL after its repository becomes private.
+
+
     if await _repo_is_private(env, owner, repo):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
-    # The repo actor's avatar/header: every remote server resolving the actor
-    # fetches both images, so a federated post fans out into a burst here.
-    # Key includes the ?v=<updated_at> buster from the actor document, so a
-    # branding change starts a fresh entry immediately.
+
+
+
+
     parts = urlparse(request.url)
     cache_key = (_ap_origin(env, request) + parts.path
                  + (("?" + parts.query) if parts.query else ""))
@@ -29357,10 +29357,10 @@ async def repo_media_handler(env, request, owner, repo, media_kind):
         raw = base64.b64decode(png_b64)
     except Exception:
         return json_response({"error": "not_found"}, status=404)
-    # The actor document busts caches via ?v=<updated_at>, so long edge/browser
-    # caching here is safe. Uint8Array.new copies into a JS-owned buffer — a
-    # bare _to_js(bytes) view into WASM memory read off the GIL (edge-cache
-    # put / client stream, after this returns) crashes the isolate.
+
+
+
+
     resp = JsResponse.new(Uint8Array.new(_to_js(bytes(raw))), to_js({
         "status": 200,
         "headers": {
@@ -29394,27 +29394,27 @@ def _repository_social_version(record):
 
 
 async def repo_card_handler(env, request, owner, repo):
-    # Social-preview info card (adhoc #46): the repo page's og:image points
-    # here, so a Mastodon/Slack/Twitter unfurl shows the repo's name,
-    # description and stats grid (with the ForkMesh mark small in the corner)
-    # instead of a full-bleed logo. Public — same visibility gate as the page
-    # it previews — and edge-cached so link-preview fetch bursts after a share
-    # cost one render per colo per TTL.
+
+
+
+
+
+
     if method_name(request) not in ("GET", "HEAD"):
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
-    # Check the signed catalog record before cache: privacy changes must revoke
-    # cached social previews immediately rather than waiting for their TTL.
+
+
     if await _repo_is_private(env, owner, repo):
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
     parts = urlparse(request.url)
-    # Organization aliases are rewritten to their backing node before this
-    # handler is dispatched, but the original Request URL deliberately stays
-    # untouched.  Keep that public identity on the rendered card while using
-    # ``owner`` below for every visibility/catalog/media lookup.  Otherwise an
-    # unfurl of /forkmesh/forkmesh would advertise mirror2/forkmesh even though
-    # the page, canonical URL and clone URL all belong to the organization.
+
+
+
+
+
+
     display_owner = owner
     display_repo = repo
     public_match = REPO_CARD_RE.match(parts.path)
@@ -29454,9 +29454,9 @@ async def repo_card_handler(env, request, owner, repo):
             env, "SELECT COUNT(*) AS c FROM ap_followers WHERE actor_bi=?",
             actor_bi)
         followers = (follow_row or {}).get("c", 0) or 0
-    # Mirror count the way the network page groups them: catalog records that
-    # share this repo's root commit (memoized decrypted catalog, so this full
-    # pass doesn't re-decrypt per request).
+
+
+
     mirrors = 0
     try:
         now_ms = int(time.time() * 1000)
@@ -29482,10 +29482,10 @@ async def repo_card_handler(env, request, owner, repo):
         "followers": followers,
     }
     png = og_card.render_repo_card(info, time.time())
-    # Stats drift, so keep the browser TTL modest; preview crawlers cache the
-    # rendered card on their side anyway. Uint8Array.new copies into a JS-owned
-    # buffer — a bare _to_js(bytes) view into WASM memory read off the GIL
-    # (edge-cache put / client stream, after this returns) crashes the isolate.
+
+
+
+
     resp = JsResponse.new(Uint8Array.new(_to_js(bytes(png))), to_js({
         "status": 200,
         "headers": {
@@ -29498,22 +29498,22 @@ async def repo_card_handler(env, request, owner, repo):
 
 
 async def repo_star_handler(env, request, owner, repo):
-    # Star/unstar a repo. A star is a plain per-account preference (not signed
-    # by the owner's key), so it lives in its own repo_stars table - the same
-    # trust model as profile_follows - rather than inside the owner-signed
-    # catalog record. GET is public (count + the caller's own state, if a
-    # session is supplied); POST/DELETE require a logged-in session, same as
-    # ACCOUNT_FOLLOW_RE.
+
+
+
+
+
+
     await ensure_schema(env)
     method = method_name(request)
     if method not in ("GET", "POST", "DELETE"):
         return json_response({"error": "method_not_allowed"}, status=405)
     if await _repo_is_private(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
-    # The router rewrites an organization path to its backing node before this
-    # handler runs. Stars are a public-repository preference, so retain the
-    # untouched verified organization identity instead of silently splitting
-    # forkmesh/forkmesh stars across its backing user's namespace.
+
+
+
+
     public_owner = str(owner or "").strip().lower()
     try:
         original_match = REPO_STAR_RE.match(
@@ -29582,9 +29582,9 @@ async def repo_star_handler(env, request, owner, repo):
 
 
 async def fedi_comments_handler(env, request, owner, repo):
-    # Remote fediverse replies for one thread, shown alongside (never inside)
-    # the Ed25519-signed event log. Public data — same visibility as the
-    # thread itself — so the only gate is repo privacy.
+
+
+
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
@@ -29621,8 +29621,8 @@ async def fedi_comments_handler(env, request, owner, repo):
                 and rec.get("remoteId"):
             normalized_records[rec["remoteId"]] = rec
             continue
-        # Pre-0065 rows remain readable and explicitly non-native while normal
-        # ActivityPub redelivery gradually upgrades them to lifecycle records.
+
+
         legacy_comments.append({
             "author": rec.get("author", ""),
             "authorName": rec.get("authorName", ""),
@@ -29658,9 +29658,9 @@ async def fedi_comments_handler(env, request, owner, repo):
 
 
 async def ap_publish_handler(env, request, owner, repo):
-    # Owner-node push of canonical announcements the relay never sees through
-    # the signed inboxes (published releases, merged PRs). Same signed-token
-    # gate as the inbox drain, so only the owner's key can speak for the repo.
+
+
+
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
@@ -29746,11 +29746,11 @@ async def ap_digest_handler(env, request, owner, repo):
 
 
 async def ap_posts_handler(env, request, owner, repo):
-    # Repo-owner fediverse-post management (dashboard "manage posts" dropdown,
-    # issue #426): list the repo actor's federated posts, or delete one. A
-    # delete broadcasts a Delete(Tombstone) to every follower inbox so the post
-    # disappears from Mastodon timelines, then drops the local object. POST-only
-    # so the session token rides in the body, never a query string / access log.
+
+
+
+
+
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     await ensure_schema(env)
@@ -29774,7 +29774,7 @@ async def ap_posts_handler(env, request, owner, repo):
             note = (rec or {}).get("note") or {}
             posts.append({
                 "id": row.get("object_uuid"),
-                "content": note.get("content") or "",  # our own safe HTML
+                "content": note.get("content") or "",
                 "url": note.get("url") or "",
                 "published": int(row.get("published") or 0),
             })
@@ -29784,22 +29784,22 @@ async def ap_posts_handler(env, request, owner, repo):
     object_uuid = clean_string(data.get("id", ""), 64).strip()
     if not object_uuid:
         return json_response({"error": "missing_id"}, status=400)
-    # Only delete a post the repo actor actually authored: the actor_bi filter
-    # stops one owner's token from reaching another actor's objects.
+
+
     row = await d1_first(
         env,
         "SELECT object_uuid FROM ap_objects WHERE object_uuid=? AND actor_bi=?",
         object_uuid, actor_bi)
     if not row:
         return json_response({"error": "not_found"}, status=404)
-    # Drop the local object first: even with federation disabled or zero
-    # followers the owner's intent (remove the post) is honored — /ap/o/<uuid>
-    # starts 404ing and it vanishes from the repo's fediverse profile feed.
+
+
+
     await d1_run(env, "DELETE FROM ap_objects WHERE object_uuid=?", object_uuid)
     origin = _ap_origin(env, request)
     object_url = origin + "/ap/o/" + object_uuid
-    # Drop the edge-parked Note (max-age 300) so the object 404s immediately
-    # rather than lingering a cache TTL after the owner deleted it.
+
+
     await edge_cache_delete(object_url)
     actor_url = _ap_actor_url(origin, AP_ACTOR_REPO, handle)
     now = int(Date.now())
@@ -29833,11 +29833,11 @@ async def ap_posts_handler(env, request, owner, repo):
                           "federated": queued})
 
 
-# --- Admin: fediverse configuration ------------------------------------------
-# Same signed-admin gate as the relay allowlist: the admin proves control of
-# their node key and carries is_admin. GET returns the switch + blocklist +
-# live stats; POST flips the switch or (un)blocks a remote domain. Blocking a
-# domain also purges its followers, cached actors and queued deliveries.
+
+
+
+
+
 
 async def _admin_ap_settings(env, request):
     await ensure_schema(env)
@@ -29887,8 +29887,8 @@ async def _admin_ap_update(env, request):
     audit_target = domain if audit_target_type == "activitypub_domain" else "global"
     if not await _admin_authorized(env, node, ts, sig, canonical):
         await _audit_sensitive_action(
-            # `node` is only a claimed identity until the signature verifies;
-            # do not attribute a denied request to an account an attacker named.
+
+
             env, "", "admin.activitypub_" + action,
             audit_target_type, audit_target, "denied",
             {"reason": "unauthorized", "claimedActorPresent": bool(node)})
@@ -29913,9 +29913,9 @@ async def _admin_ap_update(env, request):
                 "INSERT OR IGNORE INTO ap_blocked_domains (domain, added_by,"
                 " added_at) VALUES (?,?,?)",
                 domain, node, now)
-            # Purge existing state from the blocked server. valid_domain
-            # limits the charset to [a-z0-9.-], so the LIKE patterns cannot
-            # contain SQL wildcards beyond the ones we add.
+
+
+
             for pattern in ("https://" + domain + "/%",
                             "https://%." + domain + "/%"):
                 await d1_run(
@@ -29948,17 +29948,17 @@ async def _admin_ap_update(env, request):
 
 
 async def _owner_signing_pubkeys(env, owner):
-    # Every Ed25519 pubkey allowed to sign as this owner's desktop node: the
-    # account's primary pubkey plus any still-enabled device key that carries
-    # the owner_sign capability. A reinstalled or key-rotated node stores its
-    # new keypair in account_devices (login upserts it) but login only sets the
-    # primary rec["pubkey"] when it is empty, so it is never promoted. A drain
-    # gate that trusted ONLY the primary therefore silently 401'd that node on
-    # every GET /api/sync — its issues/PRs/commits/agent-prompts/about edits and
-    # chat state stopped reaching it, with no visible error (the node just backs
-    # off). The device keys are already stored and account-bound (added only
-    # through an authenticated login/claim), so reusing them is the durable node
-    # identity the account should keep signing with.
+
+
+
+
+
+
+
+
+
+
+
     keys = []
     owner_pub = await _owner_pubkey(env, owner)
     if owner_pub:
@@ -29966,8 +29966,8 @@ async def _owner_signing_pubkeys(env, owner):
     account_bi = await blind_index(env, owner)
     for device in await _account_devices_list(env, account_bi):
         pub = device.get("pubkey") or ""
-        # enabled == active and not revoked (see _account_devices_list); revoking
-        # a device in settings closes it out of the drain gate immediately.
+
+
         if (pub and pub not in keys and device.get("enabled")
                 and "owner_sign" in (device.get("capabilities") or [])):
             keys.append(pub)
@@ -30059,8 +30059,8 @@ async def _authorized_repo_inbox_signing_key(env, request, owner, repo):
     ):
         return ""
 
-    # Re-check the durable link instead of trusting the short-lived alias memo:
-    # revoking/unlinking an organization must revoke drain authority at once.
+
+
     org_bi, org_row = await _org_row(env, alias_owner)
     if not org_row:
         return ""
@@ -30115,16 +30115,16 @@ async def _authorize_repo_inbox_owner(env, request, owner, repo):
 
 async def _authorize_owner_account(env, owner, data, request=None,
                                    allow_admin=True):
-    # Authorize the caller as the repo owner (or a network admin) via their
-    # logged-in account SESSION — not a self-asserted name. Used for the website
-    # agents tab (adhoc #225). This gate protects immediate, unreviewed side
-    # effects: queuing a prompt into a running coding agent on the owner's
-    # machine, and reading an agent's transcript / session list. The earlier
-    # version trusted data["ownerAccount"] verbatim, so anyone who knew a public
-    # owner/repo name could drive those owner-only actions (agent hijack / private
-    # data disclosure). The sessionToken (POST body or bearer) must now resolve to
-    # the owner account itself or a network admin.
-    # Returns (True, None) on success, or (False, error_json_response) on failure.
+
+
+
+
+
+
+
+
+
+
     _, rec = await _account_session_record(env, request, data)
     actor = (rec.get("name", "") if rec else "").strip().lower()
     if not actor:
@@ -30136,8 +30136,8 @@ async def _authorize_owner_account(env, owner, data, request=None,
 
 
 async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
-    # True when this submitter already holds MAX_PENDING_PER_AUTHOR un-merged rows
-    # in this repo's inbox (table is a fixed literal, safe to interpolate).
+
+
     if not submitter_bi:
         return False
     row = await d1_first(
@@ -30150,8 +30150,8 @@ async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
 
 
 async def _best_effort_inbox_side_effect(awaitable):
-    # Inbox acceptance is the durable D1 insert. Notification/subscription
-    # fan-out is useful, but it must not turn an accepted web submission into 500.
+
+
     try:
         await awaitable
     except Exception:
@@ -30161,9 +30161,9 @@ async def _best_effort_inbox_side_effect(awaitable):
 async def enqueue_notification(env, recipient, kind, title, body="", repo="",
                                href="", actor="", source="", dedupe="",
                                ts=0, meta=None):
-    # Account-scoped notification index. It intentionally stores only an encrypted
-    # payload plus blind indexes/read state; the canonical event stays in repo git
-    # files or a signed inbox table.
+
+
+
     await ensure_schema(env)
     recipient = clean_string(recipient, MAX_NODE_NAME).lower()
     actor = clean_string(actor, MAX_NODE_NAME).lower()
@@ -30277,10 +30277,10 @@ async def _promote_hosted_repository_import(env, catalog_record):
 
 async def notify_mentions(env, owner, repo, actor, title, body, href, source,
                           number=0):
-    # number is optional (0 = not a numbered item, e.g. a brand-new PR before
-    # the owner assigns it) so every existing call site keeps working
-    # unchanged; callers that DO know the number pass it as a keyword so the
-    # digest email can show "#N" instead of just a bare title.
+
+
+
+
     for name in notification_mentions(title, body):
         await enqueue_notification(
             env, name, "mention", "You were mentioned in " + owner + "/" + repo,
@@ -30304,10 +30304,10 @@ def _thread_key(owner, repo, source, number):
 
 async def subscribe_thread(env, owner, repo, source, number, subscriber,
                            muted=False):
-    # Record (or mute) one node's subscription to an issue/PR thread. Auto-called
-    # for anyone who comments so they hear about later replies; the signed
-    # subscribe endpoint calls it too. An explicit mute is sticky: a later
-    # auto-subscribe won't silently re-enable a thread the user muted.
+
+
+
+
     subscriber = clean_string(subscriber, MAX_NODE_NAME).lower()
     if not valid_node_name(subscriber):
         return False
@@ -30316,8 +30316,8 @@ async def subscribe_thread(env, owner, repo, source, number, subscriber,
     except (TypeError, ValueError):
         number = 0
     if number <= 0:
-        # A brand-new submission has no durable number yet (the owner assigns it on
-        # drain), so its thread key would collide with every other new item.
+
+
         return False
     await ensure_schema(env)
     thread_bi = await blind_index(env, _thread_key(owner, repo, source, number))
@@ -30331,8 +30331,8 @@ async def subscribe_thread(env, owner, repo, source, number, subscriber,
         if existing:
             rec = await decrypt_row(env, existing.get("data", ""))
             if rec and rec.get("muted"):
-                return False  # keep an explicit unsubscribe
-            return True  # already subscribed
+                return False
+            return True
     await d1_run(
         env,
         "INSERT INTO thread_subscriptions (thread_bi, subscriber_bi, ts, data) "
@@ -30346,9 +30346,9 @@ async def subscribe_thread(env, owner, repo, source, number, subscriber,
 
 async def notify_subscribers(env, owner, repo, source, number, actor, title,
                              body, href):
-    # Fan a new comment out to everyone following the thread, minus the commenter
-    # and anyone already covered by an @mention on this same event (so a mentioned
-    # subscriber gets one notification, not two).
+
+
+
     try:
         number = int(number or 0)
     except (TypeError, ValueError):
@@ -30492,9 +30492,9 @@ async def notifications_handler(env, request):
         node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
-        # A notification inbox is private to its owner: only the account itself,
-        # proven by its session token (bearer header on this GET) or by an
-        # account-key signature on the URL (the desktop Alerts page), may read it.
+
+
+
         if await _alert_inbox_account_name(env, request) != node:
             return json_response({"error": "unauthorized"}, status=401)
         try:
@@ -30511,10 +30511,10 @@ async def notifications_handler(env, request):
         )
         items = []
         unread = 0
-        # Derive the AES key once for the whole page instead of per row: each
-        # derivation is its own async WebCrypto round trip, and this endpoint is
-        # polled often enough that N sequential round trips (one per notification)
-        # measurably drags out the request.
+
+
+
+
         row_key = await _data_key(env) if rows else None
         for row in rows:
             rec = await decrypt_row(env, row.get("data", ""), key=row_key)
@@ -30537,9 +30537,9 @@ async def notifications_handler(env, request):
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
-        # Marking notifications read mutates the owner's inbox: same gate as the
-        # GET (token from the POST body or an Authorization: Bearer header, or
-        # the account-key read proof signed onto the URL).
+
+
+
         if await _alert_inbox_account_name(env, request, data) != node:
             return json_response({"error": "unauthorized"}, status=401)
         recipient_bi = await blind_index(env, node)
@@ -30569,11 +30569,11 @@ async def notifications_handler(env, request):
         if not valid_node_name(node) or not re.fullmatch(
                 r"[a-f0-9]{64}", item_id):
             return json_response({"error": "bad_request"}, status=400)
-        # A notification can only be removed from the authenticated owner's
-        # own encrypted inbox. The opaque id is still scoped by recipient_bi,
-        # so an id copied from another account cannot delete anything. The
-        # desktop, which holds keys and no session token, signs the id itself
-        # with a proof distinct from the list/read ones (adhoc #77).
+
+
+
+
+
         if await _alert_inbox_account_name(
                 env, request, data, resource=item_id) != node:
             return json_response({"error": "unauthorized"}, status=401)
@@ -30595,13 +30595,13 @@ async def notifications_handler(env, request):
 
 
 async def mirror_requests_handler(env, request):
-    # Peer mirror requests (issue #385): a repo owner asks another node to
-    # mirror their repo, the target's holder accepts or rejects, and on accept
-    # that node starts mirroring. The request is parked as a bounded list on the
-    # TARGET account record (heartbeat-delivered, like claim/ownership-transfer);
-    # accepted entries ride back on the target node's signed heartbeat so its
-    # desktop clones the repo. All actions are session-gated (the dashboard
-    # login), exactly like the notification inbox this feeds.
+
+
+
+
+
+
+
     await ensure_schema(env)
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -30621,15 +30621,15 @@ async def mirror_requests_handler(env, request):
         repo = clean_string(data.get("repo", ""), MAX_REPO_SEGMENT).strip()
         if not valid_node_name(target) or not valid_node_name(owner) or not repo:
             return json_response({"error": "bad_request"}, status=400)
-        # "Ask a node to mirror YOUR repo": only the repo owner (proven by the
-        # session, not a self-asserted body field) may send the request.
+
+
         if owner != actor:
             return json_response({"error": "forbidden"}, status=403)
         if target == owner:
             return json_response({"error": "self_target"}, status=400)
         if await _repo_is_private(env, owner, repo):
-            # Mirroring is a public-repo affair (the /mirrors payload and clone
-            # fallback are public-only); private repos need a share token flow.
+
+
             return json_response({"error": "private_repo"}, status=400)
         key_bi = await blind_index(env, owner + "/" + repo)
         repo_row = await d1_first(
@@ -30675,8 +30675,8 @@ async def mirror_requests_handler(env, request):
         repo = clean_string((updated or {}).get("repo", ""), MAX_REPO_SEGMENT).strip()
         requester = clean_string(
             (updated or {}).get("requester", ""), MAX_NODE_NAME).lower()
-        # Let the requester know the outcome (recipient != actor is guaranteed:
-        # a request never targets its own owner).
+
+
         if requester and owner and repo:
             verb = "accepted" if action == "accept" else "declined"
             tail = (" — their node will start mirroring it shortly."
@@ -30697,10 +30697,10 @@ async def mirror_requests_handler(env, request):
 
 
 async def subscribe_handler(env, request, owner, repo):
-    # Signed subscribe/unsubscribe for one issue or PR thread (issue #361). The
-    # request is signed with the node's own Ed25519 key — the same proof of
-    # control as a heartbeat — so only the account holder can watch or mute a
-    # thread on their own behalf.
+
+
+
+
     await ensure_schema(env)
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -30766,10 +30766,10 @@ async def subscribe_handler(env, request, owner, repo):
 
 
 async def send_notification_digests(env):
-    # Cron: roll each recipient's unread notifications into a single email so a
-    # reply reaches people who don't have the app open (issue #361). Only the main
-    # relay sends mail; recipients need a verified email and must not have opted
-    # out. Best-effort — never raise from the cron.
+
+
+
+
     if not _is_main_relay(env):
         return
     await ensure_schema(env)
@@ -30794,7 +30794,7 @@ async def send_notification_digests(env):
         rec = await decrypt_row(env, acct.get("data", ""))
         if not rec or rec.get("status") != "active":
             continue
-        # Use the node owner's email if the node has an owner; otherwise use the node's email.
+
         email_rec = rec
         owner = clean_string(rec.get("owner", ""), MAX_NODE_NAME).lower()
         if owner:
@@ -30805,7 +30805,7 @@ async def send_notification_digests(env):
         if not email or not email_rec.get("email_verified"):
             continue
         if email_rec.get("email_notifications") is False:
-            continue  # explicit opt-out
+            continue
         last = int(rec.get("last_digest_ts", 0) or 0)
         if last and now - last < NOTIFICATION_DIGEST_INTERVAL_MS:
             continue
@@ -30855,16 +30855,16 @@ async def _general_chat_encrypted_message_count(env, since_ts, until_ts):
 
 
 async def send_general_chat_digests(env):
-    # The #general room history is retained as encrypted frames. The daily email
-    # intentionally reports only a count since the recipient's last digest; it
-    # never decrypts or embeds message text.
+
+
+
     if not _is_main_relay(env):
         return
     await ensure_schema(env)
     now = int(Date.now())
-    # Recipients come from the authoritative users table (accounts is legacy and
-    # is drained as records migrate); it only holds user-kind records, exactly
-    # the population eligible for this digest.
+
+
+
     rows = await d1_all(
         env,
         "SELECT user_bi AS name_bi, data FROM users ORDER BY username LIMIT ?",
@@ -30937,8 +30937,8 @@ def _forkmesh_email_card_html(
         heading, intro_html, body_html, footer_html="",
         action_label="Open ForkMesh",
         action_url="https://forkmesh.com/"):
-    # One explicit light palette avoids the unreadable hybrid produced when an
-    # email client honors only some dark-mode declarations or inline colors.
+
+
     intro_html = _light_email_fragment(intro_html)
     body_html = _light_email_fragment(body_html)
     footer_html = _light_email_fragment(footer_html)
@@ -31001,14 +31001,14 @@ def _notification_digest_email(node, items):
         except (TypeError, ValueError):
             number = 0
         when = _format_email_ts(it.get("ts"))
-        # "[owner/repo] #42 Title", falling back gracefully as each piece is
-        # missing (a brand-new PR/comment has no number yet; an old digest
-        # backlog item might predate actor tracking).
+
+
+
         prefix = ("[" + repo + "] ") if repo else ""
         number_prefix = ("#" + str(number) + " ") if number > 0 else ""
         lines.append("- " + prefix + number_prefix + title)
-        # A second indented line for who/when, only when there's something to
-        # show — matches the existing "    body" indent convention below.
+
+
         who_when = " · ".join(filter(None, [
             ("by " + actor) if actor else "", when]))
         if who_when:
@@ -31091,7 +31091,7 @@ def _html_escape(text):
 
 
 def _build_rev(env):
-    # The git rev deploy.sh stamps as a Worker var on every production deploy.
+
     try:
         val = env.BUILD_REV
         if val:
@@ -31102,29 +31102,29 @@ def _build_rev(env):
 
 
 async def poll_handler(env, request):
-    # One lightweight digest the client polls on its regular tick INSTEAD of
-    # separately re-fetching the full profile (/api/accounts/<name> — avatar and
-    # all) and the full notification list every time. It returns only cheap
-    # change tokens (a couple of indexed reads, no avatar blob, no per-row
-    # notification decrypt); the client fires those heavier fetches only when a
-    # token here actually moves. Rolling three per-minute polls into one keeps
-    # the hot dashboard path off the Worker CPU limit.
+
+
+
+
+
+
+
     await ensure_schema(env)
     params = parse_qs(urlparse(request.url).query)
     node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
     out = {"ok": True, "rev": _build_rev(env)}
     if not valid_node_name(node):
         return json_response(out)
-    # The digest exposes the account's own profile-change token and unread count,
-    # so it is returned only to the account itself (session bearer token). Anyone
-    # else — or an anonymous poll — gets just the build rev, no per-account data.
+
+
+
     if await _authed_account_name(env, request) != node:
         return json_response(out)
     name_bi, rec = await _account_row(env, node)
     if rec:
-        # Token folds the profile fields the dashboard actually re-renders, so a
-        # change to any of them (verification, avatar, admin grant, ownership)
-        # invalidates it and triggers the full /api/accounts/<name> fetch.
+
+
+
         out["profile"] = {"token": ":".join(str(x) for x in (
             rec.get("status", ""),
             1 if rec.get("email_verified") else 0,
@@ -31132,9 +31132,9 @@ async def poll_handler(env, request):
             1 if await _is_admin(env, node) else 0,
             rec.get("owner", "") or "",
         ))}
-        # Unread count is returned outright so the bell badge updates from the
-        # poll alone; token (latest ts + row total) moves on any add/remove so
-        # the full list is re-pulled only when it changed.
+
+
+
         notif = await d1_first(
             env,
             "SELECT COUNT(*) AS total, "
@@ -31158,17 +31158,17 @@ def _forkbot_extract_mention_command(message):
 
 
 def _forkbot_parse_issue_command(command):
-    # Fast, offline path for an explicitly phrased request ("create an issue
-    # to ..."). A miss here is NOT a rejection: the handler falls back to the
-    # AI intent classifier (_forkbot_ai_interpret), which recognises the same
-    # intent from natural phrasing ("forkbot can you track the flaky login
-    # test?") and from the surrounding conversation. This regex just spares an
-    # AI round trip for the obvious wording and still works when AI is off.
+
+
+
+
+
+
     text = clean_string(command, FORKBOT_MAX_COMMAND).strip()
     if not text:
         return None
-    # Verb-first ("create an issue to ...") or noun-first ("issue to ...",
-    # "bug: ...") — both common phrasings, both answerable offline.
+
+
     match = re.match(
         r"(?is)^(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
         r"pls\s+|plz\s+)*"
@@ -31201,7 +31201,7 @@ def _forkbot_command_hints_issue(command):
 
 
 def _forkbot_polite_prefix():
-    # Shared lead-in the offline parsers strip: "please can you ..." etc.
+
     return (r"(?:please\s+|can\s+you\s+|could\s+you\s+|would\s+you\s+|"
             r"pls\s+|plz\s+)*")
 
@@ -31331,8 +31331,8 @@ def _forkbot_parse_help_command(command):
 
 
 def _forkbot_help_message():
-    # Also the fallback reply for anything ForkBot could not map to an action,
-    # so it doubles as discoverable usage text.
+
+
     return (
         "I can open an issue from the conversation (\"forkbot open an issue "
         "for the flaky login test\"), list recent issues (\"forkbot list the "
@@ -31476,11 +31476,11 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
             value = result.get(key)
             if isinstance(value, str):
                 return value
-            # JSON mode returns the parsed object under "response".
+
             if isinstance(value, dict):
                 return value
-        # Some bindings return the parsed object directly rather than a text
-        # field; hand the dict back so the caller can read fields off it.
+
+
         return result
     if isinstance(result, str):
         return result
@@ -31491,9 +31491,9 @@ async def _forkbot_run_ai(env, system_prompt, user_prompt, schema=None):
     return None
 
 
-# JSON schemas for Workers AI JSON mode: a supporting model is FORCED to emit
-# exactly these shapes, eliminating the markdown-fence / chatty-preamble
-# failure modes small instruct models are prone to.
+
+
+
 FORKBOT_ISSUE_FIELDS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -31619,16 +31619,16 @@ async def _forkbot_ai_interpret(env, command, context_text=""):
     if intent == "help":
         return {"intent": "help"}
     if intent not in ("create_issue", "none"):
-        # Some models omit the field but still return title/body when they
-        # decided to draft an issue; treat a usable draft as create_issue.
+
+
         intent = "create_issue" if (parsed.get("title") or parsed.get("body")) \
             else "none"
     if intent != "create_issue":
         return {"intent": "none"}
     fields = _forkbot_clean_ai_issue_fields(parsed)
     if not fields:
-        # The model wanted an issue but produced no usable draft — let the
-        # caller's heuristic take over instead of refusing.
+
+
         return None
     return {"intent": "create_issue", "title": fields["title"],
             "body": fields["body"]}
@@ -31668,9 +31668,9 @@ async def _forkbot_repo_gateway_json(env, owner, repo, action_query):
 
 
 def _forkbot_missing_tree(data):
-    # The host answers "that folder isn't in git yet" in a few git-flavored
-    # ways (same set the dashboard's isMissingMirrorFolder knows); all of them
-    # mean "no issues filed", not "host unreachable".
+
+
+
     error = str((data or {}).get("error", "")).lower()
     return any(marker in error for marker in (
         "not_found", "not a valid object name", "pathspec",
@@ -31678,9 +31678,9 @@ def _forkbot_missing_tree(data):
 
 
 def _forkbot_issue_json_path(number, subdir=""):
-    # Issues are split by status into .forkmesh/issues/open/<N>/ and
-    # .forkmesh/issues/closed/<N>/ (adhoc #14); pre-split mirrors keep the
-    # numbered folder directly under the root (subdir "").
+
+
+
     base = ".forkmesh/issues"
     if subdir:
         base += "/" + subdir
@@ -31786,9 +31786,9 @@ async def _forkbot_load_issue_records(env, owner, repo, numbers):
     numbers = [int(n) for n in numbers][:FORKBOT_LIST_MAX]
     if not numbers:
         return []
-    # A record lives at open/<N>/, closed/<N>/, or the pre-split legacy <N>/
-    # depending on its status; ask for every candidate in the one batch (3 ×
-    # FORKBOT_LIST_MAX stays within MAX_BLOB_BATCH) and keep whichever answered.
+
+
+
     query = "&".join(
         "path=" + quote(path, safe="")
         for n in numbers for path in _forkbot_issue_json_candidates(n))
@@ -31879,8 +31879,8 @@ async def _forkbot_next_issue_number(env, repo_bi, owner, repo):
     except Exception:
         pass
     try:
-        # Seed on first use / re-anchor upward to the catalog max, never
-        # backward (MAX keeps already-handed-out numbers monotonic).
+
+
         await d1_run(
             env,
             "INSERT INTO issue_seq (repo_bi, next_number) VALUES (?, ?) "
@@ -31948,15 +31948,15 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
     this path with its random review id so the owner node can later confirm
     the exact issue it materialized; inbound posts never call this directly."""
     await ensure_schema(env)
-    # ForkBot names the repo by its PUBLIC url (forkmesh/forkmesh), which is an
-    # organization alias. Every drain path — the node's per-repo GET and the
-    # consolidated GET /api/sync — reads the inbox under the backing node's
-    # blind index, because /api/repo/... is org_alias_rewrite'd before routing
-    # and /api/sync selects the repositories rows the account actually owns.
-    # Keying the insert on the alias therefore dead-letters the row: it sits in
-    # issue_inbox forever and never reaches the repository. Resolve org->node
-    # for the storage key and the owner-directed notifications (a no-op for a
-    # plain node name); public strings/URLs stay on the alias in the caller.
+
+
+
+
+
+
+
+
+
     host_owner = await _ap_org_alias_owner(env, owner, repo)
     repo_bi = await blind_index(env, host_owner + "/" + repo)
     await _forkbot_rekey_alias_inbox(env, owner, host_owner, repo, repo_bi)
@@ -31971,9 +31971,9 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
     now = int(Date.now())
     actor = clean_string(requester, MAX_NODE_NAME).lower() or FORKBOT_AUTHOR
     body = _forkbot_attributed_body(body, source, actor)
-    # Proposed number the desktop honors when the slot is free (0 = let the
-    # desktop assign). Allocated before the insert so it lands in the stored
-    # item and can be echoed straight back to the chat.
+
+
+
     number = await _forkbot_next_issue_number(env, repo_bi, owner, repo)
     tracked_mention_id = clean_string(federated_mention_id, 32).lower()
     if not re.fullmatch(r"[a-f0-9]{32}", tracked_mention_id):
@@ -32034,8 +32034,8 @@ async def _forkbot_enqueue_issue(env, owner, repo, title, body, requester,
             env, host_owner, repo, FORKBOT_AUTHOR, item.get("titleIfNew", ""),
             event.get("body", ""), repo_web_href(owner, repo), "issue",
             number=number))
-    # Same push every other inbox write does: the owner's node syncs on the
-    # event frame instead of waiting out the 5-15 minute fallback poll.
+
+
     await notify_repo_host(env, host_owner, repo, "issues")
     return True, item
 
@@ -32048,7 +32048,7 @@ async def _forkbot_enqueue_agent_request(env, owner, repo, number, requester):
     itself. Caller has already verified the requester is the repo owner/admin
     (the same privilege gate issues_handler applies to wantsAgent)."""
     await ensure_schema(env)
-    # Key the row the way every drain reads it — see _forkbot_enqueue_issue.
+
     host_owner = await _ap_org_alias_owner(env, owner, repo)
     repo_bi = await blind_index(env, host_owner + "/" + repo)
     await _forkbot_rekey_alias_inbox(env, owner, host_owner, repo, repo_bi)
@@ -32116,9 +32116,9 @@ def _forkbot_gateway_offline_reply(owner, repo):
 
 
 async def _forkbot_action_count(env, owner, repo):
-    # A "how many" question wants a total, not a capped listing — reusing
-    # _forkbot_action_list here would silently truncate at FORKBOT_LIST_MAX
-    # and never actually answer the question asked.
+
+
+
     numbers = await _forkbot_recent_issue_numbers(env, owner, repo)
     if numbers is None:
         return _forkbot_gateway_offline_reply(owner, repo)
@@ -32237,15 +32237,15 @@ async def _forkbot_action_show(env, owner, repo, number):
 
 
 async def _forkbot_action_start_agent(env, owner, repo, number, sender):
-    # Starting a coding agent on the owner's machine is an immediate,
-    # unreviewed side effect, so it keeps the same privilege gate the web
-    # issue form's wantsAgent has (adhoc #225): the repo owner's account or a
-    # network admin. Chat sender names are client-claimed, matching the trust
-    # model of the web form's ownerAccount field.
+
+
+
+
+
     requester = clean_string(sender, MAX_NODE_NAME).strip().lower()
-    # When the repo is fronted by an organization alias, the account that owns
-    # it (and whose node would run the agent) is the backing node, not the org
-    # name in the URL — check against both so the real owner isn't refused.
+
+
+
     host_owner = (await _ap_org_alias_owner(env, owner, repo)).lower()
     authorized = bool(requester) and (
         requester == owner.lower() or requester == host_owner
@@ -32312,23 +32312,23 @@ async def forkbot_chat_handler(env, request):
     if not command:
         return json_response({"ok": True, "ignored": True})
 
-    # Recent (client-decrypted) conversation the mention sits in, so ForkBot can
-    # resolve "that bug" / "the issue we discussed" instead of only the one line.
+
+
     context_text = _forkbot_context_text(data.get("context"))
     sender = clean_string(data.get("sender", ""), MAX_NODE_NAME)
     owner = FORKBOT_DEFAULT_OWNER
     repo = FORKBOT_DEFAULT_REPO
 
-    # Decide the action. Prefer meaning over fixed wording:
-    #  1. Cheap regexes catch explicitly phrased commands offline (list /
-    #     search / start-agent / show / help / create), sparing an AI round
-    #     trip and keeping every command working when AI is off.
-    #  2. Otherwise the AI classifier reads the command + conversation and
-    #     picks the intent (drafting the issue when one is wanted).
-    #  3. AI unreachable (None — distinct from a confident "none") but the
-    #     message plainly talks about issues/bugs/tracking: file the raw text
-    #     rather than refusing. Only a confident "none" or a message with no
-    #     work-recording signal at all gets the help hint.
+
+
+
+
+
+
+
+
+
+
     action = None
     for intent_name, parser in (
             ("count_issues", _forkbot_parse_count_command),
@@ -32391,8 +32391,8 @@ async def forkbot_chat_handler(env, request):
         return json_response({"error": result}, status=429)
     title = result.get("titleIfNew", fields["title"])
     number = int(result.get("issueNumber", 0) or 0)
-    # /owner/repo/issues is the web route for the repo's issue list; the number
-    # is the proposed one the desktop honors when it merges the inbox.
+
+
     issue_url = repo_web_href(owner, repo) + "/issues"
     if number > 0:
         bot_message = (
@@ -32447,9 +32447,9 @@ def _clean_issue_attachment_data(value):
 
 
 async def _log_inbox_drain(env, repo_bi, kind, count):
-    # Audit trail for inbox acks (adhoc #97): one row per non-empty drain so a
-    # "web-filed item vanished but never synced" report is traceable. Content-free
-    # (blind-indexed repo, a count) and best-effort — never fail the ack over it.
+
+
+
     if count <= 0:
         return
     try:
@@ -32462,9 +32462,9 @@ async def _log_inbox_drain(env, repo_bi, kind, count):
 
 
 def _drain_ids_from_request(request):
-    # ?ids=1,2,3 on an inbox-drain DELETE: the node acks exactly the rows it
-    # merged, so a submission inserted after the node's read survives to the
-    # next sync instead of being swept away undelivered (adhoc #97).
+
+
+
     params = parse_qs(urlparse(request.url).query)
     raw = params.get("ids", [""])[0]
     ids = []
@@ -32792,8 +32792,8 @@ async def issues_handler(env, request, owner, repo):
             return json_response({"error": "issue_too_large"}, status=413)
         if not await verify_issue_event(number, event):
             return json_response({"error": "bad_signature"}, status=401)
-        # Screenshots the submitter had no working tree to copy in ride along as
-        # base64 bytes, named to match the signed event's attachments list.
+
+
         attachment_data, attach_err = _clean_issue_attachment_data(
             data.get("attachmentData"))
         if attach_err:
@@ -32808,9 +32808,9 @@ async def issues_handler(env, request, owner, repo):
         submitter_bi = await blind_index(env, event.get("author", ""))
         if await _inbox_author_over_quota(env, "issue_inbox", repo_bi, submitter_bi):
             return json_response({"error": "author_quota"}, status=429)
-        # Issue-level metadata for a new issue (labels/milestone/priority/
-        # assignees). Not signature-bound; the owner applies it on merge. Bounded
-        # to keep a submission small and the lists sane.
+
+
+
         meta_in = data.get("meta")
         meta = {}
         if isinstance(meta_in, dict):
@@ -32820,11 +32820,11 @@ async def issues_handler(env, request, owner, repo):
                 priority = int(meta_in.get("priority", 0))
             except (TypeError, ValueError):
                 priority = 0
-            # "wantsAgent" makes the owner's node start a coding agent on this
-            # issue automatically once merged — unlike the other meta fields
-            # above, that's an immediate, unreviewed side effect, so it's only
-            # honored when the request comes from a privileged account: the repo
-            # owner, or an admin acting on the owner's behalf (adhoc #225).
+
+
+
+
+
             wants_agent = False
             agent_model = ""
             agent_provider = ""
@@ -32833,13 +32833,13 @@ async def issues_handler(env, request, owner, repo):
                 if not ok:
                     return err
                 wants_agent = True
-                # Optional model choice (e.g. "opus"/"sonnet"/"haiku"/"fable" or a
-                # full model id) for the agent the desktop node auto-starts on this
-                # issue; empty leaves the provider's own default. Only meaningful
-                # alongside wantsAgent, so it's not parsed otherwise.
+
+
+
+
                 agent_model = clean_string(meta_in.get("model", ""), 60)
-                # Optional agent-provider choice from the web dropdown (adhoc #234);
-                # only a known provider is honored, else the node picks its default.
+
+
                 provider_in = clean_string(meta_in.get("provider", ""), 40)
                 if provider_in in ("claude-code", "claude-api", "openai"):
                     agent_provider = provider_in
@@ -32887,9 +32887,9 @@ async def issues_handler(env, request, owner, repo):
             notify_issue_assignees(
                 env, owner, repo, assignees, actor, item.get("titleIfNew", ""),
                 number))
-        # Subscriptions (issue #361): tell everyone already following this issue
-        # about the new activity, then auto-subscribe the commenter so they hear
-        # about later replies. Both no-op for a brand-new issue (number 0).
+
+
+
         await _best_effort_inbox_side_effect(
             notify_subscribers(
                 env, owner, repo, "issue", number, actor,
@@ -32899,8 +32899,8 @@ async def issues_handler(env, request, owner, repo):
             subscribe_thread(env, owner, repo, "issue", number, actor))
         await notify_repo_host(env, owner, repo, "issues")
         await notify_repo_mirrors(env, owner, repo, "issues")
-        # Fediverse: announce content events (opens/comments — never labels or
-        # status flips) to any followers of the repo/author actors.
+
+
         if event.get("type") in ("open", "comment"):
             await _best_effort_inbox_side_effect(_ap_publish_repo_event(
                 env, request, owner, repo, "issue", event.get("type"),
@@ -32936,11 +32936,11 @@ async def issues_handler(env, request, owner, repo):
         for r in rows:
             rec = await decrypt_row(env, r["data"])
             if rec:
-                # The row id lets the node ack exactly what it merged so a
-                # submission that lands mid-drain isn't swept away undelivered
-                # (adhoc #97) — the "stayed pending, then vanished, never synced"
-                # bug. A DELETE must name the ids to remove; without them the
-                # drain removes nothing.
+
+
+
+
+
                 rec["id"] = r.get("id")
                 pending.append(rec)
         return json_response({
@@ -33000,8 +33000,8 @@ async def pulls_handler(env, request, owner, repo):
             data = await bounded_json_request(request)
         except Exception:
             return json_response({"error": "invalid_json"}, status=400)
-        # A submission is either a whole new PR ("pull") or a signed conversation
-        # event ("event" + "number") — a comment or review on an existing PR.
+
+
         event = data.get("event")
         if isinstance(event, dict):
             try:
@@ -33038,8 +33038,8 @@ async def pulls_handler(env, request, owner, repo):
             await notify_pending_inbox(env, owner, repo, "pull", actor, event.get("body", ""), number)
             await notify_mentions(env, owner, repo, actor, "Pull request comment", event.get("body", ""),
                                   repo_web_href(owner, repo), "pull", number=number)
-            # Subscriptions (issue #361): fan the comment out to the PR's
-            # followers, then auto-subscribe the commenter.
+
+
             await notify_subscribers(env, owner, repo, "pull", number, actor,
                                      "Pull request comment", event.get("body", ""),
                                      repo_web_href(owner, repo))
@@ -33068,9 +33068,9 @@ async def pulls_handler(env, request, owner, repo):
         if len(description.encode("utf-8")) > MAX_ISSUE_BYTES:
             return json_response(
                 {"error": "description_too_large"}, status=413)
-        # `description` is the native Qt wire name. Normalize legacy browser
-        # `body` submissions before encrypting the inbox item so either kind of
-        # sender drains into the same lossless PullRequest representation.
+
+
+
         pull["description"] = description
         pull.pop("body", None)
         pull_bytes = len((pull.get("patch", "") or "").encode("utf-8")) + len(
@@ -33105,9 +33105,9 @@ async def pulls_handler(env, request, owner, repo):
                               repo_web_href(owner, repo), "pull")
         await notify_repo_host(env, owner, repo, "pulls")
         await notify_repo_mirrors(env, owner, repo, "pulls")
-        # Badge (adhoc #44): render the PR's visual fingerprint from the
-        # signed patch and attach it to the federated note as its lead image.
-        # Best-effort — a badge failure must never block the submission.
+
+
+
         badge = None
         try:
             stats = patch_file_stats(pull.get("patch", "") or "")
@@ -33338,17 +33338,17 @@ async def discussions_handler(env, request, owner, repo):
 
 
 async def repo_pending_counts_handler(env, request, owner, repo):
-    # GET /api/repo/{owner}/{repo}/pending — content-free tallies of inbox
-    # items still waiting for the owner node's next sync, so the website can
-    # badge the Issues/Pulls/Discussions/Commits tabs with "N pending".
-    # Public: the counts reveal only submission volume (submissions come from
-    # the public anyway); the items themselves stay encrypted and owner-gated
-    # behind the per-topic GET routes. One UNION round trip, edge-cacheable
-    # briefly so repeated page views don't re-hit D1.
+
+
+
+
+
+
+
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
-    # Submission volume is still repository metadata. Private and unpublished
-    # names return the same response and never expose whether inbox rows exist.
+
+
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         return json_response({"error": "not_found"}, status=404)
@@ -33376,14 +33376,14 @@ async def repo_pending_counts_handler(env, request, owner, repo):
 
 
 async def sync_handler(env, request):
-    # GET /api/sync?owner={name}&ts=&sig= — one signed round-trip returning
-    # everything the owner's desktop node needs across ALL of its repos:
-    # pending issue/pull/discussion inbox items, queued agent prompts
-    # (drained on read, same semantics as GET /agents), and the relay's pinned
-    # repo state. This replaces the node's old fast polling (4 inbox GETs per
-    # repo every 60s + agents every 30s + catalog list for pin checks): the
-    # node now calls this on a bounded HTTPS polling schedule.
-    # Auth reuses the forkmesh-issues-pull-v1 drain token (_authorize_owner).
+
+
+
+
+
+
+
+
     await ensure_schema(env)
     if method_name(request) != "GET":
         return json_response({"error": "method_not_allowed"}, status=405)
@@ -33399,16 +33399,16 @@ async def sync_handler(env, request):
     rows = await d1_all(
         env, "SELECT key_bi, data FROM repositories WHERE owner_bi=?", owner_bi)
     repo_bis = [row["key_bi"] for row in rows]
-    # One query per table across ALL of the owner's repos (IN-list) instead of
-    # six queries per repo: /api/sync fires on every pushed event frame AND
-    # the fallback poll, and the old 6N sequential D1 roundtrips were a top
-    # contributor to the 2026-07-11 free-plan overload. Table names are fixed
-    # literals (same convention as _inbox_author_over_quota); inbox items are
-    # NOT deleted here — the node acks a merged inbox with its per-repo DELETE.
+
+
+
+
+
+
     marks = ",".join("?" for _ in repo_bis)
-    by_repo = {}      # repo_bi -> {topic: [decrypted rows...]}
-    merge_sync_by_repo = {}  # repo_bi -> published exact-OID merge receipts
-    drain_ids = {}    # repo_bi -> {table: [row ids read]}, for exact deletes
+    by_repo = {}
+    merge_sync_by_repo = {}
+    drain_ids = {}
     if repo_bis:
         now = int(Date.now())
         await d1_run(
@@ -33452,40 +33452,40 @@ async def sync_handler(env, request):
                         "envelope": sealed["envelope"],
                     }
                 elif table == "agent_prompts" and owner_crypto is not None:
-                    # Production always enforces owner-sealed agent payloads.
-                    # A legacy row cannot be safely decrypted by the relay; it
-                    # is retained for an owner-run offline migration instead.
+
+
+
                     item = None
                 else:
                     item = await decrypt_row(env, r.get("data"))
                 if item:
-                    # Carry the inbox row id so a node draining from /api/sync
-                    # can ack exactly what it merged (DELETE ...?ids=), leaving
-                    # any submission that landed mid-drain for the next sync
-                    # instead of blanket-deleting it undelivered (adhoc #97).
+
+
+
+
                     drain_id = r.get("drain_id")
                     if drain_id is not None and topic in (
                             "issues", "pulls", "discussions"):
                         item["id"] = drain_id
                     by_repo.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(topic, []).append(item)
-                # Track the exact rows READ (even undecryptable ones — they
-                # can never be delivered, so draining them is correct) so the
-                # drain deletes below can't sweep away rows inserted while
-                # this request was still decrypting (drop-undelivered race).
-                # Owner-sealed prompts are acknowledged only after the desktop
-                # decrypts and accepts them. Legacy prompts keep drain-on-read
-                # compatibility; About updates are unchanged.
+
+
+
+
+
+
+
                 if (table == "about_inbox"
                         or (table == "agent_prompts" and not sealed
                             and owner_crypto is None)):
                     drain_ids.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(table, []).append(r.get("drain_id"))
-        # A merge performed while the source-of-truth node was offline is a
-        # durable relay job, not an ordinary PR event. Carry its exact,
-        # already-validated public object IDs in the same signed sync response
-        # so the owner node can reconcile the published mirror state later.
-        # The selected mirror, actor, paths, and credentials never leave D1.
+
+
+
+
+
         merge_rows = await d1_all(
             env,
             "SELECT repo_bi,request_id,pull_number,result,updated_at "
@@ -33543,8 +33543,8 @@ async def sync_handler(env, request):
         entry = {
             "name": clean_string(rec.get("name", ""), 120),
             "owner": clean_string(rec.get("owner", owner), 120),
-            # The relay's currently pinned state, so the node can detect pin
-            # drift without fetching the whole catalog list.
+
+
             "stateHash": rec.get("stateHash", ""),
             "updatedAt": rec.get("updatedAt", ""),
             "source": rec.get("source", ""),
@@ -33554,10 +33554,10 @@ async def sync_handler(env, request):
             "commits": pending.get("commits", []),
             "mirrorMerges": merge_sync_by_repo.get(repo_bi, []),
         }
-        # Drain-on-read deletes target the EXACT rows this request read (by
-        # id), never the whole repo_bi: a prompt/About edit inserted while
-        # this request was decrypting must survive for the next sync instead
-        # of being swept away undelivered.
+
+
+
+
         prompts = pending.get("agentPrompts", [])
         prompt_ids = drain_ids.get(repo_bi, {}).get("agent_prompts", [])
         if prompt_ids:
@@ -33572,8 +33572,8 @@ async def sync_handler(env, request):
             entry["agentPromptAckPath"] = (
                 "/api/repo/%s/%s/agents/ack" % (
                     entry.get("owner", owner), entry.get("name", "")))
-        # Web About edits, drained on read like agent prompts: the node writes
-        # the change into the repo's committed .forkmesh/info.json.
+
+
         abouts = pending.get("aboutUpdate", [])
         about_ids = drain_ids.get(repo_bi, {}).get("about_inbox", [])
         if abouts:
@@ -33589,7 +33589,7 @@ async def sync_handler(env, request):
         {"ok": True, "serverTime": int(Date.now()), "repos": repos})
 
 
-# --- Owner-only encryption control plane -----------------------------------
+
 
 async def owner_encryption_keys_handler(env, request):
     """Register or revoke public recipient bundles for the signed-in owner.
@@ -33684,9 +33684,9 @@ async def owner_encryption_keys_handler(env, request):
             "WHERE account_bi=? AND key_id=?",
             now, account_bi, key_id,
         )
-        # A policy still naming the revoked key remains strict and therefore
-        # rejects new ciphertext until the owner rotates it; it never silently
-        # falls back to Worker-readable plaintext.
+
+
+
         await _audit_sensitive_action(
             env, actor, "owner_encryption_key.revoke", "account", actor,
             "success", {"keyId": key_id})
@@ -33707,7 +33707,7 @@ async def _repo_privacy_policy(env, owner, repo):
             repo_bi,
         )
     except Exception:
-        # A control-plane outage must never reactivate a plaintext path.
+
         return {
             "repoBi": repo_bi,
             "ownerKeyId": "",
@@ -33720,9 +33720,9 @@ async def _repo_privacy_policy(env, owner, repo):
         return {
             "repoBi": repo_bi,
             "ownerKeyId": "",
-            # Confidentiality is a mandatory platform boundary, not an
-            # owner-disableable preference. Until a recipient key is
-            # registered, writes fail closed with an upgrade/setup response.
+
+
+
             "requireAgentE2EE": True,
             "requireMirrorEncryption": True,
             "policyUnavailable": False,
@@ -33732,8 +33732,8 @@ async def _repo_privacy_policy(env, owner, repo):
         "repoBi": repo_bi,
         "ownerBi": str(row.get("owner_bi") or ""),
         "ownerKeyId": str(row.get("owner_key_id") or ""),
-        # Old rows may contain zero from the pre-E2EE rollout. Do not let that
-        # historical value reactivate a server-readable data path.
+
+
         "requireAgentE2EE": True,
         "requireMirrorEncryption": True,
         "policyUnavailable": False,
@@ -33762,8 +33762,8 @@ async def repo_privacy_handler(env, request, owner, repo):
     policy = (
         await policy_reader(env, owner, repo)
         if callable(policy_reader) else {
-            # A missing policy reader is a control-plane failure, never a
-            # reason to reactivate relay-readable private data.
+
+
             "ownerKeyId": "", "requireAgentE2EE": True,
             "requireMirrorEncryption": True,
         }
@@ -33811,29 +33811,29 @@ async def repo_privacy_handler(env, request, owner, repo):
         "requireMirrorEncryption": bool(
             policy.get("requireMirrorEncryption")),
         "agentBoundary": "owner-only-e2ee",
-        # This policy is an enforcement requirement/attestation gate. Actual
-        # encrypted-at-rest mirror storage is performed and verified locally by
-        # an upgraded Qt node; the Worker cannot inspect a node's disk.
+
+
+
         "mirrorBoundary": "client-encryption-required",
         "updatedAt": int(policy.get("updatedAt") or 0),
     }, cache_control="no-store")
 
 
-# --- Agent-session sync (website "Agents" tab, adhoc #182) ------------------
-#
-# The desktop app runs Claude Code coding "agent" sessions per repo/issue.
-# There's no existing sync of that state to the worker; these three routes
-# add it end to end:
-#   POST /agents        desktop -> worker: full-replace push of this repo's
-#                        sessions, authenticated like an issue-inbox drain
-#                        (_authorize_owner: ts+sig query params).
-#   GET  /agents         desktop -> worker: drain (select + delete) any
-#                        prompts the website queued for this repo's agents.
-#   POST /agents/list    website -> worker: owner-password-gated read of the
-#                        current session list (browsers hold no signing key).
-#   POST /agents/<id>/prompt
-#                        website -> worker: owner-password-gated, queue one
-#                        text prompt for a specific running agent.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 def _clean_agent_session(item):
     """Normalize one posted agent-session dict, or None if it's unusable."""
     if not isinstance(item, dict):
@@ -33850,8 +33850,8 @@ def _clean_agent_session(item):
     except (TypeError, ValueError):
         out["issueNumber"] = 0
     out["issueTitle"] = clean_string(item.get("issueTitle", ""), MAX_AGENT_TITLE)
-    # Bounded run-log tail for the website's live transcript view (adhoc #259);
-    # empty for pushes from older desktop builds that don't send it.
+
+
     out["transcript"] = clean_string(item.get("transcript", ""), MAX_AGENT_TRANSCRIPT)
     for field in ("status", "provider", "model", "branchName", "lastError"):
         out[field] = clean_string(item.get(field, ""), MAX_AGENT_STRING)
@@ -33929,8 +33929,8 @@ async def agents_handler(env, request, owner, repo):
                 status=426,
             )
         if isinstance(encrypted_in, list):
-            # Full replacement is safe because every row remains opaque to the
-            # relay and its administrators. Duplicate ids keep the last entry.
+
+
             by_id = {agent_id: encoded for agent_id, encoded in encrypted_rows}
             encrypted_rows = list(by_id.items())
             digest = hashlib.sha256(
@@ -33969,35 +33969,35 @@ async def agents_handler(env, request, owner, repo):
         sessions_in = data.get("sessions")
         if not isinstance(sessions_in, list):
             sessions_in = []
-        # Cap to the most recent MAX_AGENT_SESSIONS entries rather than
-        # rejecting the whole push outright (same truncate-not-reject
-        # convention as the labels/assignees lists in issues_handler).
+
+
+
         sessions = [s for s in
                     (_clean_agent_session(item) for item in sessions_in[:MAX_AGENT_SESSIONS]) if s]
-        # Dedupe by id, keeping the last occurrence: repo_agents is keyed on
-        # (repo_bi, agent_id), so a payload with a repeated id would otherwise
-        # violate that primary key on the second INSERT below.
+
+
+
         by_id = {}
         for session in sessions:
             by_id[session["id"]] = session
         sessions = list(by_id.values())
-        # No-op short-circuit: the desktop's 30s safety-net timer mostly
-        # re-pushes an identical snapshot. Re-encrypting and rewriting up to
-        # MAX_AGENT_SESSIONS rows (hundreds of AES-GCM ops + inserts) for a
-        # byte-identical payload was the single strongest CPU spike in the
-        # 2026-07-11 free-plan overload. The digest memo is per-isolate: a
-        # cold isolate rewrites once, then skips.
+
+
+
+
+
+
         digest = hashlib.sha256(
             json.dumps(sessions, sort_keys=True,
                        separators=(",", ":")).encode()).hexdigest()
         if _AGENT_PUSH_DIGESTS.get(repo_bi) == digest:
             return json_response({"ok": True, "unchanged": True})
-        # Full-replace semantics: the desktop always pushes its whole current
-        # view of this repo's sessions, so the stored set is exactly that.
+
+
         await d1_run(env, "DELETE FROM repo_agents WHERE repo_bi=?", repo_bi)
         now = int(Date.now())
-        # Multi-row INSERT (chunked under D1's bound-parameter limit) instead
-        # of one awaited roundtrip per session.
+
+
         encrypted = []
         for session in sessions:
             encrypted.append(
@@ -34016,9 +34016,9 @@ async def agents_handler(env, request, owner, repo):
         _AGENT_PUSH_DIGESTS[repo_bi] = digest
         if len(_AGENT_PUSH_DIGESTS) > 2000:
             _AGENT_PUSH_DIGESTS.clear()
-        # Keep the legacy response shape for older Qt nodes. The privacy
-        # boundary is advertised by the policy/list endpoints; adding fields
-        # here broke clients that compare this acknowledgement exactly.
+
+
+
         return json_response({"ok": True})
 
     if method == "GET":
@@ -34053,8 +34053,8 @@ async def agents_handler(env, request, owner, repo):
                 })
                 continue
             if policy.get("requireAgentE2EE"):
-                # Never decrypt pre-boundary prompt rows in the Worker. They
-                # remain held for an explicit offline owner migration.
+
+
                 legacy_held += 1
                 continue
             rec = await decrypt_row(env, row.get("data"))
@@ -34062,9 +34062,9 @@ async def agents_handler(env, request, owner, repo):
                 rec["queueId"] = int(row.get("id") or 0)
                 prompts.append(rec)
             legacy_rows.append(row)
-        # Legacy clients keep drain-on-read compatibility. Owner-sealed prompts
-        # require an explicit ack after local decryption, so a wrong/revoked key
-        # cannot destroy the only queued ciphertext.
+
+
+
         if legacy_rows:
             await d1_run(
                 env,
@@ -34133,8 +34133,8 @@ async def agents_list_handler(env, request, owner, repo):
         rec = await decrypt_row(env, row.get("data"))
         if rec:
             agents.append(rec)
-    # The transcript tail can be large; keep it out of the list payload and let
-    # the detail page fetch just the selected agent's transcript on demand.
+
+
     for rec in agents:
         rec.pop("transcript", None)
     return json_response({
@@ -34284,22 +34284,22 @@ async def agents_prompt_handler(env, request, owner, repo, agent_id):
         return json_response({"error": "prompt_queue_full"}, status=429)
     now = int(Date.now())
     item = {"agentId": agent_id, "text": text, "queuedAt": now}
-    # Optional agent-provider choice from the website's top-of-list composer
-    # (adhoc #271): only meaningful when starting a brand-new agent, and only a
-    # known provider is honored — else the node falls back to its own default.
+
+
+
     provider_in = clean_string(data.get("provider", ""), 40)
     if provider_in in ("claude-code", "claude-api", "openai"):
         item["provider"] = provider_in
-    # Optional agent-model choice (adhoc #276): lets the owner choose which
-    # Claude model the agent uses (e.g. "claude-opus-4-8", "claude-sonnet-4-6",
-    # "claude-haiku-4-5", "fable-5"). Only meaningful when starting a brand-new
-    # agent, and empty leaves the provider's own default in place.
+
+
+
+
     model_in = clean_string(data.get("model", ""), 60)
     if model_in:
         item["model"] = model_in
-    # Optional pasted/attached screenshots (adhoc #78): data: URLs the node
-    # writes into the agent's working tree so the agent can see them. Only
-    # meaningful when starting a brand-new agent; bounded in count and size.
+
+
+
     images_in = data.get("images", [])
     if isinstance(images_in, list) and images_in:
         images = []
@@ -34375,7 +34375,7 @@ async def agents_ack_handler(env, request, owner, repo):
     return json_response({"ok": True, "acknowledged": len(sealed_ids)})
 
 
-# --- Organization bot credentials ------------------------------------------
+
 
 ORG_BOT_TOKEN_PROVIDERS = ("codex", "claude-code")
 ORG_BOT_TOKEN_SCOPES = {
@@ -34698,11 +34698,11 @@ async def genie_credential_handler(env, request):
         return json_response({"error": "invalid_json"}, status=400)
     if not isinstance(data, dict):
         data = {}
-    # A key-signed desktop is the point of this endpoint; an explicit account
-    # session (bearer or body token) is accepted too. Ambient cookie authority
-    # is not: _account_session_record refuses a cookie on a cross-origin write,
-    # so a cross-site POST can neither borrow a browser session nor pass off a
-    # junk signature as one.
+
+
+
+
+
     account_bi, account = await _genie_credential_signed_session(env, request)
     if not account_bi:
         account_bi, account = await _account_session_record(env, request, data)
@@ -34731,9 +34731,9 @@ async def genie_credential_handler(env, request):
     device = clean_string(data.get("deviceName"), 80).strip()
     label = GENIE_CREDENTIAL_LABEL + ((" (" + device + ")") if device else "")
     now = int(Date.now())
-    # One live credential per device: the desktop stores what it is given, so a
-    # re-mint (settings cleared, credential rotated) must retire its own
-    # predecessor instead of walking the org toward ORG_BOT_TOKEN_MAX_ACTIVE.
+
+
+
     rows = await d1_all(
         env,
         "SELECT token_id,data FROM org_bot_tokens "
@@ -34947,13 +34947,13 @@ async def _org_agent_target_mirror(
     ), None)
     if not target:
         return ""
-    # An attended desktop is a separate trust class from a headless mirror.
-    # Only a platform administrator may route a web-created task to it, and
-    # only when the source account/node is theirs, the desktop signed the exact
-    # provider capability, and its short publication lease is still fresh.
-    # The Qt client still applies the mandatory tool-free Haiku preflight after
-    # leasing the job, so this does not turn administrator status into code
-    # execution authority by itself.
+
+
+
+
+
+
+
     source_node = context["nodeOwner"].lower()
     source_providers = {
         str(value or "").strip().lower()
@@ -34998,8 +34998,8 @@ async def _org_agent_target_mirror(
         return source_node
     if eligible and valid_node_name(eligible[0]):
         return eligible[0]
-    # A source node is not described as a headless mirror. Fail closed rather
-    # than silently running an org member's prompt on a different trust class.
+
+
     return ""
 
 
@@ -35245,8 +35245,8 @@ async def org_agent_bots_handler(env, request, org, repo):
     target_node = await _org_agent_target_mirror(
         env, context, provider, preferred_node)
     if not target_node and general_bot:
-        # A general bot is runtime-agnostic: take the first supported runtime
-        # with a fresh, capable mirror instead of failing on one vendor.
+
+
         for candidate in ORG_AGENT_PROVIDERS[1:]:
             target_node = await _org_agent_target_mirror(
                 env, context, candidate, preferred_node)
@@ -35541,8 +35541,8 @@ async def repo_org_agent_job_result_handler(
         verdict = "rejected"
     if run_status not in ("running", "completed", "failed", "rejected"):
         run_status = "rejected"
-    # Exact fail-closed coupling: a run cannot become active unless the node
-    # reports that its tool-free Haiku preflight approved this exact leased job.
+
+
     if verdict != "approved" and run_status != "rejected":
         run_status = "rejected"
     now = int(Date.now())
@@ -35683,7 +35683,7 @@ async def repo_org_agent_job_result_handler(
                          cache_control="no-store")
 
 
-# --- Error log + admin dashboard -------------------------------------------
+
 
 def _sentry_dsn_parts(dsn):
     dsn = str(dsn or "").strip()
@@ -35755,10 +35755,10 @@ def _sentry_request_payload(request, privacy_safe_path=""):
     if request is None:
         return None
     headers = {}
-    # Browser/OS and content-negotiation fingerprints are unnecessary for
-    # diagnosing a Worker failure. Keep only the service host and Cloudflare's
-    # incident correlation id; authorization, cookies, IP-derived values,
-    # referrers and user-agent never enter the Sentry envelope.
+
+
+
+
     for name in ("host", "cf-ray"):
         value = _sentry_header(request, name)
         if value:
@@ -35770,10 +35770,10 @@ def _sentry_request_payload(request, privacy_safe_path=""):
     safe_url = _sentry_safe_url(request)
     privacy_safe_path = str(privacy_safe_path or "").strip()
     if privacy_safe_path:
-        # The event's transaction path has already passed through
-        # _privacy_safe_log_path. Reuse that projection in request.url too;
-        # otherwise Sentry would receive the raw private repository name even
-        # though the top-level transaction was correctly redacted.
+
+
+
+
         try:
             parsed = urlparse(safe_url)
             if parsed.scheme and parsed.netloc:
@@ -35809,10 +35809,10 @@ def _sentry_cloudflare_context(request, ray="", error_code="", service="forkmesh
         ctx["colo"] = ray.rsplit("-", 1)[-1]
     cf = getattr(request, "cf", None) if request is not None else None
     if cf is not None:
-        # A coarse edge colo and transport versions are enough to diagnose
-        # region/protocol faults. Country, timezone, client RTT, cipher and
-        # request-priority details add fingerprinting value without enough
-        # operational value, so they are deliberately excluded.
+
+
+
+
         for key in ("colo", "httpProtocol", "tlsVersion"):
             try:
                 value = getattr(cf, key)
@@ -36122,9 +36122,9 @@ async def _notify_new_error_group(env, status, method, path, message):
         return
     source = _admin_error_source(method, path)
     title = "New %s error group (%s)" % (source.lower(), status)
-    # notification_payload keeps 500 characters of body, and a truncated
-    # crash report loses exactly the tail that explains the crash (heap,
-    # context losses, GPU). Spend the whole allowance on the message.
+
+
+
     body = "%s %s — %s" % (
         str(method or "?"), str(path or "?"), str(message or "")[:460])
     for row in rows:
@@ -36151,8 +36151,8 @@ async def _write_error_log(env, status, method, path, message, ray="",
     try:
         message = _privacy_safe_error_text(path, message)
         await ensure_schema(env)
-        # Is this the first row of its group? Read before the insert, so the
-        # row we are about to write cannot answer its own question.
+
+
         known_group = await d1_first(
             env,
             """SELECT 1 AS hit FROM error_log
@@ -36169,15 +36169,15 @@ async def _write_error_log(env, status, method, path, message, ray="",
             str(message or "")[:1000], str(ray or ""),
             clean_string(actor or "", MAX_NODE_NAME).strip().lower(),
         )
-        # Keep only the most-recent MAX_ERROR_LOG rows so the table is bounded.
+
         await d1_run(
             env,
             """DELETE FROM error_log WHERE id NOT IN
                (SELECT id FROM error_log ORDER BY id DESC LIMIT ?)""",
             MAX_ERROR_LOG,
         )
-        # Last, so a notification that cannot be delivered never costs the log
-        # its record or its bound.
+
+
         if not known_group:
             await _notify_new_error_group(env, status, method, path, message)
     except Exception:
@@ -36221,9 +36221,9 @@ def _client_error_fields(payload):
     kind = str(payload.get("kind") or "").strip().lower()
     if surface not in CLIENT_ERROR_SURFACES or kind not in CLIENT_ERROR_KINDS:
         return None
-    # Crash reports carry a full diagnostic line (device, renderer, resident
-    # scene, memory); 500 characters cut it off mid-reading. The detail below
-    # still fits the 1000-character error_log column.
+
+
+
     message = _sanitize_client_error_text(payload.get("message"), 900)
     if not message:
         message = "Unspecified browser exception"
@@ -36326,7 +36326,7 @@ async def client_error_handler(env, request):
             actor,
         )
     except Exception:
-        # Error reporting must never become a new user-visible error.
+
         return json_response(
             {"ok": True, "stored": False},
             status=202,
@@ -36493,10 +36493,10 @@ def _privacy_redacted_log_path(path):
 def _privacy_safe_error_text(path, message):
     """Remove exception/detail text when the route identity was redacted."""
     if _privacy_redacted_log_path(path):
-        # Two fixed, worker-authored message shapes carry no route identity
-        # (no path, no exception text) and are the only diagnostic signal a
-        # redacted row has — blanket-redacting them made every private-route
-        # 5xx indistinguishable from every other.
+
+
+
+
         text = str(message or "")
         if (
             text.startswith("response status ")
@@ -36529,9 +36529,9 @@ def _privacy_redacted_route_kind(path):
     if api:
         rest = path[api.end(2):].strip("/")
         route = safe_segment(rest.split("/", 1)[0]) if rest else ""
-        # The first segment after /api/repo/<o>/<r>/ is a fixed route name
-        # from the worker's own routing table, never user data; anything
-        # unrecognizably long is a probe and collapses to a generic tag.
+
+
+
         if route and len(route) <= 32:
             return "[api:" + route + "]"
         return "[api]"
@@ -36541,10 +36541,10 @@ def _privacy_redacted_route_kind(path):
 async def _privacy_safe_log_path(env, path):
     """Redact names from private, missing, or visibility-unknown repo routes."""
     path = str(path or "")
-    # Opaque ids are identity-free and not sufficient authorization, so their
-    # presence in unavoidable edge request logs does not reveal a repository.
-    # Application/Sentry logs do not need the locator at all: redact it there to
-    # avoid turning an error report into a reusable private-route hint.
+
+
+
+
     if path == "/api/private-replicas" or path.startswith(
             "/api/private-replicas/"):
         return "/api/private-replicas/[opaque]"
@@ -36566,9 +36566,9 @@ async def _privacy_safe_log_path(env, path):
         owner = safe_segment(match.group(1))
         repo = safe_segment(match.group(2))
     elif looks_like_repo_route(path):
-        # Browser repository pages (/owner/repo and their tab/tree/blob deep
-        # links) are repository routes too. Never let an exception log become
-        # a name-existence oracle for a private or unpublished path.
+
+
+
         parts = [part for part in path.split("/") if part]
         owner = safe_segment(unquote(parts[0])) if len(parts) >= 2 else ""
         repo = safe_segment(unquote(parts[1])) if len(parts) >= 2 else ""
@@ -36615,8 +36615,8 @@ async def capture_worker_exception(env, request, url, error):
         )
     except BaseException:
         pass
-    # Naming the affected account is a nice-to-have; it must never be able to
-    # cost the log row itself, so it resolves in its own guard.
+
+
     try:
         actor = await _error_log_actor(env, request)
     except BaseException:
@@ -36729,14 +36729,14 @@ def _is_tunnel_content_path(path):
         GIT_RECEIVE_RE.match(path))
 
 
-# Marks a 5xx/501 the worker produced ON PURPOSE for an expected, already-
-# degraded condition: a Durable Object abort that log_durable_object_abort has
-# already recorded with its real reason, a fail-closed not-implemented answer,
-# or an upstream dependency being unavailable. The outer fetch's generic 5xx
-# logger skips marked responses — without this every DO abort double-logged
-# (the detailed D1 row AND a vague "response status 503" Sentry event, exactly
-# the noise the abort logger exists to avoid), and deliberate degraded answers
-# buried real bugs.
+
+
+
+
+
+
+
+
 EXPECTED_DEGRADED_HEADER = "x-forkmesh-expected-degraded"
 EXPECTED_DEGRADED_HEADERS = {EXPECTED_DEGRADED_HEADER: "1"}
 
@@ -36880,38 +36880,38 @@ def _safe_error_text(error):
         return "[unrenderable error]"
 
 
-# Ordered install funnel: every step the installer reports, in the order it runs.
-# Used both to validate incoming events and to render the admin funnel in order.
+
+
 INSTALL_DIAG_STEPS = (
-    "start",    # installer launched
-    "mirror",   # resolved an online mirror to clone from
-    "deps",     # build prerequisites present / installed
-    "fetch",    # repository cloned or updated
-    "build",    # cmake configure + build
-    "install",  # binary installed to ~/.local/bin
-    "launch",   # first launch (or intentionally skipped)
-    "done",     # whole install finished
+    "start",
+    "mirror",
+    "deps",
+    "fetch",
+    "build",
+    "install",
+    "launch",
+    "done",
 )
 
 
-# Known component labels for private vulnerability reports. Restricting the
-# set prevents arbitrary strings from appearing in notification emails.
+
+
 SECURITY_REPORT_COMPONENTS = frozenset({
-    "identity",     # Ed25519 keys, signing
-    "relay",        # Cloudflare relay / Durable Objects
-    "mirroring",    # bare-git mirror fetch/serve
-    "chat",         # encrypted relay chat
-    "donations",    # Solana custody / sweep
-    "website",      # forkmesh.com frontend / dashboard
-    "client",       # desktop Qt node
-    "other",        # anything else
+    "identity",
+    "relay",
+    "mirroring",
+    "chat",
+    "donations",
+    "website",
+    "client",
+    "other",
 })
 
 
 def _sanitize_diag_field(value, max_length=64):
-    # Coarse, non-identifying tokens only (platform/pm/distro/version/detail).
-    # Strip to a safe charset so a crafted POST can't smuggle markup or control
-    # characters into the admin HTML, and clamp the length.
+
+
+
     if not isinstance(value, str):
         value = "" if value is None else str(value)
     cleaned = "".join(
@@ -36953,9 +36953,9 @@ def _feedback_fields(payload):
         return source, vote, "/world/#lobby-feedback", message
     if vote not in ("like", "dislike"):
         return None
-    # Feedback is a docs-only feature. Never accept an arbitrary URL, query,
-    # private repository path, or search value into this plaintext metrics
-    # column. Preserve only a bounded, anchor-like section id.
+
+
+
     raw_path = _sanitize_feedback_text(payload.get("path"), FEEDBACK_MAX_PATH)
     without_query = raw_path.split("?", 1)[0]
     base, separator, fragment = without_query.partition("#")
@@ -37002,9 +37002,9 @@ def _install_diag_fields(payload):
 
 
 async def install_diag_handler(env, request):
-    # Anonymous, unauthenticated install telemetry from install.sh. Best-effort:
-    # never errors out the caller (the installer fires these fire-and-forget). We
-    # deliberately do not read or store the client IP / CF-Ray — see SCHEMA note.
+
+
+
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -37013,8 +37013,8 @@ async def install_diag_handler(env, request):
         payload = None
     fields = _install_diag_fields(payload)
     if not fields:
-        # Swallow malformed input rather than 4xx-ing the installer's background
-        # curl; nothing actionable for the client to do.
+
+
         return json_response({"ok": True}, cache_control="no-store")
     try:
         await ensure_schema(env)
@@ -37025,7 +37025,7 @@ async def install_diag_handler(env, request):
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
             int(Date.now()), *fields,
         )
-        # Bound the table so this open endpoint can't grow D1 without limit.
+
         await d1_run(
             env,
             """DELETE FROM install_diag WHERE id NOT IN
@@ -37038,9 +37038,9 @@ async def install_diag_handler(env, request):
 
 
 async def feedback_handler(env, request):
-    # Anonymous docs and lobby-kiosk feedback. This is intentionally
-    # unauthenticated; the body is capped before JSON parsing and the table is
-    # pruned after inserts so this open endpoint cannot grow D1 without limit.
+
+
+
     if method_name(request) != "POST":
         return json_response({"error": "method_not_allowed"}, status=405)
     try:
@@ -37061,7 +37061,7 @@ async def feedback_handler(env, request):
 
     source, vote, path, message = fields
     ip = _transient_client_address(request)
-    # Retain only a broad category, never the browser's raw user-agent string.
+
     user_agent = _generalized_client_category(request)
     try:
         await ensure_schema(env)
@@ -37147,7 +37147,7 @@ async def security_report_handler(env, request):
         )
     except Exception:
         pass
-    # Best-effort email notification to the security team.
+
     try:
         dest = (getattr(env, "SECURITY_EMAIL", "") or "security@forkmesh.com").strip()
         contact_line = ("Contact: " + report["contact"] + "\n") if report["contact"] else ""
@@ -37499,9 +37499,9 @@ async def repository_security_scans_handler(
                 cache_control="no-store",
                 extra_headers={"allow": "POST"},
             )
-        # Never redirect a credential-bearing request from HTTP: a redirect can
-        # replay Authorization to a different origin. Production publishing is
-        # HTTPS-only and fails closed before reading either the header or body.
+
+
+
         if urlparse(request.url).scheme.lower() != "https":
             return json_response(
                 {"error": "https_required"},
@@ -37522,8 +37522,8 @@ async def repository_security_scans_handler(
                 extra_headers={"www-authenticate": "Bearer"},
             )
 
-        # Resolve visibility before reading the artifact body. A guessed private
-        # name and a missing repository retain the same 404.
+
+
         try:
             repo_bi, repo_row = await _security_scan_repository_row(
                 env, owner, repo)
@@ -37611,9 +37611,9 @@ async def repository_security_scans_handler(
                     "WHERE repo_bi=? AND lease_token_bi=? AND status='leased'",
                     scan_id, int(Date.now()), repo_bi, lease["tokenBi"],
                 )
-            # The audit contains no report, repository path, commit, finding,
-            # token, or request body. target is converted to a blind token by
-            # _audit_sensitive_action.
+
+
+
             await _audit_sensitive_action(
                 env,
                 owner,
@@ -37629,9 +37629,9 @@ async def repository_security_scans_handler(
                 },
             )
         except Exception:
-            # Do not log the request, bearer token, response body, or artifact.
-            # The native runner retains its local artifact and retries temporary
-            # failures, while the deterministic scan id makes re-ingest safe.
+
+
+
             return json_response(
                 {"error": "temporarily_unavailable"},
                 status=503,
@@ -37838,9 +37838,9 @@ async def repository_security_scans_handler(
             {"error": "not_found"}, status=404, cache_control="no-store")
 
     owner_auth = await _security_scan_owner_authorization(env, request, owner)
-    # Migration 0011 defaulted historical rows to is_private=0. The signed,
-    # encrypted catalog record is the authority; missing/malformed visibility
-    # therefore fails closed just like every other repository read surface.
+
+
+
     is_private = await _repo_is_private(env, owner, repo)
     if is_private and not owner_auth:
         return json_response(
@@ -37913,14 +37913,14 @@ async def repository_security_scans_handler(
 
 
 def _admin_path(env):
-    # Dynamic, secret admin URL segment. Set ADMIN_PATH in Cloudflare vars.
+
     return str(getattr(env, "ADMIN_PATH", "") or "").strip("/")
 
 
 async def admin_stats(env):
-    # Cheap snapshot for the dashboard so the operator can watch whether Durable
-    # Object load is under control: live hosts/clients (the things that hold a DO
-    # open) plus catalog size and recent error volume. All from D1 + one count.
+
+
+
     await ensure_schema(env)
     cutoff = int(Date.now()) - HOST_PRESENCE_STALE_MS
     try:
@@ -37936,8 +37936,8 @@ async def admin_stats(env):
         env, "SELECT COUNT(*) AS n FROM error_log WHERE ts >= ?", day_ago,
     )
     err_total_row = await d1_first(env, "SELECT COUNT(*) AS n FROM error_log")
-    # Installs started in the last 24h = distinct anonymous runs that reported the
-    # opening "start" step. Best-effort; the table may not exist on a fresh DB.
+
+
     try:
         inst_row = await d1_first(
             env,
@@ -37958,9 +37958,9 @@ async def admin_stats(env):
 
 
 async def install_diag_summary(env):
-    # Aggregate the anonymous install events into an install funnel plus coarse
-    # platform / package-manager / distro breakdowns, over the retained window.
-    # All counts are over DISTINCT runs so one chatty install counts once.
+
+
+
     await ensure_schema(env)
     since = int(Date.now()) - INSTALL_DIAG_RETAIN_MS
     funnel_rows = await d1_all(
@@ -38016,9 +38016,9 @@ async def install_diag_summary(env):
 
 
 def _admin_csrf_token(env):
-    # A deterministic CSRF token derived from at-rest secrets. It is only rendered
-    # inside the admin HTML after the requester names an is_admin account, so a
-    # cross-site forged POST cannot include it without first loading the page.
+
+
+
     secret = (str(getattr(env, "ADMIN_PASS", "") or "") + "|" +
               str(getattr(env, "DATA_KEY", "") or "")).encode()
     return hmac.new(secret, b"forkmesh-admin-csrf-v1", "sha256").hexdigest()
@@ -38088,18 +38088,18 @@ def _admin_session_valid(env, request, admin):
 
 
 def _admin_cookie_name(request):
-    # The signed admin cookie embeds the admin name as its first segment;
-    # _admin_session_valid verifies the HMAC actually binds that name.
+
+
     return clean_string(
         _cookie_value(request, ADMIN_SESSION_COOKIE).split(".")[0],
         MAX_NODE_NAME).lower()
 
 
 async def _check_admin_page_auth(env, request):
-    # The same revocable HttpOnly account session used by browser APIs protects
-    # this page. Platform-admin status is checked live, so logout, password
-    # reset, account disable and role removal take effect immediately. The
-    # historical stateless admin cookie is deliberately not accepted.
+
+
+
+
     token = _cookie_value(request, ACCOUNT_SESSION_COOKIE)
     _, rec, _ = await _account_session_lookup(env, token)
     admin = clean_string(
@@ -38265,10 +38265,10 @@ ADMIN_STYLE = """
  .ab-root .relative-time{color:var(--ab-muted);white-space:nowrap}
 """
 
-# Cloudflare D1 internal bookkeeping stays out of the browser. The following
-# application tables remain in the inventory but their rows are restricted:
-# platform administration is not a decryption capability and the generic UI is
-# not a least-privilege security-review interface.
+
+
+
+
 ADMIN_HIDDEN_TABLES = (
     "_cf_KV",
     "accounts",
@@ -38285,27 +38285,27 @@ ADMIN_HIDDEN_TABLES = (
     "repo_security_scan_reviews",
     "role_grants",
     "sensitive_audit_log",
-    # Succession is governed only by the organization's current roster. The
-    # generic platform-admin table editor must not create approvals, alter
-    # cases, or bypass the append-only history/role-transfer guard.
+
+
+
     "org_succession_policies",
     "org_succession_cases",
     "org_succession_approvals",
     "org_succession_events",
     "chain_intents",
     "pending_rewards",
-    # Legacy tables can contain Worker-held wallet seeds. They remain frozen
-    # for an offline migration, but must never be rendered or edited over HTTP.
+
+
     "central_fund",
     "bounty_wallet",
     "issue_bounty",
     "federated_signup",
-    # Relay identity is not a Solana wallet, but its private signing seed is
-    # likewise outside the generic platform-admin decryption boundary.
+
+
     "relay_self",
-    # Identity, authorization, mirror-routing and reward state are available
-    # only through their purpose-built, audited APIs. A platform administrator
-    # is not implicitly a repository owner, mirror signer, or reward signer.
+
+
+
     "account_devices",
     "account_presence",
     "account_ssh_keys",
@@ -38326,16 +38326,16 @@ ADMIN_HIDDEN_TABLES = (
     "edge_route_cursor",
 )
 
-# The admin navigation is a live inventory of every application table. Tables
-# that hold credentials, encrypted owner data, or audit evidence stay listed so
-# an operator can account for the whole schema, but _render_table_view keeps
-# their contents restricted.
-#
-# Row selection + bulk delete (the same "tick rows, Delete selected" UI as the
-# error log) is available for every table whose rows are actually rendered —
-# i.e. everything not in ADMIN_HIDDEN_TABLES. Sensitive/identity/custody
-# tables stay fully restricted above, so there is no separate purge allowlist
-# to keep in sync as tables are added.
+
+
+
+
+
+
+
+
+
+
 def _admin_purge_allowed(table):
     return table not in ADMIN_HIDDEN_TABLES
 
@@ -38355,12 +38355,12 @@ async def _admin_list_tables(env):
     ]
 
 
-# Generic-table cells render on a single compact line (CSS ellipsizes long
-# values); anything longer than the preview rides in a hover tooltip so rows
-# stay one line tall.
+
+
+
 ADMIN_CELL_PREVIEW = 120
 ADMIN_CELL_TOOLTIP_MAX = 4000
-# Cap on extra columns expanded from the decrypted `data` JSON blob.
+
 ADMIN_MAX_JSON_COLS = 24
 
 
@@ -38386,7 +38386,7 @@ def _admin_contains_wallet_key(value):
             normalized = re.sub(r"[^a-z0-9]", "", str(key).lower())
             if normalized in _ADMIN_WALLET_KEY_NAMES:
                 return True
-            # Historical bounty rows used the generic pair {address, secret}.
+
             if normalized == "secret" and "address" in normalized_keys:
                 return True
             if _admin_contains_wallet_key(item):
@@ -38438,8 +38438,8 @@ def _admin_compact_cell(value, extra_class=""):
 
 
 def _admin_json_cell(decoded):
-    # Collapse the decrypted `data` JSON to a small marker; the full pretty
-    # JSON shows in the hover tooltip.
+
+
     decoded = _admin_redact_wallet_keys(decoded)
     pretty = json.dumps(decoded, indent=2, sort_keys=True)
     if len(pretty) > ADMIN_CELL_TOOLTIP_MAX:
@@ -38448,13 +38448,13 @@ def _admin_json_cell(decoded):
             % (_html_escape(pretty), len(decoded)))
 
 
-# --- Admin bulk select + delete helpers (operate on rowid) -------------------
+
 
 def _admin_bulk_form_open(table, csrf_field="", admin_query=""):
-    # Per-row buttons ride this form with their own formaction (forms cannot
-    # nest) and run their own confirmation, so the bulk prompt must not also
-    # fire for them — it asked "delete the selected rows?" for a row action
-    # that deletes nothing.
+
+
+
+
     return (
         '<form method="post" action="%s" '
         'onsubmit="return (event.submitter&&'
@@ -38591,9 +38591,9 @@ def _admin_error_row_delete_button(rowid, admin_query=""):
 
 
 def _admin_error_row_bot_task_button(rowid, admin_query=""):
-    # The raw table's rows already live inside the bulk-delete form, so this
-    # rides that form with its own formaction (forms cannot nest). Only the
-    # row id travels; the server re-reads the stored error itself.
+
+
+
     return (
         '<button class="error-bot" type="submit" name="error_id" '
         'value="%s" formaction="%s" '
@@ -38647,17 +38647,17 @@ def _admin_record_row_attrs(admin_query, table, rowid):
 
 
 async def _admin_table_columns(env, table):
-    # Real column names for the table (table name is validated by the caller).
+
     rows = await d1_all(env, "PRAGMA table_info(" + table + ")")
     return [str(r.get("name", "")) for r in rows if r.get("name")]
 
 
 async def _render_row_form(env, table, rowid, csrf_field="", admin_query=""):
-    # Retained as a fail-closed target for old admin edit/new bookmarks.
-    # Generic create/update was an ambient authorization bypass: a platform
-    # admin could edit users, org membership, SSH keys, mirror proofs or reward
-    # state without satisfying the domain API's signature and policy checks.
-    # Keep this helper as a fail-closed response for stale bookmarks.
+
+
+
+
+
     return (
         '<div class="empty">Generic row editing is disabled. Use the '
         "purpose-built, audited administration action for this resource.</div>"
@@ -38718,8 +38718,8 @@ async def _render_record_detail(env, table, rowid, admin_query=""):
 
 
 async def _admin_row_values(env, table, form):
-    # Map submitted f_<col> fields to (column, value) for valid columns only,
-    # encrypting the `data` column from its edited JSON.
+
+
     valid = set(await _admin_table_columns(env, table))
     cols, values = [], []
     for key, vals in form.items():
@@ -38755,9 +38755,9 @@ async def _admin_insert_row(env, table, form):
 
 
 async def _admin_selected_rows_have_wallet_keys(env, table, rowids):
-    # A bulk delete must not become an undeclared custody scrub. Only tables
-    # that can historically embed donation_secret are inspected; key-bearing
-    # rows remain until the separately confirmed offline migration updates them.
+
+
+
     if table not in ("users", "nodes") or not rowids:
         return False
     for start in range(0, len(rowids), 90):
@@ -38813,8 +38813,8 @@ def _render_diag_breakdown(title, pairs):
 
 
 def _render_install_diag_overview(summary):
-    # Anonymous install funnel: per-step distinct-run counts (reached / ok /
-    # failed) plus coarse platform breakdowns. Counts are over a 30-day window.
+
+
     total = summary.get("total", 0)
     completed = summary.get("completed", 0)
     funnel_rows = []
@@ -38845,15 +38845,15 @@ def _render_install_diag_overview(summary):
 
 async def _render_table_view(
         env, table, csrf_field="", admin_query="", user_filter=""):
-    # Generic "show all rows" view for one D1 table. The encrypted `data` column
-    # (users/nodes/repos/inboxes store an AES-GCM blob there) is decrypted in place
-    # so the admin can actually read it. The table name is validated by the
-    # caller against the live table list, so it is safe to interpolate.
-    # rowid lets the admin select + bulk-delete any row regardless of the table's
-    # declared primary key (all these tables are rowid tables).
-    # Newest-first by default: rowid ascends with insertion, so ORDER BY rowid DESC
-    # surfaces the most recent rows (and, with LIMIT, keeps the newest 500) for
-    # every table — including the error log, which reads from these rows.
+
+
+
+
+
+
+
+
+
     if table in ADMIN_HIDDEN_TABLES:
         return '<div class="empty">This table is restricted.</div>'
     requested_user = (
@@ -38877,8 +38877,8 @@ async def _render_table_view(
             env, "SELECT COUNT(*) AS n FROM " + table)
         total = int((count_row or {}).get("n", 0) or 0)
 
-    # Admin tool: reset any user account's login password. Shown above the
-    # users table; posts back to ?action=set_password (handled in _admin).
+
+
     prefix = ""
     if table == "users":
         user_value = (
@@ -38929,7 +38929,7 @@ async def _render_table_view(
         )
 
     if table == "install_diag":
-        # Purpose-built anonymous install funnel + recent events, newest first.
+
         summary = await install_diag_summary(env)
         recent = await d1_all(
             env,
@@ -38967,9 +38967,9 @@ async def _render_table_view(
                 % (len(recent), total) + events)
 
     if table == "error_log":
-        # Keep the purpose-built, time-formatted error view and add a bounded
-        # 24-hour occurrence overview. The aggregation uses the same already
-        # redacted fields as the raw admin-only table.
+
+
+
         now = int(Date.now())
         recent_24h = await d1_all(
             env,
@@ -38998,10 +38998,10 @@ async def _render_table_view(
                     "hours": [0] * 24,
                     "firstSeen": ts,
                     "lastSeen": ts,
-                    # Accounts whose own sessions hit this exact failure, and
-                    # how many occurrences carried no session at all. Grouping
-                    # stays keyed on the failure itself so one user's traffic
-                    # never splits a group; the affected users ride along.
+
+
+
+
                     "actors": {},
                     "anonymous": 0,
                 },
@@ -39087,8 +39087,8 @@ async def _render_table_view(
                     _html_escape(request_method or "—"),
                     _html_escape(path or "—"),
                     _html_escape(message or "—"),
-                    # A crash report earns its length: show all of it. The
-                    # cell wraps, so the group stays readable at any size.
+
+
                     _html_escape(message or "—"),
                     _admin_error_copy_button(message or ""),
                     _admin_error_users_cell(
@@ -39182,18 +39182,18 @@ async def _render_table_view(
                   '<div class="empty">This table is empty.</div>'
                 % (_html_escape(table), add_link))
 
-    # Column order: union of keys, first row's order first. The synthetic
-    # _rowid_ column drives row selection and is not displayed.
+
+
     columns = [c for c in rows[0].keys() if c != "_rowid_"]
     for r in rows:
         for k in r.keys():
             if k != "_rowid_" and k not in columns:
                 columns.append(k)
 
-    # Decrypt each row's `data` blob once, then promote the union of its
-    # top-level JSON keys to real table columns so rows stay one line tall.
-    # The data cell itself collapses to a marker with the pretty JSON in its
-    # hover tooltip.
+
+
+
+
     decoded_rows = []
     for r in rows:
         decoded = None
@@ -39212,10 +39212,10 @@ async def _render_table_view(
                     json_cols.append(k)
     json_cols = json_cols[:ADMIN_MAX_JSON_COLS]
 
-    # Surface which columns the admin is looking at plaintext vs. ciphertext:
-    # the `data` blob is AES-GCM encrypted at rest and only decrypted for this
-    # view, so operators should not mistake a successful decrypt for the data
-    # having been stored unencrypted.
+
+
+
+
     enc_notice = ""
     if "data" in columns:
         encrypted_total = sum(
@@ -39369,9 +39369,9 @@ def _render_admin_nav(tables, active, counts=None, admin_query="", sort_records=
         cls = ' class="active"' if t == active else ""
         n = counts.get(t)
         suffix = (' <span class="navcount">%d</span>' % n) if n is not None else ""
-        # Carry the active sort along: sort state lives only in the URL, so a
-        # table link that dropped it would silently reset the nav to the
-        # most-records-first default.
+
+
+
         links.append('<a href="%s"%s>%s%s</a>'
                      % (_admin_href(admin_query, table=t,
                                     sort=("records" if sort_records else "name")),
@@ -39388,12 +39388,12 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         "<meta name=\"color-scheme\" content=\"light dark\">"
         "<title>forkmesh · admin</title>"
-        # site-header.js is deferred (it also injects the header markup), so on
-        # its own it would only stamp html.light/html.dark AFTER first paint —
-        # a visible dark→light flash. This blocking pre-paint snippet mirrors
-        # its resolveTheme() (same localStorage keys, then OS preference) and
-        # stamps the class before any CSS paints, killing the flash. The
-        # deferred script re-applies the same value and owns the toggle.
+
+
+
+
+
+
         "<script>(function(){try{"
         "var k=['forkmesh.dashboard.theme','forkmesh.theme'],t='';"
         "for(var i=0;i<k.length;i++){var v=localStorage.getItem(k[i]);"
@@ -39404,19 +39404,19 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "r.classList.toggle('light',l);r.classList.toggle('dark',!l);"
         "r.style.colorScheme=l?'light':'dark';"
         "}catch(e){}})();</script>"
-        # The universal site header (brand, nav, account chip) + the theme
-        # engine it carries: site-header.js stamps html.light/html.dark from
-        # the visitor's saved choice or OS preference, which ADMIN_STYLE's
-        # variable palette keys off. styles.css supplies the header's own
-        # tokens; ADMIN_STYLE loads after it so the admin rules win.
+
+
+
+
+
         "<link rel=\"stylesheet\" href=\"/styles.css\">"
         "<link rel=\"stylesheet\" href=\"/site-header.css\">"
         "<script src=\"/posthog.js\"></script>"
         "<script src=\"/site-header.js\" defer></script>"
         "<style>" + ADMIN_STYLE + "</style></head><body>"
         "<div data-forkmesh-header=\"simple\"></div>"
-        # .ab-root scopes every admin style rule so they cannot leak into the
-        # injected site header above (and vice versa).
+
+
         "<div class=\"ab-root\">"
         "<header><h1>forkmesh · admin</h1>"
         "<div class=\"meta\">Live Durable Object load, every D1 table, and "
@@ -39467,9 +39467,9 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
         "rel.textContent=future?'in '+value+' '+unit+(value===1?'':'s'):"
         "value+' '+unit+(value===1?'':'s')+' ago';}}"
         "updateAdminRelativeTimes();setInterval(updateAdminRelativeTimes,30000);"
-        # Copy-to-clipboard for error messages. Delegated so the analytics and
-        # raw tables share one handler, and written to survive the non-secure
-        # contexts / older browsers where navigator.clipboard is absent.
+
+
+
         "document.addEventListener('click',function(ev){"
         "const btn=ev.target.closest&&ev.target.closest('[data-copy]');"
         "if(!btn)return;ev.preventDefault();ev.stopPropagation();"
@@ -39496,10 +39496,10 @@ def render_admin_html(env_stats, tables, active_table, table_html, banner="",
 
 
 async def _admin_set_password(env, name, password):
-    # Reset a user account's login password. The is_admin-gated admin page
-    # supplies a node name and a new password; we PBKDF2-hash it and overwrite
-    # pass_salt / pass_hash on the encrypted account record, leaving
-    # email/solana/etc intact.
+
+
+
+
     name = clean_string(name or "", MAX_NODE_NAME).lower()
     if not name:
         return "Set password failed: a node name is required."
@@ -39519,10 +39519,10 @@ async def _admin_set_password(env, name, password):
 
 
 async def _admin_resend_verification(env, request, name):
-    # Re-send the email-confirmation link for a user account from the admin page.
-    # Mirrors the self-service resendVerification path in the account-update
-    # endpoint: send via Mailtrap when configured, otherwise fall back to the
-    # pending_verifications queue for manual admin verification.
+
+
+
+
     name = clean_string(name or "", MAX_NODE_NAME).lower()
     if not name:
         return "Resend verify email failed: a node name is required."
@@ -39543,11 +39543,11 @@ async def _admin_resend_verification(env, request, name):
 
 
 async def _admin_console_request_ownership(env, target, owner):
-    # Operator-console counterpart to _admin_request_ownership: the operator is
-    # already authenticated via Basic Auth + CSRF for this whole page, so no
-    # node-key signature is needed here. Still only PARKS a pending marker —
-    # the transfer completes only once the target node's own signed heartbeat
-    # decision (approve/deny) comes back, same as the signed API path.
+
+
+
+
+
     target = clean_string(target or "", MAX_NODE_NAME).strip().lower()
     owner = clean_string(owner or "", MAX_NODE_NAME).strip().lower()
     if not target or not owner:
@@ -39606,8 +39606,8 @@ async def _admin_error_create_bot_task(env, form, requester):
         status or "error", method or "—", path or "—")
     if summary:
         title = title + " — " + summary
-    # source != "forkbot" skips _forkbot_attributed_body's chat footer, so the
-    # attribution the merged issue needs is written here.
+
+
     filed_by = clean_string(requester or "", MAX_NODE_NAME).strip().lower()
     body = (
         "Filed from the platform administration error log%s.\n\n"
@@ -39622,8 +39622,8 @@ async def _admin_error_create_bot_task(env, form, requester):
         status or "—", method or "—", path or "—", users,
         occurrences, str(message or "—"),
     )
-    # Content stays out of the audit trail; this bounded digest still tells
-    # two tasks filed for different errors apart.
+
+
     details = {
         "occurrences": occurrences,
         "errorDigest": hashlib.sha256(
@@ -39697,19 +39697,19 @@ async def _admin_disburse(env):
     )
 
 
-# --- Direct HTTPS mirror discovery, health, and masked routing --------------
-#
-# Repository bytes use ordinary HTTPS between this edge router and an
-# independently operated mirror. D1 retains only signed endpoint identity and
-# health metadata. The desktop host WebSocket remains a control/update channel;
-# public browse, clone, and release reads below never fall back to it.
+
+
+
+
+
+
 
 HTTPS_MIRROR_ENDPOINT_PATH = "/api/mirrors/https"
 HTTPS_MIRROR_PRIVATE_ROUTE_PATH = "/api/mirrors/private"
 HTTPS_MIRROR_MANIFEST_MAX_BYTES = 128 * 1024
-# Two oldest endpoints per minute supports twenty mirrors inside the ten-minute
-# routing freshness window while keeping a fully timed-out alarm comfortably
-# below its next wake-up.
+
+
+
 HTTPS_MIRROR_HEALTH_BATCH = 2
 HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS = 20
 HTTPS_MIRROR_CONTROL_FETCH_TIMEOUT_SECONDS = 6
@@ -39732,10 +39732,10 @@ HTTPS_MIRROR_REQUIRED_FORKMESH_OPERATIONS = frozenset({
 HTTPS_MIRROR_RETRY_STATUSES = frozenset({
     401, 403, 404, 408, 425, 429, 500, 502, 503, 504,
 })
-# A health endpoint's timeout/rate-limit/server failure is inconclusive: keep a
-# prior signed lease until its normal freshness deadline. Authentication and
-# missing-route responses are definitive for this public control endpoint and
-# therefore still fail closed immediately.
+
+
+
+
 HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES = frozenset({
     408, 425, 429, 500, 502, 503, 504,
 })
@@ -39751,8 +39751,8 @@ def _https_mirror_router_public_key(env):
 
 
 def _https_mirror_router_seed(env):
-    # This is a Cloudflare Worker secret, never a D1 field, response value,
-    # log field, endpoint argument, or node/wallet credential.
+
+
     value = clean_string(
         getattr(env, "MIRROR_ROUTER_SIGNING_SEED", ""), 120).strip()
     return value if re.fullmatch(r"[A-Za-z0-9_-]{43}", value) else ""
@@ -39845,9 +39845,9 @@ async def _cloudflare_edge_range_documents():
             return ()
         fetched.append(text)
     documents = tuple(fetched)
-    # Validate the documents before caching them. A minimal synthetic DNS
-    # answer is enough to exercise strict CIDR parsing without trusting it as a
-    # real endpoint decision.
+
+
+
     try:
         first_network = str(documents[0]).split()[0]
         probe = str(ipaddress.ip_network(first_network, strict=True).network_address)
@@ -39972,7 +39972,7 @@ async def https_mirror_endpoint_handler(env, request):
     method = method_name(request)
     router_key = _https_mirror_router_public_key(env)
     if method == "GET":
-        # Endpoint rows and repository membership are deliberately not listed.
+
         return json_response({
             "ok": bool(router_key),
             "protocol": "forkmesh-masked-proxy-v1",
@@ -40005,8 +40005,8 @@ async def https_mirror_endpoint_handler(env, request):
         return json_response({"error": "invalid_registration"}, status=400)
     await ensure_schema(env)
 
-    # The manifest cannot self-assert a new identity: its key must already be
-    # bound to the named node as its primary or an enabled owner-sign device.
+
+
     allowed_keys = await _owner_signing_pubkeys(env, registration["node"])
     if (
         registration["publicKey"] not in allowed_keys
@@ -40077,14 +40077,14 @@ async def https_mirror_endpoint_handler(env, request):
         await touch_registered_node(env, node_bi, node_rec)
     except Exception:
         pass
-    # Registration resets the endpoint to pending so a replayed registration
-    # can never preserve an old healthy lease. Challenge this exact,
-    # account-bound endpoint immediately after the durable write. This is what
-    # lets every independent mirror renew its own short lease without relying
-    # on the scheduled Worker cron (or pretending to be the organization's
-    # canonical catalog publisher). The verifier still requires Cloudflare
-    # proxied DNS, the registered Ed25519 key, and the canonical repository
-    # state pin, so acceptance here does not grant trust by itself.
+
+
+
+
+
+
+
+
     health_active = await _https_mirror_refresh_registered_health(
         env, registration["node"])
     return json_response({
@@ -40269,7 +40269,7 @@ async def https_mirror_private_route_handler(env, request):
     """Create, rotate, or revoke a blind-indexed private ciphertext route."""
     method = method_name(request)
     if method == "GET":
-        # This endpoint deliberately has no list operation.
+
         return json_response({
             "ok": True,
             "protocol": "forkmesh-private-route-v1",
@@ -40505,8 +40505,8 @@ async def _https_mirror_refresh_registered_health(env, node):
             return False
         return bool(await _https_mirror_health_one(env, row, accepted))
     except Exception:
-        # Registration remains safely pending. A transient control-plane fetch
-        # failure must not roll back its authenticated endpoint record.
+
+
         return False
 
 
@@ -40539,9 +40539,9 @@ async def _https_mirror_refresh_catalog_publisher_health(env, record):
             return False
         return bool(await _https_mirror_refresh_registered_health(env, node))
     except Exception:
-        # Publication is already authorized and durable. Health remains pending
-        # or is cleared by the verifier; a control-plane fetch/storage failure
-        # must not turn that successful catalog write into an error response.
+
+
+
         return False
 
 
@@ -40560,10 +40560,10 @@ async def _https_mirror_mark_failed(env, row, now):
 
 
 async def _https_mirror_mark_transient(env, row, now):
-    # Record only the attempt time.  checked_at/forkmesh_verified_at remain the
-    # last successful signed proof, so routing naturally stops at the normal
-    # freshness deadline if the outage persists.  Keeping updated_at separate
-    # also lets oldest-attempt-first scheduling rotate past this endpoint.
+
+
+
+
     await d1_run(
         env,
         """UPDATE mirror_https_endpoints
@@ -40712,13 +40712,13 @@ async def _https_mirror_health_one(env, row, accepted_forkmesh_refs):
         row.get("node_bi"),
     )
     if general_healthy:
-        # A fresh identity-bound challenge is a real node activity signal.
+
         await d1_run(
             env, "UPDATE nodes SET last_seen=? WHERE node_bi=?",
             now, row.get("node_bi"))
-    # Callers that renew a public routing lease need to know whether this exact
-    # repository is eligible for rotation, not merely whether the node's
-    # generic health endpoint answered.
+
+
+
     return forkmesh_active
 
 
@@ -40740,15 +40740,15 @@ async def https_mirror_health_cron(env):
     if not rows:
         return
     accepted = await _https_mirror_accepted_forkmesh_refs(env)
-    # A missing canonical state pin is a control-plane read failure, not proof
-    # that every independent mirror became invalid simultaneously.  Preserve
-    # their existing leases; the next minute retries the bounded batch.
+
+
+
     if not accepted:
         return
-    # Keep the alarm runner on one Python task. Python fan-out/timeout wrappers
-    # create nested Pyodide tasks which can poison a later scheduled wrapper
-    # with "Cannot enter into task" after the invocation has already ended.
-    # Oldest-first ordering plus the bounded batch still rotates every endpoint.
+
+
+
+
     for row in rows:
         try:
             await _https_mirror_health_one(env, row, accepted)
@@ -40837,9 +40837,9 @@ def _private_replica_not_found():
 async def _https_mirror_private_access_handler(
         env, request, url, opaque_id):
     """Authorize and serve an identity-free private-replica request."""
-    # A query would put credentials or repository hints into intermediary and
-    # platform logs. Even harmless-looking query parameters are rejected so
-    # there is exactly one supported private client request shape.
+
+
+
     if method_name(request) not in ("GET", "HEAD") or url.query:
         return _private_replica_not_found()
     private_record = await _https_mirror_private_access_record(env, opaque_id)
@@ -41063,13 +41063,13 @@ async def _https_mirror_public_context(env, owner, repo):
                 history.setdefault(
                     str(item.get("key_bi") or ""), []).append(
                         item.get("state_hash"))
-        # An organization administrator can explicitly link one of their owned
-        # mirror nodes as the canonical backing node for an organization URL.
-        # In that case the linked record is the organization-owner attestation:
-        # use its signed current/history pins, then admit only peer mirrors that
-        # publish one of those exact states. This avoids an unrelated same-name
-        # local-node record overriding the explicit organization link while
-        # retaining the stricter source-of-truth pin policy everywhere else.
+
+
+
+
+
+
+
         linked_target = await d1_first(
             env,
             "SELECT 1 AS linked FROM org_repos "
@@ -41109,9 +41109,9 @@ async def _https_mirror_public_context(env, owner, repo):
                     and re.fullmatch(r"[0-9a-f]{64}", state)
                 ):
                     current_pins.add(state)
-        # Direct routing never uses the legacy unpinned fail-open behavior. An
-        # owner must publish an authenticated refs digest before a remote
-        # endpoint can advertise or resolve that repository.
+
+
+
         if not pins:
             return None
         allowed = set()
@@ -41151,14 +41151,14 @@ async def _https_mirror_public_context(env, owner, repo):
             "owner": canonical_owner,
             "repo": canonical_repo,
             "nodes": allowed,
-            # Ordinary reads prefer the newest source generation. Recent
-            # signed generations remain available strictly as failover while
-            # their nodes converge.
+
+
+
             "currentNodes": current_nodes,
             "pins": set(pins),
-            # KV entries are addressed only by the current source-attested
-            # refs state. Historical pins may serve as temporary failover but
-            # can never populate a current-generation immutable cache entry.
+
+
+
             "currentPins": set(current_pins),
             "repoBi": await blind_index(
                 env, canonical_owner + "/" + canonical_repo.lower()),
@@ -41237,12 +41237,12 @@ async def _https_mirror_clone_pin(env, context):
 
 async def _https_mirror_route_advance(env, context, served_node, operation):
     now = int(Date.now())
-    # A Git clone has two requests: info/refs selects the next mirror and the
-    # upload-pack body is pinned to that same mirror. Advancing for both made a
-    # two-node fleet move the cursor by two per clone and therefore select the
-    # same node forever. Advance once for info/refs (and once for each ordinary
-    # browse/release request), but never advance again for its sticky
-    # git-upload-pack continuation.
+
+
+
+
+
+
     if operation != "git-upload-pack":
         await d1_run(
             env,
@@ -41261,13 +41261,13 @@ async def _https_mirror_route_advance(env, context, served_node, operation):
                    owner=excluded.owner,ts=excluded.ts""",
             context["repoBi"], served_node, now,
         )
-    # Serve tallies for the Mirror nodes view (Clones / Website columns). One
-    # git clone is two requests: info/refs (counted above only as the sticky
-    # pin) and the upload-pack POST — count the pack transfer so the pair
-    # lands as one clone. Every other read routed here is a website/browse
-    # fetch backed by this node's copy (tree/blob/raw/history/…/release-blob),
-    # the same classification the retired local gateway used. Keyed by the
-    # canonical catalog owner so org-alias routes tally onto one row.
+
+
+
+
+
+
+
     if operation == "git-info-refs":
         return
     field = "clones" if operation == "git-upload-pack" else "website"
@@ -41286,8 +41286,8 @@ async def _https_mirror_route_advance(env, context, served_node, operation):
             now,
         )
     except Exception:
-        # Best-effort display counter; a D1 hiccup must never fail the read
-        # that was just served.
+
+
         pass
 
 
@@ -41797,10 +41797,10 @@ async def repository_actions_status_handler(env, request, owner, repo):
             return json_response(
                 result,
                 cache_control="private, no-store, max-age=0, must-revalidate")
-    # An attested executor being temporarily offline is application state, not
-    # a broken HTTP route. Return a bounded empty snapshot so authorized World
-    # clients can keep the cabinet UI quiet and retry on their normal cadence
-    # without generating a repeating 503 in every visitor's console.
+
+
+
+
     return json_response(
         {
             "ok": False,
@@ -41989,8 +41989,8 @@ async def repository_pull_merge_handler(
     ).encode("utf-8")).hexdigest()
     await ensure_schema(env)
     now = int(Date.now())
-    # Delete this exact expired id first; otherwise its primary key could make
-    # INSERT OR IGNORE look successful while no live job can be read back.
+
+
     await d1_run(
         env,
         "DELETE FROM repo_merge_jobs WHERE request_id=? AND expires_at<=?",
@@ -42036,9 +42036,9 @@ async def repository_pull_merge_handler(
             )
             job_created = True
         except Exception:
-            # The schema triggers are the final concurrency-safe hard bounds.
-            # Re-read first because an identical request may have won the race;
-            # only a genuinely absent row is a full queue.
+
+
+
             job_created = False
         row = await d1_first(
             env,
@@ -42092,8 +42092,8 @@ async def repository_pull_merge_handler(
     upstream_status, result = await _https_mirror_merge_proxy(
         env, endpoint, context, node_request)
     if result is None:
-        # An uncertain transport result never fails over: the selected node may
-        # already have committed the exact idempotent request.
+
+
         return json_response(
             {"error": "merge_status_pending"}, status=503,
             cache_control="no-store")
@@ -42124,8 +42124,8 @@ async def repository_pull_merge_handler(
         {"pullNumber": int(pull_number),
          "reason": str(result.get("error") or "")})
     if terminal == "succeeded":
-        # Wake the source node immediately. Its next signed /api/sync response
-        # now includes the exact published receipt from repo_merge_jobs.
+
+
         await notify_repo_host(
             env, context["owner"], context["repo"], "mirror_merge")
     return _https_mirror_merge_response(result)
@@ -42138,10 +42138,10 @@ async def _https_mirror_proxy(
     if context is None:
         return json_response(
             {"error": "not_found"}, status=404, cache_control="no-store")
-    # org_alias_rewrite gives access checks and pin selection the canonical
-    # backing node. Repository bytes must still be requested from the gateway
-    # under the untouched public organization identity. The rewrite preserves
-    # request.url, so recover only an alias that D1 verifies maps to that node.
+
+
+
+
     try:
         original_url = urlparse(str(getattr(request, "url", "") or ""))
         original_match = (
@@ -42276,13 +42276,13 @@ async def _https_mirror_proxy(
             or status in HTTPS_MIRROR_RETRY_STATUSES
             or 500 <= status <= 599
         ):
-            # A fresh signed repository proof owns the endpoint's shared
-            # integrity state. A request-local timeout, missing optional path,
-            # or transient 5xx still fails over, but must not poison the
-            # endpoint for every other visitor. Persistent availability is
-            # re-evaluated by the signed health cron. Capability/auth rejection
-            # remains a hard failure because the endpoint can no longer honor
-            # requests signed by this router.
+
+
+
+
+
+
+
             if status in (401, 403):
                 try:
                     await d1_run(
@@ -42308,12 +42308,12 @@ async def _https_mirror_proxy(
             if value is not None:
                 raw_headers[name] = str(value)
         response_headers = https_routing.response_headers(raw_headers)
-        # A public node name is safe operational provenance (it is already
-        # listed on the repository's Mirrors tab). Attach it only to the live
-        # upstream response that this request actually selected. Edge-held
-        # metadata responses are rebuilt by repository_metadata_cache_get
-        # without this header, so a cache hit can never falsely claim that a
-        # particular mirror just served it.
+
+
+
+
+
+
         response_headers["X-ForkMesh-Served-By"] = endpoint["node"]
         await _https_mirror_route_advance(
             env, context, endpoint["node"], operation)
@@ -42324,9 +42324,9 @@ async def _https_mirror_proxy(
         ):
             await repository_metadata_cache_put(
                 env, metadata_cache_key, upstream, status)
-        # The private endpoint origin remains masked. The public node identity
-        # above is bounded routing provenance; repository bytes still stream
-        # without being materialized by the Worker.
+
+
+
         return JsResponse.new(
             upstream.body,
             to_js({"status": status, "headers": response_headers}),
@@ -42339,17 +42339,17 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
-        # The platform Cron Trigger does two things, cheapest and most public
-        # first.
-        #
-        # (1) It records the /status health sample DIRECTLY. The trigger is
-        # the only per-minute schedule the platform itself guarantees, so the
-        # public minute strip must not depend on the Durable Object subsystem
-        # being healthy: a wedged runner isolate or exhausted free-tier DO
-        # allowance left multi-hour "no health sample was recorded" gaps that
-        # read as fake downtime. The per-minute claim inside
-        # record_status_sample keeps this sample and the runner's own from
-        # double-counting an hour's checks — whichever lands first wins.
+
+
+
+
+
+
+
+
+
+
+
         try:
             await record_status_sample(self.env)
         except BaseException as error:
@@ -42360,14 +42360,14 @@ class Default(WorkerEntrypoint):
                     error=error)
             except BaseException:
                 pass
-        # (2) It starts (and then once a minute reconciles) the singleton
-        # Durable Object alarm that owns every other maintenance job. The
-        # alarm re-arms itself before work, so a stateless Python wrapper
-        # poisoned by another request or a killed maintenance batch cannot
-        # stop the runner. A failed kick must not erase the sample above or
-        # hide behind it: it is captured to Sentry only (an error_log row
-        # would paint the "errors" system red for a DO-plan-limit condition
-        # the independent watchdog already emails about).
+
+
+
+
+
+
+
+
         try:
             await _cron_runner_kick(self.env)
         except BaseException as error:
@@ -42380,47 +42380,47 @@ class Default(WorkerEntrypoint):
                 pass
 
     async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
-        # Cron trigger (every minute, see [triggers] in wrangler.toml).
-        #
-        # Only the two once-a-minute samples run on every tick; everything else
-        # is staggered onto its own minute slot. Running all eight jobs plus
-        # two Sentry round trips every minute — dozens of sequential D1 awaits
-        # in a Pyodide worker, ~90 schema DDL statements first on a cold
-        # isolate — routinely blew the invocation's resource limits, the
-        # platform killed the tick with nothing logged, and the /status page
-        # recorded the missing sample as downtime (~5% uptime shown while the
-        # site was actually up). The samples also run FIRST, so even a tick
-        # that dies in a later job has already landed its data point.
+
+
+
+
+
+
+
+
+
+
+
         cron_started_ms = int(Date.now())
         cron_failures = []
         minute = int(cron_started_ms // 60000)
-        # Sentry cron monitor disabled for now (commented out on request).
-        # The opening "in_progress" check-in and the closing ok/error check-in
-        # below are left in place, commented, so the monitor can be re-enabled
-        # by uncommenting both halves.
-        #
-        # cron_expression = _scheduled_cron_expression(controller)
-        # cron_check_in_id = _sentry_event_id()
-        # Send the "in_progress" check-in FIRST, before any D1/decrypt work,
-        # so Sentry has proof this tick started even if the platform kills
-        # the isolate later (cold Pyodide isolate blowing the invocation's
-        # CPU/wall-clock budget - the same failure mode documented above for
-        # /status samples). Without this, a killed tick sends nothing at all
-        # and Sentry reports it as a "missed check-in" instead of a runtime
-        # error, which is what actually happened; dropping the closing
-        # ok/error check-in on the same check_in_id still only costs one
-        # extra Sentry round trip per tick.
-        # try:
-        #     await capture_sentry_cron_check_in(
-        #         self.env, "in_progress", check_in_id=cron_check_in_id,
-        #         cron=cron_expression)
-        # except BaseException:
-        #     pass
-        # The /status health sample runs FIRST: it is the cheapest job (no
-        # row decryption) and the one whose absence shows publicly as fake
-        # downtime, so a tick that dies partway (cold Pyodide isolate blowing
-        # the invocation limits — cron runs in its own colo, where user
-        # traffic never warms the isolate) has already landed its samples.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         try:
             await record_status_sample(self.env)
         except BaseException as error:
@@ -42428,8 +42428,8 @@ class Default(WorkerEntrypoint):
                 self.env, "/cron/record-status-sample",
                 "record_status_sample failed: " + _safe_error_text(error),
                 error=error, failures=cron_failures)
-        # Online-node sample for the /network/ activity graph (heavier: joins
-        # + AES-GCM row decrypts per live host).
+
+
         try:
             await record_online_sample(self.env)
         except BaseException as error:
@@ -42437,10 +42437,10 @@ class Default(WorkerEntrypoint):
                 self.env, "/cron/record-online-sample",
                 "record_online_sample failed: " + _safe_error_text(error),
                 error=error, failures=cron_failures)
-        # Oldest-first bounded signed challenges keep direct HTTPS endpoints
-        # inside the two-minute routing freshness window. This moves no
-        # repository content: only identity, latency, integrity, and the
-        # forkmesh/forkmesh refs proof are retained.
+
+
+
+
         try:
             await https_mirror_health_cron(self.env)
         except BaseException as error:
@@ -42449,12 +42449,12 @@ class Default(WorkerEntrypoint):
                 "https_mirror_health_cron failed: "
                 + _safe_error_text(error),
                 error=error, failures=cron_failures)
-        # Public CelesTrak VISUAL OMM data changes slowly. One fixed-source
-        # refresh every three hours (with an additional two-hour D1 guard)
-        # keeps positions current without per-visitor upstream traffic or a
-        # quota-burning minute poll. Expected upstream failures retain the
-        # last-good snapshot and return normally; only local runtime/D1 faults
-        # reach the bounded cron error log.
+
+
+
+
+
+
         if (
             minute % WORLD_SATELLITE_REFRESH_CRON_MINUTES
             == WORLD_SATELLITE_REFRESH_CRON_OFFSET
@@ -42468,9 +42468,9 @@ class Default(WorkerEntrypoint):
                     "world satellite refresh failed: "
                     + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Confirm externally signed reward plans. This job only reads finalized
-        # transactions and checks their exact System Program transfer list; it
-        # has no signing key and never broadcasts a transaction.
+
+
+
         if minute % 5 == 1:
             try:
                 await verify_submitted_chain_intents(self.env)
@@ -42481,9 +42481,9 @@ class Default(WorkerEntrypoint):
                     "reward finality verification failed: "
                     + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # ActivityPub outbound delivery: the publish path already best-effort
-        # sends a few activities inline, this drains the retry backlog (one
-        # cheap indexed SELECT when the queue is empty).
+
+
+
         if minute % 5 == 0:
             try:
                 await ensure_schema(self.env)
@@ -42493,10 +42493,10 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/activitypub-deliver",
                     "_ap_drain_outbox failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Automatic Fediverse activity is combined per repo/org alias and is
-        # eligible no more than once per 24 hours. Processing is bounded and
-        # only creates durable Notes/outbox rows; the normal delivery drain
-        # above retains its established Retry-After/exponential backoff policy.
+
+
+
+
         if minute % 10 == 8:
             try:
                 await ensure_schema(self.env)
@@ -42508,10 +42508,10 @@ class Default(WorkerEntrypoint):
                     "_ap_process_digest_queues failed: "
                     + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Follower presentation backfill: a repo's follower gallery shows each
-        # account's published avatar and bio, which only lands in the cache when
-        # that actor is next fetched. Three signed GETs every 20 minutes fills
-        # the backlog in the background (one indexed SELECT when there is none).
+
+
+
+
         if minute % 20 == 12:
             try:
                 await ensure_schema(self.env)
@@ -42524,9 +42524,9 @@ class Default(WorkerEntrypoint):
                     "_ap_refresh_follower_profiles failed: "
                     + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Relay federation: a federated relay registers + reports its online
-        # nodes to the main relay (two outbound HTTP calls); the main relay
-        # expires stale federated presence and sweeps confirmed signups.
+
+
+
         if minute % 5 == 2:
             try:
                 await ensure_schema(self.env)
@@ -42536,9 +42536,9 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/federation-cron",
                     "federation_cron failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Email digest bridge (issue #361): per-recipient interval + min-age
-        # gates inside already hold a digest back for several minutes, so a
-        # 5-minute cadence adds no user-visible latency.
+
+
+
         if minute % 5 == 3:
             try:
                 await send_notification_digests(self.env)
@@ -42547,9 +42547,9 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/send-notification-digests",
                     "send_notification_digests failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Stale-node housekeeping expires transient presence and removes only
-        # orphaned physical registrations. Repository/endpoint-backed nodes
-        # remain as offline catalog identity until fresh evidence returns.
+
+
+
         if minute % 15 == 4:
             try:
                 await purge_stale_registered_nodes(self.env, force=True)
@@ -42558,8 +42558,8 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/purge-stale-nodes",
                     "purge_stale_registered_nodes failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Keep blocked phantom catalog entries (and their host presence) purged
-        # even if no one loads /network/.
+
+
         if minute % 15 == 9:
             try:
                 await purge_blocked_catalog(self.env)
@@ -42568,9 +42568,9 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/purge-blocked-catalog",
                     "purge_blocked_catalog failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Community reward pool: prepare an unsigned round about once an hour
-        # (interval gate inside). The owner-device signer remains the only
-        # component that can approve and broadcast the exact plan.
+
+
+
         if minute % 15 == 14:
             try:
                 await ensure_schema(self.env)
@@ -42580,9 +42580,9 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/distribute-central-fund",
                     "distribute_central_fund failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Retained chat history is only pruned per-room on client join
-        # (ForkMeshRoom.fetch); sweep all rooms hourly so an idle room still
-        # gets its 7-day-old messages deleted.
+
+
+
         if minute % 60 == 37:
             try:
                 await chat_history_prune_expired(self.env)
@@ -42591,8 +42591,8 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/chat-history-prune-expired",
                     "chat_history_prune_expired failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Hourly: prune the reinstall/rotate account_devices sprawl (stale,
-        # superseded keys), never an account's current signing key.
+
+
         if minute % 60 == 47:
             try:
                 await ensure_schema(self.env)
@@ -42602,9 +42602,9 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/purge-stale-account-devices",
                     "purge_stale_account_devices failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Hourly: bound the inbound-website board. Referer headers are
-        # attacker-controlled, so the long tail a spammer could grow is
-        # dropped and only the busiest hosts are retained.
+
+
+
         if minute % 60 == 17:
             try:
                 await prune_site_referrers(self.env)
@@ -42613,10 +42613,10 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/prune-site-referrers",
                     "prune_site_referrers failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Hourly organization-succession warning pass. It reads only the
-        # configured owner's generalized activity maximum and emits at most one
-        # deduplicated warning per inactivity deadline. It never opens a grace
-        # case or transfers a role automatically.
+
+
+
+
         if minute % 60 == 42:
             try:
                 await process_organization_succession_warnings(self.env)
@@ -42626,8 +42626,8 @@ class Default(WorkerEntrypoint):
                     "organization succession warning pass failed: "
                     + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Hourly retention for metadata-only sensitive-action audit records,
-        # plus expiration of pending reward allocations.
+
+
         if minute % 60 == 52:
             try:
                 await cleanup_sensitive_audit_records(self.env)
@@ -42646,9 +42646,9 @@ class Default(WorkerEntrypoint):
                     "cleanup_world_media_records failed: "
                     + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Hourly: the once-per-user "How are we doing?" founder feedback email
-        # for accounts that crossed the 24h-after-signup mark (batched; also
-        # back-fills accounts that signed up before this feature shipped).
+
+
+
         if minute % 60 == 22:
             try:
                 await _send_feedback_emails(self.env)
@@ -42657,12 +42657,12 @@ class Default(WorkerEntrypoint):
                     self.env, "/cron/feedback-emails",
                     "_send_feedback_emails failed: " + _safe_error_text(error),
                     error=error, failures=cron_failures)
-        # Arm the independent liveness alarm only after the complete scheduled
-        # handler reached its end. If Pyodide re-enters the event loop, the
-        # platform kills the invocation, or a future uncaught exception escapes,
-        # no heartbeat lands and the Durable Object can alert without relying on
-        # this broken Cron Trigger to detect its own failure. The next completed
-        # tick sends the one-time recovery message.
+
+
+
+
+
+
         try:
             await _cron_watchdog_completion(self.env)
         except BaseException as error:
@@ -42670,23 +42670,23 @@ class Default(WorkerEntrypoint):
                 self.env, "/cron/watchdog-completion",
                 "cron watchdog completion failed: " + _safe_error_text(error),
                 error=error, failures=cron_failures)
-        # Closing check-in for the same check_in_id sent above, so Sentry
-        # resolves the "in_progress" marker to a final ok/error result.
-        # Sentry cron monitor disabled for now (commented out on request);
-        # re-enable together with the opening check-in above.
-        # final_cron_status = "error" if cron_failures else "ok"
-        # await capture_sentry_cron_check_in(
-        #     self.env, final_cron_status, check_in_id=cron_check_in_id,
-        #     cron=cron_expression,
-        #     duration=(int(Date.now()) - cron_started_ms) / 1000)
+
+
+
+
+
+
+
+
+
 
     async def fetch(self, request):
         url = None
         try:
             url = urlparse(request.url)
 
-            # Admin error dashboard at a secret, env-configured path. Its 401/403
-            # responses are not logged, but unexpected exceptions are captured.
+
+
             admin_path = _admin_path(self.env)
             if admin_path and url.path.strip("/") == admin_path:
                 return await self._admin(request)
@@ -42701,12 +42701,12 @@ class Default(WorkerEntrypoint):
         except Exception as error:
             if str(error) == "legacy_custody_migration_required":
                 return _legacy_custody_not_ready_response()
-            # D1 being down or overloaded is a dependency outage, not a worker
-            # bug: _d1_read already replayed the one-off "internal error;
-            # reference = …" fault, so anything still escaping means the
-            # database cannot serve this request. Answer 503 (marked degraded,
-            # so the 5xx logger below does not double-log it) instead of
-            # re-raising into a Cloudflare 1101 that clients read as a 500.
+
+
+
+
+
+
             if _is_d1_platform_error(error):
                 try:
                     await log_d1_unavailable(
@@ -42724,35 +42724,35 @@ class Default(WorkerEntrypoint):
                 await capture_worker_exception(self.env, request, url, error)
             except BaseException:
                 pass
-            # Re-raise so Cloudflare records the native Worker failure/Error 1101
-            # while Sentry keeps the underlying Python exception and stack trace.
+
+
             raise
         try:
             status = int(getattr(response, "status", 200) or 200)
         except Exception:
             status = 200
-        # Credit the website that sent this visitor. Gated to served page
-        # navigations carrying an external Referer, so the extra D1 write only
-        # happens on the rare request that is actually an inbound referral.
+
+
+
         await record_site_referral(self.env, request, url, status)
-        # Blog reach is recorded from the same successfully served top-level
-        # navigation. It stores totals, a fixed aggregate HLL projection and
-        # per-post referring-host counters only.
+
+
+
         await record_blog_visit(self.env, request, url, status)
         if status >= 500:
-            # An offline node's content being re-requested (502/503/504 on a
-            # tunnel path) is expected in a P2P network — host_presence and
-            # the /status git_hosting signal already reflect it. Logging every
-            # hit cost a blocking Sentry call + a D1 write per response (a
-            # single offline node's release blob generated hundreds of noise
-            # rows a day and drowned out real failures). A 500 on the same
-            # path is a real worker bug and still logs.
+
+
+
+
+
+
+
             if status in (502, 503, 504) and _is_tunnel_content_path(url.path):
                 return response
-            # Deliberate degraded answers (DO aborts already recorded with
-            # their real reason, fail-closed 501s, unavailable upstreams) are
-            # marked at the source; re-logging them as anonymous "response
-            # status N" events only buried real bugs.
+
+
+
+
             if _response_is_expected_degraded(response):
                 return response
             await log_error(
@@ -42786,16 +42786,16 @@ class Default(WorkerEntrypoint):
                 },
             )
         params = parse_qs(urlparse(request.url).query)
-        # Nav links carry ?admin= for continuity; fall back to the cookie's
-        # name when the page was opened without the param (adhoc #168).
+
+
         account_cookie_name = await _account_cookie_name(self.env, request)
         admin_query = _admin_query(
             params.get("admin", [""])[0] or account_cookie_name)
 
-        # POST action ?action=disburse reports migration-only custody status;
-        # ?action=set_password resets a user account's login password. Every
-        # state-changing POST must carry a CSRF token rendered into the admin
-        # page, so a cross-site form cannot trigger these actions.
+
+
+
+
         banner = ""
         action = params.get("action", [""])[0]
         audit_details = {}
@@ -42996,8 +42996,8 @@ class Default(WorkerEntrypoint):
                         count = int((count_row or {}).get("n") or 0)
                         audit_details = {
                             "rowCount": count,
-                            # Content stays out of the audit trail. This
-                            # bounded digest still distinguishes group purges.
+
+
                             "groupDigest": hashlib.sha256(
                                 (
                                     group_status + "\n"
@@ -43047,8 +43047,8 @@ class Default(WorkerEntrypoint):
                                 )
                             ),
                         }
-                        # D1 caps bound parameters per query (~100), so delete in
-                        # chunks rather than one giant IN (...) list.
+
+
                         chunk = 90
                         for start in range(0, len(ids), chunk):
                             batch = ids[start:start + chunk]
@@ -43127,8 +43127,8 @@ class Default(WorkerEntrypoint):
                     target_type, target, outcome,
                     audit_details)
 
-        # Left-nav table browser: pick the requested table (validated against the
-        # live list), defaulting to the error log.
+
+
         tables = await _admin_list_tables(self.env)
         requested = params.get("table", [""])[0]
         if requested in tables:
@@ -43138,8 +43138,8 @@ class Default(WorkerEntrypoint):
         else:
             active = tables[0] if tables else ""
 
-        # Every visible record has a read-only, vertically listed detail page.
-        # Legacy edit/new bookmarks remain fail-closed below.
+
+
         if action == "detail" and active:
             table_html = await _render_record_detail(
                 self.env,
@@ -43161,7 +43161,7 @@ class Default(WorkerEntrypoint):
                           if active
                           else '<div class="empty">No tables found.</div>')
 
-        # Row counts for the left nav.
+
         counts = {}
         for t in tables:
             try:
@@ -43172,8 +43172,8 @@ class Default(WorkerEntrypoint):
         stats = await admin_stats(self.env)
         operational_alerts_enabled = await _status_alert_emails_enabled(
             self.env)
-        # Default the table browser to most-records-first; ?sort=name opts back
-        # into the A–Z ordering.
+
+
         sort_records = params.get("sort", [""])[0] != "name"
         return Response(
             render_admin_html(stats, tables, active, table_html, banner, counts,
@@ -43198,16 +43198,16 @@ class Default(WorkerEntrypoint):
             return await _https_mirror_private_access_handler(
                 self.env, request, url, private_access_match.group(1))
 
-        # Organization repo aliases (issue #388): rewrite /<org>/<repo> git and
-        # /api/repo/<org>/<repo>/... requests to the linked node's namespace
-        # before any route matching — see org_alias_rewrite.
+
+
+
         aliased = await org_alias_rewrite(self.env, request, url)
         if aliased is not None:
             request, url = aliased
 
-        # Public clone traffic uses signed, masked HTTPS. Private/missing paths
-        # fail closed in _git_host. Private clients use only the identity-free
-        # opaque endpoint above; named Git paths never advertise or proxy it.
+
+
+
         git_info = GIT_INFO_RE.match(url.path)
         if git_info:
             service = parse_qs(url.query).get("service", [""])[0]
@@ -43240,9 +43240,9 @@ class Default(WorkerEntrypoint):
             return await self._git_push(request, git_recv.group(1), git_recv.group(2))
 
         if url.path == "/" and method_name(request) in ("GET", "HEAD"):
-            # Everyone enters the same world immediately. The app may use the
-            # locally held session to render an authorized avatar and portals,
-            # but the route itself never changes based on login state.
+
+
+
             return await self._serve_homepage(url)
 
         if url.path in BLOCKED_STATIC_HTML_PATHS:
@@ -43271,23 +43271,23 @@ class Default(WorkerEntrypoint):
                 }
             )
 
-        # Build/version marker for deploy verification. deploy.sh stamps BUILD_REV
-        # (the git rev being shipped) as a Worker var on every production deploy and
-        # then polls this endpoint: if the live rev never flips to the one it just
-        # built, the upload didn't actually take effect on this origin (e.g. it hit
-        # the wrong Cloudflare account — the account drift that let stale code keep
-        # serving while the deploy reported success), and the script aborts loudly
-        # instead of reporting a phantom success.
+
+
+
+
+
+
+
         if url.path in ("/api/version", "/api/version/"):
             return json_response(
                 {
                     "ok": True,
                     "rev": _build_rev(self.env),
-                    # deploy.sh stamps APP_VERSION (qt_client release number)
-                    # alongside BUILD_REV; the dashboard header chip renders
-                    # it. It was documented as echoed here but never was —
-                    # which also left the chip's sessionStorage cache
-                    # unreachable, so every page navigation refetched this.
+
+
+
+
+
                     "version": str(
                         getattr(self.env, "APP_VERSION", "") or ""),
                     "now": Date.now(),
@@ -43568,9 +43568,9 @@ class Default(WorkerEntrypoint):
             division_by_zero = 1 / 0
             return json_response({"ok": False, "value": division_by_zero})
 
-        # Cached aggregate stats for the homepage/network page. Served before the
-        # per-repo handlers so a burst of visitors collapses to one computation
-        # per colo per TTL instead of a Durable Object fan-out per page view.
+
+
+
         if url.path in ("/api/network/overview", "/api/network/overview/"):
             return await network_overview(self.env)
 
@@ -43578,23 +43578,23 @@ class Default(WorkerEntrypoint):
             include_payouts = parse_qs(url.query).get("payouts", [""])[0] == "1"
             return await network_stats(self.env, include_payouts=include_payouts)
 
-        # 24-hour online-activity series for the /network/ graph.
+
         if url.path in ("/api/network/online-history", "/api/network/online-history/"):
             return await online_history(self.env)
 
-        # Public ranking boards (node uptime + repos per owner) for /network/.
+
         if url.path in ("/api/network/leaderboards", "/api/network/leaderboards/"):
             return await network_leaderboards(self.env)
         if url.path in ("/api/leaderboards", "/api/leaderboards/"):
             return await leaderboards_overview(self.env)
 
-        # Referral-program board (clicks + signups per share link) for the
-        # /referrals page and the World's referral leaderboard sign.
+
+
         if url.path in ("/api/referrals/leaderboard", "/api/referrals/leaderboard/"):
             return await referral_leaderboard(self.env)
 
-        # Inbound website board (visits per referring hostname) for the
-        # /referrals page.
+
+
         if url.path in ("/api/referrals/sites", "/api/referrals/sites/"):
             return await site_referrer_leaderboard(self.env)
 
@@ -43607,35 +43607,35 @@ class Default(WorkerEntrypoint):
                     extra_headers={"allow": "GET"})
             return await blog_post_metrics(self.env, slug)
 
-        # Rendered share-link card (og:image of the /r/<name> preview page).
+
         referral_card_match = REFERRAL_CARD_RE.match(url.path)
         if referral_card_match:
             return await referral_card_handler(
                 self.env, request, unquote(referral_card_match.group(1)))
 
-        # 30-day per-system uptime history for the public /status page.
+
         if url.path in ("/api/status", "/api/status/"):
             status_view = parse_qs(url.query).get("view", ["full"])[0]
             return await status_history(
                 self.env, "world" if status_view == "world" else "full")
 
-        # Installer clone source: pick the currently-online forkmesh host with
-        # the most retained uptime instead of baking one node id into install.sh.
+
+
         if url.path in ("/api/install-source", "/api/install-source/"):
             return await install_source(self.env)
 
-        # Anonymous per-step diagnostics posted by install.sh (no auth, no IP).
+
         if url.path in ("/api/install-diag", "/api/install-diag/"):
             return await install_diag_handler(self.env, request)
 
-        # Anonymous docs/page feedback: like/dislike clicks with optional text.
+
         if url.path in ("/api/feedback", "/api/feedback/"):
             return await feedback_handler(self.env, request)
 
         if url.path in ("/api/client-errors", "/api/client-errors/"):
             return await client_error_handler(self.env, request)
 
-        # Private vulnerability reports — stored encrypted, emailed to security@.
+
         if url.path in ("/api/security/report", "/api/security/report/"):
             return await security_report_handler(self.env, request)
 
@@ -43682,13 +43682,13 @@ class Default(WorkerEntrypoint):
                     {"error": "method_not_allowed"}, status=405)
             return await _account_central_fund(self.env, request)
 
-        # Persistent data lives in D1, not Durable Objects.
+
         if url.path in ("/api/repositories", "/api/repositories/"):
             return await catalog_handler(self.env, request)
 
-        # GitHub/GitLab metadata imports and non-mirrored stubs are deliberately
-        # separate from /api/repositories: only the latter represents a mirror
-        # that ForkMesh can actually route or clone.
+
+
+
         if (url.path == "/api/repository-imports"
                 or url.path == "/api/repository-imports/"
                 or url.path.startswith("/api/repository-imports/")):
@@ -43698,30 +43698,30 @@ class Default(WorkerEntrypoint):
         if url.path in ("/api/notifications", "/api/notifications/"):
             return await notifications_handler(self.env, request)
 
-        # Peer mirror requests (issue #385): create/accept/reject a request
-        # asking another node to mirror a repo. Session-gated like the inbox.
+
+
         if url.path in ("/api/mirror-requests", "/api/mirror-requests/"):
             return await mirror_requests_handler(self.env, request)
 
-        # Consolidated lightweight status digest (version + profile/notification
-        # change tokens) so the client polls once instead of re-fetching the
-        # full profile and notification list every tick.
+
+
+
         if url.path in ("/api/poll", "/api/poll/"):
             return await poll_handler(self.env, request)
 
-        # Shared room-chat key, derived server-side from DATA_KEY and handed only
-        # to authenticated clients — replaces the old public app-wide constant.
+
+
         if url.path in ("/api/chat/room-key", "/api/chat/room-key/"):
             return await chat_room_key_handler(self.env, request)
 
-        # Public chat-activity counters (message + user counts) that drive the
-        # unread badge on the shared site header's chat icon.
+
+
         if url.path in ("/api/chat/activity", "/api/chat/activity/"):
             return await chat_activity_handler(self.env, request)
 
-        # Private channel API and socket admission are checked before the
-        # generic repository-room router. Authorization and current key-version
-        # validation therefore happen before any Durable Object is selected.
+
+
+
         chat_channel_socket = CHAT_CHANNEL_WS_RE.match(url.path)
         if chat_channel_socket:
             return await _chat_channel_socket_handler(
@@ -43735,8 +43735,8 @@ class Default(WorkerEntrypoint):
             return await chat_channels_api.handle(
                 _ChatChannelsRuntime(self.env, request), url.path)
 
-        # Direct messages never inherit platform-administrator channel access.
-        # Both HTTP room access and WebSocket admission check participant rows.
+
+
         chat_direct_socket = CHAT_DIRECT_MESSAGE_WS_RE.match(url.path)
         if chat_direct_socket:
             return await _chat_direct_socket_handler(
@@ -43750,25 +43750,25 @@ class Default(WorkerEntrypoint):
             return await chat_direct_messages_api.handle(
                 _ChatDirectMessagesRuntime(self.env, request), url.path)
 
-        # Chat-triggered Cloudflare AI interface. Clients forward explicit
-        # "forkbot ..." mentions here; the Worker queues compatible issue-inbox
-        # records and returns a bot reply for the encrypted room.
+
+
+
         if url.path in ("/api/sync", "/api/sync/"):
             return await sync_handler(self.env, request)
 
-        # Live push channel that makes /api/sync event-driven: an owner node
-        # holds one WebSocket here and each web submission triggers an instant
-        # payload-free event frame (see notify_repo_host / ForkMeshNodes).
+
+
+
         if url.path in ("/api/nodes/events", "/api/nodes/events/"):
             return await node_events_handler(self.env, request)
 
         if url.path in ("/api/forkbot/chat", "/api/forkbot/chat/"):
             return await forkbot_chat_handler(self.env, request)
 
-        # All /api/accounts/* paths (reserve, profile, follow, login, lookup)
-        # are dispatched by accounts_handler.
-        # Solana payout relay mesh (canonical /api/relay-mesh/*, legacy
-        # /api/federation/* alias) — unrelated to ActivityPub, which is /ap/*.
+
+
+
+
         if (url.path.startswith("/api/relay-mesh/")
                 or url.path.startswith("/api/federation/")):
             return await federation_handler(self.env, request)
@@ -43776,7 +43776,7 @@ class Default(WorkerEntrypoint):
         if url.path.startswith("/api/accounts/"):
             return await accounts_handler(self.env, request)
 
-        # --- Organizations + teams (issue #388) --------------------------
+
         if BOT_SESSION_RE.match(url.path):
             return await bot_session_handler(self.env, request)
         if ORGS_RE.match(url.path):
@@ -43850,7 +43850,7 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await org_handler(self.env, request, org)
 
-        # --- Achievement badges (adhoc #370) ------------------------------
+
         if BADGES_RE.match(url.path):
             return await badges_catalog_handler(self.env, request)
         badge_account_match = BADGE_ACCOUNT_RE.match(url.path)
@@ -43860,15 +43860,15 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await account_badges_handler(self.env, request, account)
 
-        # Founders-outreach email console (/outreach): admins plus the
-        # admin-managed outreach_team roster send from the founders address.
+
+
         if url.path == "/api/outreach" or url.path.startswith("/api/outreach/"):
             return await outreach_handler(self.env, request)
 
-        # --- ActivityPub federation (fediverse) --------------------------
-        # WebFinger/NodeInfo discovery plus the /ap/* actor, inbox, object
-        # and collection endpoints. Kept clear of /api/federation/*, which is
-        # the (unrelated) Solana payout relay mesh.
+
+
+
+
         if url.path == "/.well-known/webfinger":
             return await ap_webfinger_handler(self.env, request)
         if url.path == "/.well-known/host-meta":
@@ -43925,16 +43925,16 @@ class Default(WorkerEntrypoint):
             return await ap_object_handler(
                 self.env, request, ap_object_match.group(1))
 
-        # Match the profile route on the percent-decoded, case-folded path:
-        # links pasted from address bars / other apps often arrive as /%40name
-        # (an encoded @) or /@Name, and both used to fall through to the 404
-        # page instead of the profile.
+
+
+
+
         public_profile = re.match(
             r"^/@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)(/repositories)?/?$",
             unquote(url.path).lower())
         if public_profile:
-            # Fediverse clients resolve profile URLs with an ActivityPub
-            # Accept header; hand them the actor document instead of HTML.
+
+
             if ap.wants_activity_json(request.headers.get("accept") or ""):
                 return await _ap_actor_doc_response(
                     self.env, request, AP_ACTOR_USER,
@@ -43943,11 +43943,11 @@ class Default(WorkerEntrypoint):
                 url, public_profile.group(1),
                 repositories=bool(public_profile.group(2)))
 
-        # /@owner.repo — a repo actor's fediverse profile page (a feed of its
-        # federated posts). A user handle never contains a dot, so a dotted
-        # /@handle is unambiguously a repo actor (see ap.split_handle). This is
-        # the repo actor's `url`, so fediverse clients that resolve it with an
-        # ActivityPub Accept header get the actor document instead of HTML.
+
+
+
+
+
         fedi_repo = re.match(r"^/@([^/]+)/?$", unquote(url.path))
         if fedi_repo:
             parsed = ap.split_handle(fedi_repo.group(1).lower())
@@ -44029,8 +44029,8 @@ class Default(WorkerEntrypoint):
                 return json_response({"error": "not_found"}, status=404)
             return await repo_pending_counts_handler(self.env, request, owner, repo)
 
-        # Remote fediverse replies for a repo thread (public read), and the
-        # owner-node push of release/merge announcements into the fediverse.
+
+
         fedi_comments_match = REPO_FEDI_COMMENTS_RE.match(url.path)
         if fedi_comments_match:
             owner = safe_segment(fedi_comments_match.group(1))
@@ -44289,15 +44289,15 @@ class Default(WorkerEntrypoint):
                 }
             ):
                 if await _repo_is_private(self.env, owner, repo):
-                    # Named private content routes are intentionally inert. The
-                    # only private byte transport is the identity-free opaque
-                    # endpoint, with authorization outside the URL.
+
+
+
                     return _private_replica_not_found()
                 return await _https_mirror_proxy(
                     self.env, request, owner, repo, action)
-            # The repository tunnel is permanently retired. Repository bytes
-            # use ordinary HTTPS mirror routes; desktop clients use bounded
-            # polling for control-plane changes.
+
+
+
             return json_response({
                 "error": "repository_socket_transport_retired",
                 "httpsMirrorRequired": True,
@@ -44319,32 +44319,32 @@ class Default(WorkerEntrypoint):
                     room.get("repo", ""),
                 ) is None
             ):
-                # Apply this before choosing or calling the Durable Object. A
-                # guessed private/missing repository therefore cannot reveal
-                # whether a room or retained history exists.
+
+
+
                 return _private_replica_not_found()
             if url.path.endswith("/clients"):
-                # The per-room observer was retired in favor of the bounded
-                # network stats snapshot. Older desktop builds still poll this
-                # path; answer before touching a Durable Object so those
-                # clients cannot repeatedly wake or exhaust a room isolate.
+
+
+
+
                 return json_response(
                     {"error": "observers_removed"},
                     status=410,
                     cache_control="no-store",
                 )
             room_id = self.env.FORKMESH_MAINNODE_ROOM.idFromName(room["key"])
-            # The platform can abort a room DO mid-request — the free-tier
-            # duration cap kills long-lived requests, and any co-located DO
-            # blowing the isolate's limits resets every in-flight request with
-            # a generic "internal error". Both are transient: a fresh stub
-            # lands on a replacement isolate, so retry once before failing.
-            # Room requests carry no body (GET snapshot / WebSocket upgrade),
-            # so re-driving durable_object_request is safe. Without this
-            # guard the abort would escape Default.fetch as a Worker Error
-            # 1101; with it, a persistent failure is recorded (the /status
-            # page counts these) and answered with a retryable 503 that
-            # leaks no exception detail to the client.
+
+
+
+
+
+
+
+
+
+
+
             last_error = None
             for _attempt in range(2):
                 room_object = self.env.FORKMESH_MAINNODE_ROOM.get(room_id)
@@ -44359,40 +44359,40 @@ class Default(WorkerEntrypoint):
                 {"error": "unavailable"}, status=503,
                 extra_headers=EXPECTED_DEGRADED_HEADERS)
 
-        # Referral share links: count the click, bounce to signup. Matched
-        # before the repo shortcut so /r/<name> never reads as owner/repo.
+
+
         referral_match = REFERRAL_LINK_RE.match(url.path)
         if referral_match:
             return await referral_click(
                 self.env, unquote(referral_match.group(1)), request)
 
-        # Repo shortcut URLs (/owner/repo and tab/tree/blob deep links) all
-        # serve the prebuilt repo-detail page; its JS resolves the path. The
-        # per-repo rel="me" head tags are injected at serve time so Mastodon
-        # can verify the repo actor's profile link (green check) against this
-        # very page — a static shared asset can't carry a per-repo link.
+
+
+
+
+
         if looks_like_repo_route(url.path):
             return await self._serve_repo_page(request, url)
 
         if url.path == "/dashboard" or url.path.startswith("/dashboard/"):
-            # Legacy /dashboard?section=X links 308 to the per-page paths.
+
             target = dashboard_section_redirect(url.path, url.query)
             if target:
                 return Response("", status=308, headers={"location": target})
-            # /dashboard/repos/ -> /dashboard/repos (canonical, no trailing /).
+
             normalized = url.path.rstrip("/") or "/dashboard"
             if normalized != url.path and normalized in DASHBOARD_PAGE_ASSETS:
                 return Response("", status=308, headers={"location": normalized})
             asset = DASHBOARD_PAGE_ASSETS.get(url.path)
             if asset:
                 return await self._serve_dashboard_asset(url, asset)
-            # Settings sub-tabs (/dashboard/settings/<tab>) share the settings
-            # document; the client restores the tab from the path.
+
+
             if url.path.startswith("/dashboard/settings/"):
                 return await self._serve_dashboard_asset(
                     url, DASHBOARD_PAGE_ASSETS["/dashboard/settings"])
-            # Old bounced deep links (/dashboard/owner/repo[...]) move to the
-            # clean repo path.
+
+
             rest = url.path[len("/dashboard"):]
             if looks_like_repo_route(rest):
                 return Response("", status=308, headers={"location": rest})
@@ -44414,18 +44414,18 @@ class Default(WorkerEntrypoint):
         )
 
     async def _serve_profile_page(self, url, name, repositories=False):
-        # /@name — the FULL public profile: the same prebuilt dashboard
-        # profile document (sidebar, contribution heatmap, activity feed,
-        # repositories tab) with per-user head tags injected at serve time.
-        # dashboard.js detects the /@name path and renders the named account's
-        # public data instead of the logged-in session (public-profile mode).
-        # Eligibility mirrors the fediverse actor: active + not private —
-        # node-owner accounts get pages too, matching _ap_user_federates.
-        # Served identically to every viewer (personalization happens in
-        # dashboard.js), so the built page lives in the colo edge cache: it is
-        # the rel=me verification target every follower server GETs after an
-        # Update(Person), and those bursts must not each rebuild it at origin.
-        # _ap_broadcast_actor_update purges the key on profile changes.
+
+
+
+
+
+
+
+
+
+
+
+
         origin = url.scheme + "://" + url.netloc
         await ensure_schema(self.env)
         _, rec = await _account_row(self.env, name)
@@ -44447,10 +44447,10 @@ class Default(WorkerEntrypoint):
         except Exception:
             body = "<!doctype html><title>ForkMesh</title>"
         canonical = "%s/@%s" % (origin, quote(name))
-        # rel="me" is the reciprocal half of the fediverse Person actor's
-        # verified profile link (the actor's `url` is this page); the
-        # alternate link lets fediverse software discover the actor from the
-        # page URL.
+
+
+
+
         tags = (
             "<link rel=\"canonical\" href=\"%s\">"
             "<link rel=\"me\" href=\"%s\">"
@@ -44470,16 +44470,16 @@ class Default(WorkerEntrypoint):
         return page
 
     async def _serve_repo_page(self, request, url):
-        # The shared repo-detail document, plus per-repo head tags:
-        #  - <link rel="me" href="<repo actor url>"> — the reciprocal half of
-        #    the repo actor's verified "Repository" row: that row links this git
-        #    page, so Mastodon fetches it and looks for a rel=me back to the
-        #    actor's `url` (the /@owner.repo fediverse profile) to mark it green;
-        #  - <link rel="alternate" type="application/activity+json"> — lets
-        #    fediverse software discover the actor straight from the page URL.
-        # Identical for every viewer, and the rel=me verification target of
-        # the repo actor: edge-cached so follower-server verification bursts
-        # after an Update(Group) cost one origin build per colo per TTL.
+
+
+
+
+
+
+
+
+
+
         origin = url.scheme + "://" + url.netloc
         parts = [p for p in url.path.split("/") if p]
         owner = safe_segment(unquote(parts[0])) if len(parts) >= 2 else ""
@@ -44490,16 +44490,16 @@ class Default(WorkerEntrypoint):
         repo_record = {}
         social_version = ""
         if owner and repo:
-            # Only an explicit public catalog row may contribute names,
-            # description, actor links, or a shared cache entry. Private and
-            # missing paths intentionally receive the same generic app shell;
-            # authenticated client APIs decide whether the viewer may render
-            # repository data. This keeps URL probing non-disclosing.
-            #
-            # An organization repo URL is a public alias, not the encrypted
-            # catalog key. Resolve its linked node only for privacy/catalog
-            # reads; canonical, actor, card and displayed identity below must
-            # remain the organization URL the visitor actually requested.
+
+
+
+
+
+
+
+
+
+
             data_owner = await _org_repo_node(
                 self.env, owner, repo) or owner
             explicit_public = not await _repo_is_private(
@@ -44522,15 +44522,15 @@ class Default(WorkerEntrypoint):
                         and _catalog_record_matches_identity(
                             repo_record, data_owner, repo))
                 except Exception:
-                    # A crawler must never receive public metadata or a shared
-                    # cache entry when the signed record cannot be re-read.
+
+
                     explicit_public = False
                     repo_record = {}
                 if explicit_public:
                     social_version = _repository_social_version(repo_record)
-                    # A state-less legacy record may still render its generic
-                    # shell, but it cannot safely create a reusable social
-                    # cache entry until it republishes a commit/state pin.
+
+
+
                     if social_version:
                         cache_key = "%s/%s/%s?repo-state=%s" % (
                             origin, quote(owner), quote(repo),
@@ -44546,17 +44546,17 @@ class Default(WorkerEntrypoint):
             body = "<!doctype html><title>ForkMesh Dashboard</title>"
         if owner and repo and explicit_public and "</head>" in body:
             canonical = "%s/%s/%s" % (origin, quote(owner), quote(repo))
-            # The repo actor's `url` — the /@owner.repo fediverse profile — is
-            # the rel=me target that verifies this page's "Repository" row.
-            # Lowercased to match the actor id (handles are case-folded).
+
+
+
             fedi_profile = "%s/@%s.%s" % (origin, owner.lower(), repo.lower())
-            # OpenGraph/Twitter card so social + fediverse shares of the repo
-            # URL (the preview under a federated "new pull request" post, a
-            # Slack unfurl, etc.) render the repo's rendered info card — name,
-            # description and stats grid with the ForkMesh mark in the corner
-            # (adhoc #46, see repo_card_handler / og_card.py) — instead of a
-            # full-bleed logo. og:description carries the catalog description
-            # so the unfurl text matches the repo, not the generic shell copy.
+
+
+
+
+
+
+
             og_image = "%s/api/repo/%s/%s/card.png" % (
                 origin, quote(owner), quote(repo))
             if social_version:
@@ -44602,13 +44602,13 @@ class Default(WorkerEntrypoint):
         return page
 
     async def _serve_repo_profile_page(self, url, owner, repo):
-        # The repo actor's `url`: a lightweight, edge-cached fediverse profile —
-        # banner, avatar, bio, follower count and a feed of the repo's federated
-        # posts — so a Mastodon user who clicks the repo handle (in a mention or
-        # via the profile's external-link) lands on a social profile instead of
-        # the git-forge page (adhoc #50). The code is one click away. Fediverse
-        # clients that send an ActivityPub Accept header are handed the actor
-        # document by the caller; this is the HTML view for browsers.
+
+
+
+
+
+
+
         origin = url.scheme + "://" + url.netloc
         handle = ap.repo_handle(owner.lower(), repo.lower())
         await ensure_schema(self.env)
@@ -44637,7 +44637,7 @@ class Default(WorkerEntrypoint):
             return await self._serve_not_found_page(url)
         description = clean_string(
             (rec or {}).get("description", "") or "", 240).strip()
-        # Branding: owner-uploaded logo/banner (repo About tab), else defaults.
+
         icon_url = AP_AVATAR_PATH
         image_url = AP_BANNER_PATH
         media_rows = await d1_all(
@@ -44670,7 +44670,7 @@ class Default(WorkerEntrypoint):
         for row in post_rows or []:
             note_rec = await decrypt_row(self.env, row.get("data"))
             note = (note_rec or {}).get("note") or {}
-            content = note.get("content") or ""  # our own generated, safe HTML
+            content = note.get("content") or ""
             if not content:
                 continue
             when = ap.iso_utc(int(row.get("published") or 0))[:10]
@@ -44706,10 +44706,10 @@ class Default(WorkerEntrypoint):
         return page
 
     async def _serve_dashboard_asset(self, url, asset_rel):
-        # The per-page dashboard documents are generated by
-        # tools/build_dashboard_assets.py. env.ASSETS.fetch serves the static
-        # file directly from the assets binding, avoiding Pyodide CPU/GIL
-        # pressure on hot dashboard navigation.
+
+
+
+
         base = url.scheme + "://" + url.netloc + "/"
         try:
             resp = await self.env.ASSETS.fetch(base + asset_rel)
@@ -44722,13 +44722,13 @@ class Default(WorkerEntrypoint):
         })
 
     async def _serve_homepage(self, url):
-        # Root remains the regular product/source-code website for guests and
-        # signed-in visitors alike. It embeds the World in a bounded iframe and
-        # links to /world/ for full-screen play. no-cache permits ETag
-        # revalidation without pinning an old shell after deploy.
+
+
+
+
         base = url.scheme + "://" + url.netloc + "/"
-        # Stream the asset body rather than buffering and rebuilding the
-        # highest-traffic document in the Python isolate.
+
+
         try:
             resp = await self.env.ASSETS.fetch(base + "index.html")
             return JsResponse.new(resp.body, to_js({
@@ -44749,18 +44749,18 @@ class Default(WorkerEntrypoint):
             )
 
     async def _git_host(self, request, owner_raw, repo_raw):
-        # Legacy compatibility boundary. Public clone traffic never reaches
-        # this method; authorized private Git clients are directed to the
-        # owner-sealed archive transport without consuming their request body.
+
+
+
         owner = safe_segment(owner_raw)
         repo = safe_segment(repo_raw)
         if not owner or not repo:
             return Response("not found", status=404)
         url = urlparse(request.url)
         is_info = url.path.endswith("/info/refs")
-        # Named Git URLs never advertise or proxy private content. Authorized
-        # private clients discover an opaque locator in their ACL-gated catalog
-        # and use the dedicated identity-free HTTPS endpoint.
+
+
+
         repo_private = await _repo_is_private(self.env, owner, repo)
         if repo_private:
             return _private_replica_not_found()
@@ -44769,16 +44769,16 @@ class Default(WorkerEntrypoint):
             self.env, request, owner, repo, operation)
 
     async def _git_push(self, request, owner_raw, repo_raw):
-        # Direct HTTPS receive-pack is not implemented yet, so fail closed
-        # before reading a request body.
+
+
         del request
         owner = safe_segment(owner_raw)
         repo = safe_segment(repo_raw)
         if not owner or not repo:
             return Response("not found", status=404)
-        # Deliberate fail-closed protocol answer (every push probe by a git
-        # client or crawler lands here) — not a worker failure, so it carries
-        # the expected-degraded marker instead of logging an error per probe.
+
+
+
         return json_response({
             "error": "direct_https_receive_pack_required",
             "repositoryBytesAccepted": False,
@@ -44788,8 +44788,8 @@ class Default(WorkerEntrypoint):
 
 
 async def chat_history_recent(env, room_key):
-    # The last few days of retained (encrypted) messages for a room, oldest
-    # first, so a joining client can replay them in order.
+
+
     await ensure_schema(env)
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     rows = await d1_all(
@@ -44816,9 +44816,9 @@ def chat_history_replay_body(body):
 
 
 async def chat_history_since(env, room_key, since_ts=0):
-    # The same retained (encrypted) frames chat_history_recent replays to a
-    # joining socket, but stamped with their store time and filtered to what
-    # landed after `since_ts`, so an HTTP client can poll a room incrementally.
+
+
+
     await ensure_schema(env)
     try:
         since = int(since_ts or 0)
@@ -44849,10 +44849,10 @@ async def chat_history_store(env, room_key, msg_id, ts, body):
 
 
 async def _chat_history_prune_bounds(env, room_key):
-    # Enforce count and aggregate-byte limits in one deterministic statement.
-    # The body is an ASCII JSON envelope, so SQLite length(body) equals its UTF-8
-    # storage bytes. Window totals are newest-first; any older overflow rows are
-    # deleted without decrypting their contents.
+
+
+
+
     await d1_run(
         env,
         "DELETE FROM chat_history WHERE room_key=? AND msg_id IN ("
@@ -44870,8 +44870,8 @@ async def _chat_history_prune_bounds(env, room_key):
 
 
 async def chat_history_prune(env, room_key):
-    # Drop anything past the retention window, then enforce count and aggregate
-    # encrypted-byte limits before replaying the room.
+
+
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE room_key=? AND ts<?",
                  room_key, cutoff)
@@ -44879,11 +44879,11 @@ async def chat_history_prune(env, room_key):
 
 
 async def chat_history_prune_expired(env):
-    # chat_history_prune() above only runs when a client joins that specific
-    # room, so a room nobody reconnects to would otherwise retain messages
-    # past the 7-day window forever. Sweep every room's expired rows on the
-    # per-minute cron (adhoc #49) so retention is enforced regardless of
-    # traffic.
+
+
+
+
+
     await ensure_schema(env)
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     await d1_run(env, "DELETE FROM chat_history WHERE ts<?", cutoff)
@@ -44982,18 +44982,18 @@ class ForkMeshDiscordGate(DurableObject):
                 "status": 429, "data": None, "retryAfterMs": wait_ms,
             }, cache_control="no-store")
 
-        # Reserve before the outbound await. This closes the first-request
-        # race even when concurrent invocations arrive before Discord has
-        # advertised a bucket id.
+
+
+
         state["routes"][route_key] = now + self._RESERVATION_MS
         await self.ctx.storage.put(
             "rate_state", json.dumps(state, separators=(",", ":")))
         result = await _discord_provider_request(
             self.env, method, path, body)
         observed_at = int(Date.now())
-        # Another route may have completed during our provider await. Reload
-        # before merging this observation so disjoint bucket metadata cannot
-        # overwrite one another.
+
+
+
         state = await self._state(observed_at)
         state["routes"].pop(route_key, None)
         retry_ms = max(
@@ -45019,8 +45019,8 @@ class ForkMeshDiscordGate(DurableObject):
             "data": result.get("data"),
             "retryAfterMs": retry_ms,
         }
-        # Aggregate byte/message counters only; the capacity row never sees
-        # the request body or provider response.
+
+
         durable_object_traffic_note(
             self,
             bytes_in=len(raw.encode("utf-8")),
@@ -45054,10 +45054,10 @@ class ForkMeshCronWatchdog(DurableObject):
         notified_state = str(
             await self.ctx.storage.get("notified_state") or "")
 
-        # Only send "recovered" if recipients previously received "outage".
-        # If the provider is temporarily unavailable, leave the state intact;
-        # the next minute's completion heartbeat retries without duplicating a
-        # successful transition.
+
+
+
+
         if outage_started_at and notified_state == "down":
             if await _send_cron_watchdog_email(
                     self.env, True, outage_started_at, now):
@@ -45081,15 +45081,15 @@ class ForkMeshCronWatchdog(DurableObject):
             return
         deadline = last_completion_at + CRON_WATCHDOG_GRACE_MS
         if now < deadline:
-            # A heartbeat raced an already-dispatched alarm. Keep the newer
-            # deadline instead of manufacturing an outage.
+
+
             await self.ctx.storage.setAlarm(deadline)
             return
         if await _status_deploy_semaphore_active(self.env, now):
-            # A Worker rollout can interrupt the cron runner long enough to
-            # trip this independent watchdog. Keep observing, but do not turn
-            # expected deployment handoff time into an incident. The shared
-            # semaphore also includes the bounded post-activation grace.
+
+
+
+
             await self.ctx.storage.setAlarm(
                 now + CRON_WATCHDOG_GRACE_MS)
             return
@@ -45108,8 +45108,8 @@ class ForkMeshCronWatchdog(DurableObject):
             if delivered:
                 await self.ctx.storage.put("notified_state", "down")
                 return
-        # Retry an unavailable email provider/admin-recipient lookup without
-        # depending on the still-missing Cron Trigger.
+
+
         await self.ctx.storage.setAlarm(now + CRON_WATCHDOG_RETRY_MS)
 
 
@@ -45148,8 +45148,8 @@ class ForkMeshCronRunner(DurableObject):
             (minute_slot + 1) * CRON_RUNNER_INTERVAL_MS
             + CRON_RUNNER_ALARM_OFFSET_MS
         )
-        # Persist the successor before any D1, asset, network, or Python task
-        # work. Even an uncatchable runtime/resource-limit kill leaves it armed.
+
+
         await self.ctx.storage.setAlarm(next_alarm)
 
         completed_slot = int(
@@ -45167,10 +45167,10 @@ class ForkMeshCronRunner(DurableObject):
                 _safe_error_text(error)[:1000],
             )
             await self.ctx.storage.put("last_failure_at", int(Date.now()))
-            # Workers Logs stays off, so a swallowed batch failure would
-            # otherwise be invisible: send it straight to Sentry. Best-effort
-            # — the already-armed successor alarm must survive a Sentry
-            # outage too.
+
+
+
+
             try:
                 await capture_sentry_error(
                     self.env, 500, "alarm", "/cron-runner/alarm",
@@ -45295,13 +45295,13 @@ class ForkMeshWorld(DurableObject):
                 for peer in peers):
             return json_response({"error": "ticket_replayed"}, status=409)
 
-        # One account is one avatar. When the same signed-in person joins from
-        # a second device (or a second visible tab), their earlier socket is
-        # retired here instead of standing beside them as a twin: every viewer
-        # keeps seeing exactly one figure for that account, and it is the one
-        # the person is actually driving. Only the ticket-verified account name
-        # can fold two sockets together — a guest may type any display name, so
-        # guests are never combined and no unverified name can evict anyone.
+
+
+
+
+
+
+
         account_key = world_protocol.account_presence_key(
             trusted_claim.get("name", ""))
         if account_key:
@@ -45314,8 +45314,8 @@ class ForkMeshWorld(DurableObject):
                     peer, WORLD_ACCOUNT_TAKEOVER_CODE,
                     "moved to your newest device")
             if replaced:
-                # The retired sockets release their arrival cells and drop out
-                # of the newcomer's welcome snapshot.
+
+
                 peers = self._live_sockets()
 
         state = world_protocol.default_presence(peer_id, now)
@@ -45323,8 +45323,8 @@ class ForkMeshWorld(DurableObject):
         for peer in peers:
             blocked_slots.append(_ws_attr(peer, "arrival_slot", -1))
             if _ws_attr(peer, "space", "") == "town-square":
-                # A visitor who restored a saved spot onto an arrival cell
-                # blocks that cell even without a matching reservation.
+
+
                 blocked_slots.append(
                     world_protocol.arrival_slot_near_position(
                         _ws_attr(peer, "x", None), _ws_attr(peer, "z", None)))
@@ -45353,8 +45353,8 @@ class ForkMeshWorld(DurableObject):
         except Exception:
             client_user_agent = ""
         if trusted_claim:
-            # The name and operator count remain private attachment fields
-            # until the owner's first presence frame opts into each one.
+
+
             state["accountStatus"] = trusted_claim["accountStatus"]
 
         client, server = WebSocketPair.new().object_values()
@@ -45371,8 +45371,8 @@ class ForkMeshWorld(DurableObject):
             client_user_agent=client_user_agent,
             ticket_nonce=ticket_nonce)
 
-        # The only snapshot is the state of sockets alive right now. It is sent
-        # directly from runtime attachments and is never persisted or replayed.
+
+
         snapshot = [
             self._presence_for_viewer(server, peer)
             for peer in peers
@@ -45429,8 +45429,8 @@ class ForkMeshWorld(DurableObject):
             "type": "mirror-push",
             "node": node,
             "repo": repo,
-            # A short id is plenty for the announcement; the full head comes
-            # from the signed mirror payload each client refreshes.
+
+
             "commit": commit[:12],
             "changedFiles": changed_files,
         })
@@ -45531,24 +45531,24 @@ class ForkMeshWorld(DurableObject):
             trusted_name or "", "Guest", trusted_node_count)
         attachment = {
             **world_protocol.public_presence(state),
-            # Kept only in this live socket attachment so a user's privacy
-            # control can restore their edge-derived flag after hiding it.
+
+
             "country_source":
                 world_protocol.approximate_country_code(country_source),
-            # These server-validated sources never leave the attachment
-            # directly. sanitize_message exposes them only when the user opts
-            # into name/operator-belt sharing.
+
+
+
             "trusted_name": trusted_fields["name"] if trusted_name else "",
             "trusted_node_count": trusted_fields["nodeCount"],
-            # The private "one account, one avatar" key. It never reaches a
-            # frame; it only lets a later connection from the same verified
-            # account retire this socket instead of standing beside it.
+
+
+
             "account_key": (
                 world_protocol.account_presence_key(trusted_fields["name"])
                 if trusted_name else ""),
-            # These opaque rotating subjects and authorization bit remain
-            # private attachment data. Only `_presence_for_viewer` can project
-            # the handles, and only to a server-verified administrator.
+
+
+
             "is_admin": bool(is_admin),
             "ip_token": (
                 str(ip_token)
@@ -45558,10 +45558,10 @@ class ForkMeshWorld(DurableObject):
                 str(agent_token)
                 if re.fullmatch(r"[a-f0-9]{64}", str(agent_token or ""))
                 else ""),
-            # Ephemeral guest-moderation detail. These fields live only in the
-            # active socket attachment and are projected only to a
-            # server-verified platform administrator by
-            # `_presence_for_viewer`.
+
+
+
+
             "client_ip": clean_string(client_ip or "", 64),
             "client_user_agent": clean_string(
                 client_user_agent or "", 1024),
@@ -45571,15 +45571,15 @@ class ForkMeshWorld(DurableObject):
                     r"[A-Za-z0-9_-]{8,32}",
                     str(ticket_nonce or ""))
                 else ""),
-            # One-use, live-socket-only consent requests. They are never
-            # persisted, broadcast, or exposed in the public presence record.
+
+
             "pending_knocks": pending_knocks,
-            # The same one-use shape for handshake offers this socket has
-            # received: only an offer parked here can be shaken back or
-            # declined, so nobody can answer a greeting they were never sent.
+
+
+
             "pending_handshakes": pending_handshakes,
-            # A room-local collision-avoidance index. It is never broadcast,
-            # persisted, or derived from an account/network identifier.
+
+
             "arrival_slot": int(arrival_slot),
             "last": int(last or 0),
             "rl_start": int(rate_start or 0),
@@ -45634,9 +45634,9 @@ class ForkMeshWorld(DurableObject):
         live = []
         stale_ids = []
         for socket in sockets:
-            # A close/error path marks the attachment before asking the runtime
-            # to close it. Hibernation may still return that socket briefly;
-            # exclude it without producing a duplicate leave frame.
+
+
+
             if bool(_ws_attr(socket, "departed", False)):
                 if cleanup:
                     self._safe_close(socket, 1000, "")
@@ -45652,9 +45652,9 @@ class ForkMeshWorld(DurableObject):
                 continue
             live.append(socket)
 
-        # Tell remaining clients to remove stale avatars immediately. Marking
-        # the socket departed before close prevents webSocketClose from sending
-        # the same leave twice.
+
+
+
         if cleanup and stale_ids:
             for stale_id in stale_ids:
                 frame = {"type": "leave", "id": stale_id}
@@ -45668,8 +45668,8 @@ class ForkMeshWorld(DurableObject):
             _ws_attr(ws, "rl_count", 0),
             now,
         )
-        # Invalid or over-limit frames do not refresh last-seen and therefore
-        # cannot keep a dead/spamming avatar alive indefinitely.
+
+
         self._save_attachment(
             ws, state,
             last=_ws_attr(ws, "last", 0),
@@ -45724,8 +45724,8 @@ class ForkMeshWorld(DurableObject):
             return
         allowed, rate_start, rate_count = self._rate_step(
             ws, state, now)
-        # Every frame (including a heartbeat or invalid JSON) is an opportunity
-        # to reap peers that vanished without a close event.
+
+
         self._live_sockets(cleanup=True)
 
         try:
@@ -45742,10 +45742,10 @@ class ForkMeshWorld(DurableObject):
             disposable = kind in ("move", "presence", "ping")
             hard_limit = world_protocol.WORLD_RATE_HARD_MAX_PER_WINDOW
             if disposable and rate_count <= hard_limit:
-                # Keep the latest accepted attachment as the coalesced state.
-                # A subsequent frame in a fresh window will carry the browser's
-                # newest position/profile, so a normal connect+movement burst
-                # sheds traffic instead of tearing down the multiplayer socket.
+
+
+
+
                 return
             self._safe_close(
                 ws,
@@ -45755,11 +45755,11 @@ class ForkMeshWorld(DurableObject):
             return
         interaction = world_protocol.sanitize_interaction(payload, state)
         if interaction is not None:
-            # Home and handshake interactions are targeted, text-free consent
-            # frames. The server keeps at most eight one-use knocks and eight
-            # one-use handshake offers inside the live socket attachment;
-            # hibernation/disconnect naturally expires them. Sender identity
-            # always comes from the attachment, never JSON.
+
+
+
+
+
             self._save_attachment(
                 ws, state, last=now,
                 rate_start=rate_start, rate_count=rate_count)
@@ -45788,8 +45788,8 @@ class ForkMeshWorld(DurableObject):
                         })
                         break
             elif interaction["kind"] == "handshake-offer":
-                # A handshake offer reaches one live peer and nobody else, so
-                # an unanswered greeting stays between the two of them.
+
+
                 for peer in self._live_sockets(cleanup=True):
                     if _ws_attr(peer, "id") == interaction["target"]:
                         pending = list(
@@ -45836,9 +45836,9 @@ class ForkMeshWorld(DurableObject):
                             })
                             break
                 else:
-                    # Two people shaking hands is a public gesture: the room
-                    # animates the pair the same way it animates an emote. The
-                    # frame carries the two peer ids and nothing else.
+
+
+
                     self._broadcast({
                         "type": "interaction",
                         "kind": "handshake",
@@ -45903,14 +45903,14 @@ class ForkMeshWorld(DurableObject):
 
     async def webSocketClose(self, ws, code, reason, was_clean):
         self._depart(ws, 1000, "")
-        # A closing socket is the last chance to bank this instance's pending
-        # byte counts before the object hibernates.
+
+
         await durable_object_traffic_flush(self, force=True)
 
     async def webSocketError(self, ws, error):
         self._depart(ws, 1011, "socket error")
 
-    # Hibernation events may be dispatched under either naming convention.
+
     web_socket_message = webSocketMessage
     web_socket_close = webSocketClose
     web_socket_error = webSocketError
@@ -45929,8 +45929,8 @@ class ForkMeshWorld(DurableObject):
     def _broadcast(self, frame, exclude_id=None, budgeted=False,
                    moderation_subject=None):
         if budgeted and not self._broadcast_admitted(int(Date.now())):
-            # State still updates in the sender's attachment, so the next
-            # welcome snapshot is current even when a hot movement delta drops.
+
+
             return
         for peer in self._live_sockets(cleanup=True):
             if exclude_id and _ws_attr(peer, "id") == exclude_id:
@@ -46005,11 +46005,11 @@ class ForkMeshOfficeRoom(DurableObject):
                 for peer in peers):
             return json_response({"error": "ticket_replayed"}, status=409)
 
-        # One account is one person in the room, exactly as in the Town Square
-        # (see ForkMeshWorld). A member who opens this meeting on a second
-        # device replaces their earlier socket instead of occupying two chairs
-        # and two rows of "In this room". The fold key is the account binding
-        # the room ticket was minted against, never a typed name.
+
+
+
+
+
         account_bi = str(claim.get("account_bi") or "")
         if re.fullmatch(r"[0-9a-f]{64}", account_bi):
             replaced = [
@@ -46022,8 +46022,8 @@ class ForkMeshOfficeRoom(DurableObject):
                     peer, WORLD_ACCOUNT_TAKEOVER_CODE,
                     "moved to your newest device")
             if replaced:
-                # The retired sockets release their seats and drop out of the
-                # newcomer's participant snapshot.
+
+
                 peers = self._live_sockets()
 
         live_ids = {
@@ -46294,10 +46294,10 @@ class ForkMeshOfficeRoom(DurableObject):
             return False
         try:
             if session_id.startswith("desktop_"):
-                # Desktop admission was authorized by the account-key signature
-                # before its HMAC ticket was issued. It has no browser
-                # account_sessions row, so recheck the active account directly;
-                # channel version/membership are still checked below each time.
+
+
+
+
                 account = await d1_first(
                     self.env,
                     "SELECT data,is_admin FROM users WHERE user_bi=?",
@@ -46512,13 +46512,13 @@ class ForkMeshOfficeRoom(DurableObject):
 
 
 class ForkMeshRoom(DurableObject):
-    # Encrypted chat relay on the WebSocket Hibernation API. Sockets are accepted
-    # via ctx.acceptWebSocket and serviced by the webSocketMessage/Close handlers
-    # below, so the Durable Object is evicted from memory while a room is idle and
-    # bills ~no duration. Connection state lives in the runtime
-    # (ctx.getWebSockets("chat")), never in instance attributes — those would not
-    # survive eviction. The read-only "observer" count socket was retired: the
-    # live count is now served over HTTP via the cached /api/network/stats.
+
+
+
+
+
+
+
     traffic_binding = "FORKMESH_MAINNODE_ROOM"
 
     async def fetch(self, request):
@@ -46540,7 +46540,7 @@ class ForkMeshRoom(DurableObject):
         is_websocket = bool(upgrade) and upgrade.lower() == "websocket"
 
         if not is_websocket:
-            # One-shot snapshot of the live client count (used by network_stats).
+
             return json_response({"ok": True, "clients": self._client_count()})
 
         if path.endswith("/clients"):
@@ -46549,8 +46549,8 @@ class ForkMeshRoom(DurableObject):
         if self._client_count() >= MAX_CONNECTIONS:
             return json_response({"error": "room_full"}, status=429)
 
-        # The room key identifies this room across hibernation; stash it on the
-        # socket so webSocketMessage can scope retained history to this room.
+
+
         account_values = parse_qs(
             parsed_url.query, keep_blank_values=False
         ).get("account") or []
@@ -46570,8 +46570,8 @@ class ForkMeshRoom(DurableObject):
             "last": int(Date.now()),
         }))
 
-        # Replay retained (still-encrypted) history to the joining client so new
-        # users see some recent backlog even when no peer is online to send it.
+
+
         if room_key:
             try:
                 await chat_history_prune(self.env, room_key)
@@ -46629,9 +46629,9 @@ class ForkMeshRoom(DurableObject):
         return sockets
 
     def _rate_ok(self, ws):
-        # Per-socket token bucket kept in the hibernation attachment: at most
-        # ROOM_MSG_MAX_PER_WINDOW frames per ROOM_MSG_WINDOW_MS. Returns False when
-        # the sender is over budget (the frame should be dropped).
+
+
+
         now = int(Date.now())
         try:
             start = int(_ws_attr(ws, "rl_start", 0) or 0)
@@ -46662,16 +46662,16 @@ class ForkMeshRoom(DurableObject):
         if len(message.encode("utf-8")) > MAX_TEXT_BYTES:
             self._safe_close(ws, 1009, "message too large")
             return
-        # Drop frames from a socket that is flooding (don't relay or retain them).
+
         if not self._rate_ok(ws):
             return
         if not await self._private_room_current(ws):
             self._close_all_chat_sockets(1008, "room access revoked")
             return
-        # Replay markers are server-owned transport metadata. Chat clients send
-        # only encrypted envelopes; dropping plaintext controls and stripping a
-        # forged replay bit prevents a peer from flushing another reader's
-        # backlog or disguising a live message as retained history.
+
+
+
+
         try:
             envelope = json.loads(message)
         except Exception:
@@ -46699,7 +46699,7 @@ class ForkMeshRoom(DurableObject):
                 durable_object_traffic_note(self, bytes_out=frame_bytes)
         await durable_object_traffic_flush(self)
 
-        # Retain durable conversation messages (still encrypted) for late joiners.
+
         await self._maybe_retain(ws, message)
 
     async def _maybe_retain(self, ws, message):
@@ -46708,7 +46708,7 @@ class ForkMeshRoom(DurableObject):
             return
         message_bytes = len(message.encode("utf-8"))
         if message_bytes > CHAT_HISTORY_MAX_BODY:
-            return  # don't retain very large frames (e.g. file transfers)
+            return
         try:
             envelope = json.loads(message)
         except Exception:
@@ -46721,8 +46721,8 @@ class ForkMeshRoom(DurableObject):
         if not await self._retention_ingress_admitted(message_bytes):
             return
         try:
-            # The message id lives inside the ciphertext, so key retention on a
-            # hash of the opaque frame (dedupes accidental re-relays).
+
+
             msg_id = (await sha256_hex(message))[:40]
             await chat_history_store(self.env, room_key, msg_id,
                                      int(Date.now()), message)
@@ -46897,7 +46897,7 @@ class ForkMeshRoom(DurableObject):
     async def webSocketError(self, ws, error):
         return
 
-    # Hibernation events may be dispatched under either naming convention.
+
     web_socket_message = webSocketMessage
     web_socket_close = webSocketClose
     web_socket_error = webSocketError
@@ -46910,19 +46910,19 @@ class ForkMeshRoom(DurableObject):
 
 
 class ForkMeshNodes(DurableObject):
-    # Per-owner push channel for desktop/headless nodes, on the WebSocket
-    # Hibernation API like ForkMeshRoom: sockets are accepted via
-    # ctx.acceptWebSocket(["node"]) and the live set is read back from
-    # ctx.getWebSockets("node"), so an idle-but-connected fleet bills ~no
-    # duration. Connection state lives only in the runtime/socket attachments
-    # — instance attributes would not survive eviction.
-    #
-    # This DO deliberately carries NOTHING but payload-free
-    # {"type":"event","topic","repo"} frames (relay -> node) and
-    # {"type":"ping"} keepalives (node -> relay). Repository bytes, inbox
-    # items and control commands all stay on their existing signed HTTPS
-    # routes; a pushed frame only tells the node to run the one consolidated
-    # GET /api/sync it would otherwise run on the slow fallback poll.
+
+
+
+
+
+
+
+
+
+
+
+
+
     traffic_binding = "FORKMESH_NODES"
 
     async def fetch(self, request):
@@ -46933,9 +46933,9 @@ class ForkMeshNodes(DurableObject):
 
         if not is_websocket:
             if path.endswith("/notify"):
-                # Internal-only (node_events_handler forwards only WebSocket
-                # upgrades, so this action is unreachable from the public
-                # router): fan one event frame out to every live node socket.
+
+
+
                 query = parse_qs(parsed_url.query)
                 frame = json.dumps({
                     "type": "event",
@@ -46955,7 +46955,7 @@ class ForkMeshNodes(DurableObject):
                             self, bytes_out=frame_bytes, messages=1)
                 await durable_object_traffic_flush(self)
                 return json_response({"ok": True, "delivered": delivered})
-            # One-shot snapshot of the live node count (internal diagnostics).
+
             return json_response(
                 {"ok": True, "nodes": len(self._live_node_sockets())})
 
@@ -46990,9 +46990,9 @@ class ForkMeshNodes(DurableObject):
         return sockets
 
     async def webSocketMessage(self, ws, message):
-        # Nodes only ever send small {"type":"ping"} keepalives; anything else
-        # is dropped (rate-limited) or the socket is closed. Each accepted
-        # frame refreshes the socket's staleness clock in its attachment.
+
+
+
         if not isinstance(message, str):
             self._safe_close(ws, 1003, "text frames only")
             return
@@ -47041,7 +47041,7 @@ class ForkMeshNodes(DurableObject):
     async def webSocketError(self, ws, error):
         return
 
-    # Hibernation events may be dispatched under either naming convention.
+
     web_socket_message = webSocketMessage
     web_socket_close = webSocketClose
     web_socket_error = webSocketError

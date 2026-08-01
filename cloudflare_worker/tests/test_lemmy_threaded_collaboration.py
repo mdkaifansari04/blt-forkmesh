@@ -52,8 +52,8 @@ def test_worker_dispatches_lifecycle_handlers_and_keeps_separate_storage():
     assert "parent_remote_id_bi" in schema
     assert "parent_remote_id_bi" in migration
     assert "lifecycle" in migration
-    # Delete is a content-free lifecycle mutation, not a hard delete that could
-    # orphan nested replies and not a native event-store write.
+
+
     delete_start = entry.index("async def _ap_handle_delete")
     delete_end = entry.index("async def ap_inbox_handler", delete_start)
     delete_handler = entry[delete_start:delete_end]

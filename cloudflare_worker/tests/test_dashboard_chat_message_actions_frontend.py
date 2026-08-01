@@ -71,7 +71,7 @@ def test_edit_frame_targets_the_message_and_is_durable():
     assert 'makePlain("edit"' in save
     assert "target: record.id" in save
     assert "runWhenConnected(() => send(plain))" in save
-    # Guard mirrors the receiver's: never broadcast an edit for another author.
+
     assert "record.senderId !== selfId" in save
     assert '"edit"' in CHAT[CHAT.index("const DURABLE_TYPES"):][:200]
 
@@ -86,9 +86,9 @@ def test_delete_frame_targets_the_message_and_is_durable():
 
 
 def test_delete_is_confirmed_without_blocking_the_world_embed():
-    # Deleting is irreversible for every reader, so it takes a second click —
-    # inline, because this chat also runs inside the World's same-origin
-    # iframe, where a blocking window.confirm() would freeze the host frame.
+
+
+
     request = _region("function requestMessageDelete(", "function confirmMessageDelete(")
     code = "\n".join(
         line for line in request.splitlines() if not line.strip().startswith("//")
@@ -102,16 +102,16 @@ def test_delete_is_confirmed_without_blocking_the_world_embed():
 def test_edited_messages_are_marked_for_readers():
     assert "chat-edited" in CHAT
     edit_branch = _region('} else if (type === "edit") {', '} else if (type === "delete") {')
-    # An inbound edit re-renders the text and stamps the marker, so a rewritten
-    # message never silently replaces what a reader already saw.
+
+
     assert "renderMessageText(rec.textEl, rec.text)" in edit_branch
     assert "markEdited(rec," in edit_branch
 
 
 def test_actions_are_hidden_until_the_row_is_hovered_or_focused():
-    # The pre-built dashboard/tailwind.css carries no group-hover variant, so
-    # the reveal has to be hand-written CSS in the shell (and therefore in the
-    # built pages too).
+
+
+
     assert "group-hover:opacity-100" not in CHAT
     for source in (SHELL, CHAT_PAGE):
         assert ".chat-message-actions {" in source
@@ -120,8 +120,8 @@ def test_actions_are_hidden_until_the_row_is_hovered_or_focused():
 
 
 def test_hidden_controls_toggle_display_not_the_hidden_attribute():
-    # Tailwind's `.flex` utility outranks the [hidden] preflight rule in the
-    # pre-built stylesheet, so `el.hidden = true` would leave the row visible.
+
+
     actions = _region("function messageActionButton(", "// The rail's mini chat")
     assert ".hidden = true" not in actions
     assert 'el.style.display = visible ? "" : "none"' in actions

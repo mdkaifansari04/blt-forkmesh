@@ -8,10 +8,10 @@ import '../theme.dart';
 import '../widgets/fm_ui.dart';
 import 'orgs_screen.dart';
 
-/// Manage one organization: its profile, member roster, teams and their
-/// permissions, and the repos linked behind its `/<org>/<repo>` aliases. Write
-/// controls appear only when the viewer is an owner/admin (from `viewerRole`),
-/// and every write surfaces the Worker's rejection reason.
+
+
+
+
 class OrgDetailScreen extends StatefulWidget {
   const OrgDetailScreen({super.key, required this.orgName});
 
@@ -224,7 +224,7 @@ class _OrgDetailScreenState extends State<OrgDetailScreen> {
     );
   }
 
-  // --- Members ---------------------------------------------------------------
+
 
   Widget _membersSection() {
     return _Section(
@@ -254,7 +254,7 @@ class _OrgDetailScreenState extends State<OrgDetailScreen> {
     );
   }
 
-  // --- Teams -----------------------------------------------------------------
+
 
   Widget _teamsSection() {
     return _Section(
@@ -308,7 +308,7 @@ class _OrgDetailScreenState extends State<OrgDetailScreen> {
     if (mounted) _load();
   }
 
-  // --- Repos -----------------------------------------------------------------
+
 
   Widget _reposSection() {
     return _Section(
@@ -376,11 +376,11 @@ class _OrgDetailScreenState extends State<OrgDetailScreen> {
   }
 }
 
-// --- Team detail -------------------------------------------------------------
 
-/// Manage one team's roster: which existing org members belong to it. Team
-/// membership can only ever raise a member's permission (the Worker rejects
-/// non-members), so the add picker is limited to current org members.
+
+
+
+
 class _TeamDetailScreen extends StatefulWidget {
   const _TeamDetailScreen({
     required this.orgName,
@@ -554,7 +554,7 @@ class _TeamDetailScreenState extends State<_TeamDetailScreen> {
   }
 }
 
-// --- Shared section + row widgets -------------------------------------------
+
 
 class _Section extends StatelessWidget {
   const _Section({
@@ -879,7 +879,7 @@ class _PickMemberSheet extends StatelessWidget {
   }
 }
 
-// --- Prompt sheets -----------------------------------------------------------
+
 
 class _MemberInput {
   const _MemberInput(this.name, this.role);

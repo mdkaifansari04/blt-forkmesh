@@ -15,7 +15,7 @@ AUTH_PAGES = (
 
 
 def _read(page: Path) -> str:
-    # dashboard.js is built from ordered public/dashboard/js/*.js fragments.
+
     if page.name == "dashboard.js":
         return assembled_dashboard_js()
     return page.read_text(encoding="utf-8")
@@ -126,7 +126,7 @@ def test_signup_posts_single_signup_request_not_payment_or_reserve_flow():
 
 
 def test_dashboard_profile_has_email_verification_and_payout_wallet_controls():
-    # Assert against the composed dashboard shell (see _dashboard_shell).
+
     dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
@@ -256,8 +256,8 @@ def test_dashboard_profile_page_js_checks_availability_renames_and_deletes_accou
     assert "deleteAccount" in dashboard_js
     assert "deleteAccount: true" in dashboard_js
     assert "localStorage.removeItem(\"forkmesh.session\")" in dashboard_js
-    # Reaching settings is a real navigation now; the account panels are
-    # settings sub-tabs restored from the URL.
+
+
     assert 'setSettingsSection(settingsSectionFromPath(), { scroll: false })' in dashboard_js
 
 

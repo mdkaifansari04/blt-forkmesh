@@ -35,8 +35,8 @@ import {
 } from "./world-office-tower.js";
 import { createWorldSky } from "./world-sky.js";
 import { WORKER_FOOTPRINT } from "./worker-footprint.js";
-// Side-effect import: ForkMesh's own QR generator publishes globalThis.ForkMeshQR,
-// used for the reward-pool treasury address board.
+
+
 import "../qr.js";
 
 const OUTFIT_COLOR_HEX = Object.fromEntries(
@@ -55,23 +55,23 @@ const BEACH_ROAD_MAX_X = BEACH_CENTER_X - BEACH_RADIUS + 12;
 const BEACH_ROAD_HALF_WIDTH = 14;
 const REPOSITORY_ISLAND_CENTER_X = 130;
 const REPOSITORY_ISLAND_RING_RADIUS = 31;
-// The satellite districts are joined by broad landscaped causeways, not
-// narrow bridges. These same dimensions drive both geometry and movement so
-// the visible land and the avatar's walkable surface cannot drift apart.
+
+
+
 const REPOSITORY_CONNECTION_MIN_X = 78;
 const REPOSITORY_CONNECTION_MAX_X = 103;
 const LEADERBOARD_ISLAND_CENTER_X = -130;
 const LEADERBOARD_CONNECTION_MIN_X = -103;
 const LEADERBOARD_CONNECTION_MAX_X = -78;
 const MEMBER_ISLAND_CENTER_Z = 130;
-// Carry the south promenade beneath the Members Circle instead of stopping at
-// its edge. The slightly raised dirt disk hides the final stretch, so visitors
-// see one route meeting the clearing without a pavement/dirt seam.
+
+
+
 const MEMBER_PATH_END_Z = MEMBER_ISLAND_CENTER_Z;
-// Every town promenade is cut from the same slab. Keeping its width, depth,
-// and center plane in one place prevents adjacent segments from producing the
-// doubled edges and hairline height changes that are especially visible from
-// the zoomed-out camera.
+
+
+
+
 const WORLD_PATH_WIDTH = OFFICE_BRIDGE_WIDTH;
 const WORLD_PATH_HEIGHT = 0.08;
 const WORLD_PATH_SURFACE_Y = 0.105;
@@ -79,12 +79,12 @@ const WORLD_PATH_CENTER_Y =
   WORLD_PATH_SURFACE_Y - WORLD_PATH_HEIGHT / 2;
 const DISTRICT_GROUND_RADIUS = 48;
 const REPOSITORY_GROUND_RADIUS = REPOSITORY_ISLAND_RING_RADIUS + 7;
-// Base (from-rest) speed. Raised so keyboard movement leaves standstill with
-// more pace by default; multiplied by the per-device move-speed control.
+
+
 const PLAYER_SPEED = 6.4;
 const PLAYER_MAX_SPEED = 13;
-// Holding either Shift key is an explicit sprint: fast enough to cross the
-// World quickly, while still using the ordinary collision and presence path.
+
+
 const PLAYER_SPRINT_MULTIPLIER = 2.6;
 const BIKE_RIDE_SPEED_MULTIPLIER = 2.15;
 const BIKE_RIDING_ACTIVITY = "riding the World bike lane";
@@ -103,20 +103,20 @@ const JETPACK_HORIZONTAL_SPEED = 30;
 const JETPACK_VERTICAL_SPEED = 22;
 const JETPACK_MAX_ALTITUDE = 480;
 const JETPACK_FLYING_ACTIVITY = "flying with a jetpack";
-// Recreation now belongs to the Office campus garden instead of occupying the
-// Town Square lawn. Both fixtures remain on the same continuous walk surface.
+
+
 const GYM_POSITION = Object.freeze([66, 0.14, -137]);
 const SWING_SET_POSITION = Object.freeze([43, 0, -137]);
 const INSTANCE_GARDEN_POSITION = Object.freeze([-52, 0, -140]);
 const GYM_HEAVY_WEIGHT_LB = 315;
 const GYM_MAX_WEIGHT_LB = 1200;
-// Double-clicking the ground sends the avatar to that spot at a dash speed far
-// above the walking cap, so crossing the whole square takes a couple of seconds
-// without teleporting the avatar out from under the camera.
+
+
+
 const PLAYER_DASH_SPEED = 48;
 const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
-// Clears the complete eleven-storey Office tower (176 units) and gives normal
-// walking input enough air time to cross its 170-unit width.
+
+
 const PLAYER_SUPER_JUMP_VELOCITY = 82;
 const PLAYER_SUPER_JUMP_MOVE_MULTIPLIER = 3.5;
 const ROOF_PARACHUTE_DEPLOY_VELOCITY = -0.35;
@@ -125,17 +125,17 @@ const ROOF_PARACHUTE_GRAVITY = 4.8;
 const ROOF_PARACHUTE_COLLAPSE_MS = 900;
 const CAMERA_OFFSET = [17, 16, 21];
 const CAMERA_DISTANCE = Math.hypot(...CAMERA_OFFSET);
-// Let players pull all the way back to a map-scale view where the World is a
-// small speck. The enlarged far plane keeps that overview visible instead of
-// clipping the ground and distant landmarks.
+
+
+
 const CAMERA_ZOOM_MIN = 0.06;
 const CAMERA_ZOOM_MAX = 28;
 const CAMERA_FAR_PLANE = 1800;
 const CAMERA_LOOK_SENSITIVITY = 0.0022;
 const RENDER_STALL_THRESHOLD_MS = 500;
-// DevTools console work is surprisingly expensive while WebGL is already
-// behind. Aggregate repeated stalls and emit at most one compact warning per
-// window instead of making a slow frame slower once every second.
+
+
+
 const RENDER_STALL_LOG_COOLDOWN_MS = 5 * 60_000;
 const MOVEMENT_INPUT_LOG_COOLDOWN_MS = 5 * 60_000;
 const MOVEMENT_INPUT_DELAY_THRESHOLD_MS = 150;
@@ -144,26 +144,26 @@ const SHADOW_MAP_BUSY_RETRY_MS = 1_000;
 const SHADOW_MAP_STALL_COOLDOWN_MS = 10_000;
 const SCENE_LOD_SAMPLE_MS = 500;
 const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
-// Movement, camera controls, and rendering retain display cadence. Decorative
-// callbacks have their own budget: compact GPUs update them at 30 Hz and a
-// zoomed-out overview at 20 Hz, where sub-pixel fire/foliage changes cannot
-// justify running every shader-adjacent CPU update on every frame.
+
+
+
+
 const VISUAL_ANIMATION_COMPACT_MS = 1000 / 30;
 const VISUAL_ANIMATION_FAR_MS = 1000 / 20;
 const VISUAL_ANIMATION_DESKTOP_MS = 1000 / 30;
 const LOCAL_POINT_LIGHT_BUDGET_DESKTOP = 4;
 const LOCAL_POINT_LIGHT_BUDGET_COMPACT = 2;
-// Dragging upward lowers the orbit eye beneath the target, which is how this
-// camera looks into the sky. Allow the full arc in both directions.
+
+
 const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
-// Stop just shy of vertical so the camera stays numerically stable while a
-// player can still look directly into the sky.
+
+
 const CAMERA_PITCH_MAX = Math.PI / 2 - 0.01;
 const WORLD_GROUND_Y = 0;
 const CAMERA_GROUND_CLEARANCE = 0.6;
-// Pull the third-person eye close before it crosses the Office façade. Keeping
-// the same chase distance on both sides of the doorway prevents the camera
-// lerp from briefly travelling through the building shell during checkout.
+
+
+
 const OFFICE_EXIT_CAMERA_ZOOM = 0.48;
 const FIRST_PERSON_EYE_HEIGHT = 2.2;
 const FIRST_PERSON_ZOOM_MIN = 0.25;
@@ -176,22 +176,22 @@ const OFFICE_HEIGHT = OFFICE_FLOOR_HEIGHT;
 const OFFICE_LOBBY_SURFACE_Y = 0.38;
 const OFFICE_INTERIOR_WALL_LIMIT = OFFICE_FRONT_Z - 0.54;
 const OFFICE_DOOR_HEIGHT = OFFICE_HEIGHT;
-// Commit entry only after the avatar's complete collision capsule has cleared
-// the inner face of the jamb. The old trigger sat outside the facade, which
-// counted visitors as indoors and switched colliders before physical entry.
+
+
+
 const OFFICE_DOORWAY_ENTRY_Z =
   OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.06;
-// This open tunnel spans both sides of the facade and gives a rejected entry
-// callback several inward frames to retry without ever creating a wall.
+
+
 const OFFICE_DOORWAY_APPROACH_Z =
   OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS + 0.9;
 const OFFICE_DOORWAY_PASSAGE_MIN_Z = OFFICE_DOORWAY_ENTRY_Z - 2;
-// The generic interior rectangle stops 0.65 units shy of the wall. Overlap
-// the doorway tunnel with that exact edge so there is no disconnected sliver
-// for the lobby collider to reject just after the entry handoff.
+
+
+
 const OFFICE_DOORWAY_INTERIOR_JOIN_Z =
   OFFICE_FRONT_Z - OFFICE_AVATAR_RADIUS - 0.7;
-// Leaving is counted only after the whole avatar clears the outer jamb.
+
 const OFFICE_INTERIOR_EXIT_Z =
   OFFICE_FRONT_Z + OFFICE_AVATAR_RADIUS + 0.06;
 const OFFICE_ELEVATOR_HALF_WIDTH = 5;
@@ -203,9 +203,9 @@ const OFFICE_FLOOR_WARP_DOOR_SPACING = 5.95;
 const OFFICE_FLOOR_WARP_DOOR_START_X = -81.2;
 const OFFICE_FLOOR_WARP_DOOR_Z = -OFFICE_DEPTH / 2 + 0.34;
 const OFFICE_FLOOR_WARP_TRIGGER_Z = -OFFICE_DEPTH / 2 + 1.18;
-// The reef is a scene-owned lobby exhibit rather than part of the reusable
-// tower shell. Keep its physical footprint beside its scene integration so
-// every movement path observes the same cabinet and glass boundary.
+
+
+
 const OFFICE_AQUARIUM_BOUNDS = Object.freeze({
   minX: -84.56,
   maxX: -81.24,
@@ -215,20 +215,20 @@ const OFFICE_AQUARIUM_BOUNDS = Object.freeze({
 const LIGHT_LEVEL_MIN = 40;
 const LIGHT_LEVEL_MAX = 140;
 const LIGHT_LEVEL_DEFAULT = 100;
-// ForkBot's world presence: a wandering guide anchored to the Town Square.
-// Chat bubbles addressed to this peer id float over its avatar, mirroring how
-// visitor bubbles work (world.js handleWorldChatMessage).
+
+
+
 const FORKBOT_PEER_ID = "forkbot";
 const FORKBOT_HOME = Object.freeze([6, 0.38, 12]);
 const FORKBOT_WANDER_RADIUS = 14;
 const FORKBOT_SPEED = 3.4;
 const FORKBOT_GREETING_RANGE = 3.2;
-// If a visitor is out of reach (travelled to another space, moderation walls,
-// …) the greeting still fires from wherever ForkBot got to.
+
+
 const FORKBOT_GREETING_TIMEOUT_MS = 12000;
-// Noah speaks only on a genuine outside -> desk-side approach. The wider reset
-// radius adds hysteresis, while the cooldown prevents a visitor pacing on the
-// boundary from creating a new local bubble every frame.
+
+
+
 const OFFICE_RECEPTION_TALK_RANGE = 2.2;
 const OFFICE_RECEPTION_RESET_RANGE = 3.8;
 const OFFICE_RECEPTION_TALK_COOLDOWN_MS = 12000;
@@ -242,10 +242,10 @@ const OFFICE_RECEPTION_MEMBER_TIPS = Object.freeze([
   "Repository portals show live mirrors, branches, issues, pull requests, and discussions.",
   "The rooftop laptop opens the real ForkMesh source browser; source edits stay in the desktop or IDE extension.",
 ]);
-// A chat mention (exciteForkbot) sends the droid rushing to the speaker at a
-// faster clip than its idle wander. The chest screen echoes the mention alone
-// for a beat before the thinking dots join it, and the wait for a reply is
-// bounded so an unavailable bot doesn't leave the dots running forever.
+
+
+
+
 const FORKBOT_EXCITED_SPEED = 5.6;
 const FORKBOT_ECHO_MS = 2500;
 const FORKBOT_THINKING_TIMEOUT_MS = 45000;
@@ -265,8 +265,8 @@ const WORLD_AGENT_BOTS = Object.freeze([
     glow: "#8fffe0",
   },
 ]);
-// The public World has one shared ground plane plus three regional labels.
-// Deprecated off-world destinations are deliberately not valid spawn spaces.
+
+
 const WORLD_SPACE_FLOORS = Object.freeze({
   "town-square": 0.38,
   east: 0.38,
@@ -361,9 +361,9 @@ const MOVEMENT_KEYS = new Set([
   "ArrowRight",
 ]);
 const SPRINT_KEYS = new Set(["ShiftLeft", "ShiftRight"]);
-// Floor-local positions on the Infrastructure story. These are deliberately
-// not part of the shared Town layout: a saved outdoor object placement must
-// never pull an interior observatory fixture back out of the building.
+
+
+
 const SYSTEM_CAPACITY_INFRASTRUCTURE_POSITION = Object.freeze([-24, 0, 7]);
 const INFRASTRUCTURE_CONSOLE_POSITION = Object.freeze([18, 0, -44.2]);
 const INFRASTRUCTURE_FOOTPRINT_POSITION = Object.freeze([-18, 0, -44.2]);
@@ -388,46 +388,46 @@ const TREE_LANDMARK_CLEARANCE = Object.freeze({
   broadcast: 9,
   office: 10,
 });
-// Shared by the seated pose and the presence frame so other visitors can render
-// a bench sitter sitting rather than standing on the plank. Exported because
-// the shell must keep it out of the landmark-proximity activity label.
+
+
+
 export const CAMPFIRE_SEATED_ACTIVITY = "sitting beside the campfire";
-// Shared by the swing-set ride and the presence frame for the same reason:
-// exported so the shell keeps it out of the landmark-proximity activity label
-// while a visitor is riding one of the town swings.
+
+
+
 export const SWING_RIDING_ACTIVITY = "swinging on the town swing set";
-// Legs hinge at the hip and again at the knee. Avatar fronts face local -Z, so
-// the positive pitch about X is the one that swings the knee over the front
-// edge of the bench instead of out behind the sitter; the knee then folds back
-// by the same amount, which drops the shin straight down and leaves the shoe
-// flat on the floor.
+
+
+
+
+
 const SEATED_LEG_PITCH = 1.45;
 const SEATED_KNEE_PITCH = -SEATED_LEG_PITCH;
-// Walking swings the whole leg from the hip, so the stride pitch is about half
-// what the old mid-leg pivot needed for the same amount of foot travel.
+
+
 const GAIT_LEG_SWING = 0.38;
-// Avatar leg metrics, in local (unscaled) avatar units: the hip joint height,
-// the length of one leg segment (thigh and shin are the same), and how far the
-// sole of the shoe hangs below the knee.
+
+
+
 const AVATAR_HIP_Y = 1.405;
 const AVATAR_LEG_SEGMENT = 0.625;
 const AVATAR_SHOE_Y = 0.15;
 const AVATAR_SHOE_HEIGHT = 0.26;
 const AVATAR_KNEE_TO_SOLE =
   AVATAR_HIP_Y - AVATAR_LEG_SEGMENT - AVATAR_SHOE_Y + AVATAR_SHOE_HEIGHT / 2;
-// A seated avatar is placed by its hips, not by its feet: the folded thigh
-// rests on top of the plank (its half-depth once pitched over, so it lies on
-// the seat instead of sinking through it) and the shin carries the shoe down
-// to the floor, which lands the sole SEATED_SEAT_TO_SOLE below the plank.
+
+
+
+
 const SEATED_HIP_ABOVE_SEAT = 0.3;
-// How far below the plank a sitter's soles end up, which is what a bench has
-// to be built up to for the feet to reach the floor.
+
+
 const SEATED_SEAT_TO_SOLE =
   AVATAR_LEG_SEGMENT * Math.cos(SEATED_LEG_PITCH) +
   AVATAR_KNEE_TO_SOLE -
   SEATED_HIP_ABOVE_SEAT;
-// Standing avatars are parked with their origin on the floor height (0.38),
-// which puts the soles of their shoes on the walking plane just above it.
+
+
 const WORLD_WALKING_PLANE_Y = 0.4;
 function seatedAvatarY(seatTopY, scale = 1) {
   return seatTopY - (AVATAR_HIP_Y - SEATED_HIP_ABOVE_SEAT) * scale;
@@ -471,8 +471,8 @@ const LOCAL_ENVIRONMENT_OVERLAYS = Object.freeze({
   },
 });
 const DAYLIGHT_ENVIRONMENT = Object.freeze({
-  // A deep teal night sky keeps the ground readable while letting the
-  // deterministic stars, planets, and public-orbit satellites remain visible.
+
+
   background: "#06131d",
   hemiSky: "#d8fff1",
   hemiGround: "#25493a",
@@ -497,8 +497,8 @@ function accountStatusIcon(identity) {
 }
 
 const WORLD_MODERATION_HANDLE_PATTERN = /^[a-f0-9]{64}$/;
-// Organization and account names share the node-name grammar the worker
-// enforces. The team plaque only ever carries names, never a session secret.
+
+
 const WORLD_ORG_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,39}$/;
 const REPOSITORY_SIZE_MAP_COLORS = Object.freeze([
   "#3987e5",
@@ -559,8 +559,8 @@ function deterministicTreeLayout() {
     maxZ: SERVER_CABINET_YARD_ORIGIN[2] + 14,
   };
   LANDMARKS.forEach((landmark) => {
-    // The campfire's clearing is filled by its bench circle, whose radius
-    // reaches past where these trees would stand.
+
+
     if (["campfire", "office"].includes(landmark.id)) return;
     for (let treeIndex = 0; treeIndex < TREES_PER_LANDMARK; treeIndex += 1) {
       const angle =
@@ -595,21 +595,21 @@ function deterministicTreeLayout() {
   return positions;
 }
 
-// Phones do not die of slow frames; they die of memory. Painted at their
-// desktop resolution the World's ~96 plates allocate around 200 MB of 2D
-// backing stores (plus the same again once uploaded as RGBA textures) before
-// the first frame, which is more than a mobile browser lets one tab hold: the
-// tab is killed seconds into the boot and reloads into the crash guard. The
-// compact renderer therefore paints its large plates at half resolution — a
-// quarter of the bytes — while the draw code keeps its original coordinate
-// system through a pre-scaled context, so only the backing store shrinks.
+
+
+
+
+
+
+
+
 const CANVAS_TEXTURE_SCALE_MIN_PIXELS = 512 * 512;
 let canvasTextureScale = 1;
 
 function canvasTextureScaleFor(width, height, draw) {
-  // A painter that takes the canvas reads canvas.width/height for its own
-  // layout, which a scaled context would silently halve underneath it. Those
-  // keep full resolution; together they are a rounding error of the total.
+
+
+
   if (canvasTextureScale >= 1 || draw.length >= 2) return 1;
   return width * height >= CANVAS_TEXTURE_SCALE_MIN_PIXELS
     ? canvasTextureScale
@@ -623,7 +623,7 @@ function canvasTexture(THREE, width, height, draw) {
   canvas.height = Math.max(1, Math.round(height * scale));
   const context = canvas.getContext("2d");
   if (scale !== 1) {
-    // Recorded so an in-place repaint can restore the same mapping.
+
     canvas.dataset.textureScale = String(scale);
     context.setTransform(scale, 0, 0, scale, 0, 0);
   }
@@ -635,22 +635,22 @@ function canvasTexture(THREE, width, height, draw) {
   return texture;
 }
 
-// Redraws an existing CanvasTexture in place. Recurring plates (the
-// per-second sync countdowns and per-minute staleness readouts) must never
-// allocate a fresh canvas or swap material.map: doing that once per plate per
-// second disposed and re-created a GL texture and re-validated the material
-// each tick, which surfaced as a metronomic ~50ms render stall while the
-// World idled. Reusing the canvas keeps a tick at one cheap 2D redraw plus a
-// same-size upload of a small texture that was already resident.
+
+
+
+
+
+
+
 function repaintCanvasTexture(material, draw) {
   const texture = material?.map;
   const canvas = texture?.image;
   const context = canvas?.getContext?.("2d");
   if (!context) return false;
-  // Large plates are painted through a scaled context on the compact
-  // renderer. Restore that mapping (a painter that saved and restored the
-  // context may have dropped it) so the repaint lands in the same coordinate
-  // system the first paint used, and clear in those same logical units.
+
+
+
+
   const scale = Number(canvas.dataset?.textureScale) || 1;
   context.setTransform(scale, 0, 0, scale, 0, 0);
   context.clearRect(0, 0, canvas.width / scale, canvas.height / scale);
@@ -670,9 +670,9 @@ function roundedRect(context, x, y, width, height, radius) {
   context.closePath();
 }
 
-// Directory figures carry the account's public joined timestamp and coarse
-// total active time. A live avatar is handed the same directory reading, so a
-// member wears the identical record whether they are walking around or seated.
+
+
+
 function joinedAgoLabel(joinedAt, now = Date.now()) {
   const timestamp = Number(joinedAt);
   if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
@@ -701,12 +701,12 @@ function badgeActiveDurationLabel(value) {
   return `${minutes % 60}M`;
 }
 
-// "FIRST SEEN 14 MINUTES AGO". The exact reading only exists while the visitor
-// shares generalized activity; the coarse bucket label remains the fallback.
-// Minutes-since-join quantized to the unit firstSeenAgoLabel displays. The
-// raw minute count feeds cached badge keys, and un-quantized it ticked for
-// every member on the same minute boundary — repainting every avatar badge
-// canvas in a single frame once a minute.
+
+
+
+
+
+
 function firstSeenMinutesBucket(joinedAt) {
   if (!(Number(joinedAt) > 0)) return 0;
   const total = Math.max(0, Math.floor((Date.now() - joinedAt) / 60_000));
@@ -737,11 +737,11 @@ function firstSeenAgoLabel(minutes) {
   return "";
 }
 
-// The visitor's own browser family and operating system, as the two coarse
-// categories world.js derived locally — never a raw user-agent string.
+
+
 function badgeClientLabel(identity) {
-  // "Hidden" is a privacy choice and "Browser"/"Device" are the placeholders a
-  // peer carries when its family is unrecognized: neither is worth a row.
+
+
   const placeholders = new Set(["hidden", "browser", "device"]);
   const parts = [identity.browser, identity.os]
     .map((value) => String(value || "").trim())
@@ -783,9 +783,9 @@ function badgeTexture(
   return canvasTexture(THREE, 512, 512, (context) => {
     context.fillStyle = "#0c2019";
     context.fillRect(0, 0, 512, 512);
-    // Activity belongs around the avatar portrait, not around this information
-    // panel. Keep a quiet structural edge here so the two signals cannot be
-    // confused.
+
+
+
     context.strokeStyle = "rgba(158,247,198,0.5)";
     context.lineWidth = 5;
     context.strokeRect(8, 8, 496, 496);
@@ -889,8 +889,8 @@ function badgeTexture(
       context.textAlign = "center";
       context.fillText(glyph, x, 132);
     };
-    // A compact handful of follower/following people makes the relationship
-    // counts visual without turning the chest into another text-only table.
+
+
     [270, 294].forEach((x) => socialDot(x, "#77d9ff", "←"));
     [326, 350, 374].forEach((x) => socialDot(x, "#9ef7c6", "→"));
     context.textAlign = "left";
@@ -905,15 +905,15 @@ function badgeTexture(
     const firstSeen =
       firstSeenAgoLabel(identity.firstSeenMinutes) ||
       firstSeenLabels[identity.firstVisitAge] ||
-      // A directory figure carries a joined date but no live first-seen
-      // reading; leave the row out instead of stating "hidden" twice.
+
+
       (joined ? "" : firstSeenLabels.hidden);
     const activity =
       activityLabels[identity.activityCategory] || activityLabels.hidden;
     const visits = Math.max(0, Math.min(999, Number(identity.visitCount) || 0));
-    // Every reading the badge holds gets its own row. The world active-time
-    // aggregate no longer replaces the shared activity line, so nobody's chest
-    // shows less than what is publicly known about them.
+
+
+
     const activeRow =
       identity.totalActiveMs != null &&
       Number.isFinite(Number(identity.totalActiveMs))
@@ -927,9 +927,9 @@ function badgeTexture(
       [joined, "#77d9ff"],
       [badgeClientLabel(identity), "#f7c96b"],
       [activeRow, "#9ef7c6"],
-      // A directory figure publishes no live activity, so its "hidden · 0
-      // visits" line is the one row worth dropping once the active-time row
-      // carries a real reading.
+
+
+
       [
         sharesActivity || !activeRow
           ? `${activity} · ${visits} PUBLIC URL VISITS`
@@ -937,7 +937,7 @@ function badgeTexture(
         "#b9cfc4",
       ],
     ].filter(([text]) => text);
-    // Five rows still have to clear the status pill at y=374.
+
     const step = rows.length > 4 ? 25 : 29;
     context.textAlign = "left";
     context.font = '700 17px "ForkMesh Mono", ui-monospace, monospace';
@@ -1020,8 +1020,8 @@ function badgeTexture(
   });
 }
 
-// The follow control lives inside the fediverse tab's canvas rather than on a
-// separate sliver of chest: the click handler hits it by UV rectangle.
+
+
 const BADGE_FOLLOW_PILL = Object.freeze({
   minU: 300 / 512,
   maxU: 484 / 512,
@@ -1063,11 +1063,11 @@ function fediverseFollowLabel(profile) {
   return profile.isFollowing === true ? "✓ FOLLOWING" : "+ FOLLOW";
 }
 
-/**
- * The second chest tab: the account's public ForkMesh profile, the activity
- * ForkMesh federates for it, the fediverse handle its owner published, and a
- * follow control. Every value comes from public /api/accounts/{name} data.
- */
+
+
+
+
+
 function fediverseBadgeTexture(THREE, identity, accent, profile = {}) {
   const state = String(profile.state || "loading");
   const posts = Array.isArray(profile.posts) ? profile.posts.slice(0, 5) : [];
@@ -1093,8 +1093,8 @@ function fediverseBadgeTexture(THREE, identity, accent, profile = {}) {
     );
 
     let cursor = 130;
-    // ForkMesh federates repositories, not accounts, so the fediverse address
-    // shown here is the one this account published on its own profile.
+
+
     const fediverse = String(profile.fediverse || "").trim();
     if (fediverse) {
       context.font = '400 19px "ForkMesh Mono", ui-monospace, monospace';
@@ -1159,8 +1159,8 @@ function fediverseBadgeTexture(THREE, identity, accent, profile = {}) {
   });
 }
 
-// Two small tabs under the badge switch the chest display between the
-// visitor's world info and their fediverse card.
+
+
 function chestTabTexture(THREE, label, active) {
   return canvasTexture(THREE, 256, 128, (context) => {
     context.clearRect(0, 0, 256, 128);
@@ -1193,8 +1193,8 @@ function createAvatarChestTabs(THREE) {
       }),
     );
     button.name = `world-chest-tab-${spec.tab}`;
-    // Avatar fronts face -Z, matching the badge just above these tabs. The
-    // tabs sit flush under the badge so the wallet chip fits beneath them.
+
+
     button.position.set(spec.x, 1.79, -0.318);
     button.rotation.y = Math.PI;
     button.userData.chestTab = spec.tab;
@@ -1208,8 +1208,8 @@ function syncChestTabs(THREE, avatar) {
   const tabs = avatar?.userData?.chestTabs;
   if (!tabs) return;
   const active = avatar.userData.chestTab === "fediverse" ? "fediverse" : "info";
-  // Badge repaints are frequent; the two small tab textures only change when
-  // the selected tab does.
+
+
   if (avatar.userData.chestTabRendered === active) return;
   avatar.userData.chestTabRendered = active;
   tabs.children.forEach((button) => {
@@ -1225,10 +1225,10 @@ function syncChestTabs(THREE, avatar) {
   });
 }
 
-// Leading colours of the drawn flag glyph, strongest first, bucketed the same
-// way as dominantSampleColor. Buckets under 6% of the opaque pixels are noise
-// (antialiasing, thin emblems) and are dropped. Empty when the canvas is
-// tainted or the glyph did not render as a colour flag.
+
+
+
+
 function flagShirtPalette(context, canvas) {
   const pixels = emojiPixels(context, canvas);
   if (!pixels) return [];
@@ -1274,22 +1274,22 @@ function flagShirtPalette(context, canvas) {
     );
 }
 
-// ---------------------------------------------------------------------------
-// The procedural outfit tailor.
-//
-// Mirrors the Qt client's procedural avatar faces: the visitor's public name
-// is folded through FNV-1a into a splitmix32 stream, and that one seed picks
-// an entire tailored kit — cut, colourway, collar, hem, fastenings, pocket,
-// seams and a stitched monogram — so the same coder wears the same outfit on
-// every device while the huge feature space keeps any two names dressed
-// differently. Supporting members may pin a specific cut and colourway
-// (identity.outfitStyle / identity.outfitColor); everyone else wears what
-// their name tailors, dyed with their flag's palette when a country is shared.
-// ---------------------------------------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
 
 function outfitRandom(seedText) {
-  // FNV-1a fold of the seed, then splitmix32 streams unlimited draws out of
-  // it — the same seeding recipe the Qt client's forkMeshAvatarPng uses.
+
+
   let state = 0x811c9dc5;
   for (const char of String(seedText || "")) {
     state = Math.imul(state ^ char.charCodeAt(0), 0x01000193) >>> 0;
@@ -1329,8 +1329,8 @@ function mixHex(hex, target, amount) {
 const shadeHex = (hex, amount) => mixHex(hex, "#06110e", amount);
 const tintHex = (hex, amount) => mixHex(hex, "#f7fbf8", amount);
 
-// Curated colourways a name can draw when no flag palette dresses the kit:
-// [body, accent, trim].
+
+
 const OUTFIT_COLORWAYS = [
   ["#174f3d", "#9ef7c6", "#f7fbf8"],
   ["#183f62", "#77d9ff", "#f2f8ff"],
@@ -1348,11 +1348,11 @@ const OUTFIT_COLORWAYS = [
   ["#101d3a", "#f7e96b", "#fffbe0"],
 ];
 
-// One painter per outfit cut. Each draws over a canvas already filled with
-// kit.base; ids stay in lockstep with OUTFIT_STYLE_OPTIONS in world-data.js.
+
+
 const OUTFIT_CUTS = {
   sash(context, rng, kit) {
-    // The classic kit: an accent sash with trim piping over a faint weave.
+
     context.save();
     context.globalAlpha = 0.16;
     context.fillStyle = kit.deep;
@@ -1384,7 +1384,7 @@ const OUTFIT_CUTS = {
     context.fillRect(x - 6, 0, 4, 256);
     context.fillRect(x + width + gap + width * 0.55 + 2, 0, 4, 256);
     if (rng.chance(60)) {
-      // A pit-lane checker band across one shoulder line.
+
       const bandY = rng.range(30, 60);
       for (let i = 0; i < 16; i += 1) {
         context.fillStyle = i % 2 ? kit.trim : kit.deep;
@@ -1453,7 +1453,7 @@ const OUTFIT_CUTS = {
       context.moveTo(x, y);
       const turns = 2 + rng.int(3);
       for (let turn = 0; turn < turns; turn += 1) {
-        // Manhattan routing: each turn moves along one axis only.
+
         if (rng.chance(50)) x = rng.range(16, 240);
         else y = rng.range(16, 240);
         context.lineTo(x, y);
@@ -1482,8 +1482,8 @@ const OUTFIT_CUTS = {
     }
   },
   pixel(context, rng, kit) {
-    // A mirrored identicon mosaic — the same trick the fallback avatar
-    // services use, worn as knitwear.
+
+
     const cells = 6;
     const size = 256 / cells;
     const palette = [kit.accent, kit.trim, shadeHex(kit.base, 0.3), kit.light];
@@ -1585,7 +1585,7 @@ const OUTFIT_CUTS = {
     }
   },
   bolt(context, rng, kit) {
-    // One big embroidered hotfix bolt with a glow halo.
+
     const cx = rng.range(96, 160);
     const lean = rng.range(-18, 18);
     const points = [
@@ -1659,12 +1659,12 @@ const OUTFIT_CUTS = {
   },
 };
 
-// Tailoring details layered over every cut. Each is its own seeded roll, so
-// two coders who happen to share a cut still differ in collar, hem,
-// fastenings, pocket, seams, and monogram.
+
+
+
 function tailorOutfitDetails(context, rng, kit, monogram) {
   if (rng.chance(70)) {
-    // Ribbed collar band along the shoulder line.
+
     context.fillStyle = rng.chance(50) ? kit.trim : kit.deep;
     context.fillRect(0, 0, 256, 16);
     context.fillStyle = kit.accent;
@@ -1674,7 +1674,7 @@ function tailorOutfitDetails(context, rng, kit, monogram) {
     context.fillStyle = rng.chance(50) ? kit.deep : kit.accent;
     context.fillRect(0, 244, 256, 12);
   }
-  const fastening = rng.int(3); // 0 plain · 1 zip · 2 buttons
+  const fastening = rng.int(3);
   if (fastening === 1) {
     context.strokeStyle = kit.trim;
     context.lineWidth = 3;
@@ -1693,7 +1693,7 @@ function tailorOutfitDetails(context, rng, kit, monogram) {
     }
   }
   if (rng.chance(45)) {
-    // A chest pocket with a trim flap.
+
     const x = rng.chance(50) ? 52 : 168;
     context.fillStyle = shadeHex(kit.base, 0.22);
     context.fillRect(x, 140, 40, 34);
@@ -1701,7 +1701,7 @@ function tailorOutfitDetails(context, rng, kit, monogram) {
     context.fillRect(x, 140, 40, 7);
   }
   if (rng.chance(50)) {
-    // Dashed side seams.
+
     context.strokeStyle = kit.trim;
     context.globalAlpha = 0.7;
     context.lineWidth = 2;
@@ -1716,8 +1716,8 @@ function tailorOutfitDetails(context, rng, kit, monogram) {
     context.globalAlpha = 1;
   }
   if (monogram) {
-    // The stitched monogram patch — the first letter of the public name, the
-    // same letter the Qt fallback avatar tile shows.
+
+
     context.fillStyle = kit.deep;
     roundedRect(context, 22, 30, 34, 34, 8);
     context.fill();
@@ -1734,11 +1734,11 @@ function tailorOutfitDetails(context, rng, kit, monogram) {
   }
 }
 
-// The one flag glyph the avatar wears is the chest badge's; the shirt never
-// prints it. When a country is shared its sampled palette dyes the kit, and
-// the visitor's public name tailors everything else — cut, trims, monogram —
-// falling back entirely to the name-seeded colourway when the flag cannot be
-// drawn or sampled.
+
+
+
+
+
 function countryShirtTexture(THREE, identity) {
   const code = /^[A-Z]{2}$/.test(String(identity.countryCode || ""))
     ? String(identity.countryCode)
@@ -1754,14 +1754,14 @@ function countryShirtTexture(THREE, identity) {
     const rng = outfitRandom(
       "outfit:" + String(identity.name || "guest").trim().toLowerCase(),
     );
-    // Fixed draw order keeps the stream stable: the seeded cut and colourway
-    // are always consumed, even when a Supporting member's pick replaces them.
+
+
     const seededCut = OUTFIT_STYLE_IDS[rng.int(OUTFIT_STYLE_IDS.length)];
     let [base, accent, trim] =
       OUTFIT_COLORWAYS[rng.int(OUTFIT_COLORWAYS.length)];
     if (flag !== "◌") {
-      // Drawn big only to be sampled, then painted over entirely: nothing of
-      // the glyph itself survives onto the cloth.
+
+
       context.clearRect(0, 0, 256, 256);
       context.textAlign = "center";
       context.textBaseline = "middle";
@@ -1774,7 +1774,7 @@ function countryShirtTexture(THREE, identity) {
       }
     }
     if (wornColor) {
-      // The Supporting-member colourway perk re-dyes the whole kit.
+
       base = wornColor;
       accent = tintHex(wornColor, 0.55);
       trim = shadeHex(wornColor, 0.45);
@@ -3171,8 +3171,8 @@ function officeReclaimedWoodTexture(THREE) {
         context.stroke();
       }
     }
-    // Chrome ForkMesh cube medallion: the branch graph is the cube's top face,
-    // with the F/M side reliefs retained from the supplied mark.
+
+
     context.save();
     context.translate(512, 512);
     context.fillStyle = "#071018";
@@ -3223,9 +3223,9 @@ function officeReclaimedWoodTexture(THREE) {
   return texture;
 }
 
-// Public build-progress wall in the Office lobby. This intentionally mirrors
-// the active implementation queue in a fixed, readable grid. Keep the ordering
-// stable so a repaint never makes cards jump around.
+
+
+
 const WORLD_TASK_BULLETIN_ITEMS = Object.freeze([
   { key: "task:world-stall-flood", task: "Stop World render stalls + warning floods", detail: "Zoom events now run LOD work only when crossing a real near/far boundary, selection bounds are cadence sampled, frame effects share one timestamp, and compact deferred diagnostics aggregate repeated stalls for 30 seconds instead of allocating stacks and flooding DevTools on the hot frame.", estimate: "implemented · performance QA", done: true },
   { key: "task:qa-full-catalog", task: "Restore the full QA desk backlog", detail: "Removed the 64-card server truncation that hid built-in cards 65–78 and every later database/task card. The bounded catalog now carries all valid sources while the physical desk stays constant-cost at five cards per page.", estimate: "implemented · focused QA", done: true },
@@ -3410,9 +3410,9 @@ function worldTaskBulletinTexture(THREE, source = WORLD_TASK_BULLETIN_ITEMS) {
   return canvasTexture(THREE, 1800, 1120, worldTaskBulletinPainter(source));
 }
 
-// Returns the 2D draw callback separately so repaintBuildBoards can redraw
-// the existing board canvas in place instead of allocating a fresh 1800px
-// canvas, context, and CanvasTexture on every refresh.
+
+
+
 function worldTaskBulletinPainter(source = WORLD_TASK_BULLETIN_ITEMS) {
   const pending = (Array.isArray(source) ? source : [])
     .filter((item) => !item.done)
@@ -4040,7 +4040,7 @@ function chatBubbleTexture(THREE, name, text) {
     context.strokeStyle = "#9ef7c6";
     context.lineWidth = 4;
     context.stroke();
-    // Speech-bubble tail pointing down toward the speaker's head.
+
     context.beginPath();
     context.moveTo(354, 214);
     context.lineTo(384, 250);
@@ -4075,10 +4075,10 @@ function chatBubbleTexture(THREE, name, text) {
   });
 }
 
-// Repaints ForkBot's chest screen in place. `state` is null for the idle
-// wordmark, or { message, thinking, dotPhase } while ForkBot is answering a
-// mention: the echoed line renders in quotes and, once thinking starts, a row
-// of pulsing dots runs beneath it until the reply is broadcast.
+
+
+
+
 function drawForkbotScreen(context, canvas, state) {
   const width = canvas.width;
   const height = canvas.height;
@@ -4277,8 +4277,8 @@ function createAvatarModerationControls(THREE, handles, guestNetwork = {}) {
       }),
     );
     control.name = `world-moderation-${spec.targetType}-control`;
-    // Avatar fronts face -Z; positive Z places this single-sided control on
-    // the back, so it cannot be selected through the avatar from the front.
+
+
     control.position.set(0, spec.y, 0.321);
     control.userData.worldModerationControl = spec.targetType;
     control.renderOrder = 3;
@@ -4327,10 +4327,10 @@ function createAvatarModerationControls(THREE, handles, guestNetwork = {}) {
   return group;
 }
 
-// The organization team plaque the app layer hands down for members of an
-// organization the viewer owns or administers. Everything here is a name the
-// roster already publishes to org members plus two counts; the plaque never
-// carries a role decision — the worker re-checks the caller's role on write.
+
+
+
+
 function sanitizedOrgTeamAssignment(remote) {
   const peerId = String(remote?.id || "");
   const assignment = remote?.orgTeam;
@@ -4426,9 +4426,9 @@ function createAvatarTeamBadges(THREE, assignment) {
         depthWrite: true,
       }),
     );
-    // The anatomical left arm sits at group x -0.73, so its outward face is
-    // local -X. Mount the marks there — sized to the 0.32-deep sleeve so they
-    // never overhang it — stacked down the upper arm like cloth patches.
+
+
+
     badge.position.set(-0.148, 0.36 - index * 0.105, 0);
     badge.rotation.y = -Math.PI / 2;
     badge.renderOrder = 3;
@@ -4475,8 +4475,8 @@ function createAvatarOrgTeamControl(THREE, assignment) {
     }),
   );
   control.name = "world-org-team-control";
-  // Same back face as the moderation plaques: avatar fronts face -Z, so a
-  // single-sided plane at positive Z cannot be clicked through the chest.
+
+
   control.position.set(0, 1.61, 0.321);
   control.userData.worldOrgTeamControl = true;
   control.renderOrder = 3;
@@ -4494,17 +4494,17 @@ function makeMaterial(THREE, color, options = {}) {
     transparent: Boolean(options.transparent),
     opacity: options.opacity ?? 1,
   };
-  // Three.js warns for explicitly supplied `undefined` enum values. Omit the
-  // option entirely unless a caller intentionally selected a rendering side.
+
+
   if (options.side !== undefined) parameters.side = options.side;
-  // three r152+ draws every transparent double-sided material in two passes
-  // (back faces, then front faces) and sets material.needsUpdate before each
-  // pass. That version bump re-resolves the shader program and re-uploads the
-  // material's entire uniform block on every draw of every frame — profiled
-  // at multiple GB/minute of allocation churn plus a doubled draw call for
-  // each such mesh. Every World use is a flat card, open shell, or additive
-  // glow that reads identically single-pass, so opt back into the pre-r152
-  // single-pass path. (Direct `new THREE.*Material` sites set the same flag.)
+
+
+
+
+
+
+
+
   if (parameters.transparent && parameters.side === THREE.DoubleSide) {
     parameters.forceSinglePass = true;
   }
@@ -4570,9 +4570,9 @@ function objectIsEffectivelyVisible(object) {
     ) {
       return false;
     }
-    // A subtree an administrator pulled out of the game via the Elements
-    // panel has no path up to the Scene; treat it exactly like a hidden one
-    // so its meshes cannot be clicked while they are not being drawn.
+
+
+
     if (!current.parent && !current.isScene) return false;
     current = current.parent;
   }
@@ -4611,12 +4611,12 @@ function makeOfficeWallPlacard(
   return placard;
 }
 
-// Branded onto the plank itself (the seat's top face texture) instead of a
-// floating sign, so an empty bench still says whose seat it is: the account
-// it belongs to, and whether they are represented here or out walking the
-// world. An unclaimed seat reads as the open guest bench. Canvas aspect
-// (480x180) matches the seat top's width:depth ratio (1.6:0.6) so the wood
-// grain and lettering aren't stretched.
+
+
+
+
+
+
 function drawCampfireSeatPlate(
   context,
   name,
@@ -4798,7 +4798,6 @@ function createProceduralCampfireEffect(THREE) {
       width *= 0.82 + turbulence * 0.42;
       width += (fineNoise - 0.5) * (0.10 + y * 0.19);
 
-      // A moving notch near the tip makes tall tongues fork before they close.
       float fork = smoothstep(0.57, 0.9, y)
         * (1.0 - smoothstep(0.0, 0.18, abs(x - center)))
         * (0.35 + 0.65 * noise(vec2(floor(t * 2.0), uPhase)));
@@ -5069,9 +5068,9 @@ function createProceduralCampfireEffect(THREE) {
   return effect;
 }
 
-// Who joined last, by the public directory's joined timestamp. An account
-// seated straight from a presence frame carries no joined date yet (0), so it
-// is skipped rather than ranked as the oldest member in the circle.
+
+
+
 function newestMemberName(members) {
   let newest = "";
   let joinedAt = 0;
@@ -5114,8 +5113,8 @@ function campfireMemberCountTexture(THREE, total, newest = "") {
   });
 }
 
-// Carves rather than paints: a dark shadow above and a warm highlight below
-// read as a groove branded into the wood instead of ink sitting on top of it.
+
+
 function embossPlankText(context, text, x, y, font, glow) {
   context.font = font;
   context.fillStyle = "rgba(20,10,4,0.6)";
@@ -5128,8 +5127,8 @@ function embossPlankText(context, text, x, y, font, glow) {
   context.fillText(text, x, y);
 }
 
-// Straight-legged pitches (standing, walking) leave the knees locked, so the
-// leg reads as the one block it draws as.
+
+
 function applyLegPitch(avatar, leftPitch, rightPitch) {
   const legs = avatar?.userData;
   if (!legs?.leftLeg || !legs?.rightLeg) return;
@@ -5148,8 +5147,8 @@ function applySeatedLegPose(avatar) {
   if (legs.rightKnee) legs.rightKnee.rotation.x = SEATED_KNEE_PITCH;
 }
 
-// Stable, readable id slug built from the only durable name a scene prop has:
-// its placard title, or a node's name.
+
+
 function worldLayoutId(prefix, name) {
   const slug = String(name || "")
     .toLowerCase()
@@ -5173,7 +5172,7 @@ function makeGroundPlaque(THREE, title, subtitle, color) {
     makeMaterial(THREE, "#101d18", { roughness: 0.55, metalness: 0.12 }),
   );
   slab.position.set(0, 0.74, 0.12);
-  // Lean the top back so the face reads from the raised world camera.
+
   slab.rotation.x = -0.42;
   plaque.add(slab);
   const face = new THREE.Mesh(
@@ -5270,9 +5269,9 @@ function arrivalPlaqueTexture(THREE, stats) {
   });
 }
 
-// The Arrival Grid's sign is a standing plaque at the grid's front edge:
-// fresh arrivals spawn facing the square, so the visit counters are the
-// first readable landmark, and the raised world camera sees the same face.
+
+
+
 function makeArrivalPlaque(THREE) {
   const plaque = new THREE.Group();
   plaque.name = "world-arrival-plaque";
@@ -5338,9 +5337,9 @@ function makeActiveLeaderboardSign(THREE) {
   return sign;
 }
 
-// Places a plaque on the ground in front of the section — on the side facing
-// the Town Square center, where visitors walk up. `position` is the section's
-// world position; sections at the center face the arrival grid instead.
+
+
+
 function placeSectionPlaque(group, plaque, position, distance) {
   const x = Array.isArray(position) ? position[0] : 0;
   const z = Array.isArray(position) ? position[2] : 0;
@@ -5362,28 +5361,28 @@ function addSectionPlaque(THREE, group, position, title, subtitle, color, distan
   );
 }
 
-// Worn on the head when a visitor has never stored a world-status emoji.
+
 const AVATAR_DEFAULT_FACE_EMOJI = "🙂";
-// Fallback for the head sphere when the worn emoji cannot be sampled. The
-// live colour is read back out of the rendered glyph instead (see
-// edgeEmojiColor) so the sphere is exactly the emoji's own rim colour.
+
+
+
 const AVATAR_EMOJI_SKIN_COLOR = "#ffcc4d";
-// The front of the head is cut off flat at this depth in front of the head's
-// centre and the face is a plain disc lying on that cut, so an uploaded avatar
-// photo is shown undistorted instead of being wrapped around a curved shell.
+
+
+
 const AVATAR_HEAD_RADIUS = 0.45;
 const AVATAR_FACE_DEPTH = 0.08;
-// Where the cut plane meets the sphere: the flat circle's exact radius, so the
-// disc covers the whole cut and no bare head shows around the face.
+
+
 const AVATAR_FACE_RADIUS = Math.sqrt(
   AVATAR_HEAD_RADIUS * AVATAR_HEAD_RADIUS - AVATAR_FACE_DEPTH * AVATAR_FACE_DEPTH,
 );
-// Held just off the cut so the disc and the coplanar cap never z-fight.
+
 const AVATAR_FACE_LIFT = 0.002;
 
-// Slices the front off a head sphere: every vertex further forward than the
-// cut plane is pulled straight back onto it, which leaves the front as one
-// flat circle (avatar fronts face -Z) and the rest of the sphere untouched.
+
+
+
 function flattenSphereFront(geometry, depth) {
   const position = geometry.attributes?.position;
   if (!position) return geometry;
@@ -5395,7 +5394,7 @@ function flattenSphereFront(geometry, depth) {
   return geometry;
 }
 
-// Reads back the drawn glyph, or "" when the canvas is tainted.
+
 function emojiPixels(context, canvas) {
   try {
     return context.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -5404,10 +5403,10 @@ function emojiPixels(context, canvas) {
   }
 }
 
-// Dominant colour of a flat list of sampled [r, g, b] triples, bucketed at
-// 4 bits per channel. Returns "" unless one bucket owns at least `share` of
-// the samples: a glyph that barely rendered (or is mostly outline) would
-// otherwise hand back a near-black head.
+
+
+
+
 function dominantSampleColor(samples, share) {
   const buckets = new Map();
   const total = samples.length / 3;
@@ -5443,8 +5442,8 @@ function dominantSampleColor(samples, share) {
   return `#${channel(best.r)}${channel(best.g)}${channel(best.b)}`;
 }
 
-// Most-common opaque colour anywhere in the drawn emoji, used as the second
-// choice when the rim itself is too varied to read.
+
+
 function dominantEmojiColor(context, canvas) {
   const pixels = emojiPixels(context, canvas);
   if (!pixels) return "";
@@ -5456,9 +5455,9 @@ function dominantEmojiColor(context, canvas) {
   return dominantSampleColor(samples, 0.25);
 }
 
-// Colour of the emoji's own outer rim. The head sphere is painted with it and
-// the decal's padding is flooded with it, so the wrapped glyph and the sphere
-// behind it meet without a seam or a gap of some other yellow.
+
+
+
 function edgeEmojiColor(context, canvas) {
   const pixels = emojiPixels(context, canvas);
   if (!pixels) return "";
@@ -5467,8 +5466,8 @@ function edgeEmojiColor(context, canvas) {
   const centerX = (width - 1) / 2;
   const centerY = (height - 1) / 2;
   const reach = Math.round(Math.max(width, height) / 2);
-  // Step back in from the antialiased rim (and any dark outline drawn on it)
-  // before sampling, so the head takes the glyph's body colour.
+
+
   const inset = Math.max(2, Math.round(Math.min(width, height) * 0.04));
   const rays = 72;
   const samples = [];
@@ -5499,39 +5498,39 @@ function edgeEmojiColor(context, canvas) {
     const i = (y * width + x) * 4;
     samples.push(pixels[i], pixels[i + 1], pixels[i + 2]);
   }
-  // A rim that is half one colour and half another (flags, split glyphs) is
-  // not a skin tone; let the whole-glyph sampler answer instead.
+
+
   if (samples.length < rays * 3 * 0.5) return "";
   return dominantSampleColor(samples, 0.45);
 }
 
-// Mouse-activity antenna: one solid green, blinked hard on and hard off.
+
 const ANTENNA_LIT_COLOR = "#22e06a";
 const ANTENNA_DARK_COLOR = "#0d3b22";
 const ANTENNA_STALK_COLOR = "#1aa856";
 const ANTENNA_BLINK_MIN_HZ = 0.9;
 const ANTENNA_BLINK_MAX_HZ = 5.4;
 
-// A wave is a short right-arm pose rather than a stored animation: the arm
-// lifts out to roughly shoulder-over-head, shakes a couple of times, and
-// drops back. It rides on top of whatever the avatar is otherwise doing, so
-// visitors can wave while walking, sitting, or riding a swing.
+
+
+
+
 const AVATAR_WAVE_DURATION_MS = 2000;
 const AVATAR_WAVE_LIFT = 2.35;
 const AVATAR_WAVE_SWEEP = 0.34;
 const AVATAR_WAVE_SHAKE_RATE = 0.014;
 
-// A handshake is the two-person greeting. Both avatars reach the same right
-// arm out in front of them — forward rather than up, which is what makes the
-// pair read as one shared gesture instead of two simultaneous waves — hold
-// while the pump rides on top, and lower again.
+
+
+
+
 const AVATAR_HANDSHAKE_DURATION_MS = 2200;
 const AVATAR_HANDSHAKE_REACH = 1.5;
 const AVATAR_HANDSHAKE_PUMP = 0.26;
 const AVATAR_HANDSHAKE_PUMP_RATE = 0.012;
 
-// Unified-card border: one darker, node-light-style colour per coarse
-// account-recency bucket from the server ("active within …").
+
+
 const ACTIVITY_LIGHT_COLORS = Object.freeze({
   hour: "#168a4d",
   "5h": "#205f43",
@@ -5544,15 +5543,15 @@ const ACTIVITY_LIGHT_COLORS = Object.freeze({
 
 const AVATAR_SOLANA_ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
-// The flag-coloured shirt cloth is mapped onto every face of the torso and
-// arm boxes. The upward-facing tops are the ones read from across the square,
-// so those four UVs are turned a half turn to keep the sash running the same
-// way round.
+
+
+
+
 function rotateBoxTopUVs(geometry) {
   const uv = geometry.attributes?.uv;
   if (!uv) return geometry;
-  // BoxGeometry lays its faces out +X, -X, +Y, -Y, +Z, -Z with four vertices
-  // each, so the top face owns vertices 8 through 11.
+
+
   for (let i = 8; i < 12; i += 1) {
     uv.setXY(i, 1 - uv.getX(i), 1 - uv.getY(i));
   }
@@ -5562,9 +5561,9 @@ function rotateBoxTopUVs(geometry) {
 
 function avatarFaceTexture(THREE, emoji) {
   let color = "";
-  // The glyph is drawn smaller than the canvas because the disc inscribes the
-  // square: the padding is what fills the corners the circle cuts away, so the
-  // face reaches the rim without the glyph itself being clipped.
+
+
+
   const texture = canvasTexture(THREE, 128, 128, (context, canvas) => {
     context.clearRect(0, 0, 128, 128);
     context.textAlign = "center";
@@ -5574,10 +5573,10 @@ function avatarFaceTexture(THREE, emoji) {
     context.fillText(emoji, 64, 67);
     color =
       edgeEmojiColor(context, canvas) || dominantEmojiColor(context, canvas);
-    // Flood everything the glyph did not cover — the padding and the corners
-    // outside a round emoji — with its own rim colour, painted underneath so
-    // the face itself is untouched. Nothing of the head shows through, so
-    // there is no gap and no seam where the decal ends.
+
+
+
+
     context.globalCompositeOperation = "destination-over";
     context.fillStyle = color || AVATAR_EMOJI_SKIN_COLOR;
     context.fillRect(0, 0, 128, 128);
@@ -5586,10 +5585,10 @@ function avatarFaceTexture(THREE, emoji) {
   return { texture, color: color || AVATAR_EMOJI_SKIN_COLOR };
 }
 
-// A stable, code-native portrait for accounts that have not uploaded a photo.
-// The same public identity key always selects the same skin, eyes, brows,
-// mouth, freckles and glasses, so people remain recognizable across devices
-// without storing another image or sending image bytes over presence.
+
+
+
+
 function proceduralAvatarFaceTexture(THREE, identityKey) {
   const seed = hashNumber(String(identityKey || "forkmesh-visitor"));
   const skins = ["#f6d8b6", "#e9bb8c", "#c98555", "#8e5738", "#5d392a"];
@@ -5672,8 +5671,8 @@ function proceduralAvatarFaceTexture(THREE, identityKey) {
 function syncAvatarFace(THREE, avatar) {
   const face = avatar.userData.faceMesh;
   if (!face?.material) return;
-  // An account avatar photo keeps its place through status changes; the
-  // deterministic portrait returns when the photo is taken off.
+
+
   if (avatar.userData.faceImageUrl) return;
   const statusEmoji = String(avatar.userData.statusEmoji || "");
   const identityKey = String(
@@ -5690,8 +5689,8 @@ function syncAvatarFace(THREE, avatar) {
   face.material.map?.dispose?.();
   face.material.map = drawn.texture;
   face.material.needsUpdate = true;
-  // Same unlit material family as the decal, so the sphere and the emoji
-  // print the identical colour under every light in the world.
+
+
   const skin = avatar.userData.skin;
   if (skin) {
     skin.color.set(drawn.color);
@@ -5700,9 +5699,9 @@ function syncAvatarFace(THREE, avatar) {
   avatar.userData.faceEmojiShown = worn;
 }
 
-// Wearing (or taking off) a consented account avatar photo as the 3D face —
-// only an already-public /api/accounts image ever reaches here; presence
-// frames carry nothing but the opt-in boolean.
+
+
+
 function applyAvatarFaceImage(THREE, avatar, url) {
   const face = avatar?.userData?.faceMesh;
   if (!face?.material) return;
@@ -5710,7 +5709,7 @@ function applyAvatarFaceImage(THREE, avatar, url) {
   if (avatar.userData.faceImageUrl === worn) return;
   avatar.userData.faceImageUrl = worn;
   if (!worn) {
-    // Redraw the emoji face on the next sync.
+
     avatar.userData.faceEmojiShown = "";
     syncAvatarFace(THREE, avatar);
     return;
@@ -5793,8 +5792,8 @@ function syncAvatarStatus(THREE, avatar, identity) {
   avatar.userData.emojiStatusKey = key;
   avatar.userData.statusEmoji = status.emoji;
   avatar.userData.statusNote = status.note;
-  // Mood is worn on the face and written on the front card. Nothing floats
-  // over the head, so a row of people keeps a clean silhouette.
+
+
   avatar.userData.emojiStatusSprite = null;
   syncAvatarFace(THREE, avatar);
 }
@@ -6001,8 +6000,8 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
   avatar.add(beltGroup);
   if (avatar.userData) {
     avatar.userData.nodeCount = count;
-    // Cached for the per-frame blink pass — a recursive getObjectByName over
-    // every avatar subtree each frame was measurably expensive.
+
+
     avatar.userData.operatorBeltLights = beltGroup.children.filter(
       (child) => child.userData?.mirrorStatusLight,
     );
@@ -6012,7 +6011,7 @@ function syncOperatorBelt(THREE, avatar, nodesOrCount) {
 function createAvatarJetpack(THREE) {
   const group = new THREE.Group();
   group.name = "forkmesh-avatar-jetpack";
-  // Avatar fronts face -Z, so positive Z is the centre of the back.
+
   group.position.set(0, 2.18, 0.43);
   const shell = makeMaterial(THREE, "#293748", {
     metalness: 0.78,
@@ -6079,8 +6078,8 @@ function createAvatar(THREE, identity, options = {}) {
   const scale = options.scale || 1;
   const remote = Boolean(options.remote);
 
-  // Unlit so the head sphere renders the sampled emoji colour exactly, with
-  // no lighting term to pull it off the flat decal wrapped over it.
+
+
   const skin = new THREE.MeshBasicMaterial({
     color: AVATAR_EMOJI_SKIN_COLOR,
   });
@@ -6099,9 +6098,9 @@ function createAvatar(THREE, identity, options = {}) {
   torso.position.y = 2.15;
   group.add(torso);
 
-  // Rounded everywhere except the front, which is cut off flat to carry the
-  // face disc: the two share AVATAR_FACE_DEPTH so the cut and the disc are the
-  // same circle.
+
+
+
   const headRig = new THREE.Group();
   headRig.name = "avatar-head-look-rig";
   headRig.position.y = 3.36;
@@ -6113,21 +6112,21 @@ function createAvatar(THREE, identity, options = {}) {
     ),
     shirt,
   );
-  // Left unscaled: an egg-shaped head would stretch the flat cut into an
-  // ellipse and put the avatar photo back out of proportion.
+
+
   headRig.add(head);
 
-  // The face wears the last world-status emoji the visitor set (default
-  // smile), or the visitor's avatar photo. It is a flat disc filling the cut
-  // front of the head, so the picture is shown square-on and unwarped rather
-  // than wrapped around a curve; syncAvatarFace keeps its texture current.
+
+
+
+
   const faceMesh = new THREE.Mesh(
     new THREE.CircleGeometry(AVATAR_FACE_RADIUS, 48),
-    // The canvas is flooded opaque, so the decal renders in the solid pass and
-    // never sorts against the head it is lying on.
+
+
     new THREE.MeshBasicMaterial({}),
   );
-  // Avatar fronts face -Z, so the disc is turned to look out of the cut.
+
   faceMesh.position.z = -(AVATAR_FACE_DEPTH + AVATAR_FACE_LIFT);
   faceMesh.rotation.y = Math.PI;
   headRig.add(faceMesh);
@@ -6165,8 +6164,8 @@ function createAvatar(THREE, identity, options = {}) {
   const jetpack = createAvatarJetpack(THREE);
   group.add(jetpack);
 
-  // Mouse activity reads as a small antenna riding on the visitor's shoulder
-  // that blinks solid green, faster the more their mouse is moving.
+
+
   const antenna = new THREE.Group();
   antenna.name = "mouse-activity-antenna";
   const antennaStalk = new THREE.Mesh(
@@ -6181,20 +6180,20 @@ function createAvatar(THREE, identity, options = {}) {
   );
   antennaBulb.position.y = 0.42;
   antenna.add(antennaBulb);
-  // Avatar fronts face -Z; perched on the right shoulder (top corner of the
-  // torso, just inboard of the arm) and tipped outward away from the head.
+
+
   antenna.position.set(0.52, 2.86, 0.06);
   antenna.rotation.x = 0.1;
   antenna.rotation.z = -0.35;
   antenna.visible = identity.inputActive === true;
   group.add(antenna);
 
-  // Each leg is a hip pivot carrying a thigh, and a knee pivot carrying the
-  // shin plus that leg's shoe. Standing (every pitch at zero) the two segments
-  // stack into the same block the single-box leg used to be, but the joints let
-  // a sitter fold the thigh forward and keep the shin and foot under the knee
-  // instead of swinging one rigid block — and shoes now travel with the leg
-  // they belong to rather than staying planted on the plank.
+
+
+
+
+
+
   const legGeometry = new THREE.BoxGeometry(0.42, AVATAR_LEG_SEGMENT, 0.45);
   const shoeGeometry = new THREE.BoxGeometry(0.46, AVATAR_SHOE_HEIGHT, 0.7);
   const buildLeg = (side) => {
@@ -6325,9 +6324,9 @@ function createAvatar(THREE, identity, options = {}) {
 function applyAvatarLookDirection(avatar, yaw, pitch, turnBody = true) {
   if (!avatar?.userData) return;
   if (turnBody && Number.isFinite(yaw)) avatar.rotation.y = yaw;
-  // Three.js camera pitch and the avatar's front-facing rig use opposite X
-  // rotation signs. Invert at this boundary so looking up raises the avatar's
-  // face and looking down lowers it.
+
+
+
   const lookPitch = clamp(-(Number(pitch) || 0), -0.62, 0.62);
   if (avatar.userData.headRig) {
     avatar.userData.headRig.rotation.order = "YXZ";
@@ -6408,8 +6407,8 @@ function avatarWorkBadgeTexture(THREE, board = {}) {
       return;
     }
 
-    // Stats first: the plate is read at a glance while walking past a mirror,
-    // so the counters stay above the per-task rows.
+
+
     context.fillStyle = "#f7c96b";
     context.font = '900 38px "ForkMesh Mono", ui-monospace, monospace';
     context.fillText("ASSIGNED", 44, 214);
@@ -6506,9 +6505,9 @@ function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
       new THREE.MeshBasicMaterial({ toneMapped: false }),
     );
     badge.name = "forkmesh-self-work-back-badge";
-    // Avatar fronts face -Z, so the owner-only work board sits on +Z.
-    // Sits below the identity/activity strip instead of occupying the same
-    // pixels. Both panels clear the jetpack on one shared rear reading plane.
+
+
+
     badge.position.set(0, 1.92, 0.68);
     badge.renderOrder = 4;
     avatar.add(badge);
@@ -6523,8 +6522,8 @@ function setAvatarWorkBadge(THREE, avatar, board, visible = true) {
 }
 
 function applyOutfit(THREE, shirt, identity) {
-  // Every public field the tailor reads is folded into one key so a presence
-  // frame that changes none of them never redraws the cloth.
+
+
   const key = [
     identity.name,
     identity.countryCode,
@@ -6604,9 +6603,9 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
     syncAvatarFace(THREE, avatar);
   }
   syncCountryShirt(THREE, avatar, identity);
-  // Taking the perk off (or losing Supporting status) reverts to the emoji
-  // face immediately; putting it on is driven by the app layer, which owns
-  // the account-lookup fetch.
+
+
+
   if (identity.faceImage !== true && avatar.userData.faceImageUrl) {
     applyAvatarFaceImage(THREE, avatar, "");
   }
@@ -6617,13 +6616,13 @@ function updateAvatarBadge(THREE, avatar, identity, remote = false) {
   syncOperatorBelt(THREE, avatar, identity.nodes || []);
 }
 
-// Starts (or restarts) the wave on one avatar. The pose itself is played by
-// animateAvatarActivity, which every walk/sit/ride path already calls after it
-// has written the arm rotations for the frame.
+
+
+
 function startAvatarWave(avatar, startedAt = performance.now()) {
   if (!avatar?.userData?.rightArm) return false;
-  // The wave and the handshake pose the same arm, so the newer gesture takes
-  // it over cleanly instead of the two fighting over the shoulder each frame.
+
+
   if (avatar.userData.handshakeStartedAt) {
     avatar.userData.handshakeStartedAt = 0;
     avatar.userData.rightArm.rotation.x = 0;
@@ -6632,9 +6631,9 @@ function startAvatarWave(avatar, startedAt = performance.now()) {
   return true;
 }
 
-// Starts (or restarts) the handshake pose on one avatar. Like the wave it
-// rides on top of whatever the avatar is otherwise doing, so two visitors can
-// shake hands while walking, sitting, or riding a swing.
+
+
+
 function startAvatarHandshake(avatar, startedAt = performance.now()) {
   if (!avatar?.userData?.rightArm) return false;
   if (avatar.userData.waveStartedAt) {
@@ -6667,9 +6666,9 @@ function startAvatarHudAction(avatar, action, startedAt = performance.now()) {
   return true;
 }
 
-// Rotating the arm box around its own centre would pull the shoulder end out
-// of the torso, so the mesh is nudged along the arc that keeps the shoulder
-// pinned where it hangs at rest.
+
+
+
 function poseWavingArm(arm, rest, angle) {
   const halfLength = (arm.geometry?.parameters?.height || 1.25) / 2;
   arm.rotation.x = 0;
@@ -6681,9 +6680,9 @@ function poseWavingArm(arm, rest, angle) {
   );
 }
 
-// The same shoulder-pinning arc as the wave, swung forward instead of out.
-// Avatar fronts face -Z, so a positive angle reaches the hand out ahead of
-// the body, where the other half of the handshake is standing.
+
+
+
 function poseHandshakingArm(arm, rest, angle) {
   const halfLength = (arm.geometry?.parameters?.height || 1.25) / 2;
   arm.rotation.z = 0;
@@ -6759,8 +6758,8 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   const waveStartedAt = avatar.userData.waveStartedAt || 0;
   const waveArm = waveStartedAt ? avatar.userData.rightArm : null;
   if (waveArm) {
-    // The rest pose is captured on the first wave: nothing else ever moves an
-    // arm's position, only its rotation.
+
+
     const rest =
       avatar.userData.rightArmRest ||
       (avatar.userData.rightArmRest = waveArm.position.clone());
@@ -6771,8 +6770,8 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
       waveArm.rotation.z = 0;
       waveArm.position.copy(rest);
     } else {
-      // One half sine lifts the arm and lowers it again; the shake rides on
-      // top of the lift so it fades in and out with the raise.
+
+
       const lift = Math.sin(Math.PI * progress);
       const shake = reducedMotion
         ? 0
@@ -6786,9 +6785,9 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     const rest =
       avatar.userData.rightArmRest ||
       (avatar.userData.rightArmRest = handshakeArm.position.clone());
-    // A gesture that started between two frames is younger than the frame
-    // timestamp animating it, so the age is clamped rather than treated as a
-    // finished pose: a throttled tab must not swallow the handshake outright.
+
+
+
     const elapsed = Math.max(0, time - handshakeStartedAt);
     const progress = elapsed / AVATAR_HANDSHAKE_DURATION_MS;
     if (!(progress >= 0) || progress >= 1) {
@@ -6796,8 +6795,8 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
       handshakeArm.rotation.x = 0;
       handshakeArm.position.copy(rest);
     } else {
-      // The reach saturates early and stays out for most of the gesture, so
-      // the two hands meet and hold rather than passing each other mid-swing.
+
+
       const reach = Math.min(1, Math.sin(Math.PI * progress) * 1.8);
       const pump = reducedMotion
         ? 0
@@ -6813,9 +6812,9 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
   const antenna = avatar.userData.antenna;
   const bulb = avatar.userData.antennaBulb;
   if (antenna?.visible && bulb) {
-    // A square blink rather than a pulse, so it reads as an unambiguous
-    // on/off beacon. Idle mouse activity ticks slowly; a mouse that is
-    // really moving drives it up to a few blinks a second.
+
+
+
     const energy = Math.max(0, Math.min(1, avatar.userData.inputEnergy || 0));
     const hz = ANTENNA_BLINK_MIN_HZ +
       energy * (ANTENNA_BLINK_MAX_HZ - ANTENNA_BLINK_MIN_HZ);
@@ -6823,9 +6822,9 @@ function animateAvatarActivity(avatar, time, delta, reducedMotion) {
     const lit = reducedMotion || cycle < 0.5;
     bulb.material.color.set(lit ? ANTENNA_LIT_COLOR : ANTENNA_DARK_COLOR);
   }
-  // Presence is presence: inactivity changes the antenna signal and activity
-  // label, never the visibility of the person. Guests and members remain fully
-  // opaque until they actually leave the World.
+
+
+
 }
 
 function mirrorNodeIsOnline(node) {
@@ -6844,10 +6843,10 @@ function mirrorMetric(value, maximum = Number.MAX_SAFE_INTEGER) {
     : null;
 }
 
-// The two ways a node answers for the repository — a git clone and a served
-// repository web request — counted together, so either kind of visit reads as
-// one "this cabinet just served somebody" event. Null when the node reports
-// neither counter; unreported values are never estimated.
+
+
+
+
 function mirrorServedTotal(node) {
   const clones = mirrorMetric(node?.clonesServed, 1_000_000_000);
   const website = mirrorMetric(node?.websiteServed, 1_000_000_000);
@@ -6958,9 +6957,9 @@ function mirrorCommitAgeLabel(ageMs) {
   return `${Math.floor(age / year)}y ago`;
 }
 
-// How the bounded client classes a node publishes for its last served clone /
-// website read are spelled on the cabinet. Anything else is treated as
-// unreported rather than printed raw.
+
+
+
 const MIRROR_SERVE_AGENT_LABELS = Object.freeze({
   "forkmesh-node": "MESH NODE",
   "git-client": "GIT",
@@ -6969,10 +6968,10 @@ const MIRROR_SERVE_AGENT_LABELS = Object.freeze({
   client: "CLIENT",
 });
 
-// "17h ago · GIT" for the two serve counters: when this node last answered
-// that kind of request and who it answered. Null (no second line at all) when
-// the node has served none yet or runs a build that never reported it — an
-// unserved counter must not borrow the record's publish age.
+
+
+
+
 function mirrorServeStamp(servedAt, agent, now = Date.now()) {
   const stamp = Number(servedAt);
   if (!Number.isFinite(stamp) || stamp <= 0 || stamp > now + 60 * 1000) {
@@ -7094,8 +7093,8 @@ function serverPanelTexture(THREE, node) {
         : integrity === "healing"
           ? "ROUTE VERIFYING"
           : "ROUTE UNVERIFIED";
-  // 512² keeps the worst-case 64-cabinet texture budget bounded on mobile.
-  // Draw in a 1024-unit coordinate system so typography stays easy to tune.
+
+
   return canvasTexture(THREE, 512, 512, (context) => {
     context.scale(0.5, 0.5);
     context.fillStyle = "#07110f";
@@ -7253,11 +7252,11 @@ function serverPanelTexture(THREE, node) {
     context.fillStyle = "#b4cabd";
     context.fillText(commitSnapshot.age, 598, 540);
 
-    // BRANCHES/PULL REQUESTS/ISSUES don't carry their own per-item
-    // timestamps, but they're read from the same signed snapshot as
-    // everything else on the card, so the record's own publish age
-    // (syncAgo) is an honest freshness stamp for them. COMMITS gets the
-    // precise last-commit age instead, since that's actually known.
+
+
+
+
+
     const rows = [
       ["COMMITS", node?.commitCount, commitSnapshot.age],
       ["BRANCHES", node?.branchCount, syncAgo],
@@ -7557,10 +7556,10 @@ function mirrorAgentTaskPanelTexture(THREE, node, provider = "") {
   });
 }
 
-// A pocket-sized stand-in for the agent a node just answered: the little
-// figure that shoots up out of a cabinet when it serves a clone or a
-// repository page. Unlit and self-owning — every launch builds its own
-// materials so it can fade out and dispose without touching shared palettes.
+
+
+
+
 function createServedVisitorFigure(THREE, accent = "#9ef7c6") {
   const group = new THREE.Group();
   group.name = "served-visitor";
@@ -7582,8 +7581,8 @@ function createServedVisitorFigure(THREE, accent = "#9ef7c6") {
   const torso = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.5, 0.22), suit);
   torso.position.y = 0.7;
   group.add(torso);
-  // Arms swept overhead and legs trailing straight below: the silhouette still
-  // reads as a launched visitor at the size it shrinks to high in the sky.
+
+
   for (const side of [-1, 1]) {
     const arm = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.44, 0.1), suit);
     arm.position.set(side * 0.25, 0.86, 0);
@@ -7644,15 +7643,15 @@ function createMirrorServerCabinet(THREE, node, id) {
     toneMapped: false,
   });
   const panel = new THREE.Mesh(panelGeometry, panelMaterial);
-  // Keep a real depth gap in front of the 0.71 cabinet face. A near-coplanar
-  // display flickers at oblique camera angles on mobile GPUs.
+
+
   panel.position.set(0, 1.72, -0.735);
   panel.rotation.y = Math.PI;
   panel.name = "mirror-server-rear-panel";
   panel.userData.nodeCabinet = { ...node };
   group.add(panel);
-  // Actions now face the routing-station walkway; technical server detail is
-  // on the opposite face so each cabinet has a distinct operational side.
+
+
   const actionsPanelMaterial = new THREE.MeshBasicMaterial({
     map: mirrorActionsPanelTexture(THREE, node),
     toneMapped: false,
@@ -7711,10 +7710,10 @@ function createMirrorServerCabinet(THREE, node, id) {
 
   const integrity = String(node?.integrity || "unknown").toLowerCase();
   const activity = String(node?.activity || "unknown").toLowerCase();
-  // The roof beacon answers one simple physical question: is this node alive?
-  // Clone eligibility and refs integrity remain explicit on its front/detail
-  // displays. Mixing those two states made a reachable worker look dead or
-  // yellow whenever it intentionally exposed no public clone endpoint.
+
+
+
+
   const statusColor =
     online
       ? "#00cc44"
@@ -7724,14 +7723,14 @@ function createMirrorServerCabinet(THREE, node, id) {
             activity === "awaiting-verification"
           ? "#ffcc00"
           : "#71837a";
-  // Yellow and red are the two statuses that want attention, so their lamps
-  // sweep like a rotating warning beacon; green and offline stay steady.
+
+
   const alerting = statusColor === "#ff0000" || statusColor === "#ffcc00";
-  // A single beacon lamp sits on the cabinet roof; its color is the status.
-  // The lens is an unlit cylinder so the status reads as one flat, solid
-  // colour from every camera angle instead of shading into a gradient. The
-  // top is left open — the world camera looks down on the yard, so a metal
-  // cap would hide the one part of the lamp that carries the status.
+
+
+
+
+
   const statusLight = new THREE.Group();
   const beaconBase = new THREE.Mesh(
     new THREE.CylinderGeometry(0.17, 0.19, 0.08, 20),
@@ -7748,8 +7747,8 @@ function createMirrorServerCabinet(THREE, node, id) {
   );
   beaconLens.position.y = 0.23;
   statusLight.add(beaconLens);
-  // Only a thin collar rings the open mouth so the lens still reads as a
-  // fixture rather than a bare peg.
+
+
   const beaconCollar = new THREE.Mesh(
     new THREE.TorusGeometry(0.152, 0.016, 8, 20),
     makeMaterial(THREE, "#35463e", {
@@ -7761,9 +7760,9 @@ function createMirrorServerCabinet(THREE, node, id) {
   beaconCollar.position.y = 0.378;
   statusLight.add(beaconCollar);
   if (alerting) {
-    // Two opposed additive lobes hugging the lens: rotating the group reads as
-    // a sweeping light without an actual light source or a per-frame material
-    // rebuild, both of which are too expensive for a yard of 64 cabinets.
+
+
+
     const beaconSweep = new THREE.Group();
     const sweepMaterial = new THREE.MeshBasicMaterial({
       color: statusColor,
@@ -7812,8 +7811,8 @@ function createMirrorServerCabinet(THREE, node, id) {
   group.userData.dataKey = nodeDataKey(node);
   group.userData.nodeRecord = { ...node };
   setShadows(group);
-  // The sweep is a glow, not geometry: shadow-casting it would paint a turning
-  // dark band across the cabinet roof.
+
+
   if (group.userData.beaconSweep) {
     setShadows(group.userData.beaconSweep, false, false);
   }
@@ -8625,8 +8624,8 @@ function concreteBrickMaterial(THREE) {
 function districtGroundMaterial(THREE, kind) {
   const repository = kind === "repositories";
   return new THREE.MeshStandardMaterial({
-    // Repository portals now sit on a neutral concrete apron. The former
-    // blue-gray circle read as a second, disconnected repository district.
+
+
     color: repository ? "#c1bbb0" : "#8a829b",
     map: projectAssetTexture(
       THREE,
@@ -8816,13 +8815,13 @@ function createTownLandscape(THREE) {
   return group;
 }
 
-// The reward pool names itself: instead of a pale stone foundation plus a
-// ground plaque, the title wraps around the green rim of the basin.
+
+
 function rewardPoolRimTexture(THREE) {
   const width = 4096;
   const height = 256;
-  // Three repeats around the rim: five crowded the 18-character title into its
-  // own neighbours, so the wrap read as one smeared word from every angle.
+
+
   const repeats = 3;
   const title = "GLOBAL REWARD POOL";
   return canvasTexture(THREE, width, height, (context) => {
@@ -8834,8 +8833,8 @@ function rewardPoolRimTexture(THREE) {
     context.textAlign = "center";
     context.textBaseline = "middle";
     const slot = width / repeats;
-    // Measured, not assumed: shrink the title until a repeat plus its ◎
-    // separator fits inside one slot, whatever font the browser resolves.
+
+
     const available = slot * 0.72;
     let titleSize = 108;
     const titleFont = (size) =>
@@ -8859,10 +8858,10 @@ function rewardPoolRimTexture(THREE) {
   });
 }
 
-// The mirror tally that hangs over the reward pool's orb. The cabinets are
-// already arranged in rings around this basin, so the headline number belongs
-// above them rather than on yet another sign: how many mirror nodes the signed
-// catalog currently lists, and how many of those are answering right now.
+
+
+
+
 function rewardPoolMirrorCountTexture(THREE, total, online) {
   const count = Math.max(0, Math.min(9999, Math.round(Number(total) || 0)));
   const live = Math.max(0, Math.min(count, Math.round(Number(online) || 0)));
@@ -8894,7 +8893,7 @@ function rewardPoolMirrorCountTexture(THREE, total, online) {
   });
 }
 
-// Paints a QR matrix (from /qr.js) into `size` square pixels at (x, y).
+
 function drawQrModules(context, text, x, y, size) {
   const encoder = globalThis.ForkMeshQR;
   if (!encoder?.generate || !text) return false;
@@ -8925,9 +8924,9 @@ function drawQrModules(context, text, x, y, size) {
   return true;
 }
 
-// The chest wallet chip: the account's published Solana address as a QR,
-// ringed with the transaction-recency colour and captioned with the public
-// balance the app layer fetched.
+
+
+
 function walletChipTexture(THREE, wallet) {
   const ring =
     ACTIVITY_LIGHT_COLORS[wallet.txBucket] || ACTIVITY_LIGHT_COLORS.stale;
@@ -8936,8 +8935,8 @@ function walletChipTexture(THREE, wallet) {
     roundedRect(context, 6, 6, 244, 244, 24);
     context.fillStyle = "rgba(7, 18, 14, 0.94)";
     context.fill();
-    // The ring wears the same colour ladder as the chest activity light,
-    // keyed to how recently the wallet last saw a transaction.
+
+
     roundedRect(context, 40, 12, 176, 176, 14);
     context.strokeStyle = ring;
     context.lineWidth = 10;
@@ -9048,8 +9047,8 @@ function rewardTreasuryTexture(THREE, treasury) {
   });
 }
 
-// A double-sided board at the basin edge showing the treasury address as a
-// scannable QR code with the live public balance beneath it.
+
+
 function createRewardTreasurySign(THREE) {
   const sign = new THREE.Group();
   sign.name = "reward-treasury-sign";
@@ -9224,8 +9223,8 @@ function createFountain(THREE, position, interactive, animated) {
   fireShell.position.copy(sun.position);
   group.add(fireShell);
 
-  // Hidden until the first signed catalog lands, so the pool never flashes a
-  // placeholder "0 MIRRORS" before the node payload arrives.
+
+
   const mirrorCountSprite = new THREE.Sprite(
     new THREE.SpriteMaterial({
       transparent: true,
@@ -9286,9 +9285,9 @@ function createFountain(THREE, position, interactive, animated) {
   group.add(light);
 
   const treasurySign = createRewardTreasurySign(THREE);
-  // The SOL board now rises from the exact centre of the global reward-pool
-  // pedestal. Its raised base clears the pedestal rim while leaving a visible
-  // gap beneath the fireball and its live online/total readout.
+
+
+
   treasurySign.position.set(0, 1, 0);
   treasurySign.rotation.y = 0;
   group.add(treasurySign);
@@ -9603,8 +9602,8 @@ function createRepositoryAgentTerminal(THREE, task = {}) {
     }),
   );
   screen.name = `repository-agent-terminal-screen:${String(task.id || "")}`;
-  // The terminal is the robot's upward-facing face. Visitors can read it from
-  // above instead of looking through a row of upright slabs.
+
+
   screen.rotation.x = -Math.PI / 2;
   screen.position.set(0, 0.665, 0);
   screen.userData.landmark = "repositories";
@@ -9714,9 +9713,9 @@ function repositoryIssueAgentModelTexture(THREE, model, provider) {
 }
 
 function repositoryStarPlaneTexture(THREE, count, starred = false) {
-  // A single, fixed upright plane avoids the chunky extruded-star silhouette
-  // at close range. Its transparent texture preserves the actual star shape
-  // while keeping the complete repo_stars value readable at its centre.
+
+
+
   return canvasTexture(THREE, 512, 512, (context) => {
     context.clearRect(0, 0, 512, 512);
     const outerRadius = 224;
@@ -9968,9 +9967,9 @@ function repositoryPullReviewStatus(pull = {}) {
   ) {
     return "ready";
   }
-  // An immutable open record is truthful, but it is not proof that a merge
-  // simulation is conflict-free. Keep the status OPEN until a mirror reports
-  // an explicit readiness/conflict result.
+
+
+
   if (state === "open") return "open";
   return "unavailable";
 }
@@ -10107,7 +10106,7 @@ function repositoryIssuePageTexture(THREE, issue, expanded, repositoryName) {
       width / 2,
       expanded ? 140 : 88,
     );
-    // Ruled page lines keep the sheet reading as a document, not a button.
+
     context.strokeStyle = "rgba(84, 96, 88, 0.35)";
     context.lineWidth = expanded ? 3 : 2;
     const firstRule = expanded ? 200 : 120;
@@ -10320,10 +10319,10 @@ function canvasReadableImageURL(value) {
   if (!raw || raw.length > 120_000) return "";
   try {
     const url = new URL(raw, window.location.href);
-    // Canvas/WebGL may only sample same-origin or embedded images unless the
-    // remote response explicitly opts into CORS. Mastodon media commonly does
-    // not, and browsers provide no preflight-free way to discover that without
-    // logging a CORS failure. Keep the generated fallback for those URLs.
+
+
+
+
     if (
       url.origin !== window.location.origin &&
       url.protocol !== "data:" &&
@@ -10367,7 +10366,7 @@ function drawRepositoryFollowerAvatar(
   context.closePath();
   context.clip();
   if (image) {
-    // Cover-crop the remote avatar into the circle without distorting it.
+
     const scale = size / Math.min(image.naturalWidth, image.naturalHeight);
     const width = image.naturalWidth * scale;
     const height = image.naturalHeight * scale;
@@ -10400,8 +10399,8 @@ function drawRepositoryFollowerAvatar(
 }
 
 function repositoryFollowerCardTexture(THREE, follower, accent, image = null) {
-  // One follower, with everything the fediverse publishes about them: avatar,
-  // display name, full @handle, home instance, bio, and when the follow landed.
+
+
   return canvasTexture(THREE, 560, 320, (context) => {
     context.clearRect(0, 0, 560, 320);
     context.fillStyle = "rgba(7, 18, 15, 0.9)";
@@ -10452,8 +10451,8 @@ function repositoryFollowerCardTexture(THREE, follower, accent, image = null) {
 }
 
 function repositoryFollowerIconTexture(THREE, follower, accent, image = null) {
-  // A pure circular avatar belongs in the orbit. The previous tall profile
-  // card hid the file wedges and read like another repository control.
+
+
   return canvasTexture(THREE, 256, 256, (context) => {
     context.clearRect(0, 0, 256, 256);
     drawRepositoryFollowerAvatar(
@@ -10472,19 +10471,19 @@ function makeRepositoryFollowerIcon(THREE, follower) {
   const seed = repositoryFollowerSeed(follower);
   const accent =
     REPOSITORY_FOLLOWER_ACCENTS[seed % REPOSITORY_FOLLOWER_ACCENTS.length];
-  // Use the same fixed face-aligned plane geometry as the repository star.
-  // A Sprite nested under the rotated portal face was present in the scene but
-  // could disappear entirely at the elevated camera angles used for the
-  // sunburst. The plane remains a real circular portrait at every angle.
+
+
+
+
   const icon = new THREE.Mesh(
     new THREE.PlaneGeometry(1, 1),
     new THREE.MeshBasicMaterial({
       map: repositoryFollowerIconTexture(THREE, follower, accent),
       transparent: true,
-      // These are UI-like identity badges pinned to the perimeter of a dense
-      // stack of file wedges. Letting the depth buffer participate caused the
-      // repository disk to erase the badges from common elevated camera
-      // angles even though their scene objects were present and visible.
+
+
+
+
       depthTest: false,
       depthWrite: false,
       side: THREE.DoubleSide,
@@ -10611,9 +10610,9 @@ function repositoryFollowButtonTexture(THREE, handle = "") {
 }
 
 function makeRepositoryFollowerFigure(THREE, follower) {
-  // A seated visitor on the ground under the repository circle, leaning back to
-  // look up at it. Purpose-built (not the player avatar) so the crowd stays
-  // small, cheap, and clearly a gallery rather than another walking body.
+
+
+
   const seed = repositoryFollowerSeed(follower);
   const accent =
     REPOSITORY_FOLLOWER_ACCENTS[seed % REPOSITORY_FOLLOWER_ACCENTS.length];
@@ -10640,7 +10639,7 @@ function makeRepositoryFollowerFigure(THREE, follower) {
     cloth,
   );
   torso.position.set(0, 0.82, 0.06);
-  // Leaning back is what makes the pose read as "looking up at the circle".
+
   torso.rotation.x = 0.22;
   group.add(torso);
   const armGeometry = new THREE.CapsuleGeometry(0.12, 0.44, 5, 10);
@@ -10660,7 +10659,7 @@ function makeRepositoryFollowerFigure(THREE, follower) {
     dark,
   );
   hair.position.set(0, 1.5, 0.14);
-  // Tilted back with the head, so the face stays clear while they look up.
+
   hair.rotation.x = 0.3;
   group.add(hair);
   const halo = new THREE.Mesh(
@@ -10692,8 +10691,8 @@ function makeRepositoryFollowerFigure(THREE, follower) {
   card.renderOrder = 13;
   group.add(card);
   loadRepositoryFollowerAvatar(follower.avatar, (image) => {
-    // The layer may have been rebuilt (catalog refresh) while the avatar was
-    // in flight; a detached card is dropped instead of repainted.
+
+
     if (!card.parent) return;
     const next = repositoryFollowerCardTexture(THREE, follower, accent, image);
     card.material.map?.dispose?.();
@@ -10871,8 +10870,8 @@ function repositoryWedgeGeometry(
 
 function createRepositoryDistrict(THREE, position, interactive, animated) {
   const group = new THREE.Group();
-  // Match the concrete apron to the live repository ring instead of leaving
-  // an oversized blue foundation behind at the former landmark position.
+
+
   group.add(
     createDistrictGroundCircle(
       THREE,
@@ -10947,9 +10946,9 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
     legacyFiles.add(file);
   }
   portal.add(legacyFiles);
-  // Repository navigation now lives on the perimeter portals and their
-  // interactive sunbursts. Keep the plaque, but remove the obsolete central
-  // globe/ring/upright centerpiece from the district.
+
+
+
   portal.visible = false;
   portal.userData.legacyPortalHidden = true;
   group.add(portal);
@@ -10964,9 +10963,9 @@ function createRepositoryDistrict(THREE, position, interactive, animated) {
   portal.userData.repositorySizeLayer = null;
   portal.userData.repositorySizeMeshes = [];
 
-  // A physical import kiosk remains at the repository district even though
-  // the old central repository portal is retired. Each provider pad opens the
-  // same secure import flow with that provider preselected.
+
+
+
   const importKiosk = new THREE.Group();
   importKiosk.name = "repository-import-kiosk";
   importKiosk.position.set(0, 0, 0);
@@ -11511,8 +11510,8 @@ function officeGuideBoardTexture(THREE) {
   });
 }
 
-// The board is a normal standing banner now, not a tower: five entries per
-// page keep it dense while every line stays readable at banner scale.
+
+
 const WORLD_BULLETIN_VISIBLE_EVENTS = 5;
 const WORLD_BULLETIN_WIDTH = 1536;
 const WORLD_BULLETIN_HEIGHT = 1024;
@@ -11520,7 +11519,7 @@ const WORLD_BULLETIN_HEIGHT = 1024;
 function worldBulletinTexture(THREE, events = [], offset = 0) {
   const allEntries = (Array.isArray(events) ? events : [])
     .filter((event) => event && String(event.title || "").trim())
-    // Newest alerts always take priority at the top of the board.
+
     .sort((left, right) => Date.parse(right.startsAt || 0) - Date.parse(left.startsAt || 0));
   const start = clamp(
     Number(offset) || 0,
@@ -11555,8 +11554,8 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
       ? new Date(timestamp).toLocaleString([], { dateStyle: "medium", timeStyle: "short" })
       : "Time to be announced";
   };
-  // The right-hand column is left clear for the ▲ / ▼ scroll controls, so no
-  // line is allowed to run under them.
+
+
   const textWidth = 1276;
   return canvasTexture(THREE, WORLD_BULLETIN_WIDTH, WORLD_BULLETIN_HEIGHT, (context) => {
     context.fillStyle = "#0b1820";
@@ -11604,9 +11603,9 @@ function worldBulletinTexture(THREE, events = [], offset = 0) {
         y + 55,
       );
       context.fillStyle = "#d5e6e9";
-      // Event descriptions are sanitized to 500 characters upstream; three
-      // wrapped lines carry the opening of each one without pushing the five
-      // slots off the board.
+
+
+
       context.font = '600 17px "ForkMesh Mono", ui-monospace, monospace';
       wrapText(context, event.description || "Community event", 60, y + 80, textWidth - 16, 21, 3);
       if (index < entries.length - 1) {
@@ -11757,21 +11756,21 @@ function worldDiscordBoardTexture(THREE) {
   });
 }
 
-// Three posts at a time on a board twice as tall as the old one, so each card
-// holds the full text, a deep image strip, and the post's engagement counts.
-// The board is repainted from the same snapshot the mini-app renders.
+
+
+
 const MASTODON_KIOSK_VISIBLE_TOOTS = 3;
 const MASTODON_KIOSK_VISIBLE_REPLIES = 5;
-// Vertical pitch of one toot card, and the top of the first card. The extra
-// height over the old 470 all goes to the attachment strip.
+
+
 const MASTODON_KIOSK_TOOT_PITCH = 720;
 const MASTODON_KIOSK_TOOT_TOP = 1390;
 const MASTODON_KIOSK_WIDTH = 1536;
 const MASTODON_KIOSK_HEIGHT = 4096;
 const MASTODON_KIOSK_REFRESH_MS = 10 * 60 * 1000;
 
-// Shared by the board texture and the "open in a new tab" buttons so both
-// agree on which two toots are on screen for a given scroll offset.
+
+
 function mastodonKioskVisibleToots(snapshot, offset) {
   const toots = Array.isArray(snapshot?.toots) ? snapshot.toots : [];
   const start = clamp(
@@ -11804,8 +11803,8 @@ function wrapCanvasText(context, text, x, y, maxWidth, lineHeight, maxLines = In
   return lines;
 }
 
-// One-line fit for the reply rows: replies get a single line each, so long
-// bodies are cut at the card width with an ellipsis rather than wrapped away.
+
+
 function clipCanvasText(context, text, maxWidth) {
   const flat = String(text || "").replace(/\s+/g, " ").trim();
   if (!flat || context.measureText(flat).width <= maxWidth) return flat;
@@ -11823,8 +11822,8 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     context.fillStyle = "#191a2e";
     context.fillRect(0, 0, WIDTH, HEIGHT);
     if (!snapshot) {
-      // No live profile yet (still fetching, or mastodon.social unreachable):
-      // fall back to the static kiosk sign describing the board.
+
+
       context.fillStyle = "#6364ff";
       context.fillRect(12, 12, 1512, 260);
       context.fillStyle = "#f2f3ff";
@@ -11867,8 +11866,8 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     }
     const image = (url) =>
       typeof resolveImage === "function" ? resolveImage(url) : null;
-    // Header banner, cover-cropped like the profile page. Text over the band
-    // sits on a darkening gradient so it stays readable on any artwork.
+
+
     const header = image(snapshot.headerURL);
     context.save();
     context.beginPath();
@@ -11933,7 +11932,7 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
     context.fillStyle = shade;
     context.fillRect(16, 16, 1504, 560);
     context.restore();
-    // Avatar overlapping the banner edge, then identity beside it.
+
     const avatar = image(snapshot.avatarURL);
     context.fillStyle = "#191a2e";
     roundedRect(context, 40, 476, 208, 208, 44);
@@ -11971,8 +11970,8 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       context.font = '800 58px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(String(value ?? "—"), x, 858);
     });
-    // Bio, then the profile's own link fields with their verification ticks —
-    // the same block the mini-app prints under the stats.
+
+
     context.fillStyle = "#c8c9ff";
     context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
     wrapCanvasText(context, snapshot.note, 56, 930, 1424, 46, 4);
@@ -12052,8 +12051,8 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
         56,
         top + 36,
       );
-      // Pinned / boosted / content-warning markers get their own highlighted
-      // line above the body instead of being folded into the text.
+
+
       const marker = String(toot.marker || "").trim();
       if (marker) {
         context.fillStyle = "#ffd257";
@@ -12062,8 +12061,8 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
       }
       context.fillStyle = "#e8e9ff";
       context.font = '600 34px "ForkMesh Mono", ui-monospace, monospace';
-      // The full post text runs until it hits the card's image strip; posts
-      // longer than the card still end at a whole line rather than mid-word.
+
+
       wrapCanvasText(
         context,
         toot.text,
@@ -12074,9 +12073,9 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
         images.length ? (marker ? 3 : 4) : marker ? 10 : 11,
       );
       if (images.length) {
-        // Attachments below the text, cover-cropped into tiles that divide the
-        // full card width. Tiles that have not loaded CORS-clean stay as empty
-        // plates.
+
+
+
         const gap = 18;
         const height = 360;
         const width = (1424 - gap * (images.length - 1)) / images.length;
@@ -12109,8 +12108,8 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
           context.restore();
         });
       }
-      // Engagement counts sit on the card's bottom rule: stars, boosts, and
-      // how many people replied to that post.
+
+
       context.fillStyle = "#8b9bf4";
       context.font = '700 30px "ForkMesh Mono", ui-monospace, monospace';
       context.fillText(
@@ -12122,8 +12121,8 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
         56,
         top + 692,
       );
-      // Rule between the cards only: the last card runs straight into the
-      // replies strip so the tall image tiles keep their clearance.
+
+
       if (index < entries.length - 1) {
         context.strokeStyle = "rgba(99,100,255,0.28)";
         context.lineWidth = 3;
@@ -12133,9 +12132,9 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
         context.stroke();
       }
     });
-    // Replies section: the newest public replies other accounts left on those
-    // toots, each with the replier's own avatar so the board shows who is
-    // talking back rather than just a reply count.
+
+
+
     const replies = (Array.isArray(snapshot.replies) ? snapshot.replies : [])
       .filter(Boolean)
       .slice(0, MASTODON_KIOSK_VISIBLE_REPLIES);
@@ -12190,7 +12189,7 @@ function mastodonKioskTexture(THREE, snapshot = null, offset = 0, resolveImage =
   });
 }
 
-// MM:SS left before the next fetch, floored at 00:00.
+
 function mastodonCountdownClock(remainingMs) {
   const seconds = Math.max(0, Math.ceil((Number(remainingMs) || 0) / 1000));
   const minutes = Math.floor(seconds / 60);
@@ -12200,10 +12199,10 @@ function mastodonCountdownClock(remainingMs) {
   )}`;
 }
 
-// The refresh timer that rides on the kiosk frame: a small MM:SS readout of
-// the time left in the ten-minute refresh window. It repaints once a second
-// on its own small texture so the big board texture is only rebuilt when the
-// snapshot itself changes.
+
+
+
+
 function drawMastodonCountdown(
   context,
   remainingMs = MASTODON_KIOSK_REFRESH_MS,
@@ -12212,8 +12211,8 @@ function drawMastodonCountdown(
 ) {
   const total = Math.max(1000, Number(totalMs) || MASTODON_KIOSK_REFRESH_MS);
   const remaining = clamp(Number(remainingMs) || 0, 0, total);
-  // Unframed: just the label over a soft backing plate, no border, so it
-  // reads as lettering on the stand rather than a badge on the board.
+
+
   context.fillStyle = "rgba(15,16,36,0.72)";
   roundedRect(context, 4, 4, 248, 120, 22);
   context.fill();
@@ -12241,22 +12240,22 @@ function mastodonCountdownTexture(
   );
 }
 
-// Posting-cadence thresholds for the last-post plate. Mastodon presence
-// guides settle on roughly one post a day for an account that wants to stay
-// visible: under a day since the newest toot is healthy green, a missed day
-// turns amber ("time to post"), and three silent days reads as an abandoned
-// profile and goes red.
+
+
+
+
+
 const MASTODON_POST_FRESH_MS = 24 * 60 * 60 * 1000;
 const MASTODON_POST_STALE_MS = 72 * 60 * 60 * 1000;
 
-// The same cadence rule for the blog board, stretched to how often a feature
-// blog actually publishes: a post within the week is green, a quiet week
-// turns amber, and three silent weeks read as a stalled blog and go red.
+
+
+
 const BLOG_POST_FRESH_MS = 7 * 24 * 60 * 60 * 1000;
 const BLOG_POST_STALE_MS = 21 * 24 * 60 * 60 * 1000;
 
-// Compact elapsed readout: minutes under an hour, hours under two days,
-// whole days beyond that.
+
+
 function mastodonLastPostClock(sinceMs) {
   const minutes = Math.max(0, Math.floor((Number(sinceMs) || 0) / 60_000));
   if (minutes < 60) return `${minutes}M AGO`;
@@ -12276,12 +12275,12 @@ function mastodonLastPostColor(
   return "#ff7a7a";
 }
 
-// The plate beside the sync clock: how long since @forkmesh last posted,
-// tinted green / amber / red by the cadence thresholds above so a glance at
-// the stand says whether it is time to post again. sinceMs of null (nothing
-// fetched yet, or a feed with no dated posts) renders a neutral placeholder.
-// The social banners reuse the same plate with their own label and
-// thresholds.
+
+
+
+
+
+
 function drawMastodonLastPost(
   context,
   sinceMs = null,
@@ -12319,8 +12318,8 @@ function mastodonLastPostTexture(
 function createMastodonKiosk(THREE, interactive) {
   const group = new THREE.Group();
   group.name = "forkmesh-mastodon-kiosk";
-  // A newsstand beside the Office approach: close enough to read on the walk
-  // to the door, far enough not to block the campus bridge.
+
+
   group.position.set(33.5, 0, -18.5);
   group.rotation.y = Math.atan2(-group.position.x, -group.position.z);
   const base = new THREE.Mesh(
@@ -12333,9 +12332,9 @@ function createMastodonKiosk(THREE, interactive) {
     makeMaterial(THREE, "#2c2d4d", { metalness: 0.4, roughness: 0.5 }),
   );
   post.position.y = 1.3;
-  // A billboard twice as tall as the old one: the same 0.75-wide stand now
-  // carries the live profile header, bio, stats, three full toot cards with
-  // deep image strips, and the replies strip without crowding any of them.
+
+
+
   const frame = new THREE.Mesh(
     new THREE.BoxGeometry(7.9, 20.0, 0.36),
     makeMaterial(THREE, "#43389c", { metalness: 0.35, roughness: 0.45 }),
@@ -12350,9 +12349,9 @@ function createMastodonKiosk(THREE, interactive) {
   );
   face.name = "forkmesh-mastodon-kiosk-face";
   face.position.set(0, 11.75, 0.2);
-  // Sits on the stand under the board, off the artwork entirely, so the board
-  // itself is all profile and posts. Wide and short: it reads a MM:SS clock,
-  // not a dial.
+
+
+
   const countdown = new THREE.Mesh(
     new THREE.PlaneGeometry(1.6, 0.8),
     new THREE.MeshBasicMaterial({
@@ -12363,8 +12362,8 @@ function createMastodonKiosk(THREE, interactive) {
   );
   countdown.name = "forkmesh-mastodon-kiosk-countdown";
   countdown.position.set(-0.95, 1.15, 0.3);
-  // Its sibling plate: how long since the last toot, colored by whether we
-  // are keeping up a healthy posting cadence.
+
+
   const lastPost = new THREE.Mesh(
     new THREE.PlaneGeometry(1.6, 0.8),
     new THREE.MeshBasicMaterial({
@@ -12398,8 +12397,8 @@ function createMastodonKiosk(THREE, interactive) {
     control.userData.interactive = `mastodon-kiosk-scroll-${direction}`;
     return control;
   };
-  // Both scroll controls now live at the bottom of the board, up to the left
-  // of down, out of the way of the toot cards above them.
+
+
   const scrollUp = makeKioskControl("▲", "up", 2.2, 2.55);
   const scrollDown = makeKioskControl("▼", "down", 3.1, 2.55);
   const makeOpenButton = (name, x, y) => {
@@ -12428,10 +12427,10 @@ function createMastodonKiosk(THREE, interactive) {
     button.visible = false;
     return button;
   };
-  // One button beside the profile identity, one beside each of the three
-  // visible toot cards, each opening that item's mastodon.social page in a
-  // new tab instead of the in-app board. The heights track the card headings
-  // on the taller board.
+
+
+
+
   const openProfile = makeOpenButton("profile", 3.25, 18.3);
   const openToot0 = makeOpenButton("toot-0", 3.25, 14.65);
   const openToot1 = makeOpenButton("toot-1", 3.25, 11.3);
@@ -12461,20 +12460,20 @@ function createMastodonKiosk(THREE, interactive) {
   return group;
 }
 
-// Half-height siblings of the Mastodon kiosk for Twitter/X and Reddit: same
-// stand, frame, and sign typography, but the whole board is one click target
-// that opens the profile in a new tab. Neither network allows the browser to
-// fetch its feed directly (no CORS, unlike mastodon.social), so the Worker
-// proxies one edge-cached read via /api/world/social-posts and the board
-// repaints from that snapshot; without one it keeps the static sign.
+
+
+
+
+
+
 const SOCIAL_BANNER_VISIBLE_POSTS = 4;
 const SOCIAL_BANNER_WIDTH = 1536;
 const SOCIAL_BANNER_HEIGHT = 2048;
 const SOCIAL_BANNER_POST_TOP = 760;
 const SOCIAL_BANNER_POST_PITCH = 290;
-// A board whose feed carries artwork and preview text (the blog's RSS items)
-// draws taller cards: a 16:9 thumbnail beside the headline and the item's
-// description under it, so fewer of them fit on the same face.
+
+
+
 const SOCIAL_BANNER_ART_VISIBLE_POSTS = 3;
 const SOCIAL_BANNER_ART_POST_PITCH = 372;
 const SOCIAL_BANNER_ART_WIDTH = 400;
@@ -12553,12 +12552,12 @@ const REDDIT_BANNER_OPTIONS = Object.freeze({
   },
 });
 
-// The blog board continues the same ring past Reddit. Its posts come from
-// the blog's own RSS feed (/blog/rss.xml), so each card shows the item's
-// artwork and preview text. Feed items carry pubDate, so the plate at the
-// bottom of the board reads how long ago the newest article went up, tinted
-// by the same green / amber / red rule as the Mastodon kiosk's LAST POST
-// plate — only at a blog's slower cadence (a week fresh, three weeks stale).
+
+
+
+
+
+
 const BLOG_BANNER_OPTIONS = Object.freeze({
   id: "blog",
   position: [19.8, 0, -32.8],
@@ -12587,11 +12586,11 @@ const BLOG_BANNER_OPTIONS = Object.freeze({
   },
 });
 
-// One artwork-carrying card on a social board: the post's own image on the
-// left (cover-cropped into a 16:9 tile), then its meta line, headline, and
-// the preview text the feed item's description carries. An image that has
-// not decoded yet — or one a host refuses to serve CORS-clean, which would
-// taint the canvas and break the WebGL upload — keeps the placeholder plate.
+
+
+
+
+
 function drawSocialBannerPostCard(context, post, top, resolveImage) {
   const width = SOCIAL_BANNER_ART_WIDTH;
   const height = SOCIAL_BANNER_ART_HEIGHT;
@@ -12700,8 +12699,8 @@ function socialBannerTexture(
     context.lineTo(1440, 656);
     context.stroke();
     if (!snapshot) {
-      // No proxy snapshot (still fetching, or the feed is unreachable):
-      // fall back to the static sign describing the board.
+
+
       context.fillStyle = "#e8e9ff";
       context.font = '700 60px "ForkMesh Mono", ui-monospace, monospace';
       options.lines.forEach((line, index) => {
@@ -12750,9 +12749,9 @@ function socialBannerTexture(
           wrapCanvasText(context, post.text, 96, top + 76, 1344, 66, 3);
         }
         if (index < posts.length - 1) {
-          // Art cards run taller than the text-only ones (three lines of
-          // preview text under a two-line headline), so their rule sits
-          // closer to the next card rather than through the last line.
+
+
+
           const rule = top + pitch - (art ? 20 : 66);
           context.strokeStyle = "rgba(139,155,244,0.25)";
           context.lineWidth = 2;
@@ -12792,9 +12791,9 @@ function systemStatusColor(status) {
     SYSTEM_STATUS_COLORS.unknown;
 }
 
-// A compact, canvas-native copy of /status. The physical frame deliberately
-// remains the same as the Twitter sign, while its face contains every system
-// and the same day/hour/minute hierarchy and state colours as the web page.
+
+
+
 function systemStatusBannerTexture(THREE, payload = null) {
   const WIDTH = SOCIAL_BANNER_WIDTH;
   const HEIGHT = SOCIAL_BANNER_HEIGHT;
@@ -12885,8 +12884,8 @@ function systemStatusBannerTexture(THREE, payload = null) {
         Math.min(16, rowHeight * 0.075),
       );
 
-      // Top strip: the latest 60 raw one-minute reachability checks. It now
-      // spans the same full graph width as the other time scales.
+
+
       const minutes = Array.isArray(system.minutes)
         ? system.minutes.slice(-60)
         : [];
@@ -12907,8 +12906,8 @@ function systemStatusBannerTexture(THREE, payload = null) {
         context.fill();
       });
 
-      // Middle strip: the latest 24 hourly checks. Every time scale uses the
-      // same visual height so none of the three rows looks heavier.
+
+
       const hours = (
         Array.isArray(system.hours)
           ? system.hours
@@ -12932,7 +12931,7 @@ function systemStatusBannerTexture(THREE, payload = null) {
         context.fill();
       });
 
-      // Bottom strip: one tile per day, at the same height as minute/hour cells.
+
       const daySlot = graphWidth / 30;
       const dayWidth = Math.max(8, daySlot - 4);
       const dayHeight = statusCellHeight;
@@ -13013,8 +13012,8 @@ function createSocialBanner(THREE, interactive, options) {
   );
   face.name = `forkmesh-${options.id}-banner-face`;
   face.position.set(0, frameY, 0.2);
-  // The same stand plates the Mastodon kiosk carries: the MM:SS countdown to
-  // the next feed sync on the left, the staleness readout on the right.
+
+
   const countdown = new THREE.Mesh(
     new THREE.PlaneGeometry(1.6, 0.8),
     new THREE.MeshBasicMaterial({
@@ -14226,10 +14225,10 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     seaGrasses.push({ grass, phase });
     coralGarden.add(grass);
   }
-  // Every public account owns one anonymous fish. The same name-seeded RNG
-  // and curated colourways used by the procedural shirts determine its body,
-  // accent, species, scale, speed, and route, so the school is stable on every
-  // device without ever painting a person's name onto an animal.
+
+
+
+
   const fishStates = [];
   let fishPopulationKey = "";
   let visitorReaction = 0;
@@ -14246,8 +14245,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
     const rng = outfitRandom(
       "outfit:" + String(name || "guest").trim().toLowerCase(),
     );
-    // Keep these two draws in the shirt tailor's order: cut first, colourway
-    // second. That makes the fish palette agree with the user's default kit.
+
+
     rng.int(OUTFIT_STYLE_IDS.length);
     const [body, accent, trim] =
       OUTFIT_COLORWAYS[rng.int(OUTFIT_COLORWAYS.length)];
@@ -14274,11 +14273,11 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
         activityBucket: String(user?.activityBucket || ""),
       }))
       .filter((user) => user.name);
-    // The directory can contain a thousand lifetime accounts. A cinematic
-    // fish is sixteen meshes, so constructing one per account turns a lobby
-    // decoration into tens of thousands of drawables. Keep a deterministic,
-    // activity-first representative school and expose the full population as
-    // metadata for diagnostics/UI without allocating it into the scene.
+
+
+
+
+
     const visibleUsers = [...normalized]
       .sort((left, right) => {
         const leftRecent =
@@ -14328,8 +14327,8 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       const individualScale = schoolScale * rng.range(0.84, 1.12);
       fish.scale.setScalar(individualScale);
       fish.userData.activityLane = "inactive";
-      // A live World presence or any non-stale server recency bucket swims
-      // above the reef. Stale/unknown accounts graze the quieter bottom lane.
+
+
       const recent =
         user.active ||
         ["hour", "5h", "24h", "3d", "5d", "10d"].includes(
@@ -14690,9 +14689,9 @@ function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
       }
       const fish = state.fish;
       fish.position.copy(state.point);
-      // Only a small, randomly selected group acknowledges a nearby visitor.
-      // Their eased target stays just behind the glass and is spread around
-      // eye level, avoiding the abrupt whole-school shove used previously.
+
+
+
       if (approachBlend > 0.001) {
         const focus = index === visitorFocusIndex;
         const encounterOffset =
@@ -15108,9 +15107,9 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   }
 
   const frontZ = OFFICE_FRONT_Z - wallThickness / 2;
-  // Keep the entrance opening flush with the lobby floor. The old continuous
-  // 0.62-unit concrete base crossed the doorway and rendered as a shin-high
-  // ledge even while the movement code treated the opening as walkable.
+
+
+
   for (const [minX, maxX] of [
     [-OFFICE_WIDTH / 2, -doorWidth / 2],
     [doorWidth / 2, elevatorFacadeMinX],
@@ -15141,8 +15140,8 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     );
   }
 
-  // Ground-floor glazing leaves both the staffed entrance and the panoramic
-  // elevator bay physically open instead of drawing panes through them.
+
+
   for (const [minX, maxX] of [
     [-OFFICE_WIDTH / 2 + 0.6, -doorWidth / 2 - 0.55],
     [doorWidth / 2 + 0.55, elevatorFacadeMinX],
@@ -15172,8 +15171,8 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     group.add(mullion);
   }
 
-  // One continuous ten-story curtain wall. Repeated geometry stays simple and
-  // the emissive floor bands make every team level legible from Town Square.
+
+
   for (let level = 1; level < OFFICE_FLOOR_COUNT; level += 1) {
     const baseY = level * OFFICE_FLOOR_HEIGHT;
     if (level < OFFICE_FLOOR_COUNT - 1) {
@@ -15323,9 +15322,9 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
   });
   group.add(slidingDoors);
 
-  // A status panel rides on the glass but never participates in collision.
-  // Access hydration is intentionally background-only; this makes that
-  // network activity visible without turning the doorway into a loading gate.
+
+
+
   const doorStatus = new THREE.Mesh(
     new THREE.PlaneGeometry(4.6, 0.72),
     new THREE.MeshBasicMaterial({
@@ -15355,9 +15354,9 @@ function createForkMeshOffice(THREE, position, interactive, animated) {
     interactive.push(child);
   });
   setShadows(group);
-  // Transparent walls are a view envelope, not shadow casters. Keeping them
-  // out of both the depth and shadow buffers prevents bright/dark popping as
-  // the camera crosses the tower while preserving the opaque frame.
+
+
+
   group.traverse((child) => {
     if (!child.isMesh || !child.material?.transparent) return;
     child.castShadow = false;
@@ -15478,8 +15477,8 @@ function updateScreenLabel(
   position.y += yOffset;
   position.project(camera);
   const visible = position.z > -1 && position.z < 1 && Math.abs(position.x) < 1.25 && Math.abs(position.y) < 1.25;
-  // Equality-guarded writes: labels run at ~30 Hz for every avatar, and
-  // unconditional style writes dirty layout even when nothing moved.
+
+
   const visibility = visible ? "visible" : "hidden";
   if (element.style.visibility !== visibility) {
     element.style.opacity = visible ? "1" : "0";
@@ -15650,18 +15649,18 @@ export function createWorldScene({
   onGymState = () => {},
   onStartHereSelect = () => {},
 }) {
-  // Phones frequently expose a high-density screen to a comparatively small
-  // GPU.  Use the same scene, but avoid allocating multisample and shadow-map
-  // buffers that can make WebGL context creation fail outright on those
-  // devices.  Coarse pointer is capability-based, so a small desktop window
-  // keeps its full renderer.  The embedder also forces this mode when the
-  // previous session in this tab crashed, so a GPU that just died is not
-  // asked for the same multisample and shadow allocations again.
+
+
+
+
+
+
+
   const compactRenderer = Boolean(
     forceCompactRenderer || window.matchMedia?.("(pointer: coarse)")?.matches,
   );
-  // Set before anything paints: every plate below reads this while building
-  // its backing store, and the tab is killed by their sum, not by any one.
+
+
   canvasTextureScale = compactRenderer ? 0.5 : 1;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(DAYLIGHT_ENVIRONMENT.background);
@@ -15684,8 +15683,8 @@ export function createWorldScene({
   const renderer = new THREE.WebGLRenderer({
     antialias: !compactRenderer,
     alpha: false,
-    // No World material or pass uses the stencil buffer. Avoid allocating and
-    // clearing an attachment that otherwise adds bandwidth to every frame.
+
+
     stencil: false,
     powerPreference: compactRenderer ? "default" : "high-performance",
   });
@@ -15694,25 +15693,25 @@ export function createWorldScene({
   renderer.toneMappingExposure = 1.08;
   renderer.shadowMap.enabled = !compactRenderer;
   renderer.shadowMap.type = THREE.PCFShadowMap;
-  // The sun and almost all shadow casters are static. Rebuilding the complete
-  // atlas on every display frame nearly doubles town-square draw calls, so
-  // refresh it at a bounded cadence while retaining live shadows.
+
+
+
   renderer.shadowMap.autoUpdate = false;
   renderer.shadowMap.needsUpdate = !compactRenderer;
   renderer.domElement.className = "world-canvas";
   renderer.domElement.setAttribute("aria-hidden", "true");
-  // The canvas is purely visual; leaving a tabindex (even -1) lets a pointer
-  // click move focus into an aria-hidden subtree.  A later dialog close then
-  // triggers the browser's hidden-focused-element accessibility warning.
+
+
+
   renderer.domElement.removeAttribute("tabindex");
   renderer.domElement.dataset.cameraControl = "drag";
   renderer.domElement.dataset.cameraMode = "third-person";
   renderer.domElement.dataset.dragging = "false";
   container.appendChild(renderer.domElement);
   const handleContextLost = (event) => {
-    // preventDefault opts into WebGL's restoration path. Without it, a
-    // transient mobile GPU reset can leave partially redrawn "scratchy"
-    // geometry in place until the whole page is reloaded.
+
+
+
     event.preventDefault();
     onRendererStateChange("lost");
   };
@@ -15752,9 +15751,9 @@ export function createWorldScene({
   const sun = new THREE.DirectionalLight("#fff1c4", 3.4);
   sun.position.set(-24, 35, 18);
   sun.castShadow = !compactRenderer;
-  // The World contains hundreds of casters. A 1024px atlas rebuilt on a timer
-  // created periodic 150–600ms renderer stalls on integrated GPUs; a soft
-  // 512px map with settled-input refreshes is enough for this wide light.
+
+
+
   sun.shadow.mapSize.set(512, 512);
   sun.shadow.camera.left = -90;
   sun.shadow.camera.right = 90;
@@ -15768,8 +15767,8 @@ export function createWorldScene({
   const moon = new THREE.DirectionalLight("#c8eaff", 0.82);
   moon.name = "forkmesh-world-moonlight";
   moon.position.set(24, 48, -18);
-  // The sun owns the one shadow map. Moonlight is a cheap cool fill, so a
-  // bright night does not double the scene's shadow-rendering cost.
+
+
   moon.castShadow = false;
   scene.add(moon);
   scene.add(moon.target);
@@ -15778,18 +15777,18 @@ export function createWorldScene({
   scene.add(world);
   const interactive = [];
   const animated = [];
-  // Camera-coupled or player-driven motion retains display cadence. The
-  // larger ambient list below is intentionally sampled less often.
+
+
   const frameAnimated = [];
   const landmarkObjects = new Map();
 
-  // -------------------------------------------------------------------------
-  // Administrator element registry. Every named piece of the World registers
-  // its scene roots (or a per-frame system hook) here so the admin-only
-  // Elements settings pane can pull any single one completely out of the
-  // game — scene graph, raycast targets, and per-frame work — and put it
-  // back live, isolating what each piece costs. The registry is local-render
-  // only: it never touches presence, layout, or any shared world state.
+
+
+
+
+
+
+
   const worldElements = new Map();
   const localPointLights = new Set();
   const disabledWorldElements = new Set(
@@ -15822,8 +15821,8 @@ export function createWorldScene({
     const record = element.detached.get(root);
     if (!record) return;
     element.detached.delete(root);
-    // A dynamic root (remote avatar, node cabinet) may have despawned while
-    // it sat detached; its liveness probe keeps it from being resurrected.
+
+
     const live = element.liveness.get(root);
     if (live && live() !== true) {
       element.roots.delete(root);
@@ -15851,14 +15850,14 @@ export function createWorldScene({
       };
       worldElements.set(id, element);
     }
-    // Dynamic roots churn: node cabinets rebuild on every changed poll
-    // record, visitor avatars despawn, the portal ring is replaced per
-    // catalog reload. Pruning used to happen only from the diagnostics
-    // panel, so every replaced root — with its canvases and liveness
-    // closure — stayed in this registry for the life of the page (heap
-    // profiling showed 13 dead cabinets per mirror node and ~200MB of
-    // retained canvas backing stores). Every registration is a churn
-    // point, so sweep the element's dead roots here.
+
+
+
+
+
+
+
+
     pruneDeadElementRoots(element);
     (Array.isArray(roots) ? roots : [roots])
       .filter(Boolean)
@@ -15886,7 +15885,7 @@ export function createWorldScene({
     element.roots.forEach((root) => {
       const live = element.liveness.get(root);
       const detachedHere = element.detached.has(root);
-      // Externally removed (a despawned avatar) or reported dead: forget it.
+
       if ((!detachedHere && !root.parent) || (live && live() !== true)) {
         element.roots.delete(root);
         element.detached.delete(root);
@@ -15907,8 +15906,8 @@ export function createWorldScene({
       else detachElementRoot(element, root);
     });
     element.onToggle?.(on);
-    // The shadow atlas refreshes on a slow cadence; rebuild it now so a
-    // removed caster's shadow does not linger on the ground.
+
+
     if (renderer.shadowMap.enabled) renderer.shadowMap.needsUpdate = true;
     return true;
   }
@@ -15958,8 +15957,8 @@ export function createWorldScene({
     });
   }
 
-  // Whole-scene systems and the fixtures that exist before the static town
-  // builds below. Everything else registers inline where it is constructed.
+
+
   registerWorldElement(
     "lighting",
     "Sun, moon & ambient light",
@@ -15980,21 +15979,21 @@ export function createWorldScene({
 
   const worldBulletin = new THREE.Group();
   worldBulletin.name = "forkmesh-world-bulletin";
-  // Banner-sized boards have to be walked up to, so it now stands just past
-  // the leaderboards instead of stranded near the rim of the terrain — still
-  // clear of the arrival / join grid visitors spawn onto.
+
+
+
   worldBulletin.position.set(-24, 0, 33);
-  // Plane textures face local +Z. Rotate the board so its readable face looks
-  // back into the World from the outer edge of the circular terrain.
+
+
   worldBulletin.rotation.y = Math.atan2(
     -worldBulletin.position.x,
     -worldBulletin.position.z,
   );
   let worldBulletinEvents = [];
   let worldBulletinOffset = 0;
-  // Sized like the other standing banners in the square rather than the tower
-  // it used to be: the page holds five entries, and the ▲ / ▼ controls page
-  // through the rest.
+
+
+
   const BULLETIN_FACE_CENTER_Y = 3.9;
   const bulletinBase = new THREE.Mesh(
     new THREE.BoxGeometry(7.9, 0.26, 1.5),
@@ -16049,8 +16048,8 @@ export function createWorldScene({
     control.userData.interactive = `world-bulletin-scroll-${direction}`;
     return control;
   };
-  // Parked in the clear right-hand margin, level with the header and the
-  // footer so neither control covers an entry.
+
+
   const bulletinScrollUp = makeBulletinControl("▲", "up", BULLETIN_FACE_CENTER_Y + 2.05);
   const bulletinScrollDown = makeBulletinControl("▼", "down", BULLETIN_FACE_CENTER_Y - 2.05);
   worldBulletin.add(bulletinFrame, bulletinFace, bulletinScrollUp, bulletinScrollDown);
@@ -16150,9 +16149,9 @@ export function createWorldScene({
     "discord-board", "Discord board", "Boards & kiosks", worldDiscordBoard,
   );
 
-  // One uninterrupted city park slab sits under every district, path, and
-  // building. Satellite circles remain semantic layout regions only; they no
-  // longer expose separate land edges when the camera pulls back.
+
+
+
   const continuousCityFoundation = new THREE.Mesh(
     new THREE.CylinderGeometry(1, 1, 6.4, 128),
     makeMaterial(THREE, "#59483a", { roughness: 1 }),
@@ -16197,9 +16196,9 @@ export function createWorldScene({
     townLandscape,
   );
 
-  // The bike street is one exact circle on top of the shared grass slab.
-  // RingGeometry avoids the spline seams and overlapping land ribbons that
-  // produced long lines and sluggish overdraw in distant camera views.
+
+
+
   const worldBikeLane = new THREE.Mesh(
     new THREE.RingGeometry(
       WORLD_BIKE_LANE_RADIUS - 3.6,
@@ -16314,9 +16313,9 @@ export function createWorldScene({
   addWorldBike(0, "#77d9ff", 0.38);
   addWorldBike(1, "#9ef7c6", 0.43);
 
-  // A single connected road leaves the eastern city edge and arrives at a
-  // coastal rest area. The beach uses only local, preloaded assets so entering
-  // it never waits on a remote video host or triggers a large network stall.
+
+
+
   const beachRoadLength = BEACH_ROAD_MAX_X - BEACH_ROAD_MIN_X;
   const beachRoad = new THREE.Mesh(
     new THREE.BoxGeometry(
@@ -16509,10 +16508,10 @@ export function createWorldScene({
   }
   addBeachCar();
 
-  // One lightweight, person-sized quadcopter waits beside the Town Square.
-  // It is deliberately built from a handful of low-segment primitives: the
-  // rotors remain legible nearby without adding meaningful cost to aerial or
-  // map-scale views.
+
+
+
+
   const quadcopterStates = [];
   function addWorldQuadcopter() {
     const quadcopter = new THREE.Group();
@@ -16597,10 +16596,10 @@ export function createWorldScene({
   }
   addWorldQuadcopter();
 
-  // Every repository imported from an external provider lives on its own
-  // district, whether it is already hosted by a mirror or remains an external
-  // stub. Broad earth connects it to town; the legacy "bridge" group is now a
-  // paved promenade on that continuous causeway.
+
+
+
+
   const repositoryBridge = new THREE.Group();
   repositoryBridge.name = "hosted-repository-bridge";
   repositoryBridge.position.set(
@@ -16628,9 +16627,9 @@ export function createWorldScene({
     "causeways", "Causeways & bridges", "Terrain", repositoryBridge,
   );
 
-  // A purpose-built public rankings district balances the repository island
-  // across town. The broad earth connection is always walkable, with an
-  // illuminated promenade making the route legible at every sky theme.
+
+
+
   const leaderboardConnection = new THREE.Group();
   leaderboardConnection.name = "forkmesh-leaderboard-island-connection";
   leaderboardConnection.position.set(
@@ -16672,9 +16671,9 @@ export function createWorldScene({
     }),
   );
   leaderboardBeacon.position.y = 0.35;
-  // Retained as a detached construction value for older layout snapshots;
-  // the center is intentionally open and contains no "leaderboard area"
-  // monument.
+
+
+
   leaderboardBeacon.visible = false;
   const leaderboardIslandTitle = new THREE.Mesh(
     new THREE.PlaneGeometry(7.4, 2.45),
@@ -16714,9 +16713,9 @@ export function createWorldScene({
       object.rotation.y = Math.atan2(-object.position.x, -object.position.z);
       object.updateMatrixWorld(true);
       billboardIslandBounds.setFromObject(object);
-      // Board authors use different local origins (some at their center,
-      // others at their footings). Normalize from actual geometry so no
-      // frame, post, label, or base can be buried by the shared terrain.
+
+
+
       if (Number.isFinite(billboardIslandBounds.min.y)) {
         object.position.y += 0.12 - billboardIslandBounds.min.y;
       }
@@ -16733,20 +16732,20 @@ export function createWorldScene({
   placeBillboardOnIsland(worldGeneralChatBoard);
   placeBillboardOnIsland(worldDiscordBoard);
 
-  // Registered members and their named campfire benches have a dedicated
-  // southern garden. It is the fourth cardinal district, leaving the live
-  // mirror cabinets and reward pool unobstructed in the central plaza.
-  // The south route used to be two overlapping slabs: the town path stopped
-  // at z=88 while a second promenade began at z=78. Besides the visible color
-  // seam, their different heights caused the large doubled rectangle seen
-  // from above. createTownLandscape now owns one continuous path beneath the
-  // circle dirt. The former entrance sign crowded that route, so the clearing
-  // and its much larger member total now provide the wayfinding on their own.
 
-  // The first object encountered when walking from the Members Circle toward
-  // the centered nodes is a persistent orientation board. Only bounded step
-  // identifiers are stored; no movement coordinates or visit history leave
-  // the device.
+
+
+
+
+
+
+
+
+
+
+
+
+
   const startHereStorageKey = "forkmesh.world.start-here.v1";
   let savedStartHereSteps = [];
   try {
@@ -16765,8 +16764,8 @@ export function createWorldScene({
   ]);
   const startHereBoard = new THREE.Group();
   startHereBoard.name = "forkmesh-start-here-map";
-  // Keep the large orientation map on the far side of even the maximum-sized
-  // bench ring, facing back toward the fire and arriving visitors.
+
+
   startHereBoard.position.set(0, 0, MEMBER_ISLAND_CENTER_Z + 38);
   startHereBoard.rotation.y = Math.PI;
   const startHereBacking = new THREE.Mesh(
@@ -16825,12 +16824,12 @@ export function createWorldScene({
     return true;
   }
 
-  // The Office is a real campus district, not another interior scene. Its
-  // wooded earth joins town across a broad continuous neck, with a stone
-  // promenade down the middle for visual wayfinding.
-  // The town route now ends exactly where the elevated bridge begins. The
-  // previous office-land promenade overlapped both by several metres and
-  // produced the stacked slabs visible from above.
+
+
+
+
+
+
   const officeBridge = new THREE.Group();
   officeBridge.name = "forkmesh-office-bridge";
   const officeBridgeLength =
@@ -16873,9 +16872,9 @@ export function createWorldScene({
     concreteBrickMaterial(THREE),
   );
   approachDeck.name = "forkmesh-office-island-approach-deck";
-  // The bridge, approach, and lobby slab all terminate at the same plane.
-  // Computing the approach directly to the facade removes the old 0.75-unit
-  // void and matching its top to the slab removes the visible doorway step.
+
+
+
   approachDeck.position.y = OFFICE_LOBBY_SURFACE_Y - 0.09;
   approachDeck.receiveShadow = true;
   approachDeck.userData.ground = true;
@@ -16901,14 +16900,14 @@ export function createWorldScene({
     "causeways", "Causeways & bridges", "Terrain", officeApproach,
   );
 
-  // The room still assigns one of 64 ephemeral slots, but the grid itself is
-  // no longer drawn: the plaques at the front edge carry the arrival story and
-  // the lawn reads as open ground.
+
+
+
   const arrivalBox = new THREE.Group();
   arrivalBox.name = "world-arrival-box";
   const arrivalPlaque = makeArrivalPlaque(THREE);
-  // Just past the grid's front edge (cells end at z ≈ 17.4), facing inward
-  // toward the Town Square center as visitors leave the welcome grid.
+
+
   arrivalPlaque.position.set(0, 0, 15.2);
   arrivalPlaque.rotation.y = Math.PI;
   setShadows(arrivalPlaque);
@@ -16939,8 +16938,8 @@ export function createWorldScene({
     office: createForkMeshOffice,
   };
   LANDMARKS.forEach((landmark) => {
-    // The campfire owns a map spot but no district factory: its group and
-    // bench circle are built below and registered under their own layout id.
+
+
     const factory = landmarkFactories[landmark.id];
     if (!factory) return;
     const object = factory(
@@ -16957,13 +16956,13 @@ export function createWorldScene({
       "Districts",
       object,
     );
-    // Repository portals and their import kiosk form one structural district.
-    // Keep its shared origin fixed so a stale saved landmark transform cannot
-    // split the kiosk and apron away from the live portal ring.
+
+
+
   });
-  // Decorative landscaping lives on the Office island but owns no walkable
-  // surface or collision metadata. The doorway and its full bridge-width
-  // approach remain completely clear.
+
+
+
   const officeLandscaping = new THREE.Group();
   officeLandscaping.name = "forkmesh-office-landscaping";
   officeLandscaping.position.set(
@@ -17060,10 +17059,10 @@ export function createWorldScene({
   registerWorldElement(
     "mastodon-kiosk", "Mastodon kiosk", "Boards & kiosks", mastodonKiosk,
   );
-  // Twitter and Reddit flank the Mastodon kiosk on the same ring toward the
-  // Office, one board-width of clearance on either side, and the blog board
-  // continues the row past Reddit so all four read as one social row on the
-  // approach.
+
+
+
+
   const twitterBanner = createSocialBanner(
     THREE, interactive, TWITTER_BANNER_OPTIONS);
   world.add(twitterBanner);
@@ -17073,9 +17072,9 @@ export function createWorldScene({
   const blogBanner = createSocialBanner(
     THREE, interactive, BLOG_BANNER_OPTIONS);
   world.add(blogBanner);
-  // Same physical display format as the Twitter/X sign, placed on the Office
-  // approach. Its face mirrors all systems and all three history strips from
-  // /status instead of reducing the page to one repository summary.
+
+
+
   const statusBanner = createSocialBanner(
     THREE, interactive, STATUS_BANNER_OPTIONS);
   world.add(statusBanner);
@@ -17100,14 +17099,14 @@ export function createWorldScene({
     { group: redditBanner, options: REDDIT_BANNER_OPTIONS },
     { group: blogBanner, options: BLOG_BANNER_OPTIONS },
   ];
-  // Status has its own snapshot endpoint, so it must not participate in the
-  // social-feed repaint loop. It does share the lightweight stand timers.
+
+
   const socialBannerTimerRecords = [...socialBanners, statusBannerRecord];
 
-  // Post artwork (the blog feed's item images) is a same-origin /assets URL:
-  // it only reaches the board texture once it decodes CORS-clean, and its
-  // load repaints the boards that draw art. A host that refuses the read
-  // simply leaves the placeholder plate in place.
+
+
+
+
   const socialBannerImages = new Map();
 
   function socialBannerImage(url) {
@@ -17146,9 +17145,9 @@ export function createWorldScene({
     return true;
   }
 
-  // Repaint the banner faces from the Worker's /api/world/social-posts
-  // snapshot. A feed that is missing or unavailable keeps (or returns to)
-  // the static sign rather than showing a blank board.
+
+
+
   function updateSocialBanners(payload) {
     for (const record of socialBanners) {
       const feed = payload?.[record.options.id];
@@ -17199,15 +17198,15 @@ export function createWorldScene({
         STATUS_BANNER_OPTIONS.staleness.staleMs,
       ),
     );
-    // The shell's one-second status tick owns the countdown plate. Keeping it
-    // out of this snapshot-only repaint prevents the MM:SS clock from freezing
-    // at whichever second the minute-level HTTP response happened to arrive.
+
+
+
   }
 
-  // The stand plates under each banner: a per-second countdown to the next
-  // feed sync and a per-minute staleness readout. Both key their repaints
-  // like the Mastodon kiosk plates so a tick that changes nothing visible
-  // never rebuilds a texture.
+
+
+
+
   function updateSocialBannerTimers(payload) {
     let repainted = false;
     for (const record of socialBannerTimerRecords) {
@@ -17275,8 +17274,8 @@ export function createWorldScene({
   });
 
   const campfire = new THREE.Group();
-  // The fire stands on its own map landmark, so the world-map spot and the
-  // benches can never drift apart.
+
+
   campfire.position.set(...landmarkById("campfire").position);
   const campfireGround = new THREE.Mesh(
     new THREE.CircleGeometry(1, 96),
@@ -17289,8 +17288,8 @@ export function createWorldScene({
   );
   campfireGround.name = "campfire-member-circle-dirt";
   campfireGround.rotation.x = -Math.PI / 2;
-  // The promenade surface is 0.105 high. Lift the dirt just above it so the
-  // extended pavement is physically present but disappears beneath the circle.
+
+
   campfireGround.position.y = WORLD_PATH_SURFACE_Y + 0.01;
   campfireGround.receiveShadow = true;
   campfire.add(campfireGround);
@@ -17398,15 +17397,15 @@ export function createWorldScene({
   const FLAME_BASE_Y = 0.28;
   proceduralFire.position.y = FLAME_BASE_Y;
   campfire.add(proceduralFire);
-  // The blaze is a milestone marker rather than a per-member trickle: it holds
-  // its size through a hundred accounts and steps up a notch when the next
-  // century lands, bounded so a large community's fire stays welcoming.
+
+
+
   const CAMPFIRE_BASE_FIRE_LEVEL = 3;
   const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.35;
   const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;
   let fireLevel = CAMPFIRE_BASE_FIRE_LEVEL;
-  // Reduced-motion visitors skip animated callbacks, so establish a complete
-  // static procedural blaze before the first roster update.
+
+
   proceduralFire.scale.set(
     CAMPFIRE_BASE_FIRE_LEVEL,
     CAMPFIRE_BASE_FIRE_LEVEL,
@@ -17458,9 +17457,9 @@ export function createWorldScene({
   newestMemberSparkles.visible = false;
   campfire.add(newestMemberSparkles);
   let memberCountShown = "";
-  // The count is a clean, transparent landmark high above the flames: it
-  // remains legible across the square without putting a plate or label in the
-  // entrance or the open centre of the member rings.
+
+
+
   function setCampfireMemberCount(total, newest = "") {
     const count = Math.max(0, Math.min(999999, Math.round(Number(total) || 0)));
     const latest = String(newest || "").trim().slice(0, 18);
@@ -17476,8 +17475,8 @@ export function createWorldScene({
     memberCountSprite.material.needsUpdate = true;
     memberCountSprite.visible = true;
     newestMemberSparkles.visible = Boolean(latest);
-    // Each member contributes one visible log; the fire itself only grows on
-    // the hundreds, so passing a century is a visible event around the circle.
+
+
     rebuildCampfireMemberLogs(count);
     const fireCenturies = Math.floor(count / 100);
     fireLevel = clamp(
@@ -17499,8 +17498,8 @@ export function createWorldScene({
     const fastFlicker = Math.sin(time * 0.0197 + Math.sin(time * 0.0043) * 2.2);
     const sparkFlicker = Math.sin(time * 0.0431 + Math.sin(time * 0.0127));
     const flicker = 1 + slowFlicker * 0.075 + fastFlicker * 0.04;
-    // A milestone fire grows mostly upward: widening it at the same rate would
-    // push the flames out past their own stone ring.
+
+
     const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;
     const fireWidthScale =
       CAMPFIRE_BASE_FIRE_LEVEL * (1 + (fireGrowth - 1) * 0.32);
@@ -17558,11 +17557,11 @@ export function createWorldScene({
       ? 0.9
       : 0.7 + Math.sin(time * 0.009) * 0.25;
   });
-  // The real bench count depends on the member roster, which is still an
-  // in-flight network request when the scene first renders. Rather than
-  // seat a placeholder ring that immediately resizes (and jumps every seated
-  // avatar) once the roster arrives, show a spark orbiting the flames until
-  // rebuildCampfireCircle first runs with real data.
+
+
+
+
+
   const benchLoadingSpark = new THREE.Mesh(
     new THREE.SphereGeometry(0.09, 12, 8),
     makeMaterial(THREE, "#ffffff", {
@@ -17581,17 +17580,17 @@ export function createWorldScene({
       Math.sin(spin) * BENCH_LOADING_SPARK_RADIUS,
     );
   });
-  // Benches sit back far enough from the pit to leave a wide walkable ring
-  // between the seats and the stones (and to clear the log pile at ~2.6). The
-  // circle carries one wooden bench per registered member — occupied by a
-  // seated directory figure while the member is away, left empty (and
-  // sittable) while they walk the world as a live avatar — plus one bench
-  // that always stays open so an arriving guest has a spot by the fire, and
-  // widens whenever a new account joins so everyone still fits.
+
+
+
+
+
+
+
   const CAMPFIRE_BENCH_RADIUS = 9;
-  // Bench height is set by the sitters, not the other way round: the plank top
-  // lands SEATED_SEAT_TO_SOLE above the walking plane so a seated avatar's
-  // shins reach the ground instead of dangling (or folding through it).
+
+
+
   const CAMPFIRE_SEAT_HALF_THICKNESS = 0.07;
   const CAMPFIRE_SEAT_TOP_Y = WORLD_WALKING_PLANE_Y + SEATED_SEAT_TO_SOLE;
   const CAMPFIRE_SEAT_Y = CAMPFIRE_SEAT_TOP_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
@@ -17602,17 +17601,17 @@ export function createWorldScene({
   const CAMPFIRE_MEMBERS_PER_ROW = 25;
   const CAMPFIRE_ROW_SPACING = 2.8;
   const CAMPFIRE_SEAT_SPACING = 2.1;
-  // The ring never closes all the way round: a doorway-wide span of it is kept
-  // bench-free so visitors can walk straight in to the fire and back out again
-  // instead of climbing over the planks, however many members the circle has
-  // grown to. The radius reserves this arc alongside the seats, so widening the
-  // ring for a new account never eats the opening.
+
+
+
+
+
   const CAMPFIRE_ENTRANCE_WIDTH = 3.4;
-  // On a small ring the raw arc would swallow a third of the circle; cap it so
-  // the seats still read as a ring rather than a horseshoe.
+
+
   const CAMPFIRE_ENTRANCE_MAX_ANGLE = Math.PI / 3;
-  // The gap faces back toward the town centre, the side visitors arrive from,
-  // wherever the fire's landmark stands.
+
+
   const CAMPFIRE_ENTRANCE_ANGLE = Math.atan2(
     -campfire.position.z,
     -campfire.position.x,
@@ -17641,11 +17640,11 @@ export function createWorldScene({
     }
     const ring = new THREE.Group();
     ring.name = "campfire-member-circle";
-    // Hundreds of individual six-material seat boxes and separate legs made
-    // the lifetime account count scale into thousands of draw submissions.
-    // The shared wood is two instanced draws and every name plate is merged
-    // into one atlas-backed mesh. Invisible meshes preserve precise seat
-    // raycasting without becoming renderer submissions themselves.
+
+
+
+
+
     const seatGeometry = new THREE.BoxGeometry(1.6, 0.14, 0.6);
     const seatMaterial = makeMaterial(THREE, "#8a5a33", {
       roughness: 0.86,
@@ -17704,9 +17703,9 @@ export function createWorldScene({
       );
       const positionInRow = index - rowStart;
       const radius = CAMPFIRE_BENCH_RADIUS + row * CAMPFIRE_ROW_SPACING;
-      // Every row reserves the same doorway toward town. The usable arc is
-      // evenly spaced, while rows stop at 25 so avatars never collapse into
-      // one ever-expanding crowded ring.
+
+
+
       const entranceAngle = Math.min(
         CAMPFIRE_ENTRANCE_MAX_ANGLE,
         CAMPFIRE_ENTRANCE_WIDTH / radius,
@@ -17718,7 +17717,7 @@ export function createWorldScene({
         (positionInRow + 0.5) * seatStep;
       const bench = new THREE.Group();
       bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
-      // Long axis tangent to the ring so every bench fronts the flames.
+
       bench.rotation.y = -angle + Math.PI / 2;
       instanceTransform.position.set(
         bench.position.x,
@@ -17732,8 +17731,8 @@ export function createWorldScene({
       const seat = new THREE.Mesh(seatGeometry, seatMaterial);
       seat.position.y = CAMPFIRE_SEAT_Y;
       seat.visible = false;
-      // Seat coordinates are read from the live world matrix at click time, so a
-      // relocated campfire needs no bookkeeping and the seats can never drift.
+
+
       seat.userData.campfireBench = true;
       seat.userData.raycastProxy = true;
       interactive.push(seat);
@@ -17748,8 +17747,8 @@ export function createWorldScene({
         instanceTransform.updateMatrix();
         legInstances.setMatrixAt(index * 2 + legIndex, instanceTransform.matrix);
       });
-      // A resource-free child remains as the per-member chat-bubble anchor.
-      // The visible quad is written into the single merged atlas mesh below.
+
+
       const label = new THREE.Object3D();
       label.name = `campfire-member-bench-label-${index + 1}`;
       label.position.y = CAMPFIRE_SEAT_TOP_Y + 0.002;
@@ -17779,8 +17778,8 @@ export function createWorldScene({
       );
       benches.push({ bench, seat, label, labelKey: null });
       ring.add(bench);
-      // Offsets carry the top of the plank; sitters are placed by their hips
-      // off it (seatedAvatarY), the same way the local player is.
+
+
       seatOffsets.push(
         new THREE.Vector3(
           bench.position.x,
@@ -17820,9 +17819,9 @@ export function createWorldScene({
     return seatOffsets;
   }
 
-  // Rebrands one bench's plank top, skipping the canvas work when the seat
-  // already shows this name and away state. The ring is not built until the
-  // first updateMemberLounge, so an earlier call simply finds no bench.
+
+
+
   function setCampfireSeatLabel(index, name, state = "seated") {
     const bench = (campfire.userData.seatBenches || [])[index];
     if (!bench) return;
@@ -17900,20 +17899,20 @@ export function createWorldScene({
       name,
     });
   }
-  // No placeholder ring here: the spark above keeps the fire lively until
-  // updateMemberLounge below runs with the real roster and calls
-  // rebuildCampfireCircle with an accurate seat count.
+
+
+
   setShadows(campfire);
   world.add(campfire);
   registerWorldElement("campfire", "Campfire circle", "Districts", campfire);
   landmarkObjects.set("campfire", campfire);
 
-  // A wooden swing set beside the Office garden gym: three swings hang from
-  // one beam, so up to three visitors can ride at once. Clicking a seat starts
-  // the ride and clicking it again hops off; the shell's swing-speed slider
-  // scales the pumping, and the regular camera toggle watches the ride in
-  // first or third person because both camera modes follow the player's
-  // position.
+
+
+
+
+
+
   const SWING_SEAT_COUNT = 3;
   const SWING_SEAT_SPACING = 2.3;
   const SWING_BEAM_HEIGHT = 4.6;
@@ -17922,14 +17921,14 @@ export function createWorldScene({
   const SWING_MIN_AMPLITUDE = 0.14;
   const SWING_MAX_AMPLITUDE = 1.05;
   const SWING_REMOTE_AMPLITUDE = 0.55;
-  // A remote visitor parked this close to a seat's rest spot is riding it.
+
   const SWING_REST_CLAIM_DISTANCE_SQ = 0.81;
   const SWING_ARM_HOLD_PITCH = 1.15;
   const swingSet = new THREE.Group();
   swingSet.name = "swing-set";
   swingSet.position.set(...SWING_SET_POSITION);
-  // Face the nearby gym so the swings and workout equipment read as one
-  // compact recreation garden.
+
+
   swingSet.rotation.y = -Math.PI / 2;
   const swingFrameMaterial = makeMaterial(THREE, "#6f5136", { roughness: 0.82 });
   const swingFrameWidth = SWING_SEAT_COUNT * SWING_SEAT_SPACING + 1.6;
@@ -17986,8 +17985,8 @@ export function createWorldScene({
     interactive.push(seat);
     pivot.add(seat);
     swingSet.add(pivot);
-    // The rest anchor hangs outside the pivot so occupancy checks and the
-    // step-off spot read the seat's still position, not the moving plank.
+
+
     const anchor = new THREE.Object3D();
     anchor.position.set(
       pivot.position.x,
@@ -18000,7 +17999,7 @@ export function createWorldScene({
       seat,
       anchor,
       amplitude: 0,
-      // Staggered so idle and remote-ridden swings never move in lockstep.
+
       phase: seatIndex * 1.3,
       remoteId: "",
     });
@@ -18019,8 +18018,8 @@ export function createWorldScene({
         swing.pivot.rotation.x = 0;
         return;
       }
-      // Pumping harder swings a little faster as well as higher; the phase is
-      // continuous so speed changes never snap the seat sideways.
+
+
       swing.phase += swingPendulumOmega * (0.8 + swing.amplitude * 0.5) * delta;
       swing.pivot.rotation.x = swing.amplitude * Math.sin(swing.phase);
     });
@@ -18029,8 +18028,8 @@ export function createWorldScene({
   world.add(swingSet);
   registerWorldElement("swing-set", "Swing set", "Recreation", swingSet);
 
-  // An open-air gym beside the Town Square. Every station is a real click
-  // target; the bench press also opens the shell's weight/rep console.
+
+
   const gym = new THREE.Group();
   gym.name = "forkmesh-world-gym";
   gym.position.set(...GYM_POSITION);
@@ -18047,8 +18046,8 @@ export function createWorldScene({
   );
   gymInset.position.y = 0.13;
   gym.add(gymInset);
-  // Keep wayfinding physically anchored to the scene. Floating labels are
-  // reserved for features that explicitly need screen-facing identification.
+
+
   const gymSign = makeGroundPlaque(
     THREE,
     "WORLD GYM",
@@ -18081,8 +18080,8 @@ export function createWorldScene({
     return object;
   };
 
-  // Bench press: the shaft is split into a centre and two hinged sleeves so
-  // genuinely heavy selections can visibly flex instead of only translating.
+
+
   const benchPress = new THREE.Group();
   benchPress.name = "gym-bench-press";
   benchPress.position.set(-7.6, 0.18, -1.4);
@@ -18347,8 +18346,8 @@ export function createWorldScene({
   world.add(gym);
   registerWorldElement("gym", "Outdoor gym", "Recreation", gym);
 
-  // One square 5×5 wall preserves the whole leaderboard catalog without
-  // duplicate physical boards. Lift the complete assembly above the terrain.
+
+
   const leaderboardSuperPanel = new THREE.Group();
   leaderboardSuperPanel.name = "forkmesh-leaderboard-super-panel";
   leaderboardSuperPanel.position.set(-42, 0.22, 0);
@@ -18467,10 +18466,10 @@ export function createWorldScene({
     : Math.PI;
   world.add(player);
   registerWorldElement("player-avatar", "Your avatar", "Avatars & bots", player);
-  // The camera used to start at CAMERA_OFFSET relative to the world origin
-  // even though the avatar starts elsewhere. It then spent the first visible
-  // second easing across the map, which made the first movement input feel
-  // delayed. Start in the final chase pose before the first frame is painted.
+
+
+
+
   camera.position.set(
     player.position.x + CAMERA_OFFSET[0],
     player.position.y + FIRST_PERSON_EYE_HEIGHT + CAMERA_OFFSET[1],
@@ -18478,8 +18477,8 @@ export function createWorldScene({
   );
   const playerLabel = makePlayerLabel(player, labelLayer);
 
-  // ForkBot is a compact rolling droid, rather than another humanoid avatar.
-  // Its full body is a single click target that opens the shared General chat.
+
+
   const forkbot = new THREE.Group();
   forkbot.name = "forkbot-rolling-droid";
   forkbot.userData.name = "ForkBot";
@@ -18546,9 +18545,9 @@ export function createWorldScene({
   forkbot.add(antennaLight);
   forkbot.userData.forkbotAntennaLight = antennaLight;
   forkbot.userData.rollingBall = rollingBall;
-  // The chest screen (adhoc #369): idle it shows the FORKBOT wordmark; when a
-  // mention pulls the droid over it echoes the speaker's line and then runs
-  // the thinking dots (updateForkbot) until the reply lands in the room.
+
+
+
   const forkbotScreenTexture = canvasTexture(THREE, 512, 224, (context, canvas) =>
     drawForkbotScreen(context, canvas, null),
   );
@@ -18564,8 +18563,8 @@ export function createWorldScene({
     interactive.push(child);
   });
   animated.push((time) => {
-    // An excited ForkBot (someone just mentioned it) flashes its antenna and
-    // eye much faster than the idle glow.
+
+
     const excited = Boolean(forkbotExcitement);
     antennaLight.material.emissiveIntensity = excited
       ? 2.2 + (Math.sin(time * 0.022) + 1) * 1.1
@@ -18577,16 +18576,16 @@ export function createWorldScene({
   world.add(forkbot);
   registerWorldElement("forkbot", "ForkBot", "Avatars & bots", forkbot);
 
-  // Organization coding agents use their own fixed identities. They wander
-  // like ForkBot, but their task execution stays on an authorized headless
-  // mirror; these avatars are only a visible chat/status surface.
+
+
+
   const agentBots = new Map();
   const agentBotStates = new Map();
   let agentBotAccessAllowed = false;
   let repositoryIssueAgentPicker = null;
-  // A mirror-push socket frame is only a doorbell. It may arm a short-lived
-  // expectation, but the visual effect is released only after the next signed
-  // catalog record confirms that exact node and commit prefix.
+
+
+
   const pendingMirrorPushEffects = new Map();
   for (const config of WORLD_AGENT_BOTS) {
     const avatar = new THREE.Group();
@@ -18675,8 +18674,8 @@ export function createWorldScene({
 
   const remotePlayers = new Map();
   const remoteLabels = new Map();
-  // A successful administrative deletion must win over the next stale
-  // presence/directory frame while the edge cache catches up.
+
+
   const administrativelyRemovedAccounts = new Set();
   const moderationActions = new WeakMap();
   const adminGuestCopyActions = new WeakMap();
@@ -18698,8 +18697,8 @@ export function createWorldScene({
   avatarSelectionHighlight.material.depthWrite = false;
   scene.add(avatarSelectionHighlight);
   let activeAvatarSelection = null;
-  // Badge plane and tab buttons -> the avatar they belong to, so one click
-  // handler can switch chest tabs and hit the follow pill.
+
+
   const chestControls = new WeakMap();
   registerAvatarChestControls(player, identity.id);
   const officeParticipants = new Map();
@@ -19211,8 +19210,8 @@ export function createWorldScene({
     }
     syncAquariumControlButtons(time);
     aquariumControlPanel.hidden = false;
-    // Anchor the always-available lobby controls to the lower-right corner of
-    // the tank instead of floating at the bottom of the viewport.
+
+
     updateScreenLabel(
       THREE,
       officeAquarium.controlAnchor,
@@ -19247,8 +19246,8 @@ export function createWorldScene({
       4.2,
     );
     sign.name = `forkmesh-office-wall-placard-${floor.id}`;
-    // Every team label is physically mounted to the rear glass. Plane meshes
-    // keep neighboring floor names from hovering through slabs like sprites.
+
+
     sign.position.set(
       -62,
       floor.id === "rooftop" ? 4.2 : 7.3,
@@ -19306,8 +19305,8 @@ export function createWorldScene({
     portalLabel.scale.set(6.4, 2.4, 1);
     lobbyPortal.add(portalLabel);
     floorGroup.add(lobbyPortal);
-    // The transparent tower is an exterior cutaway: visitors should see every
-    // furnished floor through its glass before they enter the building.
+
+
     floorGroup.visible = true;
     officeInterior.add(floorGroup);
     officeFloorGroups.set(floor.id, floorGroup);
@@ -19466,9 +19465,9 @@ export function createWorldScene({
         ? "warning"
         : "ok";
     const face = engineeringDebugPanel.userData.face;
-    // A 1600×1000 monitor rebuilt from a fresh canvas every second was the
-    // World's largest recurring texture churn; redraw the resident canvas
-    // instead so the tick is one raster plus a same-size upload.
+
+
+
     repaintCanvasTexture(face.material, (context) =>
       drawEngineeringDebug(context, {
         overall,
@@ -19865,9 +19864,9 @@ export function createWorldScene({
       }
     }
 
-    // This is a launcher for the real repository source surface, not a mock
-    // editor. The shell owns the fixed same-origin action and explains that
-    // write-capable source work remains in ForkMesh desktop / IDE integration.
+
+
+
     const rooftopLaptop = new THREE.Group();
     rooftopLaptop.name = "forkmesh-office-rooftop-laptop";
     rooftopLaptop.position.set(0, 2.9, 8);
@@ -19917,10 +19916,10 @@ export function createWorldScene({
     rooftop.add(rooftopLaptop);
   }
   addOfficeFunFloorProps();
-  // The exterior tower already owns the curtain wall. A second interior shell
-  // sat almost coplanar with it and made the transparent panes flash as the
-  // depth buffer alternated between layers. Interior props now render through
-  // that single stable glass envelope.
+
+
+
+
   const officeBuilding = landmarkObjects.get("office");
   const officeSlidingDoorPanels =
     officeBuilding?.userData?.officeDoorPanels || [];
@@ -20059,8 +20058,8 @@ export function createWorldScene({
     }),
   );
   officeTable.name = "forkmesh-office-marketing-tabletop";
-  // Lift the sealed top clear of the floor plane so the green floor can never
-  // z-fight through it at shallow camera angles.
+
+
   officeTable.position.set(0, officeFloorY("marketing") + 2.1, 0);
   officeInterior.add(officeTable);
   const officeTableLogoTexture = new THREE.TextureLoader().load(
@@ -20112,8 +20111,8 @@ export function createWorldScene({
       officeInterior.add(tableLeg);
     }
   }
-  // Meeting chairs are already about a seated avatar's hip height above the
-  // office floor (0.4), so their sitters' shins reach the floor unchanged.
+
+
   const OFFICE_CHAIR_SEAT_TOP_Y = 0.91;
   const chairTransforms = [
     [-7.4, 0],
@@ -20140,8 +20139,8 @@ export function createWorldScene({
       new THREE.BoxGeometry(1.05, 1.45, 0.18),
       makeMaterial(THREE, "#347a61", { roughness: 0.7 }),
     );
-    // The back is on the outside edge, leaving every seat visibly facing the
-    // table. The seated avatar uses yaw + PI and therefore faces inward too.
+
+
     back.name = `forkmesh-office-${chairId}-back`;
     back.position.set(0, 1.42, -0.48);
     chair.add(back);
@@ -20223,8 +20222,8 @@ export function createWorldScene({
     "office-marketing-initiatives-board";
   interactive.push(officeMarketingInitiativesBoard);
   officeInterior.add(officeMarketingInitiativesBoard);
-  // Marketing roster furniture is rebuilt from the authoritative team list.
-  // It never rides multiplayer presence and disappears when the room is empty.
+
+
   const officeMarketingRosterGroup = new THREE.Group();
   officeMarketingRosterGroup.name = "forkmesh-office-marketing-roster-desks";
   officeInterior.add(officeMarketingRosterGroup);
@@ -20267,8 +20266,8 @@ export function createWorldScene({
   officeInterior.add(officeLobbyPlayer);
   registerAvatarChestControls(officeLobbyPlayer, identity.id);
 
-  // Staffed reception: Noah is a scene-native avatar, so visitors meet one
-  // person at the far-wall desk instead of a modal login wall.
+
+
   const officeReception = new THREE.Group();
   officeReception.name = "forkmesh-office-reception";
   const receptionDesk = new THREE.Mesh(
@@ -20314,7 +20313,7 @@ export function createWorldScene({
     1.35,
   );
   noahNameplate.name = "forkmesh-office-reception-nameplate-noah";
-  // The nameplate sits on the desk's front face instead of hovering over Noah.
+
   noahNameplate.position.set(0, 1.2, -33.94);
   officeReception.add(noahNameplate);
   officeInterior.add(officeReception);
@@ -20465,8 +20464,8 @@ export function createWorldScene({
   });
   officeInterior.add(officeFloorWarpHub);
 
-  // An open-sided garden tent makes instance creation feel like a welcoming
-  // fair booth. Credentials remain in the device-local UI.
+
+
   const instanceBooth = new THREE.Group();
   instanceBooth.name = "forkmesh-instance-launch-booth";
   instanceBooth.position.set(...INSTANCE_GARDEN_POSITION);
@@ -20655,7 +20654,7 @@ export function createWorldScene({
   );
   let instanceBoothOccupied = false;
 
-  // Landscaped arrival garden between the bridge and glass office.
+
   const officeFrontGarden = new THREE.Group();
   officeFrontGarden.name = "forkmesh-office-front-garden";
   const gardenPathMaterial = makeMaterial(THREE, "#d8d3c5", { roughness: 0.96 });
@@ -20692,7 +20691,7 @@ export function createWorldScene({
     officeFrontGarden.add(shrub);
   }
 
-  // A rock waterfall with translucent, animated water and a splash response.
+
   const waterfall = new THREE.Group();
   waterfall.name = "forkmesh-interactive-waterfall";
   waterfall.position.set(73, 0, -157);
@@ -20789,10 +20788,10 @@ export function createWorldScene({
     "office-garden", "Office front garden", "Scenery", officeFrontGarden,
   );
 
-  // Public lobby Link Lab: a physical, accessible entry point for members to
-  // submit public campaign/community links and inspect the transparent reach
-  // estimate. The browser dialog owns input and disclosure; this mesh never
-  // stores form values in scene state or multiplayer presence.
+
+
+
+
   const officeLinkKiosk = new THREE.Group();
   officeLinkKiosk.name = "forkmesh-office-link-kiosk";
   officeLinkKiosk.position.set(84, 0, -22);
@@ -20844,8 +20843,8 @@ export function createWorldScene({
   interactive.push(officeLinkKioskFace);
   officeInterior.add(officeLinkKiosk);
 
-  // A matching lobby terminal gives every email a concrete return action:
-  // visitors can leave product feedback without exposing it through presence.
+
+
   const officeFeedbackKiosk = new THREE.Group();
   officeFeedbackKiosk.name = "forkmesh-office-feedback-kiosk";
   officeFeedbackKiosk.position.set(84, 0, -52);
@@ -20894,9 +20893,9 @@ export function createWorldScene({
   interactive.push(officeFeedbackKioskFace);
   officeInterior.add(officeFeedbackKiosk);
 
-  // Members can propose scoped work and attach an exact SOL compensation
-  // request at this lobby desk. The mesh only opens the authenticated form;
-  // task copy and bounty metadata remain in the encrypted task catalog.
+
+
+
   const officeTaskBidKiosk = new THREE.Group();
   officeTaskBidKiosk.name = "forkmesh-office-task-bid-kiosk";
   officeTaskBidKiosk.position.set(84, 0, -37);
@@ -20945,9 +20944,9 @@ export function createWorldScene({
   interactive.push(officeTaskBidKioskFace);
   officeInterior.add(officeTaskBidKiosk);
 
-  // A separate live board beside the submission terminal makes the public
-  // links, their submitters, transparent reach inputs, tiny SOL appreciation
-  // estimate, and payment state visible without first opening a dialog.
+
+
+
   const officeLinkRewards = new THREE.Group();
   officeLinkRewards.name = "forkmesh-office-link-rewards";
   officeLinkRewards.position.set(84, 0, -6);
@@ -21029,9 +21028,9 @@ export function createWorldScene({
   officeGreetingBoard.position.set(0, 6.25, -OFFICE_FRONT_Z + 0.5);
   officeInterior.add(officeGreetingBoard);
 
-  // Public progress bulletin in the open Town Square. Keep it directly beside
-  // the System Status display so operational health and the current work round
-  // are visible together without entering the Office.
+
+
+
   const officeTaskBulletin = new THREE.Group();
   officeTaskBulletin.name = "forkmesh-office-task-bulletin";
   officeTaskBulletin.position.set(34, 3.1, -17.5);
@@ -21180,9 +21179,9 @@ export function createWorldScene({
   }
 
   function repaintBuildBoards() {
-    // Redraw the resident board canvases in place. Swapping in a fresh
-    // 1800px canvas + CanvasTexture per refresh left the old context and
-    // backing store to the GC and re-validated the material each time.
+
+
+
     if (
       !repaintCanvasTexture(
         officeTaskBulletinFace.material,
@@ -21412,8 +21411,8 @@ export function createWorldScene({
       clearTimeout(qaCueTimer);
       qaCueTimer = 0;
     }
-    // These large red/green/grey directions stay visible for every tester.
-    // Grabbing the card enlarges them briefly without hiding them afterward.
+
+
     qaSwipeCues.visible = true;
     qaSwipeCues.scale.setScalar(visible ? 1.08 : 1);
     if (visible && linger) {
@@ -21430,9 +21429,9 @@ export function createWorldScene({
     qaBoardFace.rotation.z = 0;
   }
 
-  // Shared, bounded attendance leaderboard on the left lobby wall.
-  // Authenticated punches are server-timestamped and ranked by each member's
-  // longest completed or currently active Office stay.
+
+
+
   const officeAttendanceBoard = new THREE.Mesh(
     new THREE.PlaneGeometry(27, 13.2),
     new THREE.MeshBasicMaterial({ toneMapped: false }),
@@ -21515,9 +21514,9 @@ export function createWorldScene({
   }
   officeAttendanceBoard.material.map = officeAttendanceTexture();
 
-  // Preserve the individual punch ledger alongside the member leaderboard.
-  // It lives on the opposite lobby wall at the same scale, so the two views
-  // remain independently readable instead of competing for one canvas.
+
+
+
   const officeClockInBoard = new THREE.Mesh(
     new THREE.PlaneGeometry(27, 13.2),
     new THREE.MeshBasicMaterial({ toneMapped: false }),
@@ -21619,9 +21618,9 @@ export function createWorldScene({
   }
   officeClockInBoard.material.map = officeClockInTexture();
 
-  // A true reflective capture, throttled while the visitor is inside. The
-  // sculpture follows the supplied chrome FM cube: branch graph on top, F/M
-  // reliefs on its sides, slowly rotating over a lit fountain.
+
+
+
   const logoFountain = new THREE.Group();
   logoFountain.name = "forkmesh-office-logo-fountain";
   logoFountain.position.set(-18, 0, -2);
@@ -21657,9 +21656,9 @@ export function createWorldScene({
       minFilter: THREE.LinearMipmapLinearFilter,
     },
   );
-  // Be explicit about reflection rather than relying on the render target's
-  // library default. The same live cube map then drives the mirrored letters
-  // and panels without ever turning into a refracted/inside-out view.
+
+
+
   reflectionTarget.texture.mapping = THREE.CubeReflectionMapping;
   reflectionTarget.texture.name = "forkmesh-office-logo-live-reflection";
   const reflectionCamera = new THREE.CubeCamera(
@@ -21673,9 +21672,9 @@ export function createWorldScene({
   reflectionCamera.position.y = 5.1;
   logoFountain.add(reflectionCamera);
   const chrome = new THREE.MeshPhysicalMaterial({
-    // A neutral mid-silver base leaves headroom for the live cube map. Nearly
-    // white metal clipped those reflected lobby greens and dark window bands
-    // into a flat white surface under ACES tone mapping.
+
+
+
     color: "#dbe4ef",
     metalness: 0.94,
     roughness: 0.055,
@@ -21708,19 +21707,19 @@ export function createWorldScene({
   logoPanelChrome.emissiveIntensity = 0.16;
   const chromeCube = new THREE.Group();
   chromeCube.name = "forkmesh-reflective-fm-cube";
-  // The resting view presents the F/M corner together. Motion-enabled clients
-  // then continue from this pose around the same world-vertical axis.
+
+
   chromeCube.rotation.y = 0;
-  // Only this outer mount animates. Its Y rotation is the single vertical
-  // spindle through the fountain; the inner edge-balanced tilt never changes.
+
+
   const chromeMark = new THREE.Group();
   chromeMark.name = "forkmesh-reflective-fm-cube-fixed-tilt";
   chromeCube.add(chromeMark);
   const logoHalfSize = 2.92;
   const logoSupportTopY = 2.4;
-  // Align the original lower body diagonal with world-down. The selected
-  // corner therefore remains exactly over the sole support while the outer
-  // mount spins around the world-vertical axis.
+
+
+
   const logoLowerCorner = new THREE.Vector3(-1, -1, -1).normalize();
   chromeMark.quaternion.setFromUnitVectors(
     logoLowerCorner,
@@ -21740,10 +21739,10 @@ export function createWorldScene({
   ) => {
     const piece = new THREE.Mesh(
       new THREE.BoxGeometry(width, height, depth),
-      // Every face group is authored with local +Z pointing out of the cube.
-      // Only that public face is mirror-bright. Matte sides and inward backs
-      // keep the repeated opposite F/M marks from flashing through the hollow
-      // center as fragmented chrome strokes.
+
+
+
+
       [
         logoInnerFace,
         logoInnerFace,
@@ -21803,11 +21802,11 @@ export function createWorldScene({
   addMLogoFace(2.68, Math.PI / 2);
   addMLogoFace(-2.68, -Math.PI / 2);
 
-  // Rounded mirrored top and bottom plates match the supplied cube silhouette.
-  // The branch graph is built into the Shape as seven negative-space paths:
-  // four circular nodes and three connecting slots. Extruding that Shape
-  // leaves true holes through both chrome plates, including reflective inner
-  // bevels, instead of placing dark decals over otherwise solid metal.
+
+
+
+
+
   const logoPanelShape = new THREE.Shape();
   const panelSize = 5.72;
   const panelHalf = panelSize / 2;
@@ -21868,9 +21867,9 @@ export function createWorldScene({
     const halfWidth = 0.16;
     const nx = -uz * halfWidth;
     const nz = ux * halfWidth;
-    // A hairline of chrome between independently triangulated holes avoids
-    // overlapping Shape holes (which Earcut cannot represent reliably) while
-    // remaining visually continuous beneath the panel's bevel.
+
+
+
     const trim = logoNodeCutoutRadius + 0.018;
     const sx = x1 + ux * trim;
     const sz = z1 + uz * trim;
@@ -21942,11 +21941,11 @@ export function createWorldScene({
   let logoReflectionWasInLobby = false;
   let logoReflectionWasBusy = false;
   let logoReflectionEligibleAt = Infinity;
-  // One cube-map refresh renders the scene six times. Treat it as an idle
-  // snapshot, not a recurring animation: entry and motion only mark the map
-  // dirty, then one capture runs after the visitor has settled. This keeps the
-  // Office and the local avatar legible in the chrome without a one-second
-  // render spike or visible reflection flash while walking.
+
+
+
+
+
   const logoReflectionSettleMs = compactRenderer ? 1400 : 900;
   reflectionCamera.userData.logoCaptureSettleMs = logoReflectionSettleMs;
   animated.push((time) => {
@@ -21992,15 +21991,15 @@ export function createWorldScene({
       const selfWorkBadge = player.userData?.selfWorkBadge;
       const selfWorkBadgeWasVisible = selfWorkBadge?.visible;
       chromeCube.visible = false;
-      // First-person mode normally hides the local body from the main camera.
-      // The reflection camera is independent, so reveal it for this capture
-      // while excluding its owner-only task plate. Restore both exact prior
-      // visibility states immediately afterwards.
+
+
+
+
       player.visible = true;
       if (selfWorkBadge) selfWorkBadge.visible = false;
-      // Movement and camera updates happen earlier in this frame. Commit the
-      // avatar's latest pose before the six cube faces render so its mirror
-      // image never trails one settled position behind.
+
+
+
       player.updateWorldMatrix(true, true);
       reflectionCamera.updateWorldMatrix(true, true);
       try {
@@ -22021,9 +22020,9 @@ export function createWorldScene({
     }
   }
 
-  // One physical selector rides inside the panoramic car. Access colors are
-  // updated from the server-derived grant set; locked buttons stay visible
-  // but cannot initiate travel.
+
+
+
   const officeElevatorButtons = [];
   const officeElevatorShaft = new THREE.Group();
   officeElevatorShaft.name = "forkmesh-office-glass-elevator-shaft";
@@ -22056,9 +22055,9 @@ export function createWorldScene({
     beam.position.set(x, OFFICE_TOWER_HEIGHT / 2, z);
     officeElevatorShaft.add(beam);
   }
-  // The moving car supplies the only glass envelope. Full-height shaft panes
-  // created a second parallel layer a few inches away, so their transparent
-  // sort order changed whenever the rider turned the camera.
+
+
+
   officeInterior.add(officeElevatorShaft);
 
   const officeElevatorCar = new THREE.Group();
@@ -22161,9 +22160,9 @@ export function createWorldScene({
   );
   const elevatorPanel = new THREE.Group();
   elevatorPanel.name = "forkmesh-office-elevator-cabin-panel";
-  // Keep the controls on the right-side wall. The upper-corner cabin camera
-  // looks diagonally across these large labels and through the exterior-facing
-  // opening, so riders can choose a floor without staring back into the Office.
+
+
+
   elevatorPanel.position.set(4.34, 3.3, -0.6);
   elevatorPanel.rotation.y = -Math.PI / 2;
   const panelBody = new THREE.Mesh(
@@ -22178,8 +22177,8 @@ export function createWorldScene({
     );
     const column = index % 2;
     const rowFromBottom = Math.floor(index / 2);
-    // Conventional lift ordering: floor 1 starts at the lower-left, rises
-    // left-to-right, and the rooftop ends at the top.
+
+
     button.position.set(
       (column - 0.5) * 2.35,
       -1.7 + rowFromBottom * 0.82,
@@ -22211,11 +22210,11 @@ export function createWorldScene({
   let mirrorAgentTasksKey = "";
   const botAgents = new Map();
   const loungeMembers = new Map();
-  // Public account facts the member directory publishes but a live presence
-  // frame never carries — joined date and total active time — keyed by
-  // lowercased display name and refreshed by updateMemberLounge. Every avatar
-  // drawn for a signed-in account wears them, so nobody's chest badge shows
-  // less than their campfire bench figure does.
+
+
+
+
+
   const memberFacts = new Map();
   const repositoryPortals = new Map();
   const repositoryPortalBornAt = new Map();
@@ -22240,9 +22239,9 @@ export function createWorldScene({
   const pointerStart = new THREE.Vector2();
   const pointerLast = new THREE.Vector2();
   const pointerCurrent = new THREE.Vector2();
-  // Hot-path scratch values. Reusing these avoids producing several short-
-  // lived vectors on every movement and label frame, which otherwise turns
-  // into intermittent garbage-collection pauses while walking.
+
+
+
   const movementVector = new THREE.Vector3();
   const movementForward = new THREE.Vector3();
   const movementRight = new THREE.Vector3();
@@ -22311,9 +22310,9 @@ export function createWorldScene({
   let diagnosticsRendererPoints = 0;
   let diagnosticsLongestFrameMs = 0;
   let diagnosticsLongFrames = 0;
-  // Raw per-frame durations for the current one-second sample so the debug
-  // panel can report a p95 alongside the average. Bounded: the buffer clears
-  // on every diagnostics read and truncates itself when nothing is polling.
+
+
+
   const diagnosticsFrameTimes = [];
   let diagnosticsFrameWorkTotalMs = 0;
   let diagnosticsWorstFrameSinceLoadMs = 0;
@@ -22332,9 +22331,9 @@ export function createWorldScene({
   let lastMovementInputDelayLogAt = -Infinity;
   let suppressedMovementInputDelays = 0;
   let movementInputWarningTimer = 0;
-  // Rolling 0..1 measure of how much the mouse is actually moving, decayed
-  // between samples. It only drives the local avatar's antenna blink rate;
-  // nothing about it is sent to other visitors.
+
+
+
   let pointerEnergy = 0;
   let pointerEnergyAt = 0;
   let pointerEnergyX = 0;
@@ -22361,33 +22360,33 @@ export function createWorldScene({
   let jumpQueued = false;
   let officeRoofJumping = false;
   let roofParachute = null;
-  // Per-device movement tuning scales the shared speed. Digital movement is
-  // deliberately immediate; there is no acceleration state to delay input.
+
+
   let moveSpeedScale = 1;
   let keyboardMovementSpeed = PLAYER_SPEED;
   let dashTarget = null;
-  // Set while the player is sitting on a campfire bench: the seat pose is held
-  // every frame until the visitor walks, dashes or jumps away from it.
+
+
   let benchSeat = null;
-  // Set while the player is riding a swing: the avatar is glued to the moving
-  // seat every frame until a second click — or any movement input — hops off.
+
+
   let swingRide = null;
-  // A bike stays under the local avatar and uses the normal movement,
-  // collision, camera, and presence loop; clicking the same bike dismounts.
+
+
   let bikeRide = null;
-  // The beach car uses the same immediate input path as walking and cycling;
-  // only the top-speed multiplier and seated vehicle pose differ.
+
+
   let carRide = null;
-  // The quadcopter owns all three movement axes while mounted. Its position
-  // remains local scene state; the ordinary bounded presence frame carries
-  // only the rider position and activity, just like the bike and car.
+
+
+
   let quadcopterRide = null;
-  // The jetpack is wearable rather than a mount. It leaves the avatar visible,
-  // follows the normal camera, and unlocks camera-relative horizontal flight
-  // plus explicit ascent/descent controls.
+
+
+
   let jetpackEquipped = false;
   let jetpackVerticalControl = 0;
-  // 0..1 from the shell's swing-speed slider; maps onto the pendulum amplitude.
+
   let swingSpeedLevel = 0.55;
   let primaryPointerId = null;
   let draggedCampfireLog = null;
@@ -22425,8 +22424,8 @@ export function createWorldScene({
   let officeReceptionMemberTipIndex = 0;
   let selfWorkBoard = normalizeSelfWorkBoard({});
   let selfWorkBadgeVisible = true;
-  // main dropped its own selectedLandmark when the floating landmark labels went
-  // away (adhoc #243); the Office still tracks it to frame the camera on entry.
+
+
   let selectedLandmark = "";
   let officeLocalParticipantId = "";
   let lastOfficeMovementEmit = 0;
@@ -22522,11 +22521,11 @@ export function createWorldScene({
   }
 
   function syncOfficeFloorVisibility() {
-    // Story changes are independent of camera zoom. In particular, a lobby
-    // doorway warp and an elevator arrival can both happen while the camera
-    // remains on the same near/far LOD side. Keep this explicit so a skipped
-    // LOD sample can never leave the newly selected floor hidden behind the
-    // last floor's visibility state.
+
+
+
+
+
     officeInterior.visible = true;
     for (const [floorId, floorGroup] of officeFloorGroups) {
       if (floorId === "lobby") continue;
@@ -22548,16 +22547,16 @@ export function createWorldScene({
     renderer.shadowMap.enabled = !compactRenderer && !far;
     renderer.shadowMap.needsUpdate = !compactRenderer && !far;
 
-    // The Office is intentionally a transparent cutaway tower. Keep its walls,
-    // floor slabs, lighting, and furniture visible from the outdoor World at
-    // every camera distance. Once a visitor enters, isolate the active floor
-    // to avoid drawing ten floors through the one they are using.
+
+
+
+
     syncOfficeFloorVisibility();
 
-    // A purely visual LOD helper must never be able to interrupt movement.
-    // Fail it closed once if a future marker asset cannot be constructed; the
-    // full scene remains usable and the animation loop does not retry a broken
-    // allocation on every frame.
+
+
+
+
     if (!aerialLandmarkMarkersUnavailable) {
       try {
         ensureAerialLandmarkMarkers().visible = far;
@@ -22569,10 +22568,10 @@ export function createWorldScene({
       }
     }
     updateLocalPointLightBudget(far);
-    // Distance may reduce expensive lighting work, but it must never remove
-    // World content. Repositories, organizations, fediverse displays, every
-    // public board, landscaping, and live repository layers remain visible at
-    // every zoom level so the aerial view is a faithful view of the World.
+
+
+
+
   }
 
   function updateWorldEnvironment() {
@@ -22586,8 +22585,8 @@ export function createWorldScene({
           : observedMinute;
     localDaylightMinute = minuteOfDay;
     const localHour = minuteOfDay / 60;
-    // Smooth civil-time daylight: sunrise ramps from 06:00–08:00 and sunset
-    // from 18:00–20:00 in the visitor's own timezone.
+
+
     const sunrise = clamp((localHour - 6) / 2, 0, 1);
     const sunset = clamp((20 - localHour) / 2, 0, 1);
     const daylight = Math.min(sunrise, sunset);
@@ -22680,10 +22679,10 @@ export function createWorldScene({
       (input.ridingCar ? CAR_RIDE_SPEED_MULTIPLIER : 1);
     const topSpeed = PLAYER_MAX_SPEED * moveSpeedScale * sprintScale;
     const inputStrength = Math.max(0, Number(input.inputStrength) || 0);
-    // Digital input has no acceleration ramp: the first rendered movement
-    // frame reaches the selected speed. Analog touch keeps its proportional
-    // strength, which preserves fine positioning without making WASD feel
-    // sticky after a stop.
+
+
+
+
     keyboardMovementSpeed =
       input.keyboardActive
         ? topSpeed
@@ -22722,10 +22721,10 @@ export function createWorldScene({
     ) {
       return origin;
     }
-    // Meeting poses cluster around the Marketing table, which is intentionally
-    // collidable in the free-walking floor. Search outward in small rings so
-    // leaving a room resumes at the closest valid point instead of trapping
-    // the continuous player inside that table.
+
+
+
+
     for (let distance = 0.75; distance <= 24; distance += 0.75) {
       for (let index = 0; index < 24; index += 1) {
         const angle = (index / 24) * Math.PI * 2;
@@ -22755,8 +22754,8 @@ export function createWorldScene({
       const numeric = Number(tuning.speed);
       moveSpeedScale = Number.isFinite(numeric) && numeric > 0 ? numeric : 1;
     }
-    // Keep the live speed within the new ceiling so a lowered cap takes effect
-    // immediately rather than only after the player stops and restarts.
+
+
     keyboardMovementSpeed = Math.min(
       keyboardMovementSpeed,
       PLAYER_MAX_SPEED * moveSpeedScale,
@@ -22981,8 +22980,8 @@ export function createWorldScene({
       toY: officeFloorY(floor.id) + 0.38,
       floorId: floor.id,
       startedAt: performance.now(),
-      // The doubled-height tower is a view, not a teleport. Give riders enough
-      // time to watch Town and the sky move through the panoramic front glass.
+
+
       duration: 1400 + Math.abs(floor.level -
         (officeFloorById(officeCurrentFloorId)?.level || 0)) * 360,
     };
@@ -23011,8 +23010,8 @@ export function createWorldScene({
     standUpFromOfficeChair();
     cancelDash();
     officeCurrentFloorId = floor.id;
-    // A direct doorway warp does not necessarily cross a camera LOD boundary.
-    // Render its selected floor before the next movement frame and camera snap.
+
+
     syncOfficeFloorVisibility();
     currentSpace = `office-${floor.id}`;
     currentFloorY = officeFloorY(floor.id) + 0.38;
@@ -23095,8 +23094,8 @@ export function createWorldScene({
       });
     }
     if (officeSceneMode !== "town") {
-      // The lobby now owns this same position and velocity immediately after
-      // the full avatar clears the jamb, with no collision or threshold pause.
+
+
       return false;
     }
 
@@ -23107,9 +23106,9 @@ export function createWorldScene({
     }
 
     const previousX = previousPosition.x - office.position.x;
-    // The doorway is a real open tunnel, not a collider with a callback carved
-    // into it. Movement continues on every frame while the synchronous mode
-    // handoff occurs; a transient rejection simply retries farther inside.
+
+
+
     if (inDoorwayPassage) {
       return false;
     }
@@ -23185,12 +23184,12 @@ export function createWorldScene({
         officeExitHandler();
       }
       if (officeSceneMode !== "lobby") {
-        // The exit handoff completed. The town walker inherits this exact
-        // doorway pose and velocity instead of being teleported outward.
+
+
         return false;
       }
-      // A missing/rejected controller must not let the avatar walk through
-      // the tower shell.
+
+
       position.z = OFFICE_INTERIOR_EXIT_Z;
       commitPosition();
       return true;
@@ -23381,11 +23380,11 @@ export function createWorldScene({
     cancelDash();
     focusedRepositoryKey = "";
     if (landmark.id === "office") {
-      // Office selection is travel, not a detached spectator camera. The old
-      // focus moved the view to the building while leaving the avatar at its
-      // distant coordinate, which looked like an indoor teleport and broke
-      // the next doorway interaction. Dash along the continuous ground to the
-      // real exterior threshold and keep the ordinary chase camera attached.
+
+
+
+
+
       const doorway = officeInterior.localToWorld(
         new THREE.Vector3(0, 0, OFFICE_FRONT_Z + 3.2),
       );
@@ -23406,9 +23405,9 @@ export function createWorldScene({
   }
 
   function enterOffice({ source = "" } = {}) {
-    // A doorway callback is emitted only after the town walker verifies the
-    // full avatar crossed the real opening. Trust that physical proof even when
-    // a fast dash reaches it one frame before nearestLandmark updates proximity.
+
+
+
     if (
       !["doorway", "saved-view"].includes(source) &&
       officeZoneState !== "nearby"
@@ -23424,9 +23423,9 @@ export function createWorldScene({
   }
 
   function enterOfficeLobby({ floorId = "lobby" } = {}) {
-    // The tower is physically part of the World. Entry changes only the active
-    // local avatar/floor controls; the campus, Town Square, sky, and other
-    // visitors remain rendered around it.
+
+
+
     const enteringFromTown = officeSceneMode === "town";
     const leavingMeeting = officeSceneMode === "meeting";
     if (enteringFromTown)
@@ -23465,9 +23464,9 @@ export function createWorldScene({
         player,
         new THREE.Vector3(),
       );
-      // The town-wall crossing already verified that this is the physical
-      // doorway. Preserve its exact X/Z threshold pose across the mode handoff;
-      // subsequent lobby motion owns wall and outward-exit collision.
+
+
+
       localPosition.y = currentFloorY;
       applyOfficeAvatarLocalPosition(player, localPosition);
     } else if (meetingAvatar) {
@@ -23571,9 +23570,9 @@ export function createWorldScene({
   }
 
   function applyOfficeParticipantPose(avatar, participant) {
-    // The live meeting currently occupies the Marketing story. Keep this
-    // explicit so DOM labels can obey floor occlusion; unlike Three.js meshes,
-    // HTML overlays are not hidden by an opaque floor slab automatically.
+
+
+
     avatar.userData.officeFloorId = "marketing";
     const seated = participant?.pose === "seated" && participant?.chairId;
     const chair = seated ? officeChairTransform(participant.chairId) : null;
@@ -23613,9 +23612,9 @@ export function createWorldScene({
       if (!id) return;
       seenOfficeParticipants.add(id);
       let avatar = officeParticipants.get(id);
-      // Meeting frames carry only a name and account status, so a member in a
-      // room would otherwise wear a barer chest than the same member standing
-      // in the square: fill in their public joined date and active time.
+
+
+
       const participantIdentity = withMemberFacts({
         id,
         name: String(participant.name || "Office visitor").slice(0, 32),
@@ -23772,8 +23771,8 @@ export function createWorldScene({
         interactive.push(proofPanel);
       }
       desk.add(proofPanel);
-      // Desks line the front curtain wall and face out across Town Square.
-      // Additional rows move inward while retaining a broad central aisle.
+
+
       desk.position.set(
         (column - (columns - 1) / 2) * 10.6,
         officeFloorY("marketing"),
@@ -23977,9 +23976,9 @@ export function createWorldScene({
     return updateWorldBulletin(worldBulletinEvents);
   }
 
-  // Header art and avatars come from mastodon.social's media host. They only
-  // reach the board texture when they load CORS-clean; otherwise the board
-  // keeps its text-only rendering (a tainted canvas cannot feed WebGL).
+
+
+
   function mastodonKioskImage(url) {
     const key = canvasReadableImageURL(url);
     if (!key) return null;
@@ -24058,9 +24057,9 @@ export function createWorldScene({
     return repaintMastodonKiosk();
   }
 
-  // The dial is its own small texture: a one-second countdown tick must not
-  // rebuild the 1536×4096 board texture, and it repaints the existing dial
-  // canvas in place rather than allocating a texture per tick.
+
+
+
   function repaintMastodonCountdown() {
     const dial = mastodonKiosk.getObjectByName(
       "forkmesh-mastodon-kiosk-countdown",
@@ -24091,9 +24090,9 @@ export function createWorldScene({
     lastPostAgoMs = null,
   } = {}) {
     let repainted = false;
-    // The last-post plate only changes on a minute boundary (or when a fresh
-    // snapshot moves the newest toot), so it keys on whole minutes and skips
-    // the second-by-second repaints the sync clock needs.
+
+
+
     const since =
       Number.isFinite(Number(lastPostAgoMs)) && Number(lastPostAgoMs) >= 0
         ? Number(lastPostAgoMs)
@@ -24133,9 +24132,9 @@ export function createWorldScene({
     participants = [],
     participantId = "",
   } = {}) {
-    // The meeting table stands on the Marketing floor, so joining a room is
-    // another way onto that storey: it stays closed to everyone the server
-    // did not put on the team.
+
+
+
     if (!canAccessOfficeFloor(officeFloorAccess, "marketing")) return false;
     enterOfficeLobby({ floorId: "marketing" });
     officeSceneMode = "meeting";
@@ -24213,8 +24212,8 @@ export function createWorldScene({
     );
     localPosition.y = 0.38;
     if (!crossedLobbyDoorway) {
-      // Non-spatial teardown (for example page destruction) still needs a
-      // safe outdoor position. A real doorway exit keeps its exact Z.
+
+
       localPosition.z = Math.max(localPosition.z, OFFICE_FRONT_Z + 0.82);
     }
     applyOfficeAvatarLocalPosition(player, localPosition);
@@ -24226,9 +24225,9 @@ export function createWorldScene({
     officeLobbyPlayer.visible = false;
     player.visible = cameraMode !== "first-person";
     cameraFocus = null;
-    // beginOfficeExit already pulled the eye close before the façade crossing.
-    // Keep that same distance outside so the eased camera cannot travel through
-    // the building shell. Preserve the doorway heading as well.
+
+
+
     setCameraMode("third-person", "office-exit");
     cameraZoom = OFFICE_EXIT_CAMERA_ZOOM;
     cameraYaw = Math.atan2(
@@ -24294,8 +24293,8 @@ export function createWorldScene({
       space: "town-square",
       moving: true,
     });
-    // The controller owns the audited attendance checkout. Trigger it only
-    // once the avatar has physically cleared the rooftop perimeter.
+
+
     officeExitHandler?.();
     return true;
   }
@@ -24434,16 +24433,16 @@ export function createWorldScene({
     }
     officeExitPending = false;
     officeSlidingDoorOpen = 1;
-    // Transition to one façade-safe third-person chase shot while still inside.
-    // The ordinary render loop eases into this distance, and leaveOfficeInterior
-    // keeps it unchanged after crossing for a continuous outside reveal.
+
+
+
     setCameraMode("third-person", "office-exit-approach");
     cameraFocus = null;
     cameraZoom = Math.min(cameraZoom, OFFICE_EXIT_CAMERA_ZOOM);
     pinchStartZoom = cameraZoom;
-    // Do not rewrite the avatar heading here. The visitor may already be
-    // walking through the doorway, and preserving that pose lets the same
-    // forward input continue smoothly outside.
+
+
+
     return true;
   }
 
@@ -24458,10 +24457,10 @@ export function createWorldScene({
     if (cameraMode === "first-person") {
       cameraFocus = null;
       if (bikeRide) {
-        // Enter the rider's eyes facing the handlebars. Subsequent lane
-        // curvature is applied as a wrapped heading delta, so an intentional
-        // glance remains relative to the bicycle instead of drifting in world
-        // space as the circular road turns underneath it.
+
+
+
+
         cameraYaw = Math.atan2(
           Math.sin(player.rotation.y),
           Math.cos(player.rotation.y),
@@ -24482,8 +24481,8 @@ export function createWorldScene({
           officeParticipants.get(officeLocalParticipantId);
         if (localParticipant) localParticipant.visible = true;
       }
-      // Leave the eyes at their neutral field of view so the next first-person
-      // visit does not start already pinned against the zoom-out floor.
+
+
       firstPersonZoom = 1;
       camera.fov = 44;
       camera.updateProjectionMatrix();
@@ -24526,8 +24525,8 @@ export function createWorldScene({
     cameraFocus = null;
     selectedLandmark = "repositories";
     setCameraMode("first-person", "repository-agent-terminal");
-    // A mild optical zoom makes the upward-facing terminal fill the view while
-    // retaining enough robot body around it to preserve spatial context.
+
+
     firstPersonZoom = 1.35;
     camera.fov = clamp(44 / firstPersonZoom, 10, 110);
     camera.updateProjectionMatrix();
@@ -24689,8 +24688,8 @@ export function createWorldScene({
     cameraFocus = record.group.position.clone();
     cameraFocus.y += 0.1;
     focusedRepositoryKey = key;
-    // Every perimeter portal faces toward the world center. Put the camera on
-    // that inward normal so the selected sunburst is presented straight-on.
+
+
     cameraYaw = -record.angle - Math.PI / 2;
     cameraPitch = 0.16;
     cameraZoom = Math.min(cameraZoom, 0.55);
@@ -24771,16 +24770,16 @@ export function createWorldScene({
       -Math.sin(cameraYaw),
     );
     if (forwardInput || rightInput || touchStrength) {
-      // Keyboard and analog movement follow the view direction. Only yaw
-      // participates, so looking up or down never changes walking speed.
+
+
       movement.addScaledVector(forward, forwardInput);
       movement.addScaledVector(right, rightInput);
       movement.addScaledVector(forward, -touchMovement.y);
       movement.addScaledVector(right, touchMovement.x);
     }
 
-    // Retain the programmatic directional API for older controllers, but the
-    // coarse-pointer UI now uses the proportional analog vector above.
+
+
     if (touchKeys.has("KeyW")) movement.z -= 1;
     if (touchKeys.has("KeyS")) movement.z += 1;
     if (touchKeys.has("KeyA")) movement.x -= 1;
@@ -24870,8 +24869,8 @@ export function createWorldScene({
       : officeWasMoving;
     if (shouldEmit) {
       lastOfficeMovementEmit = performance.now();
-      // Presence serialization, socket backpressure checks, and persistence
-      // run in a timer after this animation frame has rendered.
+
+
       queueMovementEvent({
         x: Number(avatar.position.x.toFixed(2)),
         y: 0.38,
@@ -25021,8 +25020,8 @@ export function createWorldScene({
     currentFloorY = player.position.y;
     if (progress < 1) return true;
     officeCurrentFloorId = ride.floorId;
-    // Elevator completion also changes the active story without necessarily
-    // changing the camera LOD class.
+
+
     syncOfficeFloorVisibility();
     currentFloorY = officeFloorY(ride.floorId) + 0.38;
     player.position.y = currentFloorY;
@@ -25040,8 +25039,8 @@ export function createWorldScene({
     return true;
   }
 
-  // Sitting is a local pose, not a teleport: the avatar lands on the plank it
-  // was clicked on, faces the flames and keeps that pose until it moves again.
+
+
   function sitOnCampfireBench(seat) {
     dismountSwing({ relocate: false });
     dismountBike({ relocate: false });
@@ -25049,8 +25048,8 @@ export function createWorldScene({
     dismountQuadcopter({ relocate: false });
     const seatPoint = seat.getWorldPosition(new THREE.Vector3());
     benchSeat = {
-      // Hips on the plank, not feet: the avatar drops until its thighs rest on
-      // the seat and its shins hang off the front edge down to the ground.
+
+
       position: new THREE.Vector3(
         seatPoint.x,
         seatedAvatarY(
@@ -25059,8 +25058,8 @@ export function createWorldScene({
         ),
         seatPoint.z,
       ),
-      // Face the flames: headings elsewhere use atan2(-dx, -dz), so pointing at
-      // the pit means negating the seat -> campfire vector.
+
+
       heading: Math.atan2(
         seatPoint.x - campfire.position.x,
         seatPoint.z - campfire.position.z,
@@ -25152,9 +25151,9 @@ export function createWorldScene({
     return swingStates[index].anchor.getWorldPosition(new THREE.Vector3());
   }
 
-  // Riding is a local pose like the campfire sit, but on a moving seat: the
-  // avatar is re-glued to the plank every frame, so both camera modes follow
-  // the arc for free. A second click on the same swing hops off.
+
+
+
   function rideSwing(index) {
     if (officeSceneMode !== "town") return;
     const swing = swingStates[index];
@@ -25201,13 +25200,13 @@ export function createWorldScene({
       seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, player.scale.x),
       seatTop.z,
     );
-    // Yaw first, then pitch in the yawed frame: with the default XYZ order the
-    // lean below would be a world-X pitch, which on a swing set that faces the
-    // fountain at an angle reads as the rider rocking side to side.
+
+
+
     player.rotation.order = "YXZ";
     player.rotation.y = swingSet.rotation.y;
-    // Lean with the ropes so the body traces the arc instead of staying bolt
-    // upright at the peaks.
+
+
     player.rotation.x = swing.pivot.rotation.x;
     player.userData.leftArm.rotation.x = SWING_ARM_HOLD_PITCH;
     player.userData.rightArm.rotation.x = SWING_ARM_HOLD_PITCH;
@@ -25223,8 +25222,8 @@ export function createWorldScene({
     player.userData.rightArm.rotation.x = 0;
     applyLegPitch(player, 0, 0);
     if (relocate) {
-      // Step off just in front of the seat's rest spot rather than standing
-      // up inside the moving plank.
+
+
       const rest = swingSeatRestPoint(index);
       const heading = swingSet.rotation.y;
       player.position.set(
@@ -25612,10 +25611,10 @@ export function createWorldScene({
       jumpQueued = false;
       superJumping = false;
     } else {
-      // Flight may cross water or scenery that is intentionally not walkable.
-      // A mid-air unequip keeps its altitude but nudges the parachute column
-      // toward the nearest point on the continuous city instead of eventually
-      // marooning the player on a non-walkable landing coordinate.
+
+
+
+
       if (
         !worldWalkSurfaceContains(
           player.position.x,
@@ -25894,12 +25893,12 @@ export function createWorldScene({
     return true;
   }
 
-  // The world map's Campfire spot is a trip home: it puts the avatar on the
-  // bench that carries this member's name and holds the same seated pose
-  // clicking the plank gives. Guests — and members the directory has not
-  // seated yet — take the bench the circle always keeps open. Leaving the
-  // Office stays a deliberate walk through its door, so this refuses while
-  // the interior is open rather than teleporting out of it.
+
+
+
+
+
+
   function returnToCampfireBench(name) {
     if (officeSceneMode !== "town") return false;
     const benches = campfire.userData.seatBenches || [];
@@ -25917,10 +25916,10 @@ export function createWorldScene({
     return true;
   }
 
-  // Position persistence intentionally stores no activity label. Recover the
-  // seated pose on refresh by recognizing coordinates on the current bench
-  // ring, then reseating by member name so roster changes cannot strand the
-  // avatar on an obsolete plank.
+
+
+
+
   function restoreCampfireSeatIfNearby(spawn, name) {
     if (
       officeSceneMode !== "town" ||
@@ -25942,9 +25941,9 @@ export function createWorldScene({
     return returnToCampfireBench(name);
   }
 
-  // Clicking the flames is a camera interaction: bring the fire and the
-  // nearest arc of seated members into a close, steady composition without
-  // moving the visitor out of their current place.
+
+
+
   function focusCampfireCircle() {
     if (officeSceneMode !== "town") return false;
     selectedLandmark = "campfire";
@@ -25978,9 +25977,9 @@ export function createWorldScene({
       return;
     }
     if (swingRide) {
-      // Like the bench below: relocation ends the ride, and so does any
-      // movement input, which keeps WASD as the universal "get off" gesture
-      // alongside the second click on the seat.
+
+
+
       const displaced =
         player.position.distanceToSquared(
           swingSeatRestPoint(swingRide.index),
@@ -25995,8 +25994,8 @@ export function createWorldScene({
       dismountSwing({ relocate: false });
     }
     if (benchSeat) {
-      // Anything that relocates the avatar (a space change, a teleport) also
-      // ends the sit; otherwise the held pose would drag it back to the bench.
+
+
       const displaced =
         player.position.distanceToSquared(benchSeat.position) > 9;
       if (!displaced && !movement.lengthSq() && !dashTarget && !jumpQueued) {
@@ -26045,9 +26044,9 @@ export function createWorldScene({
       const state = bikeStates[bikeRide.index];
       const rideDirection = Math.sign(bikeDirection);
       if (state && rideDirection) {
-        // movementInputState is reused on the next frame. Adjust its two
-        // bike-specific readings in place instead of allocating an object in
-        // the hottest movement path.
+
+
+
         input.keyboardActive = keyboardActive || Boolean(rideDirection);
         input.inputStrength = Math.abs(bikeDirection);
         movementSpeedForInput(input, delta);
@@ -26076,7 +26075,7 @@ export function createWorldScene({
       }
     } else if (movement.lengthSq()) {
       cameraFocus = null;
-      // Any manual input takes the wheel back from a double-click dash.
+
       cancelDash();
       focusedRepositoryKey = "";
       movementSpeedForInput(input, delta);
@@ -26089,8 +26088,8 @@ export function createWorldScene({
       player.rotation.y = Math.atan2(-movement.x, -movement.z);
       walking = true;
     } else if (dashTarget) {
-      // Double-click travel: run straight at the clicked ground point, then
-      // land exactly on it instead of jittering around the destination.
+
+
       const toTarget = movementDashDirection.set(
         dashTarget.x - player.position.x,
         0,
@@ -26194,16 +26193,16 @@ export function createWorldScene({
     wasWalking = walking;
   }
 
-  // Scratch vectors reused across frames — this is the hottest loop in the
-  // scene and fresh allocations here turn straight into GC pressure.
+
+
   const swingRestScratch = [];
   const swingSeatScratch = new THREE.Vector3();
 
   function updateRemotePlayers(delta, time) {
-    // Swing occupancy is re-derived every frame from where visitors stand: a
-    // remote visitor parked on a seat's rest spot is riding that swing, which
-    // is what caps the ride at three people and lets a local click on a taken
-    // seat be refused.
+
+
+
+
     const swingRestPoints = swingRestScratch;
     swingStates.forEach((swing, seatIndex) => {
       swing.remoteId = "";
@@ -26241,8 +26240,8 @@ export function createWorldScene({
           seatedAvatarY(seatTop.y + SWING_SEAT_HALF_THICKNESS, avatar.scale.x),
           seatTop.z,
         );
-        // Same yaw-then-pitch order as the local rider so the lean stays
-        // front-to-back along the ropes instead of rolling sideways.
+
+
         avatar.rotation.order = "YXZ";
         avatar.rotation.y = swingSet.rotation.y;
         avatar.rotation.x = swing.pivot.rotation.x;
@@ -26260,8 +26259,8 @@ export function createWorldScene({
         : recentlyActiveInLounge
           ? Math.sin(time * 0.012 + avatar.userData.phase) * 0.18
           : 0;
-      // Members occupying a stool in the campfire circle sit like local bench
-      // sitters do once they arrive at their seat.
+
+
       const seatedAtCampfire =
         (avatar.userData.campfireSeated === true ||
           Boolean(avatar.userData.loungeActivity)) &&
@@ -26282,11 +26281,11 @@ export function createWorldScene({
     });
   }
 
-  // ForkBot wanders the Town Square on its own; when world.js reports a
-  // visitor's first movement or mouse activity (greetForkbot) it walks over
-  // and floats a welcome bubble instead of picking the next wander spot. A
-  // chat mention (exciteForkbot) outranks both: the droid rushes to whoever
-  // spoke while its chest screen echoes the line and then thinks out loud.
+
+
+
+
+
   function updateForkbot(delta, time) {
     const data = forkbot.userData;
     let target = forkbotWanderTarget;
@@ -26309,8 +26308,8 @@ export function createWorldScene({
           });
         }
       }
-      // The reply normally clears this state (showChatBubble); the timeout
-      // only covers an unavailable bot so the dots don't run forever.
+
+
       if (waited >= FORKBOT_THINKING_TIMEOUT_MS) {
         settleForkbot(time);
         target = forkbotWanderTarget;
@@ -26325,7 +26324,7 @@ export function createWorldScene({
       ) {
         showChatBubble(FORKBOT_PEER_ID, forkbotGreeting.message);
         forkbotGreeting = null;
-        // Linger beside the visitor for a moment before wandering off.
+
         forkbotWanderTarget.copy(forkbot.position);
         forkbotNextWanderAt = time + 9000;
         target = forkbotWanderTarget;
@@ -26369,7 +26368,7 @@ export function createWorldScene({
       data.rollingBall.rotation.x -= speed * delta * 1.8;
       data.rollingBall.rotation.z = Math.sin(time * 0.006 + data.phase) * 0.08;
     }
-    // Excited hops so the mention visibly lands even from across the square.
+
     forkbot.position.y =
       forkbotExcitement && !reducedMotion
         ? FORKBOT_HOME[1] +
@@ -26488,8 +26487,8 @@ export function createWorldScene({
 
   function showAgentTaskBubble(botId, title) {
     if (!agentBotAccessAllowed) return false;
-    // The task board names one general bot, so an unknown id speaks through
-    // whichever bot avatar is present rather than staying silent.
+
+
     const state =
       agentBotStates.get(String(botId || "").toLowerCase()) ||
       agentBotStates.values().next().value;
@@ -26539,10 +26538,10 @@ export function createWorldScene({
     forkbotScreenTexture.needsUpdate = true;
   }
 
-  // adhoc #369: any live speaker mentioning ForkBot in chat (world.js
-  // handleWorldChatMessage) pulls the droid over to them. The chest screen
-  // echoes the line straight away; once the echo has had a beat the thinking
-  // dots run (updateForkbot) until the reply is broadcast into the room.
+
+
+
+
   function exciteForkbot(peerId, text) {
     const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 90);
     if (!message) return false;
@@ -26560,8 +26559,8 @@ export function createWorldScene({
     return true;
   }
 
-  // Back to the idle wordmark, lingering beside the speaker for a moment
-  // before the next wander pick.
+
+
   function settleForkbot(time) {
     forkbotExcitement = null;
     paintForkbotScreen(null);
@@ -26662,9 +26661,9 @@ export function createWorldScene({
     axes.forEach(([axis, minKey, maxKey]) => {
       const component = Number(direction[axis]) || 0;
       if (Math.abs(component) < 1e-6) return;
-      // The open front door is a real portal in the floor envelope. Only its
-      // Z face is omitted; side walls, floor/ceiling, rear wall, elevator, and
-      // every ray that misses the actual aperture retain the normal clamp.
+
+
+
       if (
         axis === "z" &&
         component > 0 &&
@@ -26726,10 +26725,10 @@ export function createWorldScene({
       releaseOfficeElevatorCamera(false);
     }
     if (officeElevatorCameraLocked) {
-      // Elevator security-camera framing from the upper rear-left corner of
-      // the moving glass car. It looks diagonally across the right-wall
-      // controls and out through the exterior-facing opening, never back into
-      // the Office interior.
+
+
+
+
       cameraEye.set(-3.72, 6.46, 2.7);
       officeElevatorCar.localToWorld(cameraEye);
       cameraLookTarget.set(3.4, 3.15, -5.4);
@@ -26748,8 +26747,8 @@ export function createWorldScene({
         -Math.sin(firstPersonPitch),
         -Math.cos(cameraYaw) * horizontal,
       );
-      // A following eye camera must not ease behind the moving avatar. Copying
-      // the position directly avoids visible lag and motion sickness.
+
+
       camera.position.copy(cameraEye);
       cameraLookTarget.copy(cameraEye).add(cameraDirection);
       camera.lookAt(cameraLookTarget);
@@ -26767,9 +26766,9 @@ export function createWorldScene({
     }
     const officeFocused = Boolean(cameraFocus && selectedLandmark === "office");
     const officeInteriorFocused = officeSceneMode !== "town";
-    // The Office keeps the same orbit feel as the rest of the World. A local
-    // ray-to-bounds limit below stops zoom at the current floor walls or the
-    // panoramic elevator glass instead of shrinking the whole interior view.
+
+
+
     const focusScale = officeInteriorFocused
       ? 1
       : officeFocused
@@ -26808,9 +26807,9 @@ export function createWorldScene({
         0.08,
       );
     if (rooftopPatioCamera) {
-      // Looking upward puts an orbit camera below its eye target. Preserve the
-      // requested outward X/Z zoom, but keep that eye just above the roof slab
-      // instead of letting a steep pitch pass through the story below.
+
+
+
       const localDesired = officeInterior.worldToLocal(
         cameraLocalDesired.copy(desired),
       );
@@ -26831,8 +26830,8 @@ export function createWorldScene({
       );
     }
     if (rooftopPatioCamera) {
-      // Clamp the actual eased camera as well as its destination. Otherwise a
-      // prior below-slab frame could lerp through the roof on its way back up.
+
+
       const localCamera = officeInterior.worldToLocal(
         cameraLocalPosition.copy(camera.position),
       );
@@ -26843,9 +26842,9 @@ export function createWorldScene({
       camera.position.copy(officeInterior.localToWorld(localCamera));
     }
     if (officeElevatorRide) {
-      // The cabin moves faster than a softly lerped orbit camera. Clamp the
-      // eased result back inside its live glass envelope so the eye never
-      // trails through a floor slab while the car is between stories.
+
+
+
       const localCamera = officeInterior.worldToLocal(
         cameraLocalPosition.copy(camera.position),
       );
@@ -26870,10 +26869,10 @@ export function createWorldScene({
   }
 
   function setSpawn(spawn = {}) {
-    // An arrival cell is always a ground-level outdoor spot. Applying one to a
-    // visitor who is standing inside the tower would drop them from their
-    // current story onto the lobby slab, so the correction is declined until
-    // they walk back out of the Office.
+
+
+
+
     if (officeSceneMode !== "town") return false;
     const requestedSpace = String(spawn.space || "");
     const space = Object.hasOwn(WORLD_SPACE_FLOORS, requestedSpace)
@@ -26892,8 +26891,8 @@ export function createWorldScene({
     lastPosition.copy(player.position);
     wasWalking = false;
     cameraFocus = null;
-    // Restored positions arrive after asynchronous bootstrap data. Do not
-    // expose a long map-wide camera lerp after the loading cover disappears.
+
+
     cameraSnapPending = true;
     cancelDash();
     focusedRepositoryKey = "";
@@ -26909,8 +26908,8 @@ export function createWorldScene({
     return true;
   }
 
-  // One unified chest card is clickable on the local player and live peers.
-  // It contains identity, Fediverse and wallet controls without mode tabs.
+
+
   function registerAvatarChestControls(avatar, peerId) {
     if (!avatar?.userData?.badge || avatar.userData.chestRegistered) return;
     const meshes = [];
@@ -26940,9 +26939,9 @@ export function createWorldScene({
         ),
         self: String(peerId || "") === identity.id,
       };
-      // Do not fan one profile + contribution request out for every seat as
-      // the directory arrives. Directory figures hydrate on first selection;
-      // local and live peer avatars remain eager.
+
+
+
       if (!directoryFigure) {
         queueMicrotask(() => onFediverseProfile(target));
       }
@@ -27157,7 +27156,7 @@ export function createWorldScene({
     return true;
   }
 
-  /** Attach a loaded (or failed) fediverse card to one avatar's chest. */
+
   function setAvatarFediverseProfile(peerId, profile) {
     const id = String(peerId || "");
     const officeParticipant = officeParticipants.get(id);
@@ -27295,7 +27294,7 @@ export function createWorldScene({
     return updated;
   }
 
-  /** Dress one avatar's face with a consented account avatar photo. */
+
   function setAvatarFaceImage(peerId, url) {
     const id = String(peerId || "");
     const avatar =
@@ -27438,13 +27437,13 @@ export function createWorldScene({
     delete avatar.userData.orgTeamAssignment;
   }
 
-  // The organization-admin counterpart of the moderation plaques: one plaque
-  // per member avatar, opening the team multi-select the app layer owns. The
-  // app only supplies `orgTeam` for members of an organization the viewer
-  // owns or administers, so a plain member never sees another back plaque.
-  // Registered inactive and same-browser peers are intentionally accepted:
-  // login state does not change organization membership, and every write is
-  // re-authorized by the worker.
+
+
+
+
+
+
+
   function syncRemoteOrgTeamControl(avatar, remote) {
     const peerId = String(remote?.id || "");
     const name = String(remote?.name || "visitor").slice(0, 32);
@@ -27513,9 +27512,9 @@ export function createWorldScene({
     }
   }
 
-  // Fill in the directory-only rows for an avatar's badge. A guest can type
-  // any display name, so only a server-stamped account status may claim the
-  // public record filed under that name.
+
+
+
   function withMemberFacts(identity) {
     if (!identity || String(identity.accountStatus || "Guest") === "Guest") {
       return identity;
@@ -27609,9 +27608,9 @@ export function createWorldScene({
         outfitStyle: remote.outfitStyle || "",
         faceImage: remote.faceImage === true,
         activityBucket: remote.activityBucket || "",
-        // The public directory's total-active-time aggregate, forwarded by the
-        // app layer so a live member's chest carries the same row their
-        // campfire bench figure does.
+
+
+
         totalActiveMs: Number.isFinite(Number(remote.totalActiveMs))
           ? Math.max(0, Number(remote.totalActiveMs))
           : null,
@@ -27664,9 +27663,9 @@ export function createWorldScene({
       avatar.userData.campfireSeated =
         String(remote.activity || "") === CAMPFIRE_SEATED_ACTIVITY;
       if (useRegisteredLounge) {
-        // Idle and returning members walk back to the bench that carries
-        // their own name; anyone the directory has not caught up with yet
-        // takes one of the open stools past the seated figures.
+
+
+
         const seats = campfire.userData.seatOffsets || [];
         const owned = campfire.userData.seatByName?.get(
           String(remote.name || "").trim().toLowerCase(),
@@ -27682,14 +27681,14 @@ export function createWorldScene({
         const offset = seat || new THREE.Vector3();
         avatar.userData.targetPosition.copy(campfire.position);
         avatar.userData.targetPosition.add(offset);
-        // Seat offsets carry the plank top; the sitter rides its hips on it.
+
         avatar.userData.targetPosition.y = seatedAvatarY(
           campfire.position.y + offset.y,
           avatar.scale.x,
         );
-        // Face the flames at the circle's centre: avatar fronts face local
-        // -Z, so the inward heading is atan2(x, z) — the same heading
-        // sitOnCampfireBench gives the local player.
+
+
+
         avatar.userData.targetHeading = Math.atan2(offset.x, offset.z);
       } else if (sharedInactive) {
         const restArea = landmarkById("neighborhood").position;
@@ -27742,16 +27741,16 @@ export function createWorldScene({
   function setRemotePlayerMovement(id, movement = {}) {
     const avatar = remotePlayers.get(String(id || ""));
     if (!avatar?.userData?.targetPosition) {
-      // A connected account can remain in the app roster briefly after an
-      // administrator removes its scene avatar. Treat its later move frames
-      // as handled so they cannot trigger a full rejected rebuild each time.
+
+
+
       return administrativelyRemovedAccounts.has(
         String(movement?.name || "").trim().toLowerCase(),
       );
     }
-    // The authoritative roster pass owns deterministic lounge, campfire and
-    // neighborhood placement. Movement frames for those presence states are
-    // transport noise, not permission to pull a parked avatar off its seat.
+
+
+
     if (
       avatar.userData.loungeActivity ||
       avatar.userData.campfireSeated
@@ -27885,16 +27884,16 @@ export function createWorldScene({
       0,
       Math.min(999999, (Number(totalCount) || 0) - removedCount),
     );
-    // The aquarium is the same public account directory expressed as a
-    // school: present/recent users swim high, inactive users low. No account
-    // names or labels are rendered on the fish themselves.
+
+
+
     officeAquarium.setUsers(members);
-    // The flames carry the headline count of registered accounts, plus the
-    // name of whoever joined last so the newest member is visible at a glance.
+
+
     setCampfireMemberCount(total, newestMemberName(members));
-    // Refresh the badge facts a live presence frame cannot carry, so the same
-    // account reads identically on its bench, on its walking avatar, and in
-    // an office meeting.
+
+
+
     memberFacts.clear();
     (Array.isArray(members) ? members : []).forEach((member) => {
       const name = String(member?.name || "").trim().toLowerCase();
@@ -27925,9 +27924,9 @@ export function createWorldScene({
         emailVerified: member?.emailVerified === true,
       });
     });
-    // A live presence frame can arrive before the public directory catches up.
-    // Repaint any already-created member avatar now that the full directory
-    // facts are available, rather than waiting for another movement frame.
+
+
+
     remotePlayers.forEach((avatar) => {
       const enriched = withMemberFacts(avatar.userData.badgeIdentity || {});
       const badgeKey = JSON.stringify(enriched);
@@ -27938,19 +27937,19 @@ export function createWorldScene({
     });
     leaderboardGridState.members = leaderboardMembers;
     repaintLeaderboardGrid();
-    // Registered members sit in a circle around the campfire facing the
-    // flames. Every account in the directory owns one numbered bench for the
-    // whole session — a member out walking the world leaves theirs visibly
-    // empty, with their name still on it — and the ring carries one bench
-    // that always stays open for the next guest plus one more for every
-    // guest already here, so the circle grows as people arrive.
+
+
+
+
+
+
     const roster = (Array.isArray(members) ? members : []).filter((member) =>
       String(member?.name || "").trim(),
     );
-    // Benches and their labels preserve the complete public roster. Detailed
-    // avatars are far more expensive (at least sixteen draws apiece), so keep
-    // a deterministic recent-first subset instead of turning every lifetime
-    // account into a permanently live character rig.
+
+
+
+
     const detailedMemberIds = new Set(
       roster
         .slice(0, CAMPFIRE_CIRCLE_MAX_SEATS)
@@ -27984,15 +27983,15 @@ export function createWorldScene({
         const name = String(member.name).trim().slice(0, 32);
         const id = `member:${name.toLowerCase()}`;
         if (seatByName.has(name.toLowerCase())) {
-          // Two rows for one account: leave the extra bench open.
+
           setCampfireSeatLabel(index, "", "open");
           setCampfireSeatOrgTeamAction(index, null, id, name);
           return;
         }
         seatByName.set(name.toLowerCase(), index);
-        // The bench keeps the member's name whether or not they are on it,
-        // so the empty seats read as "who is out and about" rather than as
-        // unclaimed furniture.
+
+
+
         const represented = detailedMemberIds.has(id);
         const assignment = sanitizedOrgTeamAssignment({
           id,
@@ -28067,9 +28066,9 @@ export function createWorldScene({
         };
         let figure = loungeMembers.get(id);
         if (!figure) {
-          // The directory carries the coarse country/browser/OS the member
-          // saved on their account, so an away member's bench figure wears
-          // their own flag shirt and client badge instead of a blank one.
+
+
+
           figure = createAvatar(
             THREE,
             memberIdentity,
@@ -28077,8 +28076,8 @@ export function createWorldScene({
           );
           world.add(figure);
           loungeMembers.set(id, figure);
-          // Directory figures are real accounts, so their chest tabs work the
-          // same way a live peer's do.
+
+
           registerAvatarChestControls(figure, id);
         } else {
           const badgeKey = JSON.stringify(memberIdentity);
@@ -28092,17 +28091,17 @@ export function createWorldScene({
             figure.userData.badgeKey = badgeKey;
           }
         }
-        // The 30s directory refresh can age a seated member's recency bucket
-        // without recreating the figure, so re-sync the chest light in place.
+
+
         syncAvatarActivity(figure, {
           inputActive: false,
           accountStatus: "Registered",
           activityBucket: member.activityBucket || "",
         });
-        // Directory figures stand in for registered accounts that are not
-        // currently present. Give them the same viewer-local organization
-        // control as a live avatar so admins can assign teams independent of
-        // whether the target member is logged in.
+
+
+
+
         syncRemoteOrgTeamControl(figure, {
           id,
           name,
@@ -28116,15 +28115,15 @@ export function createWorldScene({
           campfire.position.y + (seat ? seat.y : 0),
           figure.scale.x,
         );
-        // Face the fire at the circle's centre and hold a seated pose on the
-        // bench, matching the local player's bench-seat legs. Avatar fronts
-        // face local -Z, so the inward heading is atan2(x, z), matching
-        // sitOnCampfireBench.
+
+
+
+
         figure.rotation.y = seat ? Math.atan2(seat.x, seat.z) : 0;
         applySeatedLegPose(figure);
         figure.userData.ambientInteraction = null;
       });
-    // Benches past the roster are the open guest seats.
+
     for (let index = roster.length; index < seats.length; index += 1) {
       setCampfireSeatLabel(index, "", "open");
       setCampfireSeatOrgTeamAction(index, null, "", "");
@@ -28142,9 +28141,9 @@ export function createWorldScene({
       disposeObject3D(figure);
       loungeMembers.delete(id);
     });
-    // The member ring grows with the roster. Recompute automatic cabinet
-    // slots only when its physical radius changed, preserving a walkway
-    // without doing layout work on every identical directory refresh.
+
+
+
     if (
       previousSeatRadius !== (Number(campfire.userData.seatRadius) || 0)
     ) {
@@ -28178,9 +28177,9 @@ export function createWorldScene({
     return true;
   }
 
-  // Concentric complete rings around the centred SOL board. Each populated
-  // ring distributes its current members at equal angular intervals; a join
-  // or deletion deliberately reflows that ring so gaps never accumulate.
+
+
+
   function rewardCircleSlots(centreX, centreZ, count) {
     const minimumSpacing = 3.65;
     const ringGap = 4.25;
@@ -28196,7 +28195,7 @@ export function createWorldScene({
       );
       const ringCount = Math.min(remaining, capacity);
       const angleStep = (Math.PI * 2) / ringCount;
-      // Offset alternate rings so their cabinets do not line up radially.
+
       const phase =
         Math.PI / 4 +
         Math.PI / ringCount +
@@ -28320,10 +28319,10 @@ export function createWorldScene({
       world.remove(cabinet);
       disposeObject3D(cabinet);
     };
-    // Mirror health and response times can reorder the live payload without a
-    // membership change. A normalized name order keeps every surviving
-    // cabinet in the same slot, while a changed member list is laid out again
-    // immediately by this existing data-update path.
+
+
+
+
     const usableNodes = networkNodeSnapshot
       .map((node) => ({
         node,
@@ -28383,15 +28382,15 @@ export function createWorldScene({
         Math.abs(cameraFocus.y - (followedPosition.y + 1.65)) < 0.01 &&
         Math.abs(cameraFocus.z - followedPosition.z) < 0.01
       );
-      // The commit shown before this update, captured ahead of any rebuild.
-      // Comparing it against the fresh signed record is what detects "code
-      // was just pushed onto this node" — for both the instant socket-driven
-      // refresh and the regular poll — without trusting any relay frame.
+
+
+
+
       const priorCommit = String(
         cabinet?.userData?.nodeRecord?.commit || "",
       );
-      // Same idea for "this node just answered somebody": the served counters
-      // shown before this update, captured ahead of any rebuild.
+
+
       const priorServed = mirrorServedTotal(cabinet?.userData?.nodeRecord);
       if (
         cabinet &&
@@ -28430,8 +28429,8 @@ export function createWorldScene({
       const slot = circleSlots[nodeIndex];
       if (!slot) return;
       cabinet.position.set(slot.x, 0.38, slot.z);
-      // The front display faces inward so each cabinet remains individually
-      // readable from the surrounding walkway.
+
+
       cabinet.rotation.y = Math.atan2(
         routingX - slot.x,
         routingZ - slot.z,
@@ -28476,7 +28475,7 @@ export function createWorldScene({
       removeCabinet(cabinet);
       nodeInfrastructure.delete(id);
     });
-    // The cabinets standing in the ring are exactly what the tally counts.
+
     setRewardPoolMirrorCount(
       usableNodes.length,
       usableNodes.filter(
@@ -28513,12 +28512,12 @@ export function createWorldScene({
             path && paths.indexOf(path) === index,
         )
         .slice(0, 8),
-      // The push frame arrives immediately after the relay accepts the signed
-      // publication, but edge caches and a busy mirror can take longer than
-      // the old 15-second window to expose the matching catalog snapshot.
-      // Keep the doorbell armed through two normal catalog polls; the effect
-      // still cannot fire unless that signed record confirms this exact node
-      // and commit prefix.
+
+
+
+
+
+
       expiresAt: Date.now() + 120_000,
     });
     return true;
@@ -28744,9 +28743,9 @@ export function createWorldScene({
       .map((record) => {
         const name = String(record?.name || record?.id || "").trim();
         const pairs = systemCapacityMetricPairs(record);
-        // A discovered Durable Object with no client-observable limit still
-        // earns a plinth: its relayed byte total is the whole point, and a
-        // binding that has relayed nothing yet is itself worth showing.
+
+
+
         const bytesTotal = Number(record?.bytesTotal);
         const bytes =
           Number.isSafeInteger(bytesTotal) && bytesTotal > 0 ? bytesTotal : 0;
@@ -28781,8 +28780,8 @@ export function createWorldScene({
           .map((table) => {
             const name = String(table?.name || "").trim();
             const rowCount = Number(table?.rowCount);
-            // A table that holds nothing yet still gets a bar; it is part of
-            // the platform's shape and hiding it shrank the inventory.
+
+
             return /^[A-Za-z_][A-Za-z0-9_]{0,62}$/.test(name) &&
               Number.isSafeInteger(rowCount) &&
               rowCount >= 0
@@ -28816,8 +28815,8 @@ export function createWorldScene({
 
     const existing = systemCapacityPlatform.userData.metricsLayer;
     if (existing) {
-      // Table bars are pickable, so the old ones have to leave the interactive
-      // list before they are disposed or clicks would raycast dead meshes.
+
+
       removeInteractiveObject(interactive, existing);
       systemCapacityPlatform.remove(existing);
       disposeObject3D(existing);
@@ -28884,8 +28883,8 @@ export function createWorldScene({
       safeTables.forEach((table, index) => {
         const column = index % columns;
         const row = Math.floor(index / columns);
-        // An all-empty inventory has no scale to draw against; every bar then
-        // sits at its minimum height instead of collapsing to NaN geometry.
+
+
         const normalized = maxRows
           ? Math.log1p(table.rowCount) / Math.log1p(maxRows)
           : 0;
@@ -28920,12 +28919,12 @@ export function createWorldScene({
         );
         bar.userData.tableName = table.name;
         bar.userData.rowCount = table.rowCount;
-        // Clicking a bar opens the floating table browser for that table.
+
         bar.userData.interactive = "system-capacity-table";
         interactive.push(bar);
         tableLayer.add(bar);
-        // The complete table identity is printed on its top face: a large row
-        // count fills the width, with the table name immediately beneath it.
+
+
         const topLabel = tableTopLabel(
           table.rowCount.toLocaleString("en-US"),
           table.name,
@@ -28965,8 +28964,8 @@ export function createWorldScene({
       layer.add(tableLayer);
     }
 
-    // Relayed bytes have no configured ceiling, so the busiest Durable Object
-    // sets the scale the others are drawn against.
+
+
     const peakBytes = safeRecords.reduce(
       (peak, record) => Math.max(peak, record.bytes),
       0,
@@ -28981,8 +28980,8 @@ export function createWorldScene({
       }));
       object.userData.bytesRelayed = record.bytes;
 
-      // Plinths share the platform with the table bars, so a large binding
-      // list tightens its spacing rather than marching off the edge.
+
+
       const spacing = Math.min(
         safeRecords.length > 5 ? 1.65 : 2.5,
         11.5 / Math.max(1, safeRecords.length - 1),
@@ -29004,8 +29003,8 @@ export function createWorldScene({
       object.add(plinth);
 
       const firstMetric = record.pairs[0];
-      // Without a limit to fill against, the column shows this object's share
-      // of the busiest object's traffic (log-scaled, like the table bars).
+
+
       const rawRatio = firstMetric
         ? firstMetric.usage / firstMetric.limit
         : peakBytes
@@ -29301,9 +29300,9 @@ export function createWorldScene({
       layer.add(label);
     });
 
-    // The selected server-authoritative playlist and schedule become physical
-    // records in the Broadcast Garden. These are coordination markers only:
-    // no media URL, stream, or playback data is rendered or relayed here.
+
+
+
     const items = (Array.isArray(activeSpace?.items)
       ? activeSpace.items
       : []).slice(0, 16);
@@ -29347,8 +29346,8 @@ export function createWorldScene({
     const previousName = String(identity.name || "").trim().toLowerCase();
     const previousStatus = String(identity.accountStatus || "Guest");
     Object.assign(identity, nextIdentity);
-    // The visitor's own chest reads exactly like everyone else's: their live
-    // activity ticket wins, and the directory record fills the rest in.
+
+
     const badgeIdentity = withMemberFacts(identity);
     updateAvatarBadge(THREE, player, badgeIdentity, false);
     syncOperatorBelt(THREE, player, identity.nodes || []);
@@ -29392,9 +29391,9 @@ export function createWorldScene({
 
   function setInputActive(active) {
     identity.inputActive = active === true;
-    // Input activity only changes the shoulder antenna and idle fade. Calling
-    // updateIdentity for this bit used to regenerate two canvas badge textures
-    // synchronously in the first keydown task, directly delaying movement.
+
+
+
     syncAvatarActivity(player, identity);
     syncAvatarActivity(officeLobbyPlayer, identity);
     return identity.inputActive;
@@ -29406,9 +29405,9 @@ export function createWorldScene({
     if (!districtPortal) return;
     const records = (Array.isArray(repositories) ? repositories : [])
       .filter((record) => record && (record.owner || record.name))
-      // A retired development placeholder can still be advertised by an old
-      // node snapshot. It has never hosted content, so do not turn the
-      // non-live vm1/forkmesh stub into a permanent "mirror needed" portal.
+
+
+
       .filter(
         (record) =>
           !(
@@ -29507,8 +29506,8 @@ export function createWorldScene({
               record.sizeTree.children.length,
             ]
           : null,
-        // Identity only: a follower's avatar/bio arriving does not need a
-        // portal rebuild, but a different follower does.
+
+
         record.fediverseFollowers.map((follower) => follower?.handle || ""),
       ]),
     ]);
@@ -29541,9 +29540,9 @@ export function createWorldScene({
 
     const layer = new THREE.Group();
     layer.name = "repository-perimeter-portals";
-    // The east district is the one repository home. Native and imported
-    // records share its fully expanded ring instead of leaving a second,
-    // partial repository orbit around the central node plaza.
+
+
+
     const coreRecords = [];
     const hostedRecords = records;
     [
@@ -29730,10 +29729,10 @@ export function createWorldScene({
         portalMeshes.push(mesh);
       }
       face.add(disk, outline);
-      // Keep every repository visually expanded, including stubs whose full
-      // size tree has not reached this mirror yet. The concentric profile is
-      // deliberately lightweight; a real sizeTree replaces its centre with
-      // the file wedges below without collapsing the surrounding rings.
+
+
+
+
       const expandedProfile = new THREE.Group();
       expandedProfile.name =
         `repository-always-expanded-profile:${record.owner}/${record.name}`;
@@ -29828,8 +29827,8 @@ export function createWorldScene({
           0.08,
         );
         face.add(orbitMarker);
-        // Direct references for the per-frame pulse — animate() must not run
-        // a recursive name lookup over every portal subtree each frame.
+
+
         node.userData.repositoryHalo = selectedHalo;
         node.userData.repositoryOrbitMarker = orbitMarker;
       }
@@ -29864,9 +29863,9 @@ export function createWorldScene({
       label.name = `repository-portal-label:${record.owner}/${record.name}`;
       label.scale.set(2.8, 0.76, 1);
       label.position.set(0, -1.42, 0.12);
-      // The east island is a repository catalog rather than a selector that
-      // hides every inactive name. Density scaling keeps the full labels
-      // readable while every repository remains expanded.
+
+
+
       label.visible = true;
       node.add(label);
 
@@ -29877,9 +29876,9 @@ export function createWorldScene({
           starCount: record.starCount,
           starred: record.starred,
         };
-        // This is intentionally a fixed plane, not a 3D extrusion or a
-        // camera-following sprite. Every repository therefore gets the same
-        // readable, point-up star control when approached from the ring.
+
+
+
         const starButton = new THREE.Mesh(
           new THREE.PlaneGeometry(1.92, 1.92),
           new THREE.MeshBasicMaterial({
@@ -29918,18 +29917,18 @@ export function createWorldScene({
       base.name = `repository-portal-base:${record.owner}/${record.name}`;
       base.position.set(0, -2.38, 0);
       base.scale.x = portalDensityScale;
-      // The foundation is a direct link to the repository page. Keep its
-      // action distinct from the face, which selects the portal in-world.
+
+
       base.userData.landmark = "repositories";
       base.userData.repositoryBase = repositoryPortal;
       interactive.push(base);
       node.add(base);
-      // The angled commit-activity pedestal below carries the selected
-      // repository name, so the wheel no longer needs a second name stone.
-      // Who follows this repository over ActivityPub, shown as compact avatar
-      // icons orbiting the selected file circle. These are real remote accounts
-      // read from ap_followers; using icons keeps the repository graph visible
-      // and avoids mistaking follower records for people physically present.
+
+
+
+
+
+
       if (isActive && !record.isPrivate) {
         const followers = Array.isArray(record.fediverseFollowers)
           ? record.fediverseFollowers.filter(
@@ -29940,9 +29939,9 @@ export function createWorldScene({
           : [];
         const gallery = new THREE.Group();
         gallery.name = `repository-fediverse-follower-icons:${record.owner}/${record.name}`;
-        // Keep the social portraits on the wheel's local face plane. A deep
-        // positive-Z offset made them parallax toward the camera and appear
-        // detached from the circle at elevated viewing angles.
+
+
+
         gallery.position.set(0, 0.55, 0.18);
         const visibleFollowers = followers.slice(
           0,
@@ -29950,8 +29949,8 @@ export function createWorldScene({
         );
         visibleFollowers.forEach((follower, followerIndex) => {
           const icon = makeRepositoryFollowerIcon(THREE, follower);
-          // A broad upper arc makes the large follower portraits an explicit
-          // OUTER social ring while keeping the stone plaque clear.
+
+
           const orbitAngle =
             Math.PI * 1.08 -
             (followerIndex /
@@ -29966,9 +29965,9 @@ export function createWorldScene({
           );
           gallery.add(icon);
         });
-        // The size-map view hides the original portal face. Keep the social
-        // ring on the persistent portal mount so real followers remain visible
-        // around the live file sunburst.
+
+
+
         node.add(gallery);
         node.userData.fediverseFollowers = visibleFollowers;
 
@@ -30100,9 +30099,9 @@ export function createWorldScene({
     layer.userData.repositoryKey = repositoryKey;
     layer.userData.commit = String(selection?.commit || "").slice(0, 64);
 
-    // The selected file graph nearly reaches the ground. Its commit history is
-    // now the named repository pedestal: a compact 45-degree lectern that can
-    // be read while looking toward the wheel without lying flat on the ground.
+
+
+
     const backing = new THREE.Mesh(
       new THREE.BoxGeometry(6.25, 2.25, 0.14),
       makeMaterial(THREE, "#102a32", {
@@ -30195,8 +30194,8 @@ export function createWorldScene({
     if (!map.segments.length) return;
     const layer = new THREE.Group();
     layer.name = "repository-3d-size-map";
-    // Lift the sunburst clear of the portal base so its lowest wedges do not
-    // intersect the ground plane.
+
+
     layer.position.y = 0.55;
     layer.position.z = 0.18;
     layer.userData.repositorySizeFocus = map.path;
@@ -30208,9 +30207,9 @@ export function createWorldScene({
     const sizeMeshes = [];
     let labelCount = 0;
 
-    // A small comet-like tail lives in the gap between the hub (the current
-    // folder) and the first directory ring. It is only visible while a folder
-    // or file request is in flight, so the map itself stays readable.
+
+
+
     const loadingTail = new THREE.Group();
     loadingTail.name = "repository-size-map-loading-tail";
     [
@@ -30491,10 +30490,10 @@ export function createWorldScene({
     return true;
   }
 
-  // The open crate of issue pages and the pull-request review board that stand
-  // beside the selected repository portal. Both are rebuilt from bounded,
-  // commit-matched records the shell already verified; the scene never invents
-  // an issue or pull number of its own.
+
+
+
+
   function updateRepositoryRecordDesk(selection = {}, records = {}) {
     const previousLayer = world.userData.repositoryRecordDeskLayer;
     const previousMount =
@@ -30600,25 +30599,25 @@ export function createWorldScene({
     const layer = new THREE.Group();
     layer.name = "repository-record-desk";
     const repositoryName = `${owner}/${name}`;
-    // Ground level beside the portal plinth; the plinth base sits at -2.38 and
-    // the follower gallery stands on -2.53.
+
+
     const groundY = -2.53;
 
     const addRecordBoard = (allItems, kind, x, accent) => {
       if (!allItems.length) return null;
       const desk = new THREE.Group();
       const pageInfo = repositoryRecordPage(kind, allItems.length);
-      // Page zero contains the newest records. Every page keeps its records
-      // in newest-first data order, then maps them into their absolute tower
-      // slots so the newest entry is physically lowest and older pages climb.
+
+
+
       const items = allItems
         .slice(pageInfo.start, pageInfo.end);
       desk.name = `repository-${kind}-desk:${repositoryKey}`;
       desk.position.set(x, 0, 2.05);
-      // A single reading column keeps every record and its controls aligned.
-      // Tower height represents the complete bounded record collection, not
-      // merely the current 25-record page. The lightweight slot separators
-      // keep that truthful silhouette to one additional instanced draw call.
+
+
+
+
       const rows = Math.max(1, allItems.length);
       const rowPitch = 0.52;
       const boardHeight = 0.74 + rows * rowPitch;
@@ -30884,8 +30883,8 @@ export function createWorldScene({
       return { desk, board, boardHeight, items };
     };
 
-    // Keep review and issue work visually and operationally independent:
-    // pull requests page on the left, issues page on the right.
+
+
     const pullBoard = addRecordBoard(
       pulls,
       "pull",
@@ -31026,10 +31025,10 @@ export function createWorldScene({
           )
           .slice(0, 32)
       : [];
-    // Contributors occupy their own smaller INNER portrait ring on the
-    // selected repository face. This is deliberately separate from the large
-    // outer Mastodon-follower ring so the two relationships are immediately
-    // distinguishable.
+
+
+
+
     const activePortal = repositoryPortals.get(
       String(world.userData.repositoryActiveKey || ""),
     )?.group;
@@ -31065,8 +31064,8 @@ export function createWorldScene({
           contributorOrbit.add(icon);
           interactive.push(icon);
         });
-        // Like the follower orbit, this must survive the portal-face swap that
-        // displays the repository size map.
+
+
         activePortal.add(contributorOrbit);
       }
     }
@@ -31092,9 +31091,9 @@ export function createWorldScene({
         edgeIndexes.push([sourceIndex, targetIndex]);
       });
     });
-    // A small deterministic force layout makes the actual import graph legible:
-    // spring forces pull adjacent files together, while repulsion prevents one
-    // dense dependency component from collapsing into a single icon.
+
+
+
     const layout = safeEntries.map((entry, index) => {
       const angle = (index / Math.max(1, safeEntries.length)) * Math.PI * 2;
       const directoryBias =
@@ -31294,9 +31293,9 @@ export function createWorldScene({
       ? player
       : remotePlayers.get(peerId) || (peerId === identity.id ? player : null);
     if (!avatar) return;
-    // A wave is the one emote with a body pose behind the floating glyph, and
-    // it plays the same way whether the gesture came from this browser or off
-    // the relay.
+
+
+
     if (emote === "wave") startAvatarWave(avatar);
     if (emote === "superjump" && local && officeSceneMode === "town") {
       standUpFromBench();
@@ -31320,8 +31319,8 @@ export function createWorldScene({
     ) {
       startAvatarHudAction(avatar, emote);
     }
-    // The pose above stays (it is gameplay); only the floating glyph sprite
-    // is part of the toggleable bubble/emote element.
+
+
     if (!worldElementEnabled("chat-bubbles")) return;
     const glyphs = {
       wave: "WAVE",
@@ -31362,11 +31361,11 @@ export function createWorldScene({
     return remotePlayers.get(id) || (id === identity.id ? player : null);
   }
 
-  // An accepted handshake: both avatars start the same pose on the same frame
-  // and one glyph floats over the pair, so the greeting reads as a single
-  // shared event rather than two unrelated gestures. Either half may be
-  // missing here — a peer can be out of the room or not yet rendered — and the
-  // visible half still shakes.
+
+
+
+
+
   function playHandshake(peerId, partnerId) {
     const first = avatarForPeerId(peerId);
     const second = avatarForPeerId(partnerId);
@@ -31395,8 +31394,8 @@ export function createWorldScene({
     const message = String(text || "").replace(/\s+/g, " ").trim().slice(0, 140);
     if (!avatar || !message) return false;
     if (!worldElementEnabled("chat-bubbles")) return false;
-    // One bubble per speaker: a rapid follow-up message replaces the first
-    // instead of stacking on top of it.
+
+
     for (let index = emoteSprites.length - 1; index >= 0; index -= 1) {
       const existing = emoteSprites[index];
       if (existing.chat && existing.avatar === avatar) {
@@ -31429,7 +31428,7 @@ export function createWorldScene({
       avatar,
       chat: true,
       startedAt: performance.now(),
-      // Longer messages linger longer before fading out.
+
       duration: Math.min(14000, 10000 + message.length * 30),
       baseHeight: 5.2,
       rise: 0.5,
@@ -31448,7 +31447,7 @@ export function createWorldScene({
             remotePlayers.get(String(peerId || "")) ||
             loungeMembers.get(String(peerId || ""));
     if (!avatar) return false;
-    // ForkBot's own line is the reply the thinking dots were waiting for.
+
     if (avatar === forkbot && forkbotExcitement) {
       settleForkbot(performance.now());
     }
@@ -31461,10 +31460,10 @@ export function createWorldScene({
     return showAvatarChatBubble(avatar, text);
   }
 
-  // A registered member who is not in the world as a live peer still owns a
-  // named campfire bench. Detailed figures anchor their own lines; roster-only
-  // benches anchor a bubble at the name plate so high account counts do not
-  // make public chat disappear or require a full avatar per account.
+
+
+
+
   function showMemberChatBubble(name, text) {
     const wanted = String(name || "").trim().toLowerCase();
     if (!wanted) return false;
@@ -31480,8 +31479,8 @@ export function createWorldScene({
     if (seatByName instanceof Map && seatByName.has(wanted)) {
       return showAtBench(seatByName.get(wanted));
     }
-    // The public room truncates asserted names to 16 characters, so a
-    // truncated sender may only be a prefix of the seated member's name.
+
+
     if (wanted.length < 16) return false;
     for (const id of loungeMembers.keys()) {
       if (id.slice("member:".length).startsWith(wanted)) {
@@ -31496,23 +31495,23 @@ export function createWorldScene({
     return false;
   }
 
-  // Repaints the fountain's treasury board with the public pool address QR
-  // code and the balance reported by /api/accounts/central-fund.
+
+
   function updateRewardPool(state = {}) {
     const sign = landmarkObjects.get("fountain")?.userData?.treasurySign;
     if (!sign) return;
     applyRewardTreasury(THREE, sign, state);
   }
 
-  // Repaints the tally hovering over the pool orb. The catalog refresh runs on
-  // a timer and mirror health reorders the payload without changing these two
-  // numbers, so a memo keeps the canvas from being rebuilt every pass.
+
+
+
   function setRewardPoolMirrorCount(total, online) {
     const sprite = landmarkObjects.get("fountain")?.userData?.mirrorCountSprite;
     if (!sprite) return;
     const count = Math.max(0, Math.min(9999, Math.round(Number(total) || 0)));
     const live = Math.max(0, Math.min(count, Math.round(Number(online) || 0)));
-    // No cabinets means no catalog yet: stay hidden rather than claim zero.
+
     sprite.visible = count > 0;
     const key = `${count}|${live}`;
     if (mirrorCountShown === key) return;
@@ -31522,14 +31521,14 @@ export function createWorldScene({
     sprite.material.needsUpdate = true;
   }
 
-  // Freshly pushed code announces itself: a tall light column rises from the
-  // cabinet and a ground shockwave expands beyond the reward-pool node rings,
-  // so the arrival reads from anywhere in the town — not just beside the rack.
-  // Purely cosmetic and driven only by a verified commit change in the signed
-  // mirror payload (see updateNetworkNodes), never by an unauthenticated frame.
+
+
+
+
+
   function spawnPushSurge(position) {
     if (!worldElementEnabled("effects")) return;
-    // Bound a burst of simultaneous publishes to a fixed effect budget.
+
     if (pushSurges.length >= 8) return;
     const group = new THREE.Group();
     group.name = "mirror-push-surge";
@@ -31804,11 +31803,11 @@ export function createWorldScene({
     return true;
   }
 
-  // Serving reads as traffic leaving the rack: each clone or repository page a
-  // node answers launches a small figure for the agent it served, shooting up
-  // out of the cabinet and shrinking away into the sky. Purely cosmetic and
-  // driven only by the node's own served counters in the signed mirror payload
-  // (see updateNetworkNodes), never by an unauthenticated frame.
+
+
+
+
+
   function spawnServeFlights(position, count = 1) {
     if (!worldElementEnabled("effects")) return;
     const requested = Math.floor(Number(count));
@@ -31817,7 +31816,7 @@ export function createWorldScene({
       Math.max(1, Number.isFinite(requested) ? requested : 1),
     );
     for (let index = 0; index < wanted; index += 1) {
-      // Bound a busy fleet's burst to a fixed effect budget.
+
       if (serveFlights.length >= 12) return;
       const figure = createServedVisitorFigure(
         THREE,
@@ -31834,8 +31833,8 @@ export function createWorldScene({
       serveFlights.push({
         group: figure,
         materials: figure.userData.figureMaterials,
-        // Staggered so a multi-request update reads as a stream rather than
-        // one clump of overlapping figures.
+
+
         startedAt: performance.now() + index * 220,
         duration: 2400,
         baseY: figure.position.y,
@@ -31901,17 +31900,17 @@ export function createWorldScene({
     const next = Number(value);
     if (!Number.isFinite(next)) return cameraZoom;
     if (cameraMode === "first-person") {
-      // Once the eyes are already as wide as they go, another notch backwards
-      // steps out of the avatar's head entirely — that is where the gesture
-      // was heading anyway.
+
+
+
       if (
         next < FIRST_PERSON_ZOOM_MIN &&
         firstPersonZoom <= FIRST_PERSON_ZOOM_MIN
       ) {
         setCameraMode("third-person", "zoom-out");
         if (pinchActive) {
-          // Re-anchor a live pinch, otherwise the orbital camera inherits the
-          // scale the gesture started at inside first person.
+
+
           pinchStartZoom = cameraZoom;
           const spread = touchDistance();
           if (spread > 0) pinchStartDistance = spread;
@@ -31928,9 +31927,9 @@ export function createWorldScene({
       return firstPersonZoom;
     }
     cameraZoom = clamp(next, CAMERA_ZOOM_MIN, CAMERA_ZOOM_MAX);
-    // This is intentionally not forced. Pointer and pinch events can arrive
-    // much faster than display frames; the LOD pass only has work when zoom
-    // crosses its near/far boundary.
+
+
+
     updateSceneLevelOfDetail();
     return cameraZoom;
   }
@@ -31962,8 +31961,8 @@ export function createWorldScene({
   function rotateCamera(deltaX, deltaY) {
     if (!Number.isFinite(deltaX) || !Number.isFinite(deltaY)) return;
     if (officeElevatorCameraLocked) return;
-    // The canvas behaves like a grabbed world: pull the scene with the
-    // pointer, so the camera turns opposite to the hand's travel direction.
+
+
     cameraYaw -= deltaX * CAMERA_LOOK_SENSITIVITY;
     if (cameraMode === "first-person") {
       firstPersonPitch = clamp(
@@ -32072,8 +32071,8 @@ export function createWorldScene({
     } catch (_) {}
   }
 
-  // Energy fades with a ~0.5s half life so the antenna slows back down soon
-  // after the mouse stops instead of coasting.
+
+
   function decayedPointerEnergy(now) {
     if (!pointerEnergyAt) return 0;
     const elapsed = Math.max(0, now - pointerEnergyAt) / 1000;
@@ -32085,7 +32084,7 @@ export function createWorldScene({
     const y = Number(event.clientY) || 0;
     if (pointerEnergyAt) {
       const moved = Math.hypot(x - pointerEnergyX, y - pointerEnergyY);
-      // ~700px of travel inside one half life saturates the blink rate.
+
       pointerEnergy = Math.min(1, decayedPointerEnergy(now) + moved / 700);
     }
     pointerEnergyAt = now;
@@ -32093,12 +32092,12 @@ export function createWorldScene({
     pointerEnergyY = y;
   }
 
-  // The treasury board only ever shows what the shell last handed to
-  // updateRewardPool, and that balance costs a public Solana RPC round trip,
-  // so it is fetched on demand instead of on a timer. Resting the pointer on
-  // the SOL sign is the refresh gesture; the sample gate keeps a fast mouse
-  // sweep from adding an intersect test to every pointer event, and the edge
-  // transition means holding still asks only once.
+
+
+
+
+
+
   const REWARD_BOARD_HOVER_SAMPLE_MS = 120;
   let rewardBoardHoverSampledAt = 0;
   let rewardBoardHovered = false;
@@ -32145,23 +32144,23 @@ export function createWorldScene({
         if (!pinchActive) beginPinchIfReady();
         const distance = touchDistance();
         if (pinchActive && distance > 0) {
-          // Spreading two fingers zooms in; bringing them together zooms out.
-          // Every move is clamped, so repeated gestures can traverse the entire
-          // supported near/far range without overshooting it.
+
+
+
           setCameraZoom(
             pinchStartZoom * (pinchStartDistance / distance),
           );
           event.preventDefault();
         }
-        // A two-finger gesture is zoom-only. Never let either constituent
-        // pointer also rotate the camera.
+
+
         pointerGestureMoved = true;
         event.preventDefault();
         return;
       }
     }
-    // Only an idle fine pointer is a hover: a held button is a camera drag or
-    // an object gesture, not somebody looking at the treasury board.
+
+
     if (event.pointerType === "mouse" && primaryPointerId === null) {
       updateRewardBoardHover(event, pointerNow);
     }
@@ -32252,9 +32251,9 @@ export function createWorldScene({
 
   function officeObjectMatchesCurrentFloor(object) {
     if (!object || officeSceneMode === "town") return true;
-    // A car-mounted selector's floor id is its destination, not the story the
-    // mesh occupies. Keep every destination button clickable from the cabin;
-    // the server-derived allowed flag remains the authority on travel.
+
+
+
     if (object.userData?.interactive === "office-elevator-floor") {
       return true;
     }
@@ -32425,14 +32424,14 @@ export function createWorldScene({
       cancelled ||
       wasPinching ||
       pointerGestureMoved;
-    // Remembered past the reset below so a double-click that ended in a camera
-    // drag or pinch does not also fire off a dash.
+
+
     lastGestureDragged = suppressTap;
     pointerGestureMoved = false;
     if (suppressTap) return;
 
-    // Use the down coordinates so a small amount of click jitter cannot select
-    // an object that was not underneath the visible cursor at press time.
+
+
     pointerCoordinates({
       clientX: pointerStart.x,
       clientY: pointerStart.y,
@@ -32646,8 +32645,8 @@ export function createWorldScene({
         (officeSceneMode === "lobby" &&
           officeCurrentFloorId === "marketing"))
     ) {
-      // The board hangs on the Marketing floor. Clicking it through the glass
-      // from another storey must not hand a visitor a seat at that table.
+
+
       onOfficeMeetingBoardSelect();
       return;
     }
@@ -32915,8 +32914,8 @@ export function createWorldScene({
     finishPointer(event, false);
   }
 
-  // Raycast against the current shared floor so double-click travel stays
-  // accurate throughout the Town Square and its regional campuses.
+
+
   function groundPointAt(clientX, clientY) {
     pointerCoordinates({ clientX, clientY });
     raycaster.setFromCamera(pointer, camera);
@@ -32951,8 +32950,8 @@ export function createWorldScene({
     if (event.button !== undefined && event.button !== 0) return;
     if (lastGestureDragged) return;
     if (officeSceneMode === "meeting" || officeElevatorRide) return;
-    // A quick double tap on a bench is still a request to sit on it, not to
-    // dash to the patch of ground the bench happens to stand on.
+
+
     pointerCoordinates(event);
     raycaster.setFromCamera(pointer, camera);
     if (officeSceneMode === "lobby") {
@@ -32964,8 +32963,8 @@ export function createWorldScene({
             officeObjectMatchesCurrentFloor(object),
         );
       if (officeHit) {
-        // The two click events already performed the object interaction.
-        // Suppress only the follow-up dash through that same object/floor.
+
+
         event.preventDefault();
         return;
       }
@@ -32981,8 +32980,8 @@ export function createWorldScene({
       sitOnCampfireBench(benchHit.object);
       return;
     }
-    // The same rule for the swing set: a double tap on a seat is a request to
-    // ride it, not to dash to the ground the swing hangs over.
+
+
     const swingHit = raycaster
       .intersectObjects(interactive, false)
       .find(
@@ -33034,8 +33033,8 @@ export function createWorldScene({
     const point = groundPointAt(event.clientX, event.clientY);
     if (!point) return;
     event.preventDefault();
-    // Following the avatar again keeps the dash visible; a landmark focus left
-    // over from the two selection clicks would pin the camera in place.
+
+
     cameraFocus = null;
     dashTarget = point;
   }
@@ -33091,9 +33090,9 @@ export function createWorldScene({
     }
     const firstPerson = cameraMode === "first-person";
     const currentZoom = firstPerson ? firstPersonZoom : cameraZoom;
-    // Third person pulls the camera back as the wheel scrolls down; through
-    // the visitor's own eyes that reads backwards, so first person scrolls
-    // the other way — wheel down zooms in on what they are looking at.
+
+
+
     setCameraZoom(
       currentZoom * Math.exp(deltaPixels * (firstPerson ? -0.0015 : 0.0015)),
     );
@@ -33112,8 +33111,8 @@ export function createWorldScene({
       if (!keys.size && !event.repeat) {
         const now = performance.now();
         const eventAt = Number(event.timeStamp);
-        // Event timestamps normally share performance.now()'s time origin.
-        // Fall back for older WebViews that report an epoch timestamp.
+
+
         const startedAt =
           Number.isFinite(eventAt) &&
           eventAt > 0 &&
@@ -33206,11 +33205,11 @@ export function createWorldScene({
   let resizeFrame = 0;
   const resize = () => {
     if (resizeFrame || disposed) return;
-    // Mobile browser chrome and visualViewport can resize the canvas wrapper
-    // while a finger pans, tilts, or pinches. Reallocating the WebGL drawing
-    // buffer mid-gesture clears it and looks exactly like a full page refresh.
-    // Keep the current frame and apply one settled resize after the final
-    // touch pointer is released.
+
+
+
+
+
     if (touchPointers.size > 0 || externalTouchInteractionActive) {
       pendingTouchResize = true;
       return;
@@ -33226,9 +33225,9 @@ export function createWorldScene({
       }
       viewportRect.width = width;
       viewportRect.height = height;
-      // Keep the drawing buffer deliberately modest. The previous 1.75 cap made
-      // the GPU shade over three times as many pixels as a 1x canvas on dense
-      // displays, which showed up as movement hitching.
+
+
+
       renderer.setPixelRatio(
         Math.min(
           window.devicePixelRatio || 1,
@@ -33238,9 +33237,9 @@ export function createWorldScene({
       renderer.setSize(width, height, false);
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      // Do not clear and repaint the drawing buffer during a live touch pan.
-      // The animation loop already owns that frame; one settled resize is
-      // enough after the browser chrome and shell height stop moving.
+
+
+
       if (
         running &&
         !disposed &&
@@ -33251,8 +33250,8 @@ export function createWorldScene({
       }
     });
   };
-  // ResizeObserver is unavailable in older mobile WebViews.  A window resize
-  // listener still gives those browsers a correctly sized, working World.
+
+
   const resizeObserver =
     typeof ResizeObserver === "function" ? new ResizeObserver(resize) : null;
   resizeObserver?.observe(container);
@@ -33385,14 +33384,14 @@ export function createWorldScene({
       rawFrameMs,
     );
     if (rawFrameMs > 34) diagnosticsLongFrames += 1;
-    // Per-frame duration samples for the p95 reading. When no debug surface
-    // is polling getDiagnostics the buffer is recycled in place instead of
-    // growing without bound.
+
+
+
     if (diagnosticsFrameTimes.length >= 600) diagnosticsFrameTimes.length = 0;
     diagnosticsFrameTimes.push(rawFrameMs);
-    // rawFrameMs includes time spent waiting for requestAnimationFrame and is
-    // useful for FPS diagnostics, but it cannot identify renderer work. Stall
-    // attribution is performed after render from actual main-thread work time.
+
+
+
     if (!reducedMotion && worldElementEnabled("animations")) {
       frameAnimated.forEach((callback) => callback(time, delta));
     }
@@ -33423,11 +33422,11 @@ export function createWorldScene({
       officeCurrentFloorId === "lobby";
     officeAquarium.setAnimationActive(aquariumAnimationActive);
     officeAquarium.updateFeeding(time, aquariumAnimationActive);
-    // The Office is part of the same live World. Neighbours and ForkBot keep
-    // animating while the local visitor is in the tower instead of freezing
-    // the landscape visible through its glass walls. Each population's
-    // per-frame update pauses with its Elements toggle so an administrator
-    // can measure exactly what that population costs.
+
+
+
+
+
     if (worldElementEnabled("remote-avatars")) updateRemotePlayers(delta, time);
     if (worldElementEnabled("forkbot")) updateForkbot(delta, time);
     if (worldElementEnabled("agent-npcs")) updateAgentBots(delta, time);
@@ -33466,8 +33465,8 @@ export function createWorldScene({
           group.scale.setScalar(0.015);
           return;
         }
-        // Overshoot once, then settle into the ring like a portal locking
-        // onto its perimeter coordinate.
+
+
         const back = 1.70158;
         const shifted = progress - 1;
         const scale =
@@ -33481,10 +33480,10 @@ export function createWorldScene({
           repositoryPortalBornAt.delete(key);
         }
       });
-      // Node beacons hold a steady colour and size — no pulse — so a status
-      // reads the same in a screenshot as it does live. Only degraded and
-      // healing nodes carry a sweep, and it turns rather than fades, so the
-      // colour itself stays legible in a still frame.
+
+
+
+
       if (worldElementEnabled("node-cabinets")) {
         nodeInfrastructure.forEach((cabinet) => {
           const sweep = cabinet.userData?.beaconSweep;
@@ -33513,9 +33512,9 @@ export function createWorldScene({
         (time - flight.startedAt) / flight.duration,
       );
       const fadeStart = flight.fadeStart ?? 0.65;
-      // Most speakers are direct World children, while Noah is nested inside
-      // the translated Office reception group. World coordinates keep the
-      // shared talk-bubble UX attached correctly in both cases.
+
+
+
       flight.avatar.getWorldPosition(flight.sprite.position);
       flight.sprite.position.y +=
         (flight.baseHeight ?? 4.7) + progress * (flight.rise ?? 1.1);
@@ -33662,7 +33661,7 @@ export function createWorldScene({
         (time - surge.startedAt) / surge.duration,
       );
       const fade = 1 - progress;
-      // The ring races out to roughly yard scale while the column burns down.
+
       surge.ring.scale.setScalar(1 + progress * 34);
       surge.ring.material.opacity = 0.8 * fade;
       surge.beam.scale.x = 1 + progress * 0.7;
@@ -33680,14 +33679,14 @@ export function createWorldScene({
     for (let index = serveFlights.length - 1; index >= 0; index -= 1) {
       const flight = serveFlights[index];
       const elapsed = time - flight.startedAt;
-      // Staggered launches wait on the pad, hidden, until their turn.
+
       if (elapsed < 0) {
         flight.group.visible = false;
         continue;
       }
       flight.group.visible = true;
       const progress = Math.min(1, elapsed / flight.duration);
-      // Hard off the cabinet, easing out as it climbs away.
+
       const eased = 1 - (1 - progress) ** 2.4;
       flight.group.position.y = flight.baseY + eased * flight.climb;
       flight.group.rotation.y += flight.spin * delta;
@@ -33707,9 +33706,9 @@ export function createWorldScene({
     }
     updateCamera(delta);
     if (worldElementEnabled("sky")) worldSky.tick(Date.now(), camera.position);
-    // Spatial scans and DOM-adjacent controls do not need monitor refresh
-    // cadence. Bounding them to 12.5Hz removes repeated portal walks and
-    // layout writes while movement and WebGL rendering remain full-rate.
+
+
+
     if (time >= nextProximityUpdateAt) {
       nextProximityUpdateAt = time + 80;
       updateBuildBoardProximity();
@@ -33733,8 +33732,8 @@ export function createWorldScene({
         0.05,
       );
       lastVisualAnimationAt = time;
-      // Preserve cadence instead of drifting by a display frame whenever a
-      // requestAnimationFrame timestamp lands just past the deadline.
+
+
       nextVisualAnimationAt =
         nextVisualAnimationAt <= 0 ||
         time - nextVisualAnimationAt > visualFrameMs * 2
@@ -33748,12 +33747,12 @@ export function createWorldScene({
         animateWeather(weather.snow, time, visualDelta, "snow");
       }
     }
-    // resize() owns the only layout read. Reading the canvas bounds here,
-    // after label style writes from the preceding frame, forced a synchronous
-    // layout on every animation tick and was especially visible on first input.
+
+
+
     const rect = viewportRect;
-    // main removed the floating landmark labels (adhoc #243); only the player
-    // and remote name plates remain, and they are a town-scene concern.
+
+
     if (worldElementEnabled("screen-labels") && time >= nextScreenLabelUpdateAt) {
       nextScreenLabelUpdateAt = time + 34;
       if (officeSceneMode === "town") {
@@ -33882,9 +33881,9 @@ export function createWorldScene({
         primaryPointerId !== null ||
         pinchActive;
       if (shadowRefreshBusy) {
-        // A full shadow pass is the largest recurring GPU spike in this
-        // scene. Let input settle before paying it so walking and camera
-        // gestures never absorb the hitch.
+
+
+
         nextShadowMapUpdateAt = time + SHADOW_MAP_BUSY_RETRY_MS;
       } else {
         nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;
@@ -33949,9 +33948,9 @@ export function createWorldScene({
     }
   }
 
-  // GPU name, antialias, and WebGL tier are immutable per context, so they
-  // are probed once. Privacy-hardened browsers may refuse the debug-renderer
-  // extension entirely; the panel then simply reports no GPU name.
+
+
+
   function rendererContextInfo() {
     if (diagnosticsContextInfo) return diagnosticsContextInfo;
     const info = {
@@ -33994,8 +33993,8 @@ export function createWorldScene({
     return `#${value}`;
   }
 
-  // RGBA8 plus a third for mipmaps — a display heuristic for spotting
-  // disproportionately large assets, not an exact meter.
+
+
   function estimateTextureBytes(texture) {
     const image = texture?.isCubeTexture
       ? texture.image?.[0]
@@ -34024,11 +34023,11 @@ export function createWorldScene({
     "gradientMap",
   ];
 
-  // One walk of the live scene graph, covering everything renderer.info
-  // cannot see: per-category object counts, transparency and shadow load,
-  // uniqueness of materials/geometries/textures, and approximate GPU memory.
-  // Throttled by getDiagnostics to at most one walk every five seconds, and
-  // only while a debug surface is actually polling.
+
+
+
+
+
   function collectSceneComplexity() {
     const stats = {
       objects: 0,
@@ -34085,8 +34084,8 @@ export function createWorldScene({
       const drawable =
         child.isMesh || child.isPoints || child.isLine || child.isSprite;
       if (!drawable) return;
-      // Invisible meshes used only for precise interaction are not submitted
-      // to WebGL and should not inflate scene/draw complexity diagnostics.
+
+
       if (child.userData?.raycastProxy === true) return;
       if (child.isMesh) {
         stats.meshes += 1;
@@ -34137,14 +34136,14 @@ export function createWorldScene({
     stats.uniqueGeometries = geometries.size;
     stats.uniqueMaterials = materials.size;
     stats.uniqueTextures = textures.size;
-    // The lounge mirror renders the world into a cube target every frame.
+
     stats.renderTargetBytes +=
       Math.max(0, Number(reflectionTarget?.width) || 0) *
       Math.max(0, Number(reflectionTarget?.height) || 0) *
       4 *
       6;
-    // Name the heaviest enabled world elements so "what is costing me
-    // triangles" is answered with friendly labels, not Object3D numbers.
+
+
     stats.topElements = listWorldElements()
       .filter((element) => element.enabled && element.triangles > 0)
       .sort((a, b) => b.triangles - a.triangles)
@@ -34170,9 +34169,9 @@ export function createWorldScene({
       running && frames
         ? Math.max(0, Math.min(60_000, elapsedMs / frames))
         : 0;
-    // Average main-thread work per frame over the same window. The gap
-    // between it and the wall-clock frame time is what separates "the CPU is
-    // busy" from "we are waiting on the GPU or vsync".
+
+
+
     const cpuFrameMs =
       running && frames
         ? Math.max(0, Math.min(60_000, diagnosticsFrameWorkTotalMs / frames))
@@ -34202,8 +34201,8 @@ export function createWorldScene({
     diagnosticsPointerMoves = 0;
     diagnosticsPointerWorstGapMs = 0;
     diagnosticsWorstMovementInputMs = 0;
-    // The full scene walk is the one genuinely heavy reading, so it is
-    // recomputed at most every five seconds and only while something polls.
+
+
     if (sampleNow - diagnosticsSceneStatsAt >= 5000) {
       diagnosticsSceneStatsAt = sampleNow;
       diagnosticsSceneStats = collectSceneComplexity();

@@ -48,7 +48,7 @@ def test_related_users_rank_accounts_and_keep_anonymous_hits_visible():
 
     assert summarize({}, 0) == "—"
     assert summarize({"alice": 2, "bob": 5}, 3) == "bob (5), alice (2), anonymous (3)"
-    # Anonymous-only failures must not read as "nobody was affected".
+
     assert summarize({}, 4) == "anonymous (4)"
 
     cell = ns["_admin_error_users_cell"]({"alice": 1}, 0)
@@ -65,7 +65,7 @@ def test_copy_button_carries_the_full_escaped_message():
     html = ns["_admin_error_copy_button"]('boom "<script>" & co')
     assert 'data-copy="boom &quot;&lt;script&gt;&quot; &amp; co"' in html
     assert "<script>" not in html
-    # A row click must not navigate to the record detail when copying.
+
     assert "event.stopPropagation()" in html
 
 
@@ -85,7 +85,7 @@ def test_bot_task_controls_post_to_the_audited_action():
     button = ns["_admin_error_row_bot_task_button"](17, "admin=root")
     assert 'name="error_id" value="17"' in button
     assert "action=create_bot_task" in button
-    # Row buttons ride the bulk-delete form, so they must carry a formaction.
+
     assert "formaction=" in button
 
 
@@ -157,7 +157,7 @@ def test_bot_task_from_one_row_creates_an_org_task_assigned_to_bot():
     assert "organization_tasks" in calls["insert"][0]
     assert "assigned to Bot" in banner
     assert details["taskId"] == "a" * 32
-    # The audit trail keeps a digest, never the error text.
+
     assert "kaboom" not in str(details)
 
 

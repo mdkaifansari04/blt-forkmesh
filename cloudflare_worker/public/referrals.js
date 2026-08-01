@@ -3,8 +3,8 @@
   const siteBoardRoot = () => document.getElementById("site-referral-board");
   const linkRoot = () => document.getElementById("referral-link-area");
 
-  // Same acceptance rule as site-header.js: only real user accounts (never
-  // node sessions) count as signed in on the website.
+
+
   function readSession() {
     try {
       const session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
@@ -98,9 +98,9 @@
     }
   }
 
-  // Referring hostnames come from other people's Referer headers, so they are
-  // rendered as plain text - never as a link the board could be spammed into
-  // handing out.
+
+
+
   function renderSiteBoard(rows) {
     const root = siteBoardRoot();
     if (!root) return;

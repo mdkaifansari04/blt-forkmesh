@@ -278,9 +278,9 @@ def provider_extra_paths(source, root):
         paths = {
             "topics": base + "/topics?per_page=100",
             "languages": base + "/languages",
-            # Git's tree API returns path/type metadata, never blob contents.
-            # This gives the local logo generator and repository classifier an
-            # owner-authorized, non-sensitive structural summary.
+
+
+
             "structure": (
                 base + "/git/trees/" + quote(default_branch, safe="")
                 + "?recursive=1"
@@ -626,8 +626,8 @@ def _gitlab_metadata(root, extras):
     for key, value in list(languages.items())[:50]:
         name = clean_text(key, 80)
         try:
-            # GitLab returns percentages.  Keep an integer basis-point value so
-            # consumers do not lose deterministic precision in JSON/D1.
+
+
             amount = max(0, int(float(value) * 100))
         except (TypeError, ValueError):
             amount = 0
@@ -653,8 +653,8 @@ def _gitlab_metadata(root, extras):
         except (TypeError, ValueError):
             contributions = 0
         contributors.append({
-            # Some GitLab responses contain an email. Do not copy it into the
-            # import record or use it as an invitation address.
+
+
             "login": clean_text(
                 item.get("username") or item.get("name"), 120),
             "profileUrl": "",
@@ -850,8 +850,8 @@ def build_repository_record(
                 "private_token" if visibility == "private"
                 else "provider_token" if token_present else "public_metadata"),
             "verifiedAt": int(now_ms) if token_present else 0,
-            # Provider credentials are intentionally absent.  This field makes
-            # the storage contract explicit to API consumers and audits.
+
+
             "credentialStored": False,
         },
         "owner": owner_data,
@@ -965,7 +965,7 @@ async def fetch_provider_snapshot(provider_fetch, env, source, token):
                 extra_rate.get("remaining") == "0"
                 or extra_rate.get("retryAfter") or status == 429):
             incomplete.append(key + ":rate_limited")
-            # Do not make more requests after the provider tells us to stop.
+
             for remaining in provider_extra_paths(source, root):
                 if remaining not in extras and not any(
                         item.startswith(remaining + ":") for item in incomplete):
@@ -1131,9 +1131,9 @@ def _logo_seed(record):
         "topics": sorted(
             clean_text(item, 80) for item in (
                 metadata.get("topics") or []) if clean_text(item, 80))[:12],
-        # These optional summaries are accepted only as bounded labels. They
-        # let owner-authorized/local imports influence the mark without
-        # including file contents or private source in the logo pipeline.
+
+
+
         "fileStructure": sorted(
             clean_text(item, 120) for item in (
                 file_structure or []) if clean_text(item, 120))[:24]
@@ -1157,9 +1157,9 @@ def deterministic_logo(record):
     sides = 3 + digest[3] % 6
     radius = 25 + digest[4] % 12
     points = []
-    # A deterministic integer approximation is enough for a recognizable,
-    # abstract mark; an irregular radial polygon avoids copying provider or
-    # framework logos.
+
+
+
     directions = (
         (0, -1000), (707, -707), (1000, 0), (707, 707),
         (0, 1000), (-707, 707), (-1000, 0), (-707, -707),
@@ -1191,9 +1191,9 @@ def deterministic_logo(record):
     return {
         "kind": "forkmesh_generated",
         "contentType": "image/svg+xml",
-        # Encode every reserved byte. In particular, raw ``#`` truncates a data
-        # URL as a fragment and raw ``%`` is parsed as an escape introducer;
-        # either makes the otherwise valid generated SVG fail to render.
+
+
+
         "dataUrl": "data:image/svg+xml;charset=utf-8," + quote(svg, safe=""),
         "generated": True,
         "aiGenerated": False,
@@ -1319,8 +1319,8 @@ class RepositoryImportService:
                 return None, None
             actor_bi = await self.d["blind_index"](env, actor)
             if actor_bi != str(row.get("owner_bi") or ""):
-                # Private entries deliberately return the same not-found shape
-                # for missing, guessed, and unauthorized ids.
+
+
                 return None, None
         record = await self.d["decrypt_row"](env, row.get("data"))
         if not isinstance(record, dict):
@@ -1539,10 +1539,10 @@ class RepositoryImportService:
                 "ORDER BY updated_at DESC LIMIT ?",
                 MAX_PUBLIC_IMPORTS,
             )
-        # Pollers only need a change token. Avoid decrypting and serializing up
-        # to 200 rich provider snapshots (hundreds of KiB) every few seconds
-        # merely to discover that nothing changed. Private rows are still
-        # selected only for their authenticated owner by the queries above.
+
+
+
+
         if digest_only:
             return self._json(
                 {
@@ -1665,13 +1665,13 @@ class RepositoryImportService:
                 existing = await self.d["decrypt_row"](
                     env, existing_row.get("data"))
             if not isinstance(existing, dict):
-                # Do not reveal that a guessed private id already exists.
+
                 return self._json({"error": "not_found"}, status=404)
             if existing_owner != owner_bi:
-                # Duplicates return the existing neutral listing rather than
-                # transferring moderation rights to a later submitter. A
-                # current provider administrator can explicitly adopt it,
-                # which lets the actual owner replace a community-created stub.
+
+
+
+
                 if not record.get("authorization", {}).get(
                         "administratorVerified"):
                     return self._json({
@@ -1686,8 +1686,8 @@ class RepositoryImportService:
                 record["originalListedBy"] = (
                     existing.get("originalListedBy")
                     or existing.get("listedBy") or "")
-            # An owner may refresh provider metadata/permissions with a fresh
-            # one-request token.  Preserve mirror state and creation time.
+
+
             record["status"] = existing.get("status", record["status"])
             record["createdAt"] = existing.get(
                 "createdAt", record["createdAt"])
@@ -1697,7 +1697,7 @@ class RepositoryImportService:
             created_at=(existing_row or {}).get("created_at"))
         await self._sync_provider_invitation_provenance(
             env, record, owner_bi, provider_invitation_candidates)
-        # Drop the provider token as soon as the metadata request completes.
+
         token = ""
         return self._json({
             "ok": True,
@@ -1791,8 +1791,8 @@ class RepositoryImportService:
         if not await self._can_manage_owner(
                 env, actor, str(row.get("owner_bi") or "")):
             return self._json({"error": "forbidden"}, status=403)
-        # Remove repository-scoped presentation/workflow rows first. Abuse
-        # reports remain as moderation evidence and contain no source token.
+
+
         for sql in (
                 "DELETE FROM repository_mirror_volunteers WHERE repo_id=?",
                 "DELETE FROM contributor_invitation_provenance WHERE repo_id=?",
@@ -2216,8 +2216,8 @@ class RepositoryImportService:
                 record):
             return self._json(
                 {"error": "known_contributor_required"}, status=400)
-        # A request boolean is not evidence. The referenced durable row is
-        # matched again by the INSERT trigger so revocation races fail closed.
+
+
         if "basisConfirmed" in data or not provenance_id:
             return self._json(
                 {
@@ -2331,8 +2331,8 @@ class RepositoryImportService:
             "basis": basis,
             "provenanceId": provenance_id,
             "provenanceEvidenceDigest": provenance.get("evidenceDigest"),
-            # The raw address is needed only for the immediate delivery call.
-            # Retain a one-way verifier for later opt-out/report requests.
+
+
             "actionTokenDigest": hashlib.sha256(token.encode()).hexdigest(),
             "inviter": actor,
             "createdAt": now,
@@ -2341,9 +2341,9 @@ class RepositoryImportService:
         }
         encoded = await self.d["encrypt_row"](env, saved)
         try:
-            # The schema trigger checks every cap/cooldown and increments both
-            # rate counters in this same statement. Preflight reads above are
-            # advisory UX only; this insert is the concurrency boundary.
+
+
+
             await self.d["d1_run"](
                 env,
                 "INSERT INTO contributor_invitations "
@@ -2370,8 +2370,8 @@ class RepositoryImportService:
         status = "sent" if sent else "delivery_unconfigured"
         sent_at = now if sent else 0
         if sent:
-            # Transitioning pending -> sent retains the trigger-backed rate
-            # reservation and recipient cooldown.
+
+
             await self.d["d1_run"](
                 env,
                 "UPDATE contributor_invitations SET status=?, sent_at=? "
@@ -2379,8 +2379,8 @@ class RepositoryImportService:
                 status, sent_at, invite_id,
             )
         else:
-            # Keep no undelivered invitation/address record. The AFTER DELETE
-            # trigger releases both counters atomically with this rollback.
+
+
             await self.d["d1_run"](
                 env,
                 "DELETE FROM contributor_invitations "
@@ -2438,8 +2438,8 @@ class RepositoryImportService:
             valid_token = hmac.compare_digest(
                 supplied_digest, expected_digest)
         elif supplied and saved.get("email"):
-            # Compatibility for invitations created before raw recipient
-            # minimization was deployed.
+
+
             expected = await self.d["invitation_token"](
                 env, import_id, invite_id, saved.get("email", ""))
             valid_token = hmac.compare_digest(supplied, expected)
@@ -2659,8 +2659,8 @@ class RepositoryImportService:
             status = "approved" if direct else "pending"
             official = 1 if direct else 0
             try:
-                # Quota checks, owner-history cleanup, and official replacement
-                # are schema triggers on this one atomic insert.
+
+
                 await self.d["d1_run"](
                     env,
                     "INSERT INTO repository_logo_suggestions "

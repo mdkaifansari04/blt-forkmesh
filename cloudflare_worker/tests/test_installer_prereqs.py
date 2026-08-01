@@ -9,9 +9,9 @@ import subprocess
 
 INSTALLER = Path(__file__).resolve().parents[1] / "public" / "install.sh"
 
-# The hard-coded prefix list inside have_qt6_cmake_package. Tests swap it for a
-# fixture root so a Qt 6 install on the machine running the suite cannot mask a
-# probe that is actually broken.
+
+
+
 SYSTEM_ROOTS = "/usr /usr/local /opt/homebrew/opt/qt /usr/local/opt/qt"
 
 
@@ -51,8 +51,8 @@ def _qt_layout(root, *, multiarch=False, svg=True, lib="lib"):
 
 
 def _run(script, tmp_path, *, path_tools=(), extra_env=None):
-    # A PATH holding only the named tools, so "pkg-config is not installed" can
-    # be reproduced without touching the machine running the suite.
+
+
     bindir = tmp_path / "stubbin"
     bindir.mkdir(exist_ok=True)
     for tool in ("bash", "dirname", "uname"):
@@ -80,10 +80,10 @@ def _probe_call(fn):
 
 
 def test_qt_probe_survives_a_host_without_pkg_config(tmp_path):
-    # The regression: minimal images ship no pkg-config, so the old probe
-    # reported Qt 6 as missing, the installer reinstalled the dev packages the
-    # package manager already had, re-ran the same failing check and died with
-    # "Installed qt6-base-dev qt6-svg-dev but 'qt' is still unavailable".
+
+
+
+
     root = tmp_path / "prefix"
     _qt_layout(root)
     result = _run(
@@ -95,7 +95,7 @@ def test_qt_probe_survives_a_host_without_pkg_config(tmp_path):
 
 
 def test_qt_probe_finds_debian_multiarch_layout(tmp_path):
-    # Debian/Ubuntu install the packages under lib/<triplet>/cmake.
+
     root = tmp_path / "prefix"
     _qt_layout(root, multiarch=True)
     result = _run(
@@ -107,7 +107,7 @@ def test_qt_probe_finds_debian_multiarch_layout(tmp_path):
 
 
 def test_qt_probe_finds_lib64_layout(tmp_path):
-    # Fedora/openSUSE install the packages under lib64/cmake.
+
     root = tmp_path / "prefix"
     _qt_layout(root, lib="lib64")
     result = _run(
@@ -119,8 +119,8 @@ def test_qt_probe_finds_lib64_layout(tmp_path):
 
 
 def test_qt_probe_honours_cmake_prefix_path(tmp_path):
-    # A Qt in a custom prefix counts when the operator exported the hint CMake
-    # itself reads, which is what the failure message now tells them to do.
+
+
     root = tmp_path / "opt" / "qt"
     _qt_layout(root)
     result = _run(
@@ -133,8 +133,8 @@ def test_qt_probe_honours_cmake_prefix_path(tmp_path):
 
 
 def test_qt_probe_reports_missing_svg_package(tmp_path):
-    # qt6-svg-dev is a separate package: base-only must still install it, not
-    # sail past into a build that fails at find_package(Qt6 ... Svg).
+
+
     root = tmp_path / "prefix"
     _qt_layout(root, svg=False)
     result = _run(
@@ -155,8 +155,8 @@ def test_qt_probe_reports_missing_qt(tmp_path):
 
 
 def test_pkg_config_probe_falls_back_to_pkgconf(tmp_path):
-    # Debian renamed the binary to pkgconf; pkg-config is only a wrapper package
-    # that need not be installed.
+
+
     script = (
         "set -uo pipefail\n"
         + _function("pkg_config_probe")

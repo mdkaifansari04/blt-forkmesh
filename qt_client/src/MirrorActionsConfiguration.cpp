@@ -596,8 +596,8 @@ QList<QVariantMap> configuredRepositories(
 void writeRepositories(QSettings &settings,
                        const QList<QVariantMap> &records)
 {
-    // Remove the old array first so shortening a record cannot retain stale,
-    // executable fields beyond the newly staged transaction.
+
+
     settings.remove(QString::fromLatin1(kRepositoriesSetting));
     settings.beginWriteArray(QString::fromLatin1(kRepositoriesSetting),
                              records.size());
@@ -1113,10 +1113,10 @@ bool recoverPendingLocked(
         return false;
     }
 
-    // Never announce or attempt an external rollback until the exact prior
-    // local configuration has been durably restored and independently read
-    // back. That prevents a false-success response from leaving new secrets or
-    // a partial repository record live behind an old catalog toggle.
+
+
+
+
     if (!restoreConfiguration(settings, journal.previous)) {
         if (errorCode)
             *errorCode =
@@ -1147,7 +1147,7 @@ bool recoverPendingLocked(
     return true;
 }
 
-} // namespace
+}
 
 QString configurationRecoveryJournalPath(const QSettings &settings)
 {
@@ -1229,8 +1229,8 @@ QJsonObject applyConfiguration(const QJsonObject &request,
                           : recoveryError);
     }
 
-    // Refuse before changing any executable state unless the existing local
-    // settings store can be synchronized and restricted to its owner.
+
+
     if (!restrictSettingsFile(settings)) {
         return result(requestId, node, requestedEnabled, false, 0, false,
                       QStringLiteral("settings_write_failed"));
@@ -1311,9 +1311,9 @@ QJsonObject applyConfiguration(const QJsonObject &request,
                       QStringLiteral("actions_mirror_unavailable"));
     }
 
-    // Everything below is staged in memory first. In particular, replacement
-    // secrets do not become visible to the long-running node until the signed
-    // catalog publication has succeeded.
+
+
+
     const QList<QVariantMap> repositories =
         configuredRepositories(readRepositories(settings), owner, repository,
                                source, mirror, branch, requestedEnabled);
@@ -1384,8 +1384,8 @@ QJsonObject applyConfiguration(const QJsonObject &request,
             QStringLiteral("actions/variables"),
             encodedVariables);
     }
-    // The generation is the long-running node's commit marker. Write it last
-    // so no observer can treat a partially populated configuration as live.
+
+
     settings.setValue(QString::fromLatin1(kGenerationSetting), requestId);
 
     const ConfigurationSnapshot committed =
@@ -1465,4 +1465,4 @@ int runConfigurationStdin(int argc, char *argv[])
     return ok ? 0 : 2;
 }
 
-} // namespace forkmesh::mirror_actions
+}

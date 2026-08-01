@@ -2,16 +2,16 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:forkmesh/models/models.dart';
 import 'package:forkmesh/services/notification_deep_link.dart';
 
-// Parsing contracts for the repo-browsing models added by pulls #4/#5. The
-// mobile app reads the same Worker/desktop-host JSON as the website, and the
-// endpoints answer in a few historical shapes — these tests pin the tolerant
-// parsing (key aliases, string numbers, nesting) the screens rely on.
+
+
+
+
 void main() {
   test('Repository.fromJson reads worker catalog fields with defaults', () {
     final repo = Repository.fromJson({
       'owner': 'alice',
       'name': 'project',
-      'stars': '12', // string numbers arrive from D1-backed JSON
+      'stars': '12',
       'mirrors': 3,
       'liveHost': true,
       'updatedAt': 1700000000000,
@@ -32,7 +32,7 @@ void main() {
       'title': 'Crash on open',
       'events': [
         {'type': 'comment', 'body': 'me too'},
-        'not-an-event', // stray shapes are skipped, not fatal
+        'not-an-event',
       ],
       'labels': ['bug', 42],
       'milestone': 'v2 mobile',
@@ -51,8 +51,8 @@ void main() {
   });
 
   test('RepoTree.fromJson accepts list and wrapped-map payloads', () {
-    // Desktop hosts answer a bare entry list; the worker wraps it and names
-    // the serving mirror.
+
+
     final bare = RepoTree.fromJson([
       {'name': 'src', 'type': 'tree'},
       {'name': 'README.md', 'type': 'blob', 'size': 120},
@@ -70,13 +70,13 @@ void main() {
     });
     expect(wrapped.source, 'mirror-node');
     expect(wrapped.path, 'docs');
-    // Directories sort first, then names case-insensitively.
+
     expect(wrapped.entries.map((e) => e.name).toList(), [
       'alpha',
       'beta.md',
       'zeta.txt',
     ]);
-    // Bare child names are qualified with the requested path.
+
     expect(wrapped.entries.last.path, 'docs/zeta.txt');
   });
 

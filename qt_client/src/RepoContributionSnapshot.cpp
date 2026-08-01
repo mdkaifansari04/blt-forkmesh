@@ -52,7 +52,7 @@ LanguageInspectionLimits currentLanguageInspectionLimits()
             LanguageInspectionLimits{}));
 }
 
-} // namespace
+}
 
 void setBeforePullMetadataRecheckHookForTests(std::function<void()> hook)
 {
@@ -187,7 +187,7 @@ bool appendBounded(QByteArray *destination, const QByteArray &chunk,
     return true;
 }
 
-} // namespace RepoContributionSnapshotInternal
+}
 
 namespace {
 
@@ -601,9 +601,9 @@ bool internalPath(const QString &path)
 
 bool generatedSource(const QString &path, const QByteArray &content)
 {
-    // Generated-source rules are intentionally small and deterministic:
-    // explicit generated path components or filename markers, plus common
-    // generator headers in the first 8 KiB. No external classifier is run.
+
+
+
     const QString lowerPath = path.toLower();
     const QStringList segments = lowerPath.split(QLatin1Char('/'));
     if (segments.contains(QStringLiteral("generated")))
@@ -823,7 +823,7 @@ QString logoProjectCategory(const QString &description,
     return QStringLiteral("software project");
 }
 
-} // namespace
+}
 
 RepoContributionSnapshot buildRepoContributionSnapshot(
     const RepoContributionSnapshotInput &input)
@@ -1288,8 +1288,8 @@ RepoContributionPreparation prepareRepoContributionSnapshot(
 
 QJsonObject buildRepoLogoMetadata(const RepoLogoMetadataInput &input)
 {
-    // Logo factors are deliberately metadata-only: aggregated extension byte
-    // counts plus bounded path/manifest names. Source blobs are never requested.
+
+
     constexpr qsizetype kMaxLogoTreeBytes = 2 * 1024 * 1024;
     constexpr int kMaxLogoTreeEntries = 4096;
     constexpr int kMaxTopLevelCandidates = 128;

@@ -67,4 +67,4 @@ private:
     bool m_overflowed = false;
 };
 
-} // namespace StrictGitReadInternal
+}

@@ -1,7 +1,7 @@
--- Verified public fediverse repository mentions and replies shown in World.
--- Remote content, actor details, repository names, consent, and failure detail
--- live only in the encrypted data envelope. The plaintext columns are bounded
--- lifecycle/index fields and blind indexes.
+
+
+
+
 CREATE TABLE IF NOT EXISTS world_fediverse_mentions (
     mention_id TEXT PRIMARY KEY,
     remote_id_bi TEXT NOT NULL UNIQUE,

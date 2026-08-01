@@ -14,7 +14,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import cloudflare_bootstrap as bootstrap_module  # noqa: E402
+import cloudflare_bootstrap as bootstrap_module
 
 
 PUBLIC_KEY = base64.urlsafe_b64encode(b"P" * 32).decode().rstrip("=")
@@ -183,8 +183,8 @@ def test_bootstrap_keeps_tokens_out_of_files_and_summary(monkeypatch):
 
     assert api.verified
     assert result["ok"] is True
-    # The launch-time join ping (adhoc #97) runs only after the instance
-    # passed its health check, and its result rides the redacted summary.
+
+
     assert output.index("health:mesh.example.com") < output.index(
         "announce:mesh.example.com")
     assert result["joinRequest"] == {"announced": True, "status": "pending"}

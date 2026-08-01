@@ -112,9 +112,9 @@ UNIVERSAL_HEADER_PAGES = SIMPLE_HEADER_PAGES + (
 
 
 def test_universal_header_mounts_on_every_page_except_home():
-    # One shared, session-aware header across the site. The home page keeps
-    # its own hero header; the dashboard SPA keeps its in-app chrome. Docs
-    # mounts it too, with its own search toolbar below.
+
+
+
     for page in UNIVERSAL_HEADER_PAGES:
         html = _read(page)
         assert 'href="/site-header.css"' in html, f"{page.name} missing header CSS"
@@ -126,22 +126,22 @@ def test_universal_header_mounts_on_every_page_except_home():
 
 
 def test_universal_header_is_session_aware():
-    # A logged-in visitor sees their account chip (Dashboard / Profile / Log
-    # out) instead of the old hardcoded Sign Up / Log In links — the reported
-    # bug was /chat showing "Sign Up / Log In" to a logged-in user.
+
+
+
     js = _read(PUBLIC / "site-header.js")
 
     assert 'localStorage.getItem("forkmesh.session"' in js
     assert "function buildAccountArea(" in js
     assert 'localStorage.removeItem("forkmesh.session")' in js
-    assert ">Dashboard<" not in js  # user data is DOM-built, never innerHTML
+    assert ">Dashboard<" not in js
     assert 'dash.textContent = "Dashboard"' in js
     assert 'profile.textContent = "Public profile"' in js
     assert 'edit.href = "/dashboard/settings"' in js
     assert 'edit.textContent = "Settings"' in js
     assert 'out.textContent = "Log out"' in js
-    # Login state stays universal: a login/logout in any other open section
-    # re-renders this header's account area via the storage event.
+
+
     assert 'window.addEventListener("storage"' in js
     assert 'href="/signup">Sign Up</a>' in js
 
@@ -149,8 +149,8 @@ def test_universal_header_is_session_aware():
 def test_universal_header_organizes_all_pages():
     js = _read(PUBLIC / "site-header.js")
 
-    # Every site link lives in the hamburger menu, grouped and fully
-    # expanded — no nested "More" submenu to open.
+
+
     for href in ("/docs", "/chat", "/network", "/pricing", "/blog", "/status",
                  "/features", "/desktop", "/about", "/changelog", "/careers",
                  "/press", "/mirror-payouts", "/security-report", "/privacy",
@@ -161,11 +161,11 @@ def test_universal_header_organizes_all_pages():
                   "Legal &amp; security", "Account"):
         assert f">{group}</span>" in js
     assert "More <" not in js
-    # Current page highlight + hamburger menu.
+
     assert 'aria-current' in js
     assert "fm-header-burger" in js
     assert "fm-header-mobile" in js
-    # Dashboard-chrome parity: version pill, page context, payout shortcut.
+
     assert "/api/version" in js
     assert "fm-header-context" in js
     assert 'src="/assets/sol.png"' in js
@@ -271,8 +271,8 @@ def test_universal_header_signup_is_a_white_rounded_rectangle():
 
 
 def test_blog_posts_mount_universal_header():
-    # Blog posts used to carry their own mini header; they now mount the same
-    # universal header as the rest of the site.
+
+
     posts = sorted((PUBLIC / "blog").glob("*/index.html"))
     assert posts
     for page in posts:

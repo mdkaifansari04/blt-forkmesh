@@ -78,8 +78,8 @@ def test_operational_purges_are_allowlisted_and_content_digested():
 
 
 def test_bulk_delete_is_blocked_only_for_hidden_tables():
-    # Row selection + "Delete selected" is the default for every table whose
-    # rows actually render; only ADMIN_HIDDEN_TABLES stays fully read-only.
+
+
     purge_fn = _function_source("_admin_purge_allowed")
     assert "table not in ADMIN_HIDDEN_TABLES" in purge_fn
 
@@ -88,8 +88,8 @@ def test_bulk_delete_is_blocked_only_for_hidden_tables():
 
 
 def test_table_view_discloses_which_columns_are_encrypted():
-    # An admin looking at a decrypted `data` blob must be told it was
-    # ciphertext at rest, not silently shown plaintext-looking values.
+
+
     table_view = _function_source("_render_table_view")
     assert '"data" in columns' in table_view
     assert "AES-GCM encrypted and decrypted" in table_view

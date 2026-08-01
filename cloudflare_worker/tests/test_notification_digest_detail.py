@@ -42,9 +42,9 @@ def _load():
 def test_format_email_ts_is_a_sortable_utc_string():
     ns = _load()
     fmt = ns["_format_email_ts"]
-    # 2026-07-09T14:32:00Z in epoch ms.
+
     assert fmt(1783607520000) == "2026-07-09 14:32 UTC"
-    # Missing/zero/garbage timestamps degrade to empty, not a crash or "1970".
+
     assert fmt(0) == ""
     assert fmt(None) == ""
     assert fmt("not-a-number") == ""
@@ -62,21 +62,21 @@ def test_digest_item_shows_number_actor_and_time():
         "meta": {"number": 42, "source": "issue"},
     }])
     assert subject == "ForkMesh: 1 new notification"
-    # Text body: number folded into the header line, "by <actor>" + time on
-    # their own indented line (matching the existing "    body" indent style).
+
+
     assert "- [alice/forkmesh] #42 Issue submitted for alice/forkmesh" in text
     assert "    by bob \xb7 2026-07-09 14:32 UTC" in text
     assert "    Search box is broken on mobile" in text
-    # HTML body: same three facts, escaped, in a small muted meta line.
+
     assert "#42" in html
     assert "by <strong>bob</strong>" in html
     assert "2026-07-09 14:32 UTC" in html
 
 
 def test_digest_item_without_number_or_actor_degrades_gracefully():
-    # A brand-new PR/comment has no durable number yet, and an older stored
-    # notification predating actor tracking has none either — the meta line
-    # must simply omit whatever piece is missing, not print "None" or "#0".
+
+
+
     ns = _load()
     _subject, text, html = ns["_notification_digest_email"]("alice", [{
         "kind": "pull_submitted",
@@ -87,19 +87,19 @@ def test_digest_item_without_number_or_actor_degrades_gracefully():
         "ts": 0,
         "meta": {},
     }])
-    # The header line has no "#0" prefix and no dangling "by " with nothing
-    # after it.
+
+
     assert "- [alice/forkmesh] Pull request submitted for alice/forkmesh" in text
     assert "#0" not in text
     assert "None" not in text
-    # No "by "/time meta line at all follows the header — straight to the
-    # closing "Open ForkMesh..." text (there's no body either in this case).
+
+
     lines = text.split("\n")
     header_idx = lines.index(
         "- [alice/forkmesh] Pull request submitted for alice/forkmesh")
     assert lines[header_idx + 1] == ""
-    # HTML: the meta <p> (distinguished by its #8a8a93 muted color) is omitted
-    # entirely rather than rendering an empty/placeholder line.
+
+
     assert "#8a8a93;font-size:12px\">" not in html.split(
         "Pull request submitted for alice/forkmesh</p>")[1].split("</div>")[0]
 
@@ -142,16 +142,16 @@ def test_digest_html_uses_one_high_contrast_light_mode():
 
 
 def test_notify_mentions_accepts_an_optional_number_for_the_digest():
-    # notify_mentions had no way to attach the item's number to the stored
-    # notification at all — mentions always rendered numberless in the digest
-    # even when the mentioning comment was on a real, numbered issue/PR.
+
+
+
     body = ENTRY_TEXT[
         ENTRY_TEXT.index("async def notify_mentions"):
         ENTRY_TEXT.index("def _thread_key")
     ]
     assert "number=0" in body
     assert 'meta={"number": number} if number else {}' in body
-    # Call sites that know the number now pass it through.
+
     for marker in (
         'event.get("body", ""), repo_web_href(owner, repo), "issue",\n                number=number))',
         '"issue",\n                number=number))',

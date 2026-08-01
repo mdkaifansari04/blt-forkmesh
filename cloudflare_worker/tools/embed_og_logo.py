@@ -35,7 +35,7 @@ def png_decode_rgba8(data):
         length, ctype = struct.unpack(">I4s", data[pos:pos + 8])
         pos += 8
         chunk = data[pos:pos + length]
-        pos += length + 4  # skip CRC
+        pos += length + 4
         if ctype == b"IHDR":
             w, h, depth, color, _, _, interlace = struct.unpack(
                 ">IIBBBBB", chunk)
@@ -57,17 +57,17 @@ def png_decode_rgba8(data):
         pos += 1
         line = bytearray(raw[pos:pos + stride])
         pos += stride
-        if filt == 1:  # Sub
+        if filt == 1:
             for i in range(4, stride):
                 line[i] = (line[i] + line[i - 4]) & 255
-        elif filt == 2:  # Up
+        elif filt == 2:
             for i in range(stride):
                 line[i] = (line[i] + prev[i]) & 255
-        elif filt == 3:  # Average
+        elif filt == 3:
             for i in range(stride):
                 left = line[i - 4] if i >= 4 else 0
                 line[i] = (line[i] + ((left + prev[i]) >> 1)) & 255
-        elif filt == 4:  # Paeth
+        elif filt == 4:
             for i in range(stride):
                 a = line[i - 4] if i >= 4 else 0
                 b = prev[i]

@@ -48,10 +48,10 @@ class AuthSession {
   final bool desktopCapable;
   final List<String> capabilities;
   final List<AccountDevice> devices;
-  // Signed account session token returned by the Worker on login/signup. Sent
-  // as an `Authorization: Bearer` header so per-account endpoints (notifications,
-  // agent list/prompt, repo metadata) authorize this account rather than a
-  // self-asserted node name. Persisted with the rest of the session.
+
+
+
+
   final String sessionToken;
 
   bool get canSubmitIssue => capabilities.contains('submit_issue');
@@ -281,11 +281,11 @@ class AuthService extends ChangeNotifier {
       'email': identifier.trim().toLowerCase(),
       'password': password,
       'totp': totp.trim(),
-      // Do not send this mobile device's local Ed25519 key here. The Worker
-      // treats a pubkey on password login as the desktop/node key and binds it
-      // to the account if one is not already present. Mobile is a web-style
-      // client for the central Worker, not a repo-hosting desktop node, so
-      // binding this key would block the real Qt client from logging in later.
+
+
+
+
+
     });
     return _saveSession(AuthSession.fromJson(body));
   }
@@ -362,10 +362,10 @@ class AuthService extends ChangeNotifier {
   }
 
   Future<void> logout() async {
-    // Fire-and-forget server-side logout — the same /api/accounts/logout every
-    // web client uses. On web builds the browser holds the HttpOnly
-    // forkmesh_admin cookie, and only the Worker can clear it; without this an
-    // admin stayed able to open the admin page after logging out here.
+
+
+
+
     unawaited(
       _postJson(
         '/api/accounts/logout',

@@ -31,7 +31,7 @@ def _load(extra_globals):
 
 
 def _harness(window_ms=60 * 60 * 1000, maximum=5):
-    rows = {}          # ip_bi -> {count, window_start_ts}
+    rows = {}
     now = [1_000_000_000]
 
     class _DateStub:
@@ -94,7 +94,7 @@ def test_ip_allowed_up_to_limit_then_429():
     assert blocked["status"] == 429
     assert blocked["data"]["error"] == "rate_limited"
     assert blocked["data"]["retryAfterMs"] > 0
-    # A different IP has its own independent budget.
+
     assert asyncio.run(ns["signup_rate_check"](env, "bi:9.9.9.9")) is None
 
 
@@ -104,5 +104,5 @@ def test_window_rollover_resets_the_count():
     assert asyncio.run(ns["signup_rate_check"](env, "bi:x")) is None
     assert asyncio.run(ns["signup_rate_check"](env, "bi:x")) is None
     assert asyncio.run(ns["signup_rate_check"](env, "bi:x"))["status"] == 429
-    ns["_now"][0] += 1000  # window elapses
+    ns["_now"][0] += 1000
     assert asyncio.run(ns["signup_rate_check"](env, "bi:x")) is None

@@ -316,7 +316,7 @@ def test_release_workflow_resolves_the_signing_key_before_building():
     """
     workflow = WORKFLOW.read_text(encoding="utf-8")
 
-    # Bare reference — that is what exposes the variable to the sandbox.
+
     assert 'signing_key_pem="$FORKMESH_RELEASE_SIGNING_KEY_PEM"' in workflow
     assert "(umask 077; printf '%b\\n' \"$signing_key_pem\"" in workflow
     assert "openssl pkeyutl -sign -rawin -inkey \"$signing_key\"" in workflow
@@ -353,7 +353,7 @@ def test_release_signing_preflight_accepts_only_a_usable_ed25519_key(tmp_path):
 
     assert run({"FORKMESH_RELEASE_SIGNING_KEY": str(key)}).returncode == 0
     assert run({"FORKMESH_RELEASE_SIGNING_KEY_PEM": pem}).returncode == 0
-    # The variables dialog is single-line: \n-escaped PEM must work too.
+
     escaped = run({"FORKMESH_RELEASE_SIGNING_KEY_PEM": pem.replace("\n", "\\n")})
     assert escaped.returncode == 0, escaped.stderr
 

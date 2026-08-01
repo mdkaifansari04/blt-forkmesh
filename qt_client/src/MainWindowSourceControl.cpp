@@ -1,9 +1,9 @@
-// MainWindowSourceControl: MainWindow feature methods, split out of MainWindow.cpp.
-// Source Control panel: working-tree changes, staging, and commits.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -41,10 +41,10 @@
 
 using namespace forkmesh::ui;
 
-// A left-to-right layout that wraps its items onto the next line when the row
-// runs out of width (the classic Qt FlowLayout). The commit toolbar uses it so
-// every button/action stays visible and wraps down instead of scrolling
-// horizontally off the panel (issue #52).
+
+
+
+
 namespace {
 class FlowLayout : public QLayout
 {
@@ -119,10 +119,10 @@ private:
     int m_vSpace;
 };
 
-// Compact source-control row: the filename stays prominent, its directory is a
-// muted suffix, and potentially destructive actions only appear while the row
-// is under the pointer. No hover highlight is drawn; only the selected (current)
-// row gets a thin green outline.
+
+
+
+
 class ScmFileRow : public QWidget
 {
 public:
@@ -161,8 +161,8 @@ protected:
     void leaveEvent(QEvent *event) override
     {
         QWidget::leaveEvent(event);
-        // Moving from the row into one of its tool buttons can briefly produce
-        // a leave event. Recheck after Qt settles the mouse target.
+
+
         QTimer::singleShot(0, this, [this] {
             if (!underMouse()) {
                 m_hovered = false;
@@ -181,8 +181,8 @@ protected:
 private:
     void applyStyle()
     {
-        // Current file: a thin green outline only, no fill and no hover tint
-        // (issue #252 style, but without the background wash other lists use).
+
+
         const QString border =
             m_selected ? QStringLiteral("#2da44e") : QStringLiteral("transparent");
         setStyleSheet(
@@ -197,11 +197,11 @@ private:
     bool m_hovered = false;
     bool m_selected = false;
 };
-} // namespace
+}
 
-// ---- Source Control panel (working-tree changes) ---------------------------
 
-// Human-readable name for a `git status --porcelain` status letter.
+
+
 static QString scmStatusTip(QChar status)
 {
     switch (status.toLatin1()) {
@@ -224,9 +224,9 @@ QWidget *MainWindow::buildSourceControlPanel()
     root->setContentsMargins(16, 10, 16, 6);
     root->setSpacing(6);
 
-    // A compact two-line compose field stays visible. Less-common generation
-    // settings live behind the adjacent ellipsis menu so they do not consume
-    // most of this narrow source-control pane.
+
+
+
     m_scmMessage = new QPlainTextEdit;
     m_scmMessage->setObjectName("messageInput");
     m_scmMessage->setPlaceholderText("Message (Ctrl+Enter to commit)");
@@ -246,7 +246,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmGenerateButton->setCursor(Qt::PointingHandCursor);
     m_scmGenerateButton->setToolTip(
         "Draft the message from the changes using Claude or OpenAI");
-    // A filled accent so the AI action clearly stands out from the ghost buttons.
+
     m_scmGenerateButton->setStyleSheet(
         "QPushButton{background:#8957e5;color:#ffffff;border:1px solid #8957e5;"
         "border-radius:6px;padding:4px 12px;font-weight:600;}"
@@ -259,16 +259,16 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmGenModel = new QComboBox;
     for (int i = 0; i < kScmAiModelCount; ++i)
         m_scmGenModel->addItem(QString::fromLatin1(kScmAiModels[i].label), i);
-    // On-device option: no model, no API key, no cost — drafts the message
-    // locally from the diff's structure. The sentinel data -1 routes
-    // generateScmMessage() to the heuristic path. It's the default: free, instant
-    // and private, and it auto-fills as the changes change (see autoFillScmMessage).
+
+
+
+
     m_scmGenModel->addItem(QStringLiteral("On-device (no AI)"), -1);
     m_scmGenModel->setCurrentIndex(m_scmGenModel->findData(-1));
     m_scmGenModel->setToolTip(
         "How to draft the message: on-device (no AI), or a Claude/OpenAI model");
-    // Switching engine: auto-fill immediately when on-device is chosen (no-op for
-    // the paid models, which only run on an explicit Generate click).
+
+
     connect(m_scmGenModel, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             [this](int) { autoFillScmMessage(); });
 
@@ -277,20 +277,20 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmGenKind->addItem("X post");
     m_scmGenKind->setToolTip("What to generate from the changes");
 
-    // How far back to look for the changes being described: just the current
-    // uncommitted edits, everything since an hour ago, or everything since
-    // midnight (each window also includes the current uncommitted edits).
+
+
+
     m_scmGenDuration = new QComboBox;
     m_scmGenDuration->addItem("Current changes");
     m_scmGenDuration->addItem("Past hour");
     m_scmGenDuration->addItem("All day");
     m_scmGenDuration->setToolTip("Which changes to summarise");
-    // When the user switches to "Past hour" or "All day", enable the Generate
-    // button immediately — commits exist in those windows even with a clean tree.
+
+
     connect(m_scmGenDuration, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) {
-                // Re-evaluate the Generate button enable state now that the
-                // duration scope has changed.
+
+
                 refreshSourceControl();
             });
 
@@ -310,8 +310,8 @@ QWidget *MainWindow::buildSourceControlPanel()
             m_scmGenStatus->setText("Copied.");
     });
 
-    // Live character count (and last generation cost). For an X post it shows the
-    // 280-char budget; otherwise a plain count.
+
+
     m_scmGenStatus = new QLabel;
     m_scmGenStatus->setObjectName("statusLine");
     m_scmGenStatus->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -328,10 +328,10 @@ QWidget *MainWindow::buildSourceControlPanel()
             this, [updateCharCount](int) { updateCharCount(); });
     updateCharCount();
 
-    // Stage all / Unstage all / Discard all no longer sit here as text buttons:
-    // they are whole-group actions, and the CHANGES group headers already carry
-    // them as the +, - and revert hover actions on the group they apply to (see
-    // addGroup below). The commit actions get this row to themselves, on one line.
+
+
+
+
     m_scmCommitButton = new QPushButton("Commit");
     m_scmCommitButton->setObjectName("primaryButton");
     connect(m_scmCommitButton, &QPushButton::clicked, this, &MainWindow::scmCommit);
@@ -342,8 +342,8 @@ QWidget *MainWindow::buildSourceControlPanel()
         "(or push to the upstream branch).");
     connect(m_scmCommitPushButton, &QPushButton::clicked, this,
             &MainWindow::scmCommitAndPush);
-    // Short label so all three commit actions fit on one line in this narrow
-    // column; the tooltip still spells the three steps out.
+
+
     m_scmStageCommitPushButton = new QPushButton("Stage & push");
     m_scmStageCommitPushButton->setObjectName("primaryButton");
     m_scmStageCommitPushButton->setToolTip(
@@ -402,9 +402,9 @@ QWidget *MainWindow::buildSourceControlPanel()
     composeRow->addWidget(generationMenuButton, 0, Qt::AlignTop);
     root->addLayout(composeRow);
 
-    // Three small buttons on a single line. The FlowLayout stays so a column
-    // dragged really narrow wraps instead of clipping, but at any normal width
-    // the row reads as one line of commit actions.
+
+
+
     m_scmControlsPanel = new QWidget;
     auto *controlsRow = new FlowLayout(m_scmControlsPanel, 0, 6, 6);
     controlsRow->addWidget(m_scmCommitButton);
@@ -421,15 +421,15 @@ QWidget *MainWindow::buildSourceControlPanel()
     title->setObjectName("sectionLabel");
     m_scmCountLabel = new QLabel;
     m_scmCountLabel->setObjectName("statusLine");
-    // Read-through tally for the combined diff on the right (adhoc #399): every
-    // change lives in one scrollable view, and a file checks itself off once
-    // you've scrolled past its end, so this is the "how far in am I" counter.
+
+
+
     m_scmViewedLabel = new QLabel;
     m_scmViewedLabel->setObjectName("statusLine");
     m_scmViewedLabel->setToolTip("Files you have scrolled all the way through");
 
-    // Up/down step through the changed files without touching the tree directly,
-    // so you can review each diff in turn from the keyboard or mouse.
+
+
     m_scmPrevButton = new QPushButton;
     m_scmPrevButton->setToolTip("Previous change");
     setOcticon(m_scmPrevButton, "chevron-up", 14);
@@ -448,9 +448,9 @@ QWidget *MainWindow::buildSourceControlPanel()
             [this] { refreshSourceControl(true); });
     addRefreshSpin(m_scmRefreshButton);
 
-    // Auto-mark-viewed toggle: while checked, a file whose end has scrolled into
-    // the diff viewport is checked off "Viewed" (and collapsed) on its own.
-    // Shares the PR review page's setting so the behaviour matches everywhere.
+
+
+
     m_scmAutoViewedButton = new QPushButton;
     m_scmAutoViewedButton->setCheckable(true);
     m_scmAutoViewedButton->setChecked(autoMarkViewedOnScrollPref());
@@ -460,7 +460,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     connect(m_scmAutoViewedButton, &QPushButton::clicked, this, [this](bool on) {
         setAutoMarkViewedOnScrollPref(on);
         if (on)
-            applyScmAutoMarkViewedOnScroll(); // catch up on where we already are
+            applyScmAutoMarkViewedOnScroll();
     });
 
     for (QPushButton *b : {m_scmPrevButton, m_scmNextButton, m_scmRefreshButton,
@@ -484,24 +484,24 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmTree->setObjectName("fileTree");
     m_scmTree->setColumnCount(1);
     m_scmTree->setHeaderHidden(true);
-    // Low enough that the workspace splitter, not this tree, decides how narrow
-    // the left column may get (adhoc #74); rows elide, so they stay readable.
+
+
     m_scmTree->setMinimumWidth(160);
     m_scmTree->setRootIsDecorated(true);
     m_scmTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
-    // ScmFileRow (via setItemWidget) draws its own thin green selection
-    // outline; blank the app-wide #fileTree::item:selected solid fill so it
-    // doesn't paint underneath the row widget (issue #252 pattern).
+
+
+
     blankSelectionBand(m_scmTree);
-    // No outline around the changes list: the CHANGES heading above already
-    // delimits it, and the box only fenced in an already-narrow column. Keyed on
-    // the object name so the per-widget rule beats the app-wide #fileTree one.
+
+
+
     m_scmTree->setFrameShape(QFrame::NoFrame);
     m_scmTree->setStyleSheet(m_scmTree->styleSheet() +
                              QStringLiteral("#fileTree{border:none;}"));
-    // The history pane below can be dragged up over this one: a tree that
-    // insists on its own minimum height would floor that drag well above the
-    // splitter's own minimum.
+
+
+
     m_scmTree->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Ignored);
     m_scmTree->setMinimumHeight(0);
     connect(m_scmTree, &QTreeWidget::currentItemChanged, this,
@@ -518,7 +518,7 @@ QWidget *MainWindow::buildSourceControlPanel()
                     row->setSelected(true);
                 const QString path = item->data(0, Qt::UserRole).toString();
                 if (path.isEmpty())
-                    return; // group header
+                    return;
                 showScmDiff(path, item->data(0, Qt::UserRole + 1).toBool(),
                             item->data(0, Qt::UserRole + 2).toBool());
             });
@@ -535,12 +535,12 @@ QWidget *MainWindow::buildSourceControlPanel()
     return panel;
 }
 
-// Rows the changes panel shows for a `git status --porcelain=v1 -z` dump: one
-// per staged entry plus one per unstaged/untracked entry, so a file that is
-// both staged and further modified counts twice — exactly as it appears twice
-// in the tree. Must stay in step with the parse in refreshSourceControl()
-// below; this is the same total without building any rows, for the activity
-// rail's badge.
+
+
+
+
+
+
 static int scmChangeCount(const QByteArray &porcelain)
 {
     int count = 0;
@@ -548,9 +548,9 @@ static int scmChangeCount(const QByteArray &porcelain)
     for (int i = 0; i < fields.size(); ++i) {
         const QByteArray f = fields.at(i);
         if (f.size() < 3)
-            continue; // "XY <path>"
+            continue;
         const char x = f.at(0), y = f.at(1);
-        // Renames/copies carry the original path in the following NUL field.
+
         if (x == 'R' || x == 'C')
             ++i;
         if (x == '?' && y == '?') {
@@ -565,13 +565,13 @@ static int scmChangeCount(const QByteArray &porcelain)
     return count;
 }
 
-// Keep the activity rail's Git badge honest whichever repo tab is on screen.
-// refreshSourceControl() only runs when the changes panel is opened or the
-// window is re-activated with it already visible, so sitting on the Code tab —
-// or simply opening a repo — left the badge blank (or still showing the repo
-// we came from) while files sat uncommitted. This probe's only job is that
-// count, so it runs detached and is cheap enough for the poll in the
-// constructor to drive it while an agent edits the working tree underneath us.
+
+
+
+
+
+
+
 void MainWindow::refreshRepoChangeBadge()
 {
     if (!m_railGitButton)
@@ -586,16 +586,16 @@ void MainWindow::refreshRepoChangeBadge()
                    {QStringLiteral("status"), QStringLiteral("--porcelain=v1"),
                     QStringLiteral("-z")},
                    [this, forIndex, dir](bool ok, const QByteArray &out) {
-                       // The user can switch repos while git runs; a late reply
-                       // must not stamp the wrong repo's count on the badge.
+
+
                        if (!ok || !m_railGitButton ||
                            m_repoDetailIndex != forIndex)
                            return;
                        m_railGitButton->setBadgeCount(scmChangeCount(out));
-                       // Rebuild the panel only when it's on screen *and* the
-                       // tree actually moved: the rebuild drops the open diff
-                       // and the selection, so it must never run speculatively.
-                       // Same repo-keyed scan key refreshSourceControl() caches.
+
+
+
+
                        const QByteArray scanKey = dir.toUtf8() + '\0' + out;
                        if (scanKey != m_scmStatusCache && m_scmTree &&
                            m_scmTree->isVisible())
@@ -605,16 +605,16 @@ void MainWindow::refreshRepoChangeBadge()
 
 void MainWindow::refreshSourceControl()
 {
-    refreshSourceControl(/*force=*/false);
+    refreshSourceControl( false);
 }
 
 void MainWindow::refreshSourceControl(bool force)
 {
     if (!m_scmTree)
         return;
-    // A manual refresh should also recheck commits pending sync (the top "Sync"
-    // button's count), not just the working-tree file changes, since staging/
-    // committing/pulling elsewhere can leave that button stale.
+
+
+
     if (force)
         refreshRepoSyncIndicators();
     const QString dir = repoGitDir();
@@ -661,22 +661,22 @@ void MainWindow::refreshSourceControl(bool force)
     QByteArray out;
     runGitCapture(dir, {"status", "--porcelain=v1", "-z"}, &out, nullptr);
 
-    // Skip the full rebuild when the working tree is unchanged since the last
-    // scan. This matters now that we rescan on tab focus / window activation:
-    // without it, every rescan would clear the tree (losing the open diff and the
-    // selection) and flicker even when nothing moved. Manual refresh skips this
-    // short-circuit via force=true.
-    // Keyed by repo as well as status output: two repos can produce byte-identical
-    // `git status`, and the short-circuit would then leave the previous repo's
-    // tree — and now its whole rendered diff — on screen.
+
+
+
+
+
+
+
+
     const QByteArray scanKey = dir.toUtf8() + '\0' + out;
     if (!force && scanKey == m_scmStatusCache && m_scmTree->topLevelItemCount() > 0)
         return;
     m_scmStatusCache = scanKey;
-    m_scmPatchValid = false; // the tree changed, so the combined patch is stale
+    m_scmPatchValid = false;
 
-    // Remember which file's diff is showing so the rebuild can restore it instead
-    // of dropping the user back to a blank diff view.
+
+
     QString prevPath;
     bool prevStaged = false;
     if (QTreeWidgetItem *cur = m_scmTree->currentItem()) {
@@ -697,10 +697,10 @@ void MainWindow::refreshSourceControl(bool force)
     for (int i = 0; i < fields.size(); ++i) {
         const QByteArray f = fields.at(i);
         if (f.size() < 3)
-            continue; // "XY <path>"
+            continue;
         const char x = f.at(0), y = f.at(1);
         const QString path = QString::fromUtf8(f.mid(3));
-        // Renames/copies carry the original path in the following NUL field.
+
         if (x == 'R' || x == 'C')
             ++i;
         if (x == '?' && y == '?') {
@@ -720,11 +720,11 @@ void MainWindow::refreshSourceControl(bool force)
         auto *group = new QTreeWidgetItem(m_scmTree);
         group->setFirstColumnSpanned(true);
 
-        // VS Code-style group header: a bold "Name (N)" label with hover actions
-        // floated to the right — Open Changes (a combined diff of the whole group)
-        // plus Stage/Unstage all, and Discard all for unstaged changes. The label
-        // lives in the row widget (not setText) so the buttons can sit at the far
-        // right of the full-width header row, the way the per-file actions do.
+
+
+
+
+
         auto *gw = new QWidget;
         auto *gh = new QHBoxLayout(gw);
         gh->setContentsMargins(0, 0, 6, 0);
@@ -849,11 +849,11 @@ void MainWindow::refreshSourceControl(bool force)
             actionsLayout->addWidget(open);
             h->addWidget(actions);
             w->setActionsWidget(actions);
-            // setCurrentItem() alone only shows the diff via currentItemChanged,
-            // which Qt does not emit when this row is already the current item
-            // (e.g. the user switched the right pane to a branch/PR view, then
-            // clicked back on the still-selected file). Show the diff directly
-            // so a click always does, regardless of prior selection state.
+
+
+
+
+
             const bool staged = r.staged;
             w->onClicked = [this, item, path, staged, untracked] {
                 m_scmTree->setCurrentItem(item);
@@ -863,16 +863,16 @@ void MainWindow::refreshSourceControl(bool force)
         }
         group->setExpanded(true);
     };
-    addGroup("Staged Changes", staged, /*stagedGroup=*/true);
-    addGroup("Changes", changes, /*stagedGroup=*/false);
-    // Widen the tree so the full relative paths are always visible (capped so the
-    // diff still has room); the user can drag the splitter wider from there.
+    addGroup("Staged Changes", staged,  true);
+    addGroup("Changes", changes,  false);
+
+
     fitTreeToWidestEntry(m_scmTree);
 
     const int total = staged.size() + changes.size();
     if (m_scmCountLabel)
         m_scmCountLabel->setText(total ? QString::number(total) : QString());
-    // Mirror the count onto the activity rail's Git badge (adhoc #357).
+
     if (m_railGitButton)
         m_railGitButton->setBadgeCount(total);
     const bool anything = total > 0;
@@ -883,24 +883,24 @@ void MainWindow::refreshSourceControl(bool force)
     if (m_scmStageCommitPushButton)
         m_scmStageCommitPushButton->setEnabled(anything);
     if (m_scmGenerateButton) {
-        // Enable Generate when there are current changes, OR when the
-        // duration dropdown covers committed history (past hour / all day)
-        // — in those modes, commits exist even with a clean working tree.
+
+
+
         const bool durCoversHistory =
             m_scmGenDuration && m_scmGenDuration->currentIndex() > 0;
         m_scmGenerateButton->setEnabled(anything || durCoversHistory);
     }
 
-    // On-device drafting is free, local and instant, so when it's the selected
-    // engine auto-fill the message from the changes (never the paid AI models).
+
+
     autoFillScmMessage();
 
-    // Re-render the whole change set into the diff pane on the right, so the
-    // review is one continuous scroll rather than a click per file (adhoc #399).
+
+
     renderScmCombinedDiff();
 
-    // Re-select the file that was open before the rebuild (scrolling the combined
-    // diff back to it) if it still has changes.
+
+
     if (!prevPath.isEmpty()) {
         for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
             QTreeWidgetItem *grp = m_scmTree->topLevelItem(g);
@@ -916,28 +916,28 @@ void MainWindow::refreshSourceControl(bool force)
     }
 }
 
-// QSettings context (see loadDiffViewed) for the working-tree diff. One shared
-// context for the whole change set — a path is "viewed" whether its staged or
-// its unstaged side is the one you scrolled through.
+
+
+
 QString MainWindow::scmViewedContext()
 {
     return QStringLiteral("worktree");
 }
 
-// Sticky-header overlay and scroll wiring for the combined changes diff, built
-// once right after m_scmDiff is constructed (adhoc #399). Mirrors the PR review
-// page's header (adhoc #56) and adds a read percentage next to the chart.
+
+
+
 void MainWindow::setupScmDiffPane()
 {
     if (!m_scmDiff || m_scmStickyHeader)
         return;
     m_scmDiff->setOpenExternalLinks(false);
-    m_scmDiff->setOpenLinks(false); // "viewed:" toggles are handled here
+    m_scmDiff->setOpenLinks(false);
     connect(m_scmDiff, &QTextBrowser::anchorClicked, this,
             &MainWindow::onScmDiffAnchorClicked);
 
-    // Parented to the viewport so it floats over the text instead of scrolling
-    // away with the document.
+
+
     m_scmStickyHeader = new QFrame(m_scmDiff->viewport());
     m_scmStickyHeader->setObjectName("diffStickyHeader");
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
@@ -978,8 +978,8 @@ void MainWindow::setupScmDiffPane()
         const QString path = m_scmSectionPaths.at(idx);
         const QString ctx = scmViewedContext();
         setDiffViewed(ctx, path, !loadDiffViewed(ctx).contains(path));
-        // Give the completed whole-button checkbox a quick, restrained fade-in
-        // so the state change is noticeable without shifting the header.
+
+
         auto *effect = new QGraphicsOpacityEffect(m_scmStickyViewed);
         effect->setOpacity(0.55);
         m_scmStickyViewed->setGraphicsEffect(effect);
@@ -1001,8 +1001,8 @@ void MainWindow::setupScmDiffPane()
     sl->addWidget(m_scmStickyViewed, 0);
     m_scmStickyHeader->hide();
 
-    // Re-rendering (which collapses newly-viewed files) is far too heavy for
-    // every pixel of a fast scroll, so wait for the scroll to settle first.
+
+
     m_scmAutoViewedDebounce = new QTimer(this);
     m_scmAutoViewedDebounce->setSingleShot(true);
     m_scmAutoViewedDebounce->setInterval(400);
@@ -1010,17 +1010,17 @@ void MainWindow::setupScmDiffPane()
             &MainWindow::applyScmAutoMarkViewedOnScroll);
     connect(m_scmDiff->verticalScrollBar(), &QScrollBar::valueChanged, this,
             [this] {
-                updateScmDiffScrollState(); // cheap, every tick
+                updateScmDiffScrollState();
                 if (m_scmAutoViewedButton && m_scmAutoViewedButton->isChecked())
-                    m_scmAutoViewedDebounce->start(); // heavy, debounced
+                    m_scmAutoViewedDebounce->start();
             });
 }
 
-// Render every working-tree change — staged, then unstaged, then untracked — as
-// one scrollable diff (adhoc #399), in the same order the tree lists them. The
-// raw patch is cached (m_scmPatchValid) so toggling a file's Viewed state
-// re-renders without re-running git, and an unchanged render is skipped outright
-// (laying out a large diff blocks the GUI thread).
+
+
+
+
+
 void MainWindow::renderScmCombinedDiff()
 {
     if (!m_scmDiff)
@@ -1033,8 +1033,8 @@ void MainWindow::renderScmCombinedDiff()
         const QString stagedPatch =
             QString::fromUtf8(gitCaptureStdout(dir, {"diff", "--cached"}));
         QString rest = QString::fromUtf8(gitCaptureStdout(dir, {"diff"}));
-        // `git diff` omits untracked files; append each as a /dev/null diff so
-        // new files are reviewable in the same scroll.
+
+
         QByteArray others;
         runGitCapture(dir, {"ls-files", "--others", "--exclude-standard", "-z"},
                       &others, nullptr);
@@ -1044,9 +1044,9 @@ void MainWindow::renderScmCombinedDiff()
             rest += QString::fromUtf8(gitCaptureStdout(
                 dir, {"diff", "--no-index", "--", "/dev/null", QString::fromUtf8(p)}));
         }
-        // The renderer starts a new file at every line beginning "diff --git ",
-        // so counting them the same way tells us where the staged half ends
-        // (body lines are +/-/space-prefixed, so they can't be miscounted).
+
+
+
         m_scmCombinedStagedFiles =
             stagedPatch.count(QStringLiteral("\ndiff --git ")) +
             (stagedPatch.startsWith(QLatin1String("diff --git ")) ? 1 : 0);
@@ -1065,7 +1065,7 @@ void MainWindow::renderScmCombinedDiff()
     m_scmSectionAnchors.clear();
     m_scmSectionPaths.clear();
     m_scmStickyLabelHtml.clear();
-    m_scmFileTops.clear(); // positions move on re-render; force a recompute
+    m_scmFileTops.clear();
     for (int i = 0; i < files.size(); ++i) {
         const DiffFileEntry &f = files.at(i);
         const QString key = (i < m_scmCombinedStagedFiles ? QStringLiteral("s|")
@@ -1077,8 +1077,8 @@ void MainWindow::renderScmCombinedDiff()
         m_scmStickyLabelHtml.insert(key, diffStickyLabelHtml(f));
     }
 
-    // Forget Viewed marks for paths that no longer have changes (after a commit,
-    // say), so the next change set starts the tally from zero.
+
+
     const QSet<QString> live(m_scmSectionPaths.begin(), m_scmSectionPaths.end());
     for (const QString &p : viewed)
         if (!live.contains(p))
@@ -1095,8 +1095,8 @@ void MainWindow::renderScmCombinedDiff()
         return;
     m_scmDiffRenderKey = key;
     setDiffHtml(m_scmDiff, body);
-    // The document (and its layout) was replaced; re-read the file positions once
-    // the layout has settled.
+
+
     m_scmStickySection.clear();
     QTimer::singleShot(0, this, &MainWindow::updateScmDiffScrollState);
 }
@@ -1105,15 +1105,15 @@ void MainWindow::showScmDiff(const QString &path, bool staged, bool untracked)
 {
     Q_UNUSED(untracked);
     if (!m_scmDiff || m_scmSuppressFileScroll)
-        return; // suppressed: the selection is following the scroll, not driving it
+        return;
     setCommitWorkspacePage(kCommitWorkspaceChangesPage);
     if (m_scmSectionKeys.isEmpty())
         renderScmCombinedDiff();
     scrollScmDiffToFile(path, staged);
 }
 
-// "Open all changes" on a group header: jump to the top of that group's half of
-// the combined diff.
+
+
 void MainWindow::showScmDiffAll(bool staged)
 {
     if (!m_scmDiff)
@@ -1131,8 +1131,8 @@ void MainWindow::showScmDiffAll(bool staged)
     }
 }
 
-// Scroll the combined diff so this file's section sits at the top. A path that is
-// both staged and further modified renders twice, so `staged` picks the side.
+
+
 void MainWindow::scrollScmDiffToFile(const QString &path, bool staged)
 {
     if (!m_scmDiff)
@@ -1140,14 +1140,14 @@ void MainWindow::scrollScmDiffToFile(const QString &path, bool staged)
     int idx = m_scmSectionKeys.indexOf(
         (staged ? QStringLiteral("s|") : QStringLiteral("u|")) + path);
     if (idx < 0)
-        idx = m_scmSectionPaths.indexOf(path); // only one side has a diff
+        idx = m_scmSectionPaths.indexOf(path);
     if (idx < 0)
         return;
     m_scmDiff->scrollToAnchor(m_scmSectionAnchors.at(idx));
     updateScmDiffScrollState();
 }
 
-// The changes-tree row for a path on the staged / unstaged side, or nullptr.
+
 QTreeWidgetItem *MainWindow::scmFindItem(const QString &path, bool staged) const
 {
     if (!m_scmTree)
@@ -1164,8 +1164,8 @@ QTreeWidgetItem *MainWindow::scmFindItem(const QString &path, bool staged) const
     return nullptr;
 }
 
-// Select a file in the changes tree *without* letting currentItemChanged scroll
-// the diff back to that file's header — here the selection follows the scroll.
+
+
 void MainWindow::selectScmFileInTree(const QString &path, bool staged)
 {
     QTreeWidgetItem *item = scmFindItem(path, staged);
@@ -1177,8 +1177,8 @@ void MainWindow::selectScmFileInTree(const QString &path, bool staged)
     m_scmSuppressFileScroll = false;
 }
 
-// Pin the sticky header across the top of the changes diff viewport at its
-// natural height. Called on every scroll tick and on viewport resize.
+
+
 void MainWindow::layoutScmStickyHeader()
 {
     if (!m_scmStickyHeader || !m_scmDiff)
@@ -1188,11 +1188,11 @@ void MainWindow::layoutScmStickyHeader()
                                    m_scmStickyHeader->sizeHint().height());
 }
 
-// Walk the rendered diff once and record each section header's absolute document
-// y-position. Locating an anchor scans the document, so doing it per file would
-// be O(files x doc); this collects them all in a single pass and the result is
-// cached until the next re-render (word-wrap is off, so a resize doesn't move
-// them).
+
+
+
+
+
 void MainWindow::computeScmFileTops()
 {
     m_scmFileTops.assign(m_scmSectionAnchors.size(), -1);
@@ -1222,10 +1222,10 @@ void MainWindow::computeScmFileTops()
     }
 }
 
-// Runs on every scroll tick of the combined diff (cheap; no re-render). Works out
-// which file sits at the top of the viewport, mirrors its header into the sticky
-// bar, advances the read-progress chart / percentage by how much of that file has
-// gone past, and selects the file in the tree so the list follows the scroll.
+
+
+
+
 void MainWindow::updateScmDiffScrollState()
 {
     if (!m_scmDiff || !m_scmStickyHeader)
@@ -1244,8 +1244,8 @@ void MainWindow::updateScmDiffScrollState()
     if (m_scmFileTops.size() != m_scmSectionKeys.size())
         computeScmFileTops();
 
-    // The file at the top of the viewport is the first one whose section still
-    // reaches below the top edge.
+
+
     int idx = -1, fileTop = 0, fileBottom = 0;
     for (int i = 0; i < m_scmSectionKeys.size(); ++i) {
         if (m_scmFileTops.at(i) < 0)
@@ -1262,10 +1262,10 @@ void MainWindow::updateScmDiffScrollState()
         }
     }
     if (idx < 0) {
-        // Text layout can take one event-loop turn after a large diff is
-        // replaced. Never let that transient anchor gap hide the filename:
-        // retain the current section, or pin the first file until positions
-        // become available on the next scroll/layout tick.
+
+
+
+
         idx = m_scmSectionKeys.indexOf(m_scmStickySection);
         if (idx < 0)
             idx = 0;
@@ -1273,8 +1273,8 @@ void MainWindow::updateScmDiffScrollState()
         fileBottom = qMax(1, docHeight);
     }
 
-    // How much of the file has been read: the fraction of its extent that has
-    // passed above the viewport's bottom edge, clamped to [0,1].
+
+
     double progress = 1.0;
     if (fileBottom > fileTop)
         progress = double(viewBottom - fileTop) / double(fileBottom - fileTop);
@@ -1291,8 +1291,8 @@ void MainWindow::updateScmDiffScrollState()
     m_scmStickyViewed->setText(isViewed ? QString::fromUtf8("\xE2\x98\x91 Viewed")
                                         : QString::fromUtf8("\xE2\x98\x90 Viewed"));
     m_scmStickyViewed->setChecked(isViewed);
-    // A finished / already-viewed file reads as done (full green circle);
-    // otherwise the chart tracks the scroll in blue and greens on arrival.
+
+
     const double shown = isViewed ? 1.0 : progress;
     m_scmStickyPacman->setColor(shown >= 0.999 ? QColor(0x3f, 0xb9, 0x50)
                                                : QColor(0x58, 0xa6, 0xff));
@@ -1304,12 +1304,12 @@ void MainWindow::updateScmDiffScrollState()
     m_scmStickyHeader->raise();
 }
 
-// Debounced off the diff scrollbar: check off every file the reviewer has
-// scrolled all the way through — its end has reached the viewport bottom — as
-// "Viewed", matching the read-progress chart, which fills to 100% on the same
-// threshold. Re-renders once for the whole batch (collapsing those files), then
-// restores the scroll to whichever file is still on screen, since collapsing
-// files above it shifts the document up.
+
+
+
+
+
+
 void MainWindow::applyScmAutoMarkViewedOnScroll()
 {
     if (!m_scmAutoViewedButton || !m_scmAutoViewedButton->isChecked())
@@ -1327,7 +1327,7 @@ void MainWindow::applyScmAutoMarkViewedOnScroll()
 
     const QString ctx = scmViewedContext();
     const QSet<QString> viewed = loadDiffViewed(ctx);
-    QString currentPath; // first file not yet fully scrolled through
+    QString currentPath;
     bool currentStaged = false;
     QStringList newlyViewed;
     for (int i = 0; i < m_scmSectionKeys.size(); ++i) {
@@ -1355,7 +1355,7 @@ void MainWindow::applyScmAutoMarkViewedOnScroll()
         scrollScmDiffToFile(currentPath, currentStaged);
 }
 
-// "N of M files viewed" above the changes tree.
+
 void MainWindow::updateScmViewedCount()
 {
     if (!m_scmViewedLabel)
@@ -1374,7 +1374,7 @@ void MainWindow::updateScmViewedCount()
         QStringLiteral("%1 of %2 files viewed").arg(seen).arg(paths.size()));
 }
 
-// Clicking the "Viewed" checkbox inside the combined diff.
+
 void MainWindow::onScmDiffAnchorClicked(const QUrl &url)
 {
     if (url.scheme() != QLatin1String("viewed"))
@@ -1385,17 +1385,17 @@ void MainWindow::onScmDiffAnchorClicked(const QUrl &url)
     const QString ctx = scmViewedContext();
     setDiffViewed(ctx, path, !loadDiffViewed(ctx).contains(path));
     renderScmCombinedDiff();
-    // Keep the file that was toggled in view — collapsing it shifts everything
-    // below up, so an untouched scroll position would land somewhere random.
+
+
     scrollScmDiffToFile(path, m_scmStickySection.startsWith(QLatin1String("s|")));
 }
 
 void MainWindow::scmSelectAdjacentChange(int delta)
 {
-    // Every change shares one scrollable view, so stepping is just the next /
-    // previous hunk anywhere in the working tree — scmScrollToAdjacentHunk
-    // crosses file boundaries on its own, and the scroll drags the sticky header
-    // and the tree selection along with it.
+
+
+
+
     scmScrollToAdjacentHunk(delta);
 }
 
@@ -1405,14 +1405,14 @@ bool MainWindow::scmScrollToAdjacentHunk(int delta, bool fromEnd)
         return false;
     if (fromEnd)
         m_scmDiff->moveCursor(QTextCursor::End);
-    // Each hunk header renders as "@@ -old +new @@ ..."; the "@@ -" prefix occurs
-    // exactly once per hunk, so searching for it walks the diff hunk-by-hunk.
+
+
     const QTextDocument::FindFlags flags =
         delta < 0 ? QTextDocument::FindBackward : QTextDocument::FindFlags();
     if (!m_scmDiff->find(QStringLiteral("@@ -"), flags))
         return false;
-    // Keep the find's selection as the cursor (so a further step advances past
-    // it), but scroll the matched hunk header up near the top of the view.
+
+
     const QTextCursor found = m_scmDiff->textCursor();
     QTextCursor lineCur(found);
     lineCur.setPosition(found.selectionStart());
@@ -1425,9 +1425,9 @@ bool MainWindow::scmScrollToAdjacentHunk(int delta, bool fromEnd)
 
 void MainWindow::scmStagePath(const QString &path)
 {
-    // Staging is usually the last thing you do with a file you've just read, so
-    // when the file being staged is the one on screen, move on to the next change
-    // instead of leaving the diff parked on a now-staged file (adhoc #399).
+
+
+
     QString nextPath;
     bool nextStaged = false;
     if (m_scmTree) {
@@ -1441,8 +1441,8 @@ void MainWindow::scmStagePath(const QString &path)
         const int idx = cur ? files.indexOf(cur) : -1;
         if (idx >= 0 && cur->data(0, Qt::UserRole).toString() == path &&
             !cur->data(0, Qt::UserRole + 1).toBool()) {
-            // Prefer the next still-unstaged change; fall back to the row above
-            // when this was the last one in the list.
+
+
             for (int i = idx + 1; i < files.size(); ++i) {
                 if (!files.at(i)->data(0, Qt::UserRole + 1).toBool()) {
                     nextPath = files.at(i)->data(0, Qt::UserRole).toString();
@@ -1463,8 +1463,8 @@ void MainWindow::scmStagePath(const QString &path)
     refreshSourceControl();
     if (!nextPath.isEmpty()) {
         if (QTreeWidgetItem *item = scmFindItem(nextPath, nextStaged)) {
-            // Fires currentItemChanged -> showScmDiff, which scrolls the combined
-            // diff to that file.
+
+
             m_scmTree->setCurrentItem(item);
             m_scmTree->scrollToItem(item);
         }
@@ -1564,7 +1564,7 @@ bool MainWindow::performScmCommit()
     if (m_scmMessage)
         m_scmMessage->clear();
     logSystem(QStringLiteral("Committed: %1").arg(msg.section('\n', 0, 0)));
-    loadCommits(); // refresh history + the working-changes panel
+    loadCommits();
     if (m_repoDetailIndex >= 0)
         propagateRepoUpdate(m_repoDetailIndex);
     return true;
@@ -1577,10 +1577,10 @@ void MainWindow::scmCommit()
 
 void MainWindow::scmCommitAndPush()
 {
-    // Only push once the commit actually lands; performScmCommit() surfaces any
-    // failure (empty message, git error) itself. pushCurrentRepoUpstream() then
-    // publishes to the served network mirror or pushes to the upstream branch,
-    // matching the "Publish N" button's behaviour.
+
+
+
+
     if (performScmCommit())
         pushCurrentRepoUpstream();
 }
@@ -1590,8 +1590,8 @@ void MainWindow::scmStageAllCommitAndPush()
     const QString dir = repoGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
         return;
-    // Check the message before staging, so a missing one doesn't leave everything
-    // staged for nothing (performScmCommit re-checks once the commit runs).
+
+
     if (!m_scmMessage || m_scmMessage->toPlainText().trimmed().isEmpty()) {
         QMessageBox::information(this, "Commit", "Enter a commit message first.");
         return;
@@ -1613,10 +1613,10 @@ QString MainWindow::scmContextDiff() const
     if (dir.isEmpty())
         return QString();
 
-    // Duration scope: 0 = current uncommitted edits only, 1 = since an hour ago,
-    // 2 = since midnight. For a window we diff the working tree against the newest
-    // commit older than the cutoff, which captures everything committed within the
-    // window plus the current uncommitted edits in one diff.
+
+
+
+
     const int dur = m_scmGenDuration ? m_scmGenDuration->currentIndex() : 0;
     QByteArray diff;
     if (dur == 1 || dur == 2) {
@@ -1629,20 +1629,20 @@ QString MainWindow::scmContextDiff() const
         if (!rev.isEmpty())
             diff = gitCaptureStdout(dir, {"diff", rev});
     }
-    // Current changes, or a fallback when nothing was committed within the window.
+
     if (diff.trimmed().isEmpty()) {
         QByteArray staged = gitCaptureStdout(dir, {"diff", "--cached"});
         diff = staged.trimmed().isEmpty() ? gitCaptureStdout(dir, {"diff"}) : staged;
     }
     QString text = QString::fromUtf8(diff);
-    // Note any untracked files, whose contents don't appear in `git diff`.
+
     QByteArray untracked;
     runGitCapture(dir, {"ls-files", "--others", "--exclude-standard"}, &untracked,
                   nullptr);
     const QString others = QString::fromUtf8(untracked).trimmed();
     if (!others.isEmpty())
         text += QStringLiteral("\n\n# New (untracked) files:\n") + others;
-    // Cap for token cost; the model only needs a representative slice.
+
     constexpr int kCap = 12000;
     if (text.size() > kCap)
         text = text.left(kCap) + QStringLiteral("\n... [diff truncated]");
@@ -1671,17 +1671,17 @@ QStringList MainWindow::scmDiffScopeArgs() const
     return {};
 }
 
-// A local, model-free commit-message drafter. It parses the diff to find the
-// symbols that changed — types/functions added or removed (keyword-led definitions
-// in any language, plus C++ header declarations) and the functions whose bodies
-// changed (from git's hunk-header context) — drops generic/internal names, then
-// builds the subject from the single most significant symbol, humanizing its
-// camelCase into words ("scmHeuristicCommitMessage" -> "scm heuristic commit
-// message"). The conventional type comes from the file kinds, the branch name, the
-// change shape and a bug-fix keyword scan. Not as good as the AI models, but
-// instant, private and free — and far more specific than "update N files"; the
-// result lands in the editable message field. `variant` > 0 rotates the symbol
-// choice and verb wording so re-clicking Generate offers alternative drafts.
+
+
+
+
+
+
+
+
+
+
+
 QString MainWindow::scmHeuristicCommitMessage(int variant) const
 {
     const QString dir = repoGitDir();
@@ -1691,8 +1691,8 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
 
     struct Change {
         QChar status;
-        QString path;    // new path (for renames)
-        QString oldPath; // only set for renames
+        QString path;
+        QString oldPath;
     };
     QList<Change> changes;
     const QString ns = QString::fromUtf8(gitCaptureStdout(
@@ -1707,7 +1707,7 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
             c.oldPath = f.at(1);
         changes.append(c);
     }
-    // Untracked files only surface under the plain working-tree scope.
+
     if (scope.isEmpty()) {
         const QString u = QString::fromUtf8(gitCaptureStdout(
             dir, {"ls-files", "--others", "--exclude-standard"}));
@@ -1717,8 +1717,8 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
     if (changes.isEmpty())
         return QString();
 
-    // Per-path category, used to pick a conventional type when the whole change
-    // set is one flavour.
+
+
     auto category = [](const QString &path) -> QString {
         const QString p = path.toLower();
         const QString base = p.section(QLatin1Char('/'), -1);
@@ -1771,16 +1771,16 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
         }
     }
 
-    // ---- content analysis: walk the patch and classify which functions/types were
-    // added, removed, or had their bodies changed. Naming the actual symbols is what
-    // makes the message describe the change instead of just counting files. ----
+
+
+
     QHash<QString, int> addedType, addedFn, removedType, removedFn, touchedFn;
-    QString addedText; // added code lines, for the bug-fix keyword scan
+    QString addedText;
     {
         const QString patch = QString::fromUtf8(gitCaptureStdout(
             dir, QStringList{"diff"} + scope + QStringList{"--unified=0"}));
-        // Enclosing function from a hunk-header context: the identifier just before
-        // the first '(' (after any Class:: qualifier).
+
+
         auto funcFromContext = [](const QString &ctx) -> QString {
             const int paren = ctx.indexOf(QLatin1Char('('));
             if (paren < 0)
@@ -1797,11 +1797,11 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
                 QStringLiteral("sizeof")};
             return kw.contains(m.captured(1)) ? QString() : m.captured(1);
         };
-        // Definitions introduced/removed on one line. Keyword-led forms work for any
-        // language; in a header a "<type> name(args);" declaration counts too.
-        // All anchored at the start of the (comment-stripped) line: a real
-        // definition begins the statement, whereas prose mentioning "function" or
-        // "struct" inside a comment does not.
+
+
+
+
+
         static const QRegularExpression typeDef(QStringLiteral(
             "^(?:typedef\\s+)?(?:class|struct|enum)\\s+(?:class\\s+)?([A-Za-z_]\\w*)"));
         static const QRegularExpression langFn(QStringLiteral(
@@ -1813,7 +1813,7 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
         auto scanDefs = [&](const QString &content, bool header,
                             QHash<QString, int> &types, QHash<QString, int> &fns) {
             QString t = content.trimmed();
-            // Skip comment and preprocessor lines so their prose can't pose as code.
+
             if (t.isEmpty() || t.startsWith(QLatin1String("//"))
                 || t.startsWith(QLatin1Char('*')) || t.startsWith(QLatin1String("/*"))
                 || t.startsWith(QLatin1Char('#')))
@@ -1837,7 +1837,7 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
         int seen = 0;
         const QStringList lines = patch.split(QLatin1Char('\n'));
         for (const QString &line : lines) {
-            if (++seen > 40000) // bound the work on a very large diff
+            if (++seen > 40000)
                 break;
             if (line.startsWith(QLatin1String("+++ "))) {
                 file = line.mid(4).trimmed();
@@ -1872,9 +1872,9 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
         }
     }
 
-    // Split camelCase / snake_case / digit runs into lowercase words — a symbol's
-    // own name is the developer's description of what it does, so "deletePullAndBranch"
-    // reads back as "delete pull and branch".
+
+
+
     auto humanize = [](const QString &name) -> QString {
         QString out;
         for (int i = 0; i < name.size(); ++i) {
@@ -1887,8 +1887,8 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
             const bool prevLower = i > 0 && name.at(i - 1).isLower();
             const bool prevUpper = i > 0 && name.at(i - 1).isUpper();
             const bool nextLower = i + 1 < name.size() && name.at(i + 1).isLower();
-            const bool boundary = (c.isUpper() && prevLower)              // fooBar
-                                  || (c.isUpper() && prevUpper && nextLower) // HTMLParser
+            const bool boundary = (c.isUpper() && prevLower)
+                                  || (c.isUpper() && prevUpper && nextLower)
                                   || (c.isDigit() && i > 0 && !name.at(i - 1).isDigit());
             if (boundary && !out.isEmpty() && !out.endsWith(QLatin1Char(' ')))
                 out += QLatin1Char(' ');
@@ -1897,7 +1897,7 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
         return out.simplified();
     };
 
-    // Generic / internal names that make a poor headline.
+
     static const QSet<QString> kGeneric = {
         QStringLiteral("change"),  QStringLiteral("data"),    QStringLiteral("item"),
         QStringLiteral("info"),    QStringLiteral("helper"),  QStringLiteral("impl"),
@@ -1911,10 +1911,10 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
         QStringLiteral("state"),   QStringLiteral("params"),  QStringLiteral("args"),
         QStringLiteral("type"),    QStringLiteral("types"),   QStringLiteral("handler")};
 
-    // Rank one or more (freq, opposite-side, bonus) buckets together by descriptive
-    // merit, dropping the opposite side and generic names. Merging into a single
-    // sort (rather than concatenating) lets a well-named function outrank a terse
-    // internal struct, while `bonus` still tilts ties toward new types.
+
+
+
+
     struct Bucket {
         const QHash<QString, int> *freq;
         const QHash<QString, int> *exclude;
@@ -1954,9 +1954,9 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
     };
 
     const QHash<QString, int> none;
-    // New symbols, ranked together (a small type tilt breaks ties toward classes,
-    // but descriptiveness wins — so a one-line helper struct can't beat a
-    // well-named function). Fall back to whole new file names.
+
+
+
     QStringList newNames =
         rankMerged({{&addedType, &removedType, 2}, {&addedFn, &removedFn, 1}});
     QStringList goneNames =
@@ -1965,7 +1965,7 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
         newNames = fileStems(QChar('A'));
     if (goneNames.isEmpty() && removed > 0)
         goneNames = fileStems(QChar('D'));
-    // Functions whose bodies changed (not net added or removed).
+
     QHash<QString, int> changedFreq = touchedFn;
     for (const QString &n : addedFn.keys()) changedFreq.remove(n);
     for (const QString &n : addedType.keys()) changedFreq.remove(n);
@@ -1973,13 +1973,13 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
     for (const QString &n : removedType.keys()) changedFreq.remove(n);
     const QStringList chgNames = rankMerged({{&changedFreq, &none, 0}});
 
-    // fix-signal: words in the added code that strongly suggest a bug fix.
+
     static const QRegularExpression fixWords(QStringLiteral(
         "\\b(fix|bug|crash|freeze|hang|leak|deadlock|segfault|overflow|regression|"
         "guard|workaround|race)\\b"));
     const bool fixy = fixWords.match(addedText).hasMatch();
 
-    // ---- conventional type ----
+
     QString type;
     if (uniformCat && commonCat != QLatin1String("code"))
         type = commonCat;
@@ -2006,12 +2006,12 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
             type = QStringLiteral("chore");
     }
 
-    // ---- subject: name the headline symbol(s), humanized. A second name is added
-    // only when it's a clearly different theme (different first word), so we never
-    // emit "scm X and scm Y" or a vague "and N more" tail. ----
-    // On a re-click (variant > 0) rotate the pool so a different symbol leads —
-    // but only among the strongest few, so cycling never digs down to the noisy
-    // low-ranked tail (terse internal structs, etc.).
+
+
+
+
+
+
     auto rotate = [&](QStringList names) -> QStringList {
         if (names.size() > 4)
             names = names.mid(0, 4);
@@ -2036,8 +2036,8 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
     };
 
     QString subject;
-    QString verb;     // "" means let the conventional type carry the verb
-    QStringList pick; // the chosen symbol name(s)
+    QString verb;
+    QStringList pick;
     const bool renameOne =
         changes.size() == 1 && renamed == 1 && !changes.first().oldPath.isEmpty();
     if (renameOne) {
@@ -2053,8 +2053,8 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
     } else if (!chgNames.isEmpty()) {
         pick = headline(chgNames);
     }
-    // Vary the wording on a re-click: a synonym for add/remove, or a light verb in
-    // front of a body-change subject (which normally lets the type carry the verb).
+
+
     if (variant > 0 && !renameOne) {
         if (verb == QLatin1String("add")) {
             static const QStringList syn = {QStringLiteral("add"),
@@ -2079,7 +2079,7 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
             words << humanize(n);
         QString ph;
         if (words.size() >= 2) {
-            // Use a comma when a name already contains "and" to avoid "X and Y and Z".
+
             const QString sep = (words[0].contains(QStringLiteral(" and "))
                                  || words[1].contains(QStringLiteral(" and ")))
                                     ? QStringLiteral(", ")
@@ -2095,7 +2095,7 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
     if (subject.isEmpty() && !pick.isEmpty())
         subject = compose(2);
     if (subject.isEmpty()) {
-        // Nothing nameable (e.g. data/config only): fall back to a file summary.
+
         const QString fv = added == changes.size()    ? QStringLiteral("add")
                            : removed == changes.size() ? QStringLiteral("remove")
                            : renamed == changes.size() ? QStringLiteral("rename")
@@ -2106,7 +2106,7 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
                       : QStringLiteral("%1 %2 files").arg(fv).arg(changes.size());
     }
 
-    // Optional scope: the common directory, unless it's a generic container.
+
     static const QSet<QString> kGenericScope = {
         QStringLiteral("src"),     QStringLiteral("lib"),  QStringLiteral("source"),
         QStringLiteral("sources"), QStringLiteral("app"),  QStringLiteral("code"),
@@ -2122,7 +2122,7 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
         return m + QStringLiteral(": ") + subj;
     };
     QString msg = assemble(subject);
-    // If naming two themes overran, fall back to just the first.
+
     if (msg.size() > 72 && pick.size() >= 2)
         msg = assemble(compose(1));
     return msg;
@@ -2130,16 +2130,16 @@ QString MainWindow::scmHeuristicCommitMessage(int variant) const
 
 void MainWindow::autoFillScmMessage()
 {
-    // Only the free, local, instant drafter runs on its own — never the paid AI
-    // models, and never over a message the user has started typing.
+
+
     if (m_scmGenerating || !m_scmMessage || !m_scmGenModel
         || m_scmGenModel->currentData().toInt() != -1
         || !m_scmMessage->toPlainText().trimmed().isEmpty())
         return;
-    const QString msg = scmHeuristicCommitMessage(0); // 0 = the deterministic best
+    const QString msg = scmHeuristicCommitMessage(0);
     if (msg.isEmpty())
         return;
-    m_scmHeuristicVariant = 0; // a fresh auto-fill restarts the "vary on click" cycle
+    m_scmHeuristicVariant = 0;
     m_scmMessage->setPlainText(msg);
     if (m_scmGenStatus)
         m_scmGenStatus->setText(QString::fromUtf8(
@@ -2158,9 +2158,9 @@ void MainWindow::generateScmMessage()
         return;
     }
     const int mi = m_scmGenModel ? m_scmGenModel->currentData().toInt() : 0;
-    if (mi < 0) { // On-device (no AI): derive the message locally from the diff.
-        // Each explicit click advances the variant so re-clicking "refreshes" to an
-        // alternative phrasing/symbol choice (auto-fill always uses variant 0).
+    if (mi < 0) {
+
+
         const QString msg = scmHeuristicCommitMessage(++m_scmHeuristicVariant);
         if (msg.isEmpty()) {
             m_scmHeuristicVariant = 0;
@@ -2304,7 +2304,7 @@ void MainWindow::generateScmMessage()
                         m_scmMessage->setPlainText(text);
                     }
                 }
-                // Char count first (what the user asked to see), then the cost.
+
                 const int n = m_scmMessage
                                   ? m_scmMessage->toPlainText().size()
                                            : text.size();
@@ -2314,8 +2314,8 @@ void MainWindow::generateScmMessage()
                             .arg(QString::number(cost, 'f', 4))
                             .arg(inTok)
                             .arg(outTokActual);
-                // An X post also goes to the clipboard so it's one paste from being
-                // posted; keep the original (possibly multi-line) text there.
+
+
                 if (!isCommit) {
                     QApplication::clipboard()->setText(text);
                     line += QStringLiteral(", copied");
@@ -2394,7 +2394,7 @@ QWidget *MainWindow::buildRepoSecurityTab()
     layout->addWidget(findingsLabel);
 
     m_securityFindingsTable = new QTableWidget(0, 4);
-    installColumnHeaderMenu(m_securityFindingsTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_securityFindingsTable);
     m_securityFindingsTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_securityFindingsTable);
     m_securityFindingsTable->setHorizontalHeaderLabels(
@@ -2416,15 +2416,15 @@ QWidget *MainWindow::buildRepoSecurityTab()
     layout->addWidget(m_securityFindingsTable);
     layout->addStretch();
     connect(m_securityFindingsTable, &QTableWidget::cellClicked,
-            this, [this](int row, int /*col*/) {
+            this, [this](int row, int  ) {
         auto *item = m_securityFindingsTable->item(row, 2);
         if (!item)
             return;
         const QString path = item->data(Qt::UserRole).toString();
         if (path.isEmpty())
             return;
-        // Switch to the Code tab (index 0) so the highlighted line is visible;
-        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
+
+
         if (m_repoDetailTabs && m_repoDetailTabs->button(0))
             m_repoDetailTabs->button(0)->click();
         openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
@@ -2438,8 +2438,8 @@ QWidget *MainWindow::buildRepoSecurityTab()
     return page;
 }
 
-// Severity -> badge/text colour for the Security and Quality tabs. Mirrors the
-// palette used elsewhere (green pass, blue info, amber warning, orange/red severe).
+
+
 static QString repoSecuritySeverityColor(RepoSecuritySeverity severity)
 {
     switch (severity) {
@@ -2457,8 +2457,8 @@ static QString repoSecuritySeverityColor(RepoSecuritySeverity severity)
     return QStringLiteral("#8b949e");
 }
 
-// Render one security signal as an "insightsCard" HTML body: severity-tinted
-// title, the summary, and (when present) the longer detail.
+
+
 static QString repoSecuritySignalHtml(const RepoSecuritySignal &signal)
 {
     const QString color = repoSecuritySeverityColor(signal.severity);
@@ -2476,8 +2476,8 @@ static QString repoSecuritySignalHtml(const RepoSecuritySignal &signal)
         html += QStringLiteral(
                     "<div style='color:#8b949e; font-size:11px; margin-top:4px'>%1</div>")
                     .arg(signal.detail.toHtmlEscaped());
-    // Itemised entries (e.g. dependency manifests) render as a list where each
-    // path is a "check" link; the card's linkActivated handler opens the file.
+
+
     for (const QString &item : signal.items) {
         const QString href = QString::fromUtf8(QUrl::toPercentEncoding(item));
         html += QStringLiteral(
@@ -2489,9 +2489,9 @@ static QString repoSecuritySignalHtml(const RepoSecuritySignal &signal)
     return html;
 }
 
-// Fill a Security/Quality findings table: one row per finding (or a single
-// "Pass" row when there are none). Column 2 carries the path/line payload the
-// tables' cellClicked handlers use to open the file.
+
+
+
 static void fillRepoFindingsTable(QTableWidget *table,
                                   const QList<RepoSecurityFinding> &findings,
                                   const QString &emptyText)
@@ -2545,10 +2545,10 @@ static void fillRepoFindingsTable(QTableWidget *table,
     }
 }
 
-// Renders the dependency-scan signal as a rich table widget: one row per
-// manifest with dependency-count, outdated-count, vulnerable-count, and a
-// per-row "Run scan" button.  Placed full-width (spanning all 4 grid columns)
-// below the other signal cards.
+
+
+
+
 static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
                                   const QList<RepoSecurityFinding> &findings,
                                   const QHash<QString, int> &dependencyCounts,
@@ -2565,7 +2565,7 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
     vlay->setContentsMargins(12, 12, 12, 12);
     vlay->setSpacing(6);
 
-    // Title + severity + last-scanned time in one row
+
     const QString color = repoSecuritySeverityColor(signal.severity);
     auto *titleRow = new QHBoxLayout;
     titleRow->setContentsMargins(0, 0, 0, 0);
@@ -2596,10 +2596,10 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
     vlay->addLayout(titleRow);
 
     if (scanning) {
-        // Indeterminate (range 0,0) progress bar: Qt animates a marquee chunk on
-        // its own timer, giving a genuine moving "scan in progress" indicator
-        // rather than a static icon (the scan itself runs off the GUI thread via
-        // MainWindow::runRepoDependencyScan, so this can actually animate).
+
+
+
+
         auto *bar = new QProgressBar;
         bar->setRange(0, 0);
         bar->setTextVisible(false);
@@ -2631,14 +2631,14 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
         return card;
     }
 
-    // Count outdated (loose-specifier) alerts per manifest from findings
+
     QHash<QString, int> outdatedByPath;
     for (const RepoSecurityFinding &f : findings) {
         if (f.category == QLatin1String("Dependency"))
             outdatedByPath[f.path]++;
     }
 
-    // Manifest table: header row + one row per manifest
+
     auto *grid = new QGridLayout;
     grid->setContentsMargins(0, 8, 0, 0);
     grid->setSpacing(4);
@@ -2656,7 +2656,7 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
     grid->addWidget(makeHdr(QStringLiteral("Dependencies")), 0, 1, Qt::AlignRight);
     grid->addWidget(makeHdr(QStringLiteral("Outdated")), 0, 2, Qt::AlignRight);
     grid->addWidget(makeHdr(QStringLiteral("Vulnerable")), 0, 3, Qt::AlignRight);
-    // column 4 reserved for buttons (no header needed)
+
 
     int row = 1;
     for (const QString &manifest : signal.items) {
@@ -2695,7 +2695,7 @@ static QWidget *buildDepScanCard(const RepoSecuritySignal &signal,
         outdatedLbl->setTextFormat(Qt::RichText);
         outdatedLbl->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
 
-        // Vulnerable count: not yet implemented (requires external advisory DB)
+
         auto *vulnLbl = new QLabel(
             QStringLiteral("<span style='color:#8b949e;font-size:12px'>&ndash;</span>"));
         vulnLbl->setTextFormat(Qt::RichText);
@@ -2797,7 +2797,7 @@ void MainWindow::applyRepoSecuritySnapshot(const RepoSecuritySnapshot &snapshot,
     int index = 0;
     const RepoSecuritySignal *depSignal = nullptr;
     for (const RepoSecuritySignal &signal : snapshot.signalList) {
-        // Dependency scan gets a dedicated full-width table card (added below)
+
         if (signal.key == QLatin1String("dependencies")) {
             depSignal = &signal;
             continue;
@@ -2812,7 +2812,7 @@ void MainWindow::applyRepoSecuritySnapshot(const RepoSecuritySnapshot &snapshot,
         m_securitySignalsGrid->addWidget(card, row, col);
         ++index;
     }
-    // Place the dependency-scan card in a dedicated full-width row
+
     if (depSignal) {
         const int depRow = (index + 2) / 3;
         auto *depCard = buildDepScanCard(
@@ -2875,13 +2875,13 @@ void MainWindow::runRepoDependencyScan(const QString &manifestPath)
 
     m_repoSecurityScanRunning = true;
     m_repoSecurityScanningPath = manifestPath;
-    // Re-render immediately using the last-known snapshot so the button/progress
-    // bar flip to their busy state right away, before the rescan itself (which
-    // runs off-thread below) has produced anything new.
+
+
+
     applyRepoSecuritySnapshot(m_lastRepoSecuritySnapshot, writable.localPath);
 
     if (manifestPath.isEmpty()) {
-        // Full repo scan
+
         runOffThread<RepoSecuritySnapshot>(
             [input]() { return RepoSecurity::scan(input); },
             [this, startOwner, startName](RepoSecuritySnapshot snapshot) {
@@ -2891,11 +2891,11 @@ void MainWindow::runRepoDependencyScan(const QString &manifestPath)
                     return;
                 const RepositoryRecord &current = m_repositories.at(m_repoDetailIndex);
                 if (current.owner != startOwner || current.name != startName)
-                    return; // user navigated to a different repo while the scan ran
+                    return;
                 applyRepoSecuritySnapshot(snapshot, writableRecordFor(current).localPath);
             });
     } else {
-        // Single-manifest scan: update just that manifest's findings and dependency count
+
         runOffThread<RepoSecurityManifestScan>(
             [input, manifestPath]() { return RepoSecurity::scanManifest(input, manifestPath); },
             [this, startOwner, startName, manifestPath](RepoSecurityManifestScan result) {
@@ -2907,10 +2907,10 @@ void MainWindow::runRepoDependencyScan(const QString &manifestPath)
                 if (current.owner != startOwner || current.name != startName)
                     return;
 
-                // Update the snapshot with new findings for this manifest
+
                 RepoSecuritySnapshot &snapshot = m_lastRepoSecuritySnapshot;
                 snapshot.dependencyCounts[manifestPath] = result.dependencyCount;
-                // Replace old findings for this manifest with new ones
+
                 snapshot.findings.erase(
                     std::remove_if(snapshot.findings.begin(), snapshot.findings.end(),
                                    [&manifestPath](const RepoSecurityFinding &f) {
@@ -2941,11 +2941,11 @@ void MainWindow::openRepoFileAtLine(const QString &path, int line)
         lineSel.cursor = lc;
         lineSel.format.setBackground(QColor(31, 111, 235, 60));
         lineSel.format.setProperty(QTextFormat::FullWidthSelection, true);
-        // Move the cursor (and focus) first: CodePreviewEditor's own
-        // cursorPositionChanged handler calls highlightCurrentLine(), which
-        // replaces the extra-selection list with its neutral current-line
-        // background. Applying our highlight after that keeps the distinct
-        // blue finding highlight instead of it being silently overwritten.
+
+
+
+
+
         edit->setTextCursor(lc);
         edit->setFocus();
         edit->centerCursor();
@@ -3023,7 +3023,7 @@ QWidget *MainWindow::buildRepoQualityTab()
     layout->addWidget(findingsLabel);
 
     m_qualityFindingsTable = new QTableWidget(0, 4);
-    installColumnHeaderMenu(m_qualityFindingsTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_qualityFindingsTable);
     m_qualityFindingsTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_qualityFindingsTable);
     m_qualityFindingsTable->setHorizontalHeaderLabels(
@@ -3045,15 +3045,15 @@ QWidget *MainWindow::buildRepoQualityTab()
     layout->addWidget(m_qualityFindingsTable);
     layout->addStretch();
     connect(m_qualityFindingsTable, &QTableWidget::cellClicked,
-            this, [this](int row, int /*col*/) {
+            this, [this](int row, int  ) {
         auto *item = m_qualityFindingsTable->item(row, 2);
         if (!item)
             return;
         const QString path = item->data(Qt::UserRole).toString();
         if (path.isEmpty())
             return;
-        // Switch to the Code tab (index 0) so the highlighted line is visible;
-        // openRepoFileAtLine alone only touches the (currently hidden) files panel.
+
+
         if (m_repoDetailTabs && m_repoDetailTabs->button(0))
             m_repoDetailTabs->button(0)->click();
         openRepoFileAtLine(path, item->data(Qt::UserRole + 1).toInt());
@@ -3164,15 +3164,15 @@ void MainWindow::refreshRepoQuality()
 }
 
 namespace {
-// The scan itself lives in DirectorySizeScan.cpp so the elevated helper
-// process can run the identical walk (adhoc #76).
+
+
 using forkmesh::DirectorySizeScanCancel;
 using forkmesh::DirectorySizeScanOptions;
 using forkmesh::DirectorySizeScanResult;
 
-// Mount points offered as size-map shortcuts (adhoc #21) — everything `df`
-// lists, minus the read-only squashfs images snap piles up by the dozen,
-// biggest filesystem first so the real disks lead the column.
+
+
+
 QList<QStorageInfo> sizeMapVolumes()
 {
     QList<QStorageInfo> volumes;
@@ -3194,7 +3194,7 @@ QList<QStorageInfo> sizeMapVolumes()
               });
     return volumes;
 }
-} // namespace
+}
 
 QWidget *MainWindow::buildSizeMapTab()
 {
@@ -3227,7 +3227,7 @@ QWidget *MainWindow::buildSizeMapTab()
             [this] { refreshSizeMapTab(true, true); });
     addRefreshSpin(refresh);
 
-    // Only visible while a scan (worker thread or elevated helper) is running.
+
     auto *stop = new QPushButton("Stop");
     stop->setObjectName("ghostButton");
     stop->setProperty("buttonSize", "sm");
@@ -3252,8 +3252,8 @@ QWidget *MainWindow::buildSizeMapTab()
     headerRow->addWidget(stop, 0, Qt::AlignTop);
     layout->addLayout(headerRow);
 
-    // Folder switcher: the map defaults to the repository's working copy but
-    // can size any directory on disk.
+
+
     auto *choose = new QPushButton("Choose folder…");
     choose->setObjectName("ghostButton");
     choose->setProperty("buttonSize", "sm");
@@ -3300,9 +3300,9 @@ QWidget *MainWindow::buildSizeMapTab()
     m_sizeMapStatus->setObjectName("statusLine");
     m_sizeMapStatus->setWordWrap(true);
 
-    // Only appears once a scan actually hit directories this user cannot list
-    // (adhoc #76) — sizing "/" as a normal user misses /root, /var/lib and the
-    // rest, so the map looks empty next to whatever pseudo-file survived.
+
+
+
     auto *elevate = new QPushButton("Scan as administrator");
     elevate->setObjectName("ghostButton");
     elevate->setProperty("buttonSize", "sm");
@@ -3336,8 +3336,8 @@ QWidget *MainWindow::buildSizeMapTab()
     return page;
 }
 
-// Right-hand column of filesystem shortcuts: one small used/free map per mount
-// point, each a click away from becoming the big map (adhoc #21).
+
+
 QWidget *MainWindow::buildSizeMapVolumesPanel()
 {
     auto *panel = new QWidget;
@@ -3382,8 +3382,8 @@ void MainWindow::refreshSizeMapVolumes()
     auto *col = qobject_cast<QVBoxLayout *>(m_sizeMapVolumesBox->layout());
     if (!col)
         return;
-    // Mounts come and go (removable disks, containers), so the column is
-    // rebuilt from scratch on every rescan rather than patched in place.
+
+
     while (QLayoutItem *item = col->takeAt(0)) {
         if (QWidget *widget = item->widget())
             widget->deleteLater();
@@ -3411,16 +3411,16 @@ QString MainWindow::sizeMapRoot() const
 
 void MainWindow::chooseSizeMapFolder()
 {
-    // Start the browser where the map currently sits, so picking a sibling
-    // folder is one step away.
+
+
     QString start = sizeMapRoot();
     if (start.isEmpty() || !QDir(start).exists())
         start = QDir::homePath();
-    // Qt's own dialog rather than the platform one: the portal/GTK pickers
-    // bury the filesystem root behind "Other Locations" and refuse to hand
-    // back "/" itself, which is exactly the folder people want to size
-    // (adhoc #21). This one returns whatever directory is open when Choose is
-    // pressed, so "/" — and every mount — is selectable.
+
+
+
+
+
     QFileDialog dialog(this, "Choose a folder to size", start);
     dialog.setFileMode(QFileDialog::Directory);
     dialog.setOption(QFileDialog::ShowDirsOnly, true);
@@ -3448,9 +3448,9 @@ void MainWindow::setSizeMapRootOverride(const QString &path)
     if (m_sizeMapRootOverride == path)
         return;
     m_sizeMapRootOverride = path;
-    // Picking a folder is a click, so this is allowed to ask for the root
-    // password when that folder needs it — clicking "/" is the whole reason the
-    // prompt moved to the front (adhoc #112).
+
+
+
     refreshSizeMapTab(true, true);
 }
 
@@ -3487,27 +3487,27 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
         return;
     }
     if (!force && m_sizeMapScannedPath == path)
-        return; // the chart already shows this folder
+        return;
     if (m_sizeMapScanning)
-        return; // its finish handler notices the root changed and rescans
-    // Every plain rescan starts unprivileged again; the button comes back if
-    // this folder still holds directories the user cannot list.
+        return;
+
+
     if (m_sizeMapElevate)
         m_sizeMapElevate->setVisible(false);
     const bool hideIgnored =
         m_sizeMapHideIgnored && m_sizeMapHideIgnored->isChecked();
     DirectorySizeScanOptions options;
     options.pruned = sizeMapPrunedPaths(path);
-    // Folders this user cannot fully read — "/" above all — used to be scanned
-    // twice: once unprivileged into a map missing /root, /var/lib and the rest,
-    // then again after clicking the button. Ask for the password on the click
-    // that chose the folder instead (adhoc #112).
+
+
+
+
     if (allowElevation && forkmesh::scanNeedsElevation(path, options.pruned)) {
-        // Off the click's own stack: where pkexec is missing the prompt is a
-        // modal dialog, and pumping the event loop from inside a filesystem
-        // card's click handler would run the deleteLater() refreshSizeMapVolumes
-        // just queued for that very card. The epoch also collapses a second
-        // click into one prompt.
+
+
+
+
+
         const int pending = ++m_sizeMapScanEpoch;
         m_sizeMapStatus->setText(
             QStringLiteral("Asking for administrator access to size %1 …")
@@ -3524,10 +3524,10 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
     const int epoch = ++m_sizeMapScanEpoch;
     m_sizeMapStatus->setText(
         QStringLiteral("Scanning %1 …").arg(QDir::toNativeSeparators(path)));
-    // The walk reports the folder it is in from the worker thread; the hop
-    // through invokeMethod() is what keeps the label on the GUI thread. The
-    // QPointer matters because the pool thread outlives a window closed
-    // mid-scan.
+
+
+
+
     const QPointer<MainWindow> guard(this);
     const forkmesh::DirectorySizeScanProgress progress =
         [this, guard, epoch](const QString &current, qint64 bytes, int files) {
@@ -3537,7 +3537,7 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
                 this,
                 [this, epoch, current, bytes, files] {
                     if (epoch != m_sizeMapScanEpoch)
-                        return; // a newer scan owns the label now
+                        return;
                     showSizeMapScanProgress(current, bytes, files, false);
                 },
                 Qt::QueuedConnection);
@@ -3553,21 +3553,21 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
                 if (m_sizeMapStop)
                     m_sizeMapStop->setVisible(false);
                 if (epoch != m_sizeMapScanEpoch)
-                    return; // a newer scan superseded this one
+                    return;
                 DirectorySizeScanResult result = watcher->result();
-                // The user may have opened another repo (or picked another
-                // folder) while the scan ran — a stale tree would mislabel the
-                // chart, so rescan instead.
+
+
+
                 if (sizeMapRoot() != path) {
                     refreshSizeMapTab(false);
                     return;
                 }
                 applySizeMapResult(path, std::move(result), hideIgnored, false);
             });
-    // The QPromise parameter is how Stop reaches into a running walk: the
-    // future's cancel() only flips promise.isCanceled(), so scanDirectorySizes
-    // takes a canceled() poll wired to it and checks it between directories
-    // (adhoc #189's Stop button).
+
+
+
+
     watcher->setFuture(QtConcurrent::run(
         [path, options, progress](QPromise<DirectorySizeScanResult> &promise) {
             const forkmesh::BackgroundScope activity(
@@ -3580,9 +3580,9 @@ void MainWindow::refreshSizeMapTab(bool force, bool allowElevation)
         }));
 }
 
-// Live status line while a scan runs: the folder being walked right now, with
-// the totals counted so far (adhoc #112). The path is elided rather than
-// wrapped, so a deep tree cannot rewrap the row on every update.
+
+
+
 void MainWindow::showSizeMapScanProgress(const QString &current, qint64 bytes,
                                          int files, bool elevated)
 {
@@ -3609,10 +3609,10 @@ void MainWindow::showSizeMapScanProgress(const QString &current, qint64 bytes,
 QSet<QString> MainWindow::sizeMapPrunedPaths(const QString &path) const
 {
     QSet<QString> pruned;
-    // Resolve the .gitignore prune set on the GUI thread (git via QProcess is
-    // awkward from a QtConcurrent worker), then hand it to the scan. Using
-    // --directory keeps wholly-ignored trees to a single entry instead of every
-    // file inside them.
+
+
+
+
     if (m_sizeMapHideIgnored && m_sizeMapHideIgnored->isChecked()) {
         QByteArray out;
         if (runGitCapture(path,
@@ -3630,11 +3630,11 @@ QSet<QString> MainWindow::sizeMapPrunedPaths(const QString &path) const
             }
         }
     }
-    // Stay on one filesystem, like `du -x`: pseudo mounts under the scanned
-    // root report fiction and real mounts would be counted twice, once here and
-    // once from their own card. QStorageInfo alone is not enough — it hides the
-    // pseudo filesystems, which is how /proc/kcore's 128 TiB used to swallow a
-    // scan of "/" whole (adhoc #76) — so the kernel's mount table is read too.
+
+
+
+
+
     const QString ownMount = QDir::cleanPath(QStorageInfo(path).rootPath());
     QSet<QString> mounts = forkmesh::systemMountPoints();
     for (const QStorageInfo &volume : QStorageInfo::mountedVolumes())
@@ -3642,13 +3642,13 @@ QSet<QString> MainWindow::sizeMapPrunedPaths(const QString &path) const
     for (const QString &mount : std::as_const(mounts)) {
         if (mount.isEmpty() || mount == ownMount)
             continue;
-        pruned.insert(mount); // only matches if it sits inside the scan
+        pruned.insert(mount);
     }
     return pruned;
 }
 
-// Shared tail of both scans: label the chart, then decide whether to offer the
-// elevated rescan (adhoc #76).
+
+
 void MainWindow::applySizeMapResult(const QString &path,
                                     DirectorySizeScanResult result,
                                     bool hideIgnored, bool elevated)
@@ -3699,9 +3699,9 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
     const bool hideIgnored =
         m_sizeMapHideIgnored && m_sizeMapHideIgnored->isChecked();
 
-    // The helper is this very binary in its --size-map-scan mode, so root runs
-    // the identical walk and streams the tree back. The request goes through a
-    // file rather than stdin, which stays free for `sudo -S`'s password.
+
+
+
     DirectorySizeScanOptions options;
     options.pruned = sizeMapPrunedPaths(path);
     auto *request = new QTemporaryFile(
@@ -3712,7 +3712,7 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
             QStringLiteral("Could not prepare the elevated scan (no writable "
                            "temporary directory)."));
         if (upfront)
-            refreshSizeMapTab(true); // still size what this user can read
+            refreshSizeMapTab(true);
         return;
     }
     request->write(forkmesh::encodeScanRequest(path, options));
@@ -3726,7 +3726,7 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
     QStringList arguments;
     QByteArray stdinPayload;
     if (!pkexec.isEmpty()) {
-        // pkexec raises the desktop's own password dialog; nothing to type here.
+
         program = pkexec;
         arguments = {helper, QStringLiteral("--size-map-scan"), requestPath};
     } else {
@@ -3740,10 +3740,10 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
             QLineEdit::Password, QString(), &accepted);
         if (!accepted) {
             delete request;
-            // Dismissed before anything was drawn: size what this user can read
-            // rather than leaving the tab empty. That scan's own status ends in
-            // "scan as administrator to include them", so the decline is not
-            // silent.
+
+
+
+
             if (upfront)
                 refreshSizeMapTab(true);
             return;
@@ -3767,12 +3767,12 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
 
     auto *process = new QProcess(this);
     m_sizeMapElevatedProcess = process;
-    request->setParent(process); // the temp file dies with the process
+    request->setParent(process);
     process->setProgram(program);
     process->setArguments(arguments);
-    // Root's walk reports itself on stderr, one line per update, so the same
-    // live folder name appears whether the scan runs here or in the helper
-    // (adhoc #112). Whole lines only: a read can land mid-line.
+
+
+
     auto pending = std::make_shared<QByteArray>();
     connect(process, &QProcess::readyReadStandardError, this,
             [this, process, pending, epoch] {
@@ -3784,7 +3784,7 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
                     QString current;
                     qint64 bytes = 0;
                     int files = 0;
-                    // Anything else on stderr is pkexec's or sudo's own chatter.
+
                     if (!forkmesh::decodeScanProgress(line, &current, &bytes,
                                                       &files))
                         continue;
@@ -3792,8 +3792,8 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
                         continue;
                     showSizeMapScanProgress(current, bytes, files, true);
                 }
-                // A helper that never emits a newline must not grow the buffer
-                // for the length of a scan of "/".
+
+
                 if (pending->size() > 64 * 1024)
                     pending->clear();
             });
@@ -3807,20 +3807,20 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
                 if (m_sizeMapStop)
                     m_sizeMapStop->setVisible(false);
                 if (epoch != m_sizeMapScanEpoch)
-                    return; // a newer scan superseded this one
+                    return;
                 const QByteArray payload = process->readAllStandardOutput();
                 DirectorySizeScanResult result;
                 if (exitCode != 0 ||
                     !forkmesh::decodeScanResult(payload, &result)) {
-                    // Nothing has been drawn yet when the prompt came first, so
-                    // fall back to the unprivileged walk rather than leaving an
-                    // empty tab behind a dismissed password box. Its status
-                    // offers the rescan again.
+
+
+
+
                     if (upfront) {
                         refreshSizeMapTab(true);
                         return;
                     }
-                    // 126/127 is pkexec's "dismissed / not authorised".
+
                     m_sizeMapStatus->setText(
                         exitCode == 126 || exitCode == 127
                             ? QStringLiteral(
@@ -3839,8 +3839,8 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
                 }
                 applySizeMapResult(path, std::move(result), hideIgnored, true);
             });
-    // A missing pkexec/sudo never emits finished(), so the scanning flag would
-    // stay set and block every later rescan.
+
+
     connect(process, &QProcess::errorOccurred, this,
             [this, process, epoch, upfront](QProcess::ProcessError error) {
                 if (error != QProcess::FailedToStart)
@@ -3853,8 +3853,8 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
                     m_sizeMapStop->setVisible(false);
                 if (epoch != m_sizeMapScanEpoch || !m_sizeMapStatus)
                     return;
-                // Same fallback as a declined prompt: a map of the readable
-                // folders beats an empty tab.
+
+
                 if (upfront) {
                     refreshSizeMapTab(true);
                     return;
@@ -3873,10 +3873,10 @@ void MainWindow::rescanSizeMapElevated(bool upfront)
 
 void MainWindow::stopSizeMapScan()
 {
-    // Disconnect before cancel/kill, same as stopSearch(): once the finished
-    // handler can never fire, there is no race between its own bookkeeping and
-    // whatever the very next Rescan does, so this can freely reuse
-    // m_sizeMapScanning/m_sizeMapScanEpoch instead of tracking a third flag.
+
+
+
+
     if (m_sizeMapWatcher) {
         disconnect(m_sizeMapWatcher, nullptr, this, nullptr);
         m_sizeMapWatcher->cancel();
@@ -3890,7 +3890,7 @@ void MainWindow::stopSizeMapScan()
         m_sizeMapElevatedProcess = nullptr;
     }
     m_sizeMapScanning = false;
-    ++m_sizeMapScanEpoch; // discards any progress update already queued
+    ++m_sizeMapScanEpoch;
     if (m_sizeMapStop)
         m_sizeMapStop->setVisible(false);
     if (m_sizeMapStatus)
@@ -3988,16 +3988,16 @@ QWidget *MainWindow::buildInsightsTab()
         table->horizontalHeader()->setHighlightSections(false);
     };
 
-    // Merged "Contributors & activity": one row per contributor carrying the
-    // commit count, share, and a commits-over-time bar chart (formerly two
-    // separate sections). A time-range selector rescopes every column.
+
+
+
     auto *contributorsLabel = new QLabel("CONTRIBUTORS & ACTIVITY");
     contributorsLabel->setObjectName("sectionLabel");
 
     m_insightsRangeCombo = new QComboBox;
     m_insightsRangeCombo->setObjectName("ghostCombo");
     m_insightsRangeCombo->setCursor(Qt::PointingHandCursor);
-    // userData = window in days; 0 means all time.
+
     m_insightsRangeCombo->addItem("All time", 0);
     m_insightsRangeCombo->addItem("Last 12 months", 365);
     m_insightsRangeCombo->addItem("Last 90 days", 90);
@@ -4014,7 +4014,7 @@ QWidget *MainWindow::buildInsightsTab()
     contributorsHeader->addWidget(m_insightsRangeCombo, 0, Qt::AlignVCenter);
 
     m_insightsContributors = new QTableWidget(0, 4);
-    installColumnHeaderMenu(m_insightsContributors); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_insightsContributors);
     m_insightsContributors->setHorizontalHeaderLabels(
         {"Contributor", "Commits", "Share", "Activity"});
     configureTable(m_insightsContributors);
@@ -4029,12 +4029,12 @@ QWidget *MainWindow::buildInsightsTab()
     makeColumnsResizable(m_insightsContributors);
     m_insightsContributors->verticalHeader()->setDefaultSectionSize(34);
     m_insightsContributors->setMinimumHeight(260);
-    // Right-click a contributor to reassign their commits to another identity.
+
     m_insightsContributors->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(m_insightsContributors, &QWidget::customContextMenuRequested, this,
             &MainWindow::showInsightsContributorMenu);
-    // Left-click a contributor's name or commit count to open the Commits tab
-    // filtered to that author.
+
+
     connect(m_insightsContributors, &QTableWidget::cellClicked, this,
             [this](int row, int column) {
                 if (column != 0 && column != 1)
@@ -4048,7 +4048,7 @@ QWidget *MainWindow::buildInsightsTab()
                 openCommitsForContributor(name);
             });
 
-    // Caption under the table: the span the activity bars cover, oldest to newest.
+
     m_insightsActivityAxis = new QLabel;
     m_insightsActivityAxis->setObjectName("statusLine");
     m_insightsActivityAxis->setTextFormat(Qt::RichText);

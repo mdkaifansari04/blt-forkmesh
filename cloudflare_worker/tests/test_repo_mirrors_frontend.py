@@ -7,8 +7,8 @@ from pathlib import Path
 from _dashboard_shell import assembled_dashboard
 
 PUBLIC = Path(__file__).resolve().parents[1] / "public"
-# The dashboard shell is split into HTML partials and prebuilt before deploy;
-# assert against the assembled document a browser actually receives.
+
+
 DASHBOARD = assembled_dashboard()
 STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 

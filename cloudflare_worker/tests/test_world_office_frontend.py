@@ -339,8 +339,8 @@ def test_attendance_leaderboard_deduplicates_sorts_and_ticks_active_stays():
 
 def test_a_tabbed_away_member_resumes_attendance_as_a_new_visit():
     office = source(OFFICE_PATH)
-    # The tick, not the interval callback, owns the punch decision, so returning
-    # to a hidden tab resumes immediately instead of one heartbeat later.
+
+
     for contract in (
         "const OFFICE_ATTENDANCE_LIVE_TTL_MS = 75_000",
         "export function officeAttendanceVisitExpired(seenAt, now)",
@@ -357,8 +357,8 @@ def test_a_tabbed_away_member_resumes_attendance_as_a_new_visit():
     visibility = function_body(office, "onVisibilityChange")
     assert "document.hidden" in visibility
     assert "punchAttendanceTick()" in visibility
-    # A still-open visit keeps riding the interval instead of posting on every
-    # tab switch.
+
+
     assert (
         "if (!officeAttendanceVisitExpired(attendanceSeenAt, Date.now())) return;"
         in visibility
@@ -514,8 +514,8 @@ def test_explicit_floor_refresh_updates_access_without_attendance_or_polling():
     assert payload["entered"] is True
     assert payload["refreshed"] is True
     assert payload["floorGets"] == 1
-    # The guest entry may read the public ledger once. The explicit
-    # authorization refresh adds no attendance read or write.
+
+
     assert payload["attendanceGets"] == 1
     assert payload["postCount"] == 0
     assert payload["finalAccess"] == {
@@ -538,13 +538,13 @@ def test_marketing_is_a_team_floor_reached_only_through_a_server_grant():
     access = function_body(tower, "normalizeOfficeFloorAccess")
     assert 'supplied.add("lobby")' in access
     assert 'supplied.add("rooftop")' in access
-    # Signing in must not hand out the Marketing studio. Only the server's
-    # team-derived allowlist may add that floor.
+
+
     assert 'supplied.add("marketing")' not in access
     marketing_floor = tower[tower.index('id: "marketing"'):]
     marketing_floor = marketing_floor[:marketing_floor.index("}),")]
     assert "publicForMembers" not in marketing_floor
-    # The meeting table is the other door onto that storey.
+
     meeting = function_body(scene, "enterOfficeMeeting")
     assert 'canAccessOfficeFloor(officeFloorAccess, "marketing")' in meeting
     board = scene[scene.index('=== "office-meeting-board"'):]
@@ -556,8 +556,8 @@ def test_an_arrival_cell_never_drops_a_visitor_off_their_office_floor():
     scene = source(SCENE_PATH)
     app = source(WORLD_PATH)
     spawn = function_body(scene, "setSpawn")
-    # Arrival cells are outdoor ground spots. Applying one to a visitor riding
-    # the tower teleported them from their storey down onto the lobby slab.
+
+
     guard = 'if (officeSceneMode !== "town") return false;'
     assert guard in spawn
     assert spawn.index(guard) < spawn.index("player.position.set(")
@@ -769,8 +769,8 @@ def test_tall_floor_exhibits_and_elevator_openings_stay_between_slabs():
         "forkmesh-office-feature-partnerships-orbit-",
     ):
         assert contract in scene
-    # These rotations were the source of the giant pink/cyan shapes visibly
-    # slicing through adjacent floors.
+
+
     assert "new THREE.TorusKnotGeometry(8, 1.35" not in scene
     assert "orbit.rotation.z" not in scene
 
@@ -840,7 +840,7 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     local_position = function_body(scene, "officeAvatarLocalPosition")
     town_collision = function_body(scene, "constrainTownOfficeWalls")
 
-    # Admission must not stage a second teleport before the lobby handoff.
+
     for hard_snap in (
         "player.position.set",
         "camera.position.copy",
@@ -848,9 +848,9 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     ):
         assert hard_snap not in prepare
 
-    # The threshold helper is now a pure coordinate conversion. The mode
-    # handoff may normalize floor height, but must preserve the doorway's exact
-    # physical X/Z instead of staging a second inward teleport.
+
+
+
     assert "worldToLocal" in local_position
     assert "target.x =" not in local_position
     assert "target.z =" not in local_position
@@ -887,8 +887,8 @@ def test_office_entry_preserves_the_live_player_pose_and_camera_controls():
     assert "movingOutward &&" in collision
     assert "z <= OFFICE_DOORWAY_APPROACH_Z + 0.08" in collision
 
-    # Entry continues with the same player object. A second local avatar, a
-    # forced camera mode, or rewritten orbit state would read as a scene cut.
+
+
     assert "player" in enter
     for swap_or_snap in (
         "officeLobbyPlayer.position.set",
@@ -964,8 +964,8 @@ def test_lobby_camera_clamp_has_one_strict_open_door_portal():
     scene = source(SCENE_PATH)
     limit = function_body(scene, "officeCameraDistanceLimit")
 
-    # Only an outward ray through the open lobby aperture may omit the front-Z
-    # face. Its real width, flush floor, and lintel are checked at the front plane.
+
+
     for contract in (
         "const rawFrontDistance =",
         "(OFFICE_FRONT_Z - localTarget.z) / frontDirection",
@@ -980,7 +980,7 @@ def test_lobby_camera_clamp_has_one_strict_open_door_portal():
     ):
         assert contract in limit
 
-    # All other envelope faces remain in the ray/AABB calculation.
+
     for axis in ('["x", "minX", "maxX"]', '["y", "minY", "maxY"]',
                  '["z", "minZ", "maxZ"]'):
         assert axis in limit
@@ -999,8 +999,8 @@ def test_office_walkers_share_world_movement_tuning_and_heading():
         )
     }
 
-    # One cadence owns immediate keyboard speed, analog strength, and the
-    # user's per-device tuning in every part of the continuous World.
+
+
     for contract in (
         "PLAYER_MAX_SPEED",
         "moveSpeedScale",
@@ -1062,14 +1062,14 @@ def test_office_third_person_camera_distance_is_bounded_by_local_geometry():
     limiter = function_body(scene, "officeCameraDistanceLimit")
     update = function_body(scene, "updateCamera")
 
-    # The limiter must be part of the live third-person camera calculation,
-    # rather than a constant Office zoom step applied only during entry.
+
+
     assert "officeCameraDistanceLimit(" in update
     assert "officeSceneMode" in update
 
-    # Account for both the tower envelope and the semi-exterior elevator. The
-    # exact ray/AABB implementation may change; these semantic dependencies and
-    # a real upper-bound operation are the stable behavior contract.
+
+
+
     assert "OFFICE_WIDTH" in limiter
     assert "OFFICE_DEPTH" in limiter or "OFFICE_FRONT_Z" in limiter
     assert re.search(r"elevator", limiter, re.IGNORECASE)
@@ -1226,8 +1226,8 @@ def test_noah_reuses_local_chat_bubbles_with_hysteresis_and_no_frame_spam():
     assert "updateOfficeReceptionGuide(time)" in animate
     assert "sprite.userData.officeReceptionGreeting" in bubble
     assert "world.add(sprite)" in bubble
-    # This stays entirely scene-local; approaching a desk never emits presence,
-    # analytics, attendance, or room messages.
+
+
     for forbidden in (
         "fetch(",
         "onMovement(",
@@ -1244,8 +1244,8 @@ def test_noah_reuses_local_chat_bubbles_with_hysteresis_and_no_frame_spam():
     assert "restricted team floors" in guest_tips
     assert "lobby is open to everyone" in guest_tips
 
-    # Noah is nested under officeInterior. Shared bubble animation must resolve
-    # the speaker's world transform rather than copying that local position.
+
+
     emote_loop = scene[
         scene.index("for (let index = emoteSprites.length - 1"):
         scene.index("for (let index = rewardFlights.length - 1")
@@ -1319,8 +1319,8 @@ def test_rooftop_camera_and_pointer_travel_stay_on_the_active_floor():
         "localCamera.y = Math.max("
     )
     assert "localDesired.y = Math.max(" in camera
-    # Only Y is redirected above the slab, preserving the full outward X/Z
-    # zoom that officeCameraDistanceLimit grants on the patio.
+
+
     rooftop_guard = camera[
         camera.index("if (rooftopPatioCamera)"):
         camera.index("if (reducedMotion)")

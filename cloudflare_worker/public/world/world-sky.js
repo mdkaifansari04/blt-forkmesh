@@ -1,10 +1,10 @@
-// A dependency-injected, network-free sky layer for the World scene.
-//
-// The caller owns fetching the bounded /api/world/satellites snapshot and
-// injects the deferred, same-origin SGP4 engine only after that snapshot is
-// valid. This module initializes each compact OMM record once, then propagates
-// it locally between refreshes. Stars, planets, and satellites use three total
-// draw calls: one Points object and two InstancedMesh objects.
+
+
+
+
+
+
+
 
 export const WORLD_SKY_SEED = 0x464d534b;
 export const WORLD_SKY_MAX_STARS = 1600;
@@ -21,8 +21,8 @@ const MINUTES_PER_DAY = 1_440;
 const EARTH_RADIUS_KM = 6_378.137;
 const OMM_CATALOG_PATTERN = /^[1-9][0-9]{0,8}$/;
 
-// These are deliberately stable visual anchors, not an astronomical ephemeris.
-// The public OMM snapshot drives the moving satellite layer independently.
+
+
 export const WORLD_SKY_PLANETS = Object.freeze([
   Object.freeze({
     id: "mercury",
@@ -103,10 +103,10 @@ function seededUnit(state) {
   return [next, (next >>> 0) / 4_294_967_296];
 }
 
-/**
- * Build deterministic typed star attributes once at scene construction time.
- * No ambient randomness, DOM state, clock, or network input participates.
- */
+
+
+
+
 export function generateWorldStarField(
   requestedCount = WORLD_SKY_DEFAULT_STARS,
   seed = WORLD_SKY_SEED,
@@ -160,11 +160,11 @@ export function generateWorldStarField(
   return { count, positions, colors };
 }
 
-/**
- * Validate and initialize one compact CelesTrak OMM record. The expensive
- * json2satrec conversion happens only when a new snapshot arrives, never in
- * the animation tick.
- */
+
+
+
+
+
 export function prepareWorldSatelliteOmm(record, sgp4Engine) {
   if (!record || typeof record !== "object" || Array.isArray(record)) {
     return null;
@@ -251,9 +251,9 @@ export function prepareWorldSatelliteOmm(record, sgp4Engine) {
   };
 }
 
-/**
- * Fail closed on malformed snapshots, deduplicate catalog ids, and cap work.
- */
+
+
+
 export function normalizeWorldSatelliteSnapshot(
   snapshot,
   requestedLimit = WORLD_SKY_MAX_SATELLITES,
@@ -277,8 +277,8 @@ export function normalizeWorldSatelliteSnapshot(
   }
   const normalized = [];
   const seen = new Set();
-  // A hostile direct caller cannot make this browser helper scan an unbounded
-  // array even if it bypasses the Worker's stricter response validation.
+
+
   const scanLimit = Math.min(snapshot.satellites.length, limit * 2);
   for (
     let index = 0;
@@ -296,13 +296,13 @@ export function normalizeWorldSatelliteSnapshot(
   return normalized;
 }
 
-/**
- * Propagate one initialized OMM record into TEME kilometres with SGP4.
- *
- * The public CelesTrak mean elements are built for SGP4. This remains a
- * bounded visualization rather than a flight-dynamics or conjunction-analysis
- * product, and stale records fail closed.
- */
+
+
+
+
+
+
+
 export function propagateWorldSatelliteOmm(prepared, timestampMs, out) {
   const target = out || { x: 0, y: 0, z: 0 };
   const now = finiteNumber(timestampMs);
@@ -355,14 +355,14 @@ function disposeMaterial(material) {
   }
 }
 
-/**
- * Create a three-draw-call sky. Pass the scene (or a world group) as parent.
- *
- * API:
- *   update(snapshot, sgp4Engine)     accept a bounded OMM response
- *   tick(epochMs, cameraPosition)    move sky origin and advance satellites
- *   dispose()                        remove and release GPU resources
- */
+
+
+
+
+
+
+
+
 export function createWorldSky({
   THREE,
   parent = null,
@@ -448,8 +448,8 @@ export function createWorldSky({
     toneMapped: false,
     fog: false,
   });
-  // The sun and moon share the existing planet draw call. They move with
-  // local civil time, but do not add two more meshes to every frame.
+
+
   const sunInstanceIndex = WORLD_SKY_PLANETS.length;
   const moonInstanceIndex = sunInstanceIndex + 1;
   const planets = new THREE.InstancedMesh(
@@ -483,10 +483,10 @@ export function createWorldSky({
   if (planets.instanceColor) planets.instanceColor.needsUpdate = true;
   group.add(planets);
 
-  // One instanced, additive draw gives both bodies a readable corona without
-  // introducing per-frame canvas work or one mesh per body. The warm outer
-  // ring makes the sun read as a sun; the cool ring keeps the moon bright
-  // against the night sky.
+
+
+
+
   const celestialGlowGeometry = new THREE.RingGeometry(1.08, 1.62, 28);
   const celestialGlowMaterial = new THREE.MeshBasicMaterial({
     vertexColors: true,
@@ -600,7 +600,7 @@ export function createWorldSky({
   let lastSatelliteTick = -Infinity;
   let acceptedAt = 0;
   let sourceEpoch = "";
-  // One output object and one Object3D are reused for all instances and ticks.
+
   const propagated = { x: 0, y: 0, z: 0 };
 
   function update(snapshot, sgp4Engine) {
@@ -661,8 +661,8 @@ export function createWorldSky({
         const displayRadius =
           safeSatelliteRadius + clamp(altitude / 36_000, 0, 1) * 18;
         const inverseDistance = distance > 0 ? displayRadius / distance : 0;
-        // ECI Z is north; map it to Three's vertical axis. Negating ECI Y
-        // preserves a right-handed coordinate system for the World camera.
+
+
         transform.position.set(
           propagated.x * inverseDistance,
           propagated.z * inverseDistance,

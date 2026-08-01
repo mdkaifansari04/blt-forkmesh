@@ -1,4 +1,4 @@
--- ForkMesh D1 migration 0016 - discussion inbox.
+
 
 CREATE TABLE IF NOT EXISTS discussion_inbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

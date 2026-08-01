@@ -6,16 +6,16 @@
 
 namespace {
 
-// The provenance trailer AgentRunner stamps on agent commits (issue #365).
+
 const QLatin1String kAgentTrailer("ForkMesh-Agent:");
 
-// Pull the trailer value out of a single commit message / patch body. Returns an
-// empty string when the commit has no ForkMesh-Agent trailer.
+
+
 QString agentTrailerIn(QStringView text)
 {
-    // Avoid QStringView::split(): it materializes an entry for every line in a
-    // potentially multi-megabyte mbox merely to find one short trailer. This
-    // function runs for every visible pull during list refresh.
+
+
+
     for (qsizetype start = 0; start <= text.size();) {
         const qsizetype newline = text.indexOf(u'\n', start);
         const qsizetype end = newline < 0 ? text.size() : newline;
@@ -72,8 +72,8 @@ void copyAnchor(PullReviewThread &thread, const PullEvent &ev)
         thread.lineEnd = ev.line;
 }
 
-// Split a format-patch mbox into its per-commit chunks. Each entry starts with a
-// mbox "From <sha> <date>" line at column 0.
+
+
 QStringList splitMboxPatches(const QString &mbox)
 {
     static const QRegularExpression re(
@@ -91,13 +91,13 @@ QStringList splitMboxPatches(const QString &mbox)
     return out;
 }
 
-} // namespace
+}
 
 PullAgentProvenance pullAgentProvenance(const PullRequest &pr)
 {
     PullAgentProvenance prov;
-    // The trailer rides inside the signed commit series; the first commit that
-    // carries it settles the tool/model for the whole PR.
+
+
     const QString value = agentTrailerIn(pr.commits);
     if (value.isEmpty())
         return prov;
@@ -117,7 +117,7 @@ QHash<QString, bool> pullFileAuthorship(const PullRequest &pr)
 {
     QHash<QString, bool> authorship;
     for (const QString &patch : splitMboxPatches(pr.commits)) {
-        // The commit message (and its trailers) sit above the first diff header.
+
         const qsizetype diffStart = patch.indexOf(QLatin1String("\ndiff --git "));
         const QString message = diffStart < 0 ? patch : patch.left(diffStart);
         const bool agent = !agentTrailerIn(message).isEmpty();
@@ -128,7 +128,7 @@ QHash<QString, bool> pullFileAuthorship(const PullRequest &pr)
             const QString path = line.section(QLatin1String(" b/"), 1);
             if (path.isEmpty())
                 continue;
-            // Any agent-stamped commit that touches a file marks it agent-authored.
+
             authorship[path] = authorship.value(path, false) || agent;
         }
     }

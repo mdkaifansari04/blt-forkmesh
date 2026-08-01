@@ -59,16 +59,16 @@
         -webkit-font-smoothing: antialiased;
       }
 
-      /* ── layout: universal nav above a contained workbench ── */
+
       .chat-shell {
         display: flex;
         flex-direction: column;
         width: 100%;
         background: #03060a;
-        height: 100vh; /* fallback for browsers without dvh */
-        height: 100dvh; /* mobile: track the dynamic viewport so the input bar
-                           and full message log stay on-screen as the browser's
-                           URL/tool bar shows and hides */
+        height: 100vh;
+        height: 100dvh;
+
+
         max-width: none;
       }
 
@@ -125,8 +125,8 @@
       .chat-drop-overlay strong { color: var(--fg); font-size: 14px; }
       .chat-drop-overlay span { color: var(--muted); font-size: 11px; }
 
-      /* ── universal site header wrapper: pin it to the shell's top row and
-         give it the page's border, matching the panes below. ── */
+
+
       .chat-site-header {
         flex-shrink: 0;
         width: 100%;
@@ -144,7 +144,7 @@
       html.dark .chat-site-header .forkmesh-simple-header { --fm-header-bg: #03060a; }
       html.light .chat-site-header .forkmesh-simple-header { --fm-header-bg: #f6f8fb; }
 
-      /* ── left pane: rooms ── */
+
       .chat-rooms-pane {
         min-width: 0;
         min-height: 0;
@@ -516,7 +516,7 @@
         text-align: center;
       }
 
-      /* ── middle pane ── */
+
       .chat-main-pane {
         min-width: 0;
         min-height: 0;
@@ -563,7 +563,7 @@
         white-space: nowrap;
       }
 
-      /* ── message log ── */
+
       #chat-log {
         flex: 1;
         min-height: 0;
@@ -621,8 +621,8 @@
 
       .chat-date-divider span { white-space: nowrap; }
 
-      /* Discord-style rows: avatar + header (name/time) + text, consecutive
-         messages from the same sender collapse under one header. */
+
+
       .chat-msg {
         position: relative;
         display: flex;
@@ -657,7 +657,7 @@
 
       .chat-avatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
-      /* Continuation rows keep the text aligned under the header row. */
+
       .chat-msg.is-continuation .chat-avatar { visibility: hidden; height: 0; margin: 0; }
       .chat-msg.is-continuation { padding-top: 1px; padding-bottom: 1px; }
 
@@ -732,7 +732,7 @@
         color: var(--muted);
       }
 
-      /* ── reactions ── */
+
       .chat-reactions {
         display: flex;
         flex-wrap: wrap;
@@ -908,8 +908,8 @@
         cursor: default;
       }
 
-      /* "Turn this message into an issue": a one-line title over the
-         repository picker, so the form stays as compact as the edit box. */
+
+
       .chat-issue-form {
         gap: 5px;
       }
@@ -964,7 +964,7 @@
 
       .chat-emoji-picker button:hover { background: var(--accent-dim); transform: scale(1.15); }
 
-      /* ── mentions ── */
+
       .chat-mention {
         display: inline-block;
         border-radius: 5px;
@@ -1010,9 +1010,9 @@
         font-style: italic;
       }
 
-      /* ── input bar ── */
+
       .chat-input-bar {
-        position: relative; /* anchors the @mention suggestion popup */
+        position: relative;
         flex-shrink: 0;
         display: grid;
         min-width: 0;
@@ -1037,7 +1037,7 @@
           inset 0 1px 0 color-mix(in srgb, var(--fg) 7%, transparent);
       }
 
-      /* ── @mention autocomplete ── */
+
       .chat-mention-suggest {
         position: absolute;
         bottom: calc(100% + 6px);
@@ -1508,7 +1508,7 @@
         box-shadow: none;
       }
 
-      /* ── e2e note ── */
+
       .chat-e2e-note {
         flex-shrink: 0;
         text-align: center;
@@ -1524,7 +1524,7 @@
         text-underline-offset: 2px;
       }
 
-      /* ── right pane: people ── */
+
       .chat-people-pane {
         min-width: 0;
         min-height: 0;
@@ -1911,7 +1911,7 @@
         margin: 0 10px 8px;
       }
 
-      /* ── responsive ── */
+
       @media (max-width: 1279px) and (min-width: 901px) {
         .chat-panes {
           grid-template-columns: 192px minmax(0, 1fr) 220px;

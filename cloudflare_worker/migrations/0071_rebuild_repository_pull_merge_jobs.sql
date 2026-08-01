@@ -1,8 +1,8 @@
--- Forward repair for installations that applied an early 0070 draft before
--- the expires_at lease column and hard bounds were finalized. Rebuild from the
--- common columns so this is safe for both that draft and the final 0070 shape.
--- Merge jobs contain no repository bytes or credentials; their seven-day lease
--- is conservatively restarted from the last recorded update.
+
+
+
+
+
 
 DROP TRIGGER IF EXISTS trg_repo_merge_jobs_repo_bound;
 DROP TRIGGER IF EXISTS trg_repo_merge_jobs_global_bound;

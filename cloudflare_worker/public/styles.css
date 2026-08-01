@@ -1,4 +1,4 @@
-/* ===== Bundled fonts; no remote font service required ===== */
+
 @font-face {
   font-family: "ForkMesh Lato";
   src: url("/assets/fonts/Lato-Regular.ttf") format("truetype");
@@ -71,9 +71,9 @@
   font-display: swap;
 }
 
-/* ===== Design tokens =====
-   Single dark palette matching the landing page / dashboard design
-   (index.html :root). The site no longer ships a light theme. */
+
+
+
 :root,
 html.dark {
   color-scheme: dark;
@@ -102,10 +102,10 @@ html.dark {
   --mono: "ForkMesh Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
 }
 
-/* Light palette. site-header.js stamps html.light / html.dark from the
-   visitor's saved choice (forkmesh.theme localStorage keys, shared with the
-   dashboard and docs) or their OS preference; without JavaScript the site
-   simply stays dark. Values mirror the dashboard's light theme. */
+
+
+
+
 html.light {
   color-scheme: light;
   --background: #ffffff;
@@ -130,7 +130,7 @@ html.light {
   --button-foreground: #ffffff;
 }
 
-/* ===== Reset ===== */
+
 *,
 *::before,
 *::after {
@@ -183,7 +183,7 @@ code {
   font-size: 85%;
 }
 
-/* ===== Header ===== */
+
 .site-header {
   position: sticky;
   top: 0;
@@ -266,9 +266,9 @@ code {
   font-weight: 600;
 }
 
-/* Hamburger for the shared header. Hidden on desktop; the mobile breakpoint
-   reveals it and turns .global-nav into a dropdown panel. Injected by
-   static-page.js so every page carrying the shared header gets it. */
+
+
+
 .nav-toggle {
   display: none;
   align-items: center;
@@ -292,10 +292,10 @@ code {
   height: 18px;
 }
 
-/* Admin shortcut — lives in .header-actions (not .global-nav, which the mobile
-   breakpoint hides) so it stays visible at every width. Only revealed (hidden
-   attr removed) for a signed-in admin whose session carries an adminUrl passed
-   through from the Worker ADMIN_PATH. */
+
+
+
+
 .nav-admin {
   display: inline-flex;
   align-items: center;
@@ -430,7 +430,7 @@ code {
   height: 16px;
 }
 
-/* The site is dark-only now; the old light/dark toggle is retired. */
+
 #theme-toggle,
 html.dark .moon,
 html:not(.dark) .sun {
@@ -462,7 +462,7 @@ html:not(.dark) .sun {
   text-decoration: none;
 }
 
-/* ===== Install banner ===== */
+
 .install-banner {
   max-width: 1280px;
   margin: 10px auto 0;
@@ -518,14 +518,14 @@ html:not(.dark) .sun {
   color: var(--muted);
 }
 
-/* ===== Main layout ===== */
+
 main {
   max-width: 1280px;
   margin: 0 auto;
   padding: 32px 24px 64px;
 }
 
-/* ===== Hero ===== */
+
 .hero {
   padding: 48px 0 40px;
 }
@@ -566,7 +566,7 @@ main {
   gap: 8px;
 }
 
-/* ===== Buttons ===== */
+
 .primary-button {
   display: inline-flex;
   align-items: center;
@@ -599,7 +599,7 @@ main {
   margin-top: 10px;
 }
 
-/* ===== Stats bar ===== */
+
 .stats-grid {
   display: flex;
   border: 1px solid var(--border);
@@ -646,7 +646,7 @@ main {
   display: none;
 }
 
-/* ===== Home grid ===== */
+
 .home-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 288px;
@@ -654,7 +654,7 @@ main {
   align-items: start;
 }
 
-/* ===== Panel ===== */
+
 .panel {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -698,7 +698,7 @@ main {
   font-weight: 600;
 }
 
-/* ===== Catalog ===== */
+
 .catalog-header {
   flex-wrap: wrap;
   gap: 10px;
@@ -755,7 +755,7 @@ main {
   height: 14px;
 }
 
-/* Open/Closed/All segmented filter in the Issues panel header (issue #270). */
+
 .panel-header-aside {
   display: flex;
   flex-direction: column;
@@ -910,7 +910,7 @@ main {
   font-size: 13px;
 }
 
-/* ===== Sidebar ===== */
+
 .sidebar {
   display: grid;
   gap: 12px;
@@ -965,7 +965,7 @@ main {
   font-weight: 600;
 }
 
-/* ===== Chat ===== */
+
 .chat-header {
   display: flex;
   align-items: baseline;
@@ -1135,7 +1135,7 @@ main {
   font-size: 11px;
 }
 
-/* ===== Repo header ===== */
+
 .repo-header {
   position: sticky;
   top: 56px;
@@ -1238,7 +1238,7 @@ a.repo-icon:hover {
   margin-bottom: 8px;
 }
 
-/* ===== Profile page ===== */
+
 .profile-header,
 .profile-repos {
   max-width: 960px;
@@ -1322,7 +1322,7 @@ a.repo-icon:hover {
   font-size: 12px;
 }
 
-/* ===== Repo tabs ===== */
+
 .repo-tabs {
   display: flex;
   overflow-x: auto;
@@ -1361,7 +1361,7 @@ a.repo-icon:hover {
   border-bottom-color: var(--accent-bright);
 }
 
-/* ===== Repo grid ===== */
+
 .repo-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 272px;
@@ -1811,7 +1811,7 @@ button.issue-row {
   font-size: 13px;
 }
 
-/* ===== Static pages ===== */
+
 .page-shell {
   padding-top: 36px;
 }
@@ -1857,7 +1857,7 @@ button.issue-row {
   align-items: center;
 }
 
-/* ===== Network command center ===== */
+
 .network-command-page {
   padding-top: 28px;
 }
@@ -2326,7 +2326,7 @@ button.issue-row {
   line-height: 1.35;
 }
 
-/* ===== Doc content ===== */
+
 .doc-panel {
   margin-bottom: 0;
 }
@@ -2346,7 +2346,7 @@ button.issue-row {
   margin-bottom: 0;
 }
 
-/* ===== Feature grid ===== */
+
 .feature-grid {
   padding: 18px;
   display: grid;
@@ -2380,7 +2380,7 @@ button.issue-row {
   line-height: 1.5;
 }
 
-/* ===== Docs grid (3-col info cards) ===== */
+
 .docs-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2415,7 +2415,7 @@ button.issue-row {
   font-size: 12px;
 }
 
-/* ===== Status page (/status) ===== */
+
 .status-banner {
   display: flex;
   align-items: center;
@@ -2632,8 +2632,8 @@ button.issue-row {
   grid-template-rows: 24px;
 }
 
-/* The 30-day chart keeps the original 6x4 hourly mini-grid. The separate
-   horizontal strip below shows the last 24 elapsed hours. */
+
+
 .status-day {
   width: 100%;
   height: 24px;
@@ -2687,8 +2687,8 @@ button.issue-row {
   outline: none;
 }
 
-/* Third row: one slice per minute over the last hour. Same statuses as the
-   hour/day markers, just smaller and more of them. */
+
+
 .status-minute-bar {
   display: grid;
   grid-template-columns: repeat(60, 6px);
@@ -2736,9 +2736,9 @@ button.issue-row {
 .status-day-hour.is-unknown,
 .status-minute-slice.is-unknown { background: var(--danger); }
 
-/* Hours/minutes later today that simply haven't happened yet — visually
-   hollow so a partial day/hour never reads as a completed, fully-green/orange
-   block. */
+
+
+
 .status-hour-slice.is-future,
 .status-day-hour.is-future,
 .status-minute-slice.is-future {
@@ -2833,7 +2833,7 @@ button.issue-row {
   text-align: center;
 }
 
-/* ===== Docs layout ===== */
+
 .docs-layout {
   display: grid;
   grid-template-columns: 200px minmax(0, 1fr);
@@ -2890,7 +2890,7 @@ button.issue-row {
   font-size: 14px;
 }
 
-/* Callout */
+
 .callout {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent-bright);
@@ -2903,7 +2903,7 @@ button.issue-row {
   line-height: 1.5;
 }
 
-/* Lists & code */
+
 .doc-list {
   margin: 0;
   padding-left: 18px;
@@ -2985,7 +2985,7 @@ button.issue-row {
   color: var(--muted);
 }
 
-/* ===== Responsive ===== */
+
 @media (max-width: 1000px) {
 
   .home-grid,
@@ -3065,8 +3065,8 @@ button.issue-row {
     display: inline-flex;
   }
 
-  /* The nav collapses into a full-width dropdown anchored under the sticky
-     header; revealed by .site-header.nav-open (toggled from static-page.js). */
+
+
   .global-nav {
     display: none;
     position: absolute;
@@ -3256,7 +3256,7 @@ button.issue-row {
   }
 }
 
-/* ---- v0.3.0 preserved: latest-commit bar + Commits tab + diff view ------- */
+
 .latest-commit {
   display: flex;
   align-items: baseline;
@@ -3436,7 +3436,7 @@ html.dark .diff-hunk {
   }
 }
 
-/* Mirror nodes list on the repo detail page (one row per node hosting the repo). */
+
 .repo-mirror-nodes {
   margin: 12px 0 4px;
 }
@@ -3467,7 +3467,7 @@ html.dark .diff-hunk {
 .mirror-node-sync.is-behind {
   color: var(--warning, #d29922);
 }
-/* Pacman countdown to a behind-but-live mirror node's next heartbeat. */
+
 .mirror-node-countdown {
   display: inline-flex;
   align-items: center;
@@ -3493,7 +3493,7 @@ html.dark .diff-hunk {
   color: var(--warning, #d29922);
 }
 
-/* ---- Site footer ------------------------------------------------------- */
+
 .site-footer {
   border-top: 1px solid var(--border);
   background: var(--card);
@@ -3568,8 +3568,8 @@ html.dark .diff-hunk {
   .footer-inner { flex-direction: column; gap: 24px; }
 }
 
-/* Shared loading indicator: inherits currentColor so it matches whatever
-   muted/empty text it sits next to. */
+
+
 .fm-spinner {
   display: inline-block;
   width: 14px;

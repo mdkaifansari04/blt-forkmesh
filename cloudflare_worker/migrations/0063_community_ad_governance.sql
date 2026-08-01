@@ -1,5 +1,5 @@
--- Community-reviewed contextual placements. This ledger is deliberately
--- separate from wallets, pending rewards, and the community reward pool.
+
+
 CREATE TABLE IF NOT EXISTS community_ad_instance_policy (
     instance_id TEXT PRIMARY KEY,
     enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),

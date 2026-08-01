@@ -134,8 +134,8 @@ def test_secrets_command_uses_one_secure_bulk_update_and_verifies_names(tmp_path
     assert "CLOUDFLARE_ACCOUNT_ID" not in payload
     assert "CLOUDFLARE_API_TOKEN" not in payload
     assert "EMPTY_SECRET" not in payload
-    # The desktop app keeps its Vultr provisioning key in this file; the Worker
-    # has no Vultr code path, so it must never reach the runtime (adhoc #127).
+
+
     assert "VULTR_API_KEY" not in payload
     assert "Pushed 11 secret(s) from .env.production in one bulk update." in result.stdout
     combined_output = result.stdout + result.stderr

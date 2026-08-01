@@ -391,9 +391,9 @@ export function pullViewedStateKey(owner, repo, metadataCommit, number) {
     : "";
 }
 
-// Return the exact immutable inputs that the protected merge endpoint is
-// allowed to receive. A syntactically valid session is checked separately by
-// the World shell because this pure helper deliberately has no storage access.
+
+
+
 export function exactPullMergeContext(active, review) {
   const metadata = review?.metadata;
   const number = safePullNumber(review?.number);

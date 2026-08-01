@@ -1,7 +1,7 @@
--- Let any authorized online repository mirror materialize pending issues while
--- ensuring exactly one device owns a row at a time. Claims are opaque blind
--- indexes of registered signing keys and expire automatically after a bounded
--- lease, so an interrupted mirror cannot strand an issue.
+
+
+
+
 ALTER TABLE issue_inbox
   ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT '';
 ALTER TABLE issue_inbox

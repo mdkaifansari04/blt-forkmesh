@@ -1,6 +1,6 @@
-// ignore_for_file: dangling_library_doc_comments
-/// Plain data models mirroring the Qt client's structs (MemberInfo, ChatMessage,
-/// RepositoryRecord, Issue, PullRequest) - only the fields the Flutter UI needs.
+
+
+
 
 class Member {
   Member({
@@ -25,20 +25,20 @@ class Member {
   final String solanaAddress;
   final List<String> mirrors;
 
-  /// User account that owns this node (the wire `ownerUser` field). When a
-  /// person runs several nodes they all carry the same owner, which lets the
-  /// roster collapse them into a single user instead of many duplicates.
+
+
+
   final String owner;
 
-  /// Registered node account name (the wire `nodeName` field), used as a
-  /// last-resort display name when neither owner nor chat name is set.
+
+
   final String nodeName;
 }
 
-/// One chat participant collapsed across the one-or-more nodes they run.
-/// A single person (identified by their owning account, wallet, or display
-/// name) can be connected from several nodes at once; grouping them here stops
-/// the same user from appearing in the roster multiple times as duplicates.
+
+
+
+
 class MemberGroup {
   MemberGroup({
     required this.name,
@@ -49,19 +49,19 @@ class MemberGroup {
 
   final String name;
 
-  /// The nodes this user currently has online, most relevant first.
+
   final List<Member> members;
 
   final bool self;
 
-  /// A short id shown beneath the username only when another distinct user
-  /// shares the same display name, so genuinely different people can be told
-  /// apart. Empty when the name is already unique.
+
+
+
   final String disambiguator;
 
   bool get online => members.any((m) => m.online);
 
-  /// Representative node for actions like opening a direct message.
+
   Member get primary => members.first;
 
   String get id => primary.id;
@@ -82,7 +82,7 @@ class ChatMessage {
   });
 
   final String id;
-  final String conversation; // "#channel" or "@peerId"
+  final String conversation;
   final String senderId;
   final String senderName;
   final String text;
@@ -118,10 +118,10 @@ class NotificationPage {
   }
 }
 
-/// A remote ActivityPub reply projected by the Worker.
-///
-/// This is intentionally not an IssueEvent, PullEvent, or DiscussionEvent:
-/// HTTP-signature provenance does not make it a ForkMesh-signed native event.
+
+
+
+
 class FederatedReply {
   const FederatedReply({
     required this.remoteId,
@@ -203,7 +203,7 @@ class FederatedReply {
               .toString(),
       depth: asInt(json['depth']).clamp(0, 8),
       timestamp: asInt(json['ts']),
-      // Fail closed if a server ever labels a remote projection as native.
+
       nativeEvent: false,
     );
   }
@@ -979,7 +979,7 @@ class Issue {
 
   final int number;
   final String title;
-  final String status; // open | closed
+  final String status;
   final String body;
   final String author;
   final List<String> labels;
@@ -1144,15 +1144,15 @@ class PullRequest {
 
   final int number;
   final String title;
-  final String status; // open | merged | closed
+  final String status;
   final String body;
   final String author;
   final String baseBranch;
   final String headBranch;
-  final int createdMs; // epoch ms the PR was opened; 0 when unknown
+  final int createdMs;
 
-  /// "yyyy-MM-dd" the PR was opened, or "" when no timestamp is available.
-  /// Mirrors the Created column on the Qt client's pull request list.
+
+
   String get createdDate {
     if (createdMs <= 0) return '';
     final d = DateTime.fromMillisecondsSinceEpoch(createdMs);
@@ -1188,7 +1188,7 @@ class RepoTreeEntry {
 
   final String name;
   final String path;
-  final String type; // file | dir | symlink | submodule
+  final String type;
   final int size;
   final String sha;
 
@@ -1852,16 +1852,16 @@ class FundsReceivedEntry {
       );
 }
 
-/// The org roles the Worker recognises, most privileged first. Mirrors
-/// ``ORG_ROLES`` in the Worker (owner > admin > member).
+
+
 const orgRoles = ['owner', 'admin', 'member'];
 
-/// The repository permissions a team can hold, least privileged first. Mirrors
-/// ``TEAM_PERMISSIONS`` in the Worker.
+
+
 const orgTeamPermissions = ['read', 'write', 'maintain', 'admin'];
 
-/// One entry from ``GET /api/orgs``: an org the signed-in account belongs to and
-/// the role it holds there.
+
+
 class OrgSummary {
   const OrgSummary({required this.name, this.role = 'member'});
 
@@ -1876,8 +1876,8 @@ class OrgSummary {
   );
 }
 
-/// The public org profile from ``GET /api/orgs/<name>`` plus the viewer's role,
-/// which the detail UI uses to decide whether to show management controls.
+
+
 class OrgProfile {
   const OrgProfile({
     required this.name,
@@ -1919,7 +1919,7 @@ class OrgProfile {
   );
 }
 
-/// A member row from ``GET /api/orgs/<name>/members``.
+
 class OrgMember {
   const OrgMember({required this.name, this.role = 'member', this.sinceMs = 0});
 
@@ -1934,7 +1934,7 @@ class OrgMember {
   );
 }
 
-/// A team row from ``GET /api/orgs/<name>/teams``.
+
 class OrgTeam {
   const OrgTeam({
     required this.team,
@@ -1953,8 +1953,8 @@ class OrgTeam {
   );
 }
 
-/// A linked repo behind an ``/<org>/<repo>`` alias, from the org profile or
-/// ``GET /api/orgs/<name>/repos``.
+
+
 class OrgRepo {
   const OrgRepo({required this.repo, this.node = ''});
 
@@ -1967,8 +1967,8 @@ class OrgRepo {
   );
 }
 
-/// Raised by [ApiService] org calls when the Worker rejects a write, carrying a
-/// message already mapped to human-readable text from the server's error code.
+
+
 class OrgApiException implements Exception {
   const OrgApiException(this.code, this.message);
 
@@ -1979,8 +1979,8 @@ class OrgApiException implements Exception {
   String toString() => message;
 }
 
-/// Maps a Worker org-endpoint error code to human-readable text. Unknown codes
-/// fall through to a generic message so the UI never shows a raw slug.
+
+
 String orgErrorMessage(String code) {
   switch (code) {
     case 'invalid_org_name':

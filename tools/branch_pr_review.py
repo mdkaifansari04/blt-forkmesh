@@ -41,7 +41,7 @@ DATA_HOME = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local/share")
 KEY_PATH = Path(DATA_HOME) / "ForkMesh/ForkMesh/identity/ed25519.pem"
 
 
-# ----------------------------------------------------------------------------- git helpers
+
 def git(*args, text=True):
     return subprocess.run(
         ["git", *args], cwd=REPO, capture_output=True,
@@ -80,7 +80,7 @@ def branch_info(branch):
     }
 
 
-# ----------------------------------------------------------------------------- pulls
+
 def pulls_dir():
     return REPO / "pulls"
 
@@ -110,7 +110,7 @@ def existing_pr_for_head(head):
     return None
 
 
-# ----------------------------------------------------------------------------- signing
+
 _key = None
 _pub = None
 
@@ -187,7 +187,7 @@ def create_pull(branch, title, description):
     return {"ok": True, "number": number, "existing": False}
 
 
-# ----------------------------------------------------------------------------- diff -> html
+
 def diff_html(branch):
     raw = git_out("diff", f"{BASE}..{branch}")
     rows = []
@@ -300,7 +300,7 @@ def card_html(info):
 </div></div>"""
 
 
-# ----------------------------------------------------------------------------- server
+
 _ALLOWED_HOSTS = frozenset({f"127.0.0.1:{PORT}", f"localhost:{PORT}"})
 _ALLOWED_ORIGINS = frozenset({f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"})
 
@@ -318,13 +318,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _local_guard(self, require_origin=False):
-        # This server signs and creates real PRs and exposes local diffs, so it
-        # must only ever answer the local operator — never a web page in the
-        # operator's browser. Pin the Host header to a loopback name (defeats
-        # DNS-rebinding, where an attacker domain resolves to 127.0.0.1 but the
-        # Host header carries the attacker's domain). For state-changing POSTs,
-        # also require the Origin (which browsers always send cross-origin) to be
-        # absent or loopback, defeating cross-site form/fetch CSRF.
+
+
+
+
+
+
+
         if (self.headers.get("Host") or "") not in _ALLOWED_HOSTS:
             self._send(403, "{}", "application/json")
             return False
@@ -364,7 +364,7 @@ class Handler(BaseHTTPRequestHandler):
                 f"Ported from newnewnode-forkmesh.\n\n{desc_lines}\n"
             )
             result = create_pull(branch, title, description)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             result = {"ok": False, "error": str(e)}
         self._send(200, json.dumps(result), "application/json")
 

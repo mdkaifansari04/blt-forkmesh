@@ -6,15 +6,15 @@ import 'package:provider/provider.dart';
 import '../services/auth_service.dart';
 import '../theme.dart';
 
-/// A compact "you are posting as `username`" header shown above every compose
-/// surface (chat, issues, PRs, discussions, reviews, comments). Renders the
-/// account's real avatar (base64 PNG) when present, otherwise an initials
-/// circle matching [AvatarWithDot].
+
+
+
+
 class ComposeIdentityBar extends StatelessWidget {
   const ComposeIdentityBar({super.key, this.verb, this.padding});
 
-  /// Optional leading verb, e.g. "Posting", "Replying", "Reviewing". When null
-  /// the bar just shows the account name.
+
+
   final String? verb;
   final EdgeInsetsGeometry? padding;
 
@@ -73,7 +73,7 @@ class _ComposeAvatar extends StatelessWidget {
         final bytes = base64Decode(avatarPng);
         return CircleAvatar(radius: 14, backgroundImage: MemoryImage(bytes));
       } catch (_) {
-        // Fall through to the initials avatar below.
+
       }
     }
     final initial = name.isEmpty ? '?' : name.characters.first.toUpperCase();

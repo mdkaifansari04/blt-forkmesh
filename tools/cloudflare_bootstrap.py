@@ -52,7 +52,7 @@ class BootstrapError(RuntimeError):
 
 
 def _toml_string(value: str) -> str:
-    # JSON string syntax is valid TOML basic-string syntax for these values.
+
     return json.dumps(value, ensure_ascii=False)
 
 
@@ -326,9 +326,9 @@ def render_wrangler_config(
             output.append(f"name = {_toml_string(worker_name)}")
             continue
         if section == "build" and re.match(r"^\s*command\s*=", line):
-            # Migrations are applied explicitly with this generated config.  The
-            # repository's migrate.sh intentionally uses the checked-in config,
-            # so invoking it from here could target the original deployment.
+
+
+
             output.append('command = "python3 tools/build_dashboard_assets.py"')
             continue
         if (
@@ -379,7 +379,7 @@ class CloudflareAPI:
         self._opener = opener
         self._sleep = sleeper
 
-    def __repr__(self) -> str:  # pragma: no cover - defensive logging guard
+    def __repr__(self) -> str:
         return "CloudflareAPI(token=<redacted>)"
 
     def request(
@@ -458,10 +458,10 @@ class CloudflareAPI:
         try:
             result = self.request("GET", "/user/tokens/verify")
         except BootstrapError as error:
-            # Account-owned API tokens are valid for the account/zone calls
-            # this client makes, but the user-scoped verify endpoint rejects
-            # them with HTTP 401 "Invalid API Token". Defer to the account
-            # resolution that always follows, which still fails closed.
+
+
+
+
             if "HTTP 401" in str(error):
                 return
             raise
@@ -567,8 +567,8 @@ class CloudflareAPI:
         body = {
             "type": "AAAA",
             "name": hostname,
-            # A Workers route only needs an orange-cloud record.  100:: is the
-            # IPv6 discard-only prefix and never becomes repository storage.
+
+
             "content": "100::",
             "ttl": 1,
             "proxied": True,
@@ -958,9 +958,9 @@ def bootstrap(
         health_check(hostname)
     join_status = ""
     if options.main_relay_url.strip():
-        # The launched instance pings its main relay as a request to join
-        # (adhoc #97); the operator approves it from the desktop's red-dot
-        # prompt, which links it into the federation and the World.
+
+
+
         join_status = announce(hostname)
         output(
             f"Join request sent to {options.main_relay_url.rstrip('/')} "

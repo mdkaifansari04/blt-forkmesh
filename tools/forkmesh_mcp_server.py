@@ -60,7 +60,7 @@ from pathlib import Path
 
 try:
     from cryptography.hazmat.primitives import serialization
-except ImportError:  # pragma: no cover - dependency hint
+except ImportError:
     sys.stderr.write(
         "forkmesh-mcp: missing 'cryptography' (pip install cryptography)\n")
     raise
@@ -75,7 +75,7 @@ CONNECTOR_PATH = Path(
     os.environ.get("FORKMESH_MCP_CONNECTOR")
     or Path(DATA_HOME) / "ForkMesh/ForkMesh/mcp/connector.json")
 
-# Tools that sign with — and therefore act as — the node identity.
+
 WRITE_TOOLS = {
     "create_issue", "comment_on_issue", "create_milestone", "update_milestone",
     "create_project", "update_project", "open_pr_from_branch",
@@ -87,7 +87,7 @@ def log(msg):
     sys.stderr.flush()
 
 
-# ----------------------------------------------------------------- git helpers
+
 def git(repo, *args, text=True):
     return subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True,
@@ -109,12 +109,12 @@ def is_git_repo(path):
     return (p / ".git").exists()
 
 
-# ----------------------------------------------------------------- repo lookup
+
 def default_repo():
     env = os.environ.get("FORKMESH_REPO")
     if env:
         return Path(env).resolve()
-    # The git repo this script lives in (tools/ is at the repo root).
+
     return Path(__file__).resolve().parent.parent
 
 
@@ -144,7 +144,7 @@ def resolve_repo(name):
     raise ValueError(f"unknown repo: {name!r}")
 
 
-# ------------------------------------------------------------------- identity
+
 _key = None
 _pub = None
 
@@ -165,7 +165,7 @@ def b64url(data):
     return base64.urlsafe_b64encode(data).decode().rstrip("=")
 
 
-# ------------------------------------------------------------------ connector
+
 def connector_record():
     """The minted connector, or {} when this node has not published one."""
     try:
@@ -184,8 +184,8 @@ def access_level():
     record = connector_record()
     if not record:
         return "open"
-    # Constant-time: a token comparison that leaks length/prefix by timing is
-    # exactly the kind of side channel a local agent could grind.
+
+
     return "write" if hmac.compare_digest(
         str(record["token"]), presented_token()) else "read"
 
@@ -264,10 +264,10 @@ def read_frontmatter(path):
     return fields, m.group(2).lstrip("\n")
 
 
-# -------------------------------------------------------- issue signing/writing
-# Native signed-event tracker records, mirroring qt_client/src/IssueStore.cpp
-# byte-for-byte (contentForSigning / canonicalString; the relay Worker's
-# issue_event_content is the same spine).
+
+
+
+
 ISSUES_REL = ".forkmesh/issues"
 
 
@@ -366,7 +366,7 @@ def _commit_or_rollback(repo, pathspec, message, created_dir):
         _commit(repo, pathspec, message)
     except Exception:
         shutil.rmtree(created_dir, ignore_errors=True)
-        git(repo, "add", "-A", "--", pathspec)  # drop it from the index too
+        git(repo, "add", "-A", "--", pathspec)
         raise
 
 
@@ -396,7 +396,7 @@ def create_issue(repo, title, body, labels, milestone, priority, assignees,
     for _attempt in range(3):
         number = next_issue_number(repo)
         if any(d.exists() for d in issue_dir_candidates(repo, number)):
-            continue  # a concurrent writer claimed the number; re-read
+            continue
         ts = now_ms()
         open_ev = {
             "type": "open", "id": f"open-{number}", "author": pub,
@@ -430,13 +430,13 @@ def create_issue(repo, title, body, labels, milestone, priority, assignees,
         payload = dump_record(record)
         path = idir / f"issue-{number}.json"
         path.write_text(payload)
-        # Re-read before committing: a concurrent writer may have taken the
-        # same number (its folder appeared elsewhere, or it overwrote ours).
+
+
         if any(d.exists() for d in issue_dir_candidates(repo, number)[1:]):
             shutil.rmtree(idir, ignore_errors=True)
             continue
         if path.read_text() != payload:
-            continue  # the competing record won this path; pick a fresh number
+            continue
         _commit_or_rollback(repo, ISSUES_REL, f"issue #{number}: {title}", idir)
         return number
     raise ValueError(
@@ -467,8 +467,8 @@ def search_issues(repo, query, status=None):
     q = (query or "").lower()
     out = []
     seen = set()
-    # The status folder is authoritative for open/closed (the layout encodes
-    # each issue's state); the legacy pre-split root falls back to the record.
+
+
     for sub, folder in (("open", "open"), ("closed", "closed"), ("", "")):
         d = root / sub if sub else root
         if not d.is_dir():
@@ -507,9 +507,9 @@ def search_issues(repo, query, status=None):
     return out
 
 
-# ------------------------------------------------------- milestone definitions
-# .forkmesh/issues/milestones.json — a plain list of {title, due, status,
-# description}, the same file IssueStore::saveMilestones writes.
+
+
+
 def milestones_path(repo):
     return issues_root(repo) / "milestones.json"
 
@@ -581,8 +581,8 @@ def update_milestone(repo, title, due=None, status=None, description=None):
     save_milestones(repo, milestones)
 
 
-# ------------------------------------------------------ project signing/writing
-# Mirrors qt_client/src/ProjectStore.cpp byte-for-byte.
+
+
 PROJECTS_REL = ".forkmesh/projects"
 
 
@@ -610,8 +610,8 @@ def project_content_for_signing(ev):
     if t == "milestone":
         return ev.get("milestone", "")
     if t == "issues":
-        # Comma-joined, ascending, no spaces (e.g. "384,385") so every port
-        # hashes identical bytes regardless of stored order.
+
+
         return ",".join(str(n) for n in sorted_issue_numbers(ev.get("issues") or []))
     if t == "delete":
         return ev.get("target", "")
@@ -679,7 +679,7 @@ def create_project(repo, title, body, start_date=None, end_date=None,
         number = next_project_number(repo)
         pdir = projects_root(repo) / str(number)
         if pdir.exists():
-            continue  # a concurrent writer claimed the number; re-read
+            continue
         ts = now_ms()
         open_ev = {
             "type": "open", "id": f"open-{number}", "author": pub,
@@ -715,7 +715,7 @@ def create_project(repo, title, body, start_date=None, end_date=None,
         payload = dump_record(record)
         path = pdir / f"project-{number}.json"
         path.write_text(payload)
-        # Re-read before committing: retry if a concurrent writer overwrote us.
+
         if path.read_text() != payload:
             continue
         _commit_or_rollback(repo, PROJECTS_REL,
@@ -749,19 +749,19 @@ def _append_project_event(repo, number, ev_fields, commit_suffix):
 
 def update_project(repo, number, start_date=None, end_date=None,
                    milestone=None, issues=None):
-    read_project_record(repo, number)  # actionable "not found" before anything
+    read_project_record(repo, number)
     set_dates = start_date is not None or end_date is not None
     if not (set_dates or milestone is not None or issues is not None):
         raise ValueError(
             "nothing to update: pass start_date/end_date, milestone, or issues")
-    # Validate everything up front so a bad field never leaves a partial update.
+
     if set_dates:
         start_ms, end_ms = parse_date_range(start_date, end_date)
     if milestone:
         validate_milestone_exists(repo, milestone)
     if issues is not None:
         linked = validate_issue_links(repo, issues)
-    # One signed event + native commit per field, like the desktop's set* calls.
+
     if set_dates:
         _append_project_event(repo, number,
                               {"type": "dates", "startDate": start_ms,
@@ -775,8 +775,8 @@ def update_project(repo, number, start_date=None, end_date=None,
                               {"type": "issues", "issues": linked}, "issues")
 
 
-# ---------------------------------------------------------- pull signing/writing
-# Mirrors qt_client/src/PullStore.cpp (see tools/branch_pr_review.py).
+
+
 def sign_pull(title, base, head, patch_bytes, commits_bytes, ts, author):
     content = (title.encode() + b"\x00" + base.encode() + b"\x00" + head.encode()
                + b"\x00" + patch_bytes + b"\x00" + commits_bytes)
@@ -872,7 +872,7 @@ def _commit(repo, pathspec, message):
             raise ValueError(f"git commit failed: {err}")
 
 
-# ----------------------------------------------------------------------- tools
+
 def tool_whoami(_args):
     """Who the agent is acting as, and what it is allowed to do.
 
@@ -923,10 +923,10 @@ def tool_list_repos(_args):
 def tool_read_file(args):
     repo = resolve_repo(args.get("repo"))
     path = args["path"]
-    # Reject traversal (".."), absolute paths, and symlink escapes. An absolute
-    # right-hand operand silently discards the repo prefix (Path("/repo") / "/etc/
-    # passwd" == Path("/etc/passwd")), so a "\x00".isabs() / resolve-and-contain
-    # check is required, not just a ".." component filter.
+
+
+
+
     if Path(path).is_absolute() or ".." in Path(path).parts:
         raise ValueError("path must stay within the repo")
     ref = args.get("ref")
@@ -1192,7 +1192,7 @@ TOOLS = [
 TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
 
 
-# ------------------------------------------------------------- JSON-RPC / stdio
+
 def tools_list_payload():
     return {"tools": [{k: t[k] for k in ("name", "description", "inputSchema")}
                       for t in TOOLS]}
@@ -1207,9 +1207,9 @@ def handle_request(msg):
     if method == "initialize":
         client_ver = params.get("protocolVersion", PROTOCOL_VERSION)
         level = access_level()
-        # `instructions` is the spec's slot for telling the model how to use the
-        # server; say up front whether writes are available so it plans a task
-        # it can actually finish.
+
+
+
         instructions = (
             "ForkMesh mesh access. Read: whoami, list_repos, read_file, "
             "search_issues, get_pr_diff. Write (signed as this node): "
@@ -1243,7 +1243,7 @@ def handle_request(msg):
         try:
             require_write_access(name)
             text = tool["handler"](params.get("arguments") or {})
-        except Exception as exc:  # noqa: BLE001 — surface as a tool error
+        except Exception as exc:
             log(f"tool {name} failed: {exc}")
             return _result(mid, {
                 "content": [{"type": "text", "text": f"Error: {exc}"}],
@@ -1252,7 +1252,7 @@ def handle_request(msg):
         return _result(mid, {"content": [{"type": "text", "text": text}]})
 
     if mid is None:
-        return None  # unknown notification
+        return None
     return _error(mid, -32601, f"method not found: {method}")
 
 

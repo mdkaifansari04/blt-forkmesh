@@ -89,7 +89,7 @@ def test_primary_and_enabled_owner_sign_device_can_publish_catalog():
 @pytest.mark.parametrize(
     "device",
     [
-        _device(enabled=False),  # disabled
+        _device(enabled=False),
         _device(revoked_at=1),
         _device(capabilities="browse,publish_repo"),
     ],

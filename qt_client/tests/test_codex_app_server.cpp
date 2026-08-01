@@ -1447,7 +1447,7 @@ void runFatalErrorTest(const QString &executable)
           "non-retrying error emits one terminal result");
 }
 
-} // namespace
+}
 
 int main(int argc, char *argv[])
 {

@@ -11,14 +11,14 @@ constexpr int kKeyBytes = 32;
 constexpr int kNonceBytes = 12;
 constexpr int kTagBytes = 16;
 constexpr int kSaltBytes = 16;
-// Hardened key-stretch for a human-chosen password. Higher than RoomCrypto's
-// 210k because a cove password guards a long-lived vault, not an ephemeral room.
+
+
 constexpr int kDefaultRounds = 600000;
-// Mirror the worker's 4 MB text cap so a cove never grows past what the relay
-// would carry alongside the repo.
+
+
 constexpr qsizetype kMaxPlainBytes = 4ll * 1024 * 1024;
 
-} // namespace
+}
 
 int CoveCrypto::defaultRounds()
 {
@@ -156,7 +156,7 @@ QByteArray CoveCrypto::decrypt(const QJsonObject &cipherObj) const
                                        &len);
     EVP_CIPHER_CTX_free(ctx);
     if (ok != 1)
-        return {}; // wrong password (GCM tag mismatch) or corrupt ciphertext
+        return {};
     outLen += len;
     plain.resize(outLen);
     return plain;

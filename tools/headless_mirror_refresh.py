@@ -69,8 +69,8 @@ SERVICE_COUNTERS_FILE = "service-counters.json"
 SERVICE_COUNTERS_TYPE = "forkmesh.mirror-service-counters"
 MAX_SERVICE_COUNTERS_BYTES = 1024 * 1024
 MAX_SERVICE_COUNTER = 999_999_999_999
-# Gateway counters row: the three totals fields plus the optional last-served
-# stamps (see GatewayServiceCounters in mirror_gateway.py).
+
+
 SERVICE_COUNTER_FIELDS = frozenset({
     "clonesServed",
     "websiteServed",
@@ -296,9 +296,9 @@ def _assert_no_secret_fields(value: Any) -> None:
 
 
 def _safe_environment() -> dict[str, str]:
-    # Keep the child environment allowlisted.  In particular, do not pass
-    # cloud credentials, Python import hooks, dynamic-loader options, Git
-    # configuration injection, SSH agents, or wallet-related variables.
+
+
+
     environment = {
         "PATH": os.environ.get(
             "PATH",
@@ -313,12 +313,12 @@ def _safe_environment() -> dict[str, str]:
         "GIT_OPTIONAL_LOCKS": "0",
         "GIT_NO_REPLACE_OBJECTS": "1",
     }
-    # A materialized mirror can be several times larger than its encrypted
-    # archive. Small hosts frequently mount /tmp as a bounded tmpfs, so permit
-    # an operator to select disk-backed temporary storage without weakening the
-    # otherwise allowlisted child environment. Only an existing, normalized,
-    # owner-only real directory is trusted; unsafe TMPDIR values are ignored
-    # and Python retains its normal fail-closed temporary-directory behavior.
+
+
+
+
+
+
     temporary_raw = os.environ.get("TMPDIR", "")
     if temporary_raw:
         temporary = Path(temporary_raw)
@@ -921,10 +921,10 @@ def load_config(path: Path) -> RefreshConfig:
 @contextmanager
 def _refresh_lock(config: RefreshConfig, *, shared: bool) -> Iterator[None]:
     path = config.identity_state_directory / ".refresh.lock"
-    # ``check`` is used inside a ProtectSystem=strict gateway unit.  It must be
-    # genuinely read-only: the preceding refresh creates the lock, and a
-    # shared flock works on an O_RDONLY descriptor.  Refresh/register retain
-    # the writable create path and exclusive lock.
+
+
+
+
     flags = os.O_RDONLY if shared else os.O_RDWR | os.O_CREAT
     flags |= getattr(os, "O_CLOEXEC", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
@@ -1086,9 +1086,9 @@ def _require_bare_source(config: RefreshConfig) -> None:
 
 def _fsck_source(config: RefreshConfig) -> None:
     _require_bare_source(config)
-    # A power loss may interrupt the narrow interval between installing
-    # transaction-owned loose objects and anchoring them. Replay only the
-    # owner-only, digest-named merge journals before fsck sees the object store.
+
+
+
     _recover_merge_quarantines(config)
     _run_bounded(
         _git_prefix(config)
@@ -1416,11 +1416,11 @@ def _source_issue_counts(
     )
     if paths is None:
         return None
-    # Qt derives the allocation high-water mark from numeric directories, not
-    # only from a canonical issue-N.json blob. Do the same so a damaged or
-    # partially migrated issue directory can never make ForkBot reuse an
-    # already occupied number. Recursive ls-tree does not report directories,
-    # so any descendant path proves that the corresponding tree exists.
+
+
+
+
+
     directory_pattern = re.compile(
         rb"^\.forkmesh/issues/(?:(open|closed)/)?([0-9]+)/"
     )
@@ -1449,10 +1449,10 @@ def _source_issue_counts(
     if bounded_max is None:
         return None
 
-    # Match the desktop reader's precedence: an open/<name> tree is examined
-    # first, closed/<name> reserves the same legacy name, and only a remaining
-    # pre-split root tree is read. A missing or malformed canonical record is
-    # conservatively live, just as the Qt issue list does.
+
+
+
+
     records: list[tuple[str, bytes]] = []
     counted_names = set(directories["open"])
     for name in sorted(directories["open"]):
@@ -1494,9 +1494,9 @@ def _source_issue_counts(
         try:
             record = json.loads(blobs[path].decode("utf-8"))
         except Exception:
-            # JSON recursion limits and malformed/unreadable issue records must
-            # not take down catalog renewal. Treat them as live, matching the
-            # desktop's conservative default, without trusting any tombstone.
+
+
+
             open_count += 1
             continue
         if not isinstance(record, dict):
@@ -1607,9 +1607,9 @@ def _sample_repository_statistics(
         try:
             include(field, sampler())
         except Exception:
-            # Repository metadata is untrusted input. One malformed or unusually
-            # deep fact must remain unknown without suppressing all other
-            # independently readable statistics or breaking lease renewal.
+
+
+
             return
 
     sample("commitCount", lambda: _source_commit_count(config))
@@ -1631,8 +1631,8 @@ def _sample_repository_statistics(
     try:
         result.update(_source_commit_identity(config))
     except Exception:
-        # Same independence rule as the counts above: an unreadable commit
-        # message must not cost the mirror its lease renewal.
+
+
         pass
     return result
 
@@ -1682,9 +1682,9 @@ def _sample_gateway_service_counters(
         if not 0 <= count <= MAX_SERVICE_COUNTER:
             return {}
         result[field] = str(count)
-    # When the last clone / website read was served, and to which class of
-    # client. Optional: an older gateway's counters file carries totals only,
-    # and those stay unknown rather than being back-dated to the totals' row.
+
+
+
     for field in ("cloneServedAt", "websiteServedAt"):
         raw = row.get(field)
         if raw is None or isinstance(raw, bool):
@@ -2028,8 +2028,8 @@ def _replace_catalog_actions_enabled(
         owner_only=True,
     )
     _assert_no_secret_fields(source)
-    # Re-run the complete configuration validator before preserving and
-    # rewriting any owner-controlled fields.
+
+
     validated = load_config(path)
     after_read = _lstat_no_symlink(path, "configuration")
     if (
@@ -2043,8 +2043,8 @@ def _replace_catalog_actions_enabled(
 
     catalog = source.get("catalog", {})
     if not isinstance(catalog, dict):
-        # load_config() already rejects this, but retain a fixed local failure
-        # if the implementation is changed independently later.
+
+
         raise RefreshError("catalog must be an object")
     updated = dict(source)
     updated_catalog = dict(catalog)
@@ -2090,9 +2090,9 @@ def _replace_catalog_actions_enabled(
         try:
             _fsync_directory(path.parent)
         except RefreshError:
-            # The atomic rename already committed a complete owner-only file.
-            # As with refresh(), do not misreport that committed state as a
-            # rollback-safe failure.
+
+
+
             pass
     except OSError as exc:
         raise RefreshError("Actions configuration update failed") from exc
@@ -2300,9 +2300,9 @@ def refresh(config: RefreshConfig) -> dict[str, Any]:
             try:
                 active = _active_metadata(config, identity)
             except RefreshError:
-                # A refresh is also the recovery path for a damaged or stale
-                # active generation. Preserve unknown files until the newly
-                # sealed replacement has passed every validation step.
+
+
+
                 active = None
         _prune_superseded_archives(
             config,
@@ -2312,10 +2312,10 @@ def refresh(config: RefreshConfig) -> dict[str, Any]:
             before_refs,
             active[0].expected_refs_sha256,
         ):
-            # The encrypted flagship generation is unchanged, but adjacent
-            # hosted-import records may have changed. Rebuild and validate the
-            # lightweight gateway configuration without resealing repository
-            # bytes so additions/deletions become routable immediately.
+
+
+
+
             staged_gateway = _write_staged_json(
                 config.gateway_config_path.parent,
                 config.gateway_config_path.name,
@@ -2398,34 +2398,34 @@ def refresh(config: RefreshConfig) -> dict[str, Any]:
                     owner_only=True,
                 )
                 os.close(descriptor)
-            # Everything that can fail is complete before this linearization
-            # point.  Both the old and new regular files point only to an
-            # already-fsynced content-addressed archive, so a crash around the
-            # rename can expose either complete last-good generation, never a
-            # config with partially written bytes.
+
+
+
+
+
             _fsync_directory(config.gateway_config_path.parent)
             os.replace(staged_gateway, config.gateway_config_path)
             staged_gateway = None
             try:
                 _fsync_directory(config.gateway_config_path.parent)
             except RefreshError:
-                # The atomic rename has already committed a complete,
-                # validated generation.  Reporting failure here would be
-                # misleading and could prompt an unsafe retry/rollback.
+
+
+
                 pass
-            # The running gateway has already materialized the previous
-            # generation, while every future start now reads the new config.
-            # Keeping randomized age ciphertext for superseded refs only makes
-            # storage grow by one full repository per push.
+
+
+
+
             try:
                 _prune_superseded_archives(
                     config,
                     keep=frozenset({archive_path}),
                 )
             except RefreshError:
-                # Publication already committed atomically. Do not turn a
-                # best-effort post-commit reclamation failure into another
-                # full reseal; the next refresh prunes it before writing.
+
+
+
                 pass
             return {
                 "ok": True,
@@ -2484,8 +2484,8 @@ def _post_json(url: str, value: Mapping[str, Any]) -> tuple[int, dict[str, Any]]
                 raise RefreshError("publication response is too large")
             raw = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
     except urlerror.HTTPError as exc:
-        # Do not read or surface the remote body; it may echo a public identity
-        # or an operator-supplied field.
+
+
         raise RefreshError("publication endpoint rejected the request") from exc
     except (urlerror.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         raise RefreshError("publication endpoint is unavailable") from exc
@@ -2782,9 +2782,9 @@ def _actions_catalog_state(
     ):
         return fallback
     if state == "disabled":
-        # The public catalog contract keeps actionsEnabled/actionsState
-        # internally consistent: a live disabled executor advertises no current
-        # capability even though the owner configuration permits re-enabling it.
+
+
+
         return False, "disabled"
     return True, state
 
@@ -2818,10 +2818,10 @@ def _catalog_unsigned(
         "branch": config.catalog.branch,
         "platform": config.catalog.platform,
         "version": config.catalog.version,
-        # The owner configuration caps this capability; the live state comes
-        # only from a strict, short owner-local executor lease. Workflow
-        # definitions, variables, commands, paths, and logs never enter this
-        # signed catalog publication.
+
+
+
+
         "actionsEnabled": actions_enabled,
         "actionsState": actions_state,
         "nodeId": config.node_owner,
@@ -2912,11 +2912,11 @@ def _publish_registration(
     ):
         raise RefreshError("catalog publication was not accepted")
 
-    # A new canonical state can legitimately leave the first endpoint
-    # challenge pending: the endpoint is registered before its catalog write
-    # advances the public state pin. Re-register once after that durable write
-    # and require the Worker to confirm a fresh signed proof against the final
-    # pin. Normal renewals already return active and avoid this extra request.
+
+
+
+
+
     if endpoint_response.get("health") != "active":
         endpoint_status, endpoint_response = post_json(
             config.worker_origin + "/api/mirrors/https",
@@ -3016,15 +3016,15 @@ def check(config: RefreshConfig) -> dict[str, Any]:
         }
 
 
-# --- Authenticated pull-merge executor --------------------------------------
-#
-# The edge Worker authenticates the account and signs the complete request.
-# This node-side executor still treats every body field as hostile: repository
-# paths come only from the owner-controlled refresh configuration, branch names
-# come from committed pull metadata, and Git receives fixed argument vectors
-# with hooks, credentials, external protocols, and ambient configuration
-# disabled.  A request id is recorded as an out-of-band Git ref so retries are
-# durable without changing the public refs digest.
+
+
+
+
+
+
+
+
+
 
 MERGE_JOB_TYPE = "forkmesh.pull-merge-job-v1"
 MERGE_EXECUTOR_TYPE = "forkmesh.pull-merge-executor-v1"
@@ -3430,11 +3430,11 @@ def _merge_pull_metadata(
         != request["expectedHeadOid"]
     ):
         return None
-    # PullStore's established author signature binds title/base/head and the
-    # immutable patch/mbox reconstructed from creationBaseOid/creationHeadOid.
-    # It deliberately does not bind owner-applied lifecycle fields. Preserve
-    # every signed input and the signature byte-for-byte; change only status and
-    # the merge snapshot, exactly like PullStore::setStatus/merge.
+
+
+
+
+
     replacements = {
         "status": "merged",
         "mergeBase": request["expectedBaseOid"],
@@ -3720,8 +3720,8 @@ def _merge_metadata_commit(
     object_directory: Path,
 ) -> str:
     path = "pulls/%d/pull.md" % request["pullNumber"]
-    # Pull metadata is a committed UTF-8 document, so hash its exact bytes
-    # rather than the canonical-JSON encoding used for job records.
+
+
     _code, raw = _merge_git(
         config,
         ["hash-object", "-w", "--stdin"],
@@ -4171,8 +4171,8 @@ def _recover_merge_quarantines(config: RefreshConfig) -> None:
         try:
             journal.lstat()
         except FileNotFoundError:
-            # Object writes cannot enter the source repository until the
-            # durable journal exists, so an incomplete build is safe to drop.
+
+
             _merge_remove_quarantine(config, path)
             continue
         _merge_recover_quarantine(config, path)
@@ -4299,8 +4299,8 @@ def _merge_finalize_quarantine(
             )
             stored = _merge_store_record(config, request, record)
         else:
-            # Exact refs moved after validation. The hidden staging pair remains
-            # reachable, so speculative objects cannot become dangling.
+
+
             stored = _merge_store_failure(
                 config, request, "stale_pull_metadata")
         _merge_remove_quarantine(
@@ -4335,9 +4335,9 @@ def _merge_execute_locked(
     if quarantine_exists:
         journal = _merge_recover_quarantine(config, quarantine, request)
         return _merge_finalize_quarantine(config, request, journal)
-    # A completion marker without its owner-only journal/record is a consumed
-    # idempotency id (for example, after bounded record expiry), never authority
-    # to reinterpret an old merge as a new request.
+
+
+
     if _merge_ref_pair(config, _merge_completed_refs(request)) is not None:
         raise RefreshError("merge request id was already used")
     if not config.catalog.branch:
@@ -4365,8 +4365,8 @@ def _merge_execute_locked(
     raw_metadata, mode = metadata
     parsed = _merge_pull_metadata(raw_metadata, request, base_branch)
     if parsed is None:
-        # Deliberately one error for closed, malformed, legacy-patch, and
-        # creation-OID-mismatched records: none are safe to merge online.
+
+
         return _merge_store_failure(config, request, "unsupported_pull")
     if not _merge_peer_review_gate(
             config, request, raw_metadata):
@@ -4461,9 +4461,9 @@ def merge_executor(
     with _refresh_lock(config, shared=False):
         record = _merge_execute_locked(config, request)
     if record.get("status") == "merged" and not _merge_generation_ready(config):
-        # Resealing is deliberately outside the Git transaction lock. refresh()
-        # acquires the same exclusive lock, validates the exact post-merge refs,
-        # and atomically swaps only a complete encrypted generation.
+
+
+
         refresh(config)
     return _merge_public_result(config, request, record)
 
@@ -4536,8 +4536,8 @@ def main(argv: list[str] | None = None) -> int:
         print("headless mirror refresh: interrupted", file=sys.stderr)
         return 130
     except Exception:
-        # Unexpected library/OS exceptions can interpolate paths or request
-        # values.  Fail closed with a fixed message instead of leaking them.
+
+
         print("headless mirror refresh: unexpected local failure", file=sys.stderr)
         return 2
 

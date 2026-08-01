@@ -1,9 +1,9 @@
--- Public-only Fediverse directory and authenticated shared-media rooms.
---
--- Directory `data` is intentionally plaintext because every accepted field is
--- public instance metadata. The Worker rejects private accounts/followers,
--- raw network identifiers, and relationships without explicit public/consent
--- attestations before insertion.
+
+
+
+
+
+
 CREATE TABLE IF NOT EXISTS world_fediverse_instances (
     instance_id TEXT PRIMARY KEY,
     kind TEXT NOT NULL CHECK (kind IN ('mastodon', 'lemmy', 'x', 'reddit')),
@@ -17,8 +17,8 @@ CREATE TABLE IF NOT EXISTS world_fediverse_instances (
 CREATE INDEX IF NOT EXISTS idx_world_fediverse_kind_updated
     ON world_fediverse_instances(kind, updated_at);
 
--- A media space stores coordination metadata only. ForkMesh never stores,
--- proxies, records, or rebroadcasts media through these tables.
+
+
 CREATE TABLE IF NOT EXISTS world_media_spaces (
     space_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -47,9 +47,9 @@ CREATE INDEX IF NOT EXISTS idx_world_media_spaces_owner
 CREATE INDEX IF NOT EXISTS idx_world_media_spaces_active
     ON world_media_spaces(status, last_activity_at);
 
--- Owners are authoritative from world_media_spaces.owner_bi. Only explicit
--- moderator grants are added here; a platform role does not silently grant
--- room control.
+
+
+
 CREATE TABLE IF NOT EXISTS world_media_roles (
     role_id TEXT PRIMARY KEY,
     space_id TEXT NOT NULL,
@@ -63,9 +63,9 @@ CREATE TABLE IF NOT EXISTS world_media_roles (
 CREATE INDEX IF NOT EXISTS idx_world_media_roles_account
     ON world_media_roles(account_bi, space_id);
 
--- `data` contains only a bounded title, a validated external HTTPS provider
--- page, and no-autoplay/no-rebroadcast flags. Removed entries are soft-deleted
--- long enough for moderation/audit reconciliation, then purged.
+
+
+
 CREATE TABLE IF NOT EXISTS world_media_items (
     item_id TEXT PRIMARY KEY,
     space_id TEXT NOT NULL,

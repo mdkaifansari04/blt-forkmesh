@@ -64,9 +64,9 @@ class LogoImageParser(HTMLParser):
 def test_all_public_html_pages_use_logo_in_brand_link():
     assert (PUBLIC_DIR / "assets" / "logo.png").is_file()
 
-    # dashboard/partials/*.html are shell fragments (no <head>/brand link); they
-    # are composed into generated dashboard assets before deploy, so they are not
-    # standalone pages and are exempt from the per-page brand-link contract.
+
+
+
     html_pages = sorted(
         p for p in PUBLIC_DIR.rglob("*.html")
         if "partials" not in p.relative_to(PUBLIC_DIR).parts
@@ -76,9 +76,9 @@ def test_all_public_html_pages_use_logo_in_brand_link():
     missing = []
     for page in html_pages:
         rel = page.relative_to(PUBLIC_DIR).as_posix()
-        # dashboard/shell.html is the authored scaffold; its brand link lives
-        # in the header partial and every BUILT page document (parsed directly
-        # below) carries it inline.
+
+
+
         if rel == "dashboard/shell.html":
             continue
         html = page.read_text(encoding="utf-8")
@@ -122,9 +122,9 @@ def test_brand_logo_size_comes_from_shared_stylesheet():
 def test_dashboard_assets_are_root_relative_for_deep_links():
     html = (PUBLIC_DIR / "dashboard" / "index.html").read_text(encoding="utf-8")
 
-    # Root-relative so deep-link paths (/owner/repo/...) resolve the bundle, and
-    # carrying a per-build content-hash ?v= so a new deploy is never served from
-    # a stale cache (the old static ?v=public-profiles never changed).
+
+
+
     m = re.search(r'src="/dashboard\.js\?v=([0-9a-f]{6,})"', html)
     assert m is not None, "dashboard.js must be root-relative with a content-hash ?v="
     assert 'href="styles.css"' not in html

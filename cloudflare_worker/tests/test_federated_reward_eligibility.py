@@ -14,8 +14,8 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 import sys
 
 sys.path.insert(0, str(ROOT / "src"))
-import edge_routing  # noqa: E402
-import reward_policy  # noqa: E402
+import edge_routing
+import reward_policy
 
 
 NOW = 2_000_000_000_000

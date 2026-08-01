@@ -14,8 +14,8 @@ MAX_DURABLE_OBJECTS = 32
 MAX_SAFE_INTEGER = 9_007_199_254_740_991
 TABLE_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}")
 
-# Cloudflare D1 limits documented at
-# https://developers.cloudflare.com/d1/platform/limits/
+
+
 D1_FREE_DATABASE_BYTES = 500_000_000
 D1_PAID_DATABASE_BYTES = 10_000_000_000
 D1_INCLUDED_ACCOUNT_BYTES = 5_000_000_000
@@ -81,7 +81,7 @@ async def d1_table_inventory(env, d1_all, d1_first):
             )
             row_count = int((count_row or {}).get("row_count", 0) or 0)
         except Exception:
-            # A table can disappear during a rolling migration.
+
             continue
         if 0 <= row_count <= MAX_SAFE_INTEGER:
             capacity.append({"name": name, "rowCount": row_count})

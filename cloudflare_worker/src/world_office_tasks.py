@@ -42,9 +42,9 @@ CHECKIN_STATES = frozenset({"going_well", "blocked", "needs_help"})
 DESTINATIONS = frozenset({
     "department", "personal", "repository", "qa", "agent",
 })
-# One general bot replaces the old per-vendor Claude/Codex choice. The legacy
-# kinds still decode from stored rows and are projected as "agent" so an
-# existing task keeps working after the picker was removed.
+
+
+
 AGENT_ASSIGNEE_KINDS = frozenset({"agent", "bot", "claude", "codex"})
 ASSIGNEE_KINDS = (
     frozenset({"user", "unassigned"}) | AGENT_ASSIGNEE_KINDS
@@ -202,7 +202,7 @@ def _route(path):
         return None
     if clean == base:
         return ("collection", "", "")
-    # Collection actions must be resolved before the opaque task-id parser.
+
     if clean == base + "/stop-active":
         return ("stop-active", "", "stop-active")
     if clean == base + "/proofs":
@@ -260,14 +260,14 @@ def _checkin_deadline(runtime, now):
 async def _latest_checkins(runtime, task_ids):
     if not task_ids:
         return {}
-    # task_ids originate in the D1 result and are validated opaque hex ids.
+
     task_ids = [
         str(value).lower() for value in task_ids if valid_id(value)
     ][:MAX_TASKS]
     if not task_ids:
         return {}
     rows = []
-    # Keep each D1 statement well below its bound-parameter ceiling.
+
     for offset in range(0, len(task_ids), 50):
         chunk = task_ids[offset:offset + 50]
         placeholders = ",".join("?" for _value in chunk)
@@ -467,8 +467,8 @@ async def _list(
         MAX_TASKS,
     )
     if marketing_only and not can_manage:
-        # Preserve the private assignee-only behavior of the physical Marketing
-        # wall while the universal organization list remains member-visible.
+
+
         rows = [
             row for row in rows or []
             if str(row.get("assignee_bi") or "") == account_bi
@@ -522,8 +522,8 @@ async def _list(
         ),
     }
     if marketing_only and can_manage:
-        # Assignment is deliberately narrower than organization management:
-        # even an owner may only place Marketing work onto a Marketing member.
+
+
         result["members"] = marketing_names
     elif not marketing_only:
         result["members"] = [
@@ -840,8 +840,8 @@ async def _create(
             and str(parent_row.get("assignee_bi") or "") != account_bi
         ):
             return _response(runtime, {"error": "forbidden"}, status=403)
-        # A follow-up is a continuation of the routed work. The server, rather
-        # than the client, inherits its assignee and routing from the parent.
+
+
         assignee_kind = str(
             parent_row.get("assignee_kind") or "unassigned").lower()
         requested_assignee_kind = assignee_kind
@@ -874,9 +874,9 @@ async def _create(
         if not amount_sol or not lamports:
             return _response(
                 runtime, {"error": "invalid_bounty_request"}, status=400)
-        # A lobby bid is always made by and assigned to the authenticated
-        # organization member. Client-supplied assignee fields cannot make a
-        # compensation request appear to come from somebody else.
+
+
+
         assignee_kind = "user"
         data = dict(data)
         data["assignee"] = actor
@@ -918,7 +918,7 @@ async def _create(
         assignee = member["name"]
         assignee_bi = member["bi"]
     elif assignee_kind in AGENT_ASSIGNEE_KINDS:
-        # The board carries one general bot; the node picks the runtime.
+
         assignee_kind = "agent"
         assignee = "agent"
         destination = "agent"
@@ -943,8 +943,8 @@ async def _create(
     requested_priority = _priority(data.get("priority"))
     if "priority" in data and not can_manage:
         return _response(runtime, {"error": "manager_required"}, status=403)
-    # A desktop that launches a prompt opens the task in the same call, so the
-    # run's provenance arrives with it rather than through a second round trip.
+
+
     agent_run = (
         _agent_run(data.get("agent"))
         if requested_assignee_kind in AGENT_ASSIGNEE_KINDS
@@ -1232,7 +1232,7 @@ async def _update(
         "repository": repository,
         "howToTest": _text(current.get("howToTest"), 720),
         "qaReviewer": _text(current.get("qaReviewer"), 64).lower(),
-        # Editing the copy never rewrites who ran the task or how.
+
         "agent": _agent_run(current.get("agent")),
     })
     await runtime.d1_run(
@@ -1377,8 +1377,8 @@ async def _complete(
         runtime, org_bi, account_bi, actor, task_id, row, data,
         can_manage, now):
     """Finish assigned work and place it in the private QA review queue."""
-    # A bot-assigned task has no member assignee_bi to match, so the desktop
-    # that opened it — and only that desktop — reports its run as finished.
+
+
     launched_agent_run = (
         str(row.get("assignee_kind") or "") in AGENT_ASSIGNEE_KINDS
         and str(row.get("created_by_bi") or "") == account_bi
@@ -1393,9 +1393,9 @@ async def _complete(
         int(row.get("completed_at") or 0) > 0
         and int(row.get("qa_requested_at") or 0) > 0
     ):
-        # Completion is idempotent, but a retried client may be adding the
-        # human-readable work note after an older client already finished the
-        # task. Preserve the completed/QA state and update only encrypted copy.
+
+
+
         if "completionNote" in data:
             try:
                 completed_data = await runtime.open(row.get("data"))
@@ -1447,8 +1447,8 @@ async def _complete(
     current["qaReviewer"] = ""
     current["qaFailureReason"] = ""
     current["qaFailureScreenshot"] = ""
-    # The finishing bot (and any model/mode/strength it ended up running with)
-    # layers onto whatever the launching bot recorded when it opened the task.
+
+
     if isinstance(data.get("agent"), dict):
         merged = dict(current.get("agent") or {})
         merged.update({
@@ -1568,7 +1568,7 @@ async def _return_to_list(
     if not isinstance(current, dict):
         return _response(runtime, {"error": "task_unavailable"}, status=500)
     session_id = str(row.get("agent_session_id") or "")
-    # Best effort: a node that already leased the job simply finds it retired.
+
     cancel = getattr(runtime, "cancel_agent_session", None)
     if session_id and callable(cancel):
         try:
@@ -1614,13 +1614,13 @@ async def _delete(runtime, org_bi, actor, task_id, can_manage):
         org_bi,
         task_id,
     )
-    # A task promoted out of the legacy Marketing tables keeps its original
-    # row there, and the lazy-schema bootstrap replays its
-    # "INSERT OR IGNORE INTO organization_tasks ... SELECT ... FROM
-    # world_office_marketing_tasks" backfill on every schema fingerprint
-    # change. Without this purge the deleted task silently reappears on the
-    # next deployment. The legacy tables are absent on databases created after
-    # the promotion, so a missing table is not an error here.
+
+
+
+
+
+
+
     for legacy in (
             "world_office_marketing_checkins",
             "world_office_marketing_tasks",
@@ -1721,8 +1721,8 @@ async def _checkin(
     checkin_id = runtime.new_id()
     if not valid_id(checkin_id):
         return _response(runtime, {"error": "id_generation_failed"}, status=500)
-    # Retain a small per-task history; the migration's global trigger is the
-    # final race-safe guard against an unbounded table.
+
+
     await runtime.d1_run(
         "DELETE FROM organization_task_checkins WHERE checkin_id IN ("
         "SELECT checkin_id FROM organization_task_checkins "
@@ -1832,8 +1832,8 @@ async def handle(runtime, path):
 
     kind, task_id, action = route
     if not role:
-        # Task titles and routing are organization-private. A valid ForkMesh
-        # account without current membership receives no existence signal.
+
+
         return _response(runtime, {"error": "org_member_required"}, status=403)
     if kind == "initiatives":
         if not marketing_only:

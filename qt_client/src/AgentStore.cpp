@@ -20,7 +20,7 @@ QString sanitize(const QString &owner, const QString &name)
     return key;
 }
 
-} // namespace
+}
 
 QString AgentSession::repoKey() const
 {

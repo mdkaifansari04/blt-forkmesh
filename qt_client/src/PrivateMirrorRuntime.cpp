@@ -286,9 +286,9 @@ bool runGit(const QStringList &arguments, QByteArray *stdoutBytes,
     environment.insert(QStringLiteral("GIT_TERMINAL_PROMPT"),
                        QStringLiteral("0"));
     if (remoteHttps) {
-        // A private remote clone must not inherit a system/global credential
-        // helper, URL rewrite, protocol policy, or hook path. Only the explicit
-        // HTTPS source and short-lived Authorization header are admitted.
+
+
+
         environment.insert(QStringLiteral("GIT_CONFIG_NOSYSTEM"),
                            QStringLiteral("1"));
         environment.insert(QStringLiteral("GIT_CONFIG_SYSTEM"),
@@ -302,9 +302,9 @@ bool runGit(const QStringList &arguments, QByteArray *stdoutBytes,
     }
     process.setProcessEnvironment(environment);
     process.setProcessChannelMode(QProcess::SeparateChannels);
-    // Git and remote helpers can emit attacker-influenced diagnostics. They
-    // are intentionally discarded, not accumulated or surfaced with private
-    // URLs; callers receive one bounded generalized failure.
+
+
+
     process.setStandardErrorFile(QProcess::nullDevice());
     QStringList hardenedArguments = arguments;
     if (remoteHttps) {
@@ -434,7 +434,7 @@ PrivateMirrorRuntime::SyncResult sealArchive(
     return result;
 }
 
-} // namespace
+}
 
 PrivateMirrorMaterialization::PrivateMirrorMaterialization(
     std::unique_ptr<QTemporaryDir> directory, QString repositoryPath)
@@ -530,7 +530,7 @@ PrivateMirrorRuntime::SyncResult PrivateMirrorRuntime::syncSource(
         gitPrefixArgs +
         QStringList{QStringLiteral("clone"), QStringLiteral("--mirror"),
                     source.trimmed(), temporaryMirror};
-    if (!runGit(cloneArgs, nullptr, error, /*remoteHttps=*/true))
+    if (!runGit(cloneArgs, nullptr, error,  true))
         return {};
     return syncRepository(temporaryMirror, replicaRoot, vaultPath,
                           vaultSecret, existingOpaqueId,

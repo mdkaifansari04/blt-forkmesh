@@ -32,7 +32,7 @@ ENTRY = ROOT / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
 MODULE_PATH = ROOT / "src" / "activitypub.py"
-import importlib.util  # noqa: E402
+import importlib.util
 spec = importlib.util.spec_from_file_location("activitypub", MODULE_PATH)
 ap = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(ap)
@@ -197,7 +197,7 @@ def test_delete_removes_object_and_federates_tombstone():
         {"inbox": "https://mastodon.social/users/a/inbox",
          "shared_inbox": "https://mastodon.social/inbox"},
         {"inbox": "https://mastodon.social/users/b/inbox",
-         "shared_inbox": "https://mastodon.social/inbox"},  # dupe shared inbox
+         "shared_inbox": "https://mastodon.social/inbox"},
         {"inbox": "https://fosstodon.org/users/c/inbox", "shared_inbox": ""},
     ]
     log = []
@@ -206,16 +206,16 @@ def test_delete_removes_object_and_federates_tombstone():
         None, _post({"action": "delete", "id": "uuid-1"}), "alice", "proj"))
     assert resp["status"] == 200
     assert resp["data"] == {"ok": True, "deleted": "uuid-1", "federated": True}
-    # Local object gone.
+
     assert any(e[0] == "d1_run" and "DELETE FROM ap_objects" in e[1] for e in log)
     assert "uuid-1" not in objs
-    # One outbox row per unique inbox (shared inbox deduped → 2, not 3).
+
     inserts = _outbox_inserts(log)
     assert len(inserts) == 2
     inboxes = {e[2][0] for e in inserts}
     assert inboxes == {"https://mastodon.social/inbox",
                        "https://fosstodon.org/users/c/inbox"}
-    # The queued body is a Delete(Tombstone) from the repo actor.
+
     payload = inserts[0][2][1]
     body = json.loads(payload["body"])
     assert body["type"] == "Delete"

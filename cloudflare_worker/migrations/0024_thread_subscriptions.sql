@@ -1,14 +1,14 @@
--- Thread subscriptions (issue #361): who follows a given issue/PR so a reply
--- reaches them, not just people the comment @mentions. Auto-populated for anyone
--- who comments; also set/cleared by the signed /subscribe endpoint.
--- The data column holds the subscriber's (public) node name plus a `muted` flag
--- so an explicit unsubscribe survives a later auto-subscribe.
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS thread_subscriptions (
-  thread_bi     TEXT NOT NULL,    -- blind_index("thread:<owner>/<repo>:<source>:<number>")
-  subscriber_bi TEXT NOT NULL,    -- blind_index(subscriber node name)
+  thread_bi     TEXT NOT NULL,
+  subscriber_bi TEXT NOT NULL,
   ts            INTEGER NOT NULL,
-  data          TEXT NOT NULL,    -- AES-GCM encrypted {node, muted}
+  data          TEXT NOT NULL,
   PRIMARY KEY (thread_bi, subscriber_bi)
 );
 

@@ -36,9 +36,9 @@ constexpr quint64 kScryptR = 8;
 constexpr quint64 kScryptP = 1;
 constexpr quint64 kScryptMaxMemory = 64ull * 1024 * 1024;
 constexpr qint64 kMaximumVaultBytes = 64 * 1024;
-// Solana's packet-sized serialized transaction ceiling. Refuse plans that need
-// chunking instead of constructing an oversized transaction the network cannot
-// accept.
+
+
+
 constexpr int kMaximumTransactionBytes = 1232;
 constexpr quint64 kMaximumJsonInteger = 9007199254740991ull;
 constexpr quint64 kLamportsPerSol = 1000000000ull;
@@ -752,7 +752,7 @@ bool signEd25519(const QByteArray &seed, const QByteArray &message,
     return true;
 }
 
-} // namespace
+}
 
 void secureErase(QByteArray &bytes)
 {
@@ -1185,9 +1185,9 @@ bool buildRewardTransactionIntent(const QJsonObject &job,
                  QStringLiteral("Only a pending unsigned reward job can be signed."));
         return false;
     }
-    // A legacy packet-sized transaction currently fits at most about twenty
-    // simple transfers. Keep a conservative explicit cap, then check the exact
-    // serialized size below as the authoritative limit.
+
+
+
     if (parsed.transfers.size() > 20) {
         setError(
             error,
@@ -1206,7 +1206,7 @@ bool buildRewardTransactionIntent(const QJsonObject &job,
     accounts.append(decodeBase58(parsed.sourceWallet, 32));
     for (const RewardTransfer &transfer : parsed.transfers)
         accounts.append(decodeBase58(transfer.destinationWallet, 32));
-    accounts.append(QByteArray(32, '\0')); // System Program
+    accounts.append(QByteArray(32, '\0'));
 
     auto appendShortVector = [](QByteArray *bytes, quint32 value) {
         do {
@@ -1223,9 +1223,9 @@ bool buildRewardTransactionIntent(const QJsonObject &job,
     };
 
     QByteArray message;
-    message.append(char(1)); // pool/fee payer is the only signer
-    message.append(char(0)); // signer is writable
-    message.append(char(1)); // System Program is the only read-only unsigned key
+    message.append(char(1));
+    message.append(char(0));
+    message.append(char(1));
     appendShortVector(&message, quint32(accounts.size()));
     for (const QByteArray &account : std::as_const(accounts))
         message.append(account);
@@ -1238,7 +1238,7 @@ bool buildRewardTransactionIntent(const QJsonObject &job,
         message.append(char(0));
         message.append(char(index + 1));
         appendShortVector(&message, 12);
-        appendLittle(&message, 2, 4); // SystemInstruction::Transfer
+        appendLittle(&message, 2, 4);
         appendLittle(&message, parsed.transfers.at(index).lamports, 8);
     }
     QByteArray transaction;
@@ -1630,4 +1630,4 @@ QString redactRewardText(const QString &text, const QStringList &exactSecrets)
     return redacted;
 }
 
-} // namespace forkmesh::rewards
+}

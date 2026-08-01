@@ -56,9 +56,9 @@ class Artifact:
         return f"{RELEASE_BASE}/{self.name}"
 
 
-# Archive digests are the GitHub release-asset digests.  Darwin binary digests
-# are Cloudflare's published checksums for the single cloudflared member inside
-# each verified .tgz.  Other assets are already standalone executables.
+
+
+
 ARTIFACTS: dict[tuple[str, str], Artifact] = {
     ("linux", "x86_64"): Artifact(
         "cloudflared-linux-amd64",

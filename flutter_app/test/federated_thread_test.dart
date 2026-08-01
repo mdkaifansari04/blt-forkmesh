@@ -19,7 +19,7 @@ void main() {
       'sourceSoftware': 'lemmy',
       'lifecycle': 'edited',
       'depth': 2,
-      // A compromised or old server response cannot promote this projection.
+
       'nativeEvent': true,
     });
 

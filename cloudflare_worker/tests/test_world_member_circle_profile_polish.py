@@ -17,8 +17,8 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
     assert "function rebuildCampfireMemberLogs(total)" in SCENE
     assert "rebuildCampfireMemberLogs(count)" in SCENE
     assert "log.userData.memberLogIndex = index" in SCENE
-    # adhoc #427: the blaze is a milestone marker — it holds its size through a
-    # hundred accounts and steps up only when the next century lands.
+
+
     assert "const CAMPFIRE_BASE_FIRE_LEVEL = 3;" in SCENE
     assert "const CAMPFIRE_FIRE_LEVEL_PER_CENTURY = 0.35;" in SCENE
     assert "const CAMPFIRE_MAX_FIRE_LEVEL = 5.4;" in SCENE
@@ -27,8 +27,8 @@ def test_member_circle_uses_dirt_and_tracks_firewood_per_member():
         "CAMPFIRE_BASE_FIRE_LEVEL + fireCenturies * CAMPFIRE_FIRE_LEVEL_PER_CENTURY"
         in SCENE
     )
-    # The procedural fire stays rooted at the logs while milestone growth is
-    # applied to the effect itself, so it cannot sink into the pit.
+
+
     assert "proceduralFire.position.y = FLAME_BASE_Y;" in SCENE
     assert "const fireGrowth = fireLevel / CAMPFIRE_BASE_FIRE_LEVEL;" in SCENE
     assert "proceduralFire.scale.set(" in SCENE

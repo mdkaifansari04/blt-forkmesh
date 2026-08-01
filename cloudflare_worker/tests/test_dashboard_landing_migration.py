@@ -30,17 +30,17 @@ def _read(path: Path) -> str:
 def test_dashboard_shell_is_split_into_composable_partials():
     source_shell = (PUBLIC / "dashboard" / "shell.html").read_text(encoding="utf-8")
 
-    # The authored shell stays split - it references partials rather than
-    # inlining the chrome.
+
+
     assert "<!--#include" in source_shell
     for name in ("header", "sidebar", "main", "modals"):
         assert (PUBLIC / "dashboard" / "partials" / (name + ".html")).is_file()
         assert ('<!--#include partial="%s"-->' % name) in source_shell
     assert '<!--#include partial="network-rail"-->' not in source_shell
 
-    # One prebuilt static document per PAGES entry, each carrying its page id
-    # and exactly one view, with no runtime include pass. The old single-shell
-    # public/dashboard.html duplicate is gone.
+
+
+
     for page_id, meta in PAGES.items():
         built = (PUBLIC / meta["asset"]).read_text(encoding="utf-8")
         assert built == assembled_dashboard_page(page_id)
@@ -50,7 +50,6 @@ def test_dashboard_shell_is_split_into_composable_partials():
     assert not (PUBLIC / "dashboard.html").exists()
     assert "self.env.ASSETS.fetch(" in ENTRY_TEXT
     assert "assemble_shell(" not in ENTRY_TEXT
-    assert "tools/build_dashboard_assets.py" in ENTRY_TEXT
 
 
 def test_root_keeps_regular_site_and_embeds_world_for_every_visitor():
@@ -59,15 +58,15 @@ def test_root_keeps_regular_site_and_embeds_world_for_every_visitor():
 
     assert "Protect the code that matters from a single-host failure" in index
     assert "Code hosting that lives on the network." not in index
-    # The World drops visitors straight into the interactive city: the old
-    # "A living city for code." marketing hero is gone, and the shell stays
-    # blank while it boots — only a watchdog-revealed load error remains.
+
+
+
     assert "A living city for code." not in world
     assert "ENTERING THE WORLD" not in world
     assert "data-world-load-error" in world
     assert 'data-world-mode="public"' in world
-    # The Worker answers / with the same regular site regardless of login state,
-    # and the World remains available inside its bounded window and at /world/.
+
+
     assert "forkmesh.session" not in index
     assert 'location.replace("/dashboard")' not in index
     assert 'location.replace("/dashboard.html")' not in index
@@ -95,9 +94,9 @@ def test_dashboard_exposes_live_hydration_targets():
     ):
         assert marker in dashboard
 
-    # The persistent network rail (and its mini chat widget) is gone: network
-    # stats live in the Network section and chat is now its own dashboard
-    # section/route, not a sidebar rail.
+
+
+
     assert "data-network-rail-summary" not in dashboard
     assert 'id="sideChatMessages"' not in dashboard
 
@@ -110,7 +109,7 @@ def test_dashboard_exposes_live_hydration_targets():
 
 
 def test_dashboard_get_paid_button_uses_small_sol_logo():
-    # The button lives in the shared header partial, so any composed page has it.
+
     dashboard = assembled_dashboard_page("home")
 
     assert 'href="/mirror-payouts"' in dashboard
@@ -138,7 +137,7 @@ def test_dashboard_nav_links_to_chat_page():
     assert "Chat" in drawer_nav
     assert 'data-nav="chat" data-nav-link href="/dashboard/chat"' in drawer_nav
     assert 'data-lucide="messages-square"' in drawer_nav
-    # Sidebar entries are real page links now - no client-router buttons.
+
     assert "<button" not in drawer_nav
     assert "data-section=" not in drawer_nav
     assert 'href="/chat"' not in drawer_nav
@@ -180,12 +179,12 @@ def test_dashboard_hydrator_uses_existing_worker_apis():
     assert "renderRepositories" in dashboard_js
     assert "renderNetwork" in dashboard_js
     assert "requestedRepoKey()" in dashboard_js
-    # Signed-out visitors browse repositories as guests instead of being
-    # bounced back to the landing page (adhoc #123).
+
+
     assert 'location.replace("/");\n        return;' not in dashboard_js
     assert "data-guest-auth-link" in dashboard_js
-    # No fabricated "guest" profile (adhoc #185): guests keep the baked chrome
-    # defaults, and the account pages bounce signed-out visitors to login.
+
+
     assert 'renderProfile(session || { nodeName: "guest" })' not in dashboard_js
     assert '{ nodeName: "guest" }' not in dashboard_js
     assert 'location.replace("/login?next="' in dashboard_js
@@ -231,8 +230,8 @@ def test_dashboard_profile_page_removes_secondary_profile_picture_card():
 def test_dashboard_loads_profile_once_without_periodic_polling():
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
-    # Boot hydrates the canonical profile once and chains the notification
-    # load off it - no periodic re-fetch.
+
+
     assert "hydrateCanonicalProfile(session).then(() => loadNotifications()).catch(() => {});" in dashboard_js
     assert "function startProfileSync()" not in dashboard_js
     assert "async function pollStatus(" not in dashboard_js
@@ -244,8 +243,8 @@ def test_dashboard_defaults_to_home_and_keeps_repositories_available():
     home = _read(PUBLIC / "dashboard" / "index.html")
     repos = assembled_dashboard_page("repos")
 
-    # /dashboard is the home document: the home view is baked active and the
-    # home sidebar link carries aria-current at build time (no JS pass).
+
+
     assert 'data-page="home"' in home
     assert 'data-nav="home" data-nav-link aria-current="page"' in home
     assert 'data-nav="repos" data-nav-link aria-current="page"' not in home
@@ -253,8 +252,8 @@ def test_dashboard_defaults_to_home_and_keeps_repositories_available():
     assert 'data-view="home" class="view active' in visible
     assert 'data-view="repos"' not in visible
     assert 'data-sidebar-main-menu' in home
-    # Repositories stay one real link away: /dashboard/repos is its own page
-    # document with its own baked-active nav state.
+
+
     assert 'href="/dashboard/repos"' in home
     assert 'data-page="repos"' in repos
     assert 'data-nav="repos" data-nav-link aria-current="page"' in repos
@@ -283,14 +282,14 @@ def test_dashboard_profile_views_are_own_pages_and_client_section_router_is_gone
     assert 'data-home-agent-input' in home
     assert 'data-home-blog-card' in home
     assert 'data-home-contributions' not in visible
-    # The client-side section router is deleted: boot dispatches per page via
-    # PAGE_INITS keyed off <body data-page>.
+
+
     for removed in ("SECTION_ROUTES", "showSection(", "requestedSection(", "sectionUrl("):
         assert removed not in dashboard_js
     assert "const PAGE_INITS = {" in dashboard_js
     assert "(PAGE_INITS[currentPage()] || initHomePage)();" in dashboard_js
-    # Legacy /dashboard?section=X URLs 308 in the Worker, with a client shim
-    # for cached home documents.
+
+
     assert "target = dashboard_section_redirect(url.path, url.query)" in ENTRY_TEXT
     assert "function legacyRedirectTarget()" in dashboard_js
     assert "location.replace(legacyTarget);" in dashboard_js
@@ -299,8 +298,8 @@ def test_dashboard_profile_views_are_own_pages_and_client_section_router_is_gone
 def test_dashboard_home_left_rail_uses_theme_aware_panel_background():
     home = _read(VIEWS / "home.html")
 
-    # bg-card (not a hardcoded dark hex) so the rail switches with the
-    # dashboard's light/dark theme instead of always rendering dark.
+
+
     assert 'data-home-left-rail class="min-w-0 border-b border-border bg-card' in home
     assert "bg-[#0d1117]" not in home
     assert 'lg:border-b-0 lg:border-r' in home
@@ -309,8 +308,8 @@ def test_dashboard_home_left_rail_uses_theme_aware_panel_background():
 
 
 def test_dashboard_profile_about_is_editable_for_logged_in_user():
-    # The about modal lives in the shared modals partial; the panel is in the
-    # profile-overview view, which is the profile page's only view.
+
+
     dashboard = assembled_dashboard_page("profile")
     dashboard_js = _read(PUBLIC / "dashboard.js")
     profile = _read(VIEWS / "profile-overview.html")
@@ -346,8 +345,8 @@ def test_dashboard_profile_about_is_editable_for_logged_in_user():
 
 def test_dashboard_profile_overview_uses_real_profile_data_not_placeholders():
     dashboard_js = _read(PUBLIC / "dashboard.js")
-    # The whole composed profile page: the overview view plus the shared
-    # profile-sidebar template (which moved into the main.html wrapper).
+
+
     profile = assembled_dashboard_page("profile")
 
     assert "data-profile-overview-layout" in profile
@@ -542,8 +541,8 @@ def test_dashboard_profile_tabs_are_unified_with_app_header():
         assert "mb-8 flex min-w-0 gap-2 overflow-x-auto border-b border-border text-sm" not in profile
         assert "mb-5 flex min-w-0 gap-4 overflow-x-auto border-b border-border text-sm" not in profile
 
-    # The legacy section name is baked per page at build time; there is no JS
-    # pass mutating the root's section any more.
+
+
     assert 'data-dashboard-root data-dashboard-section="home"' in assembled_dashboard_page("home")
     assert 'data-dashboard-root data-dashboard-section="profile-overview"' in overview
     assert '[data-dashboard-section="home"] [data-app-header]' in overview
@@ -567,7 +566,7 @@ def test_dashboard_profile_tabs_link_to_network_without_placeholder_tabs():
             profile.index("data-profile-tabs")
             : profile.index("</nav>", profile.index("data-profile-tabs"))
         ]
-        # Tabs are real page links now, not client-router buttons.
+
         assert 'href="/dashboard/profile"' in tabs
         assert 'href="/dashboard/profile/repositories"' in tabs
         assert 'href="/dashboard/network"' in tabs
@@ -580,7 +579,7 @@ def test_dashboard_profile_tabs_link_to_network_without_placeholder_tabs():
         assert "Stars" not in tabs
         assert ">40<" not in tabs
 
-    # The active tab underline is baked into each page's own view.
+
     assert 'href="/dashboard/profile" class="inline-flex items-center gap-2 border-b-2 border-[#f78166]' in overview
     assert 'href="/dashboard/profile/repositories" class="inline-flex items-center gap-2 border-b-2 border-[#f78166]' in repositories
     assert 'href="/dashboard/network" class="inline-flex items-center gap-2 border-b-2 border-[#f78166]' in network
@@ -603,8 +602,8 @@ def test_dashboard_profile_repositories_reuses_overview_sidebar_component():
     repositories = _read(VIEWS / "profile-repositories.html")
     network = _read(VIEWS / "network.html")
 
-    # The sidebar template ships in the shared main.html wrapper so every page
-    # document can render it into its slot.
+
+
     assert "data-profile-sidebar-template" in _read(
         PUBLIC / "dashboard" / "partials" / "main.html")
     assert 'data-profile-sidebar-slot data-profile-sidebar-context="overview"' in overview
@@ -635,8 +634,8 @@ def test_dashboard_profile_repository_count_uses_loaded_repository_groups():
     assert "function renderProfileRepositoryCount" in dashboard_js
     assert '$$("[data-profile-repo-count]").forEach' in dashboard_js
     assert "renderProfileRepositoryCount();" in dashboard_js
-    # Counts follow the same source as the list: the whole catalog on the
-    # dashboard, scoped to the viewed account in public-profile mode.
+
+
     assert "profileRepositoryGroups().length" in dashboard_js
 
 
@@ -696,7 +695,7 @@ def test_home_right_rail_lists_latest_blog_posts_with_artwork():
 
     assert "Latest from the blog" in home
     assert 'data-home-blog-list' in home
-    # The hand-maintained release list the card used to bake in is gone.
+
     assert "The Living Code City" not in home
     assert "The Living Code City" not in dashboard_js
     assert "Loading release notes" not in home
@@ -712,8 +711,8 @@ def test_home_right_rail_lists_latest_blog_posts_with_artwork():
         "void loadHomeBlogPosts();",
     ):
         assert marker in dashboard_js
-    # Post artwork is painted, and titles/URLs stay escaped like every other
-    # feed-sourced string in the dashboard.
+
+
     assert 'loading="lazy" class="block aspect-[16/9] w-full object-cover"' in dashboard_js
     assert "${escapeHtml(post.image)}" in dashboard_js
     assert "${escapeHtml(post.title)}" in dashboard_js
@@ -818,9 +817,9 @@ def test_dashboard_uses_github_like_global_shell_and_hamburger_drawer():
         dashboard.index("data-dashboard-sidebar") - 240:
         dashboard.index("data-dashboard-sidebar") + 480
     ]
-    # The sidebar tracks the theme (light/dark), not a hardcoded dark color,
-    # so it doesn't stay black when the rest of the dashboard switches to
-    # light mode.
+
+
+
     assert "#0C1117" not in dashboard
     assert "bg-[rgb(var(--dashboard-sidebar-rgb))]" in dashboard
     assert "lg:hidden" not in hamburger
@@ -864,8 +863,8 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
     ):
         assert marker in dashboard
 
-    # The appearance panel lives on the settings page's view (and nowhere else
-    # is a popover shortcut needed).
+
+
     settings_view = _read(VIEWS / "settings.html")
     assert "data-profile-appearance-panel" in settings_view
     assert "data-appearance-theme" in settings_view
@@ -908,11 +907,11 @@ def test_dashboard_has_scoped_light_dark_appearance_controls():
 
 
 def test_dashboard_light_theme_overrides_every_dark_theme_color_variable():
-    # Regression guard: the header background once stayed black in light mode
-    # because --dashboard-header-rgb was only ever defined in the dark theme
-    # block. Every color variable set for dark must have a light override too
-    # (font-size is the one deliberate exception: it's theme-independent and
-    # lives on the shared :root/dark selector).
+
+
+
+
+
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
 
     dark_block = dashboard[
@@ -930,13 +929,13 @@ def test_dashboard_light_theme_overrides_every_dark_theme_color_variable():
 
 
 def test_dashboard_mobile_drawer_shadow_only_renders_while_open():
-    # Regression guard: the mobile nav drawer's box-shadow used to be set
-    # unconditionally on [data-dashboard-sidebar], which sits off-canvas
-    # (translateX(-100%)) by default. A box-shadow isn't clipped by its own
-    # element being off-screen, so a dark blur bled ~100px into the visible
-    # page at all times — most visible in light mode as a smudge in the
-    # bottom-left corner. The shadow must only apply once the drawer is
-    # actually open.
+
+
+
+
+
+
+
     dashboard = _read(PUBLIC / "dashboard" / "index.html")
 
     closed_rule = dashboard[
@@ -962,8 +961,8 @@ def _strip_html_comments(html: str) -> str:
 
 
 def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
-    # The repos list and the worker-served repo detail are separate page
-    # documents now; assert across every composed page.
+
+
     dashboard = assembled_dashboard()
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
@@ -982,12 +981,12 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "function renderRepoDetail",
         "loadRepositoryTree(repo",
         "loadRepositoryBlob(repo",
-        # Issues load from the repo's git tree so the Open-by-default state
-        # filter (issue #270) has real published issues to work with.
+
+
         "loadRepoIssues(repo)",
-        # Pull requests and discussions load lazily on first tab view rather than
-        # eagerly on every refresh (adhoc #105: eager per-record blob fan-out
-        # tripped the host rate limit and made reloads stop working).
+
+
+
         "loadRepoCollection(state.selectedRepo, tab,",
         "loadRepoCommits(repo)",
         "loadRepoMirrors(repo)",
@@ -995,7 +994,7 @@ def test_dashboard_repository_detail_keeps_code_comments_issues_shell():
         "Open clean URL",
         "data-dashboard-repo-tab=\"${tab}\"",
         '"code", "commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors"',
-        # Releases load lazily on first tab view from .forkmesh/releases/<channel>/release.json.
+
         "loadRepoReleases(state.selectedRepo)",
         "loadRepoInsights(state.selectedRepo)",
     ):
@@ -1109,9 +1108,9 @@ def test_repository_code_page_matches_github_code_layout():
     assert "Fork" in render
     assert "Star" in render
     assert "Add file" in render
-    # The Name/Last-commit-message/Last-commit-date column header row was
-    # dropped (adhoc #87) so the file table reads as a compact GitHub-style
-    # commit line; the summary banner still carries commit + date.
+
+
+
     assert "Last commit date" not in render
     assert "data-repo-commit-date" in render
     assert ">Code<" in render
@@ -1159,10 +1158,10 @@ def test_dashboard_about_links_readme_activity_and_owner_edit():
 
 
 def test_dashboard_about_rail_only_shows_on_code_tab():
-    # The About rail only makes sense beside the file tree/README (owner
-    # decision 2026-07-12, discussion #2): every other tab — commits,
-    # releases, issues, projects, pulls, discussions, insights, mirrors,
-    # agents — should go full-width instead of leaving an orphaned rail.
+
+
+
+
     dashboard_js = _read(PUBLIC / "dashboard.js")
     tab_state = dashboard_js[
         dashboard_js.index("function setRepoTab")
@@ -1209,8 +1208,8 @@ def test_repository_settings_move_out_of_about_and_add_owner_delete():
 
 
 def test_dashboard_repository_detail_view_uses_full_width_container():
-    # The explore view lives on the worker-served repo page document (built
-    # from the repo view partial).
+
+
     for path in (PUBLIC / "dashboard" / "repo.html", VIEWS / "repo.html"):
         dashboard = _read(path)
         explore = dashboard[
@@ -1245,9 +1244,9 @@ def test_dashboard_repository_folder_icons_are_grey():
         : dashboard_js.index("async function loadRepositoryBlob")
     ]
 
-    # File rows now use the shared vscode-icons SVGs (same set as the Qt
-    # desktop file browser) via fileIconHtml, not a lucide folder/file glyph
-    # (adhoc #87). Folders stay neutral - no text-primary tint.
+
+
+
     assert 'fileIconHtml(entry, "h-4 w-4 shrink-0")' in tree_loader
     assert '${isTree ? "text-primary" : "text-muted-foreground"}' not in tree_loader
 
@@ -1262,9 +1261,9 @@ def test_dashboard_repository_metadata_constrains_long_values_without_fake_langu
     assert 'grid grid-cols-[auto_minmax(0,1fr)] items-center gap-3' in render
     assert "flex justify-between gap-3" not in render
     assert "data-repo-live-summary" in render
-    # The Data size chip/row and the Repository metadata block were removed in
-    # the About-rail cleanup; languages now render from the REAL live file
-    # index (loadRepoAboutFilesAndLanguages), never a hardcoded mock mix.
+
+
+
     assert "formatSize(repo.sizeBytes)" not in render
     assert "TypeScript" not in render
     assert "CSS" not in render
@@ -1287,8 +1286,8 @@ def test_dashboard_repository_tabs_read_public_mirror_data_not_owner_inbox():
         "fetchRepoJson(repoLiveUrl(repo, \"history\"))",
         "function parseFrontMatter(markdown)",
         "async function loadRepoRecordsFromMirror(repo, config)",
-        # Issues read the public git tree via loadRepoIssues; pulls and
-        # discussions read it lazily through loadRepoCollection on tab view.
+
+
         "loadRepoIssues(repo)",
         "loadRepoCollection(state.selectedRepo, tab,",
         'dir: ".forkmesh/issues", file: (number) => `issue-${Number(number)}.json`',
@@ -1408,9 +1407,9 @@ def test_dashboard_code_tree_rows_use_live_commit_messages():
     ):
         assert marker in mirror_gateway
 
-    # The commit summary now paints a loading skeleton on first render and is
-    # filled by the live-commit updater; the placeholder text survives only as
-    # that updater's fallback, never as static render output.
+
+
+
     assert "published latest mirror metadata" not in render
     assert 'subject || "published latest mirror metadata"' in dashboard_js
     assert "animate-pulse rounded bg-muted-foreground/20" in render
@@ -1429,8 +1428,8 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
         'data-repo-collection-toolbar="${kind}"',
         'data-repo-filter-menu="${kind}"',
         'data-repo-filter-query="${kind}"',
-        # Issues actually wires the search box (pulls stays a static "is:pr
-        # is:open" placeholder; only issue search was requested).
+
+
         'placeholder="${kind === "pulls" ? "is:pr is:open" : "Search issues by title, body, author, or #number"}"',
         "New issue",
         "New pull request",
@@ -1444,7 +1443,7 @@ def test_dashboard_repository_issue_and_pull_tabs_match_github_lists():
     ):
         assert marker in dashboard_js
 
-    # The decorative issues left rail was removed with the About rail (adhoc #25).
+
     assert "data-repo-collection-sidebar" not in dashboard_js
     assert 'renderRepoCollectionPanel("issues", repo, issuesCount, repoCount(repo, ["closedIssues", "closedIssueCount"]))' in render
     assert 'renderRepoCollectionPanel("pulls", repo, pullsCount, repoCount(repo, ["closedPulls", "closedPullCount"]))' in render
@@ -1508,10 +1507,10 @@ def test_dashboard_repository_issue_and_pull_tabs_paginate_records_at_the_bottom
     assert "renderRepoRecordList(items, config, kind)" in collection_loader
     assert "const page = state.repoCollectionPages[kind] || 1;" in record_renderer
     assert "loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);" in click_handler
-    # Issue #420: paginating the Issues list must keep the open/closed/all filter
-    # (renderRepoIssues) instead of re-rendering the raw, unfiltered record list.
+
+
     assert 'if (kind === "issues") renderRepoIssues();' in click_handler
-    # Issue #420: 25 records per page (not 5) for issues and pulls.
+
     assert "const REPO_COLLECTION_PAGE_SIZE = 25;" in dashboard_js
 
 
@@ -1541,8 +1540,8 @@ def test_dashboard_repository_record_chips_and_sidebar_links_use_neutral_github_
     assert 'number === page ? "bg-primary text-primary-foreground border-primary"' not in pagination
     assert 'data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link"' in dashboard_js
     assert "browse-repo-button inline-flex items-center gap-1 text-xs font-medium text-foreground transition-colors" not in dashboard_js
-    # The About rail's Clone-availability row was removed with the metadata
-    # cleanup; the accent-primary variant must stay gone regardless.
+
+
     assert '${live ? "text-primary" : "text-muted-foreground"}">${live ? "available" : "offline"}</dd>' not in render
 
 
@@ -1582,7 +1581,7 @@ def test_issue_and_pull_detail_pages_match_github_conversation_layout():
     assert "data-repo-record-sidebar" in detail
     assert 'data-repo-record-tab="conversation"' in detail
     assert 'data-repo-record-tab="commits"' in detail
-    # The Checks tab was a hardcoded 0 with nothing behind it - removed.
+
     assert 'data-repo-record-tab="checks"' not in detail
     assert 'data-repo-record-tab="files"' in detail
     assert "Reviewers" in detail
@@ -1654,7 +1653,7 @@ def test_dashboard_pull_metadata_reads_pin_the_dedicated_branch_commit():
     assert "ref: commit," in conversation
     assert "{ ref: commit }" in conversation
 
-    # Pull readers must never ask the mirror to guess a mutable/default ref.
+
     for source in (records, detail, patch, conversation):
         assert 'ref: ""' not in source
 
@@ -1701,8 +1700,8 @@ def test_dashboard_repository_tab_counts_wait_for_live_data_and_update_mirrors()
     assert "function tabCountLabel(value)" in dashboard_js
     assert "return null;" in repo_count
     assert "tabCountLabel(meta.count)" in render
-    # Tab badges carry the -tab-count hook so live counts (open issues, served
-    # pulls/discussions, mirrors) update in place without a full re-render.
+
+
     assert 'data-dashboard-repo-tab-count="${tab}"' in render
     assert 'data-dashboard-repo-count="mirrors"' in render
     assert "updateRepoLiveCounts(repo, data.counts);" in dashboard_js
@@ -1736,8 +1735,8 @@ def test_worker_routes_public_history_through_direct_https():
 
 
 def test_worker_dropped_commit_comment_inbox_route():
-    # Commit commenting was removed; the /commits inbox endpoint is gone and
-    # public history still routes through the direct HTTPS mirror proxy.
+
+
     assert "REPO_COMMITS_RE" not in URLS_TEXT
     assert "commits_handler" not in ENTRY_TEXT
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
@@ -2009,8 +2008,8 @@ def test_worker_routes_raw_repository_blobs_through_direct_https_gateway():
     assert "upstream.body," in ENTRY_TEXT
     assert 'response_headers["X-ForkMesh-Served-By"] = endpoint["node"]' in ENTRY_TEXT
     assert "The private endpoint origin remains masked" in ENTRY_TEXT
-    # The node gateway streams `git cat-file blob` directly to the masked edge
-    # response. It does not base64-encode/reassemble media in a Durable Object.
+
+
     assert 'if operation == "raw":' in gateway
     assert "stream=repository.raw_spec(query)" in gateway
     assert 'kind="process"' in gateway
@@ -2041,8 +2040,8 @@ def test_direct_https_gateway_routes_live_repository_branches():
     assert REPO_HOST_ROUTE_RE in URLS_TEXT
     assert REPO_DIRECT_BROWSE_GATE in ENTRY_TEXT
 
-    # The desktop compatibility object opens no repository socket. Reads and
-    # update discovery are direct/bounded HTTPS.
+
+
     for marker in (
         '"persistentSocket"), false',
         'QStringLiteral("direct-https")',
@@ -2084,8 +2083,8 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
         "`/${encodeURIComponent(ROOM_REPO)}/rooms/"
         "${encodeURIComponent(ACTIVE_ROOM)}/ws`"
     ) in chat_js
-    # The room key is fetched from the relay (server-derived from DATA_KEY), not a
-    # public baked-in constant.
+
+
     assert 'forkmesh-shared-room-key-v1' not in chat_js
     assert "`/api/chat/room-key?owner=${encodeURIComponent(ROOM_OWNER)}`" in chat_js
     assert "`&repo=${encodeURIComponent(ROOM_REPO)}`" in chat_js
@@ -2115,10 +2114,10 @@ def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages
 
 
 def test_dashboard_deep_link_assets_binding_is_wired_up():
-    # entry.py's /dashboard/* fallback (run_worker_first) calls
-    # self.env.ASSETS.fetch(...) to serve the prebuilt SPA shell for deep links
-    # like /dashboard/owner/repo. Without an explicit binding name, env.ASSETS
-    # is undefined and that call throws, 500ing every such request.
+
+
+
+
     assert WRANGLER["assets"].get("binding") == "ASSETS"
     assert 'self.env.ASSETS.fetch(' in ENTRY_TEXT
 
@@ -2148,10 +2147,10 @@ def test_clean_marketing_routes_target_static_pages():
         assert route not in run_worker_first
     for route in ("/docs.html", "/network.html"):
         assert route in run_worker_first
-    # / and /dashboard are worker-owned now: / for the session-cookie 302,
-    # /dashboard for legacy ?section= 308s (query strings never match in
-    # _redirects). The per-page documents are excluded so they stay static
-    # assets, and the deleted single-shell dashboard.html has no entry.
+
+
+
+
     assert "/" in run_worker_first
     assert "/dashboard" in run_worker_first
     assert "/dashboard/*" in run_worker_first
@@ -2161,12 +2160,12 @@ def test_clean_marketing_routes_target_static_pages():
 
 
 def test_repo_shortcut_is_not_a_redirects_rule_so_assets_are_not_hijacked():
-    # A /:owner/:repo rule in _redirects matches real two-segment static assets
-    # (e.g. /assets/logo.png, /favicon/site.webmanifest) because Cloudflare always
-    # applies _redirects before serving a matching static file - that 308'd those
-    # assets and broke the deploy's public-asset check. The shortcut must be
-    # Worker-owned with explicit asset-prefix exceptions, so guard against the
-    # redirect rule's return.
+
+
+
+
+
+
     rules = [
         line for line in REDIRECTS.splitlines()
         if line.strip() and not line.lstrip().startswith("#")
@@ -2175,8 +2174,8 @@ def test_repo_shortcut_is_not_a_redirects_rule_so_assets_are_not_hijacked():
         assert ":owner" not in rule
         assert ":repo" not in rule
         assert "/dashboard?repo=" not in rule
-        # Self-referential 200 rewrites for asset dirs are no-ops (a rewrite to the
-        # same path); real files serve directly once nothing else hijacks them.
+
+
         assert not rule.startswith("/assets/*")
         assert not rule.startswith("/favicon/*")
 
@@ -2192,13 +2191,13 @@ def test_repo_shortcut_urls_are_worker_owned_not_404_page_scripted():
 
 
 def test_dashboard_restores_feature_tab_on_hard_refresh():
-    # Regression test: a page load (not just a client-side tab click or a
-    # Back/Forward step) at a feature-tab URL like /owner/repo/issues must
-    # restore that tab instead of silently falling back to Code. This was
-    # broken because REPO_TAB_ROUTES/repoRouteParts() were referenced by the
-    # popstate handler but never defined, and the initial-render path
-    # (renderRepoDetail, run from init() on a hard load) never consulted the
-    # URL's tab segment at all.
+
+
+
+
+
+
+
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     assert "function repoRouteParts()" in dashboard_js
@@ -2207,24 +2206,24 @@ def test_dashboard_restores_feature_tab_on_hard_refresh():
     render_start = dashboard_js.index("function renderRepoDetail(repo)")
     render_body = dashboard_js[render_start:dashboard_js.index("\n  function findRepository(key)")]
     assert "const routeParts = repoRouteParts();" in render_body
-    # adhoc #182: the owner-only Agents tab is only ever a recognized route for
-    # the account that can see it, so tab-route membership goes through
-    # repoTabRoutesFor(repo) (REPO_TAB_ROUTES + "agents" when owner/admin)
-    # instead of the bare REPO_TAB_ROUTES constant.
-    # adhoc #61: the restored tab is computed once (initialTab) so the Code
-    # tree warm-up below it can be gated to background mode when it isn't Code.
+
+
+
+
+
+
     assert 'const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";' in render_body
     assert "setRepoTab(initialTab);" in render_body
 
 
 def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
-    # Regression test: a hard refresh on /owner/repo/issues doesn't hit a
-    # static asset, so Cloudflare serves 404.html, which bounces the browser
-    # to /dashboard/owner/repo/issues. renderRepoDetail used to normalize that
-    # back to a bare /owner/repo URL (it only checked whether the current path
-    # *started with* the bare repo path, which is never true for the
-    # /dashboard/-prefixed bounce path), silently discarding the /issues
-    # segment before the tab-restore logic ever read it back out of the URL.
+
+
+
+
+
+
+
     dashboard_js = _read(PUBLIC / "dashboard.js")
 
     render_start = dashboard_js.index("function renderRepoDetail(repo)")
@@ -2233,7 +2232,7 @@ def test_dashboard_hard_refresh_preserves_tab_through_404_bounce():
     assert "routeMatchesRepo" in render_body
     assert 'repoTabRoutesFor(repo).includes(routeKind)\n        ? `${repoPathUrl(repo)}/${routeKind}`' in render_body
     assert "navigateHistory(detailPath);" in render_body
-    # The old bare-collapse call must be gone.
+
     assert "const detailPath = repoPathUrl(repo);" not in render_body
 
 
@@ -2241,8 +2240,8 @@ def test_desktop_client_install_page_exists():
     html = _read(PUBLIC / "desktop.html")
 
     assert "<title>Install ForkMesh Desktop" in html
-    # The install page owns the platform-specific sections; homepage CTAs point
-    # to the page rather than duplicating per-OS buttons.
+
+
     for anchor in ('id="macos"', 'id="windows"', 'id="linux"'):
         assert anchor in html
     assert "curl -fsSL https://forkmesh.com/install.sh | bash" in html

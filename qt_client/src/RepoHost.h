@@ -7,10 +7,10 @@
 
 #include <functional>
 
-// Compatibility status object for releases upgrading from the retired
-// per-repository WebSocket transport. It opens no socket and serves no bytes.
-// Repository content uses the signed direct-HTTPS gateway; small collaboration
-// changes arrive through the client's bounded HTTPS sync poll.
+
+
+
+
 class RepoHost : public QObject
 {
     Q_OBJECT
@@ -24,8 +24,8 @@ public:
     QJsonObject networkDiagnostics() const;
     static QString generalizedRequestLog(const QJsonObject &request);
 
-    // Kept as source-compatible no-ops for one desktop release. Repository
-    // socket credentials and connection authorization are no longer consumed.
+
+
     void setTokenProvider(std::function<QString()> provider);
     void setConnectionAuthorizer(
         std::function<bool(const QUrl &)> authorizer);

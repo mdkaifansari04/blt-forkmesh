@@ -1,114 +1,114 @@
 #!/usr/bin/env bash
-# ForkMesh desktop client installer.
-#   curl -fsSL https://forkmesh.com/install.sh | bash
-# Autodetects this machine's OS/arch and installs the matching PREBUILT binary
-# attached to the latest release (no compiler/Qt toolchain, no multi-minute
-# build). When no prebuilt asset is published for the platform — or
-# FORKMESH_FROM_SOURCE=1 is set — it falls back to cloning the repository and
-# building the Qt client from source. Set FORKMESH_NO_SOURCE_FALLBACK=1 to
-# disable that fallback and fail instead when no prebuilt binary is available
-# (this is the default on headless Linux — see below). Missing build
-# prerequisites are installed automatically when a supported package manager
-# is detected; set FORKMESH_NO_INSTALL_DEPS=1 to opt out. The binary lands in
-# ~/.local/bin.
+
+
+
+
+
+
+
+
+
+
+
+
 set -euo pipefail
 
-# Installer script version. Bump on every change to install.sh so a user can
-# confirm — from the banner printed at startup — that they are running the
-# freshly deployed script and not a cached/older copy from the CDN edge.
+
+
+
 INSTALLER_VERSION="0.15.0 (2026-07-31)"
 
-# ForkMesh is self-hosted: the same server that serves this script also serves
-# the source over git's smart-HTTP protocol at https://<host>/<node>/<repo>.
-# Override FORKMESH_HOST when self-hosting. By default, the installer asks the
-# mainnode for the currently-online forkmesh host with the most recent uptime.
+
+
+
+
 FORKMESH_HOST="${FORKMESH_HOST:-https://forkmesh.com}"
 FORKMESH_NODE="${FORKMESH_NODE:-}"
-# The name to give a freshly-deployed mirror node. The deploy UI passes the
-# operator's chosen name as FORKMESH_NODE_NAME, leaving FORKMESH_NODE empty so
-# the clone source still auto-resolves to a real online mirror. A headless launch
-# hands this on to the app so the new node adopts the chosen name and
-# auto-connects instead of sitting idle at the setup screen. Fall back to a
-# verbatim FORKMESH_NODE (older deploy UI) so naming still works across skew.
-# Empty unless the operator set one of them explicitly.
+
+
+
+
+
+
+
 FORKMESH_NODE_NAME="${FORKMESH_NODE_NAME:-${FORKMESH_NODE:-}}"
-# The account/owner this node is being attached to (adhoc #258). The desktop
-# Hosts panel that drives the install passes the operator's own account name
-# here so the installer can ECHO it back — that way the operator can see, right
-# in the install stream, which account the fresh node is meant to end up under
-# and confirm it attached correctly rather than silently registering as an
-# orphan. Purely informational: the actual attachment is done by the link code
-# below (the relay pairs it with the desktop's key-signed half). Empty on a
-# plain `curl | bash` install where no driving account is known.
+
+
+
+
+
+
+
+
 FORKMESH_OWNER="${FORKMESH_OWNER:-}"
-# Reinstall (adhoc #258): wipe any existing ForkMesh install AND its data on this
-# machine, then continue straight into a fresh install below (from the uploaded
-# or freshly-downloaded prebuilt binary). Driven by the Hosts panel's
-# "Uninstall + reinstall (all hosts)" action via FORKMESH_REINSTALL=1, or by
-# --reinstall on the command line. Non-interactive by nature, so it assumes the
-# destructive confirmation (the Qt-side dialog is the real gate).
+
+
+
+
+
+
 FORKMESH_REINSTALL="${FORKMESH_REINSTALL:-0}"
-# Restart (adhoc): stop the node's already-running daemon just before the
-# launch step so the freshly (re)built binary cleanly takes over. A plain
-# re-run would otherwise leave the old daemon running the old binary and start a
-# SECOND one beside it. Used by the Hosts panel's "Update from source (all
-# hosts)" action (with FORKMESH_FROM_SOURCE=1) to update the fleet straight from
-# source without publishing a release. Unlike a reinstall it does NOT touch the
-# node's identity key or mirrored data — it only stops+relaunches the process.
+
+
+
+
+
+
+
 FORKMESH_RESTART="${FORKMESH_RESTART:-0}"
-# Link code for attaching this fresh node to the installing user's account
-# (adhoc #53). A headless launch mints one (or honours a pre-set 6-digit value),
-# prints it as "FORKMESH LINK CODE: NNNNNN", and hands it to the daemon, which
-# presents it when it registers. The desktop app that drove the install offers
-# the same code signed with its own key; the relay pairs the two halves and
-# records the new node under that user.
+
+
+
+
+
+
 FORKMESH_LINK_CODE="${FORKMESH_LINK_CODE:-}"
-# Direct-upload install (adhoc #67): the desktop app's Hosts panel can stream
-# the release binary over the SSH session itself instead of this machine
-# downloading it from the relay. FORKMESH_LOCAL_BINARY names the pre-uploaded
-# file; FORKMESH_LOCAL_OS / FORKMESH_LOCAL_ARCH record the platform the
-# uploader says it targets, so a mismatched upload falls back to the normal
-# relay download instead of installing a binary this machine cannot run.
+
+
+
+
+
+
 FORKMESH_LOCAL_BINARY="${FORKMESH_LOCAL_BINARY:-}"
 FORKMESH_LOCAL_OS="${FORKMESH_LOCAL_OS:-}"
 FORKMESH_LOCAL_ARCH="${FORKMESH_LOCAL_ARCH:-}"
-# Optional fail-closed release provenance pin. The desktop fleet installer
-# supplies both the version and build commit embedded in its controller binary.
-# A normal one-line install leaves these empty and keeps existing behavior.
+
+
+
 FORKMESH_EXPECTED_BUILD_COMMIT="${FORKMESH_EXPECTED_BUILD_COMMIT:-}"
 FORKMESH_EXPECTED_RELEASE_VERSION="${FORKMESH_EXPECTED_RELEASE_VERSION:-}"
-# A prebuilt artifact is accepted only when its exact release manifest is
-# authenticated independently of the mirror that supplied it. Controllers may
-# pin the exact manifest SHA-256. Standalone installs may instead point at a
-# locally provisioned Ed25519 publisher public key (PEM); the detached
-# release.json.sig is then verified with OpenSSL. A checksum copied from the
-# fetched manifest is never a trust anchor.
+
+
+
+
+
+
 FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256="${FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256:-}"
 FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE="${FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE:-}"
 [ -n "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ] ||
   [ ! -f /etc/forkmesh/release-publisher.pem ] ||
   FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE=/etc/forkmesh/release-publisher.pem
-# Direct uploads do not carry a release manifest, so the authenticated
-# controller must supply their exact digest.
+
+
 FORKMESH_LOCAL_BINARY_SHA256="${FORKMESH_LOCAL_BINARY_SHA256:-}"
 FORKMESH_NAME="${FORKMESH_NAME:-forkmesh}"
 FORKMESH_INSTALL_SOURCE_URL="${FORKMESH_INSTALL_SOURCE_URL:-${FORKMESH_HOST%/}/api/install-source}"
 FORKMESH_DIAG_URL="${FORKMESH_DIAG_URL:-${FORKMESH_HOST%/}/api/install-diag}"
 REPO="${FORKMESH_REPO:-}"
-# Space-separated list of online mirror nodes resolved from the mainnode, best
-# first, and the matching list of clone URLs to try in order. A direct-HTTPS
-# endpoint can become unavailable after its latest signed health check, so the
-# installer still falls back instead of dead-ending on the first one. Populated
-# by resolve_install_node / the mirror block.
+
+
+
+
+
 FORKMESH_NODES=""
 REPO_CANDIDATES=()
-# Set by clean_clone to the human-readable reason the last clone attempt failed
-# (e.g. "mirror endpoint timed out (HTTP 504)"), so the final error and the anonymous
-# diagnostics can say WHY every mirror was unreachable rather than just "failed".
+
+
+
 CLONE_FAIL_REASON=""
-# The build checkout lives in a dedicated, installer-only location. The only
-# thing that ever lives there is a throwaway clone used to build, so it is
-# always safe to wipe and re-clone — the installer fully owns this path.
+
+
+
 SRC="${FORKMESH_DIR:-$HOME/.local/share/forkmesh/src}"
 BIN_DIR="${FORKMESH_BIN_DIR:-$HOME/.local/bin}"
 BIN="$BIN_DIR/forkmesh"
@@ -119,37 +119,37 @@ SYSTEMD_BIN="/usr/local/bin/forkmesh"
 SYSTEMD_INSTALL_MARKER="/etc/forkmesh/installer-managed"
 SYSTEMD_STATE_DIR="/var/lib/forkmesh"
 SYSTEMD_STATE_MARKER="/var/lib/forkmesh/.forkmesh-managed-service"
-# Set to 1 if a clone is rejected by the relay's integrity gate, so the final
-# error can explain that specific (owner-fixable) case instead of a generic one.
+
+
 PIN_FAILURE=0
-# Set to 1 once a prebuilt release binary has been installed, so the whole
-# source-build pipeline (toolchain deps, clone, compile) is skipped.
+
+
 INSTALLED_PREBUILT=0
-# Set by build_client to the build directory; pre-declared so the shared
-# desktop/launch tail can reference it even on the prebuilt fast path (where no
-# build ever runs) without tripping `set -u`.
+
+
+
 BUILD=""
-# A commit-pinned reinstall validates and stages its replacement before
-# honoring the destructive reinstall request. This keeps the old node running
-# when release metadata or candidate provenance is stale.
+
+
+
 DEFER_PINNED_REINSTALL=0
-# Source trees created by this installer carry an owner/path-bound marker. No
-# recursive operation is allowed merely because an environment variable points
-# at a directory.
+
+
+
 MANAGED_MARKER=".forkmesh-managed"
 INSTALLER_START_DIR="$(pwd -P 2>/dev/null || pwd)"
 INSTALLER_WORKSPACE_ROOT="$(
   git -C "$INSTALLER_START_DIR" rev-parse --show-toplevel 2>/dev/null || true
 )"
 
-# Whether to fall back to a source build when no prebuilt binary is published
-# for this platform/arch. A headless Linux box (no DISPLAY/WAYLAND_DISPLAY) is
-# almost always an unattended mirror-node deploy — pulling in a full
-# git/cmake/compiler/Qt toolchain there is undesirable, and a same-platform
-# release binary should always exist, so the fallback defaults to OFF (binary
-# only) there. Every other case (headful Linux, macOS) defaults the fallback
-# ON, unchanged from prior behaviour. Explicitly set FORKMESH_NO_SOURCE_FALLBACK
-# to 1 or 0 to override the default either way.
+
+
+
+
+
+
+
+
 if [ -z "${FORKMESH_NO_SOURCE_FALLBACK:-}" ]; then
   if [ "$(uname -s 2>/dev/null)" = "Linux" ] && [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
     FORKMESH_NO_SOURCE_FALLBACK=1
@@ -158,21 +158,21 @@ if [ -z "${FORKMESH_NO_SOURCE_FALLBACK:-}" ]; then
   fi
 fi
 
-# Anchor to a directory that exists. The installer may be launched from a path
-# that was just deleted — e.g. running this right after the uninstaller removed
-# ~/.local/share/forkmesh from a shell still sitting inside it. With a missing
-# working directory git aborts every clone up front with "fatal: Unable to read
-# current working directory", before it ever contacts the relay. cd somewhere
-# stable so this script and every child process inherit a valid CWD.
+
+
+
+
+
+
 cd "$HOME" 2>/dev/null || cd / 2>/dev/null || true
 
 say()  { printf '\033[32m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[33mWarning:\033[0m %s\n' "$1" >&2; }
 die()  { printf '\033[31mError:\033[0m %s\n' "$1" >&2; exit 1; }
-# Verbose diagnostic line, printed only when FORKMESH_DEBUG=1. Use it for the
-# extra detail a remote operator needs to debug a failed install (the resolved
-# mirror list, the raw source response, the exact URLs being cloned) without
-# cluttering the normal install log.
+
+
+
+
 dbg()  { [ "${FORKMESH_DEBUG:-0}" = "1" ] && printf '\033[2m[debug]\033[0m %s\n' "$1" >&2 || true; }
 
 _sha256_file() {
@@ -193,9 +193,9 @@ _canonical_path() {
   esac
   case "$probe" in *'
 '*) return 1 ;; esac
-  # Resolve the deepest existing ancestor physically, then append only simple
-  # non-symlink path components. This works on Linux and macOS without relying
-  # on GNU realpath -m.
+
+
+
   while [ ! -e "$probe" ]; do
     base="${probe##*/}"
     [ -n "$base" ] && [ "$base" != "." ] && [ "$base" != ".." ] || return 1
@@ -266,9 +266,9 @@ if [ -n "$INSTALLER_WORKSPACE_ROOT" ]; then
     "$SRC/"*) die "FORKMESH_DIR may not be the current workspace or one of its parents." ;;
   esac
 fi
-# A new custom target must use the intentionally narrow .../forkmesh/src shape.
-# Existing targets are accepted only when their owner/path-bound marker proves
-# this installer already owns them.
+
+
+
 if [ ! -e "$SRC" ]; then
   case "$SRC" in */forkmesh/src) ;; *)
     die "A new FORKMESH_DIR must end in /forkmesh/src." ;;
@@ -329,28 +329,28 @@ if [ -n "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ]; then
   )"
   printf '%s' "$_fm_key_mode" | grep -Eq '^[0-7]{3,4}$' ||
     die "Could not validate trusted release public-key permissions."
-  if (( (8#${_fm_key_mode} & 8#022) != 0 )); then
+  if (( (8
     die "Trusted release public key may not be group/world writable."
   fi
 fi
 
-# In debug mode, make git print the full HTTP exchange (request/response status
-# and headers) on stderr so a 5xx from the relay can be traced to its cause.
+
+
 if [ "${FORKMESH_DEBUG:-0}" = "1" ]; then
   export GIT_CURL_VERBOSE=1
 fi
-# Never let git stop a piped `curl | bash` install to prompt for credentials;
-# fail fast (and surface as a classifiable clone error) instead of hanging.
+
+
 export GIT_TERMINAL_PROMPT=0
 
-# --- anonymous diagnostics --------------------------------------------------
-# Report each install step to the mainnode so operators can see, in aggregate,
-# where installs succeed or fail (find-a-mirror, prerequisites, clone, build,
-# install, first launch). This is ANONYMOUS: RUN_ID is a fresh random id minted
-# for this run only — it is never tied to your account, email, or IP address,
-# and the server does not record the requesting IP. Only coarse platform facts
-# (OS, CPU arch, package manager, distro id, installer version) are sent. Opt
-# out entirely with FORKMESH_NO_DIAG=1.
+
+
+
+
+
+
+
+
 RUN_ID="$( (head -c 16 /dev/urandom 2>/dev/null | od -An -tx1 2>/dev/null | tr -d ' \n') || true )"
 [ -n "$RUN_ID" ] || RUN_ID="$$-$(date +%s 2>/dev/null || echo 0)"
 DIAG_OS="$(uname -s 2>/dev/null || echo unknown)"
@@ -359,18 +359,18 @@ DIAG_DISTRO=""
 if [ -r /etc/os-release ]; then
   DIAG_DISTRO="$( ( . /etc/os-release 2>/dev/null; printf '%s' "${ID:-}" ) || true )"
 fi
-# Logical prerequisites we had to install (empty = the machine already had them).
+
 DIAG_MISSING=""
-# The install phase currently in progress; the EXIT trap reports it as failed if
-# the script dies, so the funnel shows exactly where an install dropped off.
+
+
 CURRENT_STEP="start"
 
 diag() {
   [ "${FORKMESH_NO_DIAG:-0}" = "1" ] && return 0
   command -v curl >/dev/null 2>&1 || return 0
   local step="$1" ok="$2" detail="${3:-}"
-  # Fire-and-forget in the background with a short timeout: diagnostics must
-  # never slow down or fail the install, so every error is swallowed.
+
+
   curl -fsS -m 5 -X POST "$FORKMESH_DIAG_URL" \
     -H 'Content-Type: application/json' \
     --data "{\"run\":\"$RUN_ID\",\"step\":\"$step\",\"ok\":$ok,\"os\":\"$DIAG_OS\",\"arch\":\"$DIAG_ARCH\",\"pm\":\"${PM:-}\",\"distro\":\"$DIAG_DISTRO\",\"version\":\"$INSTALLER_VERSION\",\"detail\":\"$detail\"}" \
@@ -386,7 +386,7 @@ on_diag_exit() {
 trap on_diag_exit EXIT
 
 resolve_install_node() {
-  # An explicit FORKMESH_NODE override pins a single mirror; honour it verbatim.
+
   if [ -n "$FORKMESH_NODE" ]; then
     FORKMESH_NODES="$FORKMESH_NODE"
     return 0
@@ -400,23 +400,23 @@ resolve_install_node() {
   esac
   source_url="${FORKMESH_INSTALL_SOURCE_URL}${sep}_=$(date +%s)"
   dbg "Querying install source: $source_url"
-  # A bounded timeout so an unreachable mainnode fails loudly instead of the
-  # install appearing to hang forever with no output (issue #418) — curl has no
-  # timeout by default and can sit for minutes on a dead connection.
+
+
+
   if ! body="$(curl -sSL -m 20 -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' "$source_url")"; then
     die "Could not check for an online ForkMesh mirror (timed out after 20s querying $FORKMESH_INSTALL_SOURCE_URL). Please try again shortly."
   fi
   dbg "install-source response: $body"
-  # Prefer the ranked "nodes":[ ... ] list (newer mainnode); fall back to the
-  # single "node" field so older mainnodes — and the no-mirror error shape —
-  # still parse. Extract one node id per line, in server-ranked order.
+
+
+
   nodes_blob="$(printf '%s\n' "$body" | sed -n 's/.*"nodes"[[:space:]]*:[[:space:]]*\[\([^]]*\)\].*/\1/p')"
   if [ -n "$nodes_blob" ]; then
     raw_nodes="$(printf '%s\n' "$nodes_blob" | tr ',' '\n' | sed -n 's/.*"\([^"]*\)".*/\1/p')"
   else
     raw_nodes="$(printf '%s\n' "$body" | sed -n 's/.*"node"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
   fi
-  # Keep only well-formed node ids, preserving order and dropping duplicates.
+
   local valid="" n
   for n in $raw_nodes; do
     case "$n" in
@@ -430,21 +430,21 @@ resolve_install_node() {
   FORKMESH_NODE="${valid%% *}"
 }
 
-# Resolve REPO/REPO_CANDIDATES from an online mirror, if not already resolved.
-# Called eagerly below unless a direct-upload binary (FORKMESH_LOCAL_BINARY)
-# makes it unnecessary, and lazily as a fallback if that upload turns out to
-# be unusable (e.g. platform mismatch) and a mirror download or source build
-# is needed after all.
+
+
+
+
+
 ensure_mirror_candidates() {
   [ "${#REPO_CANDIDATES[@]}" -gt 0 ] && return 0
   CURRENT_STEP="mirror"
   say "Resolving an online ForkMesh mirror to clone from…"
   resolve_install_node
-  # Clone through the stable source-of-truth route. The Worker uses the ranked
-  # signed endpoint set above to select/fail over between mirror2, mirror3, ...
-  # internally. Building node-namespaced clone URLs here tied the repository
-  # pin to a mirror alias and could return 503 even while the canonical
-  # forkmesh/forkmesh route was healthy.
+
+
+
+
+
   REPO_CANDIDATES+=(
     "${FORKMESH_HOST%/}/forkmesh/${FORKMESH_NAME}"
   )
@@ -456,23 +456,23 @@ ensure_mirror_candidates() {
   diag mirror 1
 }
 
-# --- uninstall --------------------------------------------------------------
-# Remove ForkMesh completely: the binary, the cloned source, the desktop
-# launcher + icons, the login-autostart entry, AND every byte of user data
-# (settings, the node identity key, all mirrored repositories, and chat
-# history). A plain delete of the binary leaves this data behind — which is why
-# a reinstall used to show an old node name and stale chat. Run with:
-#   curl -fsSL https://forkmesh.com/install.sh | bash -s -- --uninstall
-# Mode: "full" (the --uninstall entry point, exits when done) or "reinstall"
-# (called inline before a fresh install — skips the interactive confirmation,
-# since a reinstall is already gated by its own Qt-side dialog / explicit flag,
-# and returns instead of exiting so the caller can carry on installing).
-# Stop only the daemon instance this installer started. A managed systemd unit
-# is named explicitly; a user daemon is addressed by its owner-only PID file
-# and its live executable path is checked before any signal is sent. Process
-# name scans (`pkill forkmesh`) are intentionally forbidden because they can
-# stop unrelated users, test instances, or other ForkMesh nodes on the host.
-# $1: a short context label for the log line (unused beyond readability).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 stop_forkmesh_daemons() {
   local pid="" expected="$BIN" live="" owner=""
   if [ "$(id -u)" -eq 0 ] && [ -f "$SYSTEMD_UNIT" ] &&
@@ -535,16 +535,16 @@ uninstall_forkmesh() {
   local config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
   local cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
 
-  # Directories ForkMesh owns. QSettings org+app are both "ForkMesh", so the
-  # config/data/cache live under a capitalised "ForkMesh" dir; the installer's
-  # own checkout lives under the lowercase "forkmesh".
+
+
+
   local dirs=(
-    "$config_home/ForkMesh"          # settings (node name, server, prefs)
-    "$data_home/ForkMesh"            # identity key, mirrors, repos, chat, actions
-    "$cache_home/ForkMesh"          # caches
-    "$HOME/.forkmesh"               # IDE-extension handoff dir
+    "$config_home/ForkMesh"
+    "$data_home/ForkMesh"
+    "$cache_home/ForkMesh"
+    "$HOME/.forkmesh"
   )
-  # Loose files: binary, desktop launcher, autostart entry, installed icons.
+
   local files=(
     "$BIN"
     "$data_home/applications/forkmesh.desktop"
@@ -562,10 +562,10 @@ uninstall_forkmesh() {
   printf '  • every mirrored repository, and all chat history\n'
   printf '  • the desktop launcher, icons, and login-autostart entry\n\n'
 
-  # Honour a non-interactive confirm so `curl | bash` works: pass --yes (or set
-  # FORKMESH_ASSUME_YES=1). Otherwise prompt when a terminal is attached. A
-  # reinstall skips this gate entirely — it is already an explicit, pre-confirmed
-  # action (the Qt-side dialog / the --reinstall flag).
+
+
+
+
   if [ "$mode" != "reinstall" ] \
      && [ "${FORKMESH_ASSUME_YES:-0}" != "1" ] && [ "${1:-}" != "--yes" ]; then
     if [ -t 0 ]; then
@@ -577,18 +577,18 @@ uninstall_forkmesh() {
     fi
   fi
 
-  # A headless install (e.g. a VPS) runs the binary as a plain background
-  # process (nohup, no systemd unit — see the daemon launch below). Deleting
-  # the binary out from under it just unlinks the inode: the running process
-  # keeps executing from the deleted file and keeps reporting its (now stale)
-  # presence/version to the network, which is why mirrors could still show an
-  # old version after "uninstalling" the host. Stop it first — and match it
-  # more than one way, because the process we must kill may NOT be the binary
-  # at the current $BIN path:
-  #   • by exact process name ("forkmesh")  — catches an OLD install that lived
-  #     at a different path, and a copy still executing from a deleted/replaced
-  #     inode after an in-app update (the classic "still on an old version").
-  #   • by $BIN and by the source build dir — the normal and in-place locations.
+
+
+
+
+
+
+
+
+
+
+
+
   stop_forkmesh_daemons "installer uninstall"
 
   if [ "$(id -u)" -eq 0 ] && [ -f "$SYSTEMD_UNIT" ] &&
@@ -623,15 +623,15 @@ uninstall_forkmesh() {
   for d in "${dirs[@]}"; do
     if [ -e "$d" ]; then rm -rf -- "$d" && say "Removed $d"; fi
   done
-  # Remove the installer's lowercase parent only when the managed checkout was
-  # its sole content. Unknown sibling data is never recursively erased.
+
+
   rmdir -- "$(dirname "$SRC")" 2>/dev/null || true
   for f in "${files[@]}"; do
     if [ -e "$f" ]; then rm -f -- "$f" && say "Removed $f"; fi
   done
-  # Every hicolor icon bucket the installer may have written.
+
   find "$data_home/icons/hicolor" -name 'forkmesh.png' -delete 2>/dev/null || true
-  # Refresh desktop caches so the launcher disappears promptly.
+
   command -v update-desktop-database >/dev/null 2>&1 \
     && update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true
   command -v gtk-update-icon-cache >/dev/null 2>&1 \
@@ -644,9 +644,9 @@ uninstall_forkmesh() {
   exit 0
 }
 
-# Dispatch uninstall before any install work (and before the diag EXIT trap can
-# misreport a clean uninstall as a failed install step). --reinstall wipes the
-# old install then falls through into the normal install below (adhoc #258).
+
+
+
 for arg in "$@"; do
   case "$arg" in
     --uninstall|--remove|-u) CURRENT_STEP="uninstall"; trap - EXIT; shift || true
@@ -665,10 +665,10 @@ if [ "$FORKMESH_REINSTALL" = "1" ]; then
   fi
 fi
 
-# Plain ASCII box (not Unicode box-drawing): the box-drawing characters are
-# "ambiguous width" in Unicode, so non-UTF-8 terminals/consoles (and some
-# CJK-locale fonts) render them double-width or as mojibake, breaking the
-# alignment against the fixed-width version field below.
+
+
+
+
 printf '\033[32m+-----------------------------------------------+\033[0m\n'
 printf '\033[32m|\033[0m  ForkMesh installer  \033[2mv%-24s\033[0m\033[32m|\033[0m\n' "$INSTALLER_VERSION"
 printf '\033[32m+-----------------------------------------------+\033[0m\n'
@@ -676,9 +676,9 @@ say "Host:   $FORKMESH_HOST"
 say "Source: ${SRC}"
 say "Target: ${BIN}"
 [ -n "$FORKMESH_NODE_NAME" ] && say "Node:   $FORKMESH_NODE_NAME"
-# Echo the account this node is being attached to (adhoc #258) so the operator
-# can confirm, right here in the install output, that it will end up under the
-# right owner rather than registering as an orphan node.
+
+
+
 [ -n "$FORKMESH_OWNER" ] && say "Owner:  $FORKMESH_OWNER  (this node will be attached to this account)"
 if [ "$(id -u)" -eq 0 ]; then
   say "Privileges: running as root (no sudo needed)"
@@ -687,21 +687,21 @@ else
 fi
 diag start 1
 
-# Skip resolving a mirror up front when a binary is being streamed straight
-# onto this machine over the SSH session (adhoc #67 direct-upload install):
-# nothing needs to be cloned unless that upload later turns out to be
-# unusable, in which case ensure_mirror_candidates resolves one lazily.
+
+
+
+
 if [ -z "$REPO" ] && [ -z "$FORKMESH_LOCAL_BINARY" ]; then
   ensure_mirror_candidates
 fi
-# An explicit FORKMESH_REPO (or the override path above leaving it unset) means
-# there is exactly one URL to try; make it the sole candidate so clean_clone has
-# a non-empty list to iterate.
+
+
+
 [ "${#REPO_CANDIDATES[@]}" -eq 0 ] && [ -n "$REPO" ] && REPO_CANDIDATES=("$REPO")
 
-# --- privilege escalation ---------------------------------------------------
-# Resolve how to run a package manager that needs root. Empty when we are
-# already root; otherwise prefer sudo, then doas.
+
+
+
 SUDO=""
 need_sudo() {
   if [ "$(id -u)" -eq 0 ]; then
@@ -716,9 +716,9 @@ need_sudo() {
   return 0
 }
 
-# --- package manager detection ----------------------------------------------
-# Sets PM to the detected manager and PM_INSTALL to the command (as an array)
-# that installs packages non-interactively.
+
+
+
 PM=""
 PM_INSTALL=()
 PM_UPDATED=0
@@ -735,7 +735,7 @@ detect_pm() {
   return 0
 }
 
-# Refresh package indexes once, for managers that need it before install.
+
 pm_refresh() {
   [ "$PM_UPDATED" -eq 1 ] && return 0
   PM_UPDATED=1
@@ -745,9 +745,9 @@ pm_refresh() {
   esac
 }
 
-# Run a package-manager command with escalation when required (brew must not
-# run as root). Echoes the exact command (including any sudo/doas prefix) so the
-# install log shows precisely what is being executed and with what privileges.
+
+
+
 run_pm() {
   if [ "$PM" = "brew" ]; then
     say "Running: $*"
@@ -758,13 +758,13 @@ run_pm() {
   fi
 }
 
-# Install one or more packages by name.
+
 pm_install() {
-  # Resolve privilege escalation before touching the package manager. Every
-  # install path funnels through here, so this guarantees $SUDO is set even when
-  # the caller didn't go through ensure() (e.g. the Qt/OpenSSL block below, which
-  # runs unconditionally). Without this, apt-get runs unprivileged and fails with
-  # "Could not open lock file ... Permission denied" on a fresh machine.
+
+
+
+
+
   if [ "$PM" != "brew" ] && ! need_sudo; then
     die "Installing packages via $PM needs root, but neither sudo nor doas is available. Re-run as root, or install the build dependencies manually and re-run with FORKMESH_NO_INSTALL_DEPS=1."
   fi
@@ -772,9 +772,9 @@ pm_install() {
   run_pm "${PM_INSTALL[@]}" "$@"
 }
 
-# --- prerequisites ----------------------------------------------------------
-# Map a logical prerequisite to the package providing it for the detected PM.
-# Echoes the package name, or nothing when there is no candidate to install.
+
+
+
 pkg_for() {
   local what="$1"
   case "$PM:$what" in
@@ -824,12 +824,12 @@ pkg_for() {
     brew:cmake)     echo cmake ;;
     brew:qt)        echo qt ;;
     brew:openssl)   echo "openssl@3" ;;
-    brew:compiler)  echo "" ;;  # provided by Xcode CLT, handled separately
+    brew:compiler)  echo "" ;;
   esac
 }
 
-# Ensure a prerequisite is present, installing it if missing and possible.
-# Args: <logical name> <test command...>
+
+
 ensure() {
   local what="$1"; shift
   if "$@" >/dev/null 2>&1; then
@@ -852,22 +852,22 @@ ensure() {
 
   say "Installing missing prerequisite: $what ($pkgs)"
   DIAG_MISSING="${DIAG_MISSING:+$DIAG_MISSING }$what"
-  # shellcheck disable=SC2086
+
   pm_install $pkgs || die "Failed to install $pkgs via $PM."
 
   "$@" >/dev/null 2>&1 || die "Installed $pkgs but the check for '$what' still fails. If it is already present in a custom prefix, export PATH/CMAKE_PREFIX_PATH so the check can see it, then re-run."
 }
 
-# A C++ compiler can come from any of cc/clang/g++ (or Xcode CLT on macOS).
+
 have_compiler() {
   command -v cc >/dev/null 2>&1 || command -v clang >/dev/null 2>&1 \
     || command -v g++ >/dev/null 2>&1 || command -v c++ >/dev/null 2>&1
 }
 
-# pkg-config is not guaranteed to be installed: minimal Debian/Alpine images
-# ship neither it nor Debian's `pkgconf` rename of it, and nothing in the build
-# actually needs it. Run whichever binary exists; returning 1 when neither does
-# means "unknown", which callers must never read as "the library is missing".
+
+
+
+
 pkg_config_probe() {
   if command -v pkg-config >/dev/null 2>&1; then
     pkg-config "$@"
@@ -878,17 +878,17 @@ pkg_config_probe() {
   fi
 }
 
-# Look for the CMake package files that qt_client's find_package(Qt6 COMPONENTS
-# Widgets ... Svg) actually resolves through, in the prefixes CMake searches:
-# explicit CMAKE_PREFIX_PATH / Qt6_DIR hints first, then the standard system lib
-# dirs — plain lib (Arch, Alpine), lib64 (Fedora, openSUSE), multiarch
-# lib/<triplet> (Debian, Ubuntu) and Homebrew's keg-only opt prefix. Widgets and
-# Svg come from different distro packages (qt6-base-dev vs qt6-svg-dev), so both
-# are checked. This needs no pkg-config, compiler or build tool, so it stays
-# accurate on a host the installer has not finished setting up.
+
+
+
+
+
+
+
+
 have_qt6_cmake_package() {
   local root cfg cmake_dir
-  # shellcheck disable=SC2086
+
   for root in ${CMAKE_PREFIX_PATH:+${CMAKE_PREFIX_PATH//[:;]/ }} \
               ${Qt6_DIR:+$Qt6_DIR} \
               /usr /usr/local /opt/homebrew/opt/qt /usr/local/opt/qt; do
@@ -908,22 +908,22 @@ have_qt6_cmake_package() {
 }
 
 have_qt6_dev() {
-  # Cheap probe first: the .pc files the Qt 6 development packages ship, for the
-  # same modules the build links against.
+
+
   local mods="Qt6Widgets Qt6Network Qt6Svg Qt6Concurrent"
   if [ "$(uname -s)" = "Linux" ]; then
-    # Linux additionally needs Qt's D-Bus module for portal screen capture.
+
     mods="$mods Qt6DBus"
   fi
-  # shellcheck disable=SC2086
+
   if pkg_config_probe --exists $mods 2>/dev/null; then
     return 0
   fi
-  # A host with no pkg-config (or a Qt build that ships no .pc files) must not
-  # read as "Qt 6 is missing": that made the installer reinstall the dev packages
-  # the package manager already had, re-probe with the same broken check and die
-  # with "Installed qt6-base-dev qt6-svg-dev but 'qt' is still unavailable" on a
-  # machine that was ready to build. Look for the CMake packages instead.
+
+
+
+
+
   have_qt6_cmake_package
 }
 
@@ -940,22 +940,22 @@ have_age_tools() {
     command -v age-keygen >/dev/null 2>&1
 }
 
-# Prebuilt/uploaded binaries skip the source-build pipeline (and thus its Qt 6
-# dependency install), but the binary is dynamically linked against the Qt 6
-# runtime libraries (libQt6Widgets/Gui/Core/Network/Svg) and will not even start
-# without them — it dies at exec with "error while loading shared libraries:
-# libQt6Widgets.so.6: cannot open shared object file". This bit fresh headless
-# servers that had never had Qt installed: the node "installed" but the daemon
-# never launched, so it never registered, connected, or served the repo. Ensure
-# the Qt 6 runtime is present after a prebuilt install so the node actually comes
-# up. The qt6 dev metapackages depend on the runtime libs (and the offscreen QPA
-# plugin the headless daemon needs) and resolve on both pre- and post-t64 Debian,
-# so we reuse them rather than chase the version-specific runtime package names.
-# macOS prebuilds bundle their frameworks, so this only applies to Linux with a
-# package manager.
+
+
+
+
+
+
+
+
+
+
+
+
+
 ensure_qt_runtime() {
   [ "$(uname -s)" = "Linux" ] || return 0
-  # Already have the Qt runtime libraries? Nothing to do.
+
   if command -v ldconfig >/dev/null 2>&1 \
      && ldconfig -p 2>/dev/null | grep -q 'libQt6Widgets\.so\.6'; then
     say "  Qt 6 runtime: already present"
@@ -972,7 +972,7 @@ ensure_qt_runtime() {
   local qt_pkgs; qt_pkgs="$(pkg_for qt)"
   [ -n "$qt_pkgs" ] || { warn "No Qt 6 runtime package candidate is known for '$PM'."; return 0; }
   say "Installing Qt 6 runtime libraries ($qt_pkgs) for the prebuilt binary"
-  # shellcheck disable=SC2086
+
   pm_install $qt_pkgs || die "Failed to install the Qt 6 runtime ($qt_pkgs) via $PM; the prebuilt binary cannot start without it."
 }
 
@@ -988,11 +988,11 @@ ensure git command -v git
 ensure age have_age_tools
 ensure tar command -v tar
 
-# --- prebuilt release binary (fast path) ------------------------------------
-# Resolve this machine's release asset name from uname. The release workflow
-# (.forkmesh/release.yml) names every attached build forkmesh-<os>-<arch> (with
-# a .exe suffix on Windows), so the installer can pick the right one with no
-# server round-trip beyond the clone the build path already needs.
+
+
+
+
+
 detect_release_asset() {
   local os arch
   os="$(uname -s 2>/dev/null || echo unknown)"
@@ -1011,26 +1011,26 @@ detect_release_asset() {
   ASSET_ARCH="$arch"
   ASSET_NAME="forkmesh-${os}-${arch}"
   [ "$os" = "windows" ] && ASSET_NAME="${ASSET_NAME}.exe"
-  # Release channel: the directory under .forkmesh/releases/ the workflow publishes into.
+
   RELEASE_CHANNEL="${FORKMESH_RELEASE:-latest}"
   ASSET_REL_PATH=".forkmesh/releases/${RELEASE_CHANNEL}/${ASSET_NAME}"
 }
 
-# Sparse-fetch a single committed file (repo-relative path $3) from clone URL $1
-# into dir $2, without checking out the whole tree. Prefers a blobless clone
-# (fetches only that one blob); if the mirror/relay does not honour partial-clone
-# filters, retries with a plain shallow clone so the fast path still works (it
-# just transfers more). Leaves the file at "$2/$3" on success.
+
+
+
+
+
 _sparse_fetch_file() {
   local repo="$1" tmp="$2"; shift 2
-  # The first path is required — success is gated on it being present and
-  # non-empty. Any extra paths are fetched best-effort in the SAME checkout (e.g.
-  # release.json alongside SHASUMS256.txt), so the canonical owner/repo can be
-  # read without a second clone.
+
+
+
+
   local paths=("$@") mode
   for mode in "--filter=blob:none" ""; do
     rm -rf "$tmp"; mkdir -p "$tmp" || return 1
-    # shellcheck disable=SC2086
+
     if git clone --quiet --depth 1 $mode --no-checkout "$repo" "$tmp" >/dev/null 2>&1 \
         && git -C "$tmp" sparse-checkout set --no-cone "${paths[@]}" >/dev/null 2>&1 \
         && git -C "$tmp" checkout --quiet >/dev/null 2>&1 \
@@ -1041,28 +1041,28 @@ _sparse_fetch_file() {
   return 1
 }
 
-# Split a clone URL (https://host/owner/repo[.git]) into RELEASE_REPO_OWNER and
-# RELEASE_REPO_NAME — the namespace for the relay's release-download endpoint.
+
+
 _repo_owner_name() {
   local u="${1%.git}"
   RELEASE_REPO_NAME="${u##*/}"; u="${u%/*}"
   RELEASE_REPO_OWNER="${u##*/}"
 }
 
-# Echo the canonical "owner/repo" the release manifest (release.json) records. The
-# release blob lives in an out-of-git, content-addressed store on the node that
-# STAGED the release — never in git — so only that repo's host can serve it. A
-# mirror node mirrors the git tree (it has SHASUMS256.txt/release.json) but NOT
-# the CAS, so requesting the blob from the mirror that served the clone 404s,
-# which is exactly why a published binary still fell back to a source build. Echo
-# empty when the manifest is missing or records no well-formed owner/repo.
+
+
+
+
+
+
+
 _manifest_repo() {
   [ -f "$1" ] || return 0
   sed -n 's/.*"repo"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1
 }
 
-# Echo the exact revision embedded in release binaries. This is intentionally
-# distinct from tag_commit, which remains the peeled target of the release tag.
+
+
 _manifest_build_commit() {
   [ -f "$1" ] || return 0
   sed -n 's/.*"build_commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" |
@@ -1081,9 +1081,9 @@ _manifest_checksums_sha256() {
     head -n 1 | tr 'A-F' 'a-f'
 }
 
-# Authenticate release.json independently, then bind it to the checksum list.
-# Either an authenticated controller pins the exact manifest digest or a local
-# Ed25519 publisher trust anchor verifies its detached signature.
+
+
+
 _verify_release_metadata() {
   local manifest="$1" signature="$2" sums="$3"
   local manifest_hash sums_hash expected_sums tag build_commit
@@ -1139,9 +1139,9 @@ _verify_release_metadata() {
   return 0
 }
 
-# Stage into the destination filesystem, validate those exact staged bytes, then
-# atomically rename over $BIN. The old inode/process remains intact on every
-# checksum or provenance failure.
+
+
+
 _install_binary() {
   local candidate="$1" expected_hash="${2:-}" staged source_hash staged_hash
   INSTALL_BINARY_FAILURE_KIND=""
@@ -1189,23 +1189,23 @@ _install_binary() {
   return 0
 }
 
-# Install the prebuilt binary for this platform. New model (issue #304): release
-# binaries are NOT committed to git. The installer reads the tiny committed
-# release manifest (SHASUMS256.txt, fetched over the git proxy) to learn the
-# platform asset's content hash, downloads the bytes from the relay's
-# content-addressed release endpoint, and verifies the authenticated manifest,
-# checksum-list binding, and binary SHA-256 before installing. Unsigned legacy
-# releases are never executed. The caller may explicitly allow a source build
-# after this returns non-zero.
+
+
+
+
+
+
+
+
 install_prebuilt_release() {
   command -v git >/dev/null 2>&1 || return 1
   ensure_mirror_candidates
   local tmp repo sums manifest signature canon hash url bin got attempt attempt_url
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-prebuilt.XXXXXX" 2>/dev/null)" || return 1
-  # Standalone `curl | bash` installs need an independent trust anchor too.
-  # Materialize ForkMesh's release-only public key inside this private staging
-  # directory unless an administrator or authenticated controller supplied a
-  # different trust mechanism. The corresponding private key is never shipped.
+
+
+
+
   if [ -z "$FORKMESH_EXPECTED_RELEASE_MANIFEST_SHA256" ] &&
      [ -z "$FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE" ]; then
     FORKMESH_TRUSTED_RELEASE_PUBLIC_KEY_FILE="$tmp/release-publisher.pem"
@@ -1222,14 +1222,14 @@ install_prebuilt_release() {
   RELEASE_FRESHNESS_MATCH=0
   RELEASE_CANDIDATE_FAILURE=0
   for repo in "${REPO_CANDIDATES[@]}"; do
-    # The sparse-checkout clone below is silent (redirected to /dev/null so a
-    # missing manifest isn't logged as an error) and can take a while over a
-    # slow mirror, so announce the attempt here — otherwise the install appears
-    # to hang with no output between "Resolving..." and "Downloading..." (#418).
+
+
+
+
     say "Checking $repo for a prebuilt release…"
-    # New model: manifest checksum + content-addressed download (+ verify). Fetch
-    # release.json in the same checkout so the blob can be requested from the repo
-    # that staged it — not the mirror that happened to serve this clone.
+
+
+
     if command -v curl >/dev/null 2>&1 &&
        _sparse_fetch_file "$repo" "$tmp" "$sums" "$manifest" "$signature"; then
       if [ ! -s "$tmp/$manifest" ] ||
@@ -1240,9 +1240,9 @@ install_prebuilt_release() {
       RELEASE_FRESHNESS_MATCH=1
       hash="$(awk -v n="$ASSET_NAME" '$2==n {print $1; exit}' "$tmp/$sums" 2>/dev/null)"
       if printf '%s' "$hash" | grep -Eq '^[0-9a-f]{64}$'; then
-        # Prefer the canonical owner/repo the manifest records — only that node
-        # holds the out-of-git release blob. Fall back to the mirror's own
-        # owner/repo for legacy manifests that don't record it.
+
+
+
         canon="$(_manifest_repo "$tmp/$manifest")"
         if printf '%s' "$canon" | grep -Eq '^[^/]+/[^/]+$'; then
           RELEASE_REPO_OWNER="${canon%%/*}"
@@ -1281,18 +1281,18 @@ install_prebuilt_release() {
         done
       fi
     fi
-    # Manifest-free/unsigned legacy assets are intentionally never executed.
+
   done
   rm -rf "$tmp"
   return 1
 }
 
-# Direct-upload fast path (adhoc #67): install a binary the deploying desktop
-# app already streamed onto this machine over the SSH session, skipping the
-# relay download entirely (useful when this host can't reach the release
-# endpoint, or to push exactly the build the operator is running). The
-# uploader's declared platform must match this machine; on any mismatch — or a
-# missing/empty upload — return non-zero so the normal download path runs.
+
+
+
+
+
+
 install_local_binary() {
   [ -n "$FORKMESH_LOCAL_BINARY" ] || return 1
   if [ ! -s "$FORKMESH_LOCAL_BINARY" ]; then
@@ -1348,13 +1348,13 @@ if [ "${FORKMESH_FROM_SOURCE:-0}" != "1" ]; then
   fi
 fi
 
-# Everything from here to the build retry is the source-build pipeline; skip it
-# entirely once a prebuilt binary is in place.
+
+
 if [ "$INSTALLED_PREBUILT" != "1" ]; then
 ensure cmake  command -v cmake
 
-# Compiler: on macOS this means the Xcode Command Line Tools, which brew can't
-# install — trigger Apple's installer instead.
+
+
 if ! have_compiler; then
   if [ "$(uname -s)" = "Darwin" ]; then
     if [ "${FORKMESH_NO_INSTALL_DEPS:-0}" = "1" ]; then
@@ -1372,40 +1372,40 @@ if ! have_compiler; then
   fi
 fi
 
-# Qt 6 (Widgets, Network, Svg) and OpenSSL are required by CMake. Probe them
-# before touching the package manager: repeatedly running `curl | bash` must
-# not demand sudo or reinstall large development packages on an already-ready
-# host. `ensure` still installs the known packages and fails clearly when a
-# component is genuinely absent.
+
+
+
+
+
 ensure qt have_qt6_dev
 ensure openssl have_openssl_dev
-# detail records which prerequisites had to be installed ("none" = all present),
-# so the funnel shows how often a machine already met the requirements.
+
+
 diag deps 1 "${DIAG_MISSING:-none}"
 
-# --- fetch + build + install (clean-reclone retry on any failure) -----------
-# A leftover checkout from an interrupted earlier run can be stale or incomplete
-# (e.g. the directory exists but qt_client/CMakeLists.txt is missing), which
-# breaks the build in confusing ways. Each phase below returns non-zero instead
-# of aborting, so on ANY failure we can wipe the source tree and run the whole
-# pipeline once more from a clean clone.
 
-# The owner/path-bound marker declared above is the sole authority for updating
-# or recursively replacing an installer checkout.
+
+
+
+
+
+
+
+
 owns_src() { _marker_is_valid "$SRC"; }
 
-# Extract the node segment ("https://host/<node>/forkmesh" -> "<node>") so log
-# lines can name the offending mirror without echoing the whole clone URL.
+
+
 repo_node() {
-  local r="${1%/}"   # drop any trailing slash
-  r="${r%/*}"        # drop the trailing /<repo> segment
+  local r="${1%/}"
+  r="${r%/*}"
   printf '%s' "${r##*/}"
 }
 
-# Turn the captured `git clone` output into a short, human-readable reason. The
-# 504 "Host timed out" the relay returns when a named mirror's git tunnel is
-# unresponsive is the case this whole fallback exists for, so name it precisely;
-# everything else gets a best-effort classification for the diagnostics funnel.
+
+
+
+
 classify_clone_failure() {
   case "$1" in
     *"failed integrity check"*|*"repository failed integrity"*) echo "integrity pin rejected by the relay" ;;
@@ -1421,12 +1421,12 @@ classify_clone_failure() {
   esac
 }
 
-# Replace $SRC with a fresh shallow clone. Clone into a temporary sibling first
-# and swap it into place only after the clone fully succeeds, so a failed clone
-# (e.g. no mirror currently serving the repo) can never leave the user with a
-# half-deleted or missing $SRC. Tries each resolved mirror in REPO_CANDIDATES in
-# turn, so one unreachable mirror (504/timeout) falls through to the next online
-# one instead of dead-ending the install.
+
+
+
+
+
+
 clean_clone() {
   local tmp="$SRC.new.$$"
   local repo out rc reason node total="${#REPO_CANDIDATES[@]}" idx=0
@@ -1440,8 +1440,8 @@ clean_clone() {
     else
       say "Cloning $repo"
     fi
-    # Capture output so we can recognise the relay's integrity-gate rejection and
-    # classify the failure; the output is still echoed so normal progress shows.
+
+
     out="$(git clone --depth 1 "$repo" "$tmp" 2>&1)"; rc=$?
     printf '%s\n' "$out"
     if [ "$rc" -eq 0 ]; then
@@ -1451,15 +1451,15 @@ clean_clone() {
       mv "$tmp" "$SRC"
       _write_managed_marker "$SRC" ||
         die "Could not write the managed-install marker in $SRC."
-      REPO="$repo"   # remember the mirror that actually served the clone
+      REPO="$repo"
       return 0
     fi
     rm -rf -- "$tmp"
     reason="$(classify_clone_failure "$out")"
     CLONE_FAIL_REASON="$reason"
-    # A failed integrity pin is the relay refusing every mirror of this repo, not
-    # a per-mirror outage, so trying the rest is pointless — stop and let the
-    # caller surface the owner-actionable pin help.
+
+
+
     case "$out" in
       *"failed integrity check"*|*"repository failed integrity"*) PIN_FAILURE=1; return 1 ;;
     esac
@@ -1478,10 +1478,10 @@ fetch_source() {
       return 0
     fi
     say "Updating existing checkout in $SRC"
-    # The stored remote was baked with the node id live at the original install.
-    # That node may now be offline while a different mirror is online, so pulling
-    # the old URL returns 503. Repoint origin at the freshly resolved live mirror
-    # before pulling, and fall back to a clean re-clone if the pull still fails.
+
+
+
+
     git -C "$SRC" remote set-url origin "$REPO" 2>/dev/null || true
     if ! git -C "$SRC" pull --ff-only; then
       warn "Could not update from $REPO; re-cloning from the current live mirror."
@@ -1490,9 +1490,9 @@ fetch_source() {
   else
     clean_clone || return 1
   fi
-  # git pull can say "Already up to date" yet leave a tree missing the Qt sources
-  # CMake builds from (stale/partial mirror). Success of the fetch is not proof
-  # the build inputs exist, so verify the actual file and re-clone if it is gone.
+
+
+
   if [ ! -f "$SRC/qt_client/CMakeLists.txt" ]; then
     warn "Checkout in $SRC is incomplete (no qt_client/CMakeLists.txt); re-cloning."
     clean_clone || return 1
@@ -1516,7 +1516,7 @@ build_client() {
   cmake "${cmake_args[@]}" || return 1
   say "Building (this can take a few minutes)"
   cmake --build "$build_dir" -j"$jobs" || return 1
-  BUILD="$build_dir"  # used by the install/launch phases below
+  BUILD="$build_dir"
 }
 
 install_client() {
@@ -1533,20 +1533,20 @@ install_client() {
   say "Installed to $BIN"
 }
 
-# Fetch -> build -> install, tagging the active phase for diagnostics. Returns
-# non-zero (rather than exiting) on the first failure so the caller can retry.
+
+
 attempt_install() {
-  # On a fetch failure, report WHY (the classified clone reason) to the funnel so
-  # operators can see, e.g., that every mirror returned a 504 — not just that the
-  # fetch step dropped off.
+
+
+
   CURRENT_STEP="fetch";   fetch_source   || { diag fetch 0 "${CLONE_FAIL_REASON:-fetch_failed}"; return 1; }; diag fetch 1
   CURRENT_STEP="build";   build_client   || return 1; diag build 1
   CURRENT_STEP="install"; install_client || return 1; diag install 1
 }
 
-# A stale integrity pin is rejected identically on a clean re-clone (the relay,
-# not the local checkout, refuses it), so don't bother retrying that case — go
-# straight to a clear, owner-actionable explanation.
+
+
+
 pin_failure_help() {
   printf '\033[31mError:\033[0m The mirror serving %s failed its integrity check.\n' "$REPO" >&2
   printf '\n' >&2
@@ -1570,8 +1570,8 @@ if ! attempt_install; then
   _remove_managed_src "$SRC"
   if ! attempt_install; then
     [ "$PIN_FAILURE" = "1" ] && pin_failure_help
-    # Name the last failure reason and every mirror that was tried so the cause
-    # is obvious from the final line alone (e.g. all mirrors returned a 504).
+
+
     if [ "${CLONE_FAIL_REASON:-}" ]; then
       warn "Mirrors tried: ${FORKMESH_NODES:-$REPO}"
       warn "Re-run with FORKMESH_DEBUG=1 for the full git/HTTP trace."
@@ -1580,35 +1580,35 @@ if ! attempt_install; then
     die "Install failed again after a clean re-clone; see the messages above for the cause."
   fi
 fi
-fi  # end source-build pipeline (skipped when a prebuilt binary was installed)
+fi
 
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
   *) say "Add $BIN_DIR to your PATH, e.g.  export PATH=\"$BIN_DIR:\$PATH\"" ;;
 esac
 
-# --- desktop integration (Linux) --------------------------------------------
-# Register a .desktop launcher + hicolor icons so ForkMesh appears in the
-# GNOME/KDE app menu and dock — not just on the PATH. This reuses the dedicated
-# qt_client/install.sh that ships in the cloned source, so the launcher entry
-# stays in one place and points at the build output (picking up in-app updates).
-# Best-effort and Linux-only: macOS gets its menu entry from the .app bundle,
-# and a missing icon-cache tool must never fail the whole install.
+
+
+
+
+
+
+
 register_desktop_entry() {
   [ "$(uname -s)" = "Linux" ] || return 0
   CURRENT_STEP="desktop"
-  # A headless box has no GNOME/KDE app menu or dock to register into, so writing
-  # a .desktop launcher + icons there is pointless. Skip it (matching the
-  # auto-launch display check below); the app still runs from $BIN / the CLI.
+
+
+
   if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
     say "No display detected; skipping app-menu registration (run:  forkmesh)."
     return 0
   fi
   local script="$SRC/qt_client/install.sh"
   if [ ! -f "$script" ]; then
-    # The prebuilt fast path never clones the source, so the helper that writes
-    # the .desktop entry isn't present — that's expected, not an error. The app
-    # still runs from $BIN on the PATH.
+
+
+
     if [ "$INSTALLED_PREBUILT" = "1" ]; then
       say "Installed the prebuilt binary; skipping app-menu registration (run:  forkmesh)."
     else
@@ -1618,13 +1618,13 @@ register_desktop_entry() {
     return 0
   fi
   say "Registering ForkMesh in the application menu (this can take a moment)…"
-  # The helper renders icon buckets and rebuilds the GTK icon cache, either of
-  # which can hang on a misconfigured box (a wedged ImageMagick delegate, a slow
-  # `gtk-update-icon-cache -f` over a huge hicolor theme). Run it under a hard
-  # time limit so desktop integration can NEVER freeze the whole install, capture
-  # its verbose output to a log, and replay that log on failure (or always with
-  # FORKMESH_DEBUG=1). A non-zero exit here is non-fatal — the app still runs from
-  # $BIN / the build output.
+
+
+
+
+
+
+
   local log rc=0
   log="$(mktemp 2>/dev/null || echo "${TMPDIR:-/tmp}/forkmesh-desktop.$$.log")"
   dbg "running desktop helper: bash $script (output log: $log)"
@@ -1652,18 +1652,18 @@ register_desktop_entry() {
 }
 register_desktop_entry
 
-# --- launch -----------------------------------------------------------------
-# One-shot install: start ForkMesh automatically so the user lands in the app.
-# Detached from this script (which may itself be running under `curl | bash`) so
-# it keeps running after the installer exits. Set FORKMESH_NO_LAUNCH=1 to skip
-# (e.g. headless build servers).
-#
-# On a desktop this opens the GUI. On a headless box — the usual case for a
-# deployed mirror node — it starts the node as a detached BACKGROUND DAEMON
-# instead of just printing a hint: otherwise nothing runs, so the node never
-# joins the network or appears in the Mirror nodes list even though the install
-# "succeeded". LAUNCH_MODE records which path ran so the caller prints the right
-# message.
+
+
+
+
+
+
+
+
+
+
+
+
 LAUNCH_MODE=""
 
 launch_root_headless_service() {
@@ -1714,17 +1714,17 @@ launch_root_headless_service() {
     useradd --system --home-dir "$state_dir" --create-home \
       --shell /usr/sbin/nologin "$service_user"
   fi
-  # QSettings places the first-run Actions recovery lock beneath this directory.
-  # Creating only the data directory left a brand-new service in a crash loop:
-  # QLockFile could not create its lock parent and reported configuration_busy.
-  # Keep both application roots private to the dedicated service account.
+
+
+
+
   mkdir -p "$state_dir/.local/share/forkmesh" \
     "$state_dir/.config/ForkMesh" "$state_dir/tmp" /etc/forkmesh
-  # An installed agent CLI is not sufficient to run a job: the agent needs a
-  # persistent, service-owned working checkout. Seed the flagship repository
-  # before the first daemon launch and record it in QSettings. The repository
-  # remains private to the locked service account (state_dir is 0750 and the
-  # checkout/config are 0700/0600); later mirror syncs keep it current.
+
+
+
+
+
   local checkout_root="$state_dir/repositories"
   local flagship_checkout="$checkout_root/forkmesh"
   local settings_file="$state_dir/.config/ForkMesh/ForkMesh.conf"
@@ -1783,10 +1783,10 @@ launch_root_headless_service() {
   chmod 0700 "$checkout_root" "$flagship_checkout"
   chmod 0600 "$settings_file"
   chmod 0700 "$state_dir/.config" "$state_dir/.config/ForkMesh"
-  # Encrypted public repositories are authenticated into temporary plaintext
-  # materializations. Keep those on the node's private persistent filesystem:
-  # distro /tmp is commonly a RAM-backed mount capped at half of memory, which
-  # made a valid repository exhaust small mirrors during first sync.
+
+
+
+
   chmod 0700 "$state_dir/tmp"
   {
     printf 'forkmesh-managed-service-v1\n'
@@ -1828,10 +1828,10 @@ launch_root_headless_service() {
   systemctl daemon-reload
   systemctl reset-failed forkmesh-node.service >/dev/null 2>&1 || true
   systemctl enable --now forkmesh-node.service
-  # "active" for a single instant is not a successful installation. The old
-  # check raced a first-run crash loop and marked the host installed while
-  # systemd was already preparing its restart. Require a short stable window
-  # with a live MainPID and no automatic restart.
+
+
+
+
   local stable_tick restarts main_pid
   for stable_tick in 1 2 3 4 5; do
     sleep 1
@@ -1868,16 +1868,16 @@ launch_forkmesh() {
         fi
         return 0
       fi
-      # Headless: bring the node up as a background daemon. Reading stdin from
-      # /dev/null makes the headless console drop straight into daemon mode (it
-      # keeps serving once stdin closes) rather than blocking at a prompt nothing
-      # is attached to. A root-run installer creates a locked, unprivileged
-      # forkmesh-node account and a hardened systemd service; the application
-      # itself is never granted --allow-root. FORKMESH_NODE_NAME hands the app
-      # the operator's chosen name so it adopts it and auto-connects.
+
+
+
+
+
+
+
       LAUNCH_MODE="daemon"
       local log rand daemon_pid pid_tmp
-      # Mint the account link code (adhoc #53) unless the operator pre-set one.
+
       case "$FORKMESH_LINK_CODE" in
         [0-9][0-9][0-9][0-9][0-9][0-9]) ;;
         *)
@@ -1909,33 +1909,33 @@ launch_forkmesh() {
   return 1
 }
 
-# --- automatic Cloudflare Tunnel provisioning (opt-in) -----------------------
-# When FORKMESH_TUNNEL_HOSTNAME (e.g. mirror9.forkmesh.com) and
-# CLOUDFLARE_API_TOKEN are both set, a fresh headless node provisions its own
-# direct-HTTPS mirror endpoint right after install: the pinned cloudflared and
-# mirror tools are installed, the relay's mirror-router public key is
-# discovered, tools/cloudflare_tunnel_bootstrap.py runs AS THE SERVICE USER
-# (the API token only ever travels through the child environment — never argv,
-# never logged), and the node is restarted so its startup auto-start
-# (control/autoStartMirrorServices) brings up the gateway, Tunnel connector,
-# and signed endpoint registration. Optional knobs:
-#   FORKMESH_TUNNEL_ZONE            Cloudflare zone (default: hostname minus
-#                                   its first label, e.g. forkmesh.com)
-#   FORKMESH_CLOUDFLARE_ACCOUNT_ID  passed as --account-id when set
-#   FORKMESH_RELAY_HOSTNAME         relay Worker host (default: $FORKMESH_HOST)
-# Every failure here is soft: a tunnel that cannot be provisioned must never
-# break the plain install that already succeeded.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 FORKMESH_TUNNEL_HOSTNAME="${FORKMESH_TUNNEL_HOSTNAME:-}"
 FORKMESH_TUNNEL_ZONE="${FORKMESH_TUNNEL_ZONE:-}"
 FORKMESH_CLOUDFLARE_ACCOUNT_ID="${FORKMESH_CLOUDFLARE_ACCOUNT_ID:-}"
 FORKMESH_RELAY_HOSTNAME="${FORKMESH_RELAY_HOSTNAME:-}"
 
-# Copy the pinned mirror tools into <prefix>/share/forkmesh/tools — one of the
-# exact locations the app's findPinnedTool() probes relative to its binary — so
-# the daemon can find mirror_gateway.py / cloudflared_install.py at runtime.
-# Source order: an installer source checkout, the root service's seeded
-# flagship checkout, else a sparse fetch from the resolved mirrors (the same
-# way the binary's release manifest is fetched).
+
+
+
+
+
+
 _tunnel_stage_tools() {
   local tools_dir="$1" tmp="" src="" f
   local wanted="cloudflared_install.py cloudflare_tunnel_bootstrap.py mirror_gateway.py"
@@ -1943,13 +1943,13 @@ _tunnel_stage_tools() {
     [ -n "$src" ] && [ -f "$src/cloudflare_tunnel_bootstrap.py" ] && break
   done
   if [ -z "$src" ]; then
-    # Mirrors were already resolved for the binary download; a direct-upload
-    # install that never resolved any must not hard-fail this soft path.
+
+
     [ "${#REPO_CANDIDATES[@]}" -gt 0 ] || return 1
     tmp="$(mktemp -d "${TMPDIR:-/tmp}/forkmesh-tools.XXXXXX" 2>/dev/null)" || return 1
     local repo fetched=1
     for repo in "${REPO_CANDIDATES[@]}"; do
-      # shellcheck disable=SC2086
+
       if _sparse_fetch_file "$repo" "$tmp" \
            tools/cloudflare_tunnel_bootstrap.py \
            tools/cloudflared_install.py \
@@ -1973,9 +1973,9 @@ _tunnel_stage_tools() {
   [ -f "$tools_dir/cloudflare_tunnel_bootstrap.py" ]
 }
 
-# Merge the [control] keys the daemon's mirror services read into the service
-# user's QSettings conf. Idempotent: existing values for these keys are
-# replaced, everything else in the file is preserved.
+
+
+
 _tunnel_write_control_settings() {
   local conf="$1" relay="$2" mirror="$3" node="$4" rkey="$5"
   local staged="$conf.tunnel.$$"
@@ -2023,7 +2023,7 @@ provision_cloudflare_tunnel() {
       { warn "runuser is required to bootstrap the tunnel as $service_user; skipping."; return 1; }
     state_home="$SYSTEMD_STATE_DIR"
     conf="$state_home/.config/ForkMesh/ForkMesh.conf"
-    # Qt's AppDataLocation nests organization/application: .../ForkMesh/ForkMesh.
+
     appdata="$state_home/.local/share/ForkMesh/ForkMesh"
     node_binary="$SYSTEMD_BIN"
     tools_dir="/usr/local/share/forkmesh/tools"
@@ -2037,8 +2037,8 @@ provision_cloudflare_tunnel() {
     cfd_dest="$appdata/mirror-gateway/bin/cloudflared"
   fi
   gw_root="$appdata/mirror-gateway"
-  # Node name for the manifest/registration: the operator's chosen name when it
-  # fits the relay's node-name shape, else the hostname's first label.
+
+
   node_name="$(printf '%s' "$FORKMESH_NODE_NAME" | tr 'A-Z' 'a-z')"
   printf '%s' "$node_name" | grep -Eq '^[a-z][a-z0-9-]{0,62}$' ||
     node_name="${hostname%%.*}"
@@ -2053,9 +2053,9 @@ provision_cloudflare_tunnel() {
   fi
   say "  Pinned mirror tools staged in $tools_dir"
 
-  # Pinned cloudflared connector. A system cloudflared on the PATH wins (same
-  # preference the app applies); otherwise install the exact SHA-256-pinned
-  # release with the bundled verifier — no shell pipeline.
+
+
+
   if command -v cloudflared >/dev/null 2>&1; then
     say "  cloudflared: already present ($(command -v cloudflared))"
   else
@@ -2066,14 +2066,14 @@ provision_cloudflare_tunnel() {
          --destination "$cfd_dest" --json-stdout >/dev/null 2>&1; then
       say "  Installed the SHA-256-pinned cloudflared connector to $cfd_dest"
     else
-      # The daemon can install its own managed copy on first start, so this is
-      # a warning, not a dead end.
+
+
       warn "Could not install the pinned cloudflared now; the node will retry with its own verified installer."
     fi
   fi
 
-  # The Worker's mirror-router public key — the same discovery endpoint the
-  # desktop uses before registering a direct endpoint.
+
+
   local router_body router_key
   router_body="$(curl -fsS -m 20 "https://$relay_host/api/mirrors/https" 2>/dev/null || true)"
   router_key="$(printf '%s\n' "$router_body" |
@@ -2083,8 +2083,8 @@ provision_cloudflare_tunnel() {
     return 1
   fi
 
-  # The daemon launched above generates the node identity on first start; wait
-  # (bounded) for the key to exist so the manifest can be signed with it.
+
+
   local identity_pem="$appdata/identity/ed25519.pem" waited=0
   say "  Waiting for the node identity key (up to 90s)…"
   while [ ! -s "$identity_pem" ] && [ "$waited" -lt 90 ]; do
@@ -2095,8 +2095,8 @@ provision_cloudflare_tunnel() {
     warn "The node identity key never appeared at $identity_pem; skipping tunnel provisioning."
     return 1
   fi
-  # base64url (no padding) of the raw 32-byte Ed25519 public key — the same
-  # encoding the app publishes.
+
+
   local node_pubkey
   node_pubkey="$(openssl pkey -in "$identity_pem" -pubout -outform DER 2>/dev/null |
     tail -c 32 | base64 | tr '+/' '-_' | tr -d '=')"
@@ -2105,16 +2105,16 @@ provision_cloudflare_tunnel() {
     return 1
   fi
 
-  # Stop the node before rewriting its QSettings: the running app syncs the
-  # whole conf file and would clobber keys written underneath it.
+
+
   if [ "$as_service" -eq 1 ]; then
     systemctl stop forkmesh-node.service ||
       { warn "Could not stop forkmesh-node.service for tunnel provisioning."; return 1; }
   else
     stop_forkmesh_daemons "tunnel provisioning"
   fi
-  # Restart the node no matter how the bootstrap below fares — a failed tunnel
-  # must leave a working plain node behind.
+
+
   _tunnel_restart_node() {
     if [ "$as_service" -eq 1 ]; then
       systemctl start forkmesh-node.service ||
@@ -2134,10 +2134,10 @@ provision_cloudflare_tunnel() {
     chown "$service_user:$service_user" "$conf" 2>/dev/null || true
   fi
 
-  # Provision tunnel + DNS + signed manifest + connector token. Exactly the
-  # argument list the desktop's Control Node page builds
-  # (ControlNode.cpp buildCloudflareTunnelBootstrapCommand); the Cloudflare API
-  # token travels only in the child environment.
+
+
+
+
   if [ "$as_service" -eq 1 ]; then
     say "  Running the pinned Cloudflare Tunnel bootstrap as $service_user…"
   else
@@ -2194,12 +2194,12 @@ provision_cloudflare_tunnel() {
 
 CURRENT_STEP="launch"
 LOG_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
-# Update-in-place restart (adhoc): the binary/build output has just been
-# refreshed, so stop the daemon that is still running the OLD build before we
-# relaunch — otherwise launch_forkmesh starts a second daemon alongside the
-# stale one. Only the process is stopped; the node's identity key and mirrored
-# data are left in place (this is not a reinstall). Skipped when nothing is
-# going to be launched anyway.
+
+
+
+
+
+
 if [ "$FORKMESH_RESTART" = "1" ] && [ "${FORKMESH_NO_LAUNCH:-0}" != "1" ]; then
   stop_forkmesh_daemons "restart before relaunch"
 fi
@@ -2218,8 +2218,8 @@ elif launch_forkmesh; then
     else
       say "  Logs: $LOG_PATH    Stop: kill \"\$(cat '$PID_FILE')\""
     fi
-    # The ForkMesh desktop app watches an SSH install's stream for this exact
-    # line and pops up a link dialog prefilled with the code (adhoc #53).
+
+
     say ""
     say "FORKMESH LINK CODE: $FORKMESH_LINK_CODE"
     if [ -n "$FORKMESH_OWNER" ]; then
@@ -2228,24 +2228,24 @@ elif launch_forkmesh; then
     say "  Enter this code in your ForkMesh desktop app to link the new node"
     say "  to your account (a popup opens during a Hosts-panel install; the"
     say "  code expires 30 minutes after the node registers)."
-    # Stream the freshly-started daemon's own log into this SSH session for a
-    # short bounded window (adhoc #226). Without this the node's live startup —
-    # connecting to the relay, registering, syncing the catalog — vanishes into
-    # a log file on the remote box and the operator's installer screen just
-    # shows "running as a background daemon" then stops. Tailing it here lets
-    # the desktop app's Live output box show the node actually coming alive.
+
+
+
+
+
+
     if [ "$LAUNCH_MODE" = "daemon" ] && command -v tail >/dev/null 2>&1; then
       say ""
       say "--- Live node output (first few seconds) ---"
-      # Wait briefly for the daemon to create/populate the log, then follow it.
+
       _w=0
       while [ ! -s "$LOG_PATH" ] && [ "$_w" -lt 40 ]; do sleep 0.25; _w=$((_w+1)); done
       tail -n +1 -f "$LOG_PATH" 2>/dev/null &
       _tail_pid=$!
       sleep 15
-      # kill+wait deliberately end the tail early; under `set -e` the SIGTERM
-      # exit status (143) would otherwise trip errexit and make the whole
-      # install report failure despite the daemon having started fine.
+
+
+
       kill "$_tail_pid" 2>/dev/null || true
       wait "$_tail_pid" 2>/dev/null || true
       say "--- (live output continues in $LOG_PATH) ---"
@@ -2262,9 +2262,9 @@ else
   diag launch 1 "manual"
 fi
 
-# Opt-in automatic Cloudflare Tunnel provisioning for the fresh headless node
-# (see provision_cloudflare_tunnel above). Every failure is soft: the plain
-# install above already succeeded and stays that way.
+
+
+
 if [ -n "$FORKMESH_TUNNEL_HOSTNAME" ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
   provision_cloudflare_tunnel ||
     warn "Automatic tunnel provisioning did not complete; the node is installed and running without a direct HTTPS endpoint."
@@ -2272,6 +2272,6 @@ elif [ -n "$FORKMESH_TUNNEL_HOSTNAME" ]; then
   warn "FORKMESH_TUNNEL_HOSTNAME is set but CLOUDFLARE_API_TOKEN is not; skipping automatic tunnel provisioning."
 fi
 
-# Whole install finished successfully; the EXIT trap only fires on failure.
+
 CURRENT_STEP="done"
 diag done 1

@@ -8,10 +8,10 @@
   --config /etc/forkmesh/ssh-refresh.json \
   notify && exit 0
 
-# A committed receive-pack cannot be changed into a failed push merely because
-# the Python notifier is temporarily unavailable. Retain fixed, input-free work
-# for the path unit instead; the periodic reconcile timer is the final fallback
-# if even this runtime marker cannot be created.
+
+
+
+
 umask 077
 retry_marker=$(/usr/bin/mktemp \
   /run/forkmesh-mirror-refresh/.notify-failed.XXXXXXXX) || exit 1

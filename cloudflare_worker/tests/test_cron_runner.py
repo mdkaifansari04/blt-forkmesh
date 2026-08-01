@@ -105,19 +105,19 @@ def test_trigger_samples_status_directly_then_kicks_the_alarm_runner():
         if isinstance(node, ast.AsyncFunctionDef)
         and node.name == "_run_scheduled_jobs"))
 
-    # The platform Cron Trigger is the only per-minute schedule the platform
-    # itself guarantees, so the /status sample must land from here even when
-    # the whole Durable Object subsystem is failing (wedged runner isolate,
-    # exhausted free-tier DO allowance). The sample runs FIRST so a kick that
-    # hangs on a dead object cannot starve it, and each half is isolated so
-    # one failing cannot suppress the other.
+
+
+
+
+
+
     assert "record_status_sample(self.env)" in scheduled
     assert "_cron_runner_kick(self.env)" in scheduled
     assert scheduled.index("record_status_sample(self.env)") < \
         scheduled.index("_cron_runner_kick(self.env)")
-    # The maintenance batch keeps its own sample call: with the claim row in
-    # record_status_sample exactly one caller records each minute, and the
-    # runner covers minutes where the trigger's Python wrapper was killed.
+
+
+
     assert "record_status_sample" in jobs
     assert "https_mirror_health_cron" in jobs
     assert "_cron_watchdog_completion" in jobs
@@ -177,8 +177,8 @@ def test_runner_keeps_successor_alarm_when_a_batch_fails():
         + ns["CRON_RUNNER_ALARM_OFFSET_MS"])
     assert "batch failed" in storage.data["last_failure"]
     assert "last_completed_slot" not in storage.data
-    # Workers Logs is off, so the swallowed batch failure must surface via
-    # Sentry (best-effort) instead of console/print.
+
+
     assert any(
         "batch failed" in message
         for _status, _method, _path, message in ns["sentry_events"])
@@ -208,15 +208,15 @@ def test_mid_minute_trigger_kick_reconciles_without_losing_next_slot():
     assert response.status == 200
     assert storage.alarm_at == 17 * interval + 44_000
 
-    # The reconciliation alarm lands in the already-completed minute. It must
-    # deduplicate the jobs while restoring the canonical :01.5 next wake-up.
+
+
     ns["Date"].value = storage.alarm_at
     asyncio.run(runner.alarm())
     assert observed_slots == []
     assert storage.alarm_at == expected_minute_18_alarm
 
-    # The restored alarm owns the following minute exactly once and persists
-    # its successor before work.
+
+
     ns["Date"].value = expected_minute_18_alarm
     asyncio.run(runner.alarm())
     assert observed_slots == [18]

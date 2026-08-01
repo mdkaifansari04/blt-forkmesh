@@ -17,9 +17,9 @@ import pytest
 
 from worker_test_helpers import json_from_request_double
 
-# Allow ``import src.*`` regardless of the working directory pytest is run from
-# (the collector may load this module from the repo root, where the worker
-# package dir is not otherwise on sys.path).
+
+
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import src.contributions as contributions
@@ -45,9 +45,9 @@ CONTRIBUTION_MIGRATION = ROOT / "migrations" / "0036_profile_contributions.sql"
 ENTRY = ROOT / "src" / "entry.py"
 URLS = ROOT / "src" / "urls.py"
 
-# RFC 8032 test key 1, used here with a fixed signature over the exact baseline
-# contribution canonical bytes. Keeping one real vector in the ingestion tests
-# prevents the test harness from quietly weakening the transport contract.
+
+
+
 PUBLISHER_KEY = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo"
 PUBLISHER_SIGNATURE = (
     "x6n31efOer_g6dFF_llDy9AlbdSjPGgFRTr4d6knK2Obtz2F9RotLDSYUX22nYIV"
@@ -1045,14 +1045,14 @@ def test_ingest_is_idempotent_ignores_older_rejects_equal_conflict_and_activates
 
     same = ingest_harness.run_ingest(_ingest_data(first), _catalog_record(first))
     assert same == {"accepted": True, "warning": ""}
-    # Re-attesting an unchanged snapshot (the drifted-pin republish hot path)
-    # takes the fast path: it recognizes the already-active generation from a
-    # single lookup and skips the signature verify, the staging batch, and the
-    # prune entirely — the Worker-CPU (Cloudflare 1102) optimization. So the
-    # duplicate ingest writes none of the expensive generation-staging rows
-    # (json_each fan-outs, receipts, prune deletes); only the unrelated
-    # catalog-state upserts run, and it stays accepted without duplicating the
-    # receipt.
+
+
+
+
+
+
+
+
     duplicate_writes = ingest_harness.statements[statement_count:]
     assert not any(
         "json_each" in sql
@@ -1240,8 +1240,8 @@ def test_ingest_catalog_handler_keeps_repository_write_on_optional_failure():
         "blind_index": lambda _env, value: asyncio.sleep(0, result=_blind(value)),
         "touch_registered_node": noop,
         "catalog_rate_check": noop,
-        # No website deletion is pending for these repos, so every publish is
-        # accepted (see test_repo_delete_tombstone.py for the refusal path).
+
+
         "_repo_delete_tombstone_active": (
             lambda _env, _repo_bi: asyncio.sleep(0, result=False)),
         "_clear_repo_delete_tombstone": noop,

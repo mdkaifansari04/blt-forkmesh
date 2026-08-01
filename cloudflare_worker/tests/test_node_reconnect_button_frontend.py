@@ -16,8 +16,8 @@ DASHBOARD_JS = assembled_dashboard_js()
 
 
 def test_header_has_hidden_reconnect_button_by_the_avatar():
-    # Rendered right before the profile-settings avatar button, hidden until the
-    # profile renderer decides a node link is missing.
+
+
     assert "data-node-reconnect" in DASHBOARD
     reconnect = DASHBOARD[
         DASHBOARD.index("data-node-reconnect")
@@ -33,9 +33,9 @@ def test_reconnect_visibility_gated_on_missing_linked_node():
         DASHBOARD_JS.index("function nodeNeedsReconnect")
         : DASHBOARD_JS.index("function renderProfile")
     ]
-    # Guests / node sessions never see it.
+
     assert 'if (!signedIn || session.kind === "node") return false;' in gate
-    # Only when the account affirmatively has zero linked nodes (present + empty).
+
     assert "Array.isArray(session.nodes) && session.nodes.length === 0" in gate
 
 

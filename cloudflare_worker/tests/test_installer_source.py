@@ -12,9 +12,9 @@ INSTALLER = Path(__file__).resolve().parents[1] / "public" / "install.sh"
 
 def _base_env():
     env = os.environ.copy()
-    # ForkMesh action runs set FORKMESH_REPO for release metadata. install.sh
-    # intentionally treats it as an explicit source override, so source-selection
-    # unit tests must not inherit it accidentally.
+
+
+
     env.pop("FORKMESH_REPO", None)
     return env
 
@@ -59,8 +59,8 @@ def test_installer_uses_selected_online_node():
 
 
 def test_installer_uses_first_of_ranked_node_list():
-    # Newer mainnode returns ranked nodes for display; cloning uses the stable
-    # flagship route, whose Worker router applies that live endpoint failover.
+
+
     result = _run_with_response(
         '{"ok":true,"node":"alpha","nodes":["alpha","bravo","charlie"],'
         '"repo":"forkmesh","totalMinutes":500}'
@@ -71,8 +71,8 @@ def test_installer_uses_first_of_ranked_node_list():
 
 
 def test_installer_drops_malformed_and_duplicate_nodes():
-    # A bad node id (slashes) is rejected and a repeated id collapses, but the
-    # server-ranked order of the survivors is preserved.
+
+
     result = _run_with_response(
         '{"ok":true,"node":"alpha","nodes":["alpha","bad/../id","alpha","bravo"],'
         '"repo":"forkmesh","totalMinutes":1}'
@@ -82,8 +82,8 @@ def test_installer_drops_malformed_and_duplicate_nodes():
 
 
 def test_installer_falls_back_to_single_node_field():
-    # An older mainnode without a "nodes" array still resolves via "node", and
-    # that single mirror becomes the only clone candidate.
+
+
     result = _run_with_response(
         '{"ok":true,"node":"solo","repo":"forkmesh","totalMinutes":7}'
     )
@@ -93,9 +93,9 @@ def test_installer_falls_back_to_single_node_field():
 
 
 def _run_prefix(response, extra_env):
-    # Like _run_with_response but sandboxes HOME/XDG so uninstall_forkmesh can be
-    # exercised (it rm's under $HOME) without touching the real machine, and lets
-    # a test set extra env (FORKMESH_REINSTALL, FORKMESH_OWNER, ...).
+
+
+
     with tempfile.TemporaryDirectory() as tmp:
         bindir = Path(tmp) / "bin"
         bindir.mkdir()
@@ -105,9 +105,9 @@ def _run_prefix(response, extra_env):
             encoding="utf-8",
         )
         curl.chmod(0o755)
-        # Reinstall exercises uninstall_forkmesh(), which may otherwise call the
-        # host's real pgrep/pkill and signal the ForkMesh app that is running
-        # this action. In this unit harness there is no daemon to stop.
+
+
+
         pgrep = bindir / "pgrep"
         pgrep.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         pgrep.chmod(0o755)
@@ -134,22 +134,22 @@ def _run_prefix(response, extra_env):
 
 
 def test_installer_reinstall_wipes_then_continues():
-    # --reinstall / FORKMESH_REINSTALL=1 runs the uninstall wipe first, then falls
-    # through to the normal install (the source resolution still happens), rather
-    # than exiting after the uninstall (adhoc #258).
+
+
+
     result = _run_prefix(
         '{"ok":true,"node":"forkmesh","repo":"forkmesh","totalMinutes":9}',
         {"FORKMESH_REINSTALL": "1", "FORKMESH_NO_LAUNCH": "1"},
     )
     assert result.returncode == 0, result.stderr
     assert "Reinstall requested" in result.stdout
-    # It carried on into the install (resolved a source) instead of exiting.
+
     assert "REPO=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
 
 
 def test_installer_echoes_owner_when_attached():
-    # The Hosts panel passes FORKMESH_OWNER so the operator can confirm which
-    # account the fresh node is attached to (adhoc #258); the installer echoes it.
+
+
     result = _run_prefix(
         '{"ok":true,"node":"newnewnode","repo":"forkmesh","totalMinutes":9}',
         {"FORKMESH_OWNER": "alice", "FORKMESH_NODE_NAME": "vps-1"},
@@ -206,10 +206,10 @@ def test_installer_stops_when_no_mirror_is_online():
 
 
 def test_installer_skips_mirror_lookup_when_uploading_a_binary():
-    # Direct-upload installs (adhoc #67/#70) stream the binary over the same SSH
-    # session, so a missing/offline mirror must not block them: resolve_install_node
-    # (and its curl call to the mainnode) must not run at all when
-    # FORKMESH_LOCAL_BINARY is set, even if no mirror is actually online.
+
+
+
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         bindir = tmp / "bin"
@@ -225,7 +225,7 @@ def test_installer_skips_mirror_lookup_when_uploading_a_binary():
         env = _base_env()
         env["FORKMESH_TEST_RESPONSE"] = '{"ok":false,"error":"no_online_install_source"}'
         env["PATH"] = str(bindir) + os.pathsep + env.get("PATH", "")
-        env["FORKMESH_NO_DIAG"] = "1"  # isolate resolve_install_node's curl use
+        env["FORKMESH_NO_DIAG"] = "1"
         env["FORKMESH_LOCAL_BINARY"] = "/tmp/fake-forkmesh-upload"
         result = subprocess.run(
             ["bash", "-c", _selection_prefix()], env=env,
@@ -238,9 +238,9 @@ def test_installer_skips_mirror_lookup_when_uploading_a_binary():
 
 
 def test_installer_still_resolves_a_mirror_lazily_if_upload_is_unusable():
-    # install_prebuilt_release calls ensure_mirror_candidates itself, so a local
-    # upload that turns out to be unusable (bad platform, empty file, ...) still
-    # falls back to a real mirror lookup instead of leaving REPO_CANDIDATES empty.
+
+
+
     prefix = _selection_prefix() + (
         "\nensure_mirror_candidates\n"
         'printf "REPO2=%s\\n" "$REPO"\n'
@@ -268,10 +268,10 @@ printf '%s\\n' "$FORKMESH_TEST_RESPONSE"
             capture_output=True, check=False,
         )
         assert result.returncode == 0, result.stderr
-        # Skipped up front (matches the previous test) ...
+
         assert "REPO=\n" in result.stdout
         assert "CANDIDATES=\n" in result.stdout
-        # ... but resolves once something actually needs a mirror.
+
         assert "REPO2=https://forkmesh.com/forkmesh/forkmesh" in result.stdout
         assert (
             "CANDIDATES2=https://forkmesh.com/forkmesh/forkmesh"
@@ -280,8 +280,8 @@ printf '%s\\n' "$FORKMESH_TEST_RESPONSE"
 
 
 def _clone_functions():
-    # repo_node + classify_clone_failure + clean_clone, sliced out so the
-    # multi-mirror fallback can be driven directly with a fake `git`.
+
+
     script = INSTALLER.read_text(encoding="utf-8")
     start = script.index("# Extract the node segment")
     end = script.index("fetch_source() {")
@@ -289,14 +289,14 @@ def _clone_functions():
 
 
 def test_clean_clone_falls_back_past_unreachable_mirror():
-    # The whole point of the fix: when the best mirror's git tunnel times out
-    # (504), the installer must try the next online mirror instead of failing.
+
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         bindir = tmp / "bin"
         bindir.mkdir()
-        # Fake git: the first mirror (alpha) returns the relay's 504; the second
-        # (bravo) "clones" by creating the destination directory.
+
+
         git = bindir / "git"
         git.write_text(
             "#!/bin/sh\n"
@@ -326,8 +326,8 @@ def test_clean_clone_falls_back_past_unreachable_mirror():
             '"https://forkmesh.com/bravo/forkmesh")\n'
             + _clone_functions()
             + 'mkdir -p "$(dirname "$SRC")"\n'
-            # Call via `if` like the real fetch_source does, so `set -e` is
-            # disabled inside clean_clone (a failing clone is handled, not fatal).
+
+
             "if clone_ok=1 && clean_clone; then :; else clone_ok=0; fi\n"
             'printf "RESULT_REPO=%s\\n" "$REPO"\n'
             'printf "CLONE_OK=%s\\n" "$clone_ok"\n'
@@ -340,17 +340,17 @@ def test_clean_clone_falls_back_past_unreachable_mirror():
         )
         assert result.returncode == 0, result.stderr + result.stdout
         assert "CLONE_OK=1" in result.stdout
-        # Fell through to the second mirror and recorded it as the working repo.
+
         assert "RESULT_REPO=https://forkmesh.com/bravo/forkmesh" in result.stdout
-        # Named the unreachable mirror and the 504 reason for the operator.
+
         assert ("Mirror 'alpha' could not be cloned: "
                 "mirror endpoint timed out (HTTP 504)") in result.stderr
         assert src.is_dir()
 
 
 def test_clean_clone_reports_when_all_mirrors_time_out():
-    # Every mirror down: clean_clone fails and leaves a 504 reason for the final
-    # error/diagnostics, without falsely flagging an integrity-pin failure.
+
+
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         bindir = tmp / "bin"

@@ -15,10 +15,10 @@
 
 namespace {
 
-// Base/cap for the host-wide 429 cooldown. Deliberately faster than
-// NetworkBackoff's default poll cadence (60s base) so a single transient
-// 429 doesn't stall one-shot user actions for a full minute, while a
-// sustained quota outage still backs off to a low, capped steady-state rate.
+
+
+
+
 constexpr qint64 kBaseMs = 3LL * 1000;
 constexpr qint64 kCapMs = 5LL * 60 * 1000;
 constexpr int kPayloadPreviewBytes = 16 * 1024;
@@ -120,10 +120,10 @@ QString responseDataPreview(QNetworkReply *reply, qint64 downloaded)
     return QStringLiteral("-");
 }
 
-// Stands in for a request that was suppressed by the backoff instead of
-// reaching the network. Reports as a plain transport failure so every
-// existing call site's error handling (which just checks reply->error() and
-// surfaces/logs errorString()) keeps working unchanged.
+
+
+
+
 class BackoffSuppressedReply : public QNetworkReply
 {
 public:
@@ -138,10 +138,10 @@ public:
                  QStringLiteral(
                      "ForkMesh relay is rate-limited (HTTP 429); backing off"));
         setOpenMode(QIODevice::ReadOnly);
-        // Real replies always finish asynchronously and callers routinely
-        // connect to finished()/errorOccurred() right after issuing the
-        // request; emitting synchronously here would fire before those
-        // connections exist.
+
+
+
+
         QTimer::singleShot(0, this, [this] {
             emit errorOccurred(error());
             setFinished(true);
@@ -202,7 +202,7 @@ QString canonicalExactUrl(const QUrl &input)
     return url.toString(QUrl::RemoveUserInfo | QUrl::FullyEncoded);
 }
 
-} // namespace
+}
 
 BackoffNetworkAccessManager::BackoffNetworkAccessManager(QObject *parent)
     : QNetworkAccessManager(parent)
@@ -287,7 +287,7 @@ BackoffNetworkAccessManager::endpointRequests(const QString &method,
 
 bool BackoffNetworkAccessManager::hostInCooldown(const QString &host) const
 {
-    // Same channel key createRequest() uses: the lowercased URL host.
+
     return !m_backoff.ready(normalizedHost(host),
                             QDateTime::currentMSecsSinceEpoch());
 }
@@ -625,9 +625,9 @@ QNetworkReply *BackoffNetworkAccessManager::createRequest(
         QNetworkReply *reply = createNetworkRequest(op, request, outgoingData);
         auto *tracker = new EndpointTransferTracker(reply);
         tracker->uploaded = outgoingKnown;
-        // Footer background strip (adhoc #421): one "net" ticket per in-flight
-        // reply. Retired on destruction rather than on finished() so aborted and
-        // never-finished replies can't leave the spinner running forever.
+
+
+
         const quint64 activity = forkmesh::BackgroundActivity::begin(
             QStringLiteral("net"),
             firewallMethodName(op) + QLatin1Char(' ') + endpointStatsUrl(url));
@@ -682,11 +682,11 @@ QNetworkReply *BackoffNetworkAccessManager::createRequest(
         return new BackoffSuppressedReply(request, op, this);
     }
 
-    // Host-tunnel CONTENT paths can legitimately return 5xx when the specific
-    // desktop node serving them is offline (the worker maps a dead host DO to
-    // 502/503) — that is not the relay overloading, so those must NOT trip the
-    // host-wide cooldown. The core relay API (heartbeat, sync, repositories,
-    // agents, mirrors, …) 5xx only when the Worker itself is failing.
+
+
+
+
+
     const QString lastSeg = url.path().section(QLatin1Char('/'), -1);
     static const QSet<QString> kTunnelOps = {
         QStringLiteral("tree"), QStringLiteral("blob"),
@@ -702,10 +702,10 @@ QNetworkReply *BackoffNetworkAccessManager::createRequest(
             [this, reply, channel, tunnelContent] {
         const int code =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
-        // 429 (rate limit) OR a Worker 5xx (Cloudflare 1101/1102 resource
-        // exhaustion) trips the cooldown: during the 2026-07-11 outage every
-        // core endpoint 500'd for 100 minutes while the client kept firing at
-        // full cadence because only 429 was treated as backpressure.
+
+
+
+
         const bool overloaded =
             code == 429 || (code >= 500 && code <= 599 && !tunnelContent);
         if (overloaded)

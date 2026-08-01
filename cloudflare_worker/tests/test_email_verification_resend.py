@@ -151,7 +151,7 @@ def _resend(namespace):
         object(), SimpleNamespace(method="POST", headers={})))
 
 
-# --- the button's endpoint --------------------------------------------------
+
 
 def test_resend_needs_only_the_session_and_records_the_send():
     namespace = _harness(_account())
@@ -160,7 +160,7 @@ def test_resend_needs_only_the_session_and_records_the_send():
     assert response["body"]["verificationSent"] is True
     assert response["body"]["verificationQueued"] is False
     assert namespace["_sends"] == [("alice", "alice@example.com")]
-    # The send is stamped on the recipient's own record: total, kind, outcome.
+
     stamped = namespace["_saved"]["bi:alice"]
     assert stamped["email_send_count"] == 1
     assert stamped["last_email_kind"] == "verification"
@@ -169,7 +169,7 @@ def test_resend_needs_only_the_session_and_records_the_send():
         {"ts": NOW, "kind": "verification", "ok": True}]
     assert response["body"]["emailSendCount"] == 1
     assert response["body"]["lastEmailStatus"] == "delivered"
-    # No password was asked for anywhere on this path.
+
     assert "password" not in response["body"]
 
 
@@ -191,12 +191,12 @@ def test_rejected_send_is_queued_for_an_admin_and_still_counted():
     assert namespace["_saved"]["bi:alice"]["email_sends"] == [
         {"ts": NOW, "kind": "verification", "ok": False}]
     assert response["body"]["lastEmailStatus"] == "failed"
-    # The administrator is told the provider rejected it, not that it landed.
+
     assert namespace["_pings"][0]["meta"]["delivered"] is False
     assert "rejected" in namespace["_pings"][0]["body"]
 
 
-# --- the recorded history IS the rate limit ---------------------------------
+
 
 def test_a_second_send_inside_the_cooldown_is_refused():
     namespace = _harness(_account(history=[
@@ -209,8 +209,8 @@ def test_a_second_send_inside_the_cooldown_is_refused():
 
 
 def test_failed_sends_count_against_the_daily_limit():
-    # Five rejected sends still exhaust the window: a broken mail provider must
-    # not turn the button into an unbounded send loop.
+
+
     namespace = _harness(_account(history=[
         {"ts": NOW - (index + 2) * MINUTE, "kind": "verification", "ok": False}
         for index in range(5)]))
@@ -242,7 +242,7 @@ def test_history_stays_bounded_and_the_total_keeps_climbing():
     assert len(rec["email_sends"]) == namespace["ACCOUNT_EMAIL_HISTORY"]
     assert rec["email_send_count"] == namespace["ACCOUNT_EMAIL_HISTORY"] + 6
     assert rec["email_sends"][0]["ts"] == NOW + 6
-    # Neither subject nor body nor recipient address is ever kept.
+
     assert set(rec["email_sends"][0]) == {"ts", "kind", "ok"}
 
 
@@ -255,7 +255,7 @@ def test_activity_floors_the_counter_for_records_predating_it():
     assert namespace["_account_email_activity"]({})["emailSendCount"] == 0
 
 
-# --- administrator pings ----------------------------------------------------
+
 
 def test_every_admin_is_pinged_when_transactional_mail_goes_out():
     namespace = _harness(_account(), admins=("root", "ops"))
@@ -276,9 +276,9 @@ def test_password_resets_ping_but_cron_digests_are_only_counted():
     notify = namespace["_notify_admins_account_email"]
     asyncio.run(notify(object(), "alice", "password_reset", True))
     assert namespace["_pings"][0]["title"] == "Password reset email sent to alice"
-    # Digest mail runs over every account on a cron tick. Pinging per digest
-    # would fan out into a notification storm, so those kinds are counted on the
-    # recipient's record and stop there.
+
+
+
     for kind in ("notifications", "general_chat", "feedback", ""):
         asyncio.run(notify(object(), "alice", kind, True))
     assert len(namespace["_pings"]) == 1
@@ -297,7 +297,7 @@ def test_admin_ping_failure_never_breaks_the_send():
     assert namespace["_pings"] == []
 
 
-# --- wiring -----------------------------------------------------------------
+
 
 def test_route_and_notification_kind_are_registered():
     assert ('if url.path == "/api/accounts/resend-verification" '

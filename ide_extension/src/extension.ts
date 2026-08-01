@@ -19,7 +19,7 @@ const HEARTBEAT_MS = 20_000;
 
 function currentRegistration(): Registration {
   return {
-    ide: vscode.env.appName, // "Visual Studio Code", "Windsurf", "Cursor", ...
+    ide: vscode.env.appName,
     version: vscode.version,
     pid: process.pid,
     ts: Date.now(),
@@ -28,7 +28,7 @@ function currentRegistration(): Registration {
   };
 }
 
-// Handle a task handed over by the Qt desktop app.
+
 async function handleRequest(req: TaskRequest): Promise<void> {
   const issue = loadIssueByNumber(req.repoPath, req.issueNumber);
   if (!issue) {
@@ -113,7 +113,7 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // Refresh the tree whenever issue files change on disk.
+
   const watcher = vscode.workspace.createFileSystemWatcher("**/issues/**");
   watcher.onDidCreate(() => provider.refresh());
   watcher.onDidChange(() => provider.refresh());
@@ -128,7 +128,7 @@ export function activate(context: vscode.ExtensionContext): void {
     })
   );
 
-  // --- Qt-app handshake: heartbeat + request watcher ---------------------
+
   writeRegistration(currentRegistration());
   const heartbeat = setInterval(
     () => writeRegistration(currentRegistration()),
@@ -148,7 +148,7 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
       const full = path.join(REQUESTS_DIR, filename.toString());
-      // Debounce: the file may still be mid-write when the event fires.
+
       setTimeout(() => {
         if (!fs.existsSync(full)) {
           return;
@@ -161,8 +161,8 @@ export function activate(context: vscode.ExtensionContext): void {
     });
     context.subscriptions.push({ dispose: () => reqWatcher.close() });
   } catch {
-    /* fs.watch may be unsupported on some platforms; requests still drain on
-       startup and on each refresh below. */
+
+
   }
 
   context.subscriptions.push({ dispose: () => clearRegistration() });

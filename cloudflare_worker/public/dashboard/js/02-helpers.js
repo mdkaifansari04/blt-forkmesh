@@ -116,9 +116,9 @@
   function logout() {
     let serverLogout = Promise.resolve();
     try {
-      // The Worker owns session invalidation: this clears the HttpOnly
-      // forkmesh_admin cookie so the admin page is unreachable after logout.
-      // site-header.js (marketing pages) calls the same endpoint.
+
+
+
       serverLogout = fetch("/api/accounts/logout", { method: "POST",
         keepalive: true,
         credentials: "same-origin",
@@ -156,8 +156,8 @@
         });
         if (response.status === 401) logout();
       } catch (_) {
-        // Losing the network is not a logout signal. The next bounded check
-        // retries; only an authoritative 401 boots the browser.
+
+
       } finally {
         checking = false;
       }
@@ -187,9 +187,9 @@
     })[char]);
   }
 
-  // Loading placeholder: spinner (see .fm-spinner in the shell <style>)
-  // followed by the label. `label` is inserted as HTML so call sites can keep
-  // their pre-escaped fragments.
+
+
+
   function loadingHtml(label) {
     return `<span class="fm-spinner" aria-hidden="true"></span>${label}`;
   }
@@ -199,10 +199,10 @@
     return new Intl.NumberFormat().format(number);
   }
 
-  // Compose-identity chip: avatar + username shown next to any box where the
-  // session user is about to send content (issues, replies, reviews). Built as
-  // an HTML string so it can be dropped straight into the template-literal forms
-  // in 06/07; mirrors the initial/avatarPng logic in applyAvatar().
+
+
+
+
   function composeIdentityHtml(session, verb) {
     const name = String(session?.nodeName || session?.email || "you");
     const initial = escapeHtml((name[0] || "F").toUpperCase());
@@ -238,9 +238,9 @@
     });
   }
 
-  // GitHub-style relative timestamp ("3 days ago") for the repo detail page's
-  // commit/file dates - absolute dates there made every mirrored commit look
-  // identically stale ("Jul 10, 2026") instead of showing recency at a glance.
+
+
+
   function formatTimeAgo(value) {
     const date = parseFlexibleDate(value);
     if (!date) return "unknown";
@@ -261,11 +261,11 @@
     return "just now";
   }
 
-  // Map a file name to a vscode-icons SVG base name, mirroring the Qt client's
-  // fileTypeIconName (MainWindowInternal.h) so the web file browser shows the
-  // exact same per-filetype icons as the desktop app. The referenced subset is
-  // copied into public/assets/file-icons/; unknown types fall back to
-  // default_file.
+
+
+
+
+
   const FILE_ICON_BY_NAME = {
     "cmakelists.txt": "file_type_cmake",
     "dockerfile": "file_type_docker",
@@ -330,11 +330,11 @@
     return "default_file";
   }
 
-  // <img> to a copied vscode-icons SVG, so the web file rows use the same icons
-  // as the Qt desktop browser. Directories use the folder icon; the onerror
-  // fallback covers the few Qt names we don't ship an SVG for (mirrors Qt's
-  // "verify the file exists, else default_file"). The icon name comes from a
-  // fixed allow-list, so it is safe to interpolate unescaped.
+
+
+
+
+
   function fileIconHtml(entry, cls = "h-4 w-4 shrink-0") {
     const isTree = entry?.type === "tree";
     const name = isTree ? "default_folder" : fileTypeIconName(entry?.name || "");
@@ -387,12 +387,12 @@
     return `${repo.owner || ""}/${repo.name || ""}`;
   }
 
-  // Repository bytes are published by nodes, but the catalog resolves every
-  // physical route to the user/organization that actually owns the work
-  // (ownerKind / logicalOwner / logicalOwners). Lists must show that identity —
-  // "forkmesh/forkmesh", never the serving machine's "mirror8/forkmesh".
-  // Routing keys stay physical: repoKey/repoPathUrl/data-dashboard-open-repo
-  // must keep matching the catalog rows.
+
+
+
+
+
+
   function repoLogicalOwners(repo) {
     const values = Array.isArray(repo?.logicalOwners) ? repo.logicalOwners : [];
     const owners = values.map((value) => ({
@@ -419,8 +419,8 @@
     return `${repoDisplayOwner(repo) || ""}/${repo?.name || ""}`;
   }
 
-  // Mirrors of one logical repository are grouped by root commit, so an
-  // organization alias registered on any member names the whole group.
+
+
   function groupOrganizationAlias(group) {
     const origin = sourceOfTruth(group);
     const name = String(origin?.name || "").trim().toLowerCase();
@@ -554,7 +554,7 @@
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(repo);
     }
-    // Fold empty-root name-keyed mirrors into rooted groups (same logic as worker).
+
     const rootedByName = new Map();
     for (const [key, members] of groups) {
       if (!key.startsWith("root:")) continue;
@@ -606,13 +606,13 @@
     return `/${owner}/${name}${suffix}`;
   }
 
-  // A list that reads "forkmesh/forkmesh" must also link there, not to the
-  // machine that happens to publish the bytes (adhoc #132). Organization
-  // aliases are real addresses: the Worker rewrites /<org>/<repo> and every
-  // /api/repo/<org>/<repo>/... path onto the serving node before routing, and
-  // a direct visit resolves the alias again on the repo page. User identities
-  // have no such rewrite, so a repo whose logical owner is only a user keeps
-  // the physical /<node>/<repo> route.
+
+
+
+
+
+
+
   function repoLinkUrl(repo, kind = "tree", path = "") {
     const organization = repoLogicalOwners(repo)
       .find((value) => value.kind === "organization");
@@ -627,14 +627,14 @@
       organization ? { ...origin, owner: organization } : origin, kind, path);
   }
 
-  // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
-  // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
+
+
   const REPO_TAB_ROUTES = ["commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];
 
-  // Owner/admin Agents and owner-only Settings are only recognized for an
-  // account that can actually see them. A non-owner deep link falls through
-  // to the harmless tree/blob path, so neither private control surface is
-  // addressable merely by guessing its URL.
+
+
+
+
   function repoTabRoutesFor(repo) {
     const routes = REPO_TAB_ROUTES.slice();
     if (repo && sessionCanAssignAgent(repo)) routes.push("agents");
@@ -642,10 +642,10 @@
     return routes;
   }
 
-  // Splits the current path into segments, stripping a leading /dashboard
-  // route prefix (e.g. /dashboard/owner/repo/issues -> ["owner","repo","issues"])
-  // so repo-route parsing sees the same clean owner/repo/tab shape regardless
-  // of whether the browser landed here directly or via the 404.html bounce.
+
+
+
+
   function repoRouteParts() {
     let parts = location.pathname.split("/").filter(Boolean);
     if (parts[0] === "dashboard") parts = parts.slice(1);
@@ -663,12 +663,12 @@
     return "";
   }
 
-  // Pushes a new history entry for real in-app navigations (opening a repo,
-  // browsing into a folder/file, leaving a repo for another section) so the
-  // browser Back/Forward buttons step through them one at a time instead of
-  // exiting the app entirely. No-ops when already on that URL (e.g. while
-  // restoring state from a popstate event) to avoid piling up duplicate
-  // entries that would otherwise make Back a no-op.
+
+
+
+
+
+
   function navigateHistory(url) {
     if (`${location.pathname}${location.search}` === url) return;
     window.history.pushState(null, "", url);
@@ -710,13 +710,13 @@
     }
 
     const pending = (async () => {
-      // Only explicit fresh loads bypass HTTP caching; plain fetches send no
-      // cache-buster and no cache-control override so the browser can reuse
-      // responses within the server's max-age (request budget).
+
+
+
       const noStore = fresh;
-      // Attach the account session as a bearer token when logged in. Endpoints
-      // that expose per-account data (e.g. /api/notifications) require it;
-      // public endpoints simply ignore it. Same-origin only.
+
+
+
       const token = state.session?.sessionToken || "";
       const headers = noStore
         ? { accept: "application/json", "cache-control": "no-cache" }
@@ -748,27 +748,27 @@
     }
   }
 
-  // ---- Web issue authoring (signed inbox submissions) ------------------------
-  // A logged-in web user files an issue the same way a mirror node does: a signed
-  // "open" event POSTed to the repo's inbox for the maintainer to drain. The
-  // browser holds no desktop key, so it keeps a persistent Ed25519 identity of
-  // its own; the logged-in node name rides along as authorName for display.
+
+
+
+
+
   const ISSUE_TEXT_ENCODER = new TextEncoder();
   const WEB_ISSUE_KEY_STORAGE = "forkmesh.issueKey";
-  // Attached images are embedded as base64 data: URLs inside the issue body
-  // text itself (no separate upload channel), so they share the body's 64 KB
-  // server-side cap (MAX_ISSUE_BYTES in the worker). Kept well under that so a
-  // couple of small screenshots plus title/description text still fit.
+
+
+
+
   const ISSUE_IMAGE_MAX_COUNT = 4;
   const ISSUE_IMAGE_MAX_BYTES = 40 * 1024;
   const ISSUE_IMAGE_MAX_TOTAL_BYTES = 45 * 1024;
-  // Raw files can be much bigger than the final embedded size - anything under
-  // this is accepted into the crop/compress modal rather than rejected outright.
+
+
   const ISSUE_IMAGE_RAW_MAX_BYTES = 20 * 1024 * 1024;
-  // Screenshots pasted/attached onto a "start agent" prompt (adhoc #78). More
-  // generous than issue images so a screenshot stays legible for the agent, but
-  // still bounded to keep the queued-prompt row (and /api/sync payload) modest;
-  // mirrors the worker's MAX_AGENT_PROMPT_IMAGE(S)* caps.
+
+
+
+
   const AGENT_IMAGE_MAX_COUNT = 3;
   const AGENT_IMAGE_MAX_BYTES = 1000 * 1024;
   const AGENT_IMAGE_MAX_TOTAL_BYTES = 1700 * 1024;
@@ -785,9 +785,3 @@
   function canvasToBlob(canvas, type, quality) {
     return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
   }
-
-  // Intermediary crop/compress step for images too large to embed directly.
-  // The user drags a crop box, then the modal auto-retries JPEG re-encoding at
-  // shrinking quality/scale ("multiple takes") until the result fits maxBytes,
-  // or lets the user redraw a smaller crop and retry. Resolves to
-  // { dataUrl, size } on confirm, or null if cancelled.

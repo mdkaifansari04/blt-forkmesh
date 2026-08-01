@@ -47,16 +47,16 @@ def test_mirror_nodes_table_underlines_mismatched_columns():
     source = RELEASES.read_text(encoding="utf-8")
     body = source[source.index("void MainWindow::loadMirrorNodesPanel()"):]
 
-    # A reference row (source of truth, else freshest) supplies the canonical values.
+
     assert "const MirrorAdvert *referenceAdvert =" in body
     assert "const int refIssues = referenceAdvert ? referenceAdvert->issueCount : -1;" in body
 
-    # The underline helper flips the cell font and notes the mismatch in the tooltip.
+
     assert "auto markMismatch = [](QTableWidgetItem *item, bool mismatch," in body
     assert "f.setUnderline(true);" in body
     assert "Doesn't match the source of truth" in body
 
-    # Applied to the content columns in BOTH the live-roster and catalog-backed rows.
+
     assert "markMismatch(commitItem," in body
     assert "markMismatch(issuesItem, countMismatch(nodeIssues, refIssues)," in body
     assert "markMismatch(artifactsItem, countMismatch(nodeArtifacts, refArtifacts)," in body

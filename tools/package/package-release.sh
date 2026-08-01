@@ -1,33 +1,33 @@
 #!/usr/bin/env bash
-# Build a native, (optionally) signed installer from an already-built ForkMesh
-# executable and publish it alongside the bare binary (issue #370).
-#
-# This is the packaging layer on top of the CAS release plumbing (issue #304):
-# the bare `forkmesh-<os>-<arch>[.exe]` is still published for headless/SSH
-# installs, and this wraps it into the platform's native installer for desktop
-# users, then hands both to tools/forkmesh-release-publish.sh so the installer
-# lands in the same .forkmesh/releases/<channel>/{SHASUMS256.txt,release.json,appcast.xml}
-# metadata. See /docs#installers-updates.
-#
-# Signing is env-var driven (CI secrets); every packager degrades to an UNSIGNED
-# artifact with a warning when its toolchain or certificate is absent, so a
-# release never blocks on missing certs.
-#
-# Usage:
-#   tools/package/package-release.sh --os <os> --arch <arch> --binary <path> \
-#       [--channel latest] [--tag vX.Y.Z] [--outdir DIR]
-#       [--install-root <cmake-install-prefix>]
-#
-#   --os      linux | macos | windows   (defaults to autodetected uname)
-#   --arch    x86_64 | arm64
-#   --binary  the built executable (bare binary, .exe, or path inside .app)
-#   --channel release channel (default: $RELEASE_CHANNEL or "latest")
-#   --tag     release tag (default: $FORKMESH_TAG)
-#   --outdir  where to drop the installer (default: current dir)
-#   --install-root staged `cmake --install` prefix containing the bundled
-#              ForkMesh Cloudflare deployment resources
-#
-# Prints the produced installer path on the last stdout line.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -48,7 +48,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# Autodetect os/arch the same way .forkmesh/release.yml does when unset.
+
 if [ -z "$os" ]; then
   case "$(uname -s)" in
     Linux)  os="linux" ;;
@@ -90,7 +90,7 @@ esac
 }
 
 echo "Packaged installer: $installer" >&2
-# The dispatcher only builds the installer; the caller (release.yml) publishes
-# it — together with the bare binary — via forkmesh-release-publish.sh so both
-# share one release.json. Emit the path as the final stdout line.
+
+
+
 echo "$installer"

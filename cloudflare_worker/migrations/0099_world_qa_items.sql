@@ -1,6 +1,6 @@
--- Completed build-board work promoted into the shared QA deck. Content is
--- bounded manager-authored test guidance; votes remain account-scoped in
--- world_qa_reviews and are exposed only as global aggregate counts.
+
+
+
 CREATE TABLE IF NOT EXISTS world_qa_items (
     item_key TEXT PRIMARY KEY
         CHECK (length(item_key) BETWEEN 1 AND 80),

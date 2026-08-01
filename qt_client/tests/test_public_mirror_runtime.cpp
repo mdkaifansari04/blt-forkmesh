@@ -79,7 +79,7 @@ QByteArray readAll(const QString &path)
     return file.open(QIODevice::ReadOnly) ? file.readAll() : QByteArray();
 }
 
-} // namespace
+}
 
 int main(int argc, char **argv)
 {

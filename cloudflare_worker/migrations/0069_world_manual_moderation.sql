@@ -1,9 +1,9 @@
--- Manual, administrator-initiated moderation for the multiplayer World.
---
--- `subject_token` is a keyed, rotating opaque token derived transiently at the
--- edge. Raw IP addresses and raw user-agent strings are never stored. This
--- table does not restore automated abuse detection, quarantine, security
--- signals, appeals, or permanent restrictions.
+
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS world_manual_blocks (
   block_id TEXT PRIMARY KEY,

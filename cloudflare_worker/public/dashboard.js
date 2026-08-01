@@ -19,8 +19,8 @@
     repoPullMetadataInflight: {},
     repoCollectionPages: {},
     session: null,
-    // Public-profile mode (/@name): the FOREIGN account whose profile the
-    // page is showing, or null when the profile pages show the session user.
+
+
     publicProfile: null,
     repoFileFinder: {
       repoKey: "",
@@ -41,31 +41,31 @@
     notificationUnread: 0,
     selectedNotificationId: "",
     issuesView: { filter: "open", items: [], query: "" },
-    // Projects tab (issue #384): projects link issues + a milestone and carry
-    // start/end dates; "gantt" is the default sub-view, "list" the fallback.
+
+
     projectsView: { filter: "open", mode: "gantt", items: [] },
     claimNode: { pendingNodeId: "" },
     linkGrant: null,
     repoMirrors: [],
     repoLatestCommit: null,
     repoServedBy: null,
-    // Owner-only "Agents" tab (adhoc #225): owner verification by node account,
-    // no password required. selectedAgentId (adhoc #259) is the id of the agent
-    // whose detail page - live transcript + prompt - is currently open, or null
-    // for the session list.
+
+
+
+
     agentsView: { agents: [], selectedAgentId: null },
-    // Home left-rail "Active agent sessions" list (adhoc #81): aggregated,
-    // non-terminal agent runs across the repos the session can assign agents
-    // to. null until the first cross-repo fetch resolves so the panel can tell
-    // "loading" apart from "no active sessions".
+
+
+
+
     homeAgentSessions: null,
-    // Home right-rail "Latest from the blog" (adhoc #381): the newest posts
-    // parsed from /blog/rss.xml. null until the feed read resolves so the card
-    // can tell "loading" apart from "feed unavailable".
+
+
+
     homeBlogPosts: null,
-    // Organization aliases are not duplicate catalog publications: load the
-    // signed-in viewer's linked aliases separately so Top repositories can
-    // show the stable organization path with a clear owner label.
+
+
+
     homeOrganizationRepositories: [],
     repoCommitDetail: null,
     repoRecordDetail: null,
@@ -212,9 +212,9 @@
   function logout() {
     let serverLogout = Promise.resolve();
     try {
-      // The Worker owns session invalidation: this clears the HttpOnly
-      // forkmesh_admin cookie so the admin page is unreachable after logout.
-      // site-header.js (marketing pages) calls the same endpoint.
+
+
+
       serverLogout = fetch("/api/accounts/logout", { method: "POST",
         keepalive: true,
         credentials: "same-origin",
@@ -252,8 +252,8 @@
         });
         if (response.status === 401) logout();
       } catch (_) {
-        // Losing the network is not a logout signal. The next bounded check
-        // retries; only an authoritative 401 boots the browser.
+
+
       } finally {
         checking = false;
       }
@@ -283,9 +283,9 @@
     })[char]);
   }
 
-  // Loading placeholder: spinner (see .fm-spinner in the shell <style>)
-  // followed by the label. `label` is inserted as HTML so call sites can keep
-  // their pre-escaped fragments.
+
+
+
   function loadingHtml(label) {
     return `<span class="fm-spinner" aria-hidden="true"></span>${label}`;
   }
@@ -295,10 +295,10 @@
     return new Intl.NumberFormat().format(number);
   }
 
-  // Compose-identity chip: avatar + username shown next to any box where the
-  // session user is about to send content (issues, replies, reviews). Built as
-  // an HTML string so it can be dropped straight into the template-literal forms
-  // in 06/07; mirrors the initial/avatarPng logic in applyAvatar().
+
+
+
+
   function composeIdentityHtml(session, verb) {
     const name = String(session?.nodeName || session?.email || "you");
     const initial = escapeHtml((name[0] || "F").toUpperCase());
@@ -334,9 +334,9 @@
     });
   }
 
-  // GitHub-style relative timestamp ("3 days ago") for the repo detail page's
-  // commit/file dates - absolute dates there made every mirrored commit look
-  // identically stale ("Jul 10, 2026") instead of showing recency at a glance.
+
+
+
   function formatTimeAgo(value) {
     const date = parseFlexibleDate(value);
     if (!date) return "unknown";
@@ -357,11 +357,11 @@
     return "just now";
   }
 
-  // Map a file name to a vscode-icons SVG base name, mirroring the Qt client's
-  // fileTypeIconName (MainWindowInternal.h) so the web file browser shows the
-  // exact same per-filetype icons as the desktop app. The referenced subset is
-  // copied into public/assets/file-icons/; unknown types fall back to
-  // default_file.
+
+
+
+
+
   const FILE_ICON_BY_NAME = {
     "cmakelists.txt": "file_type_cmake",
     "dockerfile": "file_type_docker",
@@ -426,11 +426,11 @@
     return "default_file";
   }
 
-  // <img> to a copied vscode-icons SVG, so the web file rows use the same icons
-  // as the Qt desktop browser. Directories use the folder icon; the onerror
-  // fallback covers the few Qt names we don't ship an SVG for (mirrors Qt's
-  // "verify the file exists, else default_file"). The icon name comes from a
-  // fixed allow-list, so it is safe to interpolate unescaped.
+
+
+
+
+
   function fileIconHtml(entry, cls = "h-4 w-4 shrink-0") {
     const isTree = entry?.type === "tree";
     const name = isTree ? "default_folder" : fileTypeIconName(entry?.name || "");
@@ -483,12 +483,12 @@
     return `${repo.owner || ""}/${repo.name || ""}`;
   }
 
-  // Repository bytes are published by nodes, but the catalog resolves every
-  // physical route to the user/organization that actually owns the work
-  // (ownerKind / logicalOwner / logicalOwners). Lists must show that identity —
-  // "forkmesh/forkmesh", never the serving machine's "mirror8/forkmesh".
-  // Routing keys stay physical: repoKey/repoPathUrl/data-dashboard-open-repo
-  // must keep matching the catalog rows.
+
+
+
+
+
+
   function repoLogicalOwners(repo) {
     const values = Array.isArray(repo?.logicalOwners) ? repo.logicalOwners : [];
     const owners = values.map((value) => ({
@@ -515,8 +515,8 @@
     return `${repoDisplayOwner(repo) || ""}/${repo?.name || ""}`;
   }
 
-  // Mirrors of one logical repository are grouped by root commit, so an
-  // organization alias registered on any member names the whole group.
+
+
   function groupOrganizationAlias(group) {
     const origin = sourceOfTruth(group);
     const name = String(origin?.name || "").trim().toLowerCase();
@@ -650,7 +650,7 @@
       if (!groups.has(key)) groups.set(key, []);
       groups.get(key).push(repo);
     }
-    // Fold empty-root name-keyed mirrors into rooted groups (same logic as worker).
+
     const rootedByName = new Map();
     for (const [key, members] of groups) {
       if (!key.startsWith("root:")) continue;
@@ -702,13 +702,13 @@
     return `/${owner}/${name}${suffix}`;
   }
 
-  // A list that reads "forkmesh/forkmesh" must also link there, not to the
-  // machine that happens to publish the bytes (adhoc #132). Organization
-  // aliases are real addresses: the Worker rewrites /<org>/<repo> and every
-  // /api/repo/<org>/<repo>/... path onto the serving node before routing, and
-  // a direct visit resolves the alias again on the repo page. User identities
-  // have no such rewrite, so a repo whose logical owner is only a user keeps
-  // the physical /<node>/<repo> route.
+
+
+
+
+
+
+
   function repoLinkUrl(repo, kind = "tree", path = "") {
     const organization = repoLogicalOwners(repo)
       .find((value) => value.kind === "organization");
@@ -723,14 +723,14 @@
       organization ? { ...origin, owner: organization } : origin, kind, path);
   }
 
-  // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
-  // a tab route (e.g. /owner/repo/issues) apart from a tree/blob code deep link.
+
+
   const REPO_TAB_ROUTES = ["commits", "insights", "sizemap", "releases", "issues", "projects", "pulls", "discussions", "mirrors"];
 
-  // Owner/admin Agents and owner-only Settings are only recognized for an
-  // account that can actually see them. A non-owner deep link falls through
-  // to the harmless tree/blob path, so neither private control surface is
-  // addressable merely by guessing its URL.
+
+
+
+
   function repoTabRoutesFor(repo) {
     const routes = REPO_TAB_ROUTES.slice();
     if (repo && sessionCanAssignAgent(repo)) routes.push("agents");
@@ -738,10 +738,10 @@
     return routes;
   }
 
-  // Splits the current path into segments, stripping a leading /dashboard
-  // route prefix (e.g. /dashboard/owner/repo/issues -> ["owner","repo","issues"])
-  // so repo-route parsing sees the same clean owner/repo/tab shape regardless
-  // of whether the browser landed here directly or via the 404.html bounce.
+
+
+
+
   function repoRouteParts() {
     let parts = location.pathname.split("/").filter(Boolean);
     if (parts[0] === "dashboard") parts = parts.slice(1);
@@ -759,12 +759,12 @@
     return "";
   }
 
-  // Pushes a new history entry for real in-app navigations (opening a repo,
-  // browsing into a folder/file, leaving a repo for another section) so the
-  // browser Back/Forward buttons step through them one at a time instead of
-  // exiting the app entirely. No-ops when already on that URL (e.g. while
-  // restoring state from a popstate event) to avoid piling up duplicate
-  // entries that would otherwise make Back a no-op.
+
+
+
+
+
+
   function navigateHistory(url) {
     if (`${location.pathname}${location.search}` === url) return;
     window.history.pushState(null, "", url);
@@ -806,13 +806,13 @@
     }
 
     const pending = (async () => {
-      // Only explicit fresh loads bypass HTTP caching; plain fetches send no
-      // cache-buster and no cache-control override so the browser can reuse
-      // responses within the server's max-age (request budget).
+
+
+
       const noStore = fresh;
-      // Attach the account session as a bearer token when logged in. Endpoints
-      // that expose per-account data (e.g. /api/notifications) require it;
-      // public endpoints simply ignore it. Same-origin only.
+
+
+
       const token = state.session?.sessionToken || "";
       const headers = noStore
         ? { accept: "application/json", "cache-control": "no-cache" }
@@ -844,27 +844,27 @@
     }
   }
 
-  // ---- Web issue authoring (signed inbox submissions) ------------------------
-  // A logged-in web user files an issue the same way a mirror node does: a signed
-  // "open" event POSTed to the repo's inbox for the maintainer to drain. The
-  // browser holds no desktop key, so it keeps a persistent Ed25519 identity of
-  // its own; the logged-in node name rides along as authorName for display.
+
+
+
+
+
   const ISSUE_TEXT_ENCODER = new TextEncoder();
   const WEB_ISSUE_KEY_STORAGE = "forkmesh.issueKey";
-  // Attached images are embedded as base64 data: URLs inside the issue body
-  // text itself (no separate upload channel), so they share the body's 64 KB
-  // server-side cap (MAX_ISSUE_BYTES in the worker). Kept well under that so a
-  // couple of small screenshots plus title/description text still fit.
+
+
+
+
   const ISSUE_IMAGE_MAX_COUNT = 4;
   const ISSUE_IMAGE_MAX_BYTES = 40 * 1024;
   const ISSUE_IMAGE_MAX_TOTAL_BYTES = 45 * 1024;
-  // Raw files can be much bigger than the final embedded size - anything under
-  // this is accepted into the crop/compress modal rather than rejected outright.
+
+
   const ISSUE_IMAGE_RAW_MAX_BYTES = 20 * 1024 * 1024;
-  // Screenshots pasted/attached onto a "start agent" prompt (adhoc #78). More
-  // generous than issue images so a screenshot stays legible for the agent, but
-  // still bounded to keep the queued-prompt row (and /api/sync payload) modest;
-  // mirrors the worker's MAX_AGENT_PROMPT_IMAGE(S)* caps.
+
+
+
+
   const AGENT_IMAGE_MAX_COUNT = 3;
   const AGENT_IMAGE_MAX_BYTES = 1000 * 1024;
   const AGENT_IMAGE_MAX_TOTAL_BYTES = 1700 * 1024;
@@ -881,12 +881,6 @@
   function canvasToBlob(canvas, type, quality) {
     return new Promise((resolve) => canvas.toBlob(resolve, type, quality));
   }
-
-  // Intermediary crop/compress step for images too large to embed directly.
-  // The user drags a crop box, then the modal auto-retries JPEG re-encoding at
-  // shrinking quality/scale ("multiple takes") until the result fits maxBytes,
-  // or lets the user redraw a smaller crop and retry. Resolves to
-  // { dataUrl, size } on confirm, or null if cancelled.
   function openImageResizeModal(file, maxBytes) {
     return new Promise((resolve) => {
       const objectUrl = URL.createObjectURL(file);
@@ -1076,7 +1070,7 @@
       try {
         const privateKey = await crypto.subtle.importKey("jwk", stored.jwk, { name: "Ed25519" }, false, ["sign"]);
         return { privateKey, pub: stored.pub };
-      } catch (_) { /* fall through and mint a fresh key */ }
+      } catch (_) {   }
     }
     const pair = await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
     const rawPub = await crypto.subtle.exportKey("raw", pair.publicKey);
@@ -1091,15 +1085,15 @@
     return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
   }
 
-  // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
-  // submission POST (verify_issue_event in the worker). New issues are signed
-  // with number 0; the first eligible mirror assigns the durable number when
-  // it commits the issue to the repository it serves.
+
+
+
+
   async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "", extraMeta = {}) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
-    // open event content = title \0 body \0 attachments(joined by ","; empty here)
+
     const NUL = String.fromCharCode(0);
     const content = title + NUL + cleanBody + NUL;
     const contentHash = await sha256HexLower(content);
@@ -1133,9 +1127,9 @@
         provider: assignAgent ? String(agentProvider || "") : "",
       },
     };
-    // When assignAgent is true, include the account session so the server can
-    // verify the caller really is the repo owner or an admin (adhoc #225). The
-    // session token is the proof; ownerAccount stays only as a display hint.
+
+
+
     if (assignAgent) {
       payload.ownerAccount = state.session?.nodeName || "";
       payload.sessionToken = state.session?.sessionToken || "";
@@ -1152,25 +1146,25 @@
     return data;
   }
 
-  // The compact World chat composer is a second presentation of the canonical
-  // dashboard actions. Expose the signed issue operation narrowly so the chat
-  // bundle can file through the same eligible-mirror delivery path without duplicating key,
-  // signature, authorization, or payload logic.
+
+
+
+
   window.ForkMeshDashboardActions = Object.assign(
     window.ForkMeshDashboardActions || {},
     { submitWebIssue },
   );
 
-  // Mirrors IssueStore::contentForSigning's "comment" case (body NUL
-  // attachments) and the desktop's inbox POST (verify_issue_event in the
-  // worker). Unlike a new issue's "open" event, a comment is signed against the
-  // issue's real number - the maintainer's node appends it to that issue when it
-  // drains the inbox (IssueStore::applyRemoteEvent).
+
+
+
+
+
   async function submitWebIssueComment(repo, number, body) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
     const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
-    // comment event content = body \0 attachments(joined by ","; empty here)
+
     const NUL = String.fromCharCode(0);
     const contentHash = await sha256HexLower(cleanBody + NUL);
     const canonical = `forkmesh-issue-event-v1\ncomment\n${number}\n${pub}\n${ts}\n${contentHash}`;
@@ -1198,10 +1192,10 @@
     return data;
   }
 
-  // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
-  // reply body) and the desktop's discussion inbox POST (verify_discussion_event
-  // in the worker). Replies are signed against the discussion's real number -
-  // unlike a new discussion's "open" event, they don't use the placeholder 0.
+
+
+
+
   async function submitWebDiscussionComment(repo, number, body) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
@@ -1231,12 +1225,12 @@
     return data;
   }
 
-  // Mirrors PullStore::contentForSigning's per-type field order (comment,
-  // review, line-comment, thread-comment, thread-reply, thread-state,
-  // suggestion-state) and the desktop's pull inbox POST
-  // (verify_pull_comment_event/pull_comment_content in the worker). Covers
-  // every conversation-shaped pull event; opening a brand new pull request is
-  // a distinct signed shape (submitWebPullOpen, below).
+
+
+
+
+
+
   async function submitWebPullEvent(repo, number, type, fields = {}) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
@@ -1300,10 +1294,10 @@
     return submitWebPullEvent(repo, number, "review", { state: reviewState, body });
   }
 
-  // Mirrors PullStore::canonicalString for a new pull (verify_pull_event in
-  // the Worker). Branch names alone are mutable and may not exist on the
-  // owner's node, so resolve them through an attested mirror once and sign the
-  // resulting portable binary patch + commit series.
+
+
+
+
   async function submitWebPullOpen(repo, title, body, base, head) {
     const comparison = await fetchRepoJson(repoLiveUrl(repo, "compare", {
       base,
@@ -1382,8 +1376,8 @@
     setHint("Signing and sending…");
     try {
       await submitWebIssueComment(repo, number, body);
-      // Show the comment straight away: it only reaches the mirror once the
-      // maintainer's node drains the inbox, so the timeline can't reload it yet.
+
+
       const timeline = form.parentElement?.querySelector("[data-repo-issue-timeline]");
       if (timeline) {
         if (timeline.dataset.empty === "true") {
@@ -1568,11 +1562,11 @@
       return session;
     }
   }
-  // Every top-level page is its own document now (/dashboard, /dashboard/repos,
-  // /dashboard/network, ...) — navigation between them is a real page load via
-  // plain <a href> links, so there is no client-side section router anymore.
-  // The only client-routed state left is within-page: repo tabs/tree/blob on
-  // the repo page, and the settings sub-tabs below.
+
+
+
+
+
 
   const SETTINGS_SECTIONS = ["public-profile", "account", "ssh-keys", "appearance", "notifications", "payout", "nodes", "organizations", "danger"];
 
@@ -1580,8 +1574,8 @@
     return SETTINGS_SECTIONS.includes(section) ? section : "public-profile";
   }
 
-  // The settings sub-tab addressed by the URL (/dashboard/settings/<tab>), so a
-  // refresh keeps the tab instead of snapping back to public-profile.
+
+
   function settingsSectionFromPath() {
     const parts = location.pathname.split("/").filter(Boolean);
     return normalizeSettingsSection(parts[0] === "dashboard" && parts[1] === "settings" ? parts[2] || "" : "");
@@ -1592,8 +1586,8 @@
     if (!state.settingsView) state.settingsView = {};
     state.settingsView.section = activeSection;
     if (push) {
-      // Reflect the tab in the URL so refresh/back keep it. public-profile is
-      // the default, so it stays on the bare /dashboard/settings URL.
+
+
       navigateHistory(activeSection === "public-profile"
         ? "/dashboard/settings"
         : `/dashboard/settings/${activeSection}`);
@@ -1618,15 +1612,15 @@
       settingsMain.scrollIntoView({ block: "start", behavior: "smooth" });
     }
 
-    // The Organizations tab is data-driven and only fetched when first opened.
+
     if (activeSection === "organizations") initOrgsSection();
     if (activeSection === "ssh-keys") loadSshKeys();
-    // Session state changes on other devices, so re-entering this tab always
-    // performs a fresh no-store read instead of keeping a page-lifetime copy.
+
+
     if (activeSection === "account") loadAccountSessions({ force: true });
   }
 
-  // ---- Active account sessions ---------------------------------------------
+
   let accountSessionsLoaded = false;
   let accountSessionsLoading = null;
 
@@ -1681,8 +1675,8 @@
       </article>`).join("");
   }
 
-  // Coarse kinds only — the Worker stores when an account was emailed and
-  // whether the provider accepted it, never the subject or body.
+
+
   const ACCOUNT_EMAIL_KIND_LABELS = {
     verification: "Email verification",
     password_reset: "Password reset",
@@ -1800,10 +1794,10 @@
     }
   }
 
-  // ---- SSH public keys (settings tab) ---------------------------------------
-  // Public keys are account-scoped and encrypted at rest by the Worker. The
-  // browser never handles a private key; every push is authorized again by the
-  // Worker and executed by a separately operated node-side SSH gateway.
+
+
+
+
   let sshKeysLoaded = false;
   let sshKeysLoading = null;
 
@@ -1938,18 +1932,18 @@
     }
   }
 
-  // ---- Organizations (settings tab) -----------------------------------------
-  // Client for the /api/orgs endpoints (mirrors the Flutter app's org UI):
-  // list/create the orgs you belong to, then a master/detail panel to manage
-  // one org's members, teams, and linked repos. All rendered lazily into
-  // [data-orgs-root] the first time the Organizations settings tab is opened.
+
+
+
+
+
   const ORG_ROLE_OPTIONS = ["owner", "admin", "member"];
   const ORG_TEAM_PERMISSIONS = ["read", "write", "maintain", "admin"];
   const ORG_WORLD_ACCESS_OPTIONS = ["public", "restricted", "private"];
-  // Keep these aliases aligned with world-office-tower.js and the Worker's
-  // OFFICE_FLOOR_TEAM_ALIASES. The server remains authoritative for elevator
-  // access; this organization-admin matrix explains every floor group a user
-  // can belong to and highlights access granted by their current teams.
+
+
+
+
   const ORG_OFFICE_FLOOR_GROUPS = Object.freeze([
     { id: "marketing", label: "Marketing", aliases: ["marketing", "marketing-team", "growth", "brand", "comms", "communications"] },
     { id: "engineering", label: "Engineering", aliases: ["engineering", "engineers", "development", "developers", "platform", "frontend", "backend"] },
@@ -1962,8 +1956,8 @@
     { id: "executive", label: "Executive", aliases: ["executive", "executives", "leadership", "organization-leadership", "org-leadership"] },
   ]);
 
-  // Worker org-endpoint error codes -> human text. Unknown codes fall through
-  // to a generic message so the UI never shows a raw slug.
+
+
   const ORG_ERROR_TEXT = {
     invalid_org_name: "Invalid name. Use lowercase letters, numbers and dashes.",
     invalid_team_name: "Invalid team name. Use lowercase letters, numbers and dashes.",
@@ -1998,9 +1992,9 @@
     return ORG_ERROR_TEXT[code] || (code ? "Request failed (" + code + ")." : "Request failed.");
   }
 
-  // fetchJson only does cached GETs; org writes need POST/DELETE with the
-  // session bearer token and must surface the structured {error} body, so they
-  // go through this dedicated helper instead.
+
+
+
   async function orgApiRequest(method, path, body) {
     const token = state.session?.sessionToken || "";
     const headers = { accept: "application/json" };
@@ -2992,8 +2986,8 @@
   }
 
   function currentSection() {
-    // The legacy section name is baked into the page document at build time
-    // (dashboard_shell.PAGES[page]["section"] -> data-dashboard-section).
+
+
     return $("[data-dashboard-root]")?.dataset?.dashboardSection
       || $("[data-view].active")?.dataset?.view
       || "home";
@@ -3030,11 +3024,11 @@
     headerContext.textContent = "Dashboard";
   }
 
-  // ---- Public-profile mode (/@name) ---------------------------------------
-  // The worker serves the SAME prebuilt profile documents at /@name; the
-  // profile-page machinery renders whatever profileSubject() returns, so
-  // public mode is: fetch the named account's public payload, park it in
-  // state.publicProfile, and strip the owner-only chrome.
+
+
+
+
+
 
   function publicProfileNameFromPath() {
     const match = /^\/@([a-z][a-z0-9-]{0,62})(?:\/repositories)?\/?$/
@@ -3046,9 +3040,9 @@
     return state.publicProfile || state.session;
   }
 
-  // On /@name pages the profile markup belongs to the fetched PUBLIC profile;
-  // the shared-chrome boot path still calls the profile renderers with the
-  // session, which must not overwrite (or briefly flash) the wrong identity.
+
+
+
   function profileMarkupOwnedByPublicProfile(session) {
     const publicName = publicProfileNameFromPath();
     return Boolean(publicName) && session !== state.publicProfile &&
@@ -3070,29 +3064,29 @@
     }
     const profile = sessionFromAccountPayload(body, { nodeName: name });
     profile.nodeName = profile.nodeName || name;
-    // Never show a mailbox on someone else's page — the handle is the
-    // public identity here.
+
+
     profile.email = "@" + profile.nodeName;
     profile.isFollowing = Boolean(body?.social?.isFollowing);
     state.publicProfile = profile;
     renderProfilePage(profile);
     applyPublicProfileChrome(profile);
-    // Repository lists still use the catalog, while the native contribution
-    // card reads its own account ledger after the public subject is installed.
+
+
     renderProfileContributionGraph();
     renderProfileRepositories();
   }
 
   function applyPublicProfileChrome(profile) {
     const name = profile.nodeName;
-    // Tabs point at the public URLs, not the session dashboard pages.
+
     $$("[data-profile-tabs] a[href='/dashboard/profile']").forEach((a) => {
       a.href = "/@" + encodeURIComponent(name);
     });
     $$("[data-profile-tabs] a[href='/dashboard/profile/repositories']").forEach((a) => {
       a.href = "/@" + encodeURIComponent(name) + "/repositories";
     });
-    // Owner-only affordances become a Follow button (or disappear).
+
     $$("[data-profile-about-edit]").forEach((el) => el.classList.add("hidden"));
     $$("[data-profile-about-owner]").forEach((el) => { el.textContent = name; });
     $$("[data-profile-sidebar-slot] a[href='/dashboard/settings']").forEach((edit) => {
@@ -3138,11 +3132,11 @@
   }
 
   function nodeNeedsReconnect(session) {
-    // A guest has nothing to reconnect; a node-kind session IS the node.
+
     const signedIn = Boolean(session && (session.nodeName || session.email));
     if (!signedIn || session.kind === "node") return false;
-    // Only flag when the account affirmatively has zero linked nodes. An absent
-    // list means "unknown" (older payload), not "none" — stay quiet then.
+
+
     return Array.isArray(session.nodes) && session.nodes.length === 0;
   }
 
@@ -3150,15 +3144,15 @@
     const hint = $("[data-email-verification-hint]");
     if (!hint) return;
     hint.textContent = message ? " " + message : "";
-    // Only utilities already present in the built dashboard/tailwind.css.
+
     hint.className = kind === "bad" ? "text-red-300"
       : kind === "good" ? "text-emerald-300"
         : "text-amber-300";
   }
 
-  // An unverified address blocks node renames and every account email, and the
-  // resend control used to be buried in the profile modal behind a password
-  // prompt. Surface it on every dashboard page until the address is confirmed.
+
+
+
   function renderEmailVerificationBanner(session) {
     const banner = $("[data-email-verification-banner]");
     if (!banner) return;
@@ -3212,19 +3206,19 @@
         adminUrl += (adminUrl.includes("?") ? "&" : "?") +
           "admin=" + encodeURIComponent(session.nodeName);
       }
-      // Only show the button once we actually have somewhere to send it -
-      // an admin session without adminUrl (ADMIN_PATH not picked up from the
-      // Worker env yet) would otherwise show a button that links to "#".
+
+
+
       adminButton.classList.toggle("hidden", !adminUrl);
       adminButton.href = adminUrl || "#";
     }
-    // Reconnect affordance next to the avatar: a signed-in user account with no
-    // node linked has nothing authenticated to drain its issues/chats/etc. to a
-    // desktop, so surface the re-link flow (the Settings > Nodes claim/link
-    // panel) instead of leaving the data stuck online. Shown only when we can
-    // affirmatively tell there are zero linked nodes (session.nodes present and
-    // empty) for a user-like account — never for a node session or when the
-    // link state is simply unknown, to avoid a false alarm.
+
+
+
+
+
+
+
     const reconnect = $("[data-node-reconnect]");
     if (reconnect) {
       reconnect.classList.toggle("hidden", !nodeNeedsReconnect(session));
@@ -3407,7 +3401,7 @@
         }
       }
     } catch {
-      // Use the curated fallback below when browser support is unavailable.
+
     }
     return PROFILE_TIMEZONE_FALLBACKS;
   }
@@ -3656,7 +3650,7 @@
     try {
       sessionStorage.setItem(profileContributionCacheKey(requestKey), JSON.stringify({ data, savedAt: Date.now() }));
     } catch (_) {
-      // A disabled or full session store only removes the offline fallback.
+
     }
   }
 
@@ -4182,9 +4176,9 @@
     return /^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(String(value || ""));
   }
 
-  // A node's Ed25519 public key (raw 32 bytes, base64url, unpadded) - the
-  // value the desktop app's own profile card labels "Node ID" (issue #351),
-  // so the claim-node input below must accept it alongside the account name.
+
+
+
   function validNodePubkey(value) {
     return /^[A-Za-z0-9_-]{43}$/.test(String(value || ""));
   }
@@ -4423,13 +4417,13 @@
     renderProfileFediverse(session);
   }
 
-  // ---- Fediverse presence ------------------------------------------------
-  // A profile with a linked Mastodon handle surfaces that account here: the
-  // account's header image becomes a banner across the overview page and the
-  // newest public posts fill a sidebar card. The browser talks straight to
-  // the user's home instance (public CORS API, credentials omitted) so none
-  // of this spends the worker's request quota, and a 10-minute localStorage
-  // snapshot keeps repeat visits from hammering small instances.
+
+
+
+
+
+
+
   const PROFILE_FEDIVERSE_CACHE_PREFIX = "forkmesh.profileFediverse:v1:";
   const PROFILE_FEDIVERSE_CACHE_TTL_MS = 10 * 60 * 1000;
   const PROFILE_FEDIVERSE_POST_LIMIT = 3;
@@ -4451,9 +4445,9 @@
     }
   }
 
-  // Mastodon serves statuses and notes as sanitized HTML; the card renders
-  // plain text only. A detached textarea decodes entities without ever
-  // constructing elements from the remote markup.
+
+
+
   function fediversePlainText(value, limit = 280) {
     const stripped = String(value ?? "")
       .replace(/<br\s*\/?>/gi, "\n")
@@ -4517,7 +4511,7 @@
         base + "/api/v1/accounts/" + encodeURIComponent(id) +
         "/statuses?limit=10&exclude_replies=true");
     } catch {
-      // The account still renders; the posts list just stays empty.
+
     }
     const posts = (Array.isArray(statuses) ? statuses : [])
       .map((status) => {
@@ -4537,8 +4531,8 @@
       })
       .filter((post) => post.url && (post.text || post.imageCount))
       .slice(0, PROFILE_FEDIVERSE_POST_LIMIT);
-    // Instances answer with a placeholder "missing.png" header when the
-    // account never uploaded one — that is not a banner worth showing.
+
+
     const header = fediverseHttpsUrl(account.header_static || account.header);
     return {
       at: Date.now(),
@@ -4576,8 +4570,8 @@
         link.textContent = "@" + data.acct;
         link.href = data.url;
       }
-      // Pops the feed out into its own window so it can sit beside the
-      // dashboard instead of replacing the tab.
+
+
       const popout = card.querySelector("[data-profile-fediverse-popout]");
       if (popout) {
         popout.onclick = () => {
@@ -4638,8 +4632,8 @@
         renderProfileFediverseData(handle, data);
       })
       .catch(() => {
-        // Instance unreachable (CORS, rate limit, downtime): keep whatever
-        // the stale snapshot already painted instead of flashing it away.
+
+
       })
       .finally(() => profileFediverseLoading.delete(handle));
   }
@@ -4822,9 +4816,9 @@
     return "Could not send the verification email. Try again in a moment.";
   }
 
-  // Re-sending a confirmation link only needs the signed-in session, so it goes
-  // to /api/accounts/resend-verification rather than the password-gated profile
-  // POST. The Worker records every send on the account and pings administrators.
+
+
+
   async function resendVerification(options = {}) {
     const hintSelector = options.hintSelector || "";
     const buttonSelector = options.buttonSelector || "[data-email-verification-resend]";
@@ -4964,9 +4958,9 @@
     }
   }
 
-  // Users vs nodes (adhoc #53): claim a node (e.g. a headless mirror you
-  // installed) by its node ID, then confirm the code that appears on that
-  // node itself to complete the link.
+
+
+
   function renderClaimNodePanel(session) {
     const list = $("[data-claim-node-list]");
     if (!list) return;
@@ -4989,8 +4983,8 @@
 
   async function claimNode() {
     const input = $("[data-claim-node-input]");
-    // Not lowercased up front: a node's public-key ID is case-sensitive, and
-    // only the plain-name form is meant to be case-insensitive.
+
+
     const nodeId = (input?.value || "").trim();
     const password = profilePassword("[data-claim-node-password]");
     if (!validNodeName(nodeId.toLowerCase()) && !validNodePubkey(nodeId)) {
@@ -5105,11 +5099,11 @@
     }
   }
 
-  // "Link this node to your account" (adhoc #120): the desktop app opens
-  // /dashboard?link_node=<node>&link_ts=<ts>&link_sig=<sig> - a short-lived
-  // grant signed with the node's own key. The signature proves node-key
-  // control and consents to the link, so whoever is logged in HERE becomes the
-  // owner with no password re-entry or confirmation code.
+
+
+
+
+
   function pendingLinkGrant() {
     const params = new URLSearchParams(location.search);
     const nodeName = (params.get("link_node") || "").trim();
@@ -5120,12 +5114,12 @@
   }
 
   function offerLinkGrant(grant) {
-    // Strip the one-time grant from the address bar first so refresh/back
-    // can't replay it (and it doesn't linger in the visible URL), then show
-    // the settings page's Nodes panel and ask for one explicit "Authenticate &
-    // link" click. The grant overrides any existing association, so the click
-    // is the moment of consent on the browser side. (Boot redirects the grant
-    // to the settings document before calling this, so the panel exists here.)
+
+
+
+
+
+
     const params = new URLSearchParams(location.search);
     for (const key of ["link_node", "link_ts", "link_sig"]) params.delete(key);
     const rest = params.toString();
@@ -5252,8 +5246,8 @@
       repo.name,
       canonical.owner,
       canonical.name,
-      // Cards are labelled with the logical owner, so filtering by the
-      // organization (or account) name has to match too.
+
+
       ...repoLogicalOwners(repo).map((value) => value.owner),
       repo.description,
       repo.channel,
@@ -5386,20 +5380,20 @@
     return true;
   }
 
-  // A repo is reachable when its own host is live OR - for a public repo - a peer
-  // mirroring the same logical repo is online and the relay serves it in place
-  // through the repo's own URL (adhoc #61). cloneOnline is the worker's group
-  // verdict; fall back to liveHost for older payloads that predate it.
+
+
+
+
   function repoIsLive(repo) {
     return Boolean(repo?.cloneOnline ?? repo?.liveHost);
   }
-  // Live, but the named source of truth is down - a mirror node is serving it.
+
   function repoServedByMirror(repo) {
     return repoIsLive(repo) && !repo?.liveHost;
   }
-  // The signed-in account owns this repo when their node name matches the repo
-  // owner slug (case-insensitive). Owners get to keep their own offline issue
-  // submissions visible until their source-of-truth node drains them (#379).
+
+
+
   function isRepoOwner(repo) {
     const owner = String(repo?.owner || "").trim().toLowerCase();
     const me = String(state.session?.nodeName || "").trim().toLowerCase();
@@ -5501,8 +5495,8 @@
   function nativeRepositoryLogoCacheKey(endpoint) {
     const token = String(state.session?.sessionToken || "");
     if (token !== nativeRepositoryLogoSessionToken) {
-      // A guest miss must not hide a private logo after login, and an
-      // owner-authorized logo must never survive logout/account switching.
+
+
       nativeRepositoryLogoCache.clear();
       nativeRepositoryLogoSessionToken = token;
       nativeRepositoryLogoSessionEpoch += 1;
@@ -5525,15 +5519,15 @@
         if (String(state.session?.sessionToken || "") !== token) return null;
         return {
           dataUrl: nativeRepositoryLogoDataUrl(body?.logo?.dataUrl),
-          // The repository's own root logo streams through a mirror, so it can
-          // fail long after the card rendered. The generated/approved artwork
-          // ships with it so the card swaps instead of showing a broken image.
+
+
+
           fallbackDataUrl: nativeRepositoryLogoDataUrl(
             body?.logo?.fallbackDataUrl),
         };
       }).catch(() => {
-        // Do not negatively cache authorization failures or transient errors.
-        // The same card can be retried after login or on a later render.
+
+
         if (nativeRepositoryLogoCache.get(cacheKey) === pending) {
           nativeRepositoryLogoCache.delete(cacheKey);
         }
@@ -5567,9 +5561,9 @@
       const dataUrl = String(logo?.dataUrl || "");
       const fallbackDataUrl = String(logo?.fallbackDataUrl || "");
       if (!dataUrl || !image.isConnected) return;
-      // The committed root logo is served by a mirror, so it can fail after the
-      // card rendered (offline or lagging host). Swap to the generated artwork,
-      // then to the repository icon — never leave a broken image behind.
+
+
+
       image.onerror = () => {
         if (fallbackDataUrl && image.dataset.logoFallbackUsed !== "true") {
           image.dataset.logoFallbackUsed = "true";
@@ -5813,9 +5807,9 @@
         const repo = sourceOfTruth(group);
         return {
           repo,
-          // Dedupe on the label, so a repo already listed under its
-          // organization does not come back a second time under the node that
-          // publishes it.
+
+
+
           key: `${groupDisplayOwner(group)}/${repo.name || ""}`,
           href: groupLinkUrl(group),
           organization: false,
@@ -5941,17 +5935,17 @@
     hydrateNativeRepositoryLogos(container);
   }
 
-  // Home right-rail "Latest from the blog" (adhoc #381): the newest feature
-  // posts with their artwork, read from the blog's own RSS document. The feed
-  // is derived from the shipped blog index and edge-cached for thirty minutes
-  // (see blog_feed.py), so this is one cheap same-origin read per dashboard
-  // load rather than a second hand-maintained copy of the post list.
+
+
+
+
+
   const HOME_BLOG_POST_LIMIT = 3;
   const HOME_BLOG_FEED_URL = "/rss.xml";
 
-  // Feed URLs are absolute against forkmesh.com; keep only the path so the
-  // dashboard links and paints artwork from whatever origin it is served on
-  // (and never loads an image from a foreign host).
+
+
+
   function homeBlogUrl(value) {
     const raw = String(value || "").trim();
     if (!raw) return "";
@@ -6054,10 +6048,10 @@
     renderHomeRepositories();
   }
 
-  // Home left-rail "Active agent sessions" (adhoc #81). Renders the aggregated
-  // non-terminal agent runs collected by loadHomeAgentSessions(). The panel
-  // stays hidden until there is at least one active session so it never shows
-  // an empty box to accounts that don't run agents.
+
+
+
+
   function renderHomeAgentSessions() {
     const panel = $("[data-home-agent-sessions-panel]");
     const container = $("[data-home-agent-sessions]");
@@ -6086,10 +6080,10 @@
     window.lucide?.createIcons();
   }
 
-  // Fetch the agent-session list for every repo the session can assign agents
-  // to and keep only the still-running (non-terminal) ones. The per-repo
-  // /agents/list endpoint is owner-gated, so this only runs for a signed-in
-  // account and silently skips repos it can't read.
+
+
+
+
   async function loadHomeAgentSessions() {
     if (!state.session?.nodeName) return;
     const repos = (state.repositories || []).filter((repo) =>
@@ -6113,9 +6107,9 @@
     renderHomeAgentSessions();
   }
 
-  // The repo groups the profile pages list: the whole catalog on the
-  // session's own dashboard, but ONLY the viewed account's repos in
-  // public-profile mode (/@name).
+
+
+
   function profileRepositoryGroups() {
     let groups = groupRepositories(state.repositories || []);
     if (state.publicProfile) {
@@ -6355,12 +6349,12 @@
     }
   }
 
-  // New-repository flow (adhoc #30). Publishing a signed catalog record and
-  // running the git mirror both require the account's Ed25519 key, which lives
-  // on the desktop node — the browser only holds a separate web-issue identity.
-  // So this "Create & mirror" modal collects the repo details on the web, then
-  // hands off the concrete steps to complete it in the desktop node's Repos
-  // page, rather than pretending the pure-web path can publish.
+
+
+
+
+
+
   function setNewRepoModalOpen(open) {
     const modal = $("[data-new-repo-modal]");
     if (!modal) return;
@@ -6492,8 +6486,8 @@
           "bad",
         );
       } finally {
-        // The credential is request-only: remove it from the form immediately,
-        // regardless of success or provider failure.
+
+
         if (tokenInput) tokenInput.value = "";
         if (submit) submit.disabled = false;
       }
@@ -6536,12 +6530,12 @@
     detail.querySelectorAll("[data-dashboard-repo-tab-panel]").forEach((panel) => {
       panel.classList.toggle("hidden", panel.dataset.dashboardRepoTabPanel !== tab);
     });
-    // The About right-hand rail only belongs next to the file tree/README
-    // (owner decision 2026-07-12, discussion #2): every other tab — commits,
-    // releases, issues, projects, pulls, discussions, insights, mirrors,
-    // agents, settings — goes full-width instead of leaving a rail with nothing beside
-    // it to explain. The explorer focus mode independently hides the rail
-    // (and collapses this same grid) while active on the code tab.
+
+
+
+
+
+
     const contentGrid = detail.querySelector("[data-repo-content-grid]");
     const about = detail.querySelector("[data-repo-about]");
     const showAbout = tab === "code";
@@ -6550,27 +6544,27 @@
     about?.classList.toggle("hidden", !showAbout);
   }
 
-  // Tab switch requested by the user (or a Back/Forward step): shows the tab,
-  // mirrors it into the address bar so refresh/back land on the same page,
-  // and fetches its records on first view. Issues, pull requests and
-  // discussions load lazily here rather than on repo open so a repo with many
-  // records doesn't fire record reads for tabs nobody opened.
+
+
+
+
+
   function activateRepoTab(tab) {
     setRepoTab(tab);
-    // The Agents auto-refresh poll only makes sense while that tab is the one
-    // on screen; leaving it (to any other tab) stops the poll.
+
+
     if (tab !== "agents") {
-      // Leaving the tab closes any open agent detail page (adhoc #259) so
-      // returning to Agents lands on the session list, not a stale transcript.
+
+
       state.agentsView.selectedAgentId = null;
     }
     if (!state.selectedRepo) return;
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
-    // Mirror health loads once with the repository summary, then refreshes
-    // only when its own tab is actually opened (plus the bounded visible-tab
-    // fallback and coalesced socket signal below).
+
+
+
     if (tab === "mirrors") {
       void loadRepoMirrors(state.selectedRepo, { background: true });
     }
@@ -6590,8 +6584,8 @@
       else if (tab === "agents") loadRepoAgents(state.selectedRepo);
       else loadRepoCollection(state.selectedRepo, tab, `[data-repo-${tab}]`);
     } else if (tab === "issues") {
-      // Re-selecting the tab should return to the issues list even if the
-      // new-issue compose form was left open.
+
+
       renderRepoIssues();
     } else if (tab === "projects") {
       renderRepoProjects();
@@ -6651,9 +6645,9 @@
         badge.hidden = true;
         badge.textContent = "";
       } else {
-        // Confirms the page loaded from a live mirror and which one (the
-        // router round-robins browse traffic across every online mirror of
-        // the repo).
+
+
+
         const speed = formatServeSpeed(tookMs);
         badge.textContent = [`served by ${name}`, speed, servedMirrorStats(name)]
           .filter(Boolean)
@@ -6661,9 +6655,9 @@
         badge.hidden = false;
       }
     }
-    // Re-render the repo's mirror lists so the node that just answered gets
-    // its green "serving this request" highlight without waiting on a fresh
-    // /mirrors fetch.
+
+
+
     renderRepoMirrorLists(state.repoMirrors, state.repoServedBy);
   }
 
@@ -6728,8 +6722,8 @@
     const focusActions = detail?.querySelector("[data-repo-focus-actions]");
     if (!detail) return;
 
-    // The grid collapse matches the base class renderRepoDetail emits (lg:) —
-    // legitimate here because focus mode hides the About rail entirely.
+
+
     contentGrid?.classList.toggle("lg:grid-cols-[minmax(0,1fr)_18rem]", !active);
     contentGrid?.classList.toggle("lg:grid-cols-1", active);
     workspace?.classList.toggle("grid", active);
@@ -7044,10 +7038,10 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    // Callers reading the dedicated pull-metadata branch first resolve its
-    // immutable OID with resolveRepoPullMetadataCommit(), then pass that exact
-    // value here. Explicitly empty refs retain the generic no-ref URL contract
-    // for compatibility callers; pull readers never rely on that ambiguity.
+
+
+
+
     if (!("ref" in (params || {}))) query.set("ref", repoSelectedBranch(repo));
     else if (!String(params.ref || "")) query.delete("ref");
     const version = repoDataVersion(repo);
@@ -7470,8 +7464,8 @@
     return trimmed;
   }
 
-  // Operates on already-`escapeHtml`d text so the captured groups (urls,
-  // labels, code) are safe to splice back into HTML without re-escaping.
+
+
   function renderMarkdownInline(escapedText) {
     return escapedText
       .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) =>
@@ -7484,11 +7478,11 @@
       .replace(/`([^`]+)`/g, (_, code) => `<code class="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs">${code}</code>`);
   }
 
-  // Small, dependency-free markdown renderer: headings, fenced code blocks,
-  // block quotes, ordered/unordered lists, hr, and paragraphs, with basic
-  // inline formatting, links and images. Not a full CommonMark
-  // implementation - readmes just need to look reasonable, not pixel-match
-  // GitHub.
+
+
+
+
+
   function renderMarkdown(raw) {
     const lines = String(raw ?? "").replace(/\r\n?/g, "\n").split("\n");
     const out = [];
@@ -7564,10 +7558,10 @@
     return out.join("");
   }
 
-  // Skeleton placeholder for the file tree while the live mirror answers. Mirrors
-  // the real row grid (icon / name / commit message / date) so the panel keeps
-  // its shape and shimmers into the content, instead of a bare one-line spinner.
-  // Bars use muted-foreground/20 so they stay visible in both light and dark.
+
+
+
+
   function repoTreeSkeletonHtml(rows = 8) {
     const nameWidths = ["w-40", "w-28", "w-52", "w-36", "w-44", "w-24", "w-48", "w-32"];
     const bar = "rounded bg-muted-foreground/20";
@@ -7582,12 +7576,12 @@
   }
 
   async function loadRepositoryTree(repo, path = "", options = {}) {
-    // background: warm the Code tab's tree/README underneath another visible
-    // tab. A refresh on /owner/repo/issues restores the Issues tab first and
-    // then preloads the tree — that preload must not steal the visible tab
-    // (setRepoTab) or rewrite the address bar back to the repo root
-    // (navigateHistory), which is what used to snap every refreshed feature
-    // tab back to the main repo page.
+
+
+
+
+
+
     const background = options.background === true;
     const detail = $("[data-repo-detail]");
     if (!detail) return;
@@ -7602,21 +7596,21 @@
     viewer?.classList.add("hidden");
     readmePanel?.classList.toggle("hidden", Boolean(path));
     setRepoExplorerFocusMode(Boolean(path));
-    // The root/README view keeps the two-column layout: the About rail is a
-    // permanent right-hand column (the old full-width README override that
-    // dropped it below the content was removed, owner decision 2026-07-11).
+
+
+
     renderRepoBreadcrumb(repo, path);
 
     treeBody.innerHTML = repoTreeSkeletonHtml();
     renderRepoExplorer(repo, path, []);
     try {
       const requestedAt = performance.now();
-      // A live-mirror read: fetch fresh (fetchRepoJson, no-store) like every
-      // other HTTPS data surface (issues/pulls/releases/README), never the browser-
-      // cached, account-scoped fetchJson. The router round-robins browse across
-      // whichever mirrors are online, so a cached copy could pin the page to a
-      // node that has since gone offline — the "served by mirror" view must
-      // reflect the mirror that actually answered this request.
+
+
+
+
+
+
       const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path }));
       renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       updateRepoCommitSummary(data.latestCommit, repo);
@@ -7683,8 +7677,8 @@
         }
       }
     } catch (_) {
-      // The tree fetch drives the commit summary; if no mirror answered, still
-      // resolve the loading skeleton to the repo-derived fallback metadata.
+
+
       updateRepoCommitSummary(null, repo);
       treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No reachable mirror host is serving this repository tree right now.</div>';
       if (!path) {
@@ -7717,8 +7711,8 @@
         if (renderRepoPreview(viewer, repo, path, {})) return;
       }
       const requestedAt = performance.now();
-      // Fresh live-mirror read (see loadRepositoryTree): the blob must come from
-      // the mirror serving this request, not a stale browser cache.
+
+
       const data = await fetchRepoJson(repoLiveUrl(repo, "blob", { path }));
       renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       if (renderRepoPreview(viewer, repo, path, data)) return;
@@ -7786,15 +7780,15 @@
     return text.slice(1, -1).split(",").map((item) => item.trim()).filter(Boolean);
   }
 
-  // Issues are split by status into .forkmesh/issues/open/<n>/ and
-  // .forkmesh/issues/closed/<n>/ (adhoc #14); pre-split mirrors keep the
-  // numbered folder directly under the root (no subdir).
+
+
+
   function issueJsonPath(number, subdir) {
     const base = subdir ? `.forkmesh/issues/${subdir}` : ".forkmesh/issues";
     return `${base}/${Number(number)}/issue-${Number(number)}.json`;
   }
 
-  // Every path issue <number>'s record may live at, most likely first.
+
   function issueJsonCandidatePaths(number) {
     return ["open", "closed", ""].map((subdir) => issueJsonPath(number, subdir));
   }
@@ -7810,11 +7804,11 @@
     const number = Number(issue.number || fallbackNumber);
     const events = Array.isArray(issue.events) ? issue.events : [];
     const open = events.find((event) => event && event.type === "open") || {};
-    // Deletion is shown, not hidden (adhoc #16), and classified by who signed it,
-    // mirroring the desktop (Issue::isDeleted / hasUnauthorizedDeleteAttempt).
-    // A delete/self signed by the issue's own creator deletes it; one signed by
-    // anyone else is an unauthorized attempt that leaves the issue open but
-    // flagged.
+
+
+
+
+
     const creator = open.author || "";
     const deletes = events.filter(
       (event) => event && event.type === "delete" && event.target === "self");
@@ -7852,10 +7846,10 @@
     };
   }
 
-  // Stand-in row for an issue folder the mirror is counting but whose JSON we
-  // could not read (relay hiccup, unreadable blob). The desktop's
-  // countOpenIssues treats an unreadable blob as open too, so we keep the count
-  // honest and show the row (flagged) instead of silently dropping it.
+
+
+
+
   function placeholderIssue(number) {
     return {
       number: Number(number),
@@ -7876,9 +7870,9 @@
     };
   }
 
-  // Adapt an issue-N.json blob into the { values, body } shape that
-  // renderRepoRecordDetail consumes for pulls/discussions front matter, so the
-  // issue detail view renders from the same JSON the Issues list already reads.
+
+
+
   function issueDetailParsed(text, fallbackNumber) {
     const issue = parseIssueJson(text, fallbackNumber);
     return {
@@ -7891,18 +7885,18 @@
         createdAt: issue.createdAtMs,
       },
       body: issue.body,
-      // Every signed event on the issue (comment, status, labels, milestone,
-      // assignees, agent, title, dates, progress, bounty, edit, delete, vote)
-      // so the detail view can render the full activity timeline, not just the
-      // opening comment.
+
+
+
+
       issueEvents: issue.events,
     };
   }
 
-  // Icon + human-readable description for a non-comment issue event, mirroring
-  // the desktop timeline (MainWindowIssues.cpp addActivity). The default branch
-  // still surfaces unknown/future event types so the detail view shows every
-  // action the JSON carries rather than silently dropping it.
+
+
+
+
   function issueEventIcon(type) {
     return ({
       status: "circle-dot",
@@ -7978,10 +7972,10 @@
       </div>`;
   }
 
-  // Full issue activity timeline: comment events render as bodied cards and
-  // every other event as an activity line, in chronological order, so the
-  // detail view shows every action stored in the issue JSON (adhoc #45). The
-  // opening event is omitted here since it's already shown as the issue body.
+
+
+
+
   function renderIssueTimeline(events) {
     const rows = (Array.isArray(events) ? events : [])
       .filter(Boolean)
@@ -8015,9 +8009,9 @@
     return `.forkmesh/projects/${Number(number)}/project-${Number(number)}.json`;
   }
 
-  // Projects (issue #384) are stored like issues - one signed-event JSON per
-  // numbered folder under .forkmesh/projects/ - and carry gantt start/end
-  // dates, an optional milestone link, and a list of linked issue numbers.
+
+
+
   function parseProjectJson(text, fallbackNumber) {
     let project = {};
     try {
@@ -8063,9 +8057,9 @@
       response.headers.get("X-ForkMesh-Served-By") || "",
     ).trim();
     if (data && typeof data === "object" && !Array.isArray(data)) {
-      // Trust routing provenance from the Worker's response header, never an
-      // upstream JSON field. A metadata-cache hit intentionally has no header,
-      // so remove any body claim instead of presenting it as a live selection.
+
+
+
       if (servedBy) data.servedBy = servedBy;
       else delete data.servedBy;
     }
@@ -8093,9 +8087,9 @@
   }
 
   async function resolveRepoPullMetadataCommit(repo) {
-    // Named private repository routes intentionally remain inert. Private
-    // bytes use the opaque encrypted-replica transport and must never become
-    // discoverable through this public branch lookup.
+
+
+
     if (!repo || repo.isPrivate) {
       throw new Error("pull_metadata_unavailable");
     }
@@ -8187,11 +8181,11 @@
   }
 
   async function fetchRepoBlobs(repo, paths, options = {}) {
-    // Batched file read: ONE request returns every path (repeated ?path=
-    // params); the Worker fans the reads out over authenticated HTTPS mirrors.
-    // Fetching each record as its own /blob call flooded the relay with 50+
-    // parallel requests per page view and tripped the per-repo rate limit.
-    // Missing/unreadable paths come back null.
+
+
+
+
+
     if (!paths.length) return {};
     const query = new URLSearchParams();
     paths.forEach((path) => query.append("path", path));
@@ -8200,9 +8194,9 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    // Same ref override contract as repoLiveUrl. Pull readers pass the exact
-    // immutable forkmesh/pulls OID resolved by
-    // resolveRepoPullMetadataCommit().
+
+
+
     if (!("ref" in options)) query.set("ref", repoSelectedBranch(repo));
     else if (options.ref) query.set("ref", options.ref);
     const version = repoDataVersion(repo);
@@ -8214,10 +8208,10 @@
   }
 
   async function loadRepoRecordsFromMirror(repo, config) {
-    // Pull requests moved to the dedicated forkmesh/pulls metadata branch
-    // (issue #399). Resolve it once, then pin the tree and every batched blob
-    // read to the same immutable commit. Never fall back to main: a missing
-    // metadata branch is unavailable, not an empty or stale pull collection.
+
+
+
+
     const refParams = config.dir === "pulls"
       ? { ref: await resolveRepoPullMetadataCommit(repo) }
       : {};
@@ -8238,7 +8232,7 @@
         : config.file;
       return `${config.dir}/${entry.name}/${file}`;
     };
-    // One batched request for every record file instead of a per-record fan-out.
+
     const blobs = await fetchRepoBlobs(repo, dirs.map(recordPath), refParams);
     const records = dirs.map((entry) => {
       const number = Number(entry.name);
@@ -8315,10 +8309,10 @@
     }).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
   }
 
-  // Shared unified-diff parser used by both the commit diff and the pull
-  // patch views. Groups lines per file and tracks real old/new line numbers
-  // per hunk so the viewer can render a GitHub-style dual gutter instead of
-  // a single running index.
+
+
+
+
   function parseDiffFiles(rawText) {
     const lines = String(rawText || "").split("\n");
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
@@ -8455,11 +8449,11 @@
     }).join("");
   }
 
-  // Pull-request badge (adhoc #44): a visual fingerprint of the PR. One tile
-  // per changed file — a file-type glyph over a green/red bar showing that
-  // file's additions:deletions ratio — grouped by directory with a labeled
-  // connector line. Mirrors the SVG the worker attaches to federated
-  // PR-opened notes (src/pull_badge.py) and the desktop Badge tab.
+
+
+
+
+
   const fileBadgeStyles = {
     ts: ["TS", "#3178c6"], tsx: ["TSX", "#3178c6"],
     js: ["JS", "#f1e05a"], mjs: ["JS", "#f1e05a"], cjs: ["JS", "#f1e05a"],
@@ -8492,8 +8486,8 @@
     "package.json": ["NPM", "#cb3837"], "package-lock.json": ["NPM", "#cb3837"],
   };
 
-  // Directory connector labels show just the folder name (not the whole
-  // path) capped to 8 chars, e.g. "one/two/three" -> "three".
+
+
   function dirBadgeLabel(dir) {
     const name = dir === "/" ? "/" : dir.slice(dir.lastIndexOf("/") + 1);
     return name.length > 8 ? `${name.slice(0, 8)}…` : name;
@@ -8514,8 +8508,8 @@
     const dels = file.dels || 0;
     const total = adds + dels;
     const addPct = total ? Math.round((adds / total) * 100) : 0;
-    // Tiny per-file diff strip, same height as the glyph square: a green
-    // slice on top sized to the addition share, red below for deletions.
+
+
     const diffStrip = total
       ? `<span class="block w-full" style="height:${addPct}%;background:#3fb950"></span><span class="block w-full" style="height:${100 - addPct}%;background:#f85149"></span>`
       : '<span class="block h-full w-full" style="background:#30363d"></span>';
@@ -8526,8 +8520,8 @@
       </div>`;
   }
 
-  // Deterministic hue per author name so the icon is stable across loads
-  // without needing an avatar fetch (mirrors loadRepoAboutContributors).
+
+
   function badgeAuthorAvatarHtml(author) {
     const name = String(author || "unknown");
     let hash = 0;
@@ -8542,8 +8536,8 @@
     if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">The badge appears once the pull request\'s committed patch is available from the live mirror.</div>';
     const additions = rows.reduce((sum, file) => sum + (file.adds || 0), 0);
     const deletions = rows.reduce((sum, file) => sum + (file.dels || 0), 0);
-    // Cluster files by directory, preserving a sorted order so each directory
-    // forms one contiguous group under its labeled connector line.
+
+
     const groups = [];
     [...rows].sort((a, b) => String(a.path || "").localeCompare(String(b.path || ""))).forEach((file) => {
       const path = String(file.path || "file");
@@ -8629,14 +8623,14 @@
     return `<div class="grid gap-3 border-b border-border bg-background p-3 sm:grid-cols-2">${frame("Before", image.old)}${frame("After", image.new)}</div>`;
   }
 
-  // Large diffs used to be replaced by a "Diff hidden for speed" notice because
-  // laying out every changed file at once is what made a big PR page crawl. Each
-  // file block instead opts into `content-visibility: auto`, so the browser lays
-  // out and paints only the files inside (or near) the visible window and skips
-  // the rest until they scroll in — the whole diff is present for find-in-page
-  // and anchors, and nothing offscreen costs layout (adhoc #421). The intrinsic
-  // size keeps the scrollbar honest: ~1.25rem per rendered row, capped at the
-  // block's own max height so the estimate never runs away on a huge file.
+
+
+
+
+
+
+
+
   function diffFileBlockIntrinsicSize(file) {
     const rows = file.binary ? 6 : Math.max(1, (file.rows || []).length);
     return `${Math.min(36, 2.5 + rows * 1.25).toFixed(2)}rem`;
@@ -8693,10 +8687,10 @@
     }
   }
 
-  // A pull's conversation is an append-only, signed event log stored as
-  // pulls/<N>/NNNN-<type>.md files alongside pull.md (see PullStore.h on the
-  // desktop client). Types: comment, review, line-comment, thread-comment,
-  // thread-reply, thread-state, suggestion-state.
+
+
+
+
   function pullEventTypeMeta(ev) {
     const neutral = "border-border bg-secondary/60 text-muted-foreground";
     if (ev.type === "review") {
@@ -8712,9 +8706,9 @@
     return { label: "comment", tone: neutral };
   }
 
-  // Approve/request-changes/comment state per reviewer, derived the same way
-  // the desktop's PullStore::reviewSummary() does: the *last* review event
-  // per author wins.
+
+
+
   function pullReviewSummary(events) {
     const rows = Array.isArray(events) ? events : [];
     const byAuthor = new Map();
@@ -8731,9 +8725,9 @@
     const authorKey = String(pullAuthor || "").trim();
     const latest = new Map();
     for (const ev of Array.isArray(events) ? events : []) {
-      // Inbox reviews are not authoritative merge evidence until the owner
-      // node drains, validates, commits, and republishes them on the pinned
-      // pull-metadata ref.
+
+
+
       if (ev?.type !== "review" || ev.pending === true) continue;
       const key = String(ev.author || "").trim();
       if (!key || key === authorKey) continue;
@@ -8760,8 +8754,8 @@
     const gateTone = policy.ready ? "text-emerald-400" : "text-amber-400";
     const gate = `<span class="mb-2 flex items-center justify-between gap-2"><strong class="${gateTone}">${policy.ready ? "Peer gate met" : "Peer approval required"}</strong><span>${policy.approvals} approved${policy.blockers ? ` · ${policy.blockers} blocking` : ""}</span></span>`;
     if (!reviewers.length) return `${gate}<span>No reviews yet</span>`;
-    // sidebarSection wraps this in a <p>, so rows must stay phrasing content
-    // (span, not div) or the browser silently closes the paragraph early.
+
+
     return gate + reviewers.map((reviewer) => {
       const tone = reviewer.state === "approved" ? "text-emerald-400" : reviewer.state === "changes_requested" ? "text-red-400" : "text-muted-foreground";
       const label = reviewer.state === "approved" ? "Approved" : reviewer.state === "changes_requested" ? "Requested changes" : "Commented";
@@ -8845,10 +8839,10 @@
     }).filter(Boolean);
   }
 
-  // A discussion's replies are an append-only, signed event log stored as
-  // .forkmesh/discussions/<N>/NNNN-comment.md files alongside discussion.md (see
-  // DiscussionStore.cpp on the desktop client). Reuses the pull conversation
-  // row renderer since a discussion comment event has the same shape.
+
+
+
+
   function renderRepoDiscussionConversation(events) {
     const rows = Array.isArray(events) ? events : [];
     if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No replies yet on this discussion.</div>';
@@ -9384,17 +9378,17 @@
     }
   }
 
-  // The connector token is a locally minted bearer string, so nothing has to
-  // be fetched to have one: the first copy mints it right here in the desktop's
-  // own format, remembers it, and the copied prompt carries the lines that
-  // install it on the node. Copying is one click and never opens a dialog.
-  // Shift-clicking the button still opens the paste box, which is what a node
-  // that already published a connector needs (its own token wins).
+
+
+
+
+
+
   const MCP_CONNECTOR_TOKEN_KEY = "forkmesh.mcpConnectorToken";
   const MCP_CONNECTOR_TOKEN_PLACEHOLDER =
     "PASTE_CONNECTOR_TOKEN_FROM_FORKMESH_DESKTOP_SETTINGS_MCP";
-  // Matches qt_client/src/McpConnector.cpp: "fmcp_" + 32 CSPRNG bytes,
-  // base64url, unpadded — the shape isWellFormedToken() accepts.
+
+
   const MCP_CONNECTOR_TOKEN_BYTES = 32;
 
   function generateMcpConnectorToken() {
@@ -9410,8 +9404,8 @@
         btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
       );
     } catch (_) {
-      // No CSPRNG (ancient or locked-down browser): fall back to the
-      // placeholder rather than to a guessable token.
+
+
       return "";
     }
   }
@@ -9431,11 +9425,11 @@
     } catch (_) {}
   }
 
-  // The token for this copy. A plain click never asks anything: a remembered
-  // token is reused, otherwise one is generated on the spot and kept. Only a
-  // shift-click opens the paste box, for the node that already published its
-  // own connector; an empty answer there rotates to a freshly generated token
-  // rather than leaving the prompt carrying a placeholder.
+
+
+
+
+
   function ensureMcpConnectorToken(options) {
     let token = loadMcpConnectorToken();
     if (options?.replaceToken) {
@@ -9455,14 +9449,14 @@
     return token;
   }
 
-  // "Copy MCP prompt" on the issue detail page: one paste block that points an
-  // MCP-capable coding agent at the forkmesh MCP server so it pulls this issue,
-  // works it on a dedicated branch, submits the pull request, and reports back
-  // which model it ran as and its thinking setting. The block carries the whole
-  // connection — the mcpServers entry the desktop's Settings -> MCP tab shows
-  // (python3, tools/forkmesh_mcp_server.py, the repo checkout) plus the
-  // connector token the signed write tools require — so nothing has to be
-  // assembled by hand before the agent can run.
+
+
+
+
+
+
+
+
   function issueMcpPrompt(repo, number, values, token) {
     const repoSlug = `${repo.owner || "owner"}/${repo.name || "repo"}`;
     const title = String(values?.title || "").trim();
@@ -9474,8 +9468,8 @@
     const serverScript = "<FORKMESH_CHECKOUT>/tools/forkmesh_mcp_server.py";
     const repoCheckout = `<CHECKOUT_OF_${repoSlug}>`;
     const connectorToken = token || MCP_CONNECTOR_TOKEN_PLACEHOLDER;
-    // The same file tools/forkmesh_mcp_server.py reads (FORKMESH_MCP_CONNECTOR
-    // overrides it) and the desktop's Settings -> MCP tab writes.
+
+
     const connectorFile =
       "$XDG_DATA_HOME/ForkMesh/ForkMesh/mcp/connector.json (default ~/.local/share/ForkMesh/ForkMesh/mcp/connector.json)";
     const configuration = {
@@ -9490,10 +9484,10 @@
         },
       },
     };
-    // The token was minted in the browser, so it only unlocks the write tools
-    // once this machine's connector file holds it. An existing connector is
-    // never overwritten: that would demote every other agent config still
-    // holding the old string, and the node owner already has a token to use.
+
+
+
+
     const tokenNote = token
       ? [
           `FORKMESH_MCP_TOKEN above is a connector token minted for this prompt. Activate it before step 1: if ${connectorFile} does not exist, create it (mode 0600) containing {"version": 1, "token": "${connectorToken}", "node": "", "label": "copied MCP prompt", "created_ms": <epoch milliseconds>} - the same record the desktop app writes. If that file already exists, leave it exactly as it is and use its own "token" value in the configuration above instead - the node already published a connector and overwriting it would revoke every other agent.`,
@@ -9530,9 +9524,9 @@
     const detail = state.repoRecordDetail;
     const repo = state.selectedRepo;
     if (!button || !repo || detail?.kind !== "issues") return false;
-    // The button renders for signed-out visitors too; the prompt itself is
-    // only handed out to an authenticated account. Bounce through login and
-    // land back on this exact issue.
+
+
+
     if (!state.session?.sessionToken) {
       location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
       return false;
@@ -9580,20 +9574,20 @@
       isIssues && !options.pending
         ? `<button type="button" data-repo-marketing-initiative class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="megaphone" class="h-3.5 w-3.5 text-primary"></i>Move to Marketing initiatives</button>`
         : "";
-    // Always rendered, signed in or not: a signed-out click bounces through
-    // /login and returns here, so the visitor discovers the workflow either way.
+
+
     const mcpPromptAction =
       isIssues && !options.pending
         ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and a generated connector token included (shift-click to paste a token this node already published)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
         : "";
     const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
-    // Always mount the timeline container for issues so a comment posted from
-    // the form below has somewhere to land, but keep it borderless while empty.
+
+
     const issueTimelineSection = isIssues
       ? `<div data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}" class="${issueTimeline ? "border-t border-border" : ""}">${issueTimeline}</div>`
       : "";
-    // A pending issue is still awaiting its mirror commit and has no number yet,
-    // so there's nothing for a comment's signature to bind to.
+
+
     const issueCommentSection = isIssues && !options.pending
       ? renderIssueCommentForm(number)
       : "";
@@ -9722,9 +9716,9 @@
     const config = repoCollectionConfig[kind];
     const container = $(`[data-repo-${kind}]`);
     if (!repo || !config || !container || !number) return;
-    // Issues just submitted from this session await their mirror commit, so
-    // there's nothing to fetch from the mirror yet - render
-    // the detail straight from the local placeholder instead.
+
+
+
     const pendingItem = kind === "issues"
       ? state.issuesView.items.find((item) => item.pending && item.localId === number)
       : null;
@@ -9749,8 +9743,8 @@
         : {};
       let blob;
       if (kind === "issues") {
-        // The record lives under open/<n>/ or closed/<n>/ (pre-split mirrors:
-        // <n>/ at the root); probe the candidates until one answers.
+
+
         let lastError = null;
         for (const path of issueJsonCandidatePaths(Number(number))) {
           try {
@@ -9764,10 +9758,10 @@
       } else {
         blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath, ...refParams }));
       }
-      // Issues are signed-event JSON (issue-N.json), not markdown front matter,
-      // so parse them the same way the list does and map into the shape the
-      // detail renderer expects. Any live mirror serving .forkmesh/issues/
-      // answers this blob read, so the detail loads whenever the list does.
+
+
+
+
       const parsed = kind === "issues"
         ? issueDetailParsed(blobText(blob), number)
         : parseFrontMatter(blobText(blob));
@@ -9800,9 +9794,9 @@
     if (badge) badge.textContent = formatCount(count);
   }
 
-  // Amber "+N" badge for inbox items the relay is still holding for the owner
-  // node's next sync — signed submissions that exist but aren't in the served
-  // git mirror yet, so the regular tab count can't include them.
+
+
+
   function setRepoTabPending(tab, count) {
     const badge = $(`[data-dashboard-repo-tab-pending="${tab}"]`);
     if (!badge) return;
@@ -9814,10 +9808,10 @@
     }
   }
 
-  // Star/unstar a repo (GET/POST/DELETE /api/repo/o/r/star). A star is a
-  // plain per-account preference, not part of the owner-signed catalog
-  // record, so it's fetched and toggled separately from the rest of the
-  // repo's data.
+
+
+
+
   function setRepoStarButtonState(button, starred, count) {
     if (!button) return;
     button.setAttribute("aria-pressed", starred ? "true" : "false");
@@ -9843,12 +9837,12 @@
       if (!response.ok || data.ok === false || !document.body.contains(button)) return;
       setRepoStarButtonState(button, Boolean(data.starred), data.count);
     } catch (_) {
-      /* offline relay — star count stays at its initial placeholder */
+
     }
   }
 
-  // Hydrates every rendered star button in `root` (repo list cards, profile
-  // rows) with its real starred state + count, one request per distinct repo.
+
+
   async function hydrateRepoStarButtons(root) {
     const buttons = Array.from((root || document).querySelectorAll("[data-repo-star-button][data-repo-key]"));
     const byKey = new Map();
@@ -9890,17 +9884,17 @@
       if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
       setRepoStarButtonState(button, Boolean(data.starred), data.count);
     } catch (_) {
-      /* best-effort — button keeps its last known state */
+
     } finally {
       button.disabled = false;
     }
   }
 
-  // Content-free pending-inbox tallies (GET /api/repo/o/r/pending). Plain
-  // fetch, not the caching fetchJson — the counts drop as soon as any online
-  // node (the source of truth or an approved mirror) merges the submissions,
-  // so they must refresh on every repo open. Best-effort: a miss just leaves
-  // the badges hidden.
+
+
+
+
+
   async function loadRepoPendingCounts(repo) {
     try {
       const response = await fetch(`${repoApiBase(repo)}/pending`, {
@@ -9912,22 +9906,22 @@
       ["issues", "pulls", "discussions"].forEach((tab) => {
         setRepoTabPending(tab, pending[tab]);
       });
-      // Remember the server-side issue tally so the Issues list can show the
-      // pending submissions as rows (adhoc #97), not just as a tab badge - the
-      // count is the only thing we can surface publicly, since the items
-      // themselves stay encrypted and owner-gated in the relay's inbox.
+
+
+
+
       state.pendingIssueCounts = state.pendingIssueCounts || {};
       state.pendingIssueCounts[pendingIssuesRepoKey(repo)] =
         Number(pending.issues) || 0;
       applyRemotePendingIssueCount(repo);
     } catch (_) {
-      /* offline relay — badges stay hidden */
+
     }
   }
 
-  // The relay only reports a COUNT of issue submissions awaiting an eligible
-  // mirror (their contents are encrypted). Surface that count in the Issues
-  // list as "syncing..." placeholder rows until a mirror commits them.
+
+
+
   function remotePendingIssuePlaceholders(count) {
     const list = [];
     for (let i = 0; i < count; i += 1) {
@@ -9953,14 +9947,14 @@
     if (pendingIssuesRepoKey(view.repo) !== pendingIssuesRepoKey(repo)) return;
     const count = Number(state.pendingIssueCounts?.[pendingIssuesRepoKey(repo)]) || 0;
     const items = view.items.filter((item) => !item.remotePlaceholder);
-    // Items already shown as pending (this session's optimistic add and the
-    // session's optimistic add) covers part of the server tally; only pad
-    // the remainder so we never double-count a submission we can already show.
+
+
+
     const pendingReals = items.filter((item) => item.pending);
     const rest = items.filter((item) => !item.pending);
     const need = Math.max(0, count - pendingReals.length);
     const next = [...pendingReals, ...remotePendingIssuePlaceholders(need), ...rest];
-    // Skip the re-render when nothing changed (placeholders already correct).
+
     if (next.length === view.items.length &&
         view.items.filter((item) => item.remotePlaceholder).length === need)
       return;
@@ -9968,9 +9962,9 @@
     renderRepoIssues();
   }
 
-  // Refreshes the "N Open" / "N Closed" counts shown in an issues/pulls panel
-  // header once the real records are loaded (the initial render only knows a
-  // bundled total, not the open/closed split).
+
+
+
   function setRepoCollectionCounts(kind, openCount, closedCount) {
     const openEl = $(`[data-repo-collection-open-count="${kind}"]`);
     if (openEl) openEl.textContent = tabCountLabel(openCount);
@@ -9980,12 +9974,12 @@
 
   function applyServedCounts(counts) {
     if (!counts || typeof counts !== "object") return;
-    // The Issues header shows OPEN issues only (issue #397): closed issues are
-    // opt-in behind the Closed filter, so the tab badge counts the open issues
-    // the host serves (counts.openIssues), and the panel's "N Open / N Closed"
-    // split is filled from the served open/closed tallies. Older hosts that only
-    // report a bundled total fall back to that total; the first view of the
-    // Issues tab still refines the badge to the open count once issues load.
+
+
+
+
+
+
     const openIssues = Number.isFinite(Number(counts.openIssues))
       ? Number(counts.openIssues)
       : Number(counts.issues);
@@ -9998,30 +9992,30 @@
     if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
   }
 
-  // The tab badges are seeded from the catalog's last-published tallies, which
-  // lag the live mirror (e.g. issues opened since the owner node last
-  // republished). The authoritative served counts ride only on the ROOT tree
-  // reply (RepoHost::rootCountsFor, gated on path.isEmpty()), so a deep link
-  // straight into a subfolder — e.g. browsing .forkmesh/issues/open — fetches a
-  // subpath tree that carries no counts, leaving the Issues badge stuck on the
-  // stale seed (showing 7 while the open/ folder holds 11). Refresh from the
-  // mirror's root counts in that one case; best-effort, so an offline mirror
-  // just keeps the catalog seed.
+
+
+
+
+
+
+
+
+
   async function refreshServedCounts(repo) {
     try {
       const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "" }));
       if (data && data.counts) applyServedCounts(data.counts);
     } catch (_) {
-      /* offline mirror — badges keep their catalog seed */
+
     }
   }
 
-  // Free-text issue search: substring match (case-insensitive) over the
-  // number, title, body snippet, author, and the status/labels/milestone
-  // meta string — everything renderRepoRecordList already shows per row, so
-  // "matches the search" and "matches what's visibly displayed" stay the
-  // same thing. Runs client-side over the already-loaded (batched) issue set
-  // rather than a new network call, per the existing loadRepoIssues contract.
+
+
+
+
+
+
   function issueMatchesQuery(issue, query) {
     const q = String(query || "").trim().toLowerCase();
     if (!q) return true;
@@ -10037,17 +10031,17 @@
     if (!container) return;
     const issuesView = state.issuesView;
     const filtered = issuesView.items.filter((issue) => {
-      // A deleted issue (its creator tombstoned it) is shown only under "All",
-      // badged, so it doesn't pad the Open/Closed lists the tab count tracks
-      // (adhoc #16). An unauthorized deletion attempt leaves the issue in its
-      // normal Open/Closed list, flagged.
+
+
+
+
       if (issue.deleted && issuesView.filter !== "all") return false;
       if (issuesView.filter === "all") return true;
-      // "Open" means "not closed", matching the desktop advert and served counts
-      // (RepoHost::countOpenIssues / mirrorOpenIssueCount both use status !=
-      // "closed"). A strict status === "open" test dropped issues with any other
-      // non-closed status (e.g. "reopened") from the Open view, so the tab and
-      // list showed fewer issues than the Mirror nodes count (adhoc #96).
+
+
+
+
+
       if (issuesView.filter === "open") return issue.status !== "closed";
       return issue.status === "closed";
     }).filter((issue) => issueMatchesQuery(issue, issuesView.query));
@@ -10055,10 +10049,10 @@
     const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
       ${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${stateName === issuesView.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}
     </div>`;
-    // When the mirror is counting issues we couldn't fetch (unreadable blobs)
-    // or is holding more than the 50 we page in, surface the gap with a Retry
-    // button instead of letting the tab quietly disagree with the Mirror nodes
-    // count.
+
+
+
+
     const missing = issuesView.missing || [];
     const truncated = issuesView.truncated || 0;
     const warnParts = [];
@@ -10072,9 +10066,9 @@
           <button type="button" data-repo-issues-reload class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2.5 font-medium text-foreground hover:bg-secondary"><i data-lucide="refresh-cw" class="h-3 w-3"></i>Retry</button>
         </div>`
       : "";
-    // While the closed history is still being paged in (issue #427), show a
-    // loader in place of the "No issues" empty state so the Closed view doesn't
-    // flash empty before its rows arrive.
+
+
+
     const emptyLabel = issuesView.closedLoading
       ? loadingHtml("Loading closed issues from the live mirror...")
       : issuesView.query
@@ -10092,9 +10086,9 @@
       btn.setAttribute("aria-pressed", btn.dataset.dashboardIssueFilter === filter ? "true" : "false");
       btn.className = `inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${btn.dataset.dashboardIssueFilter === filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`;
     });
-    // Closed issues are paged in lazily (issue #427); fetch them the first time
-    // the Closed or All view is opened. loadClosedIssues renders a loading state
-    // and then the results itself.
+
+
+
     if ((filter === "closed" || filter === "all")
         && !state.issuesView.closedLoaded && !state.issuesView.closedLoading) {
       loadClosedIssues();
@@ -10110,13 +10104,13 @@
     try {
       let tree;
       try {
-        // List the git tree under .forkmesh/issues/ (which also reveals the
-        // open//closed/ status subdirs), then read one issue-${number}.json
-        // blob for each issue from wherever it lives.
+
+
+
         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
-          // No issues have been committed to the mirror yet.
+
           state.issuesView.items = [];
           state.issuesView.filter = "open";
           state.issuesView.query = "";
@@ -10133,10 +10127,10 @@
         throw error;
       }
       const rootEntries = Array.isArray(tree.entries) ? tree.entries : [];
-      // number -> record path, split by status. The open/ and closed/ subdirs
-      // (adhoc #14) hold the numbered folders; pre-split legacy mirrors keep
-      // them directly under the root with no status until their blob is read.
-      // A number living in a status subdir supersedes a stale legacy copy.
+
+
+
+
       const openPaths = new Map();
       const closedPaths = new Map();
       const legacyPaths = new Map();
@@ -10162,15 +10156,15 @@
             legacyPaths.delete(number);
           });
       }
-      // The Issues tab defaults to Open (issue #427): page in only the open
-      // (and unknown-status legacy) titles now so they show fast, and defer the
-      // closed history - often far larger - to loadClosedIssues, run the first
-      // time the Closed/All filter is opened. Legacy folders ride the open page
-      // and get reclassified once their blob reveals a status.
+
+
+
+
+
       const pathByNumber = new Map([...legacyPaths, ...openPaths]);
       const numbered = Array.from(pathByNumber.keys()).sort((a, b) => b - a);
-      // Cap the page at 50 folders, but remember when the mirror holds more so
-      // the panel can warn instead of silently hiding them.
+
+
       const dirs = numbered.slice(0, 50);
       const { items, missing } = await fetchIssuePage(repo, pathByNumber, dirs);
       items.sort((a, b) => Number(b.number) - Number(a.number));
@@ -10181,17 +10175,17 @@
       state.issuesView.truncated = Math.max(0, numbered.length - dirs.length);
       state.issuesView.repo = repo;
       state.issuesView.closedPaths = closedPaths;
-      // Closed folders live only in closed/; there is nothing left to lazy-load
-      // once that subdir is empty (a pure-legacy mirror keeps its closed items
-      // in `items` already, classified by status).
+
+
+
       state.issuesView.closedLoaded = closedPaths.size === 0;
       state.issuesView.closedLoading = false;
-      // Counts come from the folder listing, not the paged-in blobs, so they
-      // stay right past the 50-per-page cap and match the folder-based tally the
-      // Mirror nodes tab shows (adhoc #96 / issue #397). Legacy pre-split folders
-      // carry no status in the tree, so fold in their loaded split - a
-      // creator-deleted issue is excluded, an unauthorized deletion attempt
-      // still counts (adhoc #16).
+
+
+
+
+
+
       const loadedLegacy = items.filter((issue) => legacyPaths.has(Number(issue.number)));
       const legacyOpen = loadedLegacy.filter(
         (issue) => issue.status !== "closed" && !issue.deleted).length;
@@ -10208,12 +10202,12 @@
     }
   }
 
-  // Reads and parses the issue-N.json blobs for a page of numbered folders in
-  // ONE batched request. A batched read can drop entries under relay load, so
-  // retry just the misses once - a transient gap must not quietly shrink the
-  // count vs the Mirror nodes tab (whose issueCount lists every folder).
-  // Anything still unreadable becomes a flagged placeholder row instead of
-  // vanishing. Returns { items, missing } (missing = still-unreadable numbers).
+
+
+
+
+
+
   async function fetchIssuePage(repo, pathByNumber, dirs) {
     const items = [];
     let missing = [];
@@ -10240,11 +10234,11 @@
     return { items, missing };
   }
 
-  // Lazily pages in the closed issues the first time the Closed or All filter is
-  // opened (issue #427). The initial Issues load only pages the open set for
-  // speed, so this fills the closed history in on demand, appends it to the
-  // already-loaded open items, and re-renders. The open/closed counts are not
-  // touched - they were already derived from the full folder listing.
+
+
+
+
+
   async function loadClosedIssues() {
     const view = state.issuesView;
     if (view.closedLoaded || view.closedLoading) return;
@@ -10261,8 +10255,8 @@
     try {
       const { items, missing } = await fetchIssuePage(
         view.repo || state.selectedRepo, closedPaths, dirs);
-      // A number already loaded (e.g. a legacy closed copy) keeps its existing
-      // row; the status-subdir copy would be identical.
+
+
       const have = new Set((view.items || []).map((issue) => Number(issue.number)));
       const fresh = items.filter((issue) => !have.has(Number(issue.number)));
       view.items = [...(view.items || []), ...fresh];
@@ -10271,22 +10265,22 @@
       view.truncated = (view.truncated || 0) + Math.max(0, numbers.length - dirs.length);
       view.closedLoaded = true;
     } catch (_) {
-      /* leave closedLoaded false so a later toggle retries */
+
     } finally {
       view.closedLoading = false;
       renderRepoIssues();
     }
   }
 
-  // --- Projects tab (issue #384) -------------------------------------------
+
 
   function ganttDayLabel(ms) {
     return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
-  // Percent of a project's linked issues that are closed; falls back to the
-  // linked milestone's issues (within the loaded window) when nothing is
-  // linked directly. Returns -1 when there is nothing to measure.
+
+
+
   function projectProgress(project, issues) {
     const linked = issues.filter((issue) => project.issues.includes(issue.number));
     const pool = linked.length
@@ -10325,15 +10319,15 @@
         if (!blob) return null;
         return parseProjectJson(blobText(blob), number);
       }).filter(Boolean);
-      // The gantt rows and progress bars need the linked issues' dates and
-      // states, so read exactly those issue files in one batched request.
+
+
       const linkedNumbers = [...new Set(projects.flatMap((project) => project.issues))]
         .filter((number) => Number.isFinite(number) && number > 0);
       let issues = [];
       if (linkedNumbers.length) {
-        // Each record lives at open/<n>/, closed/<n>/, or the pre-split legacy
-        // <n>/; ask for every candidate in the one batch and keep whichever
-        // answered.
+
+
+
         const issueBlobs = await fetchRepoBlobs(
           repo, linkedNumbers.flatMap((number) => issueJsonCandidatePaths(number)));
         issues = linkedNumbers
@@ -10343,8 +10337,8 @@
           })
           .filter(Boolean);
       }
-      // Milestone-linked progress reads whatever issues the Issues tab already
-      // loaded (its most-recent window) - good enough for an overview ratio.
+
+
       (state.issuesView.items || []).forEach((issue) => {
         if (!issues.some((existing) => existing.number === issue.number)) issues.push(issue);
       });
@@ -10426,11 +10420,11 @@
     }).join("");
   }
 
-  // The gantt view: one labeled row per project (rounded track + progress
-  // fill) with its linked issues indented beneath, over a shared month axis
-  // with a "today" rule. Chrome uses theme tokens so both modes stay readable;
-  // every bar is direct-labeled by its row so color never carries meaning
-  // alone.
+
+
+
+
+
   function renderRepoProjectsGantt(projects, issues) {
     const issueByNumber = new Map(issues.map((issue) => [issue.number, issue]));
     const rows = [];
@@ -10476,7 +10470,7 @@
     max += pad;
     const span = max - min;
     const pct = (ms) => Math.min(100, Math.max(0, (ms - min) * 100 / span));
-    // Month ticks (day ticks when the whole range fits inside ~2 months).
+
     const ticks = [];
     const cursor = new Date(min);
     cursor.setHours(0, 0, 0, 0);
@@ -10577,17 +10571,17 @@
     }
   }
 
-  // True when the logged-in account is the node that owns (hosts) this repo -
-  // the only account whose node can actually pick an "assign to agent" issue up
-  // and run a coding agent on it.
+
+
+
   function sessionOwnsRepo(repo) {
-    // A repo's owner is a NODE account name. The logged-in account matches
-    // either directly (it IS that node) or because the user OWNS that node
-    // (adhoc #53 claim/link) — state.session.nodes is the list of node names
-    // the user owns, the same alias set profileContributionAliases folds in.
-    // Without this, a user whose repos are published by a linked node account
-    // could never edit About / assign agents from the web (backend
-    // _account_owns_node applies the identical rule).
+
+
+
+
+
+
+
     const repoOwner = String(repo?.owner || "").toLowerCase();
     if (!repoOwner) return false;
     const me = String(state.session?.nodeName || "").toLowerCase();
@@ -10596,11 +10590,11 @@
     return owned.some((n) => String(n || "").toLowerCase() === repoOwner);
   }
 
-  // True when the logged-in account may assign an issue to a coding agent on
-  // this repo's node: the repo owner itself, or an admin acting on the owner's
-  // behalf (admin node-ownership, adhoc #141). The backend independently
-  // re-checks the account name against owner/admin status (no password,
-  // adhoc #225), so this is only the client-side gate for showing the checkbox.
+
+
+
+
+
   function sessionCanAssignAgent(repo) {
     return sessionOwnsRepo(repo) || Boolean(state.session?.isAdmin);
   }
@@ -10650,8 +10644,8 @@
   }
 
   async function saveRepoAboutFromWeb(repo, description, media = {}) {
-    // media may carry logoPng / bannerPng (data-URL PNG, "" = remove). Only
-    // keys actually present are sent, so an untouched image stays unchanged.
+
+
     const response = await fetch(`${repoApiBase(repo)}/about`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -10706,14 +10700,14 @@
     return body;
   }
 
-  // --- Manage federated posts (issue #426) ---------------------------------
-  //
-  // The owner-only "Fediverse posts" dropdown in the About rail lists the
-  // repo actor's posts and lets the owner delete one. A delete makes the relay
-  // broadcast a Delete(Tombstone) to every follower's server, so the post also
-  // disappears from Mastodon — not just the repo's own profile feed. The
-  // backend re-checks ownership from the session token, so this is only the
-  // client surface (same session-auth shape as saveRepoAboutFromWeb).
+
+
+
+
+
+
+
+
 
   async function fetchRepoFediPosts(repo) {
     const response = await fetch(`${repoApiBase(repo)}/ap-posts`, {
@@ -10760,7 +10754,7 @@
     list.innerHTML = posts.map((post) => {
       const id = escapeHtml(String(post.id || ""));
       const when = relativeTimeLabel(Number(post.published || 0));
-      // Strip our own generated HTML down to a plain-text preview.
+
       const preview = String(post.content || "")
         .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
       const text = escapeHtml(preview.slice(0, 140) || "(no text)");
@@ -10798,8 +10792,8 @@
     if (trigger) trigger.disabled = true;
     try {
       await deleteRepoFediPost(repo, id);
-      // Drop the row in place; the follower count/profile feed catch up on
-      // the next reload.
+
+
       trigger?.closest("[data-repo-fedi-post]")?.remove();
       const list = $("[data-repo-fedi-posts-list]");
       if (list && !list.querySelector("[data-repo-fedi-post]")) {
@@ -10811,15 +10805,15 @@
     }
   }
 
-  // --- About rail: fediverse badge + desktop-parity sections ---------------
-  //
-  // The desktop app's About panel shows the repo's canonical info from
-  // .forkmesh/info.json plus latest release / languages / files /
-  // contributors it computes from the local git mirror. The website mirrors
-  // all of it from data it can already reach: the live-mirror tunnel (blob,
-  // tree, history) and the relay's public GET /about (branding + fediverse
-  // follower count). Every section is best-effort and independent — a dead
-  // host must not blank the whole rail.
+
+
+
+
+
+
+
+
+
 
   const REPO_LANGUAGE_EXTENSIONS = {
     c: "C", h: "C++", cc: "C++", cpp: "C++", cxx: "C++", hpp: "C++",
@@ -10843,8 +10837,8 @@
   };
 
   function applyRepoAboutWebsite(website) {
-    // Sync the About rail's website link + the gear form's input. Empty value
-    // hides the link.
+
+
     const value = String(website || "").trim();
     const link = $("[data-repo-about-website]");
     const label = $("[data-repo-about-website-label]");
@@ -11010,8 +11004,8 @@
   }
 
   async function loadRepoFediverse(repo) {
-    // Public branding + follower count from the relay (GET /about). Fills the
-    // Watch button count, the popover, and the social badge header.
+
+
     try {
       const body = await fetchJson(`${repoApiBase(repo)}/about`);
       if (!repoAboutStillCurrent(repo) || !body?.ok) return;
@@ -11019,8 +11013,8 @@
       $$("[data-repo-watch-count], [data-repo-watch-followers], [data-repo-social-followers]").forEach((el) => {
         el.textContent = formatCount(followers);
       });
-      // WHO is watching: newest followers (handle + remote profile link),
-      // each row captioned with what they follow.
+
+
       const watchList = $("[data-repo-watch-list]");
       if (watchList) {
         const entries = Array.isArray(body.fediverse?.followersList)
@@ -11041,12 +11035,12 @@
           watchList.classList.add("hidden");
         }
       }
-      // Owner switched federation off (or the instance did): say so instead
-      // of silently showing zeros.
+
+
       $("[data-repo-watch-disabled]")?.classList.toggle(
         "hidden", body.fediverse?.enabled !== false);
-      // Seed the gear form's federation switches with the stored settings so
-      // an untouched save round-trips them unchanged.
+
+
       const apSettings = body.fediverse?.settings;
       if (apSettings && typeof apSettings === "object") {
         [["[data-repo-ap-federate]", "federate"],
@@ -11056,10 +11050,10 @@
           if (box && key in apSettings) box.checked = Boolean(apSettings[key]);
         });
       }
-      // Admin-only operational-alert switches, seeded the same way. Absent or
-      // never saved reads as off, which is the stored default.
-      // Mirrors may report their own actor handle, but the repository UI
-      // advertises the canonical ForkMesh actor everywhere.
+
+
+
+
       const handle = "@forkmesh.forkmesh@forkmesh.com";
       if (handle) {
         const handleEl = $("[data-repo-watch-handle]");
@@ -11068,7 +11062,7 @@
         if (copyButton) copyButton.setAttribute("data-dashboard-copy", handle);
         const badgeHandle = $("[data-repo-social-handle]");
         if (badgeHandle) { badgeHandle.textContent = handle; badgeHandle.title = handle; }
-        // Point every "View on Mastodon" link at the authoritative handle.
+
         $$("[data-repo-mastodon-link]").forEach((el) => {
           el.setAttribute("href", `https://mastodon.social/${handle}`);
         });
@@ -11094,12 +11088,12 @@
       if (body.description && !repo.description) {
         applyRepoAboutDescription(repo, body.description);
       }
-      // Relay-known website seeds the link/form; the committed
-      // .forkmesh/info.json (loadRepoAboutInfo) overrides it when the live
-      // mirror is reachable.
+
+
+
       if (body.website) applyRepoAboutWebsite(body.website);
       loadRepoLogoSuggestions(repo);
-    } catch (_) { /* fediverse card is an adornment, never an error */ }
+    } catch (_) {   }
   }
 
   async function loadRepoDigestPreview(repo) {
@@ -11133,8 +11127,8 @@
   }
 
   async function loadRepoAboutInfo(repo) {
-    // .forkmesh/info.json is the repo's own committed About (what the desktop
-    // shows); when present it wins over the relay catalog description.
+
+
     try {
       const blobs = await fetchRepoBlobs(repo, [".forkmesh/info.json"]);
       const blob = blobs[".forkmesh/info.json"];
@@ -11142,11 +11136,11 @@
       let info;
       try { info = JSON.parse(blobText(blob)); } catch (_) { return; }
       const about = String(info?.about || "").trim();
-      // The committed file is canonical, so it also seeds the gear editor —
-      // editing starts from exactly what the page (and the desktop app) show.
+
+
       if (about) applyRepoAboutDescription(repo, about);
       applyRepoAboutWebsite(String(info?.website || ""));
-    } catch (_) { /* host offline — keep catalog description */ }
+    } catch (_) {   }
   }
 
   async function loadRepoAboutRelease(repo) {
@@ -11186,7 +11180,7 @@
         ${when ? `<p class="mt-1.5">released ${escapeHtml(when)}</p>` : ""}`;
       section.classList.remove("hidden");
       window.lucide?.createIcons();
-    } catch (_) { /* no releases — section stays hidden */ }
+    } catch (_) {   }
   }
 
   function renderRepoAboutFileCount(count, partial) {
@@ -11197,8 +11191,8 @@
     section.classList.remove("hidden");
   }
 
-  // ranked: [[language, weight], ...] already sorted desc. weight is bytes when
-  // the host provided sizes (accurate), else a plain file count (fallback).
+
+
   function renderRepoAboutLanguages(ranked) {
     const total = ranked.reduce((sum, [, weight]) => sum + weight, 0);
     if (!ranked.length || !total) return;
@@ -11219,10 +11213,10 @@
     section.classList.remove("hidden");
   }
 
-  // The identicon shown for a contributor. Keyed on the git email (falling back
-  // to the name) so two distinct people never collapse to the same swatch the
-  // way a name-initial + single hue did — a two-tone gradient plus up-to-two
-  // initials keeps each user visually distinct and stable across loads.
+
+
+
+
   function repoContributorAvatar(contributor) {
     const name = String(contributor?.name || contributor?.email || "?").trim();
     const email = String(contributor?.email || "").trim().toLowerCase();
@@ -11239,9 +11233,9 @@
     return `<span title="${escapeHtml(title)}" class="flex h-8 w-8 items-center justify-center rounded-full border border-background font-mono text-[10px] font-semibold uppercase text-white shadow-sm" style="background-image:linear-gradient(135deg, hsl(${hue} 60% 46%), hsl(${hue2} 58% 38%))">${escapeHtml(initials)}</span>`;
   }
 
-  // contributors: [{name, email, commits}, ...] sorted desc. total overrides the
-  // rendered count (the host knows the full-history total even though only the
-  // top few avatars are shown).
+
+
+
   function renderRepoAboutContributors(contributors, total) {
     const rows = (Array.isArray(contributors) ? contributors : [])
       .filter((c) => c && (c.name || c.email));
@@ -11255,20 +11249,20 @@
     section.classList.remove("hidden");
   }
 
-  // Preferred path: one /stats round-trip the host answers from `git ls-tree -r`
-  // + `git shortlog`, so the file count is exact, languages are byte-weighted,
-  // and contributors span the whole history. Returns false (→ fall back to the
-  // per-directory walk + capped history) when the host is offline or too old to
-  // know the op.
+
+
+
+
+
   async function loadRepoAboutStats(repo) {
     let data;
     try {
       data = await fetchRepoJson(repoLiveUrl(repo, "stats"));
     } catch (_) {
-      return false; // host offline, or an old node that answered bad_op as a 5xx
+      return false;
     }
     if (!data || data.ok === false) return false;
-    if (!repoAboutStillCurrent(repo)) return true; // served, but the user navigated away
+    if (!repoAboutStillCurrent(repo)) return true;
     renderRepoAboutFileCount(Number(data.fileCount) || 0, false);
     const tally = {};
     Object.entries(data.extensions || {}).forEach(([ext, info]) => {
@@ -11296,7 +11290,7 @@
         if (language) tally[language] = (tally[language] || 0) + 1;
       });
       renderRepoAboutLanguages(Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, 6));
-    } catch (_) { /* host offline — sections stay hidden */ }
+    } catch (_) {   }
   }
 
   async function loadRepoAboutContributors(repo) {
@@ -11313,26 +11307,26 @@
       renderRepoAboutContributors(
         ranked.map(([name, commitCount]) => ({ name, commits: commitCount })),
         ranked.length);
-    } catch (_) { /* host offline — section stays hidden */ }
+    } catch (_) {   }
   }
 
-  // --- Size map (adhoc #189) --------------------------------------------
-  //
-  // A multi-level pie (sunburst) of the repo's directory sizes, fed by the
-  // host's one-round-trip /sizes op (git ls-tree -r -l folded into a nested
-  // directory tree). Ring 1 holds the repo root's directories and each deeper
-  // ring subdivides its parent; a directory's direct files are the unfilled
-  // span at the end of its arc, so "mostly loose files" reads as mostly-empty
-  // arc (the HDGraph convention). The About rail shows a small static chart;
-  // clicking it opens the fullscreen interactive one (hover details,
-  // click-to-zoom, breadcrumb). Hosts too old to know the op just leave the
-  // section hidden.
 
-  // Top-level directories take these hues in size order (fixed slots, never
-  // cycled — everything past eight goes muted gray); descendants inherit the
-  // parent hue stepped toward the surface so depth reads as shade. Both
-  // variants validated against the site's dark (#010409) / light (#ffffff)
-  // surfaces.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   const REPO_SIZEMAP_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
   const REPO_SIZEMAP_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
   const REPO_SIZEMAP_GRAY = "#8a8a8a";
@@ -11347,9 +11341,9 @@
     return `rgb(${channel(0)} ${channel(1)} ${channel(2)})`;
   }
 
-  // One walk over the full tree assigns every directory its color, so a node
-  // keeps its hue in the mini chart, in the modal, and at every zoom level
-  // (color follows the entity, never its current rank on screen).
+
+
+
   function repoSizeMapColors(root) {
     const dark = document.documentElement.dataset.dashboardTheme !== "light";
     const palette = dark ? REPO_SIZEMAP_DARK : REPO_SIZEMAP_LIGHT;
@@ -11365,13 +11359,13 @@
     return colors;
   }
 
-  // Flattens the tree, re-rooted at `focus`, into drawable ring segments. Each
-  // segment keeps `nodes` (the chain from focus down to it) so a click can
-  // extend the zoom trail without re-walking the tree.
+
+
+
   function repoSizeMapSegments(focus, colors, rings) {
     if (!(Number(focus?.size) > 0)) return [];
     const segments = [];
-    const minSpan = (2 * Math.PI) / 900; // skip sub-0.4-degree slivers
+    const minSpan = (2 * Math.PI) / 900;
     const walk = (node, depth, from, span, chain) => {
       if (depth > rings) return;
       let at = from;
@@ -11413,9 +11407,9 @@
       `L ${px(r0, end)} ${py(r0, end)} A ${r0} ${r0} 0 ${large} 0 ${px(r0, a0)} ${py(r0, a0)} Z`;
   }
 
-  // Renders the sunburst as an SVG string. Every <path> carries
-  // data-seg="<index>" into the returned segments array so callers can wire
-  // hover/click; non-interactive charts get native <title> tooltips instead.
+
+
+
   function repoSizeMapSvg(focus, colors, opts) {
     const view = opts.view;
     const hole = opts.hole;
@@ -11438,8 +11432,8 @@
         `</path>`);
     });
     if (opts.labels) {
-      // Direct labels only where they comfortably fit (span over ~18 degrees);
-      // the hover tooltip carries everything else.
+
+
       const labelSize = opts.labelSize || 12;
       segments.forEach((seg) => {
         if (seg.a1 - seg.a0 < 0.32) return;
@@ -11456,8 +11450,8 @@
           `<tspan x="${x}" dy="1.2em" font-size="${labelSize - 1}">${escapeHtml(formatSize(seg.node.size))}</tspan></text>`);
       });
     }
-    // Center hub: a transparent circle catches zoom-out clicks over the whole
-    // hole; the two text lines ride on top with pointer events off.
+
+
     parts.push(`<circle data-sizemap-center="1" cx="${c}" cy="${c}" r="${hole - 2}" fill="transparent"${opts.canGoUp ? ' class="cursor-pointer" tabindex="0" role="button" aria-label="Zoom out one directory"' : ""}></circle>`);
     const title = String(opts.centerTitle || "");
     const shownTitle = title.length > 16 ? `${title.slice(0, 15)}…` : title;
@@ -11489,11 +11483,11 @@
     section.classList.remove("hidden");
   }
 
-  // --- Size map tab (adhoc #198) ----------------------------------------
-  //
-  // The interactive size map now lives on its own repo tab instead of a modal
-  // reached from the About rail. The tab lazy-loads /sizes on first open, then
-  // mounts the same zoomable sunburst explorer full-width.
+
+
+
+
+
   async function loadRepoSizeMapTab(repo) {
     const body = $("[data-repo-sizemap]");
     if (!body) return;
@@ -11536,20 +11530,20 @@
   async function loadRepoAboutSizeMap(repo) {
     try {
       const data = await fetchRepoJson(repoLiveUrl(repo, "sizes"));
-      if (!data || data.ok === false) return; // host offline, or a pre-sizes node
+      if (!data || data.ok === false) return;
       if (!repoAboutStillCurrent(repo)) return;
       renderRepoAboutSizeMap(repo, data);
-    } catch (_) { /* section stays hidden */ }
+    } catch (_) {   }
   }
 
-  // The detailed, interactive size map: click a directory to zoom in, the
-  // center (or a breadcrumb) to zoom back out, hover for exact sizes. Mounts
-  // into the caller's {chart, crumbs, summary, tip} elements (the Size map tab
-  // panel) — it carries no overlay/dialog chrome of its own.
+
+
+
+
   function mountRepoSizeMapExplorer({ repo, root, chart, crumbs, summary, tip }) {
     if (!chart || !crumbs || !summary || !tip) return;
     const colors = repoSizeMapColors(root);
-    let trail = [root]; // root … focus
+    let trail = [root];
     let segments = [];
 
     const render = () => {
@@ -11641,10 +11635,10 @@
     render();
   }
 
-  // The About rail's file/language/contributor sections come from /stats in one
-  // request; only when that host op is unavailable do we fall back to the slower
-  // directory walk and capped commit history. The size map rides its own /sizes
-  // op in parallel (hosts predating it just leave that section hidden).
+
+
+
+
   async function loadRepoAboutInsights(repo) {
     loadRepoAboutSizeMap(repo);
     if (await loadRepoAboutStats(repo)) return;
@@ -11654,7 +11648,7 @@
 
   function loadRepoAboutRail(repo) {
     if (!repo || repo.isPrivate) {
-      // Private repos have no fediverse presence; live sections still apply.
+
       loadRepoAboutInfo(repo);
       loadRepoAboutRelease(repo);
       loadRepoAboutInsights(repo);
@@ -11666,25 +11660,25 @@
     loadRepoAboutInsights(repo);
   }
 
-  // --- Owner-only "Agents" tab (adhoc #182) -----------------------------
-  //
-  // Shows the desktop app's running/finished Claude Code agent sessions for
-  // this repo, and lets the owner send a follow-up prompt to a live one. The
-  // desktop pushes the session list; the browser has no signing key, so it
-  // re-proves account ownership by node account name (no password, adhoc #225)
-  // via the same ownerAccount check the worker uses for the "Assign to agent"
-  // issue checkbox.
 
-  // A session counts as still actionable (promptable) unless it's reached one
-  // of these terminal states. Mirrors the worker/desktop's own status names;
-  // kept as an allowlist-of-terminal-states so an unrecognized/future status
-  // defaults to promptable rather than silently hiding the input.
+
+
+
+
+
+
+
+
+
+
+
+
   const AGENT_TERMINAL_STATUSES = new Set(["success", "failed", "stopped", "cleared"]);
 
-  // Mirrors the desktop app's known model aliases (agentModelLabel in
-  // MainWindowInternal.h) so a web-picked model renders the same short label
-  // once the agent session shows up in the Agents tab. Empty value leaves the
-  // provider's own default in place.
+
+
+
+
   const AGENT_MODEL_OPTIONS = [
     { value: "", label: "Provider default" },
     { value: "auto", label: "Auto" },
@@ -11694,9 +11688,9 @@
     { value: "fable", label: "Fable" },
   ];
 
-  // Agent-provider dropdown (adhoc #234): mirrors the desktop app's provider
-  // picker so the owner can choose which agent the node auto-starts. Empty
-  // value leaves the node's default provider in place.
+
+
+
   const AGENT_PROVIDER_OPTIONS = [
     { value: "", label: "Node default" },
     { value: "claude-code", label: "Claude Code" },
@@ -11704,12 +11698,12 @@
     { value: "openai", label: "OpenAI API" },
   ];
 
-  // Agent-model dropdown for the "start a new agent" composer (adhoc #276):
-  // lets the owner choose which Claude model the agent uses. Distinct from
-  // AGENT_MODEL_OPTIONS above (used by the issue "assign to agent" checkbox,
-  // adhoc #182) since that one mirrors the desktop app's short model aliases
-  // while this one sends a full model id. Empty value leaves the provider's
-  // own default in place.
+
+
+
+
+
+
   const AGENT_NEW_MODEL_OPTIONS = [
     { value: "", label: "Provider default" },
     { value: "claude-opus-4-8", label: "Claude Opus 4.8" },
@@ -11736,8 +11730,8 @@
       : (agent.issueTitle || "");
   }
 
-  // A summary row (adhoc #259): the inline prompt moved to the detail page, so
-  // the whole row is now a click target that opens the transcript + prompt view.
+
+
   function renderRepoAgentRow(agent) {
     const issueLabel = repoAgentIssueLabel(agent);
     return `
@@ -11759,9 +11753,9 @@
       </button>`;
   }
 
-  // Agent plaintext is intentionally unavailable in the browser.  The hybrid
-  // recipient private key lives only in the owner's desktop vault, so even a
-  // stale legacy row must not reactivate browser transcript/prompt surfaces.
+
+
+
   function renderRepoAgentDetail(agent) {
     return `
       <div data-repo-agent-detail data-repo-agent-id="${escapeHtml(String(agent.id ?? ""))}" class="grid gap-3 px-4 py-3 text-xs">
@@ -11774,12 +11768,12 @@
       </div>`;
   }
 
-  // The "start a new agent" composer lives in a single top modal opened from
-  // the robot button in the header nav (adhoc #62) - it was previously pinned
-  // above the repo tab bar (adhoc #278). Because the header is global, the
-  // modal carries its own repository picker instead of relying on a repo page
-  // being open. The node's prompt drain still recognises the "new" sentinel
-  // agent id and spins up an ad-hoc run.
+
+
+
+
+
+
   function agentModalRepoChoices() {
     const seen = new Set();
     const choices = [];
@@ -11803,8 +11797,8 @@
     const modal = $("#agentModal");
     if (!modal) return;
     if (open) {
-      // Provider/model options are JS constants shared with the desktop app's
-      // picker, so the static modal markup gets them filled in on first open.
+
+
       const providerSelect = modal.querySelector("[data-repo-agent-new-provider]");
       if (providerSelect && !providerSelect.options.length) {
         providerSelect.innerHTML = AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("");
@@ -11829,9 +11823,9 @@
       window.lucide?.createIcons();
     }
     if (open) {
-      // Screenshot paste/attach (adhoc #78): wire the modal's file input, paste
-      // handler and chip list once, then reset any leftover attachments so each
-      // fresh open starts clean.
+
+
+
       wireAgentModalImages(modal);
       const form = modal.querySelector("[data-repo-agent-new-form]");
       if (form) {
@@ -11843,9 +11837,9 @@
     if (open) modal.querySelector("[data-repo-agent-new-input]")?.focus();
   }
 
-  // Pasted/attached screenshots queued alongside a "start agent" prompt
-  // (adhoc #78). They ride to the node as data: URLs; the node writes them into
-  // the agent's working tree so a coding agent can actually see the screenshot.
+
+
+
   function agentModalImages(form) {
     if (!form) return [];
     if (!form._pendingAgentImages) form._pendingAgentImages = [];
@@ -11894,8 +11888,8 @@
         return;
       }
     } else {
-      // Oversized paste/pick: reuse the issue composer's crop/compress modal to
-      // squeeze it under the per-attachment budget.
+
+
       setHint?.(`Compressing to fit under ${formatSize(budget)}…`);
       const result = await openImageResizeModal(file, budget);
       if (!result) {
@@ -11936,8 +11930,8 @@
       const imageItems = Array.from(event.clipboardData?.items || [])
         .filter((it) => it.kind === "file" && it.type.startsWith("image/"));
       if (!imageItems.length) return;
-      // A screenshot in the clipboard shouldn't also dump its (empty) text into
-      // the prompt field - claim the paste for the attachment instead.
+
+
       event.preventDefault();
       for (const it of imageItems) {
         const file = it.getAsFile();
@@ -11957,9 +11951,9 @@
   function renderRepoAgentsList(agents) {
     const container = $("[data-repo-agents]");
     if (!container) return;
-    // When a detail page is open for a still-present agent, render that instead
-    // of the list (adhoc #259). If the selected agent has vanished from a fresh
-    // fetch, fall back to the list so we never strand the user on a dead page.
+
+
+
     const selectedId = state.agentsView.selectedAgentId;
     const selected = selectedId != null
       ? agents.find((a) => String(a.id ?? "") === String(selectedId))
@@ -11970,16 +11964,16 @@
       return;
     }
     if (selectedId != null) state.agentsView.selectedAgentId = null;
-    // The "start a new agent" composer now lives in the header robot-button
-    // modal (adhoc #62), so this list is just the sessions.
+
+
     container.innerHTML = agents.length
       ? `<div class="divide-y divide-border">${agents.map(renderRepoAgentRow).join("")}</div>`
       : '<div class="px-4 py-3 text-sm text-muted-foreground">No agent sessions yet. Start one from the robot button in the header, or from the desktop app.</div>';
     window.lucide?.createIcons();
   }
 
-  // Open / close the detail page for one agent. Transcript refresh is explicit:
-  // opening the page, clicking Refresh, or sending a prompt triggers a fetch.
+
+
   function openRepoAgentDetail(repo, agentId) {
     state.agentsView.selectedAgentId = agentId;
     renderRepoAgentsList(state.agentsView.agents);
@@ -11991,8 +11985,8 @@
     renderRepoAgentsList(state.agentsView.agents);
   }
 
-  // The browser intentionally has no owner recipient private key.  Never fetch
-  // a legacy plaintext transcript or pretend an opaque envelope is readable.
+
+
   async function loadRepoAgentTranscript(repo, agentId) {
     const pre = $("[data-repo-agent-transcript]");
     if (!pre || !repo || !agentId) return;
@@ -12310,8 +12304,8 @@
     }
   }
 
-  // Kept as a defensive no-op for stale cached markup.  The current dashboard
-  // renders an owner-device information panel instead of a browser prompt form.
+
+
   async function handleRepoAgentNewSubmit(repo, form) {
     void repo;
     const hint = form?.querySelector("[data-repo-agent-new-hint]");
@@ -12397,9 +12391,9 @@
       if (agentModelInput) agentModelInput.disabled = !assignAgentInput.checked;
       if (agentProviderInput) agentProviderInput.disabled = !assignAgentInput.checked;
     });
-    // Queued images: a short placeholder (not the data URL) is inserted into
-    // the body textarea so it stays readable/editable; the real data: URL is
-    // swapped in right before signing (handleIssueComposeSubmit).
+
+
+
     const images = [];
     if (form) form._pendingIssueImages = images;
 
@@ -12428,9 +12422,9 @@
       renderAttachmentChips();
     });
 
-    // Shared by both the file picker and clipboard paste: validate, embed (or
-    // crop/compress if oversized), then insert a placeholder into the body at
-    // the caret so pasted screenshots land right where the cursor was.
+
+
+
     const addIssueImageFile = async (file, rawName) => {
       const name = rawName.replace(/[[\]]/g, "_");
       if (!file.type.startsWith("image/")) {
@@ -12497,8 +12491,8 @@
       const imageItems = Array.from(event.clipboardData?.items || [])
         .filter((item) => item.kind === "file" && item.type.startsWith("image/"));
       if (!imageItems.length) return;
-      // A pasted screenshot has no useful text form, so claim the paste instead
-      // of letting the browser also dump it in as an inline object/blank text.
+
+
       event.preventDefault();
       for (const item of imageItems) {
         const file = item.getAsFile();
@@ -12535,9 +12529,9 @@
     const agentProvider = assignAgent ? String(agentProviderInput?.value || "") : "";
     const milestone = String(milestoneInput?.value || "").trim();
     const project = String(projectInput?.value || "").trim();
-    // Swap each attached image's short placeholder back out for its real
-    // data: URL now, right before signing - the signed content hash has to
-    // cover exactly what gets sent.
+
+
+
     let body = String(bodyInput?.value || "");
     const images = form._pendingIssueImages || [];
     for (const img of images) body = body.split(img.id).join(img.dataUrl);
@@ -12545,9 +12539,9 @@
     setHint("Preparing and signing the change set…");
     try {
       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
-      // The relay wakes eligible online mirrors immediately. Keep a local
-      // optimistic row until the first mirror commits the signed issue and its
-      // durable issue number becomes visible from the repository.
+
+
+
       const pendingItem = {
         number: null,
         localId: `pending-${Date.now().toString(36)}`,
@@ -12586,11 +12580,11 @@
     }
   }
 
-  // --- CSV issue import (adhoc #188) ---------------------------------------
-  // Canonical column order for the downloadable template and the parsed import.
-  // Unknown columns are ignored; missing ones default to empty. labels and
-  // assignees hold multiple values separated by ";" so commas stay free to act
-  // as the CSV field delimiter.
+
+
+
+
+
   const ISSUE_CSV_COLUMNS = ["title", "body", "milestone", "project", "labels", "priority", "assignees"];
   const ISSUE_CSV_TEMPLATE =
     "title,body,milestone,project,labels,priority,assignees\n" +
@@ -12609,8 +12603,8 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  // Minimal RFC-4180-ish CSV parser: handles quoted fields, "" escapes, and
-  // commas/newlines inside quotes. Returns an array of rows (arrays of cells).
+
+
   function parseCsv(text) {
     const rows = [];
     let row = [];
@@ -12634,13 +12628,13 @@
       } else field += ch;
     }
     if (field.length || row.length) { row.push(field); rows.push(row); }
-    // Drop trailing blank lines so a file ending in a newline doesn't add a row.
+
     return rows.filter((r) => r.some((cell) => String(cell).trim() !== ""));
   }
 
-  // Map parsed CSV rows to issue submission objects. When the first row is a
-  // recognizable header (has a "title" column) its names decide the mapping;
-  // otherwise the file is treated as headerless in canonical column order.
+
+
+
   function csvRowsToIssues(rows) {
     if (!rows.length) return [];
     const header = rows[0].map((h) => String(h).trim().toLowerCase());
@@ -12773,11 +12767,11 @@
       failed ? "bad" : "good");
   }
 
-  // Branch-referencing web pull requests: no client-side diff computation
-  // (deliberately - that duplicates what git already does correctly). The
-  // desktop client reconstructs the patch from base/head on drain, same as any
-  // other branch-backed pull request (see renderRepoPullPatch's "Branch-backed
-  // PRs are reconstructed by the desktop client" copy).
+
+
+
+
+
   function openPullCompose(repo) {
     const container = $("[data-repo-pulls]");
     if (!container || !repo) return;
@@ -12975,21 +12969,21 @@
     }
   }
 
-  // A mirror row is ringed green when it's the node that answered the most
-  // recent live-mirror fetch (data.servedBy from the tunnel round-robin), with
-  // its response time alongside so it's obvious which mirror served the page
-  // and how fast.
+
+
+
+
   function mirrorRowIsServing(mirror, servedBy) {
     const name = String(mirror.owner || mirror.node || mirror.name || "").trim().toLowerCase();
     const servedName = String(servedBy?.name || "").trim().toLowerCase();
     return Boolean(name && servedName && name === servedName);
   }
 
-  // The source-of-truth node in a mirror group: the one whose name matches the
-  // repo owner (it holds the canonical copy), else the freshest online node with
-  // a commit, else the one with the most complete history. Every other node's
-  // commit/counts are compared against this one so the tab can flag a mirror
-  // serving stale or divergent data, exactly like the desktop Mirror nodes panel.
+
+
+
+
+
   function pickReferenceMirror(mirrors) {
     const list = (Array.isArray(mirrors) ? mirrors : []).filter(
       (mirror) => String(mirror && mirror.commit || "").trim(),
@@ -13011,16 +13005,16 @@
     )[0];
   }
 
-  // A count differs from the reference node's only when both sides actually
-  // reported a value (>= 0) — an em dash on either side means "not tracked", not
-  // "out of sync", so it's never flagged.
+
+
+
   function mirrorCountMismatch(value, ref) {
     return Number(ref) >= 0 && Number(value) >= 0 && Number(value) !== Number(ref);
   }
 
-  // One metadata chip. `mismatch` underlines it (amber) and notes the canonical
-  // value in the tooltip, matching the desktop panel's underline of a cell that
-  // doesn't match the source of truth.
+
+
+
   function mirrorChip(label, value, mismatch, note) {
     const shown = value === "" || value === undefined || value === null ? "-" : value;
     return `
@@ -13030,10 +13024,10 @@
         </span>`;
   }
 
-  // The metadata columns the desktop Mirror nodes panel shows, rendered as chips
-  // under each mirror row: commit + sync freshness, on-disk size, and the mirrored
-  // issue/commit/branch/pull/discussion/worktree/clone/website/artifact tallies.
-  // Content columns that don't match the source of truth are underlined.
+
+
+
+
   function mirrorDetailChips(mirror, refMirror) {
     const commit = String(mirror.commit || "").trim();
     const refCommit = String(refMirror?.commit || "").trim();
@@ -13078,16 +13072,16 @@
     return chips.join("");
   }
 
-  // Counts arrive as -1 when a node hasn't reported them; show a dash for those
-  // (a distinct state from a real 0) so a chip never reads a misleading "0".
+
+
   function mirrorCountText(value) {
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
   }
 
-  // The full Mirrors-tab row: a header line (dot, name, source-of-truth / out-of-
-  // sync / integrity badges, version, serve speed, status) over a wrapped strip of
-  // the same metadata columns the desktop Mirror nodes panel shows.
+
+
+
   function renderMirrorTabRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
@@ -13177,11 +13171,11 @@
         </div>`;
   }
 
-  // The "Live mirror" summary in the About aside gets its own compact list of
-  // every mirror currently online for this repo (the full tab-level list
-  // lives under the Mirrors tab and includes offline ones too). It shares the
-  // same source-of-truth / integrity-pin badges as the Mirrors tab so the
-  // canonical node and any signature failure are visible without switching tabs.
+
+
+
+
+
   function renderRepoLiveMirrorList(mirrors, servedBy) {
     const container = $("[data-repo-live-mirror-list]");
     if (!container) return;
@@ -13195,8 +13189,8 @@
   function renderRepoMirrorLists(mirrors, servedBy) {
     const tabContainer = $("[data-repo-mirrors]");
     if (tabContainer && mirrors.length) {
-      // Source of truth first, then online before offline, then freshest sync —
-      // the same ordering as the desktop Mirror nodes panel.
+
+
       const refMirror = pickReferenceMirror(mirrors);
       const ordered = mirrors.slice().sort(
         (a, b) =>
@@ -13230,7 +13224,7 @@
       return false;
     }
     const container = $("[data-repo-mirrors]");
-    // Owner-only "ask a node to mirror your repo" control (issue #385).
+
     renderMirrorRequestForm(repo);
     if (container && !background) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
@@ -13258,9 +13252,9 @@
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
       state.repoMirrors = mirrors;
-      // Older gateways reported commit dates at day precision. When the
-      // signed mirror record names the same commit, its exact commitAt is the
-      // authoritative timestamp for the repository summary.
+
+
+
       if (state.repoLatestCommit) {
         updateRepoCommitSummary(state.repoLatestCommit, repo);
       }
@@ -13285,14 +13279,14 @@
     }
   }
 
-  // Live convergence for the open repo's Mirrors tab. The chat socket
-  // (dashboard-chat.js) re-broadcasts the mirror-mesh's "mirror-update" /
-  // "mirror-synced" frames as a window event the moment a source of truth
-  // advances and each node pulls it. When one names the repo we're viewing,
-  // re-fetch host health so the nodes visibly converge without a manual reload.
+
+
+
+
+
   let liveMirrorRefreshTimer = null;
-  // Socket mirror signals refresh immediately. This is only a quiet fallback
-  // for dropped frames, and it runs only while the Mirrors tab is on screen.
+
+
   const REPO_MIRROR_POLL_MS = 5 * 60 * 1000;
   let repoMirrorPollTimer = null;
 
@@ -13318,8 +13312,8 @@
 
   function refreshOpenRepoMirrors() {
     const repo = state.selectedRepo;
-    // The panel is always mounted on repository pages, even when hidden.
-    // Refresh only when a visitor can see the result.
+
+
     if (repo && repoMirrorsTabVisible()) {
       void loadRepoMirrors(repo, { background: true, force: true });
     }
@@ -13329,15 +13323,15 @@
     if (!repo) return;
     const target = String(event?.detail?.repo || "").trim().toLowerCase();
     if (!target) return;
-    // The frame carries "<catalog-owner>/<repo>". Match the open repo by its
-    // full key, or fall back to the repo-name tail (older/renamed peers).
+
+
     const key = repoKey(repo).toLowerCase();
     const name = String(repo.name || "").trim().toLowerCase();
     const tail = target.slice(target.lastIndexOf("/") + 1);
     if (target !== key && !(name && tail === name)) return;
-    // Trailing-coalesce a burst of per-node acks into one refetch. The
-    // five-minute visible-tab fallback catches a dropped/early signal without
-    // making a second unconditional confirmation request for every push.
+
+
+
     if (liveMirrorRefreshTimer) clearTimeout(liveMirrorRefreshTimer);
     liveMirrorRefreshTimer = setTimeout(() => {
       liveMirrorRefreshTimer = null;
@@ -13403,9 +13397,9 @@
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading releases from the live mirror...")}</div>`;
     const empty = '<div class="px-4 py-3 text-sm text-muted-foreground">No releases have been published to this mirror yet.</div>';
     try {
-      // Release manifests live in the git tree at .forkmesh/releases/<channel>/release.json
-      // (issue #304). List the channels, then batch-read every manifest in one
-      // tunnel round-trip so opening the tab doesn't fan out N blob requests.
+
+
+
       let tree;
       try {
         tree = await fetchRepoJson(repoLiveUrl(
@@ -13448,7 +13442,7 @@
         container.innerHTML = empty;
         return;
       }
-      // Per-asset download counts (keyed by sha256) are a best-effort adornment.
+
       let downloads = {};
       try {
         const data = await fetchJson(`${repoApiBase(repo)}/releases/downloads`);
@@ -13537,10 +13531,10 @@
 
   function loadRepoFeaturePanels(repo, recordRoute = null) {
     loadRepoMirrors(repo);
-    // Feature panels load on their FIRST tab view (and reload here after a
-    // repo/branch switch if that tab is already active): fetching hidden live
-    // data for every repo open fires Worker/host reads for tabs nobody opened.
-    // The tab badges stay filled meanwhile from the root tree's bundled counts.
+
+
+
+
     state.loadedRepoTabs = {};
     const active = state.activeRepoTab || "code";
     if (active === "commits") {
@@ -13548,8 +13542,8 @@
       loadRepoCommits(repo);
     } else if (active === "issues") {
       state.loadedRepoTabs.issues = true;
-      // A refreshed/shared issue deep link (/owner/repo/issues/<N>) opens that
-      // issue's detail straight away; Back re-fetches the list lazily.
+
+
       if (recordRoute && recordRoute.kind === "issues" && recordRoute.number) {
         loadRepoRecordDetail(repo, "issues", recordRoute.number);
       } else {
@@ -13557,9 +13551,9 @@
       }
     } else if (active === "pulls" || active === "discussions") {
       state.loadedRepoTabs[active] = true;
-      // A record deep link (/owner/repo/pulls/<N> — e.g. the desktop client's
-      // "View on website" button) opens the record's detail page directly
-      // instead of the list; Back to the list loads it lazily from there.
+
+
+
       if (recordRoute && recordRoute.kind === active && recordRoute.number) {
         loadRepoRecordDetail(repo, active, recordRoute.number);
       } else {
@@ -13852,10 +13846,10 @@
   function renderRepoDetail(repo) {
     const detail = $("[data-repo-detail]");
     if (!detail || !repo) return;
-    // Capture the signed-in participant's workshop continuation parameters
-    // before navigateHistory removes the query string from the canonical repo
-    // URL. The consumer independently verifies repository, run, result, and
-    // commit against the encrypted workshop record before preparing a prompt.
+
+
+
+
     const workshopDeepLink = workshopAgentDeepLink(repo);
     state.selectedRepo = repo;
     state.repoCollectionPages = { issues: 1, pulls: 1 };
@@ -13863,25 +13857,25 @@
     state.repoLatestCommit = null;
     state.repoServedBy = null;
     state.agentsView = { agents: [], selectedAgentId: null };
-    // A search left over from the previously-open repo must not carry into
-    // this one — the search box is rendered immediately (below, via
-    // renderRepoCollectionPanel), before the Issues tab's own lazy load
-    // would otherwise reset it.
+
+
+
+
     state.issuesView = { filter: "open", items: [], query: "" };
-    // Pull requests and discussions load lazily the first time their tab is
-    // opened rather than on every page load. Eagerly fetching every record's
-    // blob up front is what flooded the host with requests and tripped the rate
-    // limit after a few refreshes; this map remembers which tabs have loaded.
+
+
+
+
     state.loadedRepoTabs = {};
-    // Show the clean, shareable /owner/name URL in the address bar instead of
-    // the /dashboard/owner/name... path that 404.html bounces refreshed repo
-    // links (including /owner/name/issues etc.) to. Carry over whatever tab or
-    // tree/blob suffix the incoming URL already pointed at instead of
-    // collapsing it to the bare repo root - otherwise a refresh on the Issues
-    // tab would lose its place and land back on Code. Only trust that suffix
-    // when the URL is actually addressing THIS repo already (a fresh open from
-    // the repo list/sidebar while some other repo's tab URL is showing should
-    // still land on Code, not inherit the other repo's tab).
+
+
+
+
+
+
+
+
+
     const routeParts = repoRouteParts();
     const routeRepoKey = routeParts.length >= 2
       ? `${safeDecodeURIComponent(routeParts[0])}/${safeDecodeURIComponent(routeParts[1])}`
@@ -13890,10 +13884,10 @@
       && repoMatchesKey(repo, routeRepoKey);
     const routeKind = routeMatchesRepo ? routeParts[2] : undefined;
     const routePath = routeMatchesRepo && routeParts.length > 3 ? routeParts.slice(3).map(decodeURIComponent).join("/") : "";
-    // /owner/repo/pulls/<N> is a record deep link (the desktop client's
-    // "View on website" button, or a refreshed/shared PR detail URL): keep
-    // the number in the address bar and open that record's detail page below.
-    // Issues deep-link the same way so a refresh on an open issue stays on it.
+
+
+
+
     const recordRoute = ["pulls", "discussions", "issues"].includes(routeKind) && /^\d+$/.test(routePath)
       ? { kind: routeKind, number: routePath }
       : null;
@@ -13934,13 +13928,13 @@
     const canSeeSettingsTab = canEditAbout;
     const actionSeed = repoKey(repo);
     const forkCount = stableMockNumber(`${actionSeed}:fork`, 0, 12);
-    // Watch is real: it is the repo's fediverse follower count (see
-    // loadRepoFediverse), and the button opens the follow-from-Mastodon card.
-    // The public repository actor is the canonical ForkMesh identity. Do not
-    // derive it from a mirror hostname or replica owner name.
+
+
+
+
     const fediHandle = "@forkmesh.forkmesh@forkmesh.com";
-    // Deep link that opens this repo's fediverse actor on Mastodon (any
-    // instance resolves a remote acct handle; mastodon.social is the default).
+
+
     const mastodonUrl = `https://mastodon.social/${fediHandle}`;
     const settingsPanel = canSeeSettingsTab ? `
       <section data-dashboard-repo-tab-panel="settings" class="hidden">
@@ -14042,11 +14036,11 @@
                 : tab === "pulls"
                   ? 'data-lucide="git-pull-request"'
                   : `data-lucide="${meta.icon}"`;
-              // Inbox-backed tabs get a second (hidden until filled) badge for
-              // items still sitting in the relay's inbox that no online node
-              // (source of truth or an approved mirror) has merged yet — see
-              // loadRepoPendingCounts. Any online mirror drains the queue by
-              // committing submissions straight into the repo it serves.
+
+
+
+
+
               const pendingBadge = ["issues", "pulls", "discussions"].includes(tab)
                 ? `<span data-dashboard-repo-tab-pending="${tab}" class="hidden rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-mono text-yellow-500"></span>`
                 : "";
@@ -14241,24 +14235,24 @@
           </aside>
         </div>
       </div>`;
-    // Restore whichever tab the URL points at (e.g. a refresh on
-    // /owner/repo/issues) instead of always defaulting back to Code. This
-    // runs right after painting the DOM, before anything else that could
-    // throw (icon rendering, feature-panel loads) — otherwise a later error
-    // would leave the page stuck showing Code even though the URL (and the
-    // markup underneath) is already on the right tab.
+
+
+
+
+
+
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
     window.lucide?.createIcons();
-    // When the URL restored a feature tab (or a record detail), the tree/README
-    // load is only a warm-up for a later click on Code — run it in background
-    // mode so it can't flip the visible tab or rewrite the restored URL.
+
+
+
     loadRepositoryTree(repo, routeKind === "tree" ? routePath : "", { background: initialTab !== "code" });
-    // A deep link into a subfolder (or a blob) loads a subpath/blob tree that
-    // carries no served counts, so the tab badges would stay on the stale
-    // catalog seed (e.g. Issues showing 7 while the open/ folder holds 11).
-    // Refresh them from the mirror's root counts in that case; the root code
-    // view and the feature-tab routes already fetch the root tree themselves.
+
+
+
+
+
     if ((routeKind === "tree" || routeKind === "blob") && routePath) refreshServedCounts(repo);
     if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo, recordRoute);
@@ -14268,12 +14262,12 @@
     consumeWorkshopAgentDeepLink(repo, workshopDeepLink);
   }
 
-  // GitHub-style "Code" button: a green trigger that opens a popover with the
-  // clone info instead of silently copying on click. Shows the HTTPS clone URL
-  // (readonly, selectable, with a copy button) and the ready-to-paste
-  // `git clone` command. Used both in the code toolbar and the compact
-  // scroll-pinned focus bar (compact=true), each self-contained in its own
-  // relative wrapper so the toggle handler can scope to the clicked one.
+
+
+
+
+
+
   function renderRepoCodeButton(repo, compact = false) {
     const url = cloneUrl(repo);
     const gitCmd = `git clone ${url}`;
@@ -14395,11 +14389,11 @@
     return null;
   }
 
-  // Opening a repo from any list/search control is a real page navigation now
-  // (repo pages are their own documents). Prefer the organization address the
-  // list already displays when the catalog resolved the key (alias groups),
-  // falling back to the raw owner/name path — the repo page resolves it again
-  // on boot.
+
+
+
+
+
   function openRepoPage(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return;
@@ -14409,9 +14403,9 @@
     location.assign(url);
   }
 
-  // A node's dot is only filled green when it is online *right now*; historical
-  // uptime-leaderboard entries that have since gone offline render hollow so an
-  // idle node no longer looks active (the right-rail bug in adhoc #86).
+
+
+
   function nodeDotClass(row, size) {
     return row.online
       ? `${size} fill-primary text-primary shrink-0`
@@ -14423,14 +14417,14 @@
     return row.online ? "live" : "";
   }
 
-  // Node detail chips shown under each row in the full "Connected nodes" list
-  // (not the compact home-page rail). Text fields fall back to an em dash when
-  // a node hasn't reported them; counts default to 0 rather than a dash since
-  // "no repos yet" is a real, distinct state from "field not tracked". CPU/RAM/
-  // Disk aren't collected by any node -> worker path today (that telemetry is
-  // desktop-only peer-room presence, see ServerNode::sampleSystemStats), so
-  // they always render as a dash here for parity with the desktop Mirror nodes
-  // panel's columns rather than being omitted.
+
+
+
+
+
+
+
+
   function nodeDetailChips(row) {
     const textChips = [
       ["Commit", row.commit ? String(row.commit).slice(0, 7) : ""],
@@ -14463,10 +14457,10 @@
       .join("");
   }
 
-  // The "Online only" toggle in the Connected nodes header hides offline nodes
-  // (the default, matching the desktop Mirror nodes panel). Turning it off
-  // surfaces nodes that have gone offline but still published a mirror record,
-  // rendered inactive rather than live. Defaults to on until the user flips it.
+
+
+
+
   function networkOnlineOnly() {
     return state.networkOnlineOnly !== false;
   }
@@ -14547,11 +14541,11 @@
       $("[data-network-clients]") && ($("[data-network-clients]").textContent = formatCount(clients));
       $("[data-network-uptime]") && ($("[data-network-uptime]").textContent = activeMinutes ? "Active" : "Idle");
 
-      // Merge the 48h uptime leaderboard (name + minutes) with the set of nodes
-      // that are online right now. Online nodes sort first and always appear even
-      // with no accrued minutes yet, so a freshly-started node (e.g. a VM host)
-      // shows up on the rail; offline leaderboard nodes stay listed but render
-      // as inactive rather than looking live.
+
+
+
+
+
       const onlineNames = Array.isArray(stats.onlineNodes) ? stats.onlineNodes : [];
       const onlineSet = new Set(
         onlineNames.map((name) => String(name || "").trim().toLowerCase()).filter(Boolean),
@@ -14676,9 +14670,9 @@
     window.lucide?.createIcons();
   }
 
-  // Organization task pings (adhoc #147) carry the whole event on meta, so the
-  // reader gets who/what/which org spelled out as fields instead of having to
-  // parse the one-line summary the ping list shows.
+
+
+
   function organizationTaskDetailsHtml(item) {
     if (!item || !String(item.kind || "").startsWith("organization_task")) return "";
     const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
@@ -14715,9 +14709,9 @@
     `;
   }
 
-  // Accept/Reject controls on an incoming "someone asked your node to mirror
-  // their repo" notification (issue #385). Only the still-pending request the
-  // recipient can act on gets buttons; replies ("X accepted…") carry none.
+
+
+
   function mirrorRequestActionsHtml(item) {
     if (!item || item.kind !== "mirror_request") return "";
     const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
@@ -14762,10 +14756,10 @@
     }
   }
 
-  // "Ask a node to mirror your repo" (issue #385): the owner types a node name;
-  // that node's holder gets a notification and, if they accept, their node
-  // starts mirroring this repo. Only shown to the repo owner (see
-  // renderMirrorRequestForm) — the worker re-checks ownership from the session.
+
+
+
+
   async function askNodeToMirror(trigger) {
     const repo = state.selectedRepo;
     if (!repo || !isRepoOwner(repo)) return;
@@ -14925,16 +14919,16 @@
     }
   }
 
-  // The release version changes at most per deploy: cache it in sessionStorage
-  // for an hour so repeat page navigations don't refetch /api/version.
+
+
   const APP_VERSION_STORAGE = "forkmesh.appVersion";
   const APP_VERSION_TTL_MS = 60 * 60 * 1000;
 
   async function renderAppVersion() {
-    // Show the live ForkMesh release version (same number as the desktop app -
-    // deploy.sh stamps it from qt_client/CMakeLists.txt as the APP_VERSION Worker
-    // var) next to the logo. Best-effort: stay hidden if the endpoint or version
-    // is unavailable so the header never shows a broken "v".
+
+
+
+
     const el = $("[data-app-version]");
     if (!el) return;
     const show = (version) => {
@@ -14948,7 +14942,7 @@
         return;
       }
     } catch (_) {
-      /* unreadable cache entry: fall through to the fetch */
+
     }
     try {
       const data = await fetchJson("/api/version");
@@ -14960,11 +14954,11 @@
           expiresAt: Date.now() + APP_VERSION_TTL_MS,
         }));
       } catch (_) {
-        /* best-effort cache */
+
       }
       show(version);
     } catch (_) {
-      /* leave the version chip hidden */
+
     }
   }
 
@@ -15038,16 +15032,16 @@
     }
   }
 
-  // Each page is its own document (marked <body data-page="...">). Boot runs
-  // the shared chrome first, then that page's init — the page's own markup is
-  // already visible at parse time, so there is no flash-then-swap.
+
+
+
   function currentPage() {
     return document.body?.dataset?.page || "home";
   }
 
-  // Clean path per legacy ?section= name — links from old builds and the
-  // desktop app still arrive as /dashboard?section=X. The Worker 308s these
-  // too; this client shim is belt-and-braces for cached home documents.
+
+
+
   const SECTION_PATHS = {
     home: "/dashboard",
     repos: "/dashboard/repos",
@@ -15074,23 +15068,23 @@
     return "";
   }
 
-  // Fetches the repository catalog once and fans it out to whatever containers
-  // exist on this page (sidebar list is chrome on every page; the repos list,
-  // home feed, and profile views fill in when present). Never awaited before
-  // first paint — each page shows its own skeleton immediately. The repo page
-  // awaits this promise before resolving its /owner/repo path.
+
+
+
+
+
   let repositoriesReady = null;
 
-  // Resolves once hydrateCanonicalProfile has refreshed the session with the
-  // authoritative nodes/isAdmin fields. The owner-only Agents tab (adhoc #182)
-  // is gated on those, so the repo page waits on this before deciding whether
-  // an /owner/repo/agents deep link is a real tab route or must collapse to
-  // Code — otherwise a hard refresh on Agents races the hydration and bounces
-  // back to the repo root (adhoc #93).
+
+
+
+
+
+
   let canonicalProfileReady = null;
 
-  // Boot/shared-chrome loads take the cached path (browser + edge cache honor
-  // the server's max-age); only explicit user refresh actions pass fresh:true.
+
+
   async function loadRepositories({ fresh = false } = {}) {
     if (dashboardMockRepositoriesEnabled()) {
       renderRepositories(dashboardMockRepositories(), state.session);
@@ -15112,8 +15106,8 @@
     }
   }
 
-  // Returns false when boot is aborting into a redirect (login bounce, legacy
-  // URL shim) so the page init doesn't race the navigation.
+
+
   function initSharedChrome() {
     const session = readSession();
     state.session = session;
@@ -15121,15 +15115,15 @@
 
     const grant = pendingLinkGrant();
     if (grant && !session?.nodeName) {
-      // A link grant arrived but nobody is logged in: bounce through login and
-      // come straight back with the grant intact so the link completes then.
+
+
       location.replace("/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`));
       return false;
     }
     if (grant && currentPage() !== "settings") {
-      // The desktop app hard-codes /dashboard?link_node=... — the Nodes panel
-      // lives on the settings document now. Carry the grant params over
-      // untouched; offerLinkGrant strips them there.
+
+
+
       location.replace("/dashboard/settings" + location.search);
       return false;
     }
@@ -15139,15 +15133,15 @@
       return false;
     }
 
-    // Guests can browse repositories without an account: instead of bouncing
-    // signed-out visitors back to the landing page, the header swaps the
-    // profile/notification controls for a Sign Up / Log In link.
+
+
+
     const guest = !session || (!session.nodeName && !session.email);
     if (guest) {
-      // The profile and settings documents are account pages — signed-out
-      // visitors have no profile to show there, so bounce through login and
-      // come back once they have one. /@name public profiles share the profile
-      // document and stay open to guests.
+
+
+
+
       const page = currentPage();
       const accountPage = page === "settings" ||
         ((page === "profile" || page === "profile-repositories") && !publicProfileNameFromPath());
@@ -15163,14 +15157,14 @@
       $("[data-profile-settings-button]")?.classList.add("hidden");
       $("#notificationToggle")?.classList.add("hidden");
       $("#agentModalToggle")?.classList.add("hidden");
-      // Keep the presence cookie honest: localStorage says logged out, so the
-      // Worker must stop 302ing / to the dashboard.
+
+
       document.cookie = "forkmesh_session=; Path=/; Max-Age=0; SameSite=Lax";
     }
 
     if (guest) {
-      // No fabricated "guest" identity: the chrome keeps its baked defaults;
-      // only the per-page header context still needs to be set.
+
+
       renderHeaderContext();
     } else {
       renderProfile(session);
@@ -15185,20 +15179,20 @@
 
   function initHomePage() {
     renderHomeBlogPosts();
-    // The blog card fills in from the edge-cached feed; the baked markup
-    // already shows its loading state.
+
+
     void loadHomeBlogPosts();
     void loadHomeOrganizationRepositories();
-    // Feed + top repositories fill in when loadRepositories()/loadNotifications()
-    // resolve — both re-render the home containers.
-    // Active agent sessions (adhoc #81) need the catalog first so we know which
-    // repos to poll; fetch them once repositories are loaded.
+
+
+
+
     repositoriesReady?.then(() => loadHomeAgentSessions()).catch(() => {});
   }
 
   function initReposPage() {
-    // The catalog fetch from initSharedChrome() owns this page's content; the
-    // baked markup already shows the loading state.
+
+
     loadExternalRepositories();
   }
 
@@ -15207,13 +15201,13 @@
   }
 
   function initChatPage() {
-    // dashboard-chat.js self-boots off the #fullChatMessages markup.
+
   }
 
   function initProfileOverviewPage() {
-    // /@name serves this same document in public-profile mode: render the
-    // named account's public data instead of the logged-in session (viewing
-    // your own /@name keeps the full owner view).
+
+
+
     const publicName = publicProfileNameFromPath();
     const own = String(state.session?.nodeName || "").toLowerCase();
     if (publicName && publicName !== own) {
@@ -15238,8 +15232,8 @@
     if (detail && requested) {
       detail.innerHTML = `<p class="text-sm text-muted-foreground">${loadingHtml("Loading repository…")}</p>`;
     }
-    // findRepository needs the catalog (alias/canonical grouping), so this page
-    // does wait on the shared fetch before rendering the detail body.
+
+
     await (repositoriesReady || loadRepositories());
     let repo = requested ? findRepository(requested) : null;
     if (
@@ -15247,25 +15241,25 @@
       requested &&
       repoKey(repo).toLowerCase() !== requested.toLowerCase()
     ) {
-      // A catalog alias normally resolves to its backing source record. Before
-      // accepting that canonical identity, check whether the URL is a durable
-      // organization alias so subsequent tab/tree navigation keeps the public
-      // /org/repo address instead of appearing to redirect to /node/repo.
+
+
+
+
       repo = (await findOrganizationRepository(requested)) || repo;
     } else if (!repo && requested) {
-      // Organization URLs are public aliases backed by a node-owned catalog
-      // record. The catalog deliberately publishes only the signing node's
-      // identity, so resolve the public org link on a direct-page visit and
-      // keep the requested organization identity while every data request
-      // continues through the Worker's existing org-alias authorization path.
+
+
+
+
+
       repo = await findOrganizationRepository(requested);
     }
     if (repo) {
       startRepoMirrorPolling();
-      // Owner/admin Agents and owner-only Settings depend on nodes/isAdmin
-      // fields that land after canonical profile hydration. On a hard refresh
-      // of either private control route, wait before deciding whether the tab
-      // exists so the URL is not incorrectly collapsed back to Code.
+
+
+
+
       const routeParts = repoRouteParts();
       if (
         (routeParts[2] === "agents" && !sessionCanAssignAgent(repo)) ||
@@ -15575,7 +15569,7 @@
           return;
         }
         event.preventDefault();
-        // Repo pages are real documents now: opening one is a real navigation.
+
         openRepoPage(openButton.dataset.dashboardOpenRepo);
         return;
       }
@@ -15593,8 +15587,8 @@
         return;
       }
 
-      // Watch popover: the button shows the repo's fediverse follower count
-      // and opens the follow-from-Mastodon card; any click outside closes it.
+
+
       const watchButton = event.target.closest("[data-repo-action-watch]");
       if (watchButton) {
         $("[data-repo-watch-menu]")?.classList.toggle("hidden");
@@ -15604,8 +15598,8 @@
         $("[data-repo-watch-menu]")?.classList.add("hidden");
       }
 
-      // GitHub-style Code dropdown: toggle the clone popover scoped to the
-      // clicked button; a click anywhere outside a code wrapper closes them.
+
+
       const codeButton = event.target.closest("[data-repo-code-button]");
       if (codeButton) {
         const wrap = codeButton.closest("[data-repo-code-wrap]");
@@ -15616,7 +15610,7 @@
         if (menu && willOpen) {
           menu.classList.remove("hidden");
           codeButton.setAttribute("aria-expanded", "true");
-          // Pre-select the URL so Ctrl/Cmd+C works immediately, like GitHub.
+
           wrap.querySelector("[data-repo-clone-url]")?.select?.();
         }
         return;
@@ -15730,9 +15724,9 @@
         return;
       }
 
-      // Owner "Fediverse posts" dropdown: load the post list the moment it's
-      // expanded (setTimeout so the <details> default toggle has applied), and
-      // delete a post from its trash button.
+
+
+
       const fediPostsSummary = event.target.closest("[data-repo-fedi-posts] > summary");
       if (fediPostsSummary && state.selectedRepo) {
         const repo = state.selectedRepo;
@@ -15911,9 +15905,9 @@
       if (recordButton && state.selectedRepo) {
         const kind = recordButton.dataset.repoRecordKind || "";
         const number = recordButton.dataset.repoRecordNumber || "";
-        // Mirror the opened record into the address bar (/owner/repo/pulls/4)
-        // so refresh and the desktop client's "View on website" button land on
-        // this same detail page. Pending records have no mirror number yet.
+
+
+
         if (["pulls", "discussions", "issues"].includes(kind) && /^\d+$/.test(number)) {
           navigateHistory(`${repoPathUrl(state.selectedRepo)}/${kind}/${number}`);
         }
@@ -15929,8 +15923,8 @@
         }
         state.repoRecordDetail = null;
         if (kind === "issues") {
-          // A deep-linked refresh straight into the issue detail never loaded
-          // the list, so fetch it now instead of flashing an empty "No issues".
+
+
           if (state.issuesView.items.length) renderRepoIssues();
           else loadRepoIssues(state.selectedRepo);
         } else {
@@ -15951,9 +15945,9 @@
         "[data-repo-issue-mcp-prompt]",
       );
       if (issueMcpPromptButton) {
-        // A plain click copies straight away with a generated connector token.
-        // Shift-click opens the paste box instead, so a node that already
-        // published its own connector can hand over that token by hand.
+
+
+
         void copyIssueMcpPrompt(issueMcpPromptButton, {
           replaceToken: event.shiftKey === true,
         });
@@ -15986,8 +15980,8 @@
         return;
       }
 
-      // PR detail section tabs are isolated panels, matching the GitHub review
-      // surface: only the selected section is visible at a time.
+
+
       const recordTabButton = event.target.closest("[data-repo-record-tab]");
       if (recordTabButton) {
         const article = recordTabButton.closest("[data-repo-record-detail]");
@@ -16017,10 +16011,10 @@
         const targetPage = Number(repoCollectionPageButton.dataset.repoCollectionPageTarget);
         if (kind && Number.isFinite(targetPage)) {
           state.repoCollectionPages[kind] = targetPage;
-          // Issues keep their open/closed/all filter (and its filter bar) that
-          // renderRepoIssues applies; routing pagination through
-          // loadRepoCollection would re-render the raw record list unfiltered,
-          // leaking closed issues into the default "open" view (issue #420).
+
+
+
+
           if (kind === "issues") renderRepoIssues();
           else loadRepoCollection(state.selectedRepo, kind, `[data-repo-${kind}]`);
         }
@@ -16040,8 +16034,8 @@
 
       const agentsRefreshButton = event.target.closest("[data-repo-agents-refresh]");
       if (agentsRefreshButton && state.selectedRepo) {
-        // On the detail page, Refresh reloads that agent's transcript; on the
-        // list it reloads the session list (adhoc #259).
+
+
         if (state.agentsView.selectedAgentId != null) {
           loadRepoAgentTranscript(state.selectedRepo, state.agentsView.selectedAgentId);
         } else {
@@ -16050,8 +16044,8 @@
         return;
       }
 
-      // Open an agent's detail page - live transcript + prompt (adhoc #259).
-      // Toggle: clicking a selected agent returns to the list (issue #375).
+
+
       const agentOpenButton = event.target.closest("[data-repo-agent-open]");
       if (agentOpenButton && state.selectedRepo) {
         const agentId = agentOpenButton.dataset.repoAgentId || "";
@@ -16143,9 +16137,9 @@
       if (submit) submit.disabled = true;
       setRepoAboutStatus("Saving...");
       try {
-        // Optional branding uploads ride along with the description: a chosen
-        // file becomes a data-URL PNG, a checked "Remove" sends "" (clear),
-        // and an untouched image is simply omitted (left unchanged).
+
+
+
         const media = {};
         const readAsDataUrl = (file) => new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -16169,8 +16163,8 @@
         applyRepoAboutWebsite(website);
         setRepoAboutStatus("Saved.", "good");
         setRepoAboutEditing(false);
-        // Refresh the badge header + watch count so the new logo/banner (and
-        // the ?v= cache-buster) show immediately.
+
+
         loadRepoFediverse(state.selectedRepo);
       } catch (error) {
         const code = String(error?.message || "");
@@ -16234,8 +16228,8 @@
     const agentNewForm = event.target.closest("[data-repo-agent-new-form]");
     if (agentNewForm) {
       event.preventDefault();
-      // The form lives in the header modal (adhoc #62): the target repo comes
-      // from the modal's own repository picker, not the open repo page.
+
+
       handleRepoAgentNewSubmit(agentModalSelectedRepo(), agentNewForm);
     }
   });
@@ -16288,9 +16282,9 @@
     updateRepositoryPagination();
   });
 
-  // New-repository modal (adhoc #30): open from the Repos header, collect the
-  // create-and-mirror details, then hand off to the desktop node (see
-  // handleNewRepoSubmit — the signed publish + git mirror are desktop-only).
+
+
+
   $("[data-new-repo-open]")?.addEventListener("click", () => setNewRepoModalOpen(true));
   $("[data-new-repo-close]")?.addEventListener("click", () => setNewRepoModalOpen(false));
   $("[data-new-repo-backdrop]")?.addEventListener("click", () => setNewRepoModalOpen(false));
@@ -16323,15 +16317,15 @@
     deleteSelectedExternalRepositories();
   });
 
-  // [data-profile-settings-button] is a real link to /dashboard/settings now,
-  // and [data-settings-section-link] clicks are handled by the delegated
-  // document click handler above (with push: true for URL reflection).
+
+
+
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-save]")?.addEventListener("click", saveProfile);
-  // No direct [data-profile-verify-email] listener: the delegated document
-  // click handler above already routes it, and a second listener would fire a
-  // duplicate send that the resend cooldown then rejects.
+
+
+
   $("[data-profile-rename-input]")?.addEventListener("input", () => {
     window.clearTimeout(state.nodeNameAvailability.timer);
     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);
@@ -16418,9 +16412,9 @@
     }
   });
 
-  // History handling is page-scoped now: only the repo page (tabs/tree/blob)
-  // and the settings page (sub-tabs) push same-document states. Back/Forward
-  // across pages is native navigation between real documents.
+
+
+
   function initPageHistory() {
     const page = currentPage();
     if (page === "settings") {
@@ -16434,29 +16428,29 @@
       const requested = requestedRepoKey();
       const repo = requested ? findRepository(requested) : null;
       if (!repo) {
-        // The entry points outside this repo document — a real navigation.
+
         location.reload();
         return;
       }
       if (state.selectedRepo && repoKey(state.selectedRepo) === repoKey(repo)) {
-        // Same repo; restore the path/tab from the URL instead of tearing down
-        // and rebuilding the whole detail view.
+
+
         const parts = repoRouteParts();
         const kind = parts[2];
         const path = parts.length > 3 ? parts.slice(3).map(decodeURIComponent).join("/") : "";
         if (repoTabRoutesFor(repo).includes(kind)) {
-          // Feature tab (issues, pulls, etc.): restore without re-loading
-          // records since they cache in state.
+
+
           setRepoTab(kind);
-          // Step Back/Forward between a record detail (/pulls/4) and its list.
+
           if (["pulls", "discussions", "issues"].includes(kind)) {
             if (/^\d+$/.test(path)) {
               loadRepoRecordDetail(repo, kind, path);
             } else if (state.repoRecordDetail?.kind === kind) {
               state.repoRecordDetail = null;
-              // Issues re-render through their filtered list (loadRepoCollection
-              // would leak closed issues into the default Open view); fetch it
-              // if a deep-link landing never populated the list.
+
+
+
               if (kind === "issues") {
                 if (state.issuesView.items.length) renderRepoIssues();
                 else loadRepoIssues(repo);
@@ -16475,11 +16469,11 @@
       renderRepoDetail(repo);
     });
   }
-  // ---------------------------------------------------------------------------
-  // Boot. Every page document ships this same bundle; <body data-page="..."> is
-  // baked at build time (dashboard_shell.PAGES) and picks which init runs. The
-  // page's own markup is the only view in the document and is active at parse
-  // time, so the right page paints immediately — data fills in afterwards.
+
+
+
+
+
   const PAGE_INITS = {
     "home": initHomePage,
     "repos": initReposPage,

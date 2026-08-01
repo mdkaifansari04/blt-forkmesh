@@ -20,7 +20,7 @@
     <link rel="apple-touch-icon" sizes="180x180" href="/favicon/apple-touch-icon.png" />
     <link rel="manifest" href="/favicon/site.webmanifest" />
     <link rel="stylesheet" href="styles.css" />
-    <script src="/outreach.js?v=22ebea883617" defer></script>
+    <script src="/outreach.js?v=b8e2d46baedc" defer></script>
     <style>
       body {
         min-height: 100vh;
@@ -161,7 +161,7 @@
     </style>
     <link rel="stylesheet" href="/auth-page-theme.css" />
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js?v=4fff78946d89" defer></script>
+    <script src="/site-header.js?v=48c851a962ec" defer></script>
   </head>
   <body>
     <div data-forkmesh-header="simple"></div>
@@ -174,7 +174,7 @@
         <h1 id="or-title" class="join-title">Send from the founders email</h1>
         <p class="join-sub" id="or-status">Checking your access…</p>
 
-        <!-- Shown when there is no login session. -->
+
         <div id="or-login" hidden>
           <p class="join-sub">
             Sign in with your ForkMesh account to use the outreach console.
@@ -182,7 +182,7 @@
           <p class="row-links"><a href="/login?next=/outreach">Log in →</a></p>
         </div>
 
-        <!-- Shown when logged in but not on the outreach team. -->
+
         <div id="or-denied" hidden>
           <p class="join-sub">
             Your account isn't on the outreach team yet. Ask a ForkMesh admin
@@ -190,7 +190,7 @@
           </p>
         </div>
 
-        <!-- Compose form (admins + outreach team members). -->
+
         <form id="or-compose" hidden>
           <div class="field">
             <label for="or-template">Template</label>
@@ -213,7 +213,7 @@
           <p class="hint" id="or-hint"></p>
         </form>
 
-        <!-- Team roster (admins only). -->
+
         <div class="panel" id="or-team" hidden>
           <h3>Outreach team</h3>
           <div id="or-team-list"></div>
@@ -226,9 +226,9 @@
             from the founders address too; remove them to revoke access.</p>
         </div>
 
-        <!-- Outreach tracker (visible to everyone who can send): the list of
-             emails sent on the left, a status pipeline per template type on
-             the right. -->
+
+
+
         <div class="panel" id="or-log" hidden>
           <h3>Outreach tracker</h3>
           <div class="tracker">

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Package the macOS ForkMesh app bundle for CI.
+
 set -euo pipefail
 
 BUILD_DIR="${1:-build}"

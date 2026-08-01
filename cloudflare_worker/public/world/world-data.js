@@ -55,8 +55,8 @@ export const LANDMARKS = [
     eyebrow: "CODE DISTRICT / 03",
     icon: "{ }",
     color: "#77d9ff",
-    // The repository landmark, import kiosk, concrete apron, and live portal
-    // ring share one east-district origin.
+
+
     position: [130, 0, 0],
     summary: "Authorized repositories form distinct perimeter portals with size-weighted file rings.",
     metaphor: "Each repository opens as its own three-dimensional sunburst around the city perimeter.",
@@ -140,10 +140,10 @@ export const THEME_OPTIONS = [
   { id: "low-light", label: "Local low light" },
 ];
 
-// A Supporting member perk: a shared, other-visitors-see-it-too outfit color
-// that replaces the default country-flag shirt. Guests and Registered
-// accounts keep the default flag shirt; the server drops this field back to
-// "" for anyone whose trusted accountStatus isn't "Supporting member".
+
+
+
+
 export const OUTFIT_COLOR_OPTIONS = [
   { id: "aurora", label: "Aurora green", color: "#39c783" },
   { id: "ember", label: "Ember orange", color: "#f2793a" },
@@ -152,10 +152,10 @@ export const OUTFIT_COLOR_OPTIONS = [
   { id: "slate", label: "Slate blue", color: "#3a6ea5" },
 ];
 
-// The tailored outfit cuts world-scene.js can draw. Every visitor's public
-// name seeds one of these deterministically; Supporting members may pin a
-// specific cut that every visitor sees instead. The ids must stay in lockstep
-// with WORLD_OUTFIT_STYLE_VALUES in src/world.py.
+
+
+
+
 export const OUTFIT_STYLE_OPTIONS = [
   { id: "sash", label: "Diagonal sash" },
   { id: "racer", label: "Racing stripes" },
@@ -192,10 +192,10 @@ export const ACTIVITY_OPTIONS = [
 
 export const WORLD_STATUS_NOTE_MAX = 20;
 
-// The picker is intentionally broad while the adjacent free-form emoji field
-// accepts any single valid Unicode emoji sequence, including flags, skin tones,
-// keycaps, and joined family/profession sequences. Keeping the picker data local
-// means opening it never sends a search term or profile hint to a third party.
+
+
+
+
 export const WORLD_EMOJI_CATEGORIES = Object.freeze([
   {
     id: "faces",
@@ -427,9 +427,9 @@ export function detectClient() {
   return { browser, os, touch: navigator.maxTouchPoints > 0 };
 }
 
-// Derived per directory member on every lounge/badge refresh; the two-letter
-// input space is tiny and the composed string is immutable, so memoize
-// instead of re-running the spread + fromCodePoint on each call.
+
+
+
 const FLAG_EMOJI_MEMO = new Map();
 export function flagEmoji(code) {
   const normalized = String(code || "").trim().toUpperCase();

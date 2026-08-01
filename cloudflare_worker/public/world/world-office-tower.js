@@ -4,12 +4,12 @@ export const OFFICE_BRIDGE_WIDTH = 12;
 export const OFFICE_BRIDGE_START_Z = -86;
 export const OFFICE_BRIDGE_END_Z = -108;
 
-// The old single-room office was 17 units wide. The campus tower is deliberately
-// about ten times wider while remaining a low-poly, browser-friendly structure.
+
+
 export const OFFICE_WIDTH = 170;
 export const OFFICE_DEPTH = 90;
-// Give every team a genuinely spacious story. The original eight-unit
-// spacing let the larger floor exhibits visually intersect the slabs above.
+
+
 export const OFFICE_FLOOR_HEIGHT = 16;
 export const OFFICE_FLOOR_COUNT = 11;
 export const OFFICE_TOWER_HEIGHT = OFFICE_FLOOR_HEIGHT * OFFICE_FLOOR_COUNT;
@@ -28,9 +28,9 @@ export function nextOfficeZoneState(currentState, distance) {
     ? "nearby"
     : "distant";
 }
-// The panoramic lift straddles the first front curtain-wall bay immediately
-// right of the centered Office entrance. Keeping the complete shaft close to
-// the door makes every floor reachable without a long lobby crossing.
+
+
+
 export const OFFICE_ELEVATOR_CENTER_X = 18;
 export const OFFICE_ELEVATOR_CENTER_Z = OFFICE_FRONT_Z;
 
@@ -116,11 +116,11 @@ export const OFFICE_FLOORS = Object.freeze([
   }),
 ]);
 
-// Keep this list byte-for-byte aligned with entry.py's
-// OFFICE_FLOOR_TEAM_ALIASES. The Worker remains authoritative: this copy only
-// explains which elevator floor a website organization-team checkbox will
-// unlock after the server accepts the membership change and /office/floors is
-// refreshed.
+
+
+
+
+
 export const OFFICE_FLOOR_TEAM_ALIASES = Object.freeze({
   marketing: Object.freeze([
     "marketing",
@@ -230,9 +230,9 @@ export function normalizeOfficeFloorAccess(payload = {}) {
       : [],
   );
   if (authenticated) {
-    // The lobby and the rooftop patio are the two common floors every member
-    // shares. Every department story — Marketing included — is a team floor:
-    // it only unlocks through the server-issued allowlist above.
+
+
+
     supplied.add("lobby");
     supplied.add("rooftop");
   }
@@ -290,8 +290,8 @@ const FLOOR_OBSTACLES = Object.freeze({
     }),
   ]),
   marketing: Object.freeze([
-    // Match the actual tabletop instead of fencing off the chairs, boards,
-    // and most of the studio with oversized invisible rectangles.
+
+
     Object.freeze({
       type: "rect",
       minX: -3.9,
@@ -301,8 +301,8 @@ const FLOOR_OBSTACLES = Object.freeze({
     }),
   ]),
   engineering: Object.freeze([
-    // Match the five separate workstation tops. The former single rectangle
-    // created one long invisible wall through all four visible passages.
+
+
     Object.freeze({
       type: "rect", minX: -41.5, maxX: -30.5, minZ: -2.2, maxZ: 2.2,
     }),
@@ -345,9 +345,9 @@ const FLOOR_OBSTACLES = Object.freeze({
     Object.freeze({ type: "rect", minX: -27, maxX: 27, minZ: -8, maxZ: 8 }),
   ]),
   rooftop: Object.freeze([
-    // Keep only the table footprints solid. The former six-unit circles also
-    // swallowed every chair at radius five, so sitting or standing trapped a
-    // visitor inside an invisible collider.
+
+
+
     Object.freeze({ type: "circle", x: -40, z: 8, radius: 3.5 }),
     Object.freeze({ type: "circle", x: 0, z: 8, radius: 3.5 }),
     Object.freeze({ type: "circle", x: 40, z: 8, radius: 3.5 }),
@@ -355,8 +355,8 @@ const FLOOR_OBSTACLES = Object.freeze({
 });
 
 const OFFICE_COMMON_OBSTACLES = Object.freeze([
-  // The two side panes and outward glass face are solid collision surfaces.
-  // The rear (-Z) face stays open so visitors walk into the car from a floor.
+
+
   Object.freeze({
     type: "rect",
     minX: OFFICE_ELEVATOR_CENTER_X - 5.45,

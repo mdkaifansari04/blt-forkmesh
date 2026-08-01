@@ -1,7 +1,7 @@
--- Aggregate blog reach. A post keeps one total counter, a fixed 64-register
--- HyperLogLog sketch, and aggregate referring-host counters. No IP address,
--- user agent, cookie, account, session, path beyond the public post slug, or
--- per-visitor digest is retained.
+
+
+
+
 CREATE TABLE IF NOT EXISTS blog_post_metrics (
     slug TEXT PRIMARY KEY,
     views INTEGER NOT NULL DEFAULT 0 CHECK (views >= 0),

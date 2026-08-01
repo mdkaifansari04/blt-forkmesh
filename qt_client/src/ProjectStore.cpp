@@ -28,8 +28,8 @@ QString projectJsonFileName(int number)
     return QStringLiteral("project-%1.json").arg(number);
 }
 
-// Run git in `dir`, capturing stdout. Returns false (with optional error text)
-// on non-zero exit or timeout. Mirrors IssueStore's helper.
+
+
 bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nullptr,
             QString *errText = nullptr, int timeoutMs = kGitTimeoutMs)
 {
@@ -51,8 +51,8 @@ bool runGit(const QString &dir, const QStringList &args, QByteArray *output = nu
     return true;
 }
 
-// Like runGit, but feeds `input` to the process's stdin (`git cat-file --batch`
-// so a whole tree of blobs is fetched in one process).
+
+
 bool runGitInput(const QString &dir, const QStringList &args, const QByteArray &input,
                  QByteArray *output, QString *errText = nullptr,
                  int timeoutMs = kGitTimeoutMs)
@@ -117,9 +117,9 @@ bool writeTextFile(const QString &path, const QString &text, QString *error)
     return true;
 }
 
-} // namespace
+}
 
-// ---- ProjectEvent (JSON is the wire format) ---------------------------------
+
 
 QJsonObject ProjectEvent::toJson() const
 {
@@ -166,7 +166,7 @@ ProjectEvent ProjectEvent::fromJson(const QJsonObject &obj)
     return ev;
 }
 
-// ---- Project -----------------------------------------------------------------
+
 
 QJsonObject Project::toJson() const
 {
@@ -213,7 +213,7 @@ bool Project::isDeleted() const
     return false;
 }
 
-// ---- ProjectStore ------------------------------------------------------------
+
 
 ProjectStore::ProjectStore(QString workTreePath, QString mirrorPath,
                            const ForkMeshIdentity *identity, QString authorName)
@@ -244,7 +244,7 @@ QString ProjectStore::projectFilePath(int number) const
     return QDir(projectDir(number)).filePath(projectJsonFileName(number));
 }
 
-// ---- Signing -----------------------------------------------------------------
+
 
 QString ProjectStore::contentForSigning(const ProjectEvent &ev)
 {
@@ -262,8 +262,8 @@ QString ProjectStore::contentForSigning(const ProjectEvent &ev)
     if (ev.type == "milestone")
         return ev.milestone;
     if (ev.type == "issues") {
-        // Comma-joined, ascending, no spaces (e.g. "384,385") so the client and
-        // the worker hash identical bytes regardless of stored order.
+
+
         QStringList parts;
         for (int n : sortedIssueList(ev.issues))
             parts << QString::number(n);
@@ -302,7 +302,7 @@ ProjectEvent ProjectStore::makeSignedEvent(int number, ProjectEvent ev) const
     return ev;
 }
 
-// ---- Loading -----------------------------------------------------------------
+
 
 QList<Project> ProjectStore::loadAll(QString *error) const
 {
@@ -343,7 +343,7 @@ bool ProjectStore::readProjectFile(int number, Project &out) const
     return true;
 }
 
-// ---- Mirror (read-only) --------------------------------------------------------
+
 
 QString ProjectStore::mirrorRef() const
 {
@@ -376,8 +376,8 @@ QList<Project> ProjectStore::loadFromMirror(QString *error) const
     if (ref.isEmpty())
         return projects;
 
-    // One JSON blob per project at .forkmesh/projects/<n>/project-<n>.json;
-    // batch-fetch the blobs in one `git cat-file --batch` like IssueStore.
+
+
     QByteArray listing;
     if (!runGit(m_mirror, {"ls-tree", "-r", ref, projectsRootRel() + "/"}, &listing))
         return projects;
@@ -428,14 +428,14 @@ QList<Project> ProjectStore::loadFromMirror(QString *error) const
             break;
         const QList<QByteArray> header = batch.mid(pos, nl - pos).split(' ');
         pos = nl + 1;
-        if (header.size() < 3) // "<oid> missing" or malformed — no body follows
+        if (header.size() < 3)
             continue;
         bool sizeOk = false;
         const int size = header.at(2).toInt(&sizeOk);
         if (!sizeOk || pos + size > batch.size())
             break;
         contentByOid.insert(QString::fromUtf8(header.at(0)), batch.mid(pos, size));
-        pos += size + 1; // skip body and its trailing newline
+        pos += size + 1;
     }
 
     for (auto it = projectJsonOids.constBegin(); it != projectJsonOids.constEnd();
@@ -460,7 +460,7 @@ QList<Project> ProjectStore::loadFromMirror(QString *error) const
     return projects;
 }
 
-// ---- Writing -----------------------------------------------------------------
+
 
 bool ProjectStore::writeProjectFile(const Project &project, QString *error) const
 {
@@ -537,7 +537,7 @@ int ProjectStore::nextNumber() const
     return max + 1;
 }
 
-// ---- Mutations -----------------------------------------------------------------
+
 
 int ProjectStore::createProject(const QString &title, const QString &body,
                                 qint64 startDate, qint64 endDate,
@@ -596,7 +596,7 @@ int ProjectStore::createProject(const QString &title, const QString &body,
     return number;
 }
 
-// Shared append-a-signed-event-and-commit path for the single-field mutations.
+
 bool ProjectStore::setTitle(int number, const QString &newTitle, QString *error)
 {
     if (!canWrite())
@@ -709,7 +709,7 @@ bool ProjectStore::tombstoneProject(int number, QString *error)
     if (!readProjectFile(number, project))
         return false;
     if (project.isDeleted())
-        return true; // already tombstoned; nothing to do
+        return true;
     ProjectEvent ev;
     ev.type = "delete";
     ev.target = "self";

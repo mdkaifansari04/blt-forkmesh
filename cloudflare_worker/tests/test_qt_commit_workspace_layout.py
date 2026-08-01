@@ -56,9 +56,9 @@ def test_working_tree_diff_controls_stay_above_changes_list():
     )
 
     assert "m_scmControlsPanel = new QWidget;" in build
-    # The dense toolbar wraps its buttons onto extra rows via a FlowLayout so
-    # every action stays visible instead of scrolling horizontally off the
-    # edge, but it must still sit above the changes list in the root layout.
+
+
+
     assert "new FlowLayout(m_scmControlsPanel" in build
     assert "root->addWidget(m_scmControlsPanel);" in build
     assert build.index("root->addWidget(m_scmControlsPanel);") < build.index(

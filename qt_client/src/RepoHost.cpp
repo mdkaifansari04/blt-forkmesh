@@ -55,7 +55,7 @@ QString endpointDisplay(const QUrl &url)
         QUrl::RemoveFragment);
 }
 
-} // namespace
+}
 
 RepoHost::RepoHost(const QString &owner, const QString &name,
                    const QString &mirrorPath, const QUrl &url,

@@ -13,7 +13,7 @@
   const exp = Number(params.get("exp")) || 0;
   const token = (params.get("token") || "").trim();
 
-  // A link that's missing its pieces (or manually opened) can't reset anything.
+
   if (!node || !exp || !token) {
     setHint("This reset link is invalid. Request a new one.", "bad");
     btn.disabled = true;

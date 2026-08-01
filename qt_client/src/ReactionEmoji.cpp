@@ -10,8 +10,8 @@
 namespace reactions {
 namespace {
 
-// Every glyph is painted inside a 0..1 unit square; emojiPixmap() pre-scales
-// the painter, so all coordinates and pen widths below are unit fractions.
+
+
 
 QPen strokePen(const QColor &color, qreal width)
 {
@@ -22,7 +22,7 @@ QPen strokePen(const QColor &color, qreal width)
     return pen;
 }
 
-const QColor kFeature(0x66, 0x45, 0x00); // classic emoji eye/mouth brown
+const QColor kFeature(0x66, 0x45, 0x00);
 const QColor kTearBlue(0x5d, 0xad, 0xec);
 
 QBrush faceBrush()
@@ -56,8 +56,8 @@ void paintEye(QPainter &p, qreal cx, qreal cy, qreal w = 0.11, qreal h = 0.17)
     p.drawEllipse(QRectF(cx - w / 2, cy - h / 2, w, h));
 }
 
-// A closed eye drawn as an arc: happy arcs open downward, relaxed ones open
-// upward (used for the wink).
+
+
 void paintClosedEye(QPainter &p, qreal cx, qreal cy, bool happy)
 {
     QPainterPath path;
@@ -105,7 +105,7 @@ void paintFrownStroke(QPainter &p, qreal y = 0.72, qreal depth = 0.13,
     p.drawPath(path);
 }
 
-// A big open mouth (flat-ish top edge, round belly), optionally with teeth.
+
 void paintOpenSmile(QPainter &p, qreal top, qreal bottom, qreal halfWidth,
                     bool teeth)
 {
@@ -141,7 +141,7 @@ void paintTear(QPainter &p, qreal cx, qreal cy, qreal s)
     p.drawPath(drop);
 }
 
-// --- faces -----------------------------------------------------------------
+
 
 void paintSmile(QPainter &p)
 {
@@ -178,10 +178,10 @@ void paintCool(QPainter &p)
     p.drawRoundedRect(QRectF(0.16, 0.32, 0.29, 0.21), 0.07, 0.07);
     p.drawRoundedRect(QRectF(0.55, 0.32, 0.29, 0.21), 0.07, 0.07);
     p.drawRect(QRectF(0.42, 0.35, 0.16, 0.05));
-    // Frame arms out to the face's edge.
+
     p.drawRect(QRectF(0.05, 0.34, 0.12, 0.045));
     p.drawRect(QRectF(0.83, 0.34, 0.12, 0.045));
-    // A small gloss on each lens.
+
     p.setBrush(QColor(255, 255, 255, 70));
     p.drawEllipse(QRectF(0.20, 0.345, 0.10, 0.06));
     p.drawEllipse(QRectF(0.59, 0.345, 0.10, 0.06));
@@ -191,11 +191,11 @@ void paintCool(QPainter &p)
 void paintThinking(QPainter &p)
 {
     paintFaceBase(p);
-    paintBrow(p, 0.25, 0.31, 0.42, 0.26); // raised left brow
+    paintBrow(p, 0.25, 0.31, 0.42, 0.26);
     paintBrow(p, 0.58, 0.32, 0.75, 0.34);
     paintEye(p, 0.35, 0.42, 0.10, 0.14);
     paintEye(p, 0.67, 0.44, 0.10, 0.14);
-    QPainterPath mouth; // small skeptical mouth, tilted down to the right
+    QPainterPath mouth;
     mouth.moveTo(0.34, 0.70);
     mouth.quadTo(0.46, 0.75, 0.58, 0.67);
     p.setPen(strokePen(kFeature, 0.055));
@@ -218,7 +218,7 @@ void paintSurprised(QPainter &p)
 void paintSad(QPainter &p)
 {
     paintFaceBase(p);
-    paintBrow(p, 0.26, 0.34, 0.41, 0.29); // inner ends raised
+    paintBrow(p, 0.26, 0.34, 0.41, 0.29);
     paintBrow(p, 0.59, 0.29, 0.74, 0.34);
     paintEye(p, 0.34, 0.43);
     paintEye(p, 0.66, 0.43);
@@ -233,7 +233,7 @@ void paintAngry(QPainter &p)
     g.setColorAt(0.55, QColor(0xff, 0xa7, 0x26));
     g.setColorAt(1.0, QColor(0xe8, 0x66, 0x2d));
     paintFaceBase(p, QBrush(g));
-    // Brows slanted hard toward the nose.
+
     p.setPen(strokePen(kFeature, 0.05));
     p.setBrush(Qt::NoBrush);
     p.drawLine(QLineF(0.26, 0.31, 0.43, 0.40));
@@ -243,21 +243,21 @@ void paintAngry(QPainter &p)
     paintFrownStroke(p, 0.74, 0.12, 0.17);
 }
 
-// --- hands -----------------------------------------------------------------
+
 
 void paintLike(QPainter &p)
 {
     p.setPen(Qt::NoPen);
     p.setBrush(handBrush());
-    // Thumb: a tilted capsule rising from the fist's left shoulder.
+
     p.save();
     p.translate(0.35, 0.34);
     p.rotate(-14);
     p.drawRoundedRect(QRectF(-0.08, -0.24, 0.16, 0.48), 0.08, 0.08);
     p.restore();
-    // Fist.
+
     p.drawRoundedRect(QRectF(0.30, 0.44, 0.48, 0.44), 0.10, 0.10);
-    // Subtle finger separations.
+
     p.setPen(strokePen(QColor(0, 0, 0, 45), 0.018));
     for (qreal y : {0.555, 0.665, 0.775})
         p.drawLine(QLineF(0.44, y, 0.78, y));
@@ -273,9 +273,9 @@ void paintDislike(QPainter &p)
     p.restore();
 }
 
-// One half of the praying-hands pair: four fanned fingers, a palm and a
-// thumb, occupying the right side of the unit square. Mirrored around
-// x=0.5 to draw the left hand, so the seam falls exactly at center.
+
+
+
 void paintPrayingHand(QPainter &p)
 {
     p.setPen(Qt::NoPen);
@@ -292,7 +292,7 @@ void paintPrayingHand(QPainter &p)
                           0.032, 0.032);
         p.restore();
     }
-    // Palm, tapering slightly toward the wrist.
+
     QPainterPath palm;
     palm.moveTo(0.503, 0.40);
     palm.cubicTo(0.50, 0.58, 0.505, 0.72, 0.535, 0.90);
@@ -301,7 +301,7 @@ void paintPrayingHand(QPainter &p)
     palm.cubicTo(0.72, 0.37, 0.60, 0.36, 0.503, 0.40);
     palm.closeSubpath();
     p.drawPath(palm);
-    // Thumb, angled out from the base of the palm.
+
     p.save();
     p.translate(0.555, 0.63);
     p.rotate(46);
@@ -317,10 +317,10 @@ void paintThanks(QPainter &p)
     p.scale(-1.0, 1.0);
     paintPrayingHand(p);
     p.restore();
-    // Seam where the fingers and palms meet.
+
     p.setPen(strokePen(QColor(0, 0, 0, 60), 0.016));
     p.drawLine(QLineF(0.5, 0.38, 0.5, 0.90));
-    // Radiating lines either side, like the classic emoji.
+
     p.setPen(strokePen(QColor(0xf0, 0xa9, 0x2b), 0.045));
     p.drawLine(QLineF(0.14, 0.22, 0.24, 0.31));
     p.drawLine(QLineF(0.06, 0.42, 0.19, 0.46));
@@ -328,7 +328,7 @@ void paintThanks(QPainter &p)
     p.drawLine(QLineF(0.94, 0.42, 0.81, 0.46));
 }
 
-// --- symbols ---------------------------------------------------------------
+
 
 void paintLove(QPainter &p)
 {
@@ -345,7 +345,7 @@ void paintLove(QPainter &p)
     p.setPen(Qt::NoPen);
     p.setBrush(QBrush(g));
     p.drawPath(heart);
-    // Gloss on the upper-left lobe.
+
     p.setBrush(QColor(255, 255, 255, 90));
     p.save();
     p.translate(0.30, 0.28);
@@ -362,7 +362,7 @@ void paintHot(QPainter &p)
     flame.cubicTo(0.84, 0.81, 0.68, 0.95, 0.50, 0.95);
     flame.cubicTo(0.31, 0.95, 0.15, 0.81, 0.14, 0.60);
     flame.cubicTo(0.13, 0.47, 0.20, 0.40, 0.26, 0.30);
-    // The little side flick that gives the flame its lick.
+
     flame.cubicTo(0.30, 0.36, 0.35, 0.38, 0.38, 0.34);
     flame.cubicTo(0.44, 0.26, 0.44, 0.14, 0.52, 0.04);
     flame.closeSubpath();
@@ -389,7 +389,7 @@ void paintHot(QPainter &p)
 
 void paintCelebrate(QPainter &p)
 {
-    // Party popper cone firing toward the top right.
+
     QPainterPath cone;
     cone.moveTo(0.10, 0.90);
     cone.lineTo(0.42, 0.34);
@@ -401,7 +401,7 @@ void paintCelebrate(QPainter &p)
     p.setPen(Qt::NoPen);
     p.setBrush(QBrush(g));
     p.drawPath(cone);
-    // Stripes across the cone.
+
     p.save();
     p.setClipPath(cone);
     p.setBrush(QColor(255, 255, 255, 80));
@@ -416,7 +416,7 @@ void paintCelebrate(QPainter &p)
     p.drawRect(QRectF(-0.30, -0.03, 0.60, 0.06));
     p.restore();
     p.restore();
-    // Streamers arcing out of the cone mouth.
+
     p.setBrush(Qt::NoBrush);
     p.setPen(strokePen(QColor(0x42, 0xa5, 0xf5), 0.035));
     QPainterPath s1;
@@ -428,7 +428,7 @@ void paintCelebrate(QPainter &p)
     s2.moveTo(0.64, 0.46);
     s2.cubicTo(0.76, 0.42, 0.82, 0.34, 0.92, 0.34);
     p.drawPath(s2);
-    // Confetti.
+
     p.setPen(Qt::NoPen);
     p.setBrush(QColor(0xef, 0x53, 0x50));
     p.drawEllipse(QRectF(0.70, 0.10, 0.075, 0.075));
@@ -470,14 +470,14 @@ void paintRocket(QPainter &p)
     p.save();
     p.translate(0.5, 0.5);
     p.rotate(45);
-    // Body pointing up in local coordinates.
+
     QLinearGradient body(QPointF(-0.13, 0), QPointF(0.13, 0));
     body.setColorAt(0.0, QColor(0xf5, 0xf7, 0xf8));
     body.setColorAt(1.0, QColor(0xb0, 0xbe, 0xc5));
     p.setPen(Qt::NoPen);
     p.setBrush(QBrush(body));
     p.drawRoundedRect(QRectF(-0.13, -0.40, 0.26, 0.64), 0.13, 0.13);
-    // Red nose cone capping the body.
+
     QPainterPath nose;
     nose.moveTo(-0.128, -0.16);
     nose.quadTo(-0.11, -0.34, 0.0, -0.405);
@@ -485,7 +485,7 @@ void paintRocket(QPainter &p)
     nose.closeSubpath();
     p.setBrush(QColor(0xef, 0x53, 0x50));
     p.drawPath(nose);
-    // Fins.
+
     QPainterPath fin;
     fin.moveTo(-0.12, 0.02);
     fin.quadTo(-0.28, 0.16, -0.24, 0.30);
@@ -496,11 +496,11 @@ void paintRocket(QPainter &p)
     p.scale(-1.0, 1.0);
     p.drawPath(fin);
     p.restore();
-    // Porthole.
+
     p.setBrush(QColor(0x4f, 0xc3, 0xf7));
     p.setPen(strokePen(QColor(0x90, 0xa4, 0xae), 0.025));
     p.drawEllipse(QPointF(0.0, -0.10), 0.075, 0.075);
-    // Exhaust flame.
+
     QPainterPath flame;
     flame.moveTo(-0.07, 0.24);
     flame.quadTo(-0.10, 0.38, 0.0, 0.48);
@@ -524,7 +524,7 @@ void paintEyes(QPainter &p)
         p.drawEllipse(QRectF(x, 0.16, 0.40, 0.68));
         p.setPen(Qt::NoPen);
         p.setBrush(iris);
-        // Irises look off to the left, like the classic emoji.
+
         p.drawEllipse(QRectF(x + 0.025, 0.40, 0.19, 0.24));
         p.setBrush(QColor(255, 255, 255, 200));
         p.drawEllipse(QRectF(x + 0.075, 0.45, 0.055, 0.06));
@@ -589,7 +589,7 @@ QString fromCodepoints(char32_t first, char32_t second)
     return QString::fromUcs4(points, 2);
 }
 
-} // namespace
+}
 
 const QVector<Choice> &choices()
 {
@@ -618,7 +618,7 @@ const QVector<Choice> &choices()
 
 QString canonicalValue(const QString &value)
 {
-    // Legacy reaction payloads stored literal unicode emoji.
+
     static const QHash<QString, QString> kLegacy = {
         {fromCodepoint(0x1F44D), QStringLiteral("like")},
         {fromCodepoints(0x2764, 0xFE0F), QStringLiteral("love")},
@@ -677,7 +677,7 @@ QPixmap addGlyph(int size, qreal dpr, const QColor &color)
     QPainter p(&pixmap);
     p.setRenderHint(QPainter::Antialiasing);
     p.scale(size, size);
-    // A smiley outline with a small plus at its top right.
+
     p.setPen(strokePen(color, 0.075));
     p.setBrush(Qt::NoBrush);
     p.drawEllipse(QPointF(0.44, 0.56), 0.36, 0.36);
@@ -695,4 +695,4 @@ QPixmap addGlyph(int size, qreal dpr, const QColor &color)
     return pixmap;
 }
 
-} // namespace reactions
+}

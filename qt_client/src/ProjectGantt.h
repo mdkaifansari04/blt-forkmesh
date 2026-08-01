@@ -1,10 +1,10 @@
 #pragma once
 
-// ProjectGantt (issue #384): a plain QWidget that paints the projects tab's
-// Gantt chart — projects as parent bars with their linked issues indented
-// beneath. Header-only and Q_OBJECT-free (like IssueBurnupChart) so it needs no
-// moc entry; the host section wraps it in a QScrollArea and feeds it rows plus
-// a theme probe.
+
+
+
+
+
 
 #include <QDateTime>
 #include <QMouseEvent>
@@ -17,13 +17,13 @@
 
 struct ProjectGanttRow {
     QString label;
-    qint64 start = 0;      // epoch ms; 0 = unset
-    qint64 end = 0;        // epoch ms; 0 = unset
+    qint64 start = 0;
+    qint64 end = 0;
     bool isProject = false;
-    QString status;        // open | closed
-    int progress = 0;      // 0..100
-    int indent = 0;        // 0 = project, 1 = linked issue
-    bool inferred = false; // dates were inferred (no signed dates event)
+    QString status;
+    int progress = 0;
+    int indent = 0;
+    bool inferred = false;
 };
 
 class ProjectGantt final : public QWidget
@@ -43,8 +43,8 @@ public:
         update();
     }
 
-    // Theme probe (currentThemeIsDark lives in MainWindowInternal.h, which this
-    // standalone header must not drag in) so the palette follows live switches.
+
+
     void setDarkProbe(std::function<bool()> probe) { m_darkProbe = std::move(probe); }
 
     QSize sizeHint() const override
@@ -59,8 +59,8 @@ protected:
         painter.setRenderHint(QPainter::Antialiasing);
         const bool dark = m_darkProbe ? m_darkProbe() : true;
 
-        // Restrained palette: one accent hue for projects, a second for issues,
-        // muted grays for grid/labels; everything readable on both themes.
+
+
         const QColor text(dark ? "#e6edf3" : "#1f2328");
         const QColor muted(dark ? "#8b949e" : "#656d76");
         const QColor grid(dark ? "#30363d" : "#d8dee4");
@@ -93,7 +93,7 @@ protected:
             return plot.left() + plot.width() * (ts - minTs) / double(span);
         };
 
-        // Subtle alternating row backgrounds behind everything.
+
         for (int i = 0; i < m_rows.size(); ++i) {
             if (i % 2 == 1)
                 painter.fillRect(QRectF(0, plot.top() + i * kRowHeight,
@@ -101,8 +101,8 @@ protected:
                                  rowAlt);
         }
 
-        // Time axis with adaptive ticks: months for long ranges, weeks/days for
-        // short ones. Light vertical gridlines run the full row area.
+
+
         const QDate first = QDateTime::fromMSecsSinceEpoch(minTs).date();
         const QDate last = QDateTime::fromMSecsSinceEpoch(maxTs).date();
         const qint64 days = first.daysTo(last);
@@ -114,7 +114,7 @@ protected:
                               tick.toString(days > 500 ? QStringLiteral("MMM yy")
                                                        : QStringLiteral("MMM"))});
         } else if (days > 21) {
-            QDate tick = first.addDays((8 - first.dayOfWeek()) % 7); // next Monday
+            QDate tick = first.addDays((8 - first.dayOfWeek()) % 7);
             for (; tick <= last; tick = tick.addDays(7))
                 ticks.append({tick.startOfDay().toMSecsSinceEpoch(),
                               tick.toString(QStringLiteral("MMM d"))});
@@ -140,7 +140,7 @@ protected:
         painter.drawLine(QPointF(plot.left(), plot.top()),
                          QPointF(plot.right(), plot.top()));
 
-        // Rows: elided labels in the left gutter, rounded bars in the plot.
+
         for (int i = 0; i < m_rows.size(); ++i) {
             const ProjectGanttRow &row = m_rows.at(i);
             const qreal rowTop = plot.top() + i * kRowHeight;
@@ -169,8 +169,8 @@ protected:
             const QColor fill = closed ? closedFill
                                        : (row.isProject ? projectFill : issueFill);
             if (row.inferred) {
-                // No signed dates yet: a hollow, dashed placeholder spanning the
-                // inferred createdAt -> today range.
+
+
                 QPen dashed(closed ? closedFill : base, 1.2, Qt::DashLine);
                 painter.setPen(dashed);
                 painter.setBrush(Qt::NoBrush);
@@ -181,8 +181,8 @@ protected:
                 painter.setPen(Qt::NoPen);
                 painter.setBrush(track);
                 painter.drawRoundedRect(bar, barH / 2.0, barH / 2.0);
-                // Progress overlay: a saturated fill proportional to completion
-                // (closed items read as done).
+
+
                 const int pct = closed ? 100 : qBound(0, row.progress, 100);
                 if (pct > 0) {
                     QRectF done = bar;
@@ -196,7 +196,7 @@ protected:
             }
         }
 
-        // A "today" line in an accent color over the bars.
+
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
         if (now >= minTs && now <= maxTs) {
             const qreal x = xFor(now);
@@ -254,7 +254,7 @@ private:
             minTs = now - 14 * kDayMs;
         if (maxTs == 0)
             maxTs = now + 14 * kDayMs;
-        // Breathing room on both edges so bars never kiss the plot border.
+
         const qint64 pad = qMax<qint64>(kDayMs, (maxTs - minTs) / 20);
         minTs -= pad;
         maxTs += pad;

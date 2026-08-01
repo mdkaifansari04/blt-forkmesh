@@ -1,6 +1,6 @@
--- Enforce invitation and logo quotas inside the same SQLite write that creates
--- the row. Application-side preflight checks remain useful for friendly errors,
--- but cannot protect against two Worker requests racing between COUNT/INSERT.
+
+
+
 
 CREATE INDEX IF NOT EXISTS idx_repository_logo_suggestions_proposer
     ON repository_logo_suggestions(
@@ -16,10 +16,10 @@ BEGIN
     SELECT RAISE(ABORT, 'logo_pending_proposer_limit');
 END;
 
--- Official replacement is one statement: prune only enough non-official
--- history to stay at 50, supersede the old official, then let the new insert
--- complete under the partial unique index. If the insert fails, trigger effects
--- roll back with it.
+
+
+
+
 CREATE TRIGGER IF NOT EXISTS trg_logo_official_insert
 BEFORE INSERT ON repository_logo_suggestions
 WHEN NEW.official=1
@@ -55,9 +55,9 @@ BEGIN
     WHERE repo_id=NEW.repo_id AND id<>OLD.id AND official=1;
 END;
 
--- Community submissions may occupy at most 49 total history rows. The fiftieth
--- slot remains available to an owner/moderator replacement, whose official=1
--- insert bypasses this trigger and may prune one non-official history row.
+
+
+
 CREATE TRIGGER IF NOT EXISTS trg_logo_community_repository_limit
 BEFORE INSERT ON repository_logo_suggestions
 WHEN NEW.status='pending' AND NEW.official=0
@@ -124,8 +124,8 @@ BEGIN
     SELECT RAISE(ABORT, 'invitation_repository_history_limit');
 END;
 
--- A pending row is the durable reservation. Its two counters are incremented
--- atomically with creation, before any email side effect occurs.
+
+
 CREATE TRIGGER IF NOT EXISTS trg_invitation_reserve_rate
 AFTER INSERT ON contributor_invitations
 WHEN NEW.status='pending'
@@ -146,8 +146,8 @@ BEGIN
     DO UPDATE SET sent_count=sent_count+1;
 END;
 
--- Delivery failure deletes the still-pending reservation. Counter rollback is
--- part of that same delete, so a mail outage cannot consume invitation quota.
+
+
 CREATE TRIGGER IF NOT EXISTS trg_invitation_release_rate
 AFTER DELETE ON contributor_invitations
 WHEN OLD.status='pending'

@@ -5,8 +5,8 @@
 #include <QMap>
 #include <QString>
 
-// Status values for a run. `AwaitingApproval` means the pushed workflow content
-// is new or changed and must be human-approved before anything executes.
+
+
 namespace ActionStatus {
 inline const QString AwaitingApproval = QStringLiteral("awaiting-approval");
 inline const QString Queued = QStringLiteral("queued");
@@ -14,29 +14,29 @@ inline const QString Running = QStringLiteral("running");
 inline const QString Success = QStringLiteral("success");
 inline const QString Failed = QStringLiteral("failed");
 inline const QString Rejected = QStringLiteral("rejected");
-// User stopped the run while it was queued or executing.
-inline const QString Cancelled = QStringLiteral("cancelled");
-// User skipped the run before it started (queued or awaiting approval).
-inline const QString Skipped = QStringLiteral("skipped");
-} // namespace ActionStatus
 
-// One workflow run, persisted as
-// <root>/runs/v2-<sha256(length-delimited owner/name)>/<id>/meta.json with a
-// sibling log.txt. Runs are local CI artifacts and are never committed to git.
+inline const QString Cancelled = QStringLiteral("cancelled");
+
+inline const QString Skipped = QStringLiteral("skipped");
+}
+
+
+
+
 struct ActionRun {
     int id = 0;
     QString owner;
-    QString name;            // repository name
-    QString workflowPath;    // ".forkmesh/deploy.yml"
-    QString workflowName;    // display name from the YAML
-    QString workflowContent; // raw YAML at the pushed commit (for diff/approval)
-    QString commit;          // pushed newrev SHA
-    QString ref;             // pushed refname
-    // Approval is bound to the complete repository snapshot, not just the
-    // workflow YAML. repositoryTree is Git's tree object id; executionDigest is
-    // a SHA-256 over both the recursive tree manifest and the archived file
-    // bytes. Changing a helper script, Makefile, package hook, submodule pin, or
-    // any other tracked input therefore invalidates approval.
+    QString name;
+    QString workflowPath;
+    QString workflowName;
+    QString workflowContent;
+    QString commit;
+    QString ref;
+
+
+
+
+
     QString repositoryTree;
     QString executionDigest;
     QString status = ActionStatus::Queued;
@@ -44,64 +44,64 @@ struct ActionRun {
     qint64 startedAtMs = 0;
     qint64 finishedAtMs = 0;
 
-    // Collision-resistant, filesystem/settings-safe repository storage key.
+
     QString repoKey() const;
-    // Pre-v2 lossy key, exposed only so ActionStore can migrate old records.
+
     QString legacyRepoKey() const;
     QJsonObject toJson() const;
     static ActionRun fromJson(const QJsonObject &obj);
 };
 
-// Resolves a workflow's `needs:` against the run history, so a run can wait for
-// another workflow's result at the same commit instead of repeating its work.
+
+
 namespace ActionNeeds {
 
 enum class State {
-    Ready,   // every dependency succeeded, or isn't scheduled on this node
-    Waiting, // a dependency is still awaiting approval, queued, or running
-    Blocked, // a dependency finished without succeeding
+    Ready,
+    Waiting,
+    Blocked,
 };
 
-// True when one `needs:` entry names the workflow at workflowPath. Matching is
-// case-insensitive and accepts the display name, the repo-relative path, the
-// bare file name, or the file name without its extension.
+
+
+
 bool matches(const QString &token, const QString &workflowName,
              const QString &workflowPath);
 
-// Resolve `needs` against `history` (newest first) for run's repository and
-// commit. A dependency with no run record at all is not a barrier: it may be
-// dedicated to another node, disabled, or simply absent, and blocking on it
-// would wedge the queue forever. `detail` receives the reason for a non-Ready
-// state.
+
+
+
+
+
 State resolve(const ActionRun &run, const QStringList &needs,
               const QList<ActionRun> &history, QString *detail = nullptr);
 
-} // namespace ActionNeeds
+}
 
-// Persists run history and logs on disk, and owns the global variables store and
-// the per-repo approved-workflow store (both in QSettings).
+
+
 class ActionStore
 {
 public:
-    explicit ActionStore(QString rootDir); // rootDir = <AppData>/actions
+    explicit ActionStore(QString rootDir);
 
-    QString spoolDir() const; // <root>/spool (push events land here)
-    QString artifactsDir() const; // <root>/artifacts (validated run outputs)
+    QString spoolDir() const;
+    QString artifactsDir() const;
 
-    // Runs
-    QList<ActionRun> loadAllRuns() const;    // newest first
-    ActionRun createRun(ActionRun run);      // assigns id + timestamps, persists
-    bool saveRun(const ActionRun &run) const; // rewrite meta.json
-    bool deleteRun(const ActionRun &run) const; // remove the run's dir (meta+log)
+
+    QList<ActionRun> loadAllRuns() const;
+    ActionRun createRun(ActionRun run);
+    bool saveRun(const ActionRun &run) const;
+    bool deleteRun(const ActionRun &run) const;
     void appendLog(const ActionRun &run, const QString &text) const;
     QString readLog(const ActionRun &run) const;
 
-    // Global variables (shared by all repos): QSettings key actions/variables.
+
     static QMap<QString, QString> variables();
     static void setVariables(const QMap<QString, QString> &vars);
 
-    // Approved-workflow store, keyed per repo by file path. Trust is by exact
-    // workflow content AND the complete repository state that can execute.
+
+
     static bool isApproved(const QString &repoKey, const QString &path,
                            const QString &content,
                            const QString &repositoryTree,
@@ -112,11 +112,11 @@ public:
                         const QString &executionDigest);
     static QString lastApprovedContent(const QString &repoKey, const QString &path);
 
-    // Resolve and hash an immutable repository snapshot without checking it
-    // out. The digest includes the recursive Git tree record (including modes,
-    // paths, object ids, and submodule pins) and a deterministic tar stream of
-    // every archived file, then hashes that material with SHA-256. A bounded
-    // timeout prevents a damaged repository from hanging the approval UI.
+
+
+
+
+
     static bool repositoryStateDigest(const QString &repository,
                                       const QString &commit,
                                       QString *repositoryTree,
@@ -124,7 +124,7 @@ public:
                                       QString *error = nullptr);
 
 private:
-    QString runsDir() const; // <root>/runs
+    QString runsDir() const;
     QString runDir(const ActionRun &run) const;
     QString legacyRunDir(const ActionRun &run) const;
     QString existingRunDir(const ActionRun &run) const;

@@ -18,7 +18,7 @@ _SRC = _ROOT / "src"
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
-import dashboard_bundle  # noqa: E402
+import dashboard_bundle
 
 PUBLIC = _ROOT / "public"
 JS_DIR = PUBLIC / "dashboard" / "js"
@@ -35,28 +35,28 @@ def test_every_fragment_listed_in_order_exists_on_disk():
     assert dashboard_bundle.FRAGMENTS, "no fragments declared"
     for name in dashboard_bundle.FRAGMENTS:
         assert (JS_DIR / name).is_file(), "missing fragment %s" % name
-    # Names are numeric-prefixed so lexical order == source order; the declared
-    # order must match a sorted listing so nothing is silently reordered.
+
+
     assert list(dashboard_bundle.FRAGMENTS) == sorted(dashboard_bundle.FRAGMENTS)
 
 
 def test_no_orphan_fragments_on_disk():
-    # Every *.js under dashboard/js/ must be declared in FRAGMENTS, or it would be
-    # a dead file the Worker never serves (and never re-couples into the bundle).
+
+
     on_disk = sorted(p.name for p in JS_DIR.glob("*.js"))
     assert on_disk == sorted(dashboard_bundle.FRAGMENTS)
 
 
 def test_composed_bundle_is_the_single_iife():
     js = assembled_dashboard_js()
-    # The fragments are contiguous slices of ONE closure, so the concatenation
-    # must open and close exactly one IIFE and still call init() at the end.
+
+
     assert js.startswith("(() => {")
     assert js.rstrip().endswith("})();")
     assert js.count("(() => {") >= 1
     assert "\n  if (initSharedChrome()) {\n" in js
     assert "PAGE_INITS[currentPage()]" in js
-    # A couple of load-bearing symbols that must survive the split intact.
+
     for marker in ("const state = {", "function renderRepoDetail(", "function initSharedChrome("):
         assert marker in js
 
@@ -77,7 +77,7 @@ def test_dashboard_js_is_served_as_a_static_asset():
 
 def test_shell_still_references_dashboard_js():
     shell = (PUBLIC / "dashboard" / "shell.html").read_text(encoding="utf-8")
-    # Bare src: the ?v= is stamped into the composed pages from the one content
-    # hash the build computes, never hand-written into the authored shell.
+
+
     assert 'src="/dashboard.js" defer' in shell
     assert "?v=" not in shell

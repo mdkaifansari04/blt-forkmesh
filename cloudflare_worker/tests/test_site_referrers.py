@@ -50,7 +50,7 @@ def _entry_constant(name):
             for target in node.targets:
                 if isinstance(target, ast.Name) and target.id == name:
                     value = node.value
-                    # frozenset({...}) / re.compile("...") wrap their literal.
+
                     if isinstance(value, ast.Call) and value.args:
                         literal = ast.literal_eval(value.args[0])
                         return (frozenset(literal)
@@ -173,8 +173,8 @@ def test_migration_adds_one_bounded_latest_url_to_the_aggregate_host_row():
     assert columns == {"host", "visits", "first_ts", "last_ts", "last_url"}
     assert "CREATE TABLE IF NOT EXISTS site_referrers" in SCHEMA
     assert "last_url TEXT NOT NULL DEFAULT ''" in SCHEMA
-    # Privacy contract: aggregate destination-independent reach, nothing that
-    # identifies the visitor who followed the link.
+
+
     for forbidden in ("ip", "user_agent", "session", "landing_path"):
         assert forbidden not in columns
 
@@ -217,18 +217,18 @@ def test_own_deployment_never_counts_as_a_referring_website():
     for own in ("forkmesh.com", "www.forkmesh.com"):
         assert host("https://forkmesh.com/pricing", own) == ""
         assert host("https://www.forkmesh.com/pricing", own) == ""
-    # Sibling subdomains and the parent zone of a preview deployment.
+
     assert host("https://b.forkmesh.com/x", "forkmesh.com") == ""
     assert host("https://forkmesh.com/x", "preview.forkmesh.com") == ""
     assert host("https://forkmesh.internal/x", "forkmesh.com") == ""
-    # A genuinely different site with a similar tail still counts.
+
     assert host("https://mesh.com/x", "forkmesh.com") == "mesh.com"
 
 
 def test_only_served_page_navigations_are_counted():
     db = _db()
     ns = _namespace(db)
-    run = lambda request, status=200, url=None: asyncio.run(  # noqa: E731
+    run = lambda request, status=200, url=None: asyncio.run(
         ns["record_site_referral"](object(), request, url or _url(), status))
 
     run(_request("https://news.ycombinator.com/item?id=1"))
@@ -237,20 +237,20 @@ def test_only_served_page_navigations_are_counted():
     ).fetchone()["visits"] == 1
 
     ignored = [
-        # Subresources and API calls: a page load is one visit, not thirty.
+
         (_request("https://news.ycombinator.com/x",
                   {"sec-fetch-dest": "image", "accept": "image/*"}), 200),
         (_request("https://news.ycombinator.com/x",
                   {"accept": "application/json", "sec-fetch-dest": "empty",
                    "sec-fetch-mode": "cors"}), 200),
-        # Not a served page.
+
         (_request("https://news.ycombinator.com/x"), 404),
         (_request("https://news.ycombinator.com/x"), 302),
-        # Not a browser visit.
+
         (_request("https://news.ycombinator.com/x", method="POST"), 200),
         (_request("https://news.ycombinator.com/x",
                   {"user-agent": "Mastodon/4.2.1"}), 200),
-        # Internal navigation, and no referrer at all.
+
         (_request("https://forkmesh.com/pricing"), 200),
         (_request(None), 200),
     ]
@@ -332,7 +332,7 @@ def test_surfaces_expose_the_board_and_the_privacy_contract():
     assert "site-referral-board" in REFERRALS_JS
     assert 'id="site-referral-board"' in REFERRALS_HTML
     assert "Top referring websites" in REFERRALS_HTML
-    # The host is rendered as text, never as a link the board hands out.
+
     assert "createElement(\"a\")" not in REFERRALS_JS.split(
         "function renderSiteBoard")[1].split("function renderSiteSummary")[0]
     assert "Referring websites" in PRIVACY

@@ -22,9 +22,9 @@
     <link rel="preload" as="image" type="image/webp" href="/world/assets/city-park-grass-v1.webp" crossorigin="anonymous" />
     <link rel="preload" as="image" type="image/webp" href="/world/assets/concrete-brick-path-v1.webp" crossorigin="anonymous" />
     <link rel="preload" as="image" type="image/webp" href="/world/assets/beach-horizon-v1.webp" crossorigin="anonymous" />
-    <!-- Warm the connection and prefetch the 3D runtime during HTML parse so the
-         world can render the instant the page scripts run, instead of waiting on
-         a cold fetch after bootstrap. -->
+
+
+
     <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin />
     <link rel="modulepreload" href="/world/world-scene.js" />
     <link
@@ -65,9 +65,9 @@
       </nav>
     </section>
     <script>
-      // The page intentionally stays blank while the world module boots so
-      // there is no static-content jump; this watchdog is the only fallback
-      // if that module never arrives.
+
+
+
       setTimeout(function () {
         var world = document.querySelector("forkmesh-world");
         if (world && world.dataset.worldReady === "true") return;

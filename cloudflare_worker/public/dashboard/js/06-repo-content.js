@@ -46,8 +46,8 @@
     return trimmed;
   }
 
-  // Operates on already-`escapeHtml`d text so the captured groups (urls,
-  // labels, code) are safe to splice back into HTML without re-escaping.
+
+
   function renderMarkdownInline(escapedText) {
     return escapedText
       .replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_, alt, url) =>
@@ -60,11 +60,11 @@
       .replace(/`([^`]+)`/g, (_, code) => `<code class="rounded bg-secondary px-1.5 py-0.5 font-mono text-xs">${code}</code>`);
   }
 
-  // Small, dependency-free markdown renderer: headings, fenced code blocks,
-  // block quotes, ordered/unordered lists, hr, and paragraphs, with basic
-  // inline formatting, links and images. Not a full CommonMark
-  // implementation - readmes just need to look reasonable, not pixel-match
-  // GitHub.
+
+
+
+
+
   function renderMarkdown(raw) {
     const lines = String(raw ?? "").replace(/\r\n?/g, "\n").split("\n");
     const out = [];
@@ -140,10 +140,10 @@
     return out.join("");
   }
 
-  // Skeleton placeholder for the file tree while the live mirror answers. Mirrors
-  // the real row grid (icon / name / commit message / date) so the panel keeps
-  // its shape and shimmers into the content, instead of a bare one-line spinner.
-  // Bars use muted-foreground/20 so they stay visible in both light and dark.
+
+
+
+
   function repoTreeSkeletonHtml(rows = 8) {
     const nameWidths = ["w-40", "w-28", "w-52", "w-36", "w-44", "w-24", "w-48", "w-32"];
     const bar = "rounded bg-muted-foreground/20";
@@ -158,12 +158,12 @@
   }
 
   async function loadRepositoryTree(repo, path = "", options = {}) {
-    // background: warm the Code tab's tree/README underneath another visible
-    // tab. A refresh on /owner/repo/issues restores the Issues tab first and
-    // then preloads the tree — that preload must not steal the visible tab
-    // (setRepoTab) or rewrite the address bar back to the repo root
-    // (navigateHistory), which is what used to snap every refreshed feature
-    // tab back to the main repo page.
+
+
+
+
+
+
     const background = options.background === true;
     const detail = $("[data-repo-detail]");
     if (!detail) return;
@@ -178,21 +178,21 @@
     viewer?.classList.add("hidden");
     readmePanel?.classList.toggle("hidden", Boolean(path));
     setRepoExplorerFocusMode(Boolean(path));
-    // The root/README view keeps the two-column layout: the About rail is a
-    // permanent right-hand column (the old full-width README override that
-    // dropped it below the content was removed, owner decision 2026-07-11).
+
+
+
     renderRepoBreadcrumb(repo, path);
 
     treeBody.innerHTML = repoTreeSkeletonHtml();
     renderRepoExplorer(repo, path, []);
     try {
       const requestedAt = performance.now();
-      // A live-mirror read: fetch fresh (fetchRepoJson, no-store) like every
-      // other HTTPS data surface (issues/pulls/releases/README), never the browser-
-      // cached, account-scoped fetchJson. The router round-robins browse across
-      // whichever mirrors are online, so a cached copy could pin the page to a
-      // node that has since gone offline — the "served by mirror" view must
-      // reflect the mirror that actually answered this request.
+
+
+
+
+
+
       const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path }));
       renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       updateRepoCommitSummary(data.latestCommit, repo);
@@ -259,8 +259,8 @@
         }
       }
     } catch (_) {
-      // The tree fetch drives the commit summary; if no mirror answered, still
-      // resolve the loading skeleton to the repo-derived fallback metadata.
+
+
       updateRepoCommitSummary(null, repo);
       treeBody.innerHTML = '<div class="px-4 py-3 text-sm text-muted-foreground">No reachable mirror host is serving this repository tree right now.</div>';
       if (!path) {
@@ -293,8 +293,8 @@
         if (renderRepoPreview(viewer, repo, path, {})) return;
       }
       const requestedAt = performance.now();
-      // Fresh live-mirror read (see loadRepositoryTree): the blob must come from
-      // the mirror serving this request, not a stale browser cache.
+
+
       const data = await fetchRepoJson(repoLiveUrl(repo, "blob", { path }));
       renderRepoServedBy(data.servedBy, performance.now() - requestedAt);
       if (renderRepoPreview(viewer, repo, path, data)) return;
@@ -362,15 +362,15 @@
     return text.slice(1, -1).split(",").map((item) => item.trim()).filter(Boolean);
   }
 
-  // Issues are split by status into .forkmesh/issues/open/<n>/ and
-  // .forkmesh/issues/closed/<n>/ (adhoc #14); pre-split mirrors keep the
-  // numbered folder directly under the root (no subdir).
+
+
+
   function issueJsonPath(number, subdir) {
     const base = subdir ? `.forkmesh/issues/${subdir}` : ".forkmesh/issues";
     return `${base}/${Number(number)}/issue-${Number(number)}.json`;
   }
 
-  // Every path issue <number>'s record may live at, most likely first.
+
   function issueJsonCandidatePaths(number) {
     return ["open", "closed", ""].map((subdir) => issueJsonPath(number, subdir));
   }
@@ -386,11 +386,11 @@
     const number = Number(issue.number || fallbackNumber);
     const events = Array.isArray(issue.events) ? issue.events : [];
     const open = events.find((event) => event && event.type === "open") || {};
-    // Deletion is shown, not hidden (adhoc #16), and classified by who signed it,
-    // mirroring the desktop (Issue::isDeleted / hasUnauthorizedDeleteAttempt).
-    // A delete/self signed by the issue's own creator deletes it; one signed by
-    // anyone else is an unauthorized attempt that leaves the issue open but
-    // flagged.
+
+
+
+
+
     const creator = open.author || "";
     const deletes = events.filter(
       (event) => event && event.type === "delete" && event.target === "self");
@@ -428,10 +428,10 @@
     };
   }
 
-  // Stand-in row for an issue folder the mirror is counting but whose JSON we
-  // could not read (relay hiccup, unreadable blob). The desktop's
-  // countOpenIssues treats an unreadable blob as open too, so we keep the count
-  // honest and show the row (flagged) instead of silently dropping it.
+
+
+
+
   function placeholderIssue(number) {
     return {
       number: Number(number),
@@ -452,9 +452,9 @@
     };
   }
 
-  // Adapt an issue-N.json blob into the { values, body } shape that
-  // renderRepoRecordDetail consumes for pulls/discussions front matter, so the
-  // issue detail view renders from the same JSON the Issues list already reads.
+
+
+
   function issueDetailParsed(text, fallbackNumber) {
     const issue = parseIssueJson(text, fallbackNumber);
     return {
@@ -467,18 +467,18 @@
         createdAt: issue.createdAtMs,
       },
       body: issue.body,
-      // Every signed event on the issue (comment, status, labels, milestone,
-      // assignees, agent, title, dates, progress, bounty, edit, delete, vote)
-      // so the detail view can render the full activity timeline, not just the
-      // opening comment.
+
+
+
+
       issueEvents: issue.events,
     };
   }
 
-  // Icon + human-readable description for a non-comment issue event, mirroring
-  // the desktop timeline (MainWindowIssues.cpp addActivity). The default branch
-  // still surfaces unknown/future event types so the detail view shows every
-  // action the JSON carries rather than silently dropping it.
+
+
+
+
   function issueEventIcon(type) {
     return ({
       status: "circle-dot",
@@ -554,10 +554,10 @@
       </div>`;
   }
 
-  // Full issue activity timeline: comment events render as bodied cards and
-  // every other event as an activity line, in chronological order, so the
-  // detail view shows every action stored in the issue JSON (adhoc #45). The
-  // opening event is omitted here since it's already shown as the issue body.
+
+
+
+
   function renderIssueTimeline(events) {
     const rows = (Array.isArray(events) ? events : [])
       .filter(Boolean)
@@ -591,9 +591,9 @@
     return `.forkmesh/projects/${Number(number)}/project-${Number(number)}.json`;
   }
 
-  // Projects (issue #384) are stored like issues - one signed-event JSON per
-  // numbered folder under .forkmesh/projects/ - and carry gantt start/end
-  // dates, an optional milestone link, and a list of linked issue numbers.
+
+
+
   function parseProjectJson(text, fallbackNumber) {
     let project = {};
     try {
@@ -639,9 +639,9 @@
       response.headers.get("X-ForkMesh-Served-By") || "",
     ).trim();
     if (data && typeof data === "object" && !Array.isArray(data)) {
-      // Trust routing provenance from the Worker's response header, never an
-      // upstream JSON field. A metadata-cache hit intentionally has no header,
-      // so remove any body claim instead of presenting it as a live selection.
+
+
+
       if (servedBy) data.servedBy = servedBy;
       else delete data.servedBy;
     }
@@ -669,9 +669,9 @@
   }
 
   async function resolveRepoPullMetadataCommit(repo) {
-    // Named private repository routes intentionally remain inert. Private
-    // bytes use the opaque encrypted-replica transport and must never become
-    // discoverable through this public branch lookup.
+
+
+
     if (!repo || repo.isPrivate) {
       throw new Error("pull_metadata_unavailable");
     }
@@ -763,11 +763,11 @@
   }
 
   async function fetchRepoBlobs(repo, paths, options = {}) {
-    // Batched file read: ONE request returns every path (repeated ?path=
-    // params); the Worker fans the reads out over authenticated HTTPS mirrors.
-    // Fetching each record as its own /blob call flooded the relay with 50+
-    // parallel requests per page view and tripped the per-repo rate limit.
-    // Missing/unreadable paths come back null.
+
+
+
+
+
     if (!paths.length) return {};
     const query = new URLSearchParams();
     paths.forEach((path) => query.append("path", path));
@@ -776,9 +776,9 @@
       const value = current.get(key);
       if (value) query.set(key, value);
     });
-    // Same ref override contract as repoLiveUrl. Pull readers pass the exact
-    // immutable forkmesh/pulls OID resolved by
-    // resolveRepoPullMetadataCommit().
+
+
+
     if (!("ref" in options)) query.set("ref", repoSelectedBranch(repo));
     else if (options.ref) query.set("ref", options.ref);
     const version = repoDataVersion(repo);
@@ -790,10 +790,10 @@
   }
 
   async function loadRepoRecordsFromMirror(repo, config) {
-    // Pull requests moved to the dedicated forkmesh/pulls metadata branch
-    // (issue #399). Resolve it once, then pin the tree and every batched blob
-    // read to the same immutable commit. Never fall back to main: a missing
-    // metadata branch is unavailable, not an empty or stale pull collection.
+
+
+
+
     const refParams = config.dir === "pulls"
       ? { ref: await resolveRepoPullMetadataCommit(repo) }
       : {};
@@ -814,7 +814,7 @@
         : config.file;
       return `${config.dir}/${entry.name}/${file}`;
     };
-    // One batched request for every record file instead of a per-record fan-out.
+
     const blobs = await fetchRepoBlobs(repo, dirs.map(recordPath), refParams);
     const records = dirs.map((entry) => {
       const number = Number(entry.name);
@@ -891,10 +891,10 @@
     }).join("") + (["issues", "pulls"].includes(kind) ? renderRepoCollectionPagination(kind, safePage, totalPages, items.length) : "");
   }
 
-  // Shared unified-diff parser used by both the commit diff and the pull
-  // patch views. Groups lines per file and tracks real old/new line numbers
-  // per hunk so the viewer can render a GitHub-style dual gutter instead of
-  // a single running index.
+
+
+
+
   function parseDiffFiles(rawText) {
     const lines = String(rawText || "").split("\n");
     if (lines.length && lines[lines.length - 1] === "") lines.pop();
@@ -1031,11 +1031,11 @@
     }).join("");
   }
 
-  // Pull-request badge (adhoc #44): a visual fingerprint of the PR. One tile
-  // per changed file — a file-type glyph over a green/red bar showing that
-  // file's additions:deletions ratio — grouped by directory with a labeled
-  // connector line. Mirrors the SVG the worker attaches to federated
-  // PR-opened notes (src/pull_badge.py) and the desktop Badge tab.
+
+
+
+
+
   const fileBadgeStyles = {
     ts: ["TS", "#3178c6"], tsx: ["TSX", "#3178c6"],
     js: ["JS", "#f1e05a"], mjs: ["JS", "#f1e05a"], cjs: ["JS", "#f1e05a"],
@@ -1068,8 +1068,8 @@
     "package.json": ["NPM", "#cb3837"], "package-lock.json": ["NPM", "#cb3837"],
   };
 
-  // Directory connector labels show just the folder name (not the whole
-  // path) capped to 8 chars, e.g. "one/two/three" -> "three".
+
+
   function dirBadgeLabel(dir) {
     const name = dir === "/" ? "/" : dir.slice(dir.lastIndexOf("/") + 1);
     return name.length > 8 ? `${name.slice(0, 8)}…` : name;
@@ -1090,8 +1090,8 @@
     const dels = file.dels || 0;
     const total = adds + dels;
     const addPct = total ? Math.round((adds / total) * 100) : 0;
-    // Tiny per-file diff strip, same height as the glyph square: a green
-    // slice on top sized to the addition share, red below for deletions.
+
+
     const diffStrip = total
       ? `<span class="block w-full" style="height:${addPct}%;background:#3fb950"></span><span class="block w-full" style="height:${100 - addPct}%;background:#f85149"></span>`
       : '<span class="block h-full w-full" style="background:#30363d"></span>';
@@ -1102,8 +1102,8 @@
       </div>`;
   }
 
-  // Deterministic hue per author name so the icon is stable across loads
-  // without needing an avatar fetch (mirrors loadRepoAboutContributors).
+
+
   function badgeAuthorAvatarHtml(author) {
     const name = String(author || "unknown");
     let hash = 0;
@@ -1118,8 +1118,8 @@
     if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">The badge appears once the pull request\'s committed patch is available from the live mirror.</div>';
     const additions = rows.reduce((sum, file) => sum + (file.adds || 0), 0);
     const deletions = rows.reduce((sum, file) => sum + (file.dels || 0), 0);
-    // Cluster files by directory, preserving a sorted order so each directory
-    // forms one contiguous group under its labeled connector line.
+
+
     const groups = [];
     [...rows].sort((a, b) => String(a.path || "").localeCompare(String(b.path || ""))).forEach((file) => {
       const path = String(file.path || "file");
@@ -1205,14 +1205,14 @@
     return `<div class="grid gap-3 border-b border-border bg-background p-3 sm:grid-cols-2">${frame("Before", image.old)}${frame("After", image.new)}</div>`;
   }
 
-  // Large diffs used to be replaced by a "Diff hidden for speed" notice because
-  // laying out every changed file at once is what made a big PR page crawl. Each
-  // file block instead opts into `content-visibility: auto`, so the browser lays
-  // out and paints only the files inside (or near) the visible window and skips
-  // the rest until they scroll in — the whole diff is present for find-in-page
-  // and anchors, and nothing offscreen costs layout (adhoc #421). The intrinsic
-  // size keeps the scrollbar honest: ~1.25rem per rendered row, capped at the
-  // block's own max height so the estimate never runs away on a huge file.
+
+
+
+
+
+
+
+
   function diffFileBlockIntrinsicSize(file) {
     const rows = file.binary ? 6 : Math.max(1, (file.rows || []).length);
     return `${Math.min(36, 2.5 + rows * 1.25).toFixed(2)}rem`;
@@ -1269,10 +1269,10 @@
     }
   }
 
-  // A pull's conversation is an append-only, signed event log stored as
-  // pulls/<N>/NNNN-<type>.md files alongside pull.md (see PullStore.h on the
-  // desktop client). Types: comment, review, line-comment, thread-comment,
-  // thread-reply, thread-state, suggestion-state.
+
+
+
+
   function pullEventTypeMeta(ev) {
     const neutral = "border-border bg-secondary/60 text-muted-foreground";
     if (ev.type === "review") {
@@ -1288,9 +1288,9 @@
     return { label: "comment", tone: neutral };
   }
 
-  // Approve/request-changes/comment state per reviewer, derived the same way
-  // the desktop's PullStore::reviewSummary() does: the *last* review event
-  // per author wins.
+
+
+
   function pullReviewSummary(events) {
     const rows = Array.isArray(events) ? events : [];
     const byAuthor = new Map();
@@ -1307,9 +1307,9 @@
     const authorKey = String(pullAuthor || "").trim();
     const latest = new Map();
     for (const ev of Array.isArray(events) ? events : []) {
-      // Inbox reviews are not authoritative merge evidence until the owner
-      // node drains, validates, commits, and republishes them on the pinned
-      // pull-metadata ref.
+
+
+
       if (ev?.type !== "review" || ev.pending === true) continue;
       const key = String(ev.author || "").trim();
       if (!key || key === authorKey) continue;
@@ -1336,8 +1336,8 @@
     const gateTone = policy.ready ? "text-emerald-400" : "text-amber-400";
     const gate = `<span class="mb-2 flex items-center justify-between gap-2"><strong class="${gateTone}">${policy.ready ? "Peer gate met" : "Peer approval required"}</strong><span>${policy.approvals} approved${policy.blockers ? ` · ${policy.blockers} blocking` : ""}</span></span>`;
     if (!reviewers.length) return `${gate}<span>No reviews yet</span>`;
-    // sidebarSection wraps this in a <p>, so rows must stay phrasing content
-    // (span, not div) or the browser silently closes the paragraph early.
+
+
     return gate + reviewers.map((reviewer) => {
       const tone = reviewer.state === "approved" ? "text-emerald-400" : reviewer.state === "changes_requested" ? "text-red-400" : "text-muted-foreground";
       const label = reviewer.state === "approved" ? "Approved" : reviewer.state === "changes_requested" ? "Requested changes" : "Commented";
@@ -1421,10 +1421,10 @@
     }).filter(Boolean);
   }
 
-  // A discussion's replies are an append-only, signed event log stored as
-  // .forkmesh/discussions/<N>/NNNN-comment.md files alongside discussion.md (see
-  // DiscussionStore.cpp on the desktop client). Reuses the pull conversation
-  // row renderer since a discussion comment event has the same shape.
+
+
+
+
   function renderRepoDiscussionConversation(events) {
     const rows = Array.isArray(events) ? events : [];
     if (!rows.length) return '<div class="px-4 py-3 text-sm text-muted-foreground">No replies yet on this discussion.</div>';
@@ -1960,17 +1960,17 @@
     }
   }
 
-  // The connector token is a locally minted bearer string, so nothing has to
-  // be fetched to have one: the first copy mints it right here in the desktop's
-  // own format, remembers it, and the copied prompt carries the lines that
-  // install it on the node. Copying is one click and never opens a dialog.
-  // Shift-clicking the button still opens the paste box, which is what a node
-  // that already published a connector needs (its own token wins).
+
+
+
+
+
+
   const MCP_CONNECTOR_TOKEN_KEY = "forkmesh.mcpConnectorToken";
   const MCP_CONNECTOR_TOKEN_PLACEHOLDER =
     "PASTE_CONNECTOR_TOKEN_FROM_FORKMESH_DESKTOP_SETTINGS_MCP";
-  // Matches qt_client/src/McpConnector.cpp: "fmcp_" + 32 CSPRNG bytes,
-  // base64url, unpadded — the shape isWellFormedToken() accepts.
+
+
   const MCP_CONNECTOR_TOKEN_BYTES = 32;
 
   function generateMcpConnectorToken() {
@@ -1986,8 +1986,8 @@
         btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
       );
     } catch (_) {
-      // No CSPRNG (ancient or locked-down browser): fall back to the
-      // placeholder rather than to a guessable token.
+
+
       return "";
     }
   }
@@ -2007,11 +2007,11 @@
     } catch (_) {}
   }
 
-  // The token for this copy. A plain click never asks anything: a remembered
-  // token is reused, otherwise one is generated on the spot and kept. Only a
-  // shift-click opens the paste box, for the node that already published its
-  // own connector; an empty answer there rotates to a freshly generated token
-  // rather than leaving the prompt carrying a placeholder.
+
+
+
+
+
   function ensureMcpConnectorToken(options) {
     let token = loadMcpConnectorToken();
     if (options?.replaceToken) {
@@ -2031,14 +2031,14 @@
     return token;
   }
 
-  // "Copy MCP prompt" on the issue detail page: one paste block that points an
-  // MCP-capable coding agent at the forkmesh MCP server so it pulls this issue,
-  // works it on a dedicated branch, submits the pull request, and reports back
-  // which model it ran as and its thinking setting. The block carries the whole
-  // connection — the mcpServers entry the desktop's Settings -> MCP tab shows
-  // (python3, tools/forkmesh_mcp_server.py, the repo checkout) plus the
-  // connector token the signed write tools require — so nothing has to be
-  // assembled by hand before the agent can run.
+
+
+
+
+
+
+
+
   function issueMcpPrompt(repo, number, values, token) {
     const repoSlug = `${repo.owner || "owner"}/${repo.name || "repo"}`;
     const title = String(values?.title || "").trim();
@@ -2050,8 +2050,8 @@
     const serverScript = "<FORKMESH_CHECKOUT>/tools/forkmesh_mcp_server.py";
     const repoCheckout = `<CHECKOUT_OF_${repoSlug}>`;
     const connectorToken = token || MCP_CONNECTOR_TOKEN_PLACEHOLDER;
-    // The same file tools/forkmesh_mcp_server.py reads (FORKMESH_MCP_CONNECTOR
-    // overrides it) and the desktop's Settings -> MCP tab writes.
+
+
     const connectorFile =
       "$XDG_DATA_HOME/ForkMesh/ForkMesh/mcp/connector.json (default ~/.local/share/ForkMesh/ForkMesh/mcp/connector.json)";
     const configuration = {
@@ -2066,10 +2066,10 @@
         },
       },
     };
-    // The token was minted in the browser, so it only unlocks the write tools
-    // once this machine's connector file holds it. An existing connector is
-    // never overwritten: that would demote every other agent config still
-    // holding the old string, and the node owner already has a token to use.
+
+
+
+
     const tokenNote = token
       ? [
           `FORKMESH_MCP_TOKEN above is a connector token minted for this prompt. Activate it before step 1: if ${connectorFile} does not exist, create it (mode 0600) containing {"version": 1, "token": "${connectorToken}", "node": "", "label": "copied MCP prompt", "created_ms": <epoch milliseconds>} - the same record the desktop app writes. If that file already exists, leave it exactly as it is and use its own "token" value in the configuration above instead - the node already published a connector and overwriting it would revoke every other agent.`,
@@ -2106,9 +2106,9 @@
     const detail = state.repoRecordDetail;
     const repo = state.selectedRepo;
     if (!button || !repo || detail?.kind !== "issues") return false;
-    // The button renders for signed-out visitors too; the prompt itself is
-    // only handed out to an authenticated account. Bounce through login and
-    // land back on this exact issue.
+
+
+
     if (!state.session?.sessionToken) {
       location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
       return false;
@@ -2156,20 +2156,20 @@
       isIssues && !options.pending
         ? `<button type="button" data-repo-marketing-initiative class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="megaphone" class="h-3.5 w-3.5 text-primary"></i>Move to Marketing initiatives</button>`
         : "";
-    // Always rendered, signed in or not: a signed-out click bounces through
-    // /login and returns here, so the visitor discovers the workflow either way.
+
+
     const mcpPromptAction =
       isIssues && !options.pending
         ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and a generated connector token included (shift-click to paste a token this node already published)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
         : "";
     const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
-    // Always mount the timeline container for issues so a comment posted from
-    // the form below has somewhere to land, but keep it borderless while empty.
+
+
     const issueTimelineSection = isIssues
       ? `<div data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}" class="${issueTimeline ? "border-t border-border" : ""}">${issueTimeline}</div>`
       : "";
-    // A pending issue is still awaiting its mirror commit and has no number yet,
-    // so there's nothing for a comment's signature to bind to.
+
+
     const issueCommentSection = isIssues && !options.pending
       ? renderIssueCommentForm(number)
       : "";
@@ -2298,9 +2298,9 @@
     const config = repoCollectionConfig[kind];
     const container = $(`[data-repo-${kind}]`);
     if (!repo || !config || !container || !number) return;
-    // Issues just submitted from this session await their mirror commit, so
-    // there's nothing to fetch from the mirror yet - render
-    // the detail straight from the local placeholder instead.
+
+
+
     const pendingItem = kind === "issues"
       ? state.issuesView.items.find((item) => item.pending && item.localId === number)
       : null;
@@ -2325,8 +2325,8 @@
         : {};
       let blob;
       if (kind === "issues") {
-        // The record lives under open/<n>/ or closed/<n>/ (pre-split mirrors:
-        // <n>/ at the root); probe the candidates until one answers.
+
+
         let lastError = null;
         for (const path of issueJsonCandidatePaths(Number(number))) {
           try {
@@ -2340,10 +2340,10 @@
       } else {
         blob = await fetchRepoJson(repoLiveUrl(repo, "blob", { path: recordPath, ...refParams }));
       }
-      // Issues are signed-event JSON (issue-N.json), not markdown front matter,
-      // so parse them the same way the list does and map into the shape the
-      // detail renderer expects. Any live mirror serving .forkmesh/issues/
-      // answers this blob read, so the detail loads whenever the list does.
+
+
+
+
       const parsed = kind === "issues"
         ? issueDetailParsed(blobText(blob), number)
         : parseFrontMatter(blobText(blob));
@@ -2376,9 +2376,9 @@
     if (badge) badge.textContent = formatCount(count);
   }
 
-  // Amber "+N" badge for inbox items the relay is still holding for the owner
-  // node's next sync — signed submissions that exist but aren't in the served
-  // git mirror yet, so the regular tab count can't include them.
+
+
+
   function setRepoTabPending(tab, count) {
     const badge = $(`[data-dashboard-repo-tab-pending="${tab}"]`);
     if (!badge) return;
@@ -2390,10 +2390,10 @@
     }
   }
 
-  // Star/unstar a repo (GET/POST/DELETE /api/repo/o/r/star). A star is a
-  // plain per-account preference, not part of the owner-signed catalog
-  // record, so it's fetched and toggled separately from the rest of the
-  // repo's data.
+
+
+
+
   function setRepoStarButtonState(button, starred, count) {
     if (!button) return;
     button.setAttribute("aria-pressed", starred ? "true" : "false");
@@ -2419,12 +2419,12 @@
       if (!response.ok || data.ok === false || !document.body.contains(button)) return;
       setRepoStarButtonState(button, Boolean(data.starred), data.count);
     } catch (_) {
-      /* offline relay — star count stays at its initial placeholder */
+
     }
   }
 
-  // Hydrates every rendered star button in `root` (repo list cards, profile
-  // rows) with its real starred state + count, one request per distinct repo.
+
+
   async function hydrateRepoStarButtons(root) {
     const buttons = Array.from((root || document).querySelectorAll("[data-repo-star-button][data-repo-key]"));
     const byKey = new Map();
@@ -2466,17 +2466,17 @@
       if (!response.ok || data.ok === false) throw new Error(data.error || `HTTP ${response.status}`);
       setRepoStarButtonState(button, Boolean(data.starred), data.count);
     } catch (_) {
-      /* best-effort — button keeps its last known state */
+
     } finally {
       button.disabled = false;
     }
   }
 
-  // Content-free pending-inbox tallies (GET /api/repo/o/r/pending). Plain
-  // fetch, not the caching fetchJson — the counts drop as soon as any online
-  // node (the source of truth or an approved mirror) merges the submissions,
-  // so they must refresh on every repo open. Best-effort: a miss just leaves
-  // the badges hidden.
+
+
+
+
+
   async function loadRepoPendingCounts(repo) {
     try {
       const response = await fetch(`${repoApiBase(repo)}/pending`, {
@@ -2488,22 +2488,22 @@
       ["issues", "pulls", "discussions"].forEach((tab) => {
         setRepoTabPending(tab, pending[tab]);
       });
-      // Remember the server-side issue tally so the Issues list can show the
-      // pending submissions as rows (adhoc #97), not just as a tab badge - the
-      // count is the only thing we can surface publicly, since the items
-      // themselves stay encrypted and owner-gated in the relay's inbox.
+
+
+
+
       state.pendingIssueCounts = state.pendingIssueCounts || {};
       state.pendingIssueCounts[pendingIssuesRepoKey(repo)] =
         Number(pending.issues) || 0;
       applyRemotePendingIssueCount(repo);
     } catch (_) {
-      /* offline relay — badges stay hidden */
+
     }
   }
 
-  // The relay only reports a COUNT of issue submissions awaiting an eligible
-  // mirror (their contents are encrypted). Surface that count in the Issues
-  // list as "syncing..." placeholder rows until a mirror commits them.
+
+
+
   function remotePendingIssuePlaceholders(count) {
     const list = [];
     for (let i = 0; i < count; i += 1) {
@@ -2529,14 +2529,14 @@
     if (pendingIssuesRepoKey(view.repo) !== pendingIssuesRepoKey(repo)) return;
     const count = Number(state.pendingIssueCounts?.[pendingIssuesRepoKey(repo)]) || 0;
     const items = view.items.filter((item) => !item.remotePlaceholder);
-    // Items already shown as pending (this session's optimistic add and the
-    // session's optimistic add) covers part of the server tally; only pad
-    // the remainder so we never double-count a submission we can already show.
+
+
+
     const pendingReals = items.filter((item) => item.pending);
     const rest = items.filter((item) => !item.pending);
     const need = Math.max(0, count - pendingReals.length);
     const next = [...pendingReals, ...remotePendingIssuePlaceholders(need), ...rest];
-    // Skip the re-render when nothing changed (placeholders already correct).
+
     if (next.length === view.items.length &&
         view.items.filter((item) => item.remotePlaceholder).length === need)
       return;
@@ -2544,9 +2544,9 @@
     renderRepoIssues();
   }
 
-  // Refreshes the "N Open" / "N Closed" counts shown in an issues/pulls panel
-  // header once the real records are loaded (the initial render only knows a
-  // bundled total, not the open/closed split).
+
+
+
   function setRepoCollectionCounts(kind, openCount, closedCount) {
     const openEl = $(`[data-repo-collection-open-count="${kind}"]`);
     if (openEl) openEl.textContent = tabCountLabel(openCount);
@@ -2556,12 +2556,12 @@
 
   function applyServedCounts(counts) {
     if (!counts || typeof counts !== "object") return;
-    // The Issues header shows OPEN issues only (issue #397): closed issues are
-    // opt-in behind the Closed filter, so the tab badge counts the open issues
-    // the host serves (counts.openIssues), and the panel's "N Open / N Closed"
-    // split is filled from the served open/closed tallies. Older hosts that only
-    // report a bundled total fall back to that total; the first view of the
-    // Issues tab still refines the badge to the open count once issues load.
+
+
+
+
+
+
     const openIssues = Number.isFinite(Number(counts.openIssues))
       ? Number(counts.openIssues)
       : Number(counts.issues);
@@ -2574,30 +2574,30 @@
     if (Number.isFinite(Number(counts.discussions))) setRepoTabCount("discussions", Number(counts.discussions));
   }
 
-  // The tab badges are seeded from the catalog's last-published tallies, which
-  // lag the live mirror (e.g. issues opened since the owner node last
-  // republished). The authoritative served counts ride only on the ROOT tree
-  // reply (RepoHost::rootCountsFor, gated on path.isEmpty()), so a deep link
-  // straight into a subfolder — e.g. browsing .forkmesh/issues/open — fetches a
-  // subpath tree that carries no counts, leaving the Issues badge stuck on the
-  // stale seed (showing 7 while the open/ folder holds 11). Refresh from the
-  // mirror's root counts in that one case; best-effort, so an offline mirror
-  // just keeps the catalog seed.
+
+
+
+
+
+
+
+
+
   async function refreshServedCounts(repo) {
     try {
       const data = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: "" }));
       if (data && data.counts) applyServedCounts(data.counts);
     } catch (_) {
-      /* offline mirror — badges keep their catalog seed */
+
     }
   }
 
-  // Free-text issue search: substring match (case-insensitive) over the
-  // number, title, body snippet, author, and the status/labels/milestone
-  // meta string — everything renderRepoRecordList already shows per row, so
-  // "matches the search" and "matches what's visibly displayed" stay the
-  // same thing. Runs client-side over the already-loaded (batched) issue set
-  // rather than a new network call, per the existing loadRepoIssues contract.
+
+
+
+
+
+
   function issueMatchesQuery(issue, query) {
     const q = String(query || "").trim().toLowerCase();
     if (!q) return true;
@@ -2613,17 +2613,17 @@
     if (!container) return;
     const issuesView = state.issuesView;
     const filtered = issuesView.items.filter((issue) => {
-      // A deleted issue (its creator tombstoned it) is shown only under "All",
-      // badged, so it doesn't pad the Open/Closed lists the tab count tracks
-      // (adhoc #16). An unauthorized deletion attempt leaves the issue in its
-      // normal Open/Closed list, flagged.
+
+
+
+
       if (issue.deleted && issuesView.filter !== "all") return false;
       if (issuesView.filter === "all") return true;
-      // "Open" means "not closed", matching the desktop advert and served counts
-      // (RepoHost::countOpenIssues / mirrorOpenIssueCount both use status !=
-      // "closed"). A strict status === "open" test dropped issues with any other
-      // non-closed status (e.g. "reopened") from the Open view, so the tab and
-      // list showed fewer issues than the Mirror nodes count (adhoc #96).
+
+
+
+
+
       if (issuesView.filter === "open") return issue.status !== "closed";
       return issue.status === "closed";
     }).filter((issue) => issueMatchesQuery(issue, issuesView.query));
@@ -2631,10 +2631,10 @@
     const filterBar = `<div class="flex items-center gap-1 border-b border-border px-4 py-2">
       ${["open", "closed", "all"].map((stateName) => `<button type="button" data-dashboard-issue-filter="${stateName}" aria-pressed="${stateName === "open" ? "true" : "false"}" class="inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${stateName === issuesView.filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}">${stateName[0].toUpperCase() + stateName.slice(1)}</button>`).join("")}
     </div>`;
-    // When the mirror is counting issues we couldn't fetch (unreadable blobs)
-    // or is holding more than the 50 we page in, surface the gap with a Retry
-    // button instead of letting the tab quietly disagree with the Mirror nodes
-    // count.
+
+
+
+
     const missing = issuesView.missing || [];
     const truncated = issuesView.truncated || 0;
     const warnParts = [];
@@ -2648,9 +2648,9 @@
           <button type="button" data-repo-issues-reload class="inline-flex h-7 items-center gap-1 rounded-md border border-border bg-background px-2.5 font-medium text-foreground hover:bg-secondary"><i data-lucide="refresh-cw" class="h-3 w-3"></i>Retry</button>
         </div>`
       : "";
-    // While the closed history is still being paged in (issue #427), show a
-    // loader in place of the "No issues" empty state so the Closed view doesn't
-    // flash empty before its rows arrive.
+
+
+
     const emptyLabel = issuesView.closedLoading
       ? loadingHtml("Loading closed issues from the live mirror...")
       : issuesView.query
@@ -2668,9 +2668,9 @@
       btn.setAttribute("aria-pressed", btn.dataset.dashboardIssueFilter === filter ? "true" : "false");
       btn.className = `inline-flex h-7 items-center rounded-md px-2.5 text-xs font-medium transition-colors ${btn.dataset.dashboardIssueFilter === filter ? "bg-secondary text-foreground" : "text-muted-foreground hover:text-foreground"}`;
     });
-    // Closed issues are paged in lazily (issue #427); fetch them the first time
-    // the Closed or All view is opened. loadClosedIssues renders a loading state
-    // and then the results itself.
+
+
+
     if ((filter === "closed" || filter === "all")
         && !state.issuesView.closedLoaded && !state.issuesView.closedLoading) {
       loadClosedIssues();
@@ -2686,13 +2686,13 @@
     try {
       let tree;
       try {
-        // List the git tree under .forkmesh/issues/ (which also reveals the
-        // open//closed/ status subdirs), then read one issue-${number}.json
-        // blob for each issue from wherever it lives.
+
+
+
         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
-          // No issues have been committed to the mirror yet.
+
           state.issuesView.items = [];
           state.issuesView.filter = "open";
           state.issuesView.query = "";
@@ -2709,10 +2709,10 @@
         throw error;
       }
       const rootEntries = Array.isArray(tree.entries) ? tree.entries : [];
-      // number -> record path, split by status. The open/ and closed/ subdirs
-      // (adhoc #14) hold the numbered folders; pre-split legacy mirrors keep
-      // them directly under the root with no status until their blob is read.
-      // A number living in a status subdir supersedes a stale legacy copy.
+
+
+
+
       const openPaths = new Map();
       const closedPaths = new Map();
       const legacyPaths = new Map();
@@ -2738,15 +2738,15 @@
             legacyPaths.delete(number);
           });
       }
-      // The Issues tab defaults to Open (issue #427): page in only the open
-      // (and unknown-status legacy) titles now so they show fast, and defer the
-      // closed history - often far larger - to loadClosedIssues, run the first
-      // time the Closed/All filter is opened. Legacy folders ride the open page
-      // and get reclassified once their blob reveals a status.
+
+
+
+
+
       const pathByNumber = new Map([...legacyPaths, ...openPaths]);
       const numbered = Array.from(pathByNumber.keys()).sort((a, b) => b - a);
-      // Cap the page at 50 folders, but remember when the mirror holds more so
-      // the panel can warn instead of silently hiding them.
+
+
       const dirs = numbered.slice(0, 50);
       const { items, missing } = await fetchIssuePage(repo, pathByNumber, dirs);
       items.sort((a, b) => Number(b.number) - Number(a.number));
@@ -2757,17 +2757,17 @@
       state.issuesView.truncated = Math.max(0, numbered.length - dirs.length);
       state.issuesView.repo = repo;
       state.issuesView.closedPaths = closedPaths;
-      // Closed folders live only in closed/; there is nothing left to lazy-load
-      // once that subdir is empty (a pure-legacy mirror keeps its closed items
-      // in `items` already, classified by status).
+
+
+
       state.issuesView.closedLoaded = closedPaths.size === 0;
       state.issuesView.closedLoading = false;
-      // Counts come from the folder listing, not the paged-in blobs, so they
-      // stay right past the 50-per-page cap and match the folder-based tally the
-      // Mirror nodes tab shows (adhoc #96 / issue #397). Legacy pre-split folders
-      // carry no status in the tree, so fold in their loaded split - a
-      // creator-deleted issue is excluded, an unauthorized deletion attempt
-      // still counts (adhoc #16).
+
+
+
+
+
+
       const loadedLegacy = items.filter((issue) => legacyPaths.has(Number(issue.number)));
       const legacyOpen = loadedLegacy.filter(
         (issue) => issue.status !== "closed" && !issue.deleted).length;
@@ -2784,12 +2784,12 @@
     }
   }
 
-  // Reads and parses the issue-N.json blobs for a page of numbered folders in
-  // ONE batched request. A batched read can drop entries under relay load, so
-  // retry just the misses once - a transient gap must not quietly shrink the
-  // count vs the Mirror nodes tab (whose issueCount lists every folder).
-  // Anything still unreadable becomes a flagged placeholder row instead of
-  // vanishing. Returns { items, missing } (missing = still-unreadable numbers).
+
+
+
+
+
+
   async function fetchIssuePage(repo, pathByNumber, dirs) {
     const items = [];
     let missing = [];
@@ -2816,11 +2816,11 @@
     return { items, missing };
   }
 
-  // Lazily pages in the closed issues the first time the Closed or All filter is
-  // opened (issue #427). The initial Issues load only pages the open set for
-  // speed, so this fills the closed history in on demand, appends it to the
-  // already-loaded open items, and re-renders. The open/closed counts are not
-  // touched - they were already derived from the full folder listing.
+
+
+
+
+
   async function loadClosedIssues() {
     const view = state.issuesView;
     if (view.closedLoaded || view.closedLoading) return;
@@ -2837,8 +2837,8 @@
     try {
       const { items, missing } = await fetchIssuePage(
         view.repo || state.selectedRepo, closedPaths, dirs);
-      // A number already loaded (e.g. a legacy closed copy) keeps its existing
-      // row; the status-subdir copy would be identical.
+
+
       const have = new Set((view.items || []).map((issue) => Number(issue.number)));
       const fresh = items.filter((issue) => !have.has(Number(issue.number)));
       view.items = [...(view.items || []), ...fresh];
@@ -2847,22 +2847,22 @@
       view.truncated = (view.truncated || 0) + Math.max(0, numbers.length - dirs.length);
       view.closedLoaded = true;
     } catch (_) {
-      /* leave closedLoaded false so a later toggle retries */
+
     } finally {
       view.closedLoading = false;
       renderRepoIssues();
     }
   }
 
-  // --- Projects tab (issue #384) -------------------------------------------
+
 
   function ganttDayLabel(ms) {
     return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
 
-  // Percent of a project's linked issues that are closed; falls back to the
-  // linked milestone's issues (within the loaded window) when nothing is
-  // linked directly. Returns -1 when there is nothing to measure.
+
+
+
   function projectProgress(project, issues) {
     const linked = issues.filter((issue) => project.issues.includes(issue.number));
     const pool = linked.length
@@ -2901,15 +2901,15 @@
         if (!blob) return null;
         return parseProjectJson(blobText(blob), number);
       }).filter(Boolean);
-      // The gantt rows and progress bars need the linked issues' dates and
-      // states, so read exactly those issue files in one batched request.
+
+
       const linkedNumbers = [...new Set(projects.flatMap((project) => project.issues))]
         .filter((number) => Number.isFinite(number) && number > 0);
       let issues = [];
       if (linkedNumbers.length) {
-        // Each record lives at open/<n>/, closed/<n>/, or the pre-split legacy
-        // <n>/; ask for every candidate in the one batch and keep whichever
-        // answered.
+
+
+
         const issueBlobs = await fetchRepoBlobs(
           repo, linkedNumbers.flatMap((number) => issueJsonCandidatePaths(number)));
         issues = linkedNumbers
@@ -2919,8 +2919,8 @@
           })
           .filter(Boolean);
       }
-      // Milestone-linked progress reads whatever issues the Issues tab already
-      // loaded (its most-recent window) - good enough for an overview ratio.
+
+
       (state.issuesView.items || []).forEach((issue) => {
         if (!issues.some((existing) => existing.number === issue.number)) issues.push(issue);
       });
@@ -3002,11 +3002,11 @@
     }).join("");
   }
 
-  // The gantt view: one labeled row per project (rounded track + progress
-  // fill) with its linked issues indented beneath, over a shared month axis
-  // with a "today" rule. Chrome uses theme tokens so both modes stay readable;
-  // every bar is direct-labeled by its row so color never carries meaning
-  // alone.
+
+
+
+
+
   function renderRepoProjectsGantt(projects, issues) {
     const issueByNumber = new Map(issues.map((issue) => [issue.number, issue]));
     const rows = [];
@@ -3052,7 +3052,7 @@
     max += pad;
     const span = max - min;
     const pct = (ms) => Math.min(100, Math.max(0, (ms - min) * 100 / span));
-    // Month ticks (day ticks when the whole range fits inside ~2 months).
+
     const ticks = [];
     const cursor = new Date(min);
     cursor.setHours(0, 0, 0, 0);
@@ -3153,17 +3153,17 @@
     }
   }
 
-  // True when the logged-in account is the node that owns (hosts) this repo -
-  // the only account whose node can actually pick an "assign to agent" issue up
-  // and run a coding agent on it.
+
+
+
   function sessionOwnsRepo(repo) {
-    // A repo's owner is a NODE account name. The logged-in account matches
-    // either directly (it IS that node) or because the user OWNS that node
-    // (adhoc #53 claim/link) — state.session.nodes is the list of node names
-    // the user owns, the same alias set profileContributionAliases folds in.
-    // Without this, a user whose repos are published by a linked node account
-    // could never edit About / assign agents from the web (backend
-    // _account_owns_node applies the identical rule).
+
+
+
+
+
+
+
     const repoOwner = String(repo?.owner || "").toLowerCase();
     if (!repoOwner) return false;
     const me = String(state.session?.nodeName || "").toLowerCase();
@@ -3172,11 +3172,11 @@
     return owned.some((n) => String(n || "").toLowerCase() === repoOwner);
   }
 
-  // True when the logged-in account may assign an issue to a coding agent on
-  // this repo's node: the repo owner itself, or an admin acting on the owner's
-  // behalf (admin node-ownership, adhoc #141). The backend independently
-  // re-checks the account name against owner/admin status (no password,
-  // adhoc #225), so this is only the client-side gate for showing the checkbox.
+
+
+
+
+
   function sessionCanAssignAgent(repo) {
     return sessionOwnsRepo(repo) || Boolean(state.session?.isAdmin);
   }
@@ -3226,8 +3226,8 @@
   }
 
   async function saveRepoAboutFromWeb(repo, description, media = {}) {
-    // media may carry logoPng / bannerPng (data-URL PNG, "" = remove). Only
-    // keys actually present are sent, so an untouched image stays unchanged.
+
+
     const response = await fetch(`${repoApiBase(repo)}/about`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -3282,14 +3282,14 @@
     return body;
   }
 
-  // --- Manage federated posts (issue #426) ---------------------------------
-  //
-  // The owner-only "Fediverse posts" dropdown in the About rail lists the
-  // repo actor's posts and lets the owner delete one. A delete makes the relay
-  // broadcast a Delete(Tombstone) to every follower's server, so the post also
-  // disappears from Mastodon — not just the repo's own profile feed. The
-  // backend re-checks ownership from the session token, so this is only the
-  // client surface (same session-auth shape as saveRepoAboutFromWeb).
+
+
+
+
+
+
+
+
 
   async function fetchRepoFediPosts(repo) {
     const response = await fetch(`${repoApiBase(repo)}/ap-posts`, {
@@ -3336,7 +3336,7 @@
     list.innerHTML = posts.map((post) => {
       const id = escapeHtml(String(post.id || ""));
       const when = relativeTimeLabel(Number(post.published || 0));
-      // Strip our own generated HTML down to a plain-text preview.
+
       const preview = String(post.content || "")
         .replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
       const text = escapeHtml(preview.slice(0, 140) || "(no text)");
@@ -3374,8 +3374,8 @@
     if (trigger) trigger.disabled = true;
     try {
       await deleteRepoFediPost(repo, id);
-      // Drop the row in place; the follower count/profile feed catch up on
-      // the next reload.
+
+
       trigger?.closest("[data-repo-fedi-post]")?.remove();
       const list = $("[data-repo-fedi-posts-list]");
       if (list && !list.querySelector("[data-repo-fedi-post]")) {
@@ -3387,15 +3387,15 @@
     }
   }
 
-  // --- About rail: fediverse badge + desktop-parity sections ---------------
-  //
-  // The desktop app's About panel shows the repo's canonical info from
-  // .forkmesh/info.json plus latest release / languages / files /
-  // contributors it computes from the local git mirror. The website mirrors
-  // all of it from data it can already reach: the live-mirror tunnel (blob,
-  // tree, history) and the relay's public GET /about (branding + fediverse
-  // follower count). Every section is best-effort and independent — a dead
-  // host must not blank the whole rail.
+
+
+
+
+
+
+
+
+
 
   const REPO_LANGUAGE_EXTENSIONS = {
     c: "C", h: "C++", cc: "C++", cpp: "C++", cxx: "C++", hpp: "C++",
@@ -3419,8 +3419,8 @@
   };
 
   function applyRepoAboutWebsite(website) {
-    // Sync the About rail's website link + the gear form's input. Empty value
-    // hides the link.
+
+
     const value = String(website || "").trim();
     const link = $("[data-repo-about-website]");
     const label = $("[data-repo-about-website-label]");
@@ -3586,8 +3586,8 @@
   }
 
   async function loadRepoFediverse(repo) {
-    // Public branding + follower count from the relay (GET /about). Fills the
-    // Watch button count, the popover, and the social badge header.
+
+
     try {
       const body = await fetchJson(`${repoApiBase(repo)}/about`);
       if (!repoAboutStillCurrent(repo) || !body?.ok) return;
@@ -3595,8 +3595,8 @@
       $$("[data-repo-watch-count], [data-repo-watch-followers], [data-repo-social-followers]").forEach((el) => {
         el.textContent = formatCount(followers);
       });
-      // WHO is watching: newest followers (handle + remote profile link),
-      // each row captioned with what they follow.
+
+
       const watchList = $("[data-repo-watch-list]");
       if (watchList) {
         const entries = Array.isArray(body.fediverse?.followersList)
@@ -3617,12 +3617,12 @@
           watchList.classList.add("hidden");
         }
       }
-      // Owner switched federation off (or the instance did): say so instead
-      // of silently showing zeros.
+
+
       $("[data-repo-watch-disabled]")?.classList.toggle(
         "hidden", body.fediverse?.enabled !== false);
-      // Seed the gear form's federation switches with the stored settings so
-      // an untouched save round-trips them unchanged.
+
+
       const apSettings = body.fediverse?.settings;
       if (apSettings && typeof apSettings === "object") {
         [["[data-repo-ap-federate]", "federate"],
@@ -3632,10 +3632,10 @@
           if (box && key in apSettings) box.checked = Boolean(apSettings[key]);
         });
       }
-      // Admin-only operational-alert switches, seeded the same way. Absent or
-      // never saved reads as off, which is the stored default.
-      // Mirrors may report their own actor handle, but the repository UI
-      // advertises the canonical ForkMesh actor everywhere.
+
+
+
+
       const handle = "@forkmesh.forkmesh@forkmesh.com";
       if (handle) {
         const handleEl = $("[data-repo-watch-handle]");
@@ -3644,7 +3644,7 @@
         if (copyButton) copyButton.setAttribute("data-dashboard-copy", handle);
         const badgeHandle = $("[data-repo-social-handle]");
         if (badgeHandle) { badgeHandle.textContent = handle; badgeHandle.title = handle; }
-        // Point every "View on Mastodon" link at the authoritative handle.
+
         $$("[data-repo-mastodon-link]").forEach((el) => {
           el.setAttribute("href", `https://mastodon.social/${handle}`);
         });
@@ -3670,12 +3670,12 @@
       if (body.description && !repo.description) {
         applyRepoAboutDescription(repo, body.description);
       }
-      // Relay-known website seeds the link/form; the committed
-      // .forkmesh/info.json (loadRepoAboutInfo) overrides it when the live
-      // mirror is reachable.
+
+
+
       if (body.website) applyRepoAboutWebsite(body.website);
       loadRepoLogoSuggestions(repo);
-    } catch (_) { /* fediverse card is an adornment, never an error */ }
+    } catch (_) {   }
   }
 
   async function loadRepoDigestPreview(repo) {
@@ -3709,8 +3709,8 @@
   }
 
   async function loadRepoAboutInfo(repo) {
-    // .forkmesh/info.json is the repo's own committed About (what the desktop
-    // shows); when present it wins over the relay catalog description.
+
+
     try {
       const blobs = await fetchRepoBlobs(repo, [".forkmesh/info.json"]);
       const blob = blobs[".forkmesh/info.json"];
@@ -3718,11 +3718,11 @@
       let info;
       try { info = JSON.parse(blobText(blob)); } catch (_) { return; }
       const about = String(info?.about || "").trim();
-      // The committed file is canonical, so it also seeds the gear editor —
-      // editing starts from exactly what the page (and the desktop app) show.
+
+
       if (about) applyRepoAboutDescription(repo, about);
       applyRepoAboutWebsite(String(info?.website || ""));
-    } catch (_) { /* host offline — keep catalog description */ }
+    } catch (_) {   }
   }
 
   async function loadRepoAboutRelease(repo) {
@@ -3762,7 +3762,7 @@
         ${when ? `<p class="mt-1.5">released ${escapeHtml(when)}</p>` : ""}`;
       section.classList.remove("hidden");
       window.lucide?.createIcons();
-    } catch (_) { /* no releases — section stays hidden */ }
+    } catch (_) {   }
   }
 
   function renderRepoAboutFileCount(count, partial) {
@@ -3773,8 +3773,8 @@
     section.classList.remove("hidden");
   }
 
-  // ranked: [[language, weight], ...] already sorted desc. weight is bytes when
-  // the host provided sizes (accurate), else a plain file count (fallback).
+
+
   function renderRepoAboutLanguages(ranked) {
     const total = ranked.reduce((sum, [, weight]) => sum + weight, 0);
     if (!ranked.length || !total) return;
@@ -3795,10 +3795,10 @@
     section.classList.remove("hidden");
   }
 
-  // The identicon shown for a contributor. Keyed on the git email (falling back
-  // to the name) so two distinct people never collapse to the same swatch the
-  // way a name-initial + single hue did — a two-tone gradient plus up-to-two
-  // initials keeps each user visually distinct and stable across loads.
+
+
+
+
   function repoContributorAvatar(contributor) {
     const name = String(contributor?.name || contributor?.email || "?").trim();
     const email = String(contributor?.email || "").trim().toLowerCase();
@@ -3815,9 +3815,9 @@
     return `<span title="${escapeHtml(title)}" class="flex h-8 w-8 items-center justify-center rounded-full border border-background font-mono text-[10px] font-semibold uppercase text-white shadow-sm" style="background-image:linear-gradient(135deg, hsl(${hue} 60% 46%), hsl(${hue2} 58% 38%))">${escapeHtml(initials)}</span>`;
   }
 
-  // contributors: [{name, email, commits}, ...] sorted desc. total overrides the
-  // rendered count (the host knows the full-history total even though only the
-  // top few avatars are shown).
+
+
+
   function renderRepoAboutContributors(contributors, total) {
     const rows = (Array.isArray(contributors) ? contributors : [])
       .filter((c) => c && (c.name || c.email));
@@ -3831,20 +3831,20 @@
     section.classList.remove("hidden");
   }
 
-  // Preferred path: one /stats round-trip the host answers from `git ls-tree -r`
-  // + `git shortlog`, so the file count is exact, languages are byte-weighted,
-  // and contributors span the whole history. Returns false (→ fall back to the
-  // per-directory walk + capped history) when the host is offline or too old to
-  // know the op.
+
+
+
+
+
   async function loadRepoAboutStats(repo) {
     let data;
     try {
       data = await fetchRepoJson(repoLiveUrl(repo, "stats"));
     } catch (_) {
-      return false; // host offline, or an old node that answered bad_op as a 5xx
+      return false;
     }
     if (!data || data.ok === false) return false;
-    if (!repoAboutStillCurrent(repo)) return true; // served, but the user navigated away
+    if (!repoAboutStillCurrent(repo)) return true;
     renderRepoAboutFileCount(Number(data.fileCount) || 0, false);
     const tally = {};
     Object.entries(data.extensions || {}).forEach(([ext, info]) => {
@@ -3872,7 +3872,7 @@
         if (language) tally[language] = (tally[language] || 0) + 1;
       });
       renderRepoAboutLanguages(Object.entries(tally).sort((a, b) => b[1] - a[1]).slice(0, 6));
-    } catch (_) { /* host offline — sections stay hidden */ }
+    } catch (_) {   }
   }
 
   async function loadRepoAboutContributors(repo) {
@@ -3889,26 +3889,26 @@
       renderRepoAboutContributors(
         ranked.map(([name, commitCount]) => ({ name, commits: commitCount })),
         ranked.length);
-    } catch (_) { /* host offline — section stays hidden */ }
+    } catch (_) {   }
   }
 
-  // --- Size map (adhoc #189) --------------------------------------------
-  //
-  // A multi-level pie (sunburst) of the repo's directory sizes, fed by the
-  // host's one-round-trip /sizes op (git ls-tree -r -l folded into a nested
-  // directory tree). Ring 1 holds the repo root's directories and each deeper
-  // ring subdivides its parent; a directory's direct files are the unfilled
-  // span at the end of its arc, so "mostly loose files" reads as mostly-empty
-  // arc (the HDGraph convention). The About rail shows a small static chart;
-  // clicking it opens the fullscreen interactive one (hover details,
-  // click-to-zoom, breadcrumb). Hosts too old to know the op just leave the
-  // section hidden.
 
-  // Top-level directories take these hues in size order (fixed slots, never
-  // cycled — everything past eight goes muted gray); descendants inherit the
-  // parent hue stepped toward the surface so depth reads as shade. Both
-  // variants validated against the site's dark (#010409) / light (#ffffff)
-  // surfaces.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   const REPO_SIZEMAP_DARK = ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"];
   const REPO_SIZEMAP_LIGHT = ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"];
   const REPO_SIZEMAP_GRAY = "#8a8a8a";
@@ -3923,9 +3923,9 @@
     return `rgb(${channel(0)} ${channel(1)} ${channel(2)})`;
   }
 
-  // One walk over the full tree assigns every directory its color, so a node
-  // keeps its hue in the mini chart, in the modal, and at every zoom level
-  // (color follows the entity, never its current rank on screen).
+
+
+
   function repoSizeMapColors(root) {
     const dark = document.documentElement.dataset.dashboardTheme !== "light";
     const palette = dark ? REPO_SIZEMAP_DARK : REPO_SIZEMAP_LIGHT;
@@ -3941,13 +3941,13 @@
     return colors;
   }
 
-  // Flattens the tree, re-rooted at `focus`, into drawable ring segments. Each
-  // segment keeps `nodes` (the chain from focus down to it) so a click can
-  // extend the zoom trail without re-walking the tree.
+
+
+
   function repoSizeMapSegments(focus, colors, rings) {
     if (!(Number(focus?.size) > 0)) return [];
     const segments = [];
-    const minSpan = (2 * Math.PI) / 900; // skip sub-0.4-degree slivers
+    const minSpan = (2 * Math.PI) / 900;
     const walk = (node, depth, from, span, chain) => {
       if (depth > rings) return;
       let at = from;
@@ -3989,9 +3989,9 @@
       `L ${px(r0, end)} ${py(r0, end)} A ${r0} ${r0} 0 ${large} 0 ${px(r0, a0)} ${py(r0, a0)} Z`;
   }
 
-  // Renders the sunburst as an SVG string. Every <path> carries
-  // data-seg="<index>" into the returned segments array so callers can wire
-  // hover/click; non-interactive charts get native <title> tooltips instead.
+
+
+
   function repoSizeMapSvg(focus, colors, opts) {
     const view = opts.view;
     const hole = opts.hole;
@@ -4014,8 +4014,8 @@
         `</path>`);
     });
     if (opts.labels) {
-      // Direct labels only where they comfortably fit (span over ~18 degrees);
-      // the hover tooltip carries everything else.
+
+
       const labelSize = opts.labelSize || 12;
       segments.forEach((seg) => {
         if (seg.a1 - seg.a0 < 0.32) return;
@@ -4032,8 +4032,8 @@
           `<tspan x="${x}" dy="1.2em" font-size="${labelSize - 1}">${escapeHtml(formatSize(seg.node.size))}</tspan></text>`);
       });
     }
-    // Center hub: a transparent circle catches zoom-out clicks over the whole
-    // hole; the two text lines ride on top with pointer events off.
+
+
     parts.push(`<circle data-sizemap-center="1" cx="${c}" cy="${c}" r="${hole - 2}" fill="transparent"${opts.canGoUp ? ' class="cursor-pointer" tabindex="0" role="button" aria-label="Zoom out one directory"' : ""}></circle>`);
     const title = String(opts.centerTitle || "");
     const shownTitle = title.length > 16 ? `${title.slice(0, 15)}…` : title;
@@ -4065,11 +4065,11 @@
     section.classList.remove("hidden");
   }
 
-  // --- Size map tab (adhoc #198) ----------------------------------------
-  //
-  // The interactive size map now lives on its own repo tab instead of a modal
-  // reached from the About rail. The tab lazy-loads /sizes on first open, then
-  // mounts the same zoomable sunburst explorer full-width.
+
+
+
+
+
   async function loadRepoSizeMapTab(repo) {
     const body = $("[data-repo-sizemap]");
     if (!body) return;
@@ -4112,20 +4112,20 @@
   async function loadRepoAboutSizeMap(repo) {
     try {
       const data = await fetchRepoJson(repoLiveUrl(repo, "sizes"));
-      if (!data || data.ok === false) return; // host offline, or a pre-sizes node
+      if (!data || data.ok === false) return;
       if (!repoAboutStillCurrent(repo)) return;
       renderRepoAboutSizeMap(repo, data);
-    } catch (_) { /* section stays hidden */ }
+    } catch (_) {   }
   }
 
-  // The detailed, interactive size map: click a directory to zoom in, the
-  // center (or a breadcrumb) to zoom back out, hover for exact sizes. Mounts
-  // into the caller's {chart, crumbs, summary, tip} elements (the Size map tab
-  // panel) — it carries no overlay/dialog chrome of its own.
+
+
+
+
   function mountRepoSizeMapExplorer({ repo, root, chart, crumbs, summary, tip }) {
     if (!chart || !crumbs || !summary || !tip) return;
     const colors = repoSizeMapColors(root);
-    let trail = [root]; // root … focus
+    let trail = [root];
     let segments = [];
 
     const render = () => {
@@ -4217,10 +4217,10 @@
     render();
   }
 
-  // The About rail's file/language/contributor sections come from /stats in one
-  // request; only when that host op is unavailable do we fall back to the slower
-  // directory walk and capped commit history. The size map rides its own /sizes
-  // op in parallel (hosts predating it just leave that section hidden).
+
+
+
+
   async function loadRepoAboutInsights(repo) {
     loadRepoAboutSizeMap(repo);
     if (await loadRepoAboutStats(repo)) return;
@@ -4230,7 +4230,7 @@
 
   function loadRepoAboutRail(repo) {
     if (!repo || repo.isPrivate) {
-      // Private repos have no fediverse presence; live sections still apply.
+
       loadRepoAboutInfo(repo);
       loadRepoAboutRelease(repo);
       loadRepoAboutInsights(repo);
@@ -4242,25 +4242,25 @@
     loadRepoAboutInsights(repo);
   }
 
-  // --- Owner-only "Agents" tab (adhoc #182) -----------------------------
-  //
-  // Shows the desktop app's running/finished Claude Code agent sessions for
-  // this repo, and lets the owner send a follow-up prompt to a live one. The
-  // desktop pushes the session list; the browser has no signing key, so it
-  // re-proves account ownership by node account name (no password, adhoc #225)
-  // via the same ownerAccount check the worker uses for the "Assign to agent"
-  // issue checkbox.
 
-  // A session counts as still actionable (promptable) unless it's reached one
-  // of these terminal states. Mirrors the worker/desktop's own status names;
-  // kept as an allowlist-of-terminal-states so an unrecognized/future status
-  // defaults to promptable rather than silently hiding the input.
+
+
+
+
+
+
+
+
+
+
+
+
   const AGENT_TERMINAL_STATUSES = new Set(["success", "failed", "stopped", "cleared"]);
 
-  // Mirrors the desktop app's known model aliases (agentModelLabel in
-  // MainWindowInternal.h) so a web-picked model renders the same short label
-  // once the agent session shows up in the Agents tab. Empty value leaves the
-  // provider's own default in place.
+
+
+
+
   const AGENT_MODEL_OPTIONS = [
     { value: "", label: "Provider default" },
     { value: "auto", label: "Auto" },
@@ -4270,9 +4270,9 @@
     { value: "fable", label: "Fable" },
   ];
 
-  // Agent-provider dropdown (adhoc #234): mirrors the desktop app's provider
-  // picker so the owner can choose which agent the node auto-starts. Empty
-  // value leaves the node's default provider in place.
+
+
+
   const AGENT_PROVIDER_OPTIONS = [
     { value: "", label: "Node default" },
     { value: "claude-code", label: "Claude Code" },
@@ -4280,12 +4280,12 @@
     { value: "openai", label: "OpenAI API" },
   ];
 
-  // Agent-model dropdown for the "start a new agent" composer (adhoc #276):
-  // lets the owner choose which Claude model the agent uses. Distinct from
-  // AGENT_MODEL_OPTIONS above (used by the issue "assign to agent" checkbox,
-  // adhoc #182) since that one mirrors the desktop app's short model aliases
-  // while this one sends a full model id. Empty value leaves the provider's
-  // own default in place.
+
+
+
+
+
+
   const AGENT_NEW_MODEL_OPTIONS = [
     { value: "", label: "Provider default" },
     { value: "claude-opus-4-8", label: "Claude Opus 4.8" },
@@ -4312,8 +4312,8 @@
       : (agent.issueTitle || "");
   }
 
-  // A summary row (adhoc #259): the inline prompt moved to the detail page, so
-  // the whole row is now a click target that opens the transcript + prompt view.
+
+
   function renderRepoAgentRow(agent) {
     const issueLabel = repoAgentIssueLabel(agent);
     return `
@@ -4335,9 +4335,9 @@
       </button>`;
   }
 
-  // Agent plaintext is intentionally unavailable in the browser.  The hybrid
-  // recipient private key lives only in the owner's desktop vault, so even a
-  // stale legacy row must not reactivate browser transcript/prompt surfaces.
+
+
+
   function renderRepoAgentDetail(agent) {
     return `
       <div data-repo-agent-detail data-repo-agent-id="${escapeHtml(String(agent.id ?? ""))}" class="grid gap-3 px-4 py-3 text-xs">
@@ -4350,12 +4350,12 @@
       </div>`;
   }
 
-  // The "start a new agent" composer lives in a single top modal opened from
-  // the robot button in the header nav (adhoc #62) - it was previously pinned
-  // above the repo tab bar (adhoc #278). Because the header is global, the
-  // modal carries its own repository picker instead of relying on a repo page
-  // being open. The node's prompt drain still recognises the "new" sentinel
-  // agent id and spins up an ad-hoc run.
+
+
+
+
+
+
   function agentModalRepoChoices() {
     const seen = new Set();
     const choices = [];
@@ -4379,8 +4379,8 @@
     const modal = $("#agentModal");
     if (!modal) return;
     if (open) {
-      // Provider/model options are JS constants shared with the desktop app's
-      // picker, so the static modal markup gets them filled in on first open.
+
+
       const providerSelect = modal.querySelector("[data-repo-agent-new-provider]");
       if (providerSelect && !providerSelect.options.length) {
         providerSelect.innerHTML = AGENT_PROVIDER_OPTIONS.map((opt) => `<option value="${escapeHtml(opt.value)}">${escapeHtml(opt.label)}</option>`).join("");
@@ -4405,9 +4405,9 @@
       window.lucide?.createIcons();
     }
     if (open) {
-      // Screenshot paste/attach (adhoc #78): wire the modal's file input, paste
-      // handler and chip list once, then reset any leftover attachments so each
-      // fresh open starts clean.
+
+
+
       wireAgentModalImages(modal);
       const form = modal.querySelector("[data-repo-agent-new-form]");
       if (form) {
@@ -4419,9 +4419,9 @@
     if (open) modal.querySelector("[data-repo-agent-new-input]")?.focus();
   }
 
-  // Pasted/attached screenshots queued alongside a "start agent" prompt
-  // (adhoc #78). They ride to the node as data: URLs; the node writes them into
-  // the agent's working tree so a coding agent can actually see the screenshot.
+
+
+
   function agentModalImages(form) {
     if (!form) return [];
     if (!form._pendingAgentImages) form._pendingAgentImages = [];
@@ -4470,8 +4470,8 @@
         return;
       }
     } else {
-      // Oversized paste/pick: reuse the issue composer's crop/compress modal to
-      // squeeze it under the per-attachment budget.
+
+
       setHint?.(`Compressing to fit under ${formatSize(budget)}…`);
       const result = await openImageResizeModal(file, budget);
       if (!result) {
@@ -4512,8 +4512,8 @@
       const imageItems = Array.from(event.clipboardData?.items || [])
         .filter((it) => it.kind === "file" && it.type.startsWith("image/"));
       if (!imageItems.length) return;
-      // A screenshot in the clipboard shouldn't also dump its (empty) text into
-      // the prompt field - claim the paste for the attachment instead.
+
+
       event.preventDefault();
       for (const it of imageItems) {
         const file = it.getAsFile();
@@ -4533,9 +4533,9 @@
   function renderRepoAgentsList(agents) {
     const container = $("[data-repo-agents]");
     if (!container) return;
-    // When a detail page is open for a still-present agent, render that instead
-    // of the list (adhoc #259). If the selected agent has vanished from a fresh
-    // fetch, fall back to the list so we never strand the user on a dead page.
+
+
+
     const selectedId = state.agentsView.selectedAgentId;
     const selected = selectedId != null
       ? agents.find((a) => String(a.id ?? "") === String(selectedId))
@@ -4546,16 +4546,16 @@
       return;
     }
     if (selectedId != null) state.agentsView.selectedAgentId = null;
-    // The "start a new agent" composer now lives in the header robot-button
-    // modal (adhoc #62), so this list is just the sessions.
+
+
     container.innerHTML = agents.length
       ? `<div class="divide-y divide-border">${agents.map(renderRepoAgentRow).join("")}</div>`
       : '<div class="px-4 py-3 text-sm text-muted-foreground">No agent sessions yet. Start one from the robot button in the header, or from the desktop app.</div>';
     window.lucide?.createIcons();
   }
 
-  // Open / close the detail page for one agent. Transcript refresh is explicit:
-  // opening the page, clicking Refresh, or sending a prompt triggers a fetch.
+
+
   function openRepoAgentDetail(repo, agentId) {
     state.agentsView.selectedAgentId = agentId;
     renderRepoAgentsList(state.agentsView.agents);
@@ -4567,8 +4567,8 @@
     renderRepoAgentsList(state.agentsView.agents);
   }
 
-  // The browser intentionally has no owner recipient private key.  Never fetch
-  // a legacy plaintext transcript or pretend an opaque envelope is readable.
+
+
   async function loadRepoAgentTranscript(repo, agentId) {
     const pre = $("[data-repo-agent-transcript]");
     if (!pre || !repo || !agentId) return;
@@ -4886,8 +4886,8 @@
     }
   }
 
-  // Kept as a defensive no-op for stale cached markup.  The current dashboard
-  // renders an owner-device information panel instead of a browser prompt form.
+
+
   async function handleRepoAgentNewSubmit(repo, form) {
     void repo;
     const hint = form?.querySelector("[data-repo-agent-new-hint]");

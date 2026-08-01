@@ -15,13 +15,13 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 ENTRY = ROOT / "src" / "entry.py"
-# SCHEMA_STATEMENTS (D1 DDL) was extracted from entry.py into schema.py;
-# concatenate it so the schema source-contract assertions below still resolve.
+
+
 SCHEMA = ENTRY.parent / "schema.py"
 ENTRY_TEXT = (
     ENTRY.read_text(encoding="utf-8") + "\n" + SCHEMA.read_text(encoding="utf-8"))
-# Route regexes now live in the extracted urls.py module (imported by entry.py);
-# parse it alongside entry.py so the assign nodes below still resolve.
+
+
 URLS = ROOT / "src" / "urls.py"
 URLS_TEXT = URLS.read_text(encoding="utf-8")
 
@@ -75,7 +75,7 @@ def _load(*names, extra_globals=None):
 
 
 class _Clock:
-    value = 1_700_000_000_000  # arbitrary fixed instant
+    value = 1_700_000_000_000
 
     @classmethod
     def now(cls):
@@ -109,8 +109,8 @@ def _sample_env(
         return []
 
     async def d1_run(_env, sql, *args):
-        # The samples are written as one multi-row upsert per table (see
-        # record_status_sample): decode the flat arg list back into rows.
+
+
         if sql.startswith("INSERT INTO system_status_daily"):
             for i in range(0, len(args), 3):
                 inserted.append({"system": args[i + 1], "failure": args[i + 2]})
@@ -159,7 +159,7 @@ def _run_sample(
     )
 
 
-# --- record_status_sample ---------------------------------------------------
+
 
 def test_all_systems_recorded_ok_with_no_errors_and_a_live_https_mirror():
     results, reasons, _minutes = _run_sample(error_paths=[], host_online=True, db_ok=True)
@@ -265,7 +265,7 @@ def test_signed_mirror_endpoints_get_independent_status_samples():
         {"node_name": "mirror3", "checked_at": fresh, "healthy": 0,
          "integrity": "ok", "forkmesh_active": 1,
          "forkmesh_verified_at": fresh},
-        # Invalid registry text can never become a public node/system ID.
+
         {"node_name": "Jett user", "checked_at": fresh, "healthy": 1,
          "integrity": "ok", "forkmesh_active": 1,
          "forkmesh_verified_at": fresh},
@@ -322,10 +322,10 @@ def test_git_clone_and_room_errors_are_bucketed_as_realtime():
 
 
 def test_do_duration_abort_fails_its_own_bucket_and_realtime():
-    # A free-tier DO duration abort is a real room failure (still counts
-    # toward "realtime"), but must also have its own dedicated bucket so it's
-    # visible as its own row on /status instead of hiding among other
-    # realtime incidents.
+
+
+
+
     results, reasons, _minutes = _run_sample(error_rows=[
         {"path": "/api/repo/mainnode/forkmesh/rooms/general/ws", "status": 503,
          "message": "durable object aborted: Exceeded allowed duration in "
@@ -350,11 +350,11 @@ def test_reason_includes_status_and_message_and_extra_count():
 
 
 def test_offline_direct_mirror_503s_do_not_fail_any_system():
-    # 502/503/504 on direct-mirror content paths mean an upstream endpoint is
-    # unreachable — node availability (tracked by signed HTTPS health), not an
-    # API outage. A single offline node's
-    # release blob being re-requested every few minutes used to paint the
-    # whole "api" system red on /status.
+
+
+
+
+
     blob = "/api/repo/somenode/forkmesh/releases/blob/sha256/" + "a" * 64
     results, reasons, _minutes = _run_sample(error_rows=[
         {"path": blob, "status": 503, "message": "response status 503"},
@@ -371,8 +371,8 @@ def test_offline_direct_mirror_503s_do_not_fail_any_system():
 
 
 def test_a_500_on_a_direct_mirror_path_still_fails_the_api_bucket():
-    # Only upstream-unavailability statuses are excused; a real worker bug
-    # (500) on the same path must still count.
+
+
     blob = "/api/repo/somenode/forkmesh/releases/blob/sha256/" + "b" * 64
     results, reasons, _minutes = _run_sample(error_rows=[
         {"path": blob, "status": 500, "message": "boom"},
@@ -391,17 +391,17 @@ def test_repository_content_paths_are_classified_and_room_paths_are_not():
     assert is_tunnel("/somenode/forkmesh/info/refs")
     assert is_tunnel("/somenode/forkmesh/git-upload-pack")
     assert is_tunnel("/somenode/forkmesh/git-receive-pack")
-    # A room 5xx is the worker's own Durable Object failing — must stay
-    # visible in error_log / Sentry, so room paths are never excused.
+
+
     assert not is_tunnel("/api/repo/mainnode/forkmesh/rooms/general/ws")
     assert not is_tunnel("/api/repositories")
 
 
 def test_fetch_skips_logging_offline_node_5xx_on_repository_content_paths():
-    # Source contract: Default.fetch must not log_error (blocking Sentry call
-    # + D1 write per hit) for 502/503/504 on direct-mirror content paths — an
-    # offline node's re-requested release blob used to generate hundreds of
-    # noise rows a day. Everything else >= 500 still logs.
+
+
+
+
     fetch_src = ENTRY_TEXT.split("async def fetch", 1)[1] \
         .split("async def _admin", 1)[0]
     guard_at = fetch_src.index("_is_tunnel_content_path(url.path)")
@@ -411,10 +411,10 @@ def test_fetch_skips_logging_offline_node_5xx_on_repository_content_paths():
 
 
 def test_room_do_fetch_is_retried_once_on_a_transient_abort():
-    # Source contract: a room DO abort (free-tier duration cap, or a
-    # co-located DO resetting the isolate) is transient — the router must
-    # retry once with a fresh stub before answering 503, and only the
-    # persistent failure is logged.
+
+
+
+
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
     src = None
     for node in ast.walk(tree):
@@ -425,18 +425,18 @@ def test_room_do_fetch_is_retried_once_on_a_transient_abort():
     retry_at = room_block.index("for _attempt in range(2)")
     stub_at = room_block.index("FORKMESH_MAINNODE_ROOM.get(room_id)")
     fetch_at = room_block.index("room_object.fetch")
-    # The stub is re-acquired inside the retry loop (a crashed isolate needs
-    # a fresh stub), and the fetch happens inside the loop too.
+
+
     assert retry_at < stub_at < fetch_at
     assert "log_durable_object_abort" in room_block[fetch_at:]
 
 
 def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
-    # Source contract for the scheduled() handler: the two once-a-minute
-    # samples must run unconditionally (and first, so a tick that dies later
-    # has already landed its data point), while every other job sits behind a
-    # minute-modulo gate. Running everything every minute is what blew the
-    # invocation's resource limits and showed as downtime on /status.
+
+
+
+
+
     scheduled = ENTRY_TEXT.split("async def scheduled", 1)[1] \
         .split("async def fetch", 1)[0]
     sample_at = scheduled.index("await record_status_sample")
@@ -444,8 +444,8 @@ def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
     first_gate_at = scheduled.index("if minute % ")
     assert online_at < first_gate_at
     assert sample_at < first_gate_at
-    # The /status sample runs before the heavier online sample, so a tick
-    # that dies partway has already landed the publicly-visible data point.
+
+
     assert sample_at < online_at
     for job in ("verify_submitted_chain_intents", "_federation_cron",
                 "send_notification_digests", "purge_stale_registered_nodes",
@@ -453,8 +453,8 @@ def test_cron_samples_run_every_tick_and_heavy_jobs_are_staggered():
                 "chat_history_prune_expired"):
         job_at = scheduled.index(job + "(")
         gate = scheduled.rindex("if minute % ", 0, job_at)
-        # The nearest preceding modulo gate must belong to this job's block —
-        # i.e. no other job call sits between the gate and this call.
+
+
         between = scheduled[gate:job_at]
         assert not any(other + "(" in between for other in (
             "verify_submitted_chain_intents", "_federation_cron",
@@ -519,13 +519,13 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
         return _load("ensure_schema", "_apply_schema",
                      extra_globals=make_globals(**kwargs))
 
-    # Fingerprint matches: one SELECT, zero DDL statements replayed.
+
     g = load_ensure_schema(stored_fingerprint=fingerprint)
     asyncio.run(g["ensure_schema"](_Env()))
     assert prepared == []
     assert d1_runs == []
 
-    # No schema_meta yet (first run): full DDL replay + fingerprint recorded.
+
     prepared.clear()
     d1_runs.clear()
     g = load_ensure_schema(stored_fingerprint=None)
@@ -534,7 +534,7 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
     assert len(d1_runs) == 1 and "schema_meta" in d1_runs[0][0]
     assert d1_runs[0][1] == (fingerprint,)
 
-    # Stale fingerprint (schema changed since): replay + re-record.
+
     prepared.clear()
     d1_runs.clear()
     g = load_ensure_schema(stored_fingerprint="fp-older")
@@ -542,9 +542,9 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
     assert prepared == fake_pre_alters + fake_statements + fake_alters
     assert len(d1_runs) == 1
 
-    # Transient D1 failure (overload / internal error) on the fingerprint
-    # SELECT must propagate — NOT fall through to the full DDL replay, which
-    # would pile ~110 more statements onto an already-overloaded database.
+
+
+
     prepared.clear()
     d1_runs.clear()
     g = load_ensure_schema(stored_fingerprint=fingerprint,
@@ -557,8 +557,8 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
     assert prepared == []
     assert d1_runs == []
 
-    # Concurrent requests on a cold isolate share ONE apply (single-flight)
-    # instead of each replaying the full DDL in parallel.
+
+
     prepared.clear()
     d1_runs.clear()
     g = load_ensure_schema(stored_fingerprint=None)
@@ -571,7 +571,7 @@ def test_ensure_schema_skips_ddl_when_fingerprint_matches():
     assert len(d1_runs) == 1
 
 
-# --- status_history ----------------------------------------------------------
+
 
 def _history_env(rows, hour_rows=(), minute_rows=()):
     async def noop(*_a, **_k):
@@ -607,9 +607,9 @@ def _run_history(rows, hour_rows=(), minute_rows=()):
 
 
 def test_no_data_is_a_red_monitoring_failure_without_fabricated_uptime():
-    # Missing expected samples mean the monitoring system failed. Render that
-    # state red/down, while keeping the uptime value unset because no service
-    # probe actually ran.
+
+
+
     out = _run_history([])
     by_id = {s["id"]: s for s in out["systems"]}
     assert by_id["website"]["status"] == "down"
@@ -667,9 +667,9 @@ def test_all_checks_passing_today_is_operational():
     out = _run_history(rows, hour_rows)
     by_id = {s["id"]: s for s in out["systems"]}
     assert by_id["website"]["status"] == "operational"
-    # Uptime covers RECORDED samples only — every recorded check passed, so
-    # 100%, with the sampling gaps reported separately as coverage instead of
-    # being silently folded in as fake downtime.
+
+
+
     assert by_id["website"]["uptime24hPct"] == 100.0
     assert by_id["website"]["coverage24hPct"] < 100.0
     assert by_id["website"]["missing24h"] > 0
@@ -719,16 +719,16 @@ def test_current_status_uses_latest_day_not_a_stale_incident_weeks_ago():
     ]
     out = _run_history(rows, hour_rows)
     by_id = {s["id"]: s for s in out["systems"]}
-    # Status reflects today (operational), even though the 30-day aggregate
-    # uptime is dragged down by the old incident.
+
+
     assert by_id["website"]["status"] == "operational"
     assert by_id["website"]["uptimePct"] < 100.0
 
 
 def test_current_status_uses_latest_hour_not_the_whole_days_aggregate():
-    # A blip two hours ago that has since cleared shouldn't keep today's badge
-    # degraded for the rest of the day — the banner should track the most
-    # recent hour, not the day's cumulative failure count.
+
+
+
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     rows = [{"day_ts": cur_day, "system": "api", "checks": 3, "failures": 1}]
@@ -750,11 +750,11 @@ HOUR_MS = 3600000
 
 
 def test_recovered_git_hosting_earlier_today_clears_the_badge():
-    # Hosts dropped off overnight (a failing hour) but are back now (the
-    # current hour is operational): the headline badge must read operational
-    # and drop the stale "no desktop hosts checked in" reason, even though the
-    # whole-day aggregate still counts the earlier failures. Regression for
-    # "we have hosts online but /status shows git hosting down (1h 34m ago)".
+
+
+
+
+
     cur_day = (_Clock.value // DAY_MS) * DAY_MS
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     prev_hour = cur_hour - HOUR_MS
@@ -805,10 +805,10 @@ def test_hour_with_no_checks_is_down_and_explains_monitoring_failure():
 
 
 def test_uptime_counts_only_recorded_samples_and_reports_coverage():
-    # 10 samples recorded this hour (5 failed) out of a near-full day of
-    # expected minutes: uptime must be 50% of what was RECORDED, with the
-    # gaps surfaced as coverage — not a near-0% number fabricated from the
-    # sampler's own absence.
+
+
+
+
     cur_hour = (_Clock.value // HOUR_MS) * HOUR_MS
     hour_rows = [
         {"hour_ts": cur_hour, "system": "api", "checks": 10, "failures": 5,
@@ -839,16 +839,16 @@ def test_stale_samples_flip_the_badge_to_monitoring_failure():
     assert website["status"] == "down"
     assert "Monitoring failed" in website["reason"]
     assert website["reasonTs"] == stale_hour
-    # The stale-but-recorded samples still count toward uptime honestly.
+
     assert website["uptime24hPct"] == 100.0
 
 
 def test_each_system_describes_exactly_what_its_check_tests():
-    # Every /status row is click-expandable to show what its health check
-    # actually verifies; the descriptions must exist, be distinct per system
-    # (the rows share one sampler cron, so identical-looking bars need the
-    # difference spelled out), and match the real checks in
-    # record_status_sample.
+
+
+
+
+
     out = _run_history([])
     by_id = {s["id"]: s for s in out["systems"]}
     descriptions = {sid: s["checkDescription"] for sid, s in by_id.items()}
@@ -887,16 +887,16 @@ def test_operational_hour_does_not_carry_a_stale_reason():
     assert this_hour["reason"] is None
 
 
-# --- per-minute strip (60-minute row under the hour strip) -----------------
+
 
 MINUTE_MS = 60000
 
 
 def test_record_status_sample_writes_one_minute_row_per_system():
     _results, _reasons, minutes = _run_sample(error_paths=["/api/repositories"])
-    # database/git_hosting/website/realtime all pass this tick; only "api"
-    # (matched by the /api/ path) fails. minutely's "ok" is the schema's own
-    # ok column (1 == passed), the inverse of the daily/hourly "failure" flag.
+
+
+
     ok, reason = minutes["api"]
     assert ok == 0
     assert "/api/repositories" in reason
@@ -906,10 +906,10 @@ def test_record_status_sample_writes_one_minute_row_per_system():
 
 
 def test_one_sampler_records_each_minute_via_the_claim_row():
-    # The platform Cron Trigger and the ForkMeshCronRunner alarm both call
-    # record_status_sample every minute. The claim row must let exactly one
-    # of them record the minute — the daily/hourly rollups are checks-counter
-    # increments, so a second recording would inflate the hour's coverage.
+
+
+
+
     extra, inserted, hourly, minutely = _sample_env(_Clock.value, [])
     claims = {}
     base_d1_run = extra["d1_run"]
@@ -948,8 +948,8 @@ def test_one_sampler_records_each_minute_via_the_claim_row():
     recorded = len(minutely)
     assert recorded > 0
 
-    # A second caller inside the same minute loses the read-back token check
-    # and must skip the whole sample (no minute rows, no counter increments).
+
+
     asyncio.run(g["record_status_sample"](object()))
     assert len(minutely) == recorded
     assert len(inserted) == recorded
@@ -957,9 +957,9 @@ def test_one_sampler_records_each_minute_via_the_claim_row():
 
 
 def test_claim_infrastructure_failure_fails_open_and_still_samples():
-    # A broken claim table must never blank the public sample — worst case a
-    # duplicated minute overwrites cleanly and costs one extra check count,
-    # while a skipped minute would paint fake downtime.
+
+
+
     extra, _inserted, _hourly, minutely = _sample_env(_Clock.value, [])
     base_d1_run = extra["d1_run"]
 
@@ -989,11 +989,11 @@ def test_minute_with_no_row_is_future_only_for_the_current_bucket():
     out = _run_history([])
     by_id = {s["id"]: s for s in out["systems"]}
     minutes = by_id["website"]["minutes"]
-    # The newest bucket (this minute) simply hasn't been sampled by the cron
-    # yet — that's not evidence of an outage.
+
+
     assert minutes[-1]["status"] == "future"
-    # Every older bucket was expected to have data and is therefore a red
-    # monitoring failure.
+
+
     assert all(m["status"] == "down" for m in minutes[:-1])
     assert all("Monitoring failed" in m["reason"] for m in minutes[:-1])
 
@@ -1011,8 +1011,8 @@ def test_minute_row_reflects_ok_and_carries_its_failure_reason():
     minutes = {m["minuteTs"]: m for m in by_id["api"]["minutes"]}
     assert minutes[prev_minute]["status"] == "down"
     assert minutes[prev_minute]["reason"] == "500 on /api/x: boom"
-    # The current minute already has a row (the cron beat us to it this
-    # time), so it reflects that sample rather than reading as "future".
+
+
     assert minutes[cur_minute]["status"] == "operational"
     assert minutes[cur_minute]["reason"] is None
 
@@ -1051,8 +1051,8 @@ def test_latest_passing_minute_clears_failure_from_hourly_rollup():
     out = _run_history(rows, hour_rows, minute_rows)
     system = next(
         s for s in out["systems"] if s["id"] == "flagship_repository")
-    # The aggregate remains below 100% and preserves the historical amber
-    # dots, but the current badge follows the completed reachability probe.
+
+
     assert system["uptime24hPct"] < 100.0
     assert system["status"] == "operational"
     assert system["reason"] is None
@@ -1092,7 +1092,7 @@ def test_stale_latest_minute_reports_monitoring_failure_not_online():
     assert "last two minutes" in system["reason"]
 
 
-# --- current-state snapshot (issue #356) ------------------------------------
+
 
 def _run_history_current(
     repo_count=7, online_labels=("alice", "bob"), error_count=3,
@@ -1113,8 +1113,8 @@ def _run_history_current(
             return {"n": repo_count}
         if "FROM error_log" in sql:
             if "message LIKE" in sql:
-                # The dedicated DO-duration-abort counter must filter on the
-                # platform's abort text, not count every error row.
+
+
                 assert any(
                     "Exceeded allowed duration" in str(a) for a in args
                 ), sql
@@ -1128,7 +1128,7 @@ def _run_history_current(
         return {"owner": "alice", "name": "forkmesh"}
 
     async def _live_online_nodes(_env, _now):
-        # owner_bi -> label, same shape as the real helper
+
         return {"bi%d" % i: label for i, label in enumerate(online_labels)}
 
     async def blind_index(_env, _value):
@@ -1170,8 +1170,8 @@ def test_current_snapshot_reports_the_four_headline_metrics():
 
 
 def test_current_online_count_dedupes_by_node_label_not_row_count():
-    # _live_online_nodes keys by owner, but two entries can carry the same label
-    # (e.g. an ad-hoc re-key); the headline count must be distinct labels.
+
+
     out = _run_history_current(online_labels=("alice", "alice", "bob"))
     assert out["current"]["onlineNodes"] == 2
 
@@ -1182,9 +1182,9 @@ def test_current_snapshot_offline_mainnode_is_false():
 
 
 def test_current_snapshot_counts_do_duration_aborts_separately():
-    # AbortError("Exceeded allowed duration in Durable Objects free tier."):
-    # the /status page gets its own counter for platform-killed DO requests so
-    # plan-limit churn is distinguishable from real bugs in errors24h.
+
+
+
     out = _run_history_current(error_count=9, do_abort_count=4)
     current = out["current"]
     assert current["errors24h"] == 9
@@ -1192,11 +1192,11 @@ def test_current_snapshot_counts_do_duration_aborts_separately():
 
 
 def test_room_route_turns_a_do_duration_abort_into_a_retryable_503():
-    # Regression: a room DO request that outlives the free-tier duration cap
-    # dies with pyodide.http.AbortError, which used to escape _route and
-    # surface as a Worker Error 1101. The room fetch must be guarded, log the
-    # cause (so the /status counter above sees it), and answer 503 without
-    # leaking exception detail to the client.
+
+
+
+
+
     tree = ast.parse(ENTRY.read_text(encoding="utf-8"), filename=str(ENTRY))
     src = None
     for node in ast.walk(tree):
@@ -1209,8 +1209,8 @@ def test_room_route_turns_a_do_duration_abort_into_a_retryable_503():
     after_fetch = room_block[fetch_at:]
     assert "log_durable_object_abort" in after_fetch
     assert "status=503" in after_fetch
-    # Repository browse keeps no second DO fetch to guard: it is ordinary
-    # direct HTTPS and leaves the multiplayer room socket intact.
+
+
     browse_block = src[src.index("REPO_HOST_RE.match"):src.index(
         "room_key_from_path(url.path)")]
     assert "host_object.fetch" not in browse_block
@@ -1218,9 +1218,9 @@ def test_room_route_turns_a_do_duration_abort_into_a_retryable_503():
 
 
 def test_current_mainnode_online_via_signed_forkmesh_https_proof():
-    # The banner reflects a fresh, integrity-matching direct HTTPS proof for
-    # forkmesh/forkmesh. A control-socket heartbeat alone is not evidence that
-    # repository bytes are available.
+
+
+
     def _load_with_mirror():
         async def noop(*_a, **_k):
             return None
@@ -1265,7 +1265,7 @@ def test_current_mainnode_online_via_signed_forkmesh_https_proof():
 
 
 def test_current_snapshot_survives_a_failing_read():
-    # A blank/failing metric is None, and it must not blank the rest of the page.
+
     def _load_broken():
         async def noop(*_a, **_k):
             return None
@@ -1302,7 +1302,7 @@ def test_current_snapshot_survives_a_failing_read():
     out = _load_broken()
     assert out["current"]["catalogRepos"] is None
     assert out["current"]["onlineNodes"] == 0
-    # systems still rendered despite the failed metric
+
     assert len(out["systems"]) == 9
 
 
@@ -1345,7 +1345,7 @@ def test_status_page_renders_current_state_grid():
     assert "data.current" in status_html
 
 
-# --- static wiring -----------------------------------------------------------
+
 
 def test_worker_exposes_status_route_and_schema():
     assert 'url.path in ("/api/status", "/api/status/")' in ENTRY_TEXT
@@ -1374,8 +1374,8 @@ def test_status_page_asset_and_redirect_exist():
     assert "status-row-metrics" in status_html
     assert "last 24 hourly checks" in status_html
     assert "currentHour - 23 * 3600000" in status_html
-    # Missing samples are monitoring gaps, never fabricated downtime — the
-    # copy must say so, and the old "counts as downtime" claim must be gone.
+
+
     assert "monitoring gap" in status_html
     assert "count as downtime" not in status_html
     assert "optimizing traffic usage for bots" in status_html
@@ -1388,10 +1388,10 @@ def test_status_page_asset_and_redirect_exist():
 
 
 def test_status_page_names_cloudflare_rate_limiting_on_429():
-    # When the free-plan daily quota runs out Cloudflare answers every route —
-    # even /api/status — with an HTML 429. The status page must say exactly
-    # that (a plan limit that resets on its own, not an outage) instead of the
-    # generic "unavailable" message (adhoc #80).
+
+
+
+
     status_html = (ROOT / "public" / "status.html").read_text(encoding="utf-8")
     render = status_html[
         status_html.index("async function render()"):
@@ -1401,8 +1401,8 @@ def test_status_page_names_cloudflare_rate_limiting_on_429():
     assert "Rate limited by Cloudflare" in render
     assert "not an outage" in render
     assert "resets automatically" in render
-    # The 429 banner uses the outage styling, and other fetch failures show
-    # their actual HTTP/content/body details instead of a generic message.
+
+
     assert 'banner.classList.add("is-down");' in render
     assert "Status unavailable right now." not in render
     assert "failedStatusDetail" in render
@@ -1429,9 +1429,9 @@ if __name__ == "__main__":
 
 
 def test_status_reports_cron_liveness_for_the_banner():
-    # current.lastCronSampleTs = newest minute with a recorded sample, so the
-    # page can say "the sampling cron is behind" instead of letting missing
-    # samples read as a confirmed outage.
+
+
+
     cur_minute = (_Clock.value // MINUTE_MS) * MINUTE_MS
     minute_rows = [
         {"minute_ts": cur_minute - 7 * MINUTE_MS, "system": "website",
@@ -1441,7 +1441,7 @@ def test_status_reports_cron_liveness_for_the_banner():
     ]
     out = _run_history([], minute_rows=minute_rows)
     assert out["current"]["lastCronSampleTs"] == cur_minute - 5 * MINUTE_MS
-    # No samples at all -> null, not 0 (the page treats it as "unknown").
+
     out = _run_history([])
     assert out["current"]["lastCronSampleTs"] is None
 

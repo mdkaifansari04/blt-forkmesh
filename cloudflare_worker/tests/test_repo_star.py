@@ -64,14 +64,14 @@ class _Request:
 
 
 def _harness(accounts, repositories=None, stars=None):
-    # Public serving now fails closed when the catalog row is absent, so the
-    # ordinary harness includes the explicit public repository under test.
+
+
     repositories = list(
         repositories if repositories is not None else [
             {"key_bi": "bi:alice/proj", "is_private": 0}
         ]
-    )  # {key_bi, is_private}
-    stars = list(stars or [])                # {repo_bi, account_bi, created_at}
+    )
+    stars = list(stars or [])
     now = [1_000_000_000]
 
     class _DateStub:
@@ -209,13 +209,13 @@ def test_star_post_requires_session_and_is_idempotent():
     env = object()
     url = "https://forkmesh.test/api/repo/alice/proj/star"
 
-    # No session -> rejected, nothing recorded.
+
     anon = asyncio.run(ns["repo_star_handler"](
         env, _Request("POST", url, body={}), "alice", "proj"))
     assert anon["status"] == 401
     assert ns["_stars"] == []
 
-    # A valid session can star, and starring twice doesn't double-count.
+
     first = asyncio.run(ns["repo_star_handler"](
         env, _Request("POST", url, body={
             "sessionToken": ns["_account_session_token"](env, "mallory")}),

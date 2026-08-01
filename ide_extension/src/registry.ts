@@ -1,13 +1,13 @@
-// The cross-process contract with the ForkMesh Qt desktop app.
-//
-// Everything lives under ~/.forkmesh/ide/:
-//   registration.json        written by THIS extension; a heartbeat the Qt app
-//                             polls to detect that the IDE integration is live.
-//   requests/<id>.json        written by the Qt app; "run issue N with <agent>".
-//   responses/<id>.json       written by THIS extension; ack/result per request.
-//
-// Plain files + fs.watch keep it dependency-free and work regardless of which
-// folder the IDE has open.
+
+
+
+
+
+
+
+
+
+
 import * as os from "os";
 import * as path from "path";
 import * as fs from "fs";
@@ -18,16 +18,16 @@ export const RESPONSES_DIR = path.join(FORKMESH_DIR, "responses");
 export const REGISTRATION_FILE = path.join(FORKMESH_DIR, "registration.json");
 
 export interface Registration {
-  ide: string; // appName, e.g. "Visual Studio Code", "Windsurf", "Cursor"
+  ide: string;
   version: string;
   pid: number;
-  ts: number; // epoch ms of the last heartbeat
+  ts: number;
   workspaces: string[];
   agents: { claude: boolean; codex: boolean };
 }
 
-// A task handed over by the Qt app: run issue `issueNumber` (under `repoPath`)
-// with the named agent provider.
+
+
 export interface TaskRequest {
   id: string;
   ts: number;
@@ -47,7 +47,7 @@ export function writeRegistration(reg: Registration): void {
     ensureDirs();
     fs.writeFileSync(REGISTRATION_FILE, JSON.stringify(reg, null, 2));
   } catch {
-    /* best effort: detection is a convenience, never block the IDE on it */
+
   }
 }
 
@@ -55,7 +55,7 @@ export function clearRegistration(): void {
   try {
     fs.rmSync(REGISTRATION_FILE, { force: true });
   } catch {
-    /* ignore */
+
   }
 }
 
@@ -70,12 +70,12 @@ export function writeResponse(
       JSON.stringify({ id, ts: Date.now(), ...body }, null, 2)
     );
   } catch {
-    /* ignore */
+
   }
 }
 
-// Read + delete a request file. Returns undefined if it's gone or unparseable
-// (another window may have grabbed it first).
+
+
 export function takeRequest(file: string): TaskRequest | undefined {
   try {
     const raw = fs.readFileSync(file, "utf8");

@@ -22,9 +22,9 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(WORKER / "src"))
 
-import edge_routing  # noqa: E402
-import mirror_gateway as gateway  # noqa: E402
-import urls  # noqa: E402
+import edge_routing
+import mirror_gateway as gateway
+import urls
 
 
 OID_A = "a" * 40
@@ -314,8 +314,8 @@ def test_merge_job_cleanup_enforces_expiry_repo_and_global_hard_bounds():
     assert "expired" not in ids
 
     add("active-b", "repo-a", "requested", 5, 10_000)
-    # At the per-repo ceiling, the oldest terminal row is evicted, while both
-    # in-flight rows survive and one slot becomes available.
+
+
     assert asyncio.run(make_room(None, "repo-a", 100)) is True
     ids = {
         row[0] for row in database.execute(
@@ -325,8 +325,8 @@ def test_merge_job_cleanup_enforces_expiry_repo_and_global_hard_bounds():
     assert {"active-a", "active-b"} <= ids
 
     add("active-c", "repo-a", "requested", 6, 10_000)
-    # A full repo made entirely of in-flight work fails closed instead of
-    # evicting an uncertain merge.
+
+
     assert asyncio.run(make_room(None, "repo-a", 100)) is False
     assert database.execute(
         "SELECT COUNT(*) FROM repo_merge_jobs WHERE repo_bi='repo-a'"
@@ -336,7 +336,7 @@ def test_merge_job_cleanup_enforces_expiry_repo_and_global_hard_bounds():
     add("active-d", "repo-c", "requested", 8, 10_000)
     assert database.execute(
         "SELECT COUNT(*) FROM repo_merge_jobs").fetchone()[0] == 5
-    # Global pressure evicts a terminal row but never an in-flight row.
+
     assert asyncio.run(make_room(None, "repo-z", 100)) is True
     ids = {
         row[0] for row in database.execute(

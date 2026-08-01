@@ -108,8 +108,8 @@ def test_session_list_is_account_scoped_and_shows_only_owner_visible_detail():
     response = asyncio.run(sessions(
         object(), SimpleNamespace(method="GET", headers={})))
     assert response["status"] == 200
-    # The sign-in address is returned so the owner can recognize a device they
-    # do not own before revoking it. The raw user agent still never leaves D1.
+
+
     assert response["body"]["sessions"] == [{
         "id": "c" * 32,
         "deviceLabel": "Mobile browser",
@@ -119,8 +119,8 @@ def test_session_list_is_account_scoped_and_shows_only_owner_visible_detail():
         "expiresAt": 3_000_000,
         "current": True,
     }]
-    # Account-level activity for the settings screen: last seen anywhere and
-    # the last email that went out, with its outcome.
+
+
     assert response["body"]["account"] == {
         "lastSeenAt": 1_500_000,
         "lastEmailAt": 0,
@@ -146,7 +146,7 @@ def test_session_list_reports_last_seen_and_last_email():
     }]
     sessions, calls, _audits, _lookups = _runtime(
         rows=rows,
-        # A linked device was seen more recently than any browser session.
+
         activity_seen=1_900_000,
         account_rec={
             "name": "alice",
@@ -162,13 +162,13 @@ def test_session_list_reports_last_seen_and_last_email():
         "lastEmailAt": 1_700_000,
         "lastEmailStatus": "failed",
         "lastEmailKind": "notifications",
-        # How many account-directed emails have gone out in total.
+
         "emailSendCount": 4,
     }
     activity = next(
         call for call in calls if call[0] == "first" and "MAX(seen)" in call[1])
     assert activity[2] == ("account-bi", "account-bi")
-    # No subject, body, or recipient address is stored or returned.
+
     assert "@" not in json.dumps(response["body"]["account"])
 
 
@@ -219,7 +219,7 @@ def test_log_out_everywhere_drops_the_calling_device_too():
     assert response["status"] == 200
     assert response["body"]["currentRevoked"] is True
     assert response["extra_headers"]["Set-Cookie"] == "cleared"
-    # An account-wide revoke, not a per-session one: no session id is passed.
+
     assert ("revoke", "account-bi", "") in calls
     assert audits[0][1:6] == (
         "account.session_revoke",

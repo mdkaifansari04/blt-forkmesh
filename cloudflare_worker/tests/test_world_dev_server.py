@@ -37,10 +37,10 @@ def test_local_world_file_resolution_and_traversal():
     assert dev.local_world_file(WORLD_DIR, "/world") == index
     assert (dev.local_world_file(WORLD_DIR, "/world/world.js")
             == WORLD_DIR / "world.js")
-    # Prod-only assets fall through to the proxy instead of 404ing locally.
+
     assert dev.local_world_file(WORLD_DIR, "/world/not-in-checkout.js") is None
-    # Path traversal cannot escape the world directory even though a real
-    # worker file exists one level up.
+
+
     assert dev.local_world_file(WORLD_DIR, "/world/../src/entry.py") is None
     assert dev.local_world_file(WORLD_DIR, "/world/%2e%2e/entry.py") is None
 
@@ -59,8 +59,8 @@ def test_upstream_headers_rewrite_origin_and_host():
         UPSTREAM,
     )
     as_dict = dict(headers)
-    # Same-origin checks upstream (world_websocket_origin_allowed) must see
-    # the upstream origin, not the local one.
+
+
     assert as_dict["Origin"] == UPSTREAM
     assert as_dict["Referer"] == "https://forkmesh.com/world/"
     assert as_dict["Host"] == "forkmesh.com"
@@ -81,8 +81,8 @@ def test_location_rewrites_point_back_at_the_local_origin():
 
 
 def test_defaults_match_the_desktop_probe():
-    # The Qt World button probes http://127.0.0.1:8788/world/ and requires
-    # this marker header before preferring the local copy.
+
+
     assert dev.DEFAULT_PORT == 8788
     assert dev.DEFAULT_UPSTREAM == UPSTREAM
     assert dev.DEV_MARKER_HEADER == "X-ForkMesh-World-Dev"

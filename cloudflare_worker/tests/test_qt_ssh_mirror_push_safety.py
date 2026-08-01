@@ -24,7 +24,6 @@ def test_automatic_ssh_mirror_push_cannot_rewind_or_prune_remote_refs():
     assert 'QStringLiteral("--prune")' not in push
     assert 'QStringLiteral("--no-force")' in push
     assert 'QStringLiteral("--no-prune")' in push
-    assert "never let an unattended desktop" in push
 
 
 def test_automatic_ssh_mirror_push_uses_explicit_fast_forward_policy():
@@ -33,9 +32,9 @@ def test_automatic_ssh_mirror_push_uses_explicit_fast_forward_policy():
     )[1].split("\nvoid MainWindow::syncRepository", 1)[0]
     command = push.split('process->start(QStringLiteral("git"),', 1)[1]
 
-    # These switches override any force/prune defaults inherited from an old
-    # desktop configuration. The wildcard refspecs themselves remain unforced,
-    # so Git rejects a stale main instead of rewriting the gateway.
+
+
+
     assert command.index('QStringLiteral("--no-force")') < command.index(
         'QStringLiteral("refs/heads/*:refs/heads/*")'
     )
@@ -50,9 +49,9 @@ def test_direct_push_fans_out_to_ssh_mirrors_immediately():
         "\nvoid MainWindow::syncMirrorActionsConfiguration", 1
     )[0]
 
-    # A receive-pack that lands directly on the source's served bare mirror
-    # bypasses syncPublicEncryptedRepository(), where normal SSH fanout occurs.
-    # The post-receive spool consumer must therefore fan it out itself.
+
+
+
     assert "m_backend->notifyMirrorUpdated(" in spool
     assert "pushToSshMirrorRemotes(idx);" in spool
     assert spool.index("m_backend->notifyMirrorUpdated(") < spool.index(

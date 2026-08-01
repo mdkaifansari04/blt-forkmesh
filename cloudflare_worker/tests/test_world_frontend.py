@@ -71,9 +71,9 @@ BOT_DIRECTORY = json.loads(
 
 
 def test_world_boots_blank_with_a_ten_second_load_error_watchdog():
-    # The shell stays blank while the world module boots (adhoc #240): no
-    # static fallback content to jump away from, only a hidden error panel
-    # that an inline watchdog reveals if the module never arrives.
+
+
+
     assert '<forkmesh-world data-world-mode="public"></forkmesh-world>' in INDEX
     assert "world-static-fallback" not in INDEX
     assert "JavaScript and WebGL enhance this page" not in INDEX
@@ -240,8 +240,8 @@ def test_user_agent_is_reduced_locally_to_generalized_badge_categories():
         APP.index("  async loadContext() {"):
         APP.index("\n  async loadSatelliteSky()", APP.index("  async loadContext() {"))
     ]
-    # The shared context is a guest-visible payload: no connection card rides
-    # back on it, so nothing here reads an address or a raw user agent.
+
+
     assert "securityDetails" not in context
     presence = APP[
         APP.index("  sendPresence(message) {"):
@@ -298,14 +298,14 @@ def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
         "return `JOINED ${count}${unit} AGO`",
     ):
         assert contract in SCENE
-    # Public chest badges still show only coarse categories. The owner-only
-    # back plate carries the assigned-work board and never enters an identity.
+
+
     assert "navigator.userAgent" not in SCENE
     assert "function avatarWorkBadgeTexture" in SCENE
     assert 'badge.name = "forkmesh-self-work-back-badge"' in SCENE
     assert "setSelfWorkBadgeVisibility" in SCENE
     assert "HIDDEN FROM PEERS + SCREENSHOTS" in SCENE
-    # The retired session card must not come back on the avatar's back.
+
     assert "YOUR SESSION" not in SCENE
     assert "EDGE IP" not in SCENE
     for contract in (
@@ -321,16 +321,16 @@ def test_chest_badge_shows_client_categories_exact_ages_and_status_note():
 
 
 def test_chest_badge_shows_the_same_full_record_for_every_avatar():
-    # The world active-time row is an extra line, never a replacement for the
-    # activity·visits line, so no avatar's chest shows less than the badge
-    # knows about that visitor.
+
+
+
     assert "const activeRow =" in SCENE
     assert "IN WORLD`" in SCENE
     assert "`${activity} · ${visits} PUBLIC URL VISITS`" in SCENE
     assert "sharesActivity || !activeRow" in SCENE
-    # A live presence frame carries no joined date or active-time aggregate, so
-    # every avatar for a known account is filled in from the public directory:
-    # walking peers, office-meeting participants, and the visitor themselves.
+
+
+
     for contract in (
         "function withMemberFacts(identity)",
         "const badgeIdentity = withMemberFacts({",
@@ -339,11 +339,11 @@ def test_chest_badge_shows_the_same_full_record_for_every_avatar():
         "memberFacts.clear();",
     ):
         assert contract in SCENE
-    # A guest can type any display name, so only a server-stamped account
-    # status may claim the record filed under it.
+
+
     assert 'String(identity.accountStatus || "Guest") === "Guest"' in SCENE
-    # The visitor's own chest wears their live activity-ticket total, repainted
-    # once a minute rather than on every one-second tick.
+
+
     assert "syncOwnBadgeActivity()" in APP
     assert "this.syncOwnBadgeActivity();" in APP
     assert "worldActivityRenderedMinute" in APP
@@ -375,8 +375,8 @@ def test_unified_chest_card_uses_public_profile_wallet_and_explicit_follow():
     assert "nextName !== previousName || nextStatus !== previousStatus" in SCENE
     assert "player.userData.fediverseProfile = loadingProfile;" in SCENE
     assert "onFediverseProfile({" in SCENE
-    # The unified card is loaded when an avatar is registered; there are no
-    # runtime mode buttons to hide identity fields from seated members.
+
+
     register = SCENE[
         SCENE.index("  function registerAvatarChestControls"):
         SCENE.index("  function unregisterAvatarChestControls")
@@ -416,8 +416,8 @@ def test_self_profile_has_follower_avatars_and_activitypub_selfie_composer():
     assert "blob.size < 63 * 1024" in APP
     assert ".world-profile-follower-strip" in CSS
     assert ".world-profile-selfie-preview" in CSS
-    # The private profile drawer is omitted from the selfie while the rest of
-    # the current World view and public HUD are captured.
+
+
     selfie = APP[
         APP.index("  async captureWorldSelfie"):
         APP.index("  async compactWorldSelfie")
@@ -498,15 +498,15 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert 'this.fetchJSON("/api/world/inactive"' in APP
     assert 'this.fetchJSON("/api/network/overview"' in APP
     assert 'this.fetchJSON("/api/repositories", { auth: hasSession })' in APP
-    # The campfire circle (adhoc #228) reads the same public roster the chat
-    # page uses — profile names only, fetched without credentials. Anything
-    # beyond that anonymous directory stays off-limits to the world client.
+
+
+
     assert (
         'this.fetchJSON("/api/accounts/users", {\n          auth: false,'
         in APP
     )
-    # Boot fetch plus the throttled refresh that seats accounts created after
-    # the tab opened; both anonymous, and nothing else touches the endpoint.
+
+
     assert APP.count("/api/accounts/users") == 2
     assert (
         'this.fetchJSON("/api/accounts/users", {\n        auth: false,' in APP
@@ -545,8 +545,8 @@ def test_presence_moves_use_the_constant_time_scene_fast_path():
         APP.index("\n  setupBroadcastChannel()", APP.index("  receivePresence(message) {"))
     ]
     assert "let peersChanged = false" in receiver
-    # Roster changes still coalesce into one deferred renderPeers() pass, while
-    # ordinary movement only changes an existing avatar interpolation target.
+
+
     assert "if (peersChanged) this.schedulePeerRender()" in receiver
     assert 'message.type === "move"' in receiver
     assert "this.world?.setRemotePlayerMovement?.(id, next)" in receiver
@@ -559,16 +559,16 @@ def test_presence_moves_use_the_constant_time_scene_fast_path():
 
 
 def test_handshakes_are_offered_from_one_profile_and_answered_by_the_peer():
-    # The greeting is offered from the visitor's own profile panel, so it is
-    # always addressed at exactly the avatar the visitor selected.
+
+
     assert "data-world-handshake-offer" in APP
     assert "data-world-handshake-accept" in APP
     assert "data-world-handshake-decline" in APP
     assert "offerWorldHandshake(peerId)" in APP
     assert "answerWorldHandshake(peerId, accepted)" in APP
     assert '"handshake-offer",\n        "handshake-accept",' in APP
-    # Offers are live-socket state on both ends: they expire, and a peer who
-    # leaves takes their open greeting with them.
+
+
     assert "WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000" in APP
     assert "this.pendingHandshakes = new Map()" in APP
     assert "this.sentHandshakeOffers = new Map()" in APP
@@ -583,8 +583,8 @@ def test_handshakes_are_offered_from_one_profile_and_answered_by_the_peer():
     assert "this.pendingHandshakes.delete(departed)" in receiver
     assert 'message.kind === "handshake-offer"' in receiver
     assert 'message.kind === "handshake-decline"' in receiver
-    # Only an accepted handshake animates for everyone, and it names both
-    # halves of the pair so each browser poses the same two avatars.
+
+
     assert 'message.kind === "handshake" &&' in receiver
     assert "this.playWorldHandshake(accepterId, offererId)" in receiver
     assert "function playHandshake(peerId, partnerId)" in SCENE
@@ -676,9 +676,9 @@ def test_world_client_coalesces_disposable_frames_and_reconnects_with_grace():
 
 def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
     assert "player.rotation.y = Math.atan2(-movement.x, -movement.z)" in SCENE
-    # A single click still only selects — walk-to-click stays gone. Travel by
-    # pointer is opt-in through the double-click dash (see the dash test below),
-    # so no target may be set from the single-tap path.
+
+
+
     assert "moveTarget" not in SCENE
     single_tap = SCENE[
         SCENE.index("  function finishPointer"):
@@ -699,9 +699,9 @@ def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
 
 
 def test_opening_curtain_itemizes_every_boot_step_with_live_timers():
-    # "Opening ForkMesh World" used to be one headline over a percentage. The
-    # curtain now lists every startup step with its own running seconds
-    # counter, so a slow open names the step it is actually waiting on.
+
+
+
     assert "const WORLD_BOOT_STEPS = [" in APP
     for step in ("restore", "session", "engine", "scene", "data", "populate", "spawn"):
         assert f'{{ id: "{step}", label: "' in APP
@@ -709,25 +709,25 @@ def test_opening_curtain_itemizes_every_boot_step_with_live_timers():
     assert 'data-world-boot-step="${escapeHTML(step.id)}"' in APP
     assert "data-world-boot-time" in APP
     assert "data-world-loading-elapsed" in APP
-    # Counters redraw on their own interval and stop when the ledger closes,
-    # including the WebGL-fallback path that throws the curtain away.
+
+
     assert "const WORLD_BOOT_TICK_MS = 100;" in APP
     assert "() => this.tickBootSteps()," in APP
     assert "window.clearInterval(this.bootTickTimer);" in APP
     assert 'this.completeBootTimeline({ state: "failed" });' in APP
-    # Every awaited stage of bootstrap() reports through the ledger.
+
     assert 'this.trackBootStep(\n        "session",' in APP
     assert 'this.trackBootStep("data", this.loadWorldData())' in APP
     assert 'this.startBootStep("scene", "geometry, lighting, labels")' in APP
     assert 'this.finishBootStep("scene");' in APP
     assert 'this.finishBootStep("populate");' in APP
     assert 'this.finishBootStep("spawn");' in APP
-    # The world-data fan-out reports "n/total requests" as it settles rather
-    # than sitting silent for the whole batch.
+
+
     assert 'this.countBootRequests("data", [' in APP
     assert "`${settled}/${total} requests`" in APP
-    # Ten repaints a second must not be announced: the single stage line above
-    # the ledger stays the curtain's live region.
+
+
     assert 'aria-live="off"' in APP
     assert ".world-loading-steps li {" in CSS
     assert '.world-loading-steps li[data-state="running"] .world-loading-step-mark' in CSS
@@ -1085,9 +1085,9 @@ def test_chat_opens_through_the_spatial_forkmesh_office_and_terminal():
     assert 'office: "visiting-office"' in APP
     assert "/chat?embed=office" not in APP
     assert "allow-popups" not in APP
-    # Two doors to the same encrypted chat: the spatial Office walk-in (above)
-    # and the docked chat terminal panel. The Office deliberately does not
-    # replace the terminal, so both entrances are asserted here.
+
+
+
     assert "openWorldChat(" in APP
     assert "closeWorldChat()" in APP
     assert "data-world-chat-terminal" in APP
@@ -1452,16 +1452,16 @@ def test_world_first_person_camera_has_accessible_toggle_and_scene_api():
         SCENE.index("\n  function focusRepositoryPortal(", scene_mode_start)
     ]
     assert 'player.visible = false' in scene_mode
-    # Third-person restores the shared World avatar everywhere except an Office
-    # meeting, where the local meeting participant is the visible camera target.
+
+
     assert 'player.visible = officeSceneMode !== "meeting"' in scene_mode
     assert "if (localParticipant) localParticipant.visible = true" in scene_mode
     assert "firstPersonZoom = 1;" in scene_mode
     assert "renderer.domElement.dataset.cameraMode = cameraMode" in scene_mode
     assert "onCameraMode({ mode: cameraMode, reason })" in scene_mode
 
-    # Visiting a repository sunburst frames it from the orbital camera; only
-    # the camera button puts the visitor inside the avatar's head.
+
+
     reveal_start = APP.index("  revealRepositoryScene() {")
     reveal = APP[
         reveal_start:
@@ -1594,9 +1594,9 @@ def test_world_autoloads_the_live_catalog_attested_flagship_repository_map():
 
 
 def test_flagship_portal_retries_until_the_default_repository_is_open():
-    # The alias pin needs the repository catalog and the mirror snapshot to
-    # agree. Both are re-read after entry, so the automatic load is retried
-    # from the freshest pair instead of only the boot snapshot.
+
+
+
     reconcile = APP[
         APP.index("  reconcileRepositoryAliasCatalog() {"):
         APP.index(
@@ -1615,7 +1615,7 @@ def test_flagship_portal_retries_until_the_default_repository_is_open():
             APP.index("  async retryFlagshipPortal() {"),
         )
     ]
-    # Never override a visitor's own choice, and never poll without a bound.
+
     assert "this.repositoryManualSelection ||" in retry
     assert "this.activeRepository ||" in retry
     assert "this.flagshipPortalRetries >= FLAGSHIP_PORTAL_RETRY_LIMIT" in retry
@@ -1624,7 +1624,7 @@ def test_flagship_portal_retries_until_the_default_repository_is_open():
     assert "void this.autoLoadFlagshipRepositoryMap();" in retry
     assert "const FLAGSHIP_PORTAL_RETRY_LIMIT = 20;" in APP
 
-    # The retry rides the existing import poll rather than adding a timer.
+
     poll = APP[
         APP.index("  startRepositoryImportPolling() {"):
         APP.index(
@@ -1680,8 +1680,8 @@ def test_flagship_graph_requires_commit_matched_tree_sizes_stats_and_entities():
     assert "this.loadRepositoryEntityRecords(base, commit, {" in fetch_map
     assert "privateRepository: catalogRecord?.isPrivate === true" in fetch_map
     assert "pullResult," in fetch_map
-    # Pull metadata is optional enrichment. It starts alongside the immutable
-    # size/stats requests so it cannot hold the first repository frame blank.
+
+
     assert "const pullResultPromise =" in fetch_map
     assert "const sizeRequest = this.fetchJSON(`${base}/sizes${ref}`" in fetch_map
     assert (
@@ -1739,8 +1739,8 @@ def test_repository_map_autoload_is_deduplicated_and_never_overrides_manual_choi
     ]
     assert "this.repositoryManualSelection" in auto
     assert "this.activeRepository" in auto
-    # The tree preview paints immediately; mirror metadata may converge behind
-    # it without collapsing the flagship wheel into a syncing placeholder.
+
+
     assert "this.world.updateRepositoryGraph?.([], []);" not in auto
     assert "if (!catalogCommits.size)" not in auto
     assert "requireComplete: false" in auto
@@ -2193,8 +2193,8 @@ def test_world_has_responsive_and_reduced_motion_fallbacks():
 
 
 def test_world_supports_bounded_pinch_wheel_and_drag_controls():
-    # Pinch and wheel share one explicit near/far camera range rather than
-    # changing page scale or maintaining two controls that can drift apart.
+
+
     for contract in (
         "CAMERA_ZOOM_MIN",
         "CAMERA_ZOOM_MAX",
@@ -2203,8 +2203,8 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
         "pinchStartDistance / distance",
         'addEventListener("pointermove", handlePointerMove',
         'addEventListener("wheel", handleWheel',
-        # First person inverts the wheel: through the visitor's own eyes,
-        # scrolling down zooms in on what they are looking at (adhoc #303).
+
+
         "Math.exp(deltaPixels * (firstPerson ? -0.0015 : 0.0015))",
         "getCameraState",
     ):
@@ -2219,9 +2219,9 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     assert "click the plaza" not in APP
     assert "click on the plaza" not in DATA
 
-    # Fine-pointer navigation keeps the cursor visible and rotates only while
-    # the primary pointer is dragged. One touch rotates, two touches only pinch,
-    # and the proportional thumbstick stays camera-relative like WASD.
+
+
+
     for contract in (
         'dataset.cameraControl = "drag"',
         "function rotateCamera",
@@ -2245,8 +2245,8 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     assert "pointerLockElement" not in SCENE
     assert "raycaster.intersectObject(ground" not in SCENE
 
-    # Keyboard movement reaches its named cap on the first frame, while analog
-    # input retains proportional control and blur still clears stale input.
+
+
     for contract in (
         "PLAYER_MAX_SPEED",
         "function movementSpeedForInput",
@@ -2260,8 +2260,8 @@ def test_world_supports_bounded_pinch_wheel_and_drag_controls():
     ):
         assert contract in SCENE
 
-    # Every global/canvas listener introduced by these controls has a matching
-    # cleanup path when the custom element is disconnected.
+
+
     for cleanup in (
         'removeEventListener("pointermove", handlePointerMove)',
         'removeEventListener("wheel", handleWheel)',
@@ -2286,8 +2286,8 @@ def test_world_overview_zoom_keeps_the_finite_ground_inside_camera_depth():
         "  )"
     ) in SCENE
 
-    # At maximum strategic zoom, a camera looking at the world center can still
-    # see through the opposite edge of the finite ground before its far plane.
+
+
     camera_distance = math.hypot(17, 16, 21)
     assert camera_distance * 28 + 365 < 1800
 
@@ -2343,10 +2343,10 @@ def test_world_has_no_pale_plaza_and_places_trees_deterministically_clear_of_use
 
 
 def test_world_member_directory_seats_registered_users_from_roster():
-    # The directory figures come from the public users directory (adhoc #228)
-    # and, since adhoc #287, sit in a circle around the campfire facing the
-    # flames. The Member Lounge structure that used to hold them (and its
-    # count plaque / account button) was removed entirely.
+
+
+
+
     assert "function updateMemberLounge" in SCENE
     assert "const loungeMembers = new Map();" in SCENE
     assert "registered-user-lounge" not in SCENE
@@ -2355,8 +2355,8 @@ def test_world_member_directory_seats_registered_users_from_roster():
     assert "function memberLoungeAuthTexture" not in SCENE
     assert "function makeMemberLoungePlaque" not in SCENE
     assert "function syncLoungeAuthButton" not in SCENE
-    # world.js feeds it the public roster (no email/device material) and
-    # dedupes accounts already rendered as live or opted-in idle avatars.
+
+
     assert '"/api/accounts/users"' in APP
     assert "syncMemberLounge" in APP
     assert "this.memberDirectory.length" in APP
@@ -2381,14 +2381,14 @@ def test_world_settings_moves_focus_before_hiding_the_panel():
 
 
 def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
-    # adhoc #287: one bench per registered account rings the campfire. A
-    # bounded recent subset appears as seated figures facing the fire, members
-    # walking the world leave their named bench empty, and the ring rebuilds
-    # wider whenever a new account joins so everyone still fits. adhoc #291
-    # adds one extra bench that always stays open for the next guest, and
-    # adhoc #303 one more per guest already in the world, names every bench
-    # so an empty one says who is out and about, and seats accounts that
-    # signed up after the tab loaded straight from their presence frame.
+
+
+
+
+
+
+
+
     assert "function rebuildCampfireCircle" in SCENE
     assert '"campfire-member-circle"' in SCENE
     assert (
@@ -2403,19 +2403,19 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
     assert "noteDirectoryMembers" in APP
-    # Concentric rows hold 25 people each and preserve one aligned walk-in gap.
+
     assert "const CAMPFIRE_MEMBERS_PER_ROW = 25;" in SCENE
     assert "const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);" in SCENE
     assert "CAMPFIRE_ENTRANCE_WIDTH / radius" in SCENE
     assert '"sitting around the campfire"' in SCENE
-    # Figures and idle live avatars both face the pit at the circle's centre.
-    # Avatar fronts face local -Z, so the inward heading is atan2(x, z) — the
-    # negated form pointed everyone away from the flames (adhoc #291).
+
+
+
     assert SCENE.count("Math.atan2(offset.x, offset.z)") >= 1
     assert SCENE.count("Math.atan2(seat.x, seat.z)") >= 1
     assert "Math.atan2(-offset.x, -offset.z)" not in SCENE
     assert "Math.atan2(-seat.x, -seat.z)" not in SCENE
-    # Idle/returning live members take the empty tail benches.
+
     assert "campfire.userData.memberFigureCount" in SCENE
 
     nodes = SCENE[
@@ -2449,14 +2449,14 @@ def test_system_capacity_scene_combines_service_limits_and_database_rows():
     assert 'systemCapacityPlatform.userData.officeFloorId = "infrastructure"' in SCENE
     assert "infrastructureFloor.add(systemCapacityPlatform);" in SCENE
     assert "Math.log1p(table.rowCount)" in SCENE
-    # Every table the Worker counted is drawn, empty ones included, up to the
-    # same ceiling the Worker itself enumerates.
+
+
     assert "rowCount >= 0" in SCENE
     assert ".slice(0, 256)" in SCENE
     assert "visibleTableCount" in SCENE
     assert "system-capacity-row-count:" in SCENE
-    # The table name is printed on the bar's top face only; the old upright
-    # label behind each bar was removed.
+
+
     assert "system-capacity-table-name:" not in SCENE
 
 
@@ -2499,8 +2499,8 @@ def test_system_capacity_tables_open_a_sortable_scrollable_panel():
 
 
 def test_detail_panels_resize_from_their_left_border_and_never_drift():
-    # The left border is a real drag grip, and the chosen width is a
-    # device-local preference floored by each panel's base width.
+
+
     assert 'data-world-detail-resize' in APP
     assert 'role="separator"' in APP
     assert 'aria-orientation="vertical"' in APP
@@ -2515,9 +2515,9 @@ def test_detail_panels_resize_from_their_left_border_and_never_drift():
     assert (
         '.fm-world:has(.world-detail[data-repository-review="true"])' in CSS
     )
-    # A long unbreakable title must not widen the header past the panel: that
-    # pushes the close button out of view, and focusing it scrolls the clipped
-    # panel sideways into blank space with the text cut off.
+
+
+
     assert "grid-template-columns: minmax(0, 1fr) auto;" in CSS
     assert "overflow-wrap: anywhere;" in CSS
     assert "detail.scrollLeft = 0;" in APP
@@ -2594,7 +2594,7 @@ def test_world_right_rail_reveals_as_one_fixed_square_shortcut_column():
 
 
 def test_world_movement_speed_is_adjustable_and_keyboard_input_is_immediate():
-    # Scene exposes speed tuning, but digital input has no configurable ramp.
+
     assert "function setMovementTuning" in SCENE
     assert "setMovementTuning," in SCENE
     assert "let moveSpeedScale = 1" in SCENE
@@ -2602,7 +2602,7 @@ def test_world_movement_speed_is_adjustable_and_keyboard_input_is_immediate():
     assert "input.keyboardActive" in SCENE
     assert "? topSpeed" in SCENE
     assert "moveAccelScale" not in SCENE
-    # App retains speed control and explains immediate keyboard response.
+
     assert "data-world-move-speed" in APP
     assert "data-world-move-speed-output" in APP
     assert "this.settings.moveSpeed = next" in APP
@@ -2612,9 +2612,9 @@ def test_world_movement_speed_is_adjustable_and_keyboard_input_is_immediate():
 
 
 def test_double_clicking_the_ground_dashes_the_avatar_to_that_point():
-    # Double-click travel raycasts the current space's floor plane (so it works
-    # on elevated spaces too), clamps inside the world radius, and runs there at
-    # a dash speed well above the walking cap instead of teleporting.
+
+
+
     for contract in (
         "const PLAYER_DASH_SPEED = 48",
         "const PLAYER_DASH_ARRIVE_DISTANCE = 0.3",
@@ -2631,8 +2631,8 @@ def test_double_clicking_the_ground_dashes_the_avatar_to_that_point():
     ):
         assert contract in SCENE
     assert "const PLAYER_MAX_SPEED = 13" in SCENE
-    # A drag or pinch that happens to end in a double-click must not dash, and
-    # manual input, teleports, focus clears and blur all cancel a running dash.
+
+
     assert "lastGestureDragged = suppressTap" in SCENE
     assert "if (lastGestureDragged) return" in SCENE
     dash_cancels = SCENE.count("cancelDash()")
@@ -2697,8 +2697,8 @@ def test_support_center_is_not_rendered_in_the_world():
     assert "function createSupportCenter" not in SCENE
     assert "SUPPORT CENTER" not in SCENE
     assert "supportPanelHTML()" not in APP
-    # Supporting-member account routes remain available outside the removed
-    # in-World landmark.
+
+
     assert "https://www.patreon.com/16434219/join" in APP
 
 
@@ -2778,9 +2778,9 @@ def test_linked_payout_page_has_a_truthful_non_custodial_notice():
 
 
 def test_forkbot_rolls_through_the_world_for_explicit_chat_interactions():
-    # ForkBot is a rolling Town Square guide. Chat replies broadcast with
-    # the fixed sender "forkbot" float over the droid. Entry remains immediate
-    # and quiet until a visitor chooses to interact.
+
+
+
     assert 'const FORKBOT_PEER_ID = "forkbot";' in SCENE
     assert "const forkbot = new THREE.Group();" in SCENE
     assert 'forkbot.name = "forkbot-rolling-droid";' in SCENE
@@ -2789,21 +2789,21 @@ def test_forkbot_rolls_through_the_world_for_explicit_chat_interactions():
     assert "updateForkbot(delta, time);" in SCENE
     assert "function greetForkbot(text)" in SCENE
     assert "greetForkbot," in SCENE
-    # Bubbles addressed to the bot peer id resolve to the bot avatar.
+
     assert "peerId === FORKBOT_PEER_ID" in SCENE
-    # Out-of-reach visitors still get greeted from wherever the bot got to.
+
     assert "const FORKBOT_GREETING_TIMEOUT_MS = 12000;" in SCENE
     assert (
         'const FORKBOT_GREETED_KEY = "forkmesh.world.forkbotGreeted.v1";'
         in APP
     )
-    # Entering the World is immediate and does not force an unsolicited bot
-    # greeting; ForkBot remains available for explicit chat interactions.
+
+
     assert APP.count("this.maybeGreetForkbot();") == 0
     assert 'this.world?.showChatBubble?.("forkbot", text);' in APP
-    # The asking client mirrors ForkBot replies into the World embed, and
-    # guests inside the public World room can talk to the bot (the endpoint
-    # itself is sessionless).
+
+
+
     assert (
         "emitWorldChatBubble(plain.sender, plain.senderId, plain.text);"
         in DASHBOARD_CHAT
@@ -2812,26 +2812,26 @@ def test_forkbot_rolls_through_the_world_for_explicit_chat_interactions():
 
 
 def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
-    # adhoc #369: as soon as anyone in the world mentions ForkBot in chat, the
-    # droid gets excited and rushes over to the speaker. Its chest screen
-    # echoes the line that mentioned it, then runs a thinking indicator until
-    # the reply (broadcast with sender "forkbot") lands in the room.
+
+
+
+
     assert "const FORKBOT_EXCITED_SPEED = 5.6;" in SCENE
     assert "const FORKBOT_ECHO_MS = 2500;" in SCENE
     assert "const FORKBOT_THINKING_TIMEOUT_MS = 45000;" in SCENE
     assert "function drawForkbotScreen(context, canvas, state)" in SCENE
     assert "function exciteForkbot(peerId, text)" in SCENE
     assert "exciteForkbot," in SCENE
-    # The screen repaints in place (echo, then animated dots) rather than
-    # allocating a new texture per frame.
+
+
     assert "forkbotScreenTexture.needsUpdate = true;" in SCENE
-    # ForkBot's own reply bubble is what stops the thinking indicator, with a
-    # bounded fallback so an unavailable bot doesn't think forever.
+
+
     assert "if (avatar === forkbot && forkbotExcitement) {" in SCENE
     assert "waited >= FORKBOT_THINKING_TIMEOUT_MS" in SCENE
-    # The world client matches the same mention pattern the chat clients
-    # forward to /api/forkbot/chat, for the visitor's own line and for remote
-    # peers' lines alike.
+
+
+
     assert (
         "const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\\b/i;"
         in APP
@@ -2840,11 +2840,11 @@ def test_forkbot_mention_excites_the_droid_with_echo_screen_and_thinking_dots():
 
 
 def test_unified_chat_stream_does_not_duplicate_replayed_activity():
-    # adhoc #25: a fresh load opened on a stack of activity cards — the chat
-    # backlog the relay re-sends on connect, the first notification/event read,
-    # and any mirror doorbell that landed while the scene was booting. Those
-    # are all old news to someone who just arrived, so the stream only narrates
-    # what happens after the World is up.
+
+
+
+
+
     assert "const ACTIVITY_JOIN_GRACE_MS = CHAT_BUBBLE_JOIN_GRACE_MS;" in APP
     assert (
         "this.activityNoticesEnabledAt = Date.now() + ACTIVITY_JOIN_GRACE_MS;"
@@ -2855,9 +2855,9 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         "    return Date.now() >= this.activityNoticesEnabledAt;\n"
         "  }"
     ) in APP
-    # Native chat owns the transcript rows; the floating bubble stack renders
-    # each signal at most once, only after the join grace, and system activity
-    # re-entering from the transcript never bounces back into it.
+
+
+
     handler = APP[
         APP.index("  handleWorldChatMessage = (event) => {"):
         APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
@@ -2867,8 +2867,8 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
     assert handler.index("if (data.history === true) return;") < handler.index(
         '{ kind: "chat", sender },'
     )
-    # The first notification/event reads still seed the seen sets, so nothing
-    # already waiting at load is announced on a later poll either.
+
+
     announce = APP[
         APP.index("  announceWorldNotifications() {"):
         APP.index("\n  }", APP.index("  announceWorldNotifications() {"))
@@ -2878,29 +2878,29 @@ def test_unified_chat_stream_does_not_duplicate_replayed_activity():
         in announce
     )
     assert "if (!this.activityNoticesSettled()) return;" in announce
-    # A mirror doorbell during the grace still arms the scene effect and the
-    # catalog refresh; only its narration is held back.
+
+
     push = APP[
         APP.index("  handleMirrorPush(message) {"):
         APP.index("\n  }", APP.index("  handleMirrorPush(message) {"))
     ]
     assert "if (this.activityNoticesSettled()) {" in push
     assert "this.world?.armMirrorPushEffect?.(" in push
-    # Notices a visitor causes by acting are never gated.
+
     toast_start = APP.index("  toast(message, { priority = 0, lockMs = 0 } = {}) {")
     toast = APP[toast_start:APP.index("\n  }", toast_start)]
     assert "activityNoticesSettled" not in toast
 
 
 def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
-    # adhoc #426: the docked CHAT bar showed only the newest line, so a visitor
-    # walking around had no idea how much they had missed. It now carries an
-    # unread pill that counts live remote lines and resets whenever chat opens.
+
+
+
     assert "data-world-chat-terminal-unread" in APP
     assert ".world-chat-terminal-unread {" in CSS
-    # Replayed history and this browser's own messages never bump it, and
-    # neither does the signed-in account talking from another tab or device
-    # (`own`, which dashboard-chat.js resolves by account name).
+
+
+
     handler = APP[
         APP.index("  handleWorldChatMessage = (event) => {"):
         APP.index("\n  };", APP.index("  handleWorldChatMessage = (event) => {"))
@@ -2911,24 +2911,24 @@ def test_collapsed_chat_bar_shows_an_unread_count_excluding_own_lines():
         "this.bumpChatTerminalUnread();"
     ) in handler
     assert "own: isOwnChatLine(sender, senderId)," in DASHBOARD_CHAT
-    # `self` stays a strict senderId match: only the browser's own line may
-    # raise a bubble over the local avatar.
+
+
     assert "self: senderId === selfId," in DASHBOARD_CHAT
-    # An already-open panel never accumulates, and both doors into the room
-    # (the bar itself and the full overlay) clear the count.
+
+
     assert (
         'if (this.$("[data-world-chat-terminal]")?.open) return;' in APP
     )
     assert APP.count("this.clearChatTerminalUnread();") == 2
-    # The mobile layout shrinks the collapsed bar to the word CHAT; the pill
-    # gets room there rather than being clipped or hidden.
+
+
     assert ".world-chat-terminal-unread:not([hidden])" in CSS
 
 
 def test_clicking_forkbot_opens_the_terminal_bar_with_a_mention_prefilled():
-    # adhoc #284: ForkBot should drop a visitor into the small, docked CHAT
-    # bar (not the full-screen chat overlay), with "@forkbot " already typed
-    # in so they can start chatting immediately.
+
+
+
     assert 'onForkbotChat: () => {\n          this.openChatTerminal("@forkbot ");' in APP
     terminal = APP[
         APP.index("  openChatTerminal("):
@@ -2939,18 +2939,18 @@ def test_clicking_forkbot_opens_the_terminal_bar_with_a_mention_prefilled():
     assert "details.open = true;" in terminal
     assert '"forkmesh:chat-prefill"' in terminal
     assert 'new MessageEvent("message"' in terminal
-    # The native controller listens for that message and fills + focuses its
-    # composer without a nested document.
+
+
     assert 'data.type !== "forkmesh:chat-prefill"' in DASHBOARD_CHAT
     assert "input.focus();" in DASHBOARD_CHAT
 
 
 def test_signed_in_visitors_keep_their_account_name_for_every_peer():
-    # adhoc #276: a world ticket is the only account proof peers receive, so
-    # applying one must never be gated on the optional activity accounting that
-    # ships in the same response — a browser that keeps no ticket rejoins as an
-    # anonymous "Guest ####", which also silences its chat bubbles (they are
-    # matched to an avatar by display name).
+
+
+
+
+
     identity = APP[
         APP.index("  applyWorldTicketIdentity(ticket) {"):
         APP.index("\n  applyWorldActivityTicket(ticket)")
@@ -2966,12 +2966,12 @@ def test_signed_in_visitors_keep_their_account_name_for_every_peer():
     ]
     assert "if (this.applyWorldTicketIdentity(ticket)) {" in refresh
     assert "this.applyWorldActivityTicket(ticket);" in refresh
-    # A ticket that failed during bootstrap left the visitor stranded under the
-    # placeholder guest name for the rest of the session; a later ticket now
-    # repairs the identity and republishes it.
+
+
+
     assert "this.identity.name !== previousName" in refresh
     assert 'this.sendPresence({ type: "presence" });' in refresh
-    # Cookie-authenticated browsers hold no bearer token in localStorage.
+
     assert (
         "if (!readSession()?.sessionToken && !this.sessionAuthenticated) {"
         in refresh
@@ -2985,13 +2985,13 @@ def test_signed_in_visitors_keep_their_account_name_for_every_peer():
     assert (
         "(readSession()?.sessionToken || this.sessionAuthenticated) &&" in connect
     )
-    # Never present an expired ticket: the relay drops the claim silently.
+
     assert "if (this.worldTicket && this.worldTicketExpires <= Date.now())" in connect
 
 
 def test_world_guests_chat_under_the_name_their_avatar_wears():
-    # The embedded chat is matched to an avatar by display name, so a signed-out
-    # visitor has to speak as the same "Guest ####" the World shows above them.
+
+
     assert 'const GUEST_ID_KEY = "forkmesh.world.guestId.v1";' in APP
     assert 'const WORLD_GUEST_ID_KEY = "forkmesh.world.guestId.v1";' in DASHBOARD_CHAT
     assert "worldGuestPresenceName() ||" in DASHBOARD_CHAT
@@ -3000,7 +3000,7 @@ def test_world_guests_chat_under_the_name_their_avatar_wears():
         DASHBOARD_CHAT.index("\n  function displayName()")
     ]
     assert 'requestedParams.get("worldEmbed") !== "1"' in guest_name
-    # Same derivation as world.js hashSuffix()/accountIdentity().
+
     assert "hash = (Math.imul(hash, 31) + char.charCodeAt(0)) >>> 0;" in guest_name
     assert "String(hash % 10000).padStart(4, \"0\")" in guest_name
     assert "`guest:${guest}`" in guest_name
@@ -3008,8 +3008,8 @@ def test_world_guests_chat_under_the_name_their_avatar_wears():
 
 
 def test_world_updates_ask_before_code_refresh():
-    # A deployed code revision raises an explicit refresh action and never
-    # reloads the visitor out from under an active walk.
+
+
     assert "const WORLD_UPDATE_CHECK_INTERVAL_MS = 5 * 60 * 1000;" in APP
     assert "startUpdateWatch()" in APP
     assert "async checkForWorldUpdate()" in APP
@@ -3031,7 +3031,7 @@ def test_world_updates_ask_before_code_refresh():
     assert 'state === "ready"' in deploy
     assert "refresh.hidden = true;" in deploy
     assert "refresh.hidden = false;" in deploy
-    # Bounded: hidden tabs never poll and visibility bursts are throttled.
+
     assert (
         "if (this.destroyed || this.updateReloadPending || document.hidden) "
         "return;" in APP
@@ -3041,10 +3041,10 @@ def test_world_updates_ask_before_code_refresh():
 
 
 def test_arrival_grid_sign_is_a_front_plaque_with_visit_counters():
-    # The Arrival Grid sign stands at the grid's front edge as a physical
-    # plaque (no more floating sprite) and shows aggregate visit counters:
-    # all-time total, today vs the same time yesterday, and the past hour vs
-    # the same hour yesterday.
+
+
+
+
     assert "function makeArrivalPlaque" in SCENE
     assert "function arrivalPlaqueTexture" in SCENE
     assert 'plaque.name = "world-arrival-plaque"' in SCENE
@@ -3058,8 +3058,8 @@ def test_arrival_grid_sign_is_a_front_plaque_with_visit_counters():
     assert "function updateArrivalStats" in SCENE
     assert "yesterdaySameTime" in SCENE
     assert "pastHourYesterday" in SCENE
-    # The client feeds the plaque from the public aggregate endpoint; the
-    # response carries counters only, so it is shared and cacheable.
+
+
     assert '"/api/world/visitors"' in APP
     assert "updateArrivalStats" in APP
     assert '"/api/world/visitors", "/api/world/visitors/"' in ENTRY

@@ -29,11 +29,11 @@ ProtectKernelLogs=true
 ProtectKernelModules=true
 ProtectKernelTunables=true
 ProtectSystem=strict
-# The fixed merge executor runs as this same unprivileged service account.  A
-# successful exact-OID merge must atomically update the dedicated bare Git
-# source, then reseal and register state under ForkMesh's private data root.
-# Release CAS data remains read-only.  The two optional source roots cover the
-# packaged and legacy layouts without making an absent alternative fatal.
+
+
+
+
+
 ReadWritePaths=/var/lib/forkmesh-mirror/identity /var/lib/forkmesh-mirror/encrypted /var/lib/forkmesh-mirror/gateway /var/lib/forkmesh-mirror/runtime-tmp -/var/lib/forkmesh-mirror/source -/srv/forkmesh-git
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 RestrictNamespaces=true

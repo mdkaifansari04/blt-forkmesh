@@ -46,8 +46,8 @@ def _load_functions(extra_globals):
     assert {node.name for node in selected} == FUNCS, "missing claim/link functions"
     module = ast.fix_missing_locations(ast.Module(body=selected, type_ignores=[]))
     namespace = dict(extra_globals)
-    # Per-isolate hot-path memos the heartbeat path references (module-level
-    # in entry.py); fresh per load for test isolation.
+
+
     namespace.setdefault("_MIRRORED_ACCOUNT_BIS", set())
     namespace.setdefault("_HEARTBEAT_BALANCE_PROBES", {})
     namespace.setdefault("bounded_json_request", json_from_request_double)
@@ -158,7 +158,7 @@ def _harness(accounts):
         return None
 
     def _random_bytes(n):
-        return bytes([7] * n)  # deterministic -> code "434247"
+        return bytes([7] * n)
 
     def _ts_ok(_ts):
         return True
@@ -167,8 +167,8 @@ def _harness(accounts):
         return repr(error)
 
     async def _award_badge(env, name, name_bi, slug, granted_by="system"):
-        # Badge awarding (adhoc #370) is covered in isolation by
-        # test_badges.py; this harness only needs the call site to resolve.
+
+
         return None
 
     namespace = _load_functions({
@@ -241,19 +241,19 @@ def test_claim_flow_links_node_via_heartbeat_code():
         env, _Request(_auth({"nodeId": "mirror1"}))))
     assert started["status"] == 201
     assert started["data"]["pending"] is True
-    # The code never leaves via the website response.
+
     assert "code" not in str(started["data"])
     pending = accounts["mirror1"]["claim_pending"]
     assert pending["user"] == "alice"
     assert re.fullmatch(r"[0-9]{6}", pending["code"])
 
-    # Only the node (signed heartbeat) is shown the code.
+
     beat = asyncio.run(ns["_account_heartbeat"](env, _Request(
         {"nodeName": "mirror1", "ts": "1", "sig": "s"})))
     assert beat["status"] == 200
     assert beat["data"]["claim"] == {"user": "alice", "code": pending["code"]}
 
-    # A wrong code is rejected and counted.
+
     wrong = asyncio.run(ns["_account_claim_confirm"](
         env, _Request(_auth({"nodeId": "mirror1", "code": "000000"}))))
     assert wrong["status"] == 401
@@ -271,10 +271,10 @@ def test_claim_flow_links_node_via_heartbeat_code():
 
 
 def test_claim_node_accepts_pubkey_as_node_id():
-    # issue #351: the desktop app's own profile card calls the node's Ed25519
-    # public key its "Node ID", so a user pasting that value into the
-    # website's claim form must resolve to the node's actual account name,
-    # not be rejected as malformed.
+
+
+
+
     pubkey = "A" * 43
     accounts = {"alice": _user_rec(), "mirror1": dict(_node_rec(), pubkey=pubkey)}
     ns = _harness(accounts)
@@ -293,13 +293,13 @@ def test_claim_node_accepts_pubkey_as_node_id():
     assert accounts["mirror1"]["owner"] == "alice"
     assert accounts["alice"]["nodes"] == ["mirror1"]
 
-    # A key with no matching account is a 404, same as an unknown name.
+
     missing = asyncio.run(ns["_account_claim_node"](
         env, _Request(_auth({"nodeId": "B" * 43}))))
     assert missing["status"] == 404
     assert missing["data"]["error"] == "no_such_node"
 
-    # Something that's neither a name nor a key-shaped value is still 400.
+
     malformed = asyncio.run(ns["_account_claim_node"](
         env, _Request(_auth({"nodeId": "!!!not-valid!!!"}))))
     assert malformed["status"] == 400
@@ -347,7 +347,7 @@ def test_expired_claim_is_cleaned_up_by_heartbeat():
 
     asyncio.run(ns["_account_claim_node"](
         env, _Request(_auth({"nodeId": "mirror1"}))))
-    ns["_now"][0] += 11 * 60 * 1000  # past CLAIM_CODE_TTL_MS
+    ns["_now"][0] += 11 * 60 * 1000
 
     confirm = asyncio.run(ns["_account_claim_confirm"](
         env, _Request(_auth({"nodeId": "mirror1",
@@ -390,7 +390,7 @@ def test_admin_ownership_transfer_approved_via_node_heartbeat():
     pending = accounts["mirror1"]["ownership_transfer_pending"]
     assert pending["admin"] == "admin1"
 
-    # The prompt only ever reaches the target node via its own heartbeat.
+
     beat = asyncio.run(ns["_account_heartbeat"](env, _Request(
         {"nodeName": "mirror1", "ts": "1", "sig": "s"})))
     assert beat["data"]["ownershipTransfer"] == {"admin": "admin1"}
@@ -450,7 +450,7 @@ def test_admin_ownership_transfer_rejections():
         {"node": "admin1", "target": "ghost", "ts": "1", "sig": "s"})))
     assert missing["status"] == 404
 
-    # No pending marker at all -> confirm is a no-op 404.
+
     no_pending = asyncio.run(ns["_account_ownership_transfer_confirm"](
         env, _Request({"nodeName": "mirror1", "ts": "1", "sig": "s",
                       "action": "approve"})))
@@ -465,7 +465,7 @@ def test_expired_ownership_transfer_is_cleaned_up_by_heartbeat():
 
     asyncio.run(ns["_admin_request_ownership"](env, _Request(
         {"node": "admin1", "target": "mirror1", "ts": "1", "sig": "s"})))
-    ns["_now"][0] += 25 * 60 * 60 * 1000  # past OWNERSHIP_TRANSFER_TTL_MS
+    ns["_now"][0] += 25 * 60 * 60 * 1000
 
     confirm = asyncio.run(ns["_account_ownership_transfer_confirm"](
         env, _Request({"nodeName": "mirror1", "ts": "1", "sig": "s",
@@ -479,9 +479,9 @@ def test_expired_ownership_transfer_is_cleaned_up_by_heartbeat():
 
 
 def test_link_self_attaches_node_with_node_key_and_user_password():
-    # The desktop "Log in as a user" path: the node signs with its own key and
-    # supplies the user's password, so the link completes in one call with no
-    # confirmation code.
+
+
+
     accounts = {"alice": _user_rec(), "mirror1": _node_rec()}
     ns = _harness(accounts)
     env = object()
@@ -494,7 +494,7 @@ def test_link_self_attaches_node_with_node_key_and_user_password():
     assert accounts["mirror1"]["owner"] == "alice"
     assert accounts["alice"]["nodes"] == ["mirror1"]
 
-    # Re-running is idempotent (already linked to the same user).
+
     again = asyncio.run(ns["_account_link_self"](env, _Request(
         _auth({"nodeName": "mirror1", "ts": "1", "sig": "s"}))))
     assert again["data"]["alreadyLinked"] is True
@@ -537,14 +537,14 @@ def test_link_self_rejections():
 
 
 def _grant(node="mirror1", user="alice"):
-    # The browser half of "Link this node to your account" (adhoc #120): the
-    # node-signed grant from the URL plus the dashboard session's user name.
+
+
     return {"nodeName": node, "user": user, "ts": "1", "sig": "s"}
 
 
 def test_link_grant_links_node_to_browser_user():
-    # The node profile's browser button: a node-signed grant redeemed by the
-    # dashboard's logged-in user — no password re-entry, no confirmation code.
+
+
     accounts = {"alice": _user_rec(), "mirror1": _node_rec()}
     ns = _harness(accounts)
     env = object()
@@ -557,12 +557,12 @@ def test_link_grant_links_node_to_browser_user():
     assert accounts["alice"]["nodes"] == ["mirror1"]
     assert ns["_link_rows"], "redeemed grant must be parked as used"
 
-    # Redeeming the same grant again is idempotent while still linked…
+
     again = asyncio.run(ns["_account_link_grant"](env, _Request(_grant())))
     assert again["status"] == 200
     assert again["data"]["alreadyLinked"] is True
 
-    # …but once the node is unlinked, the burned grant cannot re-link it.
+
     del accounts["mirror1"]["owner"]
     replay = asyncio.run(ns["_account_link_grant"](env, _Request(_grant())))
     assert replay["status"] == 409
@@ -571,10 +571,10 @@ def test_link_grant_links_node_to_browser_user():
 
 
 def test_link_grant_overrides_existing_association():
-    # The grant is signed by the node's own key, so it OVERRIDES the current
-    # association: an owned node re-homes to the redeeming user (leaving the
-    # old owner's fleet), and even a user-kind account's node can be taken
-    # possession of.
+
+
+
+
     accounts = {
         "alice": _user_rec(),
         "bob": _user_rec("bob", "bob@example.com"),
@@ -592,8 +592,8 @@ def test_link_grant_overrides_existing_association():
     assert accounts["alice"]["nodes"] == ["owned"]
     assert accounts["bob"]["nodes"] == [], "old owner's fleet must shrink"
 
-    # A node whose account is itself a user can still be handed over — its own
-    # key signed the grant, so the operator authorized it.
+
+
     taken = asyncio.run(ns["_account_link_grant"](
         env, _Request({"nodeName": "bob", "user": "alice",
                        "ts": "2", "sig": "s2"})))
@@ -602,7 +602,7 @@ def test_link_grant_overrides_existing_association():
     assert accounts["bob"]["owner"] == "alice"
     assert sorted(accounts["alice"]["nodes"]) == ["bob", "owned"]
 
-    # Logged in as the node's own account: a friendly no-op, not an error.
+
     self_link = asyncio.run(ns["_account_link_grant"](
         env, _Request(_grant(node="alice", user="alice"))))
     assert self_link["status"] == 200
@@ -630,15 +630,15 @@ def test_link_grant_rejections():
     assert ghost_user["status"] == 404
     assert ghost_user["data"]["error"] == "no_such_user"
 
-    # A bare node session in the browser can't take possession of other nodes.
+
     not_user = asyncio.run(ns["_account_link_grant"](
         env, _Request(_grant(user="stray"))))
     assert not_user["status"] == 403
     assert not_user["data"]["error"] == "not_a_user"
 
-    # A stale timestamp or a bad signature invalidates the grant outright
-    # (the exec'd functions resolve globals through the harness namespace, so
-    # rebinding these stubs takes effect immediately).
+
+
+
     ns["_ts_ok"] = lambda _ts: False
     stale = asyncio.run(ns["_account_link_grant"](env, _Request(_grant())))
     assert stale["status"] == 401
@@ -660,12 +660,12 @@ def test_link_code_rendezvous_node_registers_first():
     ns = _harness(accounts)
     env = object()
 
-    # The fresh node's finalize parks its half first…
+
     parked = asyncio.run(ns["_redeem_or_park_link_code"](
         env, "123456", node="mirror2"))
     assert parked == {"linked": False}
 
-    # …then the installing desktop (a user account) offers the same code.
+
     offer = asyncio.run(ns["_account_link_node"](env, _Request(
         {"nodeName": "alice", "code": "123456", "ts": "1", "sig": "s"})))
     assert offer["status"] == 200
@@ -756,8 +756,8 @@ def test_installer_reclaim_rehomes_owned_node_and_rotates_key_node_first():
 
 
 def test_link_offer_resolves_the_user_behind_an_owned_node():
-    # An owned node's key can offer a code on behalf of its owning user; a
-    # bare, unowned node account cannot confer ownership at all.
+
+
     accounts = {
         "alice": _user_rec(),
         "mirror1": dict(_node_rec(), owner="alice"),
@@ -785,7 +785,7 @@ def test_expired_link_code_is_not_redeemed():
     env = object()
 
     asyncio.run(ns["_redeem_or_park_link_code"](env, "999888", node="mirror2"))
-    ns["_now"][0] += 31 * 60 * 1000  # past LINK_CODE_TTL_MS
+    ns["_now"][0] += 31 * 60 * 1000
 
     offer = asyncio.run(ns["_account_link_node"](env, _Request(
         {"nodeName": "alice", "code": "999888", "ts": "1", "sig": "s"})))
@@ -799,15 +799,15 @@ def test_wire_contracts_across_worker_qt_and_installer():
     qt_chat = QT_CHAT.read_text(encoding="utf-8")
     install = INSTALL_SH.read_text(encoding="utf-8")
 
-    # The link-offer canonical string matches on both ends.
+
     assert '"forkmesh-link-v1\\n" + name + "\\n" + code + "\\n" + ts' in entry
     assert '"forkmesh-link-v1\\n" + signer + "\\n" + code + "\\n" + ts' in qt_chat
 
-    # The installer's printed marker is exactly what the desktop app scans for.
+
     assert 'FORKMESH LINK CODE: $FORKMESH_LINK_CODE' in install
     assert 'FORKMESH LINK CODE:\\\\s*([0-9]{6})' in qt_chat
 
-    # The daemon inherits the code and presents it at finalize.
+
     assert 'FORKMESH_LINK_CODE="$FORKMESH_LINK_CODE"' in install
     assert 'qEnvironmentVariable("FORKMESH_LINK_CODE")' in qt_setup
     assert '"linkCode"' in qt_setup
@@ -824,42 +824,42 @@ def test_wire_contracts_across_worker_qt_and_installer():
         in qt_setup
     )
 
-    # The heartbeat is the only channel that carries the claim code out.
+
     assert 'response["claim"]' in entry
     assert 'resp.value(QStringLiteral("claim")).toObject()' in qt_setup
 
-    # "Log in as a user" (link-self): the node signs its own key over the same
-    # canonical string the worker verifies, and POSTs it to /link-self.
+
+
     assert '"forkmesh-link-self-v1\\n" + node_name + "\\n" + identifier +' in entry
     assert '"/api/accounts/link-self"' in entry
     assert '"forkmesh-link-self-v1\\n" + node + "\\n" + id + "\\n" + ts' in qt_chat
     assert 'accountsApiUrl("link-self")' in qt_chat
 
-    # The public account lookup lists the nodes linked to the account (the same
-    # data _account_public_payload already exposes), so a node's profile can
-    # render its user's whole fleet — the "show the linked nodes" ask.
+
+
+
     assert '"nodes": _owned_nodes(rec)}' in entry
     assert 'profileNodesFromJson(resp.value(QStringLiteral("nodes")))' in qt_chat
-    # The profile knows when its own account is a user (so it stops nagging to
-    # "log in as a user" and instead lists the nodes it owns).
+
+
     assert 'm_profileIsUserAccount' in qt_chat
 
 
 def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
     entry = ENTRY.read_text(encoding="utf-8")
     qt_chat = QT_CHAT.read_text(encoding="utf-8")
-    # dashboard.js is built from ordered public/dashboard/js/*.js fragments.
+
     dashboard_js = assembled_dashboard_js()
     login_js = (ROOT / "cloudflare_worker" / "public" / "login.js").read_text(
         encoding="utf-8")
 
-    # The grant canonical string matches on both ends, and the endpoint exists.
+
     assert '"forkmesh-link-grant-v1\\n" + node_name + "\\n" + ts' in entry
     assert '"/api/accounts/link-grant"' in entry
     assert '"forkmesh-link-grant-v1\\n" + node + "\\n" + ts' in qt_chat
 
-    # The desktop app opens /dashboard?link_node=…&link_ts=…&link_sig=… and the
-    # dashboard redeems exactly those params against the endpoint.
+
+
     for marker in ("link_node", "link_ts", "link_sig"):
         assert marker in qt_chat
         assert marker in dashboard_js
@@ -867,8 +867,8 @@ def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
     assert "offerLinkGrant" in dashboard_js
     assert "redeemLinkGrant" in dashboard_js
 
-    # The browser side asks for one explicit "Authenticate & link" click; the
-    # confirm row ships in the prebuilt settings page document.
+
+
     settings_html = (ROOT / "cloudflare_worker" / "public" / "dashboard" /
                      "settings" / "index.html").read_text(encoding="utf-8")
     assert "data-link-grant-row" in settings_html
@@ -877,10 +877,10 @@ def test_link_grant_wire_contract_across_worker_qt_and_dashboard():
     assert "data-link-grant-confirm" in composed
     assert "data-link-grant-confirm" in dashboard_js
 
-    # A logged-out browser bounces through login and resumes via ?next= (local
-    # paths only, so the bounce can't become an open redirect). The guard rejects
-    # "//host" and the "/\host" backslash bypass and confirms the resolved origin
-    # matches ours.
+
+
+
+
     assert "/login?next=" in dashboard_js
     assert "nextPath()" in login_js
     assert 'value.startsWith("//")' in login_js
@@ -895,8 +895,8 @@ def test_dashboard_exposes_a_claim_node_panel():
 
     settings_html = (ROOT / "cloudflare_worker" / "public" / "dashboard" /
                      "settings" / "index.html").read_text(encoding="utf-8")
-    # The claim panel lives in the settings view and is present in the prebuilt
-    # settings page document.
+
+
     assert "data-claim-node-input" in settings_html
     composed = assembled_dashboard()
     assert "data-claim-node-input" in composed

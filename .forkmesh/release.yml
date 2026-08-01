@@ -1,36 +1,36 @@
 name: Attach desktop build to release
-# Automatically builds the desktop Qt client for each platform when a release is
-# published (a tag drafted from the Releases panel). Each node it runs on builds
-# its own platform's binary and publishes it to the release, so to cover
-# Linux + macOS + Windows, the workflow runs on a node of each OS. The installer
-# (cloudflare_worker/public/install.sh) then autodetects the visitor's platform
-# and downloads the matching prebuilt binary instead of compiling.
-#
-# Release binaries are NOT committed into git (issue #304). The binary bytes are
-# staged into the node's content-addressed release store (the CAS, co-located
-# with the served mirror) and only small TEXT metadata is committed under
-# .forkmesh/releases/<channel>/ — SHASUMS256.txt + release.json. install.sh reads that
-# metadata over the git proxy, authenticates the detached Ed25519 signature
-# against a separately provisioned publisher key, then downloads the binary
-# from the relay's content-addressed endpoint and verifies its SHA-256.
-#
-# Triggered by the release event (the runner checks out the tagged commit and
-# exports FORKMESH_TAG with the tag name); also runnable by hand via
-# workflow_dispatch.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 on: [release, workflow_dispatch]
 jobs:
   release:
     steps:
-      # Build the optimized desktop client, name the binary forkmesh-<os>-<arch>
-      # [.exe] (the exact scheme install.sh resolves from `uname`), then publish
-      # it: tools/forkmesh-release-publish.sh hashes the binary, copies the bytes
-      # into the node's CAS, and writes .forkmesh/releases/<channel>/{SHASUMS256.txt,
-      # release.json}. The runner sets FORKMESH_RELEASE_CAS to the served CAS
-      # (<mirror>/forkmesh-releases) so the bytes land where the node streams them
-      # from, then — after this step succeeds — harvests the .forkmesh/releases/<channel>/
-      # signed metadata into the working copy, commits it, and publishes (syncs the
-      # served mirror). The asset goes live for download automatically; nothing
-      # here needs to commit into the throwaway worktree (cleanup discards it).
+
+
+
+
+
+
+
+
+
+
       - name: Build and attach the desktop binary
         run: |
           set -e

@@ -1,6 +1,6 @@
--- Bounded, privacy-preserving read model for verified profile contribution
--- snapshots. Human-readable repository labels remain inside encrypted data;
--- raw Git author names and email addresses are never stored.
+
+
+
 CREATE TABLE IF NOT EXISTS profile_contribution_receipts (
     generation_bi TEXT PRIMARY KEY,
     snapshot_hash TEXT NOT NULL,

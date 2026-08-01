@@ -26,8 +26,8 @@ def _release_functions():
     """Extract the contiguous prebuilt-install helper block from install.sh."""
     script = INSTALLER.read_text(encoding="utf-8")
     start = script.index("_sparse_fetch_file() {")
-    # install_prebuilt_release is the last function in the block; cut at its
-    # closing brace (first line that is exactly "}" after its definition).
+
+
     body_at = script.index("install_prebuilt_release() {", start)
     end = script.index("\n}\n", body_at) + len("\n}\n")
     return script[start:end]
@@ -127,8 +127,8 @@ def _run(
 
         bindir = tmp / "stubbin"
         bindir.mkdir()
-        # Fake git: clone makes the dir; sparse-checkout records the rel path(s)
-        # (one per line); checkout copies each that exists out of $FAKE_REPO.
+
+
         (bindir / "git").write_text(
             """#!/bin/sh
 if [ "$1" = "clone" ]; then
@@ -160,8 +160,8 @@ exit 0
             )
             (bindir / "sha256sum").chmod(0o755)
         if not omit_curl:
-            # Fake curl: `curl -fsSL <url> -o <out>` → record the URL and write
-            # the payload to <out>.
+
+
             (bindir / "curl").write_text(
                 """#!/bin/sh
 out=""; url=""
@@ -234,7 +234,7 @@ def test_prebuilt_install_fails_closed_without_checksum_tool():
 
 
 def test_rejects_checksum_mismatch():
-    # Manifest advertises one hash, the relay serves different bytes → no install.
+
     payload = b"tampered bytes that do not match the manifest hash"
     wrong = hashlib.sha256(b"the expected bytes").hexdigest()
     rc, installed, stderr, _ = _run("%s  forkmesh-linux-x86_64\n" % wrong, payload)
@@ -313,7 +313,7 @@ def test_trusted_ed25519_key_accepts_signature_and_rejects_tampering(tmp_path):
 
 
 def test_ignores_other_platform_entries():
-    # Manifest has no line for this platform → prebuilt path declines (rc != 0).
+
     payload = b"irrelevant"
     other = hashlib.sha256(payload).hexdigest()
     rc, installed, _, _ = _run("%s  forkmesh-windows-x86_64.exe\n" % other, payload)
@@ -322,10 +322,10 @@ def test_ignores_other_platform_entries():
 
 
 def test_blob_url_uses_manifest_repo_not_mirror():
-    # The clone came from the mirror "alice/forkmesh" (REPO_CANDIDATES), but the
-    # release.json manifest records the canonical "forkmesh/forkmesh" — the only
-    # node that holds the out-of-git blob. The blob URL MUST target the canonical
-    # repo, otherwise the mirror 404s and a published binary falls back to source.
+
+
+
+
     payload = b"\x7fELF prebuilt" * 20
     digest = hashlib.sha256(payload).hexdigest()
     sums = "%s  forkmesh-linux-x86_64\n" % digest
@@ -394,9 +394,9 @@ def test_pinned_reinstall_defers_destruction_until_verified_stage():
 
 
 def test_commit_pinned_install_rejects_stale_same_semver_release():
-    # Version strings are deliberately absent from this gate: two v0.7.0
-    # artifacts can be different.  Even with valid bytes/checksum, release.json
-    # from an older commit must be rejected before installation.
+
+
+
     payload = b"\x7fELF stale but checksum-valid v0.7.0 artifact" * 20
     digest = hashlib.sha256(payload).hexdigest()
     current_commit = "b2" * 20
@@ -531,8 +531,8 @@ def test_exact_staged_copy_is_checked_before_atomic_swap(tmp_path):
 
     stub_bin = tmp_path / "stubbin"
     stub_bin.mkdir()
-    # Simulate bytes changing during the candidate -> destination-filesystem
-    # copy. Verification must run on the staged path, not only on candidate.
+
+
     (stub_bin / "install").write_text(
         """#!/bin/sh
 dest=""
@@ -567,12 +567,12 @@ chmod 0755 "$dest"
     assert "Staged ForkMesh binary failed its SHA-256 check" in proc.stderr
 
 
-# --- direct-upload install (adhoc #67) ---------------------------------------
-# The desktop app's Hosts panel can stream the release binary over the SSH
-# session and hand it to the installer as FORKMESH_LOCAL_BINARY (with the
-# uploader's platform in FORKMESH_LOCAL_OS/ARCH). install_local_binary() must
-# install a matching upload as-is and decline — falling back to the relay
-# download — on a platform mismatch or a missing/empty upload.
+
+
+
+
+
+
 
 
 def _local_binary_function():
@@ -605,7 +605,7 @@ def _run_local(payload, *, os_decl="", arch_decl="", missing=False, pinned=True)
             + 'FORKMESH_LOCAL_ARCH="%s"\n' % arch_decl
             + 'FORKMESH_LOCAL_BINARY_SHA256="%s"\n'
             % (hashlib.sha256(payload).hexdigest() if pinned else "")
-            + _release_functions()  # provides _install_binary
+            + _release_functions()
             + _local_binary_function()
             + "\ninstall_local_binary\n")
         proc = subprocess.run(
@@ -623,7 +623,7 @@ def test_local_binary_installs_matching_upload():
 
 
 def test_local_binary_installs_without_declared_platform():
-    # Platform declaration is optional, but the controller digest is not.
+
     payload = b"\x7fELF undeclared platform upload"
     rc, installed, _ = _run_local(payload)
     assert rc == 0
@@ -661,6 +661,6 @@ def test_local_binary_missing_or_empty_upload_declines():
     assert rc != 0
     assert installed is None
     assert "falling back" in stderr
-    rc, installed, _ = _run_local(b"")  # exists but empty
+    rc, installed, _ = _run_local(b"")
     assert rc != 0
     assert installed is None

@@ -15,8 +15,8 @@
 
 namespace {
 
-// Cadence of the retained-history safety poll. Active sends/receives use the
-// room socket; this slower pass fills gaps after sleep or disconnects.
+
+
 constexpr int kPollIntervalMs = 30000;
 constexpr int kMaxChannels = 50;
 constexpr int kMaxTextChars = 16000;
@@ -25,9 +25,9 @@ constexpr int kMaxFileNameChars = 180;
 constexpr int kMaxMimeChars = 100;
 constexpr qsizetype kMaxFileBytes = 8ll * 1024 * 1024;
 constexpr int kMaxPendingTextsPerRoom = 32;
-// Ids already shown per room. Bounded: an office room retains a few hundred
-// messages, and each poll only asks for what landed after the newest stamp
-// this client has seen.
+
+
+
 constexpr int kSeenIdsPerRoom = 1000;
 
 const QRegularExpression &channelIdPattern()
@@ -41,7 +41,7 @@ QString boundedText(const QJsonObject &object, const char *key, int maxChars)
     return object.value(QLatin1String(key)).toString().left(maxChars);
 }
 
-} // namespace
+}
 
 namespace forkmesh::office {
 
@@ -91,8 +91,8 @@ bool chatMessageFromPlain(const QJsonObject &plain, const QString &conversation,
     const QString id = plain.value(QStringLiteral("id")).toString();
     if (id.isEmpty() || id.size() > 64)
         return false;
-    // The office is an untrusted publisher like any other room member: every
-    // field is bounded here, exactly as the mesh room's frames are.
+
+
     if (plain.value(QStringLiteral("text")).toString().size() > kMaxTextChars)
         return false;
 
@@ -113,8 +113,8 @@ bool chatMessageFromPlain(const QJsonObject &plain, const QString &conversation,
             plain.value(QStringLiteral("file")).toString().toLatin1(),
             QByteArray::Base64Encoding | QByteArray::AbortOnBase64DecodingErrors);
         if (decoded.isEmpty() || decoded.size() > kMaxFileBytes) {
-            // Keep the message, drop an unreadable/oversized attachment: the
-            // row still shows who said what.
+
+
             message.fileName.clear();
             message.fileMime.clear();
         } else {
@@ -128,7 +128,7 @@ bool chatMessageFromPlain(const QJsonObject &plain, const QString &conversation,
     return true;
 }
 
-} // namespace forkmesh::office
+}
 
 OfficeChannelMirror::OfficeChannelMirror(QNetworkAccessManager *network,
                                          QObject *parent)
@@ -149,7 +149,7 @@ void OfficeChannelMirror::setIdentity(const QString &account, const QString &sel
 {
     const QString normalized = account.trimmed().toLower();
     if (normalized != m_account) {
-        // A different account sees a different set of office rooms.
+
         for (auto it = m_rooms.begin(); it != m_rooms.end(); ++it) {
             failPending(it.value(), QStringLiteral("chat account changed"));
             discardSender(it.value());
@@ -359,8 +359,8 @@ void OfficeChannelMirror::fetchChannels()
             if (membersChanged)
                 emit roomMembersChanged(conversation, members);
         }
-        // Rooms the account can no longer read (removed from a private channel)
-        // stop being polled; their already-shown messages stay in the view.
+
+
         const QStringList known = m_rooms.keys();
         for (const QString &id : known) {
             if (!live.contains(id)) {
@@ -375,9 +375,9 @@ void OfficeChannelMirror::fetchChannels()
             m_conversations = conversations;
             emit conversationsChanged(m_conversations);
         }
-        // The poll that launched this list request could not yet know the room
-        // ids. Fetch immediately after discovery instead of making first paint
-        // wait for the next 30-second timer tick.
+
+
+
         for (const QString &id : std::as_const(live))
             fetchHistory(id);
     });
@@ -503,8 +503,8 @@ void OfficeChannelMirror::openSender(const QString &channelId,
         return;
     }
 
-    // A ticket or edge failure must not leave queued text stuck forever. A later
-    // send gets a fresh ticket instead of reusing a stale reconnect URL.
+
+
     QTimer::singleShot(20000, this, [this, channelId, sender] {
         if (!m_rooms.contains(channelId))
             return;

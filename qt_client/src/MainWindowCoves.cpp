@@ -1,9 +1,9 @@
-// Cove feature: encrypted, password-shared file vaults inside a repo.
-//
-// These are MainWindow member functions, defined in their own translation unit to
-// keep the feature self-contained (and to stay out of the way of the very large,
-// frequently-edited MainWindow.cpp). See CoveStore/CoveCrypto for the on-disk
-// .forkmesh/coves/<slug>.cove format and the AES-256-GCM crypto.
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -35,8 +35,8 @@ using namespace forkmesh::ui;
 
 namespace {
 
-// notifyEnabled() lives in MainWindow.cpp's anonymous namespace; re-derive it
-// here so this TU stays independent. Notifications default off.
+
+
 bool coveAlertEnabled()
 {
     return QSettings().value(QStringLiteral("notifications/coveOpened"), false).toBool();
@@ -49,9 +49,9 @@ QString shortStamp(qint64 ms)
     return QDateTime::fromMSecsSinceEpoch(ms).toString(QStringLiteral("yyyy-MM-dd hh:mm"));
 }
 
-} // namespace
+}
 
-// ---- Stores + scopes -------------------------------------------------------
+
 
 CoveStore MainWindow::coveStoreForRepo(int repoIndex) const
 {
@@ -103,11 +103,11 @@ bool MainWindow::tryUnlockCove(Cove &cove, int repoIndex, QString *passwordOut) 
     for (const QString &pw : std::as_const(candidates)) {
         if (pw.isEmpty())
             continue;
-        // Deriving a cove key is deliberately slow (a ~0.5-1s KDF, by design);
-        // a candidate that already failed for this cove will fail again, so
-        // don't re-pay the derivation on every settings rebuild — that stalled
-        // every repo open that carried a non-matching saved password (stall
-        // log: tryUnlockCove <- rebuildRepoCovesList <- openRepoDetail).
+
+
+
+
+
         const QString attempt = cove.id + QLatin1Char('\x1f') + pw;
         if (m_coveFailedUnlocks.contains(attempt))
             continue;
@@ -122,7 +122,7 @@ bool MainWindow::tryUnlockCove(Cove &cove, int repoIndex, QString *passwordOut) 
     return false;
 }
 
-// ---- Local "log yourself" access log (per machine) -------------------------
+
 
 void MainWindow::logCoveAccessLocal(const Cove &cove)
 {
@@ -142,7 +142,7 @@ QStringList MainWindow::coveAccessLogLocal(const QString &coveId) const
     return QSettings().value(QStringLiteral("coves/access/") + coveId).toStringList();
 }
 
-// ---- Live "someone opened your cove" alert ---------------------------------
+
 
 QByteArray MainWindow::coveOpenCanonical(const QString &coveId, const QString &creatorKey,
                                          const QString &openerKey, qint64 ts)
@@ -169,12 +169,12 @@ void MainWindow::onCoveOpened(const QString &creatorKey, const QString &coveId,
                               const QString &openerName, qint64 ts,
                               const QString &signature)
 {
-    // Only the cove's creator acts on it; everyone else in the room ignores it.
+
     if (!m_profileIdentity.isValid() || creatorKey != m_profileIdentity.publicKey())
         return;
     if (openerKey == m_profileIdentity.publicKey())
-        return; // our own open echoed back
-    // Trust the report only if the opener's signature verifies over the canonical.
+        return;
+
     if (!ForkMeshIdentity::verifySignature(
             openerKey, signature, coveOpenCanonical(coveId, creatorKey, openerKey, ts)))
         return;
@@ -200,7 +200,7 @@ void MainWindow::onCoveInvited(const QString &inviteeAccount, const QString &cov
     const QString account = coveAccountName();
     if (account.isEmpty() ||
         inviteeAccount.compare(account, Qt::CaseInsensitive) != 0)
-        return; // this invite wasn't for us
+        return;
 
     const QString who =
         inviterName.trimmed().isEmpty() ? QStringLiteral("Someone") : inviterName.trimmed();
@@ -216,7 +216,7 @@ void MainWindow::onCoveInvited(const QString &inviteeAccount, const QString &cov
                                 QSystemTrayIcon::Information, 6000);
 }
 
-// ---- Opening / viewing -----------------------------------------------------
+
 
 void MainWindow::openCove(const QString &relPath)
 {
@@ -234,7 +234,7 @@ void MainWindow::openCove(const QString &relPath)
     QString password;
     if (!tryUnlockCove(cove, idx, &password)) {
         bool ok = false;
-        // A locked cove's name is encrypted, so it may be unknown here.
+
         const QString prompt =
             cove.name.isEmpty()
                 ? QStringLiteral("Enter the password for this cove:")
@@ -258,8 +258,8 @@ void MainWindow::openCove(const QString &relPath)
 
 void MainWindow::openCoveViewer(int repoIndex, Cove cove, const QString &password)
 {
-    // Opening a cove counts as access: log it locally ("log yourself") and, if the
-    // creator asked for it and we aren't the creator, ping their node.
+
+
     logCoveAccessLocal(cove);
     if (cove.notifyOnOpen && !cove.createdByMe(&m_profileIdentity))
         announceCoveOpened(cove);
@@ -267,8 +267,8 @@ void MainWindow::openCoveViewer(int repoIndex, Cove cove, const QString &passwor
     CoveStore store = coveStoreForRepo(repoIndex);
     const bool canSave = store.canWrite();
 
-    // Record this open inside the cove's access log so it rides along the next time
-    // the cove is saved (a git-versioned trail the creator sees on sync).
+
+
     if (canSave) {
         CoveAccessEntry entry;
         entry.who = m_profileIdentity.publicKey();
@@ -343,7 +343,7 @@ void MainWindow::openCoveViewer(int repoIndex, Cove cove, const QString &passwor
 
     connect(docList, &QListWidget::currentRowChanged, dialog,
             [syncEditorToDoc, showDoc, cur](int row) {
-                // Persist the doc we're leaving before loading the new one.
+
                 if (*cur != row)
                     syncEditorToDoc();
                 showDoc(row);
@@ -433,7 +433,7 @@ void MainWindow::openCoveViewer(int repoIndex, Cove cove, const QString &passwor
     dialog->show();
 }
 
-// ---- Creating --------------------------------------------------------------
+
 
 void MainWindow::promptCreateCove(int repoIndex)
 {
@@ -513,7 +513,7 @@ void MainWindow::promptCreateCove(int repoIndex)
     openCoveViewer(repoIndex, created, pw);
 }
 
-// ---- Repo Settings "Coves" section -----------------------------------------
+
 
 QWidget *MainWindow::buildCoveSection()
 {
@@ -553,9 +553,9 @@ QWidget *MainWindow::buildCoveSection()
     m_covePasswordEdit->setEchoMode(QLineEdit::Password);
     m_covePasswordEdit->setPlaceholderText(QStringLiteral("Cove password for this repo"));
     pwRow->addWidget(m_covePasswordEdit, 1);
-    // On the source-of-truth node (the one holding the working tree) the owner can
-    // reveal the saved cove password — handy for sharing it with the team. Hidden on
-    // mirror nodes; visibility is (re)set in rebuildRepoCovesList. (#231)
+
+
+
     m_covePwRevealBtn = new QPushButton(QStringLiteral("Show"));
     m_covePwRevealBtn->setObjectName("covePwReveal");
     m_covePwRevealBtn->setProperty("buttonSize", "sm");
@@ -563,7 +563,7 @@ QWidget *MainWindow::buildCoveSection()
     m_covePwRevealBtn->setCursor(Qt::PointingHandCursor);
     m_covePwRevealBtn->setToolTip(
         QStringLiteral("Reveal the saved cove password on this source-of-truth node"));
-    m_covePwRevealBtn->setVisible(false); // shown only on source-of-truth (rebuild)
+    m_covePwRevealBtn->setVisible(false);
     pwRow->addWidget(m_covePwRevealBtn);
     connect(m_covePwRevealBtn, &QPushButton::toggled, this, [this](bool on) {
         if (on && m_covePasswordEdit->text().isEmpty())
@@ -627,9 +627,9 @@ void MainWindow::rebuildRepoCovesList()
     const int idx = m_repoDetailIndex;
 
     if (m_covePwRevealBtn) {
-        // Only the source-of-truth node (a writable working tree) can reveal the
-        // saved password. Re-mask on every rebuild so a revealed password never
-        // lingers across a repo switch.
+
+
+
         if (m_covePwRevealBtn->isChecked()) {
             QSignalBlocker block(m_covePwRevealBtn);
             m_covePwRevealBtn->setChecked(false);
@@ -655,12 +655,12 @@ void MainWindow::rebuildRepoCovesList()
         const bool unlocked = tryUnlockCove(cove, idx, &pw);
         const QString mine =
             cove.createdByMe(&m_profileIdentity) ? QStringLiteral("  (yours)") : QString();
-        // A locked cove keeps its name encrypted; show a neutral label until unlock.
+
         const QString label =
             cove.name.isEmpty() ? QStringLiteral("Locked cove") : cove.name;
         auto *item = new QListWidgetItem(
             QStringLiteral("%1%2").arg(label, mine), m_coveList);
-        // Lock state as a tinted octicon (green once open), not an emoji glyph.
+
         item->setIcon(QIcon(tintedOcticonPixmap(
             unlocked ? QStringLiteral("unlock") : QStringLiteral("lock"),
             QColor(unlocked ? "#3fb950" : "#8b949e"), 14)));
@@ -705,7 +705,7 @@ void MainWindow::applyCovePasswordFromSettings(int repoIndex, bool global,
         loadRepoFileTree();
 }
 
-// ---- Global Settings "Coves" section ---------------------------------------
+
 
 QWidget *MainWindow::buildCoveGlobalSection()
 {

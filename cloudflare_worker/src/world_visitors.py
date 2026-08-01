@@ -102,7 +102,7 @@ def generalized_user_agent(raw_user_agent):
     else:
         system = "other-os"
 
-    # Keep the allowlist explicit even if this helper changes in the future.
+
     category = "%s:%s:%s" % (client, system, device)
     return (
         category
@@ -157,8 +157,8 @@ def hll_estimate(register_rows, precision=HLL_PRECISION):
     alpha = 0.7213 / (1.0 + 1.079 / register_count)
     estimate = alpha * register_count * register_count / harmonic
 
-    # Linear counting removes the large small-cardinality bias and gives the
-    # Arrival Grid sensible 0/1/2 counts while retaining HLL's fixed footprint.
+
+
     if estimate <= 2.5 * register_count and zero_count:
         estimate = register_count * math.log(register_count / zero_count)
     return max(0, int(round(estimate)))

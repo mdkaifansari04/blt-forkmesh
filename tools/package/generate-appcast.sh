@@ -1,25 +1,25 @@
 #!/usr/bin/env bash
-# Generate a Sparkle/WinSparkle appcast from a channel's release.json (issue #370).
-# The appcast is the in-app update manifest: Sparkle 2 (macOS) and WinSparkle
-# (Windows) poll it, verify each enclosure's EdDSA signature, and offer the
-# update. Deriving it from release.json keeps a single source of truth for
-# "what is the latest release" — see /docs#installers-updates.
-#
-# Emits: .forkmesh/releases/<channel>/appcast.xml
-#
-# Usage:
-#   tools/package/generate-appcast.sh [--channel latest] [--host https://forkmesh.com]
-#
-# Signing env (optional):
-#   FORKMESH_SPARKLE_ED_KEY   base64 Ed25519 private key. When set, each
-#                             installer enclosure gets an EdDSA `sparkle:edSignature`
-#                             over its bytes (reuses the node release key, per #370).
-#                             When absent, the appcast ships without signatures
-#                             and Sparkle is expected to run with signature
-#                             enforcement disabled until a key is wired in.
-#
-# release.json is the source of truth for asset sha256/size; the enclosure URL is
-# the relay's content-addressed blob endpoint the mirror already serves.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 set -euo pipefail
 
 channel="${RELEASE_CHANNEL:-latest}"
@@ -40,9 +40,9 @@ out=".forkmesh/releases/${channel}/appcast.xml"
 log() { echo "[appcast] $*" >&2; }
 host="${host%/}"
 
-# Parse release.json with python (already required across the toolchain) and emit
-# the appcast. Only the platform *installers* (AppImage/dmg/setup.exe) are
-# advertised for in-app updates; the bare binaries stay install.sh-only.
+
+
+
 FORKMESH_APPCAST_HOST="$host" \
 FORKMESH_APPCAST_CHANNEL="$channel" \
 python3 - "$meta" "$out" <<'PY'
@@ -75,7 +75,6 @@ def blob_url(sha):
     return f"{host}/releases/blob/{sha}"
 
 def find_blob(sha):
-    # Best-effort local blob lookup for signing; the served bytes are identical.
     for root in (os.environ.get("FORKMESH_RELEASE_CAS", ""), ".forkmesh/release-blobs"):
         if not root:
             continue

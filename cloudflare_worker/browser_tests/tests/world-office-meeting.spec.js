@@ -409,8 +409,8 @@ for (const viewport of [
 ]) {
   test(`Office meeting visual acceptance ${viewport.name}`, async ({ browser }, testInfo) => {
     testInfo.snapshotSuffix = "linux";
-    // The transcript renders local time. Pin the browser zone so snapshots
-    // remain identical on developer machines and CI runners worldwide.
+
+
     const context = await browser.newContext({
       ...viewport.options,
       timezoneId: "UTC",

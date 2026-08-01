@@ -393,10 +393,10 @@ def _verification_harness(rpc, memo=None, now=2_000_000_000_000):
 
 
 def test_pool_verification_memoizes_the_stable_network_proof():
-    # The proof (genesis hash + pool account existence) is stable
-    # configuration, so a verified triple must not re-run two Solana RPC
-    # round trips on every /api/accounts/central-fund view — public RPC rate
-    # limits turned that into recurring 503s (2026-07-24 error log).
+
+
+
+
     memo = {"key": None, "ts": 0}
     verify, calls = _verification_harness({
         "getGenesisHash": {"result": "GENESIS"},
@@ -405,20 +405,20 @@ def test_pool_verification_memoizes_the_stable_network_proof():
     assert asyncio.run(verify(_Env(), POOL)) is True
     assert calls == ["getGenesisHash", "getAccountInfo"]
     assert asyncio.run(verify(_Env(), POOL)) is True
-    assert calls == ["getGenesisHash", "getAccountInfo"]  # fresh hit: no RPC
+    assert calls == ["getGenesisHash", "getAccountInfo"]
 
 
 def test_pool_verification_serves_bounded_stale_through_rpc_outages():
     hour = 60 * 60 * 1000
     verified_at = 2_000_000_000_000
     memo = {"key": ("devnet", "https://rpc.example", POOL), "ts": verified_at}
-    # Two hours later (past the fresh TTL) the RPC answers nothing at all:
-    # the previously proven configuration keeps serving.
+
+
     verify, calls = _verification_harness(
         {}, memo=memo, now=verified_at + 2 * hour)
     assert asyncio.run(verify(_Env(), POOL)) is True
     assert calls == ["getGenesisHash"]
-    # Past the stale bound a dead RPC fails closed again.
+
     verify, _ = _verification_harness(
         {}, memo=memo, now=verified_at + 25 * hour)
     assert asyncio.run(verify(_Env(), POOL)) is False
@@ -427,8 +427,8 @@ def test_pool_verification_serves_bounded_stale_through_rpc_outages():
 def test_pool_verification_wrong_cluster_answer_clears_the_fallback():
     memo = {"key": ("devnet", "https://rpc.example", POOL),
             "ts": 2_000_000_000_000}
-    # A real ANSWER naming the wrong cluster is disqualifying — it must not
-    # be smoothed over by the stale window, and it revokes the fallback.
+
+
     verify, _ = _verification_harness(
         {"getGenesisHash": {"result": "MAINNET-HASH"}},
         memo=memo, now=2_000_000_000_000 + 2 * 60 * 60 * 1000)

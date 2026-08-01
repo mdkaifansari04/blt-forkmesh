@@ -5,12 +5,12 @@
     <script src="/posthog.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <script>
-      // A bare one-segment path (e.g. /forkmesh) is someone's user-or-org
-      // page, but Static Assets can't route it (only the Worker knows which
-      // names exist), so this 404 bounces it to the canonical /@name profile
-      // URL, which is Worker-routed. A missing /@name profile serves this
-      // page again with an @-prefixed path that the regex rejects, so a bad
-      // name can never bounce in a loop.
+
+
+
+
+
+
       (() => {
         const parts = location.pathname.split("/").filter(Boolean);
         if (parts.length !== 1) return;
@@ -215,7 +215,7 @@
     </style>
     <link rel="stylesheet" href="/mesh-page-theme.css" />
     <link rel="stylesheet" href="/site-header.css" />
-    <script src="/site-header.js?v=4fff78946d89" defer></script>
+    <script src="/site-header.js?v=48c851a962ec" defer></script>
   </head>
   <body class="h-full">
     <main class="page-shell flex min-h-screen flex-col">

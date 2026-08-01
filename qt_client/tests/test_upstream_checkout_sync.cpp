@@ -8,13 +8,13 @@
 
 #include <cstdio>
 
-// The headless-fleet regression this suite pins down: a node that seals its
-// public mirror from the installer-provisioned agent checkout must keep that
-// checkout tracking the upstream relay clone. Before UpstreamCheckoutSync,
-// the checkout froze at its install-time snapshot (the mirror6/7/8 outage of
-// 2026-07-30): new upstream commits, branches, and the pulls metadata branch
-// never arrived, and the node served stale data forever while claiming to be
-// a healthy mirror.
+
+
+
+
+
+
+
 
 namespace {
 
@@ -72,7 +72,7 @@ bool commitFile(const QString &repo, const QString &name,
                       QStringLiteral("-m"), message});
 }
 
-} // namespace
+}
 
 int main(int argc, char *argv[])
 {
@@ -85,8 +85,8 @@ int main(int argc, char *argv[])
     }
     const QDir root(temp.path());
 
-    // Upstream: the relay-served source of truth, with main, a side branch,
-    // the pulls metadata branch, and a branch that will later disappear.
+
+
     const QString upstream = root.filePath(QStringLiteral("upstream"));
     QDir().mkpath(upstream);
     check(git(upstream, {QStringLiteral("init"), QStringLiteral("-q"),
@@ -120,17 +120,17 @@ int main(int argc, char *argv[])
                          QStringLiteral("main")}),
           "back to main");
 
-    // Node checkout: the installer's single-branch clone, exactly like
-    // launch_root_headless_service seeds it.
+
+
     const QString checkout = root.filePath(QStringLiteral("checkout"));
     check(git(temp.path(), {QStringLiteral("clone"), QStringLiteral("-q"),
                             QStringLiteral("--branch"), QStringLiteral("main"),
                             QStringLiteral("--single-branch"), upstream,
                             checkout}),
           "single-branch clone");
-    // Local junk pulls branch (the pre-fix nodes grew one) plus a stale agent
-    // claim branch pointing at the clone-time tip, and one branch with real
-    // local-only work that must survive every refresh.
+
+
+
     check(git(checkout, {QStringLiteral("branch"),
                          QStringLiteral("forkmesh/pulls")}),
           "local junk pulls branch");
@@ -147,15 +147,15 @@ int main(int argc, char *argv[])
     check(git(checkout, {QStringLiteral("checkout"), QStringLiteral("-q"),
                          QStringLiteral("main")}),
           "back on main");
-    // A linked worktree keeps the pulls branch checked out, mirroring the
-    // app's pull-meta materialization (the case that broke a naive refresh).
+
+
     const QString pullsWorktree = root.filePath(QStringLiteral("pull-meta"));
     check(git(checkout, {QStringLiteral("worktree"), QStringLiteral("add"),
                          QStringLiteral("-q"), pullsWorktree,
                          QStringLiteral("forkmesh/pulls")}),
           "pulls worktree");
 
-    // Upstream moves on: main advances, the stale claim branch is deleted.
+
     check(commitFile(upstream, QStringLiteral("README.md"),
                      QByteArrayLiteral("hello v2\n"), QStringLiteral("second")),
           "advance upstream main");
@@ -164,7 +164,7 @@ int main(int argc, char *argv[])
                          QStringLiteral("agent/adhoc-1-stale-claim")}),
           "delete upstream stale claim");
 
-    // --- The refresh under test -------------------------------------------
+
     const auto outcome =
         forkmesh::upstream::refreshManagedCheckoutFromUpstream(checkout,
                                                                upstream);
@@ -196,14 +196,14 @@ int main(int argc, char *argv[])
                   QStringLiteral("agent wip"),
           "agent wip tip untouched");
 
-    // A second refresh with nothing new is a quiet no-op.
+
     const auto again =
         forkmesh::upstream::refreshManagedCheckoutFromUpstream(checkout,
                                                                upstream);
     check(again.error.isEmpty(), "no-op refresh reports no error");
     check(again.summary().isEmpty(), "no-op refresh has an empty summary");
 
-    // A dirty primary checkout must never be fast-forwarded under an agent.
+
     check(commitFile(upstream, QStringLiteral("README.md"),
                      QByteArrayLiteral("hello v3\n"), QStringLiteral("third")),
           "advance upstream again");
@@ -221,13 +221,13 @@ int main(int argc, char *argv[])
               revParse(upstream, QStringLiteral("main")),
           "dirty main did not move");
 
-    // An unreachable upstream fails closed without touching anything.
+
     const auto offline = forkmesh::upstream::refreshManagedCheckoutFromUpstream(
         checkout, root.filePath(QStringLiteral("missing")));
     check(!offline.error.isEmpty(), "unreachable upstream reports an error");
     check(!offline.summary().isEmpty(), "failure summary names the problem");
 
-    // A path that is not a checkout is rejected outright.
+
     const auto notRepo = forkmesh::upstream::refreshManagedCheckoutFromUpstream(
         root.filePath(QStringLiteral("nowhere")), upstream);
     check(!notRepo.error.isEmpty(), "missing checkout rejected");

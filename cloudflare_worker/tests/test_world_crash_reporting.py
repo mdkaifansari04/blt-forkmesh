@@ -49,15 +49,15 @@ def test_crash_kind_is_accepted_by_the_client_error_collector():
 def test_world_arms_a_pagehide_cleared_crash_guard_with_heartbeat():
     assert 'const CRASH_GUARD_KEY = "forkmesh.world.crash-guard.v1"' in WORLD
     assert 'const CRASH_COUNT_KEY = "forkmesh.world.crash-count.v1"' in WORLD
-    # Armed on boot and on bfcache resume, refreshed alongside the
-    # once-per-second diagnostics tick, cleared on every orderly pagehide.
+
+
     assert "this.armCrashGuard();" in WORLD
     assert "this.beatCrashGuard();" in WORLD
     assert (
         "this.disarmCrashGuard();\n"
         "    this.pauseWorldActivity();"
     ) in WORLD
-    # The heartbeat carries the diagnostics that make the report debuggable.
+
     assert "heapUsedMb" in WORLD
     assert "contextLosses" in WORLD
     assert "UNMASKED_RENDERER_WEBGL" in WORLD
@@ -82,9 +82,9 @@ def test_webgl_context_losses_are_reported_with_diagnostics():
 
 
 def test_crashed_sessions_reboot_into_the_compact_renderer():
-    # The safe-mode reboot is the mitigation: after a crash (or a context
-    # loss that forced the recovery reload) the next boot skips multisample,
-    # stencil, and shadow-map allocations.
+
+
+
     assert "this.rendererSafeMode = this.worldCrashCount() > 0;" in WORLD
     assert "forceCompactRenderer: this.rendererSafeMode === true," in WORLD
     assert "forceCompactRenderer = false," in SCENE
@@ -92,7 +92,7 @@ def test_crashed_sessions_reboot_into_the_compact_renderer():
         "forceCompactRenderer || window.matchMedia?."
         '("(pointer: coarse)")?.matches,'
     ) in SCENE
-    # The renderer-recovery reload counts like a crash for the next boot.
+
     assert (
         "this.recordWorldCrash();\n"
         "    this.preserveWorldPositionForRefresh();"
@@ -100,24 +100,24 @@ def test_crashed_sessions_reboot_into_the_compact_renderer():
 
 
 def test_compact_renderer_paints_large_plates_at_half_resolution():
-    # The mobile crash is a memory crash: ~96 plates at desktop resolution
-    # allocate more 2D backing store than a phone tab is allowed to hold.
+
+
     assert "const CANVAS_TEXTURE_SCALE_MIN_PIXELS = 512 * 512;" in SCENE
     assert "let canvasTextureScale = 1;" in SCENE
     assert "canvasTextureScale = compactRenderer ? 0.5 : 1;" in SCENE
-    # The scale must be chosen before the first plate paints, or the phone
-    # allocates the full-size buffers this is meant to avoid.
+
+
     build = SCENE[SCENE.index("export function createWorldScene("):]
     assert build.index("canvasTextureScale = compactRenderer") < build.index(
         "createWorldSky({")
-    # Draw code keeps its own coordinate system: only the buffer shrinks.
+
     assert "canvas.width = Math.max(1, Math.round(width * scale));" in SCENE
     assert "context.setTransform(scale, 0, 0, scale, 0, 0);" in SCENE
-    # Painters that read canvas.width/height keep full resolution.
+
     assert (
         "if (canvasTextureScale >= 1 || draw.length >= 2) return 1;"
     ) in SCENE
-    # An in-place repaint lands in the same coordinate system.
+
     repaint = SCENE[SCENE.index("function repaintCanvasTexture("):]
     repaint = repaint[:repaint.index("\nfunction ")]
     assert "Number(canvas.dataset?.textureScale) || 1" in repaint
@@ -127,8 +127,8 @@ def test_compact_renderer_paints_large_plates_at_half_resolution():
 
 
 def test_crash_reports_name_the_device_renderer_and_resident_scene():
-    # "Crashing on mobile" is only actionable with the device class, the
-    # renderer mode, and what the GPU was holding when the tab died.
+
+
     report = WORLD[WORLD.index("  reportPreviousWorldCrash()"):]
     report = report[:report.index("  reportWorldClientError(")]
     for reading in (
@@ -146,12 +146,12 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
         "avatars ${describe(record.avatars)}",
     ):
         assert reading in report, reading
-    # The device facts are read once and reused, like the GPU label.
+
     assert "deviceProfile()" in WORLD
     assert "navigator.hardwareConcurrency" in WORLD
     assert "navigator.deviceMemory" in WORLD
-    # The heartbeat rides the diagnostics snapshot the renderer already
-    # publishes rather than duplicating those readings.
+
+
     guard = WORLD[WORLD.index("  beatCrashGuard()"):]
     guard = guard[:guard.index("  reportPreviousWorldCrash()")]
     assert "const output = snapshot?.output;" in guard
@@ -164,9 +164,9 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
 
 
 def test_volatile_crash_readings_are_bucketed_so_equivalent_crashes_group():
-    # The admin view groups rows by exact message text. Raw counters would
-    # file every crash as its own group of one — no count, no frequency, and
-    # one administrator ping per crash.
+
+
+
     assert "function coarseCrashReading(value)" in WORLD
     assert "function coarseCrashLabel(value, unit = \"\")" in WORLD
     assert "const magnitude = 10 ** Math.floor(Math.log10(number));" in WORLD
@@ -174,17 +174,17 @@ def test_volatile_crash_readings_are_bucketed_so_equivalent_crashes_group():
 
 
 def test_crash_reports_reach_the_admin_ping_without_losing_the_tail():
-    # The reported group was cut at "context los": the message survived the
-    # collector but the ping body truncated it mid-reading.
+
+
     assert '_sanitize_client_error_text(payload.get("message"), 900)' in ENTRY
     assert 'String(message || "").slice(0, 900)' in WORLD
     notify = ENTRY[ENTRY.index("async def _notify_new_error_group("):]
     notify = notify[:notify.index("async def _write_error_log(")]
     assert 'str(message or "")[:460]' in notify
-    # 460 plus the "JS /client-error/world — " prefix stays inside the
-    # 500-character body the notification payload keeps.
+
+
     assert 'clean_string(body, 500)' in ENTRY
-    # The admin table shows the whole report rather than one clipped line.
+
     assert "white-space:pre-wrap;overflow-wrap:anywhere" in ENTRY
     assert "text-overflow:ellipsis;white-space:nowrap;vertical-align:middle" \
         not in ENTRY

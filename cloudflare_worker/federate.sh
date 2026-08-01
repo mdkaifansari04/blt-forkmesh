@@ -1,24 +1,24 @@
 #!/usr/bin/env bash
-# Fediverse (ActivityPub) go-live helper for the ForkMesh relay
-#
-# "Connecting to the fediverse" needs no registration anywhere: once the
-# Worker with the /ap/* layer is deployed, being reachable at the well-known
-# discovery endpoints on your domain IS joining the network. This script
-# proves that from the outside, exactly the way a Mastodon server would.
-#
-#   ./federate.sh                    verify https://forkmesh.com (default)
-#   ./federate.sh verify [origin]    run every discovery/protocol check
-#   ./federate.sh verify --user alice --repo owner/widget
-#                                    check specific actors (otherwise a public
-#                                    repo + its owner are picked from the
-#                                    live catalog automatically)
-#   ./federate.sh comments owner/repo issue 7 [origin]
-#                                    show a thread's federated comments
-#   ./federate.sh deploy             ./deploy.sh then verify (needs
-#                                    .env.production; on machines without it,
-#                                    push to main and let CI deploy instead)
-#
-# Exit code = number of failed checks, so it slots straight into CI.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 set -u
 cd "$(dirname "$0")"
 
@@ -34,8 +34,8 @@ say()  { printf '%s\n' "$*"; }
 pass() { CHECKS=$((CHECKS + 1)); say "  PASS  $1"; }
 fail() { CHECKS=$((CHECKS + 1)); FAILS=$((FAILS + 1)); say "  FAIL  $1${2:+ — $2}"; }
 
-# fetch <url> [accept] -> sets $BODY and $HTTP_STATUS (globals, NOT a command
-# substitution: a subshell would silently drop the status).
+
+
 fetch() {
     local url="$1" accept="${2:-}" tmp
     tmp="$(mktemp)"
@@ -48,8 +48,8 @@ fetch() {
     rm -f "$tmp"
 }
 
-# jget <python-expr over d> -> value from $BODY or empty (body via stdin so
-# arbitrary response bodies can't break quoting)
+
+
 jget() {
     printf '%s' "$BODY" | python3 -c '
 import json, sys
@@ -62,15 +62,15 @@ except Exception:
 }
 
 pick_sample() {
-    # Auto-pick a public repo (and a federating user) from the live catalog so
-    # zero-argument verification just works.
+
+
     fetch "$ORIGIN/api/repositories"
     if [ -z "$REPO_PATH" ]; then
         REPO_PATH="$(jget 'd["repositories"][0]["owner"] + "/" + d["repositories"][0]["name"]')"
     fi
     if [ -z "$USER_HANDLE" ]; then
-        # Only USER-kind accounts get Person actors (node/mirror accounts
-        # correctly 404), so probe catalog owners until one webfingers.
+
+
         local domain="${ORIGIN#*://}" owner
         for owner in $(jget '" ".join(dict.fromkeys(r["owner"] for r in d["repositories"][:25]))'); do
             fetch "$ORIGIN/.well-known/webfinger?resource=acct:$owner@$domain"
@@ -83,7 +83,7 @@ verify() {
     local domain="${ORIGIN#*://}"
     say "Verifying fediverse surface of $ORIGIN"
 
-    # 0. Origin sanity: the Worker answers at all.
+
     fetch "$ORIGIN/api/version"
     if [ "$HTTP_STATUS" = 200 ]; then pass "/api/version (rev $(jget 'd["rev"][:12]'))"
     else fail "/api/version" "HTTP $HTTP_STATUS — is the Worker deployed?"; return; fi
@@ -93,7 +93,7 @@ verify() {
     [ -n "$USER_HANDLE" ] || say "  note: no user-kind account found among catalog owners; user-actor checks skipped (node accounts correctly have no Person actor)"
     local owner="${REPO_PATH%%/*}" repo="${REPO_PATH#*/}"
 
-    # 1. NodeInfo discovery chain.
+
     fetch "$ORIGIN/.well-known/nodeinfo"
     case "$(jget 'd["links"][0]["href"]')" in
         "$ORIGIN"/nodeinfo/2.1) pass "/.well-known/nodeinfo";;
@@ -105,7 +105,7 @@ verify() {
         pass "/nodeinfo/2.1 (activitypub advertised)"
     else fail "/nodeinfo/2.1" "HTTP $HTTP_STATUS"; fi
 
-    # 2. WebFinger + actor documents for the user and repo actors.
+
     if [ -n "$USER_HANDLE" ]; then
         fetch "$ORIGIN/.well-known/webfinger?resource=acct:$USER_HANDLE@$domain"
         if [ "$(jget 'd["subject"]')" = "acct:$USER_HANDLE@$domain" ]; then
@@ -118,7 +118,7 @@ verify() {
             pass "actor /ap/users/$USER_HANDLE (RSA key published)"
         else fail "actor /ap/users/$USER_HANDLE" "HTTP $HTTP_STATUS"; fi
 
-        # Content negotiation on the human profile URL.
+
         fetch "$ORIGIN/@$USER_HANDLE" application/activity+json
         if [ "$(jget 'd["id"]')" = "$ORIGIN/ap/users/$USER_HANDLE" ]; then
             pass "content negotiation on /@$USER_HANDLE"
@@ -148,7 +148,7 @@ verify() {
         else fail "fedi-comments API" "HTTP $HTTP_STATUS"; fi
     fi
 
-    # 3. Inbox exists and ENFORCES HTTP signatures (unsigned POST must 401).
+
     HTTP_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -X POST \
         -H 'Content-Type: application/activity+json' \
         -d '{"type":"Follow","actor":"https://example.com/u/x"}' \
@@ -177,7 +177,7 @@ case "$cmd" in
         fetch "$ORIGIN/api/repo/${rp%%/*}/${rp#*/}/fedi-comments?kind=$kind&number=$num"
         printf '%s\n' "$BODY"
         exit 0;;
-    -*|http*) cmd=verify;;   # bare origin or flags → verify
+    -*|http*) cmd=verify;;
     *) say "unknown command: $cmd"; exit 2;;
 esac
 while [ $# -gt 0 ]; do

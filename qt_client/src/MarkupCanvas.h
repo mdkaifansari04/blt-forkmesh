@@ -11,28 +11,28 @@
 
 class QPainter;
 
-// The kind of annotation the user is drawing on a captured screenshot.
+
 enum class MarkupTool { Pencil, Rect, Ellipse, Line, Arrow, Text, Move };
 
-// A single annotation: a freehand stroke (a list of points), a shape outline
-// (a rectangle/ellipse bounded by rect, or a directional line/arrow running
-// from p1 to p2), or a text label dropped at a point.
+
+
+
 struct MarkupOp {
     enum class Kind { Stroke, Shape, Text };
     Kind kind = Kind::Stroke;
     QColor color;
-    QVector<QPoint> points; // used when kind == Stroke
-    MarkupTool shapeType = MarkupTool::Rect; // used when kind == Shape
-    QRect rect; // used when shapeType is Rect or Ellipse
-    QPoint p1, p2; // used when shapeType is Line or Arrow (p2 is the arrow's head)
-    QPoint textPos; // used when kind == Text (baseline origin)
-    QString text; // used when kind == Text
-    int textPointSize = 18; // used when kind == Text
+    QVector<QPoint> points;
+    MarkupTool shapeType = MarkupTool::Rect;
+    QRect rect;
+    QPoint p1, p2;
+    QPoint textPos;
+    QString text;
+    int textPointSize = 18;
 };
 
-// The drawable viewport over the screenshot: renders the base image and lets the
-// user scribble freehand ink, drop shape outlines, or add text labels on top,
-// then flattens the markup back onto the image.
+
+
+
 class MarkupCanvas : public QWidget
 {
     Q_OBJECT
@@ -44,7 +44,7 @@ public:
     void setTextPointSize(int pointSize);
     void undo();
 
-    // Composite all markup onto the base image and return the flattened result.
+
     QImage flattenedImage() const;
 
     QSize sizeHint() const override;

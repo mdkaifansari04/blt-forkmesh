@@ -21,9 +21,9 @@ from pathlib import Path
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 MIRRORS = ENTRY.parent / "mirrors.py"
 CATALOG = ENTRY.parent / "catalog.py"
-# Mirror grouping / clone-selection helpers were extracted from entry.py into
-# mirrors.py, and the catalog-record sanitization helpers into catalog.py;
-# parse all sources so the AST loaders below still find them.
+
+
+
 _WORKER_SRC = (
     ENTRY.read_text(encoding="utf-8") + "\n"
     + MIRRORS.read_text(encoding="utf-8") + "\n"
@@ -48,7 +48,7 @@ def _load(*names, extra_globals=None):
     return [namespace[name] for name in names]
 
 
-# --- mirroring_owner_set: the pure grouping decision ------------------------
+
 
 def _owner_set(records):
     (fn,) = _load(
@@ -59,7 +59,7 @@ def _owner_set(records):
 
 
 def test_single_owner_repo_does_not_qualify():
-    # carol hosts only her own repo; no other node mirrors it -> not eligible.
+
     owners = _owner_set([{"owner": "carol", "name": "solo", "rootCommit": "R2"}])
     assert owners == set()
 
@@ -73,11 +73,11 @@ def test_repo_mirrored_across_two_owners_qualifies_both():
 
 
 def test_groups_by_root_commit_not_just_name():
-    # Same root, different local names -> still the same logical repo (mirrors).
+
     owners = _owner_set([
         {"owner": "alice", "name": "forkmesh", "rootCommit": "R1"},
         {"owner": "bob", "name": "forkmesh-fork", "rootCommit": "R1"},
-        # A genuine fork (different root) shares the name but is NOT a mirror.
+
         {"owner": "eve", "name": "forkmesh", "rootCommit": "Rx"},
     ])
     assert owners == {"alice", "bob"}
@@ -97,11 +97,11 @@ def test_owner_comparison_is_case_insensitive():
         {"owner": "Alice", "name": "forkmesh", "rootCommit": "R1"},
         {"owner": "alice", "name": "forkmesh", "rootCommit": "R1"},
     ])
-    # Same owner under two casings is one node, not a mirror across nodes.
+
     assert owners == set()
 
 
-# --- _online_payout_addresses: the split actually drops solo nodes ----------
+
 
 class _Clock:
     @staticmethod
@@ -163,7 +163,7 @@ def _payout_globals(repos, accounts, presence, balances=None):
     return extra, calls
 
 
-# A valid-looking devnet/mainnet base58 address per node (44 chars).
+
 _W = {
     "alice": "A1ice1111111111111111111111111111111111111x",
     "bob": "Bob2222222222222222222222222222222222222222x",
@@ -173,7 +173,7 @@ _W = {
 
 def _run_addresses(repos, accounts, presence, balances=None):
     extra, calls = _payout_globals(repos, accounts, presence, balances=balances)
-    # Load the whole call chain into one namespace so cross-references resolve.
+
     fns = _load(
         "_online_payout_addresses",
         "_mirroring_owners",
@@ -200,12 +200,12 @@ def test_split_excludes_node_with_no_mirrors():
         repos, accounts, ["bi_alice", "bi_bob", "bi_carol"])
     assert addresses == [_W["alice"], _W["bob"]]
     assert _W["carol"] not in addresses
-    assert calls["deleted"] is True  # stale presence still self-heals
+    assert calls["deleted"] is True
 
 
 def test_split_is_empty_when_nothing_is_mirrored():
-    # Every node hosts only its own repo -> the node half collapses to nobody and
-    # the sweep routes the whole donation to the treasury.
+
+
     repos = [
         {"owner": "alice", "name": "a", "rootCommit": "Ra"},
         {"owner": "bob", "name": "b", "rootCommit": "Rb"},
@@ -249,7 +249,7 @@ def test_payout_address_does_not_need_a_deposit_to_be_eligible():
     assert addresses == [_W["alice"], _W["bob"]]
 
 
-# --- Source contract: display filtering remains; legacy sweep is gone --------
+
 
 def test_worker_has_no_legacy_wallet_sweep():
     assert "def _sweep_confirmed_donation" not in ENTRY_TEXT
@@ -263,7 +263,7 @@ def test_payout_addresses_consults_mirroring_owners():
 
 
 def test_network_payout_display_marks_no_mirrors():
-    # /network/ eligibility must agree with the real split.
+
     assert 'reason = "no_mirrors"' in ENTRY_TEXT
     assert 'reason = "wallet_unverified"' not in ENTRY_TEXT
     assert "MIN_ACTIVE_LAMPORTS" not in ENTRY_TEXT

@@ -39,12 +39,12 @@ class _Relay:
 
     def __init__(self, *, session_owner="alice", repo_exists=True):
         self.session_owner = session_owner
-        self.tombstones = {}       # repo_bi -> expires_at
+        self.tombstones = {}
         self.repos = {"bi:alice/demo": {"owner": "alice", "name": "demo"}} \
             if repo_exists else {}
         self.deleted_scoped = []
 
-    # --- D1 -------------------------------------------------------------
+
     async def d1_run(self, env, sql, *args):
         if "INSERT INTO repo_deletions" in sql:
             self.tombstones[args[0]] = args[3]
@@ -72,7 +72,7 @@ class _Relay:
     async def d1_all(self, env, sql, *args):
         return []
 
-    # --- handler namespace ----------------------------------------------
+
     def namespace(self, body=None):
         relay = self
 
@@ -217,8 +217,8 @@ def test_website_delete_records_a_tombstone():
 
 
 def test_tombstone_is_recorded_even_when_the_row_is_already_gone():
-    # The owner node may be mid-republish when the delete lands; a missing row
-    # is exactly the race that made the delete look like a no-op.
+
+
     relay = _Relay(repo_exists=False)
     handler = _handlers(relay)["catalog_handler"]
     response = _run(handler(None, _delete_request()))
@@ -227,8 +227,8 @@ def test_tombstone_is_recorded_even_when_the_row_is_already_gone():
 
 
 def test_owner_signed_desktop_delete_leaves_no_tombstone():
-    # The desktop signs its own deletes and also uses them to move a repo to a
-    # renamed owner. It is the publisher, so it needs no tombstone.
+
+
     relay = _Relay(session_owner="")
     namespace = _handlers(relay)
 
@@ -255,13 +255,13 @@ def test_heartbeat_republish_is_refused_after_a_website_delete():
     assert response.status == 410
     assert response.payload == {"error": "repository_deleted"}
     assert relay.repos == {}
-    # Still tombstoned, so the next heartbeat is refused too.
+
     assert "bi:alice/demo" in relay.tombstones
 
 
 def test_publish_without_an_intent_field_is_treated_as_a_heartbeat():
-    # Older desktop builds send no publishIntent at all; their republish must
-    # not resurrect the repository either.
+
+
     relay = _Relay()
     _run(_handlers(relay)["catalog_handler"](None, _delete_request()))
     handler = _handlers(relay, _publish_body())["catalog_handler"]
@@ -292,7 +292,7 @@ def test_tombstone_ttl_is_bounded_and_generous():
     match = re.search(
         r"REPO_DELETE_TOMBSTONE_TTL_MS\s*=\s*([0-9 */+]+)", source)
     assert match, "the tombstone TTL constant should stay declarative"
-    ttl = eval(match.group(1))  # noqa: S307 - a literal arithmetic expression
+    ttl = eval(match.group(1))
     day = 24 * 60 * 60 * 1000
     assert 30 * day <= ttl <= 365 * day
 
@@ -316,12 +316,12 @@ def test_desktop_publish_declares_whether_a_person_asked_for_it():
         "void MainWindow::publishRepositoryNow("):]
     body = body[:body.index("QNetworkRequest request(catalogApiUrl());")]
     assert 'metadata.insert(QStringLiteral("publishIntent")' in body
-    # Serving flipping off->on is the user turning sharing back on; a repo that
-    # was already serving is just heartbeating.
+
+
     assert "m_catalogPublishServeState.value(publishKey, false)" in body
     assert "showDialogOnError || (repo.publishToNetwork && !wasServing)" in body
-    # The intent must not enter the change fingerprint, or a manual publish
-    # would make the next heartbeat look like a changed record.
+
+
     assert 'fingerprintSource.remove(QStringLiteral("publishIntent"));' \
         in REPOS_CPP
 
@@ -335,5 +335,5 @@ def test_desktop_stops_sharing_a_repository_deleted_on_the_website():
         REPOS_CPP.index('QLatin1String("repository_deleted")')]
     assert "repo.publishToNetwork = false;" in branch
     assert "saveRepositories();" in branch
-    # No retry: republishing is exactly what the tombstone exists to stop.
+
     assert "scheduleCatalogPublish(" not in branch

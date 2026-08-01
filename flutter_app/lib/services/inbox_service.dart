@@ -7,14 +7,14 @@ import 'identity.dart';
 import 'performance_monitor_service.dart';
 import 'settings_service.dart';
 
-/// Signed write paths to a repo's relay inbox, mirroring the Qt client's
-/// submit*ToInbox functions and the worker's verify_issue_event /
-/// verify_pull_event / verify_pull_comment_event.
-///
-/// The local node (a non-owner) POSTs signed events; the repo owner later drains
-/// the inbox, applies, commits, and syncs back. Every canonical string and
-/// content layout below must match cloudflare_worker/src/entry.py byte-for-byte
-/// or the relay rejects with 401 bad_signature.
+
+
+
+
+
+
+
+
 class InboxService {
   InboxService(
     this._settings,
@@ -46,10 +46,10 @@ class InboxService {
   Future<String> _sign(String canonical) =>
       _identity.sign(utf8.encode(canonical));
 
-  // ---- issues -------------------------------------------------------------
 
-  // issue_event_content() — NUL-joined fields per event type. Public so the
-  // contract tests can pin it to the Qt/worker cross-language vectors.
+
+
+
   String issueContent(String type, Map<String, dynamic> ev) {
     final attachments = (ev['attachments'] as List?)?.join(',') ?? '';
     switch (type) {
@@ -163,7 +163,7 @@ class InboxService {
     });
   }
 
-  // ---- pull requests ------------------------------------------------------
+
 
   Future<void> submitNewPull(
     String owner,
@@ -191,8 +191,8 @@ class InboxService {
     });
   }
 
-  // pull_comment_content() — NUL-joined per type. Public so the contract
-  // tests can pin it to the Qt/worker cross-language vectors.
+
+
   String pullCommentContent(String type, Map<String, dynamic> ev) {
     switch (type) {
       case 'comment':
@@ -273,7 +273,7 @@ class InboxService {
     });
   }
 
-  /// [state] is "approve" | "request-changes" | "comment".
+
   Future<void> reviewPull(
     String owner,
     String name,
@@ -291,7 +291,7 @@ class InboxService {
     });
   }
 
-  // ---- discussions ---------------------------------------------------------
+
 
   String _discussionContent(String type, Map<String, dynamic> ev) {
     switch (type) {
@@ -359,10 +359,10 @@ class InboxService {
     });
   }
 
-  // ---- thread subscriptions -----------------------------------------------
 
-  /// [source] is "issue" or "pull". This signs the Worker/mainnode thread
-  /// subscription contract so replies can fan out into the notification inbox.
+
+
+
   Future<void> setThreadSubscription(
     String owner,
     String name, {
@@ -399,7 +399,7 @@ class InboxService {
     });
   }
 
-  // ---- transport ----------------------------------------------------------
+
 
   Future<void> _post(Uri uri, Map<String, dynamic> body) async {
     Future<void> send() async {

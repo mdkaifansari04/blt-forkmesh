@@ -83,8 +83,8 @@ def test_pending_endpoint_counts_all_four_inboxes_in_one_round_trip():
     assert resp["status"] == 200
     assert captured["pending"] == {
         "issues": 3, "pulls": 0, "discussions": 1, "commits": 2}
-    # One UNION statement, not four queries; briefly cacheable so page views
-    # don't re-hit D1 (the whole point is reducing load, not adding it).
+
+
     assert len(queries) == 1
     assert queries[0].count("UNION ALL") == 3
     assert captured["_cache"] == 30
@@ -102,7 +102,7 @@ def test_dashboard_tabs_show_pending_badges_from_the_endpoint():
     assert "async function loadRepoPendingCounts(repo)" in DASHBOARD_JS
     assert "`${repoApiBase(repo)}/pending`" in DASHBOARD_JS
     assert "loadRepoPendingCounts(repo);" in DASHBOARD_JS
-    # Badge fills for exactly the four inbox-backed tabs and hides at zero.
+
     assert '["issues", "pulls", "discussions", "commits"].forEach((tab) => {' in DASHBOARD_JS
     assert 'badge.classList.toggle("hidden", n <= 0);' in DASHBOARD_JS
     assert "waiting for the owner node to sync" in DASHBOARD_JS

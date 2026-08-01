@@ -37,8 +37,8 @@ DEFAULT_PORT = 8788
 DEFAULT_UPSTREAM = "https://forkmesh.com"
 DEV_MARKER_HEADER = "X-ForkMesh-World-Dev"
 
-# End-to-end headers only; these are connection-scoped and must not be
-# replayed on the upstream leg (RFC 9110 §7.6.1).
+
+
 HOP_BY_HOP_HEADERS = frozenset({
     "connection",
     "keep-alive",
@@ -188,8 +188,8 @@ class WorldDevHandler(http.server.BaseHTTPRequestHandler):
         lines = [f"{self.command} {self.path} HTTP/1.1"]
         lines += [f"{name}: {value}" for name, value in upstream_request_headers(
             self.headers.items(), local_host, self.upstream)]
-        # upstream_request_headers strips hop-by-hop headers; restore the two
-        # that make this an Upgrade request.
+
+
         lines += ["Connection: Upgrade", "Upgrade: websocket", "", ""]
         raw.sendall("\r\n".join(lines).encode("latin-1"))
         raw.settimeout(None)

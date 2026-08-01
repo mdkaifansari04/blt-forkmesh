@@ -15,21 +15,21 @@ import re
 import unicodedata
 
 
-# One shared virtual day lasts four real hours.  Clients advance the returned
-# worldTimeMs locally and wrap at WORLD_DAY_LENGTH_MS, so every visitor sees the
-# same cycle without polling.
+
+
+
 WORLD_DAY_LENGTH_MS = 4 * 60 * 60 * 1000
 
-# The socket is intentionally low-bandwidth: a client should send movement only
-# a few times per second and a heartbeat while idle.
+
+
 WORLD_MESSAGE_MAX_BYTES = 1024
 WORLD_RATE_WINDOW_MS = 1000
 WORLD_RATE_MAX_PER_WINDOW = 4
-# Ordinary browser bursts can legitimately cross the soft budget while a
-# connection publishes its profile and initial position.  The Durable Object
-# drops those disposable excess frames, but a sender that keeps flooding past
-# this bounded ceiling is still disconnected within the same one-second
-# window.
+
+
+
+
+
 WORLD_RATE_HARD_MAX_PER_WINDOW = 12
 WORLD_BROADCAST_WINDOW_MS = 1000
 WORLD_BROADCAST_MAX_PER_WINDOW = 24
@@ -65,10 +65,10 @@ WORLD_FIRST_VISIT_AGE_VALUES = frozenset({
     "over-a-year", "hidden",
 })
 WORLD_DOOR_VALUES = frozenset({"closed", "knock", "open"})
-# Text-free consent frames addressed at exactly one live peer. A handshake is
-# the two-person greeting: one visitor offers, the other shakes back (or
-# declines, which says nothing beyond "not now"). Only an accepted handshake
-# becomes public, and then only as the pair of peer ids that shook.
+
+
+
+
 WORLD_TARGETED_INTERACTION_KINDS = (
     "knock",
     "home-grant",
@@ -94,14 +94,14 @@ WORLD_ACCOUNT_STATUS_VALUES = frozenset({
     "Guest", "Registered", "Supporting member", "Mirror operator",
     "Organization admin", "Verified bot",
 })
-# A Supporting member perk: an alternate avatar outfit color that replaces the
-# default country-flag shirt. "" means "use the default flag shirt".
+
+
 WORLD_OUTFIT_COLOR_VALUES = frozenset({
     "", "aurora", "ember", "violet", "gold", "slate",
 })
-# A Supporting member perk: pin one of the tailored outfit cuts instead of the
-# cut the visitor's public name seeds. "" means "wear the name-seeded cut".
-# The ids must stay in lockstep with OUTFIT_STYLE_OPTIONS in world-data.js.
+
+
+
 WORLD_OUTFIT_STYLE_VALUES = frozenset({
     "", "sash", "racer", "chevron", "argyle", "circuit", "pixel",
     "waves", "starfield", "hex", "bolt", "tartan", "binary",
@@ -115,18 +115,18 @@ WORLD_INACTIVITY_VALUES = frozenset({
 })
 WORLD_NODE_BADGE_MAX = 6
 WORLD_STATUS_NOTE_MAX = 20
-# "First seen 12 minutes ago" on the chest badge. The client derives this from
-# its own local first-visit marker; only whole minutes travel, bounded to ten
-# years so a spoofed value cannot become an unbounded number on a peer canvas.
-WORLD_FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60
-# "Joined 3 months ago" — the account creation timestamp, which is already
-# public on /api/accounts/{name}. Guests never carry one.
-WORLD_JOINED_AT_MIN_MS = 1577836800000  # 2020-01-01T00:00:00Z
 
-# Office meetings use a separate authorized socket from the global World.
-# This protocol carries only ephemeral room-local avatar and chair state. Chat
-# messages, channel identifiers, attachments, and encryption material are not
-# valid fields here.
+
+
+WORLD_FIRST_SEEN_MAX_MINUTES = 10 * 365 * 24 * 60
+
+
+WORLD_JOINED_AT_MIN_MS = 1577836800000
+
+
+
+
+
 OFFICE_MESSAGE_MAX_BYTES = 4096
 OFFICE_RATE_WINDOW_MS = 1000
 OFFICE_RATE_MAX_PER_WINDOW = 8
@@ -143,8 +143,8 @@ OFFICE_PUBLIC_FIELDS = (
     "pose", "chairId", "bindingKey", "updatedAt",
 )
 
-# This is the complete state that may leave the Durable Object.  Keeping the
-# list explicit is the privacy boundary for snapshots and presence frames.
+
+
 WORLD_PUBLIC_FIELDS = (
     "id", "name", "countryCode", "browser", "os", "status", "localTime",
     "activityCategory", "inputActive", "visitCount", "firstVisitAge",
@@ -199,8 +199,8 @@ def clean_client_profile(country="", browser="", operating_system=""):
 def clean_display_name(value, fallback="Guest"):
     """Bound a public display name and remove markup/control punctuation."""
     raw = str(value or "")[:128]
-    # Unicode letters and digits are welcome.  A deliberately tiny punctuation
-    # set keeps names readable while excluding HTML/URL syntax and controls.
+
+
     clean = "".join(
         ch for ch in raw if ch.isalnum() or ch in (" ", ".", "_", "-")
     )
@@ -223,8 +223,8 @@ def account_presence_key(name):
     """
     raw = str(name or "").strip()
     clean = clean_display_name(raw, "")
-    # Anything that did not survive sanitizing unchanged collapsed onto a
-    # generic fallback label; folding on that would combine unrelated people.
+
+
     return clean.casefold() if raw and clean == raw else ""
 
 
@@ -461,27 +461,27 @@ def default_presence(peer_id, now):
     return {
         "id": peer_id,
         "name": clean_display_name("", "Guest " + suffix if suffix else "Guest"),
-        # The server keeps the coarse edge country privately on the live socket.
-        # A client must explicitly send shareCountry=true before it is public.
+
+
         "countryCode": "",
         "browser": "hidden",
         "os": "hidden",
         "status": "hidden",
         "localTime": "",
         "activityCategory": "hidden",
-        # These coarse indicators are meaningful only while generalized
-        # activity sharing is enabled. They never contain event coordinates,
-        # visited URLs, query strings, or timestamps.
+
+
+
         "inputActive": False,
         "visitCount": 0,
         "firstVisitAge": "hidden",
         "firstSeenMinutes": 0,
-        # Public account age, shown as "joined … ago" on the chest badge. It
-        # stays 0 until a validated world ticket has made this a named account.
+
+
         "joinedAt": 0,
-        # Account status and operator-belt count are supplied by the routing
-        # Worker after it validates a short-lived world ticket. They are never
-        # accepted from arbitrary socket JSON.
+
+
+
         "accountStatus": "Guest",
         "nodeCount": 0,
         "space": "town-square",
@@ -491,8 +491,8 @@ def default_presence(peer_id, now):
         "outfitColor": "",
         "outfitStyle": "",
         "faceImage": False,
-        # The chest wallet-QR address. A self-claim like the display name,
-        # but only a ticket-authenticated account may wear one.
+
+
         "solana": "",
         "x": 0.0,
         "y": 0.0,
@@ -681,10 +681,10 @@ def sanitize_message(payload, current, now, country_source="",
         elif trusted_name:
             state["name"] = clean_display_name(
                 trusted_name, state.get("name") or "Contributor")
-        # An anonymous socket never chooses an account-looking display name.
-        # Its server-generated Guest suffix is bound to this random peer id,
-        # so a second client cannot visually impersonate a signed-in avatar
-        # simply by copying the victim's name into a presence frame.
+
+
+
+
         if "browser" in payload:
             state["browser"] = _choice(
                 payload.get("browser"), WORLD_BROWSER_VALUES,
@@ -724,16 +724,16 @@ def sanitize_message(payload, current, now, country_source="",
         if "joinedAt" in payload:
             state["joinedAt"] = _bounded_joined_at(
                 payload.get("joinedAt"), now, 0)
-        # Activity privacy is the parent control for all four derived
-        # indicators. Explicitly clear prior values so turning sharing off
-        # cannot leave stale metadata visible in a live socket attachment.
+
+
+
         if state.get("activityCategory") == "hidden":
             state["inputActive"] = False
             state["visitCount"] = 0
             state["firstVisitAge"] = "hidden"
             state["firstSeenMinutes"] = 0
-        # A joined date belongs to an account. A connection the routing Worker
-        # never authenticated cannot publish one.
+
+
         if state.get("accountStatus") == "Guest":
             state["joinedAt"] = 0
         if "publicDoor" in payload:
@@ -747,30 +747,30 @@ def sanitize_message(payload, current, now, country_source="",
                 payload.get("statusNote"))
         if not state.get("statusEmoji"):
             state["statusNote"] = ""
-        # The outfit color perk is validated against the connection's own
-        # trusted accountStatus, never the client-claimed one: a Guest or
-        # Registered payload requesting a color is silently reset to "".
+
+
+
         if "outfitColor" in payload:
             state["outfitColor"] = (
                 _choice(payload.get("outfitColor"), WORLD_OUTFIT_COLOR_VALUES, "")
                 if state.get("accountStatus") == "Supporting member" else "")
-        # The pinned outfit cut follows the same trust rule as the color.
+
         if "outfitStyle" in payload:
             state["outfitStyle"] = (
                 _choice(payload.get("outfitStyle"), WORLD_OUTFIT_STYLE_VALUES, "")
                 if state.get("accountStatus") == "Supporting member" else "")
-        # Wearing the account's public avatar image as the 3D face is opt-in
-        # and only a boolean travels over presence: peers resolve the actual
-        # image from the already-public /api/accounts/{name} lookup, so no
-        # image bytes ever enter a presence frame.
+
+
+
+
         if "faceImage" in payload:
             state["faceImage"] = (
                 payload.get("faceImage") is True
                 and state.get("accountStatus") != "Guest")
-        # The chest wallet QR shows an address its owner already chose to
-        # publish on their account. It is validated as base58 and gated to
-        # authenticated accounts so an anonymous socket cannot dress itself
-        # in an arbitrary wallet.
+
+
+
+
         if "solana" in payload:
             raw_solana = str(payload.get("solana") or "")
             state["solana"] = (
@@ -789,9 +789,9 @@ def sanitize_message(payload, current, now, country_source="",
             state["nodeCount"] = (
                 max(0, min(WORLD_NODE_BADGE_MAX, trusted_count))
                 if payload["shareNodes"] else 0)
-        # The connection's approximate country came from the edge, not the
-        # client. A privacy toggle may hide or restore that coarse value without
-        # accepting a spoofed country code from arbitrary JSON.
+
+
+
         if isinstance(payload.get("shareCountry"), bool):
             state["countryCode"] = (
                 approximate_country_code(country_source)
@@ -813,8 +813,8 @@ def sanitize_message(payload, current, now, country_source="",
         return kind, state
 
     if kind == "ping":
-        # Heartbeats refresh only the private socket liveness timestamp.  They
-        # do not fabricate public movement/activity.
+
+
         return kind, state
 
     return None

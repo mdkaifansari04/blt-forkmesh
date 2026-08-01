@@ -42,13 +42,13 @@ QString pendingImagePlaceholder(int index)
 {
     return QStringLiteral("forkmesh-pending-image:%1").arg(index);
 }
-}  // namespace
+}
 
 MarkdownEditor::MarkdownEditor(QWidget *parent) : QWidget(parent)
 {
     m_source = new QPlainTextEdit;
     m_source->setObjectName("markdownSource");
-    m_source->setAcceptDrops(false);  // drops are handled by this widget instead
+    m_source->setAcceptDrops(false);
     m_preview = new QTextBrowser;
     m_preview->setObjectName("markdownPreview");
     m_preview->setOpenExternalLinks(true);
@@ -68,7 +68,7 @@ MarkdownEditor::MarkdownEditor(QWidget *parent) : QWidget(parent)
     header->addWidget(m_previewTab);
     header->addSpacing(8);
 
-    // Formatting toolbar: each button wraps the selection or inserts a snippet.
+
     auto *toolbar = new QHBoxLayout;
     toolbar->setContentsMargins(0, 0, 0, 0);
     toolbar->setSpacing(2);
@@ -120,10 +120,10 @@ MarkdownEditor::MarkdownEditor(QWidget *parent) : QWidget(parent)
     connect(m_writeTab, &QPushButton::clicked, this, &MarkdownEditor::showWrite);
     connect(m_previewTab, &QPushButton::clicked, this, &MarkdownEditor::showPreview);
 
-    // Accept image drops on the whole editor and on the text area's viewport.
+
     setAcceptDrops(true);
     m_source->viewport()->installEventFilter(this);
-    // Filter the text area itself for mention-popup navigation keys and focus.
+
     m_source->installEventFilter(this);
 }
 
@@ -199,10 +199,10 @@ void MarkdownEditor::setMentionCandidates(const QStringList &names)
         hideMentionPopup();
 }
 
-// Re-detect an "@token" immediately before the cursor and (re)show a filtered
-// list of matching node names. Hides the popup whenever the cursor isn't sitting
-// in a mention token. Cheap: only the current line is scanned, and the candidate
-// list is supplied ready-made by the caller.
+
+
+
+
 void MarkdownEditor::updateMentionPopup()
 {
     if (m_mentionCandidates.isEmpty() || m_stack->currentWidget() != m_source) {
@@ -224,7 +224,7 @@ void MarkdownEditor::updateMentionPopup()
             at = i;
             break;
         }
-        // A mention is letters/digits/hyphens; anything else ends the search.
+
         if (!(c.isLetterOrNumber() || c == QChar('-')))
             break;
     }
@@ -232,8 +232,8 @@ void MarkdownEditor::updateMentionPopup()
         hideMentionPopup();
         return;
     }
-    // The '@' must begin a word (line start or preceded by whitespace/punct), so
-    // we don't pop on an email address or mid-word "@".
+
+
     if (at > 0) {
         const QChar prev = block.at(at - 1);
         if (prev.isLetterOrNumber() || prev == QChar('-') || prev == QChar('_')) {
@@ -271,7 +271,7 @@ void MarkdownEditor::updateMentionPopup()
     m_mentionPopup->addItems(matches);
     m_mentionPopup->setCurrentRow(0);
 
-    // Size to the contents: a handful of rows tall, wide enough for the names.
+
     const int rowH = m_mentionPopup->sizeHintForRow(0);
     const int rows = qMin(matches.size(), 6);
     m_mentionPopup->setFixedHeight(rows * rowH + 4);
@@ -299,7 +299,7 @@ void MarkdownEditor::acceptMention(const QString &name)
         hideMentionPopup();
         return;
     }
-    // Replace from the '@' through the current caret with "@name ".
+
     QTextCursor cursor = m_source->textCursor();
     cursor.setPosition(m_mentionAnchor);
     cursor.setPosition(m_source->textCursor().position(), QTextCursor::KeepAnchor);

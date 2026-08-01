@@ -80,7 +80,7 @@ def test_only_approved_query_rows_with_public_https_origins_are_projected():
             "approved_at": NOW - 10_000,
             "last_seen": NOW - 1_000,
             "fresh_verified": 1,
-            # A fake adapter returning extra columns must not make them public.
+
             "pubkey": "relay-public-key",
             "wallet": "wallet-address",
             "health_sig": "secret-signature-value",

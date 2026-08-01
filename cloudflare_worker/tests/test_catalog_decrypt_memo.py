@@ -46,13 +46,13 @@ def _make_env(rows, decrypt_calls):
         return list(rows)
 
     async def active_registered_node_bis(env, now=None):
-        # Durable catalog retention must not depend on this empty live set.
-        # Before the regression fix every row below was filtered out.
+
+
         return set()
 
     async def decrypt_row(env, stored, key=None):
         decrypt_calls.append(stored)
-        # Blobs are "cipher:<json-ish payload>"; the plaintext is the tail.
+
         if not str(stored).startswith("cipher:"):
             return None
         return {
@@ -87,7 +87,7 @@ def test_refill_reuses_unchanged_decrypts():
     assert [r["data"]["payload"] for r in first] == ["a", "b"]
     assert len(decrypt_calls) == 2
 
-    # Second refill (TTL lapsed), identical blobs: zero fresh decrypts.
+
     second = asyncio.run(catalog(None, now + TTL + 1))
     assert [r["data"]["payload"] for r in second] == ["a", "b"]
     assert len(decrypt_calls) == 2
@@ -104,7 +104,7 @@ def test_refill_decrypts_only_changed_rows():
     asyncio.run(catalog(None, now))
     assert len(decrypt_calls) == 2
 
-    # r2 was re-published (new ciphertext): only r2 is decrypted again.
+
     rows[1] = _row("r2", "cipher:b2")
     second = asyncio.run(catalog(None, now + TTL + 1))
     assert [r["data"]["payload"] for r in second] == ["a", "b2"]
@@ -123,8 +123,8 @@ def test_deleted_rows_drop_out_of_the_decrypt_memo():
     del rows[1]
     second = asyncio.run(catalog(None, now + TTL + 1))
     assert [r["data"]["payload"] for r in second] == ["a"]
-    # The memo is rebuilt from the rows seen this refill (stays bounded by the
-    # live catalog); r2's stale plaintext is gone.
+
+
     assert set(ns["_CATALOG_ROW_DECRYPT_MEMO"]) == {"cipher:a"}
 
 

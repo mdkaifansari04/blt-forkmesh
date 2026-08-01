@@ -3,9 +3,9 @@ on: [push, workflow_dispatch]
 jobs:
   android:
     steps:
-      # Only build when this push actually touched flutter_app/. Mirrors the
-      # deploy workflow's "skip unless changed" gate: a sentinel file written
-      # here is checked by the build step so it no-ops on unrelated commits.
+
+
+
       - name: Skip unless flutter_app/ changed
         run: |
           # HEAD is normally a MERGE commit (agent branches land on main via
@@ -28,10 +28,10 @@ jobs:
             printf '%s\n' "$app_changes"
           fi
 
-      # Build the release APK and copy it out of the (temporary) run worktree to
-      # a persistent artifacts dir on this node, since the worktree is removed
-      # when the run finishes. The APK path is printed to the run log — that's
-      # the attached artifact (ForkMesh has no relay artifact upload).
+
+
+
+
       - name: Build APK and collect artifact
         run: |
           [ -f .forkmesh-skip-android ] && exit 0

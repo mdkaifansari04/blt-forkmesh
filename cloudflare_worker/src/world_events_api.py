@@ -8,11 +8,11 @@ import world_events as policy
 EVENTS_PREFIX = "/api/world/events"
 PUBLIC_EVENTS_CACHE_MS = 30 * 1000
 
-# Browser clients deliberately bypass their HTTP cache when checking the live
-# bulletin. Keep the identical public list briefly inside a warm Worker isolate
-# so a burst of World tabs shares one D1 read. The scope is the environment
-# object for that isolate; test/runtime adapters without one simply skip this
-# optional cache.
+
+
+
+
+
 _PUBLIC_EVENTS_CACHE = {
     "scope": 0,
     "expires_at": 0,
@@ -185,7 +185,7 @@ async def handle(runtime, path):
     if denial is not None:
         return denial
 
-    # Retention is enforced during mutations as well as deployment cleanup.
+
     await runtime.d1_run(
         "DELETE FROM world_events WHERE "
         "(status='cancelled' AND cancelled_at<?) OR "

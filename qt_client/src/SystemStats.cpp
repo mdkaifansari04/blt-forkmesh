@@ -19,25 +19,25 @@
 
 namespace {
 
-// Sample cache for the CPU delta. A single process, so plain file-statics are
-// enough; cpuPercent() compares each reading against the previous one.
+
+
 std::chrono::steady_clock::time_point g_lastWall{};
-double g_lastCpuSecs = -1.0;  // < 0 until the first sample establishes a baseline
+double g_lastCpuSecs = -1.0;
 double g_lastPercent = 0.0;
 
-// Whole-host CPU accounting from /proc/stat's aggregate line, kept separate from
-// the process-CPU cache above so the two readings don't disturb each other.
-double g_lastHostBusy = -1.0;   // busy jiffies at the previous host sample
-double g_lastHostTotal = -1.0;  // total jiffies at the previous host sample
+
+
+double g_lastHostBusy = -1.0;
+double g_lastHostTotal = -1.0;
 double g_lastHostPercent = 0.0;
 
-// Total CPU seconds (user + system) this process has consumed, or -1 if unknown.
+
 double processCpuSeconds()
 {
 #if defined(Q_OS_LINUX)
-    // /proc/self/stat is the cheapest accurate source. The comm field (2nd) is
-    // wrapped in parens and may itself contain spaces, so parse after the last
-    // ')': in that tail, index 11 == utime and index 12 == stime (clock ticks).
+
+
+
     QFile stat(QStringLiteral("/proc/self/stat"));
     if (stat.open(QIODevice::ReadOnly)) {
         const QByteArray data = stat.readAll();
@@ -64,12 +64,12 @@ double processCpuSeconds()
     return -1.0;
 }
 
-} // namespace
+}
 
 qint64 SystemStats::residentBytes()
 {
 #if defined(Q_OS_LINUX)
-    // /proc/self/statm: "size resident shared ..." in pages.
+
     QFile statm(QStringLiteral("/proc/self/statm"));
     if (statm.open(QIODevice::ReadOnly)) {
         const QList<QByteArray> parts = statm.readAll().trimmed().split(' ');
@@ -83,7 +83,7 @@ qint64 SystemStats::residentBytes()
     }
 #endif
 #if defined(Q_OS_UNIX)
-    // Fallback: peak RSS from getrusage (ru_maxrss is bytes on macOS, KiB else).
+
     rusage ru{};
     if (getrusage(RUSAGE_SELF, &ru) == 0) {
 #if defined(Q_OS_MACOS)
@@ -110,8 +110,8 @@ qint64 SystemStats::totalMemoryBytes()
 qint64 SystemStats::availableMemoryBytes()
 {
 #if defined(Q_OS_LINUX)
-    // MemAvailable is the kernel's own estimate of how much can be allocated
-    // without swapping (reclaimable cache included), reported in KiB.
+
+
     QFile meminfo(QStringLiteral("/proc/meminfo"));
     if (meminfo.open(QIODevice::ReadOnly)) {
         const QList<QByteArray> lines = meminfo.readAll().split('\n');
@@ -154,8 +154,8 @@ qint64 SystemStats::diskFreeBytes(const QString &path)
 #if defined(Q_OS_UNIX)
     struct statvfs vfs{};
     if (!path.isEmpty() && statvfs(path.toLocal8Bit().constData(), &vfs) == 0)
-        // f_bavail is the space available to a non-root process — the figure a
-        // user actually has to spend, which is what the bar should reflect.
+
+
         return qint64(vfs.f_bavail) * qint64(vfs.f_frsize);
 #else
     Q_UNUSED(path);
@@ -168,8 +168,8 @@ double SystemStats::hostCpuPercent()
 #if defined(Q_OS_LINUX)
     QFile stat(QStringLiteral("/proc/stat"));
     if (stat.open(QIODevice::ReadOnly)) {
-        // The first line "cpu  user nice system idle iowait irq softirq steal..."
-        // aggregates every core. Busy == total minus the idle+iowait fields.
+
+
         const QByteArray first = stat.readLine();
         if (first.startsWith("cpu ")) {
             const QList<QByteArray> fields = first.simplified().split(' ');
@@ -180,7 +180,7 @@ double SystemStats::hostCpuPercent()
                 if (!ok)
                     continue;
                 total += v;
-                if (i == 4 || i == 5) // idle + iowait
+                if (i == 4 || i == 5)
                     idle += v;
             }
             if (total > 0.0) {
@@ -214,7 +214,7 @@ double SystemStats::cpuPercent()
         return -1.0;
     const auto now = std::chrono::steady_clock::now();
     if (g_lastCpuSecs < 0.0) {
-        // First sample: no interval yet, so report 0 and record the baseline.
+
         g_lastCpuSecs = cpu;
         g_lastWall = now;
         g_lastPercent = 0.0;
@@ -223,7 +223,7 @@ double SystemStats::cpuPercent()
     const double wallSecs =
         std::chrono::duration<double>(now - g_lastWall).count();
     if (wallSecs < 0.05)
-        return g_lastPercent; // too soon to resample without amplifying noise
+        return g_lastPercent;
     const double pct = (cpu - g_lastCpuSecs) / wallSecs * 100.0;
     g_lastCpuSecs = cpu;
     g_lastWall = now;
@@ -239,8 +239,8 @@ SystemStats::DescendantLoad SystemStats::descendantsNamed(qint64 rootPid,
         return load;
 #if defined(Q_OS_LINUX)
     const QByteArray wanted = comm.toLocal8Bit();
-    // One pass over /proc collecting (pid, ppid, comm); the tree is walked
-    // afterwards so the scan stays O(processes) however deep the subtree runs.
+
+
     struct Entry {
         qint64 ppid = 0;
         bool matches = false;
@@ -257,10 +257,10 @@ SystemStats::DescendantLoad SystemStats::descendantsNamed(qint64 rootPid,
             continue;
         QFile stat(QStringLiteral("/proc/%1/stat").arg(name));
         if (!stat.open(QIODevice::ReadOnly))
-            continue; // the process exited between listing and reading
+            continue;
         const QByteArray data = stat.readAll();
-        // The comm field is parenthesised and may itself contain spaces and
-        // parens, so split on the last ')': index 1 of the tail is the ppid.
+
+
         const int lp = data.indexOf('(');
         const int rp = data.lastIndexOf(')');
         if (lp < 0 || rp <= lp)
@@ -276,7 +276,7 @@ SystemStats::DescendantLoad SystemStats::descendantsNamed(qint64 rootPid,
         children[ppid].append(pid);
     }
     QList<qint64> queue{rootPid};
-    QSet<qint64> seen{rootPid}; // PID reuse can't turn the walk into a cycle
+    QSet<qint64> seen{rootPid};
     while (!queue.isEmpty()) {
         const qint64 pid = queue.takeLast();
         const auto entry = entries.constFind(pid);

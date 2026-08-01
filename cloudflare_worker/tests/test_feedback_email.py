@@ -18,8 +18,8 @@ from pathlib import Path
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 
-# clean_string lives in catalog.py (imported by entry.py), so it is stubbed
-# in the harness rather than AST-extracted.
+
+
 FUNCS = {"_send_feedback_emails", "_feedback_email_content", "_account_kind",
          "valid_node_name", "_stamp_account_email"}
 
@@ -27,7 +27,7 @@ CONSTANTS = [
     node for node in ast.parse(ENTRY_TEXT).body
     if isinstance(node, ast.Assign)
     and any(getattr(t, "id", "").startswith("FEEDBACK_EMAIL")
-            # _stamp_account_email bounds the per-account send history.
+
             or getattr(t, "id", "") == "ACCOUNT_EMAIL_HISTORY"
             for t in node.targets)
 ]
@@ -54,10 +54,10 @@ NOW = 2_000_000_000_000
 
 def _harness(accounts, send_results=None):
     """accounts: list of dicts with name_bi + decrypted record fields."""
-    sends = []          # (to, subject, from_email, from_name)
+    sends = []
     send_results = list(send_results or [])
-    table = {}          # account_bi -> (name, sent_at)
-    saved = {}          # account_bi -> stamped record
+    table = {}
+    saved = {}
 
     class _DateStub:
         @staticmethod
@@ -127,12 +127,12 @@ def _user(bi, name, age_ms=2 * DAY, verified=True, kind="user",
 
 def test_sends_once_to_eligible_users_only():
     accounts = [
-        _user("bi:alice", "alice"),                       # eligible
-        _user("bi:bob", "bob", age_ms=DAY // 2),          # too fresh
-        _user("bi:carol", "carol", verified=False),       # unverified email
-        _user("bi:node1", "node1", kind="node"),          # node account
-        _user("bi:eve", "eve", email=""),                 # no email at all
-        _user("bi:mallory", "mallory", status="banned"),  # not active
+        _user("bi:alice", "alice"),
+        _user("bi:bob", "bob", age_ms=DAY // 2),
+        _user("bi:carol", "carol", verified=False),
+        _user("bi:node1", "node1", kind="node"),
+        _user("bi:eve", "eve", email=""),
+        _user("bi:mallory", "mallory", status="banned"),
     ]
     ns = _harness(accounts)
     sent = asyncio.run(ns["_send_feedback_emails"](object()))
@@ -143,8 +143,8 @@ def test_sends_once_to_eligible_users_only():
     assert "alice" in subject
     assert set(ns["_table"]) == {"bi:alice"}
 
-    # Second run: the send-log row excludes alice; nothing further goes out.
-    # The account screen's "last emailed" stamp records the send and outcome.
+
+
     stamp = ns["_saved"]["bi:alice"]
     assert stamp["last_email_kind"] == "feedback"
     assert stamp["last_email_ok"] is True
@@ -158,11 +158,11 @@ def test_sends_once_to_eligible_users_only():
 def test_failed_send_releases_the_claim_for_retry():
     ns = _harness([_user("bi:alice", "alice")], send_results=[False, True])
     assert asyncio.run(ns["_send_feedback_emails"](object())) == 0
-    assert ns["_table"] == {}          # claim released on failure
+    assert ns["_table"] == {}
     assert ns["_saved"]["bi:alice"]["last_email_ok"] is False
     assert asyncio.run(ns["_send_feedback_emails"](object())) == 1
     assert set(ns["_table"]) == {"bi:alice"}
-    assert len(ns["_sends"]) == 2      # retried exactly once
+    assert len(ns["_sends"]) == 2
 
 
 def test_content_is_reply_geared_and_from_founders():

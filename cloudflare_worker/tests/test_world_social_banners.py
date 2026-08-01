@@ -15,8 +15,8 @@ ENTRY_PATH = SRC / "entry.py"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import blog_feed  # noqa: E402
-import world_social_feeds as feeds  # noqa: E402
+import blog_feed
+import world_social_feeds as feeds
 
 
 def _source(path):
@@ -26,7 +26,7 @@ def _source(path):
 def test_scene_places_twitter_and_reddit_banners_on_the_social_row():
     scene = _source(SCENE_PATH)
     assert "createSocialBanner" in scene
-    # Both banners flank the Mastodon kiosk on the ring toward the Office.
+
     assert "position: [37.2, 0, -9.2]" in scene
     assert "position: [27.6, 0, -26.6]" in scene
     assert "world.add(twitterBanner);" in scene
@@ -43,8 +43,8 @@ def test_banners_carry_the_official_handles():
 
 def test_banner_click_opens_the_profile_in_a_new_tab():
     scene = _source(SCENE_PATH)
-    # The whole board is one click target that rides the same guarded
-    # open-link callback the Mastodon kiosk buttons use (noopener new tab).
+
+
     assert 'child.userData.interactive = "social-banner-open";' in scene
     assert 'userData?.interactive === "social-banner-open"' in scene
     assert scene.count("onMastodonOpenLink(href)") >= 2
@@ -54,11 +54,11 @@ def test_banner_faces_repaint_from_the_proxy_snapshot():
     scene = _source(SCENE_PATH)
     assert "function socialBannerTexture(" in scene
     assert "function updateSocialBanners(payload)" in scene
-    # Exposed on the scene API so world.js can push snapshots.
+
     assert "updateSocialBanners,\n" in scene
-    # Repaints dispose the previous texture like the Mastodon kiosk does.
+
     assert scene.count("face.material.map?.dispose?.();") >= 2
-    # A feed that is not ready keeps the static sign, never a blank board.
+
     assert 'feed.state === "ready"' in scene
 
 
@@ -118,7 +118,7 @@ def test_world_fetches_the_proxy_without_credentials_on_a_timer():
     assert "startSocialBannersRefresh()" in world
     assert "this.startSocialBannersRefresh();" in world
     assert "window.clearInterval(this.socialFeedsTimer);" in world
-    # The proxy read is public and never carries ForkMesh session material.
+
     idx = world.index("loadSocialBanners()")
     assert 'credentials: "omit"' in world[idx:idx + 1200]
     assert "this.world?.updateSocialBanners?.(" in world
@@ -132,8 +132,8 @@ def test_worker_routes_the_social_posts_proxy_behind_the_edge_cache():
         'WORLD_SOCIAL_POSTS_CACHE_KEY = (\n'
         '    "https://forkmesh.internal/api/world/social-posts")' in entry
     )
-    # Ten-minute TTL matching the Mastodon kiosk cadence keeps the two
-    # upstream fetches to one per colo per window (free-plan quota).
+
+
     assert "WORLD_SOCIAL_POSTS_TTL = 600" in entry
     assert "edge_cache_match(WORLD_SOCIAL_POSTS_CACHE_KEY)" in entry
     assert "edge_cache_put(WORLD_SOCIAL_POSTS_CACHE_KEY, resp)" in entry
@@ -162,7 +162,7 @@ def test_reddit_listing_normalization_bounds_and_links():
     assert post["comments"] == 3
     assert post["createdAt"] == 1752000000000
     assert post["url"].startswith("https://www.reddit.com/r/forkmesh/")
-    # Malformed payloads normalize to an empty list, never raise.
+
     assert feeds.normalize_reddit_listing(None) == []
     assert feeds.normalize_reddit_listing({"data": {"children": "x"}}) == []
 
@@ -197,9 +197,9 @@ def test_twitter_timeline_extraction_and_normalization():
     assert post["author"] == "@forkmesh"
     assert post["likes"] == 3 and post["retweets"] == 1
     assert post["url"] == "https://x.com/forkmesh/status/9"
-    # Classic string dates still resolve to epoch milliseconds.
+
     assert feeds._twitter_created_ms("Mon, 01 Apr 2024 12:00:00 +0000") > 0
-    # Missing or mangled markup degrades to None/[] instead of raising.
+
     assert feeds.extract_next_data("<html>no data</html>") is None
     assert feeds.extract_next_data(
         '<script id="__NEXT_DATA__">not json</script>') is None
@@ -283,19 +283,19 @@ def test_blog_feed_normalization_carries_preview_text_and_artwork():
     assert post["id"] == "desktop-node-mirrors"
     assert post["text"] == "Desktop-node mirrors"
     assert post["meta"] == "Distributed hosting & more · Feature 01"
-    # The board prints the feed item's description under the headline, and
-    # paints its enclosure image as the card's artwork.
+
+
     assert post["detail"] == (
         "Actively mirrored repositories live on independent nodes.")
     assert post["image"] == "https://forkmesh.com/x.webp"
-    # The item's pubDate rides through as createdAt: the board's plate
-    # reads how long ago the newest post went up.
+
+
     assert post["createdAt"] == 1783123200000
     undated = feeds.normalize_blog_feed(blog_feed.build_feed(
         _BLOG_CARD_HTML.replace(' data-published="2026-07-04"', "")))
     assert undated[0]["createdAt"] == 0
     assert post["url"] == "https://forkmesh.com/blog/desktop-node-mirrors/"
-    # Malformed documents degrade to an empty list, never raise.
+
     assert feeds.normalize_blog_feed(None) == []
     assert feeds.normalize_blog_feed("<rss><channel/></rss>") == []
 
@@ -333,7 +333,7 @@ def test_blog_feed_parses_the_shipped_blog_page():
     assert all(post["text"] and post["meta"] for post in posts)
     assert all(post["url"].startswith("https://forkmesh.com/blog/")
                for post in posts)
-    # Every shipped card has artwork, so every board card gets an image.
+
     assert all(post["image"].startswith("https://forkmesh.com/assets/")
                for post in posts)
 
@@ -351,16 +351,16 @@ def test_scene_places_the_blog_banner_on_the_social_row():
 
 def test_banners_carry_sync_and_staleness_plates():
     scene = _source(SCENE_PATH)
-    # Each banner stand carries the kiosk's two plates: the MM:SS countdown
-    # to the next feed sync and the color-coded staleness readout.
+
+
     assert "banner-countdown" in scene
     assert "banner-lastpost" in scene
     assert "function updateSocialBannerTimers(payload)" in scene
     assert "updateSocialBannerTimers,\n" in scene
-    # Every board, blog included, reads its own newest post's age.
+
     assert 'label: "SYNCED"' not in scene
     assert scene.count('label: "LAST POST"') == 3
-    # The blog runs the same color rule on a blog's slower cadence.
+
     assert "const BLOG_POST_FRESH_MS = 7 * 24 * 60 * 60 * 1000;" in scene
     assert "const BLOG_POST_STALE_MS = 21 * 24 * 60 * 60 * 1000;" in scene
     assert "freshMs: BLOG_POST_FRESH_MS," in scene
@@ -372,8 +372,8 @@ def test_world_drives_the_banner_clocks_on_a_one_second_tick():
     assert "this.world?.updateSocialBannerTimers?.(" in world
     assert "socialNewestPostAgo(feed)" in world
     assert "blog: timers(this.socialNewestPostAgo(snapshot?.blog))," in world
-    # The tick, not a ten-minute interval, drives the reload so the countdown
-    # and the fetch can never drift apart.
+
+
     idx = world.index("startSocialBannersRefresh() {")
     assert "1000" in world[idx:idx + 300]
 
@@ -381,9 +381,9 @@ def test_world_drives_the_banner_clocks_on_a_one_second_tick():
 def test_worker_folds_the_blog_feed_into_the_social_snapshot():
     entry = _source(ENTRY_PATH)
     assert "blog_feed.BLOG_INDEX_ASSET" in entry
-    # The board reads the same RSS document the public feed serves.
+
     assert "world_social_feeds.normalize_blog_feed(blog_rss)" in entry
-    # The blog read stays inside the Worker's own static assets.
+
     idx = entry.index("blog_feed.BLOG_INDEX_ASSET")
     assert "env.ASSETS.fetch" in entry[idx - 400:idx]
     assert "_blog_post_reach_summary" in entry
@@ -395,16 +395,16 @@ def test_worker_folds_the_blog_feed_into_the_social_snapshot():
 def test_blog_board_draws_feed_artwork_and_preview_text():
     scene = _source(SCENE_PATH)
     world = _source(WORLD_PATH)
-    # The blog board is the one that carries per-post art.
+
     assert "postArt: true" in scene
     assert scene.count("postArt: true") == 1
     assert "function drawSocialBannerPostCard(" in scene
-    # Artwork is cover-cropped into the card tile and only drawn once the
-    # image decodes CORS-clean; otherwise the placeholder plate stays.
+
+
     assert 'image.crossOrigin = "anonymous";' in scene
     assert "media?.naturalWidth > 0 && media?.naturalHeight > 0" in scene
-    # world.js forwards the item's preview text and image to the board, with
-    # off-site image URLs dropped so the canvas is never tainted.
+
+
     assert "socialPostImage(value)" in world
     assert 'url.pathname.startsWith("/assets/")' in world
     assert "detail: String(post?.detail || \"\")" in world

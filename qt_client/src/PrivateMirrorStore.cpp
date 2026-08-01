@@ -247,7 +247,7 @@ QJsonObject makeStored(const QString &opaqueId, quint64 epoch,
     };
 }
 
-} // namespace
+}
 
 bool PrivateMirrorStore::isOpaqueId(const QString &value)
 {

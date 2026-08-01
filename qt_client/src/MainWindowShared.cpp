@@ -1,12 +1,12 @@
-// Cross-region free helpers shared by several MainWindow feature translation
-// units. These were forward-declared at the top of MainWindow.cpp and defined
-// deep in its feature code; lifted here (with external linkage, in namespace
-// forkmesh::ui) so the per-feature MainWindow*.cpp files can all call them.
-// Declarations live in MainWindowInternal.h.
 
-// MainWindowInternal.h pulls in the full Qt/include block plus the forkmesh::ui
-// helper layer (themedOcticon, runGitCapture, DiffFileEntry, …) that the diff
-// renderers and other shared helpers below depend on.
+
+
+
+
+
+
+
+
 #include "MainWindowInternal.h"
 
 #include "ActionStore.h"
@@ -63,9 +63,9 @@ QString openAiResponseText(const QJsonObject &obj)
     return parts.join(QStringLiteral("\n\n")).trimmed();
 }
 
-// USD cost of an "Ask AI" Responses call from its usage tokens. Prices are the
-// published OpenAI rates for gpt-4.1-nano (input $0.10 / output $0.40 per 1M
-// tokens); bump these if the model or its pricing changes.
+
+
+
 double openAiAskCostUsd(const QJsonObject &response, qint64 *inTokens,
                         qint64 *outTokens)
 {
@@ -126,16 +126,16 @@ QString mirrorHeadBranch(const QString &mirrorPath)
                                  QStringLiteral("refs/heads/") + head).isEmpty()))
             return head;
     }
-    // A bare mirror cloned from the relay can carry an unset/dangling HEAD (the
-    // relay serves git-upload-pack without advertising a symref HEAD), so the
-    // symbolic-ref above yields nothing. Every downstream figure the Mirror nodes
-    // view shows for a node — its latest commit and the issue/commit/pull/
-    // discussion counts — is read relative to this branch, so an empty result
-    // blanks nearly the whole row for such a node (issue #243). Fall back to an
-    // actual served branch: prefer main/master, else the first refs/heads/* or
-    // refs/remotes/* held. The live RepoHost can serve from remote refs, so the
-    // advert/catalog path must accept them too or a usable headless mirror looks
-    // empty on the website.
+
+
+
+
+
+
+
+
+
+
     QProcess refs;
     refs.start("git", {"-C", mirrorPath, "for-each-ref",
                        "--format=%(refname)", "refs/heads/", "refs/remotes/"});
@@ -257,8 +257,8 @@ QColor actionStatusColor(const QString &status)
     return QColor("#8b949e");
 }
 
-// Detailed, timestamped startup logging so a slow launch can be diagnosed from
-// the terminal: each phase prints "[startup +<ms>ms] <phase>". Always on (cheap).
+
+
 QElapsedTimer &startupClock()
 {
     static QElapsedTimer t;
@@ -273,10 +273,10 @@ void logStartup(const QString &phase)
                              .arg(phase);
 }
 
-// Same idea for the rebuild/restart path, which can be slow (git pull, cmake
-// configure, full rebuild, relaunch): each phase prints "[restart +<ms>ms]" so
-// the time sink is obvious from the terminal. The clock is reset by
-// beginRestartLog() at the start of each restart sequence.
+
+
+
+
 QElapsedTimer &restartClock()
 {
     static QElapsedTimer t;
@@ -296,26 +296,26 @@ void logRestart(const QString &phase)
 }
 
 
-// ---- Shared display helpers (diffs, agent status, reference links) ----
-// Declarations (and the DiffFileEntry/DiffFileNavigator types) live in
-// MainWindowInternal.h; these were lifted out of MainWindowIssues/Ide/Agents.
+
+
+
 
 namespace {
 
-// Progressive diff rendering (adhoc #421), see the declarations in
-// MainWindowInternal.h. Above this many chars of HTML a diff is laid out one
-// batch at a time instead of in a single blocking pass; the first batch covers
-// well over a screenful, so the visible window is complete on arrival.
+
+
+
+
 constexpr qsizetype kDiffFirstPaintChars = 70'000;
-// Chars of HTML per streamed batch. Each batch is a separate GUI-thread layout,
-// so this trades how fast the rest lands against how long any one turn blocks.
+
+
 constexpr qsizetype kDiffStreamBatchChars = 70'000;
 
-// QTextDocument is not virtualized: inserting another row can relayout the
-// entire table already above it. Multi-megabyte generated HTML therefore gets
-// progressively *slower* even when it arrives in event-loop-sized batches. Keep
-// each file body and the complete rich-text body bounded. Headers/anchors remain
-// for every file, and a clear placeholder points readers to the full patch.
+
+
+
+
+
 constexpr qsizetype kDiffFileRichTextChars = 60'000;
 constexpr qsizetype kDiffTotalRichTextChars = 420'000;
 
@@ -330,9 +330,9 @@ QString responsiveDiffBlock(const QString &block, bool headerOnly)
     if (tableOpenEnd < 0)
         return block.left(kDiffFileRichTextChars);
 
-    // Keep the file header but discard a potentially large inline image preview
-    // before the diff table. The first </div> closes .fileheader; .fileblock is
-    // deliberately left open for the replacement table below.
+
+
+
     const int headerEnd = block.indexOf(QStringLiteral("</div>"));
     QString compact =
         block.left(headerEnd >= 0 && headerEnd < table ? headerEnd + 6
@@ -367,21 +367,21 @@ QString responsiveDiffBlock(const QString &block, bool headerOnly)
     return compact;
 }
 
-// Split rendered diff HTML into its self-contained per-file blocks. Each file's
-// block begins with its `<a name="file-N"></a>` anchor (see diffFileHeaderHtml)
-// and ends before the next one, so these chunks can be streamed into the view a
-// few at a time instead of laid out in one blocking pass. Any preamble before
-// the first anchor rides along with the first block.
+
+
+
+
+
 QStringList splitDiffFileBlocks(const QString &html)
 {
     static const QString marker = QStringLiteral("<a name=\"file-");
     int pos = html.indexOf(marker);
     if (pos < 0)
-        return {html}; // no per-file anchors (e.g. an empty/notice body)
+        return {html};
     QStringList blocks;
     qsizetype richTextChars = 0;
     if (pos > 0)
-        blocks.append(html.left(pos)); // preamble before the first file (if any)
+        blocks.append(html.left(pos));
     while (pos >= 0) {
         const int next = html.indexOf(marker, pos + marker.size());
         QString block = html.mid(pos, next < 0 ? -1 : next - pos);
@@ -396,14 +396,14 @@ QStringList splitDiffFileBlocks(const QString &html)
 
 struct DiffStreamState {
     QStringList pending;
-    // Bumped on every render (and by a flush) so a batch queued for a diff that
-    // has since been replaced bails instead of writing into the new document.
+
+
     int gen = 0;
     QList<std::function<void()>> finishedHooks;
 };
 
-// Per-view stream state. Keyed by pointer and dropped when the view dies; all of
-// this runs on the GUI thread.
+
+
 QHash<QTextEdit *, DiffStreamState> &diffStreams()
 {
     static QHash<QTextEdit *, DiffStreamState> streams;
@@ -421,8 +421,8 @@ DiffStreamState &diffStreamState(QTextEdit *view)
     return streams[view];
 }
 
-// Run the "document is complete" hooks for a view. Hooks are copied first: one
-// may re-render this very view (a font change, a re-render on new data).
+
+
 void finishDiffStream(QTextEdit *view)
 {
     auto it = diffStreams().find(view);
@@ -437,9 +437,9 @@ void appendDiffStreamBatch(QTextEdit *view, const QString &batch)
 {
     if (batch.isEmpty())
         return;
-    // Rich-text parse + layout runs synchronously on the GUI thread and is the
-    // slow half of showing a diff; name it so a stall report points here instead
-    // of an anonymous harfbuzz/QTextDocumentLayout backtrace.
+
+
+
     BlockingCallScope crumb(QStringLiteral("diff html append (%1 chars, %2)")
                                 .arg(batch.size())
                                 .arg(view->objectName().isEmpty()
@@ -452,8 +452,8 @@ void appendDiffStreamBatch(QTextEdit *view, const QString &batch)
             .arg(view->objectName().isEmpty() ? QStringLiteral("unnamed view")
                                                : view->objectName()),
         forkmesh::ActionTelemetry::Execution::UiBlocking);
-    // Append at the document's end via a private cursor so the user's current
-    // scroll position is left untouched as the rest fills in below.
+
+
     QTextCursor cur(view->document());
     cur.movePosition(QTextCursor::End);
     cur.insertHtml(batch);
@@ -469,10 +469,10 @@ void scheduleDiffStreamBatch(QTextEdit *view, int gen)
         if (it == diffStreams().end() || it->gen != gen || it->pending.isEmpty())
             return;
         QString batch;
-        // Stop *before* a block would push the batch over budget (a lone
-        // oversized block still goes alone). Filling until the size crossed the
-        // cap meant a batch could end at ~70k + one whole file block: the stall
-        // log's >500 ms diff appends were all exactly such 80–130k batches.
+
+
+
+
         while (!it->pending.isEmpty() &&
                (batch.isEmpty() ||
                 batch.size() + it->pending.first().size() <=
@@ -489,7 +489,7 @@ void scheduleDiffStreamBatch(QTextEdit *view, int gen)
     });
 }
 
-} // namespace
+}
 
 void renderDiffStreamed(QTextEdit *view, const QString &html,
                         const QString &styleSheet)
@@ -497,20 +497,20 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
     if (!view)
         return;
     DiffStreamState &state = diffStreamState(view);
-    ++state.gen; // supersede any batches still queued from a previous render
+    ++state.gen;
     state.pending.clear();
     const int gen = state.gen;
 
     QString first = html;
-    // Always split anchored diffs, even when there is only one file: a single
-    // generated lockfile/API snapshot was the worst multi-megabyte stall in the
-    // diagnostics log, and the old `blocks.size() > 1` condition bypassed all
-    // progressive/bounded handling for exactly that case.
+
+
+
+
     QStringList blocks = splitDiffFileBlocks(html);
     if (!(blocks.size() == 1 && blocks.first() == html)) {
         first.clear();
-        // Same no-overshoot rule as the streamed batches: the first paint used
-        // to take one block too many and lay out up to ~130k chars in one turn.
+
+
         while (!blocks.isEmpty() &&
                (first.isEmpty() ||
                 first.size() + blocks.first().size() <= kDiffFirstPaintChars))
@@ -548,7 +548,7 @@ void flushDiffStream(QTextEdit *view)
     auto it = diffStreams().find(view);
     if (it == diffStreams().end() || it->pending.isEmpty())
         return;
-    ++it->gen; // the queued batch bails; the whole remainder lands here instead
+    ++it->gen;
     const QString rest = it->pending.join(QString());
     it->pending.clear();
     appendDiffStreamBatch(view, rest);
@@ -562,18 +562,18 @@ void addDiffStreamFinishedHook(QTextEdit *view, std::function<void()> hook)
     diffStreamState(view).finishedHooks.append(std::move(hook));
 }
 
-// Format an estimated agent task cost as a short USD string, e.g. "$0.01".
+
 QString agentCostText(double usd)
 {
     return QStringLiteral("$%1").arg(usd, 0, 'f', 2);
 }
 
-// Turn references in an already-HTML-escaped commit message into links the detail
-// view resolves: "#123" → the matching issue / pull request, and a bare commit SHA
-// (7-40 hex with at least one a-f letter, so plain decimal numbers are left alone)
-// → that commit via showCommit. Both kinds are matched in one pass so a SHA can't
-// match inside a generated href; operating on escaped text keeps the digits/'#'/hex
-// intact while leaving the rest untouched.
+
+
+
+
+
+
 QString linkifyIssueRefs(const QString &escaped)
 {
     static const QRegularExpression re(QStringLiteral(
@@ -603,22 +603,22 @@ QString linkifyIssueRefs(const QString &escaped)
     return out;
 }
 
-// Reference patterns recognised inside a markdown comment body. Tried in order at
-// each position: a forkmesh:// permalink, a "#123" issue/PR reference, or a bare
-// commit SHA (7-40 hex with at least one a-f letter, so plain numbers are left
-// alone). See autolinkReferences() / openBodyReference().
+
+
+
+
 const QRegularExpression &bodyReferenceRegex()
 {
     static const QRegularExpression re(QStringLiteral(
-        // Permalink: stop before trailing sentence punctuation so "...#3." links #3.
+
         "(forkmesh://(?:issue|pull|commit)/[^\\s<>()\\[\\]]*[^\\s<>()\\[\\].,;:!?'\"])"
         "|(?<![\\w/#])#(\\d+)\\b"
         "|\\b(?=[0-9a-f]*[a-f])([0-9a-f]{7,40})\\b"));
     return re;
 }
 
-// Linkify the plain-text portion of a line (no code/links): wrap each reference in
-// a markdown link with a private scheme openBodyReference() resolves.
+
+
 QString linkifyReferenceText(const QString &text)
 {
     QString out;
@@ -628,8 +628,8 @@ QString linkifyReferenceText(const QString &text)
         const QRegularExpressionMatch m = it.next();
         out += text.mid(last, m.capturedStart() - last);
         if (!m.captured(1).isEmpty()) {
-            // Keep the permalink as an explicit <autolink> so the exact href reaches
-            // the router untouched by markdown.
+
+
             out += QStringLiteral("<%1>").arg(m.captured(1));
         } else if (!m.captured(2).isEmpty()) {
             const QString num = m.captured(2);
@@ -644,9 +644,9 @@ QString linkifyReferenceText(const QString &text)
     return out;
 }
 
-// If a "[label](target)" link starts at `start`, return the index past its closing
-// ')'; otherwise -1. First-match bracket/paren scan — enough to leave existing
-// markdown links verbatim so we never nest one inside another.
+
+
+
 int markdownLinkSpanEnd(const QString &line, int start)
 {
     const int close = line.indexOf(QLatin1Char(']'), start + 1);
@@ -659,8 +659,8 @@ int markdownLinkSpanEnd(const QString &line, int start)
     return end < 0 ? -1 : end + 1;
 }
 
-// If a "<scheme://...>" autolink starts at `start`, return the index past its '>';
-// otherwise -1 (a bare '<' is left as literal text).
+
+
 int autolinkSpanEnd(const QString &line, int start)
 {
     const int close = line.indexOf(QLatin1Char('>'), start + 1);
@@ -671,8 +671,8 @@ int autolinkSpanEnd(const QString &line, int start)
     return close + 1;
 }
 
-// Linkify one non-fenced line: copy inline `code` spans, existing markdown links and
-// autolinks verbatim, and linkify references in the remaining text.
+
+
 QString linkifyReferenceLine(const QString &line)
 {
     QString out;
@@ -693,7 +693,7 @@ QString linkifyReferenceLine(const QString &line)
                     break;
                 const int after = idx + run;
                 if (after < n && line.at(after) == QLatin1Char('`')) {
-                    close = after; // part of a longer run; keep looking
+                    close = after;
                     continue;
                 }
                 found = idx;
@@ -703,7 +703,7 @@ QString linkifyReferenceLine(const QString &line)
                 out += line.mid(i, found + run - i);
                 i = found + run;
             } else {
-                out += ticks; // unterminated: emit literally
+                out += ticks;
                 i += run;
             }
             continue;
@@ -754,8 +754,8 @@ QString diffStickyStyleSheet(int fontPt)
         .arg(qBound(8, fontPt, 28));
 }
 
-// Render a path with the directory dimmed and the basename bold, matching the
-// diff's .fdir / .fname spans.
+
+
 QString diffStickyPathHtml(const QString &path)
 {
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
@@ -783,7 +783,7 @@ QString agentStatusText(const QString &status)
     return status;
 }
 
-// An agent is "working" on the issue while queued or running.
+
 bool agentSessionActive(const AgentSession *s)
 {
     return s && (s->status == AgentStatus::Running ||
@@ -815,14 +815,14 @@ QColor agentStatusColor(const QString &status)
     return QColor("#8b949e");
 }
 
-// The tint agentStatusOcticon() paints a session's status glyph in. Split out so
-// the top-bar agent matrix can colour its squares to exactly the same palette —
-// two hard-coded copies would drift the moment a status changes colour.
+
+
+
 QColor agentStatusIconColor(const AgentSession &s)
 {
     if (s.merged) return QColor("#a371f7");
-    // Genie runs (adhoc #38) keep their own violet while they are working, so a
-    // run off the website's shared task list never reads as an ordinary turn.
+
+
     if (s.genieInFlight()) return QColor(Theme::kGenie);
     if (s.status == AgentStatus::Running) return QColor(Theme::kRunning);
     if (s.status == AgentStatus::Success) return QColor("#3fb950");
@@ -830,7 +830,7 @@ QColor agentStatusIconColor(const AgentSession &s)
     if (s.status == AgentStatus::Stopped) return QColor("#f85149");
     if (s.status == AgentStatus::Waiting) return QColor("#e3742f");
     if (s.status == AgentStatus::Queued) return QColor("#d29922");
-    return QColor("#8b949e"); // cleared / unknown
+    return QColor("#8b949e");
 }
 
 QIcon agentStatusOcticon(const AgentSession &s, int px)
@@ -838,9 +838,9 @@ QIcon agentStatusOcticon(const AgentSession &s, int px)
     const QColor tint = agentStatusIconColor(s);
     if (s.merged)
         return themedOcticon("git-merge", tint, px);
-    // A genie in flight gets the sparkle instead of the shared spinner/clock
-    // (adhoc #38). Terminal states keep their usual glyph, so "did it work?"
-    // still reads the same for genie and ordinary runs alike.
+
+
+
     if (s.genieInFlight())
         return themedOcticon("sparkle", tint, px);
     if (s.status == AgentStatus::Running)
@@ -855,7 +855,7 @@ QIcon agentStatusOcticon(const AgentSession &s, int px)
         return themedOcticon("hand", tint, px);
     if (s.status == AgentStatus::Queued)
         return themedOcticon("history", tint, px);
-    // Cleared / unknown.
+
     return themedOcticon("circle-slash", tint, px);
 }
 
@@ -878,14 +878,14 @@ QString diffImageMimeForPath(const QString &path)
     return QString();
 }
 
-// A diff can carry an attacker-influenced image straight into an auto-rendered
-// view (an untrusted PR's asset, or a file an issue agent fetched), so it isn't
-// enough to trust the ".png" extension and hand the bytes to QTextDocument's
-// image loader. QImageReader::canRead() sniffs the actual content, and size()
-// reads just the format header for PNG/JPEG/GIF/BMP — no pixel decode yet — so
-// this rejects both non-images and "decompression bomb" images (a small file
-// whose declared dimensions would blow up to a huge pixel buffer once decoded)
-// without paying the decode cost ourselves.
+
+
+
+
+
+
+
+
 bool diffImageSafeToDecode(const QByteArray &bytes)
 {
     QBuffer buf;
@@ -895,7 +895,7 @@ bool diffImageSafeToDecode(const QByteArray &bytes)
     if (!reader.canRead())
         return false;
     const QSize size = reader.size();
-    constexpr qint64 kMaxPixels = 40'000'000; // ~40MP, comfortably above any diff asset
+    constexpr qint64 kMaxPixels = 40'000'000;
     return !size.isValid() ||
            qint64(size.width()) * qint64(size.height()) <= kMaxPixels;
 }
@@ -929,12 +929,12 @@ QString diffImagePreviewHtml(const QString &dir, const QString &base,
     if (mime.isEmpty())
         return QString();
 
-    // An empty base/head isn't "read the index" (what `git show :path` would do)
-    // — it means the caller has no commit for that side at all: the Source
-    // Control and live agent-diff views pass "" for whichever side is the
-    // uncommitted working tree, and `:path` is simply missing for a brand-new
-    // untracked file. Read the intended content directly instead so a freshly
-    // added/edited image actually previews (adhoc #61).
+
+
+
+
+
+
     QByteArray oldBytes;
     if (f.status != QLatin1String("added") && !dir.isEmpty()) {
         const QString oldRef = base.isEmpty() ? QStringLiteral("HEAD") : base;
@@ -965,13 +965,13 @@ QString diffImagePreviewHtml(const QString &dir, const QString &base,
              diffImageCellHtml(QStringLiteral("After"), path, mime, newBytes));
 }
 
-// Render a unified diff into an HTML table with an old/new line-number gutter
-// and +/- coloring (classes styled by the document stylesheet), one block per
-// file with a named anchor so the file list can scroll to it.
-// Build a line-number gutter cell. When anchors is true the number links to
-// "cmt:<path>?s=<side>&l=<line>" so the PR view can attach a comment to that
-// line. The file path is carried in the anchor (not inferred from the selected
-// list row) so a continuous all-files diff targets the right file (issue #250).
+
+
+
+
+
+
+
 QString gutterCellHtml(const QString &cls, const QString &num, const QString &side,
                        bool anchors, const QString &path)
 {
@@ -986,10 +986,10 @@ QString gutterCellHtml(const QString &cls, const QString &num, const QString &si
         .arg(cls, enc, side, num);
 }
 
-// Insert any inline-comment note rows that target the just-emitted line numbers
-// (keys "<path>\x1fold:<n>" / "<path>\x1fnew:<n>"), spanning all `columns`
-// columns of the table. The path prefix keeps notes from one file off another
-// file's same-numbered line when every file is rendered into one view (#250).
+
+
+
+
 QString lineNoteRows(const QHash<QString, QString> &lineNotes, const QString &path,
                      const QString &oldNum, const QString &newNum, int columns)
 {
@@ -1009,9 +1009,9 @@ QString lineNoteRows(const QHash<QString, QString> &lineNotes, const QString &pa
     return out;
 }
 
-// A single placeholder row standing in for a binary file's diff body, which is a
-// base85 literal/delta blob rather than reviewable text. `columns` matches the
-// table the row is inserted into (2 for a one-sided add/delete, 3 otherwise).
+
+
+
 QString diffBinaryRowHtml(const DiffFileEntry &f, int columns)
 {
     QString verb = QStringLiteral("changed");
@@ -1027,13 +1027,13 @@ QString diffBinaryRowHtml(const DiffFileEntry &f, int columns)
         .arg(verb);
 }
 
-// Per-file header block shared by the unified and split renderers. The old text
-// badge ("ADDED"/"MODIFIED"/…) is replaced by a status octicon (the word lives
-// on as a tooltip); the path shows its directory dimmed and the basename bold;
-// a five-segment green/red proportion bar mirrors GitHub's diff-stat squares.
-// The right side carries the per-file comment icon (PR view only) and the
-// "Viewed" toggle. Returns the header div only — the caller appends the image
-// preview and opens the diff table itself (and skips both for viewed files).
+
+
+
+
+
+
+
 QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
 {
     QString icon = QStringLiteral("file-diff");
@@ -1057,22 +1057,22 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
             .arg(word, octiconMarkup(icon, 14, tint));
 
     const QString encPath = QString::fromLatin1(QUrl::toPercentEncoding(f.path));
-    // "Viewed" checkbox toggle (the diff is collapsed when checked).
+
     const QString viewedLink =
         QStringLiteral("<a class='viewedtoggle%1' href='viewed:%2'>"
                        "<span style='font-size:19px'>%3</span> Viewed</a>")
             .arg(viewed ? QStringLiteral(" on") : QString(), encPath,
                  viewed ? QString::fromUtf8("\xE2\x98\x91")
                         : QString::fromUtf8("\xE2\x98\x90"));
-    // Per-file comment icon, only in the PR view (anchors enabled).
+
     const QString commentIcon =
         anchors ? QStringLiteral("<a class='filecomment' href='filecomment:%1' "
                                  "title='Comment on this file'>%2</a>")
                       .arg(encPath, QString::fromUtf8("\xF0\x9F\x92\xAC"))
                 : QString();
 
-    // Split the path so the directory reads as muted context and the file name
-    // stands out.
+
+
     QString pathHtml;
     const int slash = f.path.lastIndexOf(QLatin1Char('/'));
     if (slash >= 0)
@@ -1084,8 +1084,8 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
         pathHtml = QStringLiteral("<span class='fname'>%1</span>")
                        .arg(f.path.toHtmlEscaped());
 
-    // Five filled-block glyphs split green/red by the additions' share, clamped
-    // so any change of a kind shows at least one block.
+
+
     const int total = f.adds + f.dels;
     QString bar;
     if (total > 0) {
@@ -1103,7 +1103,7 @@ QString diffFileHeaderHtml(const DiffFileEntry &f, bool viewed, bool anchors)
                        .arg(QString(red, QChar(0x2588)));
     }
 
-    // Binary files have no line counts; show a "BIN" marker in place of +/-.
+
     const QString statHtml =
         f.binary
             ? QStringLiteral("<span class='fstat'> BIN</span>")
@@ -1169,26 +1169,26 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         QStringLiteral("@@ -(\\d+)(?:,\\d+)? \\+(\\d+)(?:,\\d+)? @@"));
     const bool anchors = !anchorFile.isEmpty();
     QString html;
-    // Avoid repeated reallocation on big diffs; rendered HTML runs a few times
-    // the size of the raw patch (row markup per line).
+
+
     html.reserve(patch.size() * 3);
     QString fileBody;
     const QStringList lines = patch.split(QLatin1Char('\n'));
     int oldNo = 0, newNo = 0, fileIdx = -1;
     bool inFile = false;
-    // Set once a file's "GIT binary patch" / "Binary files … differ" marker is
-    // seen, so the base85 literal/delta payload that follows is skipped instead of
-    // rendered as garbage context rows. Reset at the next "diff --git".
+
+
+
     bool inBinary = false;
-    // Path of the file whose rows are currently being emitted (for comment
-    // anchors / note keys when all files share one rendered view — issue #250).
+
+
     const auto curPath = [&] {
         return fileIdx >= 0 ? files[fileIdx].path : QString();
     };
 
-    // Per-file header is emitted lazily: we buffer the rows so the header can
-    // report final +/- counts (read from the hunks), then prepend the styled
-    // header block before the table.
+
+
+
     auto emitFileHeader = [&](int idx) {
         const DiffFileEntry &f = files[idx];
         const bool viewed = viewedFiles.contains(f.path);
@@ -1234,7 +1234,7 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
         }
         if (!inFile)
             continue;
-        // Status detection (header lines come before the first hunk).
+
         if (fileIdx >= 0) {
             if (line.startsWith(QLatin1String("new file")))
                 files[fileIdx].status = QStringLiteral("added");
@@ -1244,8 +1244,8 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                      line.startsWith(QLatin1String("similarity ")))
                 files[fileIdx].status = QStringLiteral("renamed");
         }
-        // Binary section: mark the file, emit one placeholder row, and skip the
-        // base85 payload (and any "Binary files … differ" line) that follows.
+
+
         if (line.startsWith(QLatin1String("GIT binary patch")) ||
             line.startsWith(QLatin1String("Binary files "))) {
             if (fileIdx >= 0 && !files[fileIdx].binary) {
@@ -1270,9 +1270,9 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             line.startsWith(QLatin1String("old mode")) ||
             line.startsWith(QLatin1String("new mode")))
             continue;
-        // A fully-added or fully-deleted file leaves one side's gutter blank on
-        // every row. Drop that always-empty column so the content sits flush
-        // left instead of behind a dead gutter.
+
+
+
         const bool addOnly =
             fileIdx >= 0 && files[fileIdx].status == QLatin1String("added");
         const bool delOnly =
@@ -1306,7 +1306,7 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             oldCell = QString::number(oldNo++);
             if (fileIdx >= 0)
                 ++files[fileIdx].dels;
-        } else if (c0 == QLatin1Char('\\')) { // "\ No newline at end of file"
+        } else if (c0 == QLatin1Char('\\')) {
             cls = QStringLiteral("ctx");
             text = line;
         } else {
@@ -1339,12 +1339,12 @@ QString renderUnifiedDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     return html;
 }
 
-// Render a unified diff into a side-by-side (split) HTML table: per file, four
-// columns — old line-number, old code, new line-number, new code. Deletions sit
-// on the left, additions on the right, context spans both. Within a hunk a run
-// of removed lines is paired row-for-row with the following run of added lines;
-// any surplus on one side leaves the opposite cell blank. Stats and per-file
-// anchors/headers match renderUnifiedDiffHtml so the file list and toggle line up.
+
+
+
+
+
+
 QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                             const QString &dir, const QString &base,
                             const QString &head,
@@ -1361,14 +1361,14 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     const QStringList lines = patch.split(QLatin1Char('\n'));
     int oldNo = 0, newNo = 0, fileIdx = -1;
     bool inFile = false;
-    bool inBinary = false; // see renderUnifiedDiffHtml
+    bool inBinary = false;
 
-    // Path of the file currently being emitted (for comment anchors / note keys
-    // when all files share one rendered view — issue #250).
+
+
     const auto curPath = [&] {
         return fileIdx >= 0 ? files[fileIdx].path : QString();
     };
-    // A side gutter cell; clickable (comment anchor) when anchors is on.
+
     const auto gut = [&](const QString &extraCls, const QString &num,
                          const QString &side) {
         if (num.isEmpty())
@@ -1382,21 +1382,21 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             .arg(extraCls, enc, side, num);
     };
 
-    // Buffered runs of removed/added lines awaiting pairing.
+
     QStringList pendingDel, pendingAdd;
     const auto emitText = [](const QString &t) {
         return t.isEmpty() ? QStringLiteral("&nbsp;") : t.toHtmlEscaped();
     };
-    // A fully-added or fully-deleted file has content on one side only. When the
-    // current file is one-sided, fall back to a 2-column unified layout so the
-    // diff sits flush-left instead of behind a dead, always-blank column.
+
+
+
     const auto oneSidedKind = [&]() -> int {
         if (fileIdx < 0)
             return 0;
         if (files[fileIdx].status == QLatin1String("added"))
-            return 1; // add-only
+            return 1;
         if (files[fileIdx].status == QLatin1String("deleted"))
-            return -1; // del-only
+            return -1;
         return 0;
     };
     const auto flushPairs = [&] {
@@ -1498,7 +1498,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                      line.startsWith(QLatin1String("similarity ")))
                 files[fileIdx].status = QStringLiteral("renamed");
         }
-        // Binary section: one placeholder row, then skip the base85 payload.
+
         if (line.startsWith(QLatin1String("GIT binary patch")) ||
             line.startsWith(QLatin1String("Binary files "))) {
             if (fileIdx >= 0 && !files[fileIdx].binary) {
@@ -1528,7 +1528,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                 oldNo = m.captured(1).toInt();
                 newNo = m.captured(2).toInt();
             }
-            // One-sided files use the 2-column layout (see flushPairs).
+
             fileBody += oneSidedKind()
                             ? QStringLiteral("<tr><td class='ln hunk'></td>"
                                              "<td class='code hunk'>%1</td></tr>")
@@ -1552,10 +1552,10 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
             pendingDel << text;
             if (fileIdx >= 0)
                 ++files[fileIdx].dels;
-        } else if (c0 == QLatin1Char('\\')) { // "\ No newline at end of file"
+        } else if (c0 == QLatin1Char('\\')) {
             flushPairs();
-            // One-sided files keep the 2-column layout; otherwise render on both
-            // sides as context so neither column drifts.
+
+
             fileBody += oneSidedKind()
                             ? QStringLiteral("<tr><td class='ln'></td>"
                                              "<td class='code'>%1</td></tr>")
@@ -1565,7 +1565,7 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                                   "<td class='ln nln'></td><td class='code'>%1</td></tr>")
                                   .arg(line.toHtmlEscaped());
         } else if (const int kind = oneSidedKind()) {
-            // Context line in a one-sided file (rare): single gutter + code.
+
             flushPairs();
             const bool addOnly = kind > 0;
             const QString ln = QString::number(addOnly ? newNo++ : oldNo++);
@@ -1596,8 +1596,8 @@ QString renderSplitDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
     return html;
 }
 
-// User preference (persisted): render diffs side-by-side (split) vs unified.
-// Defaults to side-by-side. Shared by the commit and pull-request diff views.
+
+
 bool diffSplitPref()
 {
     return QSettings().value(QStringLiteral("view/diffSplit"), true).toBool();
@@ -1607,14 +1607,14 @@ void setDiffSplitPref(bool split)
     QSettings().setValue(QStringLiteral("view/diffSplit"), split);
 }
 
-// User preference (persisted): automatically mark a pull request's files as
-// "Viewed" as the reviewer scrolls past them in the Files-changed diff.
-// Defaults off, matching GitHub's same-named setting.
+
+
+
 bool autoMarkViewedOnScrollPref()
 {
-    // On by default (adhoc #56): reaching a file's bottom while scrolling
-    // auto-checks its Viewed box — the behaviour the sticky header's Pac-Man
-    // chart visualises. The eye toggle in the Files header opts out.
+
+
+
     return QSettings().value(QStringLiteral("view/autoMarkViewedOnScroll"), true).toBool();
 }
 void setAutoMarkViewedOnScrollPref(bool on)
@@ -1622,9 +1622,9 @@ void setAutoMarkViewedOnScrollPref(bool on)
     QSettings().setValue(QStringLiteral("view/autoMarkViewedOnScroll"), on);
 }
 
-// Rebuild a diff view's extra selections from its find-bar matches, painting
-// the active match in a brighter color than the rest, and update the "n/m"
-// count label. Shared by the PR and branch/PR-range find bars (adhoc #107).
+
+
+
 void applyDiffSearchHighlights(QTextBrowser *diff,
                                const QList<QTextCursor> &matches, int activeIndex,
                                QLabel *countLabel, bool termEmpty)
@@ -1655,7 +1655,7 @@ void applyDiffSearchHighlights(QTextBrowser *diff,
                                         .arg(matches.size()));
 }
 
-// Dispatch to the split or unified renderer based on the current preference.
+
 QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                        const QString &dir, const QString &base, const QString &head,
                        const QString &anchorFile,
@@ -1669,9 +1669,9 @@ QString renderDiffHtml(const QString &patch, QList<DiffFileEntry> &files,
                                        lineNotes, viewedFiles);
 }
 
-// Theme-aware stylesheet for the diff HTML produced by the renderers above,
-// shared by the commit and pull-request diff QTextBrowsers. Includes the
-// split-view central divider (td.nln) on top of the unified-view rules.
+
+
+
 QString diffStyleSheet(int fontPt)
 {
     const bool dark = qApp->palette().color(QPalette::Base).lightness() < 128;
@@ -1688,13 +1688,13 @@ QString diffStyleSheet(int fontPt)
                ".fileblock { margin:0; }"
                ".fileheader { background:%1; padding:6px 10px; font-family:"
                "monospace; font-size:12px; border:1px solid %7; }"
-               // Status octicon badge (image) sat next to the path.
+
                ".stbadge { margin-right:8px; vertical-align:middle; }"
                ".fpath { vertical-align:middle; }"
                ".fdir { color:%2; }"
                ".fname { font-weight:600; color:%8; }"
                ".fstat { color:%2; font-size:11px; }"
-               // GitHub-style green/red proportion bar (filled block glyphs).
+
                ".barblk { font-family:monospace; letter-spacing:-1px; }"
                ".barblk.add { color:#3fb950; } .barblk.del { color:#f85149; }"
                ".viewedtoggle { color:%2; text-decoration:none; font-size:11px; }"
@@ -1714,20 +1714,20 @@ QString diffStyleSheet(int fontPt)
                "td.ln { color:%2; text-align:right; padding:0 10px; width:1%; "
                "font-size:%10px; white-space:nowrap; background:%9; "
                "border-right:1px solid %7; }"
-               // pre-wrap (not pre) so long lines wrap within the cell instead
-               // of forcing the table wider than the viewport — keeps the split
-               // (side-by-side) view on screen. Give the two split code columns a
-               // fixed half-width so neither can grow past its share.
+
+
+
+
                "td.code { white-space:pre-wrap; padding:0 10px; color:%8; "
                "font-size:%10px; }"
                "td.ocode, td.ncode { width:49%; }"
                ".add { background:%3; } .del { background:%4; }"
                ".hunk { color:%5; background:%6; }"
                "td.ln.hunk { background:%6; border-right:1px solid %7; }"
-               // Split view: the new-side line-number gutter doubles as the
-               // central divider between the old and new columns.
+
+
                "td.nln { border-left:1px solid %7; }"
-               // Clickable line-number gutters (PR view) + inline comment rows.
+
                "td.lnlink a { color:%2; text-decoration:none; }"
                "td.notecell { padding:8px 12px; background:%1; "
                "border:1px solid %7; color:%8; white-space:normal; }"
@@ -1751,4 +1751,4 @@ QString diffStyleSheet(int fontPt)
 }
 
 
-} // namespace forkmesh::ui
+}

@@ -26,117 +26,117 @@ from datetime import datetime, timezone
 CARD_W = 1200
 CARD_H = 630
 
-_BG = (1, 4, 9)            # --background
-_CARD = (13, 17, 23)       # --card
-_BORDER = (48, 54, 61)     # --dashboard-border-rgb
-_FG = (240, 246, 252)      # --foreground
-_TEXT = (201, 209, 217)    # --dashboard-secondary-foreground-rgb
-_MUTED = (139, 148, 158)   # --dashboard-muted-foreground-rgb
-_ACCENT = (88, 166, 255)   # --dashboard-accent-rgb
+_BG = (1, 4, 9)
+_CARD = (13, 17, 23)
+_BORDER = (48, 54, 61)
+_FG = (240, 246, 252)
+_TEXT = (201, 209, 217)
+_MUTED = (139, 148, 158)
+_ACCENT = (88, 166, 255)
 
-# Classic 5x7 ASCII font (chars 32..126), 5 column bytes per glyph, bit 0 =
-# top row. The old Adafruit/HD44780 table - public domain and legible even at
-# small scales.
+
+
+
 _FONT = bytes.fromhex(
-    "0000000000"  # ' '
-    "00005f0000"  # '!'
-    "0007000700"  # '"'
-    "147f147f14"  # '#'
-    "242a7f2a12"  # '$'
-    "2313086462"  # '%'
-    "3649552250"  # '&'
-    "0005030000"  # '''
-    "001c224100"  # '('
-    "0041221c00"  # ')'
-    "082a1c2a08"  # '*'
-    "08083e0808"  # '+'
-    "0050300000"  # ','
-    "0808080808"  # '-'
-    "0060600000"  # '.'
-    "2010080402"  # '/'
-    "3e5149453e"  # '0'
-    "00427f4000"  # '1'
-    "4261514946"  # '2'
-    "2141454b31"  # '3'
-    "1814127f10"  # '4'
-    "2745454539"  # '5'
-    "3c4a494930"  # '6'
-    "0171090503"  # '7'
-    "3649494936"  # '8'
-    "064949291e"  # '9'
-    "0036360000"  # ':'
-    "0056360000"  # ';'
-    "0008142241"  # '<'
-    "1414141414"  # '='
-    "4122140800"  # '>'
-    "0201510906"  # '?'
-    "324979413e"  # '@'
-    "7e1111117e"  # 'A'
-    "7f49494936"  # 'B'
-    "3e41414122"  # 'C'
-    "7f4141221c"  # 'D'
-    "7f49494941"  # 'E'
-    "7f09090901"  # 'F'
-    "3e4149497a"  # 'G'
-    "7f0808087f"  # 'H'
-    "00417f4100"  # 'I'
-    "2040413f01"  # 'J'
-    "7f08142241"  # 'K'
-    "7f40404040"  # 'L'
-    "7f020c027f"  # 'M'
-    "7f0408107f"  # 'N'
-    "3e4141413e"  # 'O'
-    "7f09090906"  # 'P'
-    "3e4151215e"  # 'Q'
-    "7f09192946"  # 'R'
-    "4649494931"  # 'S'
-    "01017f0101"  # 'T'
-    "3f4040403f"  # 'U'
-    "1f2040201f"  # 'V'
-    "3f4038403f"  # 'W'
-    "6314081463"  # 'X'
-    "0708700807"  # 'Y'
-    "6151494543"  # 'Z'
-    "007f414100"  # '['
-    "0204081020"  # '\'
-    "0041417f00"  # ']'
-    "0402010204"  # '^'
-    "4040404040"  # '_'
-    "0001020400"  # '`'
-    "2054545478"  # 'a'
-    "7f48444438"  # 'b'
-    "3844444420"  # 'c'
-    "384444487f"  # 'd'
-    "3854545418"  # 'e'
-    "087e090102"  # 'f'
-    "0c5252523e"  # 'g'
-    "7f08040478"  # 'h'
-    "00447d4000"  # 'i'
-    "2040443d00"  # 'j'
-    "7f10284400"  # 'k'
-    "00417f4000"  # 'l'
-    "7c04180478"  # 'm'
-    "7c08040478"  # 'n'
-    "3844444438"  # 'o'
-    "7c14141408"  # 'p'
-    "081414187c"  # 'q'
-    "7c08040408"  # 'r'
-    "4854545420"  # 's'
-    "043f444020"  # 't'
-    "3c4040207c"  # 'u'
-    "1c2040201c"  # 'v'
-    "3c4030403c"  # 'w'
-    "4428102844"  # 'x'
-    "0c5050503c"  # 'y'
-    "4464544c44"  # 'z'
-    "0008364100"  # '{'
-    "00007f0000"  # '|'
-    "0041360800"  # '}'
-    "0201020402"  # '~'
+    "0000000000"
+    "00005f0000"
+    "0007000700"
+    "147f147f14"
+    "242a7f2a12"
+    "2313086462"
+    "3649552250"
+    "0005030000"
+    "001c224100"
+    "0041221c00"
+    "082a1c2a08"
+    "08083e0808"
+    "0050300000"
+    "0808080808"
+    "0060600000"
+    "2010080402"
+    "3e5149453e"
+    "00427f4000"
+    "4261514946"
+    "2141454b31"
+    "1814127f10"
+    "2745454539"
+    "3c4a494930"
+    "0171090503"
+    "3649494936"
+    "064949291e"
+    "0036360000"
+    "0056360000"
+    "0008142241"
+    "1414141414"
+    "4122140800"
+    "0201510906"
+    "324979413e"
+    "7e1111117e"
+    "7f49494936"
+    "3e41414122"
+    "7f4141221c"
+    "7f49494941"
+    "7f09090901"
+    "3e4149497a"
+    "7f0808087f"
+    "00417f4100"
+    "2040413f01"
+    "7f08142241"
+    "7f40404040"
+    "7f020c027f"
+    "7f0408107f"
+    "3e4141413e"
+    "7f09090906"
+    "3e4151215e"
+    "7f09192946"
+    "4649494931"
+    "01017f0101"
+    "3f4040403f"
+    "1f2040201f"
+    "3f4038403f"
+    "6314081463"
+    "0708700807"
+    "6151494543"
+    "007f414100"
+    "0204081020"
+    "0041417f00"
+    "0402010204"
+    "4040404040"
+    "0001020400"
+    "2054545478"
+    "7f48444438"
+    "3844444420"
+    "384444487f"
+    "3854545418"
+    "087e090102"
+    "0c5252523e"
+    "7f08040478"
+    "00447d4000"
+    "2040443d00"
+    "7f10284400"
+    "00417f4000"
+    "7c04180478"
+    "7c08040478"
+    "3844444438"
+    "7c14141408"
+    "081414187c"
+    "7c08040408"
+    "4854545420"
+    "043f444020"
+    "3c4040207c"
+    "1c2040201c"
+    "3c4030403c"
+    "4428102844"
+    "0c5050503c"
+    "4464544c44"
+    "0008364100"
+    "00007f0000"
+    "0041360800"
+    "0201020402"
 )
 
-# ForkMesh mark, pre-scaled to 93x112 raw RGBA (zlib+base64). Regenerate with
-# tools/embed_og_logo.py whenever public/assets/logo.png changes.
+
+
 _LOGO_W = 93
 _LOGO_H = 112
 _LOGO_B64 = (
@@ -437,7 +437,7 @@ class _Canvas:
         for ch in s:
             code = ord(ch)
             if not 32 <= code <= 126:
-                code = 63  # '?'
+                code = 63
             base = (code - 32) * 5
             for col in range(5):
                 bits = _FONT[base + col]
@@ -476,7 +476,7 @@ class _Canvas:
         stride = self.w * 3
         raw = bytearray()
         for yy in range(self.h):
-            raw.append(0)  # filter: None
+            raw.append(0)
             raw += self.buf[yy * stride:(yy + 1) * stride]
         out = bytearray(b"\x89PNG\r\n\x1a\n")
         for tag, body in (
@@ -566,7 +566,7 @@ def _ts_seconds(value):
         return None
     try:
         n = int(float(text))
-        if n > 10 ** 11:  # milliseconds
+        if n > 10 ** 11:
             return n // 1000
         if n > 10 ** 8:
             return n
@@ -611,7 +611,7 @@ def render_repo_card(info, now_s):
     repo = str(info.get("repo") or "")
     canvas = _Canvas(CARD_W, CARD_H, _BG)
 
-    # Card panel.
+
     margin = 28
     canvas.fill_rect(margin, margin, CARD_W - 2 * margin, CARD_H - 2 * margin,
                      _CARD)
@@ -622,7 +622,7 @@ def render_repo_card(info, now_s):
     logo_x = CARD_W - pad - _LOGO_W
     canvas.blit_rgba(logo_x, margin + 40, _LOGO_W, _LOGO_H, _logo_rgba())
 
-    # Title: owner/repo, shrunk (then ellipsized) to clear the logo.
+
     title = "%s/%s" % (owner, repo)
     title_max_w = logo_x - pad - 40
     scale = 6
@@ -631,7 +631,7 @@ def render_repo_card(info, now_s):
     title = _fit(title, scale, title_max_w)
     canvas.text(pad, 96, title, scale, _FG)
 
-    # Description under the title (two lines max).
+
     description = str(info.get("description") or "").strip()
     if not description:
         description = "A repository mirrored across the ForkMesh network."
@@ -640,10 +640,10 @@ def render_repo_card(info, now_s):
         canvas.text(pad, y, line, 3, _TEXT)
         y += 7 * 3 + 12
 
-    # Divider.
+
     canvas.fill_rect(pad, 268, CARD_W - 2 * pad, 2, _BORDER)
 
-    # Stats grid: 2 rows x 4 columns of value + label.
+
     cells = (
         ("STARS", format_count(info.get("stars"))),
         ("ISSUES", format_count(info.get("issues"))),
@@ -666,7 +666,7 @@ def render_repo_card(info, now_s):
         canvas.text(cx, cy, value, value_scale, _FG)
         canvas.text(cx, cy + 7 * 5 + 12, label, 2, _MUTED)
 
-    # Footer: canonical URL left, branch + followers right.
+
     footer_y = CARD_H - margin - 48
     host = str(info.get("host") or "forkmesh.com")
     url = _fit("%s/%s/%s" % (host, owner, repo), 3, grid_w - 360)
@@ -726,7 +726,7 @@ def render_referral_card(info, now_s):
 
     canvas.fill_rect(pad, 268, CARD_W - 2 * pad, 2, _BORDER)
 
-    # One wide row: the two counters this link has earned, plus how recently.
+
     cells = (
         ("CLICKS", format_exact(info.get("clicks"))),
         ("SIGNUPS", format_exact(info.get("signups"))),

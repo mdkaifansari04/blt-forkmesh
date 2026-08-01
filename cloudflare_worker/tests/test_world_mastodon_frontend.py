@@ -39,8 +39,8 @@ def test_scene_places_a_clickable_kiosk_beside_the_office():
     assert '"mastodon-board"' in scene
     assert "onMastodonBoardSelect = () => {}" in scene
     assert 'userData?.interactive === "mastodon-board"' in scene
-    # The kiosk stands beside the Office approach at [45, 0, -27], not in the
-    # arrival grid or in front of the Office door / exterior keypad.
+
+
     assert "group.position.set(33.5, 0, -18.5);" in scene
 
 
@@ -54,7 +54,7 @@ def test_world_opens_the_mini_app_and_fetches_without_credentials():
     assert 'class="world-mastodon-app"' in world
     assert "data-world-mastodon-toots" in world
     assert "data-world-mastodon-retry" in world
-    # Untrusted remote text is always escaped before injection.
+
     assert re.search(r"escapeHTML\(\s*status\.text,?\s*\)", world)
 
 
@@ -67,14 +67,14 @@ def test_kiosk_refreshes_every_ten_minutes_behind_an_mmss_timer():
     assert "this.startMastodonRefresh();" in world
     assert "window.clearInterval(this.mastodonRefreshTimer);" in world
     assert "updateMastodonCountdown" in world
-    # The countdown runs from the attempt so a failed fetch cannot hot-loop.
+
     assert "this.mastodonRequestedAt = Date.now();" in world
     assert "MASTODON_KIOSK_REFRESH_MS = 10 * 60 * 1000" in scene
     assert "function mastodonCountdownTexture(" in scene
     assert '"forkmesh-mastodon-kiosk-countdown"' in scene
     assert "function updateMastodonCountdown(" in scene
     assert "updateMastodonCountdown," in scene
-    # A plain MM:SS readout: no ring, no arc, no progress sweep.
+
     assert "function mastodonCountdownClock(" in scene
     countdown = scene.split("function mastodonCountdownClock(", 1)[1].split(
         "function createMastodonKiosk(", 1
@@ -101,16 +101,16 @@ def test_countdown_clock_formats_mm_ss():
 def test_kiosk_shows_time_since_last_post_with_cadence_colors():
     world = _source(WORLD_PATH)
     scene = _source(SCENE_PATH)
-    # The stand carries a second plate beside NEXT SYNC: how long since the
-    # newest toot, tinted by whether the once-a-day cadence is being kept.
+
+
     assert "mastodonLastPostAgo()" in world
     assert "lastPostAgoMs: this.mastodonLastPostAgo()," in world
     assert "const MASTODON_POST_FRESH_MS = 24 * 60 * 60 * 1000;" in scene
     assert "const MASTODON_POST_STALE_MS = 72 * 60 * 60 * 1000;" in scene
     assert "function mastodonLastPostTexture(" in scene
     assert '"forkmesh-mastodon-kiosk-lastpost"' in scene
-    # The plate label is parameterized so the social banners can reuse the
-    # painter; the kiosk keeps the LAST POST default.
+
+
     assert "context.fillText(label, 128, 44);" in scene
     assert 'label = "LAST POST",' in scene
 
@@ -151,14 +151,14 @@ def test_last_post_clock_and_colors_follow_the_cadence():
 def test_kiosk_and_mini_app_carry_replies_with_author_icons():
     world = _source(WORLD_PATH)
     scene = _source(SCENE_PATH)
-    # Replies are collected from the thread context of the newest toots.
+
     assert "async fetchMastodonReplies(" in world
     assert "/context`" in world
     assert "reply.authorAcct === account.acct" in world
     assert "const MASTODON_REPLY_LIMIT = 12;" in world
     assert "replies: this.mastodonReplies.map(" in world
     assert "avatar: reply.authorAvatar," in world
-    # Mini-app section plus the kiosk strip, each with the replier's icon.
+
     assert "mastodonRepliesHTML()" in world
     assert "data-world-mastodon-replies" in world
     assert re.search(r"escapeHTML\(\s*reply\.text,?\s*\)", world)
@@ -174,29 +174,29 @@ def test_kiosk_board_is_larger_and_carries_post_images():
     scene = _source(SCENE_PATH)
     assert "images: status.images.map((media) => media.url)" in world
     assert "const MASTODON_KIOSK_WIDTH = 1536;" in scene
-    # Twice as tall as the old 2048 board, so the attachment strip and a third
-    # toot card fit without crowding the replies section.
+
+
     assert "const MASTODON_KIOSK_HEIGHT = 4096;" in scene
     assert "const MASTODON_KIOSK_VISIBLE_TOOTS = 3;" in scene
-    # Board plane and canvas keep the same 0.375 aspect ratio.
+
     assert "new THREE.PlaneGeometry(7.2, 19.2)" in scene
     assert "new THREE.BoxGeometry(7.9, 20.0, 0.36)" in scene
     assert "Array.isArray(toot.images) ? toot.images : []" in scene
-    # A third open-in-a-new-tab button rides along with the third card.
+
     assert 'setMastodonOpenButton("toot-2", visibleToots[2]?.url);' in scene
 
 
 def test_kiosk_cards_carry_stars_boosts_and_reply_counts():
     world = _source(WORLD_PATH)
     scene = _source(SCENE_PATH)
-    # The snapshot carries the engagement counts the mini-app footer shows.
+
     assert "replies: formatMastodonCount(status.repliesCount)," in world
     assert "boosts: formatMastodonCount(status.reblogsCount)," in world
     assert "stars: formatMastodonCount(status.favouritesCount)," in world
     for line in ("${toot.stars ?? 0} STARS", "${toot.boosts ?? 0} BOOSTS",
                  "${toot.replies ?? 0} REPLIES"):
         assert line in scene
-    # Pinned / boost / content-warning markers get their own card line.
+
     assert "marker," in world
     assert "const marker = String(toot.marker || \"\").trim();" in scene
 
@@ -251,7 +251,7 @@ def test_account_normalization_bounds_and_flattens_remote_html():
     """
     )
     assert account["note"] == "Community-owned Git forge & mesh"
-    assert account["avatar"] == ""  # http:// is rejected
+    assert account["avatar"] == ""
     assert account["header"] == "https://files.mastodon.social/header.png"
     assert account["followersCount"] == 157
     assert account["fields"] == [
@@ -287,7 +287,7 @@ def test_status_normalization_unwraps_boosts_and_strips_markup():
     )
     assert status["boostedFrom"] == "friend@example.social"
     assert "<" not in status["text"] and "Fediverse" in status["text"]
-    assert status["url"] == ""  # non-https status URLs are rejected
+    assert status["url"] == ""
     assert status["images"] == [
         {"url": "https://files.example/p.png", "alt": "alt"}
     ]

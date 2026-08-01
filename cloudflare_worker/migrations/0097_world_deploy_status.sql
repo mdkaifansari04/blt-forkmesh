@@ -1,6 +1,6 @@
--- Public, content-free deployment lifecycle for the World refresh banner.
--- The deploy script writes this row directly through authenticated Wrangler;
--- browsers can only read it through the public GET endpoint.
+
+
+
 CREATE TABLE IF NOT EXISTS world_deploy_status (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
     state TEXT NOT NULL CHECK (state IN ('idle', 'deploying', 'ready', 'failed')),

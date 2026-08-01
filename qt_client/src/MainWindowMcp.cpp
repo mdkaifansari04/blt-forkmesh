@@ -1,15 +1,15 @@
-// Settings -> MCP: the connector that lets an outside agent work this node's
-// mesh (adhoc #16).
-//
-// tools/forkmesh_mcp_server.py has always been able to serve issues, projects
-// and PRs to any MCP-capable agent, but connecting it meant knowing where the
-// script lives, which environment variables it reads, and that its write tools
-// sign as your node. This page turns that into: press Generate, copy one JSON
-// block into the agent, done — and the token it mints is the thing that lets
-// that agent act with this node's identity, the way an API token would.
-//
-// These are MainWindow member functions in their own translation unit; the
-// class itself is declared in MainWindow.h.
+
+
+
+
+
+
+
+
+
+
+
+
 
 #include "ControlNode.h"
 #include "MainWindow.h"
@@ -38,8 +38,8 @@ using namespace forkmesh::ui;
 
 namespace {
 
-// The interpreter the generated config will name. An absolute path keeps the
-// agent working even when it is launched with a different PATH than this app.
+
+
 QString pythonCommand()
 {
     const QString found = QStandardPaths::findExecutable(QStringLiteral("python3"));
@@ -51,10 +51,10 @@ QString mcpAppDataDir()
     return QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
 }
 
-// The marker a genie run prints, on a line of its own, the moment it picks a
-// task off the shared list: "FORKMESH_TASK <id>: <title>". Kept deliberately
-// loose about the separator (colon or dash) and tolerant of the surrounding
-// markdown the CLI likes to add, since it is the agent — not us — writing it.
+
+
+
+
 const QRegularExpression &genieTaskLineRe()
 {
     static const QRegularExpression re(
@@ -63,7 +63,7 @@ const QRegularExpression &genieTaskLineRe()
     return re;
 }
 
-} // namespace
+}
 
 QString MainWindow::mcpServerScriptPath() const
 {
@@ -98,7 +98,7 @@ QWidget *MainWindow::buildMcpConnectorTab()
     m_mcpStatusLabel->setWordWrap(true);
     m_mcpStatusLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
 
-    // --- token -------------------------------------------------------------
+
     auto *tokenLabel = new QLabel("CONNECTOR TOKEN");
     tokenLabel->setObjectName("sectionLabel");
 
@@ -144,7 +144,7 @@ QWidget *MainWindow::buildMcpConnectorTab()
     tokenRow->addWidget(copyTokenButton);
     tokenRow->addWidget(m_mcpRevokeButton);
 
-    // --- config ------------------------------------------------------------
+
     auto *configLabel = new QLabel("AGENT CONFIGURATION");
     configLabel->setObjectName("sectionLabel");
 
@@ -210,7 +210,7 @@ QWidget *MainWindow::buildMcpConnectorTab()
     configButtonRow->addWidget(m_mcpTestButton);
     configButtonRow->addStretch();
 
-    // --- how to use --------------------------------------------------------
+
     auto *usageLabel = new QLabel("HOW AGENTS USE IT");
     usageLabel->setObjectName("sectionLabel");
 
@@ -240,13 +240,13 @@ QWidget *MainWindow::buildMcpConnectorTab()
     usage->setTextFormat(Qt::RichText);
     usage->setWordWrap(true);
 
-    // --- genie ---------------------------------------------------------------
-    // The other direction (adhoc #42): instead of handing an outside agent this
-    // node's mesh, this hands a local agent the *website's* task list. Nothing
-    // here has to be filled in any more (adhoc #49): the first press of the
-    // prompt bar's "genie" button has the relay mint this node's own task-only
-    // credential, signed with the account key this install already holds, and
-    // saves it into these fields.
+
+
+
+
+
+
+
     auto *genieLabel = new QLabel("GENIE (WEBSITE TASK LIST)");
     genieLabel->setObjectName("sectionLabel");
 
@@ -376,7 +376,7 @@ void MainWindow::refreshMcpConnectorTab()
                          : script,
         repositoryMirrorRoot(), connector.token));
 
-    // Genie (adhoc #42): show the saved website credential and workflow.
+
     const QSettings settings;
     const QString genieToken =
         settings.value(kGenieTokenSetting).toString().trimmed();
@@ -415,8 +415,8 @@ void MainWindow::generateMcpConnector()
         return;
     }
     refreshMcpConnectorTab();
-    // The field itself only ever shows a masked token, so put the real string
-    // on the clipboard once, right when it is minted.
+
+
     QApplication::clipboard()->setText(connector.token);
     flashMessage("Connector token generated and copied to the clipboard. "
                  "Paste the configuration below into your agent.",
@@ -441,7 +441,7 @@ void MainWindow::testMcpConnector()
     if (!m_mcpTestLabel || !m_mcpTestButton)
         return;
     if (m_mcpTestProcess)
-        return; // a probe is already running
+        return;
 
     const QString script = mcpServerScriptPath();
     if (script.isEmpty()) {
@@ -466,9 +466,9 @@ void MainWindow::testMcpConnector()
         env.insert(QStringLiteral("FORKMESH_MCP_TOKEN"), token);
     proc->setProcessEnvironment(env);
 
-    // Drive the same stdio handshake an agent performs: initialize, then ask
-    // for the tool list. Anything less would be testing a different code path
-    // than the one that actually has to work.
+
+
+
     connect(proc, &QProcess::finished, this,
             [this, proc](int, QProcess::ExitStatus) {
                 proc->deleteLater();
@@ -536,25 +536,25 @@ void MainWindow::testMcpConnector()
                           "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":"
                           "\"tools/list\"}\n");
     proc->write(handshake);
-    proc->closeWriteChannel(); // the server exits when stdin closes
+    proc->closeWriteChannel();
 
-    // Closing stdin is what ends the server, but a wedged interpreter would
-    // otherwise leave the button disabled forever.
+
+
     QTimer::singleShot(15000, proc, [proc] {
         if (proc->state() != QProcess::NotRunning)
             proc->kill();
     });
 }
 
-// --- Genie (adhoc #42) -----------------------------------------------------
-//
-// The website's Organization Admin page can mint a revocable, task-only bearer
-// credential for the relay's own Streamable HTTP MCP server (<origin>/mcp),
-// which exposes list_org_tasks / get_org_task / complete_org_task. Pasting that
-// setup into an agent by hand is exactly the friction the "genie" button
-// removes: press it and this app starts a normal tracked agent session whose
-// opening prompt is that same setup block, so the agent picks its own work off
-// the shared task list instead of running something typed here.
+
+
+
+
+
+
+
+
+
 
 QUrl MainWindow::genieMcpUrl() const
 {
@@ -565,8 +565,8 @@ QUrl MainWindow::genieMcpUrl() const
         if (url.isValid() && !url.host().isEmpty())
             return url;
     }
-    // Default to the active relay: the credential the website mints is scoped to
-    // that same origin, so pointing anywhere else could only fail to authorize.
+
+
     QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/mcp"));
     url.setQuery(QString());
@@ -574,13 +574,13 @@ QUrl MainWindow::genieMcpUrl() const
     return url;
 }
 
-// The opening prompt for a genie run: the MCP server block the website
-// generates, then the workflow the agent follows. Deliberately close to
-// orgRemoteMcpPrompt() in cloudflare_worker/public/dashboard/js/04-account.js —
-// the difference is that ForkMesh has already prepared an isolated worktree and
-// branch for this run, so the agent is told to work in it rather than to build
-// its own, and it is asked to announce the task it picked so the desktop can
-// retitle the session live.
+
+
+
+
+
+
+
 QString MainWindow::genieSetupPrompt(const QString &extraInstruction) const
 {
     const QSettings settings;
@@ -590,10 +590,10 @@ QString MainWindow::genieSetupPrompt(const QString &extraInstruction) const
         settings.value(kGenieWorkflowSetting, QStringLiteral("pr")).toString() ==
         QLatin1String("deploy");
 
-    // "forkmesh-tasks", not "forkmesh": a checkout can already define a
-    // project-scoped `forkmesh` server (this repository's own .mcp.json points
-    // that name at the local stdio mesh server), and a name collision is how a
-    // genie run ends up with no list_org_tasks tool at all (adhoc #49).
+
+
+
+
     const QJsonObject config{
         {QStringLiteral("mcpServers"),
          QJsonObject{
@@ -682,26 +682,26 @@ void MainWindow::startGenieAgent()
                      true);
         return;
     }
-    // Anything typed in the quick-add box is guidance for the genie run, not the
-    // task itself: the task comes from the shared list.
+
+
     const QString typed =
         m_issueQuickAdd ? m_issueQuickAdd->toPlainText().trimmed() : QString();
     const QString token =
         QSettings().value(kGenieTokenSetting).toString().trimmed();
     if (token.isEmpty()) {
-        // Nothing to configure by hand: this install is already signed in as its
-        // account, so it mints its own task-only credential and then launches.
+
+
         requestGenieCredential(repoIndex, typed);
         return;
     }
     launchGenieRun(repoIndex, typed);
 }
 
-// Ask the relay for this desktop's task-only remote-MCP bearer, signed with the
-// account key, then start the run (adhoc #49). Nothing is pasted, nothing is
-// generated on the website, and the credential is stored exactly where a pasted
-// one would be — so a later press reuses it and Settings → MCP can still show
-// and clear it.
+
+
+
+
+
 void MainWindow::requestGenieCredential(int repoIndex,
                                         const QString &typedGuidance)
 {
@@ -713,9 +713,9 @@ void MainWindow::requestGenieCredential(int repoIndex,
         flashMessage("Genie needs the relay to mint its task credential.", true);
         return;
     }
-    // The run starts after a network round trip, and m_repositories can be
-    // rebuilt in between, so remember which repository by name and look it up
-    // again rather than trusting the index to still mean the same checkout.
+
+
+
     const QString repoOwner = m_repositories.at(repoIndex).owner;
     const QString repoName = m_repositories.at(repoIndex).name;
     QUrl url = catalogApiUrl();
@@ -723,8 +723,8 @@ void MainWindow::requestGenieCredential(int repoIndex,
     url.setQuery(QString());
     url.setFragment(QString());
     QNetworkRequest request;
-    // Same proof family as the org-task writes this desktop already signs: an
-    // account session token when there is one, the account key otherwise.
+
+
     if (!authenticateOrgTaskRequest(url, request, kGenieCredentialProof,
                                     QString())) {
         flashMessage(QString::fromUtf8(
@@ -775,14 +775,14 @@ void MainWindow::requestGenieCredential(int repoIndex,
                     obj.value(QStringLiteral("organization")).toString().trimmed();
                 if (!org.isEmpty())
                     settings.setValue(kGenieOrgSetting, org);
-                // The relay names the origin the credential is scoped to; honour
-                // it over the default guess when it is a usable URL, since a
-                // credential minted for one origin authorizes nowhere else.
+
+
+
                 const QUrl mcpUrl(
                     obj.value(QStringLiteral("mcpUrl")).toString().trimmed());
                 if (mcpUrl.isValid() && !mcpUrl.host().isEmpty())
                     settings.setValue(kGenieUrlSetting, mcpUrl.toString());
-                refreshMcpConnectorTab(); // Settings shows the minted credential
+                refreshMcpConnectorTab();
                 int repoIndex = -1;
                 for (int i = 0; i < m_repositories.size(); ++i) {
                     if (m_repositories.at(i).owner == repoOwner &&
@@ -806,31 +806,31 @@ void MainWindow::requestGenieCredential(int repoIndex,
 
 void MainWindow::launchGenieRun(int repoIndex, const QString &typedGuidance)
 {
-    // The typed guidance joins the prompt history like every other send, then
-    // the box is cleared so the next prompt starts fresh.
+
+
     if (!typedGuidance.isEmpty())
         recordQuickAddHistory(typedGuidance);
-    // Genie is a Claude Code run by construction: the remote server is
-    // configured from the prompt, which needs an agent that can add an MCP
-    // server to itself. The API-key providers have no such tool.
-    //
-    // The prompt embeds the bearer credential, so it is persisted with the
-    // session (a resume has to replay it) exactly like the other agent
-    // credentials this app stores locally — but it is registered in
-    // localProviderCredentialValues() so it is redacted out of the transcript,
-    // the run log, and the owner-sealed snapshot pushed to the relay.
-    //
-    // The title is set explicitly: the prompt's first line is MCP setup, so
-    // without it the session list would show a configuration sentence instead of
-    // a genie run, and the run would only be recognizable in the logs (adhoc
-    // #49). applyGenieTaskTitle() replaces it with the task the agent announces.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
     const int sessionId = startAdHocAgentForRepo(
         repoIndex, genieSetupPrompt(typedGuidance),
         QStringLiteral("claude-code"),
-        /*createPr=*/true,
+         true,
         QSettings().value(kClaudeCodeModelSetting).toString(),
         QString::fromUtf8("Genie \xE2\x80\x94 picking a task\xE2\x80\xA6"),
-        /*genie=*/true);
+         true);
     if (sessionId <= 0)
         return;
     if (m_issueQuickAdd)
@@ -843,10 +843,10 @@ void MainWindow::launchGenieRun(int repoIndex, const QString &typedGuidance)
             .arg(sessionId));
 }
 
-// Watch a running agent's assistant text for the "FORKMESH_TASK <id>: <title>"
-// line a genie run prints when it takes a task, and retitle the live session
-// with it so the agents list, its dot and the transcript header all say what
-// the agent is actually working on rather than the opening prompt's first line.
+
+
+
+
 void MainWindow::applyGenieTaskTitle(int sessionId, const QString &assistantText)
 {
     if (sessionId <= 0 || !m_agentStore ||
@@ -856,8 +856,8 @@ void MainWindow::applyGenieTaskTitle(int sessionId, const QString &assistantText
     if (!match.hasMatch())
         return;
     QString title = match.captured(2).trimmed();
-    // The CLI often wraps the line in markdown; strip the decoration so the row
-    // shows the plain title.
+
+
     while (!title.isEmpty() &&
            (title.endsWith(QLatin1Char('*')) || title.endsWith(QLatin1Char('`')) ||
             title.endsWith(QLatin1Char('_'))))
@@ -865,15 +865,15 @@ void MainWindow::applyGenieTaskTitle(int sessionId, const QString &assistantText
     title = title.trimmed();
     if (title.isEmpty())
         return;
-    // Keep the run readable as the genie in the session list: the task it picked,
-    // still labelled by what started it (adhoc #49).
+
+
     title = QString::fromUtf8("Genie \xE2\x80\x94 ") + title;
     if (title.size() > 80)
         title = title.left(77) + QString::fromUtf8("\xE2\x80\xA6");
 
     {
-        // Scoped: reloadAgents() below rebuilds m_agentSessions, so the pointer
-        // must not outlive this block (the git-pump UAF family, adhoc #106).
+
+
         AgentSession *session = findAgentSession(sessionId);
         if (!session || session->issueTitle == title)
             return;
@@ -889,7 +889,7 @@ void MainWindow::applyGenieTaskTitle(int sessionId, const QString &assistantText
                   .arg(sessionId)
                   .arg(title, match.captured(1)));
     reloadAgents();
-    scheduleAgentSessionsPush(); // the website's session list shows it too
+    scheduleAgentSessionsPush();
 }
 
 void MainWindow::saveGenieSettings()

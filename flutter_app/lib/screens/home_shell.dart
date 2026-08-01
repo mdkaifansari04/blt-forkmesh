@@ -20,7 +20,7 @@ import 'notifications_screen.dart';
 import 'repos_screen.dart';
 import 'settings_screen.dart';
 
-/// Top-level shell with a persistent status bar and primary app navigation.
+
 class HomeShell extends StatefulWidget {
   const HomeShell({super.key, this.worldLauncher});
 
@@ -141,9 +141,9 @@ class _HomeShellState extends State<HomeShell> {
     );
   }
 
-  /// Central nav handler: opens the Tools sheet for the trailing slot, and marks
-  /// the active chat conversation read as soon as the Chat tab is opened so the
-  /// nav badge clears once messages have actually been seen.
+
+
+
   void _select(int i) {
     if (i == _destinations.length - 1) {
       _showToolsSheet(context);
@@ -430,8 +430,8 @@ class _ToolsSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final availableHeight = MediaQuery.sizeOf(context).height;
     final bottomInset = MediaQuery.paddingOf(context).bottom;
-    // Hug the content (the Column is min-sized and the list shrink-wraps),
-    // capped at half the screen plus the bottom inset the list pads for.
+
+
     final maxSheetHeight = availableHeight * 0.5 + bottomInset;
     return SafeArea(
       top: false,

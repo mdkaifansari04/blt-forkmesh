@@ -1,21 +1,21 @@
-# Pull request "badge" generator (adhoc #44): a shareable SVG fingerprint of a
-# PR. One tile per changed file (a file-type glyph with a green/red bar showing
-# that file's additions:deletions ratio), tiles grouped by directory with a
-# labeled connector line, and a header carrying the title, author and totals.
-#
-# Pure and js-free (like activitypub.py/urls.py) so tests import it directly.
-# The SVG is self-contained — glyphs are text labels, no external images — so
-# it renders anywhere the ActivityPub attachment lands.
+
+
+
+
+
+
+
+
 
 _BADGE_WIDTH = 1200
 _MARGIN = 40
-_TILE = 56          # tile square edge
-_TILE_PITCH = 72    # tile + horizontal gap
-_ROW_PITCH = 104    # tile + bar + group line/label + vertical gap
+_TILE = 56
+_TILE_PITCH = 72
+_ROW_PITCH = 104
 _HEADER_H = 108
 _COLS = (_BADGE_WIDTH - 2 * _MARGIN + (_TILE_PITCH - _TILE)) // _TILE_PITCH
-# Tile cap keeps the SVG comfortably under the 64 KB note-media budget; the
-# footer says how many files were dropped.
+
+
 MAX_BADGE_FILES = 96
 
 _GREEN = "#3fb950"
@@ -23,8 +23,8 @@ _RED = "#f85149"
 _MUTED = "#8b949e"
 _PURPLE = "#a371f7"
 
-# extension -> (tile label, label color). Fallback is the uppercased extension
-# in muted gray, so unknown types still read as "a file of some kind".
+
+
 _EXT_STYLES = {
     "ts": ("TS", "#3178c6"), "tsx": ("TSX", "#3178c6"),
     "js": ("JS", "#f1e05a"), "mjs": ("JS", "#f1e05a"), "cjs": ("JS", "#f1e05a"),
@@ -94,7 +94,7 @@ def patch_file_stats(patch):
     cur = None
     for line in (patch or "").split("\n"):
         if line.startswith("diff --git "):
-            # "diff --git a/<old> b/<new>" — take the b/ side (rename target).
+
             rest = line[len("diff --git "):]
             path = rest.split(" b/", 1)[1] if " b/" in rest else rest
             cur = {"path": path, "adds": 0, "dels": 0}
@@ -143,8 +143,8 @@ def _tile_svg(x, y, file):
             x + _TILE // 2, y + (_TILE - 12) // 2 + 5,
             15 if len(label) <= 3 else 11, color, _esc(label)),
     ]
-    # Ratio bar: green additions share on the left, red deletions share on the
-    # right; a file with no counted lines (binary) gets a neutral bar.
+
+
     bar_y = y + _TILE - 4
     if total:
         green_w = round(_TILE * adds / total)
@@ -188,14 +188,14 @@ def pull_badge_svg(title, author, files, number=0):
     deletions = sum(f["dels"] for f in files)
 
     body = []
-    # Tile grid: groups flow left-to-right; a group that would split across a
-    # row boundary but could fit on a fresh row starts one, so directories
-    # mostly stay visually contiguous like the concept mock.
+
+
+
     row, col = 0, 0
     for directory, group in _group_files(shown):
         if col and col + len(group) > _COLS and len(group) <= _COLS:
             row, col = row + 1, 0
-        segments = []  # (row, first col, last col) runs this group occupies
+        segments = []
         for file in group:
             if col >= _COLS:
                 row, col = row + 1, 0
@@ -207,8 +207,8 @@ def pull_badge_svg(title, author, files, number=0):
             y = _HEADER_H + row * _ROW_PITCH
             body.append(_tile_svg(x, y, file))
             col += 1
-        # Connector line under every run of the group; the directory label
-        # sits under the last run.
+
+
         for seg_row, first, last in segments:
             x1 = _MARGIN + first * _TILE_PITCH
             x2 = _MARGIN + last * _TILE_PITCH + _TILE
@@ -266,14 +266,14 @@ def pull_badge_svg(title, author, files, number=0):
             "".join(header), "".join(body)))
 
 
-# --- PNG badge (adhoc #83) ----------------------------------------------------
-# Mastodon and most fediverse clients refuse to render SVG media attachments
-# (they show a "Preview not available / Click to open" placeholder), so the
-# federated PR badge is rasterized to a real PNG using og_card's stdlib canvas.
-# It is rendered SQUARE so a timeline shows it as a proper image tile rather
-# than a wide letterbox strip. Colors mirror the SVG so both read alike.
 
-_PNG_SIZE = 640          # square edge
+
+
+
+
+
+
+_PNG_SIZE = 640
 _PNG_BG = (1, 4, 9)
 _PNG_CARD = (13, 17, 23)
 _PNG_BORDER = (48, 54, 61)
@@ -300,8 +300,8 @@ def _tile_png(canvas, x, y, file, tile):
         scale -= 1
     canvas.text(x + (tile - text_width(label, scale)) // 2,
                 y + (tile - 7 * scale) // 2, label, scale, _hex2rgb(color_hex))
-    # Ratio bar under the tile: green additions share left, red deletions
-    # right; a file with no counted lines (binary) gets a neutral bar.
+
+
     adds, dels = file["adds"], file["dels"]
     total = adds + dels
     bar_y = y + tile + 2
@@ -352,9 +352,9 @@ def pull_badge_png(title, author, files, number=0):
 
     canvas.fill_rect(pad, 190, inner_w, 2, _PNG_BORDER)
 
-    # Tile grid: file-type glyph tiles grouped by directory, flowing left to
-    # right and wrapping; a group that would split across a row but fits on a
-    # fresh one starts there, so directories mostly stay contiguous.
+
+
+
     grid_top = 210
     tile = 48
     pitch_x = 62
@@ -370,7 +370,7 @@ def pull_badge_png(title, author, files, number=0):
             break
         if col and col + len(group) > cols and len(group) <= cols:
             row, col = row + 1, 0
-        segments = []  # [row, first col, last col] runs this group occupies
+        segments = []
         for file in group:
             if col >= cols:
                 row, col = row + 1, 0
@@ -385,9 +385,9 @@ def pull_badge_png(title, author, files, number=0):
                       grid_top + row * row_pitch, file, tile)
             drawn += 1
             col += 1
-        # Label (and underline) only multi-file directories: a single-tile
-        # group's label is wider than its tile and would collide with the
-        # neighbour's, and the glyph alone already reads the file.
+
+
+
         count = sum(s[2] - s[1] + 1 for s in segments)
         if count >= 2:
             for seg_row, first, last in segments:

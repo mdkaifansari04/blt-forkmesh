@@ -24,8 +24,8 @@ def test_diagnostics_bar_is_compact_expandable_and_device_local():
     )
     assert "Local one-second samples." in APP
     assert "Nothing here is transmitted while you are in the World" in APP
-    # The crash reporter does send a summary of these readings, so the panel
-    # says so rather than claiming diagnostics never leave the device.
+
+
     assert (
         "if the tab crashes, a summary of these readings and your device "
         "class is reported"
@@ -181,19 +181,19 @@ def test_readings_are_graded_green_orange_red_from_local_thresholds_only():
         "backpressure",
     ):
         assert f"{metric}:" in grading
-    # FPS is the one reading where a *smaller* number is the unhealthy one.
+
     assert "lowerIsWorse: true" in grading
     assert 'return "high"' in grading
     assert '? "caution" : "good"' in grading
-    # Thresholds are display-only: no sampling, no network, no persistence.
+
     for forbidden in ("fetch(", "setInterval(", "localStorage", "sessionStorage"):
         assert forbidden not in grading
 
     render = _section(APP, "  renderDiagnostics()", "\n  startActivityTicker()")
     assert "diagnosticMetric(" in render
     assert "diagnosticStateLevel(connection.state)" in render
-    # Every interpolated free-text value stays escaped now that the readings
-    # are written as HTML rather than textContent.
+
+
     assert "escapeHTML(renderer.space)" in render
     assert "escapeHTML(queues.movement)" in render
     assert "escapeHTML(version)" in render

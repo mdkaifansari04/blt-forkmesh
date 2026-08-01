@@ -1,41 +1,41 @@
 #!/usr/bin/env bash
-# Deploy the ForkMesh website and relay Worker to Cloudflare
-#
-# The Worker serves the static site from public/ (Cloudflare Static Assets)
-# and hosts the API/relay/catalog routes, so a single deploy ships both.
-#
-#   ./deploy.sh          deploy to production (+ validate/push secrets from .env.production)
-#   ./deploy.sh secrets  (re)push only the .env.production secrets, no redeploy
-#   ./deploy.sh dev      run the Worker locally instead of deploying
-#   ./deploy.sh dry-run   build and validate without uploading
-#   ./deploy.sh republish-release-binary
-#                        explicitly replace this platform's existing release
-#                        asset with a clean build of the current commit
-#
-# A production deploy stamps a BUILD_REV var and then VERIFIES the live origin is
-# serving it (GET /api/version). If the public site never reports the new rev the
-# deploy is treated as FAILED (exit 1) — this is what catches an upload that
-# "succeeded" but landed on the wrong Cloudflare account, leaving stale code live.
-# Override the verified origin with DEPLOY_VERIFY_URL (default https://forkmesh.com).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 set -euo pipefail
 cd "$(dirname "$0")"
 
 . ./pywrangler.sh
 
-# Production Worker config (admin creds, etc.) lives in .env.production —
-# gitignored so secrets stay out of the committed wrangler.toml.
-#
-# IMPORTANT: these are pushed as Worker *secrets*, not plaintext vars. Plaintext
-# vars (wrangler.toml [vars] and `--var`) are the COMPLETE set on every deploy, so
-# a deploy that doesn't re-pass them ERASES them — that's why the admin dashboard
-# vars kept vanishing. Secrets persist across deploys (a deploy never deletes a
-# secret that isn't in the config), so the admin URL keeps working. The Worker
-# reads them the same way (env.ADMIN_PATH, etc.).
+
+
+
+
+
+
+
+
+
 ENV_FILE=".env.production"
 
-# Strip a trailing CR (CRLF-saved files) and surrounding whitespace. A stray \r
-# or space on a value is a classic cause of a secret that "exists" in the
-# dashboard but never matches at runtime (admin path / basic-auth comparisons).
+
+
+
 trim() {
     local s="$1"
     s="${s%$'\r'}"
@@ -44,23 +44,23 @@ trim() {
     printf '%s' "$s"
 }
 
-# Inline --var args are built too, but used ONLY for local `dev`: workerd's dev
-# server has no secret store unless you keep a .dev.vars file, so passing them
-# inline keeps `./deploy.sh dev` working.
+
+
+
 VAR_ARGS=()
 CF_ACCOUNT_ID_SET=0
 if [ -f "$ENV_FILE" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
-        case "$line" in ''|'#'*) continue ;; esac   # skip blanks/comments
-        case "$line" in *=*) ;; *) continue ;; esac # skip lines without KEY=VALUE
+        case "$line" in ''|'#'*) continue ;; esac
+        case "$line" in *=*) ;; *) continue ;; esac
         key="$(trim "${line%%=*}")"
         value="$(trim "${line#*=}")"
         [ -z "$key" ] && continue
-        # CLOUDFLARE_* keys configure wrangler itself (which account/token to use),
-        # not the Worker. Export them so every pywrangler call targets the right
-        # account — this is how the maintainer pins the account without committing
-        # the ID to this open-source wrangler.toml — and never ship them as Worker
-        # vars or secrets.
+
+
+
+
+
         case "$key" in
             CLOUDFLARE_ACCOUNT_ID)
                 if [ -n "$value" ]; then
@@ -74,7 +74,7 @@ if [ -f "$ENV_FILE" ]; then
                 continue
                 ;;
         esac
-        VAR_ARGS+=(--var "${key}:${value}")          # .env uses =, wrangler uses :
+        VAR_ARGS+=(--var "${key}:${value}")
     done < "$ENV_FILE"
 fi
 
@@ -87,13 +87,13 @@ require_cloudflare_account() {
     return 1
 }
 
-# ForkMesh injects every Settings -> Secrets & Coves variable into this run's
-# environment under the exact name you gave it, and wrangler only authenticates
-# with CLOUDFLARE_API_TOKEN. So if the token was saved under a common near-miss
-# name (CF_API_TOKEN / CLOUDFLARE_TOKEN / CF_TOKEN), promote it to
-# CLOUDFLARE_API_TOKEN here rather than failing the deploy over a naming
-# mismatch. Only runs when CLOUDFLARE_API_TOKEN is empty, and announces the
-# rename so the source is never a mystery.
+
+
+
+
+
+
+
 adopt_cloudflare_token_alias() {
     [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && return 0
     local name val
@@ -108,20 +108,20 @@ adopt_cloudflare_token_alias() {
     return 1
 }
 
-# Wrangler needs Cloudflare credentials to touch the API. An explicit
-# CLOUDFLARE_API_TOKEN (exported from $ENV_FILE above) always works; without one
-# wrangler falls back to an interactive OAuth login, which only works at a TTY.
-# In a non-interactive environment (CI, a headless box, an agent) that fallback
-# fails — and only AFTER the [build] command has already run migrate.sh — with a
-# terse "Failed to fetch auth token: 400 Bad Request / set a CLOUDFLARE_API_TOKEN".
-# Catch it up front with actionable guidance instead. The TTY test mirrors
-# wrangler's own interactive detection (stdin && stdout), so this errors exactly
-# when wrangler would have, never sooner.
+
+
+
+
+
+
+
+
+
 require_cloudflare_auth() {
     adopt_cloudflare_token_alias || true
     [ -n "${CLOUDFLARE_API_TOKEN:-}" ] && return 0
     if [ -t 0 ] && [ -t 1 ]; then
-        return 0   # a human at a terminal: let wrangler do its OAuth login
+        return 0
     fi
     echo "ERROR: no Cloudflare credentials for a non-interactive deploy." >&2
     echo "       wrangler can't open an interactive OAuth login here, so set a" >&2
@@ -132,10 +132,10 @@ require_cloudflare_auth() {
     echo "       $ENV_FILE (deploy.sh exports it for wrangler):" >&2
     echo "         CLOUDFLARE_API_TOKEN=..." >&2
     echo "       Create one: https://developers.cloudflare.com/fundamentals/api/get-started/create-token/" >&2
-    # The token must be named EXACTLY CLOUDFLARE_API_TOKEN (or one of the aliases
-    # adopted above). A token saved under any other name is invisible to wrangler,
-    # so surface the Cloudflare-ish variable names we CAN see — this is what turns
-    # "but I added the token!" into "oh, I named it the wrong thing."
+
+
+
+
     local seen
     seen="$(compgen -v 2>/dev/null | grep -E '^(CF_|CLOUDFLARE_)' \
         | grep -v '^CLOUDFLARE_ACCOUNT_ID$' \
@@ -149,10 +149,10 @@ require_cloudflare_auth() {
     return 1
 }
 
-# A stamp identifying exactly which build we are shipping. The git rev (marked
-# -dirty when the tree has uncommitted changes) when available, else a UTC
-# timestamp. Passed to the Worker as the BUILD_REV var and echoed back by
-# /api/version so a deploy can prove the new code is actually live.
+
+
+
+
 build_rev() {
     local rev
     if rev="$(git rev-parse --short=12 HEAD 2>/dev/null)" && [ -n "$rev" ]; then
@@ -166,20 +166,20 @@ build_rev() {
     fi
 }
 
-# The human-readable release version, read from the desktop app's authoritative
-# source (qt_client/CMakeLists.txt: `project(ForkMesh VERSION x.y.z ...)`) so the
-# website header shows the SAME version as the app and picks up a new number
-# automatically whenever a release bumps that line and redeploys. Passed to the
-# Worker as the APP_VERSION var (echoed back by /api/version). Empty if it can't
-# be parsed, in which case the header simply omits the version chip.
+
+
+
+
+
+
 app_version() {
     local cmake="../qt_client/CMakeLists.txt"
     [ -f "$cmake" ] || return 0
     sed -n 's/^project(ForkMesh VERSION \([0-9][0-9.]*\).*/\1/p' "$cmake" | head -n1
 }
 
-# Publish only a state, revision, and timestamps. Wrangler is the authenticated
-# writer; World clients never receive a mutation credential.
+
+
 signal_world_deploy() {
     local state="$1"
     local revision="$2"
@@ -217,15 +217,15 @@ build_dashboard_assets() {
     python3 tools/build_dashboard_assets.py
 }
 
-# Fallback HTTP GET for when curl itself is broken. Seen live (adhoc #136): a
-# host application-firewall rule that singles out the curl binary (an OpenSnitch
-# "deny process.path /usr/bin/curl" answered on a popup) blackholes every curl
-# request — including its DNS — so verification dies with curl exit 28 while the
-# network, the deploy, and the site are all fine. python3's sockets don't match
-# a per-binary curl rule, so retry the same GET through it before treating a
-# connection-level curl failure as "the origin is down". Output mirrors
-# curl -w '\n%{http_code}': body, newline, status code. The explicit User-Agent
-# matters: the edge 403s python's default UA as a bot.
+
+
+
+
+
+
+
+
+
 _py_http_get() {
     command -v python3 >/dev/null 2>&1 || return 1
     python3 - "$1" <<'PYEOF'
@@ -244,8 +244,8 @@ except Exception as e:
 PYEOF
 }
 
-# HEAD-style fallback for the asset checks, same rationale as _py_http_get.
-# Prints "<status> <content-type>".
+
+
 _py_http_head() {
     command -v python3 >/dev/null 2>&1 || return 1
     python3 - "$1" <<'PYEOF'
@@ -263,12 +263,12 @@ except Exception as e:
 PYEOF
 }
 
-# After a deploy, confirm the live origin is actually serving the build we just
-# shipped. Polls /api/version (allowing for edge propagation) and matches its
-# reported rev against the BUILD_REV we stamped. A mismatch that never resolves
-# means the upload didn't take effect on the public origin — most often because
-# it landed on the wrong Cloudflare account — so we FAIL LOUDLY rather than let a
-# phantom "Done." hide stale code. Override the origin with DEPLOY_VERIFY_URL.
+
+
+
+
+
+
 verify_deploy() {
     local expected="$1"
     local base="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"
@@ -279,14 +279,14 @@ verify_deploy() {
         return 0
     fi
     echo "Verifying $url is serving BUILD_REV=$expected ..."
-    # 30 attempts * (up to 25s request + 6s sleep) gives a long runway before
-    # calling this a real failure. This Worker is a ~10k-line Python
-    # (Pyodide) module, and Cloudflare Python Workers are known to have much
-    # slower cold starts than JS Workers while the isolate compiles/loads the
-    # runtime on the FIRST hit of a freshly-deployed version at each colo — a
-    # too-tight per-request timeout here previously made the loop time out
-    # (curl exit 28) before the Worker ever got a chance to answer, reporting
-    # a false "never went live" even though the deploy had, in fact, landed.
+
+
+
+
+
+
+
+
     local attempts=30 max_time=25 sleep_s=6
     local attempt body got http_code curl_rc via
     for attempt in $(seq 1 "$attempts"); do
@@ -299,7 +299,7 @@ verify_deploy() {
         fi
         http_code="${body##*$'\n'}"
         body="${body%$'\n'*}"
-        # Pull "rev":"<value>" out of the JSON without needing jq.
+
         got="$(printf '%s' "$body" | sed -n 's/.*"rev"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')"
         if [ "$curl_rc" = 0 ] && [ "$http_code" = "200" ] && [ "$got" = "$expected" ]; then
             echo "Verified: live origin is serving build $expected (via $via)."
@@ -335,11 +335,11 @@ verify_deploy() {
     return 1
 }
 
-# After verify_deploy confirms the Worker is live, prove the public static assets
-# are actually served (correct HTTP status + content-type). A broken assets upload
-# or a misrouted path silently serves the 404 page (text/html) in place of an
-# image, so we check a representative set and FAIL LOUDLY rather than ship a
-# landing page with missing logo/video. Override the origin with DEPLOY_VERIFY_URL.
+
+
+
+
+
 verify_public_assets() {
     local base="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"
     base="${base%/}"
@@ -348,8 +348,8 @@ verify_public_assets() {
         return 0
     fi
 
-    # "<path> <expected-content-type-prefix>". The .webmanifest entry is matched
-    # leniently below because Cloudflare may serve it as application/json.
+
+
     local checks=(
         "/assets/logo.png image/png"
         "/favicon/favicon-32x32.png image/png"
@@ -378,8 +378,8 @@ verify_public_assets() {
             printf '%s\n' "$headers" |
                 awk -F': *' 'tolower($1) == "content-type" { value=tolower($2) } END { sub(/\r$/, "", value); print value }'
         )"
-        # curl got no response at all (vs an HTTP error): same per-binary
-        # firewall blind spot as in verify_deploy — retry through python3.
+
+
         if [ -z "$status" ]; then
             read -r status content_type <<<"$(_py_http_head "$url" || true)"
         fi
@@ -410,15 +410,15 @@ verify_public_assets() {
         return 1
     fi
 
-    # The World loads as an ES-module graph. Content-type checks alone cannot
-    # distinguish a newly deployed module from an older cached copy, so compare
-    # every executable/style entrypoint byte-for-byte with this checkout and
-    # require the explicit browser no-store policy. A query tied to BUILD_REV
-    # also prevents an intermediary from answering this verification with an
-    # object selected under an earlier deployment URL. The HTML document is
-    # deliberately excluded from byte comparison because Cloudflare may append
-    # its managed browser-integrity bootstrap; its cache policy is still checked
-    # separately below.
+
+
+
+
+
+
+
+
+
     local world_checks=(
         "/world/world.js|public/world/world.js"
         "/world/world-data.js|public/world/world-data.js"
@@ -441,10 +441,10 @@ verify_public_assets() {
             local_hash="$(shasum -a 256 "$local_asset" | awk '{print $1}')"
         fi
         remote_hash=""
-        # A Worker version and its static-asset manifest propagate together, but
-        # an individual edge may briefly retain the previous content mapping for
-        # a URL that the verifier requested during the version transition.  Keep
-        # this check strict while allowing that bounded convergence window.
+
+
+
+
         for ((asset_attempt = 1; asset_attempt <= asset_attempts; asset_attempt++)); do
             if command -v sha256sum >/dev/null 2>&1; then
                 remote_hash="$(
@@ -507,11 +507,11 @@ verify_public_assets() {
     echo "Verified: World runtime assets exactly match $BUILD_REV and are browser no-store."
 }
 
-# Remove the superseded script only after the relay build and its public assets
-# have verified successfully. Deleting a Worker also removes its route
-# associations, allowing the main Worker's static assets to answer the former
-# exact marketing routes. "Already absent" is idempotent; authentication/API
-# failures remain fatal so a split deployment cannot be mistaken for success.
+
+
+
+
+
 retire_legacy_marketing_worker() {
     local output rc=0
     echo "Retiring legacy forkmesh-marketing Worker (if present) ..."
@@ -532,10 +532,10 @@ retire_legacy_marketing_worker() {
     return "$rc"
 }
 
-# Prove the marketing documents consolidated into this Worker retain their
-# clean URLs and canonical bodies. This runs after the former marketing Worker
-# is absent, so success demonstrates the main deployment itself owns the World,
-# pricing, blog index, and posts.
+
+
+
+
 verify_marketing_routes() {
     local base="${DEPLOY_VERIFY_URL:-https://forkmesh.com}"
     base="${base%/}"
@@ -572,12 +572,12 @@ verify_marketing_routes() {
     echo "Verified: one Worker serves the World, pricing, blog index and posts."
 }
 
-# Push every KEY=VALUE in .env.production to the deployed Worker as a SECRET.
-# Idempotent (re-running updates values) and persists across redeploys. Requires
-# the Worker to already exist, so run it after `pywrangler deploy`. Send the
-# complete update in one `secret bulk` command: every individual `secret put`
-# publishes another Worker version, which needlessly restarts Durable Objects
-# and scheduled-runner isolates during an otherwise single deployment.
+
+
+
+
+
+
 push_secrets() {
     local action="${1:-publish}"
     case "$action" in
@@ -592,13 +592,13 @@ push_secrets() {
         echo "       Copy .env.production.example, supply real values, and keep the file untracked." >&2
         return 1
     fi
-    # Worker secrets that MUST be set for the site to work; an empty/missing one
-    # is a hard error, not a silent skip (that's what made a broken deploy look
-    # successful). TREASURY_BCH_ADDRESS is optional (legacy), so it's not listed.
-    # MAILTRAP_API_TOKEN sends signup confirmation emails - required here so a
-    # production deploy is guaranteed to push and register it (the Worker still
-    # no-ops gracefully if it's ever unset). A fork that doesn't send email can
-    # drop it from this list.
+
+
+
+
+
+
+
     local required=" ADMIN_PATH MAILTRAP_API_TOKEN DATA_KEY TREASURY_SOLANA_ADDRESS MIRROR_ROUTER_PUBLIC_KEY MIRROR_ROUTER_SIGNING_SEED DISCORD_CLIENT_ID DISCORD_CLIENT_SECRET DISCORD_BOT_TOKEN "
 
     if [ "$action" = "validate" ]; then
@@ -617,11 +617,11 @@ push_secrets() {
         key="$(trim "${line%%=*}")"
         value="$(trim "${line#*=}")"
         [ -z "$key" ] && continue
-        # Cloudflare credentials normally configure Wrangler and never enter
-        # the Worker. Two narrow exceptions support outage-log excerpts:
-        # publish the public account id and an explicitly separate
-        # Observability-only token under runtime-specific secret names. Never
-        # map the broad CLOUDFLARE_API_TOKEN used for deployments.
+
+
+
+
+
         case "$key" in
             CLOUDFLARE_ACCOUNT_ID)
                 key="WORKERS_OBSERVABILITY_ACCOUNT_ID"
@@ -632,17 +632,17 @@ push_secrets() {
             CLOUDFLARE_*)
                 continue
                 ;;
-            # Provisioning credentials for the operator's own infrastructure:
-            # the desktop app saves the Vultr API key here beside the
-            # Cloudflare ones so it never has to ask for it twice. No Worker
-            # code path reaches Vultr, so pushing it would only widen the
-            # runtime's secret surface.
+
+
+
+
+
             VULTR_API_KEY|VULTR_API_TOKEN|VULTR_TOKEN|VULTR_KEY)
                 continue
                 ;;
         esac
-        # Never push an empty value: it sets a blank secret, which looks "set" in
-        # the dashboard but locks out the admin path / basic auth at runtime.
+
+
         if [ -z "$value" ]; then
             echo "  skip (empty): $key" >&2
             empties+=("$key")
@@ -658,9 +658,9 @@ push_secrets() {
         count=$((count + 1))
     done < "$ENV_FILE"
 
-    # Hard-fail if any REQUIRED secret never got a value (empty or missing from
-    # the file). This is what previously slipped through as a "successful" deploy
-    # with no admin creds / treasury address set.
+
+
+
     local req missing_req=()
     for req in $required; do
         case " ${pushed[*]-} " in *" $req "*) ;; *) missing_req+=("$req") ;; esac
@@ -670,8 +670,8 @@ push_secrets() {
         echo "       Set them (real values, not blank) and re-run './deploy.sh secrets'." >&2
         return 1
     fi
-    # Do not infer array positions: optional secrets may appear before or after
-    # Discord values. Validate the public application ID without printing it.
+
+
     local discord_client_id=""
     local index
     for index in "${!pushed[@]}"; do
@@ -689,12 +689,12 @@ push_secrets() {
         return 0
     fi
 
-    # Build a JSON object in a mode-0600 temporary file, then publish every
-    # secret in ONE command/version. Values are passed to Python over a private
-    # NUL-delimited pipe rather than argv, so quotes, backslashes, tabs and other
-    # non-NUL bytes are JSON-encoded correctly without becoming visible in the
-    # process list. The subshell's EXIT trap removes the file after both success
-    # and failure (including an interrupted/failed Wrangler invocation).
+
+
+
+
+
+
     if ! command -v python3 >/dev/null 2>&1; then
         echo "ERROR: python3 is required to encode the bulk secret payload." >&2
         return 1
@@ -739,8 +739,8 @@ PYEOF
     fi
     echo "Pushed $count secret(s) from $ENV_FILE in one bulk update."
 
-    # Verify: confirm each pushed name actually exists on the Worker now, so a
-    # silently-failed `secret bulk` becomes a loud error instead of a mystery.
+
+
     local listed
     if listed="$(pywrangler secret list --env "" 2>/dev/null)"; then
         local missing=()
@@ -759,12 +759,12 @@ PYEOF
     fi
 }
 
-# Build and publish a prebuilt release binary for the current platform. This
-# makes install.sh downloads fast (no recompile) instead of falling back to a
-# full source build. Normal Worker deploys skip an asset name that is already in
-# the manifest. The explicit republish-release-binary command passes force=1 so
-# maintainers can refresh bytes after a same-version fix without deleting
-# metadata by hand or silently reusing an older vX.Y.Z executable.
+
+
+
+
+
+
 publish_release_binary() {
     local force="${1:-0}"
     if ! command -v cmake >/dev/null 2>&1; then
@@ -776,7 +776,7 @@ publish_release_binary() {
         return 0
     fi
 
-    # Detect current platform (same logic as release.yml).
+
     local os arch
     os="$(uname -s)"
     arch="$(uname -m)"
@@ -793,9 +793,9 @@ publish_release_binary() {
     local asset="forkmesh-${os}-${arch}"
     [ "$os" = "windows" ] && asset="${asset}.exe"
 
-    # Check if this asset is already published. Only the dedicated, explicit
-    # republish command may replace it; an ordinary Worker deploy remains cheap
-    # and idempotent.
+
+
+
     if [ -f ../.forkmesh/releases/latest/SHASUMS256.txt ] && grep -q "  $asset" ../.forkmesh/releases/latest/SHASUMS256.txt 2>/dev/null; then
         if [ "$force" != "1" ]; then
             echo "Release binary for $asset is already published."
@@ -813,10 +813,10 @@ publish_release_binary() {
         return 1
     fi
     release_tag="${FORKMESH_TAG:-v${release_version}}"
-    # Release metadata is committed only after the artifact exists, so bind the
-    # binary and manifest to the newest commit that changed anything outside
-    # .forkmesh/releases/. This stays stable across the metadata-only publish
-    # commit while still changing for every subsequent source change.
+
+
+
+
     build_commit="$(git -C .. log -1 --format=%H -- . \
         ':(exclude).forkmesh/releases/**' 2>/dev/null || true)"
     if ! printf '%s' "$build_commit" |
@@ -842,9 +842,9 @@ publish_release_binary() {
             return 1
         fi
     fi
-    # Every artifact build—not only an explicit same-version refresh—must bind
-    # to committed bytes. Include untracked relevant files and ignore only the
-    # release metadata that this function itself produces.
+
+
+
     local worktree_status
     if ! worktree_status="$(git -C .. status --porcelain=v1 \
             --untracked-files=all -- . \
@@ -861,10 +861,10 @@ publish_release_binary() {
 
     echo "Building and publishing ForkMesh v${release_version} for ${os}/${arch}…"
 
-    # Build the Qt client in Release mode (same as release.yml). Note: we are
-    # in cloudflare_worker/ so qt_client is at ../qt_client. Always overwrite a
-    # cached release override: a reused build-release directory must not stamp a
-    # prior tag into the new executable.
+
+
+
+
     local jobs
     jobs="$( (nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4) )"
     local configure_output
@@ -882,7 +882,7 @@ publish_release_binary() {
         return 1
     fi
 
-    # Locate the built executable.
+
     local built=""
     for cand in \
         "../qt_client/build-release/forkmesh" \
@@ -895,9 +895,9 @@ publish_release_binary() {
         return 1
     fi
 
-    # Version is part of the artifact contract, not just UI text. Refuse to
-    # update the manifest if the newly-built executable does not report exactly
-    # the version/channel being replaced.
+
+
+
     local reported_version reported_commit
     if ! reported_version="$("$built" --version 2>&1)" || \
        [ "$reported_version" != "ForkMesh ${release_version}" ]; then
@@ -910,11 +910,11 @@ publish_release_binary() {
         return 1
     fi
 
-    # Publish via the content-addressed store and write release metadata. Run the
-    # publisher from the repository root: it writes `.forkmesh/releases/...`
-    # relative to its working directory, while deploy.sh itself runs from
-    # cloudflare_worker/. The old child-directory invocation wrote metadata to
-    # cloudflare_worker/.forkmesh and then staged the untouched root manifest.
+
+
+
+
+
     cp "$built" "$asset"
     chmod 0755 "$asset" || true
     local cas_dir="${FORKMESH_RELEASE_CAS:-../.forkmesh/release-blobs}"
@@ -943,10 +943,10 @@ publish_release_binary() {
     fi
     printf '%s\n' "$publish_output" | tail -3
 
-    # Bind the mutable "latest" channel to the exact source revision just
-    # compiled. A same-semver republish is only complete when release.json,
-    # SHASUMS256.txt, the signed manifest, and the served CAS all agree on these
-    # new bytes.
+
+
+
+
     local asset_hash
     if command -v sha256sum >/dev/null 2>&1; then
         asset_hash="$(sha256sum "$asset" | awk '{print $1}')"
@@ -973,13 +973,13 @@ publish_release_binary() {
     echo "Verified release metadata: v${release_version}, tag ${tag_commit:0:12}, build ${build_commit:0:12}, sha256:${asset_hash:0:12}."
     rm -f "$asset"
 
-    # Stage the release metadata for commit.
+
     git add ../.forkmesh/releases/latest/SHASUMS256.txt \
         ../.forkmesh/releases/latest/release.json \
         ../.forkmesh/releases/latest/release.json.sig || return 1
 }
 
-# Commit release metadata changes if any were staged.
+
 commit_release_metadata() {
     if git diff --quiet --cached ../.forkmesh/releases/latest/ 2>/dev/null; then
         return 0
@@ -996,17 +996,17 @@ case "${1:-deploy}" in
     deploy)
         require_cloudflare_account
         require_cloudflare_auth
-        # Fail before migrations, deploy signalling, or a Worker upload if the
-        # complete production secret set is unavailable. The same parsed file
-        # is atomically published after the Worker version exists.
+
+
+
         push_secrets validate
         build_dashboard_assets
         BUILD_REV="$(build_rev)"
         APP_VERSION="$(app_version)"
         DEPLOYED_AT_MS="$(date -u +%s)000"
-        # Announce before migrations so their expected D1 churn cannot trigger
-        # an incident. A brand-new install may not have the lifecycle table yet;
-        # in that case the retry immediately after migration establishes it.
+
+
+
         if signal_world_deploy deploying "$BUILD_REV"; then
             DEPLOY_SIGNAL_ACTIVE=1
             trap mark_interrupted_world_deploy EXIT
@@ -1023,27 +1023,27 @@ case "${1:-deploy}" in
             fi
         fi
         echo "Deploying ForkMesh website + relay to Cloudflare (build $BUILD_REV, version ${APP_VERSION:-unknown})..."
-        # wrangler.toml defines [env.dev] alongside the top-level (production)
-        # config, so wrangler warns "no target environment specified" unless we
-        # pass --env explicitly. Every pywrangler call below that touches the
-        # live Worker passes --env "" (the documented way to target the
-        # top-level environment) so the warning goes away and every command
-        # (deploy, secret bulk/list, dev, dry-run) consistently hits the same
-        # script instead of drifting between an implicit and explicit target.
-        # Stamp the build into the Worker as a plaintext var so /api/version can
-        # report it. --var is MERGED with wrangler.toml [vars] (it does not wipe
-        # them) and we re-pass it every deploy, so it persists; secrets are
-        # untouched. This is the marker verify_deploy checks below.
+
+
+
+
+
+
+
+
+
+
+
         pywrangler deploy --env "" \
             --var "BUILD_REV:${BUILD_REV}" \
             --var "APP_VERSION:${APP_VERSION}" \
             --var "DEPLOYED_AT_MS:${DEPLOYED_AT_MS}"
-        # Secrets are set after the Worker exists; unlike plaintext vars they
-        # survive this and future deploys, so the admin dashboard keeps working.
+
+
         push_secrets
-        # Prove the public origin is actually serving what we just uploaded. A
-        # failed/no-op/wrong-account deploy now aborts here instead of printing a
-        # phantom success.
+
+
+
         verify_deploy "$BUILD_REV"
         verify_public_assets
         retire_legacy_marketing_worker
@@ -1054,9 +1054,9 @@ case "${1:-deploy}" in
             trap - EXIT
         fi
 
-        # Build and publish a prebuilt release binary for install.sh to find.
-        # This is optional: if it fails, the deploy still succeeds (users can build
-        # from source), but install.sh will be much faster with prebuilts.
+
+
+
         echo
         if publish_release_binary 0; then
             commit_release_metadata
@@ -1067,11 +1067,11 @@ case "${1:-deploy}" in
         echo "Done. Live at https://forkmesh.com (and any custom domain)."
         ;;
     republish-release-binary)
-        # Deliberately separate from `deploy`: replacing bytes under the same
-        # semver is an operator decision, and it must point at the real served
-        # CAS. The function also requires a clean tracked worktree, stamps the
-        # project version explicitly, verifies `<binary> --version`, and writes
-        # the current HEAD into release.json before this metadata is committed.
+
+
+
+
+
         source_rev="$(git rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
         if publish_release_binary 1; then
             commit_release_metadata
@@ -1084,7 +1084,7 @@ case "${1:-deploy}" in
     secrets)
         require_cloudflare_account
         require_cloudflare_auth
-        # Re-push just the .env.production secrets, no full redeploy.
+
         push_secrets
         ;;
     dev)
@@ -1093,8 +1093,8 @@ case "${1:-deploy}" in
         ;;
     dry-run)
         require_cloudflare_account
-        # --dry-run still runs the [build] command (migrate.sh → remote D1), which
-        # needs Cloudflare auth, so the same non-interactive guard applies.
+
+
         require_cloudflare_auth
         build_dashboard_assets
         pywrangler deploy --env "" --dry-run

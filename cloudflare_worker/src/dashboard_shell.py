@@ -27,30 +27,30 @@ it is trivially unit-testable against the on-disk partials.
 import hashlib
 import re
 
-# Placeholder the shell uses to pull in a partial: <!--#include partial="name"-->
+
 INCLUDE_RE = re.compile(r'<!--#include partial="([a-z0-9-]+)"-->')
 
-# Placeholder inside the "main" partial for the page's single view.
+
 VIEW_INCLUDE_RE = re.compile(r"<!--#include view-->")
 
-# Per-page metadata tokens in the shell: <!--#page id-->, <!--#page title-->, ...
+
 PAGE_TOKEN_RE = re.compile(r"<!--#page ([a-z]+)-->")
 
-# Root-relative first-party <script src="/name.js"> tags, with an optional
-# existing ``?v=`` cache-busting query. Used by ``stamp_asset_versions`` to
-# rewrite the version to a per-build content hash so a new bundle is never
-# served from a stale edge/browser cache (the old static ``?v=public-profiles``
-# query never changed, so week-old dashboard.js kept being served until a cache
-# happened to expire — a hard refresh masked it).
+
+
+
+
+
+
 ASSET_SCRIPT_RE = re.compile(r'(src="/([\w.-]+\.js))(?:\?v=[^"]*)?"')
 
-# The dashboard's pages. Keys are page ids (also the <body data-page> value the
-# JS boot dispatch keys off). "view" names the partials/views/<view>.html file;
-# "section" is the legacy data-dashboard-section name (CSS hooks + old JS state
-# names); "nav" is the sidebar data-nav link to mark active (None = no sidebar
-# item); "route" is the public clean URL (None = worker-only, the repo detail
-# document is fetched by the Worker for every /owner/repo[...] path); "asset"
-# is the built public/-relative file.
+
+
+
+
+
+
+
 PAGES = {
     "home": {
         "view": "home",
@@ -185,28 +185,28 @@ def content_version(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
 
 
-# Single source of truth for cache-busting: the first-party client bundles that
-# receive a content-hash ``?v=`` query. ``dashboard.js`` is composed in memory
-# at build time; the rest are authored files served straight from ``public/``.
-# Adding a bundle is one edit here (plus its ``<script>`` tag) — the build tool,
-# the stamper, and the frontend tests all derive from this list.
-#
-# No document ever hand-writes a ``?v=``: the authored HTML links the bare
-# ``/name.js`` and the build stamps the hash in, so a bundle edit updates every
-# page that references it from this one place (the hand-bumped ``?v=`` strings
-# that preceded this — public-profiles, auth-simple-1, verify-recap-1 — went
-# stale in whichever page the bumper forgot).
+
+
+
+
+
+
+
+
+
+
+
 CACHE_BUSTED_BUNDLES = (
-    # Dashboard.
+
     "dashboard.js",
     "dashboard-chat.js",
-    # Shared site chrome, on nearly every marketing/auth page.
+
     "site-header.js",
     "site-footer.js",
     "home-header-auth.js",
     "static-page.js",
     "blog-social.js",
-    # Per-page site bundles.
+
     "login.js",
     "signup.js",
     "forgot-password.js",
@@ -256,9 +256,9 @@ def stamp_asset_versions(html, versions):
     return ASSET_SCRIPT_RE.sub(_stamp, html)
 
 
-# Everything under public/dashboard/ is either a compose input (shell.html, the
-# partials) or a composed output stamped from that compose — so the in-place
-# stamping pass skips the whole subtree.
+
+
+
 STAMPED_PAGE_EXCLUDE_PREFIX = "dashboard/"
 
 

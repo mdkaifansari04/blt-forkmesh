@@ -106,8 +106,8 @@ def test_camera_and_non_motion_frame_work_are_allocation_bounded():
     assert "officeAvatarLocalPosition(\n        player,\n        officeCameraLocalPosition," in camera
     assert "time >= nextProximityUpdateAt" in animate
     assert "time >= nextScreenLabelUpdateAt" in animate
-    # Drawing-buffer inspection and console I/O are deferred until after the
-    # already-late animation frame has yielded.
+
+
     warning = _section(
         SCENE,
         "  function scheduleRenderStallWarning(",

@@ -1,7 +1,7 @@
--- Metadata-only organization bot-token usage history. Secrets, request
--- bodies, query strings, IP addresses, and user-agent values never enter this
--- table. Organization admins receive a short preview; the full append-only
--- table is visible in the platform administration browser.
+
+
+
+
 CREATE TABLE IF NOT EXISTS org_bot_token_usage (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   token_id   TEXT NOT NULL,

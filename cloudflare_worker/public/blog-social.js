@@ -1,16 +1,16 @@
 (() => {
-  // Where a post was announced on the social networks we run. Each blog post
-  // carries its own permalinks as data attributes on a placeholder element:
-  //
-  //   <section data-blog-social
-  //            data-reddit=""
-  //            data-mastodon=""
-  //            data-twitter=""></section>
-  //
-  // Filling one in is pasting the permalink into the matching attribute of
-  // that post's index.html — there is no second list to keep in sync. The
-  // ones left blank still render, as an explicit empty slot rather than a
-  // silent gap, so an unannounced post reads as unannounced.
+
+
+
+
+
+
+
+
+
+
+
+
   const NETWORKS = [
     { key: "reddit", label: "Reddit" },
     { key: "mastodon", label: "Mastodon" },
@@ -21,16 +21,16 @@
   const MASTODON_LIMIT = 500;
   const TWITTER_LIMIT = 250;
 
-  // Only real web permalinks become links: a blank attribute and anything
-  // that is not http(s) (a stray note, a javascript: URL) both read as empty.
+
+
   function permalink(host, key) {
     const raw = (host.dataset[key] || "").trim();
     return /^https?:\/\//i.test(raw) ? raw : "";
   }
 
-  // Show the permalink itself rather than a generic "View post", trimmed to
-  // the part that identifies it: forkmesh.com's own network handles are the
-  // point of the row.
+
+
+
   function linkText(url) {
     try {
       const parsed = new URL(url);

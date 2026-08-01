@@ -1,8 +1,8 @@
--- Idempotent account-authorized pull merge jobs. The Worker retains only
--- blind indexes, exact public Git object ids in a bounded result, and the
--- independently operated node selected for execution. Repository bytes and node
--- credentials never enter D1. Expiry and database triggers enforce seven-day
--- application retention plus hard per-repository/global record ceilings.
+
+
+
+
+
 
 CREATE TABLE IF NOT EXISTS repo_merge_jobs (
     request_id TEXT PRIMARY KEY,

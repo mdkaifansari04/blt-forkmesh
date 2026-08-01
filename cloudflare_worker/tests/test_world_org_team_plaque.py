@@ -85,7 +85,7 @@ ORG_ROLES = _constant("ORG_ROLES")
 ORG_WORLD_ACCESS_VALUES = _constant("ORG_WORLD_ACCESS_VALUES")
 
 
-# --- Roster read -------------------------------------------------------------
+
 
 class _Request:
     method = "GET"
@@ -163,15 +163,15 @@ def test_member_roster_carries_each_members_teams():
         {"name": "grace", "role": "admin", "since": 12, "teams": ["core"]},
         {"name": "linus", "role": "member", "since": 13, "teams": []},
     ]
-    # One roster read plus one team read: never one request per team.
+
     assert sum("org_team_members" in sql for sql in queries) == 1
 
 
 def test_anonymous_roster_read_exposes_neither_names_nor_teams():
     handler, _ = _members_handler("", "")
     result = _run(handler(None, _Request(), "acme"))
-    # Default office visibility is "restricted", so an anonymous read is
-    # rejected outright; a public hallway still redacts every name.
+
+
     assert result["status"] == 403
     assert result["data"] == {"error": "forbidden"}
     assert '"visibility": "public-redacted"' in ENTRY_TEXT
@@ -194,15 +194,15 @@ def test_team_member_writes_stay_owner_admin_only():
     assert 'if await _org_role(env, org_bi, account) not in ("owner", "admin")' \
         in handler
     assert '{"error": "forbidden"}' in handler
-    # Ordinary membership still rejects outsiders unless the admin explicitly
-    # selects the limited external-collaborator path.
+
+
     assert '"not_a_member"' in handler
     assert 'data.get("external") is True' in handler
     assert "org_team_collaborators" in handler
     assert '{"error": "active_user_required"}' in handler
 
 
-# --- The plaque on the avatar back -------------------------------------------
+
 
 def test_team_plaque_rides_live_and_offline_member_avatar_backs():
     for contract in (
@@ -233,9 +233,9 @@ def test_team_plaque_rides_live_and_offline_member_avatar_backs():
         SCENE.index("function sanitizedOrgTeamAssignment(remote)"):
         SCENE.index("function orgTeamControlTexture")
     ]
-    # These are real registered accounts rendered from server-backed presence
-    # or the public users directory, so being offline/local is not a reason to
-    # remove an organization administrator's control.
+
+
+
     assert "persistedInactive" not in sanitizer
     assert "inactive|local" not in sanitizer
 
@@ -266,7 +266,7 @@ def test_team_plaque_texture_carries_no_secret():
         assert secret not in texture.lower(), secret
 
 
-# --- The team checkboxes the plaque opens ------------------------------------
+
 
 def test_all_org_members_get_team_badges_but_only_admins_get_controls():
     managed = APP[
@@ -282,7 +282,7 @@ def test_all_org_members_get_team_badges_but_only_admins_get_controls():
     assert "const canManage" in index
     assert "canManage," in index
     assert "WORLD_ACCOUNT_NAME_RE.test(account)" in index
-    # A guest may type any display name; only server-stamped accounts resolve.
+
     assert 'String(player?.accountStatus || "Guest") === "Guest"' in APP
     assert "orgTeam ? { orgTeam } : {}" in APP
     assert "onOrgTeamAssign: (target) => this.openOrgTeamAssignment(target)" \
@@ -299,8 +299,8 @@ def test_all_org_members_get_team_badges_but_only_admins_get_controls():
         SCENE.index("function orgTeamControlTexture")
     ]
     assert "forkmesh-avatar-left-arm-team-badges" in badges
-    # Small patches on the arm's outward (-X) face, not slabs overhanging the
-    # sleeve on the front of the avatar.
+
+
     assert "new THREE.PlaneGeometry(0.26, 0.09)" in badges
     assert "badge.rotation.y = -Math.PI / 2" in badges
     assert "badge.position.set(-0.148, 0.36 - index * 0.105, 0)" in badges
@@ -339,17 +339,17 @@ def test_assignment_dialog_uses_checkboxes_and_diffs_into_team_writes():
     assert '`${root}/${encodeURIComponent(team)}/members`' in dialog
     assert 'grant ? {} : { method: "DELETE" }' in dialog
     assert "await this.refreshOrganizationTeams(org)" in dialog
-    # The plaque names the one website setting behind both views and explains
-    # the Office elevator effect without making the client authoritative.
+
+
     assert "same organization teams" in dialog
     assert "website organization settings" in dialog
     assert "officeFloorsForTeam(team?.team)" in dialog
     assert "Unlocks Office elevator" in dialog
     assert "No additional Office elevator floor" in dialog
 
-    # Saving a different user's grants does not touch this browser's elevator.
-    # Saving the signed-in viewer performs exactly one deliberate refresh;
-    # the controller re-reads the authoritative allowlist without polling.
+
+
+
     assert "let savedChanges = 0" in dialog
     assert "savedChanges += 1" in dialog
     assert "savedChanges > 0" in dialog

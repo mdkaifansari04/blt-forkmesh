@@ -115,12 +115,12 @@ def test_announce_is_throttled_per_isolate():
 
 
 def test_route_and_heartbeat_wiring():
-    # The announce route is dispatched by the federation handler (which also
-    # serves it under the canonical /api/relay-mesh/* alias)...
+
+
     assert 'if url.path == "/api/federation/announce":' in SOURCE
     assert "return await _federation_announce(env, request)" in SOURCE
-    # ...and the admin heartbeat reply carries the pending join-request count
-    # (main relay only) that lights the desktop's red dot + Approve button.
+
+
     assert "if is_admin and _is_main_relay(env):" in SOURCE
     assert "SELECT COUNT(*) AS n FROM relays WHERE status='pending'" in SOURCE
     assert 'response["pendingRelays"]' in SOURCE
@@ -131,19 +131,19 @@ def test_wire_contracts_across_worker_qt_and_bootstrap():
     qt_chat = QT_CHAT.read_text(encoding="utf-8")
     bootstrap = BOOTSTRAP.read_text(encoding="utf-8")
 
-    # The launch bootstrap pings the fresh instance's announce endpoint so its
-    # join request reaches the main relay the moment it launches.
+
+
     assert "/api/federation/announce" in bootstrap
     assert "announce: Callable[[str], str] = _announce_join" in bootstrap
 
-    # The desktop reads the heartbeat's pending count and drives the red dot
-    # over the relay favicon plus the Approve button beside it.
+
+
     assert 'resp.value(QStringLiteral("pendingRelays")).toInt()' in qt_setup
     assert "setPendingRelayJoins" in qt_setup
     assert "m_relayJoinDot = new QLabel(m_relayMenuButton);" in qt_chat
     assert "m_relayJoinApproveButton" in qt_chat
 
-    # The signed admin canonicals match on both ends.
+
     assert '"forkmesh-admin-relays-v1\\n" + node + "\\n" + ts' in SOURCE
     assert '("forkmesh-admin-relays-v1\\n" + node + "\\n" + ts)' in qt_setup
     assert ('"forkmesh-admin-relay-approve-v1\\n" + node + "\\n" + pubkey +'

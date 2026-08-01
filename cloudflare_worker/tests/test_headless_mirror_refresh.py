@@ -1007,8 +1007,8 @@ def test_headless_catalog_samples_truthful_repository_statistics(installation):
         "pullCount": "2",
         "discussionCount": "2",
         "artifactCount": "2",
-        # Who made the published head commit and what it says, so the Mirror
-        # nodes view and the World cabinets can name it (adhoc #337).
+
+
         "commitSubject": "add collaboration metadata",
         "commitAuthorName": "ForkMesh test",
     }
@@ -1037,8 +1037,8 @@ def test_headless_catalog_omits_unreadable_or_unavailable_statistics(
 
     stats = refresh_tool._sample_repository_statistics(config)
     assert "issueCount" not in stats
-    # The tree itself still reserves issue number 1 even when its record cannot
-    # be read, so a later automated issue must not reuse that occupied number.
+
+
     assert stats["issueMaxNumber"] == "1"
     assert "artifactCount" not in stats
     assert stats["commitCount"] == "2"
@@ -1067,8 +1067,8 @@ def test_issue_statistics_reserve_all_numeric_directories_and_default_live(
     stats = refresh_tool._sample_repository_statistics(
         installation["config"]
     )
-    # Qt treats an unreadable open/legacy issue as live, while every numeric
-    # tree (including a closed one without its record) reserves its number.
+
+
     assert stats["issueCount"] == "2"
     assert stats["issueMaxNumber"] == "21"
 

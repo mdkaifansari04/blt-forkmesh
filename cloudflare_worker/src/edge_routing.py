@@ -17,12 +17,12 @@ import re
 from urllib.parse import quote, urlencode, urlparse, urlunparse
 
 
-# Endpoint registration is a coarse availability lease.  Hosts renew it every
-# four minutes and the bounded renewal unit may spend up to five minutes
-# validating a large encrypted mirror or waiting on the control plane.  Keep
-# that healthy path inside this ten-minute lease.  Repository traffic is still
-# fail-closed: entry.py independently requires a fresh node-signed repository
-# proof and caches it for at most 60 seconds before every routed operation.
+
+
+
+
+
+
 ENDPOINT_STALE_MS = 10 * 60 * 1000
 MAX_FAILOVER_ATTEMPTS = 4
 NODE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -100,8 +100,8 @@ def _public_hostname(hostname):
     try:
         address = ipaddress.ip_address(hostname.strip("[]"))
     except ValueError:
-        # A DNS name needs at least one dot. Cloudflare-managed mirror names
-        # satisfy this and it avoids accidentally targeting an internal label.
+
+
         return "." in hostname
     return bool(address.is_global)
 

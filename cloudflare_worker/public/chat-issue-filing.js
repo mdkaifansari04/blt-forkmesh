@@ -1,22 +1,22 @@
-// Turning a chat message into a repository issue.
-//
-// A bug report typed into chat should not have to be retyped on the issues
-// page, so every message in every web chat surface carries a control that files
-// it as an issue: the full chat page (chat.js), the dashboard chat and the
-// World's in-world chat (both dashboard-chat.js). The desktop client does the
-// same from its message "⋯" menu (MessageRow -> MainWindow::promptIssueFromChatMessage).
-//
-// The issue is filed as the same signed "open" event the dashboard's new-issue
-// form posts (submitWebIssue in dashboard/js/03-issues-profile-io.js): it lands
-// in the maintainer's inbox and appears once their node drains it. Three things
-// have to stay in lockstep with that form and with verify_issue_event in the
-// worker, or the relay rejects the event:
-//
-//   * the localStorage key below, so a visitor keeps one author identity no
-//     matter which surface they file from;
-//   * the "open" content preimage - title NUL body NUL attachments;
-//   * the "forkmesh-issue-event-v1" canonical string, signed with number 0
-//     (the maintainer assigns the durable number on drain).
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 export const WEB_ISSUE_KEY_STORAGE = "forkmesh.webIssueKey";
 
@@ -38,8 +38,8 @@ async function sha256HexLower(text) {
     .join("");
 }
 
-// The author key is minted on first use and kept in localStorage, so every
-// issue and comment a visitor files from this browser carries one identity.
+
+
 async function webIssueKey() {
   let stored = null;
   try {
@@ -52,7 +52,7 @@ async function webIssueKey() {
           "jwk", stored.jwk, { name: "Ed25519" }, false, ["sign"]),
         pub: stored.pub,
       };
-    } catch (_) { /* fall through and mint a fresh key */ }
+    } catch (_) {   }
   }
   const pair = await crypto.subtle.generateKey(
     { name: "Ed25519" }, true, ["sign", "verify"]);
@@ -68,15 +68,15 @@ async function webIssueKey() {
   };
 }
 
-// The first line of the message seeds the title (the author still edits it
-// before filing); the whole message becomes the body.
+
+
 export function issueTitleFromMessage(text) {
   const first = String(text || "").split(/\r?\n/)[0].trim().replace(/\s+/g, " ");
   return first.length > 200 ? `${first.slice(0, 199)}…` : first;
 }
 
-// Attribution matters: the issue is signed by whoever files it, so the body
-// records who actually said it, where, and when.
+
+
 export function issueBodyFromMessage({ text, who, tsMs, channelLabel } = {}) {
   const when = new Date(Number(tsMs) || Date.now()).toISOString();
   const channel = String(channelLabel || "").trim();
@@ -87,8 +87,8 @@ export function issueBodyFromMessage({ text, who, tsMs, channelLabel } = {}) {
 
 let repositoriesPromise = null;
 
-// Public catalog read (no session needed) shared by every filing surface that
-// does not already have a repository picker of its own.
+
+
 export function loadIssueRepositories() {
   if (repositoriesPromise) return repositoriesPromise;
   repositoriesPromise = (async () => {
@@ -106,9 +106,9 @@ export function loadIssueRepositories() {
       : []) {
       const routeOwner = String(repository?.owner || "");
       const name = String(repository?.name || repository?.repo || "");
-      // A repository is listed once per logical owner it answers to (its node
-      // name and any organization alias); the alias is what people recognize,
-      // but the API route always wants the hosting owner.
+
+
+
       const logicalOwners = Array.isArray(repository?.logicalOwners)
         ? repository.logicalOwners
         : ["user", "organization"].includes(String(repository?.ownerKind || "")) &&
@@ -144,7 +144,7 @@ export async function fileWebIssue(repository, title, body, authorName = "") {
   const { privateKey, pub } = await webIssueKey();
   const ts = Math.floor(Date.now() / 1000);
   const cleanBody = String(body || "").replace(/[\r\n]+$/, "");
-  // open event content = title NUL body NUL attachments (none from chat)
+
   const NUL = String.fromCharCode(0);
   const contentHash = await sha256HexLower(`${title}${NUL}${cleanBody}${NUL}`);
   const canonical =

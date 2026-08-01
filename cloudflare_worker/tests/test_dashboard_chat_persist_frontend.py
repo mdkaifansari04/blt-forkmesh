@@ -27,7 +27,7 @@ STYLES = (PUBLIC / "styles.css").read_text(encoding="utf-8")
 
 def test_send_marks_durable_frames_for_relay_retention():
     send = CHAT[CHAT.index("function send(") : CHAT.index("async function connect(")]
-    # The durable frame gets the persist flag the relay checks before retaining.
+
     assert "envelope.persist = true" in send
     assert "DURABLE_TYPES.has(" in send
 
@@ -85,9 +85,9 @@ def test_dashboard_history_starts_at_five_and_reveals_five_per_scroll():
 
 
 def test_world_embed_chat_reads_oldest_first_newest_last():
-    # adhoc #93: the world embed rendered its feed newest-first (history sorted
-    # descending, indicator appended, scroll parked at the top), so the latest
-    # line sat above older ones. Both modes now read like every other chat.
+
+
+
     assert "records.sort((left, right) => left.tsMs - right.tsMs)" in CHAT
     assert "fullLog.prepend(historyIndicator);" in CHAT
     assert "Number(candidate.dataset.chatTimestamp || 0) > record.tsMs" in CHAT
@@ -96,7 +96,7 @@ def test_world_embed_chat_reads_oldest_first_newest_last():
 
 
 def test_durable_type_set_matches_the_node():
-    # Same set as the desktop node's kDurableTypes (ServerNode.cpp).
+
     for kind in ("chat", "edit", "delete", "reaction", "admin-delete"):
         assert f'"{kind}"' in CHAT[CHAT.index("DURABLE_TYPES") : CHAT.index("function send(")]
         assert f'"{kind}"' in PUBLIC_CHAT[
@@ -123,7 +123,7 @@ def test_dashboard_chat_allows_guests_only_in_public_world_general():
     assert "function normalizedPublicWorldFrame(entry)" in CHAT
     assert 'accountKind: entry.accountKind === "user" ? "user" : "guest"' in CHAT
     assert "sender: publicWorldName(entry.sender)" in CHAT
-    # Public-room names are shown as asserted - no "World visitor - jett".
+
     assert "World visitor · ${" not in CHAT
     assert 'function publicWorldName(value)' in CHAT
     assert "Guests can use only public World #general" in CHAT
@@ -151,7 +151,7 @@ def test_public_chat_splits_guest_general_from_authenticated_channels():
     assert "function normalizedPublicWorldFrame(" in PUBLIC_CHAT
     assert 'accountKind: plain.accountKind === "user" ? "user" : "guest"' in PUBLIC_CHAT
     assert "sender: publicWorldName(plain.sender)" in PUBLIC_CHAT
-    # Public-room names are shown as asserted - no "World visitor - jett".
+
     assert "World visitor · ${" not in PUBLIC_CHAT
     assert "function publicWorldName(value)" in PUBLIC_CHAT
     assert "PUBLIC_WORLD_ROOM_KEY_ENDPOINT" in PUBLIC_CHAT
@@ -189,19 +189,19 @@ def test_web_chat_mentions_link_to_public_profiles_with_hover_cards():
     assert "function makeMentionAnchor" in PUBLIC_CHAT
     assert "renderRichText(container, record" in PUBLIC_CHAT
     assert "renderRecordBody(rec)" in PUBLIC_CHAT
-    # An edited message is re-rendered through the mention renderer (the record
-    # keeps the new text so a later edit starts from it), never set as raw
-    # textContent, so mentions stay linked after an edit.
+
+
+
     assert "rec.text = plain.text || \"\"" in CHAT
     assert "renderMessageText(rec.textEl, rec.text)" in CHAT
     assert "sideEntry.text = plain.text || \"\"" in CHAT
 
 
 def test_dashboard_chat_composer_offers_mention_autocomplete():
-    # Typing "@partial" in the dashboard composer pops a suggestion list built
-    # from people seen in the room plus the registered-user directory; Tab (or
-    # Enter / click) accepts, arrows navigate, Escape dismisses. The token
-    # charset matches CHAT_MENTION_RE so an accepted mention renders linked.
+
+
+
+
     assert "function mentionTokenAtCaret(" in CHAT
     assert "function mentionCandidates(" in CHAT
     assert "function acceptMentionSuggest(" in CHAT
@@ -210,10 +210,10 @@ def test_dashboard_chat_composer_offers_mention_autocomplete():
     assert 'event.key === "Tab" || event.key === "Enter"' in CHAT
     assert "acceptMentionSuggest()" in CHAT
     assert 'inputEl.addEventListener("input", () => updateMentionSuggest(inputEl))' in CHAT
-    # ForkBot answers a "@forkbot" mention, so it is always suggestable.
+
     assert "byName.set(FORKBOT_SENDER_ID" in CHAT
-    # The mention list owns Enter while it is open, so accepting a name must not
-    # also send the half-typed message.
+
+
     wire = CHAT[CHAT.index("function wireInput("):CHAT.index("async function initChat(")]
     assert wire.index("acceptMentionSuggest()") < wire.index(
         "sendFrom(inputEl, attachmentControl);\n      }"
@@ -235,8 +235,8 @@ def test_dashboard_picker_and_paste_attachments_send_without_an_extra_click():
         CHAT.index('inputEl.addEventListener("keydown"')
     ]
     assert "void sendDashboardDraft(control);" in picker
-    # Returning the upload promise keeps the paste chain ordered while still
-    # sending immediately after staging, with no second user action.
+
+
     assert "return sendDashboardDraft(attachmentControl);" in paste
 
 
@@ -247,7 +247,7 @@ def test_chat_mention_styles_are_available_on_all_chat_surfaces():
         assert ".chat-mention-card[hidden]" in source
 
 
-# --- /chat three-pane layout (rooms | conversation | people) -----------------
+
 
 def test_public_chat_has_rooms_conversation_and_people_panes():
     assert 'id="chat-rooms"' in PUBLIC_CHAT_HTML
@@ -255,8 +255,8 @@ def test_public_chat_has_rooms_conversation_and_people_panes():
     assert 'id="chat-channel-title"' in PUBLIC_CHAT_HTML
     assert ".chat-rooms-pane" in PUBLIC_CHAT_CSS
     assert ".chat-people-pane" in PUBLIC_CHAT_CSS
-    # Sends carry the selected display label while private buffers and room
-    # access stay keyed by the server-provided opaque channel id.
+
+
     assert "channel: channelDisplayLabel(activeChannel)" in PUBLIC_CHAT
     assert "function setActiveChannel(" in PUBLIC_CHAT
     assert 'const PRIVATE_CHANNELS_ENDPOINT = "/api/chat/channels"' in PUBLIC_CHAT
@@ -270,20 +270,20 @@ def test_dashboard_public_room_links_to_private_channel_directory():
 
 
 def test_public_chat_sends_presence_keepalive_at_desktop_cadence():
-    # The room DO reaps sockets with no frames for 3 minutes; the presence beat
-    # (same 60s cadence as ServerNode's kPresenceIntervalMs) keeps the web
-    # client connected AND keeps its roster entry fresh for peers. The old web
-    # client sent nothing while idle and kept getting disconnected.
+
+
+
+
     assert "PRESENCE_INTERVAL_MS = 60000" in PUBLIC_CHAT
-    assert "PEER_STALE_MS = 180000" in PUBLIC_CHAT  # ServerNode kPeerStaleMs
+    assert "PEER_STALE_MS = 180000" in PUBLIC_CHAT
     assert 'send(makePlain("presence"))' in PUBLIC_CHAT
     assert "function scheduleReconnect(" in PUBLIC_CHAT
 
 
 def test_public_chat_reactions_speak_the_desktop_protocol():
-    # Same frame shape as ServerNode::sendReaction so toggles converge across
-    # web and desktop clients, and reactions persist for late joiners (the
-    # "reaction" kind is already in DURABLE_TYPES).
+
+
+
     reaction = PUBLIC_CHAT[
         PUBLIC_CHAT.index("function toggleReaction("):
         PUBLIC_CHAT.index("function ensureEmojiPicker(")
@@ -299,9 +299,9 @@ def test_public_chat_reactions_speak_the_desktop_protocol():
 
 
 def test_public_chat_people_pane_tracks_online_status_from_frame_ts():
-    # Presence derives from each frame's own timestamp so replayed history
-    # can't paint a days-old author as online, and an old frame never demotes
-    # a peer heard from more recently.
+
+
+
     assert "function noteRoster(" in PUBLIC_CHAT
     assert "Math.min(Number(plain.ts) || Date.now(), Date.now())" in PUBLIC_CHAT
     assert "function personIsOnline(" in PUBLIC_CHAT
@@ -320,9 +320,9 @@ def test_public_chat_orders_messages_by_ts_with_avatars_and_time():
 
 
 def test_public_chat_mention_autocomplete_accepts_with_tab():
-    # Typing "@partial" pops a roster-backed suggestion list; Tab (or Enter /
-    # click) accepts, arrows navigate, Escape dismisses. The token charset
-    # matches CHAT_MENTION_RE so an accepted mention always renders linked.
+
+
+
     assert "function mentionTokenAtCaret(" in PUBLIC_CHAT
     assert "function mentionCandidates(" in PUBLIC_CHAT
     assert "function acceptMentionSuggest(" in PUBLIC_CHAT
@@ -335,11 +335,11 @@ def test_public_chat_mention_autocomplete_accepts_with_tab():
 
 
 def test_public_chat_usernames_link_to_relay_profile_pages():
-    # Clicking a message author, their avatar, or a people-pane row opens
-    # /@username — a RELATIVE URL, so the link lands on whichever relay is
-    # serving the page (forkmesh.com or a self-hosted mainnode). ForkBot is
-    # not an account, and public World guests are explicitly unverified, so
-    # those rows stay unlinked.
+
+
+
+
+
     assert 'return key ? "/@" + encodeURIComponent(key) : "#";' in PUBLIC_CHAT
     assert "author.href = mentionProfilePath(record.sender)" in PUBLIC_CHAT
     assert "avatarLink.href = mentionProfilePath(record.sender)" in PUBLIC_CHAT
@@ -352,16 +352,16 @@ def test_public_chat_usernames_link_to_relay_profile_pages():
 
 
 def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():
-    # The rail's mini chat renders like the full chat — avatar + name + time —
-    # and inserts each message by its own timestamp so replayed history and
-    # live traffic interleave with the newest at the bottom.
+
+
+
     assert "function fmtChatTime(" in CHAT
     assert "tsMs: Number(tsMs) || Date.now()" in CHAT
     assert "sideEntries.splice(index, 0, entry)" in CHAT
     assert "fmtChatTime(message.tsMs)" in CHAT
     assert "hydrateChatAvatar(row.querySelector" in CHAT
-    # Call sites hand the epoch timestamp through (formatting happens at
-    # render), so ordering never depends on arrival order.
+
+
     render_entry = CHAT[
         CHAT.index("function renderChatEntry("):
         CHAT.index("async function verifyAdminDelete(")
@@ -377,10 +377,10 @@ def test_dashboard_side_chat_orders_by_ts_with_avatar_and_time():
 
 
 def test_dashboard_side_chat_keeps_its_socket_alive_and_reconnects():
-    # The room DO reaps sockets that send nothing for 3 minutes; the dashboard
-    # chat used to go silently stale on idle tabs (no keepalive, no reconnect)
-    # so new messages just stopped arriving. Mirrors the /chat page fix: 60s
-    # presence beat (desktop cadence) + reconnect with backoff.
+
+
+
+
     assert 'send(makePlain("presence"))' in CHAT
     assert "}, 60000);" in CHAT
     assert "function scheduleReconnect(" in CHAT

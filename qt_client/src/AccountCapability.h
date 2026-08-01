@@ -42,4 +42,4 @@ inline bool persistedMarkerMatches(const QString &storedAccount,
            storedPublicKey == currentPublicKey;
 }
 
-} // namespace AccountCapability
+}

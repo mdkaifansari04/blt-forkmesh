@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Shared pywrangler bootstrap for deploy.sh and migrate.sh
-#
-# Prefer uvx when available: it self-fetches workers-py without a project-local
-# install. On hosts without uv/uvx, install workers-py into a private venv under
-# cloudflare_worker/.pywrangler so deploys do not depend on global Python tools.
+
+
+
+
+
 
 PYWRANGLER_VENV="${PYWRANGLER_VENV:-.pywrangler}"
 PYWRANGLER_BIN="$PYWRANGLER_VENV/bin/pywrangler"
@@ -120,15 +120,15 @@ install_pywrangler() {
     python3 -m venv "$PYWRANGLER_VENV"
     "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade pip >/dev/null
     "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade "$WORKERS_PY_SPEC"
-    # Newer workers-py binaries can require uv tooling at runtime. Install a
-    # project-local uv copy so we can keep the deploy path self-contained when
-    # the host only has python3.
+
+
+
     if [ ! -x "$PYWRANGLER_UVX" ] || [ ! -x "$PYWRANGLER_UV" ]; then
         "$PYWRANGLER_VENV/bin/python" -m pip install --upgrade uv >/dev/null
     fi
 
-    # Keep the venv bin on PATH so any worker-installed entrypoint that shells
-    # out to uv/uvx can find the project-local copy.
+
+
     _pywrangler_ensure_venv_path
     _pywrangler_install_npx_wrapper
 

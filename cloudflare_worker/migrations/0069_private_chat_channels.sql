@@ -1,6 +1,6 @@
--- Private administrator-created chat channels and direct user memberships.
--- Human-readable channel names remain inside encrypted data; name_bi only
--- enforces normalized-name uniqueness without exposing the name in plaintext.
+
+
+
 
 CREATE TABLE IF NOT EXISTS chat_channels (
   channel_id    TEXT PRIMARY KEY,
@@ -24,8 +24,8 @@ CREATE TABLE IF NOT EXISTS chat_channel_members (
 CREATE INDEX IF NOT EXISTS idx_chat_channel_members_member
   ON chat_channel_members(member_bi, channel_id);
 
--- Revoking a real membership rotates the channel in the same SQLite write.
--- A repeated idempotent DELETE affects no row and therefore does not rotate.
+
+
 CREATE TRIGGER IF NOT EXISTS trg_chat_channel_member_remove_rotate
 AFTER DELETE ON chat_channel_members
 BEGIN

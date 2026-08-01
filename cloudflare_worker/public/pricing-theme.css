@@ -64,10 +64,10 @@ html.light {
   --ring: #0969da;
 }
 
-/*
- * Layered semantic mappings leave the current unlayered dark design in
- * control. The scoped light rules below take over only for html.light.
- */
+
+
+
+
 @layer pricing-theme {
   body {
     background: var(--pricing-page-bg);

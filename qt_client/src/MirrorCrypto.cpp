@@ -14,7 +14,7 @@
 
 namespace {
 
-constexpr int kKeyBytes = 32;   // AES-256 content key / KEK
+constexpr int kKeyBytes = 32;
 constexpr int kNonceBytes = 12;
 constexpr int kTagBytes = 16;
 constexpr int kX25519Bytes = 32;
@@ -22,8 +22,8 @@ constexpr int kMlkemPubBytes = 1184;
 constexpr int kMlkemPrivBytes = 2400;
 constexpr int kMlkemCtBytes = 1088;
 
-// Domain separation for the hybrid-KEM HKDF, so the derived KEK can never be
-// confused with a key from any other ForkMesh context.
+
+
 const char kHkdfSalt[] = "forkmesh-mirror-kem-v1";
 
 using PkeyPtr = std::unique_ptr<EVP_PKEY, decltype(&EVP_PKEY_free)>;
@@ -46,8 +46,8 @@ private:
 QByteArray randomBytes(int count)
 {
     QByteArray out(count, Qt::Uninitialized);
-    // Mirror keys and nonces must never fall back to a non-cryptographic PRNG.
-    // A system RNG failure is a hard encryption failure.
+
+
     if (RAND_bytes(reinterpret_cast<unsigned char *>(out.data()), count) != 1)
         return {};
     return out;
@@ -112,7 +112,7 @@ QByteArray fromB64UrlBounded(const QJsonValue &value, int maximumSize)
     return decoded.size() <= maximumSize ? decoded : QByteArray{};
 }
 
-// AES-256-GCM seal: writes nonce/tag/body. Returns false on any OpenSSL error.
+
 bool gcmSeal(const QByteArray &key, const QByteArray &plaintext,
              QByteArray &nonce, QByteArray &tag, QByteArray &body)
 {
@@ -152,7 +152,7 @@ bool gcmSeal(const QByteArray &key, const QByteArray &plaintext,
     return true;
 }
 
-// AES-256-GCM open. Returns the plaintext, or {} on tag mismatch / bad input.
+
 QByteArray gcmOpen(const QByteArray &key, const QByteArray &nonce,
                    const QByteArray &tag, const QByteArray &body)
 {
@@ -185,12 +185,12 @@ QByteArray gcmOpen(const QByteArray &key, const QByteArray &nonce,
     }
     EVP_CIPHER_CTX_free(ctx);
     if (!ok)
-        return {}; // wrong KEK (GCM tag mismatch) or corrupt ciphertext
+        return {};
     plain.resize(outLen);
     return plain;
 }
 
-// X25519 ECDH: derive the shared secret from a raw private and a raw peer public.
+
 QByteArray x25519Derive(const QByteArray &rawPriv, const QByteArray &rawPeerPub)
 {
     if (rawPriv.size() != kX25519Bytes || rawPeerPub.size() != kX25519Bytes)
@@ -220,7 +220,7 @@ QByteArray x25519Derive(const QByteArray &rawPriv, const QByteArray &rawPeerPub)
     return ss;
 }
 
-// ML-KEM-768 encapsulate to a raw public key: fills ct and shared secret.
+
 bool mlkemEncapsulate(const QByteArray &rawPub, QByteArray &ct, QByteArray &ss)
 {
     if (rawPub.size() != kMlkemPubBytes)
@@ -247,7 +247,7 @@ bool mlkemEncapsulate(const QByteArray &rawPub, QByteArray &ct, QByteArray &ss)
     return true;
 }
 
-// ML-KEM-768 decapsulate with a raw private key: recovers the shared secret.
+
 QByteArray mlkemDecapsulate(const QByteArray &rawPriv, const QByteArray &ct)
 {
     if (rawPriv.size() != kMlkemPrivBytes || ct.size() != kMlkemCtBytes)
@@ -275,9 +275,9 @@ QByteArray mlkemDecapsulate(const QByteArray &rawPriv, const QByteArray &ct)
     return ss;
 }
 
-// HKDF-SHA256 combine the two KEM shared secrets into the 32-byte AES KEK. The
-// info string binds the KEK to the exact ephemeral X25519 pub + ML-KEM ct that
-// produced it, so a mix-and-match of wrap fields cannot yield a valid key.
+
+
+
 QByteArray deriveKek(const QByteArray &ssX, const QByteArray &ssM,
                      const QByteArray &info)
 {
@@ -313,7 +313,7 @@ QString keyIdFor(const QByteArray &x25519Pub, const QByteArray &mlkemPub)
                                                QByteArray::OmitTrailingEquals));
 }
 
-} // namespace
+}
 
 bool MirrorCrypto::Identity::isValid() const
 {
@@ -392,8 +392,8 @@ QJsonObject MirrorCrypto::sealArchive(const QByteArray &plaintext,
     if (recipientBundles.isEmpty() || recipientBundles.size() > 256)
         return fail("At least one recipient is required.");
 
-    // One random content key encrypts the whole archive; only this key is wrapped
-    // per recipient, so an N-collaborator repo stores the ciphertext once.
+
+
     QByteArray contentKey = randomBytes(kKeyBytes);
     ByteArrayCleanser contentKeyCleanser(&contentKey);
     QByteArray nonce, tag, body;
@@ -415,7 +415,7 @@ QJsonObject MirrorCrypto::sealArchive(const QByteArray &plaintext,
             return fail("A recipient public bundle is duplicated.");
         recipientIds.insert(recipientId);
 
-        // X25519: ephemeral keypair, ECDH with the recipient's static public key.
+
         PkeyPtr eph(EVP_PKEY_Q_keygen(nullptr, nullptr, "X25519"), &EVP_PKEY_free);
         QByteArray ephPub(kX25519Bytes, Qt::Uninitialized), ephPriv(kX25519Bytes, Qt::Uninitialized);
         size_t epl = kX25519Bytes, eprl = kX25519Bytes;
@@ -427,7 +427,7 @@ QJsonObject MirrorCrypto::sealArchive(const QByteArray &plaintext,
             return fail("Could not generate an ephemeral X25519 key.");
         const QByteArray ssX = x25519Derive(ephPriv, xPub);
 
-        // ML-KEM-768: encapsulate to the recipient's static public key.
+
         QByteArray ct, ssM;
         if (!mlkemEncapsulate(mPub, ct, ssM))
             return fail("Could not encapsulate to the recipient's ML-KEM key.");
@@ -612,8 +612,8 @@ QByteArray MirrorCrypto::openOwnerPayload(
         fromB64UrlExact(envelope.value(QStringLiteral("nonce")), kNonceBytes);
     const QByteArray payloadTag =
         fromB64UrlExact(envelope.value(QStringLiteral("tag")), kTagBytes);
-    // Owner envelopes are bounded to 1 MiB by the relay.  Apply the same
-    // client-side ceiling before allocating or entering OpenSSL.
+
+
     const QByteArray payloadBody =
         fromB64UrlBounded(envelope.value(QStringLiteral("body")),
                           1024 * 1024);

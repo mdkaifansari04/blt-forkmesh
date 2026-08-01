@@ -89,7 +89,7 @@ ORG_ROLES = _constant("ORG_ROLES")
 ORG_WORLD_ACCESS_VALUES = _constant("ORG_WORLD_ACCESS_VALUES")
 
 
-# --- Route table + schema ----------------------------------------------------
+
 
 def test_routes_cover_the_org_api():
     assert urls.ORGS_RE.match("/api/orgs")
@@ -99,7 +99,7 @@ def test_routes_cover_the_org_api():
     m = urls.ORG_TEAM_MEMBERS_RE.match("/api/orgs/acme/teams/core/members")
     assert m and m.group(2) == "core"
     assert urls.ORG_REPOS_RE.match("/api/orgs/acme/repos")
-    # single-segment ORG_RE never swallows the sub-collections
+
     assert not urls.ORG_RE.match("/api/orgs/acme/members")
 
 
@@ -126,7 +126,7 @@ def test_schema_defines_org_tables_and_migration_exists():
     assert "CREATE TABLE IF NOT EXISTS organization_tasks" in universal
 
 
-# --- Permission ladder -------------------------------------------------------
+
 
 def test_permission_ladder_order_and_roles():
     assert TEAM_PERMISSIONS == ("read", "write", "maintain", "admin")
@@ -135,13 +135,13 @@ def test_permission_ladder_order_and_roles():
                extra_globals={"TEAM_PERMISSIONS": TEAM_PERMISSIONS})
     rank = ns["team_permission_rank"]
     assert rank("read") < rank("write") < rank("maintain") < rank("admin")
-    assert rank("WRITE") == rank("write")  # case-insensitive
+    assert rank("WRITE") == rank("write")
     assert rank("") == -1 and rank("bogus") == -1 and rank(None) == -1
 
 
 def _org_perm_env(role, team_permissions):
-    # Fake d1 layer: one org, one member with `role`, teams granting
-    # `team_permissions`.
+
+
     async def blind_index(env, value):
         return "bi:" + value
 
@@ -165,16 +165,16 @@ def _org_perm_env(role, team_permissions):
 
 
 def test_org_permission_ladder():
-    # owners and admins hold admin regardless of teams
+
     for role in ("owner", "admin"):
         ns = _org_perm_env(role, [])
         assert _run(ns["_org_permission"](None, "org-bi", "alice")) == "admin"
-    # a plain member holds read; team membership raises it to the best team
+
     ns = _org_perm_env("member", [])
     assert _run(ns["_org_permission"](None, "org-bi", "alice")) == "read"
     ns = _org_perm_env("member", ["write", "maintain"])
     assert _run(ns["_org_permission"](None, "org-bi", "alice")) == "maintain"
-    # a non-member holds nothing
+
     ns = _org_perm_env("", [])
     assert _run(ns["_org_permission"](None, "org-bi", "alice")) == ""
 
@@ -212,14 +212,14 @@ def test_org_write_allowed_requires_write_rank_and_fails_closed():
 
     assert _run(build("write")(None, "jett", "widget", "alice")) is True
     assert _run(build("admin")(None, "jett", "widget", "alice")) is True
-    # plain membership (read) is NOT enough to push
+
     assert _run(build("")(None, "jett", "widget", "alice")) is False
-    # a D1 error must never grant push access
+
     assert _run(build("write", explode=True)(None, "jett", "widget", "alice")) is False
     assert _run(build("write")(None, "", "widget", "alice")) is False
 
 
-# --- URL aliasing ------------------------------------------------------------
+
 
 class _FakeJsRequest:
     def __init__(self, url, base):
@@ -264,8 +264,8 @@ def test_alias_rewrite_rewrites_api_and_git_paths():
         assert result is not None, path
         request, new_url = result
         assert new_url.path == expected
-        assert new_url.query == "service=git-upload-pack"  # query survives
-        assert request == "req"  # original body/headers/cf metadata survive
+        assert new_url.query == "service=git-upload-pack"
+        assert request == "req"
 
 
 def test_alias_rewrite_does_not_reconstruct_the_worker_request():
@@ -283,7 +283,7 @@ def test_alias_rewrite_leaves_other_paths_and_plain_nodes_alone():
                  "/api/repo/othernode/widget/tree"):
         url = urlparse("https://forkmesh.com" + path)
         assert _run(rewrite(None, "req", url)) is None, path
-    # no alias registered -> untouched even on a matching shape
+
     rewrite = _alias_ns("")
     url = urlparse("https://forkmesh.com/api/repo/acme/widget/tree")
     assert _run(rewrite(None, "req", url)) is None
@@ -295,7 +295,7 @@ def test_route_runs_the_alias_rewrite_before_any_matching():
         ENTRY_TEXT.index("git_info = GIT_INFO_RE.match(url.path)")
 
 
-# --- Fediverse org-alias resolution (adhoc #187) -----------------------------
+
 
 def _ap_alias_ns():
     async def _org_repo_node(env, org, repo):
@@ -307,19 +307,19 @@ def _ap_alias_ns():
 
 
 def test_ap_org_alias_owner_resolves_org_handles_to_the_backing_node():
-    # A fediverse mention of @acme.widget@host must read its repo row, AP
-    # settings and issue inbox under the linked node ("jett"), not the org.
+
+
     resolve = _ap_alias_ns()
     assert _run(resolve(None, "acme", "widget")) == "jett"
-    # A plain node handle (no org alias) resolves to itself, so every
-    # non-org AP path is a no-op.
+
+
     assert _run(resolve(None, "jett", "widget")) == "jett"
 
 
 def test_ap_data_reads_route_through_the_org_alias_resolver():
-    # The repo-federates gate, per-repo settings key, actor doc and the
-    # mention handler must all resolve the org alias before touching repo
-    # data — otherwise an org-fronted repo is invisible to federation.
+
+
+
     fed = ENTRY_TEXT[ENTRY_TEXT.index("async def _ap_repo_federates"):]
     fed = fed[:fed.index("\n\n\n")]
     assert "_ap_org_alias_owner(env, owner, repo)" in fed
@@ -335,26 +335,26 @@ def test_ap_data_reads_route_through_the_org_alias_resolver():
     assert "_forkbot_enqueue_issue(" not in mention
 
 
-# --- Push gate ---------------------------------------------------------------
+
 
 def test_push_gate_branches_a_foreign_username_to_the_org_token():
-    # The Basic-auth username selects the org-team path: the pusher signs with
-    # their OWN key and must hold write+ on the repo through an org.
+
+
     assert ("return await verify_org_push_token(env, username, owner, repo, ts, sig)"
             in ENTRY_TEXT)
     assert '"forkmesh-org-push-v1\\n" + pusher + "\\n" + owner + "\\n"' in ENTRY_TEXT
     assert "return await _org_write_allowed(env, owner, repo, pusher)" in ENTRY_TEXT
-    # the owner's own push path is unchanged
+
     assert '"forkmesh-push-v1\\n" + owner + "\\n" + repo + "\\n"' in ENTRY_TEXT
 
 
-# --- Namespace exclusivity ---------------------------------------------------
+
 
 def test_org_and_account_namespaces_reject_each_other():
-    # org creation rejects names any account row holds...
+
     assert '"error": "org_name_taken"' in ENTRY_TEXT
-    # ...and both account signup paths reject org names, so the alias rewrite
-    # can never shadow (or be shadowed by) a real node's URL.
+
+
     assert ENTRY_TEXT.count(
         "_, org_holder = await _org_row(env, name)") == 2
     assert "if org_holder:" in ENTRY_TEXT
@@ -363,7 +363,7 @@ def test_org_and_account_namespaces_reject_each_other():
 def test_linking_a_repo_requires_the_callers_own_account_or_fleet_node():
     assert '"error": "not_your_node"' in ENTRY_TEXT
     assert "if not await _account_owns_node(env, account, node):" in ENTRY_TEXT
-    # ...and the repo must actually be published by that node.
+
     assert '"error": "unknown_repo"' in ENTRY_TEXT
 
 
@@ -493,12 +493,12 @@ def test_org_owner_cannot_link_an_unowned_node_namespace():
 
 
 def test_org_admin_guards_and_caps_are_present():
-    # last-owner protection + per-account/org caps bounding D1 growth
+
     assert '"error": "last_owner"' in ENTRY_TEXT
     for cap in ("MAX_ORGS_PER_ACCOUNT", "MAX_ORG_MEMBERS", "MAX_ORG_TEAMS",
                 "MAX_ORG_REPOS"):
         assert cap in ENTRY_TEXT, cap
-    # team membership can only raise an existing member's permission
+
     assert '"error": "not_a_member"' in ENTRY_TEXT
 
 

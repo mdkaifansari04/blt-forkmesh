@@ -9,22 +9,22 @@
 
 namespace {
 
-// The pre-adhoc-#66 location: <temp>/forkmesh-agent-images. Still read (old
-// prompts embed those paths) but never written to.
+
+
 QString legacyDirectory()
 {
     return QStandardPaths::writableLocation(QStandardPaths::TempLocation) +
            QStringLiteral("/forkmesh-agent-images");
 }
 
-} // namespace
+}
 
 QString AgentPromptImages::directory()
 {
     QString base =
         QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (base.isEmpty())
-        base = QDir::tempPath(); // no writable app data: better than nothing
+        base = QDir::tempPath();
     return base + QStringLiteral("/agent-images");
 }
 
@@ -35,8 +35,8 @@ QString AgentPromptImages::save(const QImage &image)
     const QString dir = directory();
     if (!QDir().mkpath(dir))
         return QString();
-    // Not auto-removed: the file must outlive this call, the agent run that
-    // reads it, and every later re-render of the transcript.
+
+
     QTemporaryFile file(dir + QStringLiteral("/paste-XXXXXX.png"));
     file.setAutoRemove(false);
     if (!file.open())
@@ -82,8 +82,8 @@ void AgentPromptImages::migrateLegacy()
         const QString target = dir + QLatin1Char('/') + name;
         if (QFileInfo::exists(target))
             continue;
-        // Copied, not moved: a session resumed in this same boot still sends
-        // the original temp path to the CLI, which has to be able to read it.
+
+
         QFile::copy(legacy.filePath(name), target);
     }
 }

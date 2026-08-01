@@ -19,30 +19,30 @@
 #endif
 
 namespace {
-// RFC 6455 handshake GUID.
+
 const QByteArray kWsGuid = QByteArrayLiteral("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
 
 QString fileUrl(const QString &path)
 {
     return path.isEmpty() ? QString() : QUrl::fromLocalFile(path).toString();
 }
-} // namespace
+}
 
 ClaudeIdeBridge::ClaudeIdeBridge(QObject *parent) : QObject(parent) {}
 
 ClaudeIdeBridge::~ClaudeIdeBridge() { stop(); }
 
-// ---------------------------------------------------------------- lifecycle
+
 
 bool ClaudeIdeBridge::start(const QString &workspaceFolder)
 {
     m_workspaceFolder = workspaceFolder;
     if (isListening()) {
-        writeLockfile(); // refresh workspace folder in the lockfile
+        writeLockfile();
         return true;
     }
 
-    // 128-bit token, 32 lowercase hex chars, matching the CLI's expectation.
+
     quint32 r[4];
     for (quint32 &x : r)
         x = QRandomGenerator::system()->generate();
@@ -67,8 +67,8 @@ bool ClaudeIdeBridge::start(const QString &workspaceFolder)
 void ClaudeIdeBridge::stop()
 {
     removeLockfile();
-    // Detach our handlers first so abort()'s synchronous disconnected signal
-    // can't re-enter onDisconnected() and mutate m_conns mid-teardown.
+
+
     const QList<QTcpSocket *> socks = m_conns.keys();
     m_conns.clear();
     m_pendingDiffs.clear();
@@ -108,7 +108,7 @@ void ClaudeIdeBridge::setWorkspaceFolder(const QString &path)
         writeLockfile();
 }
 
-// ------------------------------------------------------------- editor state
+
 
 void ClaudeIdeBridge::setActiveFile(const QString &filePath)
 {
@@ -136,7 +136,7 @@ void ClaudeIdeBridge::clearSelection()
     m_hasSelection = false;
 }
 
-// ----------------------------------------------------------- TCP / handshake
+
 
 void ClaudeIdeBridge::onNewConnection()
 {
@@ -152,8 +152,8 @@ void ClaudeIdeBridge::onNewConnection()
 
 void ClaudeIdeBridge::onDisconnected(QTcpSocket *sock)
 {
-    // Drop any diffs still waiting on this client so resolveDiff() can't fire at
-    // a dead socket later.
+
+
     for (auto it = m_pendingDiffs.begin(); it != m_pendingDiffs.end();) {
         if (it.value().sock == sock)
             it = m_pendingDiffs.erase(it);
@@ -174,7 +174,7 @@ void ClaudeIdeBridge::onReadyRead(QTcpSocket *sock)
     c.buf += sock->readAll();
     if (!c.upgraded) {
         if (!tryHandshake(c))
-            return; // waiting for more bytes, or the connection was rejected
+            return;
     }
     if (c.upgraded)
         processFrames(sock);
@@ -184,7 +184,7 @@ bool ClaudeIdeBridge::tryHandshake(Conn &c)
 {
     const int end = c.buf.indexOf("\r\n\r\n");
     if (end < 0)
-        return false; // headers not complete yet
+        return false;
 
     const QByteArray head = c.buf.left(end);
     QHash<QString, QString> headers;
@@ -216,30 +216,30 @@ bool ClaudeIdeBridge::tryHandshake(Conn &c)
     resp += "Upgrade: websocket\r\n";
     resp += "Connection: Upgrade\r\n";
     resp += "Sec-WebSocket-Accept: " + accept + "\r\n";
-    // The CLI connects with `Sec-WebSocket-Protocol: mcp`; echo it back so its
-    // strict ws client accepts the handshake. We don't negotiate any extension
-    // (permessage-deflate), so frames stay uncompressed.
+
+
+
     if (headers.value(QStringLiteral("sec-websocket-protocol"))
             .contains(QStringLiteral("mcp")))
         resp += "Sec-WebSocket-Protocol: mcp\r\n";
     resp += "\r\n";
     c.sock->write(resp);
 
-    c.buf.remove(0, end + 4); // keep any frame bytes that arrived with the request
+    c.buf.remove(0, end + 4);
     c.upgraded = true;
     emit clientConnected();
     emit log(QStringLiteral("[ide] CLI connected"));
     return true;
 }
 
-// ------------------------------------------------------------- WS framing
+
 
 void ClaudeIdeBridge::processFrames(QTcpSocket *sock)
 {
     for (;;) {
-        // Re-fetch each pass: dispatch() can spin a nested event loop (the
-        // openDiff dialog), during which this same socket may receive more bytes
-        // or disconnect — re-finding keeps us off a dangling Conn reference.
+
+
+
         auto it = m_conns.find(sock);
         if (it == m_conns.end())
             return;
@@ -275,7 +275,7 @@ void ClaudeIdeBridge::processFrames(QTcpSocket *sock)
             idx += 4;
         }
         if ((quint64)b.size() < (quint64)idx + len)
-            return; // frame not fully arrived
+            return;
 
         QByteArray payload = b.mid(idx, (int)len);
         if (masked) {
@@ -284,10 +284,10 @@ void ClaudeIdeBridge::processFrames(QTcpSocket *sock)
         }
         c.buf.remove(0, idx + (int)len);
 
-        // dispatch() may invalidate `c` (nested loop / disconnect), so finish all
-        // reads/writes of `c` before calling it, then use the stable `sock`.
+
+
         switch (opcode) {
-        case 0x0: // continuation
+        case 0x0:
             c.fragment += payload;
             if (fin) {
                 const int op = c.fragmentOpcode;
@@ -301,8 +301,8 @@ void ClaudeIdeBridge::processFrames(QTcpSocket *sock)
                 }
             }
             break;
-        case 0x1: // text
-        case 0x2: // binary (treated like text payloads carrying JSON)
+        case 0x1:
+        case 0x2:
             if (fin) {
                 const QJsonDocument doc = QJsonDocument::fromJson(payload);
                 if (doc.isObject())
@@ -312,11 +312,11 @@ void ClaudeIdeBridge::processFrames(QTcpSocket *sock)
                 c.fragmentOpcode = opcode;
             }
             break;
-        case 0x8: // close
+        case 0x8:
             sendClose(sock);
             sock->disconnectFromHost();
             return;
-        case 0x9: { // ping -> pong (same payload, unmasked)
+        case 0x9: {
             QByteArray frame;
             frame.append(char(0x80 | 0x0A));
             frame.append(char(payload.size() & 0x7f));
@@ -324,7 +324,7 @@ void ClaudeIdeBridge::processFrames(QTcpSocket *sock)
             sock->write(frame);
             break;
         }
-        case 0xA: // pong
+        case 0xA:
             break;
         default:
             break;
@@ -337,7 +337,7 @@ void ClaudeIdeBridge::sendText(QTcpSocket *sock, const QByteArray &payload)
     if (!sock)
         return;
     QByteArray frame;
-    frame.append(char(0x80 | 0x01)); // FIN + text, server frames are not masked
+    frame.append(char(0x80 | 0x01));
     const int n = payload.size();
     if (n < 126) {
         frame.append(char(n));
@@ -362,7 +362,7 @@ void ClaudeIdeBridge::sendClose(QTcpSocket *sock)
     sock->write(close, 2);
 }
 
-// ------------------------------------------------------------- JSON-RPC
+
 
 void ClaudeIdeBridge::dispatch(QTcpSocket *sock, const QJsonObject &msg)
 {
@@ -396,9 +396,9 @@ void ClaudeIdeBridge::dispatch(QTcpSocket *sock, const QJsonObject &msg)
         sendResult(sock, id, toolDescriptors());
         return;
     }
-    // We advertise the prompts capability (mirroring the reference IDE), so the
-    // CLI calls prompts/list right after connecting; answer with an empty set
-    // rather than a method-not-found error. Same for any resources/list probe.
+
+
+
     if (method == QLatin1String("prompts/list")) {
         sendResult(sock, id, QJsonObject{{QStringLiteral("prompts"), QJsonArray{}}});
         return;
@@ -417,7 +417,7 @@ void ClaudeIdeBridge::dispatch(QTcpSocket *sock, const QJsonObject &msg)
         sendResult(sock, id, QJsonObject{});
         return;
     }
-    // notifications/initialized, cancelled, etc. carry no id and need no reply.
+
     if (isRequest)
         sendError(sock, id, -32601, QStringLiteral("Method not found: %1").arg(method));
 }
@@ -440,7 +440,7 @@ void ClaudeIdeBridge::handleToolCall(QTcpSocket *sock, const QJsonValue &id,
         const QString newPath = args.value(QStringLiteral("new_file_path")).toString();
         const QString contents =
             args.value(QStringLiteral("new_file_contents")).toString();
-        // Blocking tool: park the request and answer from resolveDiff().
+
         m_pendingDiffs.insert(tab, PendingDiff{sock, id, oldPath, newPath});
         emit openDiffRequested(tab, oldPath, newPath, contents);
         return;
@@ -498,13 +498,13 @@ void ClaudeIdeBridge::handleToolCall(QTcpSocket *sock, const QJsonValue &id,
     }
 
     if (name == QLatin1String("getDiagnostics")) {
-        // ForkMesh has no language server, so there are never diagnostics.
+
         sendResult(sock, id, mcpText(QStringLiteral("[]")));
         return;
     }
 
     if (name == QLatin1String("closeAllDiffTabs")) {
-        // Resolve anything still open as rejected, then report the count.
+
         const int n = m_pendingDiffs.size();
         const QList<QString> tabs = m_pendingDiffs.keys();
         for (const QString &tab : tabs)
@@ -531,7 +531,7 @@ void ClaudeIdeBridge::sendResult(QTcpSocket *sock, const QJsonValue &id,
                                  const QJsonObject &result)
 {
     if (id.isUndefined() || id.isNull())
-        return; // a notification expects no response
+        return;
     const QJsonObject msg{{QStringLiteral("jsonrpc"), QStringLiteral("2.0")},
                           {QStringLiteral("id"), id},
                           {QStringLiteral("result"), result}};
@@ -626,7 +626,7 @@ QJsonObject ClaudeIdeBridge::toolDescriptors() const
     return QJsonObject{{QStringLiteral("tools"), tools}};
 }
 
-// ------------------------------------------------------------- notifications
+
 
 void ClaudeIdeBridge::notifySelectionChanged()
 {
@@ -655,7 +655,7 @@ void ClaudeIdeBridge::notifyAtMentioned(const QString &filePath, int lineStart,
                                  {QStringLiteral("lineEnd"), lineEnd}});
 }
 
-// ------------------------------------------------------------- openDiff result
+
 
 void ClaudeIdeBridge::resolveDiff(const QString &tabName, bool accepted,
                                   const QString &finalContents)
@@ -666,11 +666,11 @@ void ClaudeIdeBridge::resolveDiff(const QString &tabName, bool accepted,
     const PendingDiff pd = it.value();
     m_pendingDiffs.erase(it);
     if (!m_conns.contains(pd.sock))
-        return; // client went away
+        return;
 
     if (accepted) {
-        // Apply the change the way an editor would: write it to disk, then tell
-        // the CLI the file was saved so it continues from the new contents.
+
+
         const QString target = pd.oldPath.isEmpty() ? pd.newPath : pd.oldPath;
         if (!target.isEmpty()) {
             QDir().mkpath(QFileInfo(target).absolutePath());
@@ -691,7 +691,7 @@ void ClaudeIdeBridge::resolveDiff(const QString &tabName, bool accepted,
     }
 }
 
-// ------------------------------------------------------------- lockfile
+
 
 QString ClaudeIdeBridge::lockfilePath() const
 {

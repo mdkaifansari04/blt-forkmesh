@@ -14,7 +14,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "tools"))
 
-import cloudflared_install as installer  # noqa: E402
+import cloudflared_install as installer
 
 
 class _Response(io.BytesIO, AbstractContextManager):

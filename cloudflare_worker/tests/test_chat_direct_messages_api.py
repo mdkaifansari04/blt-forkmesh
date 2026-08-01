@@ -13,7 +13,7 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import chat_direct_messages_api as api  # noqa: E402
+import chat_direct_messages_api as api
 
 
 def run_async_test(function):

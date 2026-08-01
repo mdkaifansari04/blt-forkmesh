@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-import world_visitors as visitors  # noqa: E402
+import world_visitors as visitors
 
 
 def _digest(value):
@@ -84,7 +84,7 @@ def test_hll_deduplicates_repeats_and_is_accurate_at_plaque_scale():
     estimate = visitors.hll_estimate(thousand)
     assert 900 <= estimate <= 1100
 
-    # Merging repeated register updates is idempotent.
+
     assert visitors.hll_estimate(thousand + thousand) == estimate
 
 

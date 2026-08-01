@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Package the Windows ForkMesh binary as an NSIS installer and Authenticode-sign
-# it (issue #370). Emits:
-#   <outdir>/forkmesh-windows-<arch>-setup.exe
-#
-# Signing env (all optional — unsigned when absent):
-#   On a Windows runner: signtool is used automatically if on PATH.
-#   Cross-platform (osslsigncode):
-#     FORKMESH_WIN_CERT_PFX        base64 of the .pfx code-signing cert
-#     FORKMESH_WIN_CERT_PASSWORD   its password
-#     FORKMESH_WIN_TIMESTAMP_URL   RFC-3161 timestamp URL (default: DigiCert)
-#
-# Updates are handled in-app by WinSparkle, which polls the appcast written by
-# generate-appcast.sh. See /docs#installers-updates.
+
+
+
+
+
+
+
+
+
+
+
+
+
 set -euo pipefail
 
 binary="$1"; outdir="${2:-.}"
@@ -52,7 +52,7 @@ makensis \
   -DFORKMESH_OUTFILE="$out" \
   "$here/forkmesh.nsi" >&2
 
-# --- Authenticode signing ---------------------------------------------------
+
 if command -v signtool >/dev/null 2>&1 && [ -n "${FORKMESH_WIN_CERT_PFX:-}" ]; then
   pfx="$workdir/cert.pfx"
   printf '%s' "$FORKMESH_WIN_CERT_PFX" | base64 -d > "$pfx"

@@ -13,7 +13,7 @@
 #include <cmath>
 
 namespace {
-// Not all libm headers define M_PI (it's POSIX, not standard C++).
+
 constexpr double kPi = 3.14159265358979323846;
 bool isDirectional(MarkupTool tool)
 {
@@ -177,7 +177,7 @@ void MarkupCanvas::mouseMoveEvent(QMouseEvent *event)
     if (m_current.kind == MarkupOp::Kind::Stroke) {
         m_current.points.append(pos);
     } else if (isDirectional(m_current.shapeType)) {
-        m_current.p2 = pos; // p1 stays anchored at the drag origin
+        m_current.p2 = pos;
     } else {
         m_current.rect = QRect(m_dragOrigin, pos).normalized();
     }
@@ -249,11 +249,11 @@ void MarkupCanvas::renderOp(QPainter &painter, const MarkupOp &op)
         painter.drawEllipse(op.rect);
     } else if (op.shapeType == MarkupTool::Line) {
         painter.drawLine(op.p1, op.p2);
-    } else { // Arrow: a shaft plus a filled triangular head at p2
+    } else {
         painter.drawLine(op.p1, op.p2);
         const double angle = std::atan2(op.p2.y() - op.p1.y(), op.p2.x() - op.p1.x());
         constexpr double kHeadLength = 14.0;
-        constexpr double kHeadSpread = kPi / 7.0; // ~25.7 degrees off the shaft
+        constexpr double kHeadSpread = kPi / 7.0;
         const QPointF tip(op.p2);
         const QPointF left = tip - QPointF(kHeadLength * std::cos(angle - kHeadSpread),
                                            kHeadLength * std::sin(angle - kHeadSpread));

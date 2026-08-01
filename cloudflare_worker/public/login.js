@@ -11,18 +11,18 @@
   const DEMO_EMAIL = "demo@forkmesh.local";
   const DEMO_PASSWORD = "forkmesh-demo";
 
-  // Where to land after a successful login. Only same-site paths are honored
-  // (an absolute URL here would be an open redirect). Used by flows that bounce
-  // through login, e.g. the desktop app's "Link this node to your account"
-  // grant URL (adhoc #120), so they resume exactly where they left off.
+
+
+
+
   function nextPath() {
     let value = "";
     try {
       value = new URLSearchParams(location.search).get("next") || "";
     } catch (_) {}
-    // Must be a same-origin path. Reject "//host" and "/\host" (browsers
-    // normalize the backslash to "/", so "/\evil.com" resolves off-origin) and
-    // confirm the resolved origin matches ours before honoring it.
+
+
+
     if (!value.startsWith("/") || value.startsWith("//") || value.startsWith("/\\")) {
       return "";
     }
@@ -108,7 +108,7 @@
 
     if (res.ok) {
       setHint("Logged in as “" + (body.nodeName || email) + "”.", "good");
-      // Persist a minimal, non-secret session marker for the static site.
+
       storeSession(body);
       setTimeout(() => (location.href = nextPath() || "/"), 700);
       return;
@@ -119,8 +119,8 @@
       return;
     }
     setHint(
-      // The relay returns one generic code for a bad email/password/unknown
-      // account so attackers can't enumerate which accounts exist.
+
+
       body.error === "invalid_credentials" ? "Incorrect email or password."
         : body.error === "too_many_attempts"
           ? "Too many failed attempts. Wait a few minutes and try again."
@@ -129,11 +129,11 @@
         : "Could not log in. Please try again.", "bad");
   }
 
-  // If we were bounced here from a gated page (e.g. the admin dashboard, whose
-  // short-lived HttpOnly cookie lapses well before the 30-day login session
-  // does) and we still hold a valid account session, re-establish the admin
-  // page cookie from that session token instead of forcing a password re-entry
-  // (adhoc #163). On any failure we silently fall back to the normal form.
+
+
+
+
+
   const ADMIN_RESUME_KEY = "forkmesh.adminResumeAt";
 
   async function resumeAdminSession() {
@@ -144,10 +144,10 @@
       session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
     } catch (_) {}
     if (!session || !session.isAdmin || !session.sessionToken) return;
-    // If we resumed seconds ago and got bounced straight back here, the gated
-    // page is rejecting the freshly minted cookie — fall through to the
-    // password form instead of redirect-looping forever (adhoc #168). A
-    // resume from hours ago (cookie lapsed again) still retries silently.
+
+
+
+
     try {
       if (Date.now() - Number(sessionStorage.getItem(ADMIN_RESUME_KEY) || 0) < 15000) return;
     } catch (_) {}

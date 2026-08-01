@@ -68,7 +68,7 @@ def test_qt_and_worker_share_complete_single_recipient_hybrid_envelope():
     assert "_valid_b64url(kem_ciphertext, 1088, 1088)" in validator
     assert "_valid_b64url(wrapped_key, 32, 32)" in validator
     assert '"recipients": [{' in validator
-    # The obsolete kid/nonce/tag/body-only framing cannot pass.
+
     assert 'kid = str(value.get("kid")' not in validator
 
 

@@ -14,9 +14,9 @@ namespace forkmesh::mcp {
 
 namespace {
 
-// POSIX-ish shell quoting for the copy-paste CLI line. Anything outside the
-// safe set is wrapped in single quotes with embedded quotes escaped, so a home
-// directory with a space in it still produces a runnable command.
+
+
+
 QString shellQuote(const QString &value)
 {
     static const QRegularExpression safe(QStringLiteral("^[A-Za-z0-9_@%+=:,./-]+$"));
@@ -29,7 +29,7 @@ QString shellQuote(const QString &value)
     return QLatin1Char('\'') + escaped + QLatin1Char('\'');
 }
 
-} // namespace
+}
 
 QString connectorPath(const QString &appDataDir)
 {
@@ -38,7 +38,7 @@ QString connectorPath(const QString &appDataDir)
 
 QString generateToken()
 {
-    // 32 bytes from the system CSPRNG — the same strength as the room keys.
+
     QByteArray raw(32, Qt::Uninitialized);
     QRandomGenerator::system()->fillRange(
         reinterpret_cast<quint32 *>(raw.data()), raw.size() / 4);
@@ -64,7 +64,7 @@ Connector loadConnector(const QString &appDataDir)
         QJsonDocument::fromJson(file.readAll()).object();
     const QString token = object.value(QStringLiteral("token")).toString();
     if (!isWellFormedToken(token))
-        return connector; // truncated or hand-edited file: treat as absent
+        return connector;
     connector.token = token;
     connector.node = object.value(QStringLiteral("node")).toString();
     connector.label = object.value(QStringLiteral("label")).toString();
@@ -103,8 +103,8 @@ bool saveConnector(const QString &appDataDir, const Connector &connector,
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate))
         return fail(QStringLiteral("Could not write %1.").arg(path));
-    // Owner-only before anything is written: this is a bearer credential that
-    // signs as this node, exactly like the identity key next to it.
+
+
     file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
     const QByteArray payload =
         QJsonDocument(object).toJson(QJsonDocument::Indented);
@@ -178,4 +178,4 @@ QString maskToken(const QString &token)
     return token.left(9) + QString::fromUtf8("\xe2\x80\xa6") + token.right(4);
 }
 
-} // namespace forkmesh::mcp
+}

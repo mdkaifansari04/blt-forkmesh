@@ -702,8 +702,8 @@ async def cleanup(runtime):
         "DELETE FROM world_fediverse_mentions WHERE expires_at<=?",
         now,
     )
-    # A worker interruption while an authorized create was claiming its lease
-    # makes the item reviewable again; no issue is announced or inferred.
+
+
     await runtime.d1_run(
         "UPDATE world_fediverse_mentions SET state='failed',"
         "create_lease_id='',create_lease_until=0,updated_at=? "

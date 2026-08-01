@@ -26,7 +26,7 @@ import re
 import time
 from urllib.parse import urlparse
 
-# --- Constants ----------------------------------------------------------------
+
 
 AS_CONTEXT = "https://www.w3.org/ns/activitystreams"
 SECURITY_CONTEXT = "https://w3id.org/security/v1"
@@ -34,23 +34,23 @@ AS_PUBLIC = "https://www.w3.org/ns/activitystreams#Public"
 ACTIVITY_CONTENT_TYPE = "application/activity+json; charset=utf-8"
 JRD_CONTENT_TYPE = "application/jrd+json; charset=utf-8"
 
-# Accept-header fragments that mean "give me the ActivityPub JSON, not HTML".
+
 _ACTIVITY_ACCEPT_TOKENS = (
     "application/activity+json",
     "application/ld+json",
 )
 
-# Default signed headers for outbound requests (Mastodon-compatible).
+
 SIGNED_HEADERS_POST = ["(request-target)", "host", "date", "digest",
                        "content-type"]
 SIGNED_HEADERS_GET = ["(request-target)", "host", "date", "accept"]
 
-# Local user/node names never contain a dot (see NODE_NAME_RE in entry.py), so
-# "<owner>.<repo>" is an unambiguous repo-actor handle: split on the FIRST dot.
+
+
 USER_HANDLE_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPO_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
 
-# Give up on a queued delivery after this many attempts (~2 days of backoff).
+
 MAX_DELIVERY_ATTEMPTS = 8
 
 
@@ -59,7 +59,7 @@ def wants_activity_json(accept_header):
     return any(token in accept for token in _ACTIVITY_ACCEPT_TOKENS)
 
 
-# --- Handles / identifiers -----------------------------------------------------
+
 
 def parse_acct_resource(resource):
     """Parse a WebFinger ?resource= value into (handle, domain), lowercased.
@@ -132,8 +132,8 @@ def parse_local_actor_url(origin, url):
             return parsed
     match = _LOCAL_REPO_URL_RE.match(path)
     if match:
-        # Lowercase like split_handle does: AP actor ids must be one stable
-        # string, and every forkmesh lookup is case-insensitive anyway.
+
+
         owner, repo = match.group(1).lower(), match.group(2).lower()
         if USER_HANDLE_RE.match(owner) and REPO_SEGMENT_RE.match(repo):
             return ("repo", owner, repo)
@@ -158,7 +158,7 @@ def context_key(owner, repo, kind, ref):
     return "%s/%s#%s#%s" % (owner, repo, kind, ref)
 
 
-# --- Time / date formatting ------------------------------------------------
+
 
 _WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 _MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun",
@@ -191,7 +191,7 @@ def parse_http_date_ms(value):
     return 0
 
 
-# --- Digest header ----------------------------------------------------------
+
 
 def digest_header_value(body_bytes):
     return "SHA-256=" + base64.b64encode(
@@ -212,7 +212,7 @@ def digest_matches(header_value, body_bytes):
     return False
 
 
-# --- HTTP Signatures (draft-cavage) ------------------------------------------
+
 
 def signing_string(method, path_with_query, headers, header_names,
                    created=None, expires=None):
@@ -253,8 +253,8 @@ def parse_signature_header(value):
     if not value:
         return None
     value = value.strip()
-    # Some implementations send "Signature keyId=..." inside an Authorization
-    # header; strip the scheme token if present.
+
+
     if value.lower().startswith("signature "):
         value = value[len("signature "):]
     params = {}
@@ -291,7 +291,7 @@ def build_signature_header(key_id, header_names, signature_b64,
             % (key_id, algorithm, " ".join(header_names), signature_b64))
 
 
-# --- PEM helpers -------------------------------------------------------------
+
 
 def pem_wrap(label, der_b64):
     body = "\n".join(der_b64[i:i + 64] for i in range(0, len(der_b64), 64))
@@ -305,7 +305,7 @@ def pem_body(pem):
     return "".join(lines)
 
 
-# --- Document builders --------------------------------------------------------
+
 
 def webfinger_doc(acct, actor_url):
     return {
@@ -400,19 +400,19 @@ def actor_doc(actor_url, actor_type, preferred_username, display_name,
     if published_ms:
         doc["published"] = iso_utc(published_ms)
     if icon_url:
-        doc["icon"] = image_object(icon_url)     # avatar
+        doc["icon"] = image_object(icon_url)
     if image_url:
-        doc["image"] = image_object(image_url)   # profile header/banner
+        doc["image"] = image_object(image_url)
     if attachments:
-        doc["attachment"] = list(attachments)    # profile metadata rows
+        doc["attachment"] = list(attachments)
     return doc
 
 
 def instance_actor_doc(origin, domain, pubkey_pem, icon_url=None,
                        image_url=None):
-    # The service-level actor used to sign outbound GETs (Mastodon "secure mode"
-    # requires signed fetches). preferredUsername is the domain itself, which a
-    # local user name can never collide with (names cannot contain dots).
+
+
+
     actor_url = origin + INSTANCE_ACTOR_PATH
     doc = actor_doc(
         actor_url, "Application", domain, "ForkMesh relay",
@@ -433,12 +433,12 @@ def collection_doc(collection_url, total_items, items=None):
         "totalItems": int(total_items),
     }
     if items is not None:
-        # A self-contained first page (no next/prev): small enough lists that
-        # remote servers don't need real pagination. Without a `first` page at
-        # all, Mastodon's UI treats the collection as hidden ("this user has
-        # chosen to not make their followers/following visible") even though
-        # totalItems is populated — so omitting this for opted-out accounts is
-        # what actually keeps their list private, not just leaving it out.
+
+
+
+
+
+
         doc["first"] = {
             "type": "OrderedCollectionPage",
             "partOf": collection_url,
@@ -531,7 +531,7 @@ def accept_activity(actor_url, follow_activity):
     }
 
 
-# --- Remote document extraction ------------------------------------------------
+
 
 def activity_object_id(value):
     """An activity's object/actor may be a bare id string or an embedded
@@ -630,9 +630,9 @@ def actor_essentials(doc):
         "name": str(doc.get("name", "") or ""),
         "url": activity_object_id(doc.get("url")) or str(doc["id"]),
         "type": str(doc.get("type", "") or ""),
-        # Public profile presentation: the avatar and the bio the remote server
-        # already publishes to anyone who fetches this actor. Callers sanitize
-        # (the summary is untrusted remote HTML) before storing or serving.
+
+
+
         "icon": image_url_of(doc.get("icon")),
         "image": image_url_of(doc.get("image")),
         "summary": str(doc.get("summary", "") or ""),
@@ -704,7 +704,7 @@ def note_essentials(obj):
     }
 
 
-# --- Content rendering / sanitization ------------------------------------------
+
 
 _TAG_RE = re.compile(r"<[^>]{0,500}>")
 _BREAK_RE = re.compile(r"<\s*(?:br\s*/?|/p|/div|/li)\s*>", re.IGNORECASE)
@@ -829,7 +829,7 @@ def event_note_text(kind, event_type, owner, repo, ref, title, body,
     return "\n\n".join(parts)
 
 
-# --- Domain blocklist (defederation) -----------------------------------------
+
 
 _DOMAIN_RE = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?"
@@ -853,7 +853,7 @@ def domain_blocked_by(host, blocked_domains):
     return False
 
 
-# --- Delivery retry policy -------------------------------------------------
+
 
 def retry_backoff_ms(attempts):
     """Delay before retry number `attempts` (1-based): 5m, 20m, 80m ... capped

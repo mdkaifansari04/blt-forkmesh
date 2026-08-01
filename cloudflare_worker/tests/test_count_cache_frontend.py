@@ -19,7 +19,7 @@ def test_static_page_defines_and_primes_cached_stats():
     assert "function readCachedStat(" in STATIC
     assert "function writeCachedStat(" in STATIC
     assert "function primeCachedStats(" in STATIC
-    # Priming happens before the first live fetch kicks off.
+
     assert STATIC.index("primeCachedStats();") < STATIC.rindex("pollStats();")
     assert "setInterval(" not in STATIC
     assert "function startStats(" not in STATIC

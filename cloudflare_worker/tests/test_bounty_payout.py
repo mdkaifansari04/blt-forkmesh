@@ -41,7 +41,7 @@ def test_public_projection_labels_legacy_rows_as_migration_required():
         "_solana_pay_uri": lambda address, amount, **_kwargs:
             f"solana:{address}?amount={amount}",
     })
-    # Re-load after injecting dependencies into the execution namespace.
+
     tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
     node = next(
         item for item in tree.body

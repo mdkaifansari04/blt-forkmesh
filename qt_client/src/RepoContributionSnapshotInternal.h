@@ -70,4 +70,4 @@ bool appendBounded(QByteArray *destination, const QByteArray &chunk,
                    qsizetype maxBytes);
 void setBeforePullMetadataRecheckHookForTests(std::function<void()> hook);
 
-} // namespace RepoContributionSnapshotInternal
+}

@@ -77,8 +77,8 @@ def _run(repo_records):
 
         @staticmethod
         def parse(s):
-            # Model updatedAt as sortable numeric strings ("1", "2", ...); real
-            # values are ISO timestamps, but only relative ordering matters here.
+
+
             try:
                 return float(s)
             except (TypeError, ValueError):
@@ -152,7 +152,7 @@ def test_sums_counters_across_a_nodes_repos_and_keeps_latest_state():
     assert newnewnode["artifactCount"] == 1
     assert newnewnode["clonesServed"] == 5
     assert newnewnode["websiteServed"] == 10
-    # repoB has the later updatedAt ("2" > "1"), so its state wins.
+
     assert newnewnode["commit"] == "bbbbbbbbbbbb"
     assert newnewnode["branch"] == "dev"
     assert newnewnode["version"] == "0.5.2"
@@ -194,8 +194,8 @@ def test_partial_multi_repo_counter_totals_remain_unknown():
         },
     ])
     node = out["nodes"][0]
-    # A partial sum is not a truthful node total. Both repositories reported
-    # commitCount, so that one aggregate remains known.
+
+
     assert node["issueCount"] is None
     assert node["pullCount"] is None
     assert node["commitCount"] == 15

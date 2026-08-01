@@ -1,9 +1,9 @@
-// MainWindowReleases: MainWindow feature methods, split out of MainWindow.cpp.
-// Releases panel and mirror nodes.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -42,23 +42,23 @@ enum MirrorNodeColumn {
     MirrorNodeColumnCount,
 };
 
-// Bake a release tag's version into the Qt client's source version — the
-// project(ForkMesh VERSION X.Y.Z ...) line in qt_client/CMakeLists.txt that
-// every "ForkMesh v" FORKMESH_VERSION display reads — and commit it, so cutting
-// release vX.Y.Z immediately updates the version the app reports.
-//
-// Called BEFORE the release tag is created (see promptNewRelease), so the
-// tagged commit itself declares the release version: building straight from the
-// tag reports X.Y.Z. Previously the header was only bumped by
-// ActionRunner::landVersionHeader AFTER a build node finished publishing the
-// binary, which (a) left the tagged commit reading the previous version and
-// (b) never happened at all if no build node ran. The release.yml workflow's
-// in-worktree sed and -DFORKMESH_VERSION_OVERRIDE stamp still cover the published binary;
-// landVersionHeader becomes a no-op once the header is already in sync here.
-//
-// Only a clean MAJOR.MINOR.PATCH tag bumps the header; a pre-release (-rc1) or
-// non-semver tag is left alone so the source version never jumps ahead to a
-// version that hasn't shipped. Returns true when a bump was committed.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 bool bumpQtVersionForRelease(const QString &workTree, const QString &tag)
 {
     if (workTree.isEmpty())
@@ -73,8 +73,8 @@ bool bumpQtVersionForRelease(const QString &workTree, const QString &tag)
 
     const QString rel = QStringLiteral("qt_client/CMakeLists.txt");
 
-    // Don't touch a header the user is already editing — a path-scoped commit
-    // would otherwise sweep their pending edits in with the version bump.
+
+
     QByteArray pending;
     if (!runGitCapture(workTree, {"status", "--porcelain", "--", rel}, &pending,
                        nullptr) ||
@@ -87,13 +87,13 @@ bool bumpQtVersionForRelease(const QString &workTree, const QString &tag)
     QString text = QString::fromUtf8(file.readAll());
     file.close();
 
-    // The version sits on a single line: project(ForkMesh VERSION X.Y.Z ...).
+
     static const QRegularExpression versionLine(
         QStringLiteral("^(project\\(ForkMesh VERSION )([0-9]+\\.[0-9]+\\.[0-9]+)"),
         QRegularExpression::MultilineOption);
     const QRegularExpressionMatch m = versionLine.match(text);
     if (!m.hasMatch() || m.captured(2) == version)
-        return false; // header missing here, or already at the release version
+        return false;
 
     text.replace(m.capturedStart(2), m.capturedLength(2), version);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate | QIODevice::Text))
@@ -103,8 +103,8 @@ bool bumpQtVersionForRelease(const QString &workTree, const QString &tag)
     if (!wrote)
         return false;
 
-    // Commit just the version header, under the same release-bot identity
-    // ActionRunner uses when it lands release metadata.
+
+
     return runGitCapture(
         workTree,
         {"-c", QStringLiteral("user.email=actions@forkmesh.local"), "-c",
@@ -114,9 +114,9 @@ bool bumpQtVersionForRelease(const QString &workTree, const QString &tag)
         nullptr, nullptr);
 }
 
-} // namespace
+}
 
-// ---- Releases panel --------------------------------------------------------
+
 
 QWidget *MainWindow::buildReleasesTab()
 {
@@ -150,7 +150,7 @@ QWidget *MainWindow::buildReleasesTab()
     layout->addLayout(headerRow);
 
     m_releasesTable = new QTableWidget(0, 11);
-    installColumnHeaderMenu(m_releasesTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_releasesTable);
     m_releasesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_releasesTable);
     m_releasesTable->setHorizontalHeaderLabels(
@@ -176,11 +176,11 @@ QWidget *MainWindow::buildReleasesTab()
     rh->setSectionResizeMode(9, QHeaderView::ResizeToContents);
     rh->setSectionResizeMode(10, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_releasesTable);
-    // itemActivated (rather than cellDoubleClicked) so pressing Enter on the
-    // keyboard-focused row opens the release too, matching the arrow-key
-    // navigation the tab supports (adhoc #183). Opening a row shows the
-    // release's full notes and the diff since the previous release (issue #284);
-    // a button there still browses the repo at the tag.
+
+
+
+
+
     connect(m_releasesTable, &QTableWidget::itemActivated, this,
             [this](QTableWidgetItem *item) {
                 QTableWidgetItem *it =
@@ -192,14 +192,14 @@ QWidget *MainWindow::buildReleasesTab()
     return page;
 }
 
-// ---- Artifacts panel -------------------------------------------------------
-//
-// Release binaries live out of git in the node's content-addressed store
-// (forkmesh-releases/sha256/<aa>/<hash>/data — see issue #304); the Releases tab
-// only links to their downloads. This tab lists the blobs actually on disk with
-// their size and the release they belong to, and lets each be deleted to reclaim
-// space (adhoc #98). An orphaned blob — one no release manifest references — is
-// surfaced explicitly, since those are the ones most worth pruning.
+
+
+
+
+
+
+
+
 
 QWidget *MainWindow::buildArtifactsTab()
 {
@@ -236,7 +236,7 @@ QWidget *MainWindow::buildArtifactsTab()
     layout->addWidget(hint);
 
     m_artifactsTable = new QTableWidget(0, 5);
-    installColumnHeaderMenu(m_artifactsTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_artifactsTable);
     m_artifactsTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_artifactsTable);
     m_artifactsTable->setHorizontalHeaderLabels(
@@ -270,18 +270,18 @@ void MainWindow::loadArtifactsPanel()
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
     const QString mirrorPath = m_repositories.at(m_repoDetailIndex).mirrorPath;
-    // Deletion only touches the on-disk CAS in this node's own mirror, so it's
-    // fine on mirror-only hosting nodes too (where reclaiming space matters most)
-    // — gate on holding a writable local mirror, not on having a working tree.
+
+
+
     const bool writable = !m_repositories.at(m_repoDetailIndex).previewOnly &&
                           !mirrorPath.isEmpty() && QDir(mirrorPath).exists();
 
     const QList<MirrorReleaseBlob> blobs = mirrorReleaseBlobs(mirrorPath);
 
-    // Map blob sha256 -> asset name / source tag from the release manifests git
-    // already mirrors (.forkmesh/releases/<channel>/release.json on the served branch), the
-    // same way replicateReleaseArtifacts reads them. A blob no manifest names is
-    // an orphan and shown as such.
+
+
+
+
     QHash<QString, QString> nameByHash;
     QHash<QString, QString> tagByHash;
     const QString branch = mirrorHeadBranch(mirrorPath);
@@ -393,8 +393,8 @@ void MainWindow::deleteArtifact(const QString &hash, const QString &label)
                 .arg(label),
             QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
         return;
-    // The blob lives at <mirror>/forkmesh-releases/sha256/<aa>/<hash>/data — drop
-    // the whole <hash>/ directory, then the <aa>/ shard once it's empty.
+
+
     const QFileInfo info(mirrorReleaseBlobPath(mirrorPath, hash));
     QDir hashDir = info.absoluteDir();
     if (!hashDir.removeRecursively()) {
@@ -410,8 +410,8 @@ void MainWindow::deleteArtifact(const QString &hash, const QString &label)
             .arg(label, hash.left(12)));
     setRepoDetailNotice(QStringLiteral("Deleted artifact %1.").arg(label));
     loadArtifactsPanel();
-    // The Mirror nodes view advertises this node's artifact tally; keep it honest
-    // if it's the visible tab.
+
+
     if (m_repoDetailStack && m_mirrorNodesTabIndex >= 0 &&
         m_repoDetailStack->currentIndex() == m_mirrorNodesTabIndex)
         loadMirrorNodesPanel();
@@ -558,10 +558,10 @@ void MainWindow::pruneReleaseTagsForCurrentRepo(const QString &keepTag)
         m_repoDetailStack->currentIndex() == m_releasesTabIndex)
         loadReleasesPanel();
 
-    // Deleting only changes the tag refs in the working copy; propagate that
-    // into the served bare mirror now (syncRepository fetches heads+tags with
-    // --prune) instead of waiting on the one-minute auto-sync — the same
-    // immediacy propagateRepoUpdate already gives freshly committed issues/PRs.
+
+
+
+
     propagateRepoUpdate(m_repoDetailIndex);
 }
 
@@ -580,17 +580,17 @@ void MainWindow::loadReleasesPanel()
                            !repo.localPath.trimmed().isEmpty();
     }
 
-    // Release artifacts are published under .forkmesh/releases/<channel>/release.json (the
-    // channel is usually "latest", NOT the tag name — see .forkmesh/releases/README.md and
-    // tools/forkmesh-release-publish.sh). Each manifest records the tag it was cut
-    // from in its "tag" field, so scan every channel manifest and key the asset
-    // names by that tag. The Artifacts column then looks up each release row by
-    // tag, instead of probing a .forkmesh/releases/<tag>/ path that the publisher never
-    // writes (which left the column always empty).
-    // Each artifact name links to its live download on the relay's
-    // content-addressed release endpoint (the exact URL install.sh fetches:
-    // <relay>/api/repo/<owner>/<name>/releases/blob/sha256/<blob_sha256>), so a
-    // release row's binaries can be pulled straight from the served mirror.
+
+
+
+
+
+
+
+
+
+
+
     QString relayHost =
         serverHost(QSettings().value(kServerUrlSetting).toString().trimmed());
     if (relayHost.isEmpty())
@@ -605,10 +605,10 @@ void MainWindow::loadReleasesPanel()
                   relayHost);
     static const QRegularExpression sha256Re(QStringLiteral("\\A[0-9a-f]{64}\\z"));
 
-    // The relay logs one row per completed download of a release asset (see the
-    // worker's /releases/blob/sha256/<hash> route), keyed by this repo's
-    // owner/name — the same identity the artifact links above are built from.
-    // Fetched below (throttled) and rendered next to each artifact's checksum.
+
+
+
+
     QString dlOwner;
     QString dlRepo;
     QString dlSource;
@@ -622,19 +622,19 @@ void MainWindow::loadReleasesPanel()
     const bool haveDownloadCounts = !dlSource.isEmpty() &&
                                     m_releaseDownloadsSource == dlSource;
 
-    // Artifacts column holds rich-text links, so key it on the rendered HTML.
-    // Size/SHA-256/Downloads get their own plain-text columns (one comma-joined
-    // entry per asset, positionally matching the Artifacts links) instead of
-    // being crammed into the Artifacts cell.
+
+
+
+
     QHash<QString, QString> artifactsByTag;
     QHash<QString, QString> sizeByTag;
     QHash<QString, QString> shaByTag;
     QHash<QString, QString> shaTooltipByTag;
     QHash<QString, QString> downloadsByTag;
-    // The "latest" channel is what install.sh actually downloads as the current
-    // release, regardless of which tag it was cut from. Remember its rendered
-    // artifacts (and source tag) so the newest release row can surface them even
-    // when that release's own build hasn't published a manifest yet.
+
+
+
+
     QString latestChannelHtml;
     QString latestChannelTag;
     QString latestChannelSize;
@@ -659,8 +659,8 @@ void MainWindow::loadReleasesPanel()
                 obj.value(QStringLiteral("tag")).toString().trimmed();
             if (manifestTag.isEmpty())
                 continue;
-            // The canonical owner/repo that staged the out-of-git blob; only that
-            // node serves the content-addressed download.
+
+
             const QString manifestRepo =
                 obj.value(QStringLiteral("repo")).toString().trimmed();
             QStringList assetLinks;
@@ -695,20 +695,20 @@ void MainWindow::loadReleasesPanel()
                 }
                 assetLinks.append(entry);
 
-                // Artifact byte size, as recorded by
-                // tools/forkmesh-release-publish.sh when it staged the blob.
+
+
                 const qint64 size =
                     static_cast<qint64>(a.value(QStringLiteral("size")).toDouble());
                 sizeParts.append(size > 0 ? QLocale().formattedDataSize(size)
                                           : QStringLiteral("—"));
 
-                // Abbreviated sha256 for the column, full digest in the tooltip —
-                // the full 64-char hex would blow out the column width.
+
+
                 shaParts.append(hashValid ? hash.left(12) : QStringLiteral("—"));
                 shaTooltipParts.append(hashValid ? QStringLiteral("sha256:%1").arg(hash)
                                                  : QString());
 
-                // Download tally the relay has logged for this exact blob.
+
                 if (hashValid && haveDownloadCounts)
                     downloadParts.append(
                         QString::number(m_releaseDownloadsCache.value(hash, 0)));
@@ -741,11 +741,11 @@ void MainWindow::loadReleasesPanel()
     int count = 0;
     QString currentTag;
     QByteArray out;
-    // One batched for-each-ref call carries everything the row needs, including
-    // the tag's target commit (peeled short sha for an annotated tag, or its own
-    // short sha for a lightweight one) and tagger — spawning a git process per row
-    // to fetch these froze the UI on repos with many refs before (issue #152), so
-    // nothing extra is shelled out here per release.
+
+
+
+
+
     if (!dir.isEmpty() &&
         runGitCapture(dir,
                       {"for-each-ref", "--sort=-creatordate", "refs/tags",
@@ -757,10 +757,10 @@ void MainWindow::loadReleasesPanel()
                        "%(taggername)%1f"
                        "%(contents:body)%1e"},
                       &out, nullptr)) {
-        // Records are RS-separated (%1e) rather than newline-separated, because
-        // the trailing contents:body field can itself contain embedded newlines
-        // (the "What's Changed" bullet list) — splitting on '\n' would otherwise
-        // shred one release's record into several bogus rows.
+
+
+
+
         QStringList tagLines;
         for (const QString &record :
              QString::fromUtf8(out).split(QLatin1Char('\x1e'))) {
@@ -774,15 +774,15 @@ void MainWindow::loadReleasesPanel()
             const QString tag = f.value(0).trimmed();
             if (tag.isEmpty())
                 continue;
-            // Tags are sorted newest-first, so the first one is the current
-            // release shown at the top of the panel header (issue #226).
+
+
             if (currentTag.isEmpty())
                 currentTag = tag;
 
-            // The previous release (next-older tag by creation date) is the
-            // Compare link's diff base — same ordering showReleaseDetail uses
-            // (issue #284), just read off the row already fetched below instead
-            // of another git call.
+
+
+
+
             QString prevTag;
             for (int j = i + 1; j < tagLines.size(); ++j) {
                 const QString cand =
@@ -799,9 +799,9 @@ void MainWindow::loadReleasesPanel()
             tagItem->setIcon(themedOcticon("tag", QColor("#a371f7"), 14));
             m_releasesTable->setItem(row, 0, tagItem);
 
-            // Commit column: the tag's target commit. Peeled short sha for an
-            // annotated tag (%(*objectname:short)); a lightweight tag's own
-            // objectname is already the commit.
+
+
+
             QString commitSha = f.value(3).trimmed();
             if (commitSha.isEmpty())
                 commitSha = f.value(4).trimmed();
@@ -810,8 +810,8 @@ void MainWindow::loadReleasesPanel()
             commitItem->setForeground(QColor("#8b949e"));
             m_releasesTable->setItem(row, 1, commitItem);
 
-            // Parse the datetime string from git (format: "YYYY-MM-DD HH:MM")
-            // and convert to relative "x ago" format
+
+
             const QString dateTimeStr = f.value(1).trimmed();
             QString relativeTime = dateTimeStr;
             if (!dateTimeStr.isEmpty()) {
@@ -832,14 +832,14 @@ void MainWindow::loadReleasesPanel()
                 whenItem->setToolTip(toolTip);
             m_releasesTable->setItem(row, 2, whenItem);
 
-            // Release notes column: promptNewRelease defaults the tag message's
-            // title to the tag name itself when the user leaves Title blank (the
-            // usual case for auto-generated releases), so contents:subject alone
-            // is almost always just a copy of the Tag column — not the release's
-            // actual notes, which live in the tag body below the title. Prefer a
-            // real title when one was typed; otherwise fall back to the first
-            // line of the body (skipping the auto-generated "## What's Changed"
-            // heading) so this column shows something distinct from Tag.
+
+
+
+
+
+
+
+
             const QString subject = f.value(2).trimmed();
             const QString body = f.value(6).trimmed();
             QString notesPreview = subject;
@@ -864,10 +864,10 @@ void MainWindow::loadReleasesPanel()
                 notesItem->setToolTip(notesTooltip);
             m_releasesTable->setItem(row, 3, notesItem);
 
-            // Compare column: a GitHub-style link to the diff since the previous
-            // release. The actual diff is computed on demand by showReleaseDetail
-            // (the same dialog a row click opens) rather than here, so listing
-            // releases never spawns a diff per row.
+
+
+
+
             if (prevTag.isEmpty()) {
                 auto *initial = new QTableWidgetItem("Initial release");
                 initial->setForeground(QColor("#8b949e"));
@@ -886,20 +886,20 @@ void MainWindow::loadReleasesPanel()
                 m_releasesTable->setCellWidget(row, 4, compare);
             }
 
-            // Artifacts for this tag come from the channel manifest scanned above
-            // (keyed by the manifest's own "tag" field), not a .forkmesh/releases/<tag>/ path.
-            // The asset names are rendered as live-download links, so use a
-            // rich-text label cell that opens the URL in the browser on click.
+
+
+
+
             QString artifactsHtml = artifactsByTag.value(tag);
             QString sizeText = sizeByTag.value(tag);
             QString shaText = shaByTag.value(tag);
             QString shaTooltip = shaTooltipByTag.value(tag);
             QString downloadsText = downloadsByTag.value(tag);
-            // The newest release should always show a downloadable artifact when
-            // one exists. If this top row has no manifest of its own yet (its
-            // build hasn't published, so the tag-keyed lookup is empty), fall back
-            // to the "latest" channel's artifact — exactly what install.sh serves
-            // — annotated with the tag it was actually cut from.
+
+
+
+
+
             if (artifactsHtml.isEmpty() && count == 0 &&
                 !latestChannelHtml.isEmpty()) {
                 artifactsHtml =
@@ -939,9 +939,9 @@ void MainWindow::loadReleasesPanel()
                 shaItem->setToolTip(shaTooltip);
             m_releasesTable->setItem(row, 7, shaItem);
 
-            // Downloads only reads as "0" once the relay's per-hash tally has
-            // actually loaded (haveDownloadCounts); until then every asset shows
-            // "—" rather than a misleading zero.
+
+
+
             auto *downloadsItem = new QTableWidgetItem(
                 downloadsText.isEmpty() ? QStringLiteral("—") : downloadsText);
             downloadsItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
@@ -976,8 +976,8 @@ void MainWindow::loadReleasesPanel()
             ++count;
         }
     }
-    // Header reads "Releases  <current tag> (N)" — the current release number on
-    // top, then how many releases there are in parentheses to the right (#226).
+
+
     if (m_releasesSummary) {
         if (count == 0)
             m_releasesSummary->setText(QString());
@@ -997,9 +997,9 @@ void MainWindow::loadReleasesPanel()
         empty->setForeground(QColor("#8b949e"));
         m_releasesTable->setItem(0, 0, empty);
     }
-    // Refresh this repo's per-artifact download counts (throttled); the async
-    // reply re-renders this panel so a freshly logged download shows up without
-    // the user having to hit Refresh.
+
+
+
     if (!dlSource.isEmpty()) {
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         if (m_releaseDownloadsFetchSource != dlSource ||
@@ -1024,9 +1024,9 @@ QWidget *MainWindow::buildMirrorNodesTab()
     heading->setObjectName("channelTitle");
     m_mirrorNodesSummary = new QLabel;
     m_mirrorNodesSummary->setObjectName("statusLine");
-    // Re-attest the relay's integrity pin to the refs we currently serve. Only the
-    // source of truth (the owner holding the working copy) can do this, so the
-    // button stays hidden until loadMirrorNodesPanel() finds we are that node.
+
+
+
     m_mirrorResetPinButton = new QPushButton("Reset integrity pin");
     m_mirrorResetPinButton->setObjectName("ghostButton");
     m_mirrorResetPinButton->setCursor(Qt::PointingHandCursor);
@@ -1049,8 +1049,8 @@ QWidget *MainWindow::buildMirrorNodesTab()
     refreshButton->setToolTip(QStringLiteral("Reload the local mirror nodes table"));
     setOcticon(refreshButton, "sync", 16);
     connect(refreshButton, &QPushButton::clicked, this, [this] {
-        // A manual refresh is an operator request for fresh catalog state, not
-        // merely a repaint of the five-minute cached result.
+
+
         m_catalogMirrorsFetchedMs = 0;
         loadMirrorNodesPanel();
     });
@@ -1084,13 +1084,13 @@ QWidget *MainWindow::buildMirrorNodesTab()
     blurb->setWordWrap(true);
     layout->addWidget(blurb);
 
-    // Per-node activity used to be a "Live ›" dot row here, then a strip floating
-    // just above the Mirror nodes tab (adhoc #197). Both are gone (adhoc #420);
-    // the same dots still show as blips in the relay radar, and this table's own
-    // status lights carry each node's online/behind/integrity state.
+
+
+
+
 
     m_mirrorNodesTable = new QTableWidget(0, MirrorNodeColumnCount);
-    installColumnHeaderMenu(m_mirrorNodesTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_mirrorNodesTable);
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
@@ -1106,7 +1106,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorNodesTable->setWordWrap(false);
     m_mirrorNodesTable->setSortingEnabled(true);
     m_mirrorNodesTable->sortByColumn(MirrorNodeColNode,
-                                     Qt::AscendingOrder); // source of truth first
+                                     Qt::AscendingOrder);
     QHeaderView *mh = m_mirrorNodesTable->horizontalHeader();
     mh->setHighlightSections(false);
     mh->setSectionResizeMode(MirrorNodeColNode, QHeaderView::Stretch);
@@ -1133,11 +1133,11 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColWebsite, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColArtifacts, QHeaderView::ResizeToContents);
     makeColumnsResizable(m_mirrorNodesTable);
-    // Synced column draws a pac-man countdown for behind nodes; a 1s timer
-    // repaints the column so the chart animates while the panel is visible.
+
+
     m_mirrorNodesTable->setItemDelegateForColumn(
         MirrorNodeColSynced, new MirrorSyncDelegate(m_mirrorNodesTable));
-    // CPU / RAM / disk columns render as little usage bars (details on hover).
+
     auto *resourceBars = new ResourceBarDelegate(m_mirrorNodesTable);
     for (int col : {MirrorNodeColCpu, MirrorNodeColRam, MirrorNodeColDisk})
         m_mirrorNodesTable->setItemDelegateForColumn(col, resourceBars);
@@ -1146,11 +1146,11 @@ QWidget *MainWindow::buildMirrorNodesTab()
     connect(pacmanTick, &QTimer::timeout, m_mirrorNodesTable, [this] {
         if (!m_mirrorNodesTable->isVisible())
             return;
-        // Only the Synced column animates, so repaint just its cells rather than
-        // the whole viewport. A full viewport()->update() re-ran the row's
-        // HoverRowDelegate for every other column each second, painting cells
-        // nothing had changed and stalling the GUI thread on big node lists
-        // (adhoc #238); this mirrors the per-cell scanner repaint (onScannerTick).
+
+
+
+
+
         for (int r = 0; r < m_mirrorNodesTable->rowCount(); ++r) {
             if (m_mirrorNodesTable->item(r, MirrorNodeColSynced))
                 m_mirrorNodesTable->update(
@@ -1158,23 +1158,23 @@ QWidget *MainWindow::buildMirrorNodesTab()
         }
     });
     pacmanTick->start();
-    // A visible Mirror nodes page is an operator view: refresh its catalog
-    // snapshot once a minute so it never sits on stale commit/sync status. The
-    // timer remains idle while another repository tab is selected.
+
+
+
     auto *panelRefresh = new QTimer(m_mirrorNodesTable);
     panelRefresh->setInterval(60 * 1000);
     connect(panelRefresh, &QTimer::timeout, m_mirrorNodesTable, [this] {
         if (!m_mirrorNodesTable->isVisible())
             return;
-        // Bypass the normal five-minute catalog cache only while the operator
-        // is looking at this table; live roster changes still redraw it sooner.
+
+
         m_catalogMirrorsFetchedMs = 0;
         loadMirrorNodesPanel();
     });
     panelRefresh->start();
-    // Double-click a node row to open its profile.
-    // itemActivated (rather than cellDoubleClicked) so Enter opens the selected
-    // node's profile, matching the tab's arrow-key navigation (adhoc #183).
+
+
+
     connect(m_mirrorNodesTable, &QTableWidget::itemActivated, this,
             [this](QTableWidgetItem *item) {
                 QTableWidgetItem *it =
@@ -1208,8 +1208,8 @@ void MainWindow::requestMirrorNodesRefresh()
     if (source.section('/', 0, 0).isEmpty() || name.isEmpty())
         return;
 
-    // Make our own response fresh too: rebuild the cached mirror adverts from disk
-    // and force an immediate hello before asking peers to do the same.
+
+
     m_mirrorAdvertSig.clear();
     refreshRepositoryList();
     m_backend->advertiseMirrorsNow();
@@ -1243,9 +1243,9 @@ void MainWindow::onMirrorRefreshRequested(const QString &source,
     if (!mirrorsRequestedSource)
         return;
 
-    // The request is explicit, so bypass the advert-signature cache and the
-    // backend hello throttle: peers asked for the freshest commit/count/resource
-    // snapshot we can report right now.
+
+
+
     m_mirrorAdvertSig.clear();
     refreshRepositoryList();
     m_backend->advertiseMirrorsNow();
@@ -1255,9 +1255,9 @@ void MainWindow::onMirrorRefreshRequested(const QString &source,
                            : QStringLiteral(" to %1").arg(requesterName.trimmed())));
 }
 
-// Read this node's own Mirror-nodes row in one pass. Pure (touches no MainWindow
-// state) so the identical call can run on a worker thread — every helper it uses
-// is the same one refreshMirrorAdverts() runs off-thread for the catalog advert.
+
+
+
 static MirrorSelfSnapshot gatherMirrorSelfSnapshot(const RepositoryRecord &repo,
                                                    const QString &key,
                                                    bool hasWorkingTree)
@@ -1272,12 +1272,12 @@ static MirrorSelfSnapshot gatherMirrorSelfSnapshot(const RepositoryRecord &repo,
     advert.commit = tip.commit;
     advert.commitIdentity = mirrorCommitIdentity(mirror, repo.localPath, tip.commit);
     advert.updatedMs = repo.lastSyncMs;
-    // The source of truth may carry no bare mirror at all — its working copy IS
-    // the served data and the record's mirrorPath is legitimately empty. The
-    // tip/identity reads above already fall back to the working copy; hand the
-    // count helpers the same fallback, or the self row renders em-dashes for
-    // Size/Issues/Commits/Branches/Pulls/Discussions while the node is visibly
-    // serving the repository.
+
+
+
+
+
+
     const QString countsDir =
         (!mirror.trimmed().isEmpty() && QDir(mirror).exists())
             ? mirror
@@ -1289,8 +1289,8 @@ static MirrorSelfSnapshot gatherMirrorSelfSnapshot(const RepositoryRecord &repo,
     advert.pullCount = mirrorPullCount(countsDir, advert.branch);
     advert.discussionCount = mirrorDiscussionCount(countsDir, advert.branch);
     advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
-    // Artifacts: a bare mirror stores its release CAS at
-    // <mirror>/forkmesh-releases, a working copy at .forkmesh/release-blobs.
+
+
     advert.artifactCount = mirrorArtifactCount(mirror);
     if (advert.artifactCount < 0)
         advert.artifactCount = checkoutArtifactCount(repo.localPath);
@@ -1311,8 +1311,8 @@ static MirrorSelfSnapshot gatherMirrorSelfSnapshot(const RepositoryRecord &repo,
 
 QString MainWindow::mirrorSelfSnapshotKey(const RepositoryRecord &repo) const
 {
-    // Filesystem-only, like refreshMirrorAdverts()'s input signature: asking git
-    // whether git has anything new would cost exactly what we are trying to skip.
+
+
     auto stamp = [](const QString &base, const QString &leaf) {
         return QString::number(QFileInfo(QDir(base).filePath(leaf))
                                    .lastModified()
@@ -1334,9 +1334,9 @@ void MainWindow::refreshMirrorSelfSnapshot(const RepositoryRecord &repo,
                                            const QString &key)
 {
     if (m_mirrorSelfSnapshotsInFlight.contains(repo.mirrorPath))
-        return; // a gather is already running; its result carries the newer key
+        return;
     m_mirrorSelfSnapshotsInFlight.insert(repo.mirrorPath);
-    const RepositoryRecord snapshotRepo = repo; // by value: the worker outlives it
+    const RepositoryRecord snapshotRepo = repo;
     const bool hasWorkingTree = repoHasWorkingTree();
     auto result = std::make_shared<MirrorSelfSnapshot>();
     QThread *worker = QThread::create([snapshotRepo, key, hasWorkingTree, result] {
@@ -1351,7 +1351,7 @@ void MainWindow::refreshMirrorSelfSnapshot(const RepositoryRecord &repo,
             [this, mirror = repo.mirrorPath, result] {
                 m_mirrorSelfSnapshotsInFlight.remove(mirror);
                 m_mirrorSelfSnapshots.insert(mirror, *result);
-                loadMirrorNodesPanel(); // one rebuild with the fresh figures
+                loadMirrorNodesPanel();
             });
     worker->start();
 }
@@ -1360,16 +1360,16 @@ void MainWindow::loadMirrorNodesPanel()
 {
     if (!m_mirrorNodesTable)
         return;
-    // Re-entrancy guard (adhoc #375): every git read below — our own advert's
-    // head/counts, and the `git show` that names each row's commit — pumps the
-    // event loop on the GUI thread, so a queued rebuild (a roster heartbeat, a
-    // /mirrors reply) can land mid-build. That nested pass clears and refills
-    // the table, then this one resumes and appends its remaining rows on top of
-    // it — the table ends up listing every node twice, the stragglers with only
-    // the cells built after the pump. Drop the re-entrant call: the in-flight
-    // build finishes a consistent table, and anything it missed lands on the
-    // next rebuild (the roster re-keys this panel constantly).
-    // (Mirrors the m_branchesPanelLoading guard in loadBranchesPanel.)
+
+
+
+
+
+
+
+
+
+
     if (m_mirrorNodesPanelLoading)
         return;
     QScopedValueRollback<bool> loadingGuard(m_mirrorNodesPanelLoading, true);
@@ -1384,43 +1384,43 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
-        // No repo to scope the tint to: the chrome line's node dots go back to
-        // plain network status (adhoc #79 / #124).
+
+
         setNodeDotRepoStates({});
         m_mirrorNodesTable->setSortingEnabled(true);
-        updateMirrorNodeLightTimer(); // empty table: stops the beacon spinner
+        updateMirrorNodeLightTimer();
         return;
     }
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    // Keep the GUI breathing across this panel's synchronous git reads: ~10 for our
-    // own selfAdvert (head/commit/size/counts/worktrees) plus a `git show` per roster
-    // row for its commit subject. Rebuilt on every roster update, so without this the
-    // main thread froze while a peer's presence flickered (adhoc #83).
+
+
+
+
     GitKeepAlive keepAlive;
-    // This node's own clone identity (catalog/host owner) for this repo.
+
     const QString canonical =
         catalogOwner(repo) + "/" +
         repoSegment(repo.name, QStringLiteral("repository"));
-    // The SHARED upstream identity — the same on every node mirroring this repo,
-    // which is what actually groups them. The node whose clone identity equals
-    // this source is the source of truth (the owner).
+
+
+
     const QString source = repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
                            repoSegment(repo.name, QStringLiteral("repository"));
     const QString sourceOwner = source.section('/', 0, 0);
     const QString legacy = repo.owner + "/" + repo.name;
-    // Our own mirror, used to resolve a peer's advertised commit to its subject.
+
     const QString localMirror = repo.mirrorPath;
 
-    // For our own row, read the primary branch tip locally so it always reflects
-    // main/default-branch freshness without waiting for a roster round-trip.
-    // Gathering it costs ~12 synchronous git subprocesses (tip, commit identity,
-    // repo size, five counts, worktrees, pending-push), and this panel is rebuilt
-    // on every roster update — the stall log is full of 800ms+ GUI freezes inside
-    // mirrorCommitIdentity()/mirrorIssueCount() from exactly here (adhoc #93).
-    // Serve the last snapshot and re-gather it on a worker when the mirror or the
-    // working tree has actually moved, the same way refreshMirrorAdverts() feeds
-    // the catalog advert; the first look at a repo still gathers inline so the row
-    // is never blank on open.
+
+
+
+
+
+
+
+
+
+
     const QString selfKey = mirrorSelfSnapshotKey(repo);
     const auto cached = m_mirrorSelfSnapshots.constFind(repo.mirrorPath);
     MirrorSelfSnapshot snapshot;
@@ -1429,9 +1429,9 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorSelfSnapshots.insert(repo.mirrorPath, snapshot);
     } else {
         snapshot = *cached;
-        // Floor the re-read rate: while a mirror sync is running the fingerprint
-        // moves again before each gather lands, and an unthrottled loop would
-        // keep a worker busy for the whole sync.
+
+
+
         constexpr qint64 kSelfSnapshotFloorMs = 2000;
         if (snapshot.key != selfKey &&
             QDateTime::currentMSecsSinceEpoch() - snapshot.gatheredMs >
@@ -1444,15 +1444,15 @@ void MainWindow::loadMirrorNodesPanel()
     selfAdvert.updatedMs = repo.lastSyncMs;
     const QString servedBranch = selfAdvert.branch;
     const QString servedCommit = snapshot.servedCommit;
-    // If we are the source of truth, our working copy can be ahead of the bare
-    // mirror we serve (e.g. a comment was just committed and the mirror fetch
-    // hasn't run/finished). Those un-mirrored commits give the self row its live
-    // "↑N to push" badge; counted with the rest of the snapshot.
+
+
+
+
     const int pendingPush = snapshot.pendingPush;
 
-    // Resolve a node's advert for this repo: the shared source identity groups
-    // every mirror, with a clone-name fallback for older peers, and our own row
-    // always reads the live local primary branch via selfAdvert.
+
+
+
     auto matchAdvert = [&](const MemberInfo &node,
                            bool &namedOnly) -> const MirrorAdvert * {
         const MirrorAdvert *advert = nullptr;
@@ -1466,7 +1466,7 @@ void MainWindow::loadMirrorNodesPanel()
         namedOnly = !advert && (node.mirrors.contains(canonical) ||
                                 node.mirrors.contains(legacy));
         if (node.self && (advert || namedOnly || !repo.previewOnly))
-            advert = &selfAdvert; // always prefer our live local HEAD for our row
+            advert = &selfAdvert;
         return advert;
     };
 
@@ -1486,12 +1486,12 @@ void MainWindow::loadMirrorNodesPanel()
             name = node.name.trimmed();
         return name;
     };
-    // What the Node column SHOWS: the machine's node name, never the username.
-    // displayNodeName above is the account half of the clone identity — it still
-    // keys the catalog lookups (serve counts / integrity) and the dedup below —
-    // but a user account owns many nodes, so the visible label prefers the
-    // registered node name the peer advertises (machineNodeName() for our own
-    // row) and only falls back to the account for peers that don't send one.
+
+
+
+
+
+
     auto displayNodeLabel = [&](const MemberInfo &node,
                                 const MirrorAdvert *advert) {
         QString label = node.nodeName.trimmed();
@@ -1501,9 +1501,9 @@ void MainWindow::loadMirrorNodesPanel()
             label = displayNodeName(node, advert);
         return label;
     };
-    // Owner (user account) per node. The roster hello carries ownerUser when
-    // the node knows its link; older nodes don't advertise it, but the catalog
-    // mirror record they published does — index it by node name as a fallback.
+
+
+
     QHash<QString, QString> catalogOwnerUserByNode;
     if (m_catalogMirrorsSource == source) {
         for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
@@ -1523,10 +1523,10 @@ void MainWindow::loadMirrorNodesPanel()
                 displayNodeName(node, advert).trimmed().toLower());
         if (owner.isEmpty())
             owner = catalogOwnerUserByNode.value(node.nodeName.trimmed().toLower());
-        // Our own row is owned by the signed-in user (what the top-bar chip
-        // shows), and a node the user's profile lists as linked is part of that
-        // same fleet — so both resolve to us even when neither the wire nor the
-        // catalog carries the link yet.
+
+
+
+
         if (owner.isEmpty() &&
             (node.self ||
              (!node.nodeName.trimmed().isEmpty() &&
@@ -1545,19 +1545,19 @@ void MainWindow::loadMirrorNodesPanel()
         return item;
     };
 
-    // One row per node *name*: a node that re-registers (reinstall → new key)
-    // can transiently sit in the roster under two identities — the old key's
-    // session still heartbeating beside the new one — which listed the same
-    // node twice (adhoc #46). Keep the best entry per name: ourselves, else the
-    // one online, else the one actually advertising this repo, else the freshest
-    // advert, else the newer app version (a stale session lags after an upgrade).
+
+
+
+
+
+
     QList<MemberInfo> rosterNodes;
     QHash<QString, int> rosterIndexByName;
     for (const MemberInfo &node : std::as_const(m_homeRoster)) {
         bool namedOnly = false;
         const MirrorAdvert *advert = matchAdvert(node, namedOnly);
         if (!advert && !namedOnly)
-            continue; // not mirroring this repo; the row loop skips these anyway
+            continue;
         const QString nameKey = displayNodeName(node, advert).trimmed().toLower();
         if (nameKey.isEmpty()) {
             rosterNodes.append(node);
@@ -1588,16 +1588,16 @@ void MainWindow::loadMirrorNodesPanel()
             rosterNodes[it.value()] = node;
     }
 
-    // The reference HEAD a node must match to count as "in sync": the source of
-    // truth's commit if it advertises one, else the freshest-synced commit in the
-    // group. Nodes whose commit differs are behind and get a heartbeat countdown.
+
+
+
     QString sourceCommit;
     QString newestCommit;
     qint64 newestMs = -1;
-    // The advert those two commits came from, so the per-column mismatch check
-    // below can compare a node's advertised counts (issues/commits/branches/…)
-    // against the same reference node, not just its commit. Pointers into
-    // rosterNodes' mirrorDetails / the local selfAdvert, both live to end-of-scope.
+
+
+
+
     const MirrorAdvert *sourceAdvert = nullptr;
     const MirrorAdvert *newestAdvert = nullptr;
     for (const MemberInfo &node : std::as_const(rosterNodes)) {
@@ -1619,10 +1619,10 @@ void MainWindow::loadMirrorNodesPanel()
     }
     const QString referenceCommit =
         !sourceCommit.isEmpty() ? sourceCommit : newestCommit;
-    // The canonical per-column values every mirror should match. Prefer the
-    // source of truth's advert (the owner's), else the freshest node's, mirroring
-    // referenceCommit. A cell that differs from these gets underlined below, so a
-    // node quietly serving different data than the source is visible at a glance.
+
+
+
+
     const MirrorAdvert *referenceAdvert =
         sourceAdvert ? sourceAdvert : newestAdvert;
     const int refIssues = referenceAdvert ? referenceAdvert->issueCount : -1;
@@ -1632,11 +1632,11 @@ void MainWindow::loadMirrorNodesPanel()
     const int refDiscussions =
         referenceAdvert ? referenceAdvert->discussionCount : -1;
     const int refArtifacts = referenceAdvert ? referenceAdvert->artifactCount : -1;
-    // Underline a cell whose content-derived value doesn't match the reference
-    // node's, and note it in the tooltip. Only content columns (commit + the
-    // metadata counts) are compared — per-node facts like CPU/version/clones are
-    // expected to differ. Skipped when either side is unknown (em-dash) so an
-    // older peer that doesn't advertise a field isn't falsely flagged.
+
+
+
+
+
     auto markMismatch = [](QTableWidgetItem *item, bool mismatch,
                            const QString &refText) {
         if (!item || !mismatch)
@@ -1653,10 +1653,10 @@ void MainWindow::loadMirrorNodesPanel()
     auto countMismatch = [](int value, int ref) {
         return ref >= 0 && value >= 0 && value != ref;
     };
-    // The elapsed time from a commit landing to a mirror reporting that same
-    // commit is the useful sync latency. Nodes still serving an older commit
-    // have not completed that sync, so say so instead of measuring their old
-    // commit's age.
+
+
+
+
     auto makeSyncDelayCell = [&referenceCommit](qint64 syncedMs,
                                                  qint64 committedAtMs,
                                                  const QString &commit,
@@ -1684,22 +1684,22 @@ void MainWindow::loadMirrorNodesPanel()
         return item;
     };
 
-    // Clone / website-serve tallies are per-node local counters, carried across the
-    // network only in each node's published catalog record. Index the catalog cache
-    // by node name so the live-roster loop can fill the "Clones" / "Website" columns
-    // for peers too (our own row reads the fresher local tally). Value = (clones,
-    // website serves); -1 == the node hasn't advertised the count yet.
+
+
+
+
+
     QHash<QString, QPair<int, int>> serveCounts;
-    // Per-node clone-integrity verdict from the same /mirrors payload:
-    // "rejected" means the relay's integrity gate refuses every clone this node
-    // serves, because the refs fingerprint it published matches no state the
-    // source of truth attested (current pin or recent history).
+
+
+
+
     QHash<QString, QString> integrityByNode;
-    // Per-node direct-HTTPS tunnel state, also from /mirrors: whether the node
-    // has a registered gateway endpoint, whether the relay's signed health
-    // probe finds it healthy/fresh, and its measured latency. Feeds the Tunnel
-    // column so an operator can see at a glance which nodes are reachable
-    // through their tunnel and which serve only via relay sync.
+
+
+
+
+
     struct TunnelInfo {
         bool registered = false;
         bool healthy = false;
@@ -1730,11 +1730,11 @@ void MainWindow::loadMirrorNodesPanel()
             }
         }
     }
-    // Tunnel column cell: "—" when the node never registered a gateway
-    // endpoint, otherwise a compact verdict with the endpoint hostname and
-    // probe details on hover. Sorts healthy → degraded → blocked → none.
+
+
+
     auto makeTunnelCell = [](const TunnelInfo &tunnel) -> SortTableWidgetItem * {
-        QString text = QString::fromUtf8("\xE2\x80\x94"); // — (no tunnel)
+        QString text = QString::fromUtf8("\xE2\x80\x94");
         double sortValue = 0;
         QString tip = QStringLiteral("No direct-HTTPS tunnel endpoint registered; "
                                      "this node serves through relay sync only.");
@@ -1772,8 +1772,8 @@ void MainWindow::loadMirrorNodesPanel()
         item->setToolTip(tip);
         return item;
     };
-    // A right-aligned tally cell: em-dash when the count is unknown (-1), else the
-    // (abbreviated) number, sorting on the raw value.
+
+
     auto makeServeCountCell = [](int value, const QString &tip) -> SortTableWidgetItem * {
         auto *item = new SortTableWidgetItem(
             value >= 0 ? formatCount(value) : QString::fromUtf8("\xE2\x80\x94"));
@@ -1793,22 +1793,22 @@ void MainWindow::loadMirrorNodesPanel()
     };
 
     int count = 0;
-    qint64 totalBytes = 0;     // data mirrored across every node in this group
-    qint64 maxRepoBytes = 0;   // best (largest, == most complete) copy seen
-    bool weAreSource = false;  // this node holds the source-of-truth copy
-    int outOfSyncPeers = 0;    // other nodes whose served state != the source
-    // Names already shown from the live chat roster, so the catalog-backed merge
-    // below (issue #223) doesn't list a node twice when it's also present in chat.
+    qint64 totalBytes = 0;
+    qint64 maxRepoBytes = 0;
+    bool weAreSource = false;
+    int outOfSyncPeers = 0;
+
+
     QSet<QString> shownNames;
-    // Node ids (keys) already shown, so a catalog record published under a node's
-    // former name doesn't add a second row for the same identity (adhoc #46).
+
+
     QSet<QString> shownIds;
-    // One activity dot per active node, fed to the live strip atop the panel.
+
     QVector<MirrorNodeDot> activityDots;
-    // Build a right-aligned numeric count cell (Commits/Branches/Pulls/
-    // Discussions): the figure, an em-dash when the node doesn't advertise it (-1, an
-    // older peer), and a singular/plural tooltip. Shared by the live-roster rows and
-    // the catalog-backed rows below so both render these columns identically.
+
+
+
+
     auto makeCountCell = [](int n, const QString &singular,
                             const QString &plural) -> SortTableWidgetItem * {
         auto *item = new SortTableWidgetItem(
@@ -1820,12 +1820,12 @@ void MainWindow::loadMirrorNodesPanel()
                 QStringLiteral("%1 %2").arg(n).arg(n == 1 ? singular : plural));
         return item;
     };
-    // Resolve what a node's advertised commit says and who wrote it. The node
-    // reports it itself (live advert or catalog record); when it doesn't — an
-    // older peer — fall back to reading the same hash out of our own mirror.
-    // Commit identities are immutable per hash, so cache them: this panel is
-    // rebuilt on every roster update and one `git show` per row froze the GUI
-    // thread while a peer's presence flickered (adhoc #83).
+
+
+
+
+
+
     auto resolveCommitIdentity = [this, &localMirror](
                                      const QString &commit,
                                      const CommitIdentity &advertised) {
@@ -1834,16 +1834,16 @@ void MainWindow::loadMirrorNodesPanel()
         if (commit.isEmpty())
             return CommitIdentity{};
         if (m_commitIdentityCache.size() > 5000)
-            m_commitIdentityCache.clear(); // safety valve, never hit in practice
+            m_commitIdentityCache.clear();
         auto cached = m_commitIdentityCache.constFind(commit);
         if (cached == m_commitIdentityCache.constEnd())
             cached = m_commitIdentityCache.insert(
                 commit, gitCommitIdentity(localMirror, commit));
         return cached.value();
     };
-    // Message / Author columns: what the node's latest commit says and who
-    // wrote it. Long subjects are elided so the columns can't stretch the table
-    // out; the full text stays on the tooltip. Shared by both row builders.
+
+
+
     auto setCommitIdentityCells = [this](int row,
                                          const CommitIdentity &identity) {
         const QString dash = QString::fromUtf8("\xE2\x80\x94");
@@ -1870,10 +1870,10 @@ void MainWindow::loadMirrorNodesPanel()
                 QStringLiteral("Authored the node's latest commit"));
         m_mirrorNodesTable->setItem(row, MirrorNodeColAuthor, authorItem);
     };
-    // Mark a node the relay refuses to serve because of the integrity pin: the
-    // clone gate rejects every clone from it until the node syncs to a state the
-    // source of truth attested (or the owner resets the pin). Applied to the
-    // Node cell of both live-roster and catalog-backed rows.
+
+
+
+
     int pinRejectedNodes = 0;
     auto markPinRejected = [&pinRejectedNodes](QTableWidgetItem *item, bool isSelf) {
         ++pinRejectedNodes;
@@ -1903,11 +1903,11 @@ void MainWindow::loadMirrorNodesPanel()
         if (!advert && !namedOnly)
             continue;
 
-        // Node: green/grey dot + name (+ "you") (+ source-of-truth tag). Our own
-        // row also fails here when the relay's pin has drifted past what we
-        // serve (m_repoPinMismatch, adhoc #65) — the relay's /mirrors payload
-        // can't see that on its own, since it only knows the hash we last
-        // published, not our live refs.
+
+
+
+
+
         const bool online = node.self ? (m_backend != nullptr) : node.online;
         const bool integrityFailing =
             integrityByNode.value(displayNodeName(node, advert).trimmed().toLower()) ==
@@ -1915,10 +1915,10 @@ void MainWindow::loadMirrorNodesPanel()
             (node.self && m_repoPinMismatch);
         if (onlineOnly && !online)
             continue;
-        // An online node serving a commit that isn't the source-of-truth's is out
-        // of sync: the source's instant mirror-update signal normally converges it
-        // in seconds, with its next heartbeat as the fallback. Computed here (ahead
-        // of the Node dot) so the dot can go amber; the Synced cell reuses it below.
+
+
+
+
         const bool behind = online && advert && !advert->commit.isEmpty() &&
                             !referenceCommit.isEmpty() &&
                             advert->commit != referenceCommit;
@@ -1931,12 +1931,12 @@ void MainWindow::loadMirrorNodesPanel()
         if (!node.id.isEmpty())
             shownIds.insert(node.id);
 
-        // The source of truth: the node whose clone identity equals the shared
-        // source (the owner advertises ownerName == source); also match by name.
-        // Our own row is the source whenever we hold the working copy this repo
-        // is served from — the account/name matches miss that when the repo is
-        // published under an owner segment (e.g. an org) that isn't the
-        // signed-in account, leaving the owner's own row untagged.
+
+
+
+
+
+
         const bool isSource =
             (advert && advert->ownerName == source) ||
             nodeDisplay.compare(sourceOwner, Qt::CaseInsensitive) == 0 ||
@@ -1945,9 +1945,9 @@ void MainWindow::loadMirrorNodesPanel()
         const int row = m_mirrorNodesTable->rowCount();
         m_mirrorNodesTable->insertRow(row);
 
-        // Only online nodes normally get a dot; keep an offline one too when
-        // it's failing the integrity pin, so the warning doesn't just vanish
-        // from the radar (adhoc #196).
+
+
+
         if (online || integrityFailing)
             activityDots.append(
                 {node.id, nodeLabel, online, node.self, behind, integrityFailing});
@@ -1955,11 +1955,11 @@ void MainWindow::loadMirrorNodesPanel()
             nodeLabel + (node.self ? QStringLiteral("  (you)") : QString()) +
             (isSource ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                       : QString()));
-        // Status light on top of the node (adhoc #230): steady green when
-        // everything is green, a spinning orange beacon for caution (online but
-        // out of sync), a spinning red beacon on error (failing the integrity
-        // pin — kept spinning even offline so the warning stays visible, per
-        // adhoc #196), and a steady grey lamp when plainly offline.
+
+
+
+
+
         const int light = integrityFailing ? 2 : behind ? 1 : 0;
         const QColor lightColor = integrityFailing ? QColor("#f85149")
                                   : !online          ? QColor("#8b949e")
@@ -1969,7 +1969,7 @@ void MainWindow::loadMirrorNodesPanel()
             QIcon(nodeStatusLightPixmap(lightColor, 14, 0.0, light != 0)));
         nameItem->setData(kNodeLightRole, light);
         nameItem->setData(Qt::UserRole, node.id);
-        // Source-of-truth rows sort to the top (★ < letters), then by name.
+
         nameItem->setData(kTableSortRole,
                           (isSource ? QStringLiteral("0") : QStringLiteral("1")) +
                               nodeLabel.toLower());
@@ -1990,8 +1990,8 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
                                     makeOwnerCell(ownerDisplay));
 
-        // Latest commit: short hash + branch, with the subject/author of that
-        // commit in their own columns beside it.
+
+
         QString commitText = QString::fromUtf8("\xE2\x80\x94");
         QString commitTip;
         CommitIdentity commitIdentity;
@@ -2020,7 +2020,7 @@ void MainWindow::loadMirrorNodesPanel()
                      referenceCommit.left(10));
         m_mirrorNodesTable->setItem(row, MirrorNodeColCommit, commitItem);
 
-        // Synced: relative time since the node last fetched from source.
+
         const qint64 syncedSecs = advert ? advert->updatedMs / 1000 : 0;
         auto *syncedItem = new SortTableWidgetItem(
             syncedSecs > 0 ? formatShortRelativeTime(syncedSecs) + " ago"
@@ -2029,14 +2029,14 @@ void MainWindow::loadMirrorNodesPanel()
         if (syncedSecs > 0)
             syncedItem->setToolTip(
                 QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
-        // Behind-but-online node: tag the cell so MirrorSyncDelegate draws a
-        // pac-man counting down to its next heartbeat/re-sync. In-sync and
-        // offline rows carry no anchor and render as plain text. (`behind` is
-        // computed above so the Node dot can also go amber for it.) The source
-        // broadcasts an instant mirror-update signal over the websocket when it
-        // advances, so a behind node normally converges in seconds; the
-        // heartbeat re-sync the countdown shows is the fallback for a node that
-        // missed the ephemeral signal.
+
+
+
+
+
+
+
+
         if (behind) {
             syncedItem->setData(kPacmanAnchorRole,
                                 static_cast<qlonglong>(advert->updatedMs));
@@ -2044,8 +2044,8 @@ void MainWindow::loadMirrorNodesPanel()
                 "Behind the source \xC2\xB7 signalled to sync now; its next "
                 "heartbeat is the fallback"));
         }
-        // Our own row, when the working copy holds commits the served mirror
-        // doesn't yet: surface the pending push count instead of the sync time.
+
+
         if (node.self && pendingPush > 0) {
             syncedItem->setText(QString::fromUtf8("\xE2\x86\x91 %1 to push")
                                     .arg(pendingPush));
@@ -2062,16 +2062,16 @@ void MainWindow::loadMirrorNodesPanel()
                               commitIdentity.committedAtMs,
                               advert ? advert->commit : QString(), isSource));
 
-        // Tally for the owner-only alert below: are we the source of truth, and
-        // how many other nodes are serving a state that doesn't match it.
+
+
         if (node.self && isSource)
             weAreSource = true;
         if (!node.self && behind)
             ++outOfSyncPeers;
 
-        // Size: how much data this node holds for this repo (its bare mirror's
-        // on-disk object size). Sorts numerically; an em-dash for older peers
-        // that don't advertise a size yet.
+
+
+
         const qint64 nodeBytes = advert ? advert->sizeBytes : 0;
         auto *sizeItem = new SortTableWidgetItem(
             nodeBytes > 0 ? formatByteSize(nodeBytes)
@@ -2084,8 +2084,8 @@ void MainWindow::loadMirrorNodesPanel()
             maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
         }
 
-        // Issues: how many issues this node is mirroring (advertised per node).
-        // Sorts numerically; an em-dash for older peers that don't advertise it.
+
+
         const int nodeIssues = advert ? advert->issueCount : -1;
         auto *issuesItem = new SortTableWidgetItem(
             nodeIssues >= 0 ? QString::number(nodeIssues)
@@ -2101,9 +2101,9 @@ void MainWindow::loadMirrorNodesPanel()
                      QString::number(refIssues));
         m_mirrorNodesTable->setItem(row, MirrorNodeColIssues, issuesItem);
 
-        // Commits / Branches / Pulls / Discussions: more per-node tallies
-        // advertised alongside the issue count, so the panel shows how much
-        // history each node mirrors and how busy it is. Em-dash for older peers.
+
+
+
         const int nodeCommits = advert ? advert->commitCount : -1;
         const int nodeBranches = advert ? advert->branchCount : -1;
         const int nodePulls = advert ? advert->pullCount : -1;
@@ -2129,9 +2129,9 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                     discussionsItem);
 
-        // CPU / RAM / disk usage bars (hover for the underlying figures). The
-        // telemetry is per-node, advertised in the node's heartbeats; peers that
-        // don't advertise it (older builds) leave the bars as an em-dash.
+
+
+
         m_mirrorNodesTable->setItem(row, MirrorNodeColCpu,
                                     makeCpuUsageCell(node.cpuPercent));
         m_mirrorNodesTable->setItem(
@@ -2161,12 +2161,12 @@ void MainWindow::loadMirrorNodesPanel()
             row, MirrorNodeColTunnel,
             makeTunnelCell(tunnelByNode.value(nodeDisplay.trimmed().toLower())));
 
-        // Clones / website serves. The authoritative tally is router-counted by
-        // the Worker and arrives via /mirrors (serveCounts) for every node,
-        // ourselves included — the retired per-repository transport was the last
-        // thing that let a node count its own traffic. Our own row still folds
-        // in the legacy local tally (kept as onRequestServed wrote it) when it
-        // is the larger figure, so pre-router history isn't lost.
+
+
+
+
+
+
         int nodeClones = -1, nodeWebsite = -1;
         {
             const QPair<int, int> s =
@@ -2185,9 +2185,9 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesTable->setItem(
             row, MirrorNodeColWebsite,
             makeServeCountCell(nodeWebsite, websiteTip(nodeWebsite)));
-        // Artifacts: how many release binaries this node is hosting for download
-        // in its content-addressed store (issue #304). A mirror replicates these
-        // separately from git, so the count reflects what it can actually serve.
+
+
+
         const int nodeArtifacts = advert ? advert->artifactCount : -1;
         auto *artifactsItem =
             makeCountCell(nodeArtifacts, "artifact", "artifacts");
@@ -2197,14 +2197,14 @@ void MainWindow::loadMirrorNodesPanel()
         ++count;
     }
 
-    // --- Catalog-backed mirrors (issue #223) --------------------------------
-    // The loop above only sees nodes currently live in the chat room, so a
-    // mirror with intermittent presence is invisible to the owner. Supplement
-    // with the worker's /mirrors list — every node that has published a mirror
-    // record for this source — adding any not already shown from the roster.
-    // Collect catalog-only mirrors (not in roster) for activity dots so the dots
-    // reflect the server's canonical mirror order, making it clear which dot
-    // represents which node when they pulse (adhoc #218).
+
+
+
+
+
+
+
+
     QVector<MirrorNodeDot> catalogOnlyDots;
     if (m_catalogMirrorsSource == source) {
         for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
@@ -2212,9 +2212,9 @@ void MainWindow::loadMirrorNodesPanel()
             const QString nodeName = m.value("node").toString().trimmed();
             if (nodeName.isEmpty() || shownNames.contains(nodeName.toLower()))
                 continue;
-            // A record published under the node's former name: that identity is
-            // already listed from the live roster under its current name, so a
-            // second row would double-count the machine (adhoc #46).
+
+
+
             const QString catalogId = m.value("id").toString().trimmed();
             if (!catalogId.isEmpty() && shownIds.contains(catalogId))
                 continue;
@@ -2227,14 +2227,14 @@ void MainWindow::loadMirrorNodesPanel()
                 m.value("integrity").toString() == QLatin1String("rejected");
             if (onlineOnly && !online)
                 continue;
-            // Online catalog node serving a commit other than the source of
-            // truth's is out of sync — its dot goes amber like the live rows.
+
+
             const QString catCommit = m.value("commit").toString();
             const bool behind = online && !catCommit.isEmpty() &&
                                 !referenceCommit.isEmpty() &&
                                 catCommit != referenceCommit;
-            // Only online nodes normally get a dot; keep an offline one too
-            // when it's failing the integrity pin (adhoc #196).
+
+
             if (online || integrityFailing)
                 catalogOnlyDots.append({m.value("id").toString(), nodeName,
                                         online, false, behind, integrityFailing});
@@ -2243,9 +2243,9 @@ void MainWindow::loadMirrorNodesPanel()
             QString ownerUser = m.value(QStringLiteral("ownerUser"))
                                     .toString()
                                     .trimmed();
-            // Same fleet fallback as the live-roster rows: a node the signed-in
-            // user's profile lists as linked is owned by us even if its catalog
-            // record predates the link.
+
+
+
             if (ownerUser.isEmpty() &&
                 m_profileLinkedNodes.contains(nodeName, Qt::CaseInsensitive))
                 ownerUser = topBarUserName().trimmed();
@@ -2253,8 +2253,8 @@ void MainWindow::loadMirrorNodesPanel()
                 nodeName + (isSource
                                 ? QString::fromUtf8("  \xE2\x98\x85 source of truth")
                                 : QString()));
-            // Same status light as the live-roster rows (adhoc #230): steady
-            // green / spinning orange caution / spinning red error / grey.
+
+
             const int light = integrityFailing ? 2 : behind ? 1 : 0;
             const QColor lightColor = integrityFailing ? QColor("#f85149")
                                       : !online          ? QColor("#8b949e")
@@ -2276,9 +2276,9 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesTable->setItem(row, MirrorNodeColNode, nameItem);
             m_mirrorNodesTable->setItem(row, MirrorNodeColOwner,
                                         makeOwnerCell(ownerUser));
-            // Latest commit: the publishing node mirrors its served HEAD into the
-            // catalog record, so even an offline node shows its commit (adhoc #56).
-            // (`catCommit` is read above so the dot can go amber for out-of-sync.)
+
+
+
             QString catCommitText = QString::fromUtf8("\xE2\x80\x94");
             if (!catCommit.isEmpty()) {
                 catCommitText = catCommit.left(10);
@@ -2286,8 +2286,8 @@ void MainWindow::loadMirrorNodesPanel()
                 if (!catBranch.isEmpty())
                     catCommitText += "  (" + catBranch + ")";
             }
-            // The subject/author the publishing node signed into its catalog
-            // record, so an offline node still names its latest commit.
+
+
             CommitIdentity catIdentity;
             catIdentity.subject =
                 m.value(QStringLiteral("lastCommitMessage")).toString().trimmed();
@@ -2339,9 +2339,9 @@ void MainWindow::loadMirrorNodesPanel()
                 totalBytes += nodeBytes;
                 maxRepoBytes = qMax(maxRepoBytes, nodeBytes);
             }
-            // Issues / commit / branch / pull / discussion counts / platform /
-            // version / node id: also mirrored into the catalog record by the
-            // publishing node, so they show for an offline node too (adhoc #56).
+
+
+
             const int catIssues = m.value("issueCount").toInt(-1);
             auto *catIssuesItem = new SortTableWidgetItem(
                 catIssues >= 0 ? QString::number(catIssues)
@@ -2381,11 +2381,11 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refDiscussions));
             m_mirrorNodesTable->setItem(row, MirrorNodeColDiscussions,
                                         catDiscussionsItem);
-            // CPU / RAM / disk: a node that opted into public host telemetry
-            // signs it into its catalog record (headless mirrors renew it every
-            // registration lease), and /mirrors passes it through — so render
-            // it exactly like the live-roster rows instead of a hard-coded
-            // em-dash. Absent fields still show as unknown.
+
+
+
+
+
             m_mirrorNodesTable->setItem(
                 row, MirrorNodeColCpu,
                 makeCpuUsageCell(m.value(QStringLiteral("cpuPercent"))
@@ -2428,8 +2428,8 @@ void MainWindow::loadMirrorNodesPanel()
                 row, MirrorNodeColTunnel,
                 makeTunnelCell(tunnelByNode.value(
                     nodeName.trimmed().toLower())));
-            // Clones / website serves the publishing node reported (adhoc #56 kin);
-            // an em-dash for records predating the counters.
+
+
             const int catClones = m.value("clonesServed").toInt(-1);
             const int catWebsite = m.value("websiteServed").toInt(-1);
             m_mirrorNodesTable->setItem(
@@ -2438,8 +2438,8 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesTable->setItem(
                 row, MirrorNodeColWebsite,
                 makeServeCountCell(catWebsite, websiteTip(catWebsite)));
-            // Artifacts the publishing node reported hosting for download, so the
-            // count shows for an offline node too.
+
+
             const int catArtifacts = m.value("artifactCount").toInt(-1);
             auto *catArtifactsItem =
                 makeCountCell(catArtifacts, "artifact", "artifacts");
@@ -2451,17 +2451,17 @@ void MainWindow::loadMirrorNodesPanel()
             ++count;
         }
     }
-    // Append catalog-only mirrors to the activity dots so they're in the server's
-    // canonical order, making it unambiguous which dot represents which node when
-    // they pulse (adhoc #218).
+
+
+
     activityDots.append(catalogOnlyDots);
 
-    // Refresh the catalog mirror list; the async reply re-renders this panel so
-    // newly-discovered mirrors appear without a restart. Opening a different
-    // repo fetches immediately; while the same repo stays open, roster flicker
-    // re-runs this panel constantly, so re-hit the relay only every few minutes
-    // — the roster itself already carries the live peers' mirror adverts, and
-    // /mirrors only adds nodes that are currently offline (those change slowly).
+
+
+
+
+
+
     const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
     if (m_catalogMirrorsFetchSource != source ||
         nowMs - m_catalogMirrorsFetchedMs > 5 * 60 * 1000) {
@@ -2474,10 +2474,10 @@ void MainWindow::loadMirrorNodesPanel()
 
     m_mirrorNodesTable->setSortingEnabled(true);
 
-    // Tint the chrome line's node dots with this repo's per-node sync and
-    // integrity state (adhoc #122/#124): the dots themselves stay the whole
-    // network, but a node that is behind or failing this repo's integrity gate
-    // reads amber while the panel has it open.
+
+
+
+
     QHash<QString, NodeDotRepoState> repoStates;
     repoStates.reserve(activityDots.size());
     for (const MirrorNodeDot &d : activityDots) {
@@ -2488,7 +2488,7 @@ void MainWindow::loadMirrorNodesPanel()
     setNodeDotRepoStates(repoStates);
 
     if (m_mirrorNodesSummary) {
-        // "· 3 nodes mirroring owner/repo · 12.4 MB each · 37.1 MB total"
+
         QString text = QString::fromUtf8("\xC2\xB7 %1 node%2 mirroring %3")
                            .arg(count)
                            .arg(count == 1 ? "" : "s")
@@ -2497,27 +2497,27 @@ void MainWindow::loadMirrorNodesPanel()
             text += QString::fromUtf8(" \xC2\xB7 %1 each \xC2\xB7 %2 total")
                         .arg(formatByteSize(maxRepoBytes),
                              formatByteSize(totalBytes));
-        // Only the source of truth is told when a mirror node's served state has
-        // drifted from canonical — the mirror itself stays unaware (its pin is
-        // not its concern). A behind-but-online mirror is flagged here so the
-        // owner can see something is off even before opening the table.
+
+
+
+
         if (weAreSource && outOfSyncPeers > 0)
             text += QString::fromUtf8(
                         " \xC2\xB7 <span style='color:#f85149'>\xE2\x9A\xA0 %1 "
                         "mirror node%2 out of sync</span>")
                         .arg(outOfSyncPeers)
                         .arg(outOfSyncPeers == 1 ? "" : "s");
-        // Nodes the relay's integrity gate is refusing to serve. Shown to every
-        // viewer (anyone cloning via one of these nodes is affected), not just
-        // the owner — the table rows carry the same per-node flag.
+
+
+
         if (pinRejectedNodes > 0)
             text += QString::fromUtf8(
                         " \xC2\xB7 <span style='color:#f85149'>\xE2\x9A\xA0 %1 "
                         "node%2 failing the integrity pin</span>")
                         .arg(pinRejectedNodes)
                         .arg(pinRejectedNodes == 1 ? "" : "s");
-        // Local commits not yet copied into the mirror we serve (a just-made
-        // comment/commit), shown until the background fetch catches the mirror up.
+
+
         if (pendingPush > 0)
             text += QString::fromUtf8(
                         " \xC2\xB7 <span style='color:#d29922'>\xE2\x86\x91 %1 "
@@ -2526,10 +2526,10 @@ void MainWindow::loadMirrorNodesPanel()
         m_mirrorNodesSummary->setTextFormat(Qt::RichText);
         m_mirrorNodesSummary->setText(text);
     }
-    // "Reset integrity pin" is the source of truth's concern alone: only the
-    // node holding the working copy can re-attest the relay's pin. Mirror nodes
-    // (even on the owner's own account) never get the button — a stale pin there
-    // is the source of truth's problem to fix (see refreshRepoPinBanner).
+
+
+
+
     if (m_mirrorResetPinButton)
         m_mirrorResetPinButton->setVisible(weAreSource && repoHasWorkingTree());
 
@@ -2547,10 +2547,10 @@ void MainWindow::loadMirrorNodesPanel()
     updateMirrorNodeLightTimer();
 }
 
-// Advance the spinning caution/error beacons on the Mirror nodes rows (adhoc
-// #230), mirroring animateRunningAgentIcons()'s treatment of the Agents table.
-// Steady lamps (green in-sync, grey offline) carry kNodeLightRole 0 and are
-// never touched here.
+
+
+
+
 void MainWindow::animateMirrorNodeLights()
 {
     if (!m_mirrorNodesTable)
@@ -2572,9 +2572,9 @@ void MainWindow::animateMirrorNodeLights()
     }
 }
 
-// Keep m_nodeLightTimer running only while at least one row's light is
-// spinning, so an all-green (or empty) table costs nothing. Called from both
-// exits of loadMirrorNodesPanel after the rows are (re)built.
+
+
+
 void MainWindow::updateMirrorNodeLightTimer()
 {
     bool spinning = false;
@@ -2600,20 +2600,20 @@ void MainWindow::updateMirrorNodeLightTimer()
 void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
                                      const QString &source)
 {
-    // The live chat roster only shows nodes currently present in the room, so a
-    // mirror with intermittent presence is invisible to the owner (issue #223).
-    // The worker's public /mirrors endpoint lists every node that has published
-    // a mirror record for this repo group; we cache the result and merge it into
-    // loadMirrorNodesPanel(). Public read — no auth token required.
+
+
+
+
+
     if (!m_networkAccess || owner.isEmpty() || repo.isEmpty())
         return;
-    QUrl url = catalogApiUrl(); // same host/scheme as the catalog
+    QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/repo/%1/%2/mirrors")
                     .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
                          QString::fromUtf8(QUrl::toPercentEncoding(repo))));
-    // Mirror discovery re-fires on every roster flicker; back it off
-    // exponentially while the relay is failing (offline / HTTP 429) so a rate-
-    // limited relay isn't re-queried on each presence blip.
+
+
+
     const QString backoffKey = url.toString();
     if (!m_pollBackoff.ready(backoffKey, QDateTime::currentMSecsSinceEpoch()))
         return;
@@ -2630,8 +2630,8 @@ void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
         m_pollBackoff.noteSuccess(backoffKey);
         m_catalogMirrorsSource = source;
         m_catalogMirrorsCache = resp.value("mirrors").toArray();
-        // Re-render only if the user is still viewing this repo group, so the
-        // freshly discovered mirrors show up without waiting for a roster tick.
+
+
         if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
             const RepositoryRecord &r = m_repositories.at(m_repoDetailIndex);
             const QString cur =
@@ -2646,13 +2646,13 @@ void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
 void MainWindow::fetchReleaseDownloadCounts(const QString &owner, const QString &repo,
                                             const QString &source)
 {
-    // The relay logs a row every time it streams a release asset out of a
-    // node's content-addressed store (its /releases/blob/sha256/<hash> route)
-    // and exposes the per-hash tally here. We cache the result and merge it
-    // into loadReleasesPanel(). Public read — no auth token required.
+
+
+
+
     if (!m_networkAccess || owner.isEmpty() || repo.isEmpty())
         return;
-    QUrl url = catalogApiUrl(); // same host/scheme as the catalog
+    QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/repo/%1/%2/releases/downloads")
                     .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
                          QString::fromUtf8(QUrl::toPercentEncoding(repo))));
@@ -2668,8 +2668,8 @@ void MainWindow::fetchReleaseDownloadCounts(const QString &owner, const QString 
         const QJsonObject counts = resp.value("counts").toObject();
         for (auto it = counts.constBegin(); it != counts.constEnd(); ++it)
             m_releaseDownloadsCache.insert(it.key(), it.value().toInt());
-        // Re-render only if the user is still viewing this repo's Releases tab,
-        // so a freshly logged download shows up without a manual refresh.
+
+
         if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
             const RepositoryRecord &r = m_repositories.at(m_repoDetailIndex);
             const QString cur =
@@ -2695,25 +2695,25 @@ void MainWindow::replicateReleaseArtifacts(int index)
     if (branch.isEmpty())
         return;
 
-    // Release manifests are committed metadata (.forkmesh/releases/<channel>/release.json)
-    // that git already mirrors; only the binary bytes live out of git in the
-    // per-node content-addressed store (issue #304). Read every channel's manifest
-    // from the served branch, collect the asset blob hashes we don't already hold,
-    // and remember the owner/repo that stages each one so we can pull it.
+
+
+
+
+
     QByteArray channelsOut;
     if (!runGitCapture(mirrorPath,
                        {QStringLiteral("ls-tree"), QStringLiteral("-z"),
                         QStringLiteral("--name-only"),
                         branch + QStringLiteral(":.forkmesh/releases")},
                        &channelsOut, nullptr))
-        return; // no .forkmesh/releases/ tree on this branch — nothing to mirror
+        return;
     static const QRegularExpression sha256Re(QStringLiteral("\\A[0-9a-f]{64}\\z"));
-    // Every mirror of this repo shares the same source identity; a manifest that
-    // doesn't name its own staging repo falls back to it.
+
+
     const QString fallbackRepo =
         repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
         repoSegment(repo.name, QStringLiteral("repository"));
-    QMap<QString, QString> pending; // blob sha256 -> "owner/name" to download from
+    QMap<QString, QString> pending;
     for (const QByteArray &raw : channelsOut.split('\0')) {
         const QString channel = QString::fromUtf8(raw).trimmed();
         if (channel.isEmpty())
@@ -2740,12 +2740,12 @@ void MainWindow::replicateReleaseArtifacts(int index)
             if (!sha256Re.match(hash).hasMatch())
                 continue;
             if (QFile::exists(mirrorReleaseBlobPath(mirrorPath, hash)))
-                continue; // already hosting this artifact
-            // A blob whose only source node is offline (relay answers 503)
-            // used to be re-requested on every roster flicker and periodic
-            // auto-sync, forever — hammering the relay with predictable
-            // failures. Back failing hashes off exponentially instead; a
-            // successful download clears the streak.
+                continue;
+
+
+
+
+
             if (!m_pollBackoff.ready(QStringLiteral("releaseBlob:") + hash,
                                      QDateTime::currentMSecsSinceEpoch()))
                 continue;
@@ -2760,8 +2760,8 @@ void MainWindow::replicateReleaseArtifacts(int index)
                   .arg(pending.size())
                   .arg(pending.size() == 1 ? "" : "s")
                   .arg(repo.owner, repo.name));
-    // Pull them one at a time so a multi-asset release doesn't open a dozen
-    // parallel binary streams at once.
+
+
     downloadNextReleaseBlob(index, mirrorPath, pending);
 }
 
@@ -2783,9 +2783,9 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
     const QString owner = downloadRepo.left(slash);
     const QString name = downloadRepo.mid(slash + 1);
 
-    // Stream the bytes straight to a temp file in the target CAS shard, hashing as
-    // we go, so even a large binary never sits fully in memory. On a verified match
-    // we atomically rename it into place; otherwise the partial is discarded.
+
+
+
     const QString blobPath = mirrorReleaseBlobPath(mirrorPath, hash);
     QDir().mkpath(QFileInfo(blobPath).absolutePath());
     auto tmp = std::make_shared<QFile>(blobPath + QStringLiteral(".part"));
@@ -2795,7 +2795,7 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
     }
     auto hasher = std::make_shared<QCryptographicHash>(QCryptographicHash::Sha256);
 
-    QUrl url = catalogApiUrl(); // relay host/scheme; content-addressed route is public
+    QUrl url = catalogApiUrl();
     url.setPath(QStringLiteral("/api/repo/%1/%2/releases/blob/sha256/%3")
                     .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
                          QString::fromUtf8(QUrl::toPercentEncoding(name)), hash));
@@ -2819,14 +2819,14 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
                     QString::fromLatin1(hasher->result().toHex());
                 if (ok && actual == hash) {
                     m_pollBackoff.noteSuccess(QStringLiteral("releaseBlob:") + hash);
-                    QFile::remove(blobPath); // replace any stale/empty leftover
+                    QFile::remove(blobPath);
                     if (!QFile::rename(partPath, blobPath)) {
                         QFile::remove(partPath);
                     } else if (index >= 0 && index < m_repositories.size() &&
                                m_repositories.at(index).mirrorPath == mirrorPath) {
-                        // Artifact availability is advertised separately from git
-                        // refs. Publish/re-announce after the CAS changes so other
-                        // nodes and the relay learn this mirror can seed releases.
+
+
+
                         m_mirrorAdvertSig.clear();
                         refreshRepositoryList();
                         if (m_repositories.at(index).publishToNetwork)
@@ -2834,9 +2834,9 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
                     }
                 } else {
                     QFile::remove(partPath);
-                    // Exponential per-hash cooldown (5m doubling to a 6h cap):
-                    // the usual failure is the one node holding the bytes being
-                    // offline, which won't change on the next roster flicker.
+
+
+
                     m_pollBackoff.noteFailure(
                         QStringLiteral("releaseBlob:") + hash,
                         QDateTime::currentMSecsSinceEpoch(),
@@ -2852,8 +2852,8 @@ void MainWindow::downloadNextReleaseBlob(int index, const QString &mirrorPath,
                                       "discarded.")
                                       .arg(hash.left(12)));
                 }
-                // Continue with the rest regardless of this one's outcome; a fresh
-                // panel load picks up the newly-hosted artifacts' count.
+
+
                 downloadNextReleaseBlob(index, mirrorPath, pending);
             });
 }
@@ -2903,7 +2903,7 @@ void MainWindow::pushReleaseToMirrors(const QString &tag)
 
     propagateRepoUpdate(index);
     const int sshRemotes =
-        pushToSshMirrorRemotes(index, /*userInitiated=*/true, tag);
+        pushToSshMirrorRemotes(index,  true, tag);
     if (sshRemotes == 0) {
         setRepoDetailNotice(
             QStringLiteral(
@@ -2931,9 +2931,9 @@ void MainWindow::promptNewRelease()
     const QString target = m_repoBranch.isEmpty() ? repoDefaultBranch(branches)
                                                   : m_repoBranch;
 
-    // Auto-fill the tag and title from the previous release so a typical
-    // patch bump is one click away. Grab the newest tag (by creation date)
-    // and its subject (the release title baked into the annotated tag).
+
+
+
     QString prevTag, prevTitle;
     {
         QByteArray out;
@@ -2953,9 +2953,9 @@ void MainWindow::promptNewRelease()
             }
         }
     }
-    // Suggest the next tag by incrementing the last run of digits in the
-    // previous tag (v0.5.1 -> v0.5.2, v1.0.0-rc1 -> v1.0.0-rc2). Falls back
-    // to an empty suggestion when there's no prior release to bump.
+
+
+
     QString suggestedTag, suggestedTitle;
     if (!prevTag.isEmpty()) {
         int end = -1;
@@ -2977,8 +2977,8 @@ void MainWindow::promptNewRelease()
                                prevTag.mid(end + 1);
         }
         if (!suggestedTag.isEmpty()) {
-            // Carry the previous title's pattern forward, swapping in the new
-            // tag where the old one appeared (titles are usually just the tag).
+
+
             if (prevTitle.isEmpty() || prevTitle == prevTag)
                 suggestedTitle = suggestedTag;
             else if (prevTitle.contains(prevTag))
@@ -2988,7 +2988,7 @@ void MainWindow::promptNewRelease()
         }
     }
 
-    // GitHub-style "draft a release": tag name, target ref, and release notes.
+
     QDialog dialog(this);
     dialog.setWindowTitle("Draft a new release");
     auto *form = new QFormLayout(&dialog);
@@ -3025,11 +3025,11 @@ void MainWindow::promptNewRelease()
     genNotesButton->setObjectName("ghostButton");
     genNotesButton->setCursor(Qt::PointingHandCursor);
     setOcticon(genNotesButton, "list-unordered", 14);
-    // GitHub-style auto-generated notes: every non-merge commit since the
-    // previous release (or, for the very first release, a capped recent window),
-    // as a "What's Changed" list, plus a compare link at the bottom. Replaces
-    // whatever is currently typed in Notes so it can be regenerated after
-    // switching Target.
+
+
+
+
+
     connect(genNotesButton, &QPushButton::clicked, &dialog,
             [dir, prevTag, tagEdit, targetEdit, notesEdit] {
                 const QString targetRef = targetEdit->currentText().trimmed();
@@ -3037,8 +3037,8 @@ void MainWindow::promptNewRelease()
                     return;
                 QStringList args{"log", "--no-merges", "--date-order",
                                  "--format=%s%x1f%h%x1f%an"};
-                // No previous tag to diff from (the first release) — cap the
-                // window so a large repo's whole history doesn't get dumped in.
+
+
                 if (prevTag.isEmpty())
                     args << QStringLiteral("--max-count=250") << targetRef;
                 else
@@ -3076,9 +3076,9 @@ void MainWindow::promptNewRelease()
                 }
                 notesEdit->setPlainText(text);
             });
-    // Second generator: hand the same commit range to an AI agent so it writes
-    // grouped, human-readable notes instead of a raw commit list. The picker
-    // chooses which provider runs it, seeded to the user's default agent.
+
+
+
     auto *agentNotesButton = new QPushButton("Generate release notes with agent");
     agentNotesButton->setObjectName("ghostButton");
     agentNotesButton->setCursor(Qt::PointingHandCursor);
@@ -3093,13 +3093,13 @@ void MainWindow::promptNewRelease()
                              QStringLiteral("claude-code"));
     selectDefaultAgentProvider(agentNotesCombo);
     agentNotesCombo->setToolTip("Which agent writes the release notes");
-    // Model picker: the options depend on the chosen provider (Claude models for
-    // the Claude agents, GPT models otherwise), so repopulate it whenever the
-    // provider changes. The data string is passed straight through as the model.
+
+
+
     auto *agentNotesModelCombo = new QComboBox;
     agentNotesModelCombo->setToolTip("Which model the agent uses");
-    // Repopulating fires currentIndexChanged for every add/clear; block signals
-    // so that churn doesn't get persisted as the user's model choice below.
+
+
     auto populateModels = [agentNotesModelCombo](const QString &provider) {
         const QSignalBlocker block(agentNotesModelCombo);
         agentNotesModelCombo->clear();
@@ -3119,8 +3119,8 @@ void MainWindow::promptNewRelease()
             agentNotesModelCombo->addItem(QStringLiteral("GPT"),
                                           QStringLiteral("gpt-4.1"));
         }
-        // Restore whichever model was last used to generate release notes with
-        // this provider family, falling back to the first item above.
+
+
         selectModelComboValue(
             agentNotesModelCombo,
             QSettings()
@@ -3133,8 +3133,8 @@ void MainWindow::promptNewRelease()
             [agentNotesCombo, populateModels](const QString &) {
                 populateModels(agentNotesCombo->currentData().toString());
             });
-    // Remember the chosen model as soon as it changes, so the next release
-    // dialog opens with it pre-selected instead of always the first item.
+
+
     auto persistReleaseNotesModel = [agentNotesCombo, agentNotesModelCombo] {
         const bool claude =
             agentIsClaudeProvider(agentNotesCombo->currentData().toString());
@@ -3177,7 +3177,7 @@ void MainWindow::promptNewRelease()
     form->addRow(buttons);
     connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-    // Pre-select the suggested tag so it can be accepted as-is or typed over.
+
     tagEdit->setFocus();
     tagEdit->selectAll();
     if (dialog.exec() != QDialog::Accepted)
@@ -3193,19 +3193,19 @@ void MainWindow::promptNewRelease()
     const QString notes = notesEdit->toPlainText().trimmed();
     if (message.isEmpty())
         message = tag;
-    // Keep the bare title for the fediverse announcement before the notes are
-    // folded into the tag message below.
+
+
     const QString releaseTitle = message;
     if (!notes.isEmpty())
         message += "\n\n" + notes;
 
-    // Stamp the released version into the Qt client's committed version header
-    // and commit it BEFORE tagging, so the tagged commit declares the release
-    // version and the app reports it. Lands even when no build node is online to
-    // run the release workflow; the workflow's landVersionHeader then no-ops.
-    // Only when releasing the checked-out branch's tip, so the bump commit
-    // advances the ref the tag will point at instead of landing on an unrelated
-    // branch (the target can differ from what's checked out).
+
+
+
+
+
+
+
     QByteArray headBranch;
     if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headBranch,
                       nullptr) &&
@@ -3214,7 +3214,7 @@ void MainWindow::promptNewRelease()
         logSystem(
             QStringLiteral("Bumped ForkMesh version header to match %1.").arg(tag));
 
-    // Annotated tag so the release notes live in the repo's git history.
+
     QString err;
     if (!runGitCapture(dir, {"tag", "-a", tag, targetRef, "-m", message}, nullptr,
                        &err)) {
@@ -3231,24 +3231,24 @@ void MainWindow::promptNewRelease()
     if (pruneTagsCheck->isChecked())
         pruneReleaseTagsForCurrentRepo(tag);
 
-    // Trigger any `on: release` workflow (e.g. .forkmesh/release.yml, which
-    // builds and publishes the desktop binary for this platform). Resolve the
-    // tag's target to a concrete commit the runner can check out, and pass the
-    // tag ref so the run reports against refs/tags/<tag> and the workflow sees
-    // FORKMESH_TAG.
+
+
+
+
+
     if (m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()) {
         const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
         if (repo.actionsEnabled) {
-            // The tag (and any version-bump commit) was just created in the
-            // working copy, but queueWorkflowsForCommit reads the .forkmesh/
-            // workflows AND resolves the commit from the served bare mirror — and
-            // ActionRunner later checks that commit out of the mirror too. The
-            // periodic mirror sync hasn't caught up yet, so without copying the new
-            // tag across first the release tag exists but ls-tree finds no workflow
-            // at the (mirror-absent) commit ("nothing to run") and the build never
-            // runs. Fetch the new heads+tags straight from the working copy into
-            // the mirror (the same refspecs syncRepository uses) so the tagged
-            // commit and its workflow files are present before we queue the build.
+
+
+
+
+
+
+
+
+
+
             if (!repo.mirrorPath.trimmed().isEmpty() && dir != repo.mirrorPath &&
                 QDir(repo.mirrorPath).exists())
                 runGitCapture(repo.mirrorPath,
@@ -3277,8 +3277,8 @@ void MainWindow::generateReleaseNotesWithAgent(
     if (!m_networkAccess || !notesEdit || targetRef.isEmpty())
         return;
 
-    // Same commit window the deterministic generator uses: everything since the
-    // previous release, or a capped recent slice for the very first one.
+
+
     QStringList args{"log", "--no-merges", "--date-order",
                      "--format=%s%x1f%h%x1f%an"};
     if (prevTag.isEmpty())
@@ -3313,7 +3313,7 @@ void MainWindow::generateReleaseNotesWithAgent(
             true);
         return;
     }
-    // A big history would blow the request budget; cap what the agent sees.
+
     if (commits.size() > 250)
         commits = commits.mid(0, 250);
 
@@ -3348,7 +3348,7 @@ void MainWindow::generateReleaseNotesWithAgent(
             "points, or Markdown lists. Keep it under 500 characters. Output only "
             "the paragraph, no preamble.\n\n----- COMMITS -----\n%2")
             .arg(version, commits.join(QLatin1Char('\n')));
-    // The dialog's model picker wins; fall back to the provider's default.
+
     const QString model =
         !modelChoice.isEmpty()
             ? modelChoice
@@ -3390,9 +3390,9 @@ void MainWindow::generateReleaseNotesWithAgent(
             req, QJsonDocument(payload).toJson(QJsonDocument::Compact));
     }
 
-    // The draft dialog is modal but its event loop keeps spinning, so the reply
-    // fires while it's open. Guard the dialog-scoped widgets with QPointer in
-    // case the user dismisses the dialog before the response lands.
+
+
+
     QPointer<QPlainTextEdit> notesGuard(notesEdit);
     QPointer<QPushButton> buttonGuard(button);
     if (button) {
@@ -3441,12 +3441,12 @@ void MainWindow::generateReleaseNotesWithAgent(
             });
 }
 
-// Announce a freshly published release to the repo's fediverse followers.
-// Releases never pass through the relay's signed inboxes (they are canonical
-// on this node), so the relay can only federate them when the owner node
-// pushes the announcement itself: POST /api/repo/<o>/<r>/ap-publish, gated by
-// the same forkmesh-issues-pull-v1 signed token as the inbox drains.
-// Best-effort fire-and-forget — a relay hiccup must never affect the release.
+
+
+
+
+
+
 void MainWindow::announceReleaseOnFediverse(const QString &tag,
                                             const QString &title,
                                             const QString &notes)
@@ -3455,7 +3455,7 @@ void MainWindow::announceReleaseOnFediverse(const QString &tag,
         return;
     const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
     if (!repo.publishToNetwork)
-        return; // unpublished repos have no public fediverse actor
+        return;
     const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
     if (!hasOwnerSigningCapability(owner))
         return;
@@ -3493,16 +3493,16 @@ void MainWindow::showReleaseDetail(const QString &tag)
     const QString dir = repoGitDir();
     if (dir.isEmpty() || tag.isEmpty())
         return;
-    // Only real tags open a detail view — guards the empty-state placeholder row,
-    // whose cell text isn't a tag.
+
+
     if (!runGitCapture(dir, {"rev-parse", "--verify", "--quiet",
                              QStringLiteral("refs/tags/") + tag},
                        nullptr, nullptr))
         return;
 
-    // --- Tag metadata: full release notes, creation date+time, tagger. For an
-    // annotated tag %(contents:*) is the tag message (the title + notes typed in
-    // promptNewRelease); for a lightweight tag it falls back to the commit's.
+
+
+
     QByteArray meta;
     runGitCapture(dir,
                   {"for-each-ref",
@@ -3516,9 +3516,9 @@ void MainWindow::showReleaseDetail(const QString &tag)
     const QString subject = mf.value(2).trimmed();
     const QString body = mf.value(3).trimmed();
 
-    // --- The previous release (next-older tag by creation date) is the diff
-    // base, so the detail view shows "what changed since the last release" — the
-    // same ordering the list uses, so it always lines up with the row above.
+
+
+
     QString prevTag;
     {
         QByteArray tagsOut;
@@ -3544,9 +3544,9 @@ void MainWindow::showReleaseDetail(const QString &tag)
         }
     }
 
-    // --- The release diff: prevTag..tag (git resolves annotated tags to the
-    // commits they point at). The very first release has no earlier tag, so the
-    // diff section says so rather than dumping the whole tree.
+
+
+
     QString diffHtml;
     if (!prevTag.isEmpty()) {
         QByteArray patchRaw;
@@ -3580,7 +3580,7 @@ void MainWindow::showReleaseDetail(const QString &tag)
         layout->addWidget(metaLabel);
     }
 
-    // Release notes (the annotated tag's body, below its subject/title).
+
     if (!body.isEmpty()) {
         auto *notes = new QLabel(
             QStringLiteral("<span style='white-space:pre-wrap'>%1</span>")
@@ -3600,7 +3600,7 @@ void MainWindow::showReleaseDetail(const QString &tag)
 
     auto *diff = new QTextBrowser;
     diff->setObjectName("diffView");
-    diff->setOpenLinks(false); // read-only diff; don't navigate on anchor clicks
+    diff->setOpenLinks(false);
     registerDiffView(diff);
     if (diffHtml.trimmed().isEmpty())
         setDiffHtml(diff,
@@ -3619,16 +3619,16 @@ void MainWindow::showReleaseDetail(const QString &tag)
     auto *buttons = new QDialogButtonBox;
     auto *browseBtn = buttons->addButton(QStringLiteral("Browse repo at this tag"),
                                          QDialogButtonBox::ActionRole);
-    // Retro-announce: releases published before the automatic ap-publish hook
-    // existed (or while the relay was unreachable) can be pushed to fediverse
-    // followers from here at any time.
+
+
+
     auto *fediBtn = buttons->addButton(QStringLiteral("Announce on fediverse"),
                                        QDialogButtonBox::ActionRole);
     buttons->addButton(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
     connect(browseBtn, &QPushButton::clicked, &dialog, [this, &dialog, tag] {
         dialog.accept();
-        setRepoBranch(tag); // browse the repo's files at this tag
+        setRepoBranch(tag);
     });
     connect(fediBtn, &QPushButton::clicked, &dialog,
             [this, tag, subject, body, fediBtn] {

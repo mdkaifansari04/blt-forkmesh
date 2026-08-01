@@ -1,6 +1,6 @@
-// Local control-node operations: mirror lifecycle/sync/health, repository
-// permissions, local identity and public wallet connection, Cloudflare relay
-// bootstrap, remote hosts, and logs.
+
+
+
 
 #include "ActionStore.h"
 #include "ControlNode.h"
@@ -139,9 +139,9 @@ bool prepareOwnerDirectory(const QString &path, QString *error)
     return true;
 }
 
-// Current bytes of an owner-only file, or empty when it is absent or is not a
-// plain file. Used to tell a rewritten-but-identical configuration from a real
-// change, so a running gateway is only restarted when it must be.
+
+
+
 QByteArray readOwnerFileIfPresent(const QString &path)
 {
     const QFileInfo info(path);
@@ -188,12 +188,12 @@ bool writeOwnerJson(const QString &path, const QJsonObject &object,
     return true;
 }
 
-// Rewrite the CLOUDFLARE_* assignments in cloudflare_worker/.env.production in
-// place, keeping every other production secret and comment. The file is the
-// deploy machine's own credential store, so it is written owner-only and is
-// never created through a symlink. *changed reports whether the file needed a
-// write at all, so a caller re-saving a value it already holds (the Vultr key
-// on every provisioning call) neither rewrites the file nor claims it did.
+
+
+
+
+
+
 bool writeEnvAssignments(const QString &path,
                          const QMap<QString, QString> &values,
                          QString *error, bool *changed = nullptr)
@@ -210,8 +210,8 @@ bool writeEnvAssignments(const QString &path,
     if (info.exists()) {
         if (info.isSymLink() || !info.isFile())
             return fail(QStringLiteral("%1 is not a regular file.").arg(path));
-        // A .env is a handful of lines; anything larger is not the file this
-        // rotation should be rewriting, and truncating it would lose secrets.
+
+
         if (info.size() > 512 * 1024)
             return fail(QStringLiteral("%1 is unexpectedly large.").arg(path));
         QFile existing(path);
@@ -302,7 +302,7 @@ QString controlMirrorReadyKey(const RepositoryRecord &repo)
                : QString();
 }
 
-} // namespace
+}
 
 QWidget *MainWindow::buildControlNodeSection()
 {
@@ -329,9 +329,9 @@ QWidget *MainWindow::buildControlNodeSection()
             "remain on devices you control; the relay receives only signed public "
             "metadata and ordinary repository traffic.")));
 
-    // One tab per operational area instead of one very long scroll (adhoc
-    // #108). Each tab scrolls on its own; the title and the privacy note above
-    // stay pinned so they are readable from any tab.
+
+
+
     auto *tabs = new QTabWidget;
     tabs->setObjectName(QStringLiteral("controlNodeTabs"));
     tabs->setDocumentMode(true);
@@ -352,7 +352,7 @@ QWidget *MainWindow::buildControlNodeSection()
         tabs->addTab(scroll, name);
     };
 
-    // --- Local service lifecycle ------------------------------------------
+
     QVBoxLayout *serviceCol = nullptr;
     QFrame *serviceCard =
         controlCard(QStringLiteral("Local mirror services"), &serviceCol);
@@ -406,7 +406,7 @@ QWidget *MainWindow::buildControlNodeSection()
     serviceCol->addLayout(serviceButtons);
     addTab(serviceCard, QStringLiteral("Mirror services"));
 
-    // --- Per-repository permissions ---------------------------------------
+
     QVBoxLayout *permissionCol = nullptr;
     QFrame *permissionCard =
         controlCard(QStringLiteral("Repository permissions"), &permissionCol);
@@ -438,7 +438,7 @@ QWidget *MainWindow::buildControlNodeSection()
     permissionCol->addWidget(m_controlPermissionsTable);
     addTab(permissionCard, QStringLiteral("Repository permissions"));
 
-    // --- Local key + wallet public address --------------------------------
+
     QVBoxLayout *identityCol = nullptr;
     QFrame *identityCard =
         controlCard(QStringLiteral("Local keys and wallet connection"), &identityCol);
@@ -501,10 +501,10 @@ QWidget *MainWindow::buildControlNodeSection()
             "wallet private key.")));
     addTab(identityCard, QStringLiteral("Keys and wallet"));
 
-    // --- First-instance-owner community reward-pool signer ----------------
+
     addTab(buildRewardPoolControlCard(), QStringLiteral("Reward pool"));
 
-    // --- Cloudflare one-click relay bootstrap -----------------------------
+
     QVBoxLayout *cloudflareCol = nullptr;
     QFrame *cloudflareCard =
         controlCard(QStringLiteral("Cloudflare relay deployment"), &cloudflareCol);
@@ -686,13 +686,13 @@ QWidget *MainWindow::buildControlNodeSection()
     m_controlCloudflareTabIndex = tabs->count();
     addTab(cloudflareCard, QStringLiteral("Cloudflare relay"));
 
-    // --- Cloudflare API token: what it can do vs. what ForkMesh needs ------
+
     addTab(buildCloudflareTokenCard(), QStringLiteral("API token"));
 
-    // --- Ship this checkout with cloudflare_worker/deploy.sh ---------------
+
     addTab(buildSiteDeployCard(), QStringLiteral("Site deployment"));
 
-    // --- Remote hosts ------------------------------------------------------
+
     QVBoxLayout *hostsCol = nullptr;
     QFrame *hostsCard =
         controlCard(QStringLiteral("Connected hosts"), &hostsCol);
@@ -729,10 +729,10 @@ QWidget *MainWindow::buildControlNodeSection()
     outer->addWidget(tabs, 1);
 
     m_controlNodeRefreshTimer = new QTimer(page);
-    // Process/gateway labels are cheap, but the mirror readiness snapshot is
-    // deliberately cached and backgrounded below. Ten seconds is ample for an
-    // operational dashboard and avoids rebuilding widgets while the user is
-    // interacting with the table.
+
+
+
+
     m_controlNodeRefreshTimer->setInterval(10000);
     connect(m_controlNodeRefreshTimer, &QTimer::timeout, this, [this] {
         if (m_sectionStack &&
@@ -762,8 +762,8 @@ void MainWindow::ensureDirectMirrorRegistrationTimer(QObject *parent)
 void MainWindow::openCloudflareSetupFromSystemLink(const QString &target)
 {
     showSection(kControlNodeSectionIndex);
-    // The relay fields this link fills live on their own tab now, so raise it
-    // rather than filling a form the operator cannot see.
+
+
     if (m_controlNodeTabs && m_controlCloudflareTabIndex >= 0)
         m_controlNodeTabs->setCurrentIndex(m_controlCloudflareTabIndex);
     const QUrl url(target);
@@ -1291,9 +1291,9 @@ void MainWindow::maybeAutoStartDirectMirrorServices()
              .value(QStringLiteral("control/autoStartMirrorServices"), true)
              .toBool())
         return;
-    // Respect an explicitly parked node — the desktop's "Start mirror
-    // services" button is the deliberate un-park. Headless nodes are forced
-    // online in setHeadlessMode, so this never strands an unattended mirror.
+
+
+
     if (m_nodeOffline)
         return;
     const QString hostname =
@@ -1303,9 +1303,9 @@ void MainWindow::maybeAutoStartDirectMirrorServices()
             .toLower();
     if (hostname.isEmpty())
         return;
-    // Only a fully provisioned endpoint qualifies: the owner-only connector
-    // token proves provisionDirectMirrorEndpoint (or the installer) already
-    // ran here. Same regular-file/owner-only test the Tunnel launch applies.
+
+
+
     const QFileInfo tokenInfo(directGatewayConnectorTokenPath());
     const auto forbiddenPermissions =
         QFileDevice::ReadGroup | QFileDevice::WriteGroup |
@@ -1415,22 +1415,22 @@ void MainWindow::updateControlRepositoryPermission(QTableWidgetItem *item)
 
     saveRepositories();
     if (visibilityChanged) {
-        // Private transitions seal and authenticate before publishing; public
-        // transitions rebuild a durable direct-HTTPS mirror. Neither path
-        // exposes repository bytes through the persistent update channel.
+
+
+
         QString ignoredGatewayError;
         rebuildDirectMirrorGatewayConfiguration(
             &ignoredGatewayError, true);
         if (enabled)
-            syncPrivateRepository(index, /*quiet=*/false);
+            syncPrivateRepository(index,  false);
         else
-            syncRepository(index, /*quiet=*/false);
+            syncRepository(index,  false);
     } else if (permission == QLatin1String("serve") &&
                repo.publishToNetwork) {
         if (repo.isPrivate)
-            syncPrivateRepository(index, /*quiet=*/false);
+            syncPrivateRepository(index,  false);
         else
-            syncRepository(index, /*quiet=*/false);
+            syncRepository(index,  false);
     } else if (permission == QLatin1String("serve") &&
                !repo.publishToNetwork) {
         QString gatewayError;
@@ -1564,9 +1564,9 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         const PublicMirrorRuntime::Metadata metadata =
             PublicMirrorRuntime::readMetadata(
                 archiveRoot, repo.publicArchiveId, nullptr);
-        // An unsealed public repository is omitted, never represented by a
-        // plaintext path or an enabled-but-unverifiable entry. Its sync path
-        // will rebuild this configuration after age sealing succeeds.
+
+
+
         if (!metadata.isValid())
             continue;
         QJsonArray operationArray;
@@ -1646,13 +1646,13 @@ bool MainWindow::rebuildDirectMirrorGatewayConfiguration(
         config.insert(QStringLiteral("privateReplicaStore"),
                       privateStoreInfo.absoluteFilePath());
     }
-    // Compare against what the gateway is already serving before rewriting it:
-    // every successful encrypted-mirror seal calls this with
-    // restartRunningGateway, and a seal happens every few minutes on an
-    // unattended mirror. Restarting unconditionally left the loopback origin
-    // down for a beat that often, so the relay's endpoint validation and health
-    // probes kept landing in the gap (502 -> invalid_manifest -> the node never
-    // registered a tunnel at all). An unchanged configuration needs no restart.
+
+
+
+
+
+
+
     const QByteArray previousConfig = readOwnerFileIfPresent(
         directGatewayConfigPath());
     if (!writeOwnerJson(directGatewayConfigPath(), config, error))
@@ -2035,15 +2035,15 @@ void MainWindow::checkDirectMirrorGatewayHealth()
 
 void MainWindow::registerDirectMirrorEndpoint()
 {
-    // A connector this process spawned is one way to know a Tunnel is in front
-    // of the loopback gateway; an owner-only connector token on disk is the
-    // other, and it is the only one a packaged deployment can offer — those run
-    // cloudflared under its own supervised unit (see
-    // packaging/systemd/cloudflared-forkmesh.service), so m_cloudflaredProcess
-    // is legitimately null there and requiring it silently disabled
-    // registration for every externally supervised mirror. The Worker
-    // revalidates proxied DNS and the signed manifest before accepting either
-    // way, so a node whose Tunnel is actually down still cannot register.
+
+
+
+
+
+
+
+
+
     const QFileInfo connectorTokenInfo(directGatewayConnectorTokenPath());
     const bool connectorProvisioned =
         (m_cloudflaredProcess &&
@@ -2560,12 +2560,12 @@ void MainWindow::runCloudflareBootstrap(bool dryRun)
         forkmesh::control::buildCloudflareBootstrapCommand(
             request, apiToken, script, python,
             QString(), QString());
-    // The Worker/static bootstrap's historical manifest describes the relay
-    // deployment, not this machine's direct HTTPS Tunnel. It is deliberately
-    // skipped here; cloudflare_tunnel_bootstrap.py writes the only active
-    // endpoint manifest with the exact Tunnel origin and DNS identity.
-    // Defence in depth: even if the builder regresses, refuse to spawn a process
-    // whose visible argv contains the API token.
+
+
+
+
+
+
     if (command.arguments.join(QChar(u'\0')).contains(apiToken)) {
         flashMessage(
             QStringLiteral("Refusing an unsafe deployment command containing a credential."),
@@ -2824,9 +2824,9 @@ void MainWindow::runCloudflareBootstrap(bool dryRun)
                                        "control-node output."),
                         true);
                 }
-                // Drop the child environment before deleting the process, then
-                // either hand the still-in-memory token to the Tunnel stage or
-                // overwrite the short-lived redaction copy on failure.
+
+
+
                 process->setProcessEnvironment(QProcessEnvironment());
                 process->deleteLater();
                 if (m_cloudflareBootstrapProcess == process)
@@ -2999,8 +2999,8 @@ void MainWindow::runSiteDeploy()
     process->setWorkingDirectory(QFileInfo(script).absolutePath());
     QProcessEnvironment environment =
         QProcessEnvironment::systemEnvironment();
-    // Keep the child's Python/Wrangler chatter arriving line by line so the
-    // page shows progress instead of one block at the end.
+
+
     environment.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
     process->setProcessEnvironment(environment);
     connect(process, &QProcess::readyReadStandardOutput, this,
@@ -3158,8 +3158,8 @@ QWidget *MainWindow::buildCloudflareTokenCard()
     }
     m_controlTokenTable->horizontalHeader()->setSectionResizeMode(
         4, QHeaderView::Stretch);
-    // The tab already scrolls; a second scrollbar inside the table would hide
-    // half the requirement list.
+
+
     m_controlTokenTable->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     col->addWidget(m_controlTokenTable);
 
@@ -3195,8 +3195,8 @@ QWidget *MainWindow::buildCloudflareTokenCard()
     m_controlTokenOutput->setFont(mono);
     col->addWidget(m_controlTokenOutput);
 
-    // Show the requirement table before anything is checked, so the tab answers
-    // "what is required" on its own.
+
+
     renderCloudflareTokenReport();
     return card;
 }
@@ -3228,8 +3228,8 @@ void MainWindow::setCloudflareTokenBusy(bool busy)
 
 void MainWindow::endCloudflareTokenRun()
 {
-    // Re-enable the buttons and drop the redaction copy together: every exit
-    // from a check or a rotation, successful or not, ends here.
+
+
     setCloudflareTokenBusy(false);
     m_controlTokenSecret.clear();
 }
@@ -3377,10 +3377,10 @@ void MainWindow::checkCloudflareTokenPolicies(const QString &token,
 
 void MainWindow::resolveCloudflareTokenTopology(const QString &token)
 {
-    // Probing an account- or zone-scoped capability needs the id of the
-    // resource to probe. Prefer what the page and this device already know, then
-    // ask Cloudflare — and only accept an answer that is unambiguous, so a
-    // multi-account token never gets checked against a stranger's account.
+
+
+
+
     if (m_controlTokenAccountId.isEmpty()) {
         appendCloudflareTokenOutput(QStringLiteral("GET /accounts\n"));
         cloudflareApiCall(
@@ -3408,8 +3408,8 @@ void MainWindow::resolveCloudflareTokenTopology(const QString &token)
                         QStringLiteral("Accounts are not listable (%1).\n")
                             .arg(error));
                 }
-                // Mark the lookup done even when it answered nothing usable, or
-                // this pass would ask again forever.
+
+
                 if (m_controlTokenAccountId.isEmpty())
                     m_controlTokenAccountId = QStringLiteral("-");
                 resolveCloudflareTokenTopology(token);
@@ -3463,7 +3463,7 @@ void MainWindow::resolveCloudflareTokenTopology(const QString &token)
                         QStringLiteral("Zones are not listable (%1).\n")
                             .arg(error));
                 }
-                // Guard against a second lookup when the zone stays unknown.
+
                 if (m_controlTokenZoneId.isEmpty())
                     m_controlTokenZoneId = QStringLiteral("-");
                 resolveCloudflareTokenTopology(token);
@@ -3568,7 +3568,7 @@ void MainWindow::renderCloudflareTokenReport()
         return;
     if (m_controlTokenSecret.isEmpty() && m_controlTokenProbeResults.isEmpty() &&
         !m_controlTokenPolicyReadable) {
-        return; // never checked in this session: keep the initial hint
+        return;
     }
     QStringList lines;
     if (m_controlTokenPolicyReadable) {
@@ -3645,8 +3645,8 @@ void MainWindow::generateCloudflareApiToken()
     setCloudflareTokenBusy(true);
     appendCloudflareTokenOutput(
         QStringLiteral("GET /user/tokens/permission_groups\n"));
-    // No per_page bound: this endpoint answers with the complete catalog, and a
-    // truncated page would look like a missing permission group.
+
+
     cloudflareApiCall(
         token, QStringLiteral("/user/tokens/permission_groups"),
         QByteArrayLiteral("GET"), {},
@@ -3663,8 +3663,8 @@ void MainWindow::generateCloudflareApiToken()
                 endCloudflareTokenRun();
                 return;
             }
-            // Cloudflare only accepts a narrow character set in a token name,
-            // and a node name is operator-supplied.
+
+
             static const QRegularExpression unsafeName(
                 QStringLiteral("[^A-Za-z0-9._-]"));
             QString node = machineNodeName();
@@ -3732,8 +3732,8 @@ QStringList MainWindow::rememberVultrApiKey(const QString &apiKey,
     if (error)
         error->clear();
     const QString key = apiKey.trimmed();
-    // A multi-line value is never a real key, and writing one would corrupt
-    // both the child environment it is injected into and the .env file below.
+
+
     if (key.isEmpty() || key == m_vultrRememberedKey ||
         key.contains(QLatin1Char('\n')) || key.contains(QLatin1Char('\r'))) {
         return {};
@@ -3748,10 +3748,10 @@ QStringList MainWindow::rememberVultrApiKey(const QString &apiKey,
         const QString name = it.key().trimmed();
         if (!names.contains(name, Qt::CaseInsensitive))
             continue;
-        // An alias the operator saved earlier (Quick setup wrote
-        // VULTR_API_TOKEN) is updated in place rather than left behind: a
-        // stale one resolves ahead of the canonical name for anything reading
-        // it directly, so the key just proven good would stay shadowed.
+
+
+
+
         if (name.compare(canonical, Qt::CaseInsensitive) == 0)
             haveCanonical = true;
         if (it.value().trimmed() != key) {
@@ -3777,8 +3777,8 @@ QStringList MainWindow::rememberVultrApiKey(const QString &apiKey,
     bool retryable = false;
     bool envChanged = false;
     if (envPath.isEmpty()) {
-        // No checkout beside this build: there is no file to write and no
-        // later call can change that, so this is reported, not retried.
+
+
         envError = QStringLiteral(
             "cloudflare_worker/.env.production was not found next to this "
             "build's Worker bundle, so no file was rewritten.");
@@ -3798,8 +3798,8 @@ QStringList MainWindow::rememberVultrApiKey(const QString &apiKey,
 
 void MainWindow::adoptRotatedCloudflareToken(const QString &token)
 {
-    // Redact the new secret from this tab's own output before anything else can
-    // print it.
+
+
     m_controlTokenSecret = token;
     const QString masked = forkmesh::control::maskedTokenSuffix(token);
 
@@ -3834,9 +3834,9 @@ void MainWindow::adoptRotatedCloudflareToken(const QString &token)
             applied << envPath;
     }
 
-    // Both deployment paths in this session pick the new token up without a
-    // restart: the relay bootstrap reads its own field, the site deploy reads
-    // .env.production.
+
+
+
     if (m_controlTokenEdit)
         m_controlTokenEdit->setText(token);
     if (m_cloudflareTokenEdit)
@@ -3863,7 +3863,7 @@ void MainWindow::adoptRotatedCloudflareToken(const QString &token)
                                         : envError + QLatin1Char(' ')));
     }
 
-    // Verify the replacement the same way the operator would.
+
     endCloudflareTokenRun();
     QTimer::singleShot(0, this, &MainWindow::testCloudflareApiToken);
 }

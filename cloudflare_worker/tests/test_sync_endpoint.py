@@ -64,14 +64,14 @@ class _Request:
 
 def _harness(owner_e2ee=False):
     """In-memory D1 stand-ins, in the style of test_repo_agents.py."""
-    repositories = []   # {"key_bi","owner_bi","data"}
+    repositories = []
     inboxes = {
-        "issue_inbox": [],       # {"repo_bi","data"}
+        "issue_inbox": [],
         "pull_inbox": [],
         "discussion_inbox": [],
         "repo_merge_jobs": [],
     }
-    agent_prompts = []  # {"id","repo_bi","data"}
+    agent_prompts = []
 
     class _DateStub:
         @staticmethod
@@ -97,8 +97,8 @@ def _harness(owner_e2ee=False):
         return sig == "good-sig"
 
     async def _account_devices_list(_env, _account_bi):
-        # No extra desktop devices by default; the device-key drain path is
-        # exercised by overriding this stub in its own test below.
+
+
         return []
 
     async def decrypt_row(_env, stored, key=None):
@@ -118,8 +118,8 @@ def _harness(owner_e2ee=False):
                 and row.get("status") == "succeeded"
                 and int(row.get("expires_at") or 0) > now
             ]
-        # sync_handler now selects each inbox table once across all of the
-        # owner's repos with `repo_bi IN (?,...)`, returning repo_bi + data.
+
+
         want = set(args)
         for table, rows in inboxes.items():
             if "FROM " + table in sql:
@@ -134,8 +134,8 @@ def _harness(owner_e2ee=False):
                     )
                 ]
         if "FROM agent_prompts" in sql:
-            # The drain path selects row ids too (aliased drain_id) so the
-            # delete can target exactly the rows it read.
+
+
             return [{"repo_bi": r["repo_bi"], "data": r["data"],
                      "drain_id": r["id"]}
                     for r in agent_prompts if r["repo_bi"] in want]
@@ -174,8 +174,8 @@ def _harness(owner_e2ee=False):
         raise AssertionError("unexpected d1_first: " + sql)
 
     def safe_segment(value, max_length=100):
-        # Stand-in for catalog.py's sanitizer: lowercase pass-through is
-        # enough for these tests' well-formed owner names.
+
+
         return str(value or "").strip().lower()[:max_length]
 
     globals_for_handler = {
@@ -266,8 +266,8 @@ def test_sync_returns_all_topics_and_drains_prompts():
     assert entry["commits"] == []
     assert entry["mirrorMerges"] == []
     assert entry["agentPrompts"] == [{"agentId": "new", "text": "fix it"}]
-    # Prompts drain on read (same contract as GET /agents); inbox items do
-    # NOT — the node still acks a merged inbox with its per-topic DELETE.
+
+
     assert agent_prompts == []
     assert len(inboxes["issue_inbox"]) == 1
 
@@ -299,7 +299,7 @@ def test_sync_queues_published_mirror_merge_receipt_for_source_truth():
         "updated_at": 900_000_000,
         "expires_at": 1_100_000_000,
         "status": "succeeded",
-        # These sensitive routing fields must not appear in the response.
+
         "selected_node": "private-mirror-name",
         "actor_bi": "blind-owner-id",
     })
@@ -348,8 +348,8 @@ def test_sync_returns_owner_sealed_prompt_and_waits_for_explicit_ack():
     assert entry["agentPromptAckPath"] == (
         "/api/repo/alice/repo-one/agents/ack")
     assert "opaque encrypted prompt" not in str(entry)
-    # Sync is non-destructive for ciphertext. The owner desktop opens and
-    # journals it before calling /agents/ack.
+
+
     assert len(agent_prompts) == 1
 
 
@@ -364,15 +364,15 @@ def test_sync_rejects_bad_signature_and_stale_ts():
         object(), _Request(_sync_url(sig="bad-sig"))))
     assert resp["status"] == 401
     resp = asyncio.run(ns["sync_handler"](
-        object(), _Request(_sync_url(ts=1))))  # far outside the skew window
+        object(), _Request(_sync_url(ts=1))))
     assert resp["status"] == 401
 
 
 def test_sync_accepts_a_stored_enabled_device_key_not_just_the_primary():
-    # A reinstalled/rotated node signs with a NEW key that login stored in
-    # account_devices (enabled, owner_sign) but never promoted to the account's
-    # primary pubkey. The drain gate must honor that stored device key or the
-    # node silently 401s forever and nothing (issues/chats/etc.) reaches it.
+
+
+
+
     ns, repositories, inboxes, _prompts = _harness()
     repositories.append({
         "key_bi": "bi:alice/repo-one",
@@ -382,7 +382,7 @@ def test_sync_accepts_a_stored_enabled_device_key_not_just_the_primary():
     inboxes["issue_inbox"].append(
         {"repo_bi": "bi:alice/repo-one", "data": {"number": 7}})
 
-    # Primary pubkey is the OLD key; only the new device key verifies the sig.
+
     async def _account_row(_env, name):
         if str(name).lower() == "alice":
             return "bi:alice", {"pubkey": "PK-old-primary"}
@@ -407,8 +407,8 @@ def test_sync_accepts_a_stored_enabled_device_key_not_just_the_primary():
 
 
 def test_sync_rejects_a_disabled_or_non_signing_device_key():
-    # A device that is revoked/disabled, or lacks the owner_sign capability, must
-    # NOT be able to drain — broadening the gate to stored keys must not weaken it.
+
+
     ns, repositories, _inboxes, _prompts = _harness()
     repositories.append({
         "key_bi": "bi:alice/repo-one",
@@ -427,9 +427,9 @@ def test_sync_rejects_a_disabled_or_non_signing_device_key():
     async def devices(_env, account_bi):
         return [
             {"pubkey": "PK-new-device", "enabled": False,
-             "capabilities": ["owner_sign"]},               # revoked/disabled
+             "capabilities": ["owner_sign"]},
             {"pubkey": "PK-web", "enabled": True,
-             "capabilities": ["browse", "comment"]},         # no owner_sign
+             "capabilities": ["browse", "comment"]},
         ]
 
     ns["_account_row"] = _account_row

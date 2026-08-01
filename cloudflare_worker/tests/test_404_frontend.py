@@ -32,8 +32,8 @@ def test_404_page_exists_and_uses_homepage_inspired_shell():
 
 
 def test_404_page_keeps_homepage_brand_and_navigation_escape_routes():
-    # Brand + Docs/Blog/Login now come from the universal session-aware header
-    # (site-header.js renders them at runtime); the in-body escape buttons stay.
+
+
     html = _read(NOT_FOUND_PAGE)
 
     for marker in (

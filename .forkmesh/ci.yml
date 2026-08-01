@@ -3,12 +3,12 @@ on: [push]
 jobs:
   test:
     steps:
-      # A run executes its steps one after another, so the three independent
-      # suites are launched together inside this one step instead: wall-clock is
-      # now the slowest suite rather than their sum. Each writes to its own log
-      # and is reported in a fixed order once it finishes, so the output stays
-      # readable instead of interleaving three builds. The step fails if any
-      # suite fails — the exit status of every one of them is checked.
+
+
+
+
+
+
       - name: Test suites (in parallel)
         run: |
           set -u

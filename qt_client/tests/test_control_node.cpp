@@ -64,7 +64,7 @@ QMap<QString, QVariant> settingsValues(QSettings &settings)
     return values;
 }
 
-} // namespace
+}
 
 int main(int argc, char **argv)
 {
@@ -726,9 +726,9 @@ int main(int argc, char **argv)
               .program.isEmpty(),
           "generic controller SSH rejects option-shaped hosts");
 
-    // Managed identity keys (adhoc #315): a recorded key file pins
-    // authentication to exactly that key; a missing file fails closed instead
-    // of silently falling back to the user's default keys.
+
+
+
     QTemporaryDir identityDir;
     const QString identityPath =
         identityDir.filePath(QStringLiteral("vultr_mirror_ed25519"));
@@ -755,10 +755,10 @@ int main(int argc, char **argv)
               .program.isEmpty(),
           "a missing managed identity file fails closed");
 
-    // Provider sign-in terminal (adhoc #422): the agent-CLI installer copies no
-    // tokens, so ForkMesh opens a real interactive shell on the mirror right
-    // after it finishes. That needs a forced remote TTY and a shell-safe
-    // command line, and the remote command itself must stay credential-free.
+
+
+
+
     QString loginError;
     const auto loginCommand =
         forkmesh::control::buildHostInteractiveSshCommand(
@@ -795,8 +795,8 @@ int main(int argc, char **argv)
               .isEmpty(),
           "a rejected sign-in host flattens to no command line at all");
 
-    // Host size map (adhoc #390): a read-only `du` browser over the same
-    // authenticated SSH channel.
+
+
     check(forkmesh::control::normalizeRemoteDiskPath(
               QStringLiteral("/var//lib/./forkmesh/")) ==
                   QStringLiteral("/var/lib/forkmesh") &&
@@ -858,8 +858,8 @@ int main(int argc, char **argv)
               QStringLiteral("/"))
               .complete == false,
           "a transport failure never looks like a complete size map");
-    // A size map that dies on the credentials asks for the host password and
-    // retries; every other 255 is something no password can fix.
+
+
     check(forkmesh::control::sshFailureNeedsPassword(
               255, QStringLiteral("root@203.0.113.10: Permission denied "
                                   "(publickey,password).")) &&
@@ -895,7 +895,7 @@ int main(int argc, char **argv)
         QByteArray("/").toBase64() + "\n" +
         "FORKMESH-MOUNT1 204800 153600 51200 " +
         QByteArray("/mnt/project data").toBase64() + "\n" +
-        // Duplicate paths are ignored rather than producing duplicate cards.
+
         "FORKMESH-MOUNT1 102400 25600 76800 " +
         QByteArray("/").toBase64() + "\n" +
         "FORKMESH-MOUNT1-END\n";
@@ -918,7 +918,7 @@ int main(int argc, char **argv)
               mountFailure.mounts.isEmpty(),
           "a host-side mount overview failure remains actionable");
 
-    // One-click Vultr provisioning helpers (adhoc #315).
+
     check(forkmesh::control::validateVultrMirrorRequest(
               QStringLiteral("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"),
               QStringLiteral("vultr-mirror-1"))
@@ -933,9 +933,9 @@ int main(int argc, char **argv)
                    .isEmpty(),
           "Vultr validation rejects malformed keys and node names");
 
-    // A key saved anywhere is the key every page resolves (adhoc #127): the
-    // canonical name wins, the Quick setup alias is honoured, and a value that
-    // could not survive an environment or .env line is skipped.
+
+
+
     check(forkmesh::control::vultrApiKeyVariableNames().constFirst() ==
                   QStringLiteral("VULTR_API_KEY") &&
               forkmesh::control::vultrApiKeyVariableNames().contains(
@@ -969,19 +969,19 @@ int main(int argc, char **argv)
                     {QStringLiteral("locations"),
                      QJsonArray{QStringLiteral("fra"),
                                 QStringLiteral("ams")}}},
-        // Cheapest IPv4 plan, but too small for the encrypted temporary
-        // repository materialization. Automatic provisioning must skip it.
+
+
         QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-0.5gb")},
                     {QStringLiteral("monthly_cost"), 2.5},
                     {QStringLiteral("ram"), 512},
                     {QStringLiteral("locations"),
                      QJsonArray{QStringLiteral("ewr")}}},
-        // Cheaper but sold out everywhere: not deployable, must be skipped.
+
         QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-old")},
                     {QStringLiteral("monthly_cost"), 3},
                     {QStringLiteral("ram"), 512},
                     {QStringLiteral("locations"), QJsonArray{}}},
-        // Same price, more RAM: preferred deterministically.
+
         QJsonObject{{QStringLiteral("id"), QStringLiteral("vhp-1c-2gb")},
                     {QStringLiteral("monthly_cost"), 5},
                     {QStringLiteral("ram"), 2048},
@@ -989,7 +989,7 @@ int main(int argc, char **argv)
                      QJsonArray{QStringLiteral("syd"),
                                 QStringLiteral("atl"),
                                 QStringLiteral("ewr")}}},
-        // Cheapest of all, but IPv6-only: unreachable for the mesh (adhoc #344).
+
         QJsonObject{{QStringLiteral("id"), QStringLiteral("vc2-1c-0.5gb-v6")},
                     {QStringLiteral("monthly_cost"), 2.5},
                     {QStringLiteral("ram"), 512},
@@ -1040,9 +1040,9 @@ int main(int argc, char **argv)
                   .toInt() == 477,
           "latest Vultr Debian selection picks the newest x64 Debian only");
 
-    // A freshly created mirror has nothing mirroring it yet, so the provisioner
-    // must direct-upload this app's binary rather than let the installer look
-    // for an online mirror — but only when that binary can actually run there.
+
+
+
     check(forkmesh::control::localBinaryRunsOnVultrMirror(
               QStringLiteral("linux"), QStringLiteral("x86_64")),
           "linux/x86_64 desktop uploads its own binary to a new Vultr mirror");
@@ -1131,7 +1131,7 @@ int main(int argc, char **argv)
               forkmesh::control::vultrApiKeyFromVariables({}).isEmpty(),
           "the stored VULTR_API_KEY device variable is resolved case-insensitively");
 
-    // --- Destroying a mirror's server on Vultr (adhoc #24) -----------------
+
     const QString destroyId =
         QStringLiteral("1f2e3d4c-5b6a-4798-8899-aabbccddeeff");
     check(forkmesh::control::savedHostVultrInstanceId(
@@ -1203,7 +1203,7 @@ int main(int argc, char **argv)
           "a destroy call is refused without a plausible API key and instance "
           "id");
 
-    // --- Installing a fresh mirror without a published release (adhoc #408) -
+
     check(forkmesh::control::localBinaryRunsOnVultrMirror(
               QStringLiteral("linux"), QStringLiteral("x86_64")) &&
               forkmesh::control::localBinaryRunsOnVultrMirror(
@@ -1234,7 +1234,7 @@ int main(int argc, char **argv)
           "an install that found nothing to download escalates to the "
           "direct upload, an unreachable host does not");
 
-    // --- Agent CLIs on a fresh mirror (adhoc #418) -------------------------
+
     forkmesh::control::AgentCliCredentials agentCredentials;
     check(forkmesh::control::agentCliCredentialsAreEmpty(agentCredentials) &&
               forkmesh::control::describeAgentCliCredentials(agentCredentials)
@@ -1333,7 +1333,7 @@ int main(int argc, char **argv)
               agentWithLogins.count(QLatin1Char('\'')) == 2,
           "the remote command is one shell word, so no section can escape it");
 
-    // --- Cloudflare DNS for a fresh Vultr mirror (adhoc #331) --------------
+
     QMap<QString, QString> zoneVariables;
     zoneVariables.insert(QStringLiteral("cloudflare_zone"),
                          QStringLiteral("Example.Com"));
@@ -1419,7 +1419,7 @@ int main(int argc, char **argv)
                   QStringLiteral("A")).isEmpty(),
           "an existing A record is reused so repeat deploys update in place");
 
-    // --- Cloudflare API token check and rotation (adhoc #108) --------------
+
     const QList<forkmesh::control::CloudflareTokenRequirement> tokenRequirements =
         forkmesh::control::cloudflareTokenRequirements();
     QSet<QString> tokenKeys;
@@ -1564,8 +1564,8 @@ int main(int argc, char **argv)
                       ? QStringLiteral("com.cloudflare.api.account.zone")
                       : QStringLiteral("com.cloudflare.api.user");
         permissionGroupCatalog.append(QJsonObject{
-            // Cloudflare permission-group ids are hex, and the resolver refuses
-            // anything else so a malformed catalog can never reach a policy.
+
+
             {QStringLiteral("id"),
              QStringLiteral("pgid") +
                  QString::number(permissionGroupCatalog.size())},
@@ -1573,7 +1573,7 @@ int main(int argc, char **argv)
             {QStringLiteral("scopes"), QJsonArray{scope}},
         });
     }
-    // A same-named group at the wrong scope must not be borrowed.
+
     permissionGroupCatalog.append(QJsonObject{
         {QStringLiteral("id"), QStringLiteral("pgwrongscope")},
         {QStringLiteral("name"), QStringLiteral("DNS Write")},
@@ -1653,8 +1653,8 @@ int main(int argc, char **argv)
               permissionGroupCatalog, &badNameError).isEmpty() &&
               !badNameError.isEmpty(),
           "a token name carrying a newline is rejected");
-    // Optional user-scoped groups are dropped when the user resource is unknown,
-    // so a token that cannot read itself can still mint a deploy token.
+
+
     const QJsonObject withoutUserPolicy =
         forkmesh::control::cloudflareTokenCreatePayload(
             QStringLiteral("ForkMesh mirror9 20260731-101500"),
@@ -1761,7 +1761,7 @@ int main(int argc, char **argv)
               !persistedAfterMigration.contains("\"pass\""),
           "legacy plaintext host passwords migrate to memory and are deleted from QSettings");
 
-    // --- SSH connection-failure classification (adhoc #335) ----------------
+
     check(forkmesh::control::sshConnectionFailureHint(
               255, QStringLiteral("ssh: connect to host 1.2.3.4 port 22: "
                                    "Connection timed out"))
@@ -1778,7 +1778,7 @@ int main(int argc, char **argv)
                       .contains(QStringLiteral("key"), Qt::CaseInsensitive),
           "a 255 ssh exit with a known connection-failure signature yields an "
           "actionable hint");
-    // --- Non-routable target diagnosis + attempt summaries (adhoc #342) ----
+
     const QString cgnatHint = forkmesh::control::sshConnectionFailureHint(
         255,
         QStringLiteral("ssh: connect to host 100.68.82.54 port 22: "
@@ -2130,7 +2130,7 @@ int main(int argc, char **argv)
                              .contains("must-never-be-committed");
                     return false;
                 }
-                return true; // explicit rollback to the prior catalog state
+                return true;
             });
     check(!unconfirmed.value(QStringLiteral("ok")).toBool() &&
               unconfirmed.value(QStringLiteral("errorCode")).toString() ==
@@ -2245,9 +2245,9 @@ int main(int argc, char **argv)
               !QFileInfo::exists(recoveryJournal),
           "durable recovery journal exists before publication, excludes replacement secrets, and is removed only after commit");
 
-    // Reinstall the exact journal captured while publication was in flight.
-    // The local settings are now fully new, which is a stronger recovery case
-    // than a process dying midway through QSettings synchronization.
+
+
+
     check(restoreJournal(interruptedJournal),
           "interrupted transaction journal can be restored for crash simulation");
     int crashRollbackCalls = 0;
@@ -2266,9 +2266,9 @@ int main(int argc, char **argv)
               !QFileInfo::exists(recoveryJournal),
           "startup recovery durably restores old settings before rolling back the published catalog");
 
-    // Capture a second interrupted transaction so local and external rollback
-    // failures can be exercised independently and retried from one durable
-    // journal.
+
+
+
     QJsonObject failureRequest = crashRequest;
     failureRequest.insert(
         QStringLiteral("requestId"),
@@ -2295,9 +2295,9 @@ int main(int argc, char **argv)
               restoreJournal(failureJournal),
           "second interrupted transaction fixture is durable");
 
-    // Make the settings filename itself a directory. This fails even when the
-    // test runs as root and proves catalog rollback is not attempted when the
-    // prior local values cannot be durably restored.
+
+
+
     actionSettings.sync();
     check(QFile::remove(actionSettingsPath) &&
               QDir().mkpath(actionSettingsPath),
@@ -2350,7 +2350,7 @@ int main(int argc, char **argv)
             rollbackSettings,
             [&](const QString &, bool enabled) {
                 ++failedCatalogRollbackCalls;
-                return !enabled; // previous state is enabled, so fail
+                return !enabled;
             },
             &catalogRollbackError);
     check(!catalogRollbackRecovered &&
@@ -2373,8 +2373,8 @@ int main(int argc, char **argv)
               !QFileInfo::exists(recoveryJournal),
           "catalog rollback retries idempotently and removes the journal only after success");
 
-    // Two helpers targeting the same QSettings file must serialize the whole
-    // snapshot/publish/write/finalize interval, not merely their writes.
+
+
     QJsonObject concurrentFirst = nodeActionsRequest;
     concurrentFirst.remove(QStringLiteral("variables"));
     concurrentFirst.insert(

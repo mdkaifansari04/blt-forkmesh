@@ -262,7 +262,7 @@ def normalize_https_url(
         return ""
     query = urlencode(pairs) if pairs else ""
     netloc = host
-    # Port 443 is canonicalized away.
+
     return parsed._replace(
         scheme="https",
         netloc=netloc,
@@ -444,8 +444,8 @@ def _contains_sensitive_key(value):
     if isinstance(value, dict):
         for key, child in value.items():
             normalized = re.sub(r"[^a-z]", "", str(key or "").lower())
-            # These two allowlisted names identify already-consented public
-            # projections, not an unfiltered follower/subscription graph.
+
+
             if normalized not in (
                     "consentedfollowers", "consentedprofiles",
                     "approvedsubscriptions"):
@@ -607,8 +607,8 @@ def fediverse_public_record(row, now=0):
     ):
         return None
     data = dict(data)
-    # Early migration builds duplicated the already-indexed host inside the
-    # public JSON blob. It is derived again from `url`, never trusted.
+
+
     data.pop("host", None)
     validation_now = max(
         1,
@@ -744,9 +744,9 @@ def normalize_media_item(value):
         "autoplay": False,
         "externalPlaybackOnly": True,
         "noRebroadcast": True,
-        # ForkMesh has not received a provider-authorized metadata event.
-        # A user-supplied playlist label must never be presented as the
-        # provider's current track.
+
+
+
         "providerMetadata": {
             "status": "unavailable",
             "reason": "not_received",

@@ -1,11 +1,11 @@
-// MainWindowProjects: MainWindow feature methods, split out of MainWindow.cpp.
-// Projects tab (issue #384): repo-level projects that group issues, carry
-// start/end dates and an optional milestone, rendered as a sortable list or a
-// Gantt timeline (ProjectGantt).
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -25,7 +25,7 @@ QString projectDateText(qint64 ms)
                   : QString();
 }
 
-// Read a "date + enable checkbox" pair back to epoch ms (0 = unset).
+
 qint64 dateEditorMs(QDateEdit *edit, QCheckBox *enable)
 {
     if (!edit || !enable || !enable->isChecked())
@@ -43,7 +43,7 @@ void seedDateEditor(QDateEdit *edit, QCheckBox *enable, qint64 ms)
                          : QDate::currentDate());
 }
 
-// A labelled "[x] enable + date" row used by the detail pane and the dialogs.
+
 QWidget *makeDateRow(QWidget *parent, QCheckBox *&enableOut, QDateEdit *&editOut)
 {
     auto *row = new QWidget(parent);
@@ -63,8 +63,8 @@ QWidget *makeDateRow(QWidget *parent, QCheckBox *&enableOut, QDateEdit *&editOut
     return row;
 }
 
-// Checkable multi-select list of the repo's issues ("#N title"), pre-checking
-// `checked`. Shared by the new-project and link-issues dialogs.
+
+
 QListWidget *makeIssuePicker(QWidget *parent, const QList<Issue> &issues,
                              const QList<int> &checked)
 {
@@ -97,15 +97,15 @@ QList<int> pickedIssues(QListWidget *list)
     return numbers;
 }
 
-} // namespace
+}
 
-// ---- Projects section --------------------------------------------------------
+
 
 QWidget *MainWindow::buildProjectsSection()
 {
     auto *page = new QWidget;
 
-    // --- Left: list/Gantt stack with a toolbar above.
+
     auto *listPane = new QWidget;
     listPane->setMinimumWidth(260);
 
@@ -120,7 +120,7 @@ QWidget *MainWindow::buildProjectsSection()
     connect(m_projectNewButton, &QPushButton::clicked, this,
             &MainWindow::promptNewProject);
 
-    // List/Gantt sub-view toggle, mirroring the Issues tab's view buttons.
+
     auto *viewGroup = new QButtonGroup(page);
     viewGroup->setExclusive(true);
     auto *listTab = new QPushButton("List");
@@ -178,8 +178,8 @@ QWidget *MainWindow::buildProjectsSection()
     m_projectTable->sortByColumn(0, Qt::AscendingOrder);
     QHeaderView *header = m_projectTable->horizontalHeader();
     header->setHighlightSections(false);
-    header->setSectionResizeMode(0, QHeaderView::ResizeToContents); // #
-    header->setSectionResizeMode(1, QHeaderView::Interactive);      // Title
+    header->setSectionResizeMode(0, QHeaderView::ResizeToContents);
+    header->setSectionResizeMode(1, QHeaderView::Interactive);
     m_projectTable->setColumnWidth(1, 320);
     for (int i = 2; i < 8; ++i)
         header->setSectionResizeMode(i, QHeaderView::ResizeToContents);
@@ -194,7 +194,7 @@ QWidget *MainWindow::buildProjectsSection()
             showProject(first->data(Qt::UserRole).toInt());
     });
 
-    // Gantt view: the chart grows with its row count inside a scroll area.
+
     auto *gantt = new ProjectGantt;
     gantt->setDarkProbe([] { return currentThemeIsDark(); });
     m_projectGantt = gantt;
@@ -205,8 +205,8 @@ QWidget *MainWindow::buildProjectsSection()
     ganttScroll->setWidget(gantt);
 
     m_projectViewStack = new QStackedWidget;
-    m_projectViewStack->addWidget(m_projectTable); // 0 List
-    m_projectViewStack->addWidget(ganttScroll);    // 1 Gantt
+    m_projectViewStack->addWidget(m_projectTable);
+    m_projectViewStack->addWidget(ganttScroll);
     connect(viewGroup, &QButtonGroup::idClicked, this, [this](int id) {
         if (m_projectViewStack)
             m_projectViewStack->setCurrentIndex(id);
@@ -231,7 +231,7 @@ QWidget *MainWindow::buildProjectsSection()
     listLayout->addWidget(m_projectInlineNotice);
     listLayout->addWidget(m_projectViewStack, 1);
 
-    // --- Right: detail pane for the selected project.
+
     auto *detail = new QWidget;
     detail->setObjectName("issueSidebar");
     m_projectDetailTitle = new QLabel("Select a project");
@@ -409,7 +409,7 @@ QWidget *MainWindow::buildProjectsSection()
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 0);
     splitter->setSizes({900, 320});
-    // Open full width: the detail pane appears once a project is selected.
+
     m_projectDetailPane->hide();
 
     auto *layout = new QHBoxLayout(page);
@@ -454,8 +454,8 @@ int MainWindow::projectProgressPercent(const Project &project) const
                 ++closed;
         }
     } else if (!project.milestone.isEmpty()) {
-        // No directly linked issues: fall back to the linked milestone's share
-        // of closed issues as the project's overall progress.
+
+
         for (const Issue &issue : m_currentIssues) {
             if (issue.milestone != project.milestone)
                 continue;
@@ -473,9 +473,9 @@ void MainWindow::reloadProjects()
 {
     if (!m_projectTable)
         return;
-    // Linked-issue titles, milestone choices and progress all read the issue
-    // data, so make sure it's loaded (cheap: reloadIssues() skips on an
-    // unchanged content signature).
+
+
+
     reloadIssues();
     if (issuesRepoIndex() < 0) {
         m_currentProjects.clear();
@@ -508,8 +508,8 @@ void MainWindow::reloadProjects()
     refreshProjectList();
     refreshProjectGantt();
 
-    // Keep the detail pane on the same project across a reload (or hide it if
-    // that project is gone, e.g. it was just deleted).
+
+
     bool stillThere = false;
     for (const Project &project : std::as_const(m_currentProjects))
         if (project.number == m_currentProjectNumber)
@@ -570,8 +570,8 @@ void MainWindow::refreshProjectGantt()
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     const qint64 day = 24 * 60 * 60 * 1000LL;
 
-    // A row's plotted range: its signed dates when both are set; otherwise an
-    // inferred createdAt -> today span drawn as a dashed placeholder.
+
+
     auto rowFor = [&](const QString &label, qint64 start, qint64 end,
                       qint64 createdAt, bool isProject, const QString &status,
                       int progress, int indent) {
@@ -697,7 +697,7 @@ void MainWindow::showProject(int number)
              m_projectMilestoneCombo})
         if (w)
             w->setEnabled(writable);
-    // The date editors additionally follow their enable checkboxes.
+
     if (writable) {
         if (m_projectStartEdit && m_projectStartEnable)
             m_projectStartEdit->setEnabled(m_projectStartEnable->isChecked());

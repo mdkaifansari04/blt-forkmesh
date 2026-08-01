@@ -1,9 +1,9 @@
-// MainWindowDiscussions: MainWindow feature methods, split out of MainWindow.cpp.
-// Discussions.
-//
-// These are MainWindow member functions defined in their own translation unit;
-// the class itself is declared in MainWindow.h. Shared helpers live in
-// MainWindowInternal.h / MainWindowShared.cpp (namespace forkmesh::ui).
+
+
+
+
+
+
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
@@ -12,7 +12,7 @@
 
 using namespace forkmesh::ui;
 
-// ---- Discussions ----------------------------------------------------------
+
 
 QWidget *MainWindow::buildDiscussionsTab()
 {
@@ -56,7 +56,7 @@ QWidget *MainWindow::buildDiscussionsTab()
     }
 
     m_discussionTable = new QTableWidget(0, 6);
-    installColumnHeaderMenu(m_discussionTable); // 3-dots per-column menu (issue #318)
+    installColumnHeaderMenu(m_discussionTable);
     m_discussionTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_discussionTable);
     m_discussionTable->setHorizontalHeaderLabels(
@@ -121,7 +121,7 @@ QWidget *MainWindow::buildDiscussionsTab()
     setOcticon(m_discussionCommentButton, "comment", 16);
     auto *composerButtons = new QHBoxLayout;
     composerButtons->setContentsMargins(0, 0, 0, 0);
-    // Speak the comment with the voice engine, just like the footer prompt mic.
+
     composerButtons->addWidget(makeVoiceButton(m_discussionComposer), 0, Qt::AlignLeft);
     composerButtons->addStretch();
     composerButtons->addWidget(m_discussionCommentButton);
@@ -203,28 +203,28 @@ DiscussionStore MainWindow::discussionStoreForCurrentRepo() const
                            chatDisplayName());
 }
 
-// The "Discussions (N)" badge without building or rendering the Discussions
-// panel. reloadDiscussions() below is the panel's loader: it bails out entirely
-// until the tab has been built, and reads the store on the GUI thread — so a
-// repo whose landing tab isn't Discussions sat on "Discussions (0)" however many
-// it really had, until the tab was clicked (adhoc #116). Read the same store on
-// a worker (the mirror path shells `git show` per discussion) and apply only the
-// count. The list it loads is what reloadDiscussions() would have loaded, so
-// keeping it is safe: opening the tab reloads and re-renders from scratch.
+
+
+
+
+
+
+
+
 void MainWindow::reloadDiscussionCountInBackground()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
         return;
     const int repoIndex = m_repoDetailIndex;
     const int generation = ++m_discussionCountLoadGen;
-    // By value: the worker must touch nothing the GUI thread owns.
+
     const DiscussionStore store = discussionStoreForCurrentRepo();
     runOffThread<QList<Discussion>>(
         [store] { return store.loadAll(nullptr); },
         [this, repoIndex, generation](QList<Discussion> loaded) {
             if (generation != m_discussionCountLoadGen ||
                 repoIndex != m_repoDetailIndex)
-                return; // superseded, or the user moved to another repo
+                return;
             m_currentDiscussions = std::move(loaded);
             updateRepoDiscussionCount();
         });
@@ -234,7 +234,7 @@ void MainWindow::reloadDiscussions()
 {
     if (!m_discussionTable)
         return;
-    // A panel load is authoritative over any count load still in flight.
+
     ++m_discussionCountLoadGen;
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
         m_currentDiscussions.clear();
@@ -426,8 +426,8 @@ void MainWindow::renderDiscussionThread(const Discussion &discussion)
     if (discussion.number <= 0)
         return;
 
-    // Owning (writable) nodes can moderate the thread by deleting comments; a
-    // read-only clone just shows them.
+
+
     const bool canModerate = discussionStoreForCurrentRepo().canWrite();
     const int number = discussion.number;
     for (const DiscussionEvent &ev : discussion.events) {
@@ -450,8 +450,8 @@ void MainWindow::renderDiscussionThread(const Discussion &discussion)
                 deleteDiscussionComment(number, eventId);
             };
         }
-        // Pass ev.author (the Ed25519 pubkey) so each card shows that author's
-        // real avatar instead of a name-seeded placeholder.
+
+
         addConversationCard(m_discussionThreadLayout, who, header, ev.body,
                             isOpen ? QStringLiteral("#58a6ff") : QString(),
                             QString(), ev.author, onDelete);
@@ -501,8 +501,8 @@ void MainWindow::updateDiscussionActionState()
     }
     const bool haveDiscussion = m_currentDiscussionNumber > 0;
     const bool canParticipate = haveRepo && (writable || m_networkAccess);
-    // Keep the composer live even with nothing selected so you can start a
-    // discussion just by typing; the title is derived from the first line.
+
+
     if (m_discussionComposer) {
         m_discussionComposer->setEnabled(canParticipate);
         m_discussionComposer->setPlaceholderText(
@@ -607,8 +607,8 @@ void MainWindow::createDiscussionDialog()
 
 QString MainWindow::discussionTitleFromBody(const QString &body)
 {
-    // Pull a readable title out of the first meaningful line of the body,
-    // dropping leading Markdown markers (headings, quotes, list bullets).
+
+
     static const QRegularExpression prefix(
         QStringLiteral("^(#{1,6}\\s+|>\\s*|[-*+]\\s+|\\d+[.)]\\s+)+"));
     QString title;
@@ -825,7 +825,7 @@ void MainWindow::syncDiscussionsInbox()
         return;
     }
     drainDiscussionsInboxFor(m_repositories.at(m_repoDetailIndex),
-                             /*interactive=*/true);
+                              true);
 }
 
 void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactive)
@@ -869,9 +869,9 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
                 "yet. Local discussions still work.");
         return;
     }
-    // Auto-polls also back off exponentially while the relay is failing (offline
-    // / HTTP 429) — distinct from the fixed "endpoint unsupported" cooldown
-    // above; a manual sync (interactive) still tries immediately.
+
+
+
     if (!interactive && !m_pollBackoff.ready(inboxBackoffKey, nowMs))
         return;
     if (mirrorIntake) {
@@ -966,7 +966,7 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
         RepositoryRecord materialized = repo;
         materialized.localPath = worktree.path();
         applyDiscussionsInboxPayload(
-            materialized, pending, interactive, /*mirrorIntake=*/true);
+            materialized, pending, interactive,  true);
         runGitCapture(
             repo.mirrorPath,
             {QStringLiteral("worktree"), QStringLiteral("remove"),
@@ -978,10 +978,10 @@ void MainWindow::drainDiscussionsInboxFor(RepositoryRecord repo, bool interactiv
     });
 }
 
-// Merge pending discussion submissions into the local store, ack the inbox,
-// and raise notifications. `pending` comes from either a per-repo GET
-// /discussions drain reply or the repo's slice of the consolidated GET
-// /api/sync response.
+
+
+
+
 void MainWindow::applyDiscussionsInboxPayload(const RepositoryRecord &repo,
                                               const QJsonArray &pending,
                                               bool interactive,
@@ -1090,8 +1090,8 @@ void MainWindow::applyDiscussionsInboxPayload(const RepositoryRecord &repo,
         }
         if (!body.isEmpty()) {
             flashMessage(body);
-            // Link a single update to its discussion; a batch lands on the
-            // repo's Discussions tab (issue #292).
+
+
             NotificationLink link;
             link.kind = QStringLiteral("discussion");
             link.owner = repo.owner;

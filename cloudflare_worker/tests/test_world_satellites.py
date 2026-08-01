@@ -19,8 +19,8 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import world_satellites as satellites  # noqa: E402
-from schema import SCHEMA_STATEMENTS  # noqa: E402
+import world_satellites as satellites
+from schema import SCHEMA_STATEMENTS
 
 
 FETCHED_AT = 1_800_000_000_000
@@ -190,8 +190,8 @@ def omm_record(**updates):
         "BSTAR": 0.0002,
         "MEAN_MOTION_DOT": 0.00001,
         "MEAN_MOTION_DDOT": 0,
-        # Valid CelesTrak fields not needed by satellite.js are deliberately
-        # removed from ForkMesh's compact public projection.
+
+
         "CLASSIFICATION_TYPE": "U",
         "ELEMENT_SET_NO": 999,
         "REV_AT_EPOCH": 54321,
@@ -567,7 +567,7 @@ def test_public_handler_serves_d1_snapshot_then_edge_cache_without_fetch():
     )
     document, digest = satellites.serialize_snapshot_payload(payload)
     harness = EntryHarness(
-        # Any accidental visitor-path fetch would fail this test.
+
         upstream=AssertionError("visitor handler must not fetch upstream"),
         row={"data": document, "digest": digest},
     )

@@ -40,7 +40,7 @@ QString issueStatusAt(const Issue &issue, qint64 timestampMs)
     return status;
 }
 
-} // namespace
+}
 
 QList<IssueBurnupPoint> buildIssueBurnupSeries(const QList<Issue> &issues,
                                                qint64 startMs, qint64 endMs,

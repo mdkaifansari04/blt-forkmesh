@@ -3,10 +3,10 @@
 #include <QString>
 #include <QUrl>
 
-// The one public room shared by the browser World and installed Qt clients.
-// Keep its endpoint and saved-settings migration independent of MainWindow's
-// widget helpers so the protocol contract can be exercised by a small,
-// headless test target.
+
+
+
+
 namespace forkmesh::mainnode {
 
 inline const QString kDefaultHost = QStringLiteral("forkmesh.com");
@@ -21,10 +21,10 @@ inline const QString kLocalServerUrl =
 inline const QString kDefaultServerUrl =
     QStringLiteral("wss://") + kDefaultHost + kRoomPath;
 
-// Upgrade only ForkMesh's exact retired shared-room endpoint. A user-defined
-// repository/private-room path is deliberately left byte-for-byte unchanged.
-// The host may be forkmesh.com, localhost, or an independently operated relay:
-// all current Workers expose the same network-wide mainnode room path.
+
+
+
+
 inline bool migrateSavedDefaultRoom(QString *serverUrl, QString *roomName)
 {
     if (!serverUrl || !roomName)
@@ -59,4 +59,4 @@ inline bool migrateSavedDefaultRoom(QString *serverUrl, QString *roomName)
     return changed;
 }
 
-} // namespace forkmesh::mainnode
+}

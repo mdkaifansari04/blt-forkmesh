@@ -1,9 +1,9 @@
-/* ForkMesh World Discord bridge — on-demand UI only.
- *
- * This module never sees a Discord token and intentionally performs no polling
- * or background relay. Every network operation is initiated by a click, so the
- * World render/movement loop remains independent from connector activity.
- */
+
+
+
+
+
+
 
 const SESSION_KEY = "forkmesh.session";
 const state = {
@@ -93,7 +93,7 @@ async function api(path, options = {}) {
     cache: "no-store",
   });
   let data = {};
-  try { data = await response.json(); } catch { /* bounded generic failure */ }
+  try { data = await response.json(); } catch {   }
   if (!response.ok) {
     const error = text(data?.error || `Request failed (${response.status})`, 180);
     const failure = new Error(error);
@@ -198,9 +198,9 @@ function render() {
   panel.append(node("p", `State: ${text(connector.state || "unknown", 80)}`, "world-discord-state"));
   renderSetup(panel, connector);
 
-  // Setup responses are deliberately 409s; retain the role from /api/orgs as
-  // a fallback so an owner can still begin authorization before a connector is
-  // configured or an older Worker response includes no role projection.
+
+
+
   const role = text(connector.role || organizationRole(), 24);
   const isOwner = role === "owner";
   const canSend = role === "owner" || role === "admin";
@@ -231,8 +231,8 @@ function render() {
         });
         const authorizationUrl = String(result.authorizationUrl || "");
         if (!authorizationUrl.startsWith("https://discord.com/")) throw new Error("authorization unavailable");
-        // This URL was generated from the Worker’s fixed Discord origin and
-        // configured callback URI. Same-tab navigation avoids popup blockers.
+
+
         window.location.assign(authorizationUrl);
         return;
       } catch (error) {
@@ -374,9 +374,9 @@ async function refreshConnector() {
       ? state.selectedChannel : (channels[0]?.id || "");
     state.notice = "";
   } catch (error) {
-    // Setup states intentionally use a non-2xx status so callers cannot act
-    // until consent exists. Retain their redacted task payload for the owner
-    // instead of collapsing it into an unexplained generic error.
+
+
+
     state.connector = error?.payload?.state ? error.payload : null;
     state.notice = text(error?.message || "Could not load Discord connector.", 180);
   } finally {

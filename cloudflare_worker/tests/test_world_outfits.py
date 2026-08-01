@@ -31,9 +31,9 @@ def test_outfit_cut_ids_stay_in_lockstep_across_protocol_data_and_scene():
     cuts = sorted(world.WORLD_OUTFIT_STYLE_VALUES - {""})
     assert cuts
     for cut in cuts:
-        # The picker option in world-data.js...
+
         assert 'id: "%s"' % cut in DATA
-        # ...and the painter that actually draws that cut in world-scene.js.
+
         assert "%s(context, rng, kit)" % cut in SCENE
 
 
@@ -67,8 +67,8 @@ def test_outfit_and_face_fields_are_public_presence_fields():
 
 
 def test_presence_frames_never_carry_image_bytes():
-    # Only the opt-in boolean travels over presence; peers resolve the actual
-    # image from the already-public, edge-cached account lookup.
+
+
     assert "faceImage:" in APP
     assert "syncWorldFaceImages" in APP
     assert "/api/accounts/" in APP
@@ -100,6 +100,6 @@ def test_outfits_are_tailored_from_the_public_name():
     assert "function countryShirtTexture" in SCENE
     assert "function tailorOutfitDetails" in SCENE
     assert "OUTFIT_CUTS" in SCENE
-    # The tailor keys off the same public identity fields the badge shows.
+
     assert "identity.outfitStyle" in SCENE
     assert "identity.outfitColor" in SCENE

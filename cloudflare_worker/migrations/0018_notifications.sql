@@ -1,13 +1,13 @@
--- First-class Worker notification inbox.
--- Canonical collaboration events still live in signed repo files or pending
--- inbox tables; this table is only an encrypted per-recipient index/read state.
+
+
+
 
 CREATE TABLE IF NOT EXISTS notifications (
-  dedupe_bi    TEXT PRIMARY KEY, -- blind_index("notification:<recipient>:<dedupe>")
-  recipient_bi TEXT NOT NULL,    -- blind_index(account name)
+  dedupe_bi    TEXT PRIMARY KEY,
+  recipient_bi TEXT NOT NULL,
   ts           INTEGER NOT NULL,
   read_at      INTEGER NOT NULL DEFAULT 0,
-  data         TEXT NOT NULL     -- AES-GCM encrypted notification payload
+  data         TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_recipient_ts

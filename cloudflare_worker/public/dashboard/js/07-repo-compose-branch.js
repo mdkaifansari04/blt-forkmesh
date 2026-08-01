@@ -74,9 +74,9 @@
       if (agentModelInput) agentModelInput.disabled = !assignAgentInput.checked;
       if (agentProviderInput) agentProviderInput.disabled = !assignAgentInput.checked;
     });
-    // Queued images: a short placeholder (not the data URL) is inserted into
-    // the body textarea so it stays readable/editable; the real data: URL is
-    // swapped in right before signing (handleIssueComposeSubmit).
+
+
+
     const images = [];
     if (form) form._pendingIssueImages = images;
 
@@ -105,9 +105,9 @@
       renderAttachmentChips();
     });
 
-    // Shared by both the file picker and clipboard paste: validate, embed (or
-    // crop/compress if oversized), then insert a placeholder into the body at
-    // the caret so pasted screenshots land right where the cursor was.
+
+
+
     const addIssueImageFile = async (file, rawName) => {
       const name = rawName.replace(/[[\]]/g, "_");
       if (!file.type.startsWith("image/")) {
@@ -174,8 +174,8 @@
       const imageItems = Array.from(event.clipboardData?.items || [])
         .filter((item) => item.kind === "file" && item.type.startsWith("image/"));
       if (!imageItems.length) return;
-      // A pasted screenshot has no useful text form, so claim the paste instead
-      // of letting the browser also dump it in as an inline object/blank text.
+
+
       event.preventDefault();
       for (const item of imageItems) {
         const file = item.getAsFile();
@@ -212,9 +212,9 @@
     const agentProvider = assignAgent ? String(agentProviderInput?.value || "") : "";
     const milestone = String(milestoneInput?.value || "").trim();
     const project = String(projectInput?.value || "").trim();
-    // Swap each attached image's short placeholder back out for its real
-    // data: URL now, right before signing - the signed content hash has to
-    // cover exactly what gets sent.
+
+
+
     let body = String(bodyInput?.value || "");
     const images = form._pendingIssueImages || [];
     for (const img of images) body = body.split(img.id).join(img.dataUrl);
@@ -222,9 +222,9 @@
     setHint("Preparing and signing the change set…");
     try {
       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
-      // The relay wakes eligible online mirrors immediately. Keep a local
-      // optimistic row until the first mirror commits the signed issue and its
-      // durable issue number becomes visible from the repository.
+
+
+
       const pendingItem = {
         number: null,
         localId: `pending-${Date.now().toString(36)}`,
@@ -263,11 +263,11 @@
     }
   }
 
-  // --- CSV issue import (adhoc #188) ---------------------------------------
-  // Canonical column order for the downloadable template and the parsed import.
-  // Unknown columns are ignored; missing ones default to empty. labels and
-  // assignees hold multiple values separated by ";" so commas stay free to act
-  // as the CSV field delimiter.
+
+
+
+
+
   const ISSUE_CSV_COLUMNS = ["title", "body", "milestone", "project", "labels", "priority", "assignees"];
   const ISSUE_CSV_TEMPLATE =
     "title,body,milestone,project,labels,priority,assignees\n" +
@@ -286,8 +286,8 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
-  // Minimal RFC-4180-ish CSV parser: handles quoted fields, "" escapes, and
-  // commas/newlines inside quotes. Returns an array of rows (arrays of cells).
+
+
   function parseCsv(text) {
     const rows = [];
     let row = [];
@@ -311,13 +311,13 @@
       } else field += ch;
     }
     if (field.length || row.length) { row.push(field); rows.push(row); }
-    // Drop trailing blank lines so a file ending in a newline doesn't add a row.
+
     return rows.filter((r) => r.some((cell) => String(cell).trim() !== ""));
   }
 
-  // Map parsed CSV rows to issue submission objects. When the first row is a
-  // recognizable header (has a "title" column) its names decide the mapping;
-  // otherwise the file is treated as headerless in canonical column order.
+
+
+
   function csvRowsToIssues(rows) {
     if (!rows.length) return [];
     const header = rows[0].map((h) => String(h).trim().toLowerCase());
@@ -450,11 +450,11 @@
       failed ? "bad" : "good");
   }
 
-  // Branch-referencing web pull requests: no client-side diff computation
-  // (deliberately - that duplicates what git already does correctly). The
-  // desktop client reconstructs the patch from base/head on drain, same as any
-  // other branch-backed pull request (see renderRepoPullPatch's "Branch-backed
-  // PRs are reconstructed by the desktop client" copy).
+
+
+
+
+
   function openPullCompose(repo) {
     const container = $("[data-repo-pulls]");
     if (!container || !repo) return;
@@ -652,21 +652,21 @@
     }
   }
 
-  // A mirror row is ringed green when it's the node that answered the most
-  // recent live-mirror fetch (data.servedBy from the tunnel round-robin), with
-  // its response time alongside so it's obvious which mirror served the page
-  // and how fast.
+
+
+
+
   function mirrorRowIsServing(mirror, servedBy) {
     const name = String(mirror.owner || mirror.node || mirror.name || "").trim().toLowerCase();
     const servedName = String(servedBy?.name || "").trim().toLowerCase();
     return Boolean(name && servedName && name === servedName);
   }
 
-  // The source-of-truth node in a mirror group: the one whose name matches the
-  // repo owner (it holds the canonical copy), else the freshest online node with
-  // a commit, else the one with the most complete history. Every other node's
-  // commit/counts are compared against this one so the tab can flag a mirror
-  // serving stale or divergent data, exactly like the desktop Mirror nodes panel.
+
+
+
+
+
   function pickReferenceMirror(mirrors) {
     const list = (Array.isArray(mirrors) ? mirrors : []).filter(
       (mirror) => String(mirror && mirror.commit || "").trim(),
@@ -688,16 +688,16 @@
     )[0];
   }
 
-  // A count differs from the reference node's only when both sides actually
-  // reported a value (>= 0) — an em dash on either side means "not tracked", not
-  // "out of sync", so it's never flagged.
+
+
+
   function mirrorCountMismatch(value, ref) {
     return Number(ref) >= 0 && Number(value) >= 0 && Number(value) !== Number(ref);
   }
 
-  // One metadata chip. `mismatch` underlines it (amber) and notes the canonical
-  // value in the tooltip, matching the desktop panel's underline of a cell that
-  // doesn't match the source of truth.
+
+
+
   function mirrorChip(label, value, mismatch, note) {
     const shown = value === "" || value === undefined || value === null ? "-" : value;
     return `
@@ -707,10 +707,10 @@
         </span>`;
   }
 
-  // The metadata columns the desktop Mirror nodes panel shows, rendered as chips
-  // under each mirror row: commit + sync freshness, on-disk size, and the mirrored
-  // issue/commit/branch/pull/discussion/worktree/clone/website/artifact tallies.
-  // Content columns that don't match the source of truth are underlined.
+
+
+
+
   function mirrorDetailChips(mirror, refMirror) {
     const commit = String(mirror.commit || "").trim();
     const refCommit = String(refMirror?.commit || "").trim();
@@ -755,16 +755,16 @@
     return chips.join("");
   }
 
-  // Counts arrive as -1 when a node hasn't reported them; show a dash for those
-  // (a distinct state from a real 0) so a chip never reads a misleading "0".
+
+
   function mirrorCountText(value) {
     const number = Number(value);
     return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
   }
 
-  // The full Mirrors-tab row: a header line (dot, name, source-of-truth / out-of-
-  // sync / integrity badges, version, serve speed, status) over a wrapped strip of
-  // the same metadata columns the desktop Mirror nodes panel shows.
+
+
+
   function renderMirrorTabRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
@@ -854,11 +854,11 @@
         </div>`;
   }
 
-  // The "Live mirror" summary in the About aside gets its own compact list of
-  // every mirror currently online for this repo (the full tab-level list
-  // lives under the Mirrors tab and includes offline ones too). It shares the
-  // same source-of-truth / integrity-pin badges as the Mirrors tab so the
-  // canonical node and any signature failure are visible without switching tabs.
+
+
+
+
+
   function renderRepoLiveMirrorList(mirrors, servedBy) {
     const container = $("[data-repo-live-mirror-list]");
     if (!container) return;
@@ -872,8 +872,8 @@
   function renderRepoMirrorLists(mirrors, servedBy) {
     const tabContainer = $("[data-repo-mirrors]");
     if (tabContainer && mirrors.length) {
-      // Source of truth first, then online before offline, then freshest sync —
-      // the same ordering as the desktop Mirror nodes panel.
+
+
       const refMirror = pickReferenceMirror(mirrors);
       const ordered = mirrors.slice().sort(
         (a, b) =>
@@ -907,7 +907,7 @@
       return false;
     }
     const container = $("[data-repo-mirrors]");
-    // Owner-only "ask a node to mirror your repo" control (issue #385).
+
     renderMirrorRequestForm(repo);
     if (container && !background) container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading mirrors...")}</div>`;
     try {
@@ -935,9 +935,9 @@
       updateRepoLiveCounts(repo, { mirrors: mirrorCount });
       setRepoTabCount("mirrors", mirrors.length);
       state.repoMirrors = mirrors;
-      // Older gateways reported commit dates at day precision. When the
-      // signed mirror record names the same commit, its exact commitAt is the
-      // authoritative timestamp for the repository summary.
+
+
+
       if (state.repoLatestCommit) {
         updateRepoCommitSummary(state.repoLatestCommit, repo);
       }
@@ -962,14 +962,14 @@
     }
   }
 
-  // Live convergence for the open repo's Mirrors tab. The chat socket
-  // (dashboard-chat.js) re-broadcasts the mirror-mesh's "mirror-update" /
-  // "mirror-synced" frames as a window event the moment a source of truth
-  // advances and each node pulls it. When one names the repo we're viewing,
-  // re-fetch host health so the nodes visibly converge without a manual reload.
+
+
+
+
+
   let liveMirrorRefreshTimer = null;
-  // Socket mirror signals refresh immediately. This is only a quiet fallback
-  // for dropped frames, and it runs only while the Mirrors tab is on screen.
+
+
   const REPO_MIRROR_POLL_MS = 5 * 60 * 1000;
   let repoMirrorPollTimer = null;
 
@@ -995,8 +995,8 @@
 
   function refreshOpenRepoMirrors() {
     const repo = state.selectedRepo;
-    // The panel is always mounted on repository pages, even when hidden.
-    // Refresh only when a visitor can see the result.
+
+
     if (repo && repoMirrorsTabVisible()) {
       void loadRepoMirrors(repo, { background: true, force: true });
     }
@@ -1006,15 +1006,15 @@
     if (!repo) return;
     const target = String(event?.detail?.repo || "").trim().toLowerCase();
     if (!target) return;
-    // The frame carries "<catalog-owner>/<repo>". Match the open repo by its
-    // full key, or fall back to the repo-name tail (older/renamed peers).
+
+
     const key = repoKey(repo).toLowerCase();
     const name = String(repo.name || "").trim().toLowerCase();
     const tail = target.slice(target.lastIndexOf("/") + 1);
     if (target !== key && !(name && tail === name)) return;
-    // Trailing-coalesce a burst of per-node acks into one refetch. The
-    // five-minute visible-tab fallback catches a dropped/early signal without
-    // making a second unconditional confirmation request for every push.
+
+
+
     if (liveMirrorRefreshTimer) clearTimeout(liveMirrorRefreshTimer);
     liveMirrorRefreshTimer = setTimeout(() => {
       liveMirrorRefreshTimer = null;
@@ -1080,9 +1080,9 @@
     container.innerHTML = `<div class="px-4 py-3 text-sm text-muted-foreground">${loadingHtml("Loading releases from the live mirror...")}</div>`;
     const empty = '<div class="px-4 py-3 text-sm text-muted-foreground">No releases have been published to this mirror yet.</div>';
     try {
-      // Release manifests live in the git tree at .forkmesh/releases/<channel>/release.json
-      // (issue #304). List the channels, then batch-read every manifest in one
-      // tunnel round-trip so opening the tab doesn't fan out N blob requests.
+
+
+
       let tree;
       try {
         tree = await fetchRepoJson(repoLiveUrl(
@@ -1125,7 +1125,7 @@
         container.innerHTML = empty;
         return;
       }
-      // Per-asset download counts (keyed by sha256) are a best-effort adornment.
+
       let downloads = {};
       try {
         const data = await fetchJson(`${repoApiBase(repo)}/releases/downloads`);
@@ -1214,10 +1214,10 @@
 
   function loadRepoFeaturePanels(repo, recordRoute = null) {
     loadRepoMirrors(repo);
-    // Feature panels load on their FIRST tab view (and reload here after a
-    // repo/branch switch if that tab is already active): fetching hidden live
-    // data for every repo open fires Worker/host reads for tabs nobody opened.
-    // The tab badges stay filled meanwhile from the root tree's bundled counts.
+
+
+
+
     state.loadedRepoTabs = {};
     const active = state.activeRepoTab || "code";
     if (active === "commits") {
@@ -1225,8 +1225,8 @@
       loadRepoCommits(repo);
     } else if (active === "issues") {
       state.loadedRepoTabs.issues = true;
-      // A refreshed/shared issue deep link (/owner/repo/issues/<N>) opens that
-      // issue's detail straight away; Back re-fetches the list lazily.
+
+
       if (recordRoute && recordRoute.kind === "issues" && recordRoute.number) {
         loadRepoRecordDetail(repo, "issues", recordRoute.number);
       } else {
@@ -1234,9 +1234,9 @@
       }
     } else if (active === "pulls" || active === "discussions") {
       state.loadedRepoTabs[active] = true;
-      // A record deep link (/owner/repo/pulls/<N> — e.g. the desktop client's
-      // "View on website" button) opens the record's detail page directly
-      // instead of the list; Back to the list loads it lazily from there.
+
+
+
       if (recordRoute && recordRoute.kind === active && recordRoute.number) {
         loadRepoRecordDetail(repo, active, recordRoute.number);
       } else {

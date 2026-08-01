@@ -1,15 +1,15 @@
-// Session-aware auth buttons for the home page's hero header. Every other
-// page gets this for free from the shared site-header.js renderer, but the
-// home page keeps its own hero header — so before this script a logged-in
-// visitor still saw "Login / Get Started" on /, disagreeing with the
-// dashboard, chat and marketing pages. Reads the same forkmesh.session
-// marker the rest of the site uses and swaps the two hero buttons for
-// Dashboard + account chip; re-renders on storage events so a login or
-// logout in another open section is reflected here without a reload.
+
+
+
+
+
+
+
+
 (() => {
-  // Same acceptance rule as site-header.js / chat.js: a user session carries
-  // kind "user" (or a legacy pre-kind session with an email); node sessions
-  // never render as a logged-in website account.
+
+
+
   function readSession() {
     try {
       const session = JSON.parse(localStorage.getItem("forkmesh.session") || "null");
@@ -50,8 +50,8 @@
       primary.href = "/signup";
       return;
     }
-    // Account name is DOM-built (never innerHTML) so a stored name can't
-    // inject markup.
+
+
     secondary.textContent = "Dashboard";
     secondary.href = "/dashboard";
     primary.textContent = "";

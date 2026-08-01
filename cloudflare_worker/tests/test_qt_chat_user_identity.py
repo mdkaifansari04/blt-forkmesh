@@ -102,21 +102,21 @@ def test_chat_member_column_is_user_directory_not_online_nodes():
 
 
 def test_self_row_folds_into_its_own_account_group():
-    # "You" must group under your OWN account (its directory entry + owned nodes)
-    # instead of a separate "\x01self" island, or the local user appears as a
-    # duplicate participant next to their own account (a second "jett").
+
+
+
     messages = MESSAGES.read_text(encoding="utf-8")
     roster_body = _body(
         messages,
         "void MainWindow::refreshChatMembers()",
         "void MainWindow::removeChatMember",
     )
-    # groupKeyFor no longer short-circuits self to a self-only key first; instead
-    # a self row resolves to the account owner key so it merges with the account.
+
+
     assert 'if (m.self)\n            return QStringLiteral("\\x01self");' not in roster_body
     assert "const QString selfOwner = accountOwner().trimmed().toLower();" in roster_body
-    # The merged canonical (directory) row keeps the self marker so it still
-    # sorts first and renders as you.
+
+
     assert "member.self = member.self || g.primary.self;" in roster_body
 
 
@@ -143,8 +143,8 @@ def test_chat_mentions_highlight_and_open_user_profiles():
     assert "QToolTip::showText" in row
     assert "QLabel::linkActivated" in row
 
-    # Directory users carry the canonical /@name profile target; live roster
-    # entries are a fallback when the directory has not seen that user yet.
+
+
     assert "std::as_const(m_chatDirectoryUsers)" in add_row_body
     assert "std::as_const(m_homeRoster)" in add_row_body
     assert add_row_body.index("std::as_const(m_chatDirectoryUsers)") < add_row_body.index(
@@ -155,8 +155,8 @@ def test_chat_mentions_highlight_and_open_user_profiles():
     assert "QDesktopServices::openUrl(url)" in add_row_body
     assert 'url.setPath(QStringLiteral("/@")' in messages
 
-    # Existing visible rows are rerendered after the async user directory lands,
-    # otherwise old messages would stay plain text until the next full refresh.
+
+
     assert "renderConversationRows();" in directory_body
 
 
@@ -189,11 +189,11 @@ def test_chat_composer_stays_visible_and_rooms_scroll_independently():
 
 
 def test_desktop_frames_carry_account_kind_for_web_display():
-    # Web/dashboard chat surfaces only render frames stamped accountKind
-    # "user". The desktop never sent the field at all, so a desktop user's
-    # messages relayed fine but were invisible on the website — "web and Qt
-    # aren't syncing". The backend stamps every outgoing frame, hydrated from
-    # the same user-vs-node rule as welcomeChannelForIdentity().
+
+
+
+
+
     server_node = (QT_SRC / "ServerNode.cpp").read_text(encoding="utf-8")
     server_node_h = (QT_SRC / "ServerNode.h").read_text(encoding="utf-8")
     chat_backend = (QT_SRC / "ChatBackend.h").read_text(encoding="utf-8")
@@ -214,11 +214,11 @@ def test_desktop_frames_carry_account_kind_for_web_display():
 
 
 def test_desktop_composer_bridges_forkbot_like_the_web_chat():
-    # ForkBot has no room connection: whichever client SENDS a mention asks
-    # /api/forkbot/chat and relays the reply. Only web clients did this, so
-    # ForkBot never answered desktop users. The desktop bridge mirrors the
-    # web one: author-side only, public channels only, recent conversation
-    # context attached, reply broadcast as forkbot/accountKind user.
+
+
+
+
+
     header = HEADER.read_text(encoding="utf-8")
     messages = MESSAGES.read_text(encoding="utf-8")
     server_node = (QT_SRC / "ServerNode.cpp").read_text(encoding="utf-8")
@@ -245,17 +245,17 @@ def test_desktop_composer_bridges_forkbot_like_the_web_chat():
     )
     assert '{"senderId", QStringLiteral("forkbot")}' in bot_chat
     assert '{"accountKind", QStringLiteral("user")}' in bot_chat
-    # Never into a private room — the bot round-trip would leak the reply
-    # path to the relay.
+
+
     assert "m_privateChannels.contains(channel)" in bot_chat
 
 
 def test_own_account_messages_never_mark_unread_or_notify():
-    # adhoc #426: ChatMessage.self is a node-id match, so a line this user
-    # typed on the website or in the World came back as somebody else's and lit
-    # the desktop's red unread badge (and raised a notification) for something
-    # they had just written. chatDisplayName() is the name this account stamps
-    # on its own outgoing frames, so incoming senders are matched against it.
+
+
+
+
+
     messages = MESSAGES.read_text(encoding="utf-8")
     body = _body(
         messages,
@@ -266,7 +266,7 @@ def test_own_account_messages_never_mark_unread_or_notify():
     assert "const bool ownMessage =" in body
     assert "message.self ||" in body
     assert "Qt::CaseInsensitive" in body
-    # Both the unread tally and the notification path use the wider check.
+
     assert "if (!ownMessage &&" in body
     assert "if (!ownMessage) {" in body
     assert "if (!message.self &&" not in body

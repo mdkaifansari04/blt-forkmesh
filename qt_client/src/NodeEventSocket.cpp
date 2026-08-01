@@ -9,23 +9,23 @@
 
 namespace {
 
-// Event frames are a topic plus a repo path; anything bigger is not ours.
+
 constexpr quint64 kMaxEventPayload = 64 * 1024;
-// A server that accepts TCP/TLS but never answers the upgrade would otherwise
-// hang the attempt forever: no other timer runs before the 101.
+
+
 constexpr int kConnectTimeoutMs = 30000;
-// Protocol pings ride the edge connection without waking the hibernated
-// Durable Object; the app-level {"type":"ping"} beat refreshes the DO's
-// staleness clock (NODE_SOCKET_STALE_MS = 15 min server-side) far less often.
+
+
+
 constexpr int kPingIntervalMs = 25000;
 constexpr qint64 kAppPingIntervalMs = 4 * 60 * 1000;
-// Half-open-link watchdog, same guard as ServerNode: if not even a pong has
-// arrived for ~2.8x the ping interval the TCP socket is a zombie (NAT timeout,
-// silent relay drop) and Qt may never emit disconnected() on its own.
+
+
+
 constexpr qint64 kStaleRxMs = 70000;
-// Reconnect ramp: 2s, 4s, 8s ... capped at 10 minutes. A dropped event only
-// delays a sync until the fallback poll, so this channel backs off harder
-// than chat rather than hammering a quota-limited relay.
+
+
+
 constexpr int kReconnectBaseDelayMs = 2000;
 constexpr qint64 kReconnectMaxDelayMs = 10 * 60 * 1000;
 
@@ -45,7 +45,7 @@ QString wsRequestPath(const QUrl &url)
     return path;
 }
 
-} // namespace
+}
 
 NodeEventSocket::NodeEventSocket(QObject *parent) : QObject(parent) {}
 
@@ -113,11 +113,11 @@ void NodeEventSocket::openConnection()
     if (m_userStopped)
         return;
 
-    // A fresh signed URL for every attempt: the ts in the drain token must be
-    // within the relay's clock-skew window when the upgrade lands.
+
+
     m_url = m_urlFactory ? m_urlFactory() : QUrl();
     if (!m_url.isValid() || m_url.host().isEmpty()) {
-        scheduleReconnect(); // e.g. not signed in yet; retry later
+        scheduleReconnect();
         return;
     }
     if (m_connectionAuthorizer && !m_connectionAuthorizer(m_url)) {
@@ -171,7 +171,7 @@ void NodeEventSocket::scheduleReconnect()
     ++m_reconnectAttempts;
     int delay = int(qMin<qint64>(qint64(kReconnectBaseDelayMs) << shift,
                                  kReconnectMaxDelayMs));
-    // Jitter keeps a fleet from reconnecting in lockstep after a relay deploy.
+
     delay += int(QRandomGenerator::global()->bounded(delay / 4 + 250));
     m_reconnectTimer->start(delay);
 }
@@ -201,9 +201,9 @@ void NodeEventSocket::connectSocketSignals()
     connect(socket, &QTcpSocket::errorOccurred, this, [this, socket] {
         if (socket != m_socket)
             return;
-        // Some errors do not emit disconnected, while others emit both;
-        // detach this exact socket first so either path converges on one
-        // reconnect.
+
+
+
         failCurrentConnection();
     });
 }
@@ -244,8 +244,8 @@ void NodeEventSocket::onPingTick()
 {
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
     if (m_lastRxMs > 0 && now - m_lastRxMs > kStaleRxMs) {
-        // Zombie link: writes still "succeed" but nothing (not even pongs)
-        // comes back. Tear it down and reconnect.
+
+
         failCurrentConnection();
         return;
     }
@@ -269,10 +269,10 @@ void NodeEventSocket::onSocketReadyRead()
         m_readBuffer.remove(0, headerEnd + 4);
         if (!header.startsWith("HTTP/1.1 101") &&
             !header.startsWith("HTTP/1.0 101")) {
-            // Non-101 is almost always transient (relay redeploy, quota 429)
-            // — or a 401 because the signed token aged past the skew window
-            // in a slow connect. Reconnect with backoff either way; the
-            // fallback /api/sync poll covers the gap.
+
+
+
+
             const int lineEnd = header.indexOf("\r\n");
             const QString statusLine = QString::fromLatin1(
                 (lineEnd < 0 ? header : header.left(lineEnd)).left(80))
@@ -347,11 +347,11 @@ void NodeEventSocket::onSocketReadyRead()
                 payload[i] = payload.at(i) ^ mask.at(i % 4);
         }
         m_lastRxMs = QDateTime::currentMSecsSinceEpoch();
-        if (opcode == 0x9) { // server ping -> pong
+        if (opcode == 0x9) {
             sendControlFrame(0xA, payload);
             continue;
         }
-        if (opcode == 0xA) // pong: keepalive acknowledged
+        if (opcode == 0xA)
             continue;
         if (opcode == 0x8) {
             m_socket->disconnectFromHost();
@@ -368,8 +368,8 @@ void NodeEventSocket::processFrame(const QByteArray &payload)
     if (!doc.isObject())
         return;
     const QJsonObject frame = doc.object();
-    // Advisory-only by design: whatever arrives here, the strongest reaction
-    // is one signed /api/sync. There is nothing else to parse or trust.
+
+
     if (frame.value(QStringLiteral("type")).toString() ==
         QLatin1String("event"))
         emit eventReceived(frame.value(QStringLiteral("topic")).toString(),
@@ -402,8 +402,8 @@ void NodeEventSocket::sendTextFrame(const QByteArray &payload)
 
 void NodeEventSocket::sendControlFrame(int opcode, const QByteArray &payload)
 {
-    // Ping/pong control frames (payload <= 125 bytes), client-masked per RFC
-    // 6455.
+
+
     if (!m_socket || !m_wsReady || payload.size() > 125)
         return;
     QByteArray frame;

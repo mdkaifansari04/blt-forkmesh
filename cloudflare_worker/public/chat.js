@@ -34,26 +34,26 @@ import {
   sameLocalDate,
 } from "./chat-date-groups.js";
 
-// Browser-side ForkMesh room chat. Reimplements the desktop client's room
-// crypto (PBKDF2 + AES-256-GCM) and message envelope so the website can join
-// the public encrypted rooms and talk to connected clients. Frames are
-// ciphertext on the wire, but the relay derives the default shared passphrase
-// and can therefore decrypt them; this is not end-to-end encryption.
-//
-// Layout: rooms on the left, conversation in the middle (ts-ordered, newest at
-// the bottom, avatars + timestamps + reactions), and people on the right.
-// Public #general uses its own "world-general" room. Each authorized private
-// channel uses a ticketed room and key version returned by the relay.
+
+
+
+
+
+
+
+
+
+
 
 const ROOM_NAME = "general";
 const PUBLIC_WORLD_GENERAL_ROOM = "world-general";
-// The room key is no longer a public constant. Every client fetches a shared
-// passphrase (derived server-side from the relay's DATA_KEY) from
-// /api/chat/room-key and feeds it into the same PBKDF2 room-key derivation, so
-// clients in a given scope converge on the same AES key. The public World
-// #general endpoint is intentionally guest-readable; every other room-key
-// request still requires repository-authorized authentication. The relay
-// controls DATA_KEY and can derive either key too. Keys are cached by scope.
+
+
+
+
+
+
+
 const PUBLIC_WORLD_ROOM_KEY_ENDPOINT =
   "/api/chat/room-key?owner=mainnode&repo=forkmesh&room=world-general";
 const PUBLIC_WORLD_CHAT_WS_PATH =
@@ -64,42 +64,42 @@ const PRIVATE_CHANNEL_REFRESH_MS = 30000;
 const FORKBOT_ENDPOINT = "/api/forkbot/chat";
 const FORKBOT_SENDER_ID = "forkbot";
 const FORKBOT_MENTION_RE = /(?:^|[^A-Za-z0-9_-])@?forkbot\b/i;
-// Mainnode base host for the room WebSocket. Defaults to the origin that served
-// this page, so a self-hosted mainnode's own site talks to itself with zero
-// config. A separately-hosted static site can point at a different relay by
-// setting window.FORKMESH_RELAY_HOST (e.g. "relay.example.com") before this
-// script loads. See public docs: /docs#self-hosting.
+
+
+
+
+
 const RELAY_HOST = window.FORKMESH_RELAY_HOST || location.host;
 const MAX_TEXT = 16000;
 const MAX_NAME = 32;
 const MAX_ACCOUNT_NAME = 63;
 const CHAT_MENTION_RE = /(^|[^A-Za-z0-9_-])@([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\b/gi;
-// Presence cadence + staleness mirror the desktop node (ServerNode.cpp:
-// kPresenceIntervalMs / kPeerStaleMs). The beat doubles as the keep-alive the
-// relay's room DO needs — it closes sockets with no frames for 3 minutes, which
-// is why the old web client (which sent nothing while idle) kept disconnecting.
+
+
+
+
 const PRESENCE_INTERVAL_MS = 60000;
-// Registered-user directory (public, no secrets — see _account_users_directory
-// in the Worker). Seeds the people pane so every account shows even before it
-// has ever spoken in the room, and a light poll (the endpoint is edge-cached,
-// and a signup invalidates that cache) surfaces brand-new signups right away
-// with a welcome line in the log.
+
+
+
+
+
 const USERS_DIRECTORY_ENDPOINT = "/api/accounts/users";
 const USERS_DIRECTORY_REFRESH_MS = 60000;
-// Counters behind the site-header chat badge; the chat page re-baselines them
-// while open so time spent reading here counts as "seen".
+
+
 const CHAT_ACTIVITY_ENDPOINT = "/api/chat/activity";
 const CHAT_ACTIVITY_SEEN_KEY = "forkmesh.chat.activitySeen";
-// Only a directory entry created this recently gets the "just joined" welcome
-// line — an account merely missing from the previous (top-1000) page isn't news.
+
+
 const NEW_USER_ANNOUNCE_WINDOW_MS = 10 * 60 * 1000;
 const PEER_STALE_MS = 180000;
-// Guests and World visitors are throwaway browser sessions: their id dies with
-// the tab, so an offline row for one can never come back and the pane filled up
-// with dozens of dead "Guest ####" people. Forget them after this much silence
-// (registered accounts and nodes still keep their offline row) — adhoc #404.
+
+
+
+
 const VISITOR_IDLE_FORGET_MS = 10 * 60 * 1000;
-const GROUP_WINDOW_MS = 5 * 60 * 1000; // same-sender messages collapse under one header
+const GROUP_WINDOW_MS = 5 * 60 * 1000;
 const REACTION_EMOJI = ["👍", "❤️", "😂", "🎉", "👀", "🚀"];
 const ACTIVE_CHANNEL_KEY = "forkmesh.chat.channel";
 const ACTIVE_DIRECT_KEY = "forkmesh.chat.direct";
@@ -184,12 +184,12 @@ const composerControls = [...new Set([
 ].filter(Boolean))];
 
 const enc = new TextEncoder();
-// A stable per-browser chat id. The relay holds no roster — every participant
-// is reconstructed client-side from the senderId on decrypted frames — so a
-// fresh random id per page load made each reload/tab of the same person show up
-// as a brand-new "ghost" participant (the "lots of jett users" symptom).
-// Persisting it collapses reloads/tabs of the same browser into one entry;
-// signed-in users still display under their account name via displayName().
+
+
+
+
+
+
 const selfId = (() => {
   const STORAGE_KEY = "forkmesh.chat.selfId";
   try {
@@ -219,10 +219,10 @@ let cachedUserSession = null;
 let chatSuspended = false;
 let officeAuthorizationExpired = false;
 const seen = new Set();
-// messageId -> message record { id, channel, ts, senderId, sender, text, self,
-// el, body, reactionsEl }. `el`/`body` reference the on-screen row while the
-// record's channel is the active one, so an edit or a (regular / admin) delete
-// can find and update or remove the right row.
+
+
+
+
 const rows = new Map();
 const threads = createThreadStore();
 const threadRenderedRows = new Map();
@@ -232,19 +232,19 @@ let attachmentDraftSequence = 0;
 const threadAttachmentRecords = new Set();
 let activeThreadRootId = "";
 let threadReturnFocus = null;
-// channel -> ts-ordered array of message records (newest last).
+
 const channelMessages = new Map();
-// channel -> idle while unseen, loading while its socket is opening, ready once
-// the room has connected or supplied a frame. Cached messages remain usable
-// across room switches even while the next room is synchronizing.
+
+
+
 const channelSyncState = new Map();
-// channel -> { unread } for the rooms list badges.
+
 const channelMeta = new Map();
-// messageId -> Map(emoji -> Map(reactorId -> reactorName)); same shape as the
-// desktop's m_reactions so toggles converge across clients.
+
+
 const reactions = new Map();
-// senderId -> { id, name, kind: "user"|"guest"|"bot"|"node", lastSeenMs } built from
-// every decrypted frame; drives the right-hand people pane.
+
+
 const roster = new Map();
 let activeChannel = "#general";
 let savedPrivateChannelId = "";
@@ -257,11 +257,11 @@ try {
     savedDirectMessageId = savedDirect;
   }
 } catch (_) {}
-// Rolling per-channel buffer of the most recent decrypted messages, forwarded
-// to ForkBot so it can resolve references like "that bug" from the
-// conversation. The relay can decrypt the default shared-key room; this buffer
-// controls only the narrower context we explicitly send to ForkBot.
-const recentContext = new Map(); // channel -> [{sender, text}]
+
+
+
+
+const recentContext = new Map();
 const RECENT_CONTEXT_MAX = 20;
 function rememberContext(channel, sender, text) {
   const clean = String(text || "").trim();
@@ -295,9 +295,9 @@ function setAttachmentFeedback(message) {
   }
 }
 
-// Verify an Ed25519 signature (raw 32-byte key, 64-byte sig) over a UTF-8
-// string. Returns false on any unsupported-browser / malformed-input error, so
-// a delete we can't authenticate is simply ignored rather than applied.
+
+
+
 async function ed25519Verify(pubB64url, sigB64url, dataStr) {
   try {
     const key = await crypto.subtle.importKey(
@@ -318,7 +318,7 @@ async function ed25519Verify(pubB64url, sigB64url, dataStr) {
   }
 }
 
-// ---- room crypto (matches RoomCrypto.cpp) -----------------------------------
+
 
 function roomScopeForChannel(channel = activeChannel) {
   return channel === "#general" ? "public-world-general" : channel;
@@ -373,9 +373,9 @@ function canJoinChannel(channel = activeChannel) {
     ));
 }
 
-// The public World #general passphrase is intentionally available to guests
-// and is isolated in its own DO room. Private channel keys come only from the
-// authenticated room-access endpoint below.
+
+
+
 async function fetchRoomPassphrase(scope = roomScopeForChannel()) {
   if (scope !== "public-world-general") {
     throw new Error("Private channel room access required.");
@@ -465,7 +465,7 @@ async function fetchRoomAccess(channelKey = activeChannel) {
   return access;
 }
 
-// ---- session ----------------------------------------------------------------
+
 
 function readSession() {
   try {
@@ -489,7 +489,7 @@ function writeSession(session) {
       : session;
     localStorage.setItem("forkmesh.session", JSON.stringify(stored));
   } catch (error) {
-    /* storage disabled */
+
   }
 }
 
@@ -497,8 +497,8 @@ function isUserLikeSession(session) {
   if (!session || !session.nodeName) return false;
   if (session.kind === "user") return true;
   if (session.kind === "node") return false;
-  // Legacy browser sessions created before account kind was persisted still
-  // carry email + nodeName for user accounts. Accept them, then hydrate below.
+
+
   return Boolean(session.email);
 }
 
@@ -552,10 +552,10 @@ function userSession() {
   return isUserLikeSession(session) ? session : null;
 }
 
-// Everyone in the public World room shows under the plain name they assert.
-// The old "World visitor · jett" prefix read as a second, different person
-// sitting next to the signed-in "jett", so it is stripped from anything that
-// still carries it (session names, replayed history frames).
+
+
+
+
 function publicWorldName(value) {
   return String(value || "")
     .replace(/^World visitor\s*·\s*/i, "")
@@ -640,7 +640,7 @@ function clearEmpty() {
   if (empty) empty.remove();
 }
 
-// ---- avatars ------------------------------------------------------------------
+
 
 const AVATAR_COLORS = [
   "#4f7ddb", "#8250df", "#bf3989", "#cf222e",
@@ -654,9 +654,9 @@ function avatarColor(name) {
   return AVATAR_COLORS[hash % AVATAR_COLORS.length];
 }
 
-// Letter avatar immediately; asynchronously swapped for the account's uploaded
-// avatarPng when the profile has one (user accounts only — fetchMentionProfile
-// resolves null for nodes, which keep the letter).
+
+
+
 function makeAvatar(name, kind) {
   const el = document.createElement("div");
   el.className = "chat-avatar";
@@ -683,7 +683,7 @@ function fmtTime(ts) {
   return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-// ---- mentions -----------------------------------------------------------------
+
 
 function mentionName(value) {
   return String(value || "").trim().toLowerCase();
@@ -801,14 +801,14 @@ function renderMessageText(container, message) {
   });
 }
 
-// ---- @mention autocomplete -----------------------------------------------------
-// Typing "@" (plus an optional partial name) in the composer pops a suggestion
-// list built from the roster; Tab (or Enter / click) accepts the highlighted
-// name, arrows move, Escape dismisses.
+
+
+
+
 
 let mentionSuggestEl = null;
-// null when closed, else { items, index, start, end } where start/end bound the
-// "@partial" token in the input's value.
+
+
 let mentionSuggest = null;
 
 function ensureMentionSuggest() {
@@ -826,16 +826,16 @@ function closeMentionSuggest() {
   if (mentionSuggestEl) mentionSuggestEl.hidden = true;
 }
 
-// The "@partial" token the caret is currently inside, or null. A mention starts
-// at "@" preceded by whitespace/start and uses the same charset the renderer
-// links: letters, digits, and hyphens.
+
+
+
 function mentionTokenAtCaret() {
   const caret = input.selectionStart;
   if (caret == null || input.selectionEnd !== caret) return null;
   const before = input.value.slice(0, caret);
   const match = /(^|\s)@([A-Za-z0-9-]{0,32})$/.exec(before);
   if (!match) return null;
-  const start = caret - match[2].length - 1; // include the "@"
+  const start = caret - match[2].length - 1;
   return { start, end: caret, partial: match[2].toLowerCase() };
 }
 
@@ -900,8 +900,8 @@ function renderMentionSuggest() {
     const dot = document.createElement("span");
     dot.className = "chat-presence-dot" + (personIsOnline(person) ? " is-online" : "");
     item.append(label, dot);
-    // mousedown, not click: click fires after the input's blur would have
-    // closed the popup.
+
+
     item.addEventListener("mousedown", (event) => {
       event.preventDefault();
       acceptMentionSuggest(index);
@@ -962,7 +962,7 @@ function moveMentionSuggest(step) {
   renderMentionSuggest();
 }
 
-// ---- rooms (left pane) --------------------------------------------------------
+
 
 function normalizeChannelKey(channel) {
   const value = String(channel || "").trim();
@@ -991,13 +991,13 @@ function markChannelLoading(channel = activeChannel) {
   }
 }
 
-// A line is "mine" when this browser sent it (senderId) OR when the signed-in
-// account authored it from somewhere else — another tab, a phone, the desktop
-// client. selfId is per-browser, so without the account check your own message
-// echoed back from a second client lit an unread badge for something you just
-// typed. Used for unread bookkeeping only: rendering, edit and delete still
-// require the stronger senderId match, since chat frames carry no signature
-// binding a display name to an account.
+
+
+
+
+
+
+
 function isOwnChatMessage(record) {
   if (!record) return false;
   if (record.self || (record.senderId && record.senderId === selfId)) {
@@ -1617,10 +1617,10 @@ async function startDirectMessage(username) {
   }
 }
 
-// ---- people (right pane) -------------------------------------------------------
 
-// Coalesce roster paints: a history replay on join delivers hundreds of frames
-// in a burst, and each one touches the roster.
+
+
+
 let peopleRenderTimer = null;
 function schedulePeopleRender() {
   if (peopleRenderTimer) return;
@@ -1639,10 +1639,10 @@ function noteRoster(plain) {
     : plain.accountKind === "guest"
       ? "guest"
       : "node";
-  // Use the frame's own timestamp (bounded by now): the relay replays retained
-  // frames to a joining client, and a days-old replayed message must not paint
-  // its author online. Never move lastSeen backwards either — a replayed old
-  // frame (or old bye) can't demote a peer we've heard from more recently.
+
+
+
+
   const frameTs = Math.min(Number(plain.ts) || Date.now(), Date.now());
   const prev = roster.get(id);
   const prevSeen = prev ? prev.lastSeenMs : 0;
@@ -1660,9 +1660,9 @@ function noteSelfRoster() {
   roster.set(selfId, {
     id: selfId,
     name: displayName(),
-    // Only an anonymous browser sits in the guest section: a signed-in person
-    // in the public room stays a user, so their live entry dedupes against the
-    // account-directory row instead of showing up as a second person.
+
+
+
     kind:
       roomScopeForChannel() === "public-world-general" && !userSession()
         ? "guest"
@@ -1676,8 +1676,8 @@ function personIsOnline(person) {
   return person.lastSeenMs > 0 && Date.now() - person.lastSeenMs <= PEER_STALE_MS;
 }
 
-// An anonymous guest, or a World visitor from an older client that still
-// prefixes its asserted name. Never a registered account or a node.
+
+
 function personIsTransientVisitor(person) {
   if (!person || person.id === selfId) return false;
   if (person.kind === "guest") return true;
@@ -1686,8 +1686,8 @@ function personIsTransientVisitor(person) {
   );
 }
 
-// Drop visitors that have gone quiet (or said "bye", which zeroes lastSeenMs),
-// so the people pane only keeps rows that can still come back.
+
+
 function forgetIdleVisitors() {
   const cutoff = Date.now() - VISITOR_IDLE_FORGET_MS;
   for (const [id, person] of [...roster]) {
@@ -1697,14 +1697,14 @@ function forgetIdleVisitors() {
   }
 }
 
-// ---- registered-user directory ------------------------------------------------
-// The room roster only knows senders it has decrypted frames from, so a user
-// who signed up on the website but never opened chat was invisible here. Merge
-// in the public account directory: every registered user gets a (offline)
-// roster entry, and a signup that appears between polls is announced in the
-// log so the room can welcome them right away.
 
-const directoryKnown = new Set(); // lowercased account names already merged
+
+
+
+
+
+
+const directoryKnown = new Set();
 const registeredUsers = new Map();
 let directorySeeded = false;
 
@@ -1732,9 +1732,9 @@ async function refreshUsersDirectory() {
     });
     const fresh = !directoryKnown.has(name);
     directoryKnown.add(name);
-    // Namespaced id so this offline placeholder never collides with a live
-    // senderId entry for the same account; renderPeople dedupes the pair by
-    // name, keeping the freshest sighting (i.e. the live one).
+
+
+
     const id = "account:" + name;
     const prev = roster.get(id);
     roster.set(id, {
@@ -1756,9 +1756,9 @@ async function refreshUsersDirectory() {
   }
 }
 
-// Record the current activity counters as "seen" so the chat icon in the site
-// header (site-header.js reads the same key) shows no badge for what's on
-// screen right now.
+
+
+
 async function markChatActivitySeen() {
   try {
     const res = await fetch(CHAT_ACTIVITY_ENDPOINT, {
@@ -1775,15 +1775,15 @@ async function markChatActivitySeen() {
   } catch (_) {}
 }
 
-// You have obviously already read your own message, so it must never light the
-// header's chat badge. That badge is a delta between the retained #general
-// count and this browser's stored baseline, so every retained line we send
-// advances the baseline by one. Without this, talking in the World or the
-// dashboard left an unread pill on every other page of the site.
+
+
+
+
+
 function noteOwnChatActivity() {
   try {
     const raw = localStorage.getItem(CHAT_ACTIVITY_SEEN_KEY);
-    if (!raw) return; // no baseline yet: the header seeds one silently
+    if (!raw) return;
     const seenActivity = JSON.parse(raw);
     if (!seenActivity || typeof seenActivity !== "object") return;
     localStorage.setItem(CHAT_ACTIVITY_SEEN_KEY, JSON.stringify({
@@ -1796,17 +1796,17 @@ function noteOwnChatActivity() {
 
 function renderPeople() {
   if (!peopleEl) return;
-  // Sweep expired visitors first (this also runs on a 30s timer, so they clear
-  // even in a silent room).
+
+
   forgetIdleVisitors();
   peopleEl.textContent = "";
   const currentName = String(userSession()?.nodeName || "").trim().toLowerCase();
-  // Collapse multiple entries for the same person into one row: a person can
-  // surface under several ids (history-replayed old senderIds, or the same
-  // account from other tabs/devices) that all carry the same display name.
-  // Dedupe WITHIN a section (users, nodes) by lowercased name — never across
-  // kinds — keeping the freshest sighting so online state wins; fall back to
-  // the id when a name is somehow missing.
+
+
+
+
+
+
   const dedupePeople = (list) => {
     const byIdentity = new Map();
     for (const person of list) {
@@ -1845,9 +1845,9 @@ function renderPeople() {
     head.textContent = title;
     peopleEl.append(head);
     for (const person of sortPeople(list)) {
-      // Each row links to the person's profile at /@username on this relay
-      // (relative URL — a self-hosted relay links to its own pages). ForkBot
-      // isn't an account, so its row stays a plain div.
+
+
+
       const hasProfile = person.kind === "user";
       const row = document.createElement(hasProfile ? "a" : "div");
       const online = personIsOnline(person);
@@ -1883,7 +1883,7 @@ function renderPeople() {
   renderSection("Nodes", bySection.node);
 }
 
-// ---- reactions ------------------------------------------------------------------
+
 
 function reactionKey(plain) {
   return String(plain.reactorId || plain.senderId || "");
@@ -1991,7 +1991,7 @@ function showEmojiPicker(anchor, messageId) {
   picker.style.top = `${y + window.scrollY}px`;
 }
 
-// ---- message log (middle pane) --------------------------------------------------
+
 
 function logNearBottom() {
   return logEl.scrollTop + logEl.clientHeight >= logEl.scrollHeight - 60;
@@ -2504,13 +2504,13 @@ function confirmMessageDelete() {
   runWhenConnected(() => send(plain));
 }
 
-// ---- convert a message into a repository issue ------------------------------
-// A bug report typed into chat should not have to be retyped on the issues
-// page. Every message carries an "Issue" control (the dashboard and in-world
-// chats carry the same one) that opens an inline form: an editable title seeded
-// from the first line, plus a repository picker. Filing signs an "open" event
-// into the maintainer's inbox — see chat-issue-filing.js — so it works from any
-// account, not just the repository's owner.
+
+
+
+
+
+
+
 
 function closeIssueForm(record, { restoreFocus = true } = {}) {
   record.issueFormEl?.remove();
@@ -2660,9 +2660,9 @@ function refreshDateDividerLabels() {
   }
 }
 
-// Render one message record into the log. `prev` is the record already above
-// it; consecutive same-sender messages within GROUP_WINDOW_MS collapse under a
-// single avatar + name/time header, Discord-style.
+
+
+
 function buildRow(record, prev) {
   const grouped = Boolean(
     prev && !prev.system && prev.senderId === record.senderId &&
@@ -2675,9 +2675,9 @@ function buildRow(record, prev) {
     (record.self ? " is-self" : "") +
     (isBot ? " is-bot" : "");
   row.dataset.id = record.id;
-  // Clicking the avatar or the author name opens the sender's profile at
-  // /@username on THIS relay (relative URL, so a self-hosted relay links to
-  // its own profile pages). ForkBot isn't an account, so it stays plain.
+
+
+
   const avatar = makeAvatar(record.sender, isBot ? "bot" : "user");
   if (isBot) {
     row.append(avatar);
@@ -2748,8 +2748,8 @@ function buildRow(record, prev) {
       (button) => showEmojiPicker(button, record.id),
     ));
   }
-  // Filing someone else's report is the common case, so this is not
-  // author-only; the issue is signed by, and attributed to, whoever files it.
+
+
   if (!record.deleted && record.text) {
     actions.append(messageAction(
       "Create an issue from this message",
@@ -2818,9 +2818,9 @@ function renderActiveChannel() {
   scrollLogToBottom();
 }
 
-// Insert a message record in ts order (newest at the bottom). Appends in the
-// common case; an out-of-order arrival (history replay racing live messages)
-// rebuilds the visible channel so ordering and grouping stay correct.
+
+
+
 function insertMessage(record) {
   const channel = record.channel;
   channelSyncState.set(channel, "ready");
@@ -2878,8 +2878,8 @@ function appendMessage(
   rememberContext(record.channel, who, text);
 }
 
-// Drop a message row from the screen (a deletion leaves no tombstone, matching
-// the desktop client). Keep its id in `seen` so a late duplicate can't reappear.
+
+
 function removeMessage(id) {
   const rec = rows.get(id);
   if (!rec) {
@@ -2910,7 +2910,7 @@ function removeMessage(id) {
   const index = list.indexOf(rec);
   if (index >= 0) list.splice(index, 1);
   if (activeThreadRootId === id) closeThread({ restoreFocus: false });
-  // Re-render so grouping headers stay correct around the gap.
+
   if (rec.channel === activeChannel) renderActiveChannel();
 }
 
@@ -2933,7 +2933,7 @@ function scheduleDateDividerRefresh() {
   }, Math.max(1, next.getTime() - now.getTime() + 50));
 }
 
-// ---- protocol ---------------------------------------------------------------
+
 
 function makePlain(type, extra) {
   return Object.assign(
@@ -2944,9 +2944,9 @@ function makePlain(type, extra) {
         String(Math.random()).slice(2) + Date.now(),
       senderId: selfId,
       sender: displayName(),
-      // Only people without a session speak as guests. A signed-in browser
-      // keeps its account kind in the public room too, so logging in no
-      // longer spawns a second "guest" person beside the account.
+
+
+
       accountKind:
         roomScopeForChannel() === "public-world-general" && !userSession()
           ? "guest"
@@ -3007,11 +3007,11 @@ function renderChatEntry(entry, kind, scope = roomScopeForChannel()) {
   if (scope === "public-world-general" && entry.channel !== "#general") return;
   if ((isPrivateChannelKey(scope) || isDirectMessageKey(scope)) &&
       entry.channel !== channelWireLabel(scope)) return;
-  // A private-room message from a room we weren't invited to is ignored, the
-  // same honour-model as the desktop client.
+
+
   if (entry.private) return;
-  // Historical authors still belong in the people pane (as offline entries —
-  // noteRoster derives presence from the entry's own timestamp).
+
+
   noteRoster(entry);
   if (!once(entry.id)) return;
   const who = (entry.sender || "peer").slice(0, MAX_NAME);
@@ -3057,14 +3057,14 @@ function renderThreadEntry(entry, scope = roomScopeForChannel()) {
   if (activeThreadRootId === record.rootId) renderThread();
 }
 
-// An admin-delete frame is signed by the admin's identity key over a canonical
-// string (must match the desktop's adminDeleteCanonical byte-for-byte). We only
-// remove the message after verifying that signature AND confirming the signer's
-// account is flagged admin on the relay — otherwise any room member could forge
-// one (chat frames are otherwise unsigned).
+
+
+
+
+
 async function verifyAdminDelete(plain) {
   const target = plain.target;
-  const adminId = plain.senderId; // desktop node id == identity pubkey (b64url)
+  const adminId = plain.senderId;
   const sig = plain.sig;
   if (!target || !sig || !adminId) return false;
   const canonical =
@@ -3095,9 +3095,9 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
     return;
   }
   plain = normalizedPublicWorldFrame(plain, scope);
-  // Roster + channel discovery run for EVERY decrypted frame — desktop nodes
-  // announce themselves (hello/presence) without accountKind, and the people
-  // pane should still show them with their online status.
+
+
+
   noteRoster(plain);
   if (scope === "public-world-general" &&
       (type === "hello" || type === "channel")) ensureChannel("#general");
@@ -3120,7 +3120,7 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
   } else if (type === "reaction") {
     if (once(plain.id)) applyReaction(plain);
   } else if (type === "edit") {
-    // The author edited their own message; only honour it from that author.
+
     const rec = rows.get(plain.target);
     const reply = rec ? null : threads.target(plain.target);
     const target = rec || reply;
@@ -3144,19 +3144,19 @@ function handlePlain(plain, scope = roomScopeForChannel()) {
       if (activeThreadRootId === rec.id) renderThread();
     }
   } else if (type === "delete") {
-    // A plain delete is only valid from the message's own author.
+
     const rec = rows.get(plain.target) || threads.target(plain.target);
     if (rec && rec.senderId === plain.senderId) removeMessage(plain.target);
   } else if (type === "admin-delete") {
-    // Moderation: remove any message once the admin signature checks out.
+
     verifyAdminDelete(plain).then((ok) => {
       if (!ok) return;
-      seen.add(plain.target); // also suppress a copy that arrives after the delete
+      seen.add(plain.target);
       removeMessage(plain.target);
     });
   } else if (type === "hello" && !plain.to) {
-    // Presence is shown in the World itself; do not add join noise to the
-    // message timeline or push the composer upward.
+
+
   } else if (type === "bye") {
     appendSystem(sender + " left");
   }
@@ -3206,8 +3206,8 @@ function send(plain) {
   const envelope = { persist: false };
   if (DURABLE_TYPES.has(plain && plain.type)) envelope.persist = true;
   if (!roomTransport) return Promise.resolve(false);
-  // Only retained #general frames reach the counter behind the header badge,
-  // and oversized file frames are dropped before retention.
+
+
   if (envelope.persist && scope === "public-world-general" && !plain.file) {
     noteOwnChatActivity();
   }
@@ -3235,10 +3235,10 @@ async function maybeAskForkbot(text) {
   if (!userSession()) return;
   if (isPrivateChannelKey(activeChannel) || isDirectMessageKey(activeChannel)) return;
   if (!FORKBOT_MENTION_RE.test(text || "")) return;
-  // The triggering line is the last buffer entry (appendMessage ran just
-  // before this) and is sent separately as `message`; drop it, drop ForkBot's
-  // own replies, and cap the rest so ForkBot sees the lead-up conversation of
-  // the room the mention happened in.
+
+
+
+
   const context = (recentContext.get(activeChannel) || [])
     .slice(0, -1)
     .filter((m) => m.sender.toLowerCase() !== "forkbot")
@@ -3359,9 +3359,9 @@ async function connect() {
     lockChatForNonUser();
     return;
   }
-  // WebCrypto (crypto.subtle) only exists in a secure context. Served over
-  // plain HTTP - a self-hosted node or LAN IP opened on mobile - it is
-  // undefined, so the room key can never derive. Say so plainly.
+
+
+
   if (!window.isSecureContext || !(window.crypto && window.crypto.subtle)) {
     setStatus("Chat needs a secure (HTTPS) connection", "insecure");
     return;
@@ -3769,7 +3769,7 @@ function sendCurrentMessage() {
         richText: { v: 1, source },
       });
       send(plain);
-      seen.add(plain.id); // we render it here; ignore the echo if one comes back
+      seen.add(plain.id);
       appendMessage(
         "self",
         plain.sender,
@@ -3841,9 +3841,9 @@ function wireChatComposer() {
     void sendAttachmentDraft();
   });
   input.addEventListener("keydown", (event) => {
-    // While the @mention popup is open it owns the keyboard: Tab (or Enter)
-    // accepts the highlighted name, arrows move, Escape dismisses - only then
-    // does Enter fall through to send.
+
+
+
     if (mentionSuggest) {
       const acceptsMention = event.key === "Tab" || event.key === "Enter";
       if (acceptsMention && !event.shiftKey) {
@@ -3867,9 +3867,9 @@ function wireChatComposer() {
       sendCurrentMessage();
     }
   });
-  // Track the "@partial" token under the caret as it changes - typing, caret
-  // moves (arrows/click), and focus loss (delayed so a suggestion mousedown
-  // still lands).
+
+
+
   input.addEventListener("input", () => {
     resizeComposer();
     updateMentionSuggest();
@@ -3947,8 +3947,8 @@ async function initChat() {
   updateAdminChannelControls();
   renderRooms();
   renderPeople();
-  // Fill the people pane with every registered user (and thereafter pick up
-  // brand-new signups), and baseline the header badge counters for this visit.
+
+
   refreshUsersDirectory();
   markChatActivitySeen();
   setInterval(() => {
@@ -3959,8 +3959,8 @@ async function initChat() {
     refreshPrivateChannels();
     refreshDirectMessages({ preserve: true, selectSaved: false });
   }, PRIVATE_CHANNEL_REFRESH_MS);
-  // Public World #general connects for everyone. Private channels remain
-  // session-gated and each uses its own ticketed room and current key version.
+
+
   if (canJoinChannel()) {
     markChannelLoading();
     unlockChatForUser();
@@ -4027,17 +4027,17 @@ async function initChat() {
   });
   resizeComposer();
   scheduleDateDividerRefresh();
-  // Presence beat, matching the desktop's cadence: keeps our roster entry
-  // fresh for peers AND keeps the room DO from closing the socket as stale
-  // (it reaps sockets that send nothing for 3 minutes — the old web client's
-  // idle disconnects).
+
+
+
+
   setInterval(() => {
     if (roomTransport?.connected && canJoinChannel()) {
       send(makePlain("presence"));
       noteSelfRoster();
     }
   }, PRESENCE_INTERVAL_MS);
-  // Re-evaluate online dots as peers go stale even with no traffic.
+
   setInterval(renderPeople, 30000);
   if (isOfficeEmbed && window.parent !== window) {
     window.parent.postMessage(

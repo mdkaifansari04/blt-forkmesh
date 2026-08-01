@@ -70,15 +70,15 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     nodes = json.loads(result.stdout)
     assert [node["name"] for node in nodes] == ["mirror2", "mirror3"]
     mirror2 = nodes[0]
-    # The machine's advertised node name rides along for display; the account
-    # name stays the identity key. A node that never advertised one omits it.
+
+
     assert mirror2["machineName"] == "rack-a-berlin"
     assert "machineName" not in nodes[1]
     assert mirror2["commit"] == "a" * 40
     assert mirror2["branch"] == "main"
-    # What the cabinet's LAST COMMIT panel names: the subject, the author and
-    # when it landed, straight from the signed mirror record (adhoc #337). A
-    # node that never published them keeps the honest "not reported" state.
+
+
+
     assert mirror2["lastCommitMessage"] == "Show the last commit on every node"
     assert mirror2["lastCommitAuthorName"] == "Ada Lovelace"
     assert mirror2["lastCommitAt"] == 1_750_000_000_000
@@ -99,8 +99,8 @@ def test_live_node_builder_preserves_signed_repo_facts_and_unknown_telemetry():
     assert mirror2["repositories"][0]["owner"] == "forkmesh"
     assert mirror2["repositories"][0]["name"] == "forkmesh"
     mirror3 = nodes[1]
-    # A signed -1 means "not advertised"; a cached aggregate zero/positive must
-    # not replace that explicit unknown state for this exact mirror record.
+
+
     assert "pullCount" not in mirror3
     assert "issueCount" not in mirror3
     assert "lastCommitMessage" not in mirror3
@@ -283,8 +283,8 @@ def test_recent_signed_endpoint_health_keeps_a_physical_cabinet_live_during_pin_
         capture_output=True,
     )
     node = json.loads(result.stdout)[0]
-    # The machine is alive, so its cabinet remains present and green. The
-    # repository route remains blocked and its integrity evidence is retained.
+
+
     assert node["name"] == "mirror2"
     assert node["online"] is True
     assert node["status"] == "online"
@@ -331,8 +331,8 @@ def test_cabinet_carries_last_served_clone_and_web_stamps_with_client_class():
     assert served["cloneServedAgent"] == "git-client"
     assert served["websiteServedAt"] == 1_750_000_900_000
     assert served["websiteServedAgent"] == "browser"
-    # A node that has served no clone yet keeps the honest unknown, and a raw
-    # User-Agent smuggled into the record is never carried into the scene.
+
+
     partial = nodes["mirror3"]
     assert "cloneServedAt" not in partial
     assert "cloneServedAgent" not in partial
@@ -341,8 +341,8 @@ def test_cabinet_carries_last_served_clone_and_web_stamps_with_client_class():
 
 
 def test_cabinet_serve_counters_are_stamped_with_when_and_who():
-    # The two serve rows on the cabinet card carry a second line: how long ago
-    # that kind of request was last answered, and the class of client answered.
+
+
     assert "function mirrorServeStamp" in SCENE
     assert "MIRROR_SERVE_AGENT_LABELS" in SCENE
     assert (
@@ -352,8 +352,8 @@ def test_cabinet_serve_counters_are_stamped_with_when_and_who():
         "mirrorServeStamp(node?.websiteServedAt, node?.websiteServedAgent)"
         in SCENE
     )
-    # Texture caching has to notice a new serve, or the card would freeze at
-    # whatever stamp it was first drawn with.
+
+
     assert "cloneServedAt: node?.cloneServedAt" in SCENE
     assert "websiteServedAgent: node?.websiteServedAgent" in SCENE
     assert "<dt>Last clone served</dt>" in APP
@@ -361,8 +361,8 @@ def test_cabinet_serve_counters_are_stamped_with_when_and_who():
 
 
 def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
-    # Bootstrap and the bounded visible-page fallback share one cached,
-    # single-flight/backoff helper. Push signals remain the instant path.
+
+
     assert APP.count('this.fetchJSON("/api/repo/forkmesh/forkmesh/mirrors"') == 1
     assert "this.fetchMirrorCatalog({ force: forceMirrors })" in APP
     assert "this.fetchMirrorCatalog({ force })" in APP
@@ -389,8 +389,8 @@ def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
     assert "`PING ${Math.round(pingLatency)} MS" in SCENE
     assert "node?.ownerUser" in SCENE
     assert "node?.nodeId" in SCENE
-    # The cabinet title is the machine's advertised node name, falling back to
-    # the account for publishers that predate the machineName catalog field.
+
+
     assert 'String(node?.machineName || node?.name || "MIRROR")' in SCENE
     assert "machineName: node?.machineName" in SCENE
     assert "nodeDataKey" in SCENE
@@ -407,12 +407,12 @@ def test_world_fetches_the_flagship_mirror_snapshot_once_and_uses_cabinets():
 
 
 def test_status_beacons_are_open_topped_and_alert_colours_sweep():
-    # The world camera looks down on the yard, so the lens top has to stay
-    # uncapped for the status colour to be visible at all.
+
+
     assert "beaconCap" not in SCENE
     assert "beaconCollar" in SCENE
-    # The physical liveness beacon is green whenever the node is reachable;
-    # offline integrity/healing states keep their red/yellow attention sweep.
+
+
     assert 'online\n      ? "#00cc44"' in SCENE
     assert 'statusColor === "#ff0000" || statusColor === "#ffcc00"' in SCENE
     assert "group.userData.beaconSweep = beaconSweep" in SCENE

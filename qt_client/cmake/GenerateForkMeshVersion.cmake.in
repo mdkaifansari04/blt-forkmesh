@@ -1,7 +1,7 @@
-# Generated build-time provenance helper.  It intentionally runs before every
-# target build, not only at CMake configure time: otherwise editing a tracked or
-# untracked source file after configure could leave a binary falsely claiming
-# the last clean commit.
+
+
+
+
 set(FM_SOURCE_DIR [==[@CMAKE_CURRENT_SOURCE_DIR@]==])
 set(FM_TEMPLATE [==[@CMAKE_CURRENT_SOURCE_DIR@/src/ForkMeshVersion.h.in]==])
 set(FM_OUTPUT [==[@CMAKE_CURRENT_BINARY_DIR@/ForkMeshVersion.h]==])
@@ -46,8 +46,8 @@ if(fm_git_root_result EQUAL 0)
         set(FORKMESH_BUILD_COMMIT "${fm_revision}")
     endif()
 elseif(NOT "${FM_OVERRIDE}" STREQUAL "")
-    # Source-archive packagers have no .git directory.  Their trusted packaging
-    # pipeline must supply the manifest's exact build_commit explicitly.
+
+
     set(FORKMESH_BUILD_COMMIT "${FM_OVERRIDE}")
 endif()
 

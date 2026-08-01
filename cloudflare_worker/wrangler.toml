@@ -1,12 +1,12 @@
 name = "forkmesh-relay"
 main = "src/entry.py"
 compatibility_flags = [ "python_workers", "disable_python_external_sdk" ]
-# Keep the Python/Pyodide runtime on Cloudflare's current snapshot. The older
-# 2026-06-14 snapshot could re-enter one scheduled wrapper task while another
-# request wrapper was executing ("Cannot enter into task ...").
+
+
+
 compatibility_date = "2026-07-23"
 
-# Runs automatically before every deploy: applies the D1 schema (idempotent).
+
 [build]
 command = "python3 tools/build_dashboard_assets.py && ./migrate.sh"
 
@@ -25,8 +25,8 @@ run_worker_first = [
   "/.well-known/*",
   "/ap/*",
   "/nodeinfo/*",
-  # The relay is the single production Worker for the World, marketing pages,
-  # static assets, APIs, and realtime chat/presence.
+
+
   "/",
   "/health",
   "/mcp",
@@ -43,9 +43,9 @@ run_worker_first = [
   "!/dashboard/profile/repositories",
   "/index.html",
   "/blog.html",
-  # The blog's RSS feed is built from blog.html at request time, so the
-  # Worker must own it before the assets router treats rss.xml as a post
-  # slug. /rss.xml is the root-level alias (and the _redirects safety net).
+
+
+
   "/blog/rss.xml",
   "/blog/feed.xml",
   "/rss.xml",
@@ -76,9 +76,9 @@ run_worker_first = [
   "/*/*",
   "!/dashboard/partials/*",
   "!/dashboard/js/*",
-  # The precompiled dashboard utility stylesheet is requested by every
-  # dashboard page. Keep it asset-first instead of letting the dashboard
-  # application router turn it into a JSON 404.
+
+
+
   "!/dashboard/tailwind.css",
   "!/assets/*",
   "!/favicon/*",
@@ -89,10 +89,10 @@ run_worker_first = [
 
 [vars]
 NODE_NAME = "forkmesh-mainnode"
-# Canonical public origins are non-secret deployment configuration. Keeping
-# these in the production manifest ensures every deploy supplies the exact
-# callback URI registered with Discord while bot/OAuth credentials remain in
-# Cloudflare's encrypted Worker secret store.
+
+
+
+
 PUBLIC_BASE_URL = "https://forkmesh.com"
 DISCORD_OAUTH_REDIRECT_URI = "https://forkmesh.com/api/integrations/discord/callback"
 NODE_SOLANA_ADDRESS = ""
@@ -104,71 +104,71 @@ REWARD_AMOUNT_LAMPORTS = "100000"
 REWARD_MIN_UPTIME_MS = "1800000"
 REWARD_MIN_CONTRIBUTION_UNITS = "0"
 REWARD_HEALTH_FRESH_MS = "600000"
-# ForkBot's chat-to-issue model. llama-3.3-70b (fp8-fast) is markedly better
-# at intent detection and supports Workers AI JSON mode (response_format
-# json_schema), which _forkbot_run_ai requests first so replies are guaranteed
-# parseable; the code default (FORKBOT_AI_DEFAULT_MODEL) stays llama-3.1-8b as
-# a conservative fallback when this var is unset.
-FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
-# Payout relay mesh (canonical routes /api/relay-mesh/*, legacy alias
-# /api/federation/* — unrelated to the ActivityPub fediverse layer at /ap/*).
-# Leave MAIN_RELAY_URL UNSET on the main relay (forkmesh.com). The relay
-# coordinates public presence and unsigned reward intents; it does not custody
-# signup deposits or load a wallet signing key.
-#
-# On a *federated* relay, set MAIN_RELAY_URL to the main relay's origin, e.g.
-#   MAIN_RELAY_URL = "https://forkmesh.com"
-# Then this relay's eligible nodes can join the main relay's public selection
-# snapshot. Reward signing still happens only in the configured owner's local
-# Qt client.
-# A federated relay auto-generates its own Ed25519 federation identity (stored
-# in D1, table relay_self) — no key to manage. Optionally set RELAY_LABEL and
-# PUBLIC_BASE_URL so it identifies itself when registering. The main operator
-# must then approve it:  UPDATE relays SET status='approved' WHERE label='<label>';
-# (or via the signed admin API /api/accounts/admin-relay-approve). Until approved,
-# its signups and reported nodes do nothing.
-# MAIN_RELAY_URL = ""
-# RELAY_LABEL = ""
-# PUBLIC_BASE_URL is set above for the canonical production deployment. Forks
-# must replace it and DISCORD_OAUTH_REDIRECT_URI with their own HTTPS origin.
-# TREASURY_SOLANA_ADDRESS is the existing one-click deployment name for the
-# public reward destination. COMMUNITY_REWARD_POOL_ADDRESS is an optional
-# explicit modern override; REWARD_SIGNER_ACCOUNT identifies the local signer.
-# The corresponding private key must exist only in the first instance owner's
-# encrypted local Qt vault; never put it in wrangler variables, D1, Worker
-# secrets, logs, or deployment manifests.
-# Admins are set in the database, not here: the users table has an is_admin
-# column. Grant one with: UPDATE users SET is_admin=1 WHERE username='<user>'.
-# DATA_KEY encrypts D1 private row blobs and derives blind indexes. It is
-# INTENTIONALLY NOT here: a value in [vars] is plaintext and committed. It
-# lives in .env.production (gitignored) and is pushed as a Worker secret. It is
-# not a wallet key and the Worker reward paths never use it to encrypt wallet
-# seeds. Historical legacy-custody rows require the documented offline
-# inventory/reconciliation/scrub migration.
-# MIRROR_ROUTER_SIGNING_SEED is a separate Ed25519 infrastructure capability
-# key in .env.production. It signs short-lived read requests sent to registered
-# direct-HTTPS mirror gateways; it is never a user/wallet/repository key and is
-# never written to D1. MIRROR_ROUTER_PUBLIC_KEY is deployed alongside it and is
-# intentionally discoverable at GET /api/mirrors/https so gateway verifiers can
-# be configured without receiving the signing seed.
-# The secret admin dashboard path (ADMIN_PATH) is kept out of this committed
-# file. It lives in .env.production (gitignored) and is pushed as a Worker
-# *secret* by deploy.sh (`pywrangler secret put`) — NOT a plaintext var, which
-# gets wiped on any deploy that doesn't re-declare it. Secrets persist across
-# deploys. See .env.production.example. ADMIN_PATH must start with "admin-" so it
-# is routed to the worker (see run_worker_first above); the dashboard is then
-# served at https://<host>/<ADMIN_PATH>, gated by a forkmesh login whose account
-# carries the is_admin flag (no static HTTP Basic credentials).
 
-# Durable Objects are used only for transient state: encrypted chat/world
-# presence plus the per-owner node event channel (payload-free "something
-# changed" frames). Repository source bytes and control traffic use normal
-# HTTPS; bounded public repository-page JSON snapshots use the state-addressed
-# KV binding below.
-#
-# ForkBot uses Cloudflare Workers AI when available to turn a chat mention into
-# a crisp issue title/body. The Worker falls back to deterministic parsing when
-# the binding is absent in local/dev contexts.
+
+
+
+
+FORKBOT_AI_MODEL = "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 [ai]
 binding = "AI"
 
@@ -204,20 +204,20 @@ class_name = "ForkMeshCronRunner"
 name = "FORKMESH_DISCORD_GATE"
 class_name = "ForkMeshDiscordGate"
 
-# Persistent storage: repo catalog, accounts, and the issue/pull inboxes.
-# Create once with:  uvx --from workers-py pywrangler d1 create forkmesh
-# then paste the printed database_id below.
+
+
+
 [[d1_databases]]
 binding = "DB"
 database_name = "forkmesh"
 database_id = "2d33ad9e-1ab2-4ca0-9075-6105d0e04d11"
 migrations_dir = "migrations"
 
-# Separate D1 database for a "dev" environment (`pywrangler dev --env dev` /
-# `pywrangler deploy --env dev`), kept apart from the production database above
-# so dev work never reads or writes production data.
-# Create once with:  uvx --from workers-py pywrangler d1 create forkmesh-dev
-# then paste the printed database_id below.
+
+
+
+
+
 [[env.dev.d1_databases]]
 binding = "DB"
 database_name = "forkmesh-dev"
@@ -225,8 +225,8 @@ database_id = "REPLACE_WITH_DEV_D1_DATABASE_ID"
 migrations_dir = "migrations"
 
 [env.dev.vars]
-# Development is explicitly isolated on devnet. Production defaults above are
-# mainnet-beta and must never silently fall back to this cluster.
+
+
 COMMUNITY_REWARD_NETWORK = "devnet"
 COMMUNITY_REWARD_RPC_URL = "https://api.devnet.solana.com"
 
@@ -286,7 +286,7 @@ new_sqlite_classes = ["ForkMeshIssues"]
 tag = "v7"
 new_sqlite_classes = ["ForkMeshPulls"]
 
-# Storage moved to D1: drop the Durable Objects that only held persistent data.
+
 [[migrations]]
 tag = "v8"
 deleted_classes = [
@@ -299,46 +299,46 @@ deleted_classes = [
 
 [[migrations]]
 tag = "v9"
-# ForkMeshWorld never uses its SQLite storage; registering it as a SQLite-backed
-# class is still required by Cloudflare before the transient DO can be bound.
+
+
 new_sqlite_classes = ["ForkMeshWorld"]
 
 [[migrations]]
 tag = "v10"
-# Repository bytes and control traffic moved to the direct HTTPS mirror layer.
+
 deleted_classes = ["ForkMeshHost"]
 
 [[migrations]]
 tag = "v11"
-# Office meeting rooms keep only live WebSocket state, but Cloudflare requires
-# every bound Durable Object class to be registered through a migration.
+
+
 new_sqlite_classes = ["ForkMeshOfficeRoom"]
 
 [[migrations]]
 tag = "v12"
-# Per-owner node event channel (unlike the retired per-repo ForkMeshHost
-# tunnel, it never carries repository bytes — see ForkMeshNodes in entry.py).
-# Live sockets are runtime state; SQLite registration is still required.
+
+
+
 new_sqlite_classes = ["ForkMeshNodes"]
 
 [[migrations]]
 tag = "v13"
-# A single alarm-backed object watches successful cron completions. Its alarm
-# runs independently of the Cron Trigger, so it can email administrators when
-# the trigger stops completing and again after the first successful recovery.
+
+
+
 new_sqlite_classes = ["ForkMeshCronWatchdog"]
 
 [[migrations]]
 tag = "v14"
-# Scheduled maintenance runs from one self-rearming alarm. The Cron Trigger only
-# seeds/reconciles it, so a wedged stateless Python scheduled wrapper cannot
-# stop the minute loop until another deployment happens.
+
+
+
 new_sqlite_classes = ["ForkMeshCronRunner"]
 
 [[migrations]]
 tag = "v15"
-# Every bot REST request crosses one fixed-name object. It persists only
-# bounded Discord rate-bucket expiry metadata and never message/channel data.
+
+
 new_sqlite_classes = ["ForkMeshDiscordGate"]
 
 
@@ -346,11 +346,11 @@ new_sqlite_classes = ["ForkMeshDiscordGate"]
 enabled = true
 head_sampling_rate = 0.05
 
-# Keep a representative production sample without spending the Workers Free
-# 200k/day observability-event allowance on routine requests. Logs stay in the
-# Cloudflare dashboard only and invocation logs remain off. Real errors are
-# unaffected: capture_sentry_error persists them through the bounded D1/Sentry
-# path independently of this diagnostic sample.
+
+
+
+
+
 [observability.logs]
 enabled = true
 head_sampling_rate = 0.05

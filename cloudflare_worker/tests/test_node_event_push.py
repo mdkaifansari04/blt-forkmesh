@@ -50,7 +50,7 @@ CONSTANTS = {
     "HOST_COUNT_TIMEOUT_MS",
     "EXPECTED_DEGRADED_HEADERS",
     "EXPECTED_DEGRADED_HEADER",
-    # safe_segment's dependencies from catalog.py
+
     "MAX_REPO_SEGMENT",
     "ROOM_NAME_RE",
 }
@@ -126,7 +126,7 @@ class _Sock:
 
 class _Ctx:
     def __init__(self):
-        self.tagged = []  # (tags, socket)
+        self.tagged = []
 
     def acceptWebSocket(self, server, tags):
         self.tagged.append((list(tags), server))
@@ -216,7 +216,7 @@ def _nodes_binding(idFromName_calls, fetch_calls, fetch_error=None,
     return binding
 
 
-# --- notify_repo_host --------------------------------------------------------
+
 
 def test_notify_pushes_one_payload_free_frame_to_the_owner_channel():
     ids, fetches = [], []
@@ -237,10 +237,10 @@ def test_notify_failure_never_escapes_and_bad_segments_are_dropped():
     env = SimpleNamespace(FORKMESH_NODES=_nodes_binding(
         ids, fetches, fetch_error=RuntimeError("DO unavailable")))
     ns = _load(_base_globals())
-    # A dead Durable Object must not fail the issue/PR write that notified.
+
     asyncio.run(ns["notify_repo_host"](env, "alice", "widgets", "issues"))
     assert ids == ["nodes:alice"]
-    # Invalid segments never even select a Durable Object.
+
     ids.clear()
     asyncio.run(ns["notify_repo_host"](env, "", "widgets", "issues"))
     asyncio.run(ns["notify_repo_host"](env, "alice", "../etc", "issues"))
@@ -248,7 +248,7 @@ def test_notify_failure_never_escapes_and_bad_segments_are_dropped():
 
 
 def test_write_paths_stay_wired_to_the_event_push():
-    # The push is only instant if the submission handlers keep calling it.
+
     entry_only = ENTRY.read_text(encoding="utf-8")
     calls = entry_only.count("notify_repo_host(env, owner, repo,")
     assert calls >= 6, "web submission paths no longer notify the owner node"
@@ -258,8 +258,8 @@ def test_write_paths_stay_wired_to_the_event_push():
 
 
 def test_channel_is_advisory_only():
-    # The DO and its notifier must never touch D1, decrypt anything, or move
-    # request bodies: a compromised relay can at most trigger a signed sync.
+
+
     for name in ("ForkMeshNodes", "notify_repo_host", "node_events_handler"):
         source = _source_of(name)
         assert "d1_" not in source
@@ -270,7 +270,7 @@ def test_channel_is_advisory_only():
     assert "'type': 'event'" in _source_of("ForkMeshNodes")
 
 
-# --- /api/nodes/events routing ----------------------------------------------
+
 
 def _events_request(upgrade="websocket"):
     headers = {"upgrade": upgrade} if upgrade else {}
@@ -281,7 +281,7 @@ def _events_request(upgrade="websocket"):
 
 def test_events_route_requires_websocket_upgrade():
     ns = _load({**_base_globals(),
-                "_authorize_owner": None})  # must not be reached
+                "_authorize_owner": None})
     result = asyncio.run(ns["node_events_handler"](
         SimpleNamespace(), _events_request(upgrade=None)))
     assert result["status"] == 426
@@ -343,12 +343,12 @@ def test_events_route_retries_then_answers_a_retryable_503():
                 "log_durable_object_abort": log_durable_object_abort})
     result = asyncio.run(ns["node_events_handler"](env, _events_request()))
     assert result["status"] == 503
-    assert len(fetches) == 2  # one retry against a fresh stub
+    assert len(fetches) == 2
     assert logged == [("/api/nodes/events", "aborted")]
     assert result["headers"] == ns["EXPECTED_DEGRADED_HEADERS"]
 
 
-# --- ForkMeshNodes Durable Object -------------------------------------------
+
 
 def _make_do(ns):
     do = ns["ForkMeshNodes"](_Ctx(), SimpleNamespace())
@@ -403,7 +403,7 @@ def test_do_ping_refreshes_staleness_clock_and_answers_pong():
     assert json.loads(ws.sent[0]) == {"type": "pong"}
     assert ws.attachment.last == NOW
     assert ws.closed is None
-    # Non-text frames and oversized frames close the socket.
+
     binary = _Sock(SimpleNamespace(id="b", last=NOW))
     asyncio.run(do.webSocketMessage(binary, b"\x00"))
     assert binary.closed == (1003, "text frames only")
@@ -423,7 +423,7 @@ def test_do_rate_limits_chatty_sockets_without_closing_them():
     assert ws.closed is None
 
 
-# --- Deployment contract -----------------------------------------------------
+
 
 def test_wrangler_registers_the_nodes_do_in_both_environments():
     config = tomllib.loads(WRANGLER.read_text(encoding="utf-8"))
@@ -436,7 +436,7 @@ def test_wrangler_registers_the_nodes_do_in_both_environments():
     migrated = [migration for migration in config["migrations"]
                 if "ForkMeshNodes" in migration.get("new_sqlite_classes", [])]
     assert len(migrated) == 1
-    # ForkMeshHost (the retired byte tunnel) must stay deleted; the event
-    # channel is a different class and never re-registers it.
+
+
     assert not any("ForkMeshHost" in migration.get("new_sqlite_classes", [])
                    for migration in config["migrations"][9:])

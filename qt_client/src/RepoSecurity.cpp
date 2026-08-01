@@ -159,7 +159,7 @@ QStringList dependencyManifests(const QList<RepoFile> &files)
     return found;
 }
 
-// ---- Dependency version scanning ----
+
 
 struct DependencyAlert {
     QString name;
@@ -169,8 +169,8 @@ struct DependencyAlert {
     QString reason;
 };
 
-// npm/yarn/pnpm: flag * / latest / open-ended >= without <
-// Returns both alerts and total count of dependencies found
+
+
 static QPair<QList<DependencyAlert>, int> scanPackageJson(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
@@ -212,7 +212,7 @@ static QPair<QList<DependencyAlert>, int> scanPackageJson(const RepoFile &file)
         const QString name = m.captured(1);
         const QString ver = m.captured(2).trimmed();
         if (ver.contains(QLatin1Char(':')))
-            continue; // file:, git+, etc.
+            continue;
         ++totalDeps;
         QString reason;
         if (ver.isEmpty() || ver == QLatin1String("*") || ver == QLatin1String("x"))
@@ -228,7 +228,7 @@ static QPair<QList<DependencyAlert>, int> scanPackageJson(const RepoFile &file)
     return {alerts, totalDeps};
 }
 
-// pip: flag packages without == specifier
+
 static QPair<QList<DependencyAlert>, int> scanRequirementsTxt(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
@@ -272,7 +272,7 @@ static QPair<QList<DependencyAlert>, int> scanRequirementsTxt(const RepoFile &fi
     return {alerts, totalDeps};
 }
 
-// Cargo.toml: flag version = "*"
+
 static QPair<QList<DependencyAlert>, int> scanCargoToml(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
@@ -303,7 +303,7 @@ static QPair<QList<DependencyAlert>, int> scanCargoToml(const RepoFile &file)
     return {alerts, totalDeps};
 }
 
-// pom.xml: flag LATEST, RELEASE, and -SNAPSHOT versions
+
 static QPair<QList<DependencyAlert>, int> scanPomXml(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
@@ -332,7 +332,7 @@ static QPair<QList<DependencyAlert>, int> scanPomXml(const RepoFile &file)
     return {alerts, totalDeps};
 }
 
-// Gemfile: flag gems declared without any version constraint
+
 static QPair<QList<DependencyAlert>, int> scanGemfile(const RepoFile &file)
 {
     QList<DependencyAlert> alerts;
@@ -353,8 +353,8 @@ static QPair<QList<DependencyAlert>, int> scanGemfile(const RepoFile &file)
         ++totalDeps;
         const QString name = m.captured(1);
         const QString rest = m.captured(2).trimmed();
-        // Skip if rest looks like a version specifier (starts with quote containing
-        // a version constraint) rather than a keyword option
+
+
         const bool hasVersionArg =
             !rest.isEmpty() &&
             !rest.startsWith(QLatin1String("require:")) &&
@@ -415,20 +415,20 @@ QString redacted(QString match)
     return match.left(4) + QStringLiteral("...") + match.right(4);
 }
 
-// Inline suppression marker: appending this token as a comment on the same
-// line as an intentional/example credential (e.g. a per-provider test
-// fixture) tells the scanner to skip it. This is what keeps the scanner's
-// own test suite (test_crypto.cpp), which embeds realistic-looking fake
-// keys to exercise each provider pattern, from flagging itself when a
-// ForkMesh checkout scans its own tracked files.
+
+
+
+
+
+
 const QString &secretScanIgnoreMarker()
 {
     static const QString marker = QStringLiteral("forkmesh-secret-scan:ignore-line");
     return marker;
 }
 
-// True if the physical line containing `offset` in `text` carries the
-// suppression marker anywhere on it (e.g. in a trailing "// ..." comment).
+
+
 bool lineHasIgnoreMarker(const QString &text, qsizetype offset)
 {
     qsizetype lineStart = offset;
@@ -447,85 +447,85 @@ struct SecretPattern {
 
 const QList<SecretPattern> &secretPatterns()
 {
-    // High-confidence patterns: specific prefixes + minimum-length constraints
-    // keep the false-positive rate low. All variable-suffix patterns use {n,}
-    // (at-least-n) so a word boundary always lands on a non-word character
-    // rather than in the middle of a long token. Grouped by provider.
+
+
+
+
     static const QList<SecretPattern> kPatterns{
-        // ---- GitHub ----------------------------------------------------------
-        // Classic PATs (ghp_) and OAuth/user/server/refresh tokens
+
+
         {QStringLiteral("GitHub token"),
          QRegularExpression(QStringLiteral("\\bgh[pousr]_[A-Za-z0-9_]{36,}\\b"))},
-        // Fine-grained PATs introduced 2022 (github_pat_ prefix)
+
         {QStringLiteral("GitHub fine-grained PAT"),
          QRegularExpression(QStringLiteral("\\bgithub_pat_[A-Za-z0-9_]{22,}\\b"))},
-        // ---- AWS -------------------------------------------------------------
-        // Long-term IAM access key IDs are always AKIA + 16 uppercase/digit chars
+
+
         {QStringLiteral("AWS access key"),
          QRegularExpression(QStringLiteral("\\bAKIA[0-9A-Z]{16,}\\b"))},
-        // Temporary STS/assumed-role credentials use ASIA prefix
+
         {QStringLiteral("AWS temporary access key"),
          QRegularExpression(QStringLiteral("\\bASIA[0-9A-Z]{16,}\\b"))},
-        // ---- Slack -----------------------------------------------------------
+
         {QStringLiteral("Slack token"),
          QRegularExpression(QStringLiteral("\\bxox[baprs]-[A-Za-z0-9-]{20,}\\b"))},
-        // ---- OpenAI ----------------------------------------------------------
-        // Project keys (sk-proj-) and legacy 48-char base64url keys
+
+
         {QStringLiteral("OpenAI API key"),
          QRegularExpression(QStringLiteral(
              "\\bsk-proj-[A-Za-z0-9_-]{20,}\\b|\\bsk-[A-Za-z0-9]{48,}\\b"))},
-        // ---- Anthropic / Claude API ------------------------------------------
+
         {QStringLiteral("Anthropic API key"),
          QRegularExpression(QStringLiteral("\\bsk-ant-[A-Za-z0-9_-]{20,}\\b"))},
-        // ---- Stripe ----------------------------------------------------------
+
         {QStringLiteral("Stripe secret key"),
          QRegularExpression(QStringLiteral(
              "\\bsk_(live|test)_[A-Za-z0-9]{24,}\\b"))},
         {QStringLiteral("Stripe restricted key"),
          QRegularExpression(QStringLiteral(
              "\\brk_(live|test)_[A-Za-z0-9]{24,}\\b"))},
-        // ---- Google ----------------------------------------------------------
-        // Server/browser API keys — all Google products share the AIza prefix
+
+
         {QStringLiteral("Google API key"),
          QRegularExpression(QStringLiteral("\\bAIza[A-Za-z0-9_-]{35,}\\b"))},
-        // OAuth 2.0 access tokens issued by Google
+
         {QStringLiteral("Google OAuth token"),
          QRegularExpression(QStringLiteral("\\bya29\\.[A-Za-z0-9_-]{20,}\\b"))},
-        // OAuth client secrets from the Google Cloud console
+
         {QStringLiteral("Google OAuth client secret"),
          QRegularExpression(QStringLiteral("\\bGOCSPX-[A-Za-z0-9_-]{28,}\\b"))},
-        // ---- SendGrid --------------------------------------------------------
-        // Format: SG.<22-char key ID>.<43-char secret>
+
+
         {QStringLiteral("SendGrid API key"),
          QRegularExpression(QStringLiteral(
              "\\bSG\\.[A-Za-z0-9_-]{22,}\\.[A-Za-z0-9_-]{43,}\\b"))},
-        // ---- Twilio ----------------------------------------------------------
-        // Auth tokens: SK prefix + 32 lowercase hex chars
+
+
         {QStringLiteral("Twilio auth token"),
          QRegularExpression(QStringLiteral("\\bSK[a-f0-9]{32,}\\b"))},
-        // ---- npm -------------------------------------------------------------
-        // npm automation / publish tokens introduced 2021
+
+
         {QStringLiteral("npm access token"),
          QRegularExpression(QStringLiteral("\\bnpm_[A-Za-z0-9]{36,}\\b"))},
-        // ---- HashiCorp Vault -------------------------------------------------
-        // hvs = service token, hvb = batch token, hvr = recovery token
+
+
         {QStringLiteral("HashiCorp Vault token"),
          QRegularExpression(QStringLiteral(
              "\\bhv[sbr]\\.[A-Za-z0-9]{24,}\\b"))},
-        // ---- Cloudflare (anchored to the well-known env-var names) -----------
+
         {QStringLiteral("Cloudflare API token"),
          QRegularExpression(QStringLiteral(
              "(?:CLOUDFLARE_API_TOKEN|CF_API_TOKEN)"
              "\\s*=\\s*['\"]?([A-Za-z0-9_-]{40,})['\"]?"))},
-        // ---- Private / PEM keys ---------------------------------------------
-        // Covers RSA, EC, PKCS#8, OpenSSH, DSA, and PGP armored blocks
+
+
         {QStringLiteral("PEM private key"),
          QRegularExpression(QStringLiteral(
              "-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |)PRIVATE KEY"
              "(?:-----| BLOCK-----)"))},
-        // ---- Generic high-entropy assignments in config / .env files ---------
-        // The value must be ≥20 non-whitespace chars inside quotes to avoid
-        // flagging short placeholder defaults like password="changeme".
+
+
+
         {QStringLiteral("Secret/token assignment"),
          QRegularExpression(QStringLiteral(
              "(?i)(?:password|passwd|api[_\\-]?(?:key|secret|token)|"
@@ -535,11 +535,11 @@ const QList<SecretPattern> &secretPatterns()
     return kPatterns;
 }
 
-// The generic assignment rule is the only pattern with no provider-specific
-// prefix to anchor it, so it is the one that trips over test fixtures and
-// documentation samples (e.g. the XKCD example password in the browser tests).
-// A value that advertises itself as a placeholder is not a credential worth
-// blocking a push over.
+
+
+
+
+
 bool looksLikePlaceholderValue(const QString &value)
 {
     static const QStringList kMarkers{
@@ -561,7 +561,7 @@ bool looksLikePlaceholderValue(const QString &value)
         QStringLiteral("test-password"),
         QStringLiteral("test_password"),
         QStringLiteral("testpassword"),
-        // Template holes: "${API_TOKEN}", "{{ secret }}", "<your-token-here>".
+
         QStringLiteral("${"),
         QStringLiteral("{{"),
         QStringLiteral("<"),
@@ -571,15 +571,15 @@ bool looksLikePlaceholderValue(const QString &value)
         if (lower.contains(marker))
             return true;
     }
-    // Filler runs like "xxxxxxxxxxxxxxxxxxxx" or "aaaaaaaaaaaaaaaaaaaa".
+
     return !lower.isEmpty() &&
            std::all_of(lower.cbegin(), lower.cend(),
                        [&lower](QChar c) { return c == lower.at(0); });
 }
 
-// True when this match is the generic assignment rule firing on a placeholder
-// value. Provider-prefixed patterns are left alone: an "AKIA…" or "ghp_…" hit
-// is high-confidence regardless of the surrounding words.
+
+
+
 bool isPlaceholderAssignment(const SecretPattern &pattern,
                              const QRegularExpressionMatch &match)
 {
@@ -621,7 +621,7 @@ QList<RepoSecurityFinding> secretFindings(const QList<RepoFile> &files)
     return findings;
 }
 
-// Scan a raw `git diff` output string for secrets introduced in added lines.
+
 QList<RepoSecurityFinding> secretFindingsFromDiff(const QString &diff)
 {
     static const QRegularExpression kHunkRe(
@@ -683,9 +683,9 @@ QList<RepoSecurityFinding> secretFindingsFromDiff(const QString &diff)
             }
             hunkOffset++;
         } else if (line.startsWith(QLatin1Char('-'))) {
-            // removed line — does not advance new-file line counter
+
         } else if (!line.isEmpty()) {
-            hunkOffset++; // context line
+            hunkOffset++;
         }
     }
     return findings;
@@ -757,7 +757,7 @@ RepoSecuritySignal signal(QString key, QString title, RepoSecuritySeverity sever
     return out;
 }
 
-} // namespace
+}
 
 RepoSecuritySnapshot RepoSecurity::scan(const RepoSecurityInput &input)
 {
@@ -1014,7 +1014,7 @@ QList<RepoSecurityFinding> RepoSecurity::findSecretsInPush(
         }
     }
 
-    // Fallback (relay repos / no upstream): scan all tracked text files.
+
     RepoSecurityInput input;
     input.localPath = localPath;
     return secretFindings(trackedTextFiles(input));
@@ -1048,12 +1048,12 @@ RepoSecuritySeverity RepoSecurity::highestSeverity(
     return highest;
 }
 
-// ---- Quality metrics (Quality tab) ----
+
 
 namespace {
 
-// Paths that look like automated-test sources: tests/ trees and
-// test_* / *_test.* / *.spec.* style file names.
+
+
 bool looksLikeTestPath(const QString &path)
 {
     const QString lower = path.toLower();
@@ -1092,7 +1092,7 @@ bool isSourceCodePath(const QString &path)
     return kCodeExtensions.contains(QFileInfo(path).suffix().toLower());
 }
 
-} // namespace
+}
 
 RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
 {
@@ -1101,7 +1101,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
     snapshot.ref = currentRefFor(input);
     snapshot.generatedAtMs = QDateTime::currentMSecsSinceEpoch();
 
-    // --- Checks: health of the local ForkMesh action runs for this repo.
+
     int passedRuns = 0;
     int failedRuns = 0;
     int activeRuns = 0;
@@ -1150,7 +1150,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
         snapshot.findings.append(finding);
     }
 
-    // --- Tracked-file metrics: volume, tests, docs, TODO markers, file sizes.
+
     const QList<RepoFile> files = trackedTextFiles(input);
     static const QRegularExpression kTodoMarker(
         QStringLiteral("\\b(TODO|FIXME|HACK|XXX)\\b"));
@@ -1258,7 +1258,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
         }
     }
 
-    // Code volume card
+
     const int fileCount = files.size();
     const int avgLines = fileCount > 0 ? int(totalLines / fileCount) : 0;
     const int blankPct =
@@ -1284,7 +1284,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
                    : QStringLiteral("No tracked text files found."),
                volumeDetail));
 
-    // Documentation card + findings for missing core docs
+
     const int coreDocs = int(hasReadme) + int(hasLicense) + int(hasContributing) +
                          int(hasChangelog);
     RepoSecuritySeverity docsSeverity = RepoSecuritySeverity::Pass;
@@ -1328,7 +1328,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
         snapshot.findings.append(finding);
     }
 
-    // Tests card
+
     RepoSecuritySeverity testsSeverity = RepoSecuritySeverity::Pass;
     QString testsSummary;
     QString testsDetail;
@@ -1354,7 +1354,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
                                    QStringLiteral("Tests"), testsSeverity,
                                    testsSummary, testsDetail));
 
-    // Maintenance markers card
+
     RepoSecuritySeverity todoSeverity = RepoSecuritySeverity::Pass;
     if (todoCount > 50)
         todoSeverity = RepoSecuritySeverity::Warning;
@@ -1374,7 +1374,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
                    : QString()));
     snapshot.findings.append(todoFindings);
 
-    // File size health card
+
     RepoSecuritySeverity sizeSeverity = RepoSecuritySeverity::Pass;
     for (const RepoSecurityFinding &finding : longFileFindings)
         if (finding.severity == RepoSecuritySeverity::Warning)
@@ -1393,7 +1393,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
                QStringLiteral("Long files are harder to review and merge.")));
     snapshot.findings.append(longFileFindings);
 
-    // Commit activity card (works for both working-tree and bare mirror repos)
+
     const QString gitDir = (!input.localPath.trimmed().isEmpty() &&
                             QDir(input.localPath).exists())
                                ? input.localPath
@@ -1432,7 +1432,7 @@ RepoSecuritySnapshot RepoQuality::scan(const RepoSecurityInput &input)
                    : QStringLiteral("No commits in the last 30 days."),
                activityDetail.trimmed()));
 
-    // Issue hygiene card
+
     int openIssues = 0;
     int closedIssues = 0;
     for (const Issue &issue : input.issues) {

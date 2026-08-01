@@ -1,6 +1,6 @@
--- GitHub/GitLab metadata imports remain separate from the live mirror catalog.
--- ``data`` columns are encrypted by the Worker; private listings and invitation
--- addresses therefore never appear as plaintext in D1.
+
+
+
 
 CREATE TABLE IF NOT EXISTS repository_imports (
     id TEXT PRIMARY KEY,

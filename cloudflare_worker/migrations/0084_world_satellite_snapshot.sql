@@ -1,8 +1,8 @@
--- Last-known-good public CelesTrak VISUAL OMM snapshot for the World sky.
---
--- The fixed CHECK on snapshot_id makes this a single-row cache. Orbital
--- elements are public; this table contains no visitor, location, account,
--- session, repository, or wallet data.
+
+
+
+
+
 CREATE TABLE IF NOT EXISTS world_satellite_snapshot (
     snapshot_id INTEGER PRIMARY KEY CHECK (snapshot_id = 1),
     data TEXT NOT NULL CHECK (

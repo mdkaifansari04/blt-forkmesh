@@ -351,7 +351,7 @@ class Config:
                 raise GatewayError("duplicate repository allowlist entry")
             previous_quota = quotas_by_path.setdefault(target, max_storage_bytes)
             if previous_quota != max_storage_bytes:
-                # Canonical aliases to one repository must not be a quota bypass.
+
                 raise GatewayError("invalid repository allowlist")
             self.repositories[key] = (
                 target,
@@ -620,8 +620,8 @@ def _repository_size_bytes(
                     info = child.stat(follow_symlinks=False)
                     if stat.S_ISLNK(info.st_mode):
                         raise GatewayError("repository storage check failed")
-                    # Logical size prevents sparse files from bypassing a quota;
-                    # allocated size accounts for metadata-heavy object stores.
+
+
                     total += max(
                         int(info.st_size),
                         int(getattr(info, "st_blocks", 0)) * 512,
@@ -685,8 +685,8 @@ def _receive_artifacts(
             visited += 1
             if visited > MAX_STORAGE_SCAN_ENTRIES or monotonic() >= deadline:
                 raise GatewayError("repository transaction scan timed out")
-            # Never follow a repository-created symlink while taking a cleanup
-            # snapshot. A symlinked subtree is not a Git receive artifact.
+
+
             names[:] = [
                 name
                 for name in names
@@ -731,9 +731,9 @@ def _cleanup_interrupted_receive(
             elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
                 target.unlink()
         except OSError:
-            # Cleanup is deliberately best-effort after the entire process
-            # group is gone. A later repository maintenance pass may reap an
-            # artifact that could not be removed safely here.
+
+
+
             continue
 
 
@@ -781,9 +781,9 @@ def _terminate_process_group(
             process.wait(timeout=grace_seconds)
         except subprocess.TimeoutExpired:
             pass
-    # The direct Git process may have exited after SIGTERM while an index-pack
-    # or pack-objects descendant remained alive. Kill the group even when the
-    # leader has already been reaped.
+
+
+
     try:
         os.killpg(process.pid, signal.SIGKILL)
     except ProcessLookupError:
@@ -791,8 +791,8 @@ def _terminate_process_group(
     try:
         process.wait(timeout=grace_seconds)
     except subprocess.TimeoutExpired:
-        # The process group has received SIGKILL. Do not wait forever for an
-        # unrelated init/subreaper bug during a forced SSH command.
+
+
         pass
 
 
@@ -914,8 +914,8 @@ def _serve(config: Config, key_id: str) -> int:
         "credential.helper=",
         "-c",
         "protocol.ext.allow=never",
-        # Never advertise, fetch, create, update, or delete ForkMesh's
-        # owner-only merge recovery refs through an end-user SSH session.
+
+
         "-c",
         "uploadpack.hideRefs=" + INTERNAL_GIT_REF_NAMESPACE,
         "-c",
@@ -956,9 +956,9 @@ def _serve(config: Config, key_id: str) -> int:
                 limits.storage_scan_deadline_seconds,
             )
             remaining_bytes = repository_quota - repository_bytes
-            # Keep a fixed metadata reserve and a second input-sized reserve for
-            # pack indexes/transaction files. Git independently rejects the
-            # stream at this exact receive.maxInputSize boundary.
+
+
+
             receive_limit = min(
                 limits.receive_max_input_bytes,
                 max(0, (remaining_bytes - 1024 * 1024) // 2),
@@ -970,8 +970,8 @@ def _serve(config: Config, key_id: str) -> int:
                     "-c",
                     "receive.maxInputSize=" + str(receive_limit),
                     "-c",
-                    # Keep accepted objects packed so a small compressed input
-                    # cannot unexpectedly expand into many large loose files.
+
+
                     "receive.unpackLimit=0",
                 ]
             )
@@ -1025,8 +1025,8 @@ def _serve(config: Config, key_id: str) -> int:
                 limits.storage_scan_deadline_seconds,
             )
             if final_bytes > repository_quota:
-                # This should be unreachable with the input and metadata
-                # reserve, but never publish an over-quota generation.
+
+
                 raise GatewayError("repository storage quota exceeded")
     if returncode == 0 and receive:
         try:
@@ -1040,10 +1040,10 @@ def _serve(config: Config, key_id: str) -> int:
                 check=False,
             )
         except (OSError, subprocess.SubprocessError):
-            # A committed push must not be rewritten as failed because the
-            # coalescing publication notification was unavailable. The fixed
-            # wrapper persists a marker on Python-level failure, and the
-            # independent reconciliation timer repairs a missing invocation.
+
+
+
+
             pass
     return int(returncode)
 

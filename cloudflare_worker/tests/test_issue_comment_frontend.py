@@ -42,10 +42,10 @@ def _slice(start, end):
 
 
 def test_web_signs_an_issue_comment_over_body_nul_attachments():
-    # An issue comment's signed content is body NUL attachments - NOT the bare
-    # body a discussion or pull comment signs. With no attachments that trailing
-    # NUL is still part of the hashed bytes; dropping it makes every web comment
-    # fail verify_issue_event with bad_signature.
+
+
+
+
     signer = _slice("async function submitWebIssueComment",
                     "  // Mirrors DiscussionStore::contentForSigning")
     assert 'const NUL = String.fromCharCode(0);' in signer
@@ -54,21 +54,21 @@ def test_web_signs_an_issue_comment_over_body_nul_attachments():
         "const canonical = `forkmesh-issue-event-v1\\ncomment\\n${number}\\n"
         "${pub}\\n${ts}\\n${contentHash}`;"
     ) in signer
-    # Both counterparts hash the same shape.
+
     assert ISSUE_EVENT_CONTENT({"type": "comment", "body": "hi"}) == "hi\x00"
     assert 'return ev.body + nul + ev.attachments.join(",");' in ISSUE_STORE
 
 
 def test_web_issue_comment_posts_a_signed_event_against_the_real_number():
-    # Unlike a new issue (signed with the placeholder number 0, renumbered on
-    # drain), a comment binds the issue's own number so applyRemoteEvent staples
-    # it onto that issue. It rides the same /issues inbox endpoint.
+
+
+
     signer = _slice("async function submitWebIssueComment",
                     "  // Mirrors DiscussionStore::contentForSigning")
     assert 'type: "comment",' in signer
     assert 'id: "comment-web-" + ts,' in signer
-    # The Worker re-hashes body + attachments to check the signature, so both
-    # must travel in the event JSON.
+
+
     assert "body: cleanBody," in signer
     assert "attachments: []," in signer
     assert "const payload = { owner: repo.owner, repo: repo.name, number, event };" in signer
@@ -79,7 +79,7 @@ def test_web_issue_comment_posts_a_signed_event_against_the_real_number():
 def test_issue_detail_renders_a_comment_composer():
     form = _slice("function renderIssueCommentForm(number)",
                   "function renderDiscussionReplyForm(number)")
-    # Signing needs an account, same gate as the discussion/pull composers.
+
     assert "if (!state.session?.nodeName)" in form
     assert "to comment on this issue." in form
     assert "data-repo-issue-comment-form" in form
@@ -93,13 +93,13 @@ def test_record_detail_mounts_the_composer_for_numbered_issues_only():
     detail = _slice("function renderRepoRecordDetail(repo, kind, number, parsed)",
                     "async function loadRepoRecordDetail(repo, kind, number)")
     assert "const isIssues = !isPulls && !isDiscussions;" in detail
-    # A pending issue is still in the maintainer's inbox with no number assigned,
-    # so there is nothing for a comment signature to bind to.
+
+
     assert "const issueCommentSection = isIssues && !options.pending" in detail
     assert "? renderIssueCommentForm(number)" in detail
     assert "${issueCommentSection}" in detail
-    # The timeline container is always mounted for issues so an optimistic
-    # comment has somewhere to land, even on an issue with no events yet.
+
+
     assert 'data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}"' in detail
 
 
@@ -115,9 +115,9 @@ def test_issue_comment_handler_appends_optimistically_and_maps_inbox_errors():
                      "async function handleDiscussionReplySubmit(repo, form)")
     assert "const number = Number(form.dataset.repoIssueCommentNumber || 0);" in handler
     assert "await submitWebIssueComment(repo, number, body);" in handler
-    # The comment only reaches the mirror once the owner's node drains the inbox,
-    # so the timeline is appended to locally (same trick the discussion reply
-    # form uses) rather than reloaded.
+
+
+
     assert '[data-repo-issue-timeline]' in handler
     assert "timeline.insertAdjacentHTML(\"beforeend\", renderIssueTimelineComment({" in handler
     assert 'timeline.dataset.empty = "false";' in handler
@@ -126,8 +126,8 @@ def test_issue_comment_handler_appends_optimistically_and_maps_inbox_errors():
 
 
 def test_timeline_comment_row_is_shared_by_history_and_new_comments():
-    # The optimistic row must render identically to a drained one, so both go
-    # through one renderer.
+
+
     row = _slice("function renderIssueTimelineComment(ev)",
                  "  // Full issue activity timeline")
     assert "<span>commented</span>" in row

@@ -14,9 +14,9 @@ class ForkMeshIdentity;
 struct RepoContributionSnapshot {
     QJsonObject payload;
     QByteArray compactPayload;
-    // Bounded paths changed by the advertised head commit. Calculated inside
-    // the existing contribution worker so catalog publication never adds a
-    // synchronous git probe to the GUI thread.
+
+
+
     QStringList changedFiles;
     QString error;
     bool complete = false;
@@ -37,11 +37,11 @@ struct RepoContributionPreparation {
     std::optional<RepoContributionSnapshot> rebuiltSnapshot;
 };
 
-// Bounded, content-free repository facts used by ForkMesh's deterministic
-// native-logo generator. Public publishers can reuse the aggregate extension
-// counts in contributionPayload; private publishers leave it empty and derive
-// the same labels from bounded git tree metadata. No blob/source contents leave
-// the device through this structure.
+
+
+
+
+
 struct RepoLogoMetadataInput {
     QString workTreePath;
     QString mirrorPath;

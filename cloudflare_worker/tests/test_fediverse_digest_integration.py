@@ -149,7 +149,7 @@ def test_scope_queue_is_encrypted_deduplicated_and_bounded():
     assert len(payload["events"]) == fedi_digest.MAX_PENDING_EVENTS
     assert payload["events"][0]["title"] == "Issue 15"
     assert row["next_ts"] == now + fedi_digest.DAY_MS
-    # The D1 row contains only an opaque encrypted token, not public titles.
+
     assert row["data"].startswith("sealed-")
     assert "Issue" not in row["data"]
 

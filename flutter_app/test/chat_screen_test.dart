@@ -112,7 +112,7 @@ void main() {
       final harness = await _RelayHarness.start();
       addTearDown(harness.close);
 
-      // Two messages land in a channel the user is not currently viewing.
+
       await harness.sendPlain({
         'type': 'chat',
         'id': 'unread-1',
@@ -136,7 +136,7 @@ void main() {
       expect(harness.relay.hasUnread('#random'), isTrue);
       expect(harness.relay.unreadCountFor('#random'), 2);
 
-      // Opening the conversation clears just that conversation.
+
       harness.relay.switchConversation('#random');
       expect(harness.relay.totalUnread, 0);
       expect(harness.relay.hasUnread('#random'), isFalse);
@@ -183,7 +183,7 @@ void main() {
       final harness = await _RelayHarness.start();
       addTearDown(harness.close);
 
-      // Same person (ownerUser "ada") connected from two distinct nodes.
+
       await harness.sendPlain({
         'type': 'presence',
         'id': 'p-node-a',
@@ -208,7 +208,7 @@ void main() {
 
       final groups = harness.relay.rosterGroups();
       final ada = groups.where((g) => g.name == 'ada').toList();
-      // Two nodes, one user row — no duplicate.
+
       expect(ada.length, 1);
       expect(ada.first.members.length, 2);
       expect(ada.first.disambiguator, isEmpty);

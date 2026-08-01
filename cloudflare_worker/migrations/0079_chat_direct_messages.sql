@@ -1,6 +1,6 @@
--- One-to-one direct-message conversations.
--- Pair identity and participant identity remain blind indexed, while public
--- usernames are stored only in encrypted data payloads.
+
+
+
 
 CREATE TABLE IF NOT EXISTS chat_direct_conversations (
   conversation_id TEXT PRIMARY KEY,

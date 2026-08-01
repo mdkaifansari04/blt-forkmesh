@@ -19,7 +19,7 @@ BLOG_PATH = ROOT / "public" / "blog.html"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import blog_feed  # noqa: E402
+import blog_feed
 
 
 CONTENT_NS = "{http://purl.org/rss/1.0/modules/content/}encoded"
@@ -50,21 +50,21 @@ def test_index_cards_parse_into_feed_entries():
     assert entry["slug"] == "desktop-node-mirrors"
     assert entry["title"] == "Desktop-node & mirrors"
     assert entry["category"] == "Distributed hosting & more · Feature 01"
-    # Whitespace is flattened and the card's own markup stays out of the text.
+
     assert entry["summary"] == (
         "Actively mirrored repositories live on <b>independent</b> nodes.")
     assert entry["url"] == "https://forkmesh.com/blog/desktop-node-mirrors/"
     assert entry["image"] == (
         "https://forkmesh.com/assets/blog/features/desktop-node-mirrors.webp")
-    # The card's publication day, read as midnight UTC.
+
     assert entry["publishedMs"] == 1783123200000
-    # An undated or malformed card still parses; it just has no date.
+
     undated = blog_feed.parse_blog_index(
         _CARD_HTML.replace(' data-published="2026-07-04"', ""))
     assert undated[0]["publishedMs"] == 0
     assert blog_feed.parse_blog_index(
         _CARD_HTML.replace("2026-07-04", "yesterday"))[0]["publishedMs"] == 0
-    # Missing or unrecognizable markup degrades to an empty list.
+
     assert blog_feed.parse_blog_index(None) == []
     assert blog_feed.parse_blog_index("<html>no cards</html>") == []
     assert blog_feed.build_feed("<html>no cards</html>") == ""
@@ -79,14 +79,14 @@ def test_feed_document_is_well_formed_rss_with_preview_text_and_image():
     assert channel.findtext("link") == "https://forkmesh.com/blog"
     assert channel.findtext("description")
     assert channel.findtext("language") == "en-us"
-    # The self link tells readers (and validators) where the feed lives.
+
     self_link = channel.find(ATOM_LINK)
     assert self_link.get("href") == "https://forkmesh.com/blog/rss.xml"
     assert self_link.get("rel") == "self"
     assert channel.findtext("lastBuildDate") == (
         "Tue, 14 Nov 2023 22:13:20 GMT")
-    # The channel's pubDate is the newest item's: readers (and the world's
-    # blog board) take it as when the blog last posted.
+
+
     assert channel.findtext("pubDate") == "Sat, 04 Jul 2026 00:00:00 GMT"
     items = channel.findall("item")
     assert len(items) == 1
@@ -98,21 +98,21 @@ def test_feed_document_is_well_formed_rss_with_preview_text_and_image():
     assert item.findtext("category") == (
         "Distributed hosting & more · Feature 01")
     assert item.findtext("pubDate") == "Sat, 04 Jul 2026 00:00:00 GMT"
-    # An undated card ships without a pubDate rather than a fake one.
+
     undated = ElementTree.fromstring(blog_feed.build_feed(
         _CARD_HTML.replace(' data-published="2026-07-04"', "")))
     assert undated.find("channel/pubDate") is None
     assert undated.find("channel/item/pubDate") is None
-    # The preview text every reader shows.
+
     assert item.findtext("description") == (
         "Actively mirrored repositories live on <b>independent</b> nodes.")
-    # The artwork, as both the classic enclosure and the media extension.
+
     image = (
         "https://forkmesh.com/assets/blog/features/desktop-node-mirrors.webp")
     assert item.find("enclosure").get("url") == image
     assert item.find("enclosure").get("type") == "image/webp"
     assert item.find(MEDIA_NS).get("url") == image
-    # The rendered body pairs the image with the same preview text.
+
     body = item.findtext(CONTENT_NS)
     assert '<img src="%s"' % image in body
     assert "Actively mirrored repositories" in body
@@ -121,14 +121,14 @@ def test_feed_document_is_well_formed_rss_with_preview_text_and_image():
 
 def test_feed_renders_every_shipped_blog_post():
     entries = blog_feed.parse_blog_index(_source(BLOG_PATH))
-    # The shipped index carries one card per feature post, all with artwork.
+
     assert len(entries) > 40
     assert all(entry["title"] and entry["summary"] for entry in entries)
     assert all(entry["url"].startswith("https://forkmesh.com/blog/")
                for entry in entries)
     assert all(entry["image"].startswith("https://forkmesh.com/assets/blog/")
                for entry in entries)
-    # Every shipped card is dated, so the feed always has a last-post stamp.
+
     assert all(entry["publishedMs"] > 0 for entry in entries)
     channel = ElementTree.fromstring(
         blog_feed.render_rss(entries)).find("channel")
@@ -154,7 +154,7 @@ def test_markup_and_cdata_cannot_escape_the_document():
     hostile = _CARD_HTML.replace(
         "Desktop-node &amp; mirrors", "]]&gt; &lt;script&gt;x&lt;/script&gt;")
     document = blog_feed.build_feed(hostile)
-    # Still parses, and the injected markup survives only as escaped text.
+
     item = ElementTree.fromstring(document).find("channel/item")
     assert item.findtext("title") == "]]> <script>x</script>"
     assert "<script>x</script>" not in document
@@ -169,12 +169,12 @@ def test_worker_owns_the_feed_route_and_serves_it_as_rss():
     idx = entry.index("async def blog_rss_handler")
     handler = entry[idx:idx + 2000]
     assert '"application/rss+xml; charset=utf-8"' in handler
-    # Built from our own static asset, edge-cached, never a blank feed.
+
     assert "edge_cache_match(BLOG_RSS_CACHE_KEY)" in handler
     assert "edge_cache_put(BLOG_RSS_CACHE_KEY" in handler
     assert '"blog_feed_unavailable"' in handler
     assert 'method_name(request) not in ("GET", "HEAD")' in handler
-    # The world banner reads the published document, not a second render.
+
     assert "async def _blog_feed_published_document(env, request):" in entry
     assert "await _blog_feed_published_document(env, request)" in entry
 
@@ -184,8 +184,8 @@ def test_feed_paths_are_worker_first_and_never_fall_into_post_rewrites():
     redirects = _source(ROOT / "public" / "_redirects")
     for path in ("/blog/rss.xml", "/blog/feed.xml", "/rss.xml", "/feed.xml"):
         assert '"%s",' % path in wrangler
-    # The assets router must not turn rss.xml into a /blog/<slug>/ rewrite;
-    # the safety-net rules have to precede the post rules to win.
+
+
     assert redirects.index("/blog/rss.xml /rss.xml 308") < redirects.index(
         "/blog/:slug /blog/:slug/ 308")
 
@@ -194,5 +194,5 @@ def test_blog_page_advertises_the_feed():
     blog = _source(BLOG_PATH)
     assert ('<link rel="alternate" type="application/rss+xml"'
             ' title="ForkMesh Blog" href="/blog/rss.xml">') in blog
-    # And a visible link for readers who do not autodiscover.
+
     assert '<a class="blog1-feed-link" href="/blog/rss.xml">' in blog

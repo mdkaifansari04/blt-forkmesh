@@ -14,12 +14,12 @@ from urllib.parse import unquote
 
 
 ENTRY = Path(__file__).resolve().parents[1] / "src" / "entry.py"
-# clean_string/safe_segment/safe_catalog_record were extracted into catalog.py;
-# parse both sources so the AST loader below still finds them.
+
+
 CATALOG = ENTRY.parent / "catalog.py"
 
-# Names pulled verbatim from entry.py; the rest of the module (JS imports, async
-# crypto) is never executed.
+
+
 _WANT_FUNCS = (
     "clean_string", "clean_int_series", "clean_optional_integer",
     "clean_optional_usage", "clean_logo_metadata", "safe_segment",
@@ -39,7 +39,7 @@ def _load_catalog_helpers():
     namespace = {
         "re": re,
         "unquote": unquote,
-        # Same shapes safe_segment relies on in entry.py.
+
         "ROOM_NAME_RE": re.compile(r"^[A-Za-z0-9._:-]+$"),
         "MAX_REPO_SEGMENT": 80,
     }
@@ -77,9 +77,9 @@ def test_catalog_keeps_only_a_public_solana_address():
 
 
 def test_only_literal_public_exposes_a_repo():
-    # Anything other than the exact string "public" stays undiscoverable. A
-    # malformed publisher may hide a public repo, but it cannot expose private
-    # metadata.
+
+
+
     for value in ("Private", "PRIVATE", "private", "priv", "", "true", 1, None):
         rec = safe_catalog_record(_base(visibility=value))
         assert rec["visibility"] == "private", value
@@ -104,10 +104,10 @@ def test_public_catalog_preserves_signed_pull_count_for_world_consumers():
 
 
 def test_public_catalog_carries_bounded_last_served_stamps_only():
-    # Optional catalog-v2 extension: when the node last served a clone / a
-    # website read, plus the bounded class of client. Absent (never empty) when
-    # unreported so older publishers' signatures still verify, and a raw
-    # User-Agent or a non-positive stamp never enters the public record.
+
+
+
+
     rec = safe_catalog_record(_base(
         visibility="public",
         cloneServedAt="1750000000000",
@@ -251,7 +251,7 @@ def test_partial_or_malformed_host_telemetry_stays_unknown():
     record = safe_catalog_record(_base(
         cpuPercent=-1,
         memUsedBytes=100,
-        # no total: an isolated "used" number is not meaningful
+
         diskUsedBytes=10,
         diskTotalBytes=0,
     ))
@@ -282,7 +282,7 @@ def test_native_logo_metadata_is_bounded_and_source_content_is_dropped():
         "fileStructure": ["path-%02d" % index for index in range(40)],
         "frameworks": ["framework-%02d" % index for index in range(20)],
         "projectCategory": "web application" * 20,
-        # A publisher cannot smuggle source through the logo metadata envelope.
+
         "sourceContent": "PRIVATE_SOURCE_BODY",
     }
     record = safe_catalog_record(_base(
@@ -329,13 +329,13 @@ def test_contribution_transport_reports_oversize_without_truncating_into_valid_d
     assert transport["warning"] == "contribution_payload_too_large"
 
 
-# --- Logged-in viewer: catalog listing token contract -----------------------
-# A logged-in owner additionally receives their own private repos from the
-# catalog GET, gated by a forkmesh-catalog-view-v1 token. The signature is
-# produced by the Qt client and verified by the worker, so the canonical string
-# must match byte-for-byte on both sides; these tests pin that contract (and the
-# owner-scoped SQL) so a one-sided edit can't silently break it.
-# MainWindow.cpp is split into feature TUs (MainWindow*.cpp); scan them all.
+
+
+
+
+
+
+
 QT_SRC = Path(__file__).resolve().parents[2] / "qt_client" / "src"
 ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 QT_TEXT = "\n".join(
@@ -344,24 +344,24 @@ QT_TEXT = "\n".join(
 
 
 def test_listing_token_canonical_matches_across_worker_and_client():
-    # Worker builds:  "forkmesh-catalog-view-v1\n" + viewer + "\n" + str(ts)
+
     assert (
         '"forkmesh-catalog-view-v1\\n" + viewer + "\\n" + str(ts)' in ENTRY_TEXT
     )
-    # Qt client signs the same prefix + viewer + ts (separated by newlines).
+
     assert '"forkmesh-catalog-view-v1\\n" + viewer + "\\n" + ts' in QT_TEXT
 
 
 def test_authenticated_listing_is_scoped_to_the_viewers_own_repos():
-    # The authenticated branch adds the viewer's own private repos and private
-    # repos shared with them; public repos stay visible to everyone.
+
+
     assert "is_private = 0 OR owner_bi = ? OR key_bi IN" in ENTRY_TEXT
     assert "SELECT repo_bi FROM repo_shares WHERE grantee_bi = ?" in ENTRY_TEXT
 
 
 def test_authenticated_listing_is_not_edge_cached():
-    # Per-viewer responses (with private repos) must never touch the shared public
-    # cache, or private repos would leak to anonymous visitors.
+
+
     assert "if authed_viewer or bypass_cache:" in ENTRY_TEXT
     assert 'cache_control="no-store, max-age=0, must-revalidate"' in ENTRY_TEXT
 

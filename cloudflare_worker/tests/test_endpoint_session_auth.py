@@ -99,8 +99,8 @@ class _ApStub:
 
 
 def _harness(accounts, notifications=None, repositories=None):
-    notifications = list(notifications or [])   # {recipient_bi, dedupe_bi, ts, read_at, data}
-    repositories = list(repositories or [])     # {key_bi, data(dict), is_private}
+    notifications = list(notifications or [])
+    repositories = list(repositories or [])
     now = [1_000_000_000]
 
     class _DateStub:
@@ -152,10 +152,10 @@ def _harness(accounts, notifications=None, repositories=None):
         return str((rec or {}).get("name") or "").strip().lower()
 
     async def _account_alert_signed_session(_env, _request):
-        # None of these requests carry the desktop's account-key signature, so
-        # the alert inbox's signed fallback resolves to nobody and the session
-        # gate below is what decides. The proof itself is pinned separately, in
-        # test_account_alert_signed_inbox.py.
+
+
+
+
         return ""
 
     async def decrypt_row(_env, stored, key=None):
@@ -250,9 +250,9 @@ def _harness(accounts, notifications=None, repositories=None):
         "MAX_NOTIFICATIONS_FETCH": 200,
         "ADMIN_SESSION_TTL_MS": 12 * 60 * 60 * 1000,
         "MAX_REPO_SEGMENT": 80,
-        # Repo branding (fediverse actor images) rides through repo_about;
-        # the auth tests never upload one, so the validator is a pass-through
-        # and the follower Update broadcast is a no-op.
+
+
+
         "MAX_REPO_LOGO_BYTES": 256 * 1024,
         "MAX_REPO_BANNER_BYTES": 1024 * 1024,
         "clean_media_png": lambda value, max_bytes: ("", ""),
@@ -276,7 +276,7 @@ def _bearer(ns, env, name):
     return {"authorization": "Bearer " + ns["_account_session_token"](env, name)}
 
 
-# --- notifications GET -------------------------------------------------------
+
 
 def test_notifications_get_requires_matching_session():
     accounts = {"alice": _user(), "mallory": _user()}
@@ -286,18 +286,18 @@ def test_notifications_get_requires_matching_session():
     env = object()
     url = "https://forkmesh.test/api/notifications?node=alice"
 
-    # No session token -> 401, nothing leaked.
+
     anon = asyncio.run(ns["notifications_handler"](env, _Request("GET", url)))
     assert anon["status"] == 401
     assert "secret alert" not in str(anon["data"])
 
-    # Someone else's valid session -> 401, nothing leaked.
+
     other = asyncio.run(ns["notifications_handler"](
         env, _Request("GET", url, headers=_bearer(ns, env, "mallory"))))
     assert other["status"] == 401
     assert "secret alert" not in str(other["data"])
 
-    # The owner's own session -> the inbox.
+
     owner = asyncio.run(ns["notifications_handler"](
         env, _Request("GET", url, headers=_bearer(ns, env, "alice"))))
     assert owner["status"] == 200
@@ -305,7 +305,7 @@ def test_notifications_get_requires_matching_session():
     assert owner["data"]["notifications"][0]["title"] == "secret alert"
 
 
-# --- notifications POST (mark read) ------------------------------------------
+
 
 def test_notifications_post_mark_read_requires_matching_session():
     accounts = {"alice": _user(), "mallory": _user()}
@@ -315,14 +315,14 @@ def test_notifications_post_mark_read_requires_matching_session():
     env = object()
     url = "https://forkmesh.test/api/notifications"
 
-    # Attacker (no/other session) cannot mark the victim's notifications read.
+
     griefed = asyncio.run(ns["notifications_handler"](
         env, _Request("POST", url, body={"node": "alice", "all": True},
                       headers=_bearer(ns, env, "mallory"))))
     assert griefed["status"] == 401
     assert notes[0]["read_at"] == 0
 
-    # The owner can, via a sessionToken in the body.
+
     ok = asyncio.run(ns["notifications_handler"](
         env, _Request("POST", url, body={
             "node": "alice", "all": True,
@@ -332,7 +332,7 @@ def test_notifications_post_mark_read_requires_matching_session():
     assert notes[0]["read_at"] == 1_000_000_000
 
 
-# --- poll digest -------------------------------------------------------------
+
 
 def test_poll_digest_omits_account_data_without_matching_session():
     accounts = {"alice": _user(), "mallory": _user()}
@@ -356,7 +356,7 @@ def test_poll_digest_omits_account_data_without_matching_session():
     assert "profile" in mine["data"]
 
 
-# --- repo about --------------------------------------------------------------
+
 
 def _repo_row(owner, name, private=False):
     return {"key_bi": "bi:%s/%s" % (owner, name),
@@ -374,7 +374,7 @@ def test_repo_about_requires_owner_session_and_hides_record():
     env = object()
     url = "https://forkmesh.test/api/repo/alice/proj/about"
 
-    # Self-asserted ownerAccount, no session -> rejected, description unchanged.
+
     spoof = asyncio.run(ns["repo_about_handler"](
         env, _Request("POST", url, body={
             "ownerAccount": "alice", "description": "defaced"}),
@@ -382,7 +382,7 @@ def test_repo_about_requires_owner_session_and_hides_record():
     assert spoof["status"] == 403
     assert repos[0]["data"].get("description") != "defaced"
 
-    # A non-owner session cannot edit either.
+
     other = asyncio.run(ns["repo_about_handler"](
         env, _Request("POST", url, body={
             "description": "defaced",
@@ -391,7 +391,7 @@ def test_repo_about_requires_owner_session_and_hides_record():
         "alice", "proj"))
     assert other["status"] == 403
 
-    # The owner can, and the response never echoes the full private record.
+
     ok = asyncio.run(ns["repo_about_handler"](
         env, _Request("POST", url, body={
             "description": "a real description",
@@ -406,11 +406,11 @@ def test_repo_about_requires_owner_session_and_hides_record():
 
 
 def test_repo_about_allows_user_who_owns_the_node():
-    # A repo's owner is a NODE account ("laptop"); the human logs in with a
-    # separate USER account ("alice") that owns that node (adhoc #53). The
-    # owning user must be able to edit About even though their name != owner.
+
+
+
     accounts = {
-        # Link recorded on BOTH sides, as _link_node_to_user writes it.
+
         "alice": _user(),
         "laptop": {"pubkey": "PK", "status": "active", "owner": "alice"},
         "stranger": _user(),
@@ -421,7 +421,7 @@ def test_repo_about_allows_user_who_owns_the_node():
     env = object()
     url = "https://forkmesh.test/api/repo/laptop/proj/about"
 
-    # The owning user's session is authorized.
+
     ok = asyncio.run(ns["repo_about_handler"](
         env, _Request("POST", url, body={
             "description": "owned via node link",
@@ -430,7 +430,7 @@ def test_repo_about_allows_user_who_owns_the_node():
     assert ok["status"] == 200
     assert repos[0]["data"]["description"] == "owned via node link"
 
-    # An unrelated user still cannot.
+
     nope = asyncio.run(ns["repo_about_handler"](
         env, _Request("POST", url, body={
             "description": "defaced",

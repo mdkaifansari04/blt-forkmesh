@@ -43,7 +43,7 @@ QString lifecycleFor(const QJsonObject &item)
     return QStringLiteral("active");
 }
 
-} // namespace
+}
 
 FederatedThreadView::FederatedThreadView(QNetworkAccessManager *network,
                                          QWidget *parent)

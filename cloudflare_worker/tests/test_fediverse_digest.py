@@ -8,7 +8,7 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-import fediverse_digest as digest  # noqa: E402
+import fediverse_digest as digest
 
 
 def _event(title="Release 1.0", timestamp=1_000, **extra):

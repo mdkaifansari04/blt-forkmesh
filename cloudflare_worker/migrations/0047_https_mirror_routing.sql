@@ -1,6 +1,6 @@
--- Public direct-HTTPS mirror discovery and signed forkmesh/forkmesh health.
--- Rows contain routing/attestation metadata only, never repository bytes,
--- private repository names, wallet material, or node private keys.
+
+
+
 
 CREATE TABLE IF NOT EXISTS mirror_https_endpoints (
     node_bi TEXT PRIMARY KEY,

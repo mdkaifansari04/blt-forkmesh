@@ -49,7 +49,7 @@ try:
         Ed25519PrivateKey,
         Ed25519PublicKey,
     )
-except ImportError as exc:  # pragma: no cover - exercised on minimal hosts
+except ImportError as exc:
     raise SystemExit(
         "headless mirror identity: the cryptography package is required"
     ) from exc
@@ -88,8 +88,8 @@ PUBLIC_STATE_FIELDS = frozenset(
         "allowedOrigins",
     }
 )
-# Bounded client classes a node may report for its last served clone / website
-# read. Raw User-Agent strings are never published (see mirror_gateway.py).
+
+
 SERVE_AGENT_CLASSES = frozenset(
     {
         "forkmesh-node",
@@ -346,8 +346,8 @@ def _require_protocol(
 
 
 def _safe_environment() -> dict[str, str]:
-    # Whitelist rather than trying to enumerate every cloud, package-manager,
-    # SSH-agent, CI, and application credential variable a host may carry.
+
+
     return {
         "PATH": os.environ.get("PATH", "/usr/local/bin:/usr/bin:/bin"),
         "LANG": "C",
@@ -1011,7 +1011,7 @@ def _validate_manifest_payload(manifest: Mapping[str, Any], state: PublicState) 
     assert hostname is not None
     edge = manifest.get("edge")
     if edge is None:
-        # Legacy Worker-route deployment manifest.
+
         _expect_fields(
             dns,
             {"recordName", "proxied", "workerRoute"},
@@ -1053,8 +1053,8 @@ def _validate_manifest_payload(manifest: Mapping[str, Any], state: PublicState) 
         ):
             raise HelperError("Cloudflare Tunnel manifest is invalid")
     elif edge.get("kind") == "cloudflare-proxied-origin":
-        # No raw origin address is signed or returned.  The operator must
-        # separately enforce a Cloudflare-only origin firewall.
+
+
         _expect_fields(
             edge,
             {"provider", "kind", "originExposure"},
@@ -1181,8 +1181,8 @@ def _archive_member_path(member: tarfile.TarInfo) -> tuple[str, ...]:
         raise HelperError("repository archive contains an unsafe path")
     if member.isdir() or member.isreg():
         return parts
-    # This rejects symlinks, hard links, devices, FIFOs, sockets, and unknown
-    # extension entries before anything is created on disk.
+
+
     raise HelperError("repository archive contains a prohibited entry type")
 
 
@@ -1435,10 +1435,10 @@ def _ensure_bare_repository(
         not stat.S_ISDIR(info.st_mode)
         or stat.S_ISLNK(info.st_mode)
         or info.st_uid != os.geteuid()
-        # SSH Git hosts commonly use a repository-sharing group.  The helper
-        # snapshots through Git into a fresh owner-only clone before archiving,
-        # so group write on the source is an intentional repository permission;
-        # world-writable repository storage remains prohibited.
+
+
+
+
         or stat.S_IMODE(info.st_mode) & stat.S_IWOTH
     ):
         raise HelperError("bare repository storage is unsafe")
@@ -1916,14 +1916,14 @@ def _normalized_public_catalog(
         "clonesServed": _clean_string(source.get("clonesServed", ""), 12),
         "websiteServed": _clean_string(source.get("websiteServed", ""), 12),
         "maintainer": node_public_key,
-        # The legacy field is retained in the Worker-normalized v2 shape but is
-        # no longer an independent authorization signature.
+
+
         "signature": "",
         "stateHash": state_hash,
         "stateSig": "",
     }
-    # Preserve absence for older catalog-v2 publishers. New headless mirrors
-    # send both fields, and both are covered by the catalog signature.
+
+
     if actions_fields:
         record["actionsEnabled"] = actions_enabled
         record["actionsState"] = actions_state
@@ -1936,9 +1936,9 @@ def _normalized_public_catalog(
     if disk_total is not None:
         record["diskUsedBytes"] = disk_used
         record["diskTotalBytes"] = disk_total
-    # Subject / author / date of the published head commit. Optional extension
-    # fields, kept absent (never empty) exactly as the Worker normalizes them,
-    # so an older publisher's catalog-v2 signature still verifies.
+
+
+
     commit_subject = _clean_string(source.get("commitSubject", ""), 120)
     if commit_subject:
         record["commitSubject"] = commit_subject
@@ -1948,9 +1948,9 @@ def _normalized_public_catalog(
     commit_at = _clean_string(source.get("commitAt", ""), 16)
     if commit_at:
         record["commitAt"] = commit_at
-    # When this node last served a clone / a website read, and the class of
-    # client it served. Same optional-extension rule: absent when the gateway
-    # never recorded one, so older publishers' signatures still verify.
+
+
+
     for field in ("cloneServedAt", "websiteServedAt"):
         served_at = _clean_string(source.get(field, ""), 16)
         if served_at.isdigit() and int(served_at) > 0:
@@ -1990,8 +1990,8 @@ def sign_catalog_v2(
         + record["updatedAt"]
     ).encode("utf-8")
     record["stateSig"] = _b64url_encode(key.sign(state_payload))
-    # Match the Worker catalog-v2 verifier exactly. ``signature`` is the
-    # retained legacy-v1 field and is not part of the v2 signed record.
+
+
     signed_record = dict(record)
     signed_record.pop("signature", None)
     record_hash = hashlib.sha256(
@@ -2131,16 +2131,16 @@ def main(argv: list[str] | None = None) -> int:
         _write_response(response)
         return 0
     except HelperError as exc:
-        # Messages are fixed policy errors and never interpolate request data,
-        # paths, subprocess output, or key material.
+
+
         print(f"headless mirror identity: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
         print("headless mirror identity: interrupted", file=sys.stderr)
         return 130
     except Exception:
-        # Never let an unexpected library or filesystem exception print a
-        # traceback containing local paths or process details in service logs.
+
+
         print("headless mirror identity: internal operation failed", file=sys.stderr)
         return 3
 

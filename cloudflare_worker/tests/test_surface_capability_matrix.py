@@ -41,8 +41,8 @@ def test_capability_matrix_has_no_implicit_or_missing_surface():
         assert str(item["canonicalPath"]).startswith("/")
         for surface in SURFACES:
             assert item[surface] in ALLOWED_MODES
-        # Every product concept is represented in the World directly, as
-        # authorized read-only state, or as an explicit safe portal.
+
+
         assert item["world"] in {"native", "read-only", "deep-link"}
 
 
