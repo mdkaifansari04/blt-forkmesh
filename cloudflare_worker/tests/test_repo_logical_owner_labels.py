@@ -149,6 +149,69 @@ console.log("ok");
     assert output.strip() == "ok"
 
 
+def test_repository_links_follow_the_organization_label():
+    # adhoc #132: a card that reads "forkmesh/forkmesh" must also navigate
+    # there. Organization aliases are routable (org_alias_rewrite maps
+    # /<org>/<repo> and /api/repo/<org>/<repo>/... onto the serving node), so
+    # the link can carry the label. A user identity has no such rewrite, so
+    # those links stay on the physical /<node>/<repo> route.
+    output = _run(
+        "state, groupRepositories, groupLinkUrl, repoLinkUrl,"
+        " homeFeedRepositoryCard",
+        """
+const {
+  state,
+  groupRepositories,
+  groupLinkUrl,
+  repoLinkUrl,
+  homeFeedRepositoryCard,
+} = global.__dashboardExports;
+const aliased = [
+  {
+    owner: "mirror6",
+    name: "forkmesh",
+    source: "local-node",
+    rootCommit: "abc",
+    liveHost: true,
+    lastSync: 3000,
+    ownerKind: "user",
+    logicalOwner: "lucianoms",
+    logicalOwners: [
+      { kind: "user", owner: "lucianoms" },
+      { kind: "organization", owner: "forkmesh" },
+    ],
+  },
+];
+state.repositories = aliased;
+const group = groupRepositories(aliased)[0];
+assert.equal(groupLinkUrl(group), "/forkmesh/forkmesh");
+assert.equal(groupLinkUrl(group, "blob", "README.md"), "/forkmesh/forkmesh/blob/README.md");
+assert.equal(repoLinkUrl(aliased[0]), "/forkmesh/forkmesh");
+const card = homeFeedRepositoryCard(group);
+assert(card.includes('href="/forkmesh/forkmesh"'));
+assert(!card.includes('href="/mirror6/forkmesh"'));
+// User identities are labels only — no worker rewrite backs /<user>/<repo>.
+const userOwned = [
+  {
+    owner: "mirror6",
+    name: "sidecar",
+    source: "local-node",
+    rootCommit: "def",
+    lastSync: 3000,
+    ownerKind: "user",
+    logicalOwner: "lucianoms",
+    logicalOwners: [{ kind: "user", owner: "lucianoms" }],
+  },
+];
+state.repositories = userOwned;
+assert.equal(groupLinkUrl(groupRepositories(userOwned)[0]), "/mirror6/sidecar");
+assert.equal(repoLinkUrl(userOwned[0]), "/mirror6/sidecar");
+console.log("ok");
+""",
+    )
+    assert output.strip() == "ok"
+
+
 def test_repository_filter_matches_the_logical_owner():
     matcher = DASHBOARD_JS[
         DASHBOARD_JS.index("function repositoryMatchesQuery(repo, query)")

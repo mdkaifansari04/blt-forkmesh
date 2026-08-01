@@ -545,14 +545,15 @@
   }
 
   // Opening a repo from any list/search control is a real page navigation now
-  // (repo pages are their own documents). Prefer the canonical origin's clean
-  // URL when the catalog already resolved the key (alias groups), falling back
-  // to the raw owner/name path — the repo page resolves it again on boot.
+  // (repo pages are their own documents). Prefer the organization address the
+  // list already displays when the catalog resolved the key (alias groups),
+  // falling back to the raw owner/name path — the repo page resolves it again
+  // on boot.
   function openRepoPage(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return;
     const repo = findRepository(wanted);
-    const url = repo ? repoPathUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
+    const url = repo ? repoLinkUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
     closeMobileDrawers();
     location.assign(url);
   }

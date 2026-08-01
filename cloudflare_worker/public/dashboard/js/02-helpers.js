@@ -421,7 +421,7 @@
 
   // Mirrors of one logical repository are grouped by root commit, so an
   // organization alias registered on any member names the whole group.
-  function groupDisplayOwner(group) {
+  function groupOrganizationAlias(group) {
     const origin = sourceOfTruth(group);
     const name = String(origin?.name || "").trim().toLowerCase();
     for (const member of [origin, ...(group?.members || [])]) {
@@ -430,7 +430,11 @@
         .find((value) => value.kind === "organization");
       if (organization) return organization.owner;
     }
-    return repoDisplayOwner(origin);
+    return "";
+  }
+
+  function groupDisplayOwner(group) {
+    return groupOrganizationAlias(group) || repoDisplayOwner(sourceOfTruth(group));
   }
 
   function normalizeRepoSegment(value) {
@@ -600,6 +604,27 @@
     const name = encodeURIComponent(repo.name || "");
     const suffix = path ? `/${kind}/${path.split("/").map(encodeURIComponent).join("/")}` : "";
     return `/${owner}/${name}${suffix}`;
+  }
+
+  // A list that reads "forkmesh/forkmesh" must also link there, not to the
+  // machine that happens to publish the bytes (adhoc #132). Organization
+  // aliases are real addresses: the Worker rewrites /<org>/<repo> and every
+  // /api/repo/<org>/<repo>/... path onto the serving node before routing, and
+  // a direct visit resolves the alias again on the repo page. User identities
+  // have no such rewrite, so a repo whose logical owner is only a user keeps
+  // the physical /<node>/<repo> route.
+  function repoLinkUrl(repo, kind = "tree", path = "") {
+    const organization = repoLogicalOwners(repo)
+      .find((value) => value.kind === "organization");
+    return repoPathUrl(
+      organization ? { ...repo, owner: organization.owner } : repo, kind, path);
+  }
+
+  function groupLinkUrl(group, kind = "tree", path = "") {
+    const origin = sourceOfTruth(group);
+    const organization = groupOrganizationAlias(group);
+    return repoPathUrl(
+      organization ? { ...origin, owner: organization } : origin, kind, path);
   }
 
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
