@@ -19,7 +19,9 @@ def _generator():
 
 def test_worker_footprint_asset_matches_current_source_tree():
     generator = _generator()
-    assert generator.OUTPUT.read_text(encoding="utf-8") == generator.rendered()
+    assert not generator.needs_refresh(), (
+        "world/worker-footprint.js drifted past the refresh deadband — "
+        "run tools/build_worker_footprint.py")
     data = generator.footprint()
     assert data["attachedPythonBytes"] > data["estimatedStartupSourceBytes"]
     assert data["onDemandSourceBytes"] > 100_000
@@ -62,6 +64,33 @@ def test_worker_footprint_asset_matches_current_source_tree():
         "maxAssetBytes": 25 * 1024 * 1024,
         "initialWorldModuleBytesSoft": 2_500_000,
     }
+
+
+def test_ordinary_source_edits_do_not_rewrite_the_committed_chart():
+    """wrangler.toml rebuilds this on every deploy; it must stay put."""
+    generator = _generator()
+    nudged = generator.footprint()
+    nudged["attachedPythonBytes"] += 6_000
+    nudged["estimatedStartupSourceBytes"] += 6_000
+    nudged["staticAssetCount"] += 1
+    nudged["modules"][0]["bytes"] += 6_000
+    nudged["components"][0]["bytes"] += 6_000
+    assert not generator.needs_refresh(nudged)
+    assert generator.build() is False
+    assert generator.committed() is not None
+
+
+def test_material_growth_still_refreshes_the_committed_chart():
+    generator = _generator()
+    doubled = generator.footprint()
+    doubled["attachedPythonBytes"] *= 2
+    assert generator.needs_refresh(doubled)
+    renamed = generator.footprint()
+    renamed["modules"][0]["name"] = "brand_new_module.py"
+    assert generator.needs_refresh(renamed)
+    rebar = generator.footprint()
+    rebar["components"][0]["bytes"] *= 2
+    assert generator.needs_refresh(rebar)
 
 
 def test_provider_import_module_is_loaded_only_when_its_routes_need_it():

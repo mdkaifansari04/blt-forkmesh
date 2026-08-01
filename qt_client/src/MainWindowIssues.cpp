@@ -8570,10 +8570,18 @@ void MainWindow::updateHomeStats()
 {
     // The quest board is gone; this now just persists accumulated uptime. The
     // per-node stats live inline in the repositories panel (see selfNodeStats).
+    // Persist at most every 5 minutes: QSettings().setValue rewrites the whole
+    // settings file synchronously, and doing that on the once-a-minute refresh
+    // timer showed up as >500 ms GUI stalls when the disk was busy. Disconnects
+    // and quits persist the exact total on their own paths, so the throttle
+    // only risks a few minutes of uptime credit on a hard kill.
     if (m_connectedAtMs > 0) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        const qint64 totalMs = m_totalConnectionMs + (now - m_connectedAtMs);
-        QSettings().setValue(kConnectionTotalSetting, totalMs);
+        if (now - m_uptimePersistedAtMs >= 5 * 60 * 1000) {
+            m_uptimePersistedAtMs = now;
+            const qint64 totalMs = m_totalConnectionMs + (now - m_connectedAtMs);
+            QSettings().setValue(kConnectionTotalSetting, totalMs);
+        }
     }
 }
 
