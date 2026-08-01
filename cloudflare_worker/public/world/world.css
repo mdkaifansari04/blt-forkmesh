@@ -6605,6 +6605,39 @@ forkmesh-world.world-office-active .world-quick-dock {
   color: var(--world-danger);
 }
 
+/* The frame-history sparkline is plain text so it survives screenshots and
+   copy/paste; block glyphs need the mono face and a little tracking. */
+.world-debug-live .world-debug-sparkline {
+  display: inline-block;
+  vertical-align: bottom;
+  font-family: "ForkMesh Mono", monospace;
+  letter-spacing: 1px;
+  color: var(--world-mint);
+}
+
+.world-debug-actions {
+  margin-top: 10px;
+}
+
+.world-debug-actions button {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--world-line);
+  background: #0a1915;
+  color: var(--world-copy);
+  cursor: pointer;
+  font: 0.62rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.world-debug-actions button:hover,
+.world-debug-actions button:focus-visible {
+  background: #12332a;
+  color: var(--world-mint);
+  outline: none;
+}
+
 /* Elements tab: one switch per registered world element, grouped by kind. */
 .world-element-master {
   display: grid;
