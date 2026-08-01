@@ -775,6 +775,104 @@ def notification_payload(kind, title, body="", repo="", href="", actor="",
     }
 
 
+# Organization task activity, in ping copy. The board itself is private to the
+# organization, so the ping is the only place most members read the event: it
+# has to answer who did it, what they did it to, which organization it belongs
+# to and where the task sits, rather than the bare "Organization task activity"
+# line it used to carry (adhoc #147).
+ORGANIZATION_TASK_ACTION_COPY = {
+    "created": "created",
+    "started": "started",
+    "stopped": "stopped",
+    "completed": "completed",
+    "returned": "returned",
+    "qa requested": "sent to QA",
+    "deleted": "deleted",
+}
+ORGANIZATION_TASK_STATUS_COPY = {
+    "idle": "not started",
+    "active": "in progress",
+    "done": "done",
+}
+
+
+def organization_task_ping_copy(org, actor, action, task):
+    """Title/body/meta for one organization task activity ping."""
+    task = task if isinstance(task, dict) else {}
+    org_name = clean_string(org, MAX_NODE_NAME).strip().lower()
+    actor_name = clean_string(actor or "", MAX_NODE_NAME).strip().lower()
+    who = ("@" + actor_name) if actor_name else "a team member"
+    action_slug = clean_string(
+        action or "", 32).strip().lower().replace("_", " ")
+    verb = ORGANIZATION_TASK_ACTION_COPY.get(
+        action_slug, action_slug or "updated")
+    task_title = clean_string(
+        task.get("title") or "", 160).strip() or "Organization task"
+    department = clean_string(
+        task.get("department") or "", 64).strip().lower()
+    team = clean_string(task.get("team") or "", 64).strip().lower()
+    status = clean_string(task.get("status") or "", 32).strip().lower()
+    assignee_kind = clean_string(
+        task.get("assigneeKind") or "", 32).strip().lower()
+    assignee = clean_string(task.get("assignee") or "", 64).strip().lower()
+    repository = clean_string(task.get("repository") or "", 201).strip()
+    task_id = clean_string(str(task.get("id") or ""), 80)
+    try:
+        priority = int(task.get("priority"))
+    except (TypeError, ValueError):
+        priority = 0
+
+    where = (" in " + org_name) if org_name else ""
+    # The task name is the only part of the title that can run long, so it is
+    # the part trimmed to keep who/what/which-org inside the 160-char cap
+    # notification_payload() enforces.
+    room = 160 - len("%s %s \"\"%s" % (who, verb, where))
+    short_title = (
+        task_title if len(task_title) <= max(8, room)
+        else task_title[:max(8, room) - 1].rstrip() + "…")
+    title = "%s %s \"%s\"%s" % (who, verb, short_title, where)
+    lead = (
+        "%s %s \"%s\" in the %s organization" % (who, verb, task_title, org_name)
+        if org_name
+        else "%s %s \"%s\" in your organization" % (who, verb, task_title))
+    details = [lead]
+    placement = " / ".join(
+        [part for part in (department, team) if part])
+    if placement:
+        details.append(placement)
+    if priority > 0:
+        details.append("priority %d" % priority)
+    if assignee_kind == "agent":
+        details.append("assigned to an agent")
+    elif assignee:
+        details.append("assigned to @" + assignee)
+    elif assignee_kind == "unassigned":
+        details.append("unassigned")
+    if status:
+        details.append(
+            "status " + ORGANIZATION_TASK_STATUS_COPY.get(status, status))
+    if repository:
+        details.append("repo " + repository)
+    return {
+        "title": title,
+        "body": " · ".join(details),
+        "meta": {
+            "organization": org_name,
+            "actor": actor_name,
+            "action": action_slug,
+            "taskId": task_id,
+            "taskTitle": task_title,
+            "department": department,
+            "team": team,
+            "priority": priority,
+            "status": status,
+            "assignee": "agent" if assignee_kind == "agent" else assignee,
+            "assigneeKind": assignee_kind,
+            "repository": repository,
+        },
+    }
+
+
 def notification_email_preferences(rec):
     prefs = dict(NOTIFICATION_EMAIL_DEFAULTS)
     raw = rec.get("notification_preferences") if isinstance(rec, dict) else {}
@@ -8483,23 +8581,23 @@ class _OfficeMarketingTasksRuntime:
             str(org_bi or ""),
         )
         safe_actor = clean_string(
-            actor or "a team member", MAX_NODE_NAME
+            actor or "", MAX_NODE_NAME
         ).strip().lower()
-        title = clean_string(
-            (task or {}).get("title") or "Organization task", 160
-        ).strip()
         safe_action = clean_string(
             action or "updated", 32
         ).strip().lower().replace("_", " ")
-        action_copy = {
-            "created": "created",
-            "started": "started",
-            "stopped": "stopped",
-            "completed": "completed",
-            "returned": "returned",
-            "qa requested": "sent to QA",
-            "deleted": "deleted",
-        }.get(safe_action, safe_action or "updated")
+        # The org name is what makes the ping legible outside the board, so it
+        # is read back from the row this org_bi indexes rather than left out.
+        org_row = await d1_first(
+            self.env, "SELECT name FROM orgs WHERE org_bi=?", str(org_bi or ""))
+        record = dict(task if isinstance(task, dict) else {})
+        record.setdefault("id", str(task_id or ""))
+        copy = organization_task_ping_copy(
+            (org_row or {}).get("name") or "",
+            safe_actor,
+            safe_action,
+            record,
+        )
         for row in rows or []:
             recipient = clean_string(
                 row.get("name") or "", MAX_NODE_NAME
@@ -8510,25 +8608,20 @@ class _OfficeMarketingTasksRuntime:
                 self.env,
                 recipient,
                 "organization_task_activity",
-                "Organization task activity",
-                body="@%s %s %s" % (safe_actor, action_copy, title),
-                actor="",
+                copy["title"],
+                body=copy["body"],
+                # Naming the actor both fills the Actor column on every ping
+                # surface and stops the member who acted being pinged about
+                # their own change (enqueue_notification drops self-pings).
+                actor=safe_actor if valid_node_name(safe_actor) else "",
+                href="/world/",
                 source=str(task_id or ""),
                 dedupe="organization-task:%s:%s:%s" % (
                     safe_action.replace(" ", "-"),
                     str(task_id or ""),
                     str((task or {}).get("updatedAt") or ""),
                 ),
-                meta={
-                    "taskId": str(task_id or ""),
-                    "action": safe_action,
-                    "department": clean_string(
-                        (task or {}).get("department") or "", 64
-                    ).strip().lower(),
-                    "team": clean_string(
-                        (task or {}).get("team") or "", 64
-                    ).strip().lower(),
-                },
+                meta=copy["meta"],
             )
 
     async def notify_engineering_task_started(
