@@ -4,7 +4,7 @@ number: 63
 title: Agent: move the agents button over here as a regular button in the left rail on top …
 base: agent/adhoc-57-can-we-please-show-in-the-agent-detail-how-many
 head: agent/adhoc-70-move-the-agents-button-over-here-as-a-regular-bu
-status: open
+status: merged
 derive: branch
 creationBaseOid: 3395f686ba25e201c981b116470a945b27af4bc1
 creationHeadOid: ad58e00e3073508609a8f08db3665f556d299f78

@@ -4,7 +4,7 @@ number: 35
 title: Agent: for every request made to a network source in the log please show the favicon…
 base: main
 head: agent/adhoc-190-for-every-request-made-to-a-network-source-in-th
-status: open
+status: closed
 ts: 1784493687622
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh

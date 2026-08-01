@@ -1,3 +1,17 @@
+From 75a309257f835f71e2a186ea5bfbbd6e6a04518a Mon Sep 17 00:00:00 2001
+From: ForkMesh Deploy <deploy@forkmesh.local>
+Date: Sat, 1 Aug 2026 03:25:03 -0400
+Subject: [PATCH] Agent: have it so that we can archive, delete or close
+ discussions
+
+---
+ qt_client/src/DiscussionStore.cpp       |  72 ++++++++++-
+ qt_client/src/DiscussionStore.h         |   3 +
+ qt_client/src/MainWindow.h              |   5 +
+ qt_client/src/MainWindowDiscussions.cpp | 151 ++++++++++++++++++++++--
+ qt_client/tests/test_crypto.cpp         |  18 +++
+ 5 files changed, 237 insertions(+), 12 deletions(-)
+
 diff --git a/qt_client/src/DiscussionStore.cpp b/qt_client/src/DiscussionStore.cpp
 index 82d5d450a..c49b197e7 100644
 --- a/qt_client/src/DiscussionStore.cpp
@@ -446,3 +460,6 @@ index e3d71c6a8..01df96554 100644
  
          PullRequest reviewPr;
          reviewPr.number = 99;
+-- 
+2.47.3
+

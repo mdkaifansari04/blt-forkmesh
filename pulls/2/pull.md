@@ -4,7 +4,7 @@ number: 2
 title: Add outreach admin shell
 base: main
 head: api-pr/20260712-003-clean/outreach-admin-shell-v3
-status: open
+status: closed
 ts: 1783798002469
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

@@ -4,7 +4,7 @@ number: 52
 title: fix: keep chat dashboard assets routed correctly
 base: main
 head: fix/chats
-status: open
+status: merged
 ts: 1785000510222
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

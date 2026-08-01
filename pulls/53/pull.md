@@ -4,7 +4,7 @@ number: 53
 title: feat(chat): add personal direct messages
 base: main
 head: feat/personal-chat
-status: open
+status: closed
 ts: 1785064862930
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

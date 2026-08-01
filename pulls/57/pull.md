@@ -4,7 +4,7 @@ number: 57
 title: feat(chat): polish public chat workbench
 base: main
 head: api-pr/20260727-213030/chat-ui-public-code
-status: open
+status: closed
 ts: 1785170747295
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari
@@ -25,4 +25,3 @@ sig: WZ8tDy-DdPgu54UP3ZQYfU6kV3RtacQDmf4QDh1utY0bUseKeUmgrePkGXITJ6TOXmh1dRLZRUK
 - Built from origin/main 3b701cad07.
 - Excludes local cloudflare_worker/wrangler.toml, planning docs, browser visual snapshots, and heavy browser-test asset changes from refator/chat-ui.
 - User manually checked and asked to stop no-mistakes, so no further no-mistakes gate was run before signing.
-

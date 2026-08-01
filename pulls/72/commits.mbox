@@ -1,3 +1,17 @@
+From a94cda68dc5e55c9e711a67186c53e909db20b5c Mon Sep 17 00:00:00 2001
+From: ForkMesh Deploy <deploy@forkmesh.local>
+Date: Sat, 1 Aug 2026 03:25:04 -0400
+Subject: [PATCH] =?UTF-8?q?Agent:=20please=20fix=20this=20crash=20and=20ch?=
+ =?UTF-8?q?eck=20the=20logs=20for=20other=20crashes=20to=20fix=20=3D=3D=3D?=
+ =?UTF-8?q?=3D=3D=20ForkM=E2=80=A6?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+---
+ qt_client/src/MainWindow.cpp | 38 ++++++++++++++++++++++++++----------
+ 1 file changed, 28 insertions(+), 10 deletions(-)
+
 diff --git a/qt_client/src/MainWindow.cpp b/qt_client/src/MainWindow.cpp
 index 4b53e733e..4e403c8c7 100644
 --- a/qt_client/src/MainWindow.cpp
@@ -56,3 +70,6 @@ index 4b53e733e..4e403c8c7 100644
          process->setProcessEnvironment(QProcessEnvironment());
      }
      m_cloudflareActiveSecret.fill(QChar(u'\0'));
+-- 
+2.47.3
+

@@ -4,7 +4,7 @@ number: 66
 title: Agent: please fix Error group error_group ● New javascript error group (520) JS /cli…
 base: main
 head: agent/adhoc-134-please-fix-error-group-error-group-new-javascrip
-status: open
+status: closed
 derive: branch
 creationBaseOid: caacd57bb5a1342b6747e8e9040fd0270f71c5e0
 creationHeadOid: 91cae5946603d94a4db707ef7fc4cda8e72c700d

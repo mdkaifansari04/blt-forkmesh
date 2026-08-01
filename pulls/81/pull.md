@@ -4,7 +4,7 @@ number: 81
 title: Agent: why are none of the mirror nodes syncing - this needs to be instant as soon a…
 base: main
 head: agent/adhoc-153-why-are-none-of-the-mirror-nodes-syncing-this-ne
-status: open
+status: merged
 ts: 1785560836496
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

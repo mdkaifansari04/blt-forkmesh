@@ -4,7 +4,7 @@ number: 33
 title: Agent: we still get this when restarting even though no actions are running and we s…
 base: main
 head: agent/adhoc-134-we-still-get-this-when-restarting-even-though-no
-status: open
+status: closed
 ts: 1784407363937
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh

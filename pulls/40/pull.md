@@ -4,7 +4,7 @@ number: 40
 title: Update homepage hero copy and local D1 dev migrations
 base: main
 head: fix/hero-title
-status: open
+status: closed
 ts: 1784743043655
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

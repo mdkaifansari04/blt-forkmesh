@@ -4,7 +4,7 @@ number: 84
 title: Agent: lets make it so that if there is any node online that mirrors the repo when a…
 base: main
 head: agent/adhoc-89-lets-make-it-so-that-if-there-is-any-node-online
-status: open
+status: merged
 ts: 1785561853089
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

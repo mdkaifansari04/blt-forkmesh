@@ -4,7 +4,7 @@ number: 73
 title: Agent: I had this on auto but it still said this message please fix it
 base: main
 head: agent/adhoc-164-i-had-this-on-auto-but-it-still-said-this-messag
-status: open
+status: merged
 ts: 1785558207083
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

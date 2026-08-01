@@ -4,7 +4,7 @@ number: 31
 title: Agent: on the repos tab please add a button to create a new repo and have our new re…
 base: main
 head: agent/adhoc-30-on-the-repos-tab-please-add-a-button-to-create-a
-status: open
+status: closed
 ts: 1784387639329
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh

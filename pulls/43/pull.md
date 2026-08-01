@@ -4,7 +4,7 @@ number: 43
 title: issue #476: align product promise, proof path, and measurement
 base: main
 head: fix/repo-path
-status: open
+status: closed
 ts: 1784889373393
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

@@ -4,7 +4,7 @@ number: 3
 title: Add outreach campaign workflow
 base: main
 head: api-pr/20260712-003-clean/outreach-campaign-workflow-v3
-status: open
+status: closed
 ts: 1783798002523
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

@@ -4,7 +4,7 @@ number: 74
 title: Agent: show another column on the nodes how long it took for the node to sync with s…
 base: main
 head: agent/adhoc-156-show-another-column-on-the-nodes-how-long-it-too
-status: open
+status: merged
 derive: branch
 creationBaseOid: 77a66f3bc95961c449d2c16c1eaf4e3b1f205a2f
 creationHeadOid: 046ec7b56b62b6be65d7b1e3b3a68ec591a1c195

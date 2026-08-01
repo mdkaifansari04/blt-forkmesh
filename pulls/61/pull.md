@@ -4,7 +4,7 @@ number: 61
 title: Agent: make these shrink the width to what is visible pleaes
 base: agent/adhoc-57-can-we-please-show-in-the-agent-detail-how-many
 head: agent/adhoc-72-make-these-shrink-the-width-to-what-is-visible-p
-status: open
+status: merged
 ts: 1785457728310
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

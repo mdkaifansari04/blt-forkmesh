@@ -4,7 +4,7 @@ number: 77
 title: Agent: we must be doing something rediculiously wrong in our three.js world - I look…
 base: main
 head: agent/adhoc-167-we-must-be-doing-something-rediculiously-wrong-i
-status: open
+status: merged
 ts: 1785559149626
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

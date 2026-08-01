@@ -4,7 +4,7 @@ number: 46
 title: feat: add ForkMesh Office world chat
 base: api-pr/20260725011143/chat-channels
 head: api-pr/20260725011143/office-world-chat
-status: open
+status: closed
 ts: 1784923299924
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

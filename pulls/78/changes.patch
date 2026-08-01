@@ -1,2291 +1,679 @@
-diff --git a/cloudflare_worker/public/dashboard.js b/cloudflare_worker/public/dashboard.js
-index 766f9a498..475f072a6 100644
---- a/cloudflare_worker/public/dashboard.js
-+++ b/cloudflare_worker/public/dashboard.js
-@@ -1087,59 +1087,14 @@
-     return { privateKey, pub };
-   }
- 
--  // Issue #379: offline issues an owner filed while their source-of-truth node
--  // was down (but a mirror was still serving the repo). They live only in the
--  // relay's inbox until the node returns and drains them, so we also keep a
--  // local copy per repo - keyed here - so they "show up fully" across reloads
--  // instead of vanishing the moment the mirror-loaded list replaces the
--  // optimistic, session-only placeholder.
--  const PENDING_ISSUES_STORAGE = "forkmesh.pendingIssues";
--
-   function pendingIssuesRepoKey(repo) {
-     return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
-   }
- 
--  function readPendingIssueStore() {
--    try { return JSON.parse(localStorage.getItem(PENDING_ISSUES_STORAGE) || "{}") || {}; }
--    catch (_) { return {}; }
--  }
--
--  function writePendingIssueStore(store) {
--    try { localStorage.setItem(PENDING_ISSUES_STORAGE, JSON.stringify(store)); } catch (_) {}
--  }
--
--  function loadPendingIssues(repo) {
--    const list = readPendingIssueStore()[pendingIssuesRepoKey(repo)];
--    return Array.isArray(list) ? list : [];
--  }
--
--  function savePendingIssue(repo, item) {
--    const store = readPendingIssueStore();
--    const key = pendingIssuesRepoKey(repo);
--    const list = Array.isArray(store[key]) ? store[key] : [];
--    store[key] = [item, ...list].slice(0, 50);
--    writePendingIssueStore(store);
--  }
--
--  // Drop any locally-held pending issues whose title now appears in the mirror
--  // tree: the owner's node has come back and drained them, so the real numbered
--  // issue served from the mirror wins and the local placeholder retires.
--  function reconcilePendingIssues(repo, mirrorIssues) {
--    const list = loadPendingIssues(repo);
--    if (!list.length) return list;
--    const drained = new Set(
--      (mirrorIssues || []).map((issue) => String(issue.title || "").trim()));
--    const kept = list.filter((item) => !drained.has(String(item.title || "").trim()));
--    if (kept.length === list.length) return list;
--    const store = readPendingIssueStore();
--    store[pendingIssuesRepoKey(repo)] = kept;
--    writePendingIssueStore(store);
--    return kept;
--  }
--
-   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
--  // inbox POST (verify_issue_event in the worker). New issues are signed with
--  // number 0; the maintainer assigns the durable number on drain.
-+  // submission POST (verify_issue_event in the worker). New issues are signed
-+  // with number 0; the first eligible mirror assigns the durable number when
-+  // it commits the issue to the repository it serves.
-   async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "", extraMeta = {}) {
-     const { privateKey, pub } = await getWebIssueKey();
-     const ts = Math.floor(Date.now() / 1000);
-@@ -1199,7 +1154,7 @@
- 
-   // The compact World chat composer is a second presentation of the canonical
-   // dashboard actions. Expose the signed issue operation narrowly so the chat
--  // bundle can file into the same maintainer inbox without duplicating key,
-+  // bundle can file through the same eligible-mirror delivery path without duplicating key,
-   // signature, authorization, or payload logic.
-   window.ForkMeshDashboardActions = Object.assign(
-     window.ForkMeshDashboardActions || {},
-@@ -1443,12 +1398,12 @@
-       }
-       if (bodyInput) bodyInput.value = "";
-       if (submit) submit.disabled = false;
--      setHint("Comment sent to the maintainer's inbox for review.", "good");
-+      setHint("Comment accepted for direct delivery to an eligible mirror.", "good");
-     } catch (error) {
-       if (submit) submit.disabled = false;
-       const code = String(error?.message || "");
-       setHint(
--        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
-+        code === "inbox_full" ? "Comment delivery is temporarily full. Try again later."
-           : code === "author_quota" ? "You've reached the submission limit for this repository."
-           : code === "issue_too_large" ? "The comment is too large - please shorten it."
-           : code === "bad_signature" ? "Could not verify the comment's signature."
-@@ -1492,12 +1447,12 @@
-       }
-       if (bodyInput) bodyInput.value = "";
-       if (submit) submit.disabled = false;
--      setHint("Reply sent to the maintainer's inbox for review.", "good");
-+      setHint("Reply accepted for direct delivery to an eligible mirror.", "good");
-     } catch (error) {
-       if (submit) submit.disabled = false;
-       const code = String(error?.message || "");
-       setHint(
--        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
-+        code === "inbox_full" ? "Reply delivery is temporarily full. Try again later."
-           : code === "author_quota" ? "You've reached the submission limit for this repository."
-           : code === "discussion_too_large" ? "The reply is too large - please shorten it."
-           : code === "bad_signature" ? "Could not verify the reply's signature."
-@@ -9619,7 +9574,7 @@
-       : parseFrontMatterList(values.labels || values.reviewLabels);
-     const metadata = recordDetailMeta(kind, values);
-     const pendingNotice = options.pending ? `
--        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
-+        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is waiting for an eligible online mirror to commit it to the repository, so it does not have a number yet.</div>` : "";
-     const isIssues = !isPulls && !isDiscussions;
-     const marketingInitiativeAction =
-       isIssues && !options.pending
-@@ -9637,7 +9592,7 @@
-     const issueTimelineSection = isIssues
-       ? `<div data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}" class="${issueTimeline ? "border-t border-border" : ""}">${issueTimeline}</div>`
-       : "";
--    // A pending issue is still in the maintainer's inbox and has no number yet,
-+    // A pending issue is still awaiting its mirror commit and has no number yet,
-     // so there's nothing for a comment's signature to bind to.
-     const issueCommentSection = isIssues && !options.pending
-       ? renderIssueCommentForm(number)
-@@ -9767,8 +9722,8 @@
-     const config = repoCollectionConfig[kind];
-     const container = $(`[data-repo-${kind}]`);
-     if (!repo || !config || !container || !number) return;
--    // Issues just submitted from this session sit in the maintainer's inbox
--    // until drained, so there's nothing to fetch from the mirror yet - render
-+    // Issues just submitted from this session await their mirror commit, so
-+    // there's nothing to fetch from the mirror yet - render
-     // the detail straight from the local placeholder instead.
-     const pendingItem = kind === "issues"
-       ? state.issuesView.items.find((item) => item.pending && item.localId === number)
-@@ -9970,11 +9925,9 @@
-     }
-   }
- 
--  // The relay only reports a COUNT of issue submissions still waiting in the
--  // owner's inbox (their contents are encrypted). Surface that count in the
--  // Issues list as "syncing..." placeholder rows so a submission stays visible
--  // on any browser - not only the one that filed it, whose optimistic copy
--  // lives in localStorage - until the owner node drains and mirrors it.
-+  // The relay only reports a COUNT of issue submissions awaiting an eligible
-+  // mirror (their contents are encrypted). Surface that count in the Issues
-+  // list as "syncing..." placeholder rows until a mirror commits them.
-   function remotePendingIssuePlaceholders(count) {
-     const list = [];
-     for (let i = 0; i < count; i += 1) {
-@@ -9986,7 +9939,7 @@
-         author: "a contributor",
-         date: "waiting to sync",
-         meta: "",
--        body: "Submitted to the maintainer's inbox. It will appear in full once the owner's source-of-truth node comes online and syncs it.",
-+        body: "Submitted for direct delivery. It will appear in full when an eligible online mirror commits it to the repository.",
-         pending: true,
-         remotePlaceholder: true,
-       });
-@@ -10001,7 +9954,7 @@
-     const count = Number(state.pendingIssueCounts?.[pendingIssuesRepoKey(repo)]) || 0;
-     const items = view.items.filter((item) => !item.remotePlaceholder);
-     // Items already shown as pending (this session's optimistic add and the
--    // issue #379 localStorage copies) cover part of the server tally; only pad
-+    // session's optimistic add) covers part of the server tally; only pad
-     // the remainder so we never double-count a submission we can already show.
-     const pendingReals = items.filter((item) => item.pending);
-     const rest = items.filter((item) => !item.pending);
-@@ -10163,9 +10116,8 @@
-         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
-       } catch (error) {
-         if (isMissingMirrorFolder(error)) {
--          // No issues on the mirror yet - still surface the owner's offline
--          // submissions kept locally while their node was down (issue #379).
--          state.issuesView.items = reconcilePendingIssues(repo, []);
-+          // No issues have been committed to the mirror yet.
-+          state.issuesView.items = [];
-           state.issuesView.filter = "open";
-           state.issuesView.query = "";
-           state.issuesView.missing = [];
-@@ -10222,12 +10174,7 @@
-       const dirs = numbered.slice(0, 50);
-       const { items, missing } = await fetchIssuePage(repo, pathByNumber, dirs);
-       items.sort((a, b) => Number(b.number) - Number(a.number));
--      // Issue #379: fold in the owner's offline submissions (kept locally while
--      // their source-of-truth node was down) so they still show up on reload,
--      // dropping any the node has since drained - the numbered mirror copy wins.
--      const pending = reconcilePendingIssues(repo, items);
--      const merged = pending.length ? [...pending, ...items] : items;
--      state.issuesView.items = merged;
-+      state.issuesView.items = items;
-       state.issuesView.filter = "open";
-       state.issuesView.query = "";
-       state.issuesView.missing = missing;
-@@ -12430,7 +12377,7 @@
-         <div class="flex flex-wrap items-center justify-between gap-3">
-           <div class="flex min-w-0 flex-col gap-1">
-             ${composeIdentityHtml(state.session, "Filing")}
--            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
-+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">An eligible online mirror will add signed issues directly to this repository.</span>
-           </div>
-           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
-         </div>
-@@ -12598,9 +12545,9 @@
-     setHint("Preparing and signing the change set…");
-     try {
-       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
--      // Submissions land in the maintainer's inbox, not the public mirror, so it
--      // won't be visible there until they drain it - but show it locally, on
--      // top of this session's issue list, so the submitter sees it right away.
-+      // The relay wakes eligible online mirrors immediately. Keep a local
-+      // optimistic row until the first mirror commits the signed issue and its
-+      // durable issue number becomes visible from the repository.
-       const pendingItem = {
-         number: null,
-         localId: `pending-${Date.now().toString(36)}`,
-@@ -12615,12 +12562,6 @@
-         pending: true,
-       };
-       state.issuesView.items = [pendingItem, ...state.issuesView.items];
--      // Issue #379: when the owner files an issue while their source-of-truth
--      // node is offline but a mirror is serving the repo, persist it locally so
--      // it keeps showing up across reloads - fully, not just this session -
--      // until the node comes back online and drains it to the mirror.
--      const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
--      if (ownerOffline) savePendingIssue(repo, pendingItem);
-       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
-       if (titleInput) titleInput.value = "";
-       if (bodyInput) bodyInput.value = "";
-@@ -12630,15 +12571,13 @@
-       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
-       if (submit) submit.disabled = false;
-       setHint(
--        ownerOffline
--          ? "Your source-of-truth node is offline, so this issue is held on a mirror and will sync to your node when it comes back online."
--          : "Issue sent to the maintainer's inbox for review. Submit another or go back.",
-+        "Issue accepted. The first eligible online mirror will add it directly to the repository.",
-         "good");
-     } catch (error) {
-       if (submit) submit.disabled = false;
-       const code = String(error?.message || "");
-       setHint(
--        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
-+        code === "inbox_full" ? "Issue delivery is temporarily full. Try again later."
-           : code === "author_quota" ? "You've reached the submission limit for this repository."
-           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
-           : code === "not_authorized" ? "Only the repository owner or an admin can assign issues to an agent."
-@@ -12739,7 +12678,7 @@
-           <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="upload" class="h-4 w-4 text-primary"></i>Import issues from CSV</span>
-           <button type="button" data-repo-issue-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to issues</button>
-         </div>
--        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is filed as its own signed issue in the maintainer's inbox.</p>
-+        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is a signed issue delivered to the first eligible online mirror.</p>
-         <div class="flex flex-wrap items-center gap-2">
-           <button type="button" data-repo-issue-template class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="download" class="h-3.5 w-3.5"></i>Download template</button>
-           <input type="file" data-repo-issue-csv-input accept=".csv,text/csv" class="text-xs text-foreground file:mr-2 file:h-8 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:text-xs file:font-medium file:text-foreground" />
-@@ -12748,7 +12687,7 @@
-         <div class="flex flex-wrap items-center justify-between gap-3">
-           <div class="flex min-w-0 flex-col gap-1">
-             ${composeIdentityHtml(state.session, "Filing")}
--            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
-+            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Eligible online mirrors add accepted issues directly to the repository.</span>
-           </div>
-           <button type="submit" data-repo-issue-import-submit disabled class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Import issues</button>
-         </div>
-@@ -12830,7 +12769,7 @@
-     setHint(
-       failed
-         ? `Imported ${ok} issue${ok === 1 ? "" : "s"}; ${failed} could not be sent. Go back to review.`
--        : `Imported ${ok} issue${ok === 1 ? "" : "s"} to the maintainer's inbox. Go back to review.`,
-+        : `Submitted ${ok} issue${ok === 1 ? "" : "s"} for direct mirror delivery.`,
-       failed ? "bad" : "good");
-   }
- 
-@@ -14667,6 +14606,8 @@
-       pending_inbox: "inbox",
-       mirror_request: "radio",
-       account_email_sent: "mail-check",
-+      organization_task_started: "clipboard-list",
-+      organization_task_activity: "clipboard-list",
-     })[kind] || "bell";
-   }
- 
-@@ -14728,12 +14669,52 @@
-         </div>
-       </div>
-       <p class="mt-5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">${escapeHtml(item.body || "ForkMesh notification")}</p>
-+      ${organizationTaskDetailsHtml(item)}
-       ${mirrorRequestActionsHtml(item)}
-       ${item.href ? `<a href="${escapeHtml(item.href)}" class="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Open context</a>` : ""}
-     `;
-     window.lucide?.createIcons();
-   }
- 
-+  // Organization task pings (adhoc #147) carry the whole event on meta, so the
-+  // reader gets who/what/which org spelled out as fields instead of having to
-+  // parse the one-line summary the ping list shows.
-+  function organizationTaskDetailsHtml(item) {
-+    if (!item || !String(item.kind || "").startsWith("organization_task")) return "";
-+    const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
-+    const assignee = String(meta.assignee || "");
-+    const assigneeLabel = meta.assigneeKind === "agent"
-+      ? "An agent"
-+      : (assignee ? `@${assignee}` : "Unassigned");
-+    const priority = Number(meta.priority) || 0;
-+    const status = ({
-+      idle: "Not started",
-+      active: "In progress",
-+      done: "Done",
-+    })[String(meta.status || "")] || String(meta.status || "");
-+    const rows = [
-+      ["Who", meta.actor ? `@${meta.actor}` : ""],
-+      ["What", `${String(meta.action || "updated")} a task`],
-+      ["Task", meta.taskTitle || ""],
-+      ["Organization", meta.organization || ""],
-+      ["Department", meta.department || ""],
-+      ["Team", meta.team || ""],
-+      ["Assigned to", assigneeLabel],
-+      ["Priority", priority > 0 ? String(priority) : ""],
-+      ["Status", status],
-+      ["Repository", meta.repository || ""],
-+    ].filter(([, value]) => String(value || "").trim());
-+    if (!rows.length) return "";
-+    return `
-+      <dl class="mt-5 grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">
-+        ${rows.map(([label, value]) => `
-+          <dt class="text-muted-foreground">${escapeHtml(label)}</dt>
-+          <dd class="min-w-0 break-words text-foreground">${escapeHtml(String(value))}</dd>
-+        `).join("")}
-+      </dl>
-+    `;
-+  }
-+
-   // Accept/Reject controls on an incoming "someone asked your node to mirror
-   // their repo" notification (issue #385). Only the still-pending request the
-   // recipient can act on gets buttons; replies ("X accepted…") carry none.
-@@ -14938,7 +14919,10 @@
-     state.selectedNotificationId = id;
-     renderNotificationModal();
-     if (!item.readAt) await markNotificationsRead([id]);
--    if (modal) setNotificationModalOpen(true);
-+    if (modal) {
-+      setNotificationDropdownOpen(false);
-+      setNotificationModalOpen(true);
-+    }
-   }
- 
-   // The release version changes at most per deploy: cache it in sessionStorage
-@@ -15385,7 +15369,10 @@
- 
-     const notificationOpen = event.target.closest("[data-notification-open]");
-     if (notificationOpen) {
--      await openNotification(notificationOpen.dataset.notificationOpen || "", Boolean(event.target.closest("#notificationModal")));
-+      await openNotification(
-+        notificationOpen.dataset.notificationOpen || "",
-+        !event.target.closest("#notificationModal"),
-+      );
-       return;
-     }
- 
-diff --git a/cloudflare_worker/public/dashboard/chat/index.html b/cloudflare_worker/public/dashboard/chat/index.html
-index 1fbd07318..51c27b2f1 100644
---- a/cloudflare_worker/public/dashboard/chat/index.html
-+++ b/cloudflare_worker/public/dashboard/chat/index.html
-@@ -782,7 +782,7 @@
-         background-clip: padding-box;
-       }
-     </style>
--    <script src="/dashboard.js?v=df50a4a95f53" defer></script>
-+    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-     <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
-   </head>
-   <body class="bg-background text-foreground" data-page="chat">
-diff --git a/cloudflare_worker/public/dashboard/index.html b/cloudflare_worker/public/dashboard/index.html
-index 688eaa76e..6302fe2b9 100644
---- a/cloudflare_worker/public/dashboard/index.html
-+++ b/cloudflare_worker/public/dashboard/index.html
-@@ -782,7 +782,7 @@
-         background-clip: padding-box;
-       }
-     </style>
--    <script src="/dashboard.js?v=df50a4a95f53" defer></script>
-+    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-     <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
-   </head>
-   <body class="bg-background text-foreground" data-page="home">
-diff --git a/cloudflare_worker/public/dashboard/js/03-issues-profile-io.js b/cloudflare_worker/public/dashboard/js/03-issues-profile-io.js
-index ec01000e3..00d6ec04f 100644
---- a/cloudflare_worker/public/dashboard/js/03-issues-profile-io.js
-+++ b/cloudflare_worker/public/dashboard/js/03-issues-profile-io.js
-@@ -198,59 +198,14 @@
-     return { privateKey, pub };
-   }
- 
--  // Issue #379: offline issues an owner filed while their source-of-truth node
--  // was down (but a mirror was still serving the repo). They live only in the
--  // relay's inbox until the node returns and drains them, so we also keep a
--  // local copy per repo - keyed here - so they "show up fully" across reloads
--  // instead of vanishing the moment the mirror-loaded list replaces the
--  // optimistic, session-only placeholder.
--  const PENDING_ISSUES_STORAGE = "forkmesh.pendingIssues";
--
-   function pendingIssuesRepoKey(repo) {
-     return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
-   }
- 
--  function readPendingIssueStore() {
--    try { return JSON.parse(localStorage.getItem(PENDING_ISSUES_STORAGE) || "{}") || {}; }
--    catch (_) { return {}; }
--  }
--
--  function writePendingIssueStore(store) {
--    try { localStorage.setItem(PENDING_ISSUES_STORAGE, JSON.stringify(store)); } catch (_) {}
--  }
--
--  function loadPendingIssues(repo) {
--    const list = readPendingIssueStore()[pendingIssuesRepoKey(repo)];
--    return Array.isArray(list) ? list : [];
--  }
--
--  function savePendingIssue(repo, item) {
--    const store = readPendingIssueStore();
--    const key = pendingIssuesRepoKey(repo);
--    const list = Array.isArray(store[key]) ? store[key] : [];
--    store[key] = [item, ...list].slice(0, 50);
--    writePendingIssueStore(store);
--  }
--
--  // Drop any locally-held pending issues whose title now appears in the mirror
--  // tree: the owner's node has come back and drained them, so the real numbered
--  // issue served from the mirror wins and the local placeholder retires.
--  function reconcilePendingIssues(repo, mirrorIssues) {
--    const list = loadPendingIssues(repo);
--    if (!list.length) return list;
--    const drained = new Set(
--      (mirrorIssues || []).map((issue) => String(issue.title || "").trim()));
--    const kept = list.filter((item) => !drained.has(String(item.title || "").trim()));
--    if (kept.length === list.length) return list;
--    const store = readPendingIssueStore();
--    store[pendingIssuesRepoKey(repo)] = kept;
--    writePendingIssueStore(store);
--    return kept;
--  }
--
-   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
--  // inbox POST (verify_issue_event in the worker). New issues are signed with
--  // number 0; the maintainer assigns the durable number on drain.
-+  // submission POST (verify_issue_event in the worker). New issues are signed
-+  // with number 0; the first eligible mirror assigns the durable number when
-+  // it commits the issue to the repository it serves.
-   async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "", extraMeta = {}) {
-     const { privateKey, pub } = await getWebIssueKey();
-     const ts = Math.floor(Date.now() / 1000);
-@@ -310,7 +265,7 @@
- 
-   // The compact World chat composer is a second presentation of the canonical
-   // dashboard actions. Expose the signed issue operation narrowly so the chat
--  // bundle can file into the same maintainer inbox without duplicating key,
-+  // bundle can file through the same eligible-mirror delivery path without duplicating key,
-   // signature, authorization, or payload logic.
-   window.ForkMeshDashboardActions = Object.assign(
-     window.ForkMeshDashboardActions || {},
-@@ -554,12 +509,12 @@
-       }
-       if (bodyInput) bodyInput.value = "";
-       if (submit) submit.disabled = false;
--      setHint("Comment sent to the maintainer's inbox for review.", "good");
-+      setHint("Comment accepted for direct delivery to an eligible mirror.", "good");
-     } catch (error) {
-       if (submit) submit.disabled = false;
-       const code = String(error?.message || "");
-       setHint(
--        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
-+        code === "inbox_full" ? "Comment delivery is temporarily full. Try again later."
-           : code === "author_quota" ? "You've reached the submission limit for this repository."
-           : code === "issue_too_large" ? "The comment is too large - please shorten it."
-           : code === "bad_signature" ? "Could not verify the comment's signature."
-@@ -603,12 +558,12 @@
-       }
-       if (bodyInput) bodyInput.value = "";
-       if (submit) submit.disabled = false;
--      setHint("Reply sent to the maintainer's inbox for review.", "good");
-+      setHint("Reply accepted for direct delivery to an eligible mirror.", "good");
-     } catch (error) {
-       if (submit) submit.disabled = false;
-       const code = String(error?.message || "");
-       setHint(
--        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
-+        code === "inbox_full" ? "Reply delivery is temporarily full. Try again later."
-           : code === "author_quota" ? "You've reached the submission limit for this repository."
-           : code === "discussion_too_large" ? "The reply is too large - please shorten it."
-           : code === "bad_signature" ? "Could not verify the reply's signature."
-diff --git a/cloudflare_worker/public/dashboard/js/06-repo-content.js b/cloudflare_worker/public/dashboard/js/06-repo-content.js
-index e4e66df88..103942114 100644
---- a/cloudflare_worker/public/dashboard/js/06-repo-content.js
-+++ b/cloudflare_worker/public/dashboard/js/06-repo-content.js
-@@ -2150,7 +2150,7 @@
-       : parseFrontMatterList(values.labels || values.reviewLabels);
-     const metadata = recordDetailMeta(kind, values);
-     const pendingNotice = options.pending ? `
--        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
-+        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is waiting for an eligible online mirror to commit it to the repository, so it does not have a number yet.</div>` : "";
-     const isIssues = !isPulls && !isDiscussions;
-     const marketingInitiativeAction =
-       isIssues && !options.pending
-@@ -2168,7 +2168,7 @@
-     const issueTimelineSection = isIssues
-       ? `<div data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}" class="${issueTimeline ? "border-t border-border" : ""}">${issueTimeline}</div>`
-       : "";
--    // A pending issue is still in the maintainer's inbox and has no number yet,
-+    // A pending issue is still awaiting its mirror commit and has no number yet,
-     // so there's nothing for a comment's signature to bind to.
-     const issueCommentSection = isIssues && !options.pending
-       ? renderIssueCommentForm(number)
-@@ -2298,8 +2298,8 @@
-     const config = repoCollectionConfig[kind];
-     const container = $(`[data-repo-${kind}]`);
-     if (!repo || !config || !container || !number) return;
--    // Issues just submitted from this session sit in the maintainer's inbox
--    // until drained, so there's nothing to fetch from the mirror yet - render
-+    // Issues just submitted from this session await their mirror commit, so
-+    // there's nothing to fetch from the mirror yet - render
-     // the detail straight from the local placeholder instead.
-     const pendingItem = kind === "issues"
-       ? state.issuesView.items.find((item) => item.pending && item.localId === number)
-@@ -2501,11 +2501,9 @@
-     }
-   }
- 
--  // The relay only reports a COUNT of issue submissions still waiting in the
--  // owner's inbox (their contents are encrypted). Surface that count in the
--  // Issues list as "syncing..." placeholder rows so a submission stays visible
--  // on any browser - not only the one that filed it, whose optimistic copy
--  // lives in localStorage - until the owner node drains and mirrors it.
-+  // The relay only reports a COUNT of issue submissions awaiting an eligible
-+  // mirror (their contents are encrypted). Surface that count in the Issues
-+  // list as "syncing..." placeholder rows until a mirror commits them.
-   function remotePendingIssuePlaceholders(count) {
-     const list = [];
-     for (let i = 0; i < count; i += 1) {
-@@ -2517,7 +2515,7 @@
-         author: "a contributor",
-         date: "waiting to sync",
-         meta: "",
--        body: "Submitted to the maintainer's inbox. It will appear in full once the owner's source-of-truth node comes online and syncs it.",
-+        body: "Submitted for direct delivery. It will appear in full when an eligible online mirror commits it to the repository.",
-         pending: true,
-         remotePlaceholder: true,
-       });
-@@ -2532,7 +2530,7 @@
-     const count = Number(state.pendingIssueCounts?.[pendingIssuesRepoKey(repo)]) || 0;
-     const items = view.items.filter((item) => !item.remotePlaceholder);
-     // Items already shown as pending (this session's optimistic add and the
--    // issue #379 localStorage copies) cover part of the server tally; only pad
-+    // session's optimistic add) covers part of the server tally; only pad
-     // the remainder so we never double-count a submission we can already show.
-     const pendingReals = items.filter((item) => item.pending);
-     const rest = items.filter((item) => !item.pending);
-@@ -2694,9 +2692,8 @@
-         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
-       } catch (error) {
-         if (isMissingMirrorFolder(error)) {
--          // No issues on the mirror yet - still surface the owner's offline
--          // submissions kept locally while their node was down (issue #379).
--          state.issuesView.items = reconcilePendingIssues(repo, []);
-+          // No issues have been committed to the mirror yet.
-+          state.issuesView.items = [];
-           state.issuesView.filter = "open";
-           state.issuesView.query = "";
-           state.issuesView.missing = [];
-@@ -2753,12 +2750,7 @@
-       const dirs = numbered.slice(0, 50);
-       const { items, missing } = await fetchIssuePage(repo, pathByNumber, dirs);
-       items.sort((a, b) => Number(b.number) - Number(a.number));
--      // Issue #379: fold in the owner's offline submissions (kept locally while
--      // their source-of-truth node was down) so they still show up on reload,
--      // dropping any the node has since drained - the numbered mirror copy wins.
--      const pending = reconcilePendingIssues(repo, items);
--      const merged = pending.length ? [...pending, ...items] : items;
--      state.issuesView.items = merged;
-+      state.issuesView.items = items;
-       state.issuesView.filter = "open";
-       state.issuesView.query = "";
-       state.issuesView.missing = missing;
-diff --git a/cloudflare_worker/public/dashboard/js/07-repo-compose-branch.js b/cloudflare_worker/public/dashboard/js/07-repo-compose-branch.js
-index 42646a888..9ae928cda 100644
---- a/cloudflare_worker/public/dashboard/js/07-repo-compose-branch.js
-+++ b/cloudflare_worker/public/dashboard/js/07-repo-compose-branch.js
-@@ -54,7 +54,7 @@
-         <div class="flex flex-wrap items-center justify-between gap-3">
-           <div class="flex min-w-0 flex-col gap-1">
-             ${composeIdentityHtml(state.session, "Filing")}
--            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
-+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">An eligible online mirror will add signed issues directly to this repository.</span>
-           </div>
-           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
-         </div>
-@@ -222,9 +222,9 @@
-     setHint("Preparing and signing the change set…");
-     try {
-       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
--      // Submissions land in the maintainer's inbox, not the public mirror, so it
--      // won't be visible there until they drain it - but show it locally, on
--      // top of this session's issue list, so the submitter sees it right away.
-+      // The relay wakes eligible online mirrors immediately. Keep a local
-+      // optimistic row until the first mirror commits the signed issue and its
-+      // durable issue number becomes visible from the repository.
-       const pendingItem = {
-         number: null,
-         localId: `pending-${Date.now().toString(36)}`,
-@@ -239,12 +239,6 @@
-         pending: true,
-       };
-       state.issuesView.items = [pendingItem, ...state.issuesView.items];
--      // Issue #379: when the owner files an issue while their source-of-truth
--      // node is offline but a mirror is serving the repo, persist it locally so
--      // it keeps showing up across reloads - fully, not just this session -
--      // until the node comes back online and drains it to the mirror.
--      const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
--      if (ownerOffline) savePendingIssue(repo, pendingItem);
-       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
-       if (titleInput) titleInput.value = "";
-       if (bodyInput) bodyInput.value = "";
-@@ -254,15 +248,13 @@
-       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
-       if (submit) submit.disabled = false;
-       setHint(
--        ownerOffline
--          ? "Your source-of-truth node is offline, so this issue is held on a mirror and will sync to your node when it comes back online."
--          : "Issue sent to the maintainer's inbox for review. Submit another or go back.",
-+        "Issue accepted. The first eligible online mirror will add it directly to the repository.",
-         "good");
-     } catch (error) {
-       if (submit) submit.disabled = false;
-       const code = String(error?.message || "");
-       setHint(
--        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
-+        code === "inbox_full" ? "Issue delivery is temporarily full. Try again later."
-           : code === "author_quota" ? "You've reached the submission limit for this repository."
-           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
-           : code === "not_authorized" ? "Only the repository owner or an admin can assign issues to an agent."
-@@ -363,7 +355,7 @@
-           <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="upload" class="h-4 w-4 text-primary"></i>Import issues from CSV</span>
-           <button type="button" data-repo-issue-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to issues</button>
-         </div>
--        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is filed as its own signed issue in the maintainer's inbox.</p>
-+        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is a signed issue delivered to the first eligible online mirror.</p>
-         <div class="flex flex-wrap items-center gap-2">
-           <button type="button" data-repo-issue-template class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="download" class="h-3.5 w-3.5"></i>Download template</button>
-           <input type="file" data-repo-issue-csv-input accept=".csv,text/csv" class="text-xs text-foreground file:mr-2 file:h-8 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:text-xs file:font-medium file:text-foreground" />
-@@ -372,7 +364,7 @@
-         <div class="flex flex-wrap items-center justify-between gap-3">
-           <div class="flex min-w-0 flex-col gap-1">
-             ${composeIdentityHtml(state.session, "Filing")}
--            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
-+            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Eligible online mirrors add accepted issues directly to the repository.</span>
-           </div>
-           <button type="submit" data-repo-issue-import-submit disabled class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Import issues</button>
-         </div>
-@@ -454,7 +446,7 @@
-     setHint(
-       failed
-         ? `Imported ${ok} issue${ok === 1 ? "" : "s"}; ${failed} could not be sent. Go back to review.`
--        : `Imported ${ok} issue${ok === 1 ? "" : "s"} to the maintainer's inbox. Go back to review.`,
-+        : `Submitted ${ok} issue${ok === 1 ? "" : "s"} for direct mirror delivery.`,
-       failed ? "bad" : "good");
-   }
- 
-diff --git a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
-index 84c428039..e5782a7c5 100644
---- a/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
-+++ b/cloudflare_worker/public/dashboard/js/08-repo-detail-network.js
-@@ -755,6 +755,8 @@
-       pending_inbox: "inbox",
-       mirror_request: "radio",
-       account_email_sent: "mail-check",
-+      organization_task_started: "clipboard-list",
-+      organization_task_activity: "clipboard-list",
-     })[kind] || "bell";
-   }
- 
-@@ -816,12 +818,52 @@
-         </div>
-       </div>
-       <p class="mt-5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">${escapeHtml(item.body || "ForkMesh notification")}</p>
-+      ${organizationTaskDetailsHtml(item)}
-       ${mirrorRequestActionsHtml(item)}
-       ${item.href ? `<a href="${escapeHtml(item.href)}" class="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Open context</a>` : ""}
-     `;
-     window.lucide?.createIcons();
-   }
- 
-+  // Organization task pings (adhoc #147) carry the whole event on meta, so the
-+  // reader gets who/what/which org spelled out as fields instead of having to
-+  // parse the one-line summary the ping list shows.
-+  function organizationTaskDetailsHtml(item) {
-+    if (!item || !String(item.kind || "").startsWith("organization_task")) return "";
-+    const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
-+    const assignee = String(meta.assignee || "");
-+    const assigneeLabel = meta.assigneeKind === "agent"
-+      ? "An agent"
-+      : (assignee ? `@${assignee}` : "Unassigned");
-+    const priority = Number(meta.priority) || 0;
-+    const status = ({
-+      idle: "Not started",
-+      active: "In progress",
-+      done: "Done",
-+    })[String(meta.status || "")] || String(meta.status || "");
-+    const rows = [
-+      ["Who", meta.actor ? `@${meta.actor}` : ""],
-+      ["What", `${String(meta.action || "updated")} a task`],
-+      ["Task", meta.taskTitle || ""],
-+      ["Organization", meta.organization || ""],
-+      ["Department", meta.department || ""],
-+      ["Team", meta.team || ""],
-+      ["Assigned to", assigneeLabel],
-+      ["Priority", priority > 0 ? String(priority) : ""],
-+      ["Status", status],
-+      ["Repository", meta.repository || ""],
-+    ].filter(([, value]) => String(value || "").trim());
-+    if (!rows.length) return "";
-+    return `
-+      <dl class="mt-5 grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">
-+        ${rows.map(([label, value]) => `
-+          <dt class="text-muted-foreground">${escapeHtml(label)}</dt>
-+          <dd class="min-w-0 break-words text-foreground">${escapeHtml(String(value))}</dd>
-+        `).join("")}
-+      </dl>
-+    `;
-+  }
-+
-   // Accept/Reject controls on an incoming "someone asked your node to mirror
-   // their repo" notification (issue #385). Only the still-pending request the
-   // recipient can act on gets buttons; replies ("X accepted…") carry none.
-@@ -1026,7 +1068,10 @@
-     state.selectedNotificationId = id;
-     renderNotificationModal();
-     if (!item.readAt) await markNotificationsRead([id]);
--    if (modal) setNotificationModalOpen(true);
-+    if (modal) {
-+      setNotificationDropdownOpen(false);
-+      setNotificationModalOpen(true);
-+    }
-   }
- 
-   // The release version changes at most per deploy: cache it in sessionStorage
-@@ -1473,7 +1518,10 @@
- 
-     const notificationOpen = event.target.closest("[data-notification-open]");
-     if (notificationOpen) {
--      await openNotification(notificationOpen.dataset.notificationOpen || "", Boolean(event.target.closest("#notificationModal")));
-+      await openNotification(
-+        notificationOpen.dataset.notificationOpen || "",
-+        !event.target.closest("#notificationModal"),
-+      );
-       return;
-     }
- 
-diff --git a/cloudflare_worker/public/dashboard/network/index.html b/cloudflare_worker/public/dashboard/network/index.html
-index 163c75522..cec028738 100644
---- a/cloudflare_worker/public/dashboard/network/index.html
-+++ b/cloudflare_worker/public/dashboard/network/index.html
-@@ -782,7 +782,7 @@
-         background-clip: padding-box;
-       }
-     </style>
--    <script src="/dashboard.js?v=df50a4a95f53" defer></script>
-+    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-     <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
-   </head>
-   <body class="bg-background text-foreground" data-page="network">
-diff --git a/cloudflare_worker/public/dashboard/profile/index.html b/cloudflare_worker/public/dashboard/profile/index.html
-index c7ab79840..6c2a584eb 100644
---- a/cloudflare_worker/public/dashboard/profile/index.html
-+++ b/cloudflare_worker/public/dashboard/profile/index.html
-@@ -782,7 +782,7 @@
-         background-clip: padding-box;
-       }
-     </style>
--    <script src="/dashboard.js?v=df50a4a95f53" defer></script>
-+    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-     <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
-   </head>
-   <body class="bg-background text-foreground" data-page="profile">
-diff --git a/cloudflare_worker/public/dashboard/profile/repositories/index.html b/cloudflare_worker/public/dashboard/profile/repositories/index.html
-index b11de098c..7142eab6e 100644
---- a/cloudflare_worker/public/dashboard/profile/repositories/index.html
-+++ b/cloudflare_worker/public/dashboard/profile/repositories/index.html
-@@ -782,7 +782,7 @@
-         background-clip: padding-box;
-       }
-     </style>
--    <script src="/dashboard.js?v=df50a4a95f53" defer></script>
-+    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-     <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
-   </head>
-   <body class="bg-background text-foreground" data-page="profile-repositories">
-diff --git a/cloudflare_worker/public/dashboard/repo.html b/cloudflare_worker/public/dashboard/repo.html
-index 9c9b27e83..3294a7d7a 100644
---- a/cloudflare_worker/public/dashboard/repo.html
-+++ b/cloudflare_worker/public/dashboard/repo.html
-@@ -782,7 +782,7 @@
-         background-clip: padding-box;
-       }
-     </style>
--    <script src="/dashboard.js?v=df50a4a95f53" defer></script>
-+    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-     <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
-   </head>
-   <body class="bg-background text-foreground" data-page="repo">
-diff --git a/cloudflare_worker/public/dashboard/repos/index.html b/cloudflare_worker/public/dashboard/repos/index.html
-index dd17fc497..9614a9271 100644
---- a/cloudflare_worker/public/dashboard/repos/index.html
-+++ b/cloudflare_worker/public/dashboard/repos/index.html
-@@ -782,7 +782,7 @@
-         background-clip: padding-box;
-       }
-     </style>
--    <script src="/dashboard.js?v=df50a4a95f53" defer></script>
-+    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-     <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
-   </head>
-   <body class="bg-background text-foreground" data-page="repos">
-diff --git a/cloudflare_worker/public/dashboard/settings/index.html b/cloudflare_worker/public/dashboard/settings/index.html
-index 70859d852..8c6558fc9 100644
---- a/cloudflare_worker/public/dashboard/settings/index.html
-+++ b/cloudflare_worker/public/dashboard/settings/index.html
-@@ -782,7 +782,7 @@
-         background-clip: padding-box;
-       }
-     </style>
--    <script src="/dashboard.js?v=df50a4a95f53" defer></script>
-+    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-     <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
-   </head>
-   <body class="bg-background text-foreground" data-page="settings">
-diff --git a/cloudflare_worker/public/world/world.css b/cloudflare_worker/public/world/world.css
-index 90ddcf695..776171de6 100644
---- a/cloudflare_worker/public/world/world.css
-+++ b/cloudflare_worker/public/world/world.css
-@@ -6552,7 +6552,10 @@ forkmesh-world.world-office-active .world-quick-dock {
-   z-index: 21;
-   top: var(--safe-top);
-   right: var(--safe-right);
--  width: min(360px, calc(100vw - 28px));
-+  width: min(
-+    var(--world-settings-user-width, 360px),
-+    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
-+  );
-   max-height: calc(100svh - var(--safe-top) - var(--safe-bottom));
-   overflow-y: auto;
-   border: 1px solid var(--world-line-strong);
-@@ -6571,13 +6574,6 @@ forkmesh-world.world-office-active .world-quick-dock {
-   visibility: visible;
- }
- 
--.world-settings[data-active-tab="work"] {
--  width: min(
--    920px,
--    calc(100vw - var(--safe-left) - var(--safe-right) - 28px)
--  );
--}
--
- .world-settings-heading {
-   display: flex;
-   align-items: start;
-@@ -6788,6 +6784,26 @@ forkmesh-world.world-office-active .world-quick-dock {
-   outline: none;
- }
- 
-+.world-element-sort {
-+  display: flex;
-+  align-items: center;
-+  justify-content: space-between;
-+  gap: 10px;
-+  margin: 10px 0;
-+  color: var(--world-muted);
-+  font: 0.62rem "ForkMesh Mono", monospace;
-+  letter-spacing: 0.06em;
-+  text-transform: uppercase;
-+}
-+
-+.world-element-sort select {
-+  border: 1px solid var(--world-line);
-+  background: #0a1915;
-+  color: var(--world-copy);
-+  padding: 7px 9px;
-+  font: inherit;
-+}
-+
- .world-element-category {
-   margin-top: 12px;
- }
-diff --git a/cloudflare_worker/public/world/world.js b/cloudflare_worker/public/world/world.js
-index 2fb39e1a5..bb27ed34d 100644
---- a/cloudflare_worker/public/world/world.js
-+++ b/cloudflare_worker/public/world/world.js
-@@ -150,7 +150,7 @@ const SOCIAL_POSTS_URL = "/api/world/social-posts";
- const SOCIAL_REFRESH_MS = 10 * 60 * 1000;
- const ADMIN_ERROR_SEEN_KEY = "forkmesh.world.adminErrorsSeen.v1";
- const ADMIN_ERROR_POLL_MS = 15_000;
--// Element ids an administrator switched off in the Elements tab. Kept on the
-+// Element ids switched off in the Elements tab. Kept on the
- // device (never in account preferences) so a perf experiment on one machine
- // cannot dim the world on every other signed-in device.
- const DISABLED_ELEMENTS_KEY = "forkmesh.world.disabledElements.v1";
-@@ -4911,7 +4911,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
- 
-         <section class="world-settings" data-world-settings aria-labelledby="world-settings-title" aria-hidden="true" inert>
-           <div class="world-settings-resize" data-world-settings-resize role="separator"
--            tabindex="0" aria-label="Resize Work panel" aria-orientation="vertical"></div>
-+            tabindex="0" aria-label="Resize settings panel" aria-orientation="vertical"></div>
-           <div class="world-settings-heading">
-             <div>
-               <p class="world-eyebrow">YOUR WORLD PREFERENCES</p>
-@@ -5115,9 +5115,9 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
- 
-           <div class="world-settings-pane" data-world-settings-pane="elements" hidden>
-             <fieldset class="world-setting-group">
--              <legend>World elements · administrator, this device only</legend>
-+              <legend>World elements · this device only</legend>
-               <p class="world-setting-note">
--                Switch any element off to remove it completely from the game —
-+                Switch any element off to remove it completely from your game —
-                 its geometry leaves the scene, its raycast targets are dropped,
-                 and its per-frame work stops — then watch the Debug tab to see
-                 what it was costing. Switch it back on to restore it. Choices
-@@ -5128,8 +5128,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
-                 <button type="button" data-world-element-master="on">Everything on</button>
-                 <button type="button" data-world-element-master="off">Everything off</button>
-               </div>
-+              <label class="world-element-sort">
-+                <span>Sort by</span>
-+                <select data-world-element-sort aria-label="Sort world elements">
-+                  <option value="drawables">Drawn</option>
-+                  <option value="triangles">Triangles</option>
-+                  <option value="interactives">Clicks</option>
-+                </select>
-+              </label>
-               <div class="world-element-list" data-world-element-list>
--                <p class="world-setting-note">Sign in as an administrator to control world elements.</p>
-+                <p class="world-setting-note">World element controls appear once the scene is ready.</p>
-               </div>
-               <p class="world-office-panel-status" data-world-element-status role="status" aria-live="polite"></p>
-             </fieldset>
-@@ -5573,9 +5581,10 @@ class ForkMeshWorld extends HTMLElement {
-     this.deployObservedRevision = "";
-     this.pendingWorldShare = null;
-     this.savedViews = [];
--    // Element ids an administrator switched off on this device. Applied to
-+    // Element ids switched off on this device. Applied to
-     // the scene at construction and edited live from the Elements tab.
-     this.disabledWorldElements = storedDisabledWorldElements();
-+    this.worldElementSort = "drawables";
-     this.worldTicketResolved = false;
-     this.settingsUpdatedAt = 0;
-     this.worldPreferencesLoaded = false;
-@@ -6566,9 +6575,8 @@ class ForkMeshWorld extends HTMLElement {
-           (this.currentSpace === "town-square"
-             ? FRESH_ARRIVAL_CAMPFIRE_PREVIEW
-             : null),
--        // Applied before the admin ticket resolves; a device whose session
--        // turns out not to be an administrator is restored to the full world
--        // by applyAdminElementsAccess the moment that answer arrives.
-+        // Applied before the account ticket resolves, and kept local to this
-+        // browser so one visitor's performance experiment stays personal.
-         initialDisabledElements: this.disabledWorldElements,
-         reducedMotion: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
-         // After a detected crash the same GPU or memory pressure would likely
-@@ -11088,6 +11096,16 @@ class ForkMeshWorld extends HTMLElement {
-         );
-         return;
-       }
-+      const elementSort = event.target.closest("[data-world-element-sort]");
-+      if (elementSort) {
-+        this.worldElementSort = ["drawables", "triangles", "interactives"].includes(
-+          elementSort.value,
-+        )
-+          ? elementSort.value
-+          : "drawables";
-+        this.renderWorldElementsPane();
-+        return;
-+      }
-       const emojiCategory = event.target.closest(
-         "[data-world-emoji-category]",
-       );
-@@ -12435,27 +12453,8 @@ class ForkMeshWorld extends HTMLElement {
-   }
- 
-   applyAdminElementsAccess() {
--    const enabled = this.identity?.isAdmin === true;
-     const elementsTab = this.$("[data-world-elements-tab]");
--    if (elementsTab) elementsTab.hidden = !enabled;
--    if (
--      !enabled &&
--      this.worldTicketResolved &&
--      this.disabledWorldElements.length
--    ) {
--      // A stored experiment from an admin session must never dim the world
--      // for whoever is signed in (or signed out) on this device now.
--      this.disabledWorldElements = [];
--      writeJSON(localStorage, DISABLED_ELEMENTS_KEY, []);
--      (this.world?.listWorldElements?.() || [])
--        .filter((element) => !element.enabled)
--        .forEach((element) =>
--          this.world.setWorldElementEnabled(element.id, true),
--        );
--    }
--    if (!enabled && this.settingsTab === "elements") {
--      this.selectSettingsTab("view");
--    }
-+    if (elementsTab) elementsTab.hidden = false;
-   }
- 
-   adminErrorStorageKey() {
-@@ -23202,14 +23201,11 @@ class ForkMeshWorld extends HTMLElement {
-   }
- 
-   selectSettingsTab(tab) {
--    let selected = ["view", "work", "security", "debug", "elements"].includes(
-+    const selected = ["view", "work", "security", "debug", "elements"].includes(
-       tab,
-     )
-       ? tab
-       : "view";
--    if (selected === "elements" && this.identity?.isAdmin !== true) {
--      selected = "view";
--    }
-     this.settingsTab = selected;
-     const panel = this.$("[data-world-settings]");
-     if (panel) panel.dataset.activeTab = selected;
-@@ -23247,10 +23243,7 @@ class ForkMeshWorld extends HTMLElement {
- 
-   setWorldElementEnabled(id, enabled) {
-     const elementId = String(id || "");
--    if (
--      this.identity?.isAdmin !== true ||
--      !this.world?.setWorldElementEnabled?.(elementId, enabled)
--    ) {
-+    if (!this.world?.setWorldElementEnabled?.(elementId, enabled)) {
-       return;
-     }
-     const disabled = new Set(this.disabledWorldElements);
-@@ -23269,7 +23262,6 @@ class ForkMeshWorld extends HTMLElement {
-   }
- 
-   setAllWorldElementsEnabled(enabled) {
--    if (this.identity?.isAdmin !== true) return;
-     const elements = this.world?.listWorldElements?.() || [];
-     elements.forEach((element) =>
-       this.world.setWorldElementEnabled(element.id, enabled),
-@@ -23290,11 +23282,6 @@ class ForkMeshWorld extends HTMLElement {
-     if (!list) return;
-     const status = this.$("[data-world-element-status]");
-     if (status) status.textContent = String(statusMessage || "").slice(0, 200);
--    if (this.identity?.isAdmin !== true) {
--      list.innerHTML =
--        '<p class="world-setting-note">Sign in as an administrator to control world elements.</p>';
--      return;
--    }
-     const elements = this.world?.listWorldElements?.() || [];
-     if (!elements.length) {
-       list.innerHTML =
-@@ -23324,11 +23311,19 @@ class ForkMeshWorld extends HTMLElement {
-         (category) => !categoryOrder.includes(category),
-       ),
-     ];
-+    const sort = ["drawables", "triangles", "interactives"].includes(
-+      this.worldElementSort,
-+    )
-+      ? this.worldElementSort
-+      : "drawables";
-+    const compareElements = (left, right) =>
-+      Number(right[sort]) - Number(left[sort]) ||
-+      left.label.localeCompare(right.label);
-     list.innerHTML = orderedCategories
-       .map((category) => {
-         const rows = grouped
-           .get(category)
--          .sort((a, b) => a.label.localeCompare(b.label))
-+          .sort(compareElements)
-           .map((element) => {
-             const stats = element.system
-               ? "per-frame system"
-@@ -23354,6 +23349,8 @@ class ForkMeshWorld extends HTMLElement {
-         </section>`;
-       })
-       .join("");
-+    const sortControl = this.$("[data-world-element-sort]");
-+    if (sortControl) sortControl.value = sort;
-   }
- 
-   renderWorldSessions(message = "", tone = "") {
-diff --git a/cloudflare_worker/src/entry.py b/cloudflare_worker/src/entry.py
-index 1be50929a..483421423 100644
---- a/cloudflare_worker/src/entry.py
-+++ b/cloudflare_worker/src/entry.py
-@@ -775,6 +775,104 @@ def notification_payload(kind, title, body="", repo="", href="", actor="",
-     }
- 
- 
-+# Organization task activity, in ping copy. The board itself is private to the
-+# organization, so the ping is the only place most members read the event: it
-+# has to answer who did it, what they did it to, which organization it belongs
-+# to and where the task sits, rather than the bare "Organization task activity"
-+# line it used to carry (adhoc #147).
-+ORGANIZATION_TASK_ACTION_COPY = {
-+    "created": "created",
-+    "started": "started",
-+    "stopped": "stopped",
-+    "completed": "completed",
-+    "returned": "returned",
-+    "qa requested": "sent to QA",
-+    "deleted": "deleted",
-+}
-+ORGANIZATION_TASK_STATUS_COPY = {
-+    "idle": "not started",
-+    "active": "in progress",
-+    "done": "done",
-+}
-+
-+
-+def organization_task_ping_copy(org, actor, action, task):
-+    """Title/body/meta for one organization task activity ping."""
-+    task = task if isinstance(task, dict) else {}
-+    org_name = clean_string(org, MAX_NODE_NAME).strip().lower()
-+    actor_name = clean_string(actor or "", MAX_NODE_NAME).strip().lower()
-+    who = ("@" + actor_name) if actor_name else "a team member"
-+    action_slug = clean_string(
-+        action or "", 32).strip().lower().replace("_", " ")
-+    verb = ORGANIZATION_TASK_ACTION_COPY.get(
-+        action_slug, action_slug or "updated")
-+    task_title = clean_string(
-+        task.get("title") or "", 160).strip() or "Organization task"
-+    department = clean_string(
-+        task.get("department") or "", 64).strip().lower()
-+    team = clean_string(task.get("team") or "", 64).strip().lower()
-+    status = clean_string(task.get("status") or "", 32).strip().lower()
-+    assignee_kind = clean_string(
-+        task.get("assigneeKind") or "", 32).strip().lower()
-+    assignee = clean_string(task.get("assignee") or "", 64).strip().lower()
-+    repository = clean_string(task.get("repository") or "", 201).strip()
-+    task_id = clean_string(str(task.get("id") or ""), 80)
-+    try:
-+        priority = int(task.get("priority"))
-+    except (TypeError, ValueError):
-+        priority = 0
-+
-+    where = (" in " + org_name) if org_name else ""
-+    # The task name is the only part of the title that can run long, so it is
-+    # the part trimmed to keep who/what/which-org inside the 160-char cap
-+    # notification_payload() enforces.
-+    room = 160 - len("%s %s \"\"%s" % (who, verb, where))
-+    short_title = (
-+        task_title if len(task_title) <= max(8, room)
-+        else task_title[:max(8, room) - 1].rstrip() + "…")
-+    title = "%s %s \"%s\"%s" % (who, verb, short_title, where)
-+    lead = (
-+        "%s %s \"%s\" in the %s organization" % (who, verb, task_title, org_name)
-+        if org_name
-+        else "%s %s \"%s\" in your organization" % (who, verb, task_title))
-+    details = [lead]
-+    placement = " / ".join(
-+        [part for part in (department, team) if part])
-+    if placement:
-+        details.append(placement)
-+    if priority > 0:
-+        details.append("priority %d" % priority)
-+    if assignee_kind == "agent":
-+        details.append("assigned to an agent")
-+    elif assignee:
-+        details.append("assigned to @" + assignee)
-+    elif assignee_kind == "unassigned":
-+        details.append("unassigned")
-+    if status:
-+        details.append(
-+            "status " + ORGANIZATION_TASK_STATUS_COPY.get(status, status))
-+    if repository:
-+        details.append("repo " + repository)
-+    return {
-+        "title": title,
-+        "body": " · ".join(details),
-+        "meta": {
-+            "organization": org_name,
-+            "actor": actor_name,
-+            "action": action_slug,
-+            "taskId": task_id,
-+            "taskTitle": task_title,
-+            "department": department,
-+            "team": team,
-+            "priority": priority,
-+            "status": status,
-+            "assignee": "agent" if assignee_kind == "agent" else assignee,
-+            "assigneeKind": assignee_kind,
-+            "repository": repository,
-+        },
-+    }
-+
-+
- def notification_email_preferences(rec):
-     prefs = dict(NOTIFICATION_EMAIL_DEFAULTS)
-     raw = rec.get("notification_preferences") if isinstance(rec, dict) else {}
-@@ -8483,23 +8581,23 @@ class _OfficeMarketingTasksRuntime:
-             str(org_bi or ""),
-         )
-         safe_actor = clean_string(
--            actor or "a team member", MAX_NODE_NAME
-+            actor or "", MAX_NODE_NAME
-         ).strip().lower()
--        title = clean_string(
--            (task or {}).get("title") or "Organization task", 160
--        ).strip()
-         safe_action = clean_string(
-             action or "updated", 32
-         ).strip().lower().replace("_", " ")
--        action_copy = {
--            "created": "created",
--            "started": "started",
--            "stopped": "stopped",
--            "completed": "completed",
--            "returned": "returned",
--            "qa requested": "sent to QA",
--            "deleted": "deleted",
--        }.get(safe_action, safe_action or "updated")
-+        # The org name is what makes the ping legible outside the board, so it
-+        # is read back from the row this org_bi indexes rather than left out.
-+        org_row = await d1_first(
-+            self.env, "SELECT name FROM orgs WHERE org_bi=?", str(org_bi or ""))
-+        record = dict(task if isinstance(task, dict) else {})
-+        record.setdefault("id", str(task_id or ""))
-+        copy = organization_task_ping_copy(
-+            (org_row or {}).get("name") or "",
-+            safe_actor,
-+            safe_action,
-+            record,
-+        )
-         for row in rows or []:
-             recipient = clean_string(
-                 row.get("name") or "", MAX_NODE_NAME
-@@ -8510,25 +8608,20 @@ class _OfficeMarketingTasksRuntime:
-                 self.env,
-                 recipient,
-                 "organization_task_activity",
--                "Organization task activity",
--                body="@%s %s %s" % (safe_actor, action_copy, title),
--                actor="",
-+                copy["title"],
-+                body=copy["body"],
-+                # Naming the actor both fills the Actor column on every ping
-+                # surface and stops the member who acted being pinged about
-+                # their own change (enqueue_notification drops self-pings).
-+                actor=safe_actor if valid_node_name(safe_actor) else "",
-+                href="/world/",
-                 source=str(task_id or ""),
-                 dedupe="organization-task:%s:%s:%s" % (
-                     safe_action.replace(" ", "-"),
-                     str(task_id or ""),
-                     str((task or {}).get("updatedAt") or ""),
-                 ),
--                meta={
--                    "taskId": str(task_id or ""),
--                    "action": safe_action,
--                    "department": clean_string(
--                        (task or {}).get("department") or "", 64
--                    ).strip().lower(),
--                    "team": clean_string(
--                        (task or {}).get("team") or "", 64
--                    ).strip().lower(),
--                },
-+                meta=copy["meta"],
-             )
- 
-     async def notify_engineering_task_started(
-diff --git a/cloudflare_worker/tests/test_offline_owner_issue_persist_frontend.py b/cloudflare_worker/tests/test_offline_owner_issue_persist_frontend.py
-index 5ff878a31..90c24bd18 100644
---- a/cloudflare_worker/tests/test_offline_owner_issue_persist_frontend.py
-+++ b/cloudflare_worker/tests/test_offline_owner_issue_persist_frontend.py
-@@ -1,14 +1,5 @@
- #!/usr/bin/env python3
--"""Owner's offline issue submissions persist across reloads (issue #379).
--
--When the owner of a repo files an issue while their source-of-truth node is down
--but a mirror is still serving the repo, the submission lands in the relay inbox
--and would previously vanish from the list on the next reload (the mirror-loaded
--issue list overwrote the optimistic, session-only placeholder). These contract
--tests pin the local-persistence path so such issues "show up fully" until the
--owner's node returns and drains them - after which the numbered mirror copy
--reconciles the local placeholder away.
--"""
-+"""Issue submission goes directly to an eligible mirror for materialization."""
- 
- from pathlib import Path
- 
-@@ -24,57 +15,22 @@ def _slice(text, start_marker, end_marker):
-     return text[start:end]
- 
- 
--def test_owner_check_and_mirror_helpers_exist():
--    # The owner-of-source-of-truth gate and the "served by a mirror" liveness
--    # check are what scope issue #379 to exactly the offline-owner case.
--    assert "function isRepoOwner(repo)" in DASHBOARD_JS
--    assert "function repoServedByMirror(repo)" in DASHBOARD_JS
--
--
--def test_persistence_store_helpers_exist():
--    for fn in (
--        "function loadPendingIssues(repo)",
--        "function savePendingIssue(repo, item)",
--        "function reconcilePendingIssues(repo, mirrorIssues)",
--    ):
--        assert fn in DASHBOARD_JS, fn
--    # Kept in localStorage under a dedicated key, per repo, so it survives reload.
--    assert '"forkmesh.pendingIssues"' in DASHBOARD_JS
--
--
--def test_submit_persists_only_for_offline_owner():
--    # On successful submit the owner-offline branch is gated on BOTH ownership
--    # and the source-of-truth being down while a mirror serves the repo.
-+def test_submit_uses_eligible_mirror_delivery_not_owner_persistence():
-     body = _slice(
-         DASHBOARD_JS,
--        "const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);",
--        "setRepoTabCount(\"issues\"",
-+        "async function handleIssueComposeSubmit(repo, form)",
-+        "// --- CSV issue import",
-     )
--    assert "if (ownerOffline) savePendingIssue(repo, pendingItem);" in body
--    # The hint copy tells the owner it will sync back when the node returns.
--    assert "sync to your node when it comes back online" in DASHBOARD_JS
-+    assert "first eligible online mirror" in body
-+    assert "savePendingIssue" not in body
-+    assert "maintainer's inbox" not in body
- 
- 
--def test_load_merges_and_reconciles_pending():
--    # loadRepoIssues folds persisted pending items in on top of the mirror list
--    # and drops any the node has since drained (matched against mirror issues).
-+def test_load_reads_only_committed_mirror_issues():
-     load = _slice(
-         DASHBOARD_JS,
-         "async function loadRepoIssues(repo)",
-         "async function loadRepoCollection(",
-     )
--    assert "reconcilePendingIssues(repo, items)" in load
--    assert "const merged = pending.length ? [...pending, ...items] : items;" in load
--    # The empty-mirror branch still surfaces the owner's offline submissions.
--    assert "reconcilePendingIssues(repo, [])" in load
--
--
--def test_reconcile_matches_on_title():
--    body = _slice(
--        DASHBOARD_JS,
--        "function reconcilePendingIssues(repo, mirrorIssues)",
--        "async function submitWebIssue",
--    )
--    # A pending item retires once a mirror issue with the same title appears.
--    assert "issue.title" in body
--    assert "item.title" in body
-+    assert "state.issuesView.items = items;" in load
-+    assert "reconcilePendingIssues" not in load
-diff --git a/cloudflare_worker/tests/test_organization_task_pings.py b/cloudflare_worker/tests/test_organization_task_pings.py
-new file mode 100644
-index 000000000..577e7d850
---- /dev/null
-+++ b/cloudflare_worker/tests/test_organization_task_pings.py
-@@ -0,0 +1,139 @@
-+#!/usr/bin/env python3
-+"""Organization task pings name who acted, on what, and in which org."""
-+import ast
-+import importlib.util
-+from pathlib import Path
-+
-+from _dashboard_bundle import assembled_dashboard_js
-+
-+ROOT = Path(__file__).resolve().parents[1]
-+ENTRY = ROOT / "src" / "entry.py"
-+ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
-+
-+_catalog_spec = importlib.util.spec_from_file_location(
-+    "forkmesh_catalog_for_pings", ROOT / "src" / "catalog.py")
-+catalog = importlib.util.module_from_spec(_catalog_spec)
-+_catalog_spec.loader.exec_module(catalog)
-+
-+
-+def _load_ping_copy():
-+    want_funcs = {"organization_task_ping_copy"}
-+    want_assigns = {
-+        "MAX_NODE_NAME",
-+        "ORGANIZATION_TASK_ACTION_COPY",
-+        "ORGANIZATION_TASK_STATUS_COPY",
-+    }
-+    tree = ast.parse(ENTRY_TEXT, filename=str(ENTRY))
-+    body = []
-+    for node in tree.body:
-+        if isinstance(node, ast.Assign):
-+            targets = {t.id for t in node.targets if isinstance(t, ast.Name)}
-+            if targets & want_assigns:
-+                body.append(node)
-+        elif isinstance(node, ast.FunctionDef) and node.name in want_funcs:
-+            body.append(node)
-+    mod = ast.Module(body=body, type_ignores=[])
-+    ast.fix_missing_locations(mod)
-+    ns = {"clean_string": catalog.clean_string}
-+    exec(compile(mod, str(ENTRY), "exec"), ns)
-+    return ns["organization_task_ping_copy"]
-+
-+
-+TASK = {
-+    "id": "task-1",
-+    "title": "Fix the login bug",
-+    "department": "engineering",
-+    "team": "frontend",
-+    "priority": 20,
-+    "status": "active",
-+    "assignee": "dana",
-+    "assigneeKind": "user",
-+    "repository": "forkmesh/site",
-+}
-+
-+
-+def test_ping_copy_names_actor_action_task_and_organization():
-+    copy = _load_ping_copy()("forkmesh", "jett", "started", TASK)
-+    assert copy["title"] == '@jett started "Fix the login bug" in forkmesh'
-+    assert copy["body"].startswith(
-+        '@jett started "Fix the login bug" in the forkmesh organization')
-+    for fragment in (
-+            "engineering / frontend",
-+            "priority 20",
-+            "assigned to @dana",
-+            "status in progress",
-+            "repo forkmesh/site",
-+    ):
-+        assert fragment in copy["body"]
-+    assert copy["meta"]["organization"] == "forkmesh"
-+    assert copy["meta"]["actor"] == "jett"
-+    assert copy["meta"]["action"] == "started"
-+    assert copy["meta"]["taskId"] == "task-1"
-+    assert copy["meta"]["taskTitle"] == "Fix the login bug"
-+    assert copy["meta"]["department"] == "engineering"
-+    assert copy["meta"]["team"] == "frontend"
-+    assert copy["meta"]["priority"] == 20
-+    assert copy["meta"]["status"] == "active"
-+    assert copy["meta"]["assignee"] == "dana"
-+    assert copy["meta"]["repository"] == "forkmesh/site"
-+
-+
-+def test_ping_copy_survives_missing_fields_and_stays_inside_caps():
-+    copy = _load_ping_copy()("", "", "qa_requested", None)
-+    assert copy["title"] == 'a team member sent to QA "Organization task"'
-+    assert "in your organization" in copy["body"]
-+    assert copy["meta"]["action"] == "qa requested"
-+    assert copy["meta"]["actor"] == ""
-+    long_title = "x" * 400
-+    long = _load_ping_copy()(
-+        "forkmesh", "j" * 80, "created", {"title": long_title})
-+    assert len(long["title"]) <= 160
-+    assert len(long["body"]) <= 500
-+    assert long["title"].endswith("in forkmesh")
-+
-+
-+def test_agent_assignment_and_unassigned_tasks_read_naturally():
-+    agent = _load_ping_copy()("forkmesh", "jett", "created", {
-+        "title": "Ship the digest", "assigneeKind": "agent",
-+        "assignee": "agent",
-+    })
-+    assert "assigned to an agent" in agent["body"]
-+    assert agent["meta"]["assignee"] == "agent"
-+    idle = _load_ping_copy()("forkmesh", "jett", "created", {
-+        "title": "Ship the digest", "assigneeKind": "unassigned",
-+        "status": "idle",
-+    })
-+    assert "unassigned" in idle["body"]
-+    assert "status not started" in idle["body"]
-+
-+
-+def test_worker_notifier_resolves_the_org_name_and_credits_the_actor():
-+    notifier = ENTRY_TEXT.split(
-+        "async def notify_organization_task_activity", 1)[1].split(
-+            "async def notify_engineering_task_started", 1)[0]
-+    assert 'SELECT name FROM orgs WHERE org_bi=?' in notifier
-+    assert "copy = organization_task_ping_copy(" in notifier
-+    assert 'copy["title"]' in notifier
-+    assert 'body=copy["body"]' in notifier
-+    assert "meta=copy[\"meta\"]" in notifier
-+    # The actor rides the ping so every surface can show who acted (and so the
-+    # member who acted is not pinged about their own change).
-+    assert 'actor=safe_actor if valid_node_name(safe_actor) else ""' in notifier
-+    assert 'href="/world/"' in notifier
-+
-+
-+def test_dashboard_ping_modal_lists_the_organization_task_fields():
-+    dashboard = assembled_dashboard_js()
-+    assert "function organizationTaskDetailsHtml(item)" in dashboard
-+    assert "${organizationTaskDetailsHtml(item)}" in dashboard
-+    assert 'String(item.kind || "").startsWith("organization_task")' in dashboard
-+    for label in ("Who", "What", "Task", "Organization", "Department",
-+                  "Team", "Assigned to", "Priority", "Status", "Repository"):
-+        assert '["%s",' % label in dashboard
-+    assert "organization_task_activity: \"clipboard-list\"" in dashboard
-+
-+
-+def test_dashboard_preview_opens_the_selected_ping_detail():
-+    dashboard = assembled_dashboard_js()
-+    assert "setNotificationDropdownOpen(false);" in dashboard
-+    assert "!event.target.closest(\"#notificationModal\")" in dashboard
-diff --git a/cloudflare_worker/tests/test_world_admin_elements_and_debug_tab.py b/cloudflare_worker/tests/test_world_admin_elements_and_debug_tab.py
-index 51c838367..22504cffa 100644
---- a/cloudflare_worker/tests/test_world_admin_elements_and_debug_tab.py
-+++ b/cloudflare_worker/tests/test_world_admin_elements_and_debug_tab.py
-@@ -1,7 +1,7 @@
- #!/usr/bin/env python3
--"""Contracts for the admin Elements tab and the settings Debug tab.
-+"""Contracts for the Elements tab and the settings Debug tab.
- 
--The issue asks for three things: an administrator-only settings tab that can
-+The issue asks for three things: a settings tab that can
- turn every single world element off (completely removing it from the game)
- and back on to isolate what is slowing rendering down; the debug tool moved
- into its own settings tab; and that panel staying open while playing, with
-@@ -99,7 +99,7 @@ def test_disabling_an_element_removes_it_from_scene_raycast_and_frame_work():
-     assert "() => nodeInfrastructure.get(id) === registeredCabinet," in SCENE
- 
- 
--def test_elements_tab_is_admin_only_device_local_and_wired_to_the_scene():
-+def test_elements_tab_is_available_to_everyone_device_local_and_wired_to_the_scene():
-     for contract in (
-         'data-world-settings-tab="elements"',
-         'data-world-settings-pane="elements"',
-@@ -113,25 +113,36 @@ def test_elements_tab_is_admin_only_device_local_and_wired_to_the_scene():
-         "initialDisabledElements: this.disabledWorldElements,",
-     ):
-         assert contract in APP
--    # Only a verified administrator flips switches, and choices persist on
--    # this device only — never into synced account preferences.
-+    # Every visitor can flip switches, and choices persist on this device only
-+    # — never into synced account preferences.
-     toggle = APP.split("  setWorldElementEnabled(id, enabled) {", 1)[1].split(
-         "\n  setAllWorldElementsEnabled(", 1
-     )[0]
--    assert "this.identity?.isAdmin !== true" in toggle
-+    assert "this.identity?.isAdmin !== true" not in toggle
-     assert "writeJSON(localStorage, DISABLED_ELEMENTS_KEY" in toggle
-     assert "disabledElements" not in APP.split("function defaultSettings()", 1)[
-         1
-     ].split("function mergeSettings", 1)[0]
--    # Selecting the tab without admin rights falls back to View, and a device
--    # whose session resolves to non-admin gets the full world back.
--    assert 'selected === "elements" && this.identity?.isAdmin !== true' in APP
--    assert "this.worldTicketResolved = true;" in APP
-+    # The tab stays visible regardless of the current account.
-     restore = APP.split("  applyAdminElementsAccess() {", 1)[1].split(
-         "\n  adminErrorStorageKey", 1
-     )[0]
--    assert "elementsTab.hidden = !enabled;" in restore
--    assert "this.disabledWorldElements = [];" in restore
-+    assert "elementsTab.hidden = false;" in restore
-+
-+
-+def test_elements_can_sort_by_drawn_triangles_or_clicks():
-+    for contract in (
-+        'data-world-element-sort',
-+        '<option value="drawables">Drawn</option>',
-+        '<option value="triangles">Triangles</option>',
-+        '<option value="interactives">Clicks</option>',
-+        'this.worldElementSort = "drawables";',
-+    ):
-+        assert contract in APP
-+    render = APP.split("  renderWorldElementsPane(statusMessage = \"\") {", 1)[1].split(
-+        "\n  renderWorldSessions", 1
-+    )[0]
-+    assert 'Number(right[sort]) - Number(left[sort])' in render
- 
- 
- def test_debug_tab_shows_live_readings_with_suggestions_and_stays_open():
-diff --git a/qt_client/src/AgentRunner.cpp b/qt_client/src/AgentRunner.cpp
-index c00f0b820..c2ec32700 100644
---- a/qt_client/src/AgentRunner.cpp
-+++ b/qt_client/src/AgentRunner.cpp
-@@ -194,6 +194,16 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
-     m_issue = issue;
-     m_repoPath = repoPath;
-     m_config = config;
-+    if (m_config.mode.trimmed().isEmpty())
-+        m_config.mode = m_session.mode;
-+    if (m_config.strength.trimmed().isEmpty())
-+        m_config.strength = m_session.strength;
-+    if (m_session.mode.trimmed().isEmpty())
-+        m_session.mode = m_config.mode;
-+    if (m_session.strength.trimmed().isEmpty())
-+        m_session.strength = m_config.strength;
-+    if (m_session.model.trimmed().isEmpty())
-+        m_session.model = m_config.model;
-     m_prompt = buildPrompt();
- 
-     m_session.status = AgentStatus::Running;
-@@ -217,6 +227,9 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
-                 .arg(m_config.maxOutputTokens));
-     if (!m_config.model.trimmed().isEmpty())
-         emitLog(QStringLiteral("==> Model: %1").arg(m_config.model.trimmed()));
-+    emitLog(QStringLiteral("==> %1")
-+                .arg(launchIdentityInstruction(m_session.provider, m_config.model,
-+                                               m_config.mode, m_config.strength)));
- 
-     if (m_config.command.trimmed().isEmpty()) {
-         complete(false, AgentStatus::Waiting,
-@@ -746,6 +759,33 @@ QString AgentRunner::defaultPromptPreamble()
-         "Do not commit, push, or open network resources unless the issue explicitly requires it.");
- }
- 
-+QString AgentRunner::providerDisplayName(const QString &provider)
-+{
-+    if (provider == QLatin1String("claude-code"))
-+        return QStringLiteral("CC");
-+    if (provider == QLatin1String("codex"))
-+        return QStringLiteral("Codex");
-+    if (provider.startsWith(QLatin1String("claude")))
-+        return QStringLiteral("Claude API");
-+    return QStringLiteral("OpenAI API");
-+}
-+
-+QString AgentRunner::launchIdentityInstruction(const QString &provider,
-+                                                const QString &model,
-+                                                const QString &mode,
-+                                                const QString &strength)
-+{
-+    return QStringLiteral("Agent launch identity: provider display name: %1; "
-+                          "resolved model: %2; permission mode: %3; "
-+                          "reasoning speed: %4.")
-+        .arg(providerDisplayName(provider),
-+             model.trimmed().isEmpty() ? QStringLiteral("provider default")
-+                                       : model.trimmed(),
-+             mode.trimmed().isEmpty() ? QStringLiteral("Ask") : mode.trimmed(),
-+             strength.trimmed().isEmpty() ? QStringLiteral("high")
-+                                           : strength.trimmed());
-+}
-+
- QString AgentRunner::buildPrompt() const
- {
-     QStringList prompt;
-@@ -754,6 +794,8 @@ QString AgentRunner::buildPrompt() const
-     QString preamble = m_config.promptPreamble.trimmed();
-     if (preamble.isEmpty())
-         preamble = defaultPromptPreamble();
-+    prompt << launchIdentityInstruction(m_session.provider, m_config.model,
-+                                        m_config.mode, m_config.strength);
-     prompt << preamble;
-     prompt << QStringLiteral("");
-     prompt << QStringLiteral("Repository: %1/%2").arg(m_session.owner, m_session.name);
-diff --git a/qt_client/src/AgentRunner.h b/qt_client/src/AgentRunner.h
-index f339d31b6..a64d68b3f 100644
---- a/qt_client/src/AgentRunner.h
-+++ b/qt_client/src/AgentRunner.h
-@@ -19,6 +19,10 @@ public:
-         QString apiKey;
-         QString isolatedHome;
-         QString model;
-+        // Launch identity values resolved by the caller from the session (or
-+        // legacy settings). They are included in the first provider prompt.
-+        QString mode;
-+        QString strength;
-         // Instruction preamble prepended to the issue prompt. Empty falls back to
-         // defaultPromptPreamble(); editable and saved via Settings → Agents.
-         QString promptPreamble;
-@@ -38,6 +42,11 @@ public:
- 
-     // The built-in instruction preamble used when no custom prompt is configured.
-     static QString defaultPromptPreamble();
-+    static QString providerDisplayName(const QString &provider);
-+    static QString launchIdentityInstruction(const QString &provider,
-+                                             const QString &model,
-+                                             const QString &mode,
-+                                             const QString &strength);
- 
-     bool busy() const { return m_busy; }
-     int currentSessionId() const { return m_session.id; }
-diff --git a/qt_client/src/CodexAppServerSession.cpp b/qt_client/src/CodexAppServerSession.cpp
-index 976c3c92b..bc8ec87f1 100644
---- a/qt_client/src/CodexAppServerSession.cpp
-+++ b/qt_client/src/CodexAppServerSession.cpp
-@@ -3,6 +3,9 @@
- #include "AgentJail.h"
- 
- #include <QCoreApplication>
-+#include <QDir>
-+#include <QFile>
-+#include <QFileInfo>
- #include <QJsonDocument>
- #include <QJsonParseError>
- #include <QProcess>
-@@ -56,7 +59,48 @@ QString sandboxForMode(const QString &mode)
-                : QStringLiteral("workspace-write");
- }
- 
--QJsonObject sandboxPolicyForMode(const QString &mode)
-+QStringList gitMetadataRoots(const QString &cwd)
-+{
-+    // A linked worktree's .git is a file which points outside cwd.  Git needs
-+    // to write both that per-worktree directory (index.lock, HEAD.lock) and
-+    // its common directory (refs, objects) when committing.  Allow only those
-+    // resolved metadata directories; the rest of the checkout remains covered
-+    // by the ordinary workspace-write sandbox.
-+    const QFileInfo dotGit(QDir(cwd).filePath(QStringLiteral(".git")));
-+    if (!dotGit.isFile())
-+        return {};
-+
-+    QFile gitFile(dotGit.absoluteFilePath());
-+    if (!gitFile.open(QIODevice::ReadOnly | QIODevice::Text))
-+        return {};
-+    const QString line = QString::fromUtf8(gitFile.readLine()).trimmed();
-+    const QString gitdirPrefix = QStringLiteral("gitdir:");
-+    if (!line.startsWith(gitdirPrefix, Qt::CaseInsensitive))
-+        return {};
-+
-+    QString gitDir = line.mid(gitdirPrefix.size()).trimmed();
-+    if (QDir::isRelativePath(gitDir))
-+        gitDir = QDir(dotGit.absolutePath()).absoluteFilePath(gitDir);
-+    gitDir = QFileInfo(gitDir).canonicalFilePath();
-+    if (gitDir.isEmpty())
-+        return {};
-+
-+    QStringList roots{gitDir};
-+    QFile commonFile(QDir(gitDir).filePath(QStringLiteral("commondir")));
-+    if (!commonFile.open(QIODevice::ReadOnly | QIODevice::Text))
-+        return roots;
-+    QString commonDir = QString::fromUtf8(commonFile.readLine()).trimmed();
-+    if (commonDir.isEmpty())
-+        return roots;
-+    if (QDir::isRelativePath(commonDir))
-+        commonDir = QDir(gitDir).absoluteFilePath(commonDir);
-+    commonDir = QFileInfo(commonDir).canonicalFilePath();
-+    if (!commonDir.isEmpty() && commonDir != gitDir)
-+        roots.append(commonDir);
-+    return roots;
-+}
-+
-+QJsonObject sandboxPolicyForMode(const QString &mode, const QString &cwd)
- {
-     if (normalizedMode(mode).contains(QStringLiteral("plan"))) {
-         return QJsonObject{{QStringLiteral("type"), QStringLiteral("readOnly")},
-@@ -64,7 +108,8 @@ QJsonObject sandboxPolicyForMode(const QString &mode)
-     }
-     return QJsonObject{
-         {QStringLiteral("type"), QStringLiteral("workspaceWrite")},
--        {QStringLiteral("writableRoots"), QJsonArray()},
-+        {QStringLiteral("writableRoots"),
-+         QJsonArray::fromStringList(gitMetadataRoots(cwd))},
-         {QStringLiteral("networkAccess"), false},
-         {QStringLiteral("excludeTmpdirEnvVar"), false},
-         {QStringLiteral("excludeSlashTmp"), false}};
-@@ -676,7 +721,7 @@ void CodexAppServerSession::beginTurn(const QString &text)
-                        {QStringLiteral("approvalPolicy"),
-                         approvalPolicyForMode(m_mode)},
-                        {QStringLiteral("sandboxPolicy"),
--                        sandboxPolicyForMode(m_mode)}};
-+                        sandboxPolicyForMode(m_mode, m_cwd)}};
-     if (!m_model.isEmpty())
-         params.insert(QStringLiteral("model"), m_model);
-     if (!m_effort.isEmpty())
+diff --git a/qt_client/CMakeLists.txt b/qt_client/CMakeLists.txt
+index 2cb9a2b97..a11dca0fa 100644
+--- a/qt_client/CMakeLists.txt
++++ b/qt_client/CMakeLists.txt
+@@ -233,6 +233,8 @@ set(FORKMESH_APP_SOURCES
+     src/AgentJail.h
+     src/AgentPromptImages.h
+     src/AgentPromptImages.cpp
++    src/UsageLimitCalendar.h
++    src/UsageLimitCalendar.cpp
+     src/AgentRunner.h
+     src/AgentRunner.cpp
+     src/QrCode.h
+@@ -553,6 +555,8 @@ if(FORKMESH_BUILD_TESTS)
+         src/PullAiReview.cpp
+         src/AgentStore.h
+         src/AgentStore.cpp
++        src/UsageLimitCalendar.h
++        src/UsageLimitCalendar.cpp
+         src/ActionStore.h
+         src/ActionStore.cpp
+         src/RepoSecurity.h
 diff --git a/qt_client/src/MainWindow.h b/qt_client/src/MainWindow.h
-index 50fec8f8b..ed260805b 100644
+index 0467bf66e..2c93ef613 100644
 --- a/qt_client/src/MainWindow.h
 +++ b/qt_client/src/MainWindow.h
-@@ -774,7 +774,8 @@ protected:
-     bool handleFramelessResizeEvent(QObject *obj, QEvent *event);
-     void updateFramelessResizeCursor(Qt::Edges edges);
-     // Right-click on selected text anywhere (transcript, diff, README, logs):
--    // shows the widget's normal context menu plus a "Send to Prompt" action.
-+    // shows the widget's normal context menu plus "Send to Prompt" and
-+    // "Search Codebase" actions.
-     // Returns true (event consumed) only when it took over the menu.
-     bool maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce);
-     // Appends text to whichever prompt box is the relevant target: the
+@@ -2348,6 +2348,22 @@ private:
+     // only useful signal for a headless node that has no one watching its
+     // screen. Opt-in via kEmailOnCreditsRefillSetting; a no-op when off.
+     void maybeEmailCreditsRefilled(bool weekly);
++    // When a provider reports a reset time for an exhausted usage window, make
++    // one local iCalendar reminder and arm the matching desktop ping. The
++    // calendar app owns alerts while ForkMesh is closed; the timer covers a
++    // running desktop.
++    void scheduleUsageLimitReminder(const QString &providerKey,
++                                    const QString &windowKey,
++                                    const QString &providerName,
++                                    const QString &windowName,
++                                    qint64 resetMs);
++    void restoreUsageLimitReminders();
++    void clearUsageLimitReminders();
++    void notifyUsageLimitReady(const QString &providerKey,
++                               const QString &windowKey,
++                               const QString &providerName,
++                               const QString &windowName,
++                               qint64 resetMs);
+     // Issue #115: persist and restore month-to-date spend so the figures are
+     // shown on restart instead of waiting for a fresh API refresh.
+     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
+@@ -5823,6 +5839,10 @@ private:
+     // periodic heartbeat timer if the immediate send fails).
+     bool m_pendingCreditsRefilled5h = false;
+     bool m_pendingCreditsRefilledWeekly = false;
++    // One armed timer per provider/window; calendar reminders persist outside
++    // the process, while these timers make the desktop ping prompt when the
++    // app remains open.
++    QHash<QString, QTimer *> m_usageLimitReminderTimers;
+ 
+     // --- Cove (encrypted vault) UI + session state ----------------------------
+     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
 diff --git a/qt_client/src/MainWindowAgents.cpp b/qt_client/src/MainWindowAgents.cpp
-index 9f19feda3..1bbbde577 100644
+index 5149a10a3..8ba9f566b 100644
 --- a/qt_client/src/MainWindowAgents.cpp
 +++ b/qt_client/src/MainWindowAgents.cpp
-@@ -5917,6 +5917,14 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider)
-     config.maxOutputTokens =
-         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
-     config.promptPreamble = agentPromptPreamble();
-+    config.mode = QSettings()
-+                      .value(kAgentModeSetting,
-+                             QSettings().value(kClaudeAutoModeSetting, true).toBool()
-+                                 ? kClaudeAutoModeLabel
-+                                 : kAgentAskModeLabel)
-+                      .toString()
-+                      .trimmed();
-+    config.strength = composerAgentStrength();
-     // Jail (adhoc #236): the headless runner wraps its command and scratch env
-     // when a cap is set; 0 leaves the run unjailed.
-     if (QSettings().value(kAgentJailSetting, false).toBool())
-@@ -5935,6 +5943,7 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider)
-         config.command = claudeCommandSetting();
-         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
-         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
-+        config.model = QStringLiteral("claude-sonnet-4-6");
-     } else if (agentIsCodexProvider(provider)) {
-         // Codex: run the installed CLI against the user's normal Codex login, just
-         // like Claude Code. This keeps a ChatGPT/Codex plan upgrade from being
-@@ -6471,6 +6480,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
-         if (!session.model.isEmpty() &&
-             agentModelMatchesProvider(provider, session.model))
-             config.model = session.model;
-+        if (!session.mode.isEmpty())
-+            config.mode = session.mode;
-+        if (!session.strength.isEmpty())
-+            config.strength = session.strength;
-         markAgentLimitWindow(provider);
-         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
-         reloadAgents();
-@@ -7156,6 +7169,10 @@ void MainWindow::processAgentQueue()
-         if (!snapshot.model.isEmpty() &&
-             agentModelMatchesProvider(snapshot.provider, snapshot.model))
-             config.model = snapshot.model;
-+        if (!snapshot.mode.isEmpty())
-+            config.mode = snapshot.mode;
-+        if (!snapshot.strength.isEmpty())
-+            config.strength = snapshot.strength;
-         // Ad-hoc API-key runs ride their saved task through the config override,
-         // mirroring startAdHocAgentForRepo so they resume the same way after a restart.
-         if (snapshot.issueNumber == 0 && !snapshot.prompt.isEmpty())
-@@ -7936,8 +7953,30 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
-     const QString branchName = session.branchName;
-     const QString baseRef = session.baseRef;
-     const int issueNumber = session.issueNumber;
--    const QString model = session.model;
--    const QString sessionMode = session.mode;
-+    QString selectedModel = session.model;
-+    if (selectedModel.isEmpty())
-+        selectedModel = QSettings()
-+                            .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
-+                            .toString()
-+                            .trimmed();
-+    const QString launchProvider = codex ? kCodexProvider : QStringLiteral("claude-code");
-+    if (!agentModelMatchesProvider(launchProvider, selectedModel))
-+        selectedModel.clear();
-+    const QString sessionMode =
-+        session.mode.isEmpty()
-+            ? QSettings()
-+                  .value(kAgentModeSetting,
-+                         QSettings().value(kClaudeAutoModeSetting, true).toBool()
-+                             ? kClaudeAutoModeLabel
-+                             : kAgentAskModeLabel)
-+                  .toString()
-+                  .trimmed()
-+            : session.mode;
-+    const QString sessionStrength =
-+        session.strength.isEmpty() ? composerAgentStrength() : session.strength;
-+    session.model = selectedModel;
-+    session.mode = sessionMode;
-+    session.strength = sessionStrength;
+@@ -11,6 +11,7 @@
+ #include "AgentPromptImages.h"
+ #include "KebabHeaderView.h"
+ #include "CodexAppServerSession.h"
++#include "UsageLimitCalendar.h"
  
-     session.status = AgentStatus::Running;
-     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
-@@ -7984,27 +8023,12 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
-     // otherwise fall back to the footer quick-add bar's persisted choice (adhoc
-     // #261). Empty leaves the CLI on its own default; otherwise it's passed
-     // through as `--model`.
--    QString selectedModel =
--        !model.isEmpty()
--            ? model
--            : QSettings()
--                  .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
--                  .toString()
--                  .trimmed();
--    // A session continued by a different provider may still carry the previous
--    // provider's model (e.g. a Codex session left with "claude-opus-4-8"); the
--    // CLI rejects a foreign model, so drop it and fall back to this provider's
--    // default rather than fail the turn (adhoc #76).
--    const QString launchProvider =
--        codex ? kCodexProvider : QStringLiteral("claude-code");
--    if (!agentModelMatchesProvider(launchProvider, selectedModel))
--        selectedModel.clear();
-     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
-     // prompt — `lead` carries the user's ask (or the issue + its comments).
-     const QString routeTask = lead;
-     auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
-                    selectedModel, routeTask, codex,
--                   sessionMode](const QString &workdir) {
-+                   sessionMode, sessionStrength](const QString &workdir) {
-         if (codex) {
-             CodexAppServerSession *live = m_codexStreams.value(sid);
-             if (!live)
-@@ -8020,9 +8044,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
-                     ? (autoMode ? kClaudeAutoModeLabel
-                                 : kAgentAskModeLabel)
-                     : sessionMode;
--            const QString effort =
--                QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
--                    .toString();
-+            const QString effort = sessionStrength;
-+            const QString launchPrompt =
-+                AgentRunner::launchIdentityInstruction(kCodexProvider, selectedModel, mode,
-+                                                       effort) + QStringLiteral("\n\n") + prompt;
-+            if (AgentSession *as = findAgentSession(sid))
-+                m_agentStore->appendLog(
-+                    *as, QStringLiteral("==> %1\n")
-+                             .arg(AgentRunner::launchIdentityInstruction(
-+                                 kCodexProvider, selectedModel, mode, effort)));
-             // Codex should use the user's normal ChatGPT/Codex login just like
-             // the official IDE extension. Do not let inherited API-key variables
-             // silently switch this path to API billing.
-@@ -8036,7 +8066,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
-                 jailMb = agentJailMemoryMb();
-                 codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
-             }
--            live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
-+            live->start(workdir, codexEnv, launchPrompt, resumeId, selectedModel, mode,
-                         effort, jailMb);
-             return;
-         }
-@@ -8063,15 +8093,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
-         // re-checks that this stream is still the session's live one (the user
-         // may have stopped or restarted it while the triage ran).
-         auto begin = [this, sid, live, workdir, env, prompt, autoMode,
--                      resumeId](const QString &chosenModel) {
-+                      resumeId, sessionMode, sessionStrength](const QString &chosenModel) {
-             if (m_streamSessions.value(sid) != live)
-                 return;
-             // Footer slash-actions menu (adhoc #116): effort and model-fallback
-             // ride into the CLI as --effort/--fallback-model; turning Thinking
-             // off zeroes the thinking budget via MAX_THINKING_TOKENS.
--            const QString effort =
--                QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
--                    .toString();
-+            const QString effort = sessionStrength;
-+            if (AgentSession *as = findAgentSession(sid)) {
-+                as->model = chosenModel;
-+                m_agentStore->saveSession(*as);
-+            }
-             const QString fallback =
-                 QSettings().value(kClaudeFallbackModelSetting, false).toBool()
-                     ? QStringLiteral("opus,sonnet")
-@@ -8085,7 +8117,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
-                 jailMb = agentJailMemoryMb();
-                 launchEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
-             }
--            live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
-+            const QString launchPrompt =
-+                AgentRunner::launchIdentityInstruction(QStringLiteral("claude-code"),
-+                                                       chosenModel, sessionMode, effort) +
-+                QStringLiteral("\n\n") + prompt;
-+            if (AgentSession *as = findAgentSession(sid))
-+                m_agentStore->appendLog(
-+                    *as, QStringLiteral("==> %1\n")
-+                             .arg(AgentRunner::launchIdentityInstruction(
-+                                 QStringLiteral("claude-code"), chosenModel,
-+                                 sessionMode, effort)));
-+            live->start(workdir, launchEnv, launchPrompt, /*skipPermissions=*/autoMode,
-                         resumeId, chosenModel, effort, fallback, jailMb);
-         };
-         if (selectedModel == kClaudeAutoModelId)
-diff --git a/qt_client/src/MainWindowChat.cpp b/qt_client/src/MainWindowChat.cpp
-index 914d418ef..64ef4bfb1 100644
---- a/qt_client/src/MainWindowChat.cpp
-+++ b/qt_client/src/MainWindowChat.cpp
-@@ -309,9 +309,9 @@ void MainWindow::fetchFaviconFromUrl(const QString &host, const QUrl &url)
-         m_faviconFetching.contains(host) || m_faviconMissing.contains(host))
-         return;
- 
--    // Hosts with a hardcoded mark (api.anthropic.com and friends) never hit the
--    // network: they answer 404 for /favicon.ico, which showed up in the log as
--    // an error line per request (adhoc #436).
-+    // Hosts with a hardcoded mark (API endpoints such as api.anthropic.com and
-+    // api.mainnet-beta.solana.com) never hit the network: their /favicon.ico
-+    // requests fail and otherwise appear as error lines in the log.
-     // Cached like a downloaded icon (but never written to the disk cache) so the
-     // breadcrumb rail and both log views pick it up the same way; no breadcrumb
-     // rebuild from here, since this runs while a log line is being rendered.
-diff --git a/qt_client/src/MainWindowInternal.h b/qt_client/src/MainWindowInternal.h
-index 9f1a8df13..4b68abe29 100644
---- a/qt_client/src/MainWindowInternal.h
-+++ b/qt_client/src/MainWindowInternal.h
-@@ -9441,15 +9441,17 @@ inline QPixmap letterFavicon(const QString &host, int side = 36)
+ #include <QTextLayout>
+ #include <QTextOption>
+@@ -3749,6 +3750,201 @@ void MainWindow::applyCachedSpendLabels()
+     restore(m_agentClaudeCredit, kClaudeCreditTextSetting, kClaudeCreditTsSetting);
  }
  
- // Hosts that get a hardcoded, locally drawn icon instead of a /favicon.ico
--// fetch. api.anthropic.com serves no favicon, so every Claude request in the
--// network log used to spit out a red "GET ERR 404 .../favicon.ico" line of its
--// own (adhoc #436). Returns an empty string for hosts with no builtin mark.
-+// fetch. API endpoints do not serve favicons, so their request lines must not
-+// cause an additional failed favicon request in the network log. Returns an
-+// empty string for hosts with no builtin mark.
- inline QString builtinFaviconKey(const QString &host)
- {
-     const QString h = host.toLower();
-     if (h == QStringLiteral("anthropic.com") || h.endsWith(".anthropic.com") ||
-         h == QStringLiteral("claude.ai") || h.endsWith(".claude.ai"))
-         return QStringLiteral("anthropic");
-+    if (h == QStringLiteral("api.mainnet-beta.solana.com"))
-+        return QStringLiteral("solana");
-     return {};
- }
- 
-@@ -9469,8 +9471,21 @@ inline QPixmap builtinFavicon(const QString &host, int side = 36)
-     QPainter painter(&pixmap);
-     painter.setRenderHint(QPainter::Antialiasing);
-     painter.setPen(Qt::NoPen);
--    painter.setBrush(QColor("#d97757")); // Anthropic clay
-+    painter.setBrush(key == QStringLiteral("solana")
-+                         ? QColor("#17172e") // Solana navy
-+                         : QColor("#d97757")); // Anthropic clay
-     painter.drawRoundedRect(QRectF(0, 0, side, side), side / 4.0, side / 4.0);
-+    if (key == QStringLiteral("solana")) {
-+        QPen stroke(QColor("#14f195"));
-+        stroke.setWidthF(qMax(1.0, side * 0.11));
-+        stroke.setCapStyle(Qt::RoundCap);
-+        painter.setPen(stroke);
-+        const qreal inset = side * 0.25;
-+        const qreal width = side * 0.5;
-+        for (const qreal y : {side * 0.32, side * 0.50, side * 0.68})
-+            painter.drawLine(QPointF(inset, y), QPointF(inset + width, y));
-+        return pixmap;
-+    }
-     // Burst mark: rounded strokes radiating from the centre.
-     QPen stroke(QColor("#ffffff"));
-     stroke.setWidthF(qMax(1.0, side * 0.09));
-diff --git a/qt_client/src/MainWindowIssues.cpp b/qt_client/src/MainWindowIssues.cpp
-index 67e3c68ef..766492dc0 100644
---- a/qt_client/src/MainWindowIssues.cpp
-+++ b/qt_client/src/MainWindowIssues.cpp
-@@ -5275,9 +5275,10 @@ bool MainWindow::handleFramelessResizeEvent(QObject *obj, QEvent *event)
- }
- 
- // Right-click on selected text anywhere in the app (a transcript reply, a
--// diff line, a README, a log) offers "Send to Prompt" so the user can grab it
--// straight into the agent prompt box instead of a manual copy/paste
--// round-trip (adhoc #126). Handles the two families of selectable text used
-+// diff line, a README, a log) offers "Send to Prompt" and "Search Codebase"
-+// so the user can either send it to an agent or look for it in the open repo
-+// without a manual copy/paste round-trip (adhoc #126). Handles the two
-+// families of selectable text used
- // across the UI:
- //   - QLabel with Qt::TextSelectableByMouse (transcript bubbles, message rows)
- //   - QTextEdit / QTextBrowser / QPlainTextEdit (diffs, README, logs, editors)
-@@ -5334,9 +5335,12 @@ bool MainWindow::maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce)
-     const QString promptText = QString(selected).replace(QChar(0x2029), QLatin1Char('\n'));
-     menu->addSeparator();
-     QAction *sendToPrompt = menu->addAction(tr("Send to Prompt"));
-+    QAction *searchCodebase = menu->addAction(tr("Search Codebase"));
-     QAction *chosen = menu->exec(ce->globalPos());
-     if (chosen == sendToPrompt)
-         appendTextToActivePrompt(promptText);
-+    else if (chosen == searchCodebase)
-+        openSearchResultsPage(promptText);
-     delete menu;
-     return true;
- }
-diff --git a/qt_client/src/MainWindowReleases.cpp b/qt_client/src/MainWindowReleases.cpp
-index ef09ad1a5..00086bf27 100644
---- a/qt_client/src/MainWindowReleases.cpp
-+++ b/qt_client/src/MainWindowReleases.cpp
-@@ -22,6 +22,7 @@ enum MirrorNodeColumn {
-     MirrorNodeColMessage,
-     MirrorNodeColAuthor,
-     MirrorNodeColSynced,
-+    MirrorNodeColSyncDelay,
-     MirrorNodeColSize,
-     MirrorNodeColIssues,
-     MirrorNodeColCommits,
-@@ -1067,7 +1068,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
-     m_mirrorNodesTable->setObjectName("issueTable");
-     enableHoverRowHighlight(m_mirrorNodesTable);
-     m_mirrorNodesTable->setHorizontalHeaderLabels(
--        {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Size",
-+        {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
-          "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU", "RAM",
-          "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
-          "Artifacts"});
-@@ -1088,6 +1089,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
-     mh->setSectionResizeMode(MirrorNodeColMessage, QHeaderView::ResizeToContents);
-     mh->setSectionResizeMode(MirrorNodeColAuthor, QHeaderView::ResizeToContents);
-     mh->setSectionResizeMode(MirrorNodeColSynced, QHeaderView::ResizeToContents);
-+    mh->setSectionResizeMode(MirrorNodeColSyncDelay, QHeaderView::ResizeToContents);
-     mh->setSectionResizeMode(MirrorNodeColSize, QHeaderView::ResizeToContents);
-     mh->setSectionResizeMode(MirrorNodeColIssues, QHeaderView::ResizeToContents);
-     mh->setSectionResizeMode(MirrorNodeColCommits, QHeaderView::ResizeToContents);
-@@ -1611,6 +1613,36 @@ void MainWindow::loadMirrorNodesPanel()
-     auto countMismatch = [](int value, int ref) {
-         return ref >= 0 && value >= 0 && value != ref;
-     };
-+    // The elapsed time from a commit landing to a mirror reporting that same
-+    // commit is the useful sync latency. Nodes still serving an older commit
-+    // have not completed that sync, so say so instead of measuring their old
-+    // commit's age.
-+    auto makeSyncDelayCell = [&referenceCommit](qint64 syncedMs,
-+                                                 qint64 committedAtMs,
-+                                                 const QString &commit,
-+                                                 bool isSource) {
-+        QString text = QString::fromUtf8("\xE2\x80\x94");
-+        QString tip;
-+        qint64 sortValue = -1;
-+        if (isSource) {
-+            text = QStringLiteral("Source");
-+            tip = QStringLiteral("This node is the source of truth");
-+        } else if (!referenceCommit.isEmpty() && !commit.isEmpty() &&
-+                   commit != referenceCommit) {
-+            text = QStringLiteral("Pending");
-+            tip = QStringLiteral("Waiting to sync the latest source commit");
-+        } else if (syncedMs > 0 && committedAtMs > 0 && syncedMs >= committedAtMs) {
-+            const qint64 delayMs = syncedMs - committedAtMs;
-+            text = formatDuration(delayMs);
-+            sortValue = delayMs;
-+            tip = QStringLiteral("%1 from commit to this node's sync")
-+                      .arg(formatDuration(delayMs));
-+        }
-+        auto *item = new SortTableWidgetItem(text);
-+        item->setData(kTableSortRole, double(sortValue));
-+        item->setToolTip(tip);
-+        return item;
-+    };
- 
-     // Clone / website-serve tallies are per-node local counters, carried across the
-     // network only in each node's published catalog record. Index the catalog cache
-@@ -1984,6 +2016,11 @@ void MainWindow::loadMirrorNodesPanel()
-                     .arg(pendingPush == 1 ? "" : "s"));
-         }
-         m_mirrorNodesTable->setItem(row, MirrorNodeColSynced, syncedItem);
-+        m_mirrorNodesTable->setItem(
-+            row, MirrorNodeColSyncDelay,
-+            makeSyncDelayCell(advert ? advert->updatedMs : 0,
-+                              commitIdentity.committedAtMs,
-+                              advert ? advert->commit : QString(), isSource));
- 
-         // Tally for the owner-only alert below: are we the source of truth, and
-         // how many other nodes are serving a state that doesn't match it.
-@@ -2247,6 +2284,10 @@ void MainWindow::loadMirrorNodesPanel()
-                 syncedItem->setToolTip(
-                     QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
-             m_mirrorNodesTable->setItem(row, MirrorNodeColSynced, syncedItem);
-+            m_mirrorNodesTable->setItem(
-+                row, MirrorNodeColSyncDelay,
-+                makeSyncDelayCell(qint64(m.value("lastSync").toDouble()),
-+                                  catIdentity.committedAtMs, catCommit, isSource));
-             const qint64 nodeBytes = qint64(m.value("sizeBytes").toDouble());
-             auto *sizeItem = new SortTableWidgetItem(
-                 nodeBytes > 0 ? formatByteSize(nodeBytes)
-diff --git a/qt_client/src/PublicMirrorRuntime.cpp b/qt_client/src/PublicMirrorRuntime.cpp
-index 84f0c7bbb..73d853924 100644
---- a/qt_client/src/PublicMirrorRuntime.cpp
-+++ b/qt_client/src/PublicMirrorRuntime.cpp
-@@ -780,7 +780,7 @@ bool encryptRepository(const QString &repositoryPath,
-     }
-     tarProcess.start(
-         tar,
--        {QStringLiteral("-C"), repository.absolutePath(),
-+        {QStringLiteral("-C"), repository.dir().absolutePath(),
-          QStringLiteral("-cf"), QStringLiteral("-"),
-          QStringLiteral("repository.git")});
-     if (!tarProcess.waitForStarted(10000)) {
-diff --git a/qt_client/tests/test_codex_app_server.cpp b/qt_client/tests/test_codex_app_server.cpp
-index ac00297ea..2ddd95d20 100644
---- a/qt_client/tests/test_codex_app_server.cpp
-+++ b/qt_client/tests/test_codex_app_server.cpp
-@@ -2,6 +2,7 @@
- 
- #include <QCoreApplication>
- #include <QDebug>
-+#include <QDir>
- #include <QElapsedTimer>
- #include <QEventLoop>
- #include <QFile>
-@@ -868,8 +869,12 @@ void runFreshProtocolTest(const QString &executable)
-     QObject::connect(&session, &CodexAppServerSession::modelsListed,
-                      [&](const QJsonArray &listed) { models = listed; });
- 
--    session.start(temp.path(), {QStringLiteral("CODEX_STUB_ENV=present")},
--                  QStringLiteral("describe this\nAttached image: /tmp/example.png"),
-+    const QString initialTask =
-+        QStringLiteral("Agent launch identity: provider display name: Codex; "
-+                       "resolved model: gpt-test; permission mode: Auto mode; "
-+                       "reasoning speed: high.\n\n"
-+                       "describe this\nAttached image: /tmp/example.png");
-+    session.start(temp.path(), {QStringLiteral("CODEX_STUB_ENV=present")}, initialTask,
-                   QString(), QStringLiteral("gpt-test"), QStringLiteral("Auto mode"),
-                   QStringLiteral("high"));
-     check(pump([&] { return started; }), "app-server process starts");
-@@ -927,14 +932,16 @@ void runFreshProtocolTest(const QString &executable)
-                                        .value(QStringLiteral("params"))
-                                        .toObject();
-     const QJsonArray input = turnParams.value(QStringLiteral("input")).toArray();
-+    const QString expectedText =
-+        initialTask.left(initialTask.indexOf(QStringLiteral("\nAttached image:")));
-     check(input.size() == 2 &&
-               input.first().toObject().value(QStringLiteral("text")).toString() ==
--                  QStringLiteral("describe this") &&
-+                  expectedText &&
-               input.last().toObject().value(QStringLiteral("type")).toString() ==
-                   QStringLiteral("localImage") &&
-               input.last().toObject().value(QStringLiteral("path")).toString() ==
-                   QStringLiteral("/tmp/example.png"),
--          "attached image lines become localImage turn inputs");
-+          "identity instruction and attached image reach turn/start");
-     check(turnParams.value(QStringLiteral("model")).toString() ==
-                   QStringLiteral("gpt-test") &&
-               turnParams.value(QStringLiteral("effort")).toString() ==
-@@ -1140,6 +1147,49 @@ void runModeMappingTest(const QString &executable, const QString &mode,
-                          .arg(mode, approval, sandbox)));
- }
- 
-+void runWorktreeMetadataSandboxTest(const QString &executable)
-+{
-+    QTemporaryDir temp;
-+    check(temp.isValid(), "worktree sandbox temp dir created");
-+    const QString repo = temp.filePath(QStringLiteral("repo"));
-+    const QString metadata = temp.filePath(QStringLiteral("metadata"));
-+    QDir().mkpath(repo);
-+    QDir().mkpath(metadata + QStringLiteral("/worktree"));
-+    QDir().mkpath(metadata + QStringLiteral("/common"));
-+    QFile dotGit(repo + QStringLiteral("/.git"));
-+    check(dotGit.open(QIODevice::WriteOnly | QIODevice::Text),
-+          "worktree git file can be created");
-+    dotGit.write("gitdir: ../metadata/worktree\n");
-+    dotGit.close();
-+    QFile commonDir(metadata + QStringLiteral("/worktree/commondir"));
-+    check(commonDir.open(QIODevice::WriteOnly | QIODevice::Text),
-+          "worktree common-dir file can be created");
-+    commonDir.write("../common\n");
-+    commonDir.close();
++namespace {
 +
-+    const QString logPath = temp.filePath(QStringLiteral("worktree.jsonl"));
-+    CodexAppServerSession session;
-+    session.setAppServerCommand(executable,
-+                                {QStringLiteral("--codex-stub"),
-+                                 QStringLiteral("mode"), logPath});
-+    bool finished = false;
-+    QObject::connect(&session, &CodexAppServerSession::finished,
-+                     [&](int) { finished = true; });
-+    session.start(repo, QStringList(), QStringLiteral("commit"), QString(),
-+                  QStringLiteral("gpt-test"), QStringLiteral("Auto"), QString());
-+    check(pump([&] { return finished; }), "worktree sandbox stub completes");
-+    const QJsonObject policy =
-+        firstMethod(readMessages(logPath), QStringLiteral("turn/start"))
-+            .value(QStringLiteral("params"))
-+            .toObject()
-+            .value(QStringLiteral("sandboxPolicy"))
-+            .toObject();
-+    const QJsonArray roots = policy.value(QStringLiteral("writableRoots")).toArray();
-+    check(roots.contains(QDir(metadata + QStringLiteral("/worktree")).absolutePath()) &&
-+              roots.contains(QDir(metadata + QStringLiteral("/common")).absolutePath()),
-+          "Auto mode permits linked-worktree Git metadata writes");
++QString usageReminderId(const QString &providerKey, const QString &windowKey)
++{
++    return providerKey + QLatin1Char('/') + windowKey;
 +}
 +
- void runInterruptedTurnTest(const QString &executable)
- {
-     QTemporaryDir temp;
-@@ -1415,6 +1465,7 @@ int main(int argc, char *argv[])
-     runModeMappingTest(executable, QStringLiteral("Edit automatically"),
-                        QStringLiteral("on-request"),
-                        QStringLiteral("workspace-write"));
-+    runWorktreeMetadataSandboxTest(executable);
-     runInterruptedTurnTest(executable);
-     runRejectedSteerTest(executable);
-     runResumeFailureTest(executable);
-diff --git a/qt_client/tests/test_window_resize.cpp b/qt_client/tests/test_window_resize.cpp
-index 42d654f58..004ae5bf4 100644
---- a/qt_client/tests/test_window_resize.cpp
-+++ b/qt_client/tests/test_window_resize.cpp
-@@ -1729,12 +1729,13 @@ int main(int argc, char *argv[])
-                       QStringLiteral("alice"),
-                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
-             // Columns: Node, Owner, Latest commit, Message, Author, Synced,
--            // Size, Issues, Commits, Branches, Pulls, Discussions, CPU, RAM,
--            // Disk, Platform, … — Message/Author pushed Disk/Platform to 14/15.
--            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 14)
-+            // Sync delay, Size, Issues, Commits, Branches, Pulls, Discussions,
-+            // CPU, RAM, Disk, Platform, … — the sync-delay column pushes
-+            // Disk/Platform to 15/16.
-+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 15)
-                       .startsWith(QStringLiteral("Disk:")),
-                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
--            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 15) ==
-+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 16) ==
-                       QStringLiteral("linux"),
-                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
-             window.testSetMirrorNodesOnlineOnly(false);
-@@ -2882,6 +2883,14 @@ int main(int argc, char *argv[])
-               QStringLiteral("an Anthropic host resolves its favicon locally, "
-                              "with no network fetch (adhoc #436)"));
- 
-+        window.testLogSystem(
-+            QStringLiteral("net GET https://api.mainnet-beta.solana.com 200"));
-+        QApplication::processEvents();
-+        check(window.testFaviconCached(
-+                  QStringLiteral("api.mainnet-beta.solana.com")),
-+              QStringLiteral("the Solana RPC host resolves its favicon locally, "
-+                             "without requesting its unsupported favicon path"));
++QString usageExhaustedSetting(const QString &providerKey,
++                              const QString &windowKey)
++{
++    if (providerKey == QLatin1String("claude")) {
++        if (windowKey == QLatin1String("5h"))
++            return kClaudeUsage5hExhaustedSetting;
++        if (windowKey == QLatin1String("weekly"))
++            return kClaudeUsageWeekExhaustedSetting;
++        if (windowKey == QLatin1String("fable"))
++            return kClaudeUsageFableExhaustedSetting;
++    } else if (providerKey == QLatin1String("codex")) {
++        if (windowKey == QLatin1String("5h"))
++            return kCodexUsage5hExhaustedSetting;
++        if (windowKey == QLatin1String("weekly"))
++            return kCodexUsageWeekExhaustedSetting;
++    }
++    return QString();
++}
 +
-         auto leadsWithIcon = [](QTextEdit *view) {
-             if (!view)
-                 return false;
++QString usageResetSetting(const QString &providerKey, const QString &windowKey)
++{
++    if (providerKey == QLatin1String("claude")) {
++        if (windowKey == QLatin1String("5h"))
++            return kClaudeUsage5hResetSetting;
++        if (windowKey == QLatin1String("weekly"))
++            return kClaudeUsageWeekResetSetting;
++        if (windowKey == QLatin1String("fable"))
++            return kClaudeUsageFableResetSetting;
++    } else if (providerKey == QLatin1String("codex")) {
++        if (windowKey == QLatin1String("5h"))
++            return kCodexUsage5hResetSetting;
++        if (windowKey == QLatin1String("weekly"))
++            return kCodexUsageWeekResetSetting;
++    }
++    return QString();
++}
++
++} // namespace
++
++void MainWindow::clearUsageLimitReminders()
++{
++    for (QTimer *timer : std::as_const(m_usageLimitReminderTimers)) {
++        timer->stop();
++        timer->deleteLater();
++    }
++    m_usageLimitReminderTimers.clear();
++}
++
++void MainWindow::restoreUsageLimitReminders()
++{
++    clearUsageLimitReminders();
++    QSettings settings;
++    if (!settings.value(kUsageLimitCalendarReminderSetting, false).toBool())
++        return;
++
++    struct Reminder {
++        const char *providerKey;
++        const char *windowKey;
++        const char *providerName;
++        const char *windowName;
++    };
++    static const Reminder reminders[] = {
++        {"claude", "5h", "Claude Code", "5-hour"},
++        {"claude", "weekly", "Claude Code", "weekly"},
++        {"claude", "fable", "Claude Code", "Fable weekly"},
++        {"codex", "5h", "Codex", "5-hour"},
++        {"codex", "weekly", "Codex", "weekly"},
++    };
++    for (const Reminder &reminder : reminders) {
++        const QString providerKey = QString::fromLatin1(reminder.providerKey);
++        const QString windowKey = QString::fromLatin1(reminder.windowKey);
++        const QString exhaustedKey = usageExhaustedSetting(providerKey, windowKey);
++        const QString resetKey = usageResetSetting(providerKey, windowKey);
++        if (exhaustedKey.isEmpty() || resetKey.isEmpty() ||
++            !settings.value(exhaustedKey, false).toBool()) {
++            continue;
++        }
++        scheduleUsageLimitReminder(providerKey, windowKey,
++                                   QString::fromLatin1(reminder.providerName),
++                                   QString::fromLatin1(reminder.windowName),
++                                   settings.value(resetKey).toLongLong());
++    }
++}
++
++void MainWindow::scheduleUsageLimitReminder(const QString &providerKey,
++                                            const QString &windowKey,
++                                            const QString &providerName,
++                                            const QString &windowName,
++                                            qint64 resetMs)
++{
++    if (resetMs <= QDateTime::currentMSecsSinceEpoch())
++        return;
++    const QString exhaustedKey = usageExhaustedSetting(providerKey, windowKey);
++    if (exhaustedKey.isEmpty())
++        return;
++    const QString id = usageReminderId(providerKey, windowKey);
++    QSettings settings;
++    if (!settings.value(kUsageLimitCalendarReminderSetting, false).toBool() ||
++        !settings.value(exhaustedKey, false).toBool()) {
++        return;
++    }
++
++    // A provider can repeat the same rate-limit frame many times. Re-arm the
++    // local timer, but only ask the OS calendar to import a genuinely new reset
++    // instant so one exhausted window does not create duplicate events.
++    const QString scheduledKey = kUsageLimitReminderScheduledPrefix + id;
++    if (settings.value(scheduledKey).toLongLong() != resetMs) {
++        settings.setValue(scheduledKey, resetMs);
++        const QString path = UsageLimitCalendar::writeEvent(
++            providerKey, windowKey, providerName, windowName, resetMs);
++        if (!path.isEmpty())
++            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
++    }
++
++    if (QTimer *old = m_usageLimitReminderTimers.take(id)) {
++        old->stop();
++        old->deleteLater();
++    }
++    auto *timer = new QTimer(this);
++    timer->setSingleShot(true);
++    m_usageLimitReminderTimers.insert(id, timer);
++    connect(timer, &QTimer::timeout, this,
++            [this, timer, id, providerKey, windowKey, providerName, windowName,
++             resetMs] {
++                if (m_usageLimitReminderTimers.value(id) != timer)
++                    return;
++                m_usageLimitReminderTimers.remove(id);
++                timer->deleteLater();
++
++                const qint64 now = QDateTime::currentMSecsSinceEpoch();
++                if (now < resetMs) {
++                    // Defensive re-arm for an unusually long provider window;
++                    // QTimer uses an int millisecond interval.
++                    scheduleUsageLimitReminder(providerKey, windowKey,
++                                               providerName, windowName, resetMs);
++                    return;
++                }
++                QSettings settings;
++                const QString exhaustedKey =
++                    usageExhaustedSetting(providerKey, windowKey);
++                const QString scheduledKey =
++                    kUsageLimitReminderScheduledPrefix + id;
++                if (!settings.value(kUsageLimitCalendarReminderSetting, false)
++                         .toBool() ||
++                    settings.value(scheduledKey).toLongLong() != resetMs ||
++                    exhaustedKey.isEmpty() ||
++                    !settings.value(exhaustedKey, false).toBool()) {
++                    return;
++                }
++                settings.setValue(exhaustedKey, false);
++                notifyUsageLimitReady(providerKey, windowKey, providerName,
++                                      windowName, resetMs);
++            });
++    const qint64 delayMs = qMin(
++        resetMs - QDateTime::currentMSecsSinceEpoch(),
++        qint64(std::numeric_limits<int>::max()));
++    timer->start(static_cast<int>(qMax<qint64>(1, delayMs)));
++}
++
++void MainWindow::notifyUsageLimitReady(const QString &providerKey,
++                                       const QString &windowKey,
++                                       const QString &providerName,
++                                       const QString &windowName,
++                                       qint64 resetMs)
++{
++    QSettings settings;
++    if (!settings.value(kUsageLimitCalendarReminderSetting, false).toBool())
++        return;
++    const QString id = usageReminderId(providerKey, windowKey);
++    const QString resetKey = usageResetSetting(providerKey, windowKey);
++    if (resetMs <= 0 && !resetKey.isEmpty())
++        resetMs = settings.value(resetKey).toLongLong();
++    const QString notifiedKey = kUsageLimitReminderNotifiedPrefix + id;
++    if (resetMs > 0 && settings.value(notifiedKey).toLongLong() == resetMs)
++        return;
++    if (resetMs > 0)
++        settings.setValue(notifiedKey, resetMs);
++
++    const QString title =
++        QStringLiteral("ForkMesh — %1 usage is ready").arg(providerName);
++    const QString body = QStringLiteral(
++                             "Your %1 %2 usage window has reset. You can resume "
++                             "agent work.")
++                             .arg(providerName, windowName);
++    addNotification(title, body);
++    postNotification(title, body, false, QStringLiteral("appointment-soon"));
++}
++
+ void MainWindow::markAgentLimitWindow(const QString &provider)
+ {
+     const bool claude = agentIsClaudeProvider(provider);
+@@ -3891,6 +4087,28 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
+                                   60 * 1000;
+         if (resetMs > 0 && durationMs > 0)
+             settings.setValue(anchorKey, resetMs - durationMs);
++        const QString windowKey = weekly ? QStringLiteral("weekly")
++                                         : QStringLiteral("5h");
++        const QString exhaustedKey =
++            usageExhaustedSetting(QStringLiteral("codex"), windowKey);
++        const qint64 knownReset = resetMs > 0
++                                      ? resetMs
++                                      : settings.value(resetKey).toLongLong();
++        if (used >= 99) {
++            settings.setValue(exhaustedKey, true);
++            scheduleUsageLimitReminder(QStringLiteral("codex"), windowKey,
++                                       QStringLiteral("Codex"),
++                                       weekly ? QStringLiteral("weekly")
++                                              : QStringLiteral("5-hour"),
++                                       knownReset);
++        } else if (used < 90 && settings.value(exhaustedKey, false).toBool()) {
++            settings.setValue(exhaustedKey, false);
++            notifyUsageLimitReady(QStringLiteral("codex"), windowKey,
++                                  QStringLiteral("Codex"),
++                                  weekly ? QStringLiteral("weekly")
++                                         : QStringLiteral("5-hour"),
++                                  knownReset);
++        }
+         if (m_navCodexUsage) {
+             const qint64 remaining = resetMs - now;
+             static_cast<TokenUsageMiniChart *>(m_navCodexUsage)
+@@ -3960,10 +4178,22 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
+     // email once when that happens.
+     const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
+                                         : kClaudeUsage5hExhaustedSetting;
++    const QString windowKey = weekly ? QStringLiteral("weekly")
++                                     : QStringLiteral("5h");
++    const QString windowName = weekly ? QStringLiteral("weekly")
++                                      : QStringLiteral("5-hour");
++    const QString resetKey = weekly ? kClaudeUsageWeekResetSetting
++                                    : kClaudeUsage5hResetSetting;
+     if (pct >= 99) {
+         settings.setValue(exhaustedKey, true);
++        scheduleUsageLimitReminder(QStringLiteral("claude"), windowKey,
++                                   QStringLiteral("Claude Code"), windowName,
++                                   settings.value(resetKey).toLongLong());
+     } else if (pct < 90 && settings.value(exhaustedKey, false).toBool()) {
+         settings.setValue(exhaustedKey, false);
++        notifyUsageLimitReady(QStringLiteral("claude"), windowKey,
++                              QStringLiteral("Claude Code"), windowName,
++                              settings.value(resetKey).toLongLong());
+         maybeEmailCreditsRefilled(weekly);
+     }
+ }
+@@ -3988,12 +4218,38 @@ void MainWindow::applyClaudeFableUsage(int percent)
+     if (m_navTokenUsage)
+         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
+             ->setUsage(TokenUsageMiniChart::Fable, pct);
+-    QSettings().setValue(kClaudeUsageFablePctSetting, pct);
++    QSettings settings;
++    settings.setValue(kClaudeUsageFablePctSetting, pct);
++    if (pct >= 99) {
++        settings.setValue(kClaudeUsageFableExhaustedSetting, true);
++        scheduleUsageLimitReminder(QStringLiteral("claude"),
++                                   QStringLiteral("fable"),
++                                   QStringLiteral("Claude Code"),
++                                   QStringLiteral("Fable weekly"),
++                                   settings.value(kClaudeUsageFableResetSetting)
++                                       .toLongLong());
++    } else if (pct < 90 &&
++               settings.value(kClaudeUsageFableExhaustedSetting, false).toBool()) {
++        settings.setValue(kClaudeUsageFableExhaustedSetting, false);
++        notifyUsageLimitReady(QStringLiteral("claude"),
++                              QStringLiteral("fable"),
++                              QStringLiteral("Claude Code"),
++                              QStringLiteral("Fable weekly"),
++                              settings.value(kClaudeUsageFableResetSetting)
++                                  .toLongLong());
++    }
+ }
+ 
+ void MainWindow::applyClaudeFableReset(qint64 resetMs)
+ {
+-    QSettings().setValue(kClaudeUsageFableResetSetting, resetMs);
++    QSettings settings;
++    settings.setValue(kClaudeUsageFableResetSetting, resetMs);
++    if (settings.value(kClaudeUsageFableExhaustedSetting, false).toBool()) {
++        scheduleUsageLimitReminder(QStringLiteral("claude"),
++                                   QStringLiteral("fable"),
++                                   QStringLiteral("Claude Code"),
++                                   QStringLiteral("Fable weekly"), resetMs);
++    }
+     if (!m_navTokenUsage)
+         return;
+     const qint64 remaining = resetMs - QDateTime::currentMSecsSinceEpoch();
+@@ -4010,9 +4266,20 @@ void MainWindow::flashUsageChart(QWidget *chart, bool ok)
+ 
+ void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
+ {
+-    QSettings().setValue(weekly ? kClaudeUsageWeekResetSetting
+-                                : kClaudeUsage5hResetSetting,
+-                         resetMs);
++    QSettings settings;
++    const QString resetKey = weekly ? kClaudeUsageWeekResetSetting
++                                    : kClaudeUsage5hResetSetting;
++    const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
++                                        : kClaudeUsage5hExhaustedSetting;
++    settings.setValue(resetKey, resetMs);
++    if (settings.value(exhaustedKey, false).toBool()) {
++        scheduleUsageLimitReminder(
++            QStringLiteral("claude"),
++            weekly ? QStringLiteral("weekly") : QStringLiteral("5h"),
++            QStringLiteral("Claude Code"),
++            weekly ? QStringLiteral("weekly") : QStringLiteral("5-hour"),
++            resetMs);
++    }
+     if (!m_navTokenUsage)
+         return;
+     const qint64 remaining = resetMs - QDateTime::currentMSecsSinceEpoch();
+diff --git a/qt_client/src/MainWindowChat.cpp b/qt_client/src/MainWindowChat.cpp
+index b254bb94b..f3481c3cb 100644
+--- a/qt_client/src/MainWindowChat.cpp
++++ b/qt_client/src/MainWindowChat.cpp
+@@ -4945,6 +4945,10 @@ QWidget *MainWindow::buildBreadcrumb()
+         flashUsageChart(m_navCodexUsage, true);
+     };
+     refreshCodexUsageRemaining();
++    // Re-arm any persisted exhausted-window reminders after the shell exists.
++    // The calendar owns the alert while the app is closed; this covers a desktop
++    // kept open across the known reset time.
++    QTimer::singleShot(0, this, &MainWindow::restoreUsageLimitReminders);
+ 
+     // Repo switcher, to the right of the node switcher: "repo ▾ count".
+     m_repoMenuButton = new QPushButton;
+diff --git a/qt_client/src/MainWindowInternal.h b/qt_client/src/MainWindowInternal.h
+index 894365fb5..5ad845937 100644
+--- a/qt_client/src/MainWindowInternal.h
++++ b/qt_client/src/MainWindowInternal.h
+@@ -3031,9 +3031,20 @@ constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
+ // while still low". Cleared the moment the refill notification fires.
+ const QString kClaudeUsage5hExhaustedSetting = QStringLiteral("agents/claudeUsage5hExhausted");
+ const QString kClaudeUsageWeekExhaustedSetting = QStringLiteral("agents/claudeUsageWeekExhausted");
++const QString kClaudeUsageFableExhaustedSetting = QStringLiteral("agents/claudeUsageFableExhausted");
++const QString kCodexUsage5hExhaustedSetting = QStringLiteral("agents/codexUsage5hExhausted");
++const QString kCodexUsageWeekExhaustedSetting = QStringLiteral("agents/codexUsageWeekExhausted");
+ // Opt-in: email the node's account when a previously-maxed-out usage window
+ // refills. Off by default — most nodes are watched interactively.
+ const QString kEmailOnCreditsRefillSetting = QStringLiteral("agents/emailOnCreditsRefill");
++// Opt-in: open a standard calendar reminder when an agent provider's usage
++// window is exhausted, and ping locally when it reaches its known reset time.
++const QString kUsageLimitCalendarReminderSetting =
++    QStringLiteral("agents/usageLimitCalendarReminder");
++const QString kUsageLimitReminderScheduledPrefix =
++    QStringLiteral("agents/usageLimitReminderScheduled/");
++const QString kUsageLimitReminderNotifiedPrefix =
++    QStringLiteral("agents/usageLimitReminderNotified/");
+ 
+ // Compact "3h 12m" / "4d 6h" / "5m" rendering of a remaining duration, rounded
+ // up to the minute. Shared by the agent-limits label and the top-bar usage
+diff --git a/qt_client/src/MainWindowSettings.cpp b/qt_client/src/MainWindowSettings.cpp
+index cbb9851af..940b33bdb 100644
+--- a/qt_client/src/MainWindowSettings.cpp
++++ b/qt_client/src/MainWindowSettings.cpp
+@@ -1282,6 +1282,23 @@ QWidget *MainWindow::buildSettingsSection()
+         QSettings().setValue(kEmailOnCreditsRefillSetting, enabled);
+     });
+     usageText->addWidget(emailOnRefillCheck);
++    auto *usageCalendarReminderCheck = new QCheckBox(
++        "Add a calendar reminder and ping me when agent usage resets");
++    usageCalendarReminderCheck->setChecked(
++        QSettings().value(kUsageLimitCalendarReminderSetting, false).toBool());
++    usageCalendarReminderCheck->setToolTip(
++        "When Claude Code or Codex usage is exhausted, open a standard calendar "
++        "reminder for its reset time and show a ForkMesh system ping when it is "
++        "ready again. The calendar app handles alerts while ForkMesh is closed.");
++    connect(usageCalendarReminderCheck, &QCheckBox::toggled, this,
++            [this](bool enabled) {
++                QSettings().setValue(kUsageLimitCalendarReminderSetting, enabled);
++                if (enabled)
++                    restoreUsageLimitReminders();
++                else
++                    clearUsageLimitReminders();
++            });
++    usageText->addWidget(usageCalendarReminderCheck);
+     // Issue #115: restore the last-known spend figures immediately so they are
+     // visible on restart before any network refresh completes.
+     applyCachedSpendLabels();
+diff --git a/qt_client/src/UsageLimitCalendar.cpp b/qt_client/src/UsageLimitCalendar.cpp
+new file mode 100644
+index 000000000..07dd1b1e0
+--- /dev/null
++++ b/qt_client/src/UsageLimitCalendar.cpp
+@@ -0,0 +1,129 @@
++#include "UsageLimitCalendar.h"
++
++#include <QDateTime>
++#include <QDir>
++#include <QSaveFile>
++#include <QStandardPaths>
++#include <QTimeZone>
++
++namespace {
++
++QString safeKey(QString value)
++{
++    value = value.toLower();
++    for (QChar &c : value) {
++        if (!c.isLetterOrNumber())
++            c = QLatin1Char('-');
++    }
++    return value;
++}
++
++QString escapeIcalendar(QString value)
++{
++    value.replace(QLatin1Char('\\'), QStringLiteral("\\\\"));
++    value.replace(QLatin1Char(';'), QStringLiteral("\\;"));
++    value.replace(QLatin1Char(','), QStringLiteral("\\,"));
++    value.replace(QStringLiteral("\r\n"), QStringLiteral("\\n"));
++    value.replace(QLatin1Char('\n'), QStringLiteral("\\n"));
++    value.replace(QLatin1Char('\r'), QStringLiteral("\\n"));
++    return value;
++}
++
++QString utcIcalendarTime(qint64 ms)
++{
++    const QDateTime time =
++        QDateTime::fromMSecsSinceEpoch(ms, QTimeZone(QTimeZone::UTC));
++    return time.isValid()
++               ? time.toString(QStringLiteral("yyyyMMdd'T'HHmmss'Z'"))
++               : QString();
++}
++
++QString reminderDirectory()
++{
++    QString base =
++        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
++    if (base.isEmpty())
++        base = QDir::tempPath();
++    return QDir(base).filePath(QStringLiteral("usage-reminders"));
++}
++
++} // namespace
++
++namespace UsageLimitCalendar {
++
++QString eventText(const QString &providerKey, const QString &windowKey,
++                  const QString &providerName, const QString &windowName,
++                  qint64 resetMs, qint64 createdMs)
++{
++    if (resetMs <= 0)
++        return QString();
++    const QString startsAt = utcIcalendarTime(resetMs);
++    if (startsAt.isEmpty())
++        return QString();
++    if (createdMs <= 0)
++        createdMs = QDateTime::currentMSecsSinceEpoch();
++    const QString createdAt = utcIcalendarTime(createdMs);
++    if (createdAt.isEmpty())
++        return QString();
++
++    const QString provider = safeKey(providerKey);
++    const QString window = safeKey(windowKey);
++    const QString summary = QStringLiteral("ForkMesh: %1 usage is ready")
++                                .arg(providerName);
++    const QString description =
++        QStringLiteral("Your %1 %2 usage window has reset. You can resume "
++                       "agent work.")
++            .arg(providerName, windowName);
++    const QString uid = QStringLiteral("forkmesh-usage-%1-%2-%3@local")
++                            .arg(provider, window, QString::number(resetMs));
++    const QString endsAt = utcIcalendarTime(resetMs + 5 * 60 * 1000);
++
++    return QStringLiteral(
++               "BEGIN:VCALENDAR\r\n"
++               "VERSION:2.0\r\n"
++               "PRODID:-//ForkMesh//Agent usage reminder//EN\r\n"
++               "CALSCALE:GREGORIAN\r\n"
++               "METHOD:PUBLISH\r\n"
++               "BEGIN:VEVENT\r\n"
++               "UID:%1\r\n"
++               "DTSTAMP:%2\r\n"
++               "DTSTART:%3\r\n"
++               "DTEND:%4\r\n"
++               "SUMMARY:%5\r\n"
++               "DESCRIPTION:%6\r\n"
++               "TRANSP:TRANSPARENT\r\n"
++               "BEGIN:VALARM\r\n"
++               "ACTION:DISPLAY\r\n"
++               "TRIGGER:PT0M\r\n"
++               "DESCRIPTION:%5\r\n"
++               "END:VALARM\r\n"
++               "END:VEVENT\r\n"
++               "END:VCALENDAR\r\n")
++        .arg(uid, createdAt, startsAt, endsAt, escapeIcalendar(summary),
++             escapeIcalendar(description));
++}
++
++QString writeEvent(const QString &providerKey, const QString &windowKey,
++                   const QString &providerName, const QString &windowName,
++                   qint64 resetMs)
++{
++    const QString content = eventText(providerKey, windowKey, providerName,
++                                      windowName, resetMs);
++    if (content.isEmpty())
++        return QString();
++    const QString directory = reminderDirectory();
++    if (!QDir().mkpath(directory))
++        return QString();
++    const QString path = QDir(directory).filePath(
++        QStringLiteral("%1-%2.ics").arg(safeKey(providerKey),
++                                         safeKey(windowKey)));
++    QSaveFile file(path);
++    if (!file.open(QIODevice::WriteOnly) ||
++        file.write(content.toUtf8()) != content.toUtf8().size() ||
++        !file.commit()) {
++        return QString();
++    }
++    return path;
++}
++
++} // namespace UsageLimitCalendar
+diff --git a/qt_client/src/UsageLimitCalendar.h b/qt_client/src/UsageLimitCalendar.h
+new file mode 100644
+index 000000000..bc525949d
+--- /dev/null
++++ b/qt_client/src/UsageLimitCalendar.h
+@@ -0,0 +1,26 @@
++#pragma once
++
++#include <QtGlobal>
++
++#include <QString>
++
++// Small local iCalendar export for agent usage-window reset reminders.  It has
++// no calendar-account integration: the desktop opens the standard .ics file in
++// the user's configured calendar application, which owns the actual event and
++// its alert.
++namespace UsageLimitCalendar {
++
++// Build a VEVENT with a display alarm at resetMs (UTC). Empty when resetMs is
++// not a valid wall-clock instant. providerKey/windowKey are stable internal
++// identifiers; their human-readable counterparts are shown in the event.
++QString eventText(const QString &providerKey, const QString &windowKey,
++                  const QString &providerName, const QString &windowName,
++                  qint64 resetMs, qint64 createdMs = 0);
++
++// Atomically write the reminder under the app-data directory and return its
++// absolute path. The same provider/window file is updated for later windows.
++QString writeEvent(const QString &providerKey, const QString &windowKey,
++                   const QString &providerName, const QString &windowName,
++                   qint64 resetMs);
++
++} // namespace UsageLimitCalendar
+diff --git a/qt_client/tests/test_crypto.cpp b/qt_client/tests/test_crypto.cpp
+index e3d71c6a8..d710b98b7 100644
+--- a/qt_client/tests/test_crypto.cpp
++++ b/qt_client/tests/test_crypto.cpp
+@@ -32,6 +32,7 @@
+ #include "../src/RoomCrypto.h"
+ #include "../src/StrictGitReader.h"
+ #include "../src/SystemStats.h"
++#include "../src/UsageLimitCalendar.h"
+ 
+ #include <QByteArray>
+ #include <QCoreApplication>
+@@ -358,6 +359,40 @@ int main(int argc, char *argv[])
+               "reference linker skips existing links, URLs, inline code, and code blocks");
+     }
+ 
++    {
++        const qint64 resetMs = QDateTime::fromString(
++                                   QStringLiteral("2026-08-01T12:30:00Z"),
++                                   Qt::ISODate)
++                                   .toMSecsSinceEpoch();
++        const QString calendar = UsageLimitCalendar::eventText(
++            QStringLiteral("claude"), QStringLiteral("5h"),
++            QStringLiteral("Claude Code"), QStringLiteral("5-hour"), resetMs,
++            resetMs - 60 * 1000);
++        check(calendar.contains(QStringLiteral("BEGIN:VCALENDAR\r\n")) &&
++                  calendar.contains(QStringLiteral("METHOD:PUBLISH\r\n")) &&
++                  calendar.contains(QStringLiteral(
++                      "UID:forkmesh-usage-claude-5h-1785587400000@local\r\n")) &&
++                  calendar.contains(QStringLiteral("DTSTART:20260801T123000Z\r\n")) &&
++                  calendar.contains(QStringLiteral("TRIGGER:PT0M\r\n")) &&
++                  calendar.contains(QStringLiteral(
++                      "SUMMARY:ForkMesh: Claude Code usage is ready\r\n")),
++              "usage-limit calendar export is a timed iCalendar event with an alarm");
++        check(UsageLimitCalendar::eventText(
++                  QStringLiteral("claude"), QStringLiteral("5h"),
++                  QStringLiteral("Claude Code"), QStringLiteral("5-hour"), 0)
++                  .isEmpty(),
++              "usage-limit calendar export rejects a missing reset time");
++
++        const QString path = UsageLimitCalendar::writeEvent(
++            QStringLiteral("codex"), QStringLiteral("weekly"),
++            QStringLiteral("Codex"), QStringLiteral("weekly"), resetMs);
++        QFile file(path);
++        check(!path.isEmpty() && file.open(QIODevice::ReadOnly) &&
++                  QString::fromUtf8(file.readAll()).contains(
++                      QStringLiteral("ForkMesh: Codex usage is ready")),
++              "usage-limit calendar event is written atomically under app data");
++    }
++
+     {
+         // Bounded chat history (issue #428): a mirror node must not retain
+         // unlimited chat frames — or huge file payloads — in RAM.

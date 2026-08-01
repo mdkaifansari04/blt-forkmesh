@@ -4,7 +4,7 @@ number: 36
 title: Agent: please fix [100%]
 base: main
 head: agent/adhoc-191-please-fix-100
-status: open
+status: merged
 ts: 1784493687670
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh

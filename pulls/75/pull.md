@@ -4,7 +4,7 @@ number: 75
 title: Agent: when we see new ping organization activity please show all information about …
 base: main
 head: agent/adhoc-165-when-we-see-new-ping-organization-activity-pleas
-status: open
+status: merged
 derive: branch
 creationBaseOid: 77a66f3bc95961c449d2c16c1eaf4e3b1f205a2f
 creationHeadOid: a90e865bfd382a1381fbe1fe6627bbe1ace0c9f2

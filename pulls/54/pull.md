@@ -4,7 +4,7 @@ number: 54
 title: Agent: lets have the ci tests run in paralell please and also if the CI Tests pass t…
 base: main
 head: agent/adhoc-261-lets-have-the-ci-tests-run-in-paralell-please-an
-status: open
+status: merged
 ts: 1785102458358
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: jett

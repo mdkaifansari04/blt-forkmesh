@@ -4,7 +4,7 @@ number: 51
 title: test: refresh Office world mobile snapshots
 base: api-pr/20260725011143/office-meetings-code
 head: api-pr/20260725011143/office-world-mobile-snapshots
-status: open
+status: closed
 ts: 1784923300134
 author: F4rlozoS0ls2-Evs6Q7mLsSsZR1TVwMAsan0tdgaJoM
 authorName: Md Kaif Ansari

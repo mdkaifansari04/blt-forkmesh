@@ -4,7 +4,7 @@ number: 37
 title: Agent: make it so that I can import issues from a csv - have a downloadable template…
 base: main
 head: agent/adhoc-188-make-it-so-that-i-can-import-issues-from-a-csv-h
-status: open
+status: closed
 derive: branch
 creationBaseOid: a5bbdcc79fa07a917eac43190235848659de02c0
 creationHeadOid: 8bb9e46a5c123b5c355b87e171082d0530c78690

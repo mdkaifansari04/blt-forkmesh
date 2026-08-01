@@ -4,7 +4,7 @@ number: 32
 title: Agent: when you click on the user avatar make it go to the user profile page please …
 base: main
 head: agent/adhoc-136-when-you-click-on-the-user-avatar-make-it-go-to
-status: open
+status: closed
 ts: 1784400954416
 author: w0F5vYijNonu8kkqLSa_jYY4GIV-Q5HpbxYY525ggm4
 authorName: forkmesh
