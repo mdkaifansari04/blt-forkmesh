@@ -2735,6 +2735,38 @@ private:
     bool proposePullFromMirrorEdit(const QString &cleanPath, const QString &content);
     void loadRepoInfo();
     void loadBranchesAndTags();
+    // Everything loadBranchesAndTags() shows, gathered on a worker thread: its
+    // five git reads (sorted branch list, HEAD, worktree list, remotes, tags)
+    // each blocked the GUI thread for seconds in the stall log whenever agent
+    // sessions kept the disk busy, and the function runs on every repo open,
+    // merge and pull refresh.
+    struct BranchesTagsSnapshot {
+        // Inputs, snapshotted on the GUI thread before the worker starts.
+        QString dir;               // repoGitDir()
+        QString localPath;         // working copy for the worktree count
+        QString configuredDefault; // m_repoInfo.defaultBranch
+        QString checkedOut;        // m_repoBranch at issue time
+        // Worker-filled results.
+        QString base;          // default branch (chooseDefaultBranch)
+        QString head;          // checked-out branch (empty = detached/none)
+        QStringList branches;  // local heads, committerdate-sorted
+        int worktreeCount = 0; // linked worktrees, minus forkmesh/pulls
+        struct Remote {
+            QString name;
+            QString fetchUrl;
+            QString pushUrl;
+        };
+        QList<Remote> remotes;
+        int tagCount = 0;
+    };
+    // Runs on a worker thread: fills the git-derived half of `snap`.
+    static BranchesTagsSnapshot readBranchesTagsGit(BranchesTagsSnapshot snap);
+    // Applies a gathered snapshot to the toolbar buttons/menus (GUI thread).
+    void applyBranchesTags(const BranchesTagsSnapshot &snap);
+    // Serializes loadBranchesAndTags() gathers; a call landing while one is in
+    // flight coalesces into a single trailing reload.
+    bool m_branchesTagsLoading = false;
+    bool m_branchesTagsReloadQueued = false;
     QStringList repoBranches() const;
     // The two reads behind repoBranches()/repoDefaultBranch() with no GUI state
     // of their own, so worker threads can run them too (adhoc #420).
@@ -7141,6 +7173,9 @@ private:
     QTimer *m_repoChangeBadgeTimer = nullptr;
     qint64 m_connectedAtMs = 0;
     qint64 m_totalConnectionMs = 0;
+    // When updateHomeStats() last persisted the uptime total, so the once-a-
+    // minute refresh doesn't rewrite the whole settings file each tick.
+    qint64 m_uptimePersistedAtMs = 0;
     // Until this moment, "node connected" alerts are suppressed: the roster
     // arrives incrementally right after we connect, so without a grace window
     // every node that was already online would pop a notification on startup.

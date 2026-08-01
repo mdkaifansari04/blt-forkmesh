@@ -469,8 +469,14 @@ void scheduleDiffStreamBatch(QTextEdit *view, int gen)
         if (it == diffStreams().end() || it->gen != gen || it->pending.isEmpty())
             return;
         QString batch;
+        // Stop *before* a block would push the batch over budget (a lone
+        // oversized block still goes alone). Filling until the size crossed the
+        // cap meant a batch could end at ~70k + one whole file block: the stall
+        // log's >500 ms diff appends were all exactly such 80–130k batches.
         while (!it->pending.isEmpty() &&
-               (batch.isEmpty() || batch.size() < kDiffStreamBatchChars))
+               (batch.isEmpty() ||
+                batch.size() + it->pending.first().size() <=
+                    kDiffStreamBatchChars))
             batch += it->pending.takeFirst();
         const bool done = it->pending.isEmpty();
         appendDiffStreamBatch(guard, batch);
@@ -503,8 +509,11 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
     QStringList blocks = splitDiffFileBlocks(html);
     if (!(blocks.size() == 1 && blocks.first() == html)) {
         first.clear();
+        // Same no-overshoot rule as the streamed batches: the first paint used
+        // to take one block too many and lay out up to ~130k chars in one turn.
         while (!blocks.isEmpty() &&
-               (first.isEmpty() || first.size() < kDiffFirstPaintChars))
+               (first.isEmpty() ||
+                first.size() + blocks.first().size() <= kDiffFirstPaintChars))
             first += blocks.takeFirst();
         state.pending = blocks;
     }
