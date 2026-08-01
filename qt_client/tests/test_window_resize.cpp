@@ -418,7 +418,34 @@ int main(int argc, char *argv[])
     QSettings().setValue(QStringLiteral("bounty/autoPrMode"),
                          QStringLiteral("wallet"));
 
+    // Startup logging is intentionally always on: paired entries name each
+    // expensive operation and include its duration so a slow launch can be
+    // diagnosed from a user's log without reproducing it under a profiler.
+    QStringList startupMessages;
+    g_capturedMessages = &startupMessages;
+    QtMessageHandler startupPrevious = qInstallMessageHandler(captureMessages);
     MainWindow window;
+    qInstallMessageHandler(startupPrevious);
+    g_capturedMessages = nullptr;
+    const QString startupLog = startupMessages.join(QLatin1Char('\n'));
+    const int detailedStartupSteps =
+        startupLog.count(QRegularExpression(QStringLiteral(
+            "\\[startup \\+\\s*\\d+ms\\] BEGIN MainWindow:")));
+    check(detailedStartupSteps >= 20 &&
+              startupLog.contains(QStringLiteral(
+                  "BEGIN MainWindow: load repository catalog from settings")) &&
+              startupLog.contains(QStringLiteral(
+                  "DONE  MainWindow: load repository catalog from settings (")) &&
+              startupLog.contains(QStringLiteral(
+                  "BEGIN MainWindow: warm Code, Branches and Worktrees UI")) &&
+              startupLog.contains(QStringLiteral(
+                  "DONE  MainWindow: warm Code, Branches and Worktrees UI (")) &&
+              startupLog.contains(QStringLiteral(
+                  "startup job scheduled: initial mirror synchronization in "
+                  "15000ms")),
+          QString("startup log names and times every material constructor phase "
+                  "(detailed steps=%1)")
+              .arg(detailedStartupSteps));
 
     // adhoc #115: the first-run screen that asked for a username and a relay
     // host is retired — it only ever loaded straight into the app — so a freshly
@@ -2127,8 +2154,10 @@ int main(int argc, char *argv[])
         QElapsedTimer diffTimer;
         diffTimer.start();
         while (diffTimer.elapsed() < 5000 &&
-               !window.testBranchDiffFiles().contains(
-                   QStringLiteral("live-uncommitted.txt")))
+               (!window.testBranchDiffFiles().contains(
+                    QStringLiteral("live-uncommitted.txt")) ||
+                !window.testBranchDiffFiles().contains(
+                    QStringLiteral("base-delete.txt"))))
             QApplication::processEvents(QEventLoop::AllEvents, 20);
         check(window.testBranchDiffFiles().contains(
                   QStringLiteral("live-uncommitted.txt")),

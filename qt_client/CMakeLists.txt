@@ -280,6 +280,7 @@ set(FORKMESH_APP_SOURCES
     src/LocalBackupStore.cpp
     src/McpConnector.h
     src/McpConnector.cpp
+    src/StartupTrace.h
     src/MainWindowInternal.h
     src/MainWindow.h
     src/MainWindow.cpp

@@ -257,20 +257,12 @@ QColor actionStatusColor(const QString &status)
     return QColor("#8b949e");
 }
 
-// Detailed, timestamped startup logging so a slow launch can be diagnosed from
-// the terminal: each phase prints "[startup +<ms>ms] <phase>". Always on (cheap).
-QElapsedTimer &startupClock()
-{
-    static QElapsedTimer t;
-    if (!t.isValid())
-        t.start();
-    return t;
-}
+// Compatibility wrapper used throughout the feature files. StartupTrace owns
+// the single process-wide clock so early main() work and MainWindow work share
+// one timeline.
 void logStartup(const QString &phase)
 {
-    qInfo().noquote() << QStringLiteral("[startup +%1ms] %2")
-                             .arg(startupClock().elapsed(), 5)
-                             .arg(phase);
+    forkmesh::logStartupTrace(phase);
 }
 
 // Same idea for the rebuild/restart path, which can be slow (git pull, cmake

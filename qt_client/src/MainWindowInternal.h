@@ -1,5 +1,7 @@
 #pragma once
 
+#include "StartupTrace.h"
+
 // Internal UI helper layer for MainWindow: custom delegates, mini-chart and
 // spinner widgets, syntax highlighters, the code-preview editor, and the many
 // free helper functions/constants the window's feature code shares. Lifted out
