@@ -101,7 +101,7 @@ public:
         x += ageWidth;
 
         if (index.data(kBranchWorktreeRole).toBool())
-            themedOcticon("file-directory", QColor("#58a6ff"), 13)
+            themedOcticon("worktree", QColor("#58a6ff"), 13)
                 .paint(painter, QRect(x, cy - 7, 14, 14));
         x += iconSlot;
 
@@ -3447,7 +3447,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         name->setData(kBranchWorktreeRole, !worktreePath.isEmpty());
         auto *worktree = new QTableWidgetItem(worktreePath);
         if (!worktreePath.isEmpty()) {
-            worktree->setIcon(themedOcticon("file-directory", QColor("#8b949e"), 13));
+            worktree->setIcon(themedOcticon("worktree", QColor("#8b949e"), 13));
             worktree->setToolTip(worktreePath);
             worktree->setForeground(QColor("#8b949e"));
         }

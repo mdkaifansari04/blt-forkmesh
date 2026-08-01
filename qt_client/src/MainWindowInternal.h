@@ -7004,7 +7004,16 @@ inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int
 
     QPixmap pixmap = crispIconPixmap(size, dpr);
 
-    QSvgRenderer renderer(QStringLiteral(":/icons/octicons/%1.svg").arg(name));
+    // A few glyphs have no octicon (the git worktree symbol, for one); those come
+    // from VS Code's codicons under /icons/codicons. Both sets are 16x16 line art
+    // of the same weight, so they mix cleanly. The existence check comes first
+    // because handing QSvgRenderer a missing resource logs a qt.svg warning; only
+    // a cache miss pays for it at all.
+    QString path = QStringLiteral(":/icons/octicons/%1.svg").arg(name);
+    if (!QFile::exists(path))
+        path = QStringLiteral(":/icons/codicons/%1.svg").arg(name);
+
+    QSvgRenderer renderer(path);
     if (!renderer.isValid())
         return pixmap;
 
