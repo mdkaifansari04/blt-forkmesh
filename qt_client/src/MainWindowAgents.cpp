@@ -6289,6 +6289,75 @@ void MainWindow::assignIssueToAgent(const QString &provider, const QString &mode
     startAgentForIssue(*issue, provider, createPr, /*quiet=*/false, model);
 }
 
+// Short branch slug from a session title, in the spirit of the SCM tab's
+// auto commit message: keep only the title's significant words and cap the
+// result at a few of them, so "occasionally the codex sessions bleed into
+// each other" names the branch "codex-sessions-bleed" rather than a 48-char
+// transliteration of the whole sentence.
+static QString agentBranchSlug(const QString &title, const QString &fallback)
+{
+    // Filler that makes a poor branch name; mirrors the commit drafter's
+    // generic-name filter, but for prose.
+    static const QSet<QString> kFiller = {
+        QStringLiteral("a"),     QStringLiteral("an"),    QStringLiteral("and"),
+        QStringLiteral("are"),   QStringLiteral("as"),    QStringLiteral("at"),
+        QStringLiteral("be"),    QStringLiteral("but"),   QStringLiteral("can"),
+        QStringLiteral("could"), QStringLiteral("do"),    QStringLiteral("dont"),
+        QStringLiteral("each"),  QStringLiteral("for"),   QStringLiteral("from"),
+        QStringLiteral("get"),   QStringLiteral("has"),   QStringLiteral("have"),
+        QStringLiteral("i"),     QStringLiteral("id"),    QStringLiteral("if"),
+        QStringLiteral("in"),    QStringLiteral("into"),  QStringLiteral("is"),
+        QStringLiteral("it"),    QStringLiteral("its"),   QStringLiteral("just"),
+        QStringLiteral("let"),   QStringLiteral("lets"),  QStringLiteral("like"),
+        QStringLiteral("make"),  QStringLiteral("my"),    QStringLiteral("of"),
+        QStringLiteral("on"),    QStringLiteral("or"),    QStringLiteral("other"),
+        QStringLiteral("our"),   QStringLiteral("out"),   QStringLiteral("please"),
+        QStringLiteral("should"),QStringLiteral("so"),    QStringLiteral("some"),
+        QStringLiteral("that"),  QStringLiteral("the"),   QStringLiteral("their"),
+        QStringLiteral("them"),  QStringLiteral("then"),  QStringLiteral("there"),
+        QStringLiteral("these"), QStringLiteral("they"),  QStringLiteral("this"),
+        QStringLiteral("to"),    QStringLiteral("too"),   QStringLiteral("up"),
+        QStringLiteral("use"),   QStringLiteral("we"),    QStringLiteral("when"),
+        QStringLiteral("with"),  QStringLiteral("would"), QStringLiteral("you"),
+        QStringLiteral("your")};
+    QStringList words{QString()};
+    for (QChar ch : title.toLower()) {
+        const char a = ch.toLatin1();
+        if ((a >= 'a' && a <= 'z') || (a >= '0' && a <= '9'))
+            words.last().append(ch);
+        else if (!words.last().isEmpty())
+            words.append(QString());
+    }
+    QString slug;
+    int kept = 0;
+    for (const QString &word : words) {
+        if (word.isEmpty() || kFiller.contains(word))
+            continue;
+        if (!slug.isEmpty() &&
+            (kept >= 4 || slug.size() + 1 + word.size() > 30))
+            break;
+        if (!slug.isEmpty())
+            slug.append(QLatin1Char('-'));
+        slug.append(word);
+        ++kept;
+    }
+    if (slug.isEmpty()) {
+        // All filler (or non-latin): fall back to the first raw words.
+        for (const QString &word : words) {
+            if (word.isEmpty())
+                continue;
+            if (!slug.isEmpty() &&
+                (kept >= 4 || slug.size() + 1 + word.size() > 30))
+                break;
+            if (!slug.isEmpty())
+                slug.append(QLatin1Char('-'));
+            slug.append(word);
+            ++kept;
+        }
+    }
+    return slug.isEmpty() ? fallback : slug.left(30);
+}
+
 int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
                                    bool createPr, bool quiet, const QString &model,
                                    const RepositoryRecord *repoHint)
@@ -6345,22 +6414,11 @@ int MainWindow::startAgentForIssue(const Issue &issue, const QString &provider,
     session.contextWindow =
         qMax(1000, QSettings().value(kAgentContextSetting, 32000).toInt());
     session = m_agentStore->createSession(session);
-    // A descriptive, related branch name: agent/issue-<n>-<title-slug>.
-    QString slug;
-    for (QChar ch : session.issueTitle.toLower()) {
-        const char a = ch.toLatin1();
-        if ((a >= 'a' && a <= 'z') || (a >= '0' && a <= '9'))
-            slug.append(ch);
-        else if (!slug.isEmpty() && !slug.endsWith(QLatin1Char('-')))
-            slug.append(QLatin1Char('-'));
-    }
-    slug = slug.left(48);
-    while (slug.endsWith(QLatin1Char('-')))
-        slug.chop(1);
-    if (slug.isEmpty())
-        slug = provider;
+    // A descriptive, short branch name: agent/issue-<n>-<title-slug>.
     session.branchName =
-        QStringLiteral("agent/issue-%1-%2").arg(session.issueNumber).arg(slug);
+        QStringLiteral("agent/issue-%1-%2")
+            .arg(session.issueNumber)
+            .arg(agentBranchSlug(session.issueTitle, provider));
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
@@ -6731,22 +6789,11 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     session.issueTitle =
         title.isEmpty() ? QStringLiteral("Ad-hoc agent run") : title;
     session = m_agentStore->createSession(session);
-    // Descriptive branch: agent/adhoc-<id>-<title-slug>.
-    QString slug;
-    for (QChar ch : session.issueTitle.toLower()) {
-        const char a = ch.toLatin1();
-        if ((a >= 'a' && a <= 'z') || (a >= '0' && a <= '9'))
-            slug.append(ch);
-        else if (!slug.isEmpty() && !slug.endsWith(QLatin1Char('-')))
-            slug.append(QLatin1Char('-'));
-    }
-    slug = slug.left(48);
-    while (slug.endsWith(QLatin1Char('-')))
-        slug.chop(1);
-    if (slug.isEmpty())
-        slug = QStringLiteral("agent");
+    // Descriptive, short branch: agent/adhoc-<id>-<title-slug>.
     session.branchName =
-        QStringLiteral("agent/adhoc-%1-%2").arg(session.id).arg(slug);
+        QStringLiteral("agent/adhoc-%1-%2")
+            .arg(session.id)
+            .arg(agentBranchSlug(session.issueTitle, QStringLiteral("agent")));
     m_agentStore->saveSession(session);
     m_agentStore->appendLog(
         session,
@@ -8039,33 +8086,23 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                   .arg(customPrompt.trimmed())
                   .arg(session.branchName)
                   .arg(baseName);
+    // No built-in system prompt any more (adhoc #2): the agent starts inside
+    // its own worktree on its own branch, so the isolation and workflow the
+    // old preamble + "Work end to end" body spelled out are enforced by the
+    // harness rather than instructed. The agent gets the task (`lead`, which
+    // names its branch/worktree) plus one factual line on how the run lands.
+    // A custom preamble from Settings → Agents still governs the run when set.
     const QString body =
-        QStringLiteral(
-            "%1 Work end to end:\n"
-            "1. Implement the change, consistent with the surrounding code.\n"
-            "2. If `%2` has advanced, rebase or merge it into your branch and "
-            "resolve any conflicts.\n"
-            "3. Run the project's tests and linting, and fix any failures.\n"
-            "4. Commit everything to `%3` with a clear message.\n"
-            "ForkMesh will open the pull request from your branch. Finally, "
-            "summarize what you changed and how to verify it.\n")
-            .arg(lead)
-            .arg(baseName)
-            .arg(session.branchName);
-    // Honor the user-editable instruction preamble from Settings → Agents, and let
-    // it GOVERN the run when set. `body` above bundles the task/branch context
-    // (`lead`) with a built-in "Work end to end" workflow; if we also prepended a
-    // custom preamble the agent would receive two competing instruction sets
-    // ("its sending both prompts — just send the one we have in settings"). So
-    // when a custom preamble is configured we send it plus only the task/branch
-    // context and drop the built-in workflow. A blank setting falls back to the
-    // built-in default preamble followed by the full workflow body, as before.
+        lead + QStringLiteral(
+                   "\nForkMesh will open the pull request from `%1` when the "
+                   "run finishes; committed and uncommitted work in the "
+                   "worktree both land in it.\n")
+                   .arg(session.branchName);
     const QString customPreamble =
         QSettings().value(kAgentPromptPreambleSetting).toString().trimmed();
-    QString prompt =
-        customPreamble.isEmpty()
-            ? AgentRunner::defaultPromptPreamble() + QStringLiteral("\n\n") + body
-            : customPreamble + QStringLiteral("\n\n") + lead;
+    QString prompt = customPreamble.isEmpty()
+                         ? body
+                         : customPreamble + QStringLiteral("\n\n") + body;
 
     // Per-session buffers; tear down any prior stream for THIS session only. The
     // stream object and the UI hand-off below are set up *before* the worktree is
@@ -8483,10 +8520,36 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
 
     // Give the agent its own worktree + branch so concurrent agents never share a
     // working tree. The checkout can take a second or two on a large repo, so run
-    // it asynchronously and start the CLI from the continuation; fall back to the
-    // live checkout if there's no base commit or the worktree can't be made.
+    // it asynchronously and start the CLI from the continuation. There is NO
+    // fallback to the shared checkout any more (adhoc #2): launching there was
+    // how concurrent sessions occasionally bled into each other — two agents
+    // editing the same tree, each finishing PR capturing the other's diff. A
+    // run that cannot get its own worktree fails with a clear error instead.
+    auto failLaunch = [this, sid](const QString &why) {
+        if (CodexAppServerSession *live = m_codexStreams.take(sid))
+            live->deleteLater();
+        if (ClaudeStreamSession *live = m_streamSessions.take(sid))
+            live->deleteLater();
+        if (AgentSession *as = findAgentSession(sid)) {
+            as->status = AgentStatus::Failed;
+            as->lastError = why;
+            as->finishedAtMs = QDateTime::currentMSecsSinceEpoch();
+            m_agentStore->appendLog(*as, QStringLiteral("!! %1\n").arg(why));
+            m_agentStore->saveSession(*as);
+            scheduleAgentSessionsPush();
+        }
+        completeOrgTaskForSession(sid);
+        reloadAgents();
+        if (sid == m_selectedAgentSessionId)
+            showAgentSession(sid);
+        looperOnSessionFinished(sid);
+        processAgentQueue();
+        maybeStartQueuedRebuild();
+    };
     if (baseRef.isEmpty()) {
-        launch(repoPath);
+        failLaunch(QStringLiteral(
+            "Could not resolve a base commit to fork the agent's worktree "
+            "from — does the repository have a commit yet?"));
         return;
     }
     const QString wtRoot =
@@ -8520,38 +8583,45 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // Chaining prune+remove+add above only serializes *within* this one script;
     // it does NOT serialize against the previous run's teardown thread, which may
     // still be mid-`git worktree remove`/`prune` on this same repo. When our add
-    // loses that race the worktree never appears, we drop to the main checkout,
-    // and `claude --resume` bails instantly with a red "0 turns" error — the user
-    // sees "Done" on the first Add and has to click again once the teardown has
-    // drained (adhoc #84). So on a resume, re-run the add a few times with a short
-    // delay before giving up, rather than silently launching in the wrong tree.
+    // loses that race the worktree never appears — so re-run it a few times with
+    // a short delay (fresh runs and resumes alike) before giving up. Retries
+    // exhausted means the run fails; it never drops to the shared checkout.
     auto runAdd = std::make_shared<std::function<void(int)>>();
-    *runAdd = [this, sid, wtPath, repoPath, script, resumeId, launch,
+    *runAdd = [this, sid, wtPath, repoPath, script, launch, failLaunch,
                runAdd](int attemptsLeft) {
         auto *add = new QProcess(this);
         add->setWorkingDirectory(repoPath);
         connect(add, &QProcess::finished, this,
-                [this, sid, add, wtPath, repoPath, script, resumeId, launch, runAdd,
+                [this, sid, add, wtPath, script, launch, failLaunch, runAdd,
                  attemptsLeft](int, QProcess::ExitStatus) {
+                    const QString err = QString::fromUtf8(
+                                            add->readAllStandardError())
+                                            .trimmed();
                     add->deleteLater();
                     if (QDir(wtPath).exists()) {
                         m_streamWorktree[sid] = wtPath;
                         launch(wtPath);
                         return;
                     }
-                    // The add lost the race with the async teardown. Resuming in
-                    // the main checkout guarantees a 0-turn --resume failure, so
-                    // wait for the teardown to drain and retry — unless the user
-                    // stopped/deleted the session while we were waiting.
-                    if (!resumeId.isEmpty() && attemptsLeft > 0 &&
-                        (m_streamSessions.value(sid) || m_codexStreams.value(sid))) {
+                    // The user stopped/deleted the session while we waited.
+                    if (!m_streamSessions.value(sid) && !m_codexStreams.value(sid))
+                        return;
+                    // The add lost the race with the async teardown — wait for
+                    // it to drain and retry.
+                    if (attemptsLeft > 0) {
                         QTimer::singleShot(400, this,
                                            [runAdd, attemptsLeft] {
                                                (*runAdd)(attemptsLeft - 1);
                                            });
                         return;
                     }
-                    launch(repoPath); // fresh run, or retries exhausted
+                    failLaunch(
+                        QStringLiteral("Could not create the agent's worktree "
+                                       "at %1%2")
+                            .arg(wtPath, err.isEmpty()
+                                             ? QStringLiteral(".")
+                                             : QStringLiteral(": %1").arg(
+                                                   err.right(400))));
                 });
         add->start(QStringLiteral("bash"), {QStringLiteral("-lc"), script});
     };
