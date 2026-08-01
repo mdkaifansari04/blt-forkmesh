@@ -1046,6 +1046,16 @@ int main(int argc, char *argv[])
               directoryNodes.contains(QStringLiteral("node-b")),
           QStringLiteral("Nodes lists offline linked nodes from the relay directory"));
 
+    // adhoc #129: a public room (#general) is open to every registered account,
+    // so its users popup lists the whole database directory — not just the
+    // handful of accounts that happen to be online right now.
+    window.testSetDirectoryUserNodes(QStringLiteral("zora"), {});
+    const QStringList publicRoomUsers =
+        window.testChatMemberNames(QStringLiteral("#general"));
+    check(publicRoomUsers.contains(QStringLiteral("alice")) &&
+              publicRoomUsers.contains(QStringLiteral("zora")),
+          QStringLiteral("#general lists every database user, online or not"));
+
     // The Repos page groups machine publications by logical repository, prefers
     // a public organization alias, maps a standalone node back to its user, and
     // exposes an explicit Switch action.
