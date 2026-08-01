@@ -16918,6 +16918,40 @@ async def world_moderation_handler(env, request):
     )
 
 
+# The desktop's Nodes page deletes a node from the app, and the ordinary launch
+# path is authenticateSilently() — keys, no session token at all (adhoc #63
+# family). Without this the button would answer not_admin to the very operator
+# who owns the mesh. The proof names the exact node it removes, so a captured
+# signature can only ever re-delete that same node inside the skew window, and
+# _is_admin still gates the caller exactly as it does a session-token one.
+WORLD_NODE_DELETE_PROOF = "forkmesh-world-node-delete-v1"
+
+
+async def _world_node_delete_signed_actor(env, request, data):
+    """Resolve the admin account behind a key-signed node deletion, or ""."""
+    if method_name(request) != "POST":
+        return ""
+    params = parse_qs(urlparse(request.url).query)
+    actor = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    target = clean_string(
+        (data or {}).get("nodeName", ""), MAX_NODE_NAME).lower()
+    if not actor or not sig or not target or not _ts_ok(ts):
+        return ""
+    canonical = (
+        WORLD_NODE_DELETE_PROOF + "\n" + actor + "\n" + target + "\n" + str(ts)
+    ).encode()
+    # Every key the account may sign as, not just its primary pubkey — same
+    # durable desktop identity as _org_task_signed_session.
+    if not await _verify_owner_signature(env, actor, sig, canonical):
+        return ""
+    _, record = await _account_row(env, actor)
+    if not record or record.get("status") != "active":
+        return ""
+    return actor
+
+
 async def world_admin_delete_node_handler(env, request):
     """Permanently remove one named node after an exact admin confirmation."""
     if method_name(request) != "POST":
@@ -16932,6 +16966,8 @@ async def world_admin_delete_node_handler(env, request):
             {"error": "invalid_json"}, status=400,
             cache_control="no-store, max-age=0, must-revalidate")
     actor = await _authed_account_name(env, request, data)
+    if not actor:
+        actor = await _world_node_delete_signed_actor(env, request, data)
     if not actor or not await _is_admin(env, actor):
         return json_response(
             {"error": "not_admin"}, status=403,
@@ -17058,6 +17094,21 @@ async def world_admin_delete_node_handler(env, request):
             env, "DELETE FROM mirror_https_endpoints "
             "WHERE lower(node_name)=?",
             identifier)
+        # The public /status page builds its mirror roster from recorded
+        # samples (status_history), not from the live endpoint table, so a
+        # deleted node kept a "Mirror node — <name>" row with 30 days of
+        # history — and a permanent "down" verdict — long after every other
+        # trace of it was gone. Drop its samples too so deletion leaves none.
+        status_system = STATUS_MIRROR_PREFIX + identifier
+        await d1_run(
+            env, "DELETE FROM system_status_daily WHERE system=?",
+            status_system)
+        await d1_run(
+            env, "DELETE FROM system_status_hourly WHERE system=?",
+            status_system)
+        await d1_run(
+            env, "DELETE FROM system_status_minute WHERE system=?",
+            status_system)
     for identity_bi in identity_bis:
         cleanup_name = (
             target if identity_bi == target_bi else requested_target
@@ -37430,6 +37481,89 @@ def _install_diag_fields(payload):
     )
 
 
+# A successful installer run ("done" step, ok) is celebrated: the World runs
+# its firework show for this long (same window as a federated instance joining)
+# and every platform admin gets one Ping per run.
+WORLD_INSTALL_CELEBRATION_MS = 10 * 60 * 1000
+MAX_WORLD_INSTALL_CELEBRATIONS = 8
+
+
+async def _enqueue_install_celebration_pings(env, fields, now):
+    """Best-effort admin Pings for one completed installer run."""
+    run, _step, _ok, os_name, arch = fields[:5]
+    platform = " · ".join(p for p in (os_name, arch) if p) or "unknown platform"
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    for row in rows or []:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+        except Exception:
+            continue
+        admin = clean_string(
+            record.get("name", ""), MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(admin):
+            continue
+        await enqueue_notification(
+            env, admin, "operational_alert",
+            "New ForkMesh desktop installed \U0001F386",
+            body=("Someone just installed the ForkMesh desktop with the "
+                  "one-line installer (" + platform + "). The World is "
+                  "running its firework show."),
+            href="/world/", source="installer",
+            dedupe="install-celebration:" + run,
+            ts=now,
+            meta={"platform": platform},
+        )
+
+
+async def world_recent_installs_handler(env, request):
+    """Fresh successful installer runs, for the World's firework display.
+
+    Anonymous coarse platform tokens only — the install_diag table stores no
+    account, IP, or hostname (see SCHEMA note) — and the installer's random
+    run id is hashed so the raw telemetry key never leaves the Worker.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store", extra_headers={"allow": "GET"})
+    await ensure_schema(env)
+    now = int(Date.now())
+    cutoff = now - WORLD_INSTALL_CELEBRATION_MS
+    rows = await d1_all(
+        env,
+        "SELECT run, MAX(ts) AS ts, MAX(os) AS os, MAX(arch) AS arch "
+        "FROM install_diag WHERE step='done' AND ok=1 AND ts>=? "
+        "GROUP BY run ORDER BY ts DESC LIMIT ?",
+        cutoff, MAX_WORLD_INSTALL_CELEBRATIONS,
+    )
+    installs = []
+    for row in rows or []:
+        run = str(row.get("run") or "")
+        if not run:
+            continue
+        installs.append({
+            "id": hashlib.sha256(
+                ("forkmesh-world-install-v1\0" + run).encode()
+            ).hexdigest()[:24],
+            "installedAt": max(0, int(row.get("ts") or 0)),
+            "os": clean_string(row.get("os"), 32),
+            "arch": clean_string(row.get("arch"), 32),
+        })
+    return json_response({
+        "ok": True,
+        "installs": installs,
+        "count": len(installs),
+        "observedAt": now,
+        "privacy": (
+            "Anonymous installer telemetry only: coarse platform tokens and "
+            "a hashed per-run id. No accounts, IP addresses, or hostnames "
+            "are stored or exposed."
+        ),
+    }, cache_control="public, max-age=30",
+       extra_headers={"x-content-type-options": "nosniff"})
+
+
 async def install_diag_handler(env, request):
     # Anonymous, unauthenticated install telemetry from install.sh. Best-effort:
     # never errors out the caller (the installer fires these fire-and-forget). We
@@ -37461,6 +37595,11 @@ async def install_diag_handler(env, request):
                (SELECT id FROM install_diag ORDER BY id DESC LIMIT ?)""",
             MAX_INSTALL_DIAG,
         )
+        if fields[1] == "done" and fields[2] == 1:
+            # Whole install finished: Ping the admins; the World picks the run
+            # up from /api/world/installs and starts its firework show.
+            await _enqueue_install_celebration_pings(
+                env, fields, int(Date.now()))
     except Exception:
         pass
     return json_response({"ok": True}, cache_control="no-store")
@@ -43929,6 +44068,10 @@ class Default(WorkerEntrypoint):
                 "/api/world/instances",
                 "/api/world/instances/"):
             return await world_relay_instances_handler(self.env, request)
+        if url.path in (
+                "/api/world/installs",
+                "/api/world/installs/"):
+            return await world_recent_installs_handler(self.env, request)
 
         if (url.path == "/api/world/fediverse"
                 or url.path == "/api/world/fediverse/"
