@@ -90,6 +90,15 @@ public:
     // Render Edit/MultiEdit diffs side-by-side (old | new) instead of unified.
     void setSplitDiffs(bool on);
 
+    // Why a failed `result` event failed, in words: the CLI's own message when
+    // it sent one, otherwise the machine-readable subtype spelled out. Shared
+    // with the host so the transcript row, the status pill and the stored
+    // session error all give the same reason instead of a bare "Failed".
+    static QString failureReason(const QJsonObject &ev);
+    // Whether a `result` event reports a failed run: is_error, or any "error_*"
+    // subtype (error_max_turns / error_during_execution / …).
+    static bool resultIsError(const QJsonObject &ev);
+
     // Host-supplied context for the "session started" divider (adhoc #9): the
     // worktree branch the run works on, the permission mode it was launched
     // under ("Auto" / "Plan" / …) and its reasoning strength ("high" / "low").

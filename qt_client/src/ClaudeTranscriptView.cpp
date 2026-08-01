@@ -1835,9 +1835,47 @@ void ClaudeTranscriptView::lockInlineChoices(QWidget *box)
         m_openInlineChoices = nullptr;
 }
 
+bool ClaudeTranscriptView::resultIsError(const QJsonObject &ev)
+{
+    return ev.value(QStringLiteral("is_error")).toBool()
+           || ev.value(QStringLiteral("subtype")).toString()
+                  .startsWith(QLatin1String("error"));
+}
+
+// Why a run failed, in words. The CLI usually puts its own message in `result`
+// ("Credit balance is too low", an execution traceback); Codex/app-server
+// failures land there too. When there's no message at all, spell out the
+// machine-readable subtype rather than leaving the transcript with a bare
+// "✗ Failed" and nothing to act on.
+QString ClaudeTranscriptView::failureReason(const QJsonObject &ev)
+{
+    QString detail = ev.value(QStringLiteral("result")).toString().trimmed();
+    if (detail.isEmpty()) {
+        const QJsonValue e = ev.value(QStringLiteral("error"));
+        detail = e.isObject()
+                     ? e.toObject().value(QStringLiteral("message")).toString().trimmed()
+                     : e.toString().trimmed();
+    }
+    if (!detail.isEmpty())
+        return detail;
+
+    QString sub = ev.value(QStringLiteral("subtype")).toString().trimmed();
+    if (sub == QLatin1String("error_max_turns"))
+        return QStringLiteral("the run hit its maximum number of turns");
+    if (sub == QLatin1String("error_during_execution"))
+        return QStringLiteral("the CLI hit an error while running the turn");
+    if (sub.isEmpty() || sub == QLatin1String("error"))
+        return QStringLiteral("the CLI reported an error but sent no detail — "
+                              "check the raw log for this session");
+    // Any future error_* subtype still reads as words, not as a token.
+    if (sub.startsWith(QLatin1String("error_")))
+        sub = sub.mid(6);
+    return sub.replace(QLatin1Char('_'), QLatin1Char(' '));
+}
+
 void ClaudeTranscriptView::addResult(const QJsonObject &ev)
 {
-    const bool err = ev.value(QStringLiteral("is_error")).toBool();
+    const bool err = resultIsError(ev);
     const double cost = ev.value(QStringLiteral("total_cost_usd")).toDouble();
     const double ms = ev.value(QStringLiteral("duration_ms")).toDouble();
     const int turns = ev.value(QStringLiteral("num_turns")).toInt();
@@ -1863,7 +1901,22 @@ void ClaudeTranscriptView::addResult(const QJsonObject &ev)
     l->setFont(monoFont());
     l->setStyleSheet(QStringLiteral("color:%1;font-weight:600;background:transparent;")
                          .arg(err ? m_p.del : m_p.add));
-    addRow(l, err ? m_p.del : m_p.add);
+    if (!err) {
+        addRow(l, m_p.add);
+        return;
+    }
+
+    // A failure says why, right under the headline: the CLI's message (or the
+    // subtype spelled out) in a wrapped, selectable block so the user doesn't
+    // have to dig through the raw log to find out what went wrong.
+    auto *card = new QWidget;
+    card->setStyleSheet(QStringLiteral("background:transparent;"));
+    auto *v = new QVBoxLayout(card);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(4);
+    v->addWidget(l);
+    v->addWidget(makeMono(failureReason(ev), true));
+    addRow(card, m_p.del);
 }
 
 // ---- per-tool rendering ----------------------------------------------------
