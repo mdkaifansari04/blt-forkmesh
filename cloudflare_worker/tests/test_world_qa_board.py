@@ -332,6 +332,22 @@ def test_cards_stack_only_deals_tasks_that_nobody_has_reviewed():
     assert "CARDS WAITING" in SCENE
 
 
+def test_shared_qa_deck_refreshes_while_world_remains_open():
+    for contract in (
+        "const WORLD_QA_POLL_MS = 15 * 1000;",
+        "this.qaTimer = window.setInterval(() => {",
+        "void this.refreshQaDeck({ quiet: true });",
+        "}, WORLD_QA_POLL_MS);",
+        "window.clearInterval(this.qaTimer);",
+    ):
+        assert contract in WORLD
+    visibility = WORLD[
+        WORLD.index("handleVisibility = () => {"):
+        WORLD.index("handleStorage = (event) => {")
+    ]
+    assert "void this.refreshQaDeck({ quiet: true });" in visibility
+
+
 def test_qa_catalog_is_not_truncated_to_the_first_64_cards():
     handler = ENTRY[
         ENTRY.index("async def world_qa_handler"):
