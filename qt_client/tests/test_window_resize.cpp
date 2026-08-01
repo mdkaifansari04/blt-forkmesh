@@ -19,6 +19,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
+#include <QMouseEvent>
 #include <QFileInfo>
 #include <QPointer>
 #include <QProcess>
@@ -46,6 +47,7 @@
 namespace forkmesh {
 namespace ui {
 QString linkifyIssueRefs(const QString &escaped);
+bool isTemporaryChatGuest(const MemberInfo &m);
 QString agentModelLabel(const QString &model);
 bool agentModelIsClaudeStyle(const QString &model);
 bool agentModelMatchesProvider(const QString &provider, const QString &model);
@@ -417,6 +419,17 @@ int main(int argc, char *argv[])
 
     MainWindow window;
 
+    // adhoc #115: the first-run screen that asked for a username and a relay
+    // host is retired — it only ever loaded straight into the app — so a freshly
+    // constructed window is already on the app shell, before any session starts.
+    check(window.testStackIndex() == 1,
+          QStringLiteral("the app opens on the app shell, not a setup screen"));
+    // Its replacement is the top-bar "Log in / Sign up" pill, which stays hidden
+    // until the deferred startup has resolved whether a user account is attached
+    // (otherwise every launch would flash it at an already-signed-in user).
+    check(!window.testSignInButtonVisible(),
+          QStringLiteral("the sign-in pill waits for silent auth to resolve"));
+
     // Opening Chat from its unread badge should land directly on the unread
     // conversation carrying the newest message, while preserving the already
     // open conversation when that conversation itself is unread.
@@ -718,6 +731,44 @@ int main(int argc, char *argv[])
     check(cloudflareToken &&
               cloudflareToken->echoMode() == QLineEdit::Password,
           QStringLiteral("Cloudflare token control masks the session-only secret"));
+
+    // adhoc #108: every control-node area is a tab at the top of the page, and
+    // the API token tab states what the deploy path requires before any call is
+    // made. The token input masks its value like every other credential field.
+    QTabWidget *controlTabs =
+        window.findChild<QTabWidget *>(QStringLiteral("controlNodeTabs"));
+    QStringList controlTabNames;
+    for (int index = 0; controlTabs && index < controlTabs->count(); ++index)
+        controlTabNames << controlTabs->tabText(index);
+    check(controlTabs && controlTabs->count() >= 8 &&
+              controlTabNames.contains(QStringLiteral("Mirror services")) &&
+              controlTabNames.contains(QStringLiteral("API token")) &&
+              controlTabNames.contains(QStringLiteral("Site deployment")),
+          QStringLiteral("control node groups each section under a top tab"));
+    QLineEdit *controlTokenValue =
+        window.findChild<QLineEdit *>(QStringLiteral("controlTokenValue"));
+    QTableWidget *controlTokenTable = window.findChild<QTableWidget *>(
+        QStringLiteral("controlTokenPermissionsTable"));
+    check(controlTokenValue &&
+              controlTokenValue->echoMode() == QLineEdit::Password &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenTestButton")) != nullptr &&
+              window.findChild<QPushButton *>(
+                  QStringLiteral("controlTokenGenerateButton")) != nullptr,
+          QStringLiteral("API token tab exposes a masked token, a check and a "
+                         "rotate button"));
+    QStringList requiredPermissionLabels;
+    for (int row = 0; controlTokenTable && row < controlTokenTable->rowCount();
+         ++row) {
+        const QTableWidgetItem *label = controlTokenTable->item(row, 0);
+        const QTableWidgetItem *need = controlTokenTable->item(row, 1);
+        if (label && need && need->text() == QStringLiteral("Required"))
+            requiredPermissionLabels << label->text();
+    }
+    check(requiredPermissionLabels.contains(QStringLiteral("Workers Scripts: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("D1: Edit")) &&
+              requiredPermissionLabels.contains(QStringLiteral("DNS: Edit")),
+          QStringLiteral("API token tab lists the required permissions up front"));
     window.testShowLogSection();
     QApplication::processEvents();
     check(window.findChild<QPushButton *>(
@@ -954,6 +1005,13 @@ int main(int argc, char *argv[])
 
     window.testEnableSessionStartBypass(true);
 
+    // adhoc #115: startup has resolved now (the bypass marks it done) and this
+    // node has no user account, so the pill appears — it is the only way in that
+    // the retired setup screen left behind.
+    window.testRefreshSignInButton();
+    check(window.testSignInButtonVisible(),
+          QStringLiteral("the sign-in pill offers a way in once no account is found"));
+
     // No wallet, no signup: starting a node needs only a valid name. The core
     // flow never invokes the (opt-in) account/signup flow, and a fresh node drops
     // straight into the app shell without an account or a verified wallet.
@@ -988,6 +1046,16 @@ int main(int argc, char *argv[])
               directoryNodes.contains(QStringLiteral("node-b")),
           QStringLiteral("Nodes lists offline linked nodes from the relay directory"));
 
+    // adhoc #129: a public room (#general) is open to every registered account,
+    // so its users popup lists the whole database directory — not just the
+    // handful of accounts that happen to be online right now.
+    window.testSetDirectoryUserNodes(QStringLiteral("zora"), {});
+    const QStringList publicRoomUsers =
+        window.testChatMemberNames(QStringLiteral("#general"));
+    check(publicRoomUsers.contains(QStringLiteral("alice")) &&
+              publicRoomUsers.contains(QStringLiteral("zora")),
+          QStringLiteral("#general lists every database user, online or not"));
+
     // The Repos page groups machine publications by logical repository, prefers
     // a public organization alias, maps a standalone node back to its user, and
     // exposes an explicit Switch action.
@@ -997,14 +1065,26 @@ int main(int argc, char *argv[])
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-a")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
                     {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Never shown in the grid")},
+                    {QStringLiteral("branch"), QStringLiteral("main")},
+                    {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"), QStringLiteral("local-node")}},
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("node-b")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
                     {QStringLiteral("rootCommit"), rootA},
                     {QStringLiteral("source"), QStringLiteral("remote-clone")}},
+        // The relay's public alias is a copy of the record above, so it carries
+        // the same published facts under the organization's name.
         QJsonObject{{QStringLiteral("owner"), QStringLiteral("acme")},
                     {QStringLiteral("name"), QStringLiteral("widget")},
                     {QStringLiteral("rootCommit"), rootA},
+                    {QStringLiteral("description"),
+                     QStringLiteral("Never shown in the grid")},
+                    {QStringLiteral("branch"), QStringLiteral("main")},
+                    {QStringLiteral("issueCount"), QStringLiteral("7")},
+                    {QStringLiteral("platform"), QStringLiteral("linux")},
                     {QStringLiteral("source"),
                      QStringLiteral("organization-alias")},
                     {QStringLiteral("servingOwner"),
@@ -1027,6 +1107,37 @@ int main(int argc, char *argv[])
     check(window.testNetworkRepoActionText(0) == QStringLiteral("Switch"),
           QStringLiteral("Repos provides an explicit Switch button"));
 
+    // adhoc #118: the page shows the full catalog record per repository -- every
+    // published field gets its own column, except the description.
+    const QStringList repoColumns = window.testNetworkRepoColumns();
+    const QStringList expectedRepoColumns{
+        QStringLiteral("Visibility"), QStringLiteral("Live host"),
+        QStringLiteral("Branch"),     QStringLiteral("Commits"),
+        QStringLiteral("Platform"),   QStringLiteral("Size"),
+        QStringLiteral("Clone URL"),  QStringLiteral("Maintainer")};
+    bool allRepoColumnsPresent = true;
+    for (const QString &column : expectedRepoColumns)
+        allRepoColumnsPresent =
+            allRepoColumnsPresent && repoColumns.contains(column);
+    check(allRepoColumnsPresent,
+          QStringLiteral("Repos gives every catalog field its own column"));
+    check(!repoColumns.contains(QStringLiteral("Description")),
+          QStringLiteral("Repos leaves the repository description out of the grid"));
+    check(window.testNetworkRepoCellText(0, QStringLiteral("Branch")) ==
+                  QStringLiteral("main") &&
+              window.testNetworkRepoCellText(0, QStringLiteral("Issues")) ==
+                  QStringLiteral("7") &&
+              window.testNetworkRepoCellText(0, QStringLiteral("Platform")) ==
+                  QStringLiteral("linux"),
+          QStringLiteral("Repos rows carry the published catalog values"));
+    check(!window.testNetworkRepoCellText(0, QStringLiteral("Repository"))
+               .contains(QStringLiteral("Never shown")),
+          QStringLiteral("Repos rows never print the repository description"));
+    // The rail badge counts what this page lists (two grouped repositories),
+    // not the machine's own copies.
+    check(window.testReposNavBadgeCount() == 2,
+          QStringLiteral("Repos rail badge counts the repositories on the network"));
+
     // Reward settings must never launch the former reserve/donation/finalize
     // account funnel. A mock account flow is installed specifically to prove it
     // remains untouched.
@@ -1047,7 +1158,7 @@ int main(int argc, char *argv[])
           QStringLiteral("reward settings cannot reserve or activate an account"));
 
     QCheckBox *nodeConnectAlertCheck =
-        findCheckBox(window, QStringLiteral("Show a system alert when a node connects"));
+        findCheckBox(window, QStringLiteral("Show a system ping when a node connects"));
     check(nodeConnectAlertCheck != nullptr,
           QStringLiteral("node-connect system alert checkbox exists"));
     if (nodeConnectAlertCheck) {
@@ -1077,6 +1188,47 @@ int main(int argc, char *argv[])
     check(networkLog.contains(QStringLiteral("Node connected")) &&
               networkLog.contains(QStringLiteral("New Peer")),
           QStringLiteral("newly online peer is logged when node-connect alerts are disabled"));
+
+    // adhoc #121: a plain user account (accountKind "user" — e.g. ForkBot's
+    // relayed chat identity, or a desktop signed in as a user rather than a
+    // linked node) coming online must not be announced as "Node connected":
+    // it isn't a node.
+    window.testResetNetworkLog();
+    QList<MemberInfo> withUserPeer = initialRoster;
+    MemberInfo userPeer = testMember(QStringLiteral("user-peer"), QStringLiteral("jett"));
+    userPeer.accountKind = QStringLiteral("user");
+    withUserPeer.append(userPeer);
+    window.testSetRoster(withUserPeer);
+    check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(QStringLiteral("jett")),
+          QStringLiteral("a plain user account online is not logged as a node connecting"));
+
+    // Adhoc #113: an anonymous chat guest coming online is a person passing
+    // through, not a node. Only a guest that advertises a machine nodeName (a
+    // first-run desktop) is announced — under the machine's name, never the
+    // person's "Guest ####" alias.
+    window.testResetNetworkLog();
+    QList<MemberInfo> withGuestPeer = withUserPeer;
+    MemberInfo guestPeer =
+        testMember(QStringLiteral("guest-peer"), QStringLiteral("Guest 4242"));
+    guestPeer.accountKind = QStringLiteral("guest");
+    withGuestPeer.append(guestPeer);
+    window.testSetRoster(withGuestPeer);
+    check(!window.testNetworkLog().join(QLatin1Char('\n')).contains(
+              QStringLiteral("Guest 4242")),
+          QStringLiteral("an anonymous guest online is not logged as a node"));
+    window.testResetNetworkLog();
+    MemberInfo guestDesktopPeer =
+        testMember(QStringLiteral("guest-desktop-peer"),
+                   QStringLiteral("Guest 4242"));
+    guestDesktopPeer.accountKind = QStringLiteral("guest");
+    guestDesktopPeer.nodeName = QStringLiteral("magnetic-terminal-4242");
+    withGuestPeer.append(guestDesktopPeer);
+    window.testSetRoster(withGuestPeer);
+    const QString guestLog = window.testNetworkLog().join(QLatin1Char('\n'));
+    check(guestLog.contains(QStringLiteral("magnetic-terminal-4242")) &&
+              !guestLog.contains(QStringLiteral("Guest 4242")),
+          QStringLiteral(
+              "a first-run desktop guest announces as its machine node name"));
 
     // adhoc #404: a browser guest / World visitor that stops sending presence is
     // forgotten after ten idle minutes, while a real node keeps its offline row
@@ -1211,6 +1363,18 @@ int main(int argc, char *argv[])
               QStringLiteral("status bar shows the open branch's commit "
                              "(date, message, author): ") +
                   commitText);
+
+        // adhoc #65: the strip only fits one elided line, so hovering it pops
+        // up the rest — full hash, author identity and the diffstat.
+        const QString tip = commitInfo ? commitInfo->toolTip() : QString();
+        check(tip.startsWith(QStringLiteral("<table")) &&
+                  tip.contains(QStringLiteral("Commit: ")) &&
+                  tip.contains(QStringLiteral("a@b.c")) &&
+                  tip.contains(QStringLiteral("Changes: ")) &&
+                  tip.contains(QStringLiteral("init")),
+              QStringLiteral("hovering the status bar commit pops up its full "
+                             "details (hash, author, changes): ") +
+                  tip);
     }
 
     // Repository detail is intentionally built on first navigation. Verify the
@@ -1224,9 +1388,11 @@ int main(int argc, char *argv[])
         QStringList labels;
         for (QAction *action : fixButton->menu()->actions())
             labels << action->text();
+        // "CC" is Claude Code, shortened with the rest of the provider labels
+        // (adhoc #38).
         if (labels == QStringList({QStringLiteral("Claude API"),
                                    QStringLiteral("OpenAI API"),
-                                   QStringLiteral("Claude Code")})) {
+                                   QStringLiteral("CC")})) {
             prFixMenuFound = true;
             break;
         }
@@ -1234,25 +1400,47 @@ int main(int argc, char *argv[])
     check(prFixMenuFound,
           QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
                          "and Claude Code after repository navigation"));
-    check(window.testAgentColumnsMovable(),
-          QStringLiteral("agents list column headers are draggable/reorderable "
-                         "after repository navigation"));
-    // adhoc #35: the list is down to id / title / Updated / Diff, and the title
-    // column is the one that flexes — so the columns always span the full list
-    // width with Updated and Diff sitting against its right edge, leaving the
-    // title everything in between rather than a fixed 320px slice.
+    // The Agents tab is built when it's first opened, and a repo no longer opens
+    // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
+    // before reading its list back. This also proves that route works for a repo
+    // with no sessions yet.
+    window.testOpenAgentsOverview();
+    // The page is laid out on its first show, so its column widths only settle
+    // once that reaches the event loop — pump until they do (bounded) rather than
+    // reading a half-laid-out header below.
+    {
+        QElapsedTimer agentLayoutTimer;
+        agentLayoutTimer.start();
+        while (agentLayoutTimer.elapsed() < 5000) {
+            QApplication::processEvents();
+            const QStringList span =
+                window.testAgentColumnLayout().section(QLatin1Char('|'), 1)
+                    .split(QLatin1Char('/'));
+            if (span.size() == 2 && span.at(1).toInt() > 0 &&
+                span.at(0).toInt() == span.at(1).toInt())
+                break;
+        }
+    }
+    check(window.testAgentListChromeHidden(),
+          QStringLiteral("agents list ships with no column header and no frame "
+                         "border (adhoc #92)"));
+    // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
+    // with its conflict alert, the churn bar and the age that used to have its
+    // own "Updated" column) and the title, which is the column that flexes — so
+    // the two always span the full list width with the title running to the
+    // list's right edge rather than a fixed 320px slice.
     const QString agentColumns = window.testAgentColumnLayout();
     const QStringList agentColumnParts =
         agentColumns.split(QLatin1Char('|'));
     const QStringList agentSpan =
         agentColumnParts.size() == 2 ? agentColumnParts.at(1).split(QLatin1Char('/'))
                                      : QStringList();
-    check(agentColumnParts.value(0) == QStringLiteral("#,Issue,Updated,Diff") &&
+    check(agentColumnParts.value(0) == QStringLiteral("#,Issue") &&
               agentSpan.size() == 2 &&
               agentSpan.at(0).toInt() == agentSpan.at(1).toInt() &&
               agentSpan.at(1).toInt() > 0,
-          QStringLiteral("agents list is #/Issue/Updated/Diff with the title column "
-                         "absorbing the spare width (adhoc #35, layout = %1)")
+          QStringLiteral("agents list is #/Issue with the title column absorbing "
+                         "the spare width (adhoc #35/#84/#92, layout = %1)")
               .arg(agentColumns));
     QPushButton *legacyIssueBounty = window.findChild<QPushButton *>(
         QStringLiteral("legacyIssueBountyDisabled"));
@@ -1300,7 +1488,7 @@ int main(int argc, char *argv[])
                                           : AgentStatus::Running;
             window.testAddAgentSession(session);
         }
-        window.testRefreshAgentStatusRow();
+        window.testRefreshAgentDotMatrix();
         window.resize(900, 650);
         QApplication::processEvents();
         const int minHintWidth = window.minimumSizeHint().width();
@@ -1541,12 +1729,13 @@ int main(int argc, char *argv[])
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
             // Columns: Node, Owner, Latest commit, Message, Author, Synced,
-            // Size, Issues, Commits, Branches, Pulls, Discussions, CPU, RAM,
-            // Disk, Platform, … — Message/Author pushed Disk/Platform to 14/15.
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 14)
+            // Sync delay, Size, Issues, Commits, Branches, Pulls, Discussions,
+            // CPU, RAM, Disk, Platform, … — the sync-delay column pushes
+            // Disk/Platform to 15/16.
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 15)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 15) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 16) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);
@@ -1676,6 +1865,37 @@ int main(int argc, char *argv[])
               QString("clicking a branch link selects the branch without waiting "
                       "for the panel's git reads (adhoc #420, landed on %1)")
                   .arg(landed.isEmpty() ? QStringLiteral("<none>") : landed));
+        // adhoc #107: the branch diff viewer lives in the Git view now — the
+        // same click must land the commits workspace on the range review pane
+        // with that branch under review.
+        check(window.testCommitWorkspacePage() == 2 &&
+                  window.testBranchDiffBranch() ==
+                      QStringLiteral("feature/keep-selected"),
+              QString("a branch link opens the branch's diff in the Git view's "
+                      "range pane (adhoc #107, page = %1, branch = %2)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBranchDiffBranch()));
+        // adhoc #110: the review borrows the left column's existing slots — the
+        // range's changed files where the working-tree changes sit, its commits
+        // where the history sits — instead of opening a column of its own.
+        check(window.testGitFilesSlotPage() == 1 &&
+                  window.testGitHistorySlotPage() == 1,
+              QString("the range's files and commits take over the Git view's "
+                      "left column (adhoc #110, files slot = %1, history slot "
+                      "= %2)")
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
+        // And closing the review hands both halves back to the working tree.
+        window.testCloseBranchRange();
+        check(window.testCommitWorkspacePage() == 0 &&
+                  window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("closing the range review restores the working-tree "
+                      "changes and commit history (adhoc #110, page = %1, files "
+                      "slot = %2, history slot = %3)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();
@@ -1683,6 +1903,79 @@ int main(int argc, char *argv[])
         check(after.contains(QStringLiteral("feature/keep-selected")),
               QStringLiteral("the background refresh rebuilds the rows after the "
                              "click (adhoc #420)"));
+
+        // adhoc #119: merging from the review ends the review — the branch's work
+        // is in main, so leaving its diff open only shows the user something
+        // they're finished with. Re-open the range pane, then let its "Merge to
+        // main" button run: the Git view must go back to the working tree exactly
+        // as if the pane's ✕ had been clicked.
+        //
+        // This fixture's linked worktree lives inside the parent checkout, so git
+        // reports it as untracked content and the merge would refuse ("the checkout
+        // has uncommitted changes"). Exclude it locally — the tracked tree is clean,
+        // which is the state that check is really about.
+        QFile excludeFile(wtRepo.path() + QStringLiteral("/.git/info/exclude"));
+        if (excludeFile.open(QIODevice::WriteOnly | QIODevice::Append)) {
+            excludeFile.write("wt-keep/\n");
+            excludeFile.close();
+        }
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        check(window.testCommitWorkspacePage() == 2,
+              QString("re-opening the branch review lands on the range pane again "
+                      "(adhoc #119 setup, page = %1)")
+                  .arg(window.testCommitWorkspacePage()));
+        const bool mergeClicked = window.testClickBranchReviewMerge(false);
+        QApplication::processEvents();
+        const QString mainTip =
+            gitOutput(wtRepo.path(), {"log", "--oneline", "-1", "main"});
+        check(mergeClicked && window.testCommitWorkspacePage() == 0 &&
+                  window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("merging from the branch review closes it and hands the Git "
+                      "view back to the working tree (adhoc #119, clicked = %1, "
+                      "page = %2, files slot = %3, history slot = %4, main tip = "
+                      "%5)")
+                  .arg(mergeClicked ? QStringLiteral("yes") : QStringLiteral("no"))
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage())
+                  .arg(mainTip.trimmed()));
+        check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),
+              QString("the review's merge button really merged the branch (adhoc "
+                      "#119, main tip = %1)").arg(mainTip.trimmed()));
+
+        // adhoc #131: the agent detail page's "Branch" button opens that session's
+        // branch in the Git view — the range pane, with the branch's changed files
+        // in the left column's CHANGES slot and its scope list below them. The
+        // sessions list is global, so the click has to point the Git view at the
+        // session's own repository first; from another repo's detail page it would
+        // otherwise render that repo's (missing) branch. Park the detail view on
+        // "me/r", then take the button's route for the session on "me/wtrepo".
+        window.testOpenRepository(repoIdx);
+        QApplication::processEvents();
+        window.testSwitchToAgentBranch(issueSession.id);
+        QApplication::processEvents();
+        const QString agentBranchDir = window.testRepoGitDir();
+        check(agentBranchDir.startsWith(wtRepo.path()),
+              QString("the agent's Branch button binds the Git view to that "
+                      "session's repository (adhoc #131, git dir = %1)")
+                  .arg(agentBranchDir));
+        check(window.testCommitWorkspacePage() == 2 &&
+                  window.testBranchDiffBranch() ==
+                      QStringLiteral("feature/keep-selected"),
+              QString("the agent's Branch button opens its branch in the Git "
+                      "view's range pane (adhoc #131, page = %1, branch = %2)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBranchDiffBranch()));
+        check(window.testGitFilesSlotPage() == 1 &&
+                  window.testGitHistorySlotPage() == 1,
+              QString("the agent's branch brings its changed files and the scope "
+                      "list into the Git view's left column (adhoc #131, files "
+                      "slot = %1, history slot = %2)")
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
     }
 
     // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
@@ -1707,6 +2000,80 @@ int main(int argc, char *argv[])
                   QString("default branch stays main while HEAD is parked on a "
                           "feature branch (got %1)")
                       .arg(window.testRepoDefaultBranch()));
+        }
+    }
+
+    // adhoc #116: a fresh install's first clone lands well after the repo-detail
+    // view opened, so every ref-backed label starts out empty. Reading them back
+    // used to be gated on the Code/Branches tab being on screen, so with any
+    // other tab up the status strip's bottom-left branch button and the branch
+    // count stayed on their empty-repo values for good — and the lazily-loaded
+    // tab badges kept the zero they were built with whatever tab was showing.
+    // Open a repo with no refs at all, move off Code, then let the clone land:
+    // the next push-driven refresh must catch all of it up.
+    {
+        QTemporaryDir lateRepo;
+        QWidget *statusBar =
+            window.findChild<QWidget *>(QStringLiteral("appStatusBar"));
+        QPushButton *branchButton =
+            statusBar ? statusBar->findChild<QPushButton *>(
+                            QStringLiteral("ghostButton"))
+                      : nullptr;
+        if (lateRepo.isValid() && branchButton) {
+            // An empty directory: the record exists and its path exists, but git
+            // has nothing to report — exactly the window between "the repo is in
+            // the list" and "its first clone finished".
+            const int idx = window.testAddLocalRepository("me", "laterepo",
+                                                          lateRepo.path());
+            window.testOpenRepository(idx);
+            QApplication::processEvents();
+            // Off the Code tab: it re-reads refs on every refresh anyway, so
+            // leaving it up would hide the regression this pins.
+            window.testShowRepoIssuesTab();
+            QApplication::processEvents();
+            const QString beforeBranch = branchButton->text();
+
+            // The clone lands: main plus two more branches, and one workflow.
+            const bool cloned =
+                initGitRepo(lateRepo) &&
+                runGitChecked(lateRepo.path(), {"branch", "release/1"}) &&
+                runGitChecked(lateRepo.path(), {"branch", "feature/two"});
+            QDir(lateRepo.path()).mkpath(QStringLiteral(".forkmesh"));
+            QFile workflow(
+                QDir(lateRepo.path()).filePath(QStringLiteral(".forkmesh/ci.yml")));
+            const bool wroteWorkflow =
+                workflow.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+                workflow.write("name: ci\non: [push]\nsteps:\n  - run: true\n") > 0;
+            workflow.close();
+
+            if (cloned && wroteWorkflow) {
+                window.testRefreshOpenRepoDetail();
+                // The Actions badge loads on a worker thread; give it a bounded
+                // window to land rather than a fixed sleep.
+                QElapsedTimer settle;
+                settle.start();
+                while (settle.elapsed() < 10000 &&
+                       window.testRepoActionsTabText() !=
+                           QStringLiteral("Actions (1)")) {
+                    QApplication::processEvents(QEventLoop::AllEvents, 50);
+                }
+                check(beforeBranch != QStringLiteral("main") &&
+                          branchButton->text() == QStringLiteral("main"),
+                      QString("status strip's branch button picks up main once "
+                              "the first clone lands (was %1, now %2)")
+                          .arg(beforeBranch, branchButton->text()));
+                check(window.testRepoBranchesButtonText() ==
+                          QStringLiteral("3 branches"),
+                      QString("branch count catches up with the landed clone "
+                              "(got %1)")
+                          .arg(window.testRepoBranchesButtonText()));
+                // The Actions tab was never opened: its badge must still be right.
+                check(window.testRepoActionsTabText() ==
+                          QStringLiteral("Actions (1)"),
+                      QString("workflow count loads without opening the Actions "
+                              "tab (got %1)")
+                          .arg(window.testRepoActionsTabText()));
+            }
         }
     }
 
@@ -1782,11 +2149,12 @@ int main(int argc, char *argv[])
             for (int i = 0; i < quickProvider->count(); ++i)
                 providerLabels << quickProvider->itemText(i);
         }
-        check(providerLabels == QStringList({QStringLiteral("Manual (create issue)"),
+        // Short labels (adhoc #38) so all four composer dropdowns fit one row.
+        check(providerLabels == QStringList({QStringLiteral("Manual"),
                                              QStringLiteral("Codex"),
-                                             QStringLiteral("OpenAI API"),
+                                             QStringLiteral("OpenAI"),
                                              QStringLiteral("Claude API"),
-                                             QStringLiteral("Claude Code")}),
+                                             QStringLiteral("CC")}),
               QStringLiteral("quick-add agent dropdown offers Manual plus the agent providers"));
         check(quickProvider && quickProvider->maxVisibleItems() >= quickProvider->count() &&
                   quickProvider->view() &&
@@ -1795,6 +2163,67 @@ int main(int argc, char *argv[])
               QStringLiteral("quick-add agent dropdown is configured as a full non-scrolling list"));
         check(seeded.testQuickAddModelVisible() && !seeded.testQuickAddModelEditable(),
               QStringLiteral("Claude Code prompt picker shows the Claude model dropdown"));
+
+        // adhoc #38: the composer's speed (reasoning-effort) picker sits next to
+        // the mode selector, offers the CLI's ladder with "Ultra" for xhigh, and
+        // writes the same setting the "/" popup's effort dots do — so a pick here
+        // is what the next run is actually launched with.
+        QComboBox *quickSpeed =
+            seeded.findChild<QComboBox *>(QStringLiteral("quickAddSpeedSelector"));
+        QStringList speedLabels;
+        if (quickSpeed) {
+            for (int i = 0; i < quickSpeed->count(); ++i)
+                speedLabels << quickSpeed->itemText(i);
+        }
+        check(quickSpeed && quickSpeed->isVisible() &&
+                  speedLabels == QStringList({QStringLiteral("Low"),
+                                              QStringLiteral("Medium"),
+                                              QStringLiteral("High"),
+                                              QStringLiteral("Ultra"),
+                                              QStringLiteral("Max")}),
+              QString("composer speed picker offers the effort ladder (%1)")
+                  .arg(speedLabels.join(QStringLiteral(", "))));
+        if (quickSpeed) {
+            const int ultra = quickSpeed->findData(QStringLiteral("xhigh"));
+            quickSpeed->setCurrentIndex(ultra);
+            QApplication::processEvents();
+            check(ultra >= 0 &&
+                      QSettings()
+                              .value(QStringLiteral("agents/claudeEffort"))
+                              .toString() == QStringLiteral("xhigh"),
+                  QStringLiteral("picking a speed persists the effort the next run "
+                                 "is launched with"));
+        }
+        // The pick-your-own-work button is the top of the send column, above
+        // "add" and "new" (adhoc #42/#38), and reads "task" rather than "genie"
+        // (adhoc #120). The strip of session dots that used to sit above the
+        // prompt is gone (adhoc #38) — its state lives in the top bar now.
+        auto *genieButton =
+            seeded.findChild<QPushButton *>(QStringLiteral("quickAddGenieButton"));
+        check(genieButton && genieButton->isVisible() &&
+                  genieButton->text() == QStringLiteral("task"),
+              QStringLiteral("the composer offers the task button"));
+        // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
+        // the composer (adhoc #120): the only Enter indicator is the green
+        // outline on whichever send button Enter activates.
+        auto *composerDock = seeded.findChild<QWidget *>(QStringLiteral("logDock"));
+        QStringList composerChecks;
+        if (composerDock) {
+            for (auto *box : composerDock->findChildren<QCheckBox *>())
+                composerChecks << box->text();
+        }
+        check(composerDock && !composerChecks.contains(QStringLiteral("YOLO")) &&
+                  !composerChecks.contains(QStringLiteral("Task")),
+              QString("the composer has no YOLO/Task toggles (%1)")
+                  .arg(composerChecks.join(QStringLiteral(", "))));
+        check(seeded.findChild<QLabel *>(QStringLiteral("quickAddEnterBadge")) ==
+                  nullptr,
+              QStringLiteral("no corner Enter badge on the send buttons"));
+        check(seeded.findChild<QWidget *>(QStringLiteral("agentStatusRow")) == nullptr &&
+                  seeded.findChild<QPushButton *>(
+                      QStringLiteral("agentStatusMore")) == nullptr,
+              QStringLiteral("the agent dot strip and its More button are gone from "
+                             "above the composer"));
 
         seeded.testSetQuickAddAgentProvider(QStringLiteral("codex"));
         QApplication::processEvents();
@@ -1896,6 +2325,79 @@ int main(int argc, char *argv[])
             settings.setValue(verifiedKey, oldVerified);
         else
             settings.remove(verifiedKey);
+    }
+
+    // Adhoc #113: a first run hands the MACHINE a generated node name, but the
+    // person has no username yet — chat speaks as an anonymous "Guest ####"
+    // (accountKind "guest", like the website's visitors) until a username is
+    // typed or an account is claimed. Typing one ends guest mode.
+    {
+        QSettings settings;
+        const QString nodeKey = QStringLiteral("account/nodeName");
+        const QString generatedKey = QStringLiteral("account/generatedNodeName");
+        const QString handleKey = QStringLiteral("profile/handle");
+        const QString displayKey = QStringLiteral("profile/displayName");
+        const QVariant oldNode = settings.value(nodeKey);
+        const QVariant oldGenerated = settings.value(generatedKey);
+        const QVariant oldHandle = settings.value(handleKey);
+        const QVariant oldDisplay = settings.value(displayKey);
+        settings.remove(nodeKey);
+        settings.remove(generatedKey);
+        settings.remove(handleKey);
+        settings.remove(displayKey);
+
+        MainWindow fresh;
+        fresh.testEnableSessionStartBypass(true);
+        const QString generatedName = settings.value(nodeKey).toString();
+        check(!generatedName.isEmpty() &&
+                  settings.value(generatedKey).toString() == generatedName,
+              QStringLiteral("first run records the generated node name"));
+        check(fresh.testChatIdentityIsGuest(),
+              QStringLiteral("first run chats as a guest, not as the node"));
+        static const QRegularExpression guestShape(
+            QStringLiteral("^Guest \\d{4}$"));
+        check(guestShape.match(fresh.testChatDisplayName()).hasMatch(),
+              QStringLiteral("guest chat name is \"Guest ####\" (%1)")
+                  .arg(fresh.testChatDisplayName()));
+        check(fresh.testMachineNodeName() == generatedName,
+              QStringLiteral("the machine keeps the generated node name"));
+
+        // A desktop guest still advertises its machine node name, so node
+        // surfaces keep its row; a browser guest (no nodeName) stays filtered
+        // (adhoc #308).
+        MemberInfo desktopGuest;
+        desktopGuest.name = QStringLiteral("Guest 8888");
+        desktopGuest.accountKind = QStringLiteral("guest");
+        desktopGuest.nodeName = generatedName;
+        MemberInfo browserGuest;
+        browserGuest.name = QStringLiteral("Guest 1667");
+        browserGuest.accountKind = QStringLiteral("guest");
+        check(!forkmesh::ui::isTemporaryChatGuest(desktopGuest),
+              QStringLiteral("a guest advertising a node name keeps node rows"));
+        check(forkmesh::ui::isTemporaryChatGuest(browserGuest),
+              QStringLiteral("a browser guest without a node stays filtered"));
+
+        // Typing a username replaces the generated name and ends guest mode.
+        fresh.testSetSetupInputs(QStringLiteral("carol"), QString());
+        fresh.testStartSession();
+        check(!fresh.testChatIdentityIsGuest(),
+              QStringLiteral("typing a username ends guest mode"));
+        check(fresh.testChatDisplayName() == QStringLiteral("carol"),
+              QStringLiteral("chat then speaks as the chosen username"));
+        stopChildProcesses(fresh);
+
+        if (oldNode.isValid())
+            settings.setValue(nodeKey, oldNode);
+        else
+            settings.remove(nodeKey);
+        if (oldGenerated.isValid())
+            settings.setValue(generatedKey, oldGenerated);
+        else
+            settings.remove(generatedKey);
+        if (oldHandle.isValid())
+            settings.setValue(handleKey, oldHandle);
+        if (oldDisplay.isValid())
+            settings.setValue(displayKey, oldDisplay);
     }
 
     // Issue #203: quick-adding an issue without assigning it to an agent should
@@ -2317,6 +2819,53 @@ int main(int argc, char *argv[])
         if (logView)
             check(logView->toPlainText().contains(QStringLiteral("Pushed 2 commits")),
                   QStringLiteral("clearing the filter restores every log line"));
+
+        // adhoc #64: each chip carries how many buffered lines it covers, and
+        // All counts the whole buffer.
+        {
+            const QStringList labels = window.testLogFilterChipLabels();
+            check(labels.contains(QStringLiteral("All 2")) &&
+                      labels.contains(QStringLiteral("STALL 1")) &&
+                      labels.contains(QStringLiteral("GIT 1")),
+                  QStringLiteral("log filter chips show the event count for each "
+                                 "category"));
+        }
+        window.testResetNetworkLog();
+        check(window.testLogFilterChipLabels().contains(QStringLiteral("STALL")),
+              QStringLiteral("an empty category's chip shows no count at all"));
+    }
+
+    // adhoc #73: clicking the footer stall badge drafts a "fix these stalls"
+    // prompt (with the log locations) into the quick-add composer, and every
+    // stall also lands in the main app log rather than only the dialog.
+    {
+        window.testResetNetworkLog();
+        window.testRecordUiStall(2100, QStringLiteral("git ls-tree"),
+                                 QStringLiteral("#0 ForkMesh::renderAgentDiff()"));
+        const QStringList logged = window.testNetworkLog();
+        check(!logged.isEmpty() &&
+                  logged.last().contains(QStringLiteral("UI stalled ~2100 ms")) &&
+                  logged.last().contains(QStringLiteral("git ls-tree")),
+              QStringLiteral("a recorded stall is written to the main app log"));
+
+        if (window.testDraftStallPromptInComposer()) {
+            const QString drafted = window.testQuickAddText();
+            check(drafted.contains(QStringLiteral("Please fix these UI stalls")),
+                  QStringLiteral("the stall badge fills the composer with a fix-it prompt"));
+            check(drafted.contains(QStringLiteral("App log:")) &&
+                      drafted.contains(QStringLiteral("network_log.txt")),
+                  QStringLiteral("the drafted prompt names where the log file lives"));
+            check(drafted.contains(QStringLiteral("renderAgentDiff")),
+                  QStringLiteral("the drafted prompt carries the recorded backtrace"));
+            // adhoc #90: the sampled frames only name the call that happened to
+            // be on the stack, so the prompt also asks for a sweep of the logs.
+            check(drafted.contains(QStringLiteral("never got backgrounded")),
+                  QStringLiteral("the drafted prompt asks for un-backgrounded work too"));
+            check(drafted.size() <= 16000,
+                  QStringLiteral("the drafted prompt fits the composer's length cap"));
+            check(drafted == window.testStallFixPrompt(),
+                  QStringLiteral("the composer holds exactly the stall fix-it prompt"));
+        }
         window.testResetNetworkLog();
     }
 
@@ -2333,6 +2882,14 @@ int main(int argc, char *argv[])
         check(window.testFaviconCached(QStringLiteral("api.anthropic.com")),
               QStringLiteral("an Anthropic host resolves its favicon locally, "
                              "with no network fetch (adhoc #436)"));
+
+        window.testLogSystem(
+            QStringLiteral("net GET https://api.mainnet-beta.solana.com 200"));
+        QApplication::processEvents();
+        check(window.testFaviconCached(
+                  QStringLiteral("api.mainnet-beta.solana.com")),
+              QStringLiteral("the Solana RPC host resolves its favicon locally, "
+                             "without requesting its unsupported favicon path"));
 
         auto leadsWithIcon = [](QTextEdit *view) {
             if (!view)
@@ -2357,6 +2914,97 @@ int main(int argc, char *argv[])
         check(leadsWithIcon(window.testFooterLogView()),
               QStringLiteral("the footer live-log strip renders the site favicon "
                              "inline too (adhoc #436)"));
+    }
+
+    // adhoc #114: every log entry leads, furthest left, with a plus that hands
+    // that entry to the footer prompt box — one click instead of a
+    // select-copy-paste round trip. Covered in both log surfaces.
+    {
+        window.testResetNetworkLog();
+        const QString entry = QStringLiteral("Pushed 3 commits to origin/main");
+        window.testLogSystem(entry);
+        window.testShowLogSection();
+        window.testRebuildNetworkLogView();
+        QApplication::processEvents();
+
+        const QString prefix = QStringLiteral("fmlogprompt:");
+        // The anchor carries the entry's own dated line, so a click needs no
+        // lookup back into the log buffer.
+        auto firstPromptHref = [&prefix](QTextEdit *view) {
+            if (!view)
+                return QString();
+            for (QTextBlock b = view->document()->firstBlock(); b.isValid();
+                 b = b.next()) {
+                for (QTextBlock::iterator it = b.begin(); !it.atEnd(); ++it) {
+                    const QString href =
+                        it.fragment().charFormat().anchorHref();
+                    if (href.startsWith(prefix))
+                        return href;
+                }
+            }
+            return QString();
+        };
+        const QString logHref = firstPromptHref(window.testNetworkLogView());
+        check(!logHref.isEmpty(),
+              QStringLiteral("the full Log view leads every entry with an "
+                             "add-to-prompt icon"));
+        check(!firstPromptHref(window.testFooterLogView()).isEmpty(),
+              QStringLiteral("the footer live-log strip leads every entry with "
+                             "one too"));
+        check(QUrl::fromPercentEncoding(logHref.mid(prefix.size()).toLatin1())
+                  .endsWith(entry),
+              QStringLiteral("the icon's anchor carries the log entry itself"));
+
+        // Click it where it actually paints (the leftmost strip of a row), not
+        // through a test-only shortcut, so the event-filter wiring is covered.
+        // Hit-testing is by anchor content, not by "first icon in the viewport":
+        // the footer strip keeps the lines it has already streamed, so its top
+        // visible row is some older entry, not the one logged just above.
+        auto clickPromptIcon = [&prefix, &entry](QTextEdit *view) {
+            if (!view)
+                return false;
+            for (int y = 0; y < view->viewport()->height(); ++y) {
+                for (int x = 0; x < 40; ++x) {
+                    const QPoint pos(x, y);
+                    const QString href = view->anchorAt(pos);
+                    if (!href.startsWith(prefix) ||
+                        !QUrl::fromPercentEncoding(
+                             href.mid(prefix.size()).toLatin1())
+                             .endsWith(entry))
+                        continue;
+                    const QPointF global = view->viewport()->mapToGlobal(pos);
+                    QMouseEvent press(QEvent::MouseButtonPress, QPointF(pos),
+                                      global, Qt::LeftButton, Qt::LeftButton,
+                                      Qt::NoModifier);
+                    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(pos),
+                                        global, Qt::LeftButton, Qt::NoButton,
+                                        Qt::NoModifier);
+                    QApplication::sendEvent(view->viewport(), &press);
+                    QApplication::sendEvent(view->viewport(), &release);
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        const QString beforeClick = window.testQuickAddText();
+        if (clickPromptIcon(window.testNetworkLogView())) {
+            const QString afterClick = window.testQuickAddText();
+            check(afterClick.endsWith(entry) && afterClick != beforeClick,
+                  QStringLiteral("clicking a Log entry's icon appends that entry "
+                                 "to the footer prompt"));
+        } else {
+            check(false, QStringLiteral("the Log entry's add-to-prompt icon is "
+                                        "hit-testable in the view"));
+        }
+        if (clickPromptIcon(window.testFooterLogView())) {
+            const QString afterFooter = window.testQuickAddText();
+            check(afterFooter.endsWith(entry) &&
+                      afterFooter.count(entry) == 2,
+                  QStringLiteral("the footer strip's icon appends to the prompt "
+                                 "instead of opening the full Log"));
+        }
+        window.testResetNetworkLog();
     }
 
     stopChildProcesses(window);

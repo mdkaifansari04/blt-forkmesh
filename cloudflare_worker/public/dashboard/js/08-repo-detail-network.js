@@ -192,9 +192,11 @@
                   ? 'data-lucide="git-pull-request"'
                   : `data-lucide="${meta.icon}"`;
               // Inbox-backed tabs get a second (hidden until filled) badge for
-              // items still sitting in the relay's inbox awaiting the owner
-              // node's next sync — see loadRepoPendingCounts.
-              const pendingBadge = ["issues", "pulls", "discussions", "commits"].includes(tab)
+              // items still sitting in the relay's inbox that no online node
+              // (source of truth or an approved mirror) has merged yet — see
+              // loadRepoPendingCounts. Any online mirror drains the queue by
+              // committing submissions straight into the repo it serves.
+              const pendingBadge = ["issues", "pulls", "discussions"].includes(tab)
                 ? `<span data-dashboard-repo-tab-pending="${tab}" class="hidden rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-mono text-yellow-500"></span>`
                 : "";
               return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-12 items-center gap-2 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${meta.count !== "" ? `<span data-dashboard-repo-tab-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">${tabCountLabel(meta.count)}</span>` : ""}${pendingBadge}</button>`;
@@ -277,7 +279,7 @@
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
             <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
-            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">reachable mirror health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
+            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">reachable mirror health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a ping; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-workshop-agent-context hidden></div><div data-repo-agents></div></div></section>` : ""}
             ${settingsPanel}
           </div>
@@ -543,14 +545,15 @@
   }
 
   // Opening a repo from any list/search control is a real page navigation now
-  // (repo pages are their own documents). Prefer the canonical origin's clean
-  // URL when the catalog already resolved the key (alias groups), falling back
-  // to the raw owner/name path — the repo page resolves it again on boot.
+  // (repo pages are their own documents). Prefer the organization address the
+  // list already displays when the catalog resolved the key (alias groups),
+  // falling back to the raw owner/name path — the repo page resolves it again
+  // on boot.
   function openRepoPage(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return;
     const repo = findRepository(wanted);
-    const url = repo ? repoPathUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
+    const url = repo ? repoLinkUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
     closeMobileDrawers();
     location.assign(url);
   }
@@ -751,6 +754,9 @@
       host_offline: "wifi-off",
       pending_inbox: "inbox",
       mirror_request: "radio",
+      account_email_sent: "mail-check",
+      organization_task_started: "clipboard-list",
+      organization_task_activity: "clipboard-list",
     })[kind] || "bell";
   }
 
@@ -776,7 +782,7 @@
     if (!list) return;
     const items = state.notifications.slice(0, 5);
     if (!items.length) {
-      list.innerHTML = '<div class="px-3 py-4 text-xs text-muted-foreground">No notifications yet. Mentions, PRs, assignments, shares, bounties, releases, and host status changes will appear here.</div>';
+      list.innerHTML = '<div class="px-3 py-4 text-xs text-muted-foreground">No pings yet. Mentions, PRs, assignments, shares, bounties, releases, and host status changes will appear here.</div>';
       return;
     }
     list.innerHTML = items.map((item) => `
@@ -784,7 +790,7 @@
         <div class="flex items-start gap-2">
           <i data-lucide="${notificationIcon(item.kind)}" class="mt-0.5 h-3.5 w-3.5 ${item.readAt ? "text-muted-foreground" : "text-primary"}"></i>
           <div class="min-w-0 flex-1">
-            <p class="truncate text-xs font-medium text-foreground">${escapeHtml(item.title || "Notification")}</p>
+            <p class="truncate text-xs font-medium text-foreground">${escapeHtml(item.title || "Ping")}</p>
             <p class="mt-0.5 truncate text-[11px] text-muted-foreground">${escapeHtml(item.body || item.repo || "ForkMesh update")}</p>
           </div>
           <span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(notificationTimeLabel(item.ts))}</span>
@@ -798,7 +804,7 @@
     const detail = $("[data-notification-modal-detail]");
     if (!detail) return;
     if (!item) {
-      detail.innerHTML = '<div class="text-sm text-muted-foreground">Select a notification to read it.</div>';
+      detail.innerHTML = '<div class="text-sm text-muted-foreground">Select a ping to read it.</div>';
       return;
     }
     detail.innerHTML = `
@@ -807,15 +813,55 @@
           <i data-lucide="${notificationIcon(item.kind)}" class="h-4 w-4"></i>
         </span>
         <div class="min-w-0 flex-1">
-          <p class="text-sm font-semibold text-foreground">${escapeHtml(item.title || "Notification")}</p>
+          <p class="text-sm font-semibold text-foreground">${escapeHtml(item.title || "Ping")}</p>
           <p class="mt-1 text-xs text-muted-foreground">${escapeHtml(notificationTimeLabel(item.ts))}${item.repo ? ` · ${escapeHtml(item.repo)}` : ""}</p>
         </div>
       </div>
       <p class="mt-5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">${escapeHtml(item.body || "ForkMesh notification")}</p>
+      ${organizationTaskDetailsHtml(item)}
       ${mirrorRequestActionsHtml(item)}
       ${item.href ? `<a href="${escapeHtml(item.href)}" class="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Open context</a>` : ""}
     `;
     window.lucide?.createIcons();
+  }
+
+  // Organization task pings (adhoc #147) carry the whole event on meta, so the
+  // reader gets who/what/which org spelled out as fields instead of having to
+  // parse the one-line summary the ping list shows.
+  function organizationTaskDetailsHtml(item) {
+    if (!item || !String(item.kind || "").startsWith("organization_task")) return "";
+    const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
+    const assignee = String(meta.assignee || "");
+    const assigneeLabel = meta.assigneeKind === "agent"
+      ? "An agent"
+      : (assignee ? `@${assignee}` : "Unassigned");
+    const priority = Number(meta.priority) || 0;
+    const status = ({
+      idle: "Not started",
+      active: "In progress",
+      done: "Done",
+    })[String(meta.status || "")] || String(meta.status || "");
+    const rows = [
+      ["Who", meta.actor ? `@${meta.actor}` : ""],
+      ["What", `${String(meta.action || "updated")} a task`],
+      ["Task", meta.taskTitle || ""],
+      ["Organization", meta.organization || ""],
+      ["Department", meta.department || ""],
+      ["Team", meta.team || ""],
+      ["Assigned to", assigneeLabel],
+      ["Priority", priority > 0 ? String(priority) : ""],
+      ["Status", status],
+      ["Repository", meta.repository || ""],
+    ].filter(([, value]) => String(value || "").trim());
+    if (!rows.length) return "";
+    return `
+      <dl class="mt-5 grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">
+        ${rows.map(([label, value]) => `
+          <dt class="text-muted-foreground">${escapeHtml(label)}</dt>
+          <dd class="min-w-0 break-words text-foreground">${escapeHtml(String(value))}</dd>
+        `).join("")}
+      </dl>
+    `;
   }
 
   // Accept/Reject controls on an incoming "someone asked your node to mirror
@@ -937,7 +983,7 @@
     const list = $("[data-notification-modal-list]");
     if (!list) return;
     if (!state.notifications.length) {
-      list.innerHTML = '<div class="p-3 text-xs text-muted-foreground">No notifications yet.</div>';
+      list.innerHTML = '<div class="p-3 text-xs text-muted-foreground">No pings yet.</div>';
       renderNotificationDetail(null);
       return;
     }
@@ -948,7 +994,7 @@
       const active = item.id === state.selectedNotificationId;
       return `
         <button type="button" data-notification-open="${escapeHtml(item.id || "")}" class="mb-1 w-full rounded-md px-3 py-2 text-left transition-colors ${active ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"}">
-          <span class="block truncate text-xs font-medium">${escapeHtml(item.title || "Notification")}</span>
+          <span class="block truncate text-xs font-medium">${escapeHtml(item.title || "Ping")}</span>
           <span class="mt-1 block truncate text-[11px] font-mono">${escapeHtml(item.repo || item.kind || "forkmesh")}</span>
         </button>
       `;
@@ -1022,7 +1068,10 @@
     state.selectedNotificationId = id;
     renderNotificationModal();
     if (!item.readAt) await markNotificationsRead([id]);
-    if (modal) setNotificationModalOpen(true);
+    if (modal) {
+      setNotificationDropdownOpen(false);
+      setNotificationModalOpen(true);
+    }
   }
 
   // The release version changes at most per deploy: cache it in sessionStorage
@@ -1469,7 +1518,10 @@
 
     const notificationOpen = event.target.closest("[data-notification-open]");
     if (notificationOpen) {
-      await openNotification(notificationOpen.dataset.notificationOpen || "", Boolean(event.target.closest("#notificationModal")));
+      await openNotification(
+        notificationOpen.dataset.notificationOpen || "",
+        !event.target.closest("#notificationModal"),
+      );
       return;
     }
 
@@ -1549,8 +1601,17 @@
       return;
     }
 
-    if (event.target.closest("[data-profile-verify-email]")) {
+    if (event.target.closest("[data-email-verification-resend]")) {
       resendVerification();
+      return;
+    }
+
+    if (event.target.closest("[data-profile-verify-email]")) {
+      resendVerification({
+        hintSelector: "[data-profile-hint]",
+        buttonSelector: "[data-profile-verify-email]",
+        buttonText: "Send link",
+      });
       return;
     }
 
@@ -1577,9 +1638,9 @@
 
     if (event.target.closest("[data-profile-page-verify-email]")) {
       resendVerification({
-        passwordSelector: "[data-profile-page-password]",
         hintSelector: "[data-profile-page-hint]",
         buttonSelector: "[data-profile-page-verify-email]",
+        buttonText: "Send link",
       });
       return;
     }
@@ -2035,6 +2096,19 @@
         return;
       }
 
+      const issueMcpPromptButton = event.target.closest(
+        "[data-repo-issue-mcp-prompt]",
+      );
+      if (issueMcpPromptButton) {
+        // A plain click copies straight away with a generated connector token.
+        // Shift-click opens the paste box instead, so a node that already
+        // published its own connector can hand over that token by hand.
+        void copyIssueMcpPrompt(issueMcpPromptButton, {
+          replaceToken: event.shiftKey === true,
+        });
+        return;
+      }
+
       const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
       if (pullViewedButton && state.selectedRepo) {
         toggleRepoPullViewed(
@@ -2404,7 +2478,9 @@
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-save]")?.addEventListener("click", saveProfile);
-  $("[data-profile-verify-email]")?.addEventListener("click", resendVerification);
+  // No direct [data-profile-verify-email] listener: the delegated document
+  // click handler above already routes it, and a second listener would fire a
+  // duplicate send that the resend cooldown then rejects.
   $("[data-profile-rename-input]")?.addEventListener("input", () => {
     window.clearTimeout(state.nodeNameAvailability.timer);
     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);

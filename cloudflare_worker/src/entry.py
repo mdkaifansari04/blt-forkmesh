@@ -146,7 +146,10 @@ CLIENT_ERROR_SURFACES = frozenset({
     "home", "world", "dashboard", "documentation", "blog", "network",
     "chat", "account", "repository", "public-page",
 })
-CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection"})
+# "crash" rows come from the world's crash guard: a page instance that ended
+# without pagehide (GPU/OOM kill, tab discard) or a lost WebGL context, with
+# the last heartbeat's diagnostics in the message.
+CLIENT_ERROR_KINDS = frozenset({"error", "unhandledrejection", "crash"})
 # Anonymous installer diagnostics: one row per reported install step. Bounded the
 # same way as the error log so the unauthenticated POST endpoint can't grow D1.
 MAX_INSTALL_DIAG = 5000
@@ -201,9 +204,6 @@ MAX_PENDING_PER_AUTHOR = 50
 # generated files or vendored code) isn't rejected at submission.
 MAX_PULL_BYTES = 100 * 1024 * 1024
 MAX_PENDING_PULLS = 200
-# Commit-comment inbox: small signed text comments keyed by commit hash.
-MAX_COMMIT_COMMENT_BYTES = 64 * 1024
-MAX_PENDING_COMMIT_COMMENTS = 500
 # Discussion inbox: signed open/comment events for read-only contributors.
 MAX_DISCUSSION_BYTES = 64 * 1024
 MAX_PENDING_DISCUSSIONS = 500
@@ -277,7 +277,16 @@ NOTIFICATION_KINDS = frozenset({
     "repository_hosted",
     "organization_task_started",
     "organization_task_activity",
+    "account_email_sent",
+    # First sighting of an operational error group (adhoc #77). Admin-only.
+    "error_group",
 })
+# Transactional account mail an administrator is pinged about, coarse kind ->
+# human label. Kinds absent here (cron digests) are counted but never pinged.
+ACCOUNT_EMAIL_PING_LABELS = {
+    "verification": "Verification",
+    "password_reset": "Password reset",
+}
 NOTIFICATION_EMAIL_KINDS = (
     "mention",
     "subscribed",
@@ -350,7 +359,6 @@ from urls import (  # noqa: E402
     REPO_PULLS_RE,
     REPO_PULL_MERGE_RE,
     REPO_ACTION_RUNS_RE,
-    REPO_COMMITS_RE,
     REPO_DISCUSSIONS_RE,
     REPO_PENDING_RE,
     REPO_SUBSCRIBE_RE,
@@ -518,7 +526,6 @@ from events import (  # noqa: E402
     normalized_discussion_category,
     pull_comment_content,
     sha256_hex,
-    verify_commit_comment_event,
     verify_discussion_event,
     verify_issue_event,
     verify_pull_comment_event,
@@ -765,6 +772,104 @@ def notification_payload(kind, title, body="", repo="", href="", actor="",
         "ts": int(ts or 0),
         "readAt": 0,
         "meta": meta if isinstance(meta, dict) else {},
+    }
+
+
+# Organization task activity, in ping copy. The board itself is private to the
+# organization, so the ping is the only place most members read the event: it
+# has to answer who did it, what they did it to, which organization it belongs
+# to and where the task sits, rather than the bare "Organization task activity"
+# line it used to carry (adhoc #147).
+ORGANIZATION_TASK_ACTION_COPY = {
+    "created": "created",
+    "started": "started",
+    "stopped": "stopped",
+    "completed": "completed",
+    "returned": "returned",
+    "qa requested": "sent to QA",
+    "deleted": "deleted",
+}
+ORGANIZATION_TASK_STATUS_COPY = {
+    "idle": "not started",
+    "active": "in progress",
+    "done": "done",
+}
+
+
+def organization_task_ping_copy(org, actor, action, task):
+    """Title/body/meta for one organization task activity ping."""
+    task = task if isinstance(task, dict) else {}
+    org_name = clean_string(org, MAX_NODE_NAME).strip().lower()
+    actor_name = clean_string(actor or "", MAX_NODE_NAME).strip().lower()
+    who = ("@" + actor_name) if actor_name else "a team member"
+    action_slug = clean_string(
+        action or "", 32).strip().lower().replace("_", " ")
+    verb = ORGANIZATION_TASK_ACTION_COPY.get(
+        action_slug, action_slug or "updated")
+    task_title = clean_string(
+        task.get("title") or "", 160).strip() or "Organization task"
+    department = clean_string(
+        task.get("department") or "", 64).strip().lower()
+    team = clean_string(task.get("team") or "", 64).strip().lower()
+    status = clean_string(task.get("status") or "", 32).strip().lower()
+    assignee_kind = clean_string(
+        task.get("assigneeKind") or "", 32).strip().lower()
+    assignee = clean_string(task.get("assignee") or "", 64).strip().lower()
+    repository = clean_string(task.get("repository") or "", 201).strip()
+    task_id = clean_string(str(task.get("id") or ""), 80)
+    try:
+        priority = int(task.get("priority"))
+    except (TypeError, ValueError):
+        priority = 0
+
+    where = (" in " + org_name) if org_name else ""
+    # The task name is the only part of the title that can run long, so it is
+    # the part trimmed to keep who/what/which-org inside the 160-char cap
+    # notification_payload() enforces.
+    room = 160 - len("%s %s \"\"%s" % (who, verb, where))
+    short_title = (
+        task_title if len(task_title) <= max(8, room)
+        else task_title[:max(8, room) - 1].rstrip() + "…")
+    title = "%s %s \"%s\"%s" % (who, verb, short_title, where)
+    lead = (
+        "%s %s \"%s\" in the %s organization" % (who, verb, task_title, org_name)
+        if org_name
+        else "%s %s \"%s\" in your organization" % (who, verb, task_title))
+    details = [lead]
+    placement = " / ".join(
+        [part for part in (department, team) if part])
+    if placement:
+        details.append(placement)
+    if priority > 0:
+        details.append("priority %d" % priority)
+    if assignee_kind == "agent":
+        details.append("assigned to an agent")
+    elif assignee:
+        details.append("assigned to @" + assignee)
+    elif assignee_kind == "unassigned":
+        details.append("unassigned")
+    if status:
+        details.append(
+            "status " + ORGANIZATION_TASK_STATUS_COPY.get(status, status))
+    if repository:
+        details.append("repo " + repository)
+    return {
+        "title": title,
+        "body": " · ".join(details),
+        "meta": {
+            "organization": org_name,
+            "actor": actor_name,
+            "action": action_slug,
+            "taskId": task_id,
+            "taskTitle": task_title,
+            "department": department,
+            "team": team,
+            "priority": priority,
+            "status": status,
+            "assignee": "agent" if assignee_kind == "agent" else assignee,
+            "assigneeKind": assignee_kind,
+            "repository": repository,
+        },
     }
 
 
@@ -3072,11 +3177,56 @@ async def _record_status_deploy_sample(env, now):
     )
 
 
+async def _claim_status_sample_minute(env, now):
+    """At-most-once gate for this minute's /status health sample.
+
+    Two independent schedulers call record_status_sample: the platform Cron
+    Trigger directly (the only per-minute schedule the platform itself
+    guarantees, so /status keeps landing samples even while Durable Objects
+    are wedged or over their free-tier quota) and the ForkMeshCronRunner
+    alarm batch. The daily/hourly rollups are checks-counter increments, so
+    a doubly-recorded minute would inflate an hour's coverage; whichever
+    caller INSERTs the minute's claim row first owns the sample and the
+    other returns without probing. D1's Python client exposes no reliable
+    changes() count, so the winner recognizes itself by reading back a
+    random token. Fails open on a claim-infrastructure error: a duplicated
+    minute costs one extra check count, while a skipped minute paints
+    public fake downtime.
+    """
+    minute_ts = (int(now) // STATUS_SAMPLE_WINDOW_MS) * STATUS_SAMPLE_WINDOW_MS
+    try:
+        rnd = js_crypto.getRandomValues(Uint8Array.new(16))
+        claim = "".join("%02x" % int(rnd[i]) for i in range(16))
+    except Exception:
+        claim = ("%032x" % int(Date.now()))[-32:]
+    try:
+        await d1_run(
+            env,
+            "INSERT INTO system_status_sample_claim "
+            "(minute_ts, claim, claimed_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(minute_ts) DO NOTHING",
+            minute_ts, claim, int(now),
+        )
+        row = await d1_first(
+            env,
+            "SELECT claim FROM system_status_sample_claim WHERE minute_ts=?",
+            minute_ts,
+        )
+    except Exception:
+        return True
+    winner = str((row or {}).get("claim") or "")
+    return (not winner) or winner == claim
+
+
 async def record_status_sample(env):
-    # Called once a minute by the scheduled (cron) handler. Best-effort per
-    # system so one failing check can't blank the rest of the page.
+    # Called once a minute by the platform Cron Trigger (scheduled()) and by
+    # the ForkMeshCronRunner alarm batch; _claim_status_sample_minute lets
+    # exactly one of them record each minute. Best-effort per system so one
+    # failing check can't blank the rest of the page.
     await ensure_schema(env)
     now = int(Date.now())
+    if not await _claim_status_sample_minute(env, now):
+        return
     if await _status_deploy_semaphore_active(env, now):
         await _record_status_deploy_sample(env, now)
         return
@@ -3283,9 +3433,17 @@ async def record_status_sample(env):
     except Exception as exc:
         # The aggregate Git-hosting row already reports a registry query
         # failure. Do not fabricate per-node identities when the authoritative
-        # registry itself could not be read.
-        console.warn(
-            "status mirror registry query failed: " + _safe_error_text(exc))
+        # registry itself could not be read. Workers Logs stays off, so the
+        # failure goes straight to Sentry (best-effort — never let telemetry
+        # sink the sample; an error_log row here would also turn a registry
+        # hiccup into a red "errors" minute).
+        try:
+            await capture_sentry_error(
+                env, 500, "scheduled", "/cron/record-status-sample",
+                "status mirror registry query failed: "
+                + _safe_error_text(exc), error=exc)
+        except BaseException:
+            pass
 
     # One multi-row upsert per table (3 statements total) instead of the old
     # 3-statements-per-system loop (15): the per-minute cron runs in a Pyodide
@@ -3341,9 +3499,15 @@ async def record_status_sample(env):
         await _record_status_monitor_transitions(
             env, ok, reason, now, status_systems)
     except Exception as exc:
-        console.warn(
-            "record_status_monitor_transitions failed: " +
-            _safe_error_text(exc))
+        # Same reasoning as the registry read above: Sentry-only visibility,
+        # never an error_log row and never a raised sample.
+        try:
+            await capture_sentry_error(
+                env, 500, "scheduled", "/cron/record-status-sample",
+                "record_status_monitor_transitions failed: "
+                + _safe_error_text(exc), error=exc)
+        except BaseException:
+            pass
     # Retention prunes only need to run occasionally, not 60x/hour: sweep on
     # the first sample of each hour.
     if now - hour_ts < STATUS_SAMPLE_WINDOW_MS:
@@ -3357,6 +3521,11 @@ async def record_status_sample(env):
         )
         await d1_run(
             env, "DELETE FROM system_status_minute WHERE minute_ts < ?",
+            minute_ts - STATUS_MINUTE_RETAIN_MS,
+        )
+        await d1_run(
+            env,
+            "DELETE FROM system_status_sample_claim WHERE minute_ts < ?",
             minute_ts - STATUS_MINUTE_RETAIN_MS,
         )
 
@@ -3845,6 +4014,8 @@ async def network_leaderboards(env):
             "platform": "", "version": "", "nodeId": "", "_updatedMs": -1,
             "_recordCount": 0,
             "_reportedCounterCounts": {},
+            "cloneServedAt": None, "cloneServedAgent": None,
+            "websiteServedAt": None, "websiteServedAgent": None,
         })
         detail["_recordCount"] += 1
         detail["sizeBytes"] += size_bytes
@@ -3862,6 +4033,24 @@ async def network_leaderboards(env):
             detail[field] = int(detail.get(field) or 0) + counter
             reported_counts = detail["_reportedCounterCounts"]
             reported_counts[field] = int(reported_counts.get(field) or 0) + 1
+        # When this node last served a clone / website read, across all of its
+        # repositories, with the client class reported alongside that serve.
+        # A point in time is carried as the newest one, never summed.
+        for stamp_field, agent_field in (
+            ("cloneServedAt", "cloneServedAgent"),
+            ("websiteServedAt", "websiteServedAgent"),
+        ):
+            raw_stamp = rec.get(stamp_field)
+            if raw_stamp is None or isinstance(raw_stamp, bool):
+                continue
+            try:
+                stamp = int(raw_stamp)
+            except (TypeError, ValueError):
+                continue
+            if stamp > 0 and stamp > int(detail.get(stamp_field) or 0):
+                detail[stamp_field] = stamp
+                detail[agent_field] = clean_string(
+                    rec.get(agent_field, ""), 16) or None
         updated_ms = _catalog_updated_ms(rec)
         if updated_ms > detail["_updatedMs"]:
             detail["_updatedMs"] = updated_ms
@@ -5890,20 +6079,6 @@ WORLD_VISIT_BUCKET_MS = 10 * 60 * 1000
 WORLD_VISIT_RETAIN_MS = 50 * 60 * 60 * 1000
 WORLD_VISITORS_CACHE_KEY = "https://forkmesh.internal/api/world/visitors"
 WORLD_VISITORS_TTL = 60
-# Administrator-locked Town Square object placement. The public GET is edge
-# cached so every world load reads one tiny cached JSON document; the cache is
-# purged the moment an administrator locks an object into a new place.
-WORLD_LAYOUT_CACHE_KEY = "https://forkmesh.internal/api/world/layout"
-WORLD_LAYOUT_TTL = 60
-WORLD_LAYOUT_MAX_OBJECTS = 200
-WORLD_LAYOUT_MAX_COORDINATE = 500
-# One full turn in radians. Locked headings are stored wrapped into [0, TURN);
-# anything further from zero than a handful of turns is a broken client.
-WORLD_LAYOUT_TURN = 6.283185307179586
-WORLD_LAYOUT_MAX_ROTATION = 1000
-WORLD_LAYOUT_ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{0,79}")
-
-
 async def _world_unique_visitor_tokens(env, request, now):
     """Derive stable/all-time and UTC-day digests without retaining inputs."""
     try:
@@ -7312,21 +7487,44 @@ async def office_attendance_handler(env, request):
             cache_control="no-store, max-age=0, must-revalidate",
             extra_headers={"x-content-type-options": "nosniff"},
         )
+    visit_id = str(data.get("visitId") or "").strip().lower()
+    if visit_id and not re.fullmatch(r"[0-9a-f]{32}", visit_id):
+        return json_response(
+            {"error": "invalid_visit"},
+            status=400,
+            cache_control="no-store, max-age=0, must-revalidate",
+            extra_headers={"x-content-type-options": "nosniff"},
+        )
 
     await ensure_schema(env)
     now = int(Date.now())
     floor_id = _office_attendance_floor(data.get("floor"))
     initial_floor_id = floor_id or "lobby"
     if action == "in":
-        # The partial unique index on open visits makes repeated/concurrent
-        # background authorization requests converge on the same visit.
+        # A page/physical entry owns one visit id. Retrying that same IN remains
+        # idempotent, while a new page entry closes an abandoned open punch at
+        # its last heartbeat instead of inheriting its elapsed time.
+        if visit_id:
+            await d1_run(
+                env,
+                "UPDATE world_office_attendance "
+                "SET out_at=MAX(in_at,COALESCE(NULLIF(last_seen_at,0),in_at)), "
+                "floor_id='' "
+                "WHERE account_bi=? AND out_at IS NULL AND visit_id<>? "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM world_office_attendance WHERE visit_id=?"
+                ")",
+                str(account_bi),
+                visit_id,
+                visit_id,
+            )
         await d1_run(
             env,
             "INSERT OR IGNORE INTO world_office_attendance "
             "(visit_id, account_bi, account_name, in_at, out_at, "
             "last_seen_at, floor_id, visit_scope) "
             "VALUES (?, ?, ?, ?, NULL, ?, ?, 'office')",
-            new_world_peer_id(),
+            visit_id or new_world_peer_id(),
             str(account_bi),
             world_protocol.clean_display_name(
                 account.get("name"), "Contributor"),
@@ -7339,21 +7537,27 @@ async def office_attendance_handler(env, request):
             "UPDATE world_office_attendance "
             "SET last_seen_at=?, "
             "floor_id=CASE WHEN ?<>'' THEN ? ELSE floor_id END "
-            "WHERE account_bi=? AND out_at IS NULL",
+            "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?)",
             now,
             floor_id,
             floor_id,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     elif action == "heartbeat":
         await d1_run(
             env,
             "UPDATE world_office_attendance "
             "SET last_seen_at=?, floor_id=? "
-            "WHERE account_bi=? AND out_at IS NULL",
+            "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?)",
             now,
             initial_floor_id,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     else:
         # Close, in place, only this account's newest open visit. Repeated OUT
@@ -7365,11 +7569,14 @@ async def office_attendance_handler(env, request):
             "WHERE visit_id=("
             "SELECT visit_id FROM world_office_attendance "
             "WHERE account_bi=? AND out_at IS NULL "
+            "AND (?='' OR visit_id=?) "
             "ORDER BY in_at DESC, visit_id DESC LIMIT 1"
             ") AND out_at IS NULL",
             now,
             now,
             str(account_bi),
+            visit_id,
+            visit_id,
         )
     visits = await _office_attendance_recent(env, now)
     return json_response(
@@ -8374,23 +8581,23 @@ class _OfficeMarketingTasksRuntime:
             str(org_bi or ""),
         )
         safe_actor = clean_string(
-            actor or "a team member", MAX_NODE_NAME
+            actor or "", MAX_NODE_NAME
         ).strip().lower()
-        title = clean_string(
-            (task or {}).get("title") or "Organization task", 160
-        ).strip()
         safe_action = clean_string(
             action or "updated", 32
         ).strip().lower().replace("_", " ")
-        action_copy = {
-            "created": "created",
-            "started": "started",
-            "stopped": "stopped",
-            "completed": "completed",
-            "returned": "returned",
-            "qa requested": "sent to QA",
-            "deleted": "deleted",
-        }.get(safe_action, safe_action or "updated")
+        # The org name is what makes the ping legible outside the board, so it
+        # is read back from the row this org_bi indexes rather than left out.
+        org_row = await d1_first(
+            self.env, "SELECT name FROM orgs WHERE org_bi=?", str(org_bi or ""))
+        record = dict(task if isinstance(task, dict) else {})
+        record.setdefault("id", str(task_id or ""))
+        copy = organization_task_ping_copy(
+            (org_row or {}).get("name") or "",
+            safe_actor,
+            safe_action,
+            record,
+        )
         for row in rows or []:
             recipient = clean_string(
                 row.get("name") or "", MAX_NODE_NAME
@@ -8401,25 +8608,20 @@ class _OfficeMarketingTasksRuntime:
                 self.env,
                 recipient,
                 "organization_task_activity",
-                "Organization task activity",
-                body="@%s %s %s" % (safe_actor, action_copy, title),
-                actor="",
+                copy["title"],
+                body=copy["body"],
+                # Naming the actor both fills the Actor column on every ping
+                # surface and stops the member who acted being pinged about
+                # their own change (enqueue_notification drops self-pings).
+                actor=safe_actor if valid_node_name(safe_actor) else "",
+                href="/world/",
                 source=str(task_id or ""),
                 dedupe="organization-task:%s:%s:%s" % (
                     safe_action.replace(" ", "-"),
                     str(task_id or ""),
                     str((task or {}).get("updatedAt") or ""),
                 ),
-                meta={
-                    "taskId": str(task_id or ""),
-                    "action": safe_action,
-                    "department": clean_string(
-                        (task or {}).get("department") or "", 64
-                    ).strip().lower(),
-                    "team": clean_string(
-                        (task or {}).get("team") or "", 64
-                    ).strip().lower(),
-                },
+                meta=copy["meta"],
             )
 
     async def notify_engineering_task_started(
@@ -9205,13 +9407,6 @@ WORLD_QA_CARDS = (
      "confirm one compact 45-degree robot screen appears in front with its "
      "provider, live state, task snapshot, and target node; confirm a "
      "non-Engineering member sees no agent terminal."),
-    ("world-object-click-keyboard-layout", "Click-selected World object editing",
-     "Click a movable Town object and confirm a restrained mint outline appears "
-     "while its related information opens in the side panel. As an is_admin "
-     "user, use all four arrow keys and confirm they nudge the selected object "
-     "relative to the camera; press R and Shift+R to rotate both ways. Confirm "
-     "the placement persists in a second browser. Drag the camera and use the "
-     "mouse wheel to confirm neither gesture moves or rotates the object."),
     ("world-member-click-detail", "Clickable World member information",
      "Click the body or chest of your own avatar and two other visible users, "
      "including one inside the Office. Confirm a subtle blue outline follows "
@@ -10748,7 +10943,6 @@ SCHEMA_ALTER_STATEMENTS = [
     "ALTER TABLE pull_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
     "ALTER TABLE pull_inbox ADD COLUMN mirrored_by_bi TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE pull_inbox ADD COLUMN mirrored_at INTEGER NOT NULL DEFAULT 0",
-    "ALTER TABLE commit_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN submitter_bi TEXT",
     "ALTER TABLE discussion_inbox ADD COLUMN claimed_by_bi TEXT NOT NULL DEFAULT ''",
     "ALTER TABLE discussion_inbox ADD COLUMN claim_expires_at INTEGER NOT NULL DEFAULT 0",
@@ -10769,9 +10963,6 @@ SCHEMA_ALTER_STATEMENTS = [
     # trusting a mutable forkmesh_active boolean.
     """ALTER TABLE mirror_https_endpoints
        ADD COLUMN forkmesh_operations_json TEXT NOT NULL DEFAULT '[]'""",
-    # Heading offset in radians for an administrator-locked scene object
-    # (migration 0082). 0 keeps the object's authored rotation.
-    "ALTER TABLE world_object_layout ADD COLUMN rotation REAL NOT NULL DEFAULT 0",
     # Edge-observed sign-in address of each account session, shown only to the
     # owner of that account in the World security tab and account settings.
     "ALTER TABLE account_sessions ADD COLUMN client_ip TEXT NOT NULL DEFAULT ''",
@@ -10908,11 +11099,52 @@ def d1_row_to_dict(row):
     return dict(row)
 
 
+# D1 occasionally fails a single query with an opaque backend fault —
+# "D1_ERROR: internal error; reference = <id>" — the same one-off platform blip
+# shape Durable Objects raise (see log_durable_object_abort). It is not a state
+# the database stays in, so replaying the query once clears it. Letting it
+# escape instead turned a single hiccup on the public profile read into a
+# Worker 1101/500 error group (GET /api/accounts/<name>).
+#
+# Overload is deliberately excluded: "D1 DB is overloaded" IS a sustained
+# state, and replaying reads into it is exactly the amplification that made the
+# 2026-07-11 free-plan incident a death spiral (the same reasoning keeps
+# _apply_schema from re-running its DDL on a struggling database). Those still
+# fail fast, and the router below turns them into a backpressure 503.
+_D1_TRANSIENT_MARKERS = ("internal error", "network connection lost")
+_D1_SUSTAINED_MARKERS = ("overload", "too many")
+
+
+def _is_transient_d1_error(error):
+    text = _safe_error_text(error).lower()
+    if any(marker in text for marker in _D1_SUSTAINED_MARKERS):
+        return False
+    return any(marker in text for marker in _D1_TRANSIENT_MARKERS)
+
+
+async def _d1_read(env, sql, args, first):
+    """Await one D1 read, replaying a single transient platform fault.
+
+    The statement is rebuilt per attempt: one that already failed is not
+    guaranteed to be re-awaitable. Reads only — d1_run's writes are not all
+    idempotent, so they keep failing fast.
+    """
+    last_error = None
+    for attempt in range(2):
+        stmt = env.DB.prepare(sql)
+        if args:
+            stmt = stmt.bind(*args)
+        try:
+            return await (stmt.first() if first else stmt.all())
+        except Exception as error:
+            if attempt or not _is_transient_d1_error(error):
+                raise
+            last_error = error
+    raise last_error
+
+
 async def d1_all(env, sql, *args):
-    stmt = env.DB.prepare(sql)
-    if args:
-        stmt = stmt.bind(*args)
-    result = await stmt.all()
+    result = await _d1_read(env, sql, args, False)
     out = []
     results = getattr(result, "results", None)
     if js_nullish(results):
@@ -10925,11 +11157,7 @@ async def d1_all(env, sql, *args):
 
 
 async def d1_first(env, sql, *args):
-    stmt = env.DB.prepare(sql)
-    if args:
-        stmt = stmt.bind(*args)
-    row = await stmt.first()
-    return d1_row_to_dict(row)
+    return d1_row_to_dict(await _d1_read(env, sql, args, True))
 
 
 async def d1_run(env, sql, *args):
@@ -11208,8 +11436,16 @@ async def _org_task_signed_session(env, request):
         ).encode()
     else:
         return "", None
-    pubkey = await _owner_pubkey(env, node)
-    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+    # Every key the account may sign as, not just its primary pubkey: a desktop
+    # that logged in with a password registers THIS machine's key in
+    # account_devices, while rec["pubkey"] keeps naming whichever install
+    # created the account. That session token lives only in memory, so the next
+    # launch authenticates silently and signs the board read with the device
+    # key — and a gate that trusted only the primary answered invalid_session,
+    # which is why the Tasks tab loaded until the app was restarted (adhoc #63).
+    # Same family as the /api/sync drain gate; see _owner_signing_pubkeys for
+    # why reusing the stored device keys is account-bound and safe.
+    if not await _verify_owner_signature(env, node, sig, canonical):
         return "", None
     account_bi, record = await _account_row(env, node)
     if (
@@ -11241,8 +11477,10 @@ async def _genie_credential_signed_session(env, request):
     canonical = (
         GENIE_CREDENTIAL_PROOF + "\n" + node + "\n" + str(ts)
     ).encode()
-    pubkey = await _owner_pubkey(env, node)
-    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+    # Same durable desktop identity as _org_task_signed_session: a reinstalled
+    # or password-logged-in machine signs with its account_devices key, which is
+    # never promoted to the account's primary pubkey (adhoc #63).
+    if not await _verify_owner_signature(env, node, sig, canonical):
         return "", None
     account_bi, record = await _account_row(env, node)
     if (
@@ -11253,6 +11491,77 @@ async def _genie_credential_signed_session(env, request):
     ):
         return "", None
     return account_bi, record
+
+
+# The same account key, reading and clearing its own alert inbox. The desktop's
+# Alerts page mirrors the website's bell, and an install that authenticated
+# silently holds keys and no session token — so without these the linked inbox
+# would answer "unauthorized" to the very operator who owns it (adhoc #59, the
+# notification twin of ORG_TASK_LIST_PROOF).
+ACCOUNT_ALERT_LIST_PROOF = "forkmesh-account-alert-list-v1"
+ACCOUNT_ALERT_READ_PROOF = "forkmesh-account-alert-read-v1"
+ACCOUNT_ALERT_DELETE_PROOF = "forkmesh-account-alert-delete-v1"
+ACCOUNT_ALERT_COLLECTION_RE = re.compile(r"^/api/notifications/?$")
+
+
+async def _account_alert_signed_session(env, request, resource=""):
+    """Resolve the account behind a key-signed alert-inbox request.
+
+    Deliberately narrow: reading the account's own notifications, marking them
+    read and deleting one of them — what the desktop Pings page does. Each
+    verb has its own proof string (and the delete proof additionally binds the
+    notification id), so a signed GET can never be replayed as a mutation and a
+    signed delete can never be replayed against a different row. Returns the
+    account name, or "" when nothing valid signed the request.
+    """
+    method = method_name(request)
+    if method not in ("GET", "POST", "DELETE"):
+        return ""
+    url = urlparse(request.url)
+    if not ACCOUNT_ALERT_COLLECTION_RE.match(url.path):
+        return ""
+    params = parse_qs(url.query)
+    node = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    if not node or not sig or not _ts_ok(ts):
+        return ""
+    if method == "GET":
+        canonical_prefix = ACCOUNT_ALERT_LIST_PROOF + "\n" + node
+    elif method == "POST":
+        canonical_prefix = ACCOUNT_ALERT_READ_PROOF + "\n" + node
+    else:
+        # The row being deleted is part of what was signed, so a captured
+        # delete cannot be replayed against a different notification.
+        item_id = clean_string(resource or "", 160).lower()
+        if not item_id:
+            return ""
+        canonical_prefix = (
+            ACCOUNT_ALERT_DELETE_PROOF + "\n" + node + "\n" + item_id)
+    canonical = (canonical_prefix + "\n" + str(ts)).encode()
+    pubkey = await _owner_pubkey(env, node)
+    if not pubkey or not await ed25519_verify(pubkey, sig, canonical):
+        return ""
+    account_bi, record = await _account_row(env, node)
+    if (
+        not account_bi
+        or not record
+        or record.get("status") != "active"
+        or _account_kind(record) != "user"
+    ):
+        return ""
+    return clean_string(record.get("name", ""), MAX_NODE_NAME).lower()
+
+
+async def _alert_inbox_account_name(env, request, data=None, resource=""):
+    """The account whose alert inbox this request is entitled to touch.
+
+    A browser proves it with a session token; the desktop, which normally holds
+    none, proves it by signing the request with the account key. `resource` is
+    the extra value the verb's proof binds (the notification id, on DELETE).
+    """
+    name = await _authed_account_name(env, request, data)
+    return name or await _account_alert_signed_session(env, request, resource)
 
 
 async def _room_key_authorized(env, request):
@@ -12915,6 +13224,16 @@ async def catalog_handler(env, request):
             return limited
 
         key_bi = await blind_index(env, owner + "/" + record["name"])
+        # The owner deleted this repository from the website, but the node that
+        # hosts it still republishes on every heartbeat. Refuse those automatic
+        # publishes so the delete sticks (adhoc #91). The signature above has
+        # already proven this is the owner's key, so an explicit user-initiated
+        # publish from the desktop is allowed to lift the tombstone.
+        if await _repo_delete_tombstone_active(env, key_bi):
+            if clean_string(data.get("publishIntent", ""), 16) != "user":
+                return json_response(
+                    {"error": "repository_deleted"}, status=410)
+            await _clear_repo_delete_tombstone(env, key_bi)
         # Per-owner record cap (an update to an existing repo is always allowed).
         prior_row = await d1_first(
             env, "SELECT data FROM repositories WHERE key_bi=?", key_bi)
@@ -13108,6 +13427,12 @@ async def catalog_handler(env, request):
                 audit_target, "failed", {"reason": "storage_error"})
             raise
         if not row:
+            # No catalog row right now, but the owner node may still be about
+            # to republish one (that race is exactly what makes a web delete
+            # look like it did nothing). Tombstone it anyway.
+            if session_authorized:
+                await _record_repo_delete_tombstone(
+                    env, key_bi, await blind_index(env, owner))
             return json_response({"ok": True, "deleted": False})
         try:
             existing = await decrypt_row(env, row["data"])
@@ -13158,6 +13483,15 @@ async def catalog_handler(env, request):
         # host presence, agent state, bounties, chat history) keeps the repo
         # alive in practice even though its catalog row is gone.
         try:
+            # A delete made from the website has to outlive the owner node's
+            # next heartbeat: that node still holds the mirror and republishes
+            # automatically, which used to re-create the row within a minute
+            # (adhoc #91). The desktop's own owner-signed delete needs no
+            # tombstone — it is the publisher, and it also uses this endpoint
+            # to move a repo to a renamed owner.
+            if session_authorized:
+                await _record_repo_delete_tombstone(
+                    env, key_bi, await blind_index(env, owner))
             await _delete_repo_scoped_state(env, key_bi)
             await d1_run(env, "DELETE FROM repositories WHERE key_bi=?", key_bi)
             await _delete_bounties_namespace(env, owner, name)
@@ -13334,12 +13668,22 @@ async def native_repository_logo_handler(
             return _repository_logo_image_response(
                 logo, public=not bool(record.get("isPrivate")))
         if committed_logo_url:
+            # The committed URL is streamed by a mirror, so it can fail while
+            # the rest of the card renders (offline or lagging host). Ship the
+            # approved/generated artwork with it so a client can swap in place
+            # instead of leaving a broken image where the logo belongs.
+            fallback = await service._official_logo(env, repository_id)
+            fallback = (
+                fallback
+                or _repository_import_module().deterministic_logo(record))
             return json_response({
                 "ok": True,
                 "repositoryId": repository_id,
                 "logo": {
                     "dataUrl": committed_logo_url,
                     "source": "repository",
+                    "fallbackDataUrl": str(
+                        (fallback or {}).get("dataUrl") or ""),
                 },
             }, cache_control="no-store")
         response = await service.logo_for_record(env, repository_id, record)
@@ -13923,6 +14267,31 @@ async def repo_mirrors_handler(env, request, owner, repo):
         return json_response({"error": "not_found"}, status=404)
     payload["owner"] = public_owner
     payload["repo"] = public_repo
+    # Router-counted serve tallies (mirror_serve_counters). Nodes stopped
+    # seeing per-request traffic when the per-repository WebSocket transport
+    # was retired, so records they publish carry only pre-retirement legacy
+    # tallies (or 0/-1). The Worker counts every read it routes in
+    # _https_mirror_route_advance; overlay those counts on top of whatever
+    # legacy figure the node still publishes — the two eras never overlap, so
+    # the sum is the node's true lifetime contribution.
+    serve_counts = {}
+    try:
+        count_rows = await d1_all(
+            env,
+            "SELECT node_name, clones, website FROM mirror_serve_counters"
+            " WHERE owner=? AND repo=?",
+            str(owner or "").strip().lower(),
+            str(repo or "").strip().lower(),
+        )
+        for row in count_rows:
+            name = str(row.get("node_name") or "").strip().lower()
+            if name:
+                serve_counts[name] = (
+                    max(0, int(row.get("clones") or 0)),
+                    max(0, int(row.get("website") or 0)),
+                )
+    except Exception:
+        serve_counts = {}
     # Owner column: a headless mirror's catalog record carries no ownerUser of
     # its own, but the node account may be claim-linked to a user (adhoc #53:
     # the node record's `owner` field names the linked user). Resolve that link
@@ -13930,6 +14299,16 @@ async def repo_mirrors_handler(env, request, owner, repo):
     # shows the human owner without each publisher having to know it.
     for mirror in payload.get("mirrors", []):
         node_name = str(mirror.get("node") or "").strip().lower()
+        counted = serve_counts.get(node_name)
+        if counted:
+            legacy_clones = mirror.get("clonesServed")
+            legacy_website = mirror.get("websiteServed")
+            mirror["clonesServed"] = (
+                legacy_clones if isinstance(legacy_clones, int)
+                and legacy_clones > 0 else 0) + counted[0]
+            mirror["websiteServed"] = (
+                legacy_website if isinstance(legacy_website, int)
+                and legacy_website > 0 else 0) + counted[1]
         endpoint = endpoint_by_node.get(node_name) or {}
         try:
             operations = json.loads(
@@ -14731,9 +15110,6 @@ async def _move_repo_namespace(env, old_owner_bi, old_owner, new_owner_bi,
             env, "UPDATE pull_inbox SET repo_bi=? WHERE repo_bi=?",
             new_repo_bi, old_repo_bi)
         await d1_run(
-            env, "UPDATE commit_inbox SET repo_bi=? WHERE repo_bi=?",
-            new_repo_bi, old_repo_bi)
-        await d1_run(
             env, "UPDATE discussion_inbox SET repo_bi=? WHERE repo_bi=?",
             new_repo_bi, old_repo_bi)
         await d1_run(
@@ -14861,6 +15237,48 @@ async def _delete_bounties_namespace(env, owner, repo):
                 row.get("bounty_bi"))
 
 
+# A repository deleted from the website stays deleted. The owner's node keeps
+# the local mirror and republishes its catalog record on every heartbeat, so
+# without a tombstone the row reappeared within a minute and the web delete
+# looked like it had silently done nothing (adhoc #91). The tombstone refuses
+# automatic republishes; an explicit user-initiated publish from the desktop
+# clears it, so the owner can always share the repo again.
+REPO_DELETE_TOMBSTONE_TTL_MS = 90 * 24 * 60 * 60 * 1000
+
+
+async def _repo_delete_tombstone_active(env, repo_bi):
+    try:
+        row = await d1_first(
+            env,
+            "SELECT repo_bi FROM repo_deletions WHERE repo_bi=? AND "
+            "expires_at>?",
+            repo_bi, int(Date.now()))
+    except Exception:
+        # An unreadable tombstone table must never block publishing; the
+        # website delete degrades to its old behaviour instead.
+        return False
+    return bool(row)
+
+
+async def _record_repo_delete_tombstone(env, repo_bi, owner_bi):
+    now = int(Date.now())
+    await d1_run(env, "DELETE FROM repo_deletions WHERE expires_at<=?", now)
+    await d1_run(
+        env,
+        "INSERT INTO repo_deletions (repo_bi, owner_bi, deleted_at, "
+        "expires_at) VALUES (?,?,?,?) ON CONFLICT(repo_bi) DO UPDATE SET "
+        "owner_bi=excluded.owner_bi, deleted_at=excluded.deleted_at, "
+        "expires_at=excluded.expires_at",
+        repo_bi, owner_bi, now, now + REPO_DELETE_TOMBSTONE_TTL_MS)
+
+
+async def _clear_repo_delete_tombstone(env, repo_bi):
+    try:
+        await d1_run(env, "DELETE FROM repo_deletions WHERE repo_bi=?", repo_bi)
+    except Exception:
+        pass
+
+
 async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(
         env, "DELETE FROM profile_contribution_days WHERE source_repo_bi=?",
@@ -14877,7 +15295,6 @@ async def _delete_repo_scoped_state(env, repo_bi):
     await d1_run(env, "DELETE FROM repo_shares WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM issue_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
-    await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM discussion_inbox WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM host_presence WHERE repo_bi=?", repo_bi)
     await d1_run(env, "DELETE FROM clone_rr WHERE repo_bi=?", repo_bi)
@@ -14917,6 +15334,10 @@ async def _delete_repo_namespace(env, owner_bi, owner):
                 "DELETE FROM funds_received WHERE scope='project' AND key=?",
                 owner + "/" + repo)
     await d1_run(env, "DELETE FROM catalog_rate WHERE owner_bi=?", owner_bi)
+    # The account itself is going away, so its website-delete tombstones have
+    # nothing left to protect — keeping them would only block a re-registered
+    # account of the same name from publishing the same repo names.
+    await d1_run(env, "DELETE FROM repo_deletions WHERE owner_bi=?", owner_bi)
     await purge_catalog_related_caches()
 
 
@@ -16208,145 +16629,6 @@ async def world_admin_delete_node_handler(env, request):
             "alreadyAbsent": not bool(node_row),
         },
         cache_control="no-store, max-age=0, must-revalidate")
-
-
-async def _world_layout_objects(env):
-    """Project the bounded shared-object placement table for the browser."""
-    rows = await d1_all(
-        env,
-        "SELECT object_id,x,z,rotation,updated_at FROM world_object_layout "
-        "ORDER BY object_id LIMIT ?",
-        WORLD_LAYOUT_MAX_OBJECTS,
-    )
-    objects = []
-    for row in rows or []:
-        objects.append({
-            "id": str(row.get("object_id") or ""),
-            "x": float(row.get("x") or 0),
-            "z": float(row.get("z") or 0),
-            "rotation": float(row.get("rotation") or 0),
-            "updatedAt": int(row.get("updated_at") or 0),
-        })
-    return objects
-
-
-def _world_layout_coordinate(value):
-    """Return a bounded, rounded ground coordinate or None."""
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    # NaN fails both comparisons, so this also rejects non-finite input.
-    if not (-WORLD_LAYOUT_MAX_COORDINATE <= value <= WORLD_LAYOUT_MAX_COORDINATE):
-        return None
-    return round(float(value), 2)
-
-
-def _world_layout_rotation(value):
-    """Return a heading offset in radians wrapped to [0, 2π), or None.
-
-    The offset is relative to the object's authored rotation, so an absent or
-    zero value leaves the scene facing the way it was built.
-    """
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return None
-    # Reject non-finite input before the modulo, which propagates NaN.
-    if not (-WORLD_LAYOUT_MAX_ROTATION <= value <= WORLD_LAYOUT_MAX_ROTATION):
-        return None
-    return round(float(value) % WORLD_LAYOUT_TURN, 4)
-
-
-async def world_layout_handler(env, request):
-    """Serve and admin-update the shared placement of Town Square objects."""
-    if method_name(request) == "GET":
-        cached = await edge_cache_match(WORLD_LAYOUT_CACHE_KEY)
-        if cached is not None:
-            return cached
-        await ensure_schema(env)
-        payload = {"ok": True, "objects": await _world_layout_objects(env)}
-        resp = json_response(payload, cache_seconds=WORLD_LAYOUT_TTL)
-        await edge_cache_put(WORLD_LAYOUT_CACHE_KEY, resp)
-        return resp
-    if method_name(request) != "POST":
-        return json_response(
-            {"error": "method_not_allowed"}, status=405,
-            cache_control="no-store, max-age=0, must-revalidate",
-            extra_headers={"allow": "GET, POST"})
-    try:
-        data = await bounded_json_request(request)
-    except Exception:
-        data = None
-    if not isinstance(data, dict):
-        return json_response(
-            {"error": "invalid_json"}, status=400,
-            cache_control="no-store, max-age=0, must-revalidate")
-    account_bi, rec = await _account_session_record(env, request, data)
-    actor = clean_string(
-        rec.get("name", "") if rec else "", MAX_NODE_NAME).strip().lower()
-    if not actor:
-        return json_response(
-            {"error": "invalid_session"}, status=401,
-            cache_control="no-store, max-age=0, must-revalidate")
-    if not await _has_role(env, actor, "platform_administrator"):
-        await _audit_sensitive_action(
-            env, actor, "world.layout.move", "world_object", "", "denied",
-            {"reason": "platform_administrator_required"})
-        return json_response(
-            {"error": "forbidden"}, status=403,
-            cache_control="no-store, max-age=0, must-revalidate")
-
-    object_id = str(data.get("id") or "").strip().lower()
-    if not WORLD_LAYOUT_ID_RE.fullmatch(object_id):
-        return json_response(
-            {"error": "invalid_object_id"}, status=400,
-            cache_control="no-store, max-age=0, must-revalidate")
-    x = _world_layout_coordinate(data.get("x"))
-    z = _world_layout_coordinate(data.get("z"))
-    if x is None or z is None:
-        return json_response(
-            {"error": "invalid_position"}, status=400,
-            cache_control="no-store, max-age=0, must-revalidate")
-
-    now = int(Date.now())
-    await ensure_schema(env)
-    existing = await d1_first(
-        env,
-        "SELECT object_id,rotation FROM world_object_layout WHERE object_id=?",
-        object_id)
-    # A client that only drags (and never rotates) omits the heading; keep the
-    # locked one instead of silently snapping the object back to square.
-    if data.get("rotation") is None:
-        rotation = float((existing or {}).get("rotation") or 0.0)
-    else:
-        rotation = _world_layout_rotation(data.get("rotation"))
-        if rotation is None:
-            return json_response(
-                {"error": "invalid_rotation"}, status=400,
-                cache_control="no-store, max-age=0, must-revalidate")
-    if not existing:
-        count = await d1_first(
-            env, "SELECT COUNT(*) AS n FROM world_object_layout")
-        if int((count or {}).get("n") or 0) >= WORLD_LAYOUT_MAX_OBJECTS:
-            return json_response(
-                {"error": "layout_limit"}, status=409,
-                cache_control="no-store, max-age=0, must-revalidate")
-    await d1_run(
-        env,
-        "INSERT INTO world_object_layout "
-        "(object_id,x,z,rotation,updated_by_bi,updated_at) "
-        "VALUES (?,?,?,?,?,?) "
-        "ON CONFLICT(object_id) DO UPDATE SET x=excluded.x,z=excluded.z,"
-        "rotation=excluded.rotation,"
-        "updated_by_bi=excluded.updated_by_bi,updated_at=excluded.updated_at",
-        object_id, x, z, rotation, account_bi, now,
-    )
-    await edge_cache_delete(WORLD_LAYOUT_CACHE_KEY)
-    await _audit_sensitive_action(
-        env, actor, "world.layout.move", "world_object", object_id,
-        "success", {"x": x, "z": z, "rotation": rotation})
-    return json_response(
-        {"ok": True, "objects": await _world_layout_objects(env)},
-        cache_control="no-store, max-age=0, must-revalidate",
-        extra_headers={"x-content-type-options": "nosniff"},
-    )
 
 
 # Simple web signup: create an active account from node name + email + password.
@@ -18436,6 +18718,7 @@ async def _account_heartbeat(env, request):
     else:
         notification_preferences = dict(
             prefs_rec.get("notification_preferences") or {})
+    is_admin = await _is_admin(env, name)
     response = {"ok": True, "online": True,
                 "hasPayoutAddress": bool(rec.get("solana")),
                 "payoutCustody": "external-self-custodial-public-address",
@@ -18444,13 +18727,25 @@ async def _account_heartbeat(env, request):
                     "public balance only. ForkMesh holds no wallet key or user "
                     "funds, and balance never gates reward eligibility."
                 ),
-                "isAdmin": await _is_admin(env, name),
+                "isAdmin": is_admin,
                 "emailNotifications": prefs_rec.get("email_notifications") is not False,
                 "notificationPreferences": notification_preferences}
     if balance_lamports is not None:
         response["balanceLamports"] = balance_lamports
         response["balanceFundsState"] = "user-owned-external-wallet"
         response["balanceIncreased"] = balance_increased
+    # A freshly launched federated instance's join request rides back on the
+    # admin's own signed heartbeat (adhoc #97), the same rail as the claim /
+    # ownership payloads below: the desktop shows a red dot over the relay
+    # favicon plus an Approve button. Count only — relay details are fetched on
+    # demand through the signed admin-relays endpoint when the admin clicks.
+    if is_admin and _is_main_relay(env):
+        try:
+            pending_row = await d1_first(
+                env, "SELECT COUNT(*) AS n FROM relays WHERE status='pending'")
+            response["pendingRelays"] = int((pending_row or {}).get("n") or 0)
+        except Exception:
+            pass
     # A pending website claim (adhoc #53) rides back on the signed heartbeat:
     # only the node's key holder ever sees the confirmation code, and the node
     # shows it on its own screen for the claiming user to type into the site.
@@ -23708,19 +24003,57 @@ async def _send_email(env, to_email, subject, text, html=None,
 # land?" without a second log table. Subject and body are never stored here, and
 # the stamp is private to the account: it rides the authenticated sessions read,
 # not the public profile lookup.
+#
+# The stamp also carries a running total plus a short bounded history of the
+# most recent sends. That history is what the "send it again" verification
+# button rate-limits itself against — a send that the provider rejected still
+# counts, so a failing mail provider can't be hammered from the dashboard.
 
 ACCOUNT_EMAIL_STATUS_DELIVERED = "delivered"
 ACCOUNT_EMAIL_STATUS_FAILED = "failed"
+ACCOUNT_EMAIL_HISTORY = 12
 
 
 def _stamp_account_email(rec, kind, ok, now=None):
     """Stamp the last account-directed email onto an already-loaded record."""
     if not isinstance(rec, dict):
         return rec
-    rec["last_email_ts"] = int(now if now is not None else Date.now())
-    rec["last_email_kind"] = clean_string(kind or "", 40)
+    ts = int(now if now is not None else Date.now())
+    kind = clean_string(kind or "", 40)
+    rec["last_email_ts"] = ts
+    rec["last_email_kind"] = kind
     rec["last_email_ok"] = bool(ok)
+    try:
+        rec["email_send_count"] = int(rec.get("email_send_count") or 0) + 1
+    except (TypeError, ValueError):
+        rec["email_send_count"] = 1
+    history = [item for item in (rec.get("email_sends") or [])
+               if isinstance(item, dict)]
+    history.append({"ts": ts, "kind": kind, "ok": bool(ok)})
+    rec["email_sends"] = history[-ACCOUNT_EMAIL_HISTORY:]
     return rec
+
+
+def _account_email_sends(rec, kind="", since=0):
+    """Bounded send history off a record, newest last, optionally narrowed."""
+    kind = clean_string(kind or "", 40)
+    sends = []
+    for item in ((rec or {}).get("email_sends") or []):
+        if not isinstance(item, dict):
+            continue
+        try:
+            ts = int(item.get("ts") or 0)
+        except (TypeError, ValueError):
+            continue
+        if ts <= 0 or ts < int(since or 0):
+            continue
+        if kind and clean_string(item.get("kind", ""), 40) != kind:
+            continue
+        sends.append({"ts": ts,
+                      "kind": clean_string(item.get("kind", ""), 40),
+                      "ok": bool(item.get("ok"))})
+    sends.sort(key=lambda item: item["ts"])
+    return sends
 
 
 async def _record_account_email(env, name, kind, ok):
@@ -23735,6 +24068,53 @@ async def _record_account_email(env, name, kind, ok):
         await _save_account(env, name_bi, _stamp_account_email(rec, kind, ok))
     except Exception:
         pass
+    await _notify_admins_account_email(env, name, kind, ok)
+
+
+async def _notify_admins_account_email(env, name, kind, ok):
+    """Ping every platform administrator when transactional mail goes out.
+
+    Only the account-directed sends that route through _record_account_email —
+    verification links and password resets — are pinged. They are the ones an
+    administrator may have to follow up by hand (a rejected verification lands
+    in the manual queue). Cron digest mail is still counted on the recipient's
+    record but never pinged, so an hourly digest run over every account cannot
+    fan out into a notification storm.
+    """
+    try:
+        kind = clean_string(kind or "", 40)
+        label = ACCOUNT_EMAIL_PING_LABELS.get(kind)
+        if not label:
+            return
+        rows = await d1_all(
+            env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+        ts = int(Date.now())
+        body = (label + " email delivered to the mail provider for " + name
+                if ok else
+                label + " email was rejected by the mail provider for " + name
+                + ". It is queued for manual follow-up.")
+        for row in rows or []:
+            try:
+                record = await decrypt_row(env, row.get("data", "")) or {}
+            except Exception:
+                continue
+            admin = clean_string(
+                record.get("name", ""), MAX_NODE_NAME).strip().lower()
+            if not valid_node_name(admin):
+                continue
+            await enqueue_notification(
+                env, admin, "account_email_sent",
+                label + " email sent to " + name,
+                body=body,
+                href="/dashboard/settings",
+                actor=name,
+                source="account-email",
+                dedupe="account-email:" + name + ":" + kind + ":" + str(ts),
+                ts=ts,
+                meta={"emailKind": kind, "delivered": bool(ok),
+                      "account": name})
+    except Exception:
+        pass
 
 
 def _account_email_activity(rec):
@@ -23743,14 +24123,21 @@ def _account_email_activity(rec):
         ts = int((rec or {}).get("last_email_ts") or 0)
     except (TypeError, ValueError):
         ts = 0
+    try:
+        count = int((rec or {}).get("email_send_count") or 0)
+    except (TypeError, ValueError):
+        count = 0
     if ts <= 0:
-        return {"lastEmailAt": 0, "lastEmailStatus": "", "lastEmailKind": ""}
+        return {"lastEmailAt": 0, "lastEmailStatus": "", "lastEmailKind": "",
+                "emailSendCount": max(0, count)}
     return {
         "lastEmailAt": ts,
         "lastEmailStatus": (
             ACCOUNT_EMAIL_STATUS_DELIVERED if rec.get("last_email_ok")
             else ACCOUNT_EMAIL_STATUS_FAILED),
         "lastEmailKind": clean_string(rec.get("last_email_kind", ""), 40),
+        # Older records predate the counter; one stamped send is the floor.
+        "emailSendCount": max(1, count),
     }
 
 
@@ -24065,6 +24452,72 @@ async def _send_verification_email(env, request, name, email):
     ok = await _send_email(env, email, subject, text, html)
     await _record_account_email(env, name, "verification", ok)
     return ok
+
+
+# --- "Send it again" for an unverified email ---------------------------------
+#
+# The profile POST is the privileged write path, so it demands the account
+# password — reasonable for a payout address, pure friction for re-sending a
+# confirmation link, and accounts were staying unverified because of it. This
+# endpoint takes the signed-in session and nothing else. The account's own send
+# history (see _stamp_account_email) is what bounds the retry rate: a queued
+# send counts exactly like a delivered one, so a failing provider cannot be
+# hammered from the dashboard.
+
+VERIFICATION_RESEND_COOLDOWN_MS = 60 * 1000
+VERIFICATION_RESEND_WINDOW_MS = 24 * 60 * 60 * 1000
+VERIFICATION_RESEND_WINDOW_LIMIT = 5
+
+
+async def _account_resend_verification(env, request):
+    try:
+        data = await bounded_json_request(request)
+    except Exception:
+        data = {}
+    name_bi, rec = await _account_session_record(env, request, data)
+    if not name_bi or not rec:
+        return json_response({"error": "unauthorized"}, status=401)
+    name = clean_string(rec.get("name", ""), MAX_NODE_NAME).strip().lower()
+    email = clean_string(rec.get("email", ""), 254).strip()
+    if not valid_node_name(name) or "@" not in email:
+        return json_response({"error": "no_email"}, status=400)
+    if rec.get("email_verified"):
+        return json_response({"error": "already_verified"}, status=409)
+
+    now = int(Date.now())
+    recent = _account_email_sends(
+        rec, kind="verification", since=now - VERIFICATION_RESEND_WINDOW_MS)
+    if recent and now - recent[-1]["ts"] < VERIFICATION_RESEND_COOLDOWN_MS:
+        return json_response(
+            {"error": "resend_too_soon",
+             "retryAfterMs": (VERIFICATION_RESEND_COOLDOWN_MS
+                              - (now - recent[-1]["ts"]))},
+            status=429, cache_control="no-store, max-age=0, must-revalidate")
+    if len(recent) >= VERIFICATION_RESEND_WINDOW_LIMIT:
+        return json_response(
+            {"error": "resend_limit_reached",
+             "retryAfterMs": max(
+                 0, VERIFICATION_RESEND_WINDOW_MS - (now - recent[0]["ts"]))},
+            status=429, cache_control="no-store, max-age=0, must-revalidate")
+
+    sent = await _send_verification_email(env, request, name, email)
+    if not sent:
+        await _enqueue_verification(env, name_bi, name, email)
+    # _send_verification_email already stamped (and pinged the admins about) a
+    # freshly loaded copy of this record. Mirror the stamp onto the stale copy
+    # held here purely to shape the response — it is never saved, so the
+    # persisted counter stays authoritative.
+    payload = {
+        "ok": True,
+        "verificationSent": bool(sent),
+        "verificationQueued": not sent,
+        "cooldownMs": VERIFICATION_RESEND_COOLDOWN_MS,
+        "remaining": max(0, VERIFICATION_RESEND_WINDOW_LIMIT - len(recent) - 1),
+    }
+    payload.update(_account_email_activity(
+        _stamp_account_email(rec, "verification", sent, now)))
+    return json_response(
+        payload, cache_control="no-store, max-age=0, must-revalidate")
 
 
 # --- "How are we doing?" founder feedback email -------------------------------
@@ -24936,6 +25389,44 @@ async def _federation_register(env, request):
     return json_response({"ok": True, "status": "pending"})
 
 
+# Launch-time join ping (adhoc #97): one announce per isolate per minute is
+# plenty — the endpoint only re-sends this relay's own idempotent registration.
+_FEDERATION_ANNOUNCE_MIN_MS = 60 * 1000
+_federation_announce_at = [0]
+
+
+async def _federation_announce(env, request):
+    """Register with the main relay now instead of on the next staggered cron.
+
+    A freshly deployed federated instance is POSTed here (on its own origin)
+    by the launch bootstrap the moment it passes its health check, so its
+    request to join shows up on the main relay — and as the red dot in the
+    operator's desktop — immediately. Unauthenticated by design: the request
+    body is ignored and the only effect is re-sending this relay's own signed
+    registration upstream (an idempotent upsert there), throttled per isolate.
+    """
+    del request
+    if _is_main_relay(env):
+        return json_response({"error": "not_federated_relay"}, status=404)
+    now = int(Date.now())
+    if now - _federation_announce_at[0] < _FEDERATION_ANNOUNCE_MIN_MS:
+        return json_response({"ok": True, "status": "throttled"},
+                             cache_control="no-store")
+    _federation_announce_at[0] = now
+    label = clean_string(getattr(env, "RELAY_LABEL", "") or "", 80)
+    base = clean_string(getattr(env, "PUBLIC_BASE_URL", "") or "", 200)
+    reply = await _call_main_relay(
+        env, "/api/federation/register", {"label": label, "baseUrl": base})
+    if not reply or not reply.get("ok"):
+        return json_response(
+            {"error": "main_relay_unreachable"}, status=502,
+            extra_headers=EXPECTED_DEGRADED_HEADERS)
+    return json_response(
+        {"ok": True,
+         "status": clean_string(reply.get("status", "") or "pending", 20)},
+        cache_control="no-store")
+
+
 async def _federation_donation_address(env, request):
     del env, request
     return json_response({
@@ -25242,6 +25733,8 @@ async def federation_handler(env, request):
             "/api/relay-mesh/", "/api/federation/", 1))
     if url.path == "/api/federation/register":
         return await _federation_register(env, request)
+    if url.path == "/api/federation/announce":
+        return await _federation_announce(env, request)
     if url.path == "/api/federation/donation-address":
         return await _federation_donation_address(env, request)
     if url.path == "/api/federation/donation-status":
@@ -26176,6 +26669,8 @@ async def accounts_handler(env, request):
         return await _account_heartbeat(env, request)
     if url.path == "/api/accounts/verify-email" and method == "GET":
         return await _verify_email(env, request)
+    if url.path == "/api/accounts/resend-verification" and method == "POST":
+        return await _account_resend_verification(env, request)
     if url.path == "/api/accounts/admin-pending" and method == "GET":
         return await _admin_pending(env, request)
     if url.path == "/api/accounts/admin-verify-email" and method == "POST":
@@ -29801,7 +30296,6 @@ async def notify_pending_inbox(env, owner, repo, source, actor, title, number=0)
     label = {
         "issue": "Issue submitted",
         "pull": "Pull request submitted",
-        "commit_comment": "Commit comment submitted",
         "discussion": "Discussion submitted",
     }.get(source, "Pending inbox item")
     await enqueue_notification(
@@ -29909,8 +30403,9 @@ async def notifications_handler(env, request):
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
         # A notification inbox is private to its owner: only the account itself,
-        # proven by its session token (bearer header on this GET), may read it.
-        if await _authed_account_name(env, request) != node:
+        # proven by its session token (bearer header on this GET) or by an
+        # account-key signature on the URL (the desktop Alerts page), may read it.
+        if await _alert_inbox_account_name(env, request) != node:
             return json_response({"error": "unauthorized"}, status=401)
         try:
             limit = int(params.get("limit", ["40"])[0])
@@ -29952,9 +30447,10 @@ async def notifications_handler(env, request):
         node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
         if not valid_node_name(node):
             return json_response({"error": "node_required"}, status=400)
-        # Marking notifications read mutates the owner's inbox: same session gate
-        # as the GET (token from the POST body or an Authorization: Bearer header).
-        if await _authed_account_name(env, request, data) != node:
+        # Marking notifications read mutates the owner's inbox: same gate as the
+        # GET (token from the POST body or an Authorization: Bearer header, or
+        # the account-key read proof signed onto the URL).
+        if await _alert_inbox_account_name(env, request, data) != node:
             return json_response({"error": "unauthorized"}, status=401)
         recipient_bi = await blind_index(env, node)
         now = int(Date.now())
@@ -29985,8 +30481,11 @@ async def notifications_handler(env, request):
             return json_response({"error": "bad_request"}, status=400)
         # A notification can only be removed from the authenticated owner's
         # own encrypted inbox. The opaque id is still scoped by recipient_bi,
-        # so an id copied from another account cannot delete anything.
-        if await _authed_account_name(env, request, data) != node:
+        # so an id copied from another account cannot delete anything. The
+        # desktop, which holds keys and no session token, signs the id itself
+        # with a proof distinct from the list/read ones (adhoc #77).
+        if await _alert_inbox_account_name(
+                env, request, data, resource=item_id) != node:
             return json_response({"error": "unauthorized"}, status=401)
         recipient_bi = await blind_index(env, node)
         await d1_run(
@@ -31979,29 +32478,36 @@ async def _claim_issue_inbox(
     return claimant_bi
 
 
-async def _materialize_issue_inbox_on_mirror(
+async def _drain_issue_inbox_on_mirror(
         env, request, repo_bi, claimant_bi, mirror_node):
-    """Mark exact rows visible on one mirror without consuming owner delivery."""
+    """Drain the exact leased rows an online mirror has merged into the repo.
+
+    A mirror merge is authoritative: the submission is committed to the served
+    branch and propagates across the mirror mesh (and back into the source's
+    working copy when that node returns), so the row is deleted outright — the
+    queue drains whenever ANY approved mirror is online, with no pending copy
+    retained for the source-of-truth node. The claim predicate keeps competing
+    mirrors converging on one winner per row.
+    """
     ids = _drain_ids_from_request(request)
     if not ids or not claimant_bi or not mirror_node:
         return 0
     marks = ",".join("?" for _ in ids)
-    mirror_bi = await blind_index(env, "issue-mirror:" + mirror_node)
     row = await d1_first(
         env,
         "SELECT COUNT(*) AS c FROM issue_inbox WHERE repo_bi=? "
-        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0" % marks,
+        "AND id IN (%s) AND claimed_by_bi=?" % marks,
         repo_bi, *ids, claimant_bi,
     )
     count = int((row or {}).get("c") or 0)
     if count:
         await d1_run(
             env,
-            "UPDATE issue_inbox SET mirrored_by_bi=?,mirrored_at=?,"
-            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
-            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0" % marks,
-            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+            "DELETE FROM issue_inbox WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=?" % marks,
+            repo_bi, *ids, claimant_bi,
         )
+        await _log_inbox_drain(env, repo_bi, "issues", count)
     return count
 
 
@@ -32024,35 +32530,98 @@ async def _claim_collaboration_inbox_on_mirror(
     return claimant_bi
 
 
-async def _materialize_collaboration_inbox_on_mirror(
+async def _drain_collaboration_inbox_on_mirror(
         env, request, table, repo_bi, claimant_bi, mirror_node):
-    """Mark exact PR/discussion rows browsable without consuming source sync."""
+    """Drain exact leased PR/discussion rows once a mirror commits them.
+
+    Same semantics as _drain_issue_inbox_on_mirror: the mirror's merge is the
+    real merge, so the acknowledged rows leave the queue instead of waiting as
+    "pending" for the source-of-truth node to come online.
+    """
     if table not in ("pull_inbox", "discussion_inbox"):
         return 0
     ids = _drain_ids_from_request(request)
     if not ids or not claimant_bi or not mirror_node:
         return 0
     marks = ",".join("?" for _ in ids)
-    mirror_bi = await blind_index(
-        env, "collaboration-mirror:" + table + ":" + mirror_node)
     row = await d1_first(
         env,
         "SELECT COUNT(*) AS c FROM %s WHERE repo_bi=? "
-        "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
-        % (table, marks),
+        "AND id IN (%s) AND claimed_by_bi=?" % (table, marks),
         repo_bi, *ids, claimant_bi,
     )
     count = int((row or {}).get("c") or 0)
     if count:
         await d1_run(
             env,
-            "UPDATE %s SET mirrored_by_bi=?,mirrored_at=?,"
-            "claimed_by_bi='',claim_expires_at=0 WHERE repo_bi=? "
-            "AND id IN (%s) AND claimed_by_bi=? AND mirrored_at=0"
-            % (table, marks),
-            mirror_bi, int(Date.now()), repo_bi, *ids, claimant_bi,
+            "DELETE FROM %s WHERE repo_bi=? "
+            "AND id IN (%s) AND claimed_by_bi=?" % (table, marks),
+            repo_bi, *ids, claimant_bi,
         )
+        await _log_inbox_drain(
+            env, repo_bi,
+            "pulls" if table == "pull_inbox" else "discussions", count)
     return count
+
+
+async def _record_mirror_attested_state(env, request, owner, repo, mirror_node):
+    """Admit the refs state an intake mirror serves after merging submissions.
+
+    A mirror that just committed web submissions onto the branch it serves now
+    advertises a refs fingerprint the source never attested, and
+    clone_state_pins would drop it (and every peer that converges on it) from
+    the read fan-out while the source is offline. A drain ack therefore
+    carries the mirror's fresh self-attestation — state/stateTs/stateSig over
+    the same forkmesh-repostate-v1 canonical it signs on its own catalog
+    publishes — and after the signature and freshness checks the digest joins
+    the repo's accepted pin history exactly like a source publish would. Only
+    callers that already passed _authorized_mirror_issue_signing_key reach
+    this, so the grant stays bounded to the repo's approved, healthy mirror
+    group. Best-effort: a malformed attestation never fails the drain that
+    carried it.
+    """
+    try:
+        params = parse_qs(urlparse(request.url).query)
+        digest = clean_string(
+            params.get("state", [""])[0], 64).strip().lower()
+        ts = params.get("stateTs", [""])[0]
+        sig = params.get("stateSig", [""])[0]
+        if not re.fullmatch(r"[0-9a-f]{64}", digest) or not ts or not sig:
+            return False
+        try:
+            if abs(int(Date.now()) - int(ts)) > LOGIN_MAX_SKEW_MS:
+                return False
+        except (TypeError, ValueError):
+            return False
+        canonical = (
+            "forkmesh-repostate-v1\n" + mirror_node + "\n" + repo + "\n"
+            + digest + "\n" + ts
+        ).encode()
+        verified = False
+        for public_key in await _owner_signing_pubkeys(env, mirror_node):
+            if await ed25519_verify(public_key, sig, canonical):
+                verified = True
+                break
+        if not verified:
+            return False
+        key_bi = await blind_index(env, owner + "/" + repo)
+        await d1_run(
+            env,
+            "INSERT INTO repo_state_history (key_bi, state_hash, ts) "
+            "VALUES (?,?,?) ON CONFLICT(key_bi, state_hash) "
+            "DO UPDATE SET ts=excluded.ts",
+            key_bi, digest, int(Date.now()),
+        )
+        await d1_run(
+            env,
+            "DELETE FROM repo_state_history WHERE key_bi=? "
+            "AND state_hash NOT IN (SELECT state_hash FROM "
+            "repo_state_history WHERE key_bi=? ORDER BY ts DESC LIMIT ?)",
+            key_bi, key_bi, STATE_PIN_HISTORY,
+        )
+        return True
+    except Exception:
+        return False
 
 
 async def _drain_issue_inbox(env, request, repo_bi, claimant_bi=""):
@@ -32308,13 +32877,16 @@ async def issues_handler(env, request, owner, repo):
         claimant_bi = await blind_index(
             env, "issue-inbox-claim:" + signing_key)
         if mirror_intake:
-            materialized = await _materialize_issue_inbox_on_mirror(
+            drained = await _drain_issue_inbox_on_mirror(
                 env, request, repo_bi, claimant_bi, mirror_node)
+            if drained:
+                await _record_mirror_attested_state(
+                    env, request, owner, repo, mirror_node)
             return json_response({
                 "ok": True,
-                "drained": 0,
-                "materialized": materialized,
-                "retainedForSource": True,
+                "drained": drained,
+                "materialized": drained,
+                "retainedForSource": False,
             })
         materialized = await _confirm_fediverse_issue_materializations(
             env, request)
@@ -32518,86 +33090,22 @@ async def pulls_handler(env, request, owner, repo):
             ) if signing_key else ""
             if not claimant_bi:
                 return json_response({"error": "unauthorized"}, status=401)
-            materialized = await _materialize_collaboration_inbox_on_mirror(
+            drained = await _drain_collaboration_inbox_on_mirror(
                 env, request, "pull_inbox", repo_bi, claimant_bi,
                 mirror_node)
+            if drained:
+                await _record_mirror_attested_state(
+                    env, request, owner, repo, mirror_node)
             return json_response({
                 "ok": True,
-                "drained": 0,
-                "materialized": materialized,
-                "retainedForSource": True,
+                "drained": drained,
+                "materialized": drained,
+                "retainedForSource": False,
             })
         if not await _authorize_repo_inbox_owner(
                 env, request, owner, repo):
             return json_response({"error": "unauthorized"}, status=401)
         await d1_run(env, "DELETE FROM pull_inbox WHERE repo_bi=?", repo_bi)
-        return json_response({"ok": True})
-
-    return json_response({"error": "method_not_allowed"}, status=405)
-
-
-async def commits_handler(env, request, owner, repo):
-    await ensure_schema(env)
-    method = method_name(request)
-    repo_bi = await blind_index(env, owner + "/" + repo)
-    if method == "POST":
-        try:
-            data = await bounded_json_request(request)
-        except Exception:
-            return json_response({"error": "invalid_json"}, status=400)
-        comment = data.get("comment")
-        sha = clean_string(data.get("sha", ""), 40)
-        if not isinstance(comment, dict) or not sha:
-            return json_response({"error": "comment_required"}, status=400)
-        if len((comment.get("body", "") or "").encode("utf-8")) > MAX_COMMIT_COMMENT_BYTES:
-            return json_response({"error": "comment_too_large"}, status=413)
-        if not await verify_commit_comment_event(sha, comment):
-            return json_response({"error": "bad_signature"}, status=401)
-        count = await d1_first(
-            env, "SELECT COUNT(*) AS c FROM commit_inbox WHERE repo_bi=?", repo_bi
-        )
-        if count and count.get("c", 0) >= MAX_PENDING_COMMIT_COMMENTS:
-            return json_response({"error": "inbox_full"}, status=429)
-        submitter_bi = await blind_index(env, comment.get("author", ""))
-        if await _inbox_author_over_quota(env, "commit_inbox", repo_bi, submitter_bi):
-            return json_response({"error": "author_quota"}, status=429)
-        item = {
-            "sha": sha,
-            "comment": comment,
-            "submitter": clean_string(comment.get("author", ""), 120),
-            "submittedAt": int(Date.now()),
-        }
-        await d1_run(
-            env,
-            "INSERT INTO commit_inbox (repo_bi, data, submitter_bi) VALUES (?,?,?)",
-            repo_bi, await encrypt_row(env, item), submitter_bi,
-        )
-        await _record_contributor(env, comment.get("author", ""), "commits")
-        actor = clean_string(comment.get("authorName", "") or comment.get("author", ""), MAX_NODE_NAME).lower()
-        await notify_pending_inbox(env, owner, repo, "commit_comment", actor, sha, 0)
-        await notify_mentions(env, owner, repo, actor, "Commit " + sha[:12], comment.get("body", ""),
-                              repo_web_href(owner, repo), "commit_comment")
-        await notify_repo_host(env, owner, repo, "commits")
-        await _best_effort_inbox_side_effect(_ap_publish_repo_event(
-            env, request, owner, repo, "commit", "comment", sha, "",
-            comment.get("body", ""), comment.get("authorName", "")))
-        return json_response({"ok": True}, status=201)
-
-    if method == "GET":
-        if not await _authorize_owner(env, request, owner):
-            return json_response({"error": "unauthorized"}, status=401)
-        rows = await d1_all(
-            env, "SELECT data FROM commit_inbox WHERE repo_bi=? ORDER BY id ASC",
-            repo_bi,
-        )
-        pending = [rec for rec in
-                   [await decrypt_row(env, r["data"]) for r in rows] if rec]
-        return json_response({"ok": True, "pending": pending})
-
-    if method == "DELETE":
-        if not await _authorize_owner(env, request, owner):
-            return json_response({"error": "unauthorized"}, status=401)
-        await d1_run(env, "DELETE FROM commit_inbox WHERE repo_bi=?", repo_bi)
         return json_response({"ok": True})
 
     return json_response({"error": "method_not_allowed"}, status=405)
@@ -32718,14 +33226,17 @@ async def discussions_handler(env, request, owner, repo):
             ) if signing_key else ""
             if not claimant_bi:
                 return json_response({"error": "unauthorized"}, status=401)
-            materialized = await _materialize_collaboration_inbox_on_mirror(
+            drained = await _drain_collaboration_inbox_on_mirror(
                 env, request, "discussion_inbox", repo_bi, claimant_bi,
                 mirror_node)
+            if drained:
+                await _record_mirror_attested_state(
+                    env, request, owner, repo, mirror_node)
             return json_response({
                 "ok": True,
-                "drained": 0,
-                "materialized": materialized,
-                "retainedForSource": True,
+                "drained": drained,
+                "materialized": drained,
+                "retainedForSource": False,
             })
         if not await _authorize_repo_inbox_signing_key(
                 env, request, owner, repo):
@@ -32760,9 +33271,8 @@ async def repo_pending_counts_handler(env, request, owner, repo):
         "UNION ALL SELECT 'pulls', COUNT(*) FROM pull_inbox "
         "WHERE repo_bi=? AND mirrored_at=0 "
         "UNION ALL SELECT 'discussions', COUNT(*) FROM discussion_inbox "
-        "WHERE repo_bi=? AND mirrored_at=0 "
-        "UNION ALL SELECT 'commits', COUNT(*) FROM commit_inbox WHERE repo_bi=?",
-        repo_bi, repo_bi, repo_bi, repo_bi,
+        "WHERE repo_bi=? AND mirrored_at=0",
+        repo_bi, repo_bi, repo_bi,
     )
     counts = {str(r.get("k") or ""): int(r.get("c") or 0) for r in rows or []}
     return json_response({
@@ -32771,7 +33281,6 @@ async def repo_pending_counts_handler(env, request, owner, repo):
             "issues": counts.get("issues", 0),
             "pulls": counts.get("pulls", 0),
             "discussions": counts.get("discussions", 0),
-            "commits": counts.get("commits", 0),
         },
     }, cache_seconds=30)
 
@@ -32779,7 +33288,7 @@ async def repo_pending_counts_handler(env, request, owner, repo):
 async def sync_handler(env, request):
     # GET /api/sync?owner={name}&ts=&sig= — one signed round-trip returning
     # everything the owner's desktop node needs across ALL of its repos:
-    # pending issue/pull/discussion/commit inbox items, queued agent prompts
+    # pending issue/pull/discussion inbox items, queued agent prompts
     # (drained on read, same semantics as GET /agents), and the relay's pinned
     # repo state. This replaces the node's old fast polling (4 inbox GETs per
     # repo every 60s + agents every 30s + catalog list for pin checks): the
@@ -32824,7 +33333,6 @@ async def sync_handler(env, request):
                 ("issues", "issue_inbox", True),
                 ("pulls", "pull_inbox", True),
                 ("discussions", "discussion_inbox", True),
-                ("commits", "commit_inbox", True),
                 ("agentPrompts", "agent_prompts", True),
                 ("aboutUpdate", "about_inbox", False)):
             order = " ORDER BY id ASC" if ordered else ""
@@ -32867,7 +33375,7 @@ async def sync_handler(env, request):
                     # instead of blanket-deleting it undelivered (adhoc #97).
                     drain_id = r.get("drain_id")
                     if drain_id is not None and topic in (
-                            "issues", "pulls", "discussions", "commits"):
+                            "issues", "pulls", "discussions"):
                         item["id"] = drain_id
                     by_repo.setdefault(r.get("repo_bi"), {}) \
                         .setdefault(topic, []).append(item)
@@ -35509,11 +36017,59 @@ async def _error_log_actor(env, request):
         return ""
 
 
+async def _notify_new_error_group(env, status, method, path, message):
+    """Ping the platform administrators the first time an error group appears.
+
+    The admin error view groups by (status, method, path, message), so the
+    first row of a group is the event worth reading — "something new is
+    broken" — while later repeats are noise. Best-effort and admin-only: this
+    rides the error path, so it must never raise and stays one bounded read
+    plus one bounded insert per administrator (adhoc #77).
+    """
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    if not rows:
+        return
+    source = _admin_error_source(method, path)
+    title = "New %s error group (%s)" % (source.lower(), status)
+    # notification_payload keeps 500 characters of body, and a truncated
+    # crash report loses exactly the tail that explains the crash (heap,
+    # context losses, GPU). Spend the whole allowance on the message.
+    body = "%s %s — %s" % (
+        str(method or "?"), str(path or "?"), str(message or "")[:460])
+    for row in rows:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+        except Exception:
+            continue
+        name = clean_string(record.get("name", ""), MAX_NODE_NAME).lower()
+        if not valid_node_name(name):
+            continue
+        await enqueue_notification(
+            env, name, "error_group", title, body=body,
+            href="/admin?table=error_log", source="error_log",
+            dedupe="error-group:%s:%s:%s:%s" % (
+                status, str(method or "")[:16], str(path or "")[:120],
+                str(message or "")[:160]),
+            meta={"status": int(status), "method": str(method or ""),
+                  "path": str(path or "")[:200], "errorSource": source},
+        )
+
+
 async def _write_error_log(env, status, method, path, message, ray="",
                            actor=""):
     try:
         message = _privacy_safe_error_text(path, message)
         await ensure_schema(env)
+        # Is this the first row of its group? Read before the insert, so the
+        # row we are about to write cannot answer its own question.
+        known_group = await d1_first(
+            env,
+            """SELECT 1 AS hit FROM error_log
+               WHERE status=? AND method=? AND path=? AND message=? LIMIT 1""",
+            int(status), str(method or ""), str(path or ""),
+            str(message or "")[:1000],
+        )
         await d1_run(
             env,
             """INSERT INTO error_log
@@ -35530,6 +36086,10 @@ async def _write_error_log(env, status, method, path, message, ray="",
                (SELECT id FROM error_log ORDER BY id DESC LIMIT ?)""",
             MAX_ERROR_LOG,
         )
+        # Last, so a notification that cannot be delivered never costs the log
+        # its record or its bound.
+        if not known_group:
+            await _notify_new_error_group(env, status, method, path, message)
     except Exception:
         pass
 
@@ -35571,7 +36131,10 @@ def _client_error_fields(payload):
     kind = str(payload.get("kind") or "").strip().lower()
     if surface not in CLIENT_ERROR_SURFACES or kind not in CLIENT_ERROR_KINDS:
         return None
-    message = _sanitize_client_error_text(payload.get("message"), 500)
+    # Crash reports carry a full diagnostic line (device, renderer, resident
+    # scene, memory); 500 characters cut it off mid-reading. The detail below
+    # still fits the 1000-character error_log column.
+    message = _sanitize_client_error_text(payload.get("message"), 900)
     if not message:
         message = "Unspecified browser exception"
     stack = _sanitize_client_error_text(payload.get("stack"), 700)
@@ -36140,6 +36703,52 @@ async def log_durable_object_abort(env, request, path, error):
         "durable object aborted: " + _safe_error_text(error)[:400],
         request.headers.get("cf-ray") or "",
         actor)
+
+
+def _is_d1_platform_error(error):
+    """Is this D1 itself failing, rather than our query being wrong?
+
+    Only the platform's own fault envelope counts. A bad statement (no such
+    table, constraint violation, syntax error) is our bug and must keep
+    surfacing as a 500 with a Sentry stack trace.
+    """
+    text = _safe_error_text(error).lower()
+    if "d1_error" not in text:
+        return False
+    return bool(
+        _is_transient_d1_error(error)
+        or any(marker in text for marker in _D1_SUSTAINED_MARKERS))
+
+
+async def log_d1_unavailable(env, request, path, error):
+    """Record a request D1 failed to serve, the same way a DO abort is logged.
+
+    _d1_read has already replayed the query once, so reaching here means the
+    database — not the worker — is down or overloaded. Same doctrine as
+    log_durable_object_abort: keep the D1 error_log row (its raw text is what
+    lets /status separate platform outages from real bugs) but raise no Sentry
+    event, and answer 503 so clients back off instead of retrying into it.
+    Best-effort: _write_error_log never raises.
+    """
+    privacy_filter = globals().get("_privacy_safe_log_path")
+    try:
+        safe_path = (
+            await privacy_filter(env, path)
+            if callable(privacy_filter) else path
+        )
+    except BaseException:
+        safe_path = "/repository-route-redacted"
+    try:
+        actor = await _error_log_actor(env, request)
+    except BaseException:
+        actor = ""
+    try:
+        ray = request.headers.get("cf-ray") or ""
+    except BaseException:
+        ray = ""
+    await _write_error_log(
+        env, 503, method_name(request), safe_path,
+        "d1 unavailable: " + _safe_error_text(error)[:400], ray, actor)
 
 
 async def log_cron_error(env, path, message, error=None, failures=None):
@@ -37555,8 +38164,8 @@ ADMIN_STYLE = """
         border-color:var(--ab-link);padding:3px 8px;font-size:11px;white-space:nowrap}
  .ab-root .error-bot:hover{background:var(--ab-link);color:#fff}
  .ab-root .error-bot-task{display:inline;margin:0}
- .ab-root .error-message{display:inline-block;max-width:520px;overflow:hidden;
-        text-overflow:ellipsis;white-space:nowrap;vertical-align:middle}
+ .ab-root .error-message{display:inline-block;max-width:640px;
+        white-space:pre-wrap;overflow-wrap:anywhere;vertical-align:middle}
  .ab-root .error-copy{background:transparent;color:var(--ab-muted);
         border-color:var(--ab-border-2);padding:1px 6px;font-size:11px;
         margin-left:6px;vertical-align:middle}
@@ -38388,7 +38997,9 @@ async def _render_table_view(
                     _html_escape(request_method or "—"),
                     _html_escape(path or "—"),
                     _html_escape(message or "—"),
-                    _html_escape((message or "—")[:160]),
+                    # A crash report earns its length: show all of it. The
+                    # cell wraps, so the group stays readable at any size.
+                    _html_escape(message or "—"),
                     _admin_error_copy_button(message or ""),
                     _admin_error_users_cell(
                         group["actors"], group["anonymous"]),
@@ -40029,6 +40640,7 @@ async def https_mirror_health_cron(env):
         """SELECT node_bi,node_name,base_url,public_key
              FROM mirror_https_endpoints
             ORDER BY
+              CASE WHEN checked_at = 0 THEN 0 ELSE 1 END ASC,
               CASE WHEN updated_at > checked_at
                    THEN updated_at ELSE checked_at END ASC,
               node_name ASC
@@ -40555,6 +41167,34 @@ async def _https_mirror_route_advance(env, context, served_node, operation):
                    owner=excluded.owner,ts=excluded.ts""",
             context["repoBi"], served_node, now,
         )
+    # Serve tallies for the Mirror nodes view (Clones / Website columns). One
+    # git clone is two requests: info/refs (counted above only as the sticky
+    # pin) and the upload-pack POST — count the pack transfer so the pair
+    # lands as one clone. Every other read routed here is a website/browse
+    # fetch backed by this node's copy (tree/blob/raw/history/…/release-blob),
+    # the same classification the retired local gateway used. Keyed by the
+    # canonical catalog owner so org-alias routes tally onto one row.
+    if operation == "git-info-refs":
+        return
+    field = "clones" if operation == "git-upload-pack" else "website"
+    try:
+        await d1_run(
+            env,
+            """INSERT INTO mirror_serve_counters(
+                   node_name,owner,repo,{field},updated_at)
+                 VALUES (?,?,?,1,?)
+                 ON CONFLICT(node_name,owner,repo) DO UPDATE SET
+                   {field}=mirror_serve_counters.{field}+1,
+                   updated_at=excluded.updated_at""".format(field=field),
+            str(served_node or "").strip().lower(),
+            str(context["owner"] or "").strip().lower(),
+            str(context["repo"] or "").strip().lower(),
+            now,
+        )
+    except Exception:
+        # Best-effort display counter; a D1 hiccup must never fail the read
+        # that was just served.
+        pass
 
 
 def _https_mirror_request_query(url, operation, release_sha=""):
@@ -41598,11 +42238,45 @@ async def _https_mirror_proxy(
 
 class Default(WorkerEntrypoint):
     async def scheduled(self, controller, env, ctx):
-        # Keep the platform Cron Trigger deliberately tiny. It starts (and then
-        # once a minute reconciles) a singleton Durable Object alarm. The alarm
-        # re-arms itself before work, so a stateless Python wrapper poisoned by
-        # another request or a killed maintenance batch cannot stop the runner.
-        await _cron_runner_kick(self.env)
+        # The platform Cron Trigger does two things, cheapest and most public
+        # first.
+        #
+        # (1) It records the /status health sample DIRECTLY. The trigger is
+        # the only per-minute schedule the platform itself guarantees, so the
+        # public minute strip must not depend on the Durable Object subsystem
+        # being healthy: a wedged runner isolate or exhausted free-tier DO
+        # allowance left multi-hour "no health sample was recorded" gaps that
+        # read as fake downtime. The per-minute claim inside
+        # record_status_sample keeps this sample and the runner's own from
+        # double-counting an hour's checks — whichever lands first wins.
+        try:
+            await record_status_sample(self.env)
+        except BaseException as error:
+            try:
+                await log_cron_error(
+                    self.env, "/cron/record-status-sample",
+                    "record_status_sample failed: " + _safe_error_text(error),
+                    error=error)
+            except BaseException:
+                pass
+        # (2) It starts (and then once a minute reconciles) the singleton
+        # Durable Object alarm that owns every other maintenance job. The
+        # alarm re-arms itself before work, so a stateless Python wrapper
+        # poisoned by another request or a killed maintenance batch cannot
+        # stop the runner. A failed kick must not erase the sample above or
+        # hide behind it: it is captured to Sentry only (an error_log row
+        # would paint the "errors" system red for a DO-plan-limit condition
+        # the independent watchdog already emails about).
+        try:
+            await _cron_runner_kick(self.env)
+        except BaseException as error:
+            try:
+                await capture_sentry_error(
+                    self.env, 500, "scheduled", "/cron/runner-kick",
+                    "cron runner kick failed: " + _safe_error_text(error),
+                    error=error)
+            except BaseException:
+                pass
 
     async def _run_scheduled_jobs(self, controller=None, env=None, ctx=None):
         # Cron trigger (every minute, see [triggers] in wrangler.toml).
@@ -41926,6 +42600,25 @@ class Default(WorkerEntrypoint):
         except Exception as error:
             if str(error) == "legacy_custody_migration_required":
                 return _legacy_custody_not_ready_response()
+            # D1 being down or overloaded is a dependency outage, not a worker
+            # bug: _d1_read already replayed the one-off "internal error;
+            # reference = …" fault, so anything still escaping means the
+            # database cannot serve this request. Answer 503 (marked degraded,
+            # so the 5xx logger below does not double-log it) instead of
+            # re-raising into a Cloudflare 1101 that clients read as a 500.
+            if _is_d1_platform_error(error):
+                try:
+                    await log_d1_unavailable(
+                        self.env, request, getattr(url, "path", ""), error)
+                except BaseException:
+                    pass
+                return json_response(
+                    {"error": "database_unavailable"}, status=503,
+                    cache_control="no-store",
+                    extra_headers={
+                        **EXPECTED_DEGRADED_HEADERS,
+                        "Retry-After": "2",
+                    })
             try:
                 await capture_worker_exception(self.env, request, url, error)
             except BaseException:
@@ -42529,9 +43222,6 @@ class Default(WorkerEntrypoint):
         if url.path in (
                 "/api/world/satellites", "/api/world/satellites/"):
             return await world_satellites_handler(self.env, request)
-
-        if url.path in ("/api/world/layout", "/api/world/layout/"):
-            return await world_layout_handler(self.env, request)
 
         if url.path in (
                 "/api/world/admin/errors",
@@ -43216,19 +43906,6 @@ class Default(WorkerEntrypoint):
                                  self.env, request, owner))):
                 return json_response({"error": "not_found"}, status=404)
             return await pulls_handler(self.env, request, owner, repo)
-
-        commits_match = REPO_COMMITS_RE.match(url.path)
-        if commits_match:
-            owner = safe_segment(commits_match.group(1))
-            repo = safe_segment(commits_match.group(2))
-            if not owner or not repo:
-                return json_response({"error": "not_found"}, status=404)
-            if (await _repo_is_private(self.env, owner, repo)
-                    and not (method_name(request) in ("GET", "DELETE")
-                             and await _authorize_owner(
-                                 self.env, request, owner))):
-                return json_response({"error": "not_found"}, status=404)
-            return await commits_handler(self.env, request, owner, repo)
 
         discussions_match = REPO_DISCUSSIONS_RE.match(url.path)
         if discussions_match:
@@ -44389,8 +45066,15 @@ class ForkMeshCronRunner(DurableObject):
                 _safe_error_text(error)[:1000],
             )
             await self.ctx.storage.put("last_failure_at", int(Date.now()))
+            # Workers Logs stays off, so a swallowed batch failure would
+            # otherwise be invisible: send it straight to Sentry. Best-effort
+            # — the already-armed successor alarm must survive a Sentry
+            # outage too.
             try:
-                print("cron runner alarm failed: " + _safe_error_text(error))
+                await capture_sentry_error(
+                    self.env, 500, "alarm", "/cron-runner/alarm",
+                    "cron runner alarm failed: " + _safe_error_text(error),
+                    error=error)
             except BaseException:
                 pass
             return
@@ -44706,7 +45390,8 @@ class ForkMeshWorld(DurableObject):
                          trusted_name=None, trusted_node_count=None,
                          pending_knocks=None, arrival_slot=None, is_admin=None,
                          ip_token=None, agent_token=None, ticket_nonce=None,
-                         client_ip=None, client_user_agent=None):
+                         client_ip=None, client_user_agent=None,
+                         pending_handshakes=None):
         if country_source is None:
             country_source = _ws_attr(ws, "country_source", "")
         if trusted_name is None:
@@ -44715,6 +45400,8 @@ class ForkMeshWorld(DurableObject):
             trusted_node_count = _ws_attr(ws, "trusted_node_count", 0)
         if pending_knocks is None:
             pending_knocks = _ws_attr(ws, "pending_knocks", [])
+        if pending_handshakes is None:
+            pending_handshakes = _ws_attr(ws, "pending_handshakes", [])
         if arrival_slot is None:
             arrival_slot = _ws_attr(ws, "arrival_slot", -1)
         if is_admin is None:
@@ -44732,6 +45419,11 @@ class ForkMeshWorld(DurableObject):
         pending_knocks = [
             str(peer_id)
             for peer_id in list(pending_knocks or [])[-8:]
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(peer_id or ""))
+        ]
+        pending_handshakes = [
+            str(peer_id)
+            for peer_id in list(pending_handshakes or [])[-8:]
             if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", str(peer_id or ""))
         ]
         trusted_fields = world_protocol.trusted_presence_claim(
@@ -44781,6 +45473,10 @@ class ForkMeshWorld(DurableObject):
             # One-use, live-socket-only consent requests. They are never
             # persisted, broadcast, or exposed in the public presence record.
             "pending_knocks": pending_knocks,
+            # The same one-use shape for handshake offers this socket has
+            # received: only an offer parked here can be shaken back or
+            # declined, so nobody can answer a greeting they were never sent.
+            "pending_handshakes": pending_handshakes,
             # A room-local collision-avoidance index. It is never broadcast,
             # persisted, or derived from an account/network identifier.
             "arrival_slot": int(arrival_slot),
@@ -44958,10 +45654,11 @@ class ForkMeshWorld(DurableObject):
             return
         interaction = world_protocol.sanitize_interaction(payload, state)
         if interaction is not None:
-            # Home interactions are targeted, text-free consent frames. The
-            # server keeps at most eight one-use knocks inside the live socket
-            # attachment; hibernation/disconnect naturally expires them.
-            # Sender identity always comes from the attachment, never JSON.
+            # Home and handshake interactions are targeted, text-free consent
+            # frames. The server keeps at most eight one-use knocks and eight
+            # one-use handshake offers inside the live socket attachment;
+            # hibernation/disconnect naturally expires them. Sender identity
+            # always comes from the attachment, never JSON.
             self._save_attachment(
                 ws, state, last=now,
                 rate_start=rate_start, rate_count=rate_count)
@@ -44989,6 +45686,64 @@ class ForkMeshWorld(DurableObject):
                             "from": state.get("id"),
                         })
                         break
+            elif interaction["kind"] == "handshake-offer":
+                # A handshake offer reaches one live peer and nobody else, so
+                # an unanswered greeting stays between the two of them.
+                for peer in self._live_sockets(cleanup=True):
+                    if _ws_attr(peer, "id") == interaction["target"]:
+                        pending = list(
+                            _ws_attr(peer, "pending_handshakes", []) or [])
+                        if state.get("id") not in pending:
+                            pending.append(state.get("id"))
+                        self._save_attachment(
+                            peer,
+                            self._socket_state(peer),
+                            last=_ws_attr(peer, "last", now),
+                            rate_start=_ws_attr(peer, "rl_start", now),
+                            rate_count=_ws_attr(peer, "rl_count", 0),
+                            pending_handshakes=pending[-8:],
+                        )
+                        self._safe_send(peer, {
+                            "type": "interaction",
+                            "kind": "handshake-offer",
+                            "from": state.get("id"),
+                        })
+                        break
+            elif interaction["kind"] in (
+                "handshake-accept", "handshake-decline",
+            ):
+                pending = list(
+                    _ws_attr(ws, "pending_handshakes", []) or [])
+                if interaction["target"] not in pending:
+                    return
+                pending = [
+                    peer_id for peer_id in pending
+                    if peer_id != interaction["target"]
+                ]
+                self._save_attachment(
+                    ws, state, last=now,
+                    rate_start=rate_start, rate_count=rate_count,
+                    pending_handshakes=pending,
+                )
+                if interaction["kind"] == "handshake-decline":
+                    for peer in self._live_sockets(cleanup=True):
+                        if _ws_attr(peer, "id") == interaction["target"]:
+                            self._safe_send(peer, {
+                                "type": "interaction",
+                                "kind": "handshake-decline",
+                                "from": state.get("id"),
+                            })
+                            break
+                else:
+                    # Two people shaking hands is a public gesture: the room
+                    # animates the pair the same way it animates an emote. The
+                    # frame carries the two peer ids and nothing else.
+                    self._broadcast({
+                        "type": "interaction",
+                        "kind": "handshake",
+                        "from": state.get("id"),
+                        "with": interaction["target"],
+                    }, exclude_id=state.get("id"), budgeted=True)
             elif interaction["kind"] in ("home-grant", "home-decline"):
                 pending = list(
                     _ws_attr(ws, "pending_knocks", []) or [])

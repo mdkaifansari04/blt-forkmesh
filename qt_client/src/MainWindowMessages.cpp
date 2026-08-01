@@ -90,6 +90,10 @@ MessageRow *MainWindow::addMessageRow(const ChatMessage &message)
                     m_backend->sendReaction(m_currentConversation, messageId, emoji);
             });
     connect(row, &MessageRow::editRequested, this, &MainWindow::promptEditMessage);
+    connect(row, &MessageRow::createIssueRequested, this,
+            &MainWindow::promptIssueFromChatMessage);
+    connect(row, &MessageRow::sendToPromptRequested, this,
+            &MainWindow::sendMessageToPrompt);
     connect(row, &MessageRow::deleteRequested, this, &MainWindow::confirmDeleteMessage);
     connect(row, &MessageRow::moderateDeleteRequested, this,
             &MainWindow::confirmAdminDeleteMessage);
@@ -249,12 +253,47 @@ void MainWindow::onMessage(const ChatMessage &message)
     }
     updateChatButton();
 
+    // #welcome traffic is the new-user roll-call (maybeAnnounceWelcome), so a
+    // fresh line there raises a "New user joined" ping whose link brings the
+    // reader straight to the channel (adhoc #88).
+    if (!ownMessage && conversation == kWelcomeChannel &&
+        message.timestampMs >
+            QDateTime::currentMSecsSinceEpoch() - kWelcomePingFreshMs) {
+        NotificationLink link;
+        link.kind = QStringLiteral("chat");
+        link.ref = kWelcomeChannel;
+        const QString who = message.senderName.trimmed();
+        addNotification(QStringLiteral("New user joined"),
+                        who.isEmpty()
+                            ? QStringLiteral("Someone new said hello in #welcome")
+                            : who + QStringLiteral(" said hello in #welcome"),
+                        false, link);
+    }
+
     if (!ownMessage) {
         const QString where = isDirectConversation(conversation)
                                   ? "sent you a message"
                                   : "in " + conversation;
         const QString preview =
             message.hasFile() ? "File: " + message.fileName : message.text;
+        // Chat is an event like any other: file it on the Pings page and raise
+        // it in the area above the log, with a row that opens the conversation
+        // it came from (adhoc #77). The desktop toast below stays gated by its
+        // own setting; this in-app record is not. Only messages that just
+        // arrived qualify — a peer replaying days of history this node has
+        // never seen must not land as hundreds of "new events" — and #welcome
+        // already raised its own ping above.
+        constexpr qint64 kChatPingFreshMs = 10 * 60 * 1000;
+        if (conversation != kWelcomeChannel &&
+            message.timestampMs >
+                QDateTime::currentMSecsSinceEpoch() - kChatPingFreshMs) {
+            NotificationLink link;
+            link.kind = QStringLiteral("chat");
+            link.ref = conversation;
+            addNotification(message.senderName + QLatin1Char(' ') + where,
+                            preview.simplified(), false, link,
+                            QStringLiteral("chat"), message.senderName);
+        }
         if (textMentionsNodeName(message.text, m_userName)) {
             if (notifyEnabled(kMentionAlertSetting)) {
                 QApplication::alert(this, 0);
@@ -601,9 +640,26 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
                 continue;
             if (!ownName.isEmpty() && m.name.compare(ownName, Qt::CaseInsensitive) == 0)
                 continue;
+            // A plain user account (accountKind "user") is a person, not a
+            // serving node — e.g. a desktop signed in as a user rather than a
+            // linked node, or ForkBot's relayed chat identity. Announcing it as
+            // "Node connected" is misleading (adhoc #37 hit this same mix-up in
+            // the node switcher); missing accountKind (older peers) still
+            // counts as a node for backward compatibility.
+            if (m.accountKind == QLatin1String("user"))
+                continue;
+            // Anonymous chat guests are people passing through, not nodes
+            // (adhoc #308). A first-run desktop guest still advertises its
+            // machine's nodeName (adhoc #113), so that machine still counts.
+            if (isTemporaryChatGuest(m))
+                continue;
             if (!previouslyOnline.contains(m.id)) {
-                const QString displayName =
-                    m.name.trimmed().isEmpty() ? m.id : m.name.trimmed();
+                // This is a node alert: name the machine (nodeName first).
+                // A first-run desktop's chat alias is "Guest ####" while its
+                // machine keeps the generated node name (adhoc #113).
+                QString displayName = nodeListIdentityKey(m).trimmed();
+                if (displayName.isEmpty())
+                    displayName = m.id;
                 logSystem(QStringLiteral("Node connected: %1 is online").arg(displayName));
                 if (!showNodeConnectAlert)
                     continue;
@@ -1058,8 +1114,16 @@ void MainWindow::refreshChatMembers()
             break;
         }
     } else {
-        // Public mesh/office rooms expose live presence, but only database
-        // accounts are users. Guests and unregistered node aliases stay out.
+        // Public mesh/office rooms (#general and friends) are open to every
+        // registered account, so the users column lists the whole database
+        // directory instead of only whoever happens to be online right now
+        // (adhoc #129). Presence still drives the online dot, the sort order
+        // and the node badges below; it just no longer decides membership.
+        // Guests and unregistered node aliases have no directory row, so they
+        // still stay out.
+        for (auto it = m_chatDirectoryUsers.constBegin();
+             it != m_chatDirectoryUsers.constEnd(); ++it)
+            roomUserKeys.insert(it.key());
         for (auto it = liveByUser.constBegin(); it != liveByUser.constEnd(); ++it)
             roomUserKeys.insert(it.key());
     }
@@ -1827,6 +1891,16 @@ void MainWindow::insertEmojiIntoComposer(const QString &emoji)
         return;
     m_messageInput->insert(emoji);
     m_messageInput->setFocus();
+}
+
+void MainWindow::sendMessageToPrompt(const QString &text)
+{
+    if (text.isEmpty())
+        return;
+    // The footer's bottom-right prompt box, not the chat input: a message worth
+    // reusing is almost always a task for an agent, so it lands where the
+    // app-wide "Send to Prompt" selection action puts text (adhoc #108).
+    appendTextToActivePrompt(text);
 }
 
 void MainWindow::showEmojiPicker(QWidget *anchor)

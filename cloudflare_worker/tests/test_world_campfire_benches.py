@@ -66,6 +66,11 @@ def test_seats_are_benches_with_planks_and_legs():
     assert "new THREE.BoxGeometry(1.6, 0.14, 0.6)" in ring
     assert "bench.rotation.y = -angle + Math.PI / 2;" in ring
     assert ring.count("leg") >= 2
+    assert "new THREE.InstancedMesh(" in ring
+    assert 'seatInstances.name = "campfire-member-bench-seats"' in ring
+    assert 'legInstances.name = "campfire-member-bench-legs"' in ring
+    assert 'labelMesh.name = "campfire-member-bench-label-atlas"' in ring
+    assert "seat.userData.raycastProxy = true;" in ring
 
 
 def test_circle_always_keeps_an_open_bench_for_the_next_guest():
@@ -93,7 +98,7 @@ def test_circle_keeps_a_walk_in_gap_instead_of_closing_the_ring():
         "  );" in SCENE
     )
     ring = SCENE.split("function rebuildCampfireCircle", 1)[1].split(
-        "setShadows(ring);", 1
+        "setShadows(campfire);", 1
     )[0]
     # Members are split into concentric rows of at most 25. Every row computes
     # its own entrance angle, so the walk-in gap stays aligned across them.
@@ -312,8 +317,24 @@ def test_bench_height_is_derived_from_the_seated_pose():
     )[0]
     assert "seat.position.y = CAMPFIRE_SEAT_Y;" in ring
     # The legs grow with the plank so the bench still stands on the ground.
-    assert "new THREE.BoxGeometry(0.16, CAMPFIRE_BENCH_LEG_HEIGHT, 0.5)" in ring
-    assert "leg.position.set(end, CAMPFIRE_BENCH_LEG_HEIGHT / 2, 0);" in ring
+    assert "const legGeometry = new THREE.BoxGeometry(" in ring
+    assert "CAMPFIRE_BENCH_LEG_HEIGHT," in ring
+    assert "CAMPFIRE_BENCH_LEG_HEIGHT / 2" in ring
+    assert "legInstances.setMatrixAt(" in ring
+
+
+def test_campfire_bounds_detailed_avatars_while_retaining_roster_benches():
+    assert "const CAMPFIRE_DETAILED_MEMBER_LIMIT = compactRenderer ? 12 : 32" in SCENE
+    assert ".slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)" in SCENE
+    assert "campfire.userData.memberFigureLimit" in SCENE
+    assert "campfire.userData.detailedMemberFigures" in SCENE
+    assert 'labelState = member.away === true' in SCENE
+    assert '"ROSTER BENCH"' in SCENE
+    assert "showAtBench(seatByName.get(wanted))" in SCENE
+    assert "setCampfireSeatOrgTeamAction(" in SCENE
+    assert "polygonOffsetFactor: -1" in SCENE
+    assert "repaintCampfireSeatLabels();" in SCENE
+    assert "labelMesh.material.map = texture" in SCENE
 
 
 def test_member_total_changes_fire_and_the_high_member_count():

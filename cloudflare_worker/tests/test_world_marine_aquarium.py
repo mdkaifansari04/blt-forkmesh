@@ -32,7 +32,8 @@ def test_office_lobby_has_a_bioluminescent_left_wall_marine_aquarium():
         "forkmesh-office-aquarium-light",
     ):
         assert name in aquarium
-    assert "createOfficeMarineAquarium(THREE, animated)" in SCENE
+    assert "function createOfficeMarineAquarium(THREE, animated, maxFish = 24)" in SCENE
+    assert "compactRenderer ? 12 : 24" in SCENE
 
 
 def test_marine_aquarium_stays_ambient_and_reuses_the_scene_animation_queue():
@@ -213,13 +214,17 @@ def test_aquarium_background_and_light_are_real_scene_toggles():
     assert "topLight.visible = aquariumLightEnabled" in aquarium
 
 
-def test_each_public_user_gets_one_small_name_seeded_fish_in_an_activity_lane():
+def test_public_users_seed_a_bounded_activity_first_school():
     aquarium = _aquarium_block()
     assert "function aquariumUserPalette(name)" in aquarium
     assert '"outfit:" + String(name || "guest")' in aquarium
     assert "OUTFIT_COLORWAYS[rng.int(OUTFIT_COLORWAYS.length)]" in aquarium
     assert "function setUsers(users = [])" in aquarium
-    assert "normalized.forEach((user, index) =>" in aquarium
+    assert ".slice(0, fishLimit)" in aquarium
+    assert "visibleUsers.forEach((user, index) =>" in aquarium
+    assert "group.userData.accountPopulation = normalized.length" in aquarium
+    assert "group.userData.visibleFish = visibleUsers.length" in aquarium
+    assert "group.userData.fishLimit = fishLimit" in aquarium
     assert "fishStates.push({" in aquarium
     assert '"active-recent"' in aquarium
     assert '"inactive"' in aquarium
@@ -229,3 +234,14 @@ def test_each_public_user_gets_one_small_name_seeded_fish_in_an_activity_lane():
     # Names seed appearance but are not drawn or attached as visible labels.
     assert "makeLabelSprite" not in aquarium
     assert "fillText(user.name" not in aquarium
+
+
+def test_aquarium_animation_is_lobby_only_and_capped_at_twenty_hertz():
+    aquarium = _aquarium_block()
+    assert "const AQUARIUM_ANIMATION_MS = 1000 / 20" in aquarium
+    assert "if (!animationActive || time < nextAnimationAt) return" in aquarium
+    assert "nextAnimationAt + AQUARIUM_ANIMATION_MS" in aquarium
+    assert "setAnimationActive(value)" in aquarium
+    assert 'officeSceneMode === "lobby"' in SCENE
+    assert 'officeCurrentFloorId === "lobby"' in SCENE
+    assert "officeAquarium.setAnimationActive(aquariumAnimationActive)" in SCENE

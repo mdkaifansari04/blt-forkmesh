@@ -1,8 +1,12 @@
 #include "SystemStats.h"
 
 #include <QByteArray>
+#include <QDir>
 #include <QFile>
+#include <QHash>
 #include <QList>
+#include <QSet>
+#include <QStringList>
 
 #include <chrono>
 
@@ -225,6 +229,80 @@ double SystemStats::cpuPercent()
     g_lastWall = now;
     g_lastPercent = pct < 0.0 ? 0.0 : pct;
     return g_lastPercent;
+}
+
+SystemStats::DescendantLoad SystemStats::descendantsNamed(qint64 rootPid,
+                                                          const QString &comm)
+{
+    DescendantLoad load;
+    if (rootPid <= 0 || comm.isEmpty())
+        return load;
+#if defined(Q_OS_LINUX)
+    const QByteArray wanted = comm.toLocal8Bit();
+    // One pass over /proc collecting (pid, ppid, comm); the tree is walked
+    // afterwards so the scan stays O(processes) however deep the subtree runs.
+    struct Entry {
+        qint64 ppid = 0;
+        bool matches = false;
+    };
+    QHash<qint64, Entry> entries;
+    QHash<qint64, QList<qint64>> children;
+    const QStringList pids =
+        QDir(QStringLiteral("/proc"))
+            .entryList(QStringList() << QStringLiteral("[0-9]*"), QDir::Dirs);
+    for (const QString &name : pids) {
+        bool pidOk = false;
+        const qint64 pid = name.toLongLong(&pidOk);
+        if (!pidOk || pid <= 0)
+            continue;
+        QFile stat(QStringLiteral("/proc/%1/stat").arg(name));
+        if (!stat.open(QIODevice::ReadOnly))
+            continue; // the process exited between listing and reading
+        const QByteArray data = stat.readAll();
+        // The comm field is parenthesised and may itself contain spaces and
+        // parens, so split on the last ')': index 1 of the tail is the ppid.
+        const int lp = data.indexOf('(');
+        const int rp = data.lastIndexOf(')');
+        if (lp < 0 || rp <= lp)
+            continue;
+        const QList<QByteArray> fields = data.mid(rp + 2).split(' ');
+        if (fields.size() < 2)
+            continue;
+        bool ppidOk = false;
+        const qint64 ppid = fields.at(1).toLongLong(&ppidOk);
+        if (!ppidOk)
+            continue;
+        entries.insert(pid, {ppid, data.mid(lp + 1, rp - lp - 1) == wanted});
+        children[ppid].append(pid);
+    }
+    QList<qint64> queue{rootPid};
+    QSet<qint64> seen{rootPid}; // PID reuse can't turn the walk into a cycle
+    while (!queue.isEmpty()) {
+        const qint64 pid = queue.takeLast();
+        const auto entry = entries.constFind(pid);
+        if (entry != entries.constEnd() && entry->matches && pid != rootPid) {
+            ++load.count;
+            QFile statm(QStringLiteral("/proc/%1/statm").arg(pid));
+            if (statm.open(QIODevice::ReadOnly)) {
+                const QList<QByteArray> fields =
+                    statm.readAll().simplified().split(' ');
+                bool rssOk = false;
+                const qulonglong pages =
+                    fields.size() > 1 ? fields.at(1).toULongLong(&rssOk) : 0;
+                const long pageSize = sysconf(_SC_PAGESIZE);
+                if (rssOk && pageSize > 0)
+                    load.residentBytes += qint64(pages) * qint64(pageSize);
+            }
+        }
+        for (qint64 child : children.value(pid)) {
+            if (!seen.contains(child)) {
+                seen.insert(child);
+                queue.append(child);
+            }
+        }
+    }
+#endif
+    return load;
 }
 
 QString SystemStats::formatBytes(qint64 bytes)

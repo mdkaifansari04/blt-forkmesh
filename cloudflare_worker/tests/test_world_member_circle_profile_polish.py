@@ -175,7 +175,8 @@ def test_mirror_lights_are_colored_and_warning_states_blink():
     assert "mirrorByName" in APP
 
 
-def test_directory_members_stay_seated_at_the_campfire():
+def test_detailed_directory_members_stay_seated_at_the_campfire():
+    assert ".slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)" in SCENE
     assert 'status: "sitting around the campfire"' in SCENE
     assert "figure.position.add(seat)" in SCENE
     assert "applySeatedLegPose(figure)" in SCENE

@@ -455,7 +455,16 @@ class CloudflareAPI:
         return "; ".join(messages) or "request was rejected"
 
     def verify_token(self) -> None:
-        result = self.request("GET", "/user/tokens/verify")
+        try:
+            result = self.request("GET", "/user/tokens/verify")
+        except BootstrapError as error:
+            # Account-owned API tokens are valid for the account/zone calls
+            # this client makes, but the user-scoped verify endpoint rejects
+            # them with HTTP 401 "Invalid API Token". Defer to the account
+            # resolution that always follows, which still fails closed.
+            if "HTTP 401" in str(error):
+                return
+            raise
         if not isinstance(result, dict) or result.get("status") != "active":
             raise BootstrapError("Cloudflare API token is not active")
 
@@ -737,6 +746,40 @@ def _health_check(hostname: str, attempts: int = 6) -> None:
     raise BootstrapError(f"deployed relay did not pass its health check at {url}")
 
 
+def _announce_join(hostname: str, attempts: int = 3) -> str:
+    """Launch-time join ping (adhoc #97): ask the fresh instance to register.
+
+    POSTing the new instance's own /api/federation/announce makes it send its
+    signed registration to its configured main relay right now, so its request
+    to join (and the approve prompt in the operator's desktop) appears the
+    moment it launches instead of on the first staggered cron. Best effort:
+    returns the reported join status ("pending"/"approved") or "" on failure —
+    the instance's scheduled task re-registers later either way.
+    """
+    url = f"https://{hostname}/api/federation/announce"
+    for attempt in range(attempts):
+        try:
+            request = Request(
+                url,
+                data=b"{}",
+                headers={
+                    "Accept": "application/json",
+                    "Content-Type": "application/json",
+                    "User-Agent": "forkmesh-cloudflare-bootstrap/1",
+                },
+                method="POST",
+            )
+            with urlopen(request, timeout=30) as response:
+                if 200 <= response.status < 300:
+                    payload = json.loads(response.read().decode("utf-8") or "{}")
+                    return str(payload.get("status") or "pending")
+        except (HTTPError, URLError, TimeoutError, ValueError):
+            pass
+        if attempt + 1 < attempts:
+            time.sleep(min(10, 1 + attempt * 2))
+    return ""
+
+
 def bootstrap(
     options: BootstrapOptions,
     *,
@@ -748,6 +791,7 @@ def bootstrap(
         [dict[str, Any] | None], Any
     ] = staged_public_assets,
     health_check: Callable[[str], None] = _health_check,
+    announce: Callable[[str], str] = _announce_join,
     output: Callable[[str], None] = print,
 ) -> dict[str, Any]:
     """Execute one idempotent relay bootstrap and return a redacted summary."""
@@ -912,6 +956,20 @@ def bootstrap(
     )
     if options.verify_health:
         health_check(hostname)
+    join_status = ""
+    if options.main_relay_url.strip():
+        # The launched instance pings its main relay as a request to join
+        # (adhoc #97); the operator approves it from the desktop's red-dot
+        # prompt, which links it into the federation and the World.
+        join_status = announce(hostname)
+        output(
+            f"Join request sent to {options.main_relay_url.rstrip('/')} "
+            f"(status: {join_status}). Approve it from the main instance to "
+            "link this World into the federation."
+            if join_status
+            else "Launch join ping did not reach the main relay; the "
+                 "instance's scheduled task will register it later."
+        )
 
     summary = {
         "ok": True,
@@ -929,6 +987,10 @@ def bootstrap(
         "routeId": str((route or {}).get("id") or ""),
         "routeChanged": route_changed,
         "mainRelayUrl": options.main_relay_url.rstrip("/"),
+        "joinRequest": {
+            "announced": bool(join_status),
+            "status": join_status,
+        },
         "workerSecretsSet": list(secret_names),
         "mirrorManifest": {
             "published": mirror_manifest is not None,

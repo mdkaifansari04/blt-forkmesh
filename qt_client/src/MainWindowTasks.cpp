@@ -61,6 +61,23 @@ QString organizationTaskProof(const QByteArray &method, const QString &path,
     return kOrgTaskCompleteProof;
 }
 
+// Tasks that are not finished — the number the rail badge shows. Counted
+// exactly the way applyOrganizationTasks counts it while filling the table, so
+// a badge refreshed without the page built agrees with one refreshed with it.
+int openOrganizationTaskCount(const QJsonArray &tasks)
+{
+    int open = 0;
+    for (const QJsonValue &value : tasks) {
+        const QJsonObject task = value.toObject();
+        const bool done =
+            task.value(QStringLiteral("completedAt")).toDouble() > 0 ||
+            taskText(task, QStringLiteral("status")) == QLatin1String("done");
+        if (!done)
+            ++open;
+    }
+    return open;
+}
+
 QString taskTimestamp(qint64 milliseconds)
 {
     if (milliseconds <= 0)
@@ -419,6 +436,7 @@ void MainWindow::requestOrganizationTasks(
     request.setTransferTimeout(15000);
     request.setRawHeader(QByteArrayLiteral("Accept"),
                          QByteArrayLiteral("application/json"));
+    bool keySigned = false;
     if (!m_accountSessionToken.trimmed().isEmpty()) {
         request.setRawHeader(
             QByteArrayLiteral("Authorization"),
@@ -436,10 +454,25 @@ void MainWindow::requestOrganizationTasks(
         const QString proof = organizationTaskProof(method, path, &resource);
         if (proof.isEmpty() ||
             !authenticateOrgTaskRequest(url, request, proof, resource)) {
-            handler(false, {}, QStringLiteral(
-                "Sign in to an organization account to use private tasks."));
+            // Distinguish "not signed in at all" from "signed in with this
+            // device's key, but this change (delete, edit, QA, another
+            // member's timer, ...) deliberately needs a real session." The
+            // first message told an operator who was plainly using their own
+            // account to "sign in" to it, which reads as a no-op bug when the
+            // actual, actionable step is a password login (adhoc #108).
+            handler(false, {},
+                    m_accountAuthenticated
+                        ? QString::fromUtf8(
+                              "This change needs a password sign-in on this "
+                              "device, not just its saved account key \xE2"
+                              "\x80\x94 use Settings \xE2\x86\x92 \"Log in to "
+                              "a user account\", then try again.")
+                        : QStringLiteral(
+                              "Sign in to an organization account to use "
+                              "private tasks."));
             return;
         }
+        keySigned = true;
     }
     const QByteArray payload =
         body.isEmpty() ? QByteArray() : QJsonDocument(body).toJson(
@@ -458,7 +491,8 @@ void MainWindow::requestOrganizationTasks(
     else
         reply = m_networkAccess->sendCustomRequest(request, method, payload);
     connect(reply, &QNetworkReply::finished, this,
-            [this, reply, method, path, handler = std::move(handler)]() mutable {
+            [this, reply, method, path, keySigned,
+             handler = std::move(handler)]() mutable {
                 const QByteArray raw = reply->readAll();
                 const QJsonDocument document = QJsonDocument::fromJson(raw);
                 const QJsonObject data = document.object();
@@ -467,13 +501,21 @@ void MainWindow::requestOrganizationTasks(
                 const bool ok = reply->error() == QNetworkReply::NoError &&
                                 status >= 200 && status < 300 &&
                                 data.value(QStringLiteral("ok")).toBool(true);
-                const QString error = ok
+                QString error = ok
                     ? QString()
                     : taskErrorText(
                           data,
                           status > 0
                               ? QStringLiteral("HTTP %1").arg(status)
                               : reply->errorString());
+                // "invalid session" reads as a bug to an operator who is
+                // plainly signed in: what the relay actually rejected is this
+                // machine's key. Say so, and name the one action that fixes it.
+                if (keySigned && status == 401)
+                    error += QString::fromUtf8(
+                        " \xE2\x80\x94 this machine's key is not authorized "
+                        "for the account. Use Settings \xE2\x86\x92 \"Log in "
+                        "to a user account\" to register it.");
                 logSystem(
                     QStringLiteral("Organization tasks: %1 %2 %3.")
                         .arg(QString::fromLatin1(method), path,
@@ -505,6 +547,49 @@ void MainWindow::refreshOrganizationTasks()
                 QStringLiteral("Private catalog refreshed at %1.")
                     .arg(QTime::currentTime().toString(
                         QStringLiteral("HH:mm:ss"))));
+        });
+}
+
+// Paint the open-task count onto the Tasks rail button and remember it, so the
+// next launch has a number to show before the relay has answered anything.
+void MainWindow::setOrganizationTaskBadge(int openCount)
+{
+    QSettings().setValue(kOrganizationTaskOpenCountSetting, openCount);
+    if (auto *button = dynamic_cast<ActivityRailButton *>(m_tasksNavButton))
+        button->setBadgeCount(openCount);
+}
+
+// Launch-time counterpart: show the last count we knew about immediately. The
+// background refresh below replaces it as soon as the relay answers.
+void MainWindow::restoreOrganizationTaskBadge()
+{
+    if (auto *button = dynamic_cast<ActivityRailButton *>(m_tasksNavButton)) {
+        button->setBadgeCount(
+            QSettings().value(kOrganizationTaskOpenCountSetting, 0).toInt());
+    }
+}
+
+// Refresh the count without requiring a visit to the Tasks page. The page is
+// built lazily, so on a fresh launch there is no status label and no table to
+// fill — count the payload directly then. A failed read (offline, or an account
+// with no private catalog) deliberately leaves the restored badge alone.
+void MainWindow::refreshOrganizationTaskBadge()
+{
+    if (m_organizationTasksLoading)
+        return;
+    if (m_organizationTasksStatus && m_organizationTasksTable) {
+        refreshOrganizationTasks(); // page exists: keep table and badge in step
+        return;
+    }
+    m_organizationTasksLoading = true;
+    requestOrganizationTasks(
+        QByteArrayLiteral("GET"), QStringLiteral("/api/tasks"), {},
+        [this](bool ok, const QJsonObject &payload, const QString &) {
+            m_organizationTasksLoading = false;
+            if (!ok)
+                return;
+            setOrganizationTaskBadge(openOrganizationTaskCount(
+                payload.value(QStringLiteral("tasks")).toArray()));
         });
 }
 
@@ -658,9 +743,7 @@ void MainWindow::applyOrganizationTasks(const QJsonObject &payload)
                          ? QStringLiteral(" \xC2\xB7 manager")
                          : QString()));
     }
-    if (auto *button =
-            dynamic_cast<ActivityRailButton *>(m_tasksNavButton))
-        button->setBadgeCount(openCount);
+    setOrganizationTaskBadge(openCount);
     if (selectedRow >= 0)
         m_organizationTasksTable->selectRow(selectedRow);
     else if (!m_organizationTasks.isEmpty())
@@ -1202,7 +1285,14 @@ void MainWindow::deleteOrganizationTask()
             m_organizationTasksStatus->setText(
                 ok ? QStringLiteral("Task deleted.")
                    : QStringLiteral("Task deletion failed: %1").arg(error));
-            if (ok)
+            if (ok) {
                 refreshOrganizationTasks();
+                return;
+            }
+            // A failed delete left the task sitting right where it was, with
+            // only a status label above the table to explain why — easy to
+            // miss, which read as "delete did nothing" (adhoc #108). Put the
+            // reason somewhere the operator cannot scroll past.
+            QMessageBox::warning(this, QStringLiteral("Delete task"), error);
         });
 }

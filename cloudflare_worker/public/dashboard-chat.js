@@ -331,6 +331,7 @@ function mountForkMeshDashboardChat() {
   let historyIndicator = null;
   let revealingHistory = false;
   let lastFullLogScrollTop = 0;
+  let stickToNewest = true;
   let historyTouchStartY = null;
   let historyTouchRevealed = false;
   let historyWheelLatched = false;
@@ -468,6 +469,33 @@ function mountForkMeshDashboardChat() {
     let s = (value || "").replace(/-/g, "+").replace(/_/g, "/");
     while (s.length % 4) s += "=";
     return b64ToBytes(s);
+  }
+
+  // Filing a chat message as a repository issue lives in a module shared with
+  // the full chat page (/chat-issue-filing.js) so the signed "open" event, the
+  // author key, and the attribution wording cannot drift between surfaces. It
+  // is imported on demand: the World loads this bundle alone, and neither the
+  // dashboard nor the World needs issue signing until someone asks for it.
+  let issueFilingPromise = null;
+
+  function issueFiling() {
+    if (!issueFilingPromise) {
+      issueFilingPromise = import("/chat-issue-filing.js").catch((error) => {
+        issueFilingPromise = null;
+        throw error;
+      });
+    }
+    return issueFilingPromise;
+  }
+
+  // The dashboard page carries its own new-issue signer (which also handles
+  // agent assignment and offline pending issues), so prefer it when loaded.
+  async function fileWebIssue(repository, title, body) {
+    const shared = window.ForkMeshDashboardActions?.submitWebIssue;
+    if (typeof shared === "function") return shared(repository, title, body);
+    const filing = await issueFiling();
+    return filing.fileWebIssue(
+      repository, title, body, String(userSession()?.nodeName || ""));
   }
 
   async function ed25519Verify(pubB64url, sigB64url, dataStr) {
@@ -1541,8 +1569,7 @@ function mountForkMeshDashboardChat() {
     historyIndicator.className = "chat-history-indicator";
     historyIndicator.setAttribute("aria-live", "polite");
     historyIndicator.addEventListener("click", () => revealOlderHistory());
-    if (simpleWorldComposer) fullLog.append(historyIndicator);
-    else fullLog.prepend(historyIndicator);
+    fullLog.prepend(historyIndicator);
     return historyIndicator;
   }
 
@@ -1550,8 +1577,11 @@ function mountForkMeshDashboardChat() {
     const records = historyRowIds
       .map((id) => rows.get(id))
       .filter(Boolean);
+    // World-embed history arrives out of order (the Discord bridge folds its
+    // own backlog in), so it is sorted here. Both modes read oldest first,
+    // newest last.
     return simpleWorldComposer
-      ? records.sort((left, right) => right.tsMs - left.tsMs)
+      ? records.sort((left, right) => left.tsMs - right.tsMs)
       : records;
   }
 
@@ -1633,9 +1663,10 @@ function mountForkMeshDashboardChat() {
     } else if (simpleWorldComposer) {
       const next = Array.from(fullLog.querySelectorAll(".chat-message-row"))
         .find((candidate) =>
-          Number(candidate.dataset.chatTimestamp || 0) <= record.tsMs);
+          Number(candidate.dataset.chatTimestamp || 0) > record.tsMs);
       row.dataset.chatTimestamp = String(record.tsMs);
-      fullLog.insertBefore(row, next || historyIndicator || null);
+      if (next) fullLog.insertBefore(row, next);
+      else fullLog.append(row);
     } else {
       fullLog.append(row);
     }
@@ -1645,6 +1676,30 @@ function mountForkMeshDashboardChat() {
       if (record.editedAt) markEdited(record, record.editedAt);
     }
     return row;
+  }
+
+  function fullLogAtNewest() {
+    if (!fullLog) return true;
+    return fullLog.scrollHeight - fullLog.scrollTop - fullLog.clientHeight <= 48;
+  }
+
+  // The newest line lives at the bottom, so "keep up with the room" means
+  // keeping the feed scrolled all the way down. The World embed mounts its log
+  // inside a closed <details>, so the first render happens at zero height and
+  // the scroll only takes once layout lands - hence the follow-up frame and the
+  // resize re-pin below.
+  function pinFullLogToNewest() {
+    if (!fullLog) return;
+    stickToNewest = true;
+    const settle = () => {
+      fullLog.scrollTop = fullLog.scrollHeight;
+      lastFullLogScrollTop = fullLog.scrollTop;
+      syncChatScrollThumb();
+    };
+    settle();
+    requestAnimationFrame(() => {
+      if (stickToNewest) settle();
+    });
   }
 
   function renderHistoryWindow({ preserveScroll = false } = {}) {
@@ -1663,9 +1718,7 @@ function mountForkMeshDashboardChat() {
     const hiddenCount = Math.max(0, records.length - visibleCount);
     ensureHistoryIndicator();
     records.forEach((record, index) => {
-      const visible = simpleWorldComposer
-        ? index < visibleCount
-        : index >= hiddenCount;
+      const visible = index >= hiddenCount;
       if (visible) materializeFullMessage(record);
       if (record.el) record.el.hidden = !visible;
     });
@@ -1673,15 +1726,15 @@ function mountForkMeshDashboardChat() {
     indicator.dataset.complete = hiddenCount ? "false" : "true";
     indicator.disabled = hiddenCount <= 0;
     indicator.textContent = hiddenCount
-      ? `${simpleWorldComposer ? "↓" : "↑"} ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · ${simpleWorldComposer ? "open" : "scroll up"} to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
+      ? `↑ ${hiddenCount} earlier message${hiddenCount === 1 ? "" : "s"} · scroll up to load ${Math.min(HISTORY_BATCH_MESSAGES, hiddenCount)}`
       : "Beginning of conversation";
     if (preserveScroll) {
       fullLog.scrollTop += Math.max(0, fullLog.scrollHeight - previousHeight);
-    } else {
-      fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
+      lastFullLogScrollTop = fullLog.scrollTop;
+      syncChatScrollThumb();
+      return;
     }
-    lastFullLogScrollTop = fullLog.scrollTop;
-    syncChatScrollThumb();
+    pinFullLogToNewest();
   }
 
   function revealOlderHistory() {
@@ -1744,7 +1797,7 @@ function mountForkMeshDashboardChat() {
       return;
     }
     materializeFullMessage(record);
-    fullLog.scrollTop = simpleWorldComposer ? 0 : fullLog.scrollHeight;
+    pinFullLogToNewest();
   }
 
   // ---- edit / delete own messages ----------------------------------------
@@ -1779,6 +1832,16 @@ function mountForkMeshDashboardChat() {
         ariaLabel: "Add reaction",
       }),
     );
+    // Anyone can turn any message into a repository issue — the useful case is
+    // filing someone else's bug report, so this is deliberately not author-only
+    // (the issue itself is signed by, and attributed to, whoever files it).
+    if (record.text) {
+      actions.append(
+        messageActionButton("Issue", () => void beginIssueFromMessage(record), {
+          ariaLabel: "Create an issue from this message",
+        }),
+      );
+    }
     if (record.self && record.senderId === selfId) {
       if (record.text) {
         actions.append(messageActionButton("Edit", () => beginMessageEdit(record)));
@@ -2034,6 +2097,126 @@ function mountForkMeshDashboardChat() {
     runWhenConnected(() => send(plain));
   }
 
+  // ---- convert a message into a repository issue --------------------------
+  // A bug report typed into chat should not have to be retyped on the issues
+  // page, so every message carries an "Issue" control that opens an inline
+  // form: an editable title seeded from the first line, and the repository
+  // picker mirrored from the composer. The whole message becomes the body with
+  // an attribution line, and it is filed through the same signed "open" event
+  // the dashboard's new-issue form posts (fileWebIssue).
+
+  function closeIssueForm(record) {
+    record.issueFormEl?.remove();
+    record.issueFormEl = null;
+    showElement(record.actionsEl, true);
+  }
+
+  async function beginIssueFromMessage(record) {
+    if (!record?.text) return;
+    if (record.issueFormEl) {
+      record.issueFormEl.querySelector("input")?.focus();
+      return;
+    }
+    const filing = await issueFiling();
+    if (record.issueFormEl) return; // a second click won while the module loaded
+    showElement(record.actionsEl, false);
+    const form = document.createElement("div");
+    form.className = "chat-issue-form mt-1 flex flex-col gap-1.5";
+    const title = document.createElement("input");
+    title.type = "text";
+    title.className =
+      "w-full rounded-md border border-border bg-background px-2 py-1 text-sm";
+    title.maxLength = 200;
+    title.value = filing.issueTitleFromMessage(record.text);
+    title.setAttribute("aria-label", "Issue title");
+    // The composer's picker is the only repository list this bundle loads
+    // (/api/repositories), so the form clones it instead of fetching again.
+    const repository = document.createElement("select");
+    repository.className =
+      "w-full rounded-md border border-border bg-background px-2 py-1 text-xs";
+    repository.setAttribute("aria-label", "Issue repository");
+    for (const option of fullRepository?.options || []) {
+      repository.append(option.cloneNode(true));
+    }
+    repository.value = String(fullRepository?.value || "");
+    const status = document.createElement("span");
+    status.className = "text-[10px] text-muted-foreground";
+    status.setAttribute("role", "status");
+    const setStatus = (message, bad = false) => {
+      status.textContent = message;
+      status.className = bad
+        ? "text-[10px] text-destructive"
+        : "text-[10px] text-muted-foreground";
+    };
+    const controls = document.createElement("div");
+    controls.className = "flex items-center gap-2";
+    const cancel = messageActionButton("Cancel", () => closeIssueForm(record), {
+      ariaLabel: "Cancel issue",
+    });
+    const create = messageActionButton(
+      "Create issue",
+      () => void createIssueFromMessage(
+        record, filing, title, repository, setStatus, create),
+      { ariaLabel: "File this issue" },
+    );
+    title.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeIssueForm(record);
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        void createIssueFromMessage(
+          record, filing, title, repository, setStatus, create);
+      }
+    });
+    controls.append(cancel, create);
+    form.append(title, repository, controls, status);
+    record.issueFormEl = form;
+    (record.contentEl || record.el).append(form);
+    if (!repository.options.length) {
+      setStatus("Sign in and pick a repository to file issues.", true);
+    }
+    title.focus();
+    title.select();
+  }
+
+  async function createIssueFromMessage(
+    record, filing, titleEl, repositoryEl, setStatus, createEl) {
+    const repository = repositoryFromSelect(repositoryEl);
+    if (!repository) {
+      setStatus("Choose a repository for this issue.", true);
+      repositoryEl.focus();
+      return;
+    }
+    const title = String(titleEl.value || "").trim().slice(0, 200);
+    if (!title) {
+      setStatus("An issue needs a title.", true);
+      titleEl.focus();
+      return;
+    }
+    createEl.disabled = true;
+    setStatus("Signing issue…");
+    try {
+      await fileWebIssue(
+        repository,
+        title,
+        filing.issueBodyFromMessage({
+          text: record.text,
+          who: record.who,
+          tsMs: record.tsMs,
+          channelLabel: CHANNEL_LABEL,
+        }),
+      );
+      closeIssueForm(record);
+      appendSystem(
+        `Issue “${title}” was signed and sent to ${repository.owner}/${repository.name}.`,
+      );
+    } catch (error) {
+      createEl.disabled = false;
+      setStatus(String(error?.message || "The issue could not be filed."), true);
+    }
+  }
+
   // The rail's mini chat mirrors the full view at a smaller scale: avatar +
   // name + time header with the message below, ordered by each message's own
   // timestamp so replayed history and live traffic interleave correctly with
@@ -2194,13 +2377,8 @@ function mountForkMeshDashboardChat() {
       const row = document.createElement("div");
       row.className = "chat-system-bubble my-2 rounded-md border border-border px-3 py-2 text-xs text-muted-foreground";
       row.textContent = text;
-      if (simpleWorldComposer) {
-        fullLog.prepend(row);
-        fullLog.scrollTop = 0;
-      } else {
-        fullLog.append(row);
-        fullLog.scrollTop = fullLog.scrollHeight;
-      }
+      fullLog.append(row);
+      pinFullLogToNewest();
     }
     if (emit) emitWorldActivity(text, "status");
   }
@@ -3253,13 +3431,16 @@ function mountForkMeshDashboardChat() {
     return control;
   }
 
-  function selectedComposerRepository() {
-    const value = String(fullRepository?.value || "");
+  // Resolve an "<owner>/<name>" repository picker to the route the API wants.
+  // The composer's own picker is the common case; the per-message "issue" form
+  // clones it, so the parsing lives here rather than reading fullRepository.
+  function repositoryFromSelect(select) {
+    const value = String(select?.value || "");
     const match = value.match(
       /^([a-z](?:[a-z0-9-]{0,61}[a-z0-9])?)\/([A-Za-z0-9._-]{1,100})$/,
     );
     if (!match) return null;
-    const selected = fullRepository?.selectedOptions?.[0];
+    const selected = select?.selectedOptions?.[0];
     const routeOwner = String(selected?.dataset?.routeOwner || match[1]);
     const routeName = String(selected?.dataset?.routeName || match[2]);
     if (
@@ -3278,15 +3459,25 @@ function mountForkMeshDashboardChat() {
     };
   }
 
+  function selectedComposerRepository() {
+    return repositoryFromSelect(fullRepository);
+  }
+
   function setComposerStatus(message = "", tone = "muted") {
     if (!fullComposerStatus) return;
     fullComposerStatus.textContent = message;
-    fullComposerStatus.className =
+    fullComposerStatus.classList.remove(
+      "text-destructive",
+      "text-primary",
+      "text-muted-foreground",
+    );
+    fullComposerStatus.classList.add(
       tone === "bad"
         ? "text-destructive"
         : tone === "good"
           ? "text-primary"
-          : "text-muted-foreground";
+          : "text-muted-foreground",
+    );
   }
 
   function pulseWorldQuickComposer(action = "chat") {
@@ -3709,12 +3900,7 @@ function mountForkMeshDashboardChat() {
         const title = String(lines.shift() || "").trim().slice(0, 200);
         const body = lines.join("\n").trim();
         if (!title) throw new Error("Issue title is required.");
-        const submitIssue =
-          window.ForkMeshDashboardActions?.submitWebIssue;
-        if (typeof submitIssue !== "function") {
-          throw new Error("Issue authoring is still loading.");
-        }
-        await submitIssue(repository, title, body);
+        await fileWebIssue(repository, title, body);
         appendSystem(`Issue “${title}” was signed and sent to ${repository.owner}/${repository.name}.`);
         setComposerStatus("Issue sent to the maintainer inbox.", "good");
       } else {
@@ -4027,6 +4213,7 @@ function mountForkMeshDashboardChat() {
       });
     fullLog?.addEventListener("scroll", () => {
       syncChatScrollThumb();
+      stickToNewest = fullLogAtNewest();
       const currentTop = fullLog.scrollTop;
       if (
         hasHiddenHistory() &&
@@ -4080,7 +4267,10 @@ function mountForkMeshDashboardChat() {
       historyTouchRevealed = false;
     }, { passive: true });
     if (fullLog && "ResizeObserver" in window) {
-      new ResizeObserver(syncChatScrollThumb).observe(fullLog);
+      new ResizeObserver(() => {
+        if (stickToNewest) pinFullLogToNewest();
+        else syncChatScrollThumb();
+      }).observe(fullLog);
     }
     syncChatScrollThumb();
     document

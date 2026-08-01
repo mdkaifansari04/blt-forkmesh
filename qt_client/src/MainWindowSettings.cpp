@@ -282,27 +282,9 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kAutoUpdateSetting, enabled);
     });
 
-    // Default tab a repository opens on. Stored as the repo-detail tab index;
-    // defaults to Agents (see defaultRepoTabIndex()).
-    auto *defaultTabLabel = new QLabel("Open repositories on tab");
-    auto *defaultTabCombo = new QComboBox;
-    defaultTabCombo->addItem(QStringLiteral("Code"), 0);
-    defaultTabCombo->addItem(QStringLiteral("Commits"), 1);
-    defaultTabCombo->addItem(QStringLiteral("Issues"), 2);
-    defaultTabCombo->addItem(QStringLiteral("Agents"), 3);
-    defaultTabCombo->addItem(QStringLiteral("Pull requests"), 4);
-    defaultTabCombo->addItem(QStringLiteral("Discussions"), 5);
-    defaultTabCombo->setToolTip(
-        "Which tab to show when you open a repository. Defaults to Agents.");
-    {
-        const int idx = defaultTabCombo->findData(defaultRepoTabIndex());
-        defaultTabCombo->setCurrentIndex(idx < 0 ? 0 : idx);
-    }
-    connect(defaultTabCombo, &QComboBox::currentIndexChanged, this,
-            [defaultTabCombo](int) {
-                QSettings().setValue(kDefaultRepoTabSetting,
-                                     defaultTabCombo->currentData().toInt());
-            });
+    // There is no "open repositories on tab" preference any more (adhoc #119): a
+    // repo opens on its Code overview, and a relaunch restores the tab last
+    // viewed. See kRepoLandingTab.
 
     auto *autoSwitchToAgentCheck =
         new QCheckBox("Switch to Agents tab when a new agent is created");
@@ -341,10 +323,10 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kPublishAgentsToWebSetting, enabled);
     });
 
-    auto *notifyLabel = new QLabel("NOTIFICATIONS");
+    auto *notifyLabel = new QLabel("PINGS");
     notifyLabel->setObjectName("sectionLabel");
     auto *pushAlertCheck =
-        new QCheckBox("Show a system alert when a push reaches a mirror");
+        new QCheckBox("Show a system ping when a push reaches a mirror");
     pushAlertCheck->setChecked(
         QSettings().value(kPushAlertSetting, false).toBool());
     pushAlertCheck->setToolTip(
@@ -354,14 +336,14 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kPushAlertSetting, enabled);
     });
     auto *actionAlertCombo = new QComboBox;
-    actionAlertCombo->addItem("Action alerts: all runs", QStringLiteral("all"));
-    actionAlertCombo->addItem("Action alerts: failures only",
+    actionAlertCombo->addItem("Action pings: all runs", QStringLiteral("all"));
+    actionAlertCombo->addItem("Action pings: failures only",
                               QStringLiteral("failed"));
-    actionAlertCombo->addItem("Action alerts: off", QStringLiteral("none"));
+    actionAlertCombo->addItem("Action pings: off", QStringLiteral("none"));
     actionAlertCombo->setToolTip(
         "Desktop notifications for .forkmesh/ workflows: pop one for every run "
         "(start and finish), only when a run fails, or never. The in-app "
-        "Notifications page logs every run regardless.");
+        "Pings page logs every run regardless.");
     {
         const int idx = actionAlertCombo->findData(actionAlertMode());
         actionAlertCombo->setCurrentIndex(idx < 0 ? 0 : idx);
@@ -372,7 +354,7 @@ QWidget *MainWindow::buildSettingsSection()
                                      actionAlertCombo->currentData().toString());
             });
     auto *nodeConnectAlertCheck =
-        new QCheckBox("Show a system alert when a node connects");
+        new QCheckBox("Show a system ping when a node connects");
     nodeConnectAlertCheck->setChecked(
         QSettings().value(kNodeConnectAlertSetting, false).toBool());
     nodeConnectAlertCheck->setToolTip(
@@ -383,7 +365,7 @@ QWidget *MainWindow::buildSettingsSection()
     });
     auto *disbursementAlertCheck =
         new QCheckBox(
-            "Show a system alert when your public wallet balance increases");
+            "Show a system ping when your public wallet balance increases");
     disbursementAlertCheck->setChecked(
         QSettings().value(kDisbursementAlertSetting, false).toBool());
     disbursementAlertCheck->setToolTip(
@@ -405,35 +387,35 @@ QWidget *MainWindow::buildSettingsSection()
         return box;
     };
     auto *chatMessageAlertCheck = alertCheck(
-        "Show a system alert for new chat messages", kChatMessageAlertSetting,
+        "Show a system ping for new chat messages", kChatMessageAlertSetting,
         "Pop up a desktop notification when a chat message arrives while ForkMesh "
         "isn't the active window.");
     auto *mentionAlertCheck = alertCheck(
-        "Show a system alert when you're @mentioned", kMentionAlertSetting,
+        "Show a system ping when you're @mentioned", kMentionAlertSetting,
         "Pop up a desktop notification when your node name is mentioned in chat or "
         "in an issue/pull request.");
     auto *issueAlertCheck = alertCheck(
-        "Show a system alert for new issues", kIssueAlertSetting,
+        "Show a system ping for new issues", kIssueAlertSetting,
         "Pop up a desktop notification when another node files an issue on one of "
         "your repositories.");
     auto *pullAlertCheck = alertCheck(
-        "Show a system alert for new pull requests", kPullAlertSetting,
+        "Show a system ping for new pull requests", kPullAlertSetting,
         "Pop up a desktop notification when another node opens a pull request on "
         "one of your repositories.");
     auto *commentAlertCheck = alertCheck(
-        "Show a system alert for new issue comments", kCommentAlertSetting,
+        "Show a system ping for new issue comments", kCommentAlertSetting,
         "Pop up a desktop notification when someone comments on one of your "
         "issues.");
     auto *mirrorUpdateAlertCheck = alertCheck(
-        "Show a system alert when a mirror updates", kMirrorUpdateAlertSetting,
+        "Show a system ping when a mirror updates", kMirrorUpdateAlertSetting,
         "Pop up a desktop notification when a peer refreshes the mirror of a repo "
         "you also mirror.");
     auto *coveOpenAlertCheck = alertCheck(
-        "Show a system alert when a cove is opened", kCoveOpenAlertSetting,
+        "Show a system ping when a cove is opened", kCoveOpenAlertSetting,
         "Pop up a desktop notification when someone opens an encrypted cove you "
         "created with notifications enabled.");
     auto *newUserAlertCheck = alertCheck(
-        "Show a system alert when a new user joins", kNewUserAlertSetting,
+        "Show a system ping when a new user joins", kNewUserAlertSetting,
         "Admin: pop up a desktop notification when a new user signs up and needs "
         "email verification.");
 
@@ -1571,6 +1553,12 @@ QWidget *MainWindow::buildSettingsSection()
     auto *leaveButton = new QPushButton("Leave node");
     leaveButton->setObjectName("dangerButton");
     leaveButton->setCursor(Qt::PointingHandCursor);
+    // Same action as the profile panel's "Disconnect": mesh only, the account
+    // stays signed in. Spelled out so it is never confused with the account
+    // logout sitting two buttons along (adhoc #63).
+    leaveButton->setToolTip(
+        "Disconnect this machine from the mesh and return to the setup "
+        "screen. Your ForkMesh account stays signed in on this machine.");
     setOcticon(leaveButton, "sign-out", 16);
     connect(leaveButton, &QPushButton::clicked, this, [this] { leaveSession(); });
 
@@ -1598,10 +1586,16 @@ QWidget *MainWindow::buildSettingsSection()
             [this] { loginToUserAccount(); });
 
     // Log out clears the signed-in account so you can log back in (as the same
-    // or a different account).
-    auto *logoutButton = new QPushButton("Log out");
+    // or a different account). "of account" is part of the label: this is the
+    // only one of the app's three sign-out-ish buttons that drops the account
+    // rather than just the mesh session (adhoc #63).
+    auto *logoutButton = new QPushButton("Log out of account");
     logoutButton->setObjectName("ghostButton");
     logoutButton->setCursor(Qt::PointingHandCursor);
+    logoutButton->setToolTip(
+        "Sign this machine out of its ForkMesh user account: revokes the "
+        "website session, forgets the account here, and returns to the login "
+        "screen. Repositories and settings on this computer are kept.");
     setOcticon(logoutButton, "sign-out", 16);
     connect(logoutButton, &QPushButton::clicked, this, [this] { logout(); });
 
@@ -1703,8 +1697,6 @@ QWidget *MainWindow::buildSettingsSection()
     generalCol->addWidget(m_autostartInfo);
     generalCol->addLayout(autostartRemoveRow);
     generalCol->addWidget(autoUpdateCheck);
-    generalCol->addWidget(defaultTabLabel);
-    generalCol->addWidget(defaultTabCombo, 0, Qt::AlignLeft);
     generalCol->addWidget(autoSwitchToAgentCheck);
     generalCol->addWidget(excludeExternalClaudeCheck);
     generalCol->addWidget(publishAgentsToWebCheck);
@@ -1774,7 +1766,7 @@ QWidget *MainWindow::buildSettingsSection()
     notifyCol->addWidget(emailHostOnlineCheck);
     notifyCol->addWidget(emailHostOfflineCheck);
     notifyCol->addStretch();
-    addTab(notifyTab, "Notifications");
+    addTab(notifyTab, "Pings");
 
     // Agents & IDE: model keys/commands and editor integration.
     auto *agentsTab = new QWidget;
@@ -1948,7 +1940,9 @@ QWidget *MainWindow::buildQuickSetupTab()
         "Stored locally in Variables / Secrets, injected into every action "
         "run's environment and redacted from logs. The Cloudflare token "
         "authenticates the deploy workflow and tunnel bootstrap; the Vultr "
-        "token lets provisioning workflows create mirror nodes.");
+        "token lets provisioning workflows create mirror nodes and is also "
+        "written to cloudflare_worker/.env.production, so neither this page "
+        "nor the Hosts page asks for it twice.");
     credsHint->setObjectName("statusLine");
     credsHint->setWordWrap(true);
 
@@ -1973,10 +1967,11 @@ QWidget *MainWindow::buildQuickSetupTab()
     vultrTokenEdit->setEchoMode(QLineEdit::Password);
     vultrTokenEdit->setPlaceholderText("Vultr API token");
     vultrTokenEdit->setToolTip(
-        "Saved as the VULTR_API_TOKEN variable so provisioning workflows can "
-        "create mirror-node servers on Vultr.");
+        "Saved as the VULTR_API_KEY variable and in "
+        "cloudflare_worker/.env.production, so provisioning workflows and the "
+        "Hosts page's one-click mirror both find it without asking again.");
     vultrTokenEdit->setText(
-        quickSetupStoredVariable(storedVars, QStringLiteral("VULTR_API_TOKEN")));
+        forkmesh::control::vultrApiKeyFromVariables(storedVars));
 
     auto *credsForm = new QFormLayout;
     credsForm->setLabelAlignment(Qt::AlignLeft);
@@ -2144,11 +2139,6 @@ QWidget *MainWindow::buildQuickSetupTab()
                     cfAccountEdit->text().trimmed(),
                     forkmesh::control::cloudflareAccountIdFromVariables(vars),
                     QStringLiteral("Cloudflare account ID"));
-        putVariable(QStringLiteral("VULTR_API_TOKEN"),
-                    vultrTokenEdit->text().trimmed(),
-                    quickSetupStoredVariable(
-                        vars, QStringLiteral("VULTR_API_TOKEN")),
-                    QStringLiteral("Vultr API token"));
         putVariable(QStringLiteral("WORLD_THEME"),
                     worldThemeCombo->currentData().toString(),
                     quickSetupStoredVariable(
@@ -2169,13 +2159,29 @@ QWidget *MainWindow::buildQuickSetupTab()
             reloadVariablesTable();
         }
 
+        // The Vultr key goes through the shared helper so this page and the
+        // Hosts page's one-click mirror agree on where it lives: the canonical
+        // VULTR_API_KEY variable plus cloudflare_worker/.env.production. It
+        // runs after the store update above so it reads that fresh map back
+        // instead of overwriting it (adhoc #127).
+        QString vultrError;
+        if (!rememberVultrApiKey(vultrTokenEdit->text().trimmed(), &vultrError)
+                 .isEmpty()) {
+            applied << QStringLiteral("Vultr API token");
+        }
+
         if (applied.isEmpty()) {
             setStatus("Nothing to apply \xE2\x80\x94 every field already "
                       "matches the stored setup.",
                       false);
             return;
         }
-        setStatus(QStringLiteral("Saved: %1.").arg(applied.join(", ")), false);
+        setStatus(QStringLiteral("Saved: %1.%2")
+                      .arg(applied.join(", "),
+                           vultrError.isEmpty()
+                               ? QString()
+                               : QStringLiteral(" ") + vultrError),
+                  false);
         logSystem(QStringLiteral("Quick setup applied: %1.")
                       .arg(applied.join(", ")));
     });
@@ -2526,10 +2532,12 @@ void MainWindow::updateUserAvatarButton()
     if (!m_userAvatarNavButton)
         return;
     // Circular, like the website renders an account's picture (adhoc #19).
-    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 34, 0.5);
+    // 24px, so the rail's Account item reads at the same visual weight as its
+    // 20px octicon siblings (adhoc #117).
+    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 24, 0.5);
     if (!pm.isNull())
         m_userAvatarNavButton->setIcon(QIcon(pm));
-    m_userAvatarNavButton->setIconSize(QSize(34, 34));
+    m_userAvatarNavButton->setIconSize(QSize(24, 24));
     m_userAvatarNavButton->setText(QString());
 }
 
@@ -2610,16 +2618,19 @@ void MainWindow::setSettingsAvatar(const QByteArray &pngData)
     if (!pixmap.loadFromData(data))
         return;
     constexpr int side = 64;
-    QPixmap rounded(side, side);
-    rounded.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap rounded = crispIconPixmap(side, dpr);
     QPainter painter(&rounded);
     painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
     QPainterPath clip;
     clip.addRoundedRect(0, 0, side, side, 14, 14);
     painter.setClipPath(clip);
-    painter.drawPixmap(0, 0,
-                       pixmap.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                     Qt::SmoothTransformation));
+    QPixmap scaled = pixmap.scaled(rounded.width(), rounded.height(),
+                                   Qt::KeepAspectRatioByExpanding,
+                                   Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    painter.drawPixmap(0, 0, scaled);
     m_settingsAvatarPreview->setPixmap(rounded);
 }
 
@@ -3124,7 +3135,11 @@ void MainWindow::leaveSession(const QString &)
         m_backend = nullptr;
     }
     updateConnectionStatus();
-    m_stack->setCurrentIndex(0);
+    // Leaving the mesh used to dump the user back on the setup screen; that
+    // screen is gone (adhoc #115), so stay in the app — the status line already
+    // reports the disconnect and the top-bar pill reappears if the account went
+    // with it.
+    updateSignInButton();
     m_userName.clear();
 
     m_homeRoster.clear();
@@ -3887,16 +3902,18 @@ void MainWindow::registerLogFaviconResource(const QString &host, QTextEdit *view
         return;
     QPixmap pix;
     if (m_faviconCache.contains(host)) {
+        const qreal dpr = iconDevicePixelRatio();
+        const int px = qMax(1, qRound(16 * dpr));
         pix = m_faviconCache.value(host)
-                  .scaled(16, 16, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                  .scaled(px, px, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        pix.setDevicePixelRatio(dpr);
     } else if (hasBuiltinFavicon(host)) {
         pix = builtinFavicon(host, 16);
     } else {
         // Never leave the 14px box empty: the host's letter badge stands in
         // until (or in place of) a fetched icon, so every network line in the
         // log reads with an icon (adhoc #436).
-        pix = letterFavicon(host).scaled(16, 16, Qt::KeepAspectRatio,
-                                         Qt::SmoothTransformation);
+        pix = letterFavicon(host, 16);
     }
     view->document()->addResource(
         QTextDocument::ImageResource,
@@ -3959,7 +3976,10 @@ void MainWindow::appendNetworkLogLine(const QString &storedLine)
         m_settingsLog->append(formatDayDividerHtml(date, dark));
     }
 
-    m_settingsLog->append(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+    m_settingsLog->append(formatLogLineHtml(
+        time, message, dark,
+        logPromptIconTag(m_settingsLog, storedLine) +
+            logFaviconTag(message, m_settingsLog)));
     if (lockedPosition >= 0)
         scrollBar->setValue(lockedPosition);
 }
@@ -4003,7 +4023,10 @@ void MainWindow::loadOlderNetworkLogSegment()
             html += QStringLiteral("<div>%1</div>").arg(formatDayDividerHtml(date, dark));
         }
         html += QStringLiteral("<div>%1</div>")
-                    .arg(formatLogLineHtml(time, message, dark, logFaviconTag(message, m_settingsLog)));
+                    .arg(formatLogLineHtml(
+                        time, message, dark,
+                        logPromptIconTag(m_settingsLog, storedLine) +
+                            logFaviconTag(message, m_settingsLog)));
     }
 
     QScrollBar *sb = m_settingsLog->verticalScrollBar();
@@ -4066,8 +4089,12 @@ void MainWindow::rebuildLogFilterButtons()
 
     auto addChip = [this](const QString &label, const QString &category,
                           const QString &tip = QString()) {
-        auto *chip = new QPushButton(label);
+        auto *chip = new QPushButton(logFilterChipLabel(label, category));
         chip->setObjectName("logFilterChip");
+        // Remembered so updateLogFilterChipCounts() can refresh just the number
+        // on each chip instead of tearing the whole row down per log line.
+        chip->setProperty("logChipName", label);
+        chip->setProperty("logChipCategory", category);
         chip->setCheckable(true);
         chip->setChecked(m_logFilter == category);
         chip->setCursor(Qt::PointingHandCursor);
@@ -4116,10 +4143,39 @@ void MainWindow::rebuildLogFilterButtons()
     };
     for (const char *b : order) {
         const QString badge = QString::fromLatin1(b);
-        if (m_logFilterCategories.contains(badge))
+        if (m_logFilterCounts.value(badge) > 0)
             addChip(badge, badge);
     }
     m_logFilterRow->addStretch();
+}
+
+// How many buffered events a chip covers, appended to its name (adhoc #64) so
+// the row doubles as a tally of what the log actually contains. A count of zero
+// — the pinned STALL chip on a healthy session — shows the bare name rather
+// than a "0", which would read as a broken counter.
+QString MainWindow::logFilterChipLabel(const QString &name,
+                                       const QString &category) const
+{
+    const int count = category.isEmpty() ? m_networkLog.size()
+                                         : m_logFilterCounts.value(category);
+    return count > 0 ? QStringLiteral("%1 %2").arg(name).arg(count) : name;
+}
+
+// Repaint the counts in place. logSystem() runs on every network event, so a
+// full rebuildLogFilterButtons() per line (two dozen buttons destroyed and
+// recreated) would be wasteful — and would drop the chip the user is hovering.
+void MainWindow::updateLogFilterChipCounts()
+{
+    if (!m_logFilterRow)
+        return;
+    for (int i = 0; i < m_logFilterRow->count(); ++i) {
+        QLayoutItem *item = m_logFilterRow->itemAt(i);
+        auto *chip = item ? qobject_cast<QPushButton *>(item->widget()) : nullptr;
+        if (!chip)
+            continue;
+        chip->setText(logFilterChipLabel(chip->property("logChipName").toString(),
+                                         chip->property("logChipCategory").toString()));
+    }
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
@@ -4138,8 +4194,10 @@ QStringList MainWindow::testLogFilterChipLabels() const
 void MainWindow::testResetNetworkLog()
 {
     m_networkLog.clear();
+    m_logFilterCounts.clear(); // the chip counts describe the buffer we just emptied
     m_networkLogDiskLines = 0;
     QFile::remove(networkLogPath());
+    rebuildLogFilterButtons();
     rebuildNetworkLogView();
 }
 #endif
@@ -4276,7 +4334,16 @@ void MainWindow::logSystem(const QString &text)
     plain.replace(QChar(0x2026), QStringLiteral("..."));
     const QString line = time + "  " + plain;
     m_networkLog.append(line);
+    bool chipsChanged = false;
     while (m_networkLog.size() > kNetworkLogLimit) {
+        // The counts describe the buffered history, so a line ageing out of it
+        // gives its category's chip back a tally point (and retires the chip
+        // entirely once it was the last line of its kind).
+        const QString dropped = logBadgeFor(m_networkLog.first());
+        if (--m_logFilterCounts[dropped] <= 0) {
+            m_logFilterCounts.remove(dropped);
+            chipsChanged = true;
+        }
         m_networkLog.removeFirst();
         // m_logRenderFrom indexes into m_networkLog; trimming the front shifts
         // every index down by one, so keep it pointed at the same line.
@@ -4286,10 +4353,12 @@ void MainWindow::logSystem(const QString &text)
 
     // A category we haven't seen yet earns its own quick-filter chip.
     const QString badge = networkLogStyleFor(plain).badge;
-    if (!m_logFilterCategories.contains(badge)) {
-        m_logFilterCategories.insert(badge);
+    if (++m_logFilterCounts[badge] == 1)
+        chipsChanged = true;
+    if (chipsChanged)
         rebuildLogFilterButtons(); // no-ops until the log section is built
-    }
+    else
+        updateLogFilterChipCounts(); // just repaint the numbers
     // Only render the line if it passes the active filter. The first line to
     // pass while the "No X events recorded." notice is up rebuilds the view so
     // the notice goes away instead of sitting above the entry.
@@ -4344,6 +4413,28 @@ static constexpr int kToastQueueLimit = 20;
 bool MainWindow::topMessageDockVisible() const
 {
     return m_footerDock && m_footerDock->isVisible();
+}
+
+// Park a message behind the toast that is currently counting down, dropping the
+// oldest once the queue is full. Used both by a burst of errors and by the
+// stream of pings this area mirrors (adhoc #77).
+void MainWindow::queueTopMessage(const QString &text, bool error)
+{
+    const QString trimmed = text.simplified();
+    if (trimmed.isEmpty())
+        return;
+    m_topMessageQueue.append(qMakePair(trimmed, error));
+    while (m_topMessageQueue.size() > kToastQueueLimit)
+        m_topMessageQueue.removeFirst();
+    renderTopMessageCountdown(); // repaint the "(+N more)" suffix
+}
+
+// True while a toast is on screen with its countdown still running: a new
+// background event must queue instead of stomping what is being read.
+bool MainWindow::topMessageBusy() const
+{
+    return m_topMessage && m_topMessage->isVisible() && m_topMessageTimer &&
+           m_topMessageTimer->isActive();
 }
 
 // (Re)paint the toast from m_topMessageRaw, honoring the expand/collapse state.
@@ -4443,6 +4534,9 @@ void MainWindow::resizeEvent(QResizeEvent *event)
     // Keep the floating expanded-toast panel anchored to the (re-centred) toast.
     if (m_topMessageOverlay && m_topMessageOverlay->isVisible())
         positionTopMessageOverlay();
+    // The red error-ping border hugs the window edges (adhoc #77).
+    if (m_errorBorderOverlay && m_errorBorderOverlay->isVisible())
+        m_errorBorderOverlay->setGeometry(rect());
 }
 
 void MainWindow::flashMessage(const QString &text, bool error,
@@ -4470,10 +4564,7 @@ void MainWindow::flashMessage(const QString &text, bool error,
     // shows it with its own full countdown once the current toast finishes.
     if (error && m_topMessage->isVisible() && m_topMessageError &&
         m_topMessageTimer && m_topMessageTimer->isActive()) {
-        m_topMessageQueue.append(trimmed);
-        while (m_topMessageQueue.size() > kToastQueueLimit)
-            m_topMessageQueue.removeFirst();
-        renderTopMessageCountdown(); // repaint the "(+N more)" suffix
+        queueTopMessage(trimmed, true);
         return;
     }
     m_topMessageError = error;
@@ -4544,7 +4635,7 @@ void MainWindow::renderTopMessageCountdown()
     // Tell the user more errors are waiting behind this one, so a fading toast
     // doesn't feel like it silently dropped the rest of a quick burst.
     QString queuedSuffix;
-    if (m_topMessageError && !m_topMessageQueue.isEmpty())
+    if (!m_topMessageQueue.isEmpty())
         queuedSuffix = QStringLiteral(" <span style='color:#6e7681'>(+%1 more)</span>")
                            .arg(m_topMessageQueue.size());
     m_topMessage->setText(m_topMessageBaseHtml + suffix + queuedSuffix);
@@ -4577,7 +4668,7 @@ void MainWindow::dismissTopMessage()
         m_topMessageClose->hide();
 }
 
-// Show the next queued error (its own full countdown, per flashMessage), or
+// Show the next queued message (its own full countdown, per flashMessage), or
 // fully dismiss the toast if nothing is waiting. Called when the current
 // toast's countdown runs out or the user dismisses it early.
 void MainWindow::advanceTopMessageQueue()
@@ -4586,8 +4677,14 @@ void MainWindow::advanceTopMessageQueue()
         dismissTopMessage();
         return;
     }
-    const QString next = m_topMessageQueue.takeFirst();
-    flashMessage(next, /*error=*/true);
+    const QPair<QString, bool> next = m_topMessageQueue.takeFirst();
+    // Hide first: flashMessage would otherwise see a toast that is still
+    // visible and queue this one straight back behind itself.
+    if (m_topMessage)
+        m_topMessage->hide();
+    if (m_topMessageTimer)
+        m_topMessageTimer->stop();
+    flashMessage(next.first, next.second);
 }
 
 void MainWindow::notifyIfInactive(const QString &title, const QString &body)

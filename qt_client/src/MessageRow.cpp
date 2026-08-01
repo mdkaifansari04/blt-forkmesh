@@ -38,7 +38,12 @@ constexpr int kPickerColumns = 6;
 // A rounded-rectangle fallback avatar: the sender's initial on a colored tile.
 QPixmap initialsAvatar(const QString &name, const QString &color)
 {
-    QPixmap pixmap(kAvatarSize, kAvatarSize);
+    // Rendered at the device pixel ratio and tagged with it, so HiDPI screens
+    // composite the tile 1:1 instead of upscaling it into a pixelated blur.
+    const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
+    QPixmap pixmap(qMax(1, qRound(kAvatarSize * dpr)),
+                   qMax(1, qRound(kAvatarSize * dpr)));
+    pixmap.setDevicePixelRatio(dpr);
     pixmap.fill(Qt::transparent);
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
@@ -51,7 +56,8 @@ QPixmap initialsAvatar(const QString &name, const QString &color)
     font.setPixelSize(16);
     painter.setFont(font);
     const QString initial = name.isEmpty() ? "?" : name.left(1).toUpper();
-    painter.drawText(pixmap.rect(), Qt::AlignCenter, initial);
+    painter.drawText(QRect(0, 0, kAvatarSize, kAvatarSize), Qt::AlignCenter,
+                     initial);
     return pixmap;
 }
 
@@ -293,6 +299,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     // qualifies for all three.
     if (!message.deleted) {
         const bool showCopy = !message.text.isEmpty();
+        // Filing someone else's bug report is the common case, so "Create
+        // issue" is offered on every message with text, not just your own.
+        const bool showCreateIssue = !message.text.isEmpty();
         // Edit stays author-only (you can only rewrite your own words).
         const bool showEdit = message.self && !message.text.isEmpty();
         // Delete is offered on EVERY message for an admin (a full moderation
@@ -302,7 +311,8 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         // is the ordinary author delete.
         const bool showModerateDelete = canModerate;
         const bool showSelfDelete = !canModerate && message.self;
-        if (showCopy || showEdit || showModerateDelete || showSelfDelete) {
+        if (showCopy || showCreateIssue || showEdit || showModerateDelete ||
+            showSelfDelete) {
             auto *menuButton = new QToolButton;
             menuButton->setObjectName("messageAction");
             menuButton->setText(QString::fromUtf8("\xE2\x8B\xAF")); // "⋯"
@@ -314,6 +324,17 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
                 QAction *copyAction = menu->addAction("Copy");
                 connect(copyAction, &QAction::triggered, this,
                         [this] { QApplication::clipboard()->setText(m_message.text); });
+                QAction *sendToPromptAction = menu->addAction("Send to Prompt");
+                connect(sendToPromptAction, &QAction::triggered, this,
+                        [this] { emit sendToPromptRequested(m_message.text); });
+            }
+            if (showCreateIssue) {
+                QAction *issueAction = menu->addAction("Create issue\xE2\x80\xA6");
+                connect(issueAction, &QAction::triggered, this, [this] {
+                    emit createIssueRequested(m_message.text,
+                                              m_message.senderName,
+                                              m_message.timestampMs);
+                });
             }
             if (showEdit) {
                 QAction *editAction = menu->addAction("Edit");
@@ -490,17 +511,22 @@ void MessageRow::setAvatar(const QPixmap &pixmap)
 {
     if (pixmap.isNull())
         return;
-    QPixmap rounded(kAvatarSize, kAvatarSize);
+    const qreal dpr = devicePixelRatio();
+    QPixmap rounded(qMax(1, qRound(kAvatarSize * dpr)),
+                    qMax(1, qRound(kAvatarSize * dpr)));
+    rounded.setDevicePixelRatio(dpr);
     rounded.fill(Qt::transparent);
     QPainter painter(&rounded);
     painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
     QPainterPath clip;
     clip.addRoundedRect(0, 0, kAvatarSize, kAvatarSize, 9, 9);
     painter.setClipPath(clip);
-    painter.drawPixmap(0, 0,
-                       pixmap.scaled(kAvatarSize, kAvatarSize,
-                                     Qt::KeepAspectRatioByExpanding,
-                                     Qt::SmoothTransformation));
+    QPixmap scaled = pixmap.scaled(rounded.width(), rounded.height(),
+                                   Qt::KeepAspectRatioByExpanding,
+                                   Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    painter.drawPixmap(0, 0, scaled);
     m_avatarLabel->setPixmap(rounded);
 }
 
