@@ -110,6 +110,13 @@ CHAT_HISTORY_MAX_PER_ROOM = 500  # hard cap on retained messages per room
 # without limit.
 CHAT_HISTORY_MAX_BODY = 1_900_000
 CHAT_HISTORY_MAX_BYTES_PER_ROOM = 16 * 1024 * 1024
+# A new WebSocket must complete its 101 handshake promptly. Replaying the
+# room's full 16 MiB retention budget before returning the upgrade can outlive
+# Cloudflare's Durable Object request-duration allowance. Send a bounded recent
+# tail instead; the encrypted archive remains retained and HTTP polling can
+# retrieve later messages incrementally.
+CHAT_HISTORY_REPLAY_MAX_MESSAGES = 64
+CHAT_HISTORY_REPLAY_MAX_BYTES = 2 * 1024 * 1024
 CHAT_HISTORY_INGRESS_WINDOW_MS = 10 * 1000
 CHAT_HISTORY_INGRESS_MAX_BYTES = 8 * 1024 * 1024
 CHAT_CHANNEL_TICKET_TTL_MS = 60 * 1000
@@ -2099,10 +2106,9 @@ async def network_overview(env):
 #   - website / api / realtime: unhandled/5xx errors logged this minute
 #     (log_error, see Default.fetch) bucketed by the path they hit, so an
 #     incident in one area doesn't paint the whole site down.
-#   - durable_objects: room requests killed by Cloudflare's free-tier DO
-#     duration cap (log_durable_object_abort), tracked separately from the
-#     rest of "realtime" so plan-limit aborts have their own visible history
-#     instead of being buried in general realtime noise.
+#   - durable_objects: room requests aborted by the Durable Objects platform
+#     (log_durable_object_abort), tracked separately from the rest of
+#     "realtime" without adding one actionable Worker-error row per reconnect.
 STATUS_SYSTEMS = [
     ("website", "Website"),
     ("api", "API"),
@@ -2112,7 +2118,7 @@ STATUS_SYSTEMS = [
     ("installer", "Installer delivery"),
     ("git_hosting", "Git hosting network"),
     ("realtime", "Realtime sync (chat & tunnels)"),
-    ("durable_objects", "Durable Objects (free-tier duration limit)"),
+    ("durable_objects", "Durable Objects (platform aborts)"),
 ]
 # What each per-minute health sample actually verifies, shown when a /status
 # visitor expands a system row. These must describe the real check
@@ -2141,9 +2147,11 @@ STATUS_SYSTEM_CHECKS = {
         "error."),
     "flagship_repository": (
         "Loads https://forkmesh.com/forkmesh/forkmesh once a minute, then "
-        "loads the root repository tree and README.md blob through the same "
-        "public API used by the page. Passes only when the page shell renders, "
-        "the root tree contains README.md, and the README body is readable."),
+        "loads the root repository tree, README.md, one issue, one discussion, "
+        "and one pull request through the same public API used by the page. "
+        "Pull requests are read from the immutable forkmesh/pulls branch. "
+        "Passes only when every routed response identifies the eligible mirror "
+        "that served it and each record body is readable."),
     "installer": (
         "Every 10 minutes, loads install.sh, asks the live install-source "
         "selector for a reachable mirror, and validates either the signed "
@@ -2161,11 +2169,11 @@ STATUS_SYSTEM_CHECKS = {
         "Repository bytes use direct HTTPS, not Durable Object sockets. Passes "
         "when no realtime failures were logged."),
     "durable_objects": (
-        "Counts requests killed by Cloudflare's free-tier Durable Object "
-        "duration cap (\"Exceeded allowed duration\") in the last minute. "
-        "Passes when none were killed. Tracked as its own system so "
-        "plan-limit aborts stay visible instead of hiding inside the "
-        "realtime row."),
+        "Counts room requests aborted by the Durable Objects platform in the "
+        "last minute, including the free-tier duration cap (\"Exceeded "
+        "allowed duration\"). Passes when none were aborted. Events are "
+        "aggregated by minute so reconnect storms stay visible here without "
+        "flooding the Worker error queue."),
 }
 STATUS_HISTORY_DAYS = 30
 STATUS_HISTORY_RETAIN_MS = STATUS_HISTORY_DAYS * 24 * 60 * 60 * 1000
@@ -2210,9 +2218,10 @@ STATUS_MONITOR_GUIDANCE = {
         "migration or query before retrying the health check."),
     "flagship_repository": (
         "the forkmesh/forkmesh mirror endpoints, repository integrity pins, "
-        "and root-tree/README responses",
+        "and root-tree, README, issue, discussion, and pull responses",
         "Verify two signed mirror proofs agree with the source revision, "
-        "publish that integrity transition, and confirm README.md loads."),
+        "publish that integrity transition, and confirm the repository tabs "
+        "load records from an eligible mirror."),
     "installer": (
         "/api/install-source and the latest signed release manifest, "
         "signature, checksums, and content-addressed release blob",
@@ -2282,7 +2291,7 @@ async def _routed_repository_read(
 
 
 async def _flagship_repository_probe(env):
-    """Exercise the same shell and routed node reads the public URL renders."""
+    """Exercise the same shell and eligible-mirror reads the public URL renders."""
 
     async def bounded_response(response, maximum):
         status = int(getattr(response, "status", 0) or 0)
@@ -2291,13 +2300,94 @@ async def _flagship_repository_probe(env):
         except Exception:
             announced = 0
         if announced > maximum:
-            return status, ""
+            return status, "", ""
         body = str(await response.text())
+        try:
+            served_by = clean_string(
+                response.headers.get("X-ForkMesh-Served-By") or "",
+                MAX_NODE_NAME,
+            ).strip().lower()
+        except Exception:
+            served_by = ""
         return (
-            (status, body)
+            (status, body, served_by)
             if len(body.encode("utf-8")) <= maximum
-            else (status, "")
+            else (status, "", served_by)
         )
+
+    async def routed_json(label, url, operation, maximum=2 * 1024 * 1024):
+        response = await _routed_repository_read(
+            env, url, operation, bypass_cache=True)
+        status, text, served_by = await bounded_response(response, maximum)
+        if status != 200:
+            return None, "%s failed (HTTP %d)" % (label, status)
+        if not served_by:
+            return None, "%s was not served by an eligible mirror" % label
+        try:
+            data = json.loads(text)
+        except Exception:
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        return data, "" if data else "%s returned an invalid response" % label
+
+    def numbered_tree(entries):
+        return next((
+            item for item in (entries if isinstance(entries, list) else [])
+            if isinstance(item, dict)
+            and str(item.get("type") or "").lower() == "tree"
+            and re.fullmatch(r"[1-9][0-9]*", str(item.get("name") or ""))
+        ), None)
+
+    async def readable_blob(label, path, ref="", json_record=False):
+        suffix = "?path=" + quote(path)
+        if ref:
+            suffix += "&ref=" + quote(ref)
+        data, error = await routed_json(
+            label,
+            "https://forkmesh.internal/api/repo/forkmesh/forkmesh/blob" + suffix,
+            "blob",
+            1024 * 1024,
+        )
+        content = str((data or {}).get("content") or "")
+        if error:
+            return error
+        if (data or {}).get("ok") is not True or not content.strip():
+            return "%s body did not load" % label
+        if json_record:
+            try:
+                record = json.loads(content)
+            except Exception:
+                record = None
+            if not isinstance(record, dict) or not record:
+                return "%s body was not valid JSON" % label
+        return ""
+
+    async def readable_record(label, path, ref="", json_record=False):
+        suffix = "?path=" + quote(path)
+        if ref:
+            suffix += "&ref=" + quote(ref)
+        data, error = await routed_json(
+            label,
+            "https://forkmesh.internal/api/repo/forkmesh/forkmesh/blobs" + suffix,
+            "blobs",
+            1024 * 1024,
+        )
+        if error:
+            return error
+        blobs = (data or {}).get("blobs")
+        blob = blobs.get(path) if isinstance(blobs, dict) else None
+        content = str(blob.get("content") or "") if isinstance(blob, dict) else ""
+        if not content.strip():
+            return "%s body did not load" % label
+        if json_record:
+            try:
+                record = json.loads(content)
+            except Exception:
+                record = None
+            if not isinstance(record, dict) or not record:
+                return "%s body was not valid JSON" % label
+        return ""
 
     # Scheduled Workers cannot hairpin through their own public hostname
     # reliably (Cloudflare returns a synthetic 404/52x before the request
@@ -2307,21 +2397,18 @@ async def _flagship_repository_probe(env):
     # nodes; none are substituted from D1 or a Worker-side copy.
     shell_response = await env.ASSETS.fetch(JsRequest.new(
         "https://forkmesh.internal/dashboard/repo.html"))
-    shell_status, shell_text = await bounded_response(
+    shell_status, shell_text, _shell_served_by = await bounded_response(
         shell_response, 512 * 1024)
     if shell_status != 200 or 'data-page="repo"' not in shell_text:
         return False, "Repository page shell did not load (HTTP %d)" % shell_status
 
-    tree_response = await _routed_repository_read(
-        env,
+    tree_data, tree_error = await routed_json(
+        "Root repository tree",
         "https://forkmesh.internal/api/repo/forkmesh/forkmesh/tree?path=",
-        "tree", bypass_cache=True)
-    tree_status, tree_text = await bounded_response(
-        tree_response, 2 * 1024 * 1024)
-    try:
-        tree_data = json.loads(tree_text)
-    except Exception:
-        tree_data = {}
+        "tree",
+    )
+    if tree_error:
+        return False, tree_error
     entries = tree_data.get("entries") if isinstance(tree_data, dict) else []
     has_readme = any(
         isinstance(item, dict)
@@ -2329,8 +2416,6 @@ async def _flagship_repository_probe(env):
         and str(item.get("type") or "").lower() == "blob"
         for item in (entries if isinstance(entries, list) else [])
     )
-    if tree_status != 200:
-        return False, "Root repository tree failed (HTTP %d)" % tree_status
     if tree_data.get("ok") is not True:
         return False, "Root repository tree returned an invalid response"
     if not has_readme:
@@ -2341,24 +2426,114 @@ async def _flagship_repository_probe(env):
             "Root repository tree did not contain README.md"
             + (": " + names if names else ""))
 
-    blob_response = await _routed_repository_read(
-        env,
+    error = await readable_blob("README.md", "README.md")
+    if error:
+        return False, error
+
+    # Issues use a split open/closed layout, with a legacy numbered-root
+    # fallback. Exercise the same tree and JSON blob reads as the Issues tab.
+    issues, error = await routed_json(
+        "Issues collection",
         "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
-        "blob?path=README.md",
-        "blob", bypass_cache=True)
-    blob_status, blob_text = await bounded_response(
-        blob_response, 512 * 1024)
-    try:
-        blob_data = json.loads(blob_text)
-    except Exception:
-        blob_data = {}
-    if (
-        blob_status != 200
-        or not isinstance(blob_data, dict)
-        or blob_data.get("ok") is not True
-        or not str(blob_data.get("content") or "").strip()
-    ):
-        return False, "README.md body did not load"
+        "tree?path=.forkmesh/issues",
+        "tree",
+    )
+    if error:
+        return False, error
+    issue = numbered_tree(issues.get("entries"))
+    issue_base = ".forkmesh/issues"
+    if issue is None:
+        status_dirs = [
+            item for item in (issues.get("entries") or [])
+            if isinstance(item, dict)
+            and str(item.get("type") or "").lower() == "tree"
+            and str(item.get("name") or "").lower() in ("open", "closed")
+        ]
+        status_dirs.sort(
+            key=lambda item: 0 if str(item.get("name")).lower() == "open" else 1)
+        for status_dir in status_dirs:
+            issue_base = str(status_dir.get("path") or "")
+            issue_tree, error = await routed_json(
+                "Issues %s collection" % str(status_dir.get("name") or ""),
+                "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+                "tree?path=" + quote(issue_base),
+                "tree",
+            )
+            if error:
+                return False, error
+            issue = numbered_tree(issue_tree.get("entries"))
+            if issue is not None:
+                break
+    if issue is None:
+        return False, "Issues collection did not contain a readable issue"
+    issue_number = str(issue.get("name") or "")
+    error = await readable_record(
+        "Issue #%s" % issue_number,
+        "%s/%s/issue-%s.json" % (issue_base, issue_number, issue_number),
+        json_record=True,
+    )
+    if error:
+        return False, error
+
+    discussions, error = await routed_json(
+        "Discussions collection",
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "tree?path=.forkmesh/discussions",
+        "tree",
+    )
+    if error:
+        return False, error
+    discussion = numbered_tree(discussions.get("entries"))
+    if discussion is None:
+        return False, "Discussions collection did not contain a readable discussion"
+    discussion_number = str(discussion.get("name") or "")
+    error = await readable_record(
+        "Discussion #%s" % discussion_number,
+        ".forkmesh/discussions/%s/discussion.md" % discussion_number,
+    )
+    if error:
+        return False, error
+
+    # The Pull requests tab resolves the metadata branch, pins its immutable
+    # OID, then reads both the collection and record from that exact revision.
+    branches, error = await routed_json(
+        "Pull request branch list",
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/branches",
+        "branches",
+    )
+    if error:
+        return False, error
+    pulls_ref = next((
+        str(branch.get("commit") or "").lower()
+        for branch in (branches.get("branches") or [])
+        if isinstance(branch, dict)
+        and branch.get("name") == "forkmesh/pulls"
+        and re.fullmatch(
+            r"(?:[0-9a-f]{40}|[0-9a-f]{64})",
+            str(branch.get("commit") or "").lower(),
+        )
+    ), "")
+    if not pulls_ref:
+        return False, "forkmesh/pulls branch did not resolve"
+    pulls, error = await routed_json(
+        "Pull requests collection",
+        "https://forkmesh.internal/api/repo/forkmesh/forkmesh/"
+        "tree?path=pulls&ref=" + quote(pulls_ref),
+        "tree",
+    )
+    if error:
+        return False, error
+    pull = numbered_tree(pulls.get("entries"))
+    if pull is None:
+        return False, "Pull requests collection did not contain a readable pull request"
+    pull_number = str(pull.get("name") or "")
+    error = await readable_record(
+        "Pull request #%s" % pull_number,
+        "pulls/%s/pull.md" % pull_number,
+        ref=pulls_ref,
+    )
+    if error:
+        return False, error
     return True, ""
 
 
@@ -3404,10 +3579,9 @@ async def record_status_sample(env):
             # counts toward "realtime" below — but it also gets its own
             # bucket so free-tier plan-limit aborts have a dedicated, visible
             # history instead of being buried among other realtime incidents.
-            # Matches both the tagged 503s log_durable_object_abort records
-            # and the raw AbortError tracebacks capture_worker_exception logs
-            # for DO calls that aren't wrapped in a retry (same substring the
-            # doDurationAborts24h snapshot below keys on).
+            # Matches legacy tagged 503 rows and raw AbortError tracebacks from
+            # before expected aborts moved to their minute aggregate (same
+            # substring the doDurationAborts24h snapshot below keys on).
             if "Exceeded allowed duration" in message:
                 failed["durable_objects"] = True
                 hit_count["durable_objects"] += 1
@@ -3441,6 +3615,39 @@ async def record_status_sample(env):
             hit_count[bucket] += 1
             if first_hit[bucket] is None:
                 first_hit[bucket] = (row.get("status"), path, message.strip())
+
+        # Expected platform aborts are intentionally kept out of error_log:
+        # every reconnecting room client can see the same DO failure, and one
+        # actionable error row per client obscures real Worker bugs. Preserve
+        # the operational signal with one content-free aggregate row per
+        # minute. Sample the completed preceding minute so an abort that lands
+        # just before this cron tick is neither missed nor counted again by the
+        # next tick.
+        abort_rows = await d1_all(
+            env,
+            "SELECT aborts,duration_aborts "
+            "FROM durable_object_abort_minute WHERE minute_ts=?",
+            minute_ts - STATUS_SAMPLE_WINDOW_MS,
+        )
+        abort_count = sum(
+            max(0, int(row.get("aborts") or 0)) for row in abort_rows)
+        duration_abort_count = sum(
+            max(0, int(row.get("duration_aborts") or 0))
+            for row in abort_rows)
+        if abort_count:
+            summary = "%d Durable Object request%s aborted" % (
+                abort_count, "" if abort_count == 1 else "s")
+            if duration_abort_count:
+                summary += " (%d exceeded allowed duration)" % (
+                    duration_abort_count)
+            for bucket in ("durable_objects", "realtime"):
+                failed[bucket] = True
+                # The summary already carries the aggregate event count; this
+                # is one status signal, not N separate error rows.
+                hit_count[bucket] += 1
+                if first_hit[bucket] is None:
+                    first_hit[bucket] = (
+                        503, "/durable-object-rooms", summary)
         ok["website"] = not failed["website"]
         ok["api"] = not failed["api"]
         ok["errors"] = not failed["errors"]
@@ -3617,6 +3824,11 @@ async def record_status_sample(env):
             env,
             "DELETE FROM system_status_sample_claim WHERE minute_ts < ?",
             minute_ts - STATUS_MINUTE_RETAIN_MS,
+        )
+        await d1_run(
+            env,
+            "DELETE FROM durable_object_abort_minute WHERE minute_ts < ?",
+            minute_ts - STATUS_HISTORY_RETAIN_MS,
         )
 
 
@@ -3863,16 +4075,18 @@ async def status_history(env, view="full"):
     try:
         # Dedicated counter for the platform killing a Durable Object request
         # mid-flight ("Exceeded allowed duration in Durable Objects free
-        # tier."). Matches both the tagged 503s the routers record via
-        # log_durable_object_abort and the raw tracebacks
-        # capture_worker_exception logged before the routers were guarded, so
-        # the operator can tell plan-limit churn apart from real bugs inside
-        # the generic errors24h count.
+        # tier."). Add the new minute aggregates to legacy/raw error rows so
+        # deployments retain a continuous 24-hour total while routine aborts
+        # stop inflating the generic errors24h count.
         do_row = await d1_first(
             env,
-            "SELECT COUNT(*) AS n FROM error_log "
-            "WHERE ts >= ? AND message LIKE ?",
+            "SELECT "
+            "(SELECT COUNT(*) FROM error_log "
+            " WHERE ts>=? AND message LIKE ?) + "
+            "(SELECT COALESCE(SUM(duration_aborts),0) "
+            " FROM durable_object_abort_minute WHERE minute_ts>=?) AS n",
             now - 24 * 60 * 60 * 1000, "%Exceeded allowed duration%",
+            now - 24 * 60 * 60 * 1000,
         )
         current["doDurationAborts24h"] = int((do_row or {}).get("n", 0) or 0)
     except Exception:
@@ -36731,12 +36945,11 @@ def _is_tunnel_content_path(path):
 
 # Marks a 5xx/501 the worker produced ON PURPOSE for an expected, already-
 # degraded condition: a Durable Object abort that log_durable_object_abort has
-# already recorded with its real reason, a fail-closed not-implemented answer,
+# already added to its minute aggregate, a fail-closed not-implemented answer,
 # or an upstream dependency being unavailable. The outer fetch's generic 5xx
-# logger skips marked responses — without this every DO abort double-logged
-# (the detailed D1 row AND a vague "response status 503" Sentry event, exactly
-# the noise the abort logger exists to avoid), and deliberate degraded answers
-# buried real bugs.
+# logger skips marked responses — without this every DO abort would also add a
+# vague "response status 503" error row/Sentry event, and deliberate degraded
+# answers would bury real bugs.
 EXPECTED_DEGRADED_HEADER = "x-forkmesh-expected-degraded"
 EXPECTED_DEGRADED_HEADERS = {EXPECTED_DEGRADED_HEADER: "1"}
 
@@ -36765,34 +36978,39 @@ async def log_error(env, status, method, path, message, ray="", request=None,
 
 
 async def log_durable_object_abort(env, request, path, error):
-    """Record a Durable Object fetch the platform killed mid-request.
+    """Aggregate a Durable Object fetch the platform killed mid-request.
 
     On the free tier Cloudflare aborts long-running Durable Object requests
     with AbortError("Exceeded allowed duration in Durable Objects free
     tier."); a co-located DO blowing the isolate's limits surfaces instead as
     a generic AbortError("internal error; reference = …"). Both are transient
-    and already handled by the caller (503 + fail over to a live mirror), so
-    only the D1 error_log row is kept — its raw error text lets the /status
-    page count plan-limit aborts separately from real bugs (see the
-    doDurationAborts24h snapshot in status_history). We deliberately do NOT
-    raise a Sentry event here: a stack-traced ERROR for every expected,
-    already-degraded platform abort just buried real bugs in noise.
-    Best-effort: _write_error_log never raises.
+    and already handled by the caller (retry, then a marked 503). Fold them
+    into one content-free row per minute so /status retains the realtime and
+    plan-limit signals without filling error_log with one row per reconnecting
+    user. We deliberately do not send Sentry events or retain paths, actors,
+    exception text, or CF-Ray ids for this expected platform condition.
     """
-    privacy_filter = globals().get("_privacy_safe_log_path")
-    safe_path = (
-        await privacy_filter(env, path)
-        if callable(privacy_filter) else path
-    )
+    del request, path
     try:
-        actor = await _error_log_actor(env, request)
+        now = int(Date.now())
+        minute_ts = (now // STATUS_SAMPLE_WINDOW_MS) * STATUS_SAMPLE_WINDOW_MS
+        duration_abort = (
+            1 if "Exceeded allowed duration" in _safe_error_text(error) else 0)
+        await ensure_schema(env)
+        await d1_run(
+            env,
+            "INSERT INTO durable_object_abort_minute "
+            "(minute_ts,aborts,duration_aborts,updated_at) VALUES (?,1,?,?) "
+            "ON CONFLICT(minute_ts) DO UPDATE SET "
+            "aborts=durable_object_abort_minute.aborts+1, "
+            "duration_aborts=durable_object_abort_minute.duration_aborts+"
+            "excluded.duration_aborts, updated_at=excluded.updated_at",
+            minute_ts, duration_abort, now,
+        )
     except BaseException:
-        actor = ""
-    await _write_error_log(
-        env, 503, method_name(request), safe_path,
-        "durable object aborted: " + _safe_error_text(error)[:400],
-        request.headers.get("cf-ray") or "",
-        actor)
+        # Optional operational telemetry must never replace the already-safe
+        # retryable response with a Worker exception.
+        pass
 
 
 def _is_d1_platform_error(error):
@@ -36811,14 +37029,13 @@ def _is_d1_platform_error(error):
 
 
 async def log_d1_unavailable(env, request, path, error):
-    """Record a request D1 failed to serve, the same way a DO abort is logged.
+    """Record a request D1 failed to serve without raising a Sentry event.
 
     _d1_read has already replayed the query once, so reaching here means the
-    database — not the worker — is down or overloaded. Same doctrine as
-    log_durable_object_abort: keep the D1 error_log row (its raw text is what
-    lets /status separate platform outages from real bugs) but raise no Sentry
-    event, and answer 503 so clients back off instead of retrying into it.
-    Best-effort: _write_error_log never raises.
+    database — not the worker — is down or overloaded. Keep the D1 error_log
+    row (its raw text lets /status separate database outages from code bugs),
+    but raise no Sentry event and answer 503 so clients back off instead of
+    retrying into it. Best-effort: _write_error_log never raises.
     """
     privacy_filter = globals().get("_privacy_safe_log_path")
     try:
@@ -44788,15 +45005,24 @@ class Default(WorkerEntrypoint):
 
 
 async def chat_history_recent(env, room_key):
-    # The last few days of retained (encrypted) messages for a room, oldest
-    # first, so a joining client can replay them in order.
+    # A bounded tail of retained (encrypted) messages for a joining room,
+    # oldest first. Do not read/replay the full 16 MiB retention allowance
+    # before returning a WebSocket 101: that made busy-room handshakes exceed
+    # the Durable Object request-duration limit and drove reconnect storms.
     await ensure_schema(env)
     cutoff = int(Date.now()) - CHAT_HISTORY_RETAIN_MS
     rows = await d1_all(
         env,
-        "SELECT body FROM chat_history WHERE room_key=? AND ts>=? "
-        "ORDER BY ts ASC, msg_id ASC LIMIT ?",
-        room_key, cutoff, CHAT_HISTORY_MAX_PER_ROOM,
+        "SELECT body FROM ("
+        "SELECT body,ts,msg_id,"
+        "ROW_NUMBER() OVER (ORDER BY ts DESC,msg_id DESC) AS replay_position,"
+        "SUM(length(body)) OVER (ORDER BY ts DESC,msg_id DESC) AS replay_bytes "
+        "FROM chat_history WHERE room_key=? AND ts>=?"
+        ") WHERE replay_position<=? AND replay_bytes<=? "
+        "ORDER BY ts ASC,msg_id ASC",
+        room_key, cutoff,
+        CHAT_HISTORY_REPLAY_MAX_MESSAGES,
+        CHAT_HISTORY_REPLAY_MAX_BYTES,
     )
     return [str(r["body"]) for r in rows]
 
@@ -46574,7 +46800,6 @@ class ForkMeshRoom(DurableObject):
         # users see some recent backlog even when no peer is online to send it.
         if room_key:
             try:
-                await chat_history_prune(self.env, room_key)
                 for body in await chat_history_recent(self.env, room_key):
                     replay_body = chat_history_replay_body(body)
                     try:

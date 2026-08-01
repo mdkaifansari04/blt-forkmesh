@@ -1058,6 +1058,17 @@ SCHEMA_STATEMENTS = [
         bytes_out INTEGER NOT NULL DEFAULT 0 CHECK (bytes_out >= 0),
         messages INTEGER NOT NULL DEFAULT 0 CHECK (messages >= 0),
         updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
+    # Minute aggregates for platform-aborted Durable Object requests
+    # (migration 0116). A reconnect storm increments one content-free row
+    # instead of writing one error_log row per affected user. /status consumes
+    # these counters, preserving incident visibility without flooding the
+    # operator's actionable Worker-error queue.
+    """CREATE TABLE IF NOT EXISTS durable_object_abort_minute (
+        minute_ts INTEGER PRIMARY KEY CHECK (minute_ts >= 0),
+        aborts INTEGER NOT NULL DEFAULT 0 CHECK (aborts >= 0),
+        duration_aborts INTEGER NOT NULL DEFAULT 0
+            CHECK (duration_aborts >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
     # Aggregate-only Town Square arrival odometer for the Arrival Grid plaque
     # (migration 0074). Each accepted world join adds one to a coarse
     # 10-minute UTC bucket; rows never carry a visitor id, country, IP, or
