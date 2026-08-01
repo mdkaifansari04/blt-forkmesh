@@ -2,6 +2,7 @@
 
 #include <QCoreApplication>
 #include <QDebug>
+#include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
 #include <QFile>
@@ -1146,6 +1147,49 @@ void runModeMappingTest(const QString &executable, const QString &mode,
                          .arg(mode, approval, sandbox)));
 }
 
+void runWorktreeMetadataSandboxTest(const QString &executable)
+{
+    QTemporaryDir temp;
+    check(temp.isValid(), "worktree sandbox temp dir created");
+    const QString repo = temp.filePath(QStringLiteral("repo"));
+    const QString metadata = temp.filePath(QStringLiteral("metadata"));
+    QDir().mkpath(repo);
+    QDir().mkpath(metadata + QStringLiteral("/worktree"));
+    QDir().mkpath(metadata + QStringLiteral("/common"));
+    QFile dotGit(repo + QStringLiteral("/.git"));
+    check(dotGit.open(QIODevice::WriteOnly | QIODevice::Text),
+          "worktree git file can be created");
+    dotGit.write("gitdir: ../metadata/worktree\n");
+    dotGit.close();
+    QFile commonDir(metadata + QStringLiteral("/worktree/commondir"));
+    check(commonDir.open(QIODevice::WriteOnly | QIODevice::Text),
+          "worktree common-dir file can be created");
+    commonDir.write("../common\n");
+    commonDir.close();
+
+    const QString logPath = temp.filePath(QStringLiteral("worktree.jsonl"));
+    CodexAppServerSession session;
+    session.setAppServerCommand(executable,
+                                {QStringLiteral("--codex-stub"),
+                                 QStringLiteral("mode"), logPath});
+    bool finished = false;
+    QObject::connect(&session, &CodexAppServerSession::finished,
+                     [&](int) { finished = true; });
+    session.start(repo, QStringList(), QStringLiteral("commit"), QString(),
+                  QStringLiteral("gpt-test"), QStringLiteral("Auto"), QString());
+    check(pump([&] { return finished; }), "worktree sandbox stub completes");
+    const QJsonObject policy =
+        firstMethod(readMessages(logPath), QStringLiteral("turn/start"))
+            .value(QStringLiteral("params"))
+            .toObject()
+            .value(QStringLiteral("sandboxPolicy"))
+            .toObject();
+    const QJsonArray roots = policy.value(QStringLiteral("writableRoots")).toArray();
+    check(roots.contains(QDir(metadata + QStringLiteral("/worktree")).absolutePath()) &&
+              roots.contains(QDir(metadata + QStringLiteral("/common")).absolutePath()),
+          "Auto mode permits linked-worktree Git metadata writes");
+}
+
 void runInterruptedTurnTest(const QString &executable)
 {
     QTemporaryDir temp;
@@ -1421,6 +1465,7 @@ int main(int argc, char *argv[])
     runModeMappingTest(executable, QStringLiteral("Edit automatically"),
                        QStringLiteral("on-request"),
                        QStringLiteral("workspace-write"));
+    runWorktreeMetadataSandboxTest(executable);
     runInterruptedTurnTest(executable);
     runRejectedSteerTest(executable);
     runResumeFailureTest(executable);
