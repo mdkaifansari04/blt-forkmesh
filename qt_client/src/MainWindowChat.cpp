@@ -11583,32 +11583,40 @@ void MainWindow::fetchNodesCatalogInfo(bool force)
 {
     if (!m_networkAccess)
         return;
-    // Same cadence as fetchRelayOnlineNodes: refreshNodesTable runs on every
-    // roster flicker, so only re-sweep the catalog once a minute (15s for an
-    // explicit Refresh click); the per-URL backoff below keeps a failing relay
-    // from being hammered.
+    // This is a fan-out (one request per repo group), and refreshNodesTable runs
+    // on every roster flicker, so it is throttled harder than the single-request
+    // fetchRelayOnlineNodes: the catalog records only move on a registration
+    // lease renewal, so five minutes is plenty fresh. An explicit Refresh click
+    // forces it at 15s. The per-URL backoff below keeps a failing/rate-limited
+    // relay from being re-queried on each attempt.
     const qint64 now = QDateTime::currentMSecsSinceEpoch();
-    const qint64 minIntervalMs = force ? 15000 : 60000;
+    const qint64 minIntervalMs = force ? 15000 : 5 * 60000;
     if (m_nodesCatalogFetchedMs > 0 &&
         now - m_nodesCatalogFetchedMs < minIntervalMs)
         return;
     m_nodesCatalogFetchedMs = now;
 
-    // The repo groups whose mirrors we ask about: every public repo this client
-    // lists (the fleet's mirrors always mirror one of these). Bounded so a huge
-    // repo list can't turn one page visit into an unthrottled request storm.
+    // The repo groups whose mirrors we ask about. Our own hosted repos come
+    // first — the fleet mirrors those, so they name the most nodes per request —
+    // and browse-only previews of other nodes' repos fill any slots left. Capped
+    // so a long repo list can't turn one page visit into a request storm.
+    constexpr int kMaxSources = 12;
     QStringList sources;
-    for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
-        if (repo.previewOnly || repo.isPrivate)
-            continue;
-        const QString owner = repo.owner.trimmed();
-        const QString name = repo.name.trimmed();
-        if (owner.isEmpty() || name.isEmpty())
-            continue;
-        const QString source = owner + QLatin1Char('/') + name;
-        if (!sources.contains(source, Qt::CaseInsensitive))
-            sources.append(source);
-        if (sources.size() >= 24)
+    for (bool previews : {false, true}) {
+        for (const RepositoryRecord &repo : std::as_const(m_repositories)) {
+            if (repo.isPrivate || repo.previewOnly != previews)
+                continue;
+            const QString owner = repo.owner.trimmed();
+            const QString name = repo.name.trimmed();
+            if (owner.isEmpty() || name.isEmpty())
+                continue;
+            const QString source = owner + QLatin1Char('/') + name;
+            if (!sources.contains(source, Qt::CaseInsensitive))
+                sources.append(source);
+            if (sources.size() >= kMaxSources)
+                break;
+        }
+        if (sources.size() >= kMaxSources)
             break;
     }
     if (sources.isEmpty())
