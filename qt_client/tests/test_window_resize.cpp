@@ -1900,6 +1900,30 @@ int main(int argc, char *argv[])
                       "list (adhoc #185, first row = %1)")
                   .arg(order.isEmpty() ? QStringLiteral("<none>") : order.first()));
 
+        // A Code overview branch row is navigation, not an inline review: its
+        // only diff destination is the universal Git workspace.
+        window.testClickRepoDetailTab(window.testBranchesTabIndex());
+        QApplication::processEvents();
+        check(window.testOverviewBodyPage() == 2 &&
+                  !window.testBranchesPanelOwnsDiffView(),
+              QString("Code overview's Branches page contains only the branch "
+                      "list, not a diff viewer (page = %1)")
+                  .arg(window.testOverviewBodyPage()));
+        const bool branchRowClicked = window.testClickBranchRowInOverview(
+            QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        check(branchRowClicked && window.testOverviewBodyPage() == 1 &&
+                  window.testCommitWorkspacePage() == 2 &&
+                  window.testBrowsedBranch() ==
+                      QStringLiteral("feature/keep-selected"),
+              QString("clicking Code overview > Branches opens that branch in "
+                      "Git (clicked = %1, overview page = %2, diff page = %3, "
+                      "branch = %4)")
+                  .arg(branchRowClicked)
+                  .arg(window.testOverviewBodyPage())
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBrowsedBranch()));
+
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the
         // selection has to come from the rows already on screen — reading it
@@ -1909,6 +1933,12 @@ int main(int argc, char *argv[])
         // silently omitted these and made the consolidated view look empty while
         // an agent was still working.
         const QString livePath = wtPath + QStringLiteral("/live-uncommitted.txt");
+        // Move main ahead immediately before opening the branch. The Git route's
+        // automatic pull must merge that new main tip inside the linked agent
+        // worktree, then rerender the range without losing its local file.
+        runGitChecked(wtRepo.path(),
+                      {"commit", "--allow-empty", "-m",
+                       "main advanced before branch review"});
         QFile liveFile(livePath);
         if (liveFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             liveFile.write("visible before commit\n");
@@ -1942,6 +1972,22 @@ int main(int argc, char *argv[])
                   .arg(window.testCompareIndicatorText().isEmpty()
                            ? QStringLiteral("<hidden>")
                            : window.testCompareIndicatorText()));
+        QElapsedTimer autoPullTimer;
+        autoPullTimer.start();
+        QString autoPullCounts;
+        while (autoPullTimer.elapsed() < 5000) {
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+            autoPullCounts = gitOutput(
+                wtRepo.path(),
+                {"rev-list", "--left-right", "--count",
+                 "main...feature/keep-selected"});
+            if (autoPullCounts.startsWith(QLatin1Char('0')))
+                break;
+        }
+        check(autoPullCounts.startsWith(QLatin1Char('0')),
+              QString("opening a linked agent branch automatically pulls main "
+                      "into its own worktree (main...branch = %1)")
+                  .arg(autoPullCounts));
         QElapsedTimer diffTimer;
         diffTimer.start();
         while (diffTimer.elapsed() < 5000 &&
@@ -1953,6 +1999,16 @@ int main(int argc, char *argv[])
               QString("a worktree comparison includes its uncommitted and "
                       "untracked files (files = %1)")
                   .arg(window.testBranchDiffFiles().join(QStringLiteral(", "))));
+        check(window.testSourceControlPaths() == window.testBranchDiffFiles(),
+              QString("the universal CHANGES tree lists the branch range's files "
+                      "(tree = %1, diff = %2)")
+                  .arg(window.testSourceControlPaths().join(QStringLiteral(", ")),
+                       window.testBranchDiffFiles().join(QStringLiteral(", "))));
+        check(window.testClickSourceControlPath(
+                  QStringLiteral("live-uncommitted.txt")) &&
+                  window.testCommitWorkspacePage() == 2,
+              QStringLiteral("clicking a branch file in CHANGES scrolls the "
+                             "right-hand range diff to that file"));
         // Every diff keeps the same universal source-control composer and
         // changes tree above the branch's commit graph.
         check(window.testGitFilesSlotPage() == 0 &&
@@ -1996,6 +2052,56 @@ int main(int argc, char *argv[])
         check(window.testCompareIndicatorText().isEmpty(),
               QString("the compare indicator hides after returning to main (base = %1)")
                   .arg(window.testCompareIndicatorText()));
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testBrowsedBranch() ==
+                  QStringLiteral("feature/keep-selected") &&
+                  window.testCommitWorkspacePage() == 2,
+              QString("Back returns from main to the prior branch comparison "
+                      "(branch = %1, page = %2)")
+                  .arg(window.testBrowsedBranch())
+                  .arg(window.testCommitWorkspacePage()));
+        check(window.testNavForwardToolTip().contains(QStringLiteral("Git · main")),
+              QString("Forward identifies its exact main-branch destination (%1)")
+                  .arg(window.testNavForwardToolTip()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testBrowsedBranch() == QStringLiteral("main") &&
+                  window.testCommitWorkspacePage() == 0,
+              QString("Forward returns from the branch comparison to main "
+                      "(branch = %1, page = %2)")
+                  .arg(window.testBrowsedBranch())
+                  .arg(window.testCommitWorkspacePage()));
+        check(window.testNavBackToolTip().contains(
+                  QStringLiteral("Git · feature/keep-selected")),
+              QString("Back identifies its exact branch destination (%1)")
+                  .arg(window.testNavBackToolTip()));
+
+        // The branch picker itself participates in the same browser trail. A
+        // user can browse a feature, choose main, then walk both directions
+        // without losing the detailed range comparison they had open.
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
+        QApplication::processEvents();
+        window.testSwitchToBranchImmediateSelection(QStringLiteral("main"));
+        QApplication::processEvents();
+        window.testNavigateBack();
+        QApplication::processEvents();
+        check(window.testBrowsedBranch() ==
+                  QStringLiteral("feature/keep-selected") &&
+                  window.testCommitWorkspacePage() == 2,
+              QString("Back restores a branch comparison after main was selected "
+                      "in Git (branch = %1, page = %2)")
+                  .arg(window.testBrowsedBranch())
+                  .arg(window.testCommitWorkspacePage()));
+        window.testNavigateForward();
+        QApplication::processEvents();
+        check(window.testBrowsedBranch() == QStringLiteral("main") &&
+                  window.testCommitWorkspacePage() == 0,
+              QString("Forward restores main after replaying a branch selection "
+                      "(branch = %1, page = %2)")
+                  .arg(window.testBrowsedBranch())
+                  .arg(window.testCommitWorkspacePage()));
         QFile::remove(livePath);
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
@@ -2072,6 +2178,18 @@ int main(int argc, char *argv[])
         // The merge path reloads the persistent agent store, while this fixture
         // was injected in memory only. Restore it before exercising the separate
         // cross-repository Branch-button route below.
+        const QString agentRouteBranch = QStringLiteral("agent/files-visible");
+        const QString agentRouteWt =
+            wtRepo.path() + QStringLiteral("/wt-agent-files");
+        runGitChecked(wtRepo.path(), {"branch", agentRouteBranch, "main"});
+        runGitChecked(wtRepo.path(),
+                      {"worktree", "add", agentRouteWt, agentRouteBranch});
+        QFile agentRouteFile(agentRouteWt + QStringLiteral("/agent-live.txt"));
+        if (agentRouteFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+            agentRouteFile.write("visible from the agent branch route\n");
+            agentRouteFile.close();
+        }
+        issueSession.branchName = agentRouteBranch;
         window.testAddAgentSession(issueSession);
 
         // adhoc #131: the agent detail page's "Branch" button opens that session's
@@ -2092,7 +2210,7 @@ int main(int argc, char *argv[])
                   .arg(agentBranchDir));
         check(window.testCommitWorkspacePage() == 2 &&
                   window.testBrowsedBranch() ==
-                      QStringLiteral("feature/keep-selected"),
+                      agentRouteBranch,
               QString("the agent's Branch button opens its branch's combined "
                       "graph + diff view (adhoc #131/#16, page = %1, branch = %2)")
                   .arg(window.testCommitWorkspacePage())
@@ -2104,6 +2222,20 @@ int main(int argc, char *argv[])
                       "slot = %2)")
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
+        QElapsedTimer agentDiffTimer;
+        agentDiffTimer.start();
+        while (agentDiffTimer.elapsed() < 5000 &&
+               !window.testSourceControlPaths().contains(
+                   QStringLiteral("agent-live.txt")))
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+        check(window.testSourceControlPaths().contains(
+                  QStringLiteral("agent-live.txt")),
+              QString("an agent's Branch button always fills CHANGES with its "
+                      "complete worktree diff (files = %1)")
+                  .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        check(window.testClickSourceControlPath(QStringLiteral("agent-live.txt")),
+              QStringLiteral("an agent branch's CHANGES row scrolls the right-hand "
+                             "diff to that file"));
     }
 
     // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
