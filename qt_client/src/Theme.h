@@ -103,6 +103,11 @@ QLineEdit, QSpinBox, QComboBox {
     border: 1px solid #30363d;
     border-radius: 6px;
     padding: 8px 10px;
+    /* A squeezed layout must clip the box, never the text: without a content
+       floor the field compresses below the font height and chops descenders
+       (adhoc #113: the generated node name's "g" lost its tail on first run).
+       19px = the field's natural content height, so nothing grows. */
+    min-height: 19px;
     selection-background-color: #1f6feb;
 }
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus { border-color: #58a6ff; }
@@ -1410,6 +1415,9 @@ QLineEdit, QSpinBox, QComboBox {
     border: 1px solid #d0d7de;
     border-radius: 6px;
     padding: 8px 10px;
+    /* Same content floor as the dark theme: a squeezed layout must clip the
+       box, never the text (adhoc #113 descender clipping). */
+    min-height: 19px;
     selection-background-color: #0969da;
     selection-color: #ffffff;
 }
