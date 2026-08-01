@@ -669,7 +669,7 @@ class AgentBranchButtonDelegate : public SelectionBorderRowDelegate
 {
 public:
     AgentBranchButtonDelegate(QAbstractItemView *view,
-                              std::function<void(const QString &)> onClick,
+                              std::function<void(int)> onClick,
                               std::function<void(int)> onConflictClick)
         : SelectionBorderRowDelegate(view), m_onClick(std::move(onClick)),
           m_onConflictClick(std::move(onConflictClick))
@@ -796,8 +796,14 @@ public:
                     m_onConflictClick(sessionId);
                     return true;
                 }
+                // The chip routes the session, not just its name (adhoc #131):
+                // the list is global, so the Git view has to be pointed at the
+                // session's own repository before its branch can open there.
+                // Qt::UserRole is the row's identity — every row lookup matches
+                // on it — so it is set even when applyAgentStatusCell was called
+                // without an explicit session id.
                 if (m_onClick && buttonRect(option, index).contains(me->pos())) {
-                    m_onClick(branch);
+                    m_onClick(index.data(Qt::UserRole).toInt());
                     return true;
                 }
             }
@@ -924,7 +930,7 @@ private:
         painter->restore();
     }
 
-    std::function<void(const QString &)> m_onClick;
+    std::function<void(int)> m_onClick;
     std::function<void(int)> m_onConflictClick;
 };
 
@@ -1233,7 +1239,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setItemDelegateForColumn(
         kAgentIdColumn,
         new AgentBranchButtonDelegate(
-            m_agentTable, [this](const QString &branch) { switchToBranch(branch); },
+            m_agentTable, [this](int sessionId) { switchToAgentBranch(sessionId); },
             [this](int sessionId) { fixAgentConflictsWithAgent(sessionId); }));
     // ~22fps timer that advances the per-session output meters and repaints the
     // top-bar fleet lights off them. It is started on demand by noteAgentActivity
@@ -1513,7 +1519,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStatusPill->setAlignment(Qt::AlignCenter);
 
     // Branch / Worktree in the output toolbar (adhoc #51): a click opens that
-    // branch's row in the Branches tab / that worktree's row in the Worktrees
+    // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
+    // the session's own repository first) / that worktree's row in the Worktrees
     // tab — the same targets the meta table's chips carried before those two
     // columns moved here. adhoc #61 dropped the tiny caption-over-value styling
     // that made them half-height oddities beside the other actions: they are
@@ -1527,11 +1534,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentBranchButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentBranchButton, "git-branch", 16);
     m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
-    connect(m_agentBranchButton, &QPushButton::clicked, this, [this] {
-        if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
-            s && !s->branchName.isEmpty())
-            switchToBranch(s->branchName);
-    });
+    connect(m_agentBranchButton, &QPushButton::clicked, this,
+            [this] { switchToAgentBranch(m_selectedAgentSessionId); });
     m_agentWorktreeButton = new QPushButton(QStringLiteral("Worktree"));
     m_agentWorktreeButton->setObjectName("successButton");
     m_agentWorktreeButton->setCursor(Qt::PointingHandCursor);
@@ -6747,6 +6751,35 @@ void MainWindow::openAgentSessionFromIssue()
 {
     if (const AgentSession *session = latestAgentSessionForIssue(m_currentIssueNumber))
         switchToAgentsTab(session->id);
+}
+
+// Open an agent session's branch in the Git view (adhoc #131): its commits, its
+// changed files and its diff, laid out exactly as the Git view lays out a branch
+// — the changed-files list in the left column's CHANGES slot with the scope list
+// (all changes / uncommitted / per-commit) below it, and the source graph handing
+// its slot over for the duration.
+//
+// switchToBranch() does that render, but it drives the repo-detail widgets of
+// whichever repository the detail view currently holds, and the sessions list is
+// global: a run belonging to another repo would otherwise open that other repo's
+// Git page and then report its branch as missing. Bind the detail view to the
+// session's own repository first.
+void MainWindow::switchToAgentBranch(int sessionId)
+{
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->branchName.isEmpty())
+        return;
+    // Copy the branch and repo out before the bind: openRepoDetail pumps the event
+    // loop over a dozen blocking git reads, and a roster callback landing in that
+    // pump can reallocate m_agentSessions (the git-pump UAF family).
+    const QString branch = session->branchName;
+    const int repoIndex = repoIndexFor(session->owner, session->name);
+    // Repo detail hosts both the Agents tab and the Git view, and is only visible
+    // on the Home section — land there first so this works from anywhere.
+    showSection(0);
+    if (repoIndex >= 0 && !bindRepoDetailToRepo(repoIndex))
+        return;
+    switchToBranch(branch);
 }
 
 void MainWindow::switchToAgentsTab(int sessionId)
