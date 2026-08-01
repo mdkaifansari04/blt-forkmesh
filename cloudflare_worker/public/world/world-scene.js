@@ -591,11 +591,38 @@ function deterministicTreeLayout() {
   return positions;
 }
 
+// Phones do not die of slow frames; they die of memory. Painted at their
+// desktop resolution the World's ~96 plates allocate around 200 MB of 2D
+// backing stores (plus the same again once uploaded as RGBA textures) before
+// the first frame, which is more than a mobile browser lets one tab hold: the
+// tab is killed seconds into the boot and reloads into the crash guard. The
+// compact renderer therefore paints its large plates at half resolution — a
+// quarter of the bytes — while the draw code keeps its original coordinate
+// system through a pre-scaled context, so only the backing store shrinks.
+const CANVAS_TEXTURE_SCALE_MIN_PIXELS = 512 * 512;
+let canvasTextureScale = 1;
+
+function canvasTextureScaleFor(width, height, draw) {
+  // A painter that takes the canvas reads canvas.width/height for its own
+  // layout, which a scaled context would silently halve underneath it. Those
+  // keep full resolution; together they are a rounding error of the total.
+  if (canvasTextureScale >= 1 || draw.length >= 2) return 1;
+  return width * height >= CANVAS_TEXTURE_SCALE_MIN_PIXELS
+    ? canvasTextureScale
+    : 1;
+}
+
 function canvasTexture(THREE, width, height, draw) {
   const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
+  const scale = canvasTextureScaleFor(width, height, draw);
+  canvas.width = Math.max(1, Math.round(width * scale));
+  canvas.height = Math.max(1, Math.round(height * scale));
   const context = canvas.getContext("2d");
+  if (scale !== 1) {
+    // Recorded so an in-place repaint can restore the same mapping.
+    canvas.dataset.textureScale = String(scale);
+    context.setTransform(scale, 0, 0, scale, 0, 0);
+  }
   draw(context, canvas);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
@@ -616,7 +643,13 @@ function repaintCanvasTexture(material, draw) {
   const canvas = texture?.image;
   const context = canvas?.getContext?.("2d");
   if (!context) return false;
-  context.clearRect(0, 0, canvas.width, canvas.height);
+  // Large plates are painted through a scaled context on the compact
+  // renderer. Restore that mapping (a painter that saved and restored the
+  // context may have dropped it) so the repaint lands in the same coordinate
+  // system the first paint used, and clear in those same logical units.
+  const scale = Number(canvas.dataset?.textureScale) || 1;
+  context.setTransform(scale, 0, 0, scale, 0, 0);
+  context.clearRect(0, 0, canvas.width / scale, canvas.height / scale);
   draw(context, canvas);
   texture.needsUpdate = true;
   return true;
@@ -15546,6 +15579,9 @@ export function createWorldScene({
   const compactRenderer = Boolean(
     forceCompactRenderer || window.matchMedia?.("(pointer: coarse)")?.matches,
   );
+  // Set before anything paints: every plate below reads this while building
+  // its backing store, and the tab is killed by their sum, not by any one.
+  canvasTextureScale = compactRenderer ? 0.5 : 1;
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(DAYLIGHT_ENVIRONMENT.background);
   const worldSky = createWorldSky({
@@ -33548,6 +33584,14 @@ export function createWorldScene({
       shadowsEnabled: renderer.shadowMap.enabled && sun.castShadow,
       disabledElements: disabledWorldElements.size,
       pixelRatio: renderer.getPixelRatio(),
+      compactRenderer,
+      // The drawing buffer is the one allocation the renderer sizes itself,
+      // so a crash report can separate "too many pixels" from "too much
+      // scene" without guessing at the device's viewport.
+      drawingBufferWidth: renderer.getDrawingBufferSize(
+        diagnosticsDrawingBuffer,
+      ).x,
+      drawingBufferHeight: diagnosticsDrawingBuffer.y,
       cameraMode,
       space: currentSpace,
       moving: wasWalking,

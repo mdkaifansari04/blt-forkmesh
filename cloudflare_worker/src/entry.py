@@ -35998,7 +35998,10 @@ def _client_error_fields(payload):
     kind = str(payload.get("kind") or "").strip().lower()
     if surface not in CLIENT_ERROR_SURFACES or kind not in CLIENT_ERROR_KINDS:
         return None
-    message = _sanitize_client_error_text(payload.get("message"), 500)
+    # Crash reports carry a full diagnostic line (device, renderer, resident
+    # scene, memory); 500 characters cut it off mid-reading. The detail below
+    # still fits the 1000-character error_log column.
+    message = _sanitize_client_error_text(payload.get("message"), 900)
     if not message:
         message = "Unspecified browser exception"
     stack = _sanitize_client_error_text(payload.get("stack"), 700)

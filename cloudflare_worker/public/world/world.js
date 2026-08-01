@@ -314,6 +314,19 @@ function compactCountLabel(value) {
   return `${Math.round(count)}`;
 }
 
+// The admin error view groups rows by their exact text, so a crash report
+// full of raw counters files every crash as its own group of one — no count,
+// no 24-hour frequency, one ping per crash. Rounding the volatile readings to
+// a single significant figure collects equivalent crashes into one group
+// while still saying what the device was doing when it died.
+function coarseCrashReading(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) return NaN;
+  if (number < 10) return Math.round(number);
+  const magnitude = 10 ** Math.floor(Math.log10(number));
+  return Math.round(number / magnitude) * magnitude;
+}
+
 // Chromium-only heap reading; NaN elsewhere and the caller omits the figure.
 function heapUsedMB() {
   const bytes = Number(performance?.memory?.usedJSHeapSize);
@@ -7921,6 +7934,22 @@ class ForkMeshWorld extends HTMLElement {
     return this.cachedGpuLabel;
   }
 
+  deviceProfile() {
+    // "Crashing a lot on mobile" is only actionable with the device class
+    // attached: a 4 GB phone with a dense screen fails where a tablet does
+    // not. All static for the page's lifetime, so resolve them once.
+    if (this.cachedDeviceProfile) return this.cachedDeviceProfile;
+    const width = Math.max(0, Math.round(Number(screen?.width) || 0));
+    const height = Math.max(0, Math.round(Number(screen?.height) || 0));
+    this.cachedDeviceProfile = {
+      screen: width && height ? `${width}x${height}` : "",
+      cores: Math.max(0, Math.round(Number(navigator.hardwareConcurrency) || 0)),
+      memoryGb: Math.max(0, Number(navigator.deviceMemory) || 0),
+      touch: window.matchMedia?.("(pointer: coarse)")?.matches === true,
+    };
+    return this.cachedDeviceProfile;
+  }
+
   beatCrashGuard() {
     if (this.destroyed) return;
     const now = Date.now();
@@ -7944,6 +7973,19 @@ class ForkMeshWorld extends HTMLElement {
       frameTimeMs: renderer ? Math.round(renderer.frameTimeMs) : -1,
       longestFrameMs: renderer ? Math.round(renderer.longestFrameMs) : -1,
       triangles: renderer ? Math.round(renderer.triangles) : -1,
+      // A mobile tab is killed by what the page is holding, not by the frame
+      // it was drawing: carry the resident GPU resource counts and the
+      // drawing-buffer size so the report can tell memory pressure apart
+      // from a driver fault.
+      calls: renderer ? Math.round(renderer.calls) : -1,
+      textures: renderer ? Math.round(renderer.textures) : -1,
+      geometries: renderer ? Math.round(renderer.geometries) : -1,
+      programs: renderer ? Math.round(renderer.programs) : -1,
+      avatars: renderer ? Math.round(renderer.remoteAvatars) : -1,
+      space: String(renderer?.space || "unknown").slice(0, 32),
+      compact: renderer ? renderer.compactRenderer === true : false,
+      bufferWidth: renderer ? Math.round(renderer.drawingBufferWidth) : -1,
+      bufferHeight: renderer ? Math.round(renderer.drawingBufferHeight) : -1,
       pixelRatio: renderer ? Number(renderer.pixelRatio) || 0 : 0,
       heapUsedMb: memory
         ? Math.round(Number(memory.usedJSHeapSize) / 1048576)
@@ -7977,26 +8019,47 @@ class ForkMeshWorld extends HTMLElement {
       Number.isFinite(Number(value)) && Number(value) >= 0
         ? `${Math.round(Number(value))}${unit}`
         : "unknown";
+    // Volatile readings are bucketed so equivalent crashes group together;
+    // small exact counts (peers, crash count, context losses) stay exact.
+    const coarse = (value, unit = "") => {
+      const reading = coarseCrashReading(value);
+      return Number.isFinite(reading) ? `${reading}${unit}` : "unknown";
+    };
     const navigation = String(
       performance.getEntriesByType?.("navigation")?.[0]?.type || "unknown",
     ).slice(0, 16);
+    const device = this.deviceProfile();
+    const buffer =
+      Number(record.bufferWidth) > 0 && Number(record.bufferHeight) > 0
+        ? `${coarseCrashReading(record.bufferWidth)}x${coarseCrashReading(record.bufferHeight)}`
+        : "unknown";
     const parts = [
       discarded
         ? "World reloaded after the browser discarded the tab"
         : "World crashed and reloaded; previous session ended without pagehide",
-      `uptime ${describe((beatAt - Number(record.startedAt)) / 1000, "s")}`,
-      `heartbeat gap ${describe((Date.now() - beatAt) / 1000, "s")}`,
+      `device ${device.touch ? "touch" : "pointer"} ${device.screen || "unknown"} screen`,
+      `renderer ${record.compact === true ? "compact" : "full"}`,
+      `safe mode ${record.safeMode === true ? "on" : "off"}`,
+      `uptime ${coarse((beatAt - Number(record.startedAt)) / 1000, "s")}`,
+      `heartbeat gap ${coarse((Date.now() - beatAt) / 1000, "s")}`,
       `navigation ${navigation}`,
       `visibility ${String(record.visibility || "unknown").slice(0, 16)}`,
       `tab crashes ${this.worldCrashCount()}`,
       `socket ${String(record.socket || "unknown").slice(0, 16)} with ${describe(record.peers)} peers`,
-      `fps ${describe(record.fps)}`,
-      `frame ${describe(record.frameTimeMs, "ms")} worst ${describe(record.longestFrameMs, "ms")}`,
-      `triangles ${describe(record.triangles)}`,
-      `dpr ${Number(record.pixelRatio) || 0}`,
-      `heap ${describe(record.heapUsedMb, "MB")} of ${describe(record.heapLimitMb, "MB")}`,
+      `space ${String(record.space || "unknown").slice(0, 32)}`,
+      `avatars ${describe(record.avatars)}`,
+      `fps ${coarse(record.fps)}`,
+      `frame ${coarse(record.frameTimeMs, "ms")} worst ${coarse(record.longestFrameMs, "ms")}`,
+      `triangles ${coarse(record.triangles)}`,
+      `draws ${coarse(record.calls)}`,
+      `textures ${coarse(record.textures)}`,
+      `geometries ${coarse(record.geometries)}`,
+      `programs ${coarse(record.programs)}`,
+      `buffer ${buffer} at dpr ${Number(record.pixelRatio) || 0}`,
+      `cores ${describe(device.cores)}`,
+      `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
+      `heap ${coarse(record.heapUsedMb, "MB")} of ${coarse(record.heapLimitMb, "MB")}`,
       `context losses ${describe(record.contextLosses)}`,
-      `safe mode ${record.safeMode === true ? "on" : "off"}`,
     ];
     const gpu = String(record.gpu || "").slice(0, 120);
     if (gpu) parts.push(`gpu ${gpu}`);
@@ -8014,7 +8077,10 @@ class ForkMeshWorld extends HTMLElement {
         body: JSON.stringify({
           kind: "crash",
           surface: "world",
-          message: String(message || "").slice(0, 500),
+          // The Worker sanitizes and stores up to 900 characters of this; a
+          // crash report that names the device, the renderer, and the
+          // resident scene needs the room.
+          message: String(message || "").slice(0, 900),
           stack: "",
           source: "world.js",
           line: 0,
@@ -8063,11 +8129,22 @@ class ForkMeshWorld extends HTMLElement {
         0,
         Math.round((Date.now() - (this.crashGuardStartedAt || Date.now())) / 1000),
       );
+      const device = this.deviceProfile();
+      const coarse = (value) => {
+        const reading = coarseCrashReading(value);
+        return Number.isFinite(reading) ? String(reading) : "unknown";
+      };
       const parts = [
-        `World renderer crashed; WebGL context lost after ${uptimeS}s`,
-        `fps ${renderer ? Math.round(renderer.fps) : "unknown"}`,
-        `triangles ${renderer ? Math.round(renderer.triangles) : "unknown"}`,
+        `World renderer crashed; WebGL context lost after ${coarse(uptimeS)}s`,
+        `device ${device.touch ? "touch" : "pointer"} ${device.screen || "unknown"} screen`,
+        `renderer ${renderer?.compactRenderer === true ? "compact" : "full"}`,
+        `fps ${coarse(renderer?.fps)}`,
+        `triangles ${coarse(renderer?.triangles)}`,
+        `textures ${coarse(renderer?.textures)}`,
+        `geometries ${coarse(renderer?.geometries)}`,
         `dpr ${renderer ? Number(renderer.pixelRatio) || 0 : 0}`,
+        `cores ${coarse(device.cores)}`,
+        `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
         `safe mode ${this.rendererSafeMode === true ? "on" : "off"}`,
       ];
       const gpu = this.rendererGpuLabel();
@@ -25086,6 +25163,15 @@ class ForkMeshWorld extends HTMLElement {
             ),
             shadowsEnabled: scene.shadowsEnabled === true,
             pixelRatio: Math.max(0, Math.min(8, Number(scene.pixelRatio) || 0)),
+            compactRenderer: scene.compactRenderer === true,
+            drawingBufferWidth: Math.max(
+              0,
+              Math.min(32_768, Number(scene.drawingBufferWidth) || 0),
+            ),
+            drawingBufferHeight: Math.max(
+              0,
+              Math.min(32_768, Number(scene.drawingBufferHeight) || 0),
+            ),
             cameraMode: String(scene.cameraMode || "unknown").slice(0, 32),
             space: String(scene.space || "unknown").slice(0, 64),
             moving: scene.moving === true,
