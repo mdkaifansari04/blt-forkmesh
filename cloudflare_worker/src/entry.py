@@ -16273,6 +16273,36 @@ def _account_world_client_fields(rec):
     )
 
 
+WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS = 60 * 60 * 1000
+
+
+def _account_public_last_email(rec):
+    """The last account email's coarse age and delivery outcome.
+
+    World paints "LAST EMAIL 2D AGO · DELIVERED" on every member badge, so the
+    stamp rides the public directory rather than only the owner's own
+    authenticated read. The send time is rounded down to the hour, and the
+    address, the email kind and the running send count stay behind
+    /api/accounts/sessions.
+    """
+    try:
+        ts = int((rec or {}).get("last_email_ts") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    if ts <= 0:
+        return {"lastEmailAt": 0, "lastEmailStatus": ""}
+    return {
+        "lastEmailAt": (
+            (ts // WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS)
+            * WORLD_PUBLIC_LAST_EMAIL_BUCKET_MS
+        ),
+        "lastEmailStatus": (
+            ACCOUNT_EMAIL_STATUS_DELIVERED if (rec or {}).get("last_email_ok")
+            else ACCOUNT_EMAIL_STATUS_FAILED
+        ),
+    }
+
+
 def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
     name = clean_string(rec.get("name", ""), MAX_NODE_NAME).lower()
     return {
@@ -16294,6 +16324,7 @@ def _account_chat_user_payload(rec, total_active_ms=0, activity_bucket=""):
         # bucket the caller already derived from the raw touch timestamp, so
         # this function never sees (or could leak) that timestamp itself.
         "activityBucket": activity_bucket,
+        **_account_public_last_email(rec),
         **_account_world_client_fields(rec),
     }
 

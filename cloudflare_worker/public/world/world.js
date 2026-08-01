@@ -1596,9 +1596,10 @@ function publicIdentity(identity, settings) {
     // A visitor at this keyboard is by definition active within the hour;
     // the light itself stays dark until the account is authenticated.
     activityBucket: "hour",
-    // Authenticated account-mail activity is shown only on this local scene
-    // identity. Presence sanitization has no fields for it, so it never leaves
-    // the owner's browser.
+    // The exact stamp from the owner's authenticated read stays on this local
+    // scene identity: presence sanitization has no fields for it, so it never
+    // leaves the owner's browser. Every other member's badge paints the coarse
+    // copy the public directory carries.
     lastEmailAt: Math.max(0, Number(identity.lastEmailAt) || 0),
     lastEmailStatus: ["delivered", "failed"].includes(
       String(identity.lastEmailStatus || ""),
@@ -2328,6 +2329,14 @@ function normalizeMemberDirectory(value) {
         0,
         Math.min(999, Number(user?.visitCount) || 0),
       ),
+      // Hour-bucketed send time plus delivery outcome, so a member's badge
+      // wears the same last-email row whoever is reading it.
+      lastEmailAt: Math.max(0, Number(user?.lastEmailAt) || 0),
+      lastEmailStatus: ["delivered", "failed"].includes(
+        String(user?.lastEmailStatus || ""),
+      )
+        ? String(user.lastEmailStatus)
+        : "",
     }))
     .filter((user) => user.name);
 }

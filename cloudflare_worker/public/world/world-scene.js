@@ -27600,6 +27600,17 @@ export function createWorldScene({
         identity.totalActiveMs == null
           ? facts.totalActiveMs
           : identity.totalActiveMs,
+      // A presence frame carries no mail stamp; the owner's own authenticated
+      // read (which knows the exact minute) still wins on their avatar.
+      lastEmailAt: Math.max(
+        Number(identity.lastEmailAt) || 0,
+        Number(facts.lastEmailAt) || 0,
+      ),
+      lastEmailStatus:
+        Number(identity.lastEmailAt) >= Number(facts.lastEmailAt || 0)
+          ? identity.lastEmailStatus || facts.lastEmailStatus
+          : facts.lastEmailStatus,
+      lastEmailPrivate: false,
     };
   }
 
@@ -27959,6 +27970,12 @@ export function createWorldScene({
         totalActiveMs:
           Number.isFinite(activeMs) && activeMs >= 0 ? activeMs : null,
         emailVerified: member?.emailVerified === true,
+        // The directory is authoritative for a registered account's mail
+        // stamp, so a member listed here never reads as "NOT SHARED": no
+        // stamp means the account has simply never been emailed.
+        lastEmailAt: Math.max(0, Number(member?.lastEmailAt) || 0),
+        lastEmailStatus: String(member?.lastEmailStatus || ""),
+        lastEmailPrivate: false,
       });
     });
     // A live presence frame can arrive before the public directory catches up.
@@ -28085,6 +28102,9 @@ export function createWorldScene({
           statusEmoji: "",
           statusNote: String(member.status || ""),
           activityBucket: member.activityBucket || "",
+          lastEmailAt: Math.max(0, Number(member.lastEmailAt) || 0),
+          lastEmailStatus: String(member.lastEmailStatus || ""),
+          lastEmailPrivate: false,
         };
         let figure = loungeMembers.get(id);
         if (!figure) {
