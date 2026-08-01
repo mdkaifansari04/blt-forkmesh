@@ -664,28 +664,33 @@ public:
     // Rebuilds off-thread now (adhoc #420), so this pumps until the rows land.
     void testReloadBranchesPanel();
     QString testBranchWorktreePath(const QString &branch) const;
-    // Compact Branch-cell data as files|added|removed|worktree|conflict|updated.
+    // Compact Branch-cell data as
+    // files|added|removed|worktree|conflict|updated|behind|ahead.
     QString testBranchVisualBadges(const QString &branch) const;
     bool testBranchesUseCompactColumns() const;
     bool testBranchesKeepFlexibleNameColumn() const;
     bool testBranchDelegatePaintsSingleTextLayer(const QString &branch) const;
+    bool testBranchSelectedTextColorIsReadable(const QString &branch) const;
     // Inject an agent session so a test can prove the branches list surfaces the
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)
     {
+        for (AgentSession &existing : m_agentSessions) {
+            if (existing.id == session.id) {
+                existing = session;
+                return;
+            }
+        }
         m_agentSessions.append(session);
     }
     // Take the nav strip's route to the Agents tab, so a test can read that
     // lazily-built list back the way a user reaches it (adhoc #119).
     void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
-    // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
-    // the branches list names the issue/agent a branch is attached to (adhoc #191).
-    QString testBranchAttachmentText(const QString &branch) const;
     // Whether the leading Branch cell for `branch` carries an icon, so a test can
     // prove the list stamps agent status at the row's left edge (adhoc #251).
     bool testBranchAttachmentHasIcon(const QString &branch) const;
-    // Branch names (column 0) in row order, so a test can prove the default branch
+    // Branch names in row order, so a test can prove the default branch
     // is pinned to the top of the list regardless of commit recency (adhoc #185).
     QStringList testBranchRowOrder() const;
     int testBranchesTabIndex() const { return m_branchesTabIndex; }
@@ -753,10 +758,6 @@ public:
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
     bool testClickBranchReviewMerge(bool deleteAll);
-    // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
-    // session the app navigated to (m_selectedAgentSessionId), so a test can prove
-    // clicking the cell jumps to that branch's agent (adhoc #258).
-    int testClickBranchAgentCell(const QString &branch);
     // issue #291: when an agent task's worktree/PR lands in the base branch the
     // session is flagged "merged" on its Status column and detail page. Drive the
     // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
@@ -771,8 +772,8 @@ public:
     bool testAgentDetailTitleWraps() const;
     QString testRenderAgentDetailTitle(const QString &text);
     // adhoc #403: the badge data the Status cell hands its branch chip, read back
-    // as "files|dirty|worktree", so a test can prove the chip's files-changed /
-    // uncommitted / worktree-present markers are fed from the session's diff stat.
+    // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
+    // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
     bool testAgentSessionMerged(int sessionId) const;
 #endif
@@ -2912,6 +2913,14 @@ private:
         int added = -1;
         int removed = -1;
     };
+    // Branches table layout: destructive action first, immediately followed by
+    // the branch name. Updated/worktree remain hidden backing columns whose data
+    // is folded into the compact Branch delegate.
+    static constexpr int kBranchesDeleteColumn = 0;
+    static constexpr int kBranchesNameColumn = 1;
+    static constexpr int kBranchesStatusColumn = 2;
+    static constexpr int kBranchesUpdatedColumn = 3;
+    static constexpr int kBranchesWorktreeColumn = 4;
     // Runs on a worker thread: fills the git-derived half of `data`.
     static BranchesPanelData readBranchesPanelGit(BranchesPanelData data);
     // Builds the table rows from a gathered snapshot (GUI thread, no git).

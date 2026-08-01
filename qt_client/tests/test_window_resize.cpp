@@ -1954,16 +1954,25 @@ int main(int argc, char *argv[])
               QStringLiteral("Branches leaves text and icons out of the style "
                              "background layer so its custom row paints each "
                              "branch name exactly once"));
+        check(window.testBranchSelectedTextColorIsReadable(
+                  QStringLiteral("feature/keep-selected")),
+              QStringLiteral("Branches keeps its normal readable text colour "
+                             "inside the transparent selected-row outline"));
         const QString branchBadges = window.testBranchVisualBadges(
             QStringLiteral("feature/keep-selected"));
         check(branchBadges.startsWith(QStringLiteral("1|1|0|1|0|")),
               QString("Branches leading cell carries file count, +/- churn, "
                       "worktree and conflict data (got %1)").arg(branchBadges));
+        check(branchBadges.section(QLatin1Char('|'), 6, 6) ==
+                      QStringLiteral("0") &&
+                  branchBadges.section(QLatin1Char('|'), 7, 7) ==
+                      QStringLiteral("1"),
+              QString("Branches leading cell carries the behind/ahead chart data "
+                      "beside file churn (got %1)").arg(branchBadges));
 
-        // adhoc #191: the Branches list must also surface the issue/agent a branch
-        // is attached to. An agent session bound to this repo's branch should
-        // name its issue ("#N") in the Issue / Agent column; an ad-hoc session
-        // (no issue) should read "Agent"; a plain branch stays empty.
+        // Keep an agent session attached to this branch: the dedicated Issue /
+        // Agent column is gone, but its status remains useful as the leading
+        // branch glyph and the session is reused by the agent-route checks below.
         AgentSession issueSession;
         issueSession.id = 4242;
         issueSession.owner = QStringLiteral("me");
@@ -1975,18 +1984,6 @@ int main(int argc, char *argv[])
             "session title that remains available all the way to the pane edge");
         window.testAddAgentSession(issueSession);
         window.testReloadBranchesPanel();
-        // The cell reads "#191 · <status>" — the status word rides along since
-        // the Branches tab started showing agent status text — so anchor on the
-        // issue number rather than pinning the whole string.
-        check(window.testBranchAttachmentText(QStringLiteral("feature/keep-selected"))
-                  .startsWith(QStringLiteral("#191")),
-              QString("branches list names the issue a branch is attached to "
-                      "(adhoc #191, cell = %1)")
-                  .arg(window.testBranchAttachmentText(
-                      QStringLiteral("feature/keep-selected"))));
-        check(window.testBranchAttachmentText(QStringLiteral("main")).isEmpty(),
-              QStringLiteral("a branch with no agent session has an empty "
-                             "Issue / Agent cell (adhoc #191)"));
 
         // adhoc #251: a branch an agent is working must also carry the agent's
         // status icon in that cell (a spinner while running, a check on success,
@@ -2000,18 +1997,6 @@ int main(int argc, char *argv[])
               QStringLiteral("a branch with no agent session carries no status "
                              "icon (adhoc #251)"));
 
-        // adhoc #258: clicking the Issue / Agent cell must jump straight to the
-        // agent run working that branch. Probe the empty-cell case first: clicking
-        // a plain branch's cell navigates nowhere (the attached session id was just
-        // added and never opened, so the selection can't already be it).
-        check(window.testClickBranchAgentCell(QStringLiteral("main")) !=
-                  issueSession.id,
-              QStringLiteral("clicking a plain branch's empty Issue / Agent cell "
-                             "does not navigate to an agent (adhoc #258)"));
-        check(window.testClickBranchAgentCell(
-                  QStringLiteral("feature/keep-selected")) == issueSession.id,
-              QStringLiteral("clicking the Issue / Agent cell jumps to that "
-                             "branch's agent session (adhoc #258)"));
         check(window.testRenderAgentDetailTitle(issueSession.issueTitle) ==
                       issueSession.issueTitle &&
                   !window.testAgentDetailTitleWraps(),
@@ -2339,21 +2324,22 @@ int main(int argc, char *argv[])
             agentRouteFile.write("visible from the agent branch route\n");
             agentRouteFile.close();
         }
-        // Reproduce the report's 23 unrelated files in the primary checkout.
-        // The agent route must read its linked worktree, never these main-tree
-        // changes, even while it keeps the graph parked on main.
+        // Reproduce the report's mismatch: main gains 23 tracked files after
+        // the agent forked. A snapshot `main..agent` comparison wrongly shows
+        // them as reverse changes; the merge-base range must show agent-live only.
+        QDir(wtRepo.path()).mkpath(QStringLiteral("main-only"));
         for (int i = 0; i < 23; ++i) {
             QFile unrelatedFile(
                 wtRepo.path() +
-                QStringLiteral("/primary-unrelated-%1.txt").arg(i));
+                QStringLiteral("/main-only/primary-unrelated-%1.txt").arg(i));
             if (unrelatedFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
                 unrelatedFile.write("belongs to the primary checkout\n");
                 unrelatedFile.close();
             }
         }
+        runGitChecked(wtRepo.path(), {"add", "--", "main-only"});
         runGitChecked(wtRepo.path(),
-                      {"commit", "--allow-empty", "-m",
-                       "main advanced before agent branch review"});
+                      {"commit", "-m", "main advanced before agent branch review"});
         issueSession.branchName = agentRouteBranch;
         issueSession.baseBranch = QStringLiteral("main");
         issueSession.baseRef = agentRouteBaseRef;
@@ -2405,7 +2391,7 @@ int main(int argc, char *argv[])
                   .arg(window.testCompareIndicatorText()));
         bool containsPrimaryChange = false;
         for (const QString &path : window.testSourceControlPaths()) {
-            if (path.startsWith(QStringLiteral("primary-unrelated-"))) {
+            if (path.startsWith(QStringLiteral("main-only/primary-unrelated-"))) {
                 containsPrimaryChange = true;
                 break;
             }
@@ -3168,15 +3154,18 @@ int main(int argc, char *argv[])
         chip.files = 7;
         chip.dirty = 2;
         chip.worktree = QStringLiteral("/tmp/wt-291");
+        chip.behind = 9;
+        chip.ahead = 4;
         check(window.testAgentStatusCellBadges(2910, chip) ==
-                  QStringLiteral("7|2|/tmp/wt-291"),
-              QString("the branch chip carries files/dirty/worktree badges "
+                  QStringLiteral("7|2|/tmp/wt-291|9|4"),
+              QString("the branch chip carries files/dirty/worktree and branch "
+                      "health badges "
                       "(adhoc #403, got %1)")
                   .arg(window.testAgentStatusCellBadges(2910, chip)));
         // A cleaned-up session with no patch yet leaves every badge unknown, so
         // the chip falls back to the plain branch button.
         check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==
-                  QStringLiteral("-1|-1|"),
+                  QStringLiteral("-1|-1||-1|-1"),
               QString("a session with no patch/worktree paints a bare branch chip "
                       "(adhoc #403, got %1)")
                   .arg(window.testAgentStatusCellBadges(2910, AgentDiffStat())));

@@ -399,6 +399,8 @@ constexpr int kAgentConflictSessionRole = Qt::UserRole + 38;
 // lines added and removed, -1 when unknown.
 constexpr int kAgentAddedRole = Qt::UserRole + 39;
 constexpr int kAgentRemovedRole = Qt::UserRole + 40;
+constexpr int kAgentAheadRole = Qt::UserRole + 41;
+constexpr int kAgentBehindRole = Qt::UserRole + 42;
 
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
@@ -486,6 +488,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // #74), so a stale flag has to be cleared rather than left behind.
     cell->setData(kAgentAddedRole, stat.added);
     cell->setData(kAgentRemovedRole, stat.removed);
+    cell->setData(kAgentAheadRole, stat.ahead);
+    cell->setData(kAgentBehindRole, stat.behind);
     cell->setData(kAgentConflictRole, stat.conflicted);
     cell->setData(kAgentConflictSessionRole, sessionId);
     // With the Status column gone the glyph is the only thing showing the run
@@ -710,6 +714,7 @@ public:
         // "worktree there or not" reads straight off the row.
         const bool live = !index.data(kAgentBranchWorktreeRole).toString().isEmpty();
         const bool conflicted = index.data(kAgentConflictRole).toBool();
+        const bool behind = index.data(kAgentBehindRole).toInt() > 0;
         const bool dark = currentThemeIsDark();
         // The amber "needs you" accent the Waiting status uses, which the whole
         // chip takes on while the branch no longer merges cleanly.
@@ -719,7 +724,7 @@ public:
         // Soft vertical gradient behind a 1px border: reads as a raised chip
         // rather than the flat block it used to be.
         QLinearGradient fill(r.topLeft(), r.bottomLeft());
-        if (conflicted) {
+        if (conflicted || behind) {
             QColor wash = accent;
             wash.setAlpha(hot ? (dark ? 70 : 40) : (dark ? 34 : 20));
             fill.setColorAt(0.0, wash);
@@ -733,7 +738,7 @@ public:
         }
         painter->setBrush(fill);
         const QColor border =
-            conflicted
+            (conflicted || behind)
                 ? accent
                 : (live ? QColor(dark ? (hot ? "#58a6ff" : "#3d6ea8") : "#0969da")
                         : QColor(dark ? (hot ? "#484f58" : "#30363d")
@@ -767,6 +772,9 @@ public:
         // edge, which is its own click target.
         if (conflicted)
             themedOcticon("alert", accent, kGlyphSize)
+                .paint(painter, conflictRect(option, index));
+        else if (behind)
+            themedOcticon("download", accent, kGlyphSize)
                 .paint(painter, conflictRect(option, index));
         // Uncommitted work in that worktree: an amber pip on the chip's corner,
         // ringed in the list background so it stays legible over the border.
@@ -5208,10 +5216,12 @@ QString MainWindow::testAgentStatusCellBadges(int sessionId,
             continue;
         QTableWidgetItem item;
         applyAgentStatusCell(&item, s, stat);
-        return QStringLiteral("%1|%2|%3")
+        return QStringLiteral("%1|%2|%3|%4|%5")
             .arg(item.data(kAgentBranchFilesRole).toInt())
             .arg(item.data(kAgentBranchDirtyRole).toInt())
-            .arg(item.data(kAgentBranchWorktreeRole).toString());
+            .arg(item.data(kAgentBranchWorktreeRole).toString())
+            .arg(item.data(kAgentBehindRole).toInt())
+            .arg(item.data(kAgentAheadRole).toInt());
     }
     return QString();
 }

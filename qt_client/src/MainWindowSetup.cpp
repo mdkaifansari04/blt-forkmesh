@@ -917,24 +917,12 @@ QString MainWindow::testBranchWorktreePath(const QString &branch) const
     if (!m_branchesTable)
         return QString();
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        QTableWidgetItem *name =
+            m_branchesTable->item(row, kBranchesNameColumn);
         if (name && name->text() == branch) {
-            if (QTableWidgetItem *wt = m_branchesTable->item(row, 3))
+            if (QTableWidgetItem *wt =
+                    m_branchesTable->item(row, kBranchesWorktreeColumn))
                 return wt->text();
-        }
-    }
-    return QString();
-}
-
-QString MainWindow::testBranchAttachmentText(const QString &branch) const
-{
-    if (!m_branchesTable)
-        return QString();
-    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
-        if (name && name->text() == branch) {
-            if (QTableWidgetItem *attach = m_branchesTable->item(row, 4))
-                return attach->text();
         }
     }
     return QString();
@@ -945,27 +933,12 @@ bool MainWindow::testBranchAttachmentHasIcon(const QString &branch) const
     if (!m_branchesTable)
         return false;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
+        QTableWidgetItem *name =
+            m_branchesTable->item(row, kBranchesNameColumn);
         if (name && name->text() == branch)
             return !name->icon().isNull();
     }
     return false;
-}
-
-int MainWindow::testClickBranchAgentCell(const QString &branch)
-{
-    if (!m_branchesTable)
-        return -1;
-    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *name = m_branchesTable->item(row, 0);
-        if (name && name->text() == branch) {
-            // Fire the same signal a real click on the Issue / Agent cell would,
-            // so the production cellClicked handler runs (adhoc #258).
-            emit m_branchesTable->cellClicked(row, 4);
-            break;
-        }
-    }
-    return m_selectedAgentSessionId;
 }
 
 QStringList MainWindow::testBranchRowOrder() const
@@ -974,7 +947,8 @@ QStringList MainWindow::testBranchRowOrder() const
     if (!m_branchesTable)
         return names;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        if (QTableWidgetItem *name = m_branchesTable->item(row, 0))
+        if (QTableWidgetItem *name =
+                m_branchesTable->item(row, kBranchesNameColumn))
             names << name->text();
     }
     return names;
