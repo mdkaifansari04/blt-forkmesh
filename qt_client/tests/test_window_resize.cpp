@@ -1707,8 +1707,20 @@ int main(int argc, char *argv[])
             baseFile.open(QIODevice::WriteOnly);
             baseFile.write("tracked on main\n");
             baseFile.close();
+
+            // Both main and the linked agent worktree will later edit this same
+            // tracked file in separate hunks. A plain merge refuses before it
+            // even considers whether the text edits overlap; Pull main must
+            // autostash, update, and restore the agent edit instead.
+            QFile shared(wtRepo.path() +
+                         QStringLiteral("/auto-stash-overlap.txt"));
+            shared.open(QIODevice::WriteOnly);
+            for (int i = 1; i <= 12; ++i)
+                shared.write(QStringLiteral("line %1\n").arg(i).toUtf8());
+            shared.close();
         }
-        runGitChecked(wtRepo.path(), {"add", "base-delete.txt"});
+        runGitChecked(wtRepo.path(),
+                      {"add", "base-delete.txt", "auto-stash-overlap.txt"});
         runGitChecked(wtRepo.path(), {"commit", "-m", "base file for deletion"});
         runGitChecked(wtRepo.path(), {"branch", "feature/keep-selected"});
         // A second branch so the compare base has somewhere else to point
@@ -1954,16 +1966,25 @@ int main(int argc, char *argv[])
               QStringLiteral("Branches leaves text and icons out of the style "
                              "background layer so its custom row paints each "
                              "branch name exactly once"));
+        check(window.testBranchSelectedTextColorIsReadable(
+                  QStringLiteral("feature/keep-selected")),
+              QStringLiteral("Branches keeps its normal readable text colour "
+                             "inside the transparent selected-row outline"));
         const QString branchBadges = window.testBranchVisualBadges(
             QStringLiteral("feature/keep-selected"));
         check(branchBadges.startsWith(QStringLiteral("1|1|0|1|0|")),
               QString("Branches leading cell carries file count, +/- churn, "
                       "worktree and conflict data (got %1)").arg(branchBadges));
+        check(branchBadges.section(QLatin1Char('|'), 6, 6) ==
+                      QStringLiteral("0") &&
+                  branchBadges.section(QLatin1Char('|'), 7, 7) ==
+                      QStringLiteral("1"),
+              QString("Branches leading cell carries the behind/ahead chart data "
+                      "beside file churn (got %1)").arg(branchBadges));
 
-        // adhoc #191: the Branches list must also surface the issue/agent a branch
-        // is attached to. An agent session bound to this repo's branch should
-        // name its issue ("#N") in the Issue / Agent column; an ad-hoc session
-        // (no issue) should read "Agent"; a plain branch stays empty.
+        // Keep an agent session attached to this branch: the dedicated Issue /
+        // Agent column is gone, but its status remains useful as the leading
+        // branch glyph and the session is reused by the agent-route checks below.
         AgentSession issueSession;
         issueSession.id = 4242;
         issueSession.owner = QStringLiteral("me");
@@ -1975,18 +1996,6 @@ int main(int argc, char *argv[])
             "session title that remains available all the way to the pane edge");
         window.testAddAgentSession(issueSession);
         window.testReloadBranchesPanel();
-        // The cell reads "#191 · <status>" — the status word rides along since
-        // the Branches tab started showing agent status text — so anchor on the
-        // issue number rather than pinning the whole string.
-        check(window.testBranchAttachmentText(QStringLiteral("feature/keep-selected"))
-                  .startsWith(QStringLiteral("#191")),
-              QString("branches list names the issue a branch is attached to "
-                      "(adhoc #191, cell = %1)")
-                  .arg(window.testBranchAttachmentText(
-                      QStringLiteral("feature/keep-selected"))));
-        check(window.testBranchAttachmentText(QStringLiteral("main")).isEmpty(),
-              QStringLiteral("a branch with no agent session has an empty "
-                             "Issue / Agent cell (adhoc #191)"));
 
         // adhoc #251: a branch an agent is working must also carry the agent's
         // status icon in that cell (a spinner while running, a check on success,
@@ -2000,18 +2009,6 @@ int main(int argc, char *argv[])
               QStringLiteral("a branch with no agent session carries no status "
                              "icon (adhoc #251)"));
 
-        // adhoc #258: clicking the Issue / Agent cell must jump straight to the
-        // agent run working that branch. Probe the empty-cell case first: clicking
-        // a plain branch's cell navigates nowhere (the attached session id was just
-        // added and never opened, so the selection can't already be it).
-        check(window.testClickBranchAgentCell(QStringLiteral("main")) !=
-                  issueSession.id,
-              QStringLiteral("clicking a plain branch's empty Issue / Agent cell "
-                             "does not navigate to an agent (adhoc #258)"));
-        check(window.testClickBranchAgentCell(
-                  QStringLiteral("feature/keep-selected")) == issueSession.id,
-              QStringLiteral("clicking the Issue / Agent cell jumps to that "
-                             "branch's agent session (adhoc #258)"));
         check(window.testRenderAgentDetailTitle(issueSession.issueTitle) ==
                       issueSession.issueTitle &&
                   !window.testAgentDetailTitleWraps(),
@@ -2070,9 +2067,30 @@ int main(int argc, char *argv[])
         // Move main ahead immediately before opening the branch. The Git route's
         // automatic pull must merge that new main tip inside the linked agent
         // worktree, then rerender the range without losing its local file.
-        runGitChecked(wtRepo.path(),
-                      {"commit", "--allow-empty", "-m",
-                       "main advanced before branch review"});
+        {
+            QFile mainShared(wtRepo.path() +
+                             QStringLiteral("/auto-stash-overlap.txt"));
+            mainShared.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            for (int i = 1; i <= 12; ++i)
+                mainShared.write((i == 12 ? QByteArray("main changed line 12\n")
+                                          : QStringLiteral("line %1\n")
+                                                .arg(i)
+                                                .toUtf8()));
+            mainShared.close();
+            runGitChecked(wtRepo.path(), {"add", "auto-stash-overlap.txt"});
+            runGitChecked(wtRepo.path(),
+                          {"commit", "-m", "main advanced before branch review"});
+
+            QFile agentShared(wtPath +
+                              QStringLiteral("/auto-stash-overlap.txt"));
+            agentShared.open(QIODevice::WriteOnly | QIODevice::Truncate);
+            for (int i = 1; i <= 12; ++i)
+                agentShared.write((i == 1 ? QByteArray("agent changed line 1\n")
+                                          : QStringLiteral("line %1\n")
+                                                .arg(i)
+                                                .toUtf8()));
+            agentShared.close();
+        }
         QFile liveFile(livePath);
         if (liveFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
             liveFile.write("visible before commit\n");
@@ -2122,6 +2140,21 @@ int main(int argc, char *argv[])
               QString("opening a linked agent branch automatically pulls main "
                       "into its own worktree (main...branch = %1)")
                   .arg(autoPullCounts));
+        QFile restoredShared(wtPath +
+                             QStringLiteral("/auto-stash-overlap.txt"));
+        restoredShared.open(QIODevice::ReadOnly);
+        const QByteArray restoredSharedText = restoredShared.readAll();
+        const QString restoredStatus =
+            gitOutput(wtPath, {"status", "--short", "--",
+                               "auto-stash-overlap.txt"});
+        check(restoredSharedText.contains("agent changed line 1\n") &&
+                  restoredSharedText.contains("main changed line 12\n") &&
+                  restoredStatus.contains(QStringLiteral("auto-stash-overlap.txt")) &&
+                  gitOutput(wtPath, {"stash", "list"}).isEmpty(),
+              QString("Pull main protects and restores edits in files also changed "
+                      "on main (status = %1, stash = %2)")
+                  .arg(restoredStatus,
+                       gitOutput(wtPath, {"stash", "list"})));
         // Now that automatic synchronization has completed, introduce the
         // staged deletion and re-open the same branch. This isolates the diff
         // regression without making the earlier pull test reject a dirty tree.
@@ -2329,6 +2362,8 @@ int main(int argc, char *argv[])
         const QString agentRouteBranch = QStringLiteral("agent/files-visible");
         const QString agentRouteWt =
             wtRepo.path() + QStringLiteral("/wt-agent-files");
+        const QString agentRouteBaseRef =
+            gitOutput(wtRepo.path(), {"rev-parse", "main"}).trimmed();
         runGitChecked(wtRepo.path(), {"branch", agentRouteBranch, "main"});
         runGitChecked(wtRepo.path(),
                       {"worktree", "add", agentRouteWt, agentRouteBranch});
@@ -2337,16 +2372,33 @@ int main(int argc, char *argv[])
             agentRouteFile.write("visible from the agent branch route\n");
             agentRouteFile.close();
         }
+        // Reproduce the report's mismatch: main gains 23 tracked files after
+        // the agent forked. A snapshot `main..agent` comparison wrongly shows
+        // them as reverse changes; the merge-base range must show agent-live only.
+        QDir(wtRepo.path()).mkpath(QStringLiteral("main-only"));
+        for (int i = 0; i < 23; ++i) {
+            QFile unrelatedFile(
+                wtRepo.path() +
+                QStringLiteral("/main-only/primary-unrelated-%1.txt").arg(i));
+            if (unrelatedFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                unrelatedFile.write("belongs to the primary checkout\n");
+                unrelatedFile.close();
+            }
+        }
+        runGitChecked(wtRepo.path(), {"add", "--", "main-only"});
+        runGitChecked(wtRepo.path(),
+                      {"commit", "-m", "main advanced before agent branch review"});
         issueSession.branchName = agentRouteBranch;
+        issueSession.baseBranch = QStringLiteral("main");
+        issueSession.baseRef = agentRouteBaseRef;
         window.testAddAgentSession(issueSession);
 
         // adhoc #131: the agent detail page's "Branch" button opens that session's
-        // branch in the Git view's combined view — its graph plus its diff
-        // against the compare base. The sessions list is global, so the click has
-        // to point the Git view at the session's own repository first; from
-        // another repo's detail page it would otherwise render that repo's
-        // (missing) branch. Park the detail view on "me/r", then take the
-        // button's route for the session on "me/wtrepo".
+        // diff against main without repointing the graph below it. The sessions
+        // list is global, so the click still has to bind the Git view to the
+        // session's own repository first; from another repo's detail page it
+        // would otherwise render that repo's (missing) branch. Park the detail
+        // view on "me/r", then take the route for the session on "me/wtrepo".
         window.testOpenRepository(repoIdx);
         QApplication::processEvents();
         window.testSwitchToAgentBranch(issueSession.id);
@@ -2357,12 +2409,12 @@ int main(int argc, char *argv[])
                       "session's repository (adhoc #131, git dir = %1)")
                   .arg(agentBranchDir));
         check(window.testCommitWorkspacePage() == 2 &&
-                  window.testBrowsedBranch() ==
-                      agentRouteBranch,
-              QString("the agent's Branch button opens its branch's combined "
-                      "graph + diff view (adhoc #131/#16, page = %1, branch = %2)")
+                  window.testBrowsedBranch() == QStringLiteral("main") &&
+                  window.testBranchDiffBranch() == agentRouteBranch,
+              QString("the agent's Branch button reviews its range without "
+                      "moving the graph off main (page = %1, graph = %2, diff = %3)")
                   .arg(window.testCommitWorkspacePage())
-                  .arg(window.testBrowsedBranch()));
+                  .arg(window.testBrowsedBranch(), window.testBranchDiffBranch()));
         check(window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
               QString("the agent's branch keeps the source-control panel above "
@@ -2381,6 +2433,38 @@ int main(int argc, char *argv[])
               QString("an agent's Branch button always fills CHANGES with its "
                       "complete worktree diff (files = %1)")
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        check(window.testCompareIndicatorText() == QStringLiteral("main"),
+              QString("an agent's Branch button always compares against main "
+                      "(base = %1)")
+                  .arg(window.testCompareIndicatorText()));
+        bool containsPrimaryChange = false;
+        for (const QString &path : window.testSourceControlPaths()) {
+            if (path.startsWith(QStringLiteral("main-only/primary-unrelated-"))) {
+                containsPrimaryChange = true;
+                break;
+            }
+        }
+        check(!containsPrimaryChange &&
+                  window.testSourceControlPaths().size() == 1,
+              QString("an agent branch excludes the primary checkout's 23 unrelated "
+                      "changes (files = %1)")
+                  .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        QElapsedTimer agentPullTimer;
+        agentPullTimer.start();
+        QString agentPullCounts;
+        while (agentPullTimer.elapsed() < 5000) {
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+            agentPullCounts = gitOutput(
+                wtRepo.path(),
+                {"rev-list", "--left-right", "--count",
+                 "main..." + agentRouteBranch});
+            if (agentPullCounts.startsWith(QLatin1Char('0')))
+                break;
+        }
+        check(agentPullCounts.startsWith(QLatin1Char('0')),
+              QString("opening an agent branch automatically runs its highlighted "
+                      "Pull main action (main...branch = %1)")
+                  .arg(agentPullCounts));
         check(window.testClickSourceControlPath(QStringLiteral("agent-live.txt")),
               QStringLiteral("an agent branch's CHANGES row scrolls the right-hand "
                              "diff to that file"));
@@ -3118,15 +3202,18 @@ int main(int argc, char *argv[])
         chip.files = 7;
         chip.dirty = 2;
         chip.worktree = QStringLiteral("/tmp/wt-291");
+        chip.behind = 9;
+        chip.ahead = 4;
         check(window.testAgentStatusCellBadges(2910, chip) ==
-                  QStringLiteral("7|2|/tmp/wt-291"),
-              QString("the branch chip carries files/dirty/worktree badges "
+                  QStringLiteral("7|2|/tmp/wt-291|9|4"),
+              QString("the branch chip carries files/dirty/worktree and branch "
+                      "health badges "
                       "(adhoc #403, got %1)")
                   .arg(window.testAgentStatusCellBadges(2910, chip)));
         // A cleaned-up session with no patch yet leaves every badge unknown, so
         // the chip falls back to the plain branch button.
         check(window.testAgentStatusCellBadges(2910, AgentDiffStat()) ==
-                  QStringLiteral("-1|-1|"),
+                  QStringLiteral("-1|-1||-1|-1"),
               QString("a session with no patch/worktree paints a bare branch chip "
                       "(adhoc #403, got %1)")
                   .arg(window.testAgentStatusCellBadges(2910, AgentDiffStat())));
