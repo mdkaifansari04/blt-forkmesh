@@ -739,6 +739,14 @@ void MainWindow::refreshThemedIcons()
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
+    // Bank the still-running uptime clock exactly: the periodic persist in
+    // updateHomeStats() is throttled, so quitting mid-session would otherwise
+    // drop the minutes since its last write.
+    if (m_connectedAtMs > 0)
+        QSettings().setValue(kConnectionTotalSetting,
+                             m_totalConnectionMs +
+                                 QDateTime::currentMSecsSinceEpoch() -
+                                 m_connectedAtMs);
     saveChatHistory();
     // Record this session's stop time, then flush+trim the persisted log.
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));
