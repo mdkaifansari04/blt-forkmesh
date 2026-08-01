@@ -4366,7 +4366,7 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
             <span class="world-diagnostics-toggle" aria-hidden="true">⌃</span>
           </summary>
           <div class="world-diagnostics-details" aria-live="off">
-            <p>Local one-second samples only. No diagnostics are transmitted, and no URLs, locations, form contents, or activity history are collected.</p>
+            <p>Local one-second samples. Nothing here is transmitted while you are in the World; if the tab crashes, a summary of these readings and your device class is reported so the crash can be fixed. No URLs, locations, form contents, or activity history are collected.</p>
             <dl>
               <div><dt>Renderer</dt><dd data-world-diagnostics-renderer>Starting…</dd></div>
               <div><dt>Frame health</dt><dd data-world-diagnostics-frame-health>Sampling…</dd></div>

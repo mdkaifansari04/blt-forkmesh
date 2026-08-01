@@ -22,8 +22,14 @@ def test_diagnostics_bar_is_compact_expandable_and_device_local():
         'aria-label="Open local World performance and connection details"'
         in APP
     )
-    assert "Local one-second samples only." in APP
-    assert "No diagnostics are transmitted" in APP
+    assert "Local one-second samples." in APP
+    assert "Nothing here is transmitted while you are in the World" in APP
+    # The crash reporter does send a summary of these readings, so the panel
+    # says so rather than claiming diagnostics never leave the device.
+    assert (
+        "if the tab crashes, a summary of these readings and your device "
+        "class is reported"
+    ) in APP
     for sensitive in ("URLs", "locations", "form contents", "activity history"):
         assert sensitive in APP
     assert ".world-diagnostics summary" in CSS

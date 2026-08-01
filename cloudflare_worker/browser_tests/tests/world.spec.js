@@ -6145,7 +6145,9 @@ test("local diagnostics report renderer and existing socket state without new te
   await expect(diagnostics).toContainText("Socket frames");
   await expect(diagnostics).toContainText("coalesced");
   await expect(diagnostics).toContainText("dddddddddddd");
-  await expect(diagnostics).toContainText("No diagnostics are transmitted");
+  await expect(diagnostics).toContainText(
+    "Nothing here is transmitted while you are in the World",
+  );
 
   const snapshot = await page.locator("forkmesh-world").evaluate((shell) =>
     shell.lastDiagnosticsSnapshot,
