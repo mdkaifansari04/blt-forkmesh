@@ -218,9 +218,39 @@ static QString scmStatusTip(QChar status)
     }
 }
 
+bool MainWindow::sourceControlShowsRange() const
+{
+    return m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1 &&
+           m_commitsStack &&
+           m_commitsStack->currentIndex() == kCommitWorkspaceRangePage &&
+           !m_branchDiffBranch.isEmpty();
+}
+
+QString MainWindow::sourceControlGitDir() const
+{
+    if (sourceControlShowsRange() && !m_branchDiffWorkDir.isEmpty() &&
+        QDir(m_branchDiffWorkDir).exists())
+        return m_branchDiffWorkDir;
+    return repoGitDir();
+}
+
+void MainWindow::scrollBranchDiffToFile(const QString &path)
+{
+    if (!m_branchDiffView || path.isEmpty())
+        return;
+    const int index = m_branchDiffFilePaths.indexOf(path);
+    if (index < 0 || index >= m_branchDiffFileAnchors.size())
+        return;
+    m_lastSourceControlDiffPath = path;
+    flushDiffStream(m_branchDiffView);
+    m_branchDiffView->scrollToAnchor(m_branchDiffFileAnchors.at(index));
+    m_branchDiffView->setFocus();
+}
+
 QWidget *MainWindow::buildSourceControlPanel()
 {
     auto *panel = new QWidget;
+    m_scmPanel = panel;
     auto *root = new QVBoxLayout(panel);
     root->setContentsMargins(16, 10, 16, 6);
     root->setSpacing(6);
@@ -417,6 +447,44 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmControlsPanel->setSizePolicy(controlsPolicy);
     root->addWidget(m_scmControlsPanel);
 
+    // Keep committed-but-unpublished work visible in the same place as working
+    // changes. This mirrors VS Code's OUTGOING CHANGES group and avoids the easy
+    // trap where a clean tree looks fully synchronized even though local commits
+    // are still waiting to reach the mirror/upstream.
+    m_scmOutgoingPanel = new QWidget(panel);
+    m_scmOutgoingPanel->setObjectName(QStringLiteral("scmOutgoingPanel"));
+    auto *outgoingLayout = new QVBoxLayout(m_scmOutgoingPanel);
+    outgoingLayout->setContentsMargins(0, 2, 0, 4);
+    outgoingLayout->setSpacing(5);
+    auto *outgoingHeader = new QHBoxLayout;
+    outgoingHeader->setContentsMargins(0, 0, 0, 0);
+    outgoingHeader->setSpacing(6);
+    auto *outgoingTitle = new QLabel(QStringLiteral("OUTGOING CHANGES"));
+    outgoingTitle->setObjectName(QStringLiteral("sectionLabel"));
+    outgoingHeader->addWidget(outgoingTitle);
+    outgoingHeader->addStretch();
+    outgoingLayout->addLayout(outgoingHeader);
+
+    m_scmOutgoingLabel = new QLabel(m_scmOutgoingPanel);
+    m_scmOutgoingLabel->setObjectName(QStringLiteral("scmOutgoingLabel"));
+    m_scmOutgoingLabel->setTextFormat(Qt::RichText);
+    m_scmOutgoingLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    outgoingLayout->addWidget(m_scmOutgoingLabel);
+
+    m_scmSyncButton = new QPushButton(QStringLiteral("Sync Changes"),
+                                      m_scmOutgoingPanel);
+    m_scmSyncButton->setObjectName(QStringLiteral("scmSyncButton"));
+    m_scmSyncButton->setCursor(Qt::PointingHandCursor);
+    m_scmSyncButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_scmSyncButton->setToolTip(
+        QStringLiteral("Publish outgoing commits to the network mirror or push "
+                       "them to the configured upstream branch"));
+    setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+    connect(m_scmSyncButton, &QPushButton::clicked, this,
+            &MainWindow::pushCurrentRepoUpstream);
+    outgoingLayout->addWidget(m_scmSyncButton);
+    m_scmOutgoingPanel->hide();
+
     auto *header = new QHBoxLayout;
     auto *title = new QLabel("CHANGES");
     title->setObjectName("sectionLabel");
@@ -446,7 +514,14 @@ QWidget *MainWindow::buildSourceControlPanel()
     setOcticon(m_scmRefreshButton, "sync", 14);
     m_scmRefreshButton->setToolTip("Rescan the working tree for changes");
     connect(m_scmRefreshButton, &QPushButton::clicked, this,
-            [this] { refreshSourceControl(true); });
+            [this] {
+                if (sourceControlShowsRange()) {
+                    m_branchDiffLastValid = false;
+                    renderBranchScopeDiff();
+                } else {
+                    refreshSourceControl(true);
+                }
+            });
     addRefreshSpin(m_scmRefreshButton);
 
     // Auto-mark-viewed toggle: while checked, a file whose end has scrolled into
@@ -460,8 +535,12 @@ QWidget *MainWindow::buildSourceControlPanel()
         "Automatically mark files as viewed while scrolling");
     connect(m_scmAutoViewedButton, &QPushButton::clicked, this, [this](bool on) {
         setAutoMarkViewedOnScrollPref(on);
-        if (on)
-            applyScmAutoMarkViewedOnScroll(); // catch up on where we already are
+        if (on) {
+            if (sourceControlShowsRange())
+                applyBranchAutoMarkViewedOnScroll();
+            else
+                applyScmAutoMarkViewedOnScroll();
+        }
     });
 
     for (QPushButton *b : {m_scmPrevButton, m_scmNextButton, m_scmRefreshButton,
@@ -480,6 +559,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     header->addWidget(m_scmNextButton);
     header->addWidget(m_scmRefreshButton);
     root->addLayout(header);
+    root->addWidget(m_scmOutgoingPanel);
 
     m_scmTree = new QTreeWidget;
     m_scmTree->setObjectName("fileTree");
@@ -520,6 +600,10 @@ QWidget *MainWindow::buildSourceControlPanel()
                 const QString path = item->data(0, Qt::UserRole).toString();
                 if (path.isEmpty())
                     return; // group header
+                if (item->data(0, Qt::UserRole + 3).toBool()) {
+                    scrollBranchDiffToFile(path);
+                    return;
+                }
                 showScmDiff(path, item->data(0, Qt::UserRole + 1).toBool(),
                             item->data(0, Qt::UserRole + 2).toBool());
             });
@@ -534,6 +618,160 @@ QWidget *MainWindow::buildSourceControlPanel()
     root->addWidget(m_scmEmptyNote);
 
     return panel;
+}
+
+void MainWindow::showRangeFilesInSourceControl(const QStringList &paths,
+                                               const QStringList &statuses)
+{
+    // The agent Branch route may still be settling the Code -> Git stack when
+    // its async diff completes. m_branchDiffBranch is the request identity; do
+    // not discard valid range files merely because a transient page index has
+    // not caught up yet.
+    if (!m_scmTree || m_branchDiffBranch.isEmpty())
+        return;
+
+    // A range may be backed by another linked worktree, while the Sync action
+    // publishes the repository's primary checkout. Never show an action for one
+    // checkout beside the outgoing count of another.
+    if (m_scmOutgoingPanel)
+        m_scmOutgoingPanel->hide();
+
+    m_scmStatusCache.clear(); // returning to main must rebuild its working tree
+    m_scmTree->setEnabled(true); // range files remain reviewable on read-only mirrors
+    if (m_scmEmptyNote)
+        m_scmEmptyNote->hide();
+    m_scmTree->clear();
+
+    if (!paths.isEmpty()) {
+        auto *group = new QTreeWidgetItem(m_scmTree);
+        group->setFirstColumnSpanned(true);
+        auto *groupWidget = new QWidget;
+        auto *groupLayout = new QHBoxLayout(groupWidget);
+        groupLayout->setContentsMargins(0, 0, 6, 0);
+        auto *label = new QLabel(
+            QStringLiteral("Changes against %1 (%2)")
+                .arg(branchCompareBase())
+                .arg(paths.size()),
+            groupWidget);
+        QFont font = label->font();
+        font.setBold(true);
+        label->setFont(font);
+        groupLayout->addWidget(label);
+        groupLayout->addStretch();
+        auto *openAll = new QToolButton(groupWidget);
+        openAll->setIcon(themedOcticon("diff", QColor("#8b949e"), 14));
+        openAll->setToolTip(QStringLiteral("Open all branch changes"));
+        openAll->setAutoRaise(true);
+        openAll->setCursor(Qt::PointingHandCursor);
+        connect(openAll, &QToolButton::clicked, this, [this, paths] {
+            if (!paths.isEmpty())
+                scrollBranchDiffToFile(paths.first());
+        });
+        groupLayout->addWidget(openAll);
+        m_scmTree->setItemWidget(group, 0, groupWidget);
+
+        for (int i = 0; i < paths.size(); ++i) {
+            const QString path = paths.at(i);
+            const QString status = statuses.value(i, QStringLiteral("modified"));
+            QChar statusCode = QLatin1Char('M');
+            if (status == QLatin1String("added"))
+                statusCode = QLatin1Char('A');
+            else if (status == QLatin1String("deleted"))
+                statusCode = QLatin1Char('D');
+            else if (status == QLatin1String("renamed"))
+                statusCode = QLatin1Char('R');
+
+            auto *item = new QTreeWidgetItem(group);
+            item->setFirstColumnSpanned(true);
+            item->setToolTip(0, path);
+            item->setData(0, Qt::UserRole, path);
+            item->setData(0, Qt::UserRole + 3, true); // branch-range row
+
+            auto *row = new ScmFileRow;
+            auto *layout = new QHBoxLayout(row);
+            layout->setContentsMargins(4, 1, 6, 1);
+            layout->setSpacing(5);
+            auto *fileIcon = new QLabel(row);
+            fileIcon->setPixmap(iconForFile(path.section('/', -1)).pixmap(14, 14));
+            fileIcon->setFixedSize(14, 14);
+            fileIcon->setAttribute(Qt::WA_TransparentForMouseEvents);
+            layout->addWidget(fileIcon);
+
+            const QString fileName = path.section('/', -1);
+            QString directory = path.left(path.size() - fileName.size());
+            if (directory.endsWith('/'))
+                directory.chop(1);
+            auto *fileLabel = new QLabel(fileName, row);
+            fileLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+            layout->addWidget(fileLabel);
+            if (!directory.isEmpty()) {
+                auto *directoryLabel = new QLabel(directory, row);
+                directoryLabel->setObjectName(QStringLiteral("statusLine"));
+                directoryLabel->setAttribute(Qt::WA_TransparentForMouseEvents);
+                layout->addWidget(directoryLabel);
+            }
+            layout->addStretch();
+
+            auto *statusLabel = new QLabel(QString(statusCode), row);
+            statusLabel->setToolTip(scmStatusTip(statusCode));
+            QFont statusFont = statusLabel->font();
+            statusFont.setBold(true);
+            statusLabel->setFont(statusFont);
+            layout->addWidget(statusLabel);
+
+            auto *actions = new QWidget(row);
+            auto *actionsLayout = new QHBoxLayout(actions);
+            actionsLayout->setContentsMargins(0, 0, 0, 0);
+            auto *open = new QToolButton(actions);
+            open->setIcon(themedOcticon("file", QColor("#8b949e"), 14));
+            open->setToolTip(QStringLiteral("Open file"));
+            open->setAutoRaise(true);
+            open->setCursor(Qt::PointingHandCursor);
+            connect(open, &QToolButton::clicked, this,
+                    [this, path] { openRepoFile(path); });
+            actionsLayout->addWidget(open);
+            layout->addWidget(actions);
+            row->setActionsWidget(actions);
+            row->onClicked = [this, item, path] {
+                m_scmTree->setCurrentItem(item);
+                scrollBranchDiffToFile(path);
+            };
+            m_scmTree->setItemWidget(item, 0, row);
+        }
+        group->setExpanded(true);
+    }
+
+    fitTreeToWidestEntry(m_scmTree);
+    if (m_scmCountLabel)
+        m_scmCountLabel->setText(paths.isEmpty() ? QString()
+                                                  : QString::number(paths.size()));
+    if (m_scmViewedLabel) {
+        const QSet<QString> viewed = loadDiffViewed(m_branchDiffViewedContext);
+        int seen = 0;
+        for (const QString &path : paths)
+            if (viewed.contains(path))
+                ++seen;
+        m_scmViewedLabel->setText(
+            paths.isEmpty()
+                ? QString()
+                : QStringLiteral("%1 of %2 files viewed").arg(seen).arg(paths.size()));
+    }
+
+    // The composer acts on the compared branch's checkout. Committed range
+    // files remain visible here, while commit buttons enable only when that
+    // checkout also has staged/unstaged work to record.
+    QByteArray status;
+    const QString dir = sourceControlGitDir();
+    if (!dir.isEmpty())
+        runGitCapture(dir, {"status", "--porcelain=v1", "-z"}, &status, nullptr);
+    const bool dirty = !status.isEmpty();
+    for (QPushButton *button : {m_scmCommitButton, m_scmCommitPushButton,
+                                m_scmStageCommitPushButton})
+        if (button)
+            button->setEnabled(dirty);
+    if (m_scmGenerateButton)
+        m_scmGenerateButton->setEnabled(
+            dirty || (m_scmGenDuration && m_scmGenDuration->currentIndex() > 0));
 }
 
 // Rows the changes panel shows for a `git status --porcelain=v1 -z` dump: one
@@ -577,7 +815,7 @@ void MainWindow::refreshRepoChangeBadge()
 {
     if (!m_railGitButton)
         return;
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree()) {
         m_railGitButton->setBadgeCount(0);
         return;
@@ -618,8 +856,18 @@ void MainWindow::refreshSourceControl(bool force)
     // committing/pulling elsewhere can leave that button stale.
     if (force)
         refreshRepoSyncIndicators();
-    const QString dir = repoGitDir();
+    if (sourceControlShowsRange()) {
+        if (m_scmOutgoingPanel)
+            m_scmOutgoingPanel->hide();
+        if (force) {
+            m_branchDiffLastValid = false;
+            renderBranchScopeDiff();
+        }
+        return;
+    }
+    const QString dir = sourceControlGitDir();
     const bool canWrite = !dir.isEmpty() && repoHasWorkingTree();
+    refreshSourceControlOutgoing();
     if (m_scmEmptyNote)
         m_scmEmptyNote->setVisible(!canWrite);
     for (QWidget *w : {static_cast<QWidget *>(m_scmMessage),
@@ -661,6 +909,12 @@ void MainWindow::refreshSourceControl(bool force)
 
     QByteArray out;
     runGitCapture(dir, {"status", "--porcelain=v1", "-z"}, &out, nullptr);
+
+    // runGitCapture pumps the event loop. An agent's Branch click can therefore
+    // open and finish a range diff while this older working-tree scan is in
+    // flight. Never let that stale scan clear the range files that just landed.
+    if (sourceControlShowsRange())
+        return;
 
     // Skip the full rebuild when the working tree is unchanged since the last
     // scan. This matters now that we rescan on tab focus / window activation:
@@ -917,6 +1171,139 @@ void MainWindow::refreshSourceControl(bool force)
     }
 }
 
+void MainWindow::refreshSourceControlOutgoing()
+{
+    if (!m_scmOutgoingPanel || !m_scmOutgoingLabel || !m_scmSyncButton)
+        return;
+    const bool showOutgoingPanel =
+        !sourceControlShowsRange() && m_scmPanel && m_scmPanel->isVisible();
+    if (!showOutgoingPanel)
+        m_scmOutgoingPanel->hide();
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
+        ++m_scmOutgoingGeneration;
+        m_scmOutgoingPanel->hide();
+        if (m_railGitButton) {
+            m_railGitButton->setPendingSyncCount(0);
+            m_railGitButton->setToolTip(
+                QStringLiteral("Source control — view the current changes"));
+        }
+        return;
+    }
+
+    const int repoIndex = m_repoDetailIndex;
+    // Git reads pump the event loop; keep an owned snapshot so a nested repo-list
+    // refresh cannot invalidate a reference into m_repositories mid-scan.
+    const RepositoryRecord repo = m_repositories.at(repoIndex);
+    if (repo.localPath.isEmpty() ||
+        !QDir(repo.localPath).exists(QStringLiteral(".git"))) {
+        ++m_scmOutgoingGeneration;
+        m_scmOutgoingPanel->hide();
+        if (m_railGitButton)
+            m_railGitButton->setPendingSyncCount(0);
+        return;
+    }
+
+    QByteArray branchOut;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("symbolic-ref"), QStringLiteral("--short"),
+                        QStringLiteral("HEAD")},
+                       &branchOut, nullptr)) {
+        ++m_scmOutgoingGeneration;
+        m_scmOutgoingPanel->hide(); // detached HEAD has no branch to publish
+        if (m_railGitButton)
+            m_railGitButton->setPendingSyncCount(0);
+        return;
+    }
+    const QString branch = QString::fromUtf8(branchOut).trimmed();
+    if (repoIndex != m_repoDetailIndex || repoIndex >= m_repositories.size() ||
+        m_repositories.at(repoIndex).localPath != repo.localPath)
+        return;
+    const bool haveMirror = !repo.mirrorPath.isEmpty() &&
+                            QDir(repo.mirrorPath).exists();
+    QString mirrorTip =
+        haveMirror ? mirrorBranchCommit(repo.mirrorPath, branch) : QString();
+    // A newly-created local branch has no same-named mirror ref yet. Compare it
+    // with the mirror's default tip instead of calling the repository's entire
+    // inherited history "outgoing".
+    if (haveMirror && mirrorTip.isEmpty())
+        mirrorTip = mirrorBranchCommit(repo.mirrorPath,
+                                       mirrorHeadBranch(repo.mirrorPath));
+    if (repoIndex != m_repoDetailIndex || repoIndex >= m_repositories.size() ||
+        m_repositories.at(repoIndex).localPath != repo.localPath)
+        return;
+    QStringList countArgs{QStringLiteral("rev-list"), QStringLiteral("--count")};
+    if (haveMirror) {
+        countArgs << (mirrorTip.isEmpty()
+                          ? branch
+                          : mirrorTip + QStringLiteral("..") + branch);
+    } else {
+        countArgs << QStringLiteral("@{upstream}..HEAD");
+    }
+
+    const bool busy = m_pushingRepos.contains(m_repoDetailIndex) ||
+                      m_syncingRepos.contains(m_repoDetailIndex);
+    if (showOutgoingPanel &&
+        m_scmOutgoingPanel->property("branch").toString() != branch)
+        m_scmOutgoingPanel->hide();
+    if (showOutgoingPanel && busy && m_scmOutgoingPanel->isVisible()) {
+        m_scmSyncButton->setEnabled(false);
+        m_scmSyncButton->setText(QStringLiteral("Syncing Changes…"));
+        setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+    }
+
+    // Counting a long branch walk synchronously can stall the UI on a large
+    // history. Keep the scan detached and generation-tagged so rapid repo/branch
+    // switches cannot paint an old count into the new checkout.
+    const int generation = ++m_scmOutgoingGeneration;
+    runGitDetached(
+        repo.localPath, countArgs,
+        [this, generation, repoIndex, branch](bool ok, const QByteArray &out) {
+            if (generation != m_scmOutgoingGeneration ||
+                repoIndex != m_repoDetailIndex)
+                return;
+            const int pending =
+                ok ? QString::fromUtf8(out).trimmed().toInt() : 0;
+            if (m_railGitButton) {
+                m_railGitButton->setPendingSyncCount(pending);
+                m_railGitButton->setToolTip(
+                    pending > 0
+                        ? QStringLiteral("Source control — %1 commit%2 waiting to sync")
+                              .arg(pending)
+                              .arg(pending == 1 ? QString() : QStringLiteral("s"))
+                        : QStringLiteral("Source control — view the current changes"));
+            }
+            // A closed Git view or branch/range comparison must leave its hidden
+            // controls inert, while the rail marker still reflects the checkout's
+            // unpublished commits.
+            if (sourceControlShowsRange() || !m_scmPanel ||
+                !m_scmPanel->isVisible()) {
+                m_scmOutgoingPanel->hide();
+                return;
+            }
+            const bool stillBusy = m_pushingRepos.contains(repoIndex) ||
+                                   m_syncingRepos.contains(repoIndex);
+            if (pending <= 0 && !stillBusy) {
+                m_scmOutgoingPanel->hide();
+                return;
+            }
+
+            // The blue bullseye matches local-branch ref pills in the graph.
+            m_scmOutgoingLabel->setText(
+                QStringLiteral(
+                    "<span style='color:#1f6feb'>&#9673;</span> "
+                    "<b>%1</b><span style='color:#8b949e'> · %2&#8593;</span>")
+                    .arg(branch.toHtmlEscaped())
+                    .arg(pending));
+            m_scmOutgoingPanel->setProperty("branch", branch);
+            m_scmSyncButton->setEnabled(!stillBusy && pending > 0);
+            m_scmSyncButton->setText(
+                stillBusy ? QStringLiteral("Syncing Changes…")
+                          : QStringLiteral("Sync Changes %1↑").arg(pending));
+            setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+            m_scmOutgoingPanel->show();
+        });
+}
+
 // QSettings context (see loadDiffViewed) for the working-tree diff. One shared
 // context for the whole change set — a path is "viewed" whether its staged or
 // its unstaged side is the one you scrolled through.
@@ -1026,7 +1413,7 @@ void MainWindow::renderScmCombinedDiff()
 {
     if (!m_scmDiff)
         return;
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
         return;
 
@@ -1144,6 +1531,7 @@ void MainWindow::scrollScmDiffToFile(const QString &path, bool staged)
         idx = m_scmSectionPaths.indexOf(path); // only one side has a diff
     if (idx < 0)
         return;
+    m_lastSourceControlDiffPath = path;
     m_scmDiff->scrollToAnchor(m_scmSectionAnchors.at(idx));
     updateScmDiffScrollState();
 }
@@ -1393,6 +1781,26 @@ void MainWindow::onScmDiffAnchorClicked(const QUrl &url)
 
 void MainWindow::scmSelectAdjacentChange(int delta)
 {
+    if (sourceControlShowsRange() && m_scmTree) {
+        QList<QTreeWidgetItem *> files;
+        for (int g = 0; g < m_scmTree->topLevelItemCount(); ++g) {
+            QTreeWidgetItem *group = m_scmTree->topLevelItem(g);
+            for (int i = 0; group && i < group->childCount(); ++i)
+                files.append(group->child(i));
+        }
+        if (files.isEmpty())
+            return;
+        int index = files.indexOf(m_scmTree->currentItem());
+        if (index < 0)
+            index = delta > 0 ? 0 : files.size() - 1;
+        else
+            index = qBound(0, index + delta, files.size() - 1);
+        m_scmTree->setCurrentItem(files.at(index));
+        m_scmTree->scrollToItem(files.at(index));
+        scrollBranchDiffToFile(
+            files.at(index)->data(0, Qt::UserRole).toString());
+        return;
+    }
     // Every change shares one scrollable view, so stepping is just the next /
     // previous hunk anywhere in the working tree — scmScrollToAdjacentHunk
     // crosses file boundaries on its own, and the scroll drags the sticky header
@@ -1457,7 +1865,7 @@ void MainWindow::scmStagePath(const QString &path)
         }
     }
 
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     QString err;
     if (!runGitCapture(dir, {"add", "-A", "--", path}, nullptr, &err))
         QMessageBox::warning(this, "Stage", err.isEmpty() ? "git add failed." : err);
@@ -1474,7 +1882,7 @@ void MainWindow::scmStagePath(const QString &path)
 
 void MainWindow::scmUnstagePath(const QString &path)
 {
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     QString err;
     if (!runGitCapture(dir, {"restore", "--staged", "--", path}, nullptr, &err) &&
         !runGitCapture(dir, {"reset", "-q", "--", path}, nullptr, nullptr))
@@ -1489,7 +1897,7 @@ void MainWindow::scmDiscardPath(const QString &path, bool untracked)
             QStringLiteral("Discard changes to \"%1\"? This cannot be undone.").arg(path),
             QMessageBox::Discard | QMessageBox::Cancel) != QMessageBox::Discard)
         return;
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     if (untracked) {
         QFile::remove(QDir(dir).filePath(path));
     } else {
@@ -1504,7 +1912,7 @@ void MainWindow::scmDiscardPath(const QString &path, bool untracked)
 
 void MainWindow::scmStageAll()
 {
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     QString err;
     if (!runGitCapture(dir, {"add", "-A"}, nullptr, &err))
         QMessageBox::warning(this, "Stage all", err.isEmpty() ? "git add failed." : err);
@@ -1513,7 +1921,7 @@ void MainWindow::scmStageAll()
 
 void MainWindow::scmUnstageAll()
 {
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     runGitCapture(dir, {"reset", "-q"}, nullptr, nullptr);
     refreshSourceControl();
 }
@@ -1526,7 +1934,7 @@ void MainWindow::scmDiscardAll()
             "This cannot be undone.",
             QMessageBox::Discard | QMessageBox::Cancel) != QMessageBox::Discard)
         return;
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     runGitCapture(dir, {"restore", "--", "."}, nullptr, nullptr);
     runGitCapture(dir, {"clean", "-fd"}, nullptr, nullptr);
     refreshSourceControl();
@@ -1534,7 +1942,7 @@ void MainWindow::scmDiscardAll()
 
 bool MainWindow::performScmCommit()
 {
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
         return false;
     const QString msg =
@@ -1593,7 +2001,7 @@ void MainWindow::scmCommitAndPush()
 
 void MainWindow::scmStageAllCommitAndPush()
 {
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     if (dir.isEmpty() || !repoHasWorkingTree())
         return;
     // Check the message before staging, so a missing one doesn't leave everything
@@ -1615,7 +2023,7 @@ void MainWindow::scmStageAllCommitAndPush()
 
 QString MainWindow::scmContextDiff() const
 {
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     if (dir.isEmpty())
         return QString();
 
@@ -1657,7 +2065,7 @@ QString MainWindow::scmContextDiff() const
 
 QStringList MainWindow::scmDiffScopeArgs() const
 {
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     const int dur = m_scmGenDuration ? m_scmGenDuration->currentIndex() : 0;
     if (!dir.isEmpty() && (dur == 1 || dur == 2)) {
         const QString cutoff =
@@ -1690,7 +2098,7 @@ QStringList MainWindow::scmDiffScopeArgs() const
 // choice and verb wording so re-clicking Generate offers alternative drafts.
 QString MainWindow::scmHeuristicCommitMessage(int variant) const
 {
-    const QString dir = repoGitDir();
+    const QString dir = sourceControlGitDir();
     if (dir.isEmpty())
         return QString();
     const QStringList scope = scmDiffScopeArgs();
