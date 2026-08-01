@@ -2218,7 +2218,10 @@ private:
     // Same as continueSelectedAgentSession, but for an arbitrary session id —
     // used to resume a session steered from the website (adhoc #182) without
     // disturbing whatever session is currently selected in the UI.
-    void continueAgentSession(int sessionId);
+    // deferRefresh=true skips the trailing reload/queue pump so a batch caller
+    // (startAllStoppedAgents) can rebuild the table and drain the queue once at
+    // the end rather than once per session.
+    void continueAgentSession(int sessionId, bool deferRefresh = false);
     // Ask the given session's agent to merge base and resolve conflicts, then
     // resume it. Driven by the agents list's orange conflict button (adhoc
     // #446); a no-op while that session is already running or queued.
@@ -2362,6 +2365,11 @@ private:
     QList<int> stoppableAgentSessionIds() const;
     // Stop every session above and clear the pending queue (adhoc #433).
     void stopAllRunningAgents();
+    // "Stop all" read backwards (adhoc #136): the idle sessions — stopped or
+    // failed, ours, not merged — that can be resumed, across all repos.
+    QList<int> startableAgentSessionIds() const;
+    // Queue every session above for a resume; the run limit drains the queue.
+    void startAllStoppedAgents();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
@@ -6656,8 +6664,10 @@ private:
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
     // Above the session list: stop every running agent and cancel the queue
-    // (adhoc #433).
+    // (adhoc #433), and its counterpart that resumes every stopped/failed one
+    // (adhoc #136).
     QPushButton *m_agentStopAllButton = nullptr;
+    QPushButton *m_agentStartAllButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Detail-toolbar buttons (adhoc #51) opening this session's branch in the
     // Branches tab and its worktree in the Worktrees tab. Full-size buttons like
