@@ -3506,7 +3506,7 @@ void MainWindow::testOpenAiAgentKey()
     const qint64 usageStart = end - 24 * 60 * 60;
     const qint64 costsStart =
         QDate(now.date().year(), now.date().month(), 1)
-            .startOfDay(QTimeZone(QTimeZone::UTC))
+            .startOfDay(QTimeZone::utc())
             .toSecsSinceEpoch();
     // Costs are returned in whole UTC-day buckets. Since end_time is
     // exclusive, use the next midnight so the still-open bucket for today is
@@ -3514,7 +3514,7 @@ void MainWindow::testOpenAiAgentKey()
     const qint64 costsEnd =
         now.date()
             .addDays(1)
-            .startOfDay(QTimeZone(QTimeZone::UTC))
+            .startOfDay(QTimeZone::utc())
             .toSecsSinceEpoch();
 
     auto finish = [this, state] {
@@ -4257,9 +4257,9 @@ void MainWindow::refreshClaudeSpend()
     // first of the month (UTC) through the next midnight so today is included.
     const QDateTime now = QDateTime::currentDateTimeUtc();
     const QDateTime monthStart(QDate(now.date().year(), now.date().month(), 1),
-                               QTime(0, 0), QTimeZone(QTimeZone::UTC));
+                               QTime(0, 0), QTimeZone::utc());
     const QDateTime end(now.date().addDays(1), QTime(0, 0),
-                        QTimeZone(QTimeZone::UTC));
+                        QTimeZone::utc());
     const QString iso = QStringLiteral("yyyy-MM-ddTHH:mm:ssZ");
     const QString startStr = monthStart.toString(iso);
     const QString endStr = end.toString(iso);
