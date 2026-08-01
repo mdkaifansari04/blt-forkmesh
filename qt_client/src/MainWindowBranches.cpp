@@ -990,6 +990,24 @@ bool MainWindow::testBranchesPanelOwnsDiffView() const
            m_branchesTable->parentWidget()->isAncestorOf(m_branchDiffView);
 }
 
+bool MainWindow::testGitWorkspaceIsExclusive() const
+{
+    if (!m_railGitButton || !m_railCodeButton || !m_repoDetailChrome ||
+        !m_repoFilesModeBar || !m_repoOverviewChrome || !m_footerDock ||
+        !m_commitsStack)
+        return false;
+    if (!m_railGitButton->isChecked() || m_railCodeButton->isChecked() ||
+        !m_repoDetailChrome->isHidden() || !m_repoFilesModeBar->isHidden() ||
+        !m_repoOverviewChrome->isHidden() || !m_footerDock->isHidden())
+        return false;
+    for (QTextEdit *view : m_diffViews) {
+        if (view && view->isVisibleTo(this) &&
+            !m_commitsStack->isAncestorOf(view))
+            return false;
+    }
+    return true;
+}
+
 int MainWindow::testCommitWorkspacePage() const
 {
     return m_commitsStack ? m_commitsStack->currentIndex() : -1;

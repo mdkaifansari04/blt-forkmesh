@@ -1691,6 +1691,17 @@ int main(int argc, char *argv[])
     // on screen instead of going blank.
     QTemporaryDir wtRepo;
     if (initGitRepo(wtRepo)) {
+        // A base-tracked file that the feature worktree deletes exercises the
+        // complete-snapshot diff path. Deleted files must come from Git's
+        // temporary index without trying to stat a path that no longer exists.
+        {
+            QFile baseFile(wtRepo.path() + QStringLiteral("/base-delete.txt"));
+            baseFile.open(QIODevice::WriteOnly);
+            baseFile.write("tracked on main\n");
+            baseFile.close();
+        }
+        runGitChecked(wtRepo.path(), {"add", "base-delete.txt"});
+        runGitChecked(wtRepo.path(), {"commit", "-m", "base file for deletion"});
         runGitChecked(wtRepo.path(), {"branch", "feature/keep-selected"});
         // A second branch so the compare base has somewhere else to point
         // (adhoc #16 — the base end of "<branch> -> <base>" is switchable).
@@ -2027,6 +2038,9 @@ int main(int argc, char *argv[])
                   .arg(window.testOverviewBodyPage())
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testBrowsedBranch()));
+        check(window.testGitWorkspaceIsExclusive(),
+              QStringLiteral("a branch diff gives the Git rail exclusive ownership: "
+                             "no Code chrome and no visible diff outside Git"));
 
         // adhoc #420: following a branch link must land on the branch straight
         // away. The panel's git reads run on a worker thread now, so the
@@ -2092,6 +2106,13 @@ int main(int argc, char *argv[])
               QString("opening a linked agent branch automatically pulls main "
                       "into its own worktree (main...branch = %1)")
                   .arg(autoPullCounts));
+        // Now that automatic synchronization has completed, introduce the
+        // staged deletion and re-open the same branch. This isolates the diff
+        // regression without making the earlier pull test reject a dirty tree.
+        QFile::remove(wtPath + QStringLiteral("/base-delete.txt"));
+        runGitChecked(wtPath, {"add", "-A", "--", "base-delete.txt"});
+        window.testSwitchToBranchImmediateSelection(
+            QStringLiteral("feature/keep-selected"));
         QElapsedTimer diffTimer;
         diffTimer.start();
         while (diffTimer.elapsed() < 5000 &&
@@ -2102,6 +2123,11 @@ int main(int argc, char *argv[])
                   QStringLiteral("live-uncommitted.txt")),
               QString("a worktree comparison includes its uncommitted and "
                       "untracked files (files = %1)")
+                  .arg(window.testBranchDiffFiles().join(QStringLiteral(", "))));
+        check(window.testBranchDiffFiles().contains(
+                  QStringLiteral("base-delete.txt")),
+              QString("a staged deletion renders in Git without an unable-to-stat "
+                      "error (files = %1)")
                   .arg(window.testBranchDiffFiles().join(QStringLiteral(", "))));
         check(window.testSourceControlPaths() == window.testBranchDiffFiles(),
               QString("the universal CHANGES tree lists the branch range's files "

@@ -9348,10 +9348,27 @@ inline bool buildWorkingTreeDiff(const QString &dir, const QString &base, QByteA
     env.insert(QStringLiteral("GIT_INDEX_FILE"), temp.path() + QStringLiteral("/index"));
 
     QByteArray ignored;
-    if (!runGitCaptureWithEnv(dir, {"read-tree", base}, env, &ignored, err))
-        return false;
-    if (!runGitCaptureWithEnv(dir, {"add", "-A", "--", "."}, env, &ignored, err))
-        return false;
+    auto stageSnapshot = [&] {
+        if (!runGitCaptureWithEnv(dir, {"read-tree", base}, env, &ignored, err))
+            return false;
+        return runGitCaptureWithEnv(dir, {"add", "-A", "--", "."}, env,
+                                    &ignored, err);
+    };
+    if (!stageSnapshot()) {
+        // Agent worktrees change while they are being reviewed. If a file is
+        // deleted between Git's directory scan and stat call, `git add -A` can
+        // transiently fail with "unable to stat … No such file" even though a
+        // deletion is a perfectly valid diff. Rebuild the temporary index and
+        // take one fresh snapshot; the real worktree/index remain untouched.
+        const QString firstError = err ? *err : QString();
+        const bool racedDeletion =
+            firstError.contains(QStringLiteral("unable to stat"),
+                                Qt::CaseInsensitive) ||
+            firstError.contains(QStringLiteral("No such file"),
+                                Qt::CaseInsensitive);
+        if (!racedDeletion || !stageSnapshot())
+            return false;
+    }
     return runGitCaptureWithEnv(dir, {"diff", "--binary", "--cached", base}, env, out, err);
 }
 
