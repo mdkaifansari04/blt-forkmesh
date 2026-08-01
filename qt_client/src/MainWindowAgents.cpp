@@ -5917,6 +5917,14 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     config.promptPreamble = agentPromptPreamble();
+    config.mode = QSettings()
+                      .value(kAgentModeSetting,
+                             QSettings().value(kClaudeAutoModeSetting, true).toBool()
+                                 ? kClaudeAutoModeLabel
+                                 : kAgentAskModeLabel)
+                      .toString()
+                      .trimmed();
+    config.strength = composerAgentStrength();
     // Jail (adhoc #236): the headless runner wraps its command and scratch env
     // when a cap is set; 0 leaves the run unjailed.
     if (QSettings().value(kAgentJailSetting, false).toBool())
@@ -5935,6 +5943,7 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
         config.command = claudeCommandSetting();
         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
+        config.model = QStringLiteral("claude-sonnet-4-6");
     } else if (agentIsCodexProvider(provider)) {
         // Codex: run the installed CLI against the user's normal Codex login, just
         // like Claude Code. This keeps a ChatGPT/Codex plan upgrade from being
@@ -6471,6 +6480,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
         if (!session.model.isEmpty() &&
             agentModelMatchesProvider(provider, session.model))
             config.model = session.model;
+        if (!session.mode.isEmpty())
+            config.mode = session.mode;
+        if (!session.strength.isEmpty())
+            config.strength = session.strength;
         markAgentLimitWindow(provider);
         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
         reloadAgents();
@@ -7156,6 +7169,10 @@ void MainWindow::processAgentQueue()
         if (!snapshot.model.isEmpty() &&
             agentModelMatchesProvider(snapshot.provider, snapshot.model))
             config.model = snapshot.model;
+        if (!snapshot.mode.isEmpty())
+            config.mode = snapshot.mode;
+        if (!snapshot.strength.isEmpty())
+            config.strength = snapshot.strength;
         // Ad-hoc API-key runs ride their saved task through the config override,
         // mirroring startAdHocAgentForRepo so they resume the same way after a restart.
         if (snapshot.issueNumber == 0 && !snapshot.prompt.isEmpty())
@@ -7936,8 +7953,30 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     const QString branchName = session.branchName;
     const QString baseRef = session.baseRef;
     const int issueNumber = session.issueNumber;
-    const QString model = session.model;
-    const QString sessionMode = session.mode;
+    QString selectedModel = session.model;
+    if (selectedModel.isEmpty())
+        selectedModel = QSettings()
+                            .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
+                            .toString()
+                            .trimmed();
+    const QString launchProvider = codex ? kCodexProvider : QStringLiteral("claude-code");
+    if (!agentModelMatchesProvider(launchProvider, selectedModel))
+        selectedModel.clear();
+    const QString sessionMode =
+        session.mode.isEmpty()
+            ? QSettings()
+                  .value(kAgentModeSetting,
+                         QSettings().value(kClaudeAutoModeSetting, true).toBool()
+                             ? kClaudeAutoModeLabel
+                             : kAgentAskModeLabel)
+                  .toString()
+                  .trimmed()
+            : session.mode;
+    const QString sessionStrength =
+        session.strength.isEmpty() ? composerAgentStrength() : session.strength;
+    session.model = selectedModel;
+    session.mode = sessionMode;
+    session.strength = sessionStrength;
 
     session.status = AgentStatus::Running;
     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
@@ -7984,27 +8023,12 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
     // otherwise fall back to the footer quick-add bar's persisted choice (adhoc
     // #261). Empty leaves the CLI on its own default; otherwise it's passed
     // through as `--model`.
-    QString selectedModel =
-        !model.isEmpty()
-            ? model
-            : QSettings()
-                  .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
-                  .toString()
-                  .trimmed();
-    // A session continued by a different provider may still carry the previous
-    // provider's model (e.g. a Codex session left with "claude-opus-4-8"); the
-    // CLI rejects a foreign model, so drop it and fall back to this provider's
-    // default rather than fail the turn (adhoc #76).
-    const QString launchProvider =
-        codex ? kCodexProvider : QStringLiteral("claude-code");
-    if (!agentModelMatchesProvider(launchProvider, selectedModel))
-        selectedModel.clear();
     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
     // prompt — `lead` carries the user's ask (or the issue + its comments).
     const QString routeTask = lead;
     auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
                    selectedModel, routeTask, codex,
-                   sessionMode](const QString &workdir) {
+                   sessionMode, sessionStrength](const QString &workdir) {
         if (codex) {
             CodexAppServerSession *live = m_codexStreams.value(sid);
             if (!live)
@@ -8020,9 +8044,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                     ? (autoMode ? kClaudeAutoModeLabel
                                 : kAgentAskModeLabel)
                     : sessionMode;
-            const QString effort =
-                QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
-                    .toString();
+            const QString effort = sessionStrength;
+            const QString launchPrompt =
+                AgentRunner::launchIdentityInstruction(kCodexProvider, selectedModel, mode,
+                                                       effort) + QStringLiteral("\n\n") + prompt;
+            if (AgentSession *as = findAgentSession(sid))
+                m_agentStore->appendLog(
+                    *as, QStringLiteral("==> %1\n")
+                             .arg(AgentRunner::launchIdentityInstruction(
+                                 kCodexProvider, selectedModel, mode, effort)));
             // Codex should use the user's normal ChatGPT/Codex login just like
             // the official IDE extension. Do not let inherited API-key variables
             // silently switch this path to API billing.
@@ -8036,7 +8066,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 jailMb = agentJailMemoryMb();
                 codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
-            live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
+            live->start(workdir, codexEnv, launchPrompt, resumeId, selectedModel, mode,
                         effort, jailMb);
             return;
         }
@@ -8063,15 +8093,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
         // re-checks that this stream is still the session's live one (the user
         // may have stopped or restarted it while the triage ran).
         auto begin = [this, sid, live, workdir, env, prompt, autoMode,
-                      resumeId](const QString &chosenModel) {
+                      resumeId, sessionMode, sessionStrength](const QString &chosenModel) {
             if (m_streamSessions.value(sid) != live)
                 return;
             // Footer slash-actions menu (adhoc #116): effort and model-fallback
             // ride into the CLI as --effort/--fallback-model; turning Thinking
             // off zeroes the thinking budget via MAX_THINKING_TOKENS.
-            const QString effort =
-                QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
-                    .toString();
+            const QString effort = sessionStrength;
+            if (AgentSession *as = findAgentSession(sid)) {
+                as->model = chosenModel;
+                m_agentStore->saveSession(*as);
+            }
             const QString fallback =
                 QSettings().value(kClaudeFallbackModelSetting, false).toBool()
                     ? QStringLiteral("opus,sonnet")
@@ -8085,7 +8117,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
                 jailMb = agentJailMemoryMb();
                 launchEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
             }
-            live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
+            const QString launchPrompt =
+                AgentRunner::launchIdentityInstruction(QStringLiteral("claude-code"),
+                                                       chosenModel, sessionMode, effort) +
+                QStringLiteral("\n\n") + prompt;
+            if (AgentSession *as = findAgentSession(sid))
+                m_agentStore->appendLog(
+                    *as, QStringLiteral("==> %1\n")
+                             .arg(AgentRunner::launchIdentityInstruction(
+                                 QStringLiteral("claude-code"), chosenModel,
+                                 sessionMode, effort)));
+            live->start(workdir, launchEnv, launchPrompt, /*skipPermissions=*/autoMode,
                         resumeId, chosenModel, effort, fallback, jailMb);
         };
         if (selectedModel == kClaudeAutoModelId)
