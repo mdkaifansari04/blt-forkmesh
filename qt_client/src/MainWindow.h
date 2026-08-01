@@ -675,6 +675,10 @@ public:
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
     QString testSwitchToBranchImmediateSelection(const QString &branch);
+    // Take the agent detail page's "Branch" route, so a test can prove it binds
+    // the Git view to that session's own repository before opening its branch
+    // there — the sessions list is global (adhoc #131).
+    void testSwitchToAgentBranch(int sessionId) { switchToAgentBranch(sessionId); }
     // Which page the Git view's right pane shows (kCommitWorkspace*Page), and
     // the branch the range pane is reviewing — so a test can prove a branch link
     // lands on the range review pane in the Git view (adhoc #107).
@@ -2218,7 +2222,10 @@ private:
     // Same as continueSelectedAgentSession, but for an arbitrary session id —
     // used to resume a session steered from the website (adhoc #182) without
     // disturbing whatever session is currently selected in the UI.
-    void continueAgentSession(int sessionId);
+    // deferRefresh=true skips the trailing reload/queue pump so a batch caller
+    // (startAllStoppedAgents) can rebuild the table and drain the queue once at
+    // the end rather than once per session.
+    void continueAgentSession(int sessionId, bool deferRefresh = false);
     // Ask the given session's agent to merge base and resolve conflicts, then
     // resume it. Driven by the agents list's orange conflict button (adhoc
     // #446); a no-op while that session is already running or queued.
@@ -2339,6 +2346,9 @@ private:
     void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
+    // Open an agent session's branch in the Git view's range pane, binding the
+    // repo detail to that session's repository first (adhoc #131).
+    void switchToAgentBranch(int sessionId);
     // Jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
@@ -2362,6 +2372,11 @@ private:
     QList<int> stoppableAgentSessionIds() const;
     // Stop every session above and clear the pending queue (adhoc #433).
     void stopAllRunningAgents();
+    // "Stop all" read backwards (adhoc #136): the idle sessions — stopped or
+    // failed, ours, not merged — that can be resumed, across all repos.
+    QList<int> startableAgentSessionIds() const;
+    // Queue every session above for a resume; the run limit drains the queue.
+    void startAllStoppedAgents();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
@@ -2727,6 +2742,38 @@ private:
     bool proposePullFromMirrorEdit(const QString &cleanPath, const QString &content);
     void loadRepoInfo();
     void loadBranchesAndTags();
+    // Everything loadBranchesAndTags() shows, gathered on a worker thread: its
+    // five git reads (sorted branch list, HEAD, worktree list, remotes, tags)
+    // each blocked the GUI thread for seconds in the stall log whenever agent
+    // sessions kept the disk busy, and the function runs on every repo open,
+    // merge and pull refresh.
+    struct BranchesTagsSnapshot {
+        // Inputs, snapshotted on the GUI thread before the worker starts.
+        QString dir;               // repoGitDir()
+        QString localPath;         // working copy for the worktree count
+        QString configuredDefault; // m_repoInfo.defaultBranch
+        QString checkedOut;        // m_repoBranch at issue time
+        // Worker-filled results.
+        QString base;          // default branch (chooseDefaultBranch)
+        QString head;          // checked-out branch (empty = detached/none)
+        QStringList branches;  // local heads, committerdate-sorted
+        int worktreeCount = 0; // linked worktrees, minus forkmesh/pulls
+        struct Remote {
+            QString name;
+            QString fetchUrl;
+            QString pushUrl;
+        };
+        QList<Remote> remotes;
+        int tagCount = 0;
+    };
+    // Runs on a worker thread: fills the git-derived half of `snap`.
+    static BranchesTagsSnapshot readBranchesTagsGit(BranchesTagsSnapshot snap);
+    // Applies a gathered snapshot to the toolbar buttons/menus (GUI thread).
+    void applyBranchesTags(const BranchesTagsSnapshot &snap);
+    // Serializes loadBranchesAndTags() gathers; a call landing while one is in
+    // flight coalesces into a single trailing reload.
+    bool m_branchesTagsLoading = false;
+    bool m_branchesTagsReloadQueued = false;
     QStringList repoBranches() const;
     // The two reads behind repoBranches()/repoDefaultBranch() with no GUI state
     // of their own, so worker threads can run them too (adhoc #420).
@@ -6624,8 +6671,10 @@ private:
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
     // Above the session list: stop every running agent and cancel the queue
-    // (adhoc #433).
+    // (adhoc #433), and its counterpart that resumes every stopped/failed one
+    // (adhoc #136).
     QPushButton *m_agentStopAllButton = nullptr;
+    QPushButton *m_agentStartAllButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Detail-toolbar buttons (adhoc #51) opening this session's branch in the
     // Branches tab and its worktree in the Worktrees tab. Full-size buttons like
@@ -7131,6 +7180,9 @@ private:
     QTimer *m_repoChangeBadgeTimer = nullptr;
     qint64 m_connectedAtMs = 0;
     qint64 m_totalConnectionMs = 0;
+    // When updateHomeStats() last persisted the uptime total, so the once-a-
+    // minute refresh doesn't rewrite the whole settings file each tick.
+    qint64 m_uptimePersistedAtMs = 0;
     // Until this moment, "node connected" alerts are suppressed: the roster
     // arrives incrementally right after we connect, so without a grace window
     // every node that was already online would pop a notification on startup.

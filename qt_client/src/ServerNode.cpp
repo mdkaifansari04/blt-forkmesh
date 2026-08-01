@@ -1506,6 +1506,7 @@ void ServerNode::removeChannel(const QString &channel)
         emit channelsChanged(m_channels);
     // Purge any retained history so a re-add can't replay old messages.
     m_channelHistory.remove(name);
+    m_channelHistoryChars.remove(name);
 }
 
 void ServerNode::createPrivateChannel(const QString &channel)
@@ -2023,8 +2024,8 @@ void ServerNode::storeHistory(const QJsonObject &message)
     const QString channel = message.value("channel").toString();
     if (channel.isEmpty())
         return;
-    const QStringList evicted =
-        ChatHistoryLimits::appendBounded(m_channelHistory[channel], message);
+    const QStringList evicted = ChatHistoryLimits::appendBounded(
+        m_channelHistory[channel], message, &m_channelHistoryChars[channel]);
     for (const QString &id : evicted)
         dropMessageIndex(id);
 }
@@ -2086,6 +2087,7 @@ void ServerNode::updateStoredMessage(const QString &messageId, const QString &te
         for (QJsonObject &message : messages) {
             if (message.value("id").toString() != messageId)
                 continue;
+            const qsizetype costBefore = ChatHistoryLimits::entryCost(message);
             if (deleted) {
                 message.insert("deleted", true);
                 message.insert("edited", false);
@@ -2097,6 +2099,12 @@ void ServerNode::updateStoredMessage(const QString &messageId, const QString &te
                 message.insert("text", text.left(kMaxTextChars));
                 message.insert("edited", true);
             }
+            // Keep the channel's running cost total (see storeHistory) exact
+            // across in-place edits — a delete shrinks the entry, an edit can
+            // grow it.
+            const auto total = m_channelHistoryChars.find(it.key());
+            if (total != m_channelHistoryChars.end())
+                *total += ChatHistoryLimits::entryCost(message) - costBefore;
             return;
         }
     }

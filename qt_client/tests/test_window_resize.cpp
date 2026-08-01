@@ -1944,6 +1944,37 @@ int main(int argc, char *argv[])
         check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),
               QString("the review's merge button really merged the branch (adhoc "
                       "#119, main tip = %1)").arg(mainTip.trimmed()));
+
+        // adhoc #131: the agent detail page's "Branch" button opens that session's
+        // branch in the Git view — the range pane, with the branch's changed files
+        // in the left column's CHANGES slot and its scope list below them. The
+        // sessions list is global, so the click has to point the Git view at the
+        // session's own repository first; from another repo's detail page it would
+        // otherwise render that repo's (missing) branch. Park the detail view on
+        // "me/r", then take the button's route for the session on "me/wtrepo".
+        window.testOpenRepository(repoIdx);
+        QApplication::processEvents();
+        window.testSwitchToAgentBranch(issueSession.id);
+        QApplication::processEvents();
+        const QString agentBranchDir = window.testRepoGitDir();
+        check(agentBranchDir.startsWith(wtRepo.path()),
+              QString("the agent's Branch button binds the Git view to that "
+                      "session's repository (adhoc #131, git dir = %1)")
+                  .arg(agentBranchDir));
+        check(window.testCommitWorkspacePage() == 2 &&
+                  window.testBranchDiffBranch() ==
+                      QStringLiteral("feature/keep-selected"),
+              QString("the agent's Branch button opens its branch in the Git "
+                      "view's range pane (adhoc #131, page = %1, branch = %2)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBranchDiffBranch()));
+        check(window.testGitFilesSlotPage() == 1 &&
+                  window.testGitHistorySlotPage() == 1,
+              QString("the agent's branch brings its changed files and the scope "
+                      "list into the Git view's left column (adhoc #131, files "
+                      "slot = %1, history slot = %2)")
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
     }
 
     // adhoc #183/follow-up: the repo's default (merge-base) branch must stay
