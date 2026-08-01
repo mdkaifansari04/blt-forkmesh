@@ -454,14 +454,14 @@ QWidget *MainWindow::buildChatPage()
     // the edge-to-edge header and remains visible beside every app view.
     auto *rail = new QWidget;
     rail->setObjectName(QStringLiteral("appNavigationRailContent"));
-    rail->setMinimumWidth(kRailItemWidth);
+    rail->setMinimumWidth(railItemWidth());
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
     // Every rail destination is the same item now (adhoc #117): one
     // ActivityRailButton — a 20px octicon SVG over a 10px caption at
-    // kRailItemWidth x kRailItemHeight — so icons, words, hover and the checked
-    // accent line all read identically down the rail.
+    // railItemWidth() x kRailItemHeight — so icons, words, hover and the
+    // checked accent line all read identically down the rail.
     //
     // Agents heads the rail (adhoc #70) — a regular destination like the rest,
     // badged with the running-session count. Only its fleet matrix stayed on the
@@ -495,7 +495,7 @@ QWidget *MainWindow::buildChatPage()
     accountLabel->setObjectName(QStringLiteral("railItemLabel"));
     accountLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     auto *accountHost = new QWidget;
-    accountHost->setFixedSize(kRailItemWidth, kRailItemHeight);
+    accountHost->setFixedSize(railItemWidth(), kRailItemHeight);
     auto *accountLayout = new QVBoxLayout(accountHost);
     accountLayout->setContentsMargins(0, 2, 0, 0);
     accountLayout->setSpacing(2);
@@ -514,7 +514,7 @@ QWidget *MainWindow::buildChatPage()
     railScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     railScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     railScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
-    railScroll->setFixedWidth(kRailWidth);
+    railScroll->setFixedWidth(railWidth());
     railScroll->setMinimumHeight(0);
     railScroll->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Ignored);
 

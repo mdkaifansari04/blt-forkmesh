@@ -31,6 +31,8 @@
 #include <QSystemTrayIcon>
 #include <QVBoxLayout>
 
+using namespace forkmesh::ui;
+
 namespace {
 
 // notifyEnabled() lives in MainWindow.cpp's anonymous namespace; re-derive it

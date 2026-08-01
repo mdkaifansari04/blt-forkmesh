@@ -7239,7 +7239,33 @@ private:
 // #appNavigationRail QScrollBar rule in Theme.h).
 constexpr int kRailItemWidth = 42;
 constexpr int kRailItemHeight = 44; // 20px icon + 10px caption + breathing room
-constexpr int kRailWidth = kRailItemWidth + 6; // + the rail's slim scrollbar
+
+// The 42px floor fits every rail caption in each of main()'s preferred UI
+// families (Inter/SF/Segoe/Roboto/Noto/Ubuntu/Cantarell measure "Network",
+// the widest word, at <=40px in the 10px demi-bold caption font). A box that
+// has none of them can fall back to a wider face (DejaVu draws it at 48px),
+// so measure the app rail's actual caption set once in the real UI font and
+// widen just enough that no word is ever cut. Font is fixed at startup, so a
+// once-computed static is safe.
+inline int railItemWidth()
+{
+    static const int width = [] {
+        QFont f = QGuiApplication::font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const QFontMetrics metrics(f);
+        int widest = kRailItemWidth;
+        for (const char *caption :
+             {"Agents", "Code", "Git", "Repos", "Chat", "Control", "Network",
+              "Settings", "Log", "Capture", "Resize", "Tasks", "Pings",
+              "Account"})
+            widest = qMax(widest, metrics.horizontalAdvance(
+                                      QString::fromLatin1(caption)) + 4);
+        return widest;
+    }();
+    return width;
+}
+inline int railWidth() { return railItemWidth() + 6; } // + slim scrollbar
 
 // One entry in the app-wide activity rail: an octicon over an optional small
 // label, VS-Code style, with the selected state drawn as a 2px accent line along
@@ -7258,7 +7284,7 @@ public:
         setCursor(Qt::PointingHandCursor);
         setFlat(true);
         setAccessibleName(m_label);
-        setFixedSize(kRailItemWidth, m_label.isEmpty() ? 40 : kRailItemHeight);
+        setFixedSize(railItemWidth(), m_label.isEmpty() ? 40 : kRailItemHeight);
         // The sync spinner's timer only runs while syncing *and* visible (see
         // show/hideEvent), so an idle or hidden item costs nothing.
         m_spinTimer = new QTimer(this);
@@ -7277,7 +7303,7 @@ public:
         if (m_compact == compact)
             return;
         m_compact = compact;
-        setFixedSize(kRailItemWidth,
+        setFixedSize(railItemWidth(),
                      m_compact ? 30 : (m_label.isEmpty() ? 40 : kRailItemHeight));
         update();
     }
