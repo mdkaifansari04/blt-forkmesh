@@ -115,7 +115,7 @@ const GYM_MAX_WEIGHT_LB = 1200;
 // without teleporting the avatar out from under the camera.
 const PLAYER_DASH_SPEED = 48;
 const PLAYER_DASH_ARRIVE_DISTANCE = 0.3;
-// Clears the complete eleven-storey Office tower (176 units) and gives normal
+// Clears the complete five-storey Office tower (80 units) and gives normal
 // walking input enough air time to cross its 170-unit width.
 const PLAYER_SUPER_JUMP_VELOCITY = 82;
 const PLAYER_SUPER_JUMP_MOVE_MULTIPLIER = 3.5;
@@ -22407,7 +22407,7 @@ export function createWorldScene({
     // The Office is intentionally a transparent cutaway tower. Keep its walls,
     // floor slabs, lighting, and furniture visible from the outdoor World at
     // every camera distance. Once a visitor enters, isolate the active floor
-    // to avoid drawing ten floors through the one they are using.
+    // to avoid drawing every other floor through the one they are using.
     syncOfficeFloorVisibility();
 
     // A purely visual LOD helper must never be able to interrupt movement.
