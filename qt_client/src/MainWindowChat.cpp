@@ -6266,20 +6266,29 @@ void MainWindow::updateUserSwitcher()
 {
     // Every profile-hydration path lands here after updating the user/node
     // flags, so this is also where the chat backend learns which account kind
-    // to stamp on outgoing frames (web surfaces only display "user" frames —
-    // same user-vs-node rule as welcomeChannelForIdentity()).
+    // to stamp on outgoing frames (web surfaces only display user/guest frames
+    // — same user-vs-node rule as welcomeChannelForIdentity()).
     if (m_backend) {
         const bool userLike =
             m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
+        // No username yet (fresh install on its generated name): speak as
+        // "guest" like the web's anonymous visitors, so the person's messages
+        // render on web surfaces instead of being dropped as node frames.
         m_backend->setAccountKind(userLike ? QStringLiteral("user")
-                                           : QStringLiteral("node"));
+                                  : chatIdentityIsGuest()
+                                      ? QStringLiteral("guest")
+                                      : QStringLiteral("node"));
     }
     const QString user = topBarUserName();
     if (m_userAvatarNavButton) {
         m_userAvatarNavButton->setToolTip(
-            user.isEmpty()
-                ? QStringLiteral("Your user account")
-                : QStringLiteral("%1 user account").arg(user));
+            chatIdentityIsGuest()
+                ? QStringLiteral("Chatting as %1 — pick a username in "
+                                 "Settings or log in to claim one")
+                      .arg(guestChatName())
+                : user.isEmpty()
+                      ? QStringLiteral("Your user account")
+                      : QStringLiteral("%1 user account").arg(user));
     }
     updateUserAvatarButton();
     updateChatIdentity();

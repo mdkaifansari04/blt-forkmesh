@@ -972,14 +972,24 @@ void MainWindow::refreshOpenRepoDetail()
     // at only one of them.
     const int visibleTab =
         m_repoDetailStack ? m_repoDetailStack->currentIndex() : -1;
-    if (visibleTab == 0 ||
+    // An empty browsed branch means this repo's refs weren't on disk at all when
+    // the view opened — a fresh install's first clone lands well after its detail
+    // page did. Everything derived from them is still on its empty value: the
+    // status strip's bottom-left branch button, "0 branches", "Tags 0",
+    // "Releases (0)". Re-read them whatever tab is on screen, so the sync that
+    // brings the repo down is the one that fills them in (adhoc #116). Once a
+    // branch is known the visible-tab gate keeps the per-push cost as it was.
+    const bool refsJustArrived = m_repoBranch.isEmpty();
+    if (refsJustArrived || visibleTab == 0 ||
         (m_branchesTabIndex >= 0 && visibleTab == m_branchesTabIndex))
         loadBranchesAndTags();
     if (m_commitsTable && m_commitsTable->isVisibleTo(this))
         loadCommits();
     if (visibleTab == 3)
         reloadAgents();
-    if (visibleTab == 2)
+    if (refsJustArrived)
+        refreshRepoTabCounts(); // the repo only just materialized: every badge is empty
+    else if (visibleTab == 2)
         reloadIssuesInBackground();
     // Pull metadata still feeds counts and agent state, but its git/disk load is
     // worker-backed; applying the resulting table is a single model allocation.
@@ -2784,9 +2794,14 @@ void MainWindow::updateActionsTabIndicator()
     // used to be a floating strip of draining bars above the tab (adhoc #105),
     // removed along with the rest of that band (adhoc #420); the Actions tab
     // itself lists queued and running runs.
-    const int workflows =
-        m_actionWorkflowList ? qMax(0, m_actionWorkflowList->count() - 1) : 0;
-    tab->setText(QStringLiteral("Actions (%1)").arg(formatCount(workflows)));
+    //
+    // m_repoWorkflows, not the list widget's row count: the widget is built once
+    // per window and keeps the last-visited repo's rows, so it reported that
+    // repo's count for every repo opened afterwards. m_repoWorkflows is per-repo
+    // — cleared on open, then filled by refreshRepoActions() or, when the panel
+    // stays lazy, by reloadWorkflowCountInBackground() (adhoc #116).
+    tab->setText(QStringLiteral("Actions (%1)")
+                     .arg(formatCount(m_repoWorkflows.size())));
 }
 
 // Duration of the previous finished run of the same workflow, shown as the
@@ -2894,16 +2909,19 @@ void MainWindow::maybeRestoreIssueLooper()
     looperStartNext();
 }
 
-QList<ActionWorkflow>
-MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
+// The workflow discovery behind availableWorkflowsForRepo(), with no window
+// state of its own so a worker thread can run it too (the Actions badge loads
+// off-thread — see reloadWorkflowCountInBackground).
+static QList<ActionWorkflow> workflowsInRepoPaths(const QString &mirrorPath,
+                                                  const QString &localPath)
 {
     QList<ActionWorkflow> out;
     // Prefer reading the bare mirror's default branch (HEAD); fall back to a
     // local working tree if one is configured.
-    if (!repo.mirrorPath.isEmpty() && QDir(repo.mirrorPath).exists()) {
+    if (!mirrorPath.isEmpty() && QDir(mirrorPath).exists()) {
         QProcess ls;
         ls.start(QStringLiteral("git"),
-                 {QStringLiteral("-C"), repo.mirrorPath, QStringLiteral("ls-tree"),
+                 {QStringLiteral("-C"), mirrorPath, QStringLiteral("ls-tree"),
                   QStringLiteral("-r"), QStringLiteral("--name-only"),
                   QStringLiteral("HEAD"), QStringLiteral("--"),
                   QStringLiteral(".forkmesh")});
@@ -2916,7 +2934,7 @@ MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
                 continue;
             QProcess show;
             show.start(QStringLiteral("git"),
-                       {QStringLiteral("-C"), repo.mirrorPath,
+                       {QStringLiteral("-C"), mirrorPath,
                         QStringLiteral("show"), QStringLiteral("HEAD:") + path});
             show.waitForFinished(8000);
             if (show.exitCode() != 0)
@@ -2925,9 +2943,43 @@ MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
                 path, QString::fromUtf8(show.readAllStandardOutput())));
         }
     }
-    if (out.isEmpty() && !repo.localPath.isEmpty())
-        out = ActionFile::parseWorkflowsInDir(repo.localPath);
+    if (out.isEmpty() && !localPath.isEmpty())
+        out = ActionFile::parseWorkflowsInDir(localPath);
     return out;
+}
+
+QList<ActionWorkflow>
+MainWindow::availableWorkflowsForRepo(const RepositoryRecord &repo) const
+{
+    return workflowsInRepoPaths(repo.mirrorPath, repo.localPath);
+}
+
+// The "Actions (N)" badge without building the Actions panel. Discovery shells
+// Git once per workflow file, so the panel is deliberately lazy — which left
+// every repo advertising "Actions (0)" until its Actions tab was clicked
+// (adhoc #116). Run the same discovery on a worker and keep the result in
+// m_repoWorkflows, exactly where refreshRepoActions() puts it.
+void MainWindow::reloadWorkflowCountInBackground()
+{
+    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
+        return;
+    const int repoIndex = m_repoDetailIndex;
+    const int generation = ++m_workflowCountLoadGen;
+    // By value: the worker must touch nothing the GUI thread owns.
+    const RepositoryRecord &repo = m_repositories.at(repoIndex);
+    const QString mirrorPath = repo.mirrorPath;
+    const QString localPath = repo.localPath;
+    runOffThread<QList<ActionWorkflow>>(
+        [mirrorPath, localPath] {
+            return workflowsInRepoPaths(mirrorPath, localPath);
+        },
+        [this, repoIndex, generation](QList<ActionWorkflow> loaded) {
+            if (generation != m_workflowCountLoadGen ||
+                repoIndex != m_repoDetailIndex)
+                return; // superseded, or the user moved to another repo
+            m_repoWorkflows = std::move(loaded);
+            updateActionsTabIndicator();
+        });
 }
 
 void MainWindow::updateWorkflowListItem(QListWidgetItem *item,
@@ -2985,8 +3037,8 @@ void MainWindow::refreshRepoActions()
     m_actionWorkflowList->clear();
 
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size()) {
-        if (m_repoActionsTab)
-            m_repoActionsTab->setText(QStringLiteral("Actions (0)"));
+        m_repoWorkflows.clear();
+        updateActionsTabIndicator();
         refreshActionsTable();
         return;
     }
@@ -3024,9 +3076,9 @@ void MainWindow::refreshRepoActions()
     showLatestVisibleActionRun();
     updateManualRunBar();
     refreshWorkflowNodeCombo();
-    if (m_repoActionsTab)
-        m_repoActionsTab->setText(QStringLiteral("Actions (%1)")
-                                      .arg(formatCount(qMax(0, m_actionWorkflowList->count() - 1))));
+    // This panel load is authoritative over any badge-only count still in flight.
+    ++m_workflowCountLoadGen;
+    updateActionsTabIndicator();
 }
 
 void MainWindow::refreshWorkflowNodeCombo()

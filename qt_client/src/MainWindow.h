@@ -74,6 +74,7 @@ struct MirrorSelfSnapshot {
 };
 
 #include <QElapsedTimer>
+#include <QFutureWatcher>
 #include <QHash>
 #include <QIcon>
 #include <QJsonArray>
@@ -456,6 +457,9 @@ public:
     void testRefreshSignInButton() { updateSignInButton(); }
     QString testUserName() const { return m_userName; }
     QString testAccountName() const { return m_accountName; }
+    bool testChatIdentityIsGuest() const { return chatIdentityIsGuest(); }
+    QString testChatDisplayName() const { return chatDisplayName(); }
+    QString testMachineNodeName() const { return machineNodeName(); }
     QString testSavedSolanaAddress() const;
     bool testAccountAuthenticated() const { return m_accountAuthenticated; }
     QString testAccountTier() const { return m_accountTier; }
@@ -487,6 +491,14 @@ public:
     // The branch the open repo treats as its default/merge base, so a test can
     // prove it stays main even when the working tree is parked on a feature branch.
     Q_INVOKABLE QString testRepoDefaultBranch() const;
+    // The push-driven repo-detail refresh, so a test can land a repo's refs
+    // *after* the detail view opened — a fresh install's first clone — and prove
+    // the status strip and the tab counts catch up (adhoc #116).
+    Q_INVOKABLE void testRefreshOpenRepoDetail() { refreshOpenRepoDetail(); }
+    // Text of the "Actions (N)" tab badge, empty when the tab row isn't built.
+    Q_INVOKABLE QString testRepoActionsTabText() const;
+    // Text of the Code toolbar's "N branches" toggle, empty when not built.
+    Q_INVOKABLE QString testRepoBranchesButtonText() const;
     // Switch the open repo-detail view to its Issues sub-tab (stack index 2) so
     // the issues toolbar gets real geometry. Returns false if not built yet.
     Q_INVOKABLE bool testShowRepoIssuesTab();
@@ -1005,6 +1017,12 @@ private:
     QString topBarUserName() const; // linked user/account name shown in the top bar
     QString nodeOwnerDisplayName() const; // user account that owns this node, if known
     QString chatDisplayName() const; // user identity used for chat sender names
+    // A first-run desktop whose account name is still the auto-generated node
+    // name (and that no user account owns) has no username yet: the person
+    // chats as an anonymous guest, the same way the website treats visitors
+    // (adhoc #113). Headless nodes are fleet machines and never guests.
+    bool chatIdentityIsGuest() const;
+    QString guestChatName() const;   // stable "Guest ####" for this install
     QString machineNodeName() const; // THIS machine's node name (never the username)
     void saveMachineNodeName(const QString &name); // persist + re-advertise
     // Persist the extra Actions `runs-on:` labels this machine answers to,
@@ -1777,6 +1795,10 @@ private:
     // selected from the one behind the button: if that prompt is dismissed the
     // map falls back to an unprivileged scan, so the tab is never left blank.
     void rescanSizeMapElevated(bool upfront = false);
+    // Stop button: cancels whichever scan is currently running, worker-thread
+    // walk or elevated helper process, the same disconnect-before-kill pattern
+    // as stopSearch().
+    void stopSizeMapScan();
     // Live "scanning <folder> · N files · M so far" line, driven from the walk
     // itself (adhoc #112).
     void showSizeMapScanProgress(const QString &current, qint64 bytes,
@@ -1790,6 +1812,9 @@ private:
     QWidget *buildDiscussionsTab();
     DiscussionStore discussionStoreForCurrentRepo() const;
     void reloadDiscussions();
+    // The "Discussions (N)" badge alone, loaded off-thread, so the count is right
+    // without building the (lazy) Discussions panel — see refreshRepoTabCounts().
+    void reloadDiscussionCountInBackground();
     void showDiscussion(int number);
     void renderDiscussionThread(const Discussion &discussion);
     void updateDiscussionActionState();
@@ -2380,6 +2405,9 @@ private:
     void refreshRepoActions();           // workflows column + runs for the open repo
     QList<ActionWorkflow> availableWorkflowsForRepo(
         const RepositoryRecord &repo) const;
+    // The "Actions (N)" badge alone, discovered off-thread, so the count is right
+    // without building the (lazy) Actions panel — see refreshRepoTabCounts().
+    void reloadWorkflowCountInBackground();
     // Show/populate the manual-run bar for the selected workflow (branches from
     // the repo's mirror, default "main"); hidden unless it allows manual runs.
     void updateManualRunBar();
@@ -2607,6 +2635,10 @@ private:
     void updateRepoIssueCount();
     void updateRepoDiscussionCount();
     void updateRepoPullCount();
+    // Fill in every repo-tab badge whose panel loads lazily (Issues, Discussions,
+    // Actions) from worker threads, so the tab row is right on the first frame
+    // rather than only after each tab is clicked (adhoc #116).
+    void refreshRepoTabCounts();
     void loadRepoOverview(const QString &path);
     void showRepoOverview();
     void showRepoEditor();
@@ -4055,6 +4087,9 @@ private:
     void startSyncFetch(int index, bool quiet, bool hasMirror,
                         const QStringList &args, const QString &beforeDigest,
                         const QString &beforeHeadCommit);
+    // Select (and prime) the repo a fresh install has been waiting on, once its
+    // first clone lands. Returns true when this index was the one awaited.
+    bool completePendingRepoAutoOpen(int index);
     void autoSyncMirrors();
     // Periodic-timer wrapper for autoSyncMirrors(): skips the round while the
     // relay host sits in BackoffNetworkAccessManager's 429/5xx cooldown, since
@@ -5145,6 +5180,14 @@ private:
     // directories this user cannot list, hidden again once the elevated rescan
     // has produced the complete tree for that folder.
     QPushButton *m_sizeMapElevate = nullptr;
+    // "Stop": shown only while a scan is running; stopSizeMapScan() hides it.
+    QPushButton *m_sizeMapStop = nullptr;
+    // The in-flight unprivileged scan's watcher, so Stop can cancel it. Null
+    // once the scan finishes or is stopped.
+    QFutureWatcher<forkmesh::DirectorySizeScanResult> *m_sizeMapWatcher = nullptr;
+    // The in-flight elevated helper process, so Stop can kill it. Null once
+    // the scan finishes or is stopped.
+    QProcess *m_sizeMapElevatedProcess = nullptr;
     // Container holding one StorageMiniMap per mounted filesystem; refilled on
     // every rescan so mounts appearing or vanishing are picked up.
     QWidget *m_sizeMapVolumesBox = nullptr;
@@ -5629,6 +5672,8 @@ private:
     QPushButton *m_discussionCommentButton = nullptr;
     QLabel *m_discussionCategorySummary = nullptr;
     QList<Discussion> m_currentDiscussions;
+    // Same guard as m_workflowCountLoadGen, for the badge-only discussions load.
+    int m_discussionCountLoadGen = 0;
     int m_currentDiscussionNumber = -1;
     DiscussionInboxBackoff m_discussionInboxBackoff;
     // Exponential backoff for the app's periodic network pollers (owner-inbox
@@ -5908,6 +5953,10 @@ private:
     QLabel *m_actionNodeLabel = nullptr;         // caption above that dropdown
     QString m_selectedWorkflowFilter;            // workflow path filter, empty = all
     QList<ActionWorkflow> m_repoWorkflows;       // parsed workflows for the open repo
+    // Bumped by every workflow discovery (panel or badge-only): a background
+    // count that lands after a newer load — or after the panel loaded the real
+    // list — drops its result instead of overwriting it.
+    int m_workflowCountLoadGen = 0;
     // Coalesces push-driven refreshOpenRepoDetail() calls: a burst of pushes
     // (a sync, an agent committing) otherwise re-runs the whole heavyweight
     // refresh — git log, per-PR apply checks, branch reload — once per event,
