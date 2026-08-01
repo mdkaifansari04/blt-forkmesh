@@ -399,6 +399,8 @@ constexpr int kAgentConflictSessionRole = Qt::UserRole + 38;
 // lines added and removed, -1 when unknown.
 constexpr int kAgentAddedRole = Qt::UserRole + 39;
 constexpr int kAgentRemovedRole = Qt::UserRole + 40;
+constexpr int kAgentAheadRole = Qt::UserRole + 41;
+constexpr int kAgentBehindRole = Qt::UserRole + 42;
 
 // The base branch an agent session landed in, defaulting to "main" when the
 // session never recorded one (issue #291).
@@ -486,6 +488,8 @@ void applyAgentStatusCell(QTableWidgetItem *cell, const AgentSession &s,
     // #74), so a stale flag has to be cleared rather than left behind.
     cell->setData(kAgentAddedRole, stat.added);
     cell->setData(kAgentRemovedRole, stat.removed);
+    cell->setData(kAgentAheadRole, stat.ahead);
+    cell->setData(kAgentBehindRole, stat.behind);
     cell->setData(kAgentConflictRole, stat.conflicted);
     cell->setData(kAgentConflictSessionRole, sessionId);
     // With the Status column gone the glyph is the only thing showing the run
@@ -710,6 +714,7 @@ public:
         // "worktree there or not" reads straight off the row.
         const bool live = !index.data(kAgentBranchWorktreeRole).toString().isEmpty();
         const bool conflicted = index.data(kAgentConflictRole).toBool();
+        const bool behind = index.data(kAgentBehindRole).toInt() > 0;
         const bool dark = currentThemeIsDark();
         // The amber "needs you" accent the Waiting status uses, which the whole
         // chip takes on while the branch no longer merges cleanly.
@@ -719,7 +724,7 @@ public:
         // Soft vertical gradient behind a 1px border: reads as a raised chip
         // rather than the flat block it used to be.
         QLinearGradient fill(r.topLeft(), r.bottomLeft());
-        if (conflicted) {
+        if (conflicted || behind) {
             QColor wash = accent;
             wash.setAlpha(hot ? (dark ? 70 : 40) : (dark ? 34 : 20));
             fill.setColorAt(0.0, wash);
@@ -733,7 +738,7 @@ public:
         }
         painter->setBrush(fill);
         const QColor border =
-            conflicted
+            (conflicted || behind)
                 ? accent
                 : (live ? QColor(dark ? (hot ? "#58a6ff" : "#3d6ea8") : "#0969da")
                         : QColor(dark ? (hot ? "#484f58" : "#30363d")
@@ -767,6 +772,9 @@ public:
         // edge, which is its own click target.
         if (conflicted)
             themedOcticon("alert", accent, kGlyphSize)
+                .paint(painter, conflictRect(option, index));
+        else if (behind)
+            themedOcticon("download", accent, kGlyphSize)
                 .paint(painter, conflictRect(option, index));
         // Uncommitted work in that worktree: an amber pip on the chip's corner,
         // ringed in the list background so it stays legible over the border.
@@ -1071,19 +1079,17 @@ void rememberAcceptedAgentPrompt(const QString &token)
                       tokens);
 }
 
-// The agent detail header's title (adhoc #84). A plain QLabel either wraps a
-// long ad-hoc title down the whole pane or, pinned to one line, shows a
-// truncated "…" tail — and the header can spare exactly two lines. This keeps
-// the full string and lays it out itself: wrap at the label's current width,
-// stop after two lines, and elide only if the text still runs past them. The
-// full title is always in the tooltip.
+// The agent detail header's title. It stays on one full, unelided line and lets
+// the pane's actual right edge clip it. That matches the Agents list: widening
+// the detail pane always reveals more text instead of preserving a manual ….
 class WrappedTitleLabel : public QLabel
 {
 public:
     explicit WrappedTitleLabel(const QString &text, QWidget *parent = nullptr)
         : QLabel(parent)
     {
-        setWordWrap(true);
+        setWordWrap(false);
+        setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
         setFullText(text);
     }
 
@@ -1091,11 +1097,11 @@ public:
     {
         m_full = text.simplified();
         setToolTip(m_full);
-        applyLayout();
+        QLabel::setText(m_full);
     }
 
-    // The pane is free to be narrower than the title — that is what the wrapping
-    // is for — so don't let the label's own minimum widen the splitter.
+    // The pane is free to be narrower than the title, so don't let the label's
+    // own minimum widen the splitter.
     QSize minimumSizeHint() const override
     {
         QSize s = QLabel::minimumSizeHint();
@@ -1103,59 +1109,13 @@ public:
         return s;
     }
 
-protected:
-    void resizeEvent(QResizeEvent *event) override
-    {
-        QLabel::resizeEvent(event);
-        applyLayout();
-    }
-
 private:
-    static constexpr int kMaxLines = 2;
-
-    void applyLayout()
-    {
-        const int usable = width() - 2; // breathing room against the pane edge
-        // QLabel::setText() is a no-op when the string is unchanged, so the
-        // setText -> relayout -> resize -> setText path settles immediately.
-        QLabel::setText(usable > 0 ? elidedToLines(m_full, usable) : m_full);
-    }
-
-    QString elidedToLines(const QString &text, int lineWidth) const
-    {
-        if (text.isEmpty())
-            return text;
-        QTextLayout layout(text, font());
-        QTextOption option;
-        option.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-        layout.setTextOption(option);
-        int lastLineStart = 0;
-        int consumed = 0;
-        layout.beginLayout();
-        for (int line = 0; line < kMaxLines; ++line) {
-            QTextLine textLine = layout.createLine();
-            if (!textLine.isValid())
-                break;
-            textLine.setLineWidth(lineWidth);
-            lastLineStart = textLine.textStart();
-            consumed = textLine.textStart() + textLine.textLength();
-        }
-        layout.endLayout();
-        if (consumed >= text.size())
-            return text; // fits in two lines as-is
-        // It doesn't: keep the first line whole and elide what is left onto the
-        // second, so the "…" lands at the end of the title rather than the top.
-        return text.left(lastLineStart) +
-               fontMetrics().elidedText(text.mid(lastLineStart), Qt::ElideRight,
-                                        lineWidth);
-    }
-
     QString m_full;
 };
 
-// Set the detail header's title through the wrapping label's own setter, so the
-// full string is what gets laid out (and what the tooltip carries). m_agentTitle
-// is typed QLabel* in the header; this is the one place that knows better.
+// Set the detail header's title through the full-title label's own setter, so its
+// complete string reaches both the clipped display and tooltip. m_agentTitle is
+// typed QLabel* in the header; this is the one place that knows better.
 void setAgentTitleText(QLabel *label, const QString &text)
 {
     if (auto *wrapped = dynamic_cast<WrappedTitleLabel *>(label))
@@ -1414,8 +1374,8 @@ QWidget *MainWindow::buildAgentsTab()
     listLayout->addWidget(m_agentTable, 1);
 
     auto *detailPane = new QWidget;
-    // Wraps onto a second line and elides only past that (adhoc #84): an ad-hoc
-    // session's title is a whole sentence, and a one-line header cut it off.
+    // Keep the whole title on one line; the detail pane's actual right edge is
+    // the only clipping boundary, and widening it reveals the remaining text.
     m_agentTitle = new WrappedTitleLabel(QStringLiteral("Select a session"));
     m_agentTitle->setObjectName("channelTitle");
     // The session's field list (Agent/Model/Repo/Status/Issue/PR/… plus Branch
@@ -1680,8 +1640,8 @@ QWidget *MainWindow::buildAgentsTab()
     actionRow->addWidget(m_agentWorktreeButton);
 
     // The title still owns its row outright (adhoc #35): sharing it with the mode
-    // selector left a long, prompt-derived ad-hoc title wrapping inside a narrow
-    // column with acres of unused space beside it. The header reads title, then
+    // selector left a long, prompt-derived ad-hoc title inside a narrow column
+    // with acres of unused space beside it. The header reads title, then
     // the status pill with the session's actions beside it, then the meta table.
     auto *topRow = new QVBoxLayout;
     topRow->setContentsMargins(0, 0, 0, 0);
@@ -5216,6 +5176,22 @@ AgentSession *MainWindow::findAgentSession(int sessionId)
 }
 
 #ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testAgentDetailTitleText() const
+{
+    return m_agentTitle ? m_agentTitle->text() : QString();
+}
+
+bool MainWindow::testAgentDetailTitleWraps() const
+{
+    return m_agentTitle && m_agentTitle->wordWrap();
+}
+
+QString MainWindow::testRenderAgentDetailTitle(const QString &text)
+{
+    setAgentTitleText(m_agentTitle, text);
+    return testAgentDetailTitleText();
+}
+
 // issue #291: read back the run-state word the agent list renders for a
 // session — "merged" once its worktree/PR lands in the base branch, otherwise the
 // run status — so a window test can prove the merge note reaches the list. Goes
@@ -5240,10 +5216,12 @@ QString MainWindow::testAgentStatusCellBadges(int sessionId,
             continue;
         QTableWidgetItem item;
         applyAgentStatusCell(&item, s, stat);
-        return QStringLiteral("%1|%2|%3")
+        return QStringLiteral("%1|%2|%3|%4|%5")
             .arg(item.data(kAgentBranchFilesRole).toInt())
             .arg(item.data(kAgentBranchDirtyRole).toInt())
-            .arg(item.data(kAgentBranchWorktreeRole).toString());
+            .arg(item.data(kAgentBranchWorktreeRole).toString())
+            .arg(item.data(kAgentBehindRole).toInt())
+            .arg(item.data(kAgentAheadRole).toInt());
     }
     return QString();
 }
@@ -5967,11 +5945,9 @@ void MainWindow::showAgentSession(int sessionId)
                 m_agentTitle,
                 QStringLiteral("External Claude Code · %1").arg(label));
         } else {
-            // An ad-hoc session's stored issueTitle is the prompt's first line
-            // capped at 80 characters, so the header used to end in a "…" that
-            // no amount of pane width would fill in. Take the first line of the
-            // prompt itself when there is one and let the label wrap it over two
-            // lines (adhoc #84).
+            // Older ad-hoc sessions may still carry a historically shortened
+            // issueTitle, so prefer the prompt's complete first line when it is
+            // available. New sessions persist that complete line directly.
             QString adHocTitle = session->issueTitle;
             if (session->issueNumber <= 0 && !session->prompt.trimmed().isEmpty())
                 adHocTitle =
@@ -6835,8 +6811,6 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
     QString title = titleOverride.trimmed().isEmpty()
                         ? task.section(QLatin1Char('\n'), 0, 0).simplified()
                         : titleOverride.trimmed();
-    if (title.size() > 80)
-        title = title.left(77) + QString::fromUtf8("\xE2\x80\xA6");
     session.issueTitle =
         title.isEmpty() ? QStringLiteral("Ad-hoc agent run") : title;
     session = m_agentStore->createSession(session);
@@ -7197,11 +7171,9 @@ void MainWindow::openAgentSessionFromIssue()
 // fill the shared range diff while the universal source-control composer,
 // working changes, and branch graph remain visible on the left.
 //
-// switchToBranch() does that render, but it drives the repo-detail widgets of
-// whichever repository the detail view currently holds, and the sessions list is
-// global: a run belonging to another repo would otherwise open that other repo's
-// Git page and then report its branch as missing. Bind the detail view to the
-// session's own repository first.
+// The sessions list is global, so a run belonging to another repo must bind the
+// detail view to its own repository first. Unlike ordinary branch navigation,
+// this review route deliberately leaves the graph's browsed branch untouched.
 void MainWindow::switchToAgentBranch(int sessionId)
 {
     const AgentSession *session = findAgentSession(sessionId);
@@ -7217,7 +7189,27 @@ void MainWindow::switchToAgentBranch(int sessionId)
     showSection(0);
     if (repoIndex >= 0 && !bindRepoDetailToRepo(repoIndex))
         return;
-    switchToBranch(branch);
+
+    // The agent button opens a review; it must not repoint the commit graph's
+    // branch picker underneath the user. Keep that history exactly where it is,
+    // reset the review base to the repository default (normally main), and open
+    // only the agent range on the right. showBranchDiff still owns the Pull main
+    // state and its automatic update attempt when this branch is behind.
+    m_branchCompareBase.clear();
+    m_branchAutoPullAttempted.clear();
+    m_branchDiffPullNumber = -1;
+    showOverviewCommits();
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
+    showBranchDiff(branch);
+    if (m_branchDiffView)
+        m_branchDiffView->setFocus();
+    QTimer::singleShot(0, this, [this] {
+        if (commitsListIsCurrent())
+            refreshSourceControl();
+        else
+            loadCommits();
+    });
+    scheduleNavRecord();
 }
 
 void MainWindow::switchToAgentsTab(int sessionId)
