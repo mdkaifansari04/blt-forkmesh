@@ -3723,8 +3723,7 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
         m_branchDetailLabel->setToolTip(
             branch.isEmpty() || base.isEmpty() || branch == base
                 ? QString()
-                : QStringLiteral("Showing what %1 changes compared with %2 "
-                                 "(git diff %2...%1)")
+                : QStringLiteral("Showing %1's complete checkout compared with %2")
                       .arg(branch, base));
         // Reviewing a pull request (adhoc #107): lead with its number and state
         // so the pane reads as that PR's changes, not just a branch.
@@ -3998,11 +3997,13 @@ void MainWindow::showBranchDiff(const QString &branch)
     if (m_branchDiffSticky)
         m_branchDiffSticky->hide(); // no spans yet; reappears on scroll
     m_branchDiffViewedContext.clear();
+    m_branchDiffWorkDir = branchWorkDir(branch);
     // A new branch's diff hasn't been fetched yet; drop the cached patch so the
     // "Viewed" toggle can't re-render a stale one before the async read lands.
     m_branchDiffLastValid = false;
     const QString dir = repoGitDir();
     if (branch.isEmpty() || dir.isEmpty()) {
+        m_branchDiffWorkDir.clear();
         m_branchDiffView->clear();
         return;
     }
@@ -4031,6 +4032,7 @@ void MainWindow::renderBranchScopeDiff()
     if (branch.isEmpty() || dir.isEmpty())
         return;
     const QString base = branchCompareBase();
+    const QString work = m_branchDiffWorkDir;
 
     // The diff read below can take seconds on a large branch — it was a
     // recurring StallWatchdog offender freezing the GUI thread (issue #353). Run
@@ -4049,7 +4051,7 @@ void MainWindow::renderBranchScopeDiff()
         QString viewedContext;
     };
     runOffThread<ScopeDiff>(
-        [dir, base, branch, pullNumber]() {
+        [dir, base, branch, work, pullNumber]() {
             ScopeDiff r;
             r.viewedContext = pullNumber >= 0
                                   ? QStringLiteral("pull/") +
@@ -4057,8 +4059,18 @@ void MainWindow::renderBranchScopeDiff()
                                   : QStringLiteral("branch/") + branch;
             r.emptyMessage =
                 QStringLiteral("No changes between %1 and %2.").arg(branch, base);
-            if (!runGitCapture(dir, {"diff", base + ".." + branch}, &r.out, &r.err))
+            // A checked-out branch is represented by its complete worktree
+            // snapshot, not just its committed tip. The temporary-index helper
+            // folds committed, staged, unstaged, deleted, and untracked files
+            // into one patch against the selected base without modifying the
+            // real index. A branch with no checkout falls back to its ref range.
+            if (!work.isEmpty()) {
+                if (!buildWorkingTreeDiff(work, base, &r.out, &r.err))
+                    r.ok = false;
+            } else if (!runGitCapture(dir, {"diff", base + ".." + branch},
+                                      &r.out, &r.err)) {
                 r.ok = false;
+            }
             return r;
         },
         [this, gen, branch](ScopeDiff r) {
@@ -4089,8 +4101,9 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         return;
     m_branchDiffViewedContext = viewedContext;
     m_branchDiffFileSpans.clear();
-    const QString dir = repoGitDir();
-    const QString base = repoDefaultBranch(repoBranches());
+    const QString dir = m_branchDiffWorkDir.isEmpty() ? repoGitDir()
+                                                       : m_branchDiffWorkDir;
+    const QString base = branchCompareBase();
     QList<DiffFileEntry> files;
     const QSet<QString> viewed = loadDiffViewed(viewedContext);
     // PR mode (adhoc #107): drop the PR's review threads beneath the lines they
@@ -4369,7 +4382,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
                 QStringLiteral("Left %1 unchanged — review its %2 uncommitted file%3 "
                                "below, then update from %4.")
                     .arg(branch, n, plural, base));
-            showOverviewCommits(); // the commits panel inside the Code overview
+            showOverviewCommits(); // the universal Git workspace
             loadCommits();         // refresh history + the working-changes panel
             return;
         }

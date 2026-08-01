@@ -414,8 +414,8 @@ QWidget *MainWindow::buildPullsTab()
                     index = 2;
                     button = m_pullTabChecks;
                 } else if (href == QLatin1String("tab:files")) {
-                    index = 3;
-                    button = m_pullTabFiles;
+                    openPullDiffInGitView(m_currentPullNumber);
+                    return;
                 }
                 if (index < 0 || !m_pullSubStack)
                     return;
@@ -865,10 +865,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullConflictDetails->hide();
     connect(m_pullConflictDetails, &QLabel::linkActivated, this,
             [this](const QString &) {
-                if (m_pullTabFiles)
-                    m_pullTabFiles->setChecked(true);
-                if (m_pullSubStack)
-                    m_pullSubStack->setCurrentIndex(3);
+                openPullDiffInGitView(m_currentPullNumber);
             });
 
     auto *conversationInner = new QWidget;
@@ -944,7 +941,7 @@ QWidget *MainWindow::buildPullsTab()
         {QStringLiteral("Conversation"), "comment"},
         {QStringLiteral("Commits"), "git-branch"},
         {QStringLiteral("Checks"), "workflow"},
-        {QStringLiteral("Files changed"), "file-diff"},
+        {QStringLiteral("Changes in Git"), "file-diff"},
         {QStringLiteral("Badge"), "graph"}};
     for (int i = 0; i < subTabs.size(); ++i) {
         auto *b = new QPushButton(subTabs.at(i).first);
@@ -964,6 +961,14 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTabFiles = qobject_cast<QPushButton *>(m_pullSubTabs->button(3));
     m_pullTabBadge = qobject_cast<QPushButton *>(m_pullSubTabs->button(4));
     connect(m_pullSubTabs, &QButtonGroup::idClicked, this, [this](int id) {
+        if (id == 3) {
+            // The PR page owns conversation/checks/approval state; repository
+            // changes have one visual home. Route its Files entry into the Git
+            // range pane, which carries the same line threads, Viewed state,
+            // find/navigation tools, and PR actions.
+            openPullDiffInGitView(m_currentPullNumber);
+            return;
+        }
         m_pullSubStack->setCurrentIndex(id);
         if (id == 2) { // refresh the Checks table when it's brought forward
             // Copy the PR out before rendering: renderPullChecks pumps the
@@ -975,15 +980,6 @@ QWidget *MainWindow::buildPullsTab()
                     current = pr;
             if (current.number > 0)
                 renderPullChecks(current);
-        }
-        if (id == 3) { // Files changed brought forward: show the sticky header now,
-            // not only after the first scroll (adhoc #56). Defer so the diff
-            // viewport has laid out at its shown size before we measure it.
-            QTimer::singleShot(0, this, &MainWindow::updatePullDiffScrollState);
-            // The pane's Ctrl+F is widget-scoped now (adhoc #107); focusing the
-            // diff makes it live from the first key.
-            if (m_pullDiff)
-                m_pullDiff->setFocus();
         }
     });
 
@@ -1843,8 +1839,8 @@ void MainWindow::switchToPullTab(int pullNumber)
 // diffs against the live refs and browses that branch in the graph, reading as
 // the same "<head> -> <base>" comparison a branch does (adhoc #16); one whose
 // branch is gone (merged & pruned, or cross-node) shows its stored patch with
-// the graph left on the default branch. Either way it borrows only the right
-// pane (adhoc #12): the working-tree CHANGES and the graph stay put.
+// the graph left on the default branch. Either way only the right pane changes:
+// the universal source-control composer, working changes, and graph stay put.
 void MainWindow::openPullDiffInGitView(int pullNumber)
 {
     // The PR widgets and state (m_currentPulls, m_currentPullNumber) live in the
@@ -1866,6 +1862,13 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     }
     if (!rowSelected)
         showPull(pullNumber);
+    // The Files button is a route, not a second PR sub-page. Leave the PR detail
+    // parked on Conversation so its button state and stack are coherent when
+    // the reviewer returns from the Git range pane.
+    if (m_pullTabConversation)
+        m_pullTabConversation->setChecked(true);
+    if (m_pullSubStack)
+        m_pullSubStack->setCurrentIndex(0);
 
     // Copy the PR out of m_currentPulls before any git call below:
     // localBranchExists pumps the event loop, which can reload the pulls list
@@ -1900,6 +1903,7 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
         // Branch gone: render the PR's stored patch directly. Mirror the reset
         // showBranchDiff does, minus the git reads that need the branch.
         m_branchDiffBranch = pr.head;
+        m_branchDiffWorkDir.clear();
         updateCommitsCompareIndicator(); // "<head> -> <base>" on the branch row
         updateBranchDetailActions(pr.head);
         m_branchDiffLastPatch = pr.patch.toUtf8();
@@ -3652,7 +3656,7 @@ void MainWindow::updatePullSubTabCounts(PullRequest pr)
         label(m_pullTabConversation, QStringLiteral("Conversation"), 0);
         label(m_pullTabCommits, QStringLiteral("Commits"), 0);
         label(m_pullTabChecks, QStringLiteral("Checks"), 0);
-        label(m_pullTabFiles, QStringLiteral("Files changed"), 0);
+        label(m_pullTabFiles, QStringLiteral("Changes in Git"), 0);
         return;
     }
     const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
@@ -3660,7 +3664,7 @@ void MainWindow::updatePullSubTabCounts(PullRequest pr)
           snapshot.topLevelItems + snapshot.totalThreads);
     label(m_pullTabCommits, QStringLiteral("Commits"), pullCommitShas(pr).size());
     label(m_pullTabChecks, QStringLiteral("Checks"), runIdsForPull(pr).size());
-    label(m_pullTabFiles, QStringLiteral("Files changed"), pr.filesChanged);
+    label(m_pullTabFiles, QStringLiteral("Changes in Git"), pr.filesChanged);
 }
 
 void MainWindow::submitPullComment()
