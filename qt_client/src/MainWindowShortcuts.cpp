@@ -66,6 +66,26 @@ void shortcutMeta(const QString &filePath, QString *name, QString *description)
     }
 }
 
+// The prompt a "prompt" card drafts into the composer: the file's text minus
+// the "# name:" / "# description:" header lines, which describe the card rather
+// than form part of the ask.
+QString shortcutPromptText(const QString &filePath)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+        return {};
+    QString text;
+    while (!file.atEnd()) {
+        const QString line = QString::fromUtf8(file.readLine());
+        const QString trimmed = line.trimmed();
+        if (trimmed.startsWith(QLatin1String("# name:")) ||
+            trimmed.startsWith(QLatin1String("# description:")))
+            continue;
+        text += line;
+    }
+    return text.trimmed();
+}
+
 } // namespace
 
 QString MainWindow::shortcutsDirPath() const
@@ -114,7 +134,8 @@ QWidget *MainWindow::buildShortcutsTab()
     auto *hint = new QLabel(
         "Scripts, prompts and skills stored in this repo's .forkmesh/shortcuts/ "
         "folder, so they version and sync with the code. Click a script card to "
-        "run it (bash, from the repo root) — its output streams below. Other "
+        "run it (bash, from the repo root) — its output streams below. A prompt "
+        "card fills the composer with its text, ready to send to an agent; other "
         "files open in the editor.");
     hint->setObjectName("statusLine");
     hint->setWordWrap(true);
@@ -197,6 +218,7 @@ void MainWindow::loadShortcutsPanel()
     for (const QFileInfo &info : files) {
         const QString path = info.absoluteFilePath();
         const bool script = shortcutIsScript(path);
+        const bool prompt = shortcutKind(path) == QLatin1String("prompt");
         QString name, description;
         shortcutMeta(path, &name, &description);
 
@@ -207,12 +229,16 @@ void MainWindow::loadShortcutsPanel()
         auto *card = new QPushButton;
         card->setObjectName("shortcutCard");
         card->setCursor(Qt::PointingHandCursor);
-        card->setToolTip(script
-                             ? QStringLiteral("Run %1").arg(info.fileName())
-                             : QStringLiteral("Edit %1").arg(info.fileName()));
-        connect(card, &QPushButton::clicked, this, [this, path, script] {
+        card->setToolTip(
+            script ? QStringLiteral("Run %1").arg(info.fileName())
+                   : prompt ? QStringLiteral("Draft %1 in the composer")
+                                  .arg(info.fileName())
+                            : QStringLiteral("Edit %1").arg(info.fileName()));
+        connect(card, &QPushButton::clicked, this, [this, path, script, prompt] {
             if (script)
                 runShortcut(path);
+            else if (prompt)
+                draftShortcutPrompt(path);
             else
                 openShortcutEditor(path);
         });
@@ -225,7 +251,8 @@ void MainWindow::loadShortcutsPanel()
         titleRow->setContentsMargins(0, 0, 0, 0);
         titleRow->setSpacing(8);
         auto *icon = new QLabel;
-        icon->setPixmap(themedOcticon(script ? "rocket" : "file",
+        icon->setPixmap(themedOcticon(script ? "rocket"
+                                             : prompt ? "comment" : "file",
                                       QColor("#2ea043"), 16)
                             .pixmap(16, 16));
         icon->setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -269,6 +296,36 @@ void MainWindow::loadShortcutsPanel()
 
         cardsLayout->insertWidget(insertAt++, card);
     }
+}
+
+// Clicking a prompt card drafts its text into the footer composer, the same way
+// the stall badge drafts its fix-it prompt (adhoc #73) — one Enter from an agent
+// run, with a chance to edit first. {{stallLog}} / {{appLog}} are substituted
+// with this machine's real log paths so a prompt that asks an agent to read them
+// carries the right locations on every platform.
+void MainWindow::draftShortcutPrompt(const QString &filePath)
+{
+    QString prompt = shortcutPromptText(filePath);
+    if (prompt.isEmpty() || !m_issueQuickAdd) {
+        openShortcutEditor(filePath); // nothing to send: fall back to editing
+        return;
+    }
+    const QString stallLog = stallLogPath();
+    prompt.replace(QStringLiteral("{{stallLog}}"),
+                   stallLog.isEmpty()
+                       ? QStringLiteral("(disabled in this build)")
+                       : QDir::toNativeSeparators(stallLog));
+    prompt.replace(QStringLiteral("{{appLog}}"),
+                   QDir::toNativeSeparators(networkLogPath()));
+    // Anything half-typed goes into the recall history first, so overwriting the
+    // box never loses a prompt — Up brings it straight back.
+    recordQuickAddHistory(m_issueQuickAdd->toPlainText());
+    m_issueQuickAdd->setPlainText(prompt);
+    m_issueQuickAdd->moveCursor(QTextCursor::End);
+    m_issueQuickAdd->setFocus();
+    setRepoDetailNotice(QStringLiteral("Drafted \"%1\" in the composer — review "
+                                       "it, then send it to an agent.")
+                            .arg(QFileInfo(filePath).fileName()));
 }
 
 void MainWindow::runShortcut(const QString &filePath)

@@ -3129,12 +3129,16 @@ private:
     // files in the checkout's .forkmesh/shortcuts/ folder (shell scripts today;
     // prompts/skills ride along as editable text), so they version and sync with
     // the repo. Each file is a clickable card — a script runs through bash with
-    // its output streamed live into the page's log pane; other kinds open in
-    // the editor. New / edit / delete round out the CRUD.
+    // its output streamed live into the page's log pane; a prompt drafts itself
+    // into the footer composer; other kinds open in the editor. New / edit /
+    // delete round out the CRUD.
     QWidget *buildShortcutsTab();
     void loadShortcutsPanel();
     QString shortcutsDirPath() const; // <working tree>/.forkmesh/shortcuts, "" without one
     void runShortcut(const QString &filePath);
+    // Fill the quick-add composer with a prompt shortcut's text (log-path
+    // placeholders resolved), ready to review and send to an agent.
+    void draftShortcutPrompt(const QString &filePath);
     void stopShortcut();
     // Create (empty filePath) or edit a shortcut via a name + content dialog.
     void openShortcutEditor(const QString &filePath);
