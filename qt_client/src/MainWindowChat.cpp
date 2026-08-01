@@ -1013,14 +1013,10 @@ QWidget *MainWindow::buildNetworkLogDock()
         sendPromptToSelectedAgent(prompt);
     });
 
-    // Third button, stacked above "add" and "new" (adhoc #42): "task" doesn't
-    // send the typed prompt at all — it starts an agent wired to the remote MCP
-    // server configured on the website, so the agent picks its own work off the
-    // organization's shared task list and reports back through the same tools.
-    // Anything typed in the box rides along as extra guidance for that run.
-    // Labelled "task" rather than "genie" (adhoc #120), after what it actually
-    // does; the widget/QSS name stays the genie one the rest of the run plumbing
-    // (AgentSession::genie, startGenieAgent) is keyed to.
+    // Third button, stacked above "add" and "new": file the typed prompt in the
+    // organization's general task list. This used to launch a genie agent that
+    // picked some *other* shared task, which made a button labelled "task" do the
+    // opposite of what the prompt beside it described (adhoc #151).
     m_quickAddGenieButton = new QPushButton(QStringLiteral("task"));
     m_quickAddGenieButton->setObjectName("quickAddGenieButton");
     m_quickAddGenieButton->setCursor(Qt::PointingHandCursor);
@@ -1030,13 +1026,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
                                          QSizePolicy::Expanding);
     m_quickAddGenieButton->setToolTip(
-        QString::fromUtf8("Task \xE2\x80\x94 start a running agent session that "
-                          "picks its own work off the organization's shared task "
-                          "list. No setup: the first press mints this node's own "
-                          "task credential from the account you are signed in "
-                          "as."));
+        QString::fromUtf8("Task \xE2\x80\x94 add this prompt to the organization's "
+                          "general task list."));
     connect(m_quickAddGenieButton, &QPushButton::clicked, this,
-            &MainWindow::startGenieAgent);
+            &MainWindow::createQuickAddOrganizationTask);
 
     // Vertically Expanding (not Fixed) so the text area absorbs any spare height
     // in the prompt frame. With the fixed-height bottom bar below it, that keeps

@@ -1276,6 +1276,7 @@ private:
     void renderOrganizationTaskDetail();
     void updateOrganizationTaskActions();
     void createOrganizationTask();
+    void createQuickAddOrganizationTask();
     void createOrganizationTaskFollowUp();
     void refreshOrganizationTaskQueue();
     void moveQueuedAgentItemToTasks();
@@ -5051,10 +5052,9 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
-    // The "task" button (adhoc #42, relabelled from "genie" in adhoc #120),
-    // stacked above "add" and "new": starts an agent wired to the website's
-    // remote MCP server so it picks its own work off the organization's shared
-    // task list instead of running a typed prompt.
+    // The "task" button, stacked above "add" and "new", files the typed prompt
+    // as an unassigned item in the organization's General task list (adhoc
+    // #151). The member name is retained to avoid churning the existing QSS.
     QPushButton *m_quickAddGenieButton = nullptr;
     // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
     // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
