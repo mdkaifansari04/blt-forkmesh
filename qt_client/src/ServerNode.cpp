@@ -1684,10 +1684,13 @@ void ServerNode::handlePlain(const QJsonObject &message)
             NodeDiagnostics::fromJson(message.value("dg").toArray());
         peer.diagnosticsMs = QDateTime::currentMSecsSinceEpoch();
     }
-    // Every stamped frame is a clock sample: our time minus the sender's. A
-    // drifting clock gets caught here rather than when signed requests start
-    // being rejected.
-    if (!senderId.isEmpty() && senderId != m_nodeId) {
+    // Heartbeats are clock samples: our time minus the sender's. A drifting
+    // clock gets caught here rather than when signed requests start being
+    // rejected. Only hello/presence — durable chat frames are replayed from the
+    // relay's retained history with their original timestamps, which would read
+    // as hours of skew.
+    if (!senderId.isEmpty() && senderId != m_nodeId &&
+        (type == QLatin1String("hello") || type == QLatin1String("presence"))) {
         const qint64 peerMs = qint64(message.value("ts").toDouble());
         if (peerMs > 0)
             NodeDiagnostics::hostCollector().notePeerTimestamp(
