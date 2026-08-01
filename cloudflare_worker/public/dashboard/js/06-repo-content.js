@@ -2150,7 +2150,7 @@
       : parseFrontMatterList(values.labels || values.reviewLabels);
     const metadata = recordDetailMeta(kind, values);
     const pendingNotice = options.pending ? `
-        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
+        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is waiting for an eligible online mirror to commit it to the repository, so it does not have a number yet.</div>` : "";
     const isIssues = !isPulls && !isDiscussions;
     const marketingInitiativeAction =
       isIssues && !options.pending
@@ -2168,7 +2168,7 @@
     const issueTimelineSection = isIssues
       ? `<div data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}" class="${issueTimeline ? "border-t border-border" : ""}">${issueTimeline}</div>`
       : "";
-    // A pending issue is still in the maintainer's inbox and has no number yet,
+    // A pending issue is still awaiting its mirror commit and has no number yet,
     // so there's nothing for a comment's signature to bind to.
     const issueCommentSection = isIssues && !options.pending
       ? renderIssueCommentForm(number)
@@ -2298,8 +2298,8 @@
     const config = repoCollectionConfig[kind];
     const container = $(`[data-repo-${kind}]`);
     if (!repo || !config || !container || !number) return;
-    // Issues just submitted from this session sit in the maintainer's inbox
-    // until drained, so there's nothing to fetch from the mirror yet - render
+    // Issues just submitted from this session await their mirror commit, so
+    // there's nothing to fetch from the mirror yet - render
     // the detail straight from the local placeholder instead.
     const pendingItem = kind === "issues"
       ? state.issuesView.items.find((item) => item.pending && item.localId === number)
@@ -2501,11 +2501,9 @@
     }
   }
 
-  // The relay only reports a COUNT of issue submissions still waiting in the
-  // owner's inbox (their contents are encrypted). Surface that count in the
-  // Issues list as "syncing..." placeholder rows so a submission stays visible
-  // on any browser - not only the one that filed it, whose optimistic copy
-  // lives in localStorage - until the owner node drains and mirrors it.
+  // The relay only reports a COUNT of issue submissions awaiting an eligible
+  // mirror (their contents are encrypted). Surface that count in the Issues
+  // list as "syncing..." placeholder rows until a mirror commits them.
   function remotePendingIssuePlaceholders(count) {
     const list = [];
     for (let i = 0; i < count; i += 1) {
@@ -2517,7 +2515,7 @@
         author: "a contributor",
         date: "waiting to sync",
         meta: "",
-        body: "Submitted to the maintainer's inbox. It will appear in full once the owner's source-of-truth node comes online and syncs it.",
+        body: "Submitted for direct delivery. It will appear in full when an eligible online mirror commits it to the repository.",
         pending: true,
         remotePlaceholder: true,
       });
@@ -2532,7 +2530,7 @@
     const count = Number(state.pendingIssueCounts?.[pendingIssuesRepoKey(repo)]) || 0;
     const items = view.items.filter((item) => !item.remotePlaceholder);
     // Items already shown as pending (this session's optimistic add and the
-    // issue #379 localStorage copies) cover part of the server tally; only pad
+    // session's optimistic add) covers part of the server tally; only pad
     // the remainder so we never double-count a submission we can already show.
     const pendingReals = items.filter((item) => item.pending);
     const rest = items.filter((item) => !item.pending);
@@ -2694,9 +2692,8 @@
         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
-          // No issues on the mirror yet - still surface the owner's offline
-          // submissions kept locally while their node was down (issue #379).
-          state.issuesView.items = reconcilePendingIssues(repo, []);
+          // No issues have been committed to the mirror yet.
+          state.issuesView.items = [];
           state.issuesView.filter = "open";
           state.issuesView.query = "";
           state.issuesView.missing = [];
@@ -2753,12 +2750,7 @@
       const dirs = numbered.slice(0, 50);
       const { items, missing } = await fetchIssuePage(repo, pathByNumber, dirs);
       items.sort((a, b) => Number(b.number) - Number(a.number));
-      // Issue #379: fold in the owner's offline submissions (kept locally while
-      // their source-of-truth node was down) so they still show up on reload,
-      // dropping any the node has since drained - the numbered mirror copy wins.
-      const pending = reconcilePendingIssues(repo, items);
-      const merged = pending.length ? [...pending, ...items] : items;
-      state.issuesView.items = merged;
+      state.issuesView.items = items;
       state.issuesView.filter = "open";
       state.issuesView.query = "";
       state.issuesView.missing = missing;

@@ -54,7 +54,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-col gap-1">
             ${composeIdentityHtml(state.session, "Filing")}
-            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">An eligible online mirror will add signed issues directly to this repository.</span>
           </div>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
@@ -222,9 +222,9 @@
     setHint("Preparing and signing the change set…");
     try {
       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
-      // Submissions land in the maintainer's inbox, not the public mirror, so it
-      // won't be visible there until they drain it - but show it locally, on
-      // top of this session's issue list, so the submitter sees it right away.
+      // The relay wakes eligible online mirrors immediately. Keep a local
+      // optimistic row until the first mirror commits the signed issue and its
+      // durable issue number becomes visible from the repository.
       const pendingItem = {
         number: null,
         localId: `pending-${Date.now().toString(36)}`,
@@ -239,12 +239,6 @@
         pending: true,
       };
       state.issuesView.items = [pendingItem, ...state.issuesView.items];
-      // Issue #379: when the owner files an issue while their source-of-truth
-      // node is offline but a mirror is serving the repo, persist it locally so
-      // it keeps showing up across reloads - fully, not just this session -
-      // until the node comes back online and drains it to the mirror.
-      const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
-      if (ownerOffline) savePendingIssue(repo, pendingItem);
       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
@@ -254,15 +248,13 @@
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
       setHint(
-        ownerOffline
-          ? "Your source-of-truth node is offline, so this issue is held on a mirror and will sync to your node when it comes back online."
-          : "Issue sent to the maintainer's inbox for review. Submit another or go back.",
+        "Issue accepted. The first eligible online mirror will add it directly to the repository.",
         "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Issue delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
           : code === "not_authorized" ? "Only the repository owner or an admin can assign issues to an agent."
@@ -363,7 +355,7 @@
           <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="upload" class="h-4 w-4 text-primary"></i>Import issues from CSV</span>
           <button type="button" data-repo-issue-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to issues</button>
         </div>
-        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is filed as its own signed issue in the maintainer's inbox.</p>
+        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is a signed issue delivered to the first eligible online mirror.</p>
         <div class="flex flex-wrap items-center gap-2">
           <button type="button" data-repo-issue-template class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="download" class="h-3.5 w-3.5"></i>Download template</button>
           <input type="file" data-repo-issue-csv-input accept=".csv,text/csv" class="text-xs text-foreground file:mr-2 file:h-8 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:text-xs file:font-medium file:text-foreground" />
@@ -372,7 +364,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-col gap-1">
             ${composeIdentityHtml(state.session, "Filing")}
-            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Eligible online mirrors add accepted issues directly to the repository.</span>
           </div>
           <button type="submit" data-repo-issue-import-submit disabled class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Import issues</button>
         </div>
@@ -454,7 +446,7 @@
     setHint(
       failed
         ? `Imported ${ok} issue${ok === 1 ? "" : "s"}; ${failed} could not be sent. Go back to review.`
-        : `Imported ${ok} issue${ok === 1 ? "" : "s"} to the maintainer's inbox. Go back to review.`,
+        : `Submitted ${ok} issue${ok === 1 ? "" : "s"} for direct mirror delivery.`,
       failed ? "bad" : "good");
   }
 

@@ -1087,59 +1087,14 @@
     return { privateKey, pub };
   }
 
-  // Issue #379: offline issues an owner filed while their source-of-truth node
-  // was down (but a mirror was still serving the repo). They live only in the
-  // relay's inbox until the node returns and drains them, so we also keep a
-  // local copy per repo - keyed here - so they "show up fully" across reloads
-  // instead of vanishing the moment the mirror-loaded list replaces the
-  // optimistic, session-only placeholder.
-  const PENDING_ISSUES_STORAGE = "forkmesh.pendingIssues";
-
   function pendingIssuesRepoKey(repo) {
     return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
   }
 
-  function readPendingIssueStore() {
-    try { return JSON.parse(localStorage.getItem(PENDING_ISSUES_STORAGE) || "{}") || {}; }
-    catch (_) { return {}; }
-  }
-
-  function writePendingIssueStore(store) {
-    try { localStorage.setItem(PENDING_ISSUES_STORAGE, JSON.stringify(store)); } catch (_) {}
-  }
-
-  function loadPendingIssues(repo) {
-    const list = readPendingIssueStore()[pendingIssuesRepoKey(repo)];
-    return Array.isArray(list) ? list : [];
-  }
-
-  function savePendingIssue(repo, item) {
-    const store = readPendingIssueStore();
-    const key = pendingIssuesRepoKey(repo);
-    const list = Array.isArray(store[key]) ? store[key] : [];
-    store[key] = [item, ...list].slice(0, 50);
-    writePendingIssueStore(store);
-  }
-
-  // Drop any locally-held pending issues whose title now appears in the mirror
-  // tree: the owner's node has come back and drained them, so the real numbered
-  // issue served from the mirror wins and the local placeholder retires.
-  function reconcilePendingIssues(repo, mirrorIssues) {
-    const list = loadPendingIssues(repo);
-    if (!list.length) return list;
-    const drained = new Set(
-      (mirrorIssues || []).map((issue) => String(issue.title || "").trim()));
-    const kept = list.filter((item) => !drained.has(String(item.title || "").trim()));
-    if (kept.length === list.length) return list;
-    const store = readPendingIssueStore();
-    store[pendingIssuesRepoKey(repo)] = kept;
-    writePendingIssueStore(store);
-    return kept;
-  }
-
   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
-  // inbox POST (verify_issue_event in the worker). New issues are signed with
-  // number 0; the maintainer assigns the durable number on drain.
+  // submission POST (verify_issue_event in the worker). New issues are signed
+  // with number 0; the first eligible mirror assigns the durable number when
+  // it commits the issue to the repository it serves.
   async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "", extraMeta = {}) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
@@ -1199,7 +1154,7 @@
 
   // The compact World chat composer is a second presentation of the canonical
   // dashboard actions. Expose the signed issue operation narrowly so the chat
-  // bundle can file into the same maintainer inbox without duplicating key,
+  // bundle can file through the same eligible-mirror delivery path without duplicating key,
   // signature, authorization, or payload logic.
   window.ForkMeshDashboardActions = Object.assign(
     window.ForkMeshDashboardActions || {},
@@ -1443,12 +1398,12 @@
       }
       if (bodyInput) bodyInput.value = "";
       if (submit) submit.disabled = false;
-      setHint("Comment sent to the maintainer's inbox for review.", "good");
+      setHint("Comment accepted for direct delivery to an eligible mirror.", "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Comment delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The comment is too large - please shorten it."
           : code === "bad_signature" ? "Could not verify the comment's signature."
@@ -1492,12 +1447,12 @@
       }
       if (bodyInput) bodyInput.value = "";
       if (submit) submit.disabled = false;
-      setHint("Reply sent to the maintainer's inbox for review.", "good");
+      setHint("Reply accepted for direct delivery to an eligible mirror.", "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Reply delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "discussion_too_large" ? "The reply is too large - please shorten it."
           : code === "bad_signature" ? "Could not verify the reply's signature."
@@ -9619,7 +9574,7 @@
       : parseFrontMatterList(values.labels || values.reviewLabels);
     const metadata = recordDetailMeta(kind, values);
     const pendingNotice = options.pending ? `
-        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
+        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is waiting for an eligible online mirror to commit it to the repository, so it does not have a number yet.</div>` : "";
     const isIssues = !isPulls && !isDiscussions;
     const marketingInitiativeAction =
       isIssues && !options.pending
@@ -9637,7 +9592,7 @@
     const issueTimelineSection = isIssues
       ? `<div data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}" class="${issueTimeline ? "border-t border-border" : ""}">${issueTimeline}</div>`
       : "";
-    // A pending issue is still in the maintainer's inbox and has no number yet,
+    // A pending issue is still awaiting its mirror commit and has no number yet,
     // so there's nothing for a comment's signature to bind to.
     const issueCommentSection = isIssues && !options.pending
       ? renderIssueCommentForm(number)
@@ -9767,8 +9722,8 @@
     const config = repoCollectionConfig[kind];
     const container = $(`[data-repo-${kind}]`);
     if (!repo || !config || !container || !number) return;
-    // Issues just submitted from this session sit in the maintainer's inbox
-    // until drained, so there's nothing to fetch from the mirror yet - render
+    // Issues just submitted from this session await their mirror commit, so
+    // there's nothing to fetch from the mirror yet - render
     // the detail straight from the local placeholder instead.
     const pendingItem = kind === "issues"
       ? state.issuesView.items.find((item) => item.pending && item.localId === number)
@@ -9970,11 +9925,9 @@
     }
   }
 
-  // The relay only reports a COUNT of issue submissions still waiting in the
-  // owner's inbox (their contents are encrypted). Surface that count in the
-  // Issues list as "syncing..." placeholder rows so a submission stays visible
-  // on any browser - not only the one that filed it, whose optimistic copy
-  // lives in localStorage - until the owner node drains and mirrors it.
+  // The relay only reports a COUNT of issue submissions awaiting an eligible
+  // mirror (their contents are encrypted). Surface that count in the Issues
+  // list as "syncing..." placeholder rows until a mirror commits them.
   function remotePendingIssuePlaceholders(count) {
     const list = [];
     for (let i = 0; i < count; i += 1) {
@@ -9986,7 +9939,7 @@
         author: "a contributor",
         date: "waiting to sync",
         meta: "",
-        body: "Submitted to the maintainer's inbox. It will appear in full once the owner's source-of-truth node comes online and syncs it.",
+        body: "Submitted for direct delivery. It will appear in full when an eligible online mirror commits it to the repository.",
         pending: true,
         remotePlaceholder: true,
       });
@@ -10001,7 +9954,7 @@
     const count = Number(state.pendingIssueCounts?.[pendingIssuesRepoKey(repo)]) || 0;
     const items = view.items.filter((item) => !item.remotePlaceholder);
     // Items already shown as pending (this session's optimistic add and the
-    // issue #379 localStorage copies) cover part of the server tally; only pad
+    // session's optimistic add) covers part of the server tally; only pad
     // the remainder so we never double-count a submission we can already show.
     const pendingReals = items.filter((item) => item.pending);
     const rest = items.filter((item) => !item.pending);
@@ -10163,9 +10116,8 @@
         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
-          // No issues on the mirror yet - still surface the owner's offline
-          // submissions kept locally while their node was down (issue #379).
-          state.issuesView.items = reconcilePendingIssues(repo, []);
+          // No issues have been committed to the mirror yet.
+          state.issuesView.items = [];
           state.issuesView.filter = "open";
           state.issuesView.query = "";
           state.issuesView.missing = [];
@@ -10222,12 +10174,7 @@
       const dirs = numbered.slice(0, 50);
       const { items, missing } = await fetchIssuePage(repo, pathByNumber, dirs);
       items.sort((a, b) => Number(b.number) - Number(a.number));
-      // Issue #379: fold in the owner's offline submissions (kept locally while
-      // their source-of-truth node was down) so they still show up on reload,
-      // dropping any the node has since drained - the numbered mirror copy wins.
-      const pending = reconcilePendingIssues(repo, items);
-      const merged = pending.length ? [...pending, ...items] : items;
-      state.issuesView.items = merged;
+      state.issuesView.items = items;
       state.issuesView.filter = "open";
       state.issuesView.query = "";
       state.issuesView.missing = missing;
@@ -12430,7 +12377,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-col gap-1">
             ${composeIdentityHtml(state.session, "Filing")}
-            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">An eligible online mirror will add signed issues directly to this repository.</span>
           </div>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
@@ -12598,9 +12545,9 @@
     setHint("Preparing and signing the change set…");
     try {
       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
-      // Submissions land in the maintainer's inbox, not the public mirror, so it
-      // won't be visible there until they drain it - but show it locally, on
-      // top of this session's issue list, so the submitter sees it right away.
+      // The relay wakes eligible online mirrors immediately. Keep a local
+      // optimistic row until the first mirror commits the signed issue and its
+      // durable issue number becomes visible from the repository.
       const pendingItem = {
         number: null,
         localId: `pending-${Date.now().toString(36)}`,
@@ -12615,12 +12562,6 @@
         pending: true,
       };
       state.issuesView.items = [pendingItem, ...state.issuesView.items];
-      // Issue #379: when the owner files an issue while their source-of-truth
-      // node is offline but a mirror is serving the repo, persist it locally so
-      // it keeps showing up across reloads - fully, not just this session -
-      // until the node comes back online and drains it to the mirror.
-      const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
-      if (ownerOffline) savePendingIssue(repo, pendingItem);
       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
@@ -12630,15 +12571,13 @@
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
       setHint(
-        ownerOffline
-          ? "Your source-of-truth node is offline, so this issue is held on a mirror and will sync to your node when it comes back online."
-          : "Issue sent to the maintainer's inbox for review. Submit another or go back.",
+        "Issue accepted. The first eligible online mirror will add it directly to the repository.",
         "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Issue delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
           : code === "not_authorized" ? "Only the repository owner or an admin can assign issues to an agent."
@@ -12739,7 +12678,7 @@
           <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="upload" class="h-4 w-4 text-primary"></i>Import issues from CSV</span>
           <button type="button" data-repo-issue-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to issues</button>
         </div>
-        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is filed as its own signed issue in the maintainer's inbox.</p>
+        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is a signed issue delivered to the first eligible online mirror.</p>
         <div class="flex flex-wrap items-center gap-2">
           <button type="button" data-repo-issue-template class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="download" class="h-3.5 w-3.5"></i>Download template</button>
           <input type="file" data-repo-issue-csv-input accept=".csv,text/csv" class="text-xs text-foreground file:mr-2 file:h-8 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:text-xs file:font-medium file:text-foreground" />
@@ -12748,7 +12687,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-col gap-1">
             ${composeIdentityHtml(state.session, "Filing")}
-            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Eligible online mirrors add accepted issues directly to the repository.</span>
           </div>
           <button type="submit" data-repo-issue-import-submit disabled class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Import issues</button>
         </div>
@@ -12830,7 +12769,7 @@
     setHint(
       failed
         ? `Imported ${ok} issue${ok === 1 ? "" : "s"}; ${failed} could not be sent. Go back to review.`
-        : `Imported ${ok} issue${ok === 1 ? "" : "s"} to the maintainer's inbox. Go back to review.`,
+        : `Submitted ${ok} issue${ok === 1 ? "" : "s"} for direct mirror delivery.`,
       failed ? "bad" : "good");
   }
 

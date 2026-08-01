@@ -198,59 +198,14 @@
     return { privateKey, pub };
   }
 
-  // Issue #379: offline issues an owner filed while their source-of-truth node
-  // was down (but a mirror was still serving the repo). They live only in the
-  // relay's inbox until the node returns and drains them, so we also keep a
-  // local copy per repo - keyed here - so they "show up fully" across reloads
-  // instead of vanishing the moment the mirror-loaded list replaces the
-  // optimistic, session-only placeholder.
-  const PENDING_ISSUES_STORAGE = "forkmesh.pendingIssues";
-
   function pendingIssuesRepoKey(repo) {
     return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
   }
 
-  function readPendingIssueStore() {
-    try { return JSON.parse(localStorage.getItem(PENDING_ISSUES_STORAGE) || "{}") || {}; }
-    catch (_) { return {}; }
-  }
-
-  function writePendingIssueStore(store) {
-    try { localStorage.setItem(PENDING_ISSUES_STORAGE, JSON.stringify(store)); } catch (_) {}
-  }
-
-  function loadPendingIssues(repo) {
-    const list = readPendingIssueStore()[pendingIssuesRepoKey(repo)];
-    return Array.isArray(list) ? list : [];
-  }
-
-  function savePendingIssue(repo, item) {
-    const store = readPendingIssueStore();
-    const key = pendingIssuesRepoKey(repo);
-    const list = Array.isArray(store[key]) ? store[key] : [];
-    store[key] = [item, ...list].slice(0, 50);
-    writePendingIssueStore(store);
-  }
-
-  // Drop any locally-held pending issues whose title now appears in the mirror
-  // tree: the owner's node has come back and drained them, so the real numbered
-  // issue served from the mirror wins and the local placeholder retires.
-  function reconcilePendingIssues(repo, mirrorIssues) {
-    const list = loadPendingIssues(repo);
-    if (!list.length) return list;
-    const drained = new Set(
-      (mirrorIssues || []).map((issue) => String(issue.title || "").trim()));
-    const kept = list.filter((item) => !drained.has(String(item.title || "").trim()));
-    if (kept.length === list.length) return list;
-    const store = readPendingIssueStore();
-    store[pendingIssuesRepoKey(repo)] = kept;
-    writePendingIssueStore(store);
-    return kept;
-  }
-
   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
-  // inbox POST (verify_issue_event in the worker). New issues are signed with
-  // number 0; the maintainer assigns the durable number on drain.
+  // submission POST (verify_issue_event in the worker). New issues are signed
+  // with number 0; the first eligible mirror assigns the durable number when
+  // it commits the issue to the repository it serves.
   async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "", extraMeta = {}) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
@@ -310,7 +265,7 @@
 
   // The compact World chat composer is a second presentation of the canonical
   // dashboard actions. Expose the signed issue operation narrowly so the chat
-  // bundle can file into the same maintainer inbox without duplicating key,
+  // bundle can file through the same eligible-mirror delivery path without duplicating key,
   // signature, authorization, or payload logic.
   window.ForkMeshDashboardActions = Object.assign(
     window.ForkMeshDashboardActions || {},
@@ -554,12 +509,12 @@
       }
       if (bodyInput) bodyInput.value = "";
       if (submit) submit.disabled = false;
-      setHint("Comment sent to the maintainer's inbox for review.", "good");
+      setHint("Comment accepted for direct delivery to an eligible mirror.", "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Comment delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The comment is too large - please shorten it."
           : code === "bad_signature" ? "Could not verify the comment's signature."
@@ -603,12 +558,12 @@
       }
       if (bodyInput) bodyInput.value = "";
       if (submit) submit.disabled = false;
-      setHint("Reply sent to the maintainer's inbox for review.", "good");
+      setHint("Reply accepted for direct delivery to an eligible mirror.", "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Reply delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "discussion_too_large" ? "The reply is too large - please shorten it."
           : code === "bad_signature" ? "Could not verify the reply's signature."
