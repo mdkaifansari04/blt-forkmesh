@@ -1729,12 +1729,13 @@ int main(int argc, char *argv[])
                       QStringLiteral("alice"),
                   QStringLiteral("Mirror nodes Owner column shows the node owner"));
             // Columns: Node, Owner, Latest commit, Message, Author, Synced,
-            // Size, Issues, Commits, Branches, Pulls, Discussions, CPU, RAM,
-            // Disk, Platform, … — Message/Author pushed Disk/Platform to 14/15.
-            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 14)
+            // Sync delay, Size, Issues, Commits, Branches, Pulls, Discussions,
+            // CPU, RAM, Disk, Platform, … — the sync-delay column pushes
+            // Disk/Platform to 15/16.
+            check(window.testMirrorNodeCellToolTip(QStringLiteral("mirror1"), 15)
                       .startsWith(QStringLiteral("Disk:")),
                   QStringLiteral("Mirror nodes Disk column contains disk usage, not platform text"));
-            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 15) ==
+            check(window.testMirrorNodeCellText(QStringLiteral("mirror1"), 16) ==
                       QStringLiteral("linux"),
                   QStringLiteral("Mirror nodes Platform column stays aligned after Disk"));
             window.testSetMirrorNodesOnlineOnly(false);
