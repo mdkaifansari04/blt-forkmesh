@@ -1,0 +1,319 @@
+diff --git a/qt_client/src/AgentRunner.cpp b/qt_client/src/AgentRunner.cpp
+index c00f0b820..c2ec32700 100644
+--- a/qt_client/src/AgentRunner.cpp
++++ b/qt_client/src/AgentRunner.cpp
+@@ -194,6 +194,16 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
+     m_issue = issue;
+     m_repoPath = repoPath;
+     m_config = config;
++    if (m_config.mode.trimmed().isEmpty())
++        m_config.mode = m_session.mode;
++    if (m_config.strength.trimmed().isEmpty())
++        m_config.strength = m_session.strength;
++    if (m_session.mode.trimmed().isEmpty())
++        m_session.mode = m_config.mode;
++    if (m_session.strength.trimmed().isEmpty())
++        m_session.strength = m_config.strength;
++    if (m_session.model.trimmed().isEmpty())
++        m_session.model = m_config.model;
+     m_prompt = buildPrompt();
+ 
+     m_session.status = AgentStatus::Running;
+@@ -217,6 +227,9 @@ void AgentRunner::start(const AgentSession &session, const Issue &issue,
+                 .arg(m_config.maxOutputTokens));
+     if (!m_config.model.trimmed().isEmpty())
+         emitLog(QStringLiteral("==> Model: %1").arg(m_config.model.trimmed()));
++    emitLog(QStringLiteral("==> %1")
++                .arg(launchIdentityInstruction(m_session.provider, m_config.model,
++                                               m_config.mode, m_config.strength)));
+ 
+     if (m_config.command.trimmed().isEmpty()) {
+         complete(false, AgentStatus::Waiting,
+@@ -746,6 +759,33 @@ QString AgentRunner::defaultPromptPreamble()
+         "Do not commit, push, or open network resources unless the issue explicitly requires it.");
+ }
+ 
++QString AgentRunner::providerDisplayName(const QString &provider)
++{
++    if (provider == QLatin1String("claude-code"))
++        return QStringLiteral("CC");
++    if (provider == QLatin1String("codex"))
++        return QStringLiteral("Codex");
++    if (provider.startsWith(QLatin1String("claude")))
++        return QStringLiteral("Claude API");
++    return QStringLiteral("OpenAI API");
++}
++
++QString AgentRunner::launchIdentityInstruction(const QString &provider,
++                                                const QString &model,
++                                                const QString &mode,
++                                                const QString &strength)
++{
++    return QStringLiteral("Agent launch identity: provider display name: %1; "
++                          "resolved model: %2; permission mode: %3; "
++                          "reasoning speed: %4.")
++        .arg(providerDisplayName(provider),
++             model.trimmed().isEmpty() ? QStringLiteral("provider default")
++                                       : model.trimmed(),
++             mode.trimmed().isEmpty() ? QStringLiteral("Ask") : mode.trimmed(),
++             strength.trimmed().isEmpty() ? QStringLiteral("high")
++                                           : strength.trimmed());
++}
++
+ QString AgentRunner::buildPrompt() const
+ {
+     QStringList prompt;
+@@ -754,6 +794,8 @@ QString AgentRunner::buildPrompt() const
+     QString preamble = m_config.promptPreamble.trimmed();
+     if (preamble.isEmpty())
+         preamble = defaultPromptPreamble();
++    prompt << launchIdentityInstruction(m_session.provider, m_config.model,
++                                        m_config.mode, m_config.strength);
+     prompt << preamble;
+     prompt << QStringLiteral("");
+     prompt << QStringLiteral("Repository: %1/%2").arg(m_session.owner, m_session.name);
+diff --git a/qt_client/src/AgentRunner.h b/qt_client/src/AgentRunner.h
+index f339d31b6..a64d68b3f 100644
+--- a/qt_client/src/AgentRunner.h
++++ b/qt_client/src/AgentRunner.h
+@@ -19,6 +19,10 @@ public:
+         QString apiKey;
+         QString isolatedHome;
+         QString model;
++        // Launch identity values resolved by the caller from the session (or
++        // legacy settings). They are included in the first provider prompt.
++        QString mode;
++        QString strength;
+         // Instruction preamble prepended to the issue prompt. Empty falls back to
+         // defaultPromptPreamble(); editable and saved via Settings → Agents.
+         QString promptPreamble;
+@@ -38,6 +42,11 @@ public:
+ 
+     // The built-in instruction preamble used when no custom prompt is configured.
+     static QString defaultPromptPreamble();
++    static QString providerDisplayName(const QString &provider);
++    static QString launchIdentityInstruction(const QString &provider,
++                                             const QString &model,
++                                             const QString &mode,
++                                             const QString &strength);
+ 
+     bool busy() const { return m_busy; }
+     int currentSessionId() const { return m_session.id; }
+diff --git a/qt_client/src/MainWindowAgents.cpp b/qt_client/src/MainWindowAgents.cpp
+index 9f19feda3..1bbbde577 100644
+--- a/qt_client/src/MainWindowAgents.cpp
++++ b/qt_client/src/MainWindowAgents.cpp
+@@ -5917,6 +5917,14 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider)
+     config.maxOutputTokens =
+         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
+     config.promptPreamble = agentPromptPreamble();
++    config.mode = QSettings()
++                      .value(kAgentModeSetting,
++                             QSettings().value(kClaudeAutoModeSetting, true).toBool()
++                                 ? kClaudeAutoModeLabel
++                                 : kAgentAskModeLabel)
++                      .toString()
++                      .trimmed();
++    config.strength = composerAgentStrength();
+     // Jail (adhoc #236): the headless runner wraps its command and scratch env
+     // when a cap is set; 0 leaves the run unjailed.
+     if (QSettings().value(kAgentJailSetting, false).toBool())
+@@ -5935,6 +5943,7 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider)
+         config.command = claudeCommandSetting();
+         config.apiKeyName = QStringLiteral("ANTHROPIC_API_KEY");
+         config.apiKey = QSettings().value(kClaudeApiKeySetting).toString().trimmed();
++        config.model = QStringLiteral("claude-sonnet-4-6");
+     } else if (agentIsCodexProvider(provider)) {
+         // Codex: run the installed CLI against the user's normal Codex login, just
+         // like Claude Code. This keeps a ChatGPT/Codex plan upgrade from being
+@@ -6471,6 +6480,10 @@ int MainWindow::startAdHocAgentForRepo(int repoIndex, const QString &task,
+         if (!session.model.isEmpty() &&
+             agentModelMatchesProvider(provider, session.model))
+             config.model = session.model;
++        if (!session.mode.isEmpty())
++            config.mode = session.mode;
++        if (!session.strength.isEmpty())
++            config.strength = session.strength;
+         markAgentLimitWindow(provider);
+         acquireAgentRunner()->start(session, Issue(), repo.localPath, config);
+         reloadAgents();
+@@ -7156,6 +7169,10 @@ void MainWindow::processAgentQueue()
+         if (!snapshot.model.isEmpty() &&
+             agentModelMatchesProvider(snapshot.provider, snapshot.model))
+             config.model = snapshot.model;
++        if (!snapshot.mode.isEmpty())
++            config.mode = snapshot.mode;
++        if (!snapshot.strength.isEmpty())
++            config.strength = snapshot.strength;
+         // Ad-hoc API-key runs ride their saved task through the config override,
+         // mirroring startAdHocAgentForRepo so they resume the same way after a restart.
+         if (snapshot.issueNumber == 0 && !snapshot.prompt.isEmpty())
+@@ -7936,8 +7953,30 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
+     const QString branchName = session.branchName;
+     const QString baseRef = session.baseRef;
+     const int issueNumber = session.issueNumber;
+-    const QString model = session.model;
+-    const QString sessionMode = session.mode;
++    QString selectedModel = session.model;
++    if (selectedModel.isEmpty())
++        selectedModel = QSettings()
++                            .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
++                            .toString()
++                            .trimmed();
++    const QString launchProvider = codex ? kCodexProvider : QStringLiteral("claude-code");
++    if (!agentModelMatchesProvider(launchProvider, selectedModel))
++        selectedModel.clear();
++    const QString sessionMode =
++        session.mode.isEmpty()
++            ? QSettings()
++                  .value(kAgentModeSetting,
++                         QSettings().value(kClaudeAutoModeSetting, true).toBool()
++                             ? kClaudeAutoModeLabel
++                             : kAgentAskModeLabel)
++                  .toString()
++                  .trimmed()
++            : session.mode;
++    const QString sessionStrength =
++        session.strength.isEmpty() ? composerAgentStrength() : session.strength;
++    session.model = selectedModel;
++    session.mode = sessionMode;
++    session.strength = sessionStrength;
+ 
+     session.status = AgentStatus::Running;
+     session.startedAtMs = QDateTime::currentMSecsSinceEpoch();
+@@ -7984,27 +8023,12 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
+     // otherwise fall back to the footer quick-add bar's persisted choice (adhoc
+     // #261). Empty leaves the CLI on its own default; otherwise it's passed
+     // through as `--model`.
+-    QString selectedModel =
+-        !model.isEmpty()
+-            ? model
+-            : QSettings()
+-                  .value(codex ? kCodexModelSetting : kClaudeCodeModelSetting)
+-                  .toString()
+-                  .trimmed();
+-    // A session continued by a different provider may still carry the previous
+-    // provider's model (e.g. a Codex session left with "claude-opus-4-8"); the
+-    // CLI rejects a foreign model, so drop it and fall back to this provider's
+-    // default rather than fail the turn (adhoc #76).
+-    const QString launchProvider =
+-        codex ? kCodexProvider : QStringLiteral("claude-code");
+-    if (!agentModelMatchesProvider(launchProvider, selectedModel))
+-        selectedModel.clear();
+     // Auto mode (adhoc #91) routes on the task itself, not the full workflow
+     // prompt — `lead` carries the user's ask (or the issue + its comments).
+     const QString routeTask = lead;
+     auto launch = [this, sid, prompt, autoMode, branchName, resumeId,
+                    selectedModel, routeTask, codex,
+-                   sessionMode](const QString &workdir) {
++                   sessionMode, sessionStrength](const QString &workdir) {
+         if (codex) {
+             CodexAppServerSession *live = m_codexStreams.value(sid);
+             if (!live)
+@@ -8020,9 +8044,15 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
+                     ? (autoMode ? kClaudeAutoModeLabel
+                                 : kAgentAskModeLabel)
+                     : sessionMode;
+-            const QString effort =
+-                QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
+-                    .toString();
++            const QString effort = sessionStrength;
++            const QString launchPrompt =
++                AgentRunner::launchIdentityInstruction(kCodexProvider, selectedModel, mode,
++                                                       effort) + QStringLiteral("\n\n") + prompt;
++            if (AgentSession *as = findAgentSession(sid))
++                m_agentStore->appendLog(
++                    *as, QStringLiteral("==> %1\n")
++                             .arg(AgentRunner::launchIdentityInstruction(
++                                 kCodexProvider, selectedModel, mode, effort)));
+             // Codex should use the user's normal ChatGPT/Codex login just like
+             // the official IDE extension. Do not let inherited API-key variables
+             // silently switch this path to API billing.
+@@ -8036,7 +8066,7 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
+                 jailMb = agentJailMemoryMb();
+                 codexEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
+             }
+-            live->start(workdir, codexEnv, prompt, resumeId, selectedModel, mode,
++            live->start(workdir, codexEnv, launchPrompt, resumeId, selectedModel, mode,
+                         effort, jailMb);
+             return;
+         }
+@@ -8063,15 +8093,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
+         // re-checks that this stream is still the session's live one (the user
+         // may have stopped or restarted it while the triage ran).
+         auto begin = [this, sid, live, workdir, env, prompt, autoMode,
+-                      resumeId](const QString &chosenModel) {
++                      resumeId, sessionMode, sessionStrength](const QString &chosenModel) {
+             if (m_streamSessions.value(sid) != live)
+                 return;
+             // Footer slash-actions menu (adhoc #116): effort and model-fallback
+             // ride into the CLI as --effort/--fallback-model; turning Thinking
+             // off zeroes the thinking budget via MAX_THINKING_TOKENS.
+-            const QString effort =
+-                QSettings().value(kClaudeEffortSetting, QStringLiteral("high"))
+-                    .toString();
++            const QString effort = sessionStrength;
++            if (AgentSession *as = findAgentSession(sid)) {
++                as->model = chosenModel;
++                m_agentStore->saveSession(*as);
++            }
+             const QString fallback =
+                 QSettings().value(kClaudeFallbackModelSetting, false).toBool()
+                     ? QStringLiteral("opus,sonnet")
+@@ -8085,7 +8117,17 @@ void MainWindow::startCliTranscript(AgentSession &session, const Issue &issue,
+                 jailMb = agentJailMemoryMb();
+                 launchEnv << AgentJail::envEntries(AgentJail::sessionJailDir(sid));
+             }
+-            live->start(workdir, launchEnv, prompt, /*skipPermissions=*/autoMode,
++            const QString launchPrompt =
++                AgentRunner::launchIdentityInstruction(QStringLiteral("claude-code"),
++                                                       chosenModel, sessionMode, effort) +
++                QStringLiteral("\n\n") + prompt;
++            if (AgentSession *as = findAgentSession(sid))
++                m_agentStore->appendLog(
++                    *as, QStringLiteral("==> %1\n")
++                             .arg(AgentRunner::launchIdentityInstruction(
++                                 QStringLiteral("claude-code"), chosenModel,
++                                 sessionMode, effort)));
++            live->start(workdir, launchEnv, launchPrompt, /*skipPermissions=*/autoMode,
+                         resumeId, chosenModel, effort, fallback, jailMb);
+         };
+         if (selectedModel == kClaudeAutoModelId)
+diff --git a/qt_client/tests/test_codex_app_server.cpp b/qt_client/tests/test_codex_app_server.cpp
+index ac00297ea..af4aabdbd 100644
+--- a/qt_client/tests/test_codex_app_server.cpp
++++ b/qt_client/tests/test_codex_app_server.cpp
+@@ -868,8 +868,12 @@ void runFreshProtocolTest(const QString &executable)
+     QObject::connect(&session, &CodexAppServerSession::modelsListed,
+                      [&](const QJsonArray &listed) { models = listed; });
+ 
+-    session.start(temp.path(), {QStringLiteral("CODEX_STUB_ENV=present")},
+-                  QStringLiteral("describe this\nAttached image: /tmp/example.png"),
++    const QString initialTask =
++        QStringLiteral("Agent launch identity: provider display name: Codex; "
++                       "resolved model: gpt-test; permission mode: Auto mode; "
++                       "reasoning speed: high.\n\n"
++                       "describe this\nAttached image: /tmp/example.png");
++    session.start(temp.path(), {QStringLiteral("CODEX_STUB_ENV=present")}, initialTask,
+                   QString(), QStringLiteral("gpt-test"), QStringLiteral("Auto mode"),
+                   QStringLiteral("high"));
+     check(pump([&] { return started; }), "app-server process starts");
+@@ -927,14 +931,16 @@ void runFreshProtocolTest(const QString &executable)
+                                        .value(QStringLiteral("params"))
+                                        .toObject();
+     const QJsonArray input = turnParams.value(QStringLiteral("input")).toArray();
++    const QString expectedText =
++        initialTask.left(initialTask.indexOf(QStringLiteral("\nAttached image:")));
+     check(input.size() == 2 &&
+               input.first().toObject().value(QStringLiteral("text")).toString() ==
+-                  QStringLiteral("describe this") &&
++                  expectedText &&
+               input.last().toObject().value(QStringLiteral("type")).toString() ==
+                   QStringLiteral("localImage") &&
+               input.last().toObject().value(QStringLiteral("path")).toString() ==
+                   QStringLiteral("/tmp/example.png"),
+-          "attached image lines become localImage turn inputs");
++          "identity instruction and attached image reach turn/start");
+     check(turnParams.value(QStringLiteral("model")).toString() ==
+                   QStringLiteral("gpt-test") &&
+               turnParams.value(QStringLiteral("effort")).toString() ==
