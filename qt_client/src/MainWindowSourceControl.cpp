@@ -250,6 +250,7 @@ void MainWindow::scrollBranchDiffToFile(const QString &path)
 QWidget *MainWindow::buildSourceControlPanel()
 {
     auto *panel = new QWidget;
+    m_scmPanel = panel;
     auto *root = new QVBoxLayout(panel);
     root->setContentsMargins(16, 10, 16, 6);
     root->setSpacing(6);
@@ -446,6 +447,44 @@ QWidget *MainWindow::buildSourceControlPanel()
     m_scmControlsPanel->setSizePolicy(controlsPolicy);
     root->addWidget(m_scmControlsPanel);
 
+    // Keep committed-but-unpublished work visible in the same place as working
+    // changes. This mirrors VS Code's OUTGOING CHANGES group and avoids the easy
+    // trap where a clean tree looks fully synchronized even though local commits
+    // are still waiting to reach the mirror/upstream.
+    m_scmOutgoingPanel = new QWidget(panel);
+    m_scmOutgoingPanel->setObjectName(QStringLiteral("scmOutgoingPanel"));
+    auto *outgoingLayout = new QVBoxLayout(m_scmOutgoingPanel);
+    outgoingLayout->setContentsMargins(0, 2, 0, 4);
+    outgoingLayout->setSpacing(5);
+    auto *outgoingHeader = new QHBoxLayout;
+    outgoingHeader->setContentsMargins(0, 0, 0, 0);
+    outgoingHeader->setSpacing(6);
+    auto *outgoingTitle = new QLabel(QStringLiteral("OUTGOING CHANGES"));
+    outgoingTitle->setObjectName(QStringLiteral("sectionLabel"));
+    outgoingHeader->addWidget(outgoingTitle);
+    outgoingHeader->addStretch();
+    outgoingLayout->addLayout(outgoingHeader);
+
+    m_scmOutgoingLabel = new QLabel(m_scmOutgoingPanel);
+    m_scmOutgoingLabel->setObjectName(QStringLiteral("scmOutgoingLabel"));
+    m_scmOutgoingLabel->setTextFormat(Qt::RichText);
+    m_scmOutgoingLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    outgoingLayout->addWidget(m_scmOutgoingLabel);
+
+    m_scmSyncButton = new QPushButton(QStringLiteral("Sync Changes"),
+                                      m_scmOutgoingPanel);
+    m_scmSyncButton->setObjectName(QStringLiteral("scmSyncButton"));
+    m_scmSyncButton->setCursor(Qt::PointingHandCursor);
+    m_scmSyncButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    m_scmSyncButton->setToolTip(
+        QStringLiteral("Publish outgoing commits to the network mirror or push "
+                       "them to the configured upstream branch"));
+    setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+    connect(m_scmSyncButton, &QPushButton::clicked, this,
+            &MainWindow::pushCurrentRepoUpstream);
+    outgoingLayout->addWidget(m_scmSyncButton);
+    m_scmOutgoingPanel->hide();
+
     auto *header = new QHBoxLayout;
     auto *title = new QLabel("CHANGES");
     title->setObjectName("sectionLabel");
@@ -520,6 +559,7 @@ QWidget *MainWindow::buildSourceControlPanel()
     header->addWidget(m_scmNextButton);
     header->addWidget(m_scmRefreshButton);
     root->addLayout(header);
+    root->addWidget(m_scmOutgoingPanel);
 
     m_scmTree = new QTreeWidget;
     m_scmTree->setObjectName("fileTree");
@@ -589,6 +629,12 @@ void MainWindow::showRangeFilesInSourceControl(const QStringList &paths,
     // not caught up yet.
     if (!m_scmTree || m_branchDiffBranch.isEmpty())
         return;
+
+    // A range may be backed by another linked worktree, while the Sync action
+    // publishes the repository's primary checkout. Never show an action for one
+    // checkout beside the outgoing count of another.
+    if (m_scmOutgoingPanel)
+        m_scmOutgoingPanel->hide();
 
     m_scmStatusCache.clear(); // returning to main must rebuild its working tree
     m_scmTree->setEnabled(true); // range files remain reviewable on read-only mirrors
@@ -811,6 +857,8 @@ void MainWindow::refreshSourceControl(bool force)
     if (force)
         refreshRepoSyncIndicators();
     if (sourceControlShowsRange()) {
+        if (m_scmOutgoingPanel)
+            m_scmOutgoingPanel->hide();
         if (force) {
             m_branchDiffLastValid = false;
             renderBranchScopeDiff();
@@ -819,6 +867,7 @@ void MainWindow::refreshSourceControl(bool force)
     }
     const QString dir = sourceControlGitDir();
     const bool canWrite = !dir.isEmpty() && repoHasWorkingTree();
+    refreshSourceControlOutgoing();
     if (m_scmEmptyNote)
         m_scmEmptyNote->setVisible(!canWrite);
     for (QWidget *w : {static_cast<QWidget *>(m_scmMessage),
@@ -1120,6 +1169,109 @@ void MainWindow::refreshSourceControl(bool force)
             }
         }
     }
+}
+
+void MainWindow::refreshSourceControlOutgoing()
+{
+    if (!m_scmOutgoingPanel || !m_scmOutgoingLabel || !m_scmSyncButton)
+        return;
+    if (sourceControlShowsRange() || m_repoDetailIndex < 0 ||
+        m_repoDetailIndex >= m_repositories.size()) {
+        ++m_scmOutgoingGeneration;
+        m_scmOutgoingPanel->hide();
+        return;
+    }
+
+    const int repoIndex = m_repoDetailIndex;
+    // Git reads pump the event loop; keep an owned snapshot so a nested repo-list
+    // refresh cannot invalidate a reference into m_repositories mid-scan.
+    const RepositoryRecord repo = m_repositories.at(repoIndex);
+    if (repo.localPath.isEmpty() ||
+        !QDir(repo.localPath).exists(QStringLiteral(".git"))) {
+        ++m_scmOutgoingGeneration;
+        m_scmOutgoingPanel->hide();
+        return;
+    }
+
+    QByteArray branchOut;
+    if (!runGitCapture(repo.localPath,
+                       {QStringLiteral("symbolic-ref"), QStringLiteral("--short"),
+                        QStringLiteral("HEAD")},
+                       &branchOut, nullptr)) {
+        ++m_scmOutgoingGeneration;
+        m_scmOutgoingPanel->hide(); // detached HEAD has no branch to publish
+        return;
+    }
+    const QString branch = QString::fromUtf8(branchOut).trimmed();
+    if (repoIndex != m_repoDetailIndex || repoIndex >= m_repositories.size() ||
+        m_repositories.at(repoIndex).localPath != repo.localPath)
+        return;
+    const bool haveMirror = !repo.mirrorPath.isEmpty() &&
+                            QDir(repo.mirrorPath).exists();
+    QString mirrorTip =
+        haveMirror ? mirrorBranchCommit(repo.mirrorPath, branch) : QString();
+    // A newly-created local branch has no same-named mirror ref yet. Compare it
+    // with the mirror's default tip instead of calling the repository's entire
+    // inherited history "outgoing".
+    if (haveMirror && mirrorTip.isEmpty())
+        mirrorTip = mirrorBranchCommit(repo.mirrorPath,
+                                       mirrorHeadBranch(repo.mirrorPath));
+    if (repoIndex != m_repoDetailIndex || repoIndex >= m_repositories.size() ||
+        m_repositories.at(repoIndex).localPath != repo.localPath)
+        return;
+    QStringList countArgs{QStringLiteral("rev-list"), QStringLiteral("--count")};
+    if (haveMirror) {
+        countArgs << (mirrorTip.isEmpty()
+                          ? branch
+                          : mirrorTip + QStringLiteral("..") + branch);
+    } else {
+        countArgs << QStringLiteral("@{upstream}..HEAD");
+    }
+
+    const bool busy = m_pushingRepos.contains(m_repoDetailIndex) ||
+                      m_syncingRepos.contains(m_repoDetailIndex);
+    if (m_scmOutgoingPanel->property("branch").toString() != branch)
+        m_scmOutgoingPanel->hide();
+    if (busy && m_scmOutgoingPanel->isVisible()) {
+        m_scmSyncButton->setEnabled(false);
+        m_scmSyncButton->setText(QStringLiteral("Syncing Changes…"));
+        setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+    }
+
+    // Counting a long branch walk synchronously can stall the UI on a large
+    // history. Keep the scan detached and generation-tagged so rapid repo/branch
+    // switches cannot paint an old count into the new checkout.
+    const int generation = ++m_scmOutgoingGeneration;
+    runGitDetached(
+        repo.localPath, countArgs,
+        [this, generation, repoIndex, branch](bool ok, const QByteArray &out) {
+            if (generation != m_scmOutgoingGeneration ||
+                repoIndex != m_repoDetailIndex || sourceControlShowsRange())
+                return;
+            const int pending =
+                ok ? QString::fromUtf8(out).trimmed().toInt() : 0;
+            const bool stillBusy = m_pushingRepos.contains(repoIndex) ||
+                                   m_syncingRepos.contains(repoIndex);
+            if (pending <= 0 && !stillBusy) {
+                m_scmOutgoingPanel->hide();
+                return;
+            }
+
+            // The blue bullseye matches local-branch ref pills in the graph.
+            m_scmOutgoingLabel->setText(
+                QStringLiteral(
+                    "<span style='color:#1f6feb'>&#9673;</span> "
+                    "<b>%1</b><span style='color:#8b949e'> · %2&#8593;</span>")
+                    .arg(branch.toHtmlEscaped())
+                    .arg(pending));
+            m_scmOutgoingPanel->setProperty("branch", branch);
+            m_scmSyncButton->setEnabled(!stillBusy && pending > 0);
+            m_scmSyncButton->setText(
+                stillBusy ? QStringLiteral("Syncing Changes…")
+                          : QStringLiteral("Sync Changes %1↑").arg(pending));
+            setOcticon(m_scmSyncButton, QStringLiteral("sync"), 14);
+            m_scmOutgoingPanel->show();
+        });
 }
 
 // QSettings context (see loadDiffViewed) for the working-tree diff. One shared

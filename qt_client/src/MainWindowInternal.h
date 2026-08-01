@@ -486,6 +486,9 @@ constexpr int kMirrorSyncJitterPercent = 15;
 constexpr auto kActionNodeLabelsSetting = "actions/nodeLabels";
 // Defined further down; used early by MirrorSyncDelegate to pick chart colors.
 bool currentThemeIsDark();
+// Defined with the rest of the icon helpers further down; commit ref badges use
+// it before that definition while painting the graph rows.
+inline QIcon themedOcticon(const QString &name, const QColor &color, int size);
 
 // Column in the commits list that carries the Summary text + the commit hash
 // (Qt::UserRole). The metadata columns sit to its left.
@@ -520,6 +523,8 @@ constexpr int kGraphIsMergeRole = Qt::UserRole + 32;   // graph cell: commit has
 constexpr int kCommitFilesRole =
     Qt::UserRole + 33; // QStringList "path\tadds\tdels" of the files the commit
                        // touched, previewed in the summary's hover box
+constexpr int kCommitRefKindsRole =
+    Qt::UserRole + 34; // QStringList aligned with kCommitRefsRole: local/remote/tag
 
 // URL scheme for a clickable branch-name link; the percent-encoded branch name
 // follows. Clicking it opens that branch's row in the Branches tab (adhoc #123).
@@ -838,22 +843,46 @@ public:
         int rightEdge = r.right();
         // Branch / tag badges (the VS Code graph's ref pills) lead the summary.
         const QStringList refs = index.data(kCommitRefsRole).toStringList();
+        const QStringList refKinds =
+            index.data(kCommitRefKindsRole).toStringList();
         if (!refs.isEmpty()) {
             painter->setRenderHint(QPainter::Antialiasing, true);
-            for (const QString &ref : refs) {
-                const int rw = fm.horizontalAdvance(ref) + 12;
+            for (int refIndex = 0; refIndex < refs.size(); ++refIndex) {
+                const QString ref = refs.at(refIndex);
+                const QString kind = refKinds.value(refIndex);
+                const bool remote = kind == QLatin1String("remote");
+                const bool tag = kind == QLatin1String("tag");
+                const QString iconName = remote ? QStringLiteral("cloud")
+                                                : tag ? QStringLiteral("tag")
+                                                      : QStringLiteral("git-commit");
+                const QColor badgeColor =
+                    remote ? QColor("#8957e5")
+                           : tag ? QColor("#2da44e") : QColor("#1f6feb");
+                constexpr int iconSize = 12;
+                constexpr int iconGap = 4;
+                const int rw = fm.horizontalAdvance(ref) + 12 + iconSize + iconGap;
                 if (x + rw > rightEdge - 80)
                     break; // keep room for the summary itself
                 const QRect br(x, r.center().y() - fm.height() / 2 - 1, rw,
                                fm.height() + 2);
-                // Solid pill with white text, like the VS Code graph's ref
-                // badges, rounded to a full capsule.
+                // Local heads carry the target/commit glyph, remote-tracking
+                // heads carry the cloud glyph, and tags retain their own mark.
+                // Blue/purple/green match the graph/ref palette in the adjacent
+                // VS Code view and make local vs published state readable before
+                // the ref text itself is parsed.
                 painter->setPen(Qt::NoPen);
-                painter->setBrush(QColor("#1f6feb"));
+                painter->setBrush(badgeColor);
                 painter->drawRoundedRect(br, br.height() / 2.0,
                                          br.height() / 2.0);
+                const QRect iconRect(br.left() + 6,
+                                     br.center().y() - iconSize / 2,
+                                     iconSize, iconSize);
+                themedOcticon(iconName, Qt::white, iconSize)
+                    .paint(painter, iconRect);
                 painter->setPen(Qt::white);
-                painter->drawText(br, Qt::AlignCenter, ref);
+                painter->drawText(
+                    br.adjusted(6 + iconSize + iconGap, 0, -6, 0),
+                    Qt::AlignVCenter | Qt::AlignLeft, ref);
                 x += rw + 5;
             }
             painter->setBrush(Qt::NoBrush);

@@ -1120,10 +1120,13 @@ private:
     void showRepoMenu();           // dropdown to open repos / add a local repo
     void updateRepoSwitcher();     // refresh top-bar repo label / count
     void updateReposNavBadge();    // rail badge = repos the Repos page lists
-    // Keep the open repo's sync-derived indicators in step (adhoc #374 removed the
-    // floating "Sync" pill that used to hover above the Code tab; the activity
-    // rail's Git glyph and the commit list's "waiting to sync" markers remain).
+    // Keep the open repo's sync-derived indicators in step. The Sync action lives
+    // inside Source Control's Outgoing Changes group (never floating above Code),
+    // alongside the activity-rail spinner and commit pending-sync markers.
     void refreshRepoSyncIndicators();
+    // Source-control's compact Outgoing Changes group. It counts commits ahead
+    // of the served mirror/upstream and drives the one-click safe publish path.
+    void refreshSourceControlOutgoing();
     void pushCurrentRepoUpstream();
     // Launch the async `git push` for a repo whose secret scan has completed and
     // been approved (see pushCurrentRepoUpstream). The repo must already be marked
@@ -5773,6 +5776,10 @@ private:
     QPushButton *m_scmCommitButton = nullptr;
     QPushButton *m_scmCommitPushButton = nullptr; // commit, then publish/push
     QPushButton *m_scmStageCommitPushButton = nullptr; // stage all, commit, push
+    QWidget *m_scmOutgoingPanel = nullptr;
+    QLabel *m_scmOutgoingLabel = nullptr; // branch + pending commit count
+    QPushButton *m_scmSyncButton = nullptr; // publish/push pending commits
+    int m_scmOutgoingGeneration = 0; // rejects late ahead-count callbacks
     // Stage all / Unstage all / Discard all have no buttons of their own in the
     // panel any more — the CHANGES group headers carry those three actions.
     QPushButton *m_scmRefreshButton = nullptr;
