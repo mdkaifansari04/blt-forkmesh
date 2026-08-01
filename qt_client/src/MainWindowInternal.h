@@ -7369,6 +7369,19 @@ public:
     }
     int badgeCount() const { return m_badge; }
 
+    // Commits that exist locally but have not reached the upstream/mirror yet.
+    // This is a separate upper-left upload marker so it can coexist with the
+    // working-tree count badge (or the in-flight sync spinner) on Git.
+    void setPendingSyncCount(int count)
+    {
+        count = qMax(0, count);
+        if (m_pendingSync == count)
+            return;
+        m_pendingSync = count;
+        update();
+    }
+    int pendingSyncCount() const { return m_pendingSync; }
+
     // Red "needs you" badge (Chat unread, pending Pings) instead of the default
     // blue count — the same corner geometry either way, so the two badge
     // languages stay aligned across the rail.
@@ -7444,6 +7457,22 @@ protected:
         p.drawPixmap(iconRect.topLeft(),
                      tintedOcticonPixmap(m_iconName, fg, iconPx));
 
+        // An amber upload arrow on the opposite corner from the ordinary count
+        // badge makes "commits waiting to sync" visible without hiding dirty
+        // file count or an active-sync spinner.
+        if (m_pendingSync > 0) {
+            const int s = 12;
+            const QPoint at(qMax(1, iconRect.left() - 5),
+                            qMax(0, iconRect.top() - 4));
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(dark ? "#0d1117" : "#ffffff"));
+            p.drawEllipse(QRect(at, QSize(s, s)).adjusted(-1, -1, 1, 1));
+            p.drawPixmap(
+                at, tintedOcticonPixmap(
+                        QStringLiteral("upload"),
+                        QColor(dark ? "#d29922" : "#9a6700"), s));
+        }
+
         if (showLabel) {
             QFont f = font();
             f.setPixelSize(10);
@@ -7504,6 +7533,7 @@ private:
     QString m_iconName;
     QString m_label;
     int m_badge = 0;
+    int m_pendingSync = 0;
     bool m_badgeUrgent = false;
     bool m_alert = false;
     bool m_syncing = false;
