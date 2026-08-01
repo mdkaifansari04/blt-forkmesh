@@ -3192,6 +3192,10 @@ private:
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
                              const QString &source);
+    // Verify that one exact mirror (with failover disabled server-side) can
+    // return README.md. Results feed the Reachability column after Artifacts.
+    void fetchMirrorReachability(const QString &owner, const QString &repo,
+                                 const QString &source, const QString &node);
     // Fetch the worker's per-artifact release download counts (logged each time
     // /releases/blob/sha256/<hash> streams a binary out), so the Releases tab can
     // show how many times each artifact has been downloaded.
@@ -7193,6 +7197,9 @@ private:
     QJsonArray m_catalogMirrorsCache;      // last /mirrors payload's "mirrors"
     QString m_catalogMirrorsFetchSource;   // source the last fetch was kicked for
     qint64 m_catalogMirrorsFetchedMs = 0;  // throttle: last fetch kick time
+    // "owner/repo|node" -> bounded result from the exact-node README probe.
+    QHash<QString, QJsonObject> m_mirrorReachabilityCache;
+    QSet<QString> m_mirrorReachabilityInFlight;
     // Per-artifact release download counts for the repo currently shown in the
     // Releases panel (sha256 -> times downloaded), from the worker's
     // /releases/downloads endpoint.

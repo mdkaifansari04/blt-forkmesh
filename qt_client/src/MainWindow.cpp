@@ -515,6 +515,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
         m_pendingSilentAuth = true;
     }
     logStartup(QStringLiteral("identity loaded"));
+    // A provisioned headless mirror never builds or opens the Control Node
+    // page, which used to be the only path that armed its gateway/tunnel
+    // services. Defer until construction and setHeadlessMode() have completed;
+    // the helper still requires the persisted hostname plus an owner-only
+    // connector token, so ordinary clients with no endpoint are a no-op.
+    QTimer::singleShot(
+        0, this, &MainWindow::maybeAutoStartDirectMirrorServices);
     updateHomeStats();
     // Populate the Hosts/Relays nav button counts up front — Nodes' count
     // follows the roster and updates itself via updateNodeSwitcher().
