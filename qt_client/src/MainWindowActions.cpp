@@ -1708,7 +1708,7 @@ void MainWindow::openNotificationLink(const NotificationLink &link)
         if (link.number > 0)
             showDiscussion(link.number);
     } else if (link.kind == QLatin1String("commit")) {
-        showOverviewCommits(); // the commits panel inside the Code overview
+        showOverviewCommits(); // the universal Git workspace
         if (!link.ref.isEmpty())
             showCommit(link.ref);
     } else if (link.kind == QLatin1String("release")) {
