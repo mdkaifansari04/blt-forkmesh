@@ -632,6 +632,14 @@ push_secrets() {
             CLOUDFLARE_*)
                 continue
                 ;;
+            # Provisioning credentials for the operator's own infrastructure:
+            # the desktop app saves the Vultr API key here beside the
+            # Cloudflare ones so it never has to ask for it twice. No Worker
+            # code path reaches Vultr, so pushing it would only widen the
+            # runtime's secret surface.
+            VULTR_API_KEY|VULTR_API_TOKEN|VULTR_TOKEN|VULTR_KEY)
+                continue
+                ;;
         esac
         # Never push an empty value: it sets a blank secret, which looks "set" in
         # the dashboard but locks out the admin path / basic auth at runtime.

@@ -4508,6 +4508,8 @@ void MainWindow::refreshAgentDotMatrix()
     }
     m_agentDotMatrix->setDots(dots);
     m_agentDotMatrix->setVisible(!dots.isEmpty());
+    // The hairline to the node dots only shows with squares on both sides.
+    updateChromeDotDivider();
 
     if (dots.isEmpty()) {
         m_agentDotTooltipKey.clear();
