@@ -5629,19 +5629,50 @@ void MainWindow::updateSearchStatus()
 }
 
 
-// Switch the Git view's right pane, keeping its left column in step (adhoc
-// #110). Reviewing a branch/PR range lends the left column's two slots to that
-// range's changed files and commits; every other page hands them back to the
-// working-tree changes and the commit history.
+// Switch the Git view's right pane. Reviewing a branch/PR range used to lend
+// the left column's two slots to that range's changed files and commits (adhoc
+// #110); the review borrows only the right pane now (adhoc #12), so the
+// working-tree CHANGES and the commit graph stay put — only the merging-in
+// indicator above the graph's branch button follows the page.
 void MainWindow::setCommitWorkspacePage(int page)
 {
     if (!m_commitsStack)
         return;
     m_commitsStack->setCurrentIndex(page);
-    const int slot = page == kCommitWorkspaceRangePage ? 1 : 0;
-    for (QStackedWidget *stack : {m_gitFilesSlot, m_gitHistorySlot})
-        if (stack && stack->count() > slot)
-            stack->setCurrentIndex(slot);
+    updateCommitsMergingBanner();
+}
+
+// The "Merging in <branch>" indicator just above the graph's branch button:
+// while a branch/PR range review is open on the right pane it names the branch
+// being merged in — the graph itself stays on the default branch (adhoc #12).
+// Hidden (collapsing its row) on every other page.
+void MainWindow::updateCommitsMergingBanner()
+{
+    if (!m_commitsMergingButton)
+        return;
+    const bool reviewing =
+        m_commitsStack &&
+        m_commitsStack->currentIndex() == kCommitWorkspaceRangePage &&
+        !m_branchDiffBranch.isEmpty();
+    if (!reviewing) {
+        m_commitsMergingButton->hide();
+        return;
+    }
+    const QString label =
+        QStringLiteral("Merging in %1").arg(m_branchDiffBranch);
+    // The button elides long agent branch names; the full story goes on the
+    // tooltip (mirrors the branch button below it).
+    if (auto *elider = dynamic_cast<ElidingPushButton *>(m_commitsMergingButton))
+        elider->setFullText(label);
+    else
+        m_commitsMergingButton->setText(label);
+    const QString base = repoDefaultBranchFast();
+    m_commitsMergingButton->setToolTip(
+        QString::fromUtf8("Reviewing %1 for merge into %2 \xE2\x80\x94 its diff "
+                          "is open on the right")
+            .arg(m_branchDiffBranch,
+                 base.isEmpty() ? QStringLiteral("the default branch") : base));
+    m_commitsMergingButton->show();
 }
 
 void MainWindow::showCommitList()
@@ -9056,6 +9087,22 @@ QWidget *MainWindow::buildRepoCommitsTab()
             openBranchRangeReview(m_repoBranch);
     });
 
+    // "Merging in <branch>" — shown just above the branch button while a
+    // branch/PR range review is open on the right pane, since the graph below
+    // stays on the default branch during a review (adhoc #12). Text and
+    // visibility live in updateCommitsMergingBanner(); clicking it just hands
+    // the focus (and the keyboard diff tools) back to the open review.
+    auto *mergingButton = new ElidingPushButton;
+    m_commitsMergingButton = mergingButton;
+    m_commitsMergingButton->setObjectName("ghostButton");
+    m_commitsMergingButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsMergingButton, "git-merge", 16);
+    m_commitsMergingButton->hide();
+    connect(m_commitsMergingButton, &QPushButton::clicked, this, [this] {
+        if (m_branchDiffView)
+            m_branchDiffView->setFocus();
+    });
+
     auto *searchRow = new QHBoxLayout;
     searchRow->setSpacing(8);
     searchRow->addWidget(m_commitsBranchButton, 1);
@@ -9077,6 +9124,7 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
+    listLayout->addWidget(m_commitsMergingButton); // above the branch button
     // The unsynced banner sits in normal flow between the search row and the
     // table: as a real laid-out widget it pushes the rows down instead of
     // floating over them, so it can never hide the very (newest, top) commits it
@@ -9331,12 +9379,10 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     // Left column: working-tree changes above commit history. The column is one
     // resizable splitter pane, so the user can give lists just enough room and
-    // keep the right side dedicated to the active diff/detail view.
-    //
-    // Each half is a stack (adhoc #110): while a branch/PR range is under review
-    // the same two slots show that range's changed files and its commits, so the
-    // review reuses the places files and commits already live instead of opening
-    // a third column beside the diff. setCommitWorkspacePage() does the swap.
+    // keep the right side dedicated to the active diff/detail view. (Each half
+    // is a stack for historical reasons — the range review used to borrow the
+    // two slots (adhoc #110); it no longer does (adhoc #12), so each hosts its
+    // single working-tree page.)
     auto *scmPanel = buildSourceControlPanel();
     m_gitFilesSlot = new QStackedWidget;
     m_gitFilesSlot->addWidget(scmPanel); // 0: working-tree CHANGES
@@ -9382,16 +9428,11 @@ QWidget *MainWindow::buildRepoCommitsTab()
     m_commitsStack->addWidget(changesPage); // kCommitWorkspaceChangesPage
     m_commitsStack->addWidget(detailPage);  // kCommitWorkspaceCommitPage
     // The branch/PR range review pane (adhoc #107): the branch diff viewer moved
-    // in from the Branches panel, so a branch or PR opens its commits, files and
-    // diff right here in the Git view.
+    // in from the Branches panel, so a branch or PR opens its diff right here in
+    // the Git view — on this right pane only (adhoc #12), the left column stays
+    // on the working tree.
     m_commitsStack->addWidget(buildBranchRangePane()); // kCommitWorkspaceRangePage
     m_commitsStack->setCurrentIndex(kCommitWorkspaceChangesPage);
-    // Page 1 of each left slot: the range's files and commits (adhoc #110). Built
-    // by buildBranchRangePane() just above, parked here until a range opens.
-    if (m_branchFilesPane)
-        m_gitFilesSlot->addWidget(m_branchFilesPane);
-    if (m_branchScopePane)
-        m_gitHistorySlot->addWidget(m_branchScopePane);
 
     auto *workspaceSplit = new QSplitter(Qt::Horizontal);
     workspaceSplit->setChildrenCollapsible(false);

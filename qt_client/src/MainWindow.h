@@ -702,11 +702,16 @@ public:
     // lands on the range review pane in the Git view (adhoc #107).
     int testCommitWorkspacePage() const;
     QString testBranchDiffBranch() const { return m_branchDiffBranch; }
-    // Which page each half of the Git view's left column shows: 0 = the working
-    // tree's changes / commit history, 1 = the reviewed range's changed files /
-    // commits (adhoc #110). Returns -1 when that half doesn't exist yet.
+    // Which page each half of the Git view's left column shows: always 0 (the
+    // working tree's changes / commit history) since the range review stopped
+    // borrowing the slots (adhoc #12). Returns -1 when that half doesn't exist
+    // yet.
     int testGitFilesSlotPage() const;
     int testGitHistorySlotPage() const;
+    // The "Merging in <branch>" indicator above the graph's branch button, or
+    // empty while it's hidden — so a test can prove the branch under review is
+    // named there while the graph stays on the default branch (adhoc #12).
+    QString testMergingBannerText() const;
     // Click the range pane's close button, so a test can prove the left column
     // goes back to the working tree when the review is dismissed (adhoc #110).
     void testCloseBranchRange();
@@ -3013,16 +3018,15 @@ private:
     void maybeAutoPullBranch(const QString &branch);
     // Bumped per branch selection so a detail-bar read that lands late is dropped.
     int m_branchDetailActionsGen = 0;
-    // Render the branch diff for whichever scope is selected in m_branchScopeList
-    // (whole branch vs base, the worktree's uncommitted changes, or one commit).
+    // Render the branch's whole range diff (everything it adds over base).
     void renderBranchScopeDiff();
     // Filesystem path whose uncommitted changes belong to `branch`: its dedicated
     // worktree, or the main checkout when `branch` is the one checked out there.
     // Empty when the branch is checked out nowhere (so it can't be dirty).
     QString branchWorkDir(const QString &branch) const;
-    // Render an already-captured patch into the branch diff view + changed-files
-    // list (shared by every scope above). `viewedContext` scopes the per-file
-    // "viewed" toggles; `emptyMessage` shows when the patch has no changes.
+    // Render an already-captured patch into the branch diff view. `viewedContext`
+    // scopes the per-file "viewed" toggles; `emptyMessage` shows when the patch
+    // has no changes.
     void renderBranchDiffPatch(const QString &patch, const QString &emptyMessage,
                                const QString &viewedContext);
     // Rebuild the sticky-bar file-span map from whatever is currently in the
@@ -5413,20 +5417,6 @@ private:
     // so the remaining branches catch up with the merge (adhoc #250).
     QCheckBox *m_branchAutoPullAllCheck = nullptr;
     QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
-    QListWidget *m_branchFileList = nullptr;    // the range's changed files
-    QLabel *m_branchFilesSummary = nullptr;     // "CHANGED FILES · N" header
-    // The two lists as standalone panes: while a branch/PR range is under review
-    // the Git view lends them its left column's slots (adhoc #110) — files where
-    // the working-tree CHANGES tree sits, commits where the history sits — so the
-    // review reads in the places those things already live.
-    QWidget *m_branchFilesPane = nullptr;
-    QWidget *m_branchScopePane = nullptr;
-    // Scope selector above the changed-files list: "All changes", the branch's
-    // uncommitted working-tree changes (when its checkout is dirty), and one row
-    // per commit the branch adds over base. Selecting a row re-renders the diff
-    // for just that scope (issue: show commits + uncommitted changes, diffable).
-    QListWidget *m_branchScopeList = nullptr;
-    QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
     // Pull request the range pane is reviewing, or -1 when it shows a plain
@@ -5440,11 +5430,10 @@ private:
     // panel happens to rebuild while the same branch is still selected. Cleared
     // implicitly by simply differing once a different branch is selected.
     QString m_branchAutoPullAttempted;
-    // Bumped each time a branch is selected / a scope diff is requested so the
-    // off-thread git reads that build the scope list and render the diff can drop
-    // their result if the user has since switched branch or scope (issue #353 —
-    // showBranchDiff/renderBranchScopeDiff shelled git on the GUI thread).
-    int m_branchScopeLoadGen = 0;
+    // Bumped each time a branch is selected / a range diff is requested so the
+    // off-thread git read that renders the diff can drop its result if the user
+    // has since switched branch (issue #353 — showBranchDiff/
+    // renderBranchScopeDiff shelled git on the GUI thread).
     int m_branchScopeDiffGen = 0;
     // Branch merge-conflict probes. `git merge-tree` costs ~0.5-1s per branch on a
     // busy repo, so running one per row inline froze the branches panel for
@@ -5483,15 +5472,15 @@ private:
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     // Ordered file paths of the diff currently in the branch view, so the
     // sticky-bar span map can be rebuilt once the whole diff has landed (the
-    // render is progressive — see renderDiffStreamed, adhoc #51/#421).
+    // render is progressive — see renderDiffStreamed, adhoc #51/#421), and each
+    // file's document anchor so the auto-mark-viewed re-render can land back on
+    // the file still being read.
     QStringList m_branchDiffFilePaths;
+    QStringList m_branchDiffFileAnchors;
     // Absolute document y of each file header (aligned to m_branchDiffFileSpans),
     // cached so the per-scroll-tick sticky/progress update doesn't re-measure the
     // document; cleared on every re-render / stream-finish (mirrors the PR pane).
     QList<int> m_branchFileTops;
-    // Keeps the changed-files list from re-scrolling the diff while the list
-    // selection is itself following the scroll (mirrors m_pullSuppressFileScroll).
-    bool m_branchSuppressFileScroll = false;
     // Debounces the auto-mark-viewed sweep off the branch diff's scrollbar, same
     // rhythm as the PR viewer's m_pullAutoViewedDebounce (adhoc #107).
     QTimer *m_branchAutoViewedDebounce = nullptr;
@@ -5725,16 +5714,24 @@ private:
     // Source Control panel (left side of the Commits tab).
     static constexpr int kCommitWorkspaceChangesPage = 0;
     static constexpr int kCommitWorkspaceCommitPage = 1;
-    // Branch/PR range review pane (adhoc #107): the branch diff viewer, moved
-    // into the Git view so a branch or PR opens its commits/files/diff here.
+    // Branch/PR range review page (adhoc #107): the branch diff, shown in the
+    // Git view's right pane. It used to borrow the left column's two slots for
+    // its own files/scope lists (adhoc #110); it no longer does (adhoc #12) —
+    // the working-tree CHANGES and the commit graph stay put, with the branch
+    // under review named above the graph's branch button.
     static constexpr int kCommitWorkspaceRangePage = 2;
-    // The Git view's left column: two stacks that normally show the working-tree
-    // changes (top) and the commit history (bottom), and swap to a reviewed
-    // range's changed files / commits while the range page is up (adhoc #110).
+    // The Git view's left column: two stacks showing the working-tree changes
+    // (top) and the commit history (bottom). Each hosts a single page since the
+    // range review stopped borrowing them (adhoc #12).
     QStackedWidget *m_gitFilesSlot = nullptr;
     QStackedWidget *m_gitHistorySlot = nullptr;
-    // Show a right-pane page and put the left column in the matching state.
+    // Show a right-pane page (and keep the merging-in indicator in step).
     void setCommitWorkspacePage(int page);
+    // The "Merging in <branch>" indicator above the graph's branch button:
+    // visible while a branch/PR range review is open on the right pane, since
+    // the graph itself stays on the default branch (adhoc #12).
+    QPushButton *m_commitsMergingButton = nullptr;
+    void updateCommitsMergingBanner();
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;

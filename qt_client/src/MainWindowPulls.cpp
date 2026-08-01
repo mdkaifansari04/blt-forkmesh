@@ -1836,13 +1836,14 @@ void MainWindow::switchToPullTab(int pullNumber)
     showPull(pullNumber);
 }
 
-// Open a pull request's commits, changed files and diff in the Git view's range
-// pane (adhoc #107): the PR counterpart of switchToBranch. The pane renders the
-// PR's review threads and comment gutters (see renderBranchDiffPatch) and its
-// "PR #N" button jumps on to the full pull request page. A PR whose head branch
-// still exists locally gets the live scope list (all changes / uncommitted /
-// per-commit); one whose branch is gone (merged & pruned, or cross-node) shows
-// its stored patch.
+// Open a pull request's diff in the Git view's range pane (adhoc #107): the PR
+// counterpart of openBranchRangeReview. The pane renders the PR's review
+// threads and comment gutters (see renderBranchDiffPatch) and its "PR #N"
+// button jumps on to the full pull request page. A PR whose head branch still
+// exists locally diffs against the live refs; one whose branch is gone (merged
+// & pruned, or cross-node) shows its stored patch. Like the branch review, it
+// borrows only the right pane (adhoc #12): the graph stays on the default
+// branch with the PR's head branch named above its branch button.
 void MainWindow::openPullDiffInGitView(int pullNumber)
 {
     // The PR widgets and state (m_currentPulls, m_currentPullNumber) live in the
@@ -1881,27 +1882,20 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
 
     m_branchDiffPullNumber = pullNumber;
     showOverviewCommits();
+    const QString base = repoDefaultBranchFast();
+    if (!base.isEmpty() && m_repoBranch != base)
+        setRepoBranch(base); // keep the graph + branch button on main
     setCommitWorkspacePage(kCommitWorkspaceRangePage);
     const QString dir = repoGitDir();
     if (!pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head)) {
-        // Live branch: the full range pane (scope list, uncommitted changes,
-        // per-commit diffs) against the repo's refs.
+        // Live branch: diff the PR's whole range against the repo's refs.
         showBranchDiff(pr.head);
     } else {
         // Branch gone: render the PR's stored patch directly. Mirror the reset
         // showBranchDiff does, minus the git reads that need the branch.
         m_branchDiffBranch = pr.head;
+        updateCommitsMergingBanner(); // names the head branch above the graph
         updateBranchDetailActions(pr.head);
-        if (m_branchScopeList) {
-            QSignalBlocker block(m_branchScopeList);
-            m_branchScopeList->clear();
-            auto *all = new QListWidgetItem(QStringLiteral("All changes"));
-            all->setIcon(themedOcticon("git-compare", QColor("#58a6ff"), 14));
-            all->setData(Qt::UserRole, QStringLiteral("all"));
-            all->setToolTip(QStringLiteral("The pull request's recorded changes"));
-            m_branchScopeList->addItem(all);
-            m_branchScopeList->setCurrentRow(0);
-        }
         m_branchDiffLastPatch = pr.patch.toUtf8();
         m_branchDiffLastEmpty = QStringLiteral("This pull request has no changes.");
         m_branchDiffLastValid = true;
