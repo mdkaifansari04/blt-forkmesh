@@ -1,0 +1,159 @@
+diff --git a/cloudflare_worker/public/world/world-scene.js b/cloudflare_worker/public/world/world-scene.js
+index 7f2c95d2c..65091be5c 100644
+--- a/cloudflare_worker/public/world/world-scene.js
++++ b/cloudflare_worker/public/world/world-scene.js
+@@ -149,6 +149,7 @@ const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
+ // justify running every shader-adjacent CPU update on every frame.
+ const VISUAL_ANIMATION_COMPACT_MS = 1000 / 30;
+ const VISUAL_ANIMATION_FAR_MS = 1000 / 20;
++const VISUAL_ANIMATION_DESKTOP_MS = 1000 / 30;
+ // Dragging upward lowers the orbit eye beneath the target, which is how this
+ // camera looks into the sky. Allow the full arc in both directions.
+ const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
+@@ -15603,7 +15604,9 @@ export function createWorldScene({
+   const renderer = new THREE.WebGLRenderer({
+     antialias: !compactRenderer,
+     alpha: false,
+-    stencil: !compactRenderer,
++    // No World material or pass uses the stencil buffer. Avoid allocating and
++    // clearing an attachment that otherwise adds bandwidth to every frame.
++    stencil: false,
+     powerPreference: compactRenderer ? "default" : "high-performance",
+   });
+   renderer.outputColorSpace = THREE.SRGBColorSpace;
+@@ -22024,6 +22027,7 @@ export function createWorldScene({
+   const cameraLocalDesired = new THREE.Vector3();
+   const cameraLocalPosition = new THREE.Vector3();
+   const cameraLimitLocalTarget = new THREE.Vector3();
++  const officeCameraLocalPosition = new THREE.Vector3();
+   const diagnosticsDrawingBuffer = new THREE.Vector2();
+   const officeDoorLocalPosition = new THREE.Vector3();
+   const officeReceptionLocalPosition = new THREE.Vector3();
+@@ -25655,58 +25659,20 @@ export function createWorldScene({
+   function walkPlayer(delta, time) {
+     const previousHorizontalPosition =
+       movementPreviousPosition.copy(player.position);
++    const input = movementInput();
+     const {
+       bikeDirection,
+       keyboardActive,
+-      ridingBike,
+-      ridingCar,
+-      sprinting,
+-      touchStrength,
+-      inputStrength,
+       movement,
+-    } = movementInput();
+-    if (
+-      updateJetpackFlight(
+-        {
+-          keyboardActive,
+-          sprinting,
+-          touchStrength,
+-          inputStrength,
+-          movement,
+-        },
+-        delta,
+-        time,
+-      )
+-    ) {
++    } = input;
++    if (updateJetpackFlight(input, delta, time)) {
+       return;
+     }
+     if (quadcopterRide) {
+-      updateQuadcopterRide(
+-        {
+-          keyboardActive,
+-          sprinting,
+-          touchStrength,
+-          inputStrength,
+-          movement,
+-        },
+-        delta,
+-        time,
+-      );
++      updateQuadcopterRide(input, delta, time);
+       return;
+     }
+-    if (
+-      updateGymExercise(
+-        {
+-          keyboardActive,
+-          sprinting,
+-          touchStrength,
+-          inputStrength,
+-          movement,
+-        },
+-        delta,
+-        time,
+-      )
+-    ) {
++    if (updateGymExercise(input, delta, time)) {
+       return;
+     }
+     if (swingRide) {
+@@ -25777,17 +25743,12 @@ export function createWorldScene({
+       const state = bikeStates[bikeRide.index];
+       const rideDirection = Math.sign(bikeDirection);
+       if (state && rideDirection) {
+-        movementSpeedForInput(
+-          {
+-            keyboardActive: keyboardActive || Boolean(rideDirection),
+-            ridingBike: true,
+-            ridingCar: false,
+-            sprinting,
+-            touchStrength,
+-            inputStrength: Math.abs(bikeDirection),
+-          },
+-          delta,
+-        );
++        // movementInputState is reused on the next frame. Adjust its two
++        // bike-specific readings in place instead of allocating an object in
++        // the hottest movement path.
++        input.keyboardActive = keyboardActive || Boolean(rideDirection);
++        input.inputStrength = Math.abs(bikeDirection);
++        movementSpeedForInput(input, delta);
+         state.travelDirection = rideDirection;
+         const previousBikeHeading = state.bike.rotation.y;
+         placeBikeOnLane(
+@@ -25816,17 +25777,7 @@ export function createWorldScene({
+       // Any manual input takes the wheel back from a double-click dash.
+       cancelDash();
+       focusedRepositoryKey = "";
+-      movementSpeedForInput(
+-        {
+-          keyboardActive,
+-          ridingBike,
+-          ridingCar,
+-          sprinting,
+-          touchStrength,
+-          inputStrength,
+-        },
+-        delta,
+-      );
++      movementSpeedForInput(input, delta);
+       player.position.addScaledVector(
+         movement,
+         keyboardMovementSpeed *
+@@ -26455,7 +26406,10 @@ export function createWorldScene({
+           ? player
+           : null;
+     if (officeSceneMode === "lobby") {
+-      const localPosition = officeAvatarLocalPosition(player);
++      const localPosition = officeAvatarLocalPosition(
++        player,
++        officeCameraLocalPosition,
++      );
+       const insideElevator = officeElevatorCabinContains(
+         localPosition.x,
+         localPosition.z,
+@@ -33366,7 +33320,7 @@ export function createWorldScene({
+         ? VISUAL_ANIMATION_FAR_MS
+         : compactRenderer
+           ? VISUAL_ANIMATION_COMPACT_MS
+-          : 0;
++          : VISUAL_ANIMATION_DESKTOP_MS;
+       const visualDelta = clamp(
+         (time - lastVisualAnimationAt) / 1000,
+         0,
