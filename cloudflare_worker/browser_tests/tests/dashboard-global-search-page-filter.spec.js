@@ -184,6 +184,77 @@ test("header search filters the repo page's file listing in place", async ({
   await expect(rows).toHaveCount(3);
 });
 
+test("header search filters the network page's connected nodes", async ({
+  page,
+}) => {
+  await page.route("https://cdn.tailwindcss.com/**", (route) =>
+    route.fulfill({
+      contentType: "text/javascript",
+      body: "window.tailwind = {};",
+    }),
+  );
+  await page.route(
+    "https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js",
+    (route) =>
+      route.fulfill({
+        contentType: "text/javascript",
+        body: "window.lucide = { createIcons() {} };",
+      }),
+  );
+  await page.route("**/dashboard/network", (route) =>
+    route.fulfill({
+      path: path.resolve(
+        __dirname, "..", "..", "public", "dashboard", "network", "index.html",
+      ),
+      contentType: "text/html; charset=utf-8",
+    }),
+  );
+  await page.route("**/api/**", (route) => {
+    const url = new URL(route.request().url());
+    let body = { ok: true };
+    if (url.pathname === "/api/repositories") {
+      body = { ok: true, repositories: REPOSITORIES };
+    } else if (url.pathname === "/api/network/overview") {
+      body = {
+        ok: true,
+        stats: {
+          hosts: 3,
+          repos: 3,
+          clients: 1,
+          onlineNodes: ["mirror6", "mirror7", "workstation"],
+        },
+        leaderboards: {
+          uptime: [
+            { name: "mirror6", minutes: 300 },
+            { name: "mirror7", minutes: 200 },
+            { name: "workstation", minutes: 100 },
+          ],
+          nodes: [],
+        },
+        history: { hours: [] },
+      };
+    }
+    return route.fulfill({
+      status: 200,
+      contentType: "application/json; charset=utf-8",
+      body: JSON.stringify(body),
+    });
+  });
+
+  await page.goto("/dashboard/network");
+
+  const nodeList = page.locator("[data-network-node-list]");
+  await expect(nodeList).toContainText("mirror6");
+  await expect(nodeList).toContainText("workstation");
+
+  await page.locator("[data-global-search]").fill("workstation");
+  await expect(nodeList).toContainText("workstation");
+  await expect(nodeList).not.toContainText("mirror6");
+
+  await page.locator("[data-global-search]").fill("");
+  await expect(nodeList).toContainText("mirror6");
+});
+
 test("a header search with no page matches empties the list without breaking it", async ({
   page,
 }) => {
