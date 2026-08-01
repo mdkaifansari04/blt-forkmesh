@@ -378,7 +378,11 @@ QWidget *MainWindow::buildRepoFilesPanel()
     m_filesStack->addWidget(buildRepoEditorPage());        // 1 editor
     m_filesStack->addWidget(buildRepoCoveExplorerPage());  // 2 secure cove
 
-    m_filesModeOverviewButton = new QPushButton("Code overview");
+    // The three mode toggles take the same icon-over-caption form as the
+    // activity rail and the repo tabs (adhoc #6), so the whole mode row —
+    // toggles, toolbar counts and trends — reads as one line.
+    m_filesModeOverviewButton =
+        new VerticalIconButton("Code overview", VerticalIconButton::Tab);
     m_filesModeOverviewButton->setObjectName("repoTab");
     m_filesModeOverviewButton->setCheckable(true);
     m_filesModeOverviewButton->setChecked(true);
@@ -389,7 +393,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeOverviewButton, &QPushButton::clicked, this,
             [this] { showRepoOverview(); });
 
-    m_filesModeExplorerButton = new QPushButton("Explorer");
+    m_filesModeExplorerButton =
+        new VerticalIconButton("Explorer", VerticalIconButton::Tab);
     m_filesModeExplorerButton->setObjectName("repoTab");
     m_filesModeExplorerButton->setCheckable(true);
     m_filesModeExplorerButton->setCursor(Qt::PointingHandCursor);
@@ -399,7 +404,8 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoEditor(); });
 
-    m_filesModeCoveExplorerButton = new QPushButton("Cove Explorer");
+    m_filesModeCoveExplorerButton =
+        new VerticalIconButton("Cove Explorer", VerticalIconButton::Tab);
     m_filesModeCoveExplorerButton->setObjectName("repoTab");
     m_filesModeCoveExplorerButton->setCheckable(true);
     m_filesModeCoveExplorerButton->setCursor(Qt::PointingHandCursor);
@@ -409,8 +415,37 @@ QWidget *MainWindow::buildRepoFilesPanel()
     connect(m_filesModeCoveExplorerButton, &QPushButton::clicked, this,
             [this] { showRepoCoveExplorer(); });
 
+    // Thirty-day repository trends and the Ratchet mode toggle, moved down
+    // from the window-chrome line onto this row (adhoc #6). Each sparkline
+    // point represents a day; they sit deliberately a little larger than the
+    // chrome's live host-resource squares.
+    auto *repoSizeChart =
+        new ResourceSparkline(QStringLiteral("SIZE"), nullptr, 44, 30);
+    auto *repoLinesChart =
+        new ResourceSparkline(QStringLiteral("LOC"), nullptr, 44, 30);
+    auto *repoFilesChart =
+        new ResourceSparkline(QStringLiteral("FILES"), nullptr, 44, 30);
+    repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
+    repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
+    repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
+    m_repoSizeChart = repoSizeChart;
+    m_repoLinesChart = repoLinesChart;
+    m_repoFilesChart = repoFilesChart;
+    m_repoRatchetButton = new QToolButton;
+    m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
+    m_repoRatchetButton->setText(QStringLiteral("Ratchet mode"));
+    m_repoRatchetButton->setCheckable(true);
+    m_repoRatchetButton->setToolTip(
+        QStringLiteral("Keep each commit at or below today's tracked size and require "
+                       "at least as many removed lines as added lines."));
+    connect(m_repoRatchetButton, &QToolButton::toggled, this,
+            &MainWindow::toggleRepositoryRatchet);
+
     // The git identity that used to sit beside these mode toggles now lives in
-    // the bottom status bar (see buildStatusBar).
+    // the bottom status bar (see buildStatusBar). One line holds the mode
+    // toggles, the branch/worktree/remote/commit/tag/release counts (moved up
+    // from the overview page), the go-to-file box and the repo trends
+    // (adhoc #6).
     m_repoFilesModeBar = new QWidget;
     auto *modeRow = new QHBoxLayout(m_repoFilesModeBar);
     modeRow->setContentsMargins(16, 6, 16, 0);
@@ -418,7 +453,25 @@ QWidget *MainWindow::buildRepoFilesPanel()
     modeRow->addWidget(m_filesModeOverviewButton);
     modeRow->addWidget(m_filesModeExplorerButton);
     modeRow->addWidget(m_filesModeCoveExplorerButton);
-    modeRow->addStretch();
+    modeRow->addSpacing(10);
+    modeRow->addWidget(m_branchesButton);
+    modeRow->addWidget(m_worktreesButton);
+    modeRow->addWidget(m_remotesButton);
+    // No toolbar Commits button here: it duplicated the commit strip's own
+    // "N Commits" toggle and was retired on main (aa108e5cf).
+    modeRow->addWidget(m_tagsButton);
+    // Releases (adhoc #180): moved out of the top tab bar to sit beside Tags.
+    // The button itself is created with the other repo tabs in
+    // buildRepoDetailSection (kept in m_repoDetailTabs so tab switching and
+    // the Releases badge keep working) — here we just place it in the row.
+    if (m_repoReleasesTab)
+        modeRow->addWidget(m_repoReleasesTab);
+    modeRow->addSpacing(10);
+    modeRow->addWidget(m_fileSearch, 1);
+    modeRow->addWidget(repoSizeChart);
+    modeRow->addWidget(repoLinesChart);
+    modeRow->addWidget(repoFilesChart);
+    modeRow->addWidget(m_repoRatchetButton);
 
     auto *panel = new QWidget;
     auto *layout = new QVBoxLayout(panel);
@@ -426,6 +479,9 @@ QWidget *MainWindow::buildRepoFilesPanel()
     layout->setSpacing(0);
     layout->addWidget(m_repoFilesModeBar);
     layout->addWidget(m_filesStack, 1);
+    // The trend charts were born just now (this panel builds lazily), so seed
+    // them immediately instead of waiting for the next 60s footer tick.
+    refreshRepositoryStats();
     return panel;
 }
 
@@ -503,10 +559,14 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_readmeView->setObjectName("readmeView");
     m_readmeView->setOpenExternalLinks(true);
 
-    // Toolbar: branch counts + tags + "go to file" search. The branch switcher
-    // itself moved to the bottom status bar (see buildStatusBar).
-    m_branchesButton = new QPushButton("0 branches");
-    m_branchesButton->setObjectName("ghostButton");
+    // Toolbar: branch counts + tags + "go to file" search, every button the
+    // same icon-over-caption form as the activity rail with its count as a
+    // corner badge (adhoc #6). The buttons are created here but placed on the
+    // Code overview's mode row, beside the Code overview / Explorer / Cove
+    // Explorer toggles (see buildRepoFilesPanel). The branch switcher itself
+    // moved to the bottom status bar (see buildStatusBar).
+    m_branchesButton =
+        new VerticalIconButton("Branches", VerticalIconButton::Tab);
     m_branchesButton->setCursor(Qt::PointingHandCursor);
     m_branchesButton->setToolTip(
         "Open the Branches panel to manage branches \xE2\x80\x94 click one to "
@@ -519,8 +579,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
         showOverviewBranches();
         loadBranchesPanel();
     });
-    m_worktreesButton = new QPushButton("Worktrees");
-    m_worktreesButton->setObjectName("ghostButton");
+    m_worktreesButton =
+        new VerticalIconButton("Worktrees", VerticalIconButton::Tab);
     m_worktreesButton->setCursor(Qt::PointingHandCursor);
     m_worktreesButton->setToolTip(
         "Open the Worktrees panel to view agent checkouts and their changes");
@@ -532,8 +592,8 @@ QWidget *MainWindow::buildRepoOverviewPage()
         showOverviewWorktrees();
         loadWorktreesPanel();
     });
-    m_remotesButton = new QPushButton("Remotes");
-    m_remotesButton->setObjectName("ghostButton");
+    m_remotesButton =
+        new VerticalIconButton("Remotes", VerticalIconButton::Tab);
     m_remotesButton->setCursor(Qt::PointingHandCursor);
     m_remotesButton->setToolTip(
         "List this repository's git remotes; pick one to copy its URL");
@@ -607,15 +667,15 @@ QWidget *MainWindow::buildRepoOverviewPage()
     m_overviewBodyStack->setSizePolicy(
         QSizePolicy::Expanding, QSizePolicy::Ignored);
 
-    // Left column: toolbar, latest commit, then the swappable body. The first
-    // two live in one wrapper so the activity-rail Git view can remove the
-    // entire Code-only upper section and give its commits/changes workspace
-    // the full available height.
+    // Left column: latest commit, then the swappable body. The commit strip
+    // lives in its own wrapper so the activity-rail Git view can remove the
+    // Code-only upper section and give its commits/changes workspace the full
+    // available height. (The toolbar that used to sit above it moved onto the
+    // mode row, adhoc #6.)
     m_repoOverviewChrome = new QWidget;
     auto *overviewChromeLayout = new QVBoxLayout(m_repoOverviewChrome);
     overviewChromeLayout->setContentsMargins(0, 0, 0, 0);
     overviewChromeLayout->setSpacing(8);
-    overviewChromeLayout->addLayout(toolbar);
     overviewChromeLayout->addWidget(commitCard);
 
     auto *leftColumn = new QWidget;
@@ -1326,17 +1386,22 @@ void MainWindow::openRepoDetail(int repoIndex)
     m_repoBranch.clear();
     loadRepoInfo();
     loadBranchesAndTags();
-    if (m_forkButton)
-        m_forkButton->setText(QStringLiteral("Fork %1").arg(formatCount(m_repoInfo.forks)));
-    if (m_mirrorButton) {
+    // Fork/Mirror counts ride the icons' corners as rail-style badges
+    // (adhoc #6) instead of living in the captions.
+    if (auto *fork = dynamic_cast<VerticalIconButton *>(m_forkButton)) {
+        fork->setText(QStringLiteral("Fork"));
+        fork->setBadgeCount(m_repoInfo.forks);
+    }
+    if (auto *mirror = dynamic_cast<VerticalIconButton *>(m_mirrorButton)) {
         if (repo.previewOnly) {
-            m_mirrorButton->setText(QStringLiteral("Mirror it"));
-            m_mirrorButton->setToolTip(
+            mirror->setText(QStringLiteral("Mirror it"));
+            mirror->setBadgeCount(0);
+            mirror->setToolTip(
                 "Clone this preview into your local mirrors and host it");
         } else {
-            m_mirrorButton->setText(
-                QStringLiteral("Mirror %1").arg(qMax(1, m_repoInfo.mirrors)));
-            m_mirrorButton->setToolTip("Sync this repository's mirror now");
+            mirror->setText(QStringLiteral("Mirror"));
+            mirror->setBadgeCount(qMax(1, m_repoInfo.mirrors));
+            mirror->setToolTip("Sync this repository's mirror now");
         }
     }
     updateRepoDetailStatus();
@@ -1506,24 +1571,23 @@ void MainWindow::updateRepoIssueCount()
             if (issue.status != "closed" && !issue.isDeleted())
                 ++openCount;
         }
-        m_repoIssuesTab->setText(
-            QStringLiteral("Issues (%1)").arg(formatCount(openCount)));
+        // The open count rides the icon's corner as a rail-style badge
+        // (adhoc #6) rather than living in the caption.
+        if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoIssuesTab))
+            b->setBadgeCount(openCount);
     }
 }
 
 void MainWindow::updateRepoDiscussionCount()
 {
-    if (m_repoDiscussionsTab)
-        m_repoDiscussionsTab->setText(
-            QStringLiteral("Discussions (%1)")
-                .arg(formatCount(m_currentDiscussions.size())));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoDiscussionsTab))
+        b->setBadgeCount(m_currentDiscussions.size());
 }
 
 void MainWindow::updateRepoPullCount()
 {
-    if (m_repoPullsTab)
-        m_repoPullsTab->setText(
-            QStringLiteral("PRs (%1)").arg(formatCount(m_currentPulls.size())));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoPullsTab))
+        b->setBadgeCount(m_currentPulls.size());
 }
 
 // Fill in the repo-tab badges whose panels load lazily. Opening a repo resets
@@ -8179,33 +8243,25 @@ void MainWindow::applyBranchesTags(const BranchesTagsSnapshot &snap)
                       .arg(label, snap.head));
     }
 
+    // Counts ride each button's icon corner as rail-style badges (adhoc #6);
+    // the captions stay the fixed words set at construction.
     if (m_branchesButton) {
-        m_branchesButton->setText(
-            QStringLiteral("%1 %2")
-                .arg(formatCount(snap.branches.size()))
-                .arg(snap.branches.size() == 1 ? QStringLiteral("branch")
-                                               : QStringLiteral("branches")));
+        if (auto *b = dynamic_cast<VerticalIconButton *>(m_branchesButton))
+            b->setBadgeCount(snap.branches.size());
         m_branchesButton->setEnabled(!snap.branches.isEmpty());
     }
     if (m_repoBranchesTab)
         m_repoBranchesTab->setText(
             QStringLiteral("Branches (%1)").arg(formatCount(snap.branches.size())));
 
-    if (m_worktreesButton)
-        m_worktreesButton->setText(
-            QStringLiteral("%1 %2")
-                .arg(formatCount(snap.worktreeCount))
-                .arg(snap.worktreeCount == 1 ? QStringLiteral("worktree")
-                                             : QStringLiteral("worktrees")));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_worktreesButton))
+        b->setBadgeCount(snap.worktreeCount);
 
     // Git remotes on the "N remotes" toolbar dropdown: one entry per remote,
     // "name — url", picking one copies its URL.
     if (m_remotesButton) {
-        m_remotesButton->setText(
-            QStringLiteral("%1 %2")
-                .arg(formatCount(snap.remotes.size()))
-                .arg(snap.remotes.size() == 1 ? QStringLiteral("remote")
-                                              : QStringLiteral("remotes")));
+        if (auto *b = dynamic_cast<VerticalIconButton *>(m_remotesButton))
+            b->setBadgeCount(snap.remotes.size());
         auto *menu = new QMenu(m_remotesButton);
         menu->setToolTipsVisible(true); // fetch/push URLs hover per row
         for (const BranchesTagsSnapshot::Remote &remote : snap.remotes) {
@@ -8260,12 +8316,10 @@ void MainWindow::applyBranchesTags(const BranchesTagsSnapshot &snap)
             old->deleteLater();
     }
 
-    if (m_tagsButton)
-        m_tagsButton->setText(
-            QStringLiteral("Tags %1").arg(formatCount(snap.tagCount)));
-    if (m_repoReleasesTab)
-        m_repoReleasesTab->setText(
-            QStringLiteral("Releases (%1)").arg(formatCount(snap.tagCount)));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_tagsButton))
+        b->setBadgeCount(snap.tagCount);
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_repoReleasesTab))
+        b->setBadgeCount(snap.tagCount);
 }
 
 bool MainWindow::repoHasWorkingTree() const
@@ -8390,9 +8444,9 @@ QWidget *MainWindow::buildRepoDetailSection()
     m_notifyButton = notifyButton;
     notifyButton->setToolTip("Pings");
     setOcticon(notifyButton, "bell", 16);
-    m_forkButton = new VerticalIconButton("Fork 0", VerticalIconButton::Action);
+    m_forkButton = new VerticalIconButton("Fork", VerticalIconButton::Action);
     m_mirrorButton =
-        new VerticalIconButton("Mirror 1", VerticalIconButton::Action);
+        new VerticalIconButton("Mirror", VerticalIconButton::Action);
     m_sourceButton =
         new VerticalIconButton("Source", VerticalIconButton::Action);
     // Open-in-browser link, mirroring the relay switcher's open button: takes
@@ -8428,26 +8482,10 @@ QWidget *MainWindow::buildRepoDetailSection()
     connect(m_sourceMenu, &QMenu::aboutToShow, this,
             &MainWindow::updateRepoActionMenus);
 
-    auto *headerRow = new QHBoxLayout;
-    headerRow->setContentsMargins(16, 12, 16, 4);
-    headerRow->setSpacing(8);
-    // Left cluster (Code / Chat / Notifications / Settings) is filled in later by
-    // buildBreadcrumb, which creates those buttons and adds them here so they sit
-    // on the same line as the repo actions, below the Solana notice.
-    m_repoHeaderLeft = new QHBoxLayout;
-    m_repoHeaderLeft->setContentsMargins(0, 0, 0, 0);
-    m_repoHeaderLeft->setSpacing(8);
-    // Repository identity belongs to repository detail, not the global chrome.
-    // updateRepoSwitcher renders owner/repo and only adds a caret when this
-    // owner/organization has another repository available.
-    m_repoHeaderLeft->addWidget(m_repoMenuButton);
-    headerRow->addLayout(m_repoHeaderLeft);
-    headerRow->addStretch();
-    headerRow->addWidget(notifyButton);
-    headerRow->addWidget(m_forkButton);
-    headerRow->addWidget(m_mirrorButton);
-    headerRow->addWidget(m_sourceButton);
-    headerRow->addWidget(m_repoOpenButton);
+    // No dedicated header row any more (adhoc #6): the owner/repo switcher
+    // moved up onto the window-chrome line (buildBreadcrumb, between the
+    // instance logo and the SOL balance) and the action cluster (Notify / Fork
+    // / Mirror / Source / Open) rides the right end of the tab row below.
 
     m_repoDetailNotice = new QLabel;
     m_repoDetailNotice->setObjectName("repoInlineNotice");
@@ -8521,16 +8559,13 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (i == 1 || i == 3 || i == 10 || i == 11)
             continue;
         const TabDef tab = tabs.at(i);
-        // Releases (id 12) is styled like a toolbar button, not a tab: it lives in
-        // the Code overview toolbar next to Tags (adhoc #180), not the tab row.
-        // Every real tab stacks its icon over a small caption (adhoc #91), the
-        // same form as the activity rail, so the row reads compact.
-        QPushButton *b =
-            i == 12 ? new QPushButton(QString::fromLatin1(tab.label))
-                    : static_cast<QPushButton *>(new VerticalIconButton(
-                          QString::fromLatin1(tab.label),
-                          VerticalIconButton::Tab));
-        b->setObjectName(i == 12 ? "ghostButton" : "repoTab");
+        // Releases (id 12) lives in the Code overview's mode row next to Tags
+        // (adhoc #180), not the tab row, but takes the same form as every real
+        // tab: icon stacked over a small caption (adhoc #91), the same shape
+        // as the activity rail, so both rows read compact.
+        QPushButton *b = new VerticalIconButton(QString::fromLatin1(tab.label),
+                                                VerticalIconButton::Tab);
+        b->setObjectName("repoTab");
         b->setCheckable(true);
         b->setCursor(Qt::PointingHandCursor);
         setOcticon(b, QString::fromLatin1(tab.icon), 16);
@@ -8586,6 +8621,15 @@ QWidget *MainWindow::buildRepoDetailSection()
             tabRow->addWidget(b);
     }
     tabRow->addStretch();
+    // Repo actions (Notify / Fork / Mirror / Source / Open) on the same line
+    // as the tabs (adhoc #6), right-aligned past the stretch. Same
+    // icon-over-caption form as everything else in the row; Fork/Mirror carry
+    // their counts as corner badges.
+    tabRow->addWidget(notifyButton);
+    tabRow->addWidget(m_forkButton);
+    tabRow->addWidget(m_mirrorButton);
+    tabRow->addWidget(m_sourceButton);
+    tabRow->addWidget(m_repoOpenButton);
     auto *tabBar = new QWidget;
     tabBar->setObjectName("repoTabBar");
     tabBar->setLayout(tabRow);
@@ -8838,17 +8882,19 @@ QWidget *MainWindow::buildRepoDetailSection()
         scheduleNavRecord();
     });
     if (m_appNavigationRailLayout) {
-        // Directly below the global Agents entry, which heads the rail (adhoc
-        // #70). indexOf() rather than a literal 1/2 so the pair still lands at
-        // the top if the rail hasn't been built with Agents yet.
-        const int after =
+        // Code heads the rail with the global Agents entry directly beneath it
+        // (adhoc #6 swapped the two), then Git. indexOf() rather than a literal
+        // 0/2 so the pair still lands at the top if the rail hasn't been built
+        // with Agents yet.
+        const int codeAt =
             m_agentsNavButton
-                ? m_appNavigationRailLayout->indexOf(m_agentsNavButton) + 1
+                ? m_appNavigationRailLayout->indexOf(m_agentsNavButton)
                 : 0;
         m_appNavigationRailLayout->insertWidget(
-            after, m_railCodeButton, 0, Qt::AlignLeft);
+            codeAt, m_railCodeButton, 0, Qt::AlignLeft);
         m_appNavigationRailLayout->insertWidget(
-            after + 1, m_railGitButton, 0, Qt::AlignLeft);
+            m_agentsNavButton ? codeAt + 2 : codeAt + 1, m_railGitButton, 0,
+            Qt::AlignLeft);
     }
     // The checked states mirror the visible view (Code tab, and which body the
     // overview shows), so track every stack the navigation helpers drive.
@@ -8869,7 +8915,6 @@ QWidget *MainWindow::buildRepoDetailSection()
     auto *chromeLayout = new QVBoxLayout(m_repoDetailChrome);
     chromeLayout->setContentsMargins(0, 0, 0, 0);
     chromeLayout->setSpacing(6);
-    chromeLayout->addLayout(headerRow);
     chromeLayout->addWidget(m_repoDetailNotice);
     chromeLayout->addWidget(metaBand);
     chromeLayout->addWidget(tabBarScroll);

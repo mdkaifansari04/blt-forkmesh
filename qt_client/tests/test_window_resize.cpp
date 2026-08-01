@@ -2305,6 +2305,10 @@ int main(int argc, char *argv[])
         check(after.contains(QStringLiteral("feature/keep-selected")),
               QStringLiteral("the background refresh rebuilds the rows after the "
                              "click (adhoc #420)"));
+        check(window.testBranchHealthIcon(QStringLiteral("feature/other-base")) ==
+                  QStringLiteral("download"),
+              QStringLiteral("Branches marks a branch that still needs main merged "
+                             "with the same download icon as the Agents list"));
 
         // adhoc #119: merging from the comparison ends it — the branch's work
         // is in main, so leaving its diff open only shows the user something
