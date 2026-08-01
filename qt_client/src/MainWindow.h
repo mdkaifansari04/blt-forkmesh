@@ -1710,6 +1710,12 @@ private:
     // either way, the node just keeps its raw address.
     void ensureVultrMirrorDns(const QString &node, const QString &ip,
                               std::function<void(QString hostname)> onDone);
+    // Drop "<node>.<zone>" again when a node is deleted for good, so no A
+    // record is left pointing at an address that no longer answers. Soft like
+    // ensureVultrMirrorDns: it reports what it did through `onDone` and never
+    // blocks the rest of the deletion.
+    void removeVultrMirrorDns(const QString &node,
+                              std::function<void(QString outcome)> onDone);
     // Reload a saved host's server info from the table. A password is restored
     // only when it remains in this process's session cache.
     void loadHostIntoForm(int row, int column);
@@ -1732,6 +1738,37 @@ private:
     QWidget *buildNodesSection();
     void refreshNodesTable();           // re-list the known nodes into the table
     void showNodeDetailForRow(int row); // fill the detail panel for a table row
+    // Per-row Delete button in the Nodes table's action column. Kept in its own
+    // pass so it can be re-attached after the user re-sorts the table, and so
+    // the admin/protected-node gating lives in one place.
+    void refreshNodeActionButtons();
+    // --- Delete a node for good (adhoc #19) ----------------------------------
+    // The Nodes page's Delete button: the same permanent removal the World
+    // panel performs, plus the provider teardown the web has no credentials
+    // for. In order — destroy the Vultr instance behind the node, drop its
+    // Cloudflare DNS record, remove every trace of it from the relay (accounts,
+    // mirrors, agent jobs and the /status history), then forget the saved SSH
+    // host locally. The provider steps are best-effort and never stop the mesh
+    // removal; the mesh removal itself is the one step that must succeed.
+    void deleteMeshNodeCompletely(const QString &node, const QString &nodeId);
+    // Resolve the node's Vultr instance (the id recorded at provision time, or
+    // a unique label/hostname/address match) and destroy it. Reports what
+    // happened through `onDone` — including "nothing to destroy" — so the
+    // deletion continues for nodes this app never provisioned.
+    void destroyVultrServerForNode(const QString &node,
+                                   std::function<void(QString outcome)> onDone);
+    void sendNodeVultrDestroy(const QString &apiKey, const QString &instanceId,
+                              const QString &node,
+                              std::function<void(QString outcome)> onDone);
+    // POST /api/world/admin/nodes/delete. A desktop that signed in with a
+    // password holds a session token; the ordinary launch authenticates
+    // silently and holds keys only, so this falls back to the signed
+    // node/ts/sig proof the worker accepts for this one deletion.
+    void sendMeshNodeDeleteRequest(const QString &node, const QString &nodeId);
+    // Drop the saved SSH host whose name matches a node that no longer exists.
+    void forgetSavedHostNamed(const QString &node);
+    // Progress/result line for a deletion, shown on the Nodes page.
+    void setNodeDeleteStatus(const QString &text);
     // Fetch the relay's list of currently-online node names (/api/network/stats
     // "onlineNodes": repository update channel or fresh signed heartbeat). Headless
     // mirror nodes serve through the relay without joining this client's chat
