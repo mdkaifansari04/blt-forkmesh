@@ -17598,7 +17598,6 @@ export function createWorldScene({
   const CAMPFIRE_BENCH_LEG_HEIGHT = CAMPFIRE_SEAT_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
   const CAMPFIRE_CIRCLE_MAX_SEATS = 500;
-  const CAMPFIRE_DETAILED_MEMBER_LIMIT = compactRenderer ? 12 : 32;
   const CAMPFIRE_MEMBERS_PER_ROW = 25;
   const CAMPFIRE_ROW_SPACING = 2.8;
   const CAMPFIRE_SEAT_SPACING = 2.1;
@@ -17818,135 +17817,6 @@ export function createWorldScene({
     campfire.userData.seatLabelMesh = labelMesh;
     campfireSeatLabelsDirty = true;
     return seatOffsets;
-  }
-
-  let compactCampfireSitters = null;
-  function ensureCompactCampfireSitters() {
-    if (compactCampfireSitters) return compactCampfireSitters;
-    const group = new THREE.Group();
-    group.name = "campfire-instanced-member-sitters";
-    const mesh = (name, geometry, capacity) => {
-      const value = new THREE.InstancedMesh(
-        geometry,
-        new THREE.MeshStandardMaterial({
-          color: "#ffffff",
-          roughness: 0.84,
-        }),
-        capacity,
-      );
-      value.name = name;
-      value.count = 0;
-      value.frustumCulled = false;
-      group.add(value);
-      return value;
-    };
-    compactCampfireSitters = {
-      group,
-      heads: mesh(
-        "campfire-instanced-member-heads",
-        new THREE.SphereGeometry(0.5, compactRenderer ? 6 : 8, 6),
-        CAMPFIRE_CIRCLE_MAX_SEATS,
-      ),
-      torsos: mesh(
-        "campfire-instanced-member-torsos",
-        new THREE.BoxGeometry(1, 1, 1),
-        CAMPFIRE_CIRCLE_MAX_SEATS,
-      ),
-      thighs: mesh(
-        "campfire-instanced-member-thighs",
-        new THREE.BoxGeometry(1, 1, 1),
-        CAMPFIRE_CIRCLE_MAX_SEATS * 2,
-      ),
-      shins: mesh(
-        "campfire-instanced-member-shins",
-        new THREE.BoxGeometry(1, 1, 1),
-        CAMPFIRE_CIRCLE_MAX_SEATS * 2,
-      ),
-    };
-    campfire.add(group);
-    registerWorldElement(
-      "avatars",
-      "Campfire roster sitters",
-      "Avatars & bots",
-      group,
-    );
-    return compactCampfireSitters;
-  }
-
-  function updateCompactCampfireSitters(sitters = []) {
-    const figures = ensureCompactCampfireSitters();
-    const visible = (Array.isArray(sitters) ? sitters : []).slice(
-      0,
-      CAMPFIRE_CIRCLE_MAX_SEATS,
-    );
-    const transform = new THREE.Object3D();
-    const position = new THREE.Vector3();
-    const color = new THREE.Color();
-    const skinColors = ["#f2c9a0", "#dca57b", "#bd7e55", "#8a5537", "#603b2a"];
-    const shirtColors = ["#6db6ff", "#e7829f", "#70c99b", "#d7a85c", "#9a83df", "#67bec4"];
-    const trouserColors = ["#26384d", "#3e4557", "#34483d", "#493b48"];
-    const setInstance = (target, index, x, y, z, heading, sx, sy, sz, tint) => {
-      transform.position.set(x, y, z);
-      transform.rotation.set(0, heading, 0);
-      transform.scale.set(sx, sy, sz);
-      transform.updateMatrix();
-      target.setMatrixAt(index, transform.matrix);
-      target.setColorAt(index, color.set(tint));
-    };
-    visible.forEach(({ member, seat }, index) => {
-      const name = String(member?.name || "member").trim().toLowerCase();
-      const seed = hashNumber(name);
-      const skin = skinColors[seed % skinColors.length];
-      const shirt = shirtColors[(seed >>> 4) % shirtColors.length];
-      const trousers = trouserColors[(seed >>> 8) % trouserColors.length];
-      const heading = seat ? Math.atan2(seat.x, seat.z) : 0;
-      const x = Number(seat?.x) || 0;
-      const seatY = Number(seat?.y) || CAMPFIRE_SEAT_TOP_Y;
-      const z = Number(seat?.z) || 0;
-      const rightX = Math.cos(heading);
-      const rightZ = -Math.sin(heading);
-      const frontX = -Math.sin(heading);
-      const frontZ = -Math.cos(heading);
-      setInstance(
-        figures.heads, index,
-        x, seatY + 1.28, z, heading,
-        0.42, 0.46, 0.42, skin,
-      );
-      setInstance(
-        figures.torsos, index,
-        x, seatY + 0.72, z, heading,
-        0.58, 0.72, 0.34, shirt,
-      );
-      [-1, 1].forEach((side, limb) => {
-        const leg = index * 2 + limb;
-        const thighX = x + rightX * side * 0.16 + frontX * 0.25;
-        const thighZ = z + rightZ * side * 0.16 + frontZ * 0.25;
-        setInstance(
-          figures.thighs, leg,
-          thighX, seatY + 0.18, thighZ, heading,
-          0.2, 0.18, 0.56, trousers,
-        );
-        setInstance(
-          figures.shins, leg,
-          x + rightX * side * 0.16 + frontX * 0.51,
-          seatY - 0.19,
-          z + rightZ * side * 0.16 + frontZ * 0.51,
-          heading,
-          0.18, 0.56, 0.18, trousers,
-        );
-      });
-    });
-    [figures.heads, figures.torsos].forEach((target) => {
-      target.count = visible.length;
-      target.instanceMatrix.needsUpdate = true;
-      if (target.instanceColor) target.instanceColor.needsUpdate = true;
-    });
-    [figures.thighs, figures.shins].forEach((target) => {
-      target.count = visible.length * 2;
-      target.instanceMatrix.needsUpdate = true;
-      if (target.instanceColor) target.instanceColor.needsUpdate = true;
-    });
-    campfire.userData.compactMemberFigures = visible.length;
   }
 
   // Rebrands one bench's plank top, skipping the canvas work when the seat
@@ -28076,21 +27946,10 @@ export function createWorldScene({
     const roster = (Array.isArray(members) ? members : []).filter((member) =>
       String(member?.name || "").trim(),
     );
-    const detailedMemberIds = new Set(
+    const seatedMemberIds = new Set(
       roster
         .slice(0, CAMPFIRE_CIRCLE_MAX_SEATS)
         .filter((member) => member?.away !== true)
-        .sort((left, right) => {
-          const recent = (member) =>
-            ["hour", "5h", "24h", "3d", "5d", "10d"].includes(
-              String(member?.activityBucket || ""),
-            );
-          return (
-            Number(recent(right)) - Number(recent(left)) ||
-            hashNumber(left?.name) - hashNumber(right?.name)
-          );
-        })
-        .slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)
         .map(
           (member) =>
             `member:${String(member?.name || "").trim().toLowerCase()}`,
@@ -28103,7 +27962,6 @@ export function createWorldScene({
     );
     const seen = new Set();
     const seatByName = new Map();
-    const compactSitters = [];
     roster
       .slice(0, Math.max(1, seats.length))
       .forEach((member, index) => {
@@ -28119,7 +27977,7 @@ export function createWorldScene({
         // The bench keeps the member's name whether or not they are on it,
         // so the empty seats read as "who is out and about" rather than as
         // unclaimed furniture.
-        const represented = detailedMemberIds.has(id);
+        const represented = seatedMemberIds.has(id);
         const assignment = sanitizedOrgTeamAssignment({
           id,
           name,
@@ -28148,9 +28006,6 @@ export function createWorldScene({
             world.remove(parked);
             disposeObject3D(parked);
             loungeMembers.delete(id);
-          }
-          if (member.away !== true && !represented) {
-            compactSitters.push({ member, seat: seats[index] });
           }
           return;
         }
@@ -28253,7 +28108,6 @@ export function createWorldScene({
         applySeatedLegPose(figure);
         figure.userData.ambientInteraction = null;
       });
-    updateCompactCampfireSitters(compactSitters);
     // Benches past the roster are the open guest seats.
     for (let index = roster.length; index < seats.length; index += 1) {
       setCampfireSeatLabel(index, "", "open");
@@ -28263,9 +28117,7 @@ export function createWorldScene({
     campfire.userData.seatByName = seatByName;
     campfire.userData.memberFigureCount = Math.min(roster.length, seats.length);
     campfire.userData.detailedMemberFigures = seen.size;
-    campfire.userData.seatedMemberFigures =
-      seen.size + compactSitters.length;
-    campfire.userData.memberFigureLimit = CAMPFIRE_DETAILED_MEMBER_LIMIT;
+    campfire.userData.seatedMemberFigures = seen.size;
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
       removeRemoteOrgTeamControl(figure, id);

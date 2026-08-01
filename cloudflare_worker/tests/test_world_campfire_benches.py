@@ -324,18 +324,16 @@ def test_bench_height_is_derived_from_the_seated_pose():
 
 
 def test_campfire_fills_every_non_walking_member_bench_with_a_figure():
-    assert "const CAMPFIRE_DETAILED_MEMBER_LIMIT = compactRenderer ? 12 : 32" in SCENE
-    assert ".slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)" in SCENE
-    assert "campfire.userData.memberFigureLimit" in SCENE
+    assert "CAMPFIRE_DETAILED_MEMBER_LIMIT" not in SCENE
+    assert "const seatedMemberIds = new Set(" in SCENE
+    assert ".filter((member) => member?.away !== true)" in SCENE
+    assert "const represented = seatedMemberIds.has(id);" in SCENE
     assert "campfire.userData.detailedMemberFigures" in SCENE
-    assert 'group.name = "campfire-instanced-member-sitters"' in SCENE
-    assert '"campfire-instanced-member-heads"' in SCENE
-    assert '"campfire-instanced-member-torsos"' in SCENE
-    assert "compactSitters.push({ member, seat: seats[index] });" in SCENE
-    assert "if (member.away !== true && !represented)" in SCENE
-    assert "updateCompactCampfireSitters(compactSitters);" in SCENE
-    assert "campfire.userData.compactMemberFigures = visible.length;" in SCENE
-    assert "campfire.userData.seatedMemberFigures =" in SCENE
+    assert "campfire-instanced-member-sitters" not in SCENE
+    assert "updateCompactCampfireSitters" not in SCENE
+    assert "figure = createAvatar(" in SCENE
+    assert "{ remote: true, scale: 0.88 }" in SCENE
+    assert "campfire.userData.seatedMemberFigures = seen.size;" in SCENE
     assert 'labelState = member.away === true' in SCENE
     assert '"ROSTER BENCH"' in SCENE
     assert "showAtBench(seatByName.get(wanted))" in SCENE
