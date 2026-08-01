@@ -13585,6 +13585,23 @@
         </span>`;
   }
 
+  // Potentially long lists stay out of the row layout. The chip carries only
+  // the item count; hovering it reveals the complete, one-item-per-line list.
+  // Keeping it focusable gives keyboard users the same native tooltip and an
+  // explicit accessible label without adding a second visual row.
+  function mirrorListChip(label, values) {
+    const list = (Array.isArray(values) ? values : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    if (!list.length) return mirrorChip(label, "", false, "");
+    const tooltip = `${label}:\n${list.map((value) => `\u2022 ${value}`).join("\n")}`;
+    return `
+        <span class="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-mono" tabindex="0" aria-label="${escapeHtml(`${label}: ${list.join(", ")}`)}" title="${escapeHtml(tooltip)}">
+          <span class="text-muted-foreground">${escapeHtml(label)}</span>
+          <span class="text-foreground">${formatCount(list.length)}</span>
+        </span>`;
+  }
+
   // The metadata columns the desktop Mirror nodes panel shows, rendered as chips
   // under each mirror row: commit + sync freshness, on-disk size, and the mirrored
   // issue/commit/branch/pull/discussion/worktree/clone/website/artifact tallies.
@@ -13618,7 +13635,7 @@
       mirrorChip("Latency", Number.isFinite(Number(mirror.latencyMs)) ? `${Math.max(0, Number(mirror.latencyMs))} ms` : "", false, ""),
       mirrorChip("Region", mirror.region || "", false, ""),
       mirrorChip("Endpoint integrity", mirror.endpointIntegrity || "", mirror.endpointIntegrity && mirror.endpointIntegrity !== "ok", ""),
-      mirrorChip("Capabilities", operations.join(", "), false, ""),
+      mirrorListChip("Capabilities", operations),
       mirrorChip("Size", mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "", false, ""),
       mirrorChip("Issues", mirrorCountText(mirror.issueCount), mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), `Source: ${mirrorCountText(refMirror?.issueCount)}`),
       mirrorChip("Commits", mirrorCountText(mirror.commitCount), mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), `Source: ${mirrorCountText(refMirror?.commitCount)}`),
@@ -13640,9 +13657,10 @@
     return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
   }
 
-  // The full Mirrors-tab row: a header line (dot, name, source-of-truth / out-of-
-  // sync / integrity badges, version, serve speed, status) over a wrapped strip of
-  // the same metadata columns the desktop Mirror nodes panel shows.
+  // The full Mirrors-tab row stays on one line: identity, state, metadata, and
+  // reachability all share one non-wrapping strip. The surrounding list scrolls
+  // horizontally on narrow screens; unbounded list data is condensed by
+  // mirrorListChip and remains available on hover/focus.
   function renderMirrorTabRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
@@ -13678,26 +13696,22 @@
         ? "text-amber-500"
         : "text-primary";
     const rowClass = isServing
-      ? "border-t border-border px-4 py-3 text-sm ring-1 ring-inset ring-primary bg-primary/5"
-      : "border-t border-border px-4 py-3 text-sm hover:bg-secondary/40 transition-colors";
+      ? "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm ring-1 ring-inset ring-primary bg-primary/5"
+      : "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm hover:bg-secondary/40 transition-colors";
     return `
         <div class="${rowClass}">
-          <div class="flex items-center gap-3">
-            <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
-            <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-              <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
-              ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
-              ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
-              ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
-              ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
-              ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
-            </div>
-            <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
-              ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
-              ${escapeHtml(mirror.status || "unknown")}
-            </span>
-          </div>
-          <div class="mt-2 flex flex-wrap gap-1.5 pl-7">${mirrorDetailChips(mirror, refMirror)}</div>
+          <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
+          <span class="shrink-0 font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
+          ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
+          ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
+          ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+          ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
+          ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
+          ${mirrorDetailChips(mirror, refMirror)}
+          <span class="ml-auto flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
+            ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
+            ${escapeHtml(mirror.status || "unknown")}
+          </span>
         </div>`;
   }
 
@@ -13760,9 +13774,9 @@
           (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
           String(a.node || a.owner || a.name || "").localeCompare(String(b.node || b.owner || b.name || "")),
       );
-      tabContainer.innerHTML = ordered
+      tabContainer.innerHTML = `<div class="overflow-x-auto">${ordered
         .map((mirror) => renderMirrorTabRow(mirror, servedBy, refMirror))
-        .join("");
+        .join("")}</div>`;
     }
     renderRepoLiveMirrorList(mirrors, servedBy);
     window.lucide?.createIcons();
