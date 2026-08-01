@@ -68,6 +68,18 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
+    # The first concrete publishing device becomes the repository authority.
+    # Additional devices owned by the same account remain useful mirrors but
+    # cannot replace its signed state merely because they cloned the checkout.
+    """CREATE TABLE IF NOT EXISTS repo_source_authorities (
+        repo_bi TEXT PRIMARY KEY, node_id TEXT NOT NULL,
+        machine_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS repo_device_mirrors (
+        repo_bi TEXT NOT NULL, node_id TEXT NOT NULL, data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (repo_bi, node_id))""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_device_mirrors_repo "
+    "ON repo_device_mirrors(repo_bi, updated_at DESC)",
     # Per-repo collaborator ACL (issue #9): which grantee accounts an owner has
     # shared a private repo with. repo_bi = blind_index("<owner>/<repo>") (the
     # same key as repositories.key_bi); grantee_bi = blind_index(grantee account
@@ -1057,6 +1069,17 @@ SCHEMA_STATEMENTS = [
         bytes_in INTEGER NOT NULL DEFAULT 0 CHECK (bytes_in >= 0),
         bytes_out INTEGER NOT NULL DEFAULT 0 CHECK (bytes_out >= 0),
         messages INTEGER NOT NULL DEFAULT 0 CHECK (messages >= 0),
+        updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
+    # Minute aggregates for platform-aborted Durable Object requests
+    # (migration 0116). A reconnect storm increments one content-free row
+    # instead of writing one error_log row per affected user. /status consumes
+    # these counters, preserving incident visibility without flooding the
+    # operator's actionable Worker-error queue.
+    """CREATE TABLE IF NOT EXISTS durable_object_abort_minute (
+        minute_ts INTEGER PRIMARY KEY CHECK (minute_ts >= 0),
+        aborts INTEGER NOT NULL DEFAULT 0 CHECK (aborts >= 0),
+        duration_aborts INTEGER NOT NULL DEFAULT 0
+            CHECK (duration_aborts >= 0),
         updated_at INTEGER NOT NULL DEFAULT 0 CHECK (updated_at >= 0))""",
     # Aggregate-only Town Square arrival odometer for the Arrival Grid plaque
     # (migration 0074). Each accepted world join adds one to a coarse

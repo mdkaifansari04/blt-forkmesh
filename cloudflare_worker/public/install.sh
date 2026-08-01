@@ -119,6 +119,7 @@ SYSTEMD_BIN="/usr/local/bin/forkmesh"
 SYSTEMD_INSTALL_MARKER="/etc/forkmesh/installer-managed"
 SYSTEMD_STATE_DIR="/var/lib/forkmesh"
 SYSTEMD_STATE_MARKER="/var/lib/forkmesh/.forkmesh-managed-service"
+SYSTEMD_BOOTSTRAP_MARKER="/var/lib/forkmesh/.forkmesh-installing-service"
 # Set to 1 if a clone is rejected by the relay's integrity gate, so the final
 # error can explain that specific (owner-fixable) case instead of a generic one.
 PIN_FAILURE=0
@@ -527,6 +528,23 @@ stop_forkmesh_daemons() {
   fi
   rm -f -- "$PID_FILE"
   say "Stopped managed ForkMesh daemon PID $pid"
+}
+
+# An interrupted age/Git materialization cannot run its QTemporaryDir cleanup,
+# so repeated service restarts can leave gigabytes of disposable mirror clones
+# behind. Remove only ForkMesh's two runtime-only prefixes, only from the
+# installer-owned service state directory, and only while the managed service
+# has already been stopped. Agent workspaces (forkmesh-agent-*) and all durable
+# repositories/archives are deliberately outside this match.
+cleanup_stale_service_mirror_tmp() {
+  [ "$(id -u)" -eq 0 ] || return 0
+  [ -f "$SYSTEMD_STATE_MARKER" ] || return 0
+  [ -d "$SYSTEMD_STATE_DIR/tmp" ] || return 0
+  [ ! -L "$SYSTEMD_STATE_DIR/tmp" ] ||
+    die "Refusing symlink managed service temp directory."
+  find "$SYSTEMD_STATE_DIR/tmp" -mindepth 1 -maxdepth 1 -type d \
+    \( -name 'ForkMesh-*' -o -name 'forkmesh-mirror-runtime-*' \) \
+    -exec rm -rf -- {} +
 }
 
 uninstall_forkmesh() {
@@ -1668,7 +1686,7 @@ LAUNCH_MODE=""
 
 launch_root_headless_service() {
   local service_user="forkmesh-node" state_dir="$SYSTEMD_STATE_DIR"
-  local binary_hash account home shell
+  local binary_hash account home shell managed_install=0 bootstrap_install=0
   [ "$(id -u)" -eq 0 ] || return 1
   command -v systemctl >/dev/null 2>&1 &&
     [ -d /run/systemd/system ] ||
@@ -1678,11 +1696,12 @@ launch_root_headless_service() {
   printf '%s' "$FORKMESH_LINK_CODE" | grep -Eq '^[0-9]{6}$' ||
     die "Headless link code is invalid."
   [ ! -L "$SYSTEMD_UNIT" ] && [ ! -L "$SYSTEMD_ENV" ] &&
-    [ ! -L "$SYSTEMD_BIN" ] && [ ! -L "$SYSTEMD_INSTALL_MARKER" ] ||
+    [ ! -L "$SYSTEMD_BIN" ] && [ ! -L "$SYSTEMD_INSTALL_MARKER" ] &&
+    [ ! -L "$SYSTEMD_BOOTSTRAP_MARKER" ] ||
     die "Refusing a symlink in the managed system-service paths."
   if [ -e "$SYSTEMD_BIN" ] || [ -e "$SYSTEMD_UNIT" ] ||
      [ -e "$SYSTEMD_STATE_DIR" ]; then
-    [ -f "$SYSTEMD_INSTALL_MARKER" ] &&
+    if [ -f "$SYSTEMD_INSTALL_MARKER" ] &&
       grep -Fqx 'forkmesh-system-service-v1' "$SYSTEMD_INSTALL_MARKER" &&
       grep -Fqx "binary=$SYSTEMD_BIN" "$SYSTEMD_INSTALL_MARKER" &&
       [ -f "$SYSTEMD_UNIT" ] &&
@@ -1691,8 +1710,23 @@ launch_root_headless_service() {
       [ ! -L "$SYSTEMD_STATE_MARKER" ] &&
       [ "$(_path_owner_uid "$SYSTEMD_STATE_MARKER")" = "0" ] &&
       grep -Fqx 'forkmesh-managed-service-v1' "$SYSTEMD_STATE_MARKER" &&
-      grep -Fqx "path=$SYSTEMD_STATE_DIR" "$SYSTEMD_STATE_MARKER" ||
+      grep -Fqx "path=$SYSTEMD_STATE_DIR" "$SYSTEMD_STATE_MARKER"; then
+      managed_install=1
+    elif [ ! -e "$SYSTEMD_BIN" ] && [ ! -e "$SYSTEMD_UNIT" ] &&
+         [ ! -e "$SYSTEMD_INSTALL_MARKER" ] &&
+         [ -f "$SYSTEMD_BOOTSTRAP_MARKER" ] &&
+         [ "$(_path_owner_uid "$SYSTEMD_BOOTSTRAP_MARKER")" = "0" ] &&
+         grep -Fqx 'forkmesh-installing-service-v1' "$SYSTEMD_BOOTSTRAP_MARKER" &&
+         grep -Fqx "path=$SYSTEMD_STATE_DIR" "$SYSTEMD_BOOTSTRAP_MARKER"; then
+      # A previous installer run may have created the locked service account
+      # and state directory before a mirror clone/download failed. The
+      # root-owned, path-bound marker is written before those fallible steps,
+      # so this exact partial transaction is safe to resume. An unmarked
+      # directory remains protected as operator-owned data.
+      bootstrap_install=1
+    else
       die "Refusing to overwrite an unmanaged system binary, service, or state directory."
+    fi
   fi
 
   if id "$service_user" >/dev/null 2>&1; then
@@ -1714,6 +1748,15 @@ launch_root_headless_service() {
     useradd --system --home-dir "$state_dir" --create-home \
       --shell /usr/sbin/nologin "$service_user"
   fi
+  if [ "$managed_install" -eq 0 ] && [ "$bootstrap_install" -eq 0 ]; then
+    {
+      printf 'forkmesh-installing-service-v1\n'
+      printf 'path=%s\n' "$state_dir"
+    } > "$SYSTEMD_BOOTSTRAP_MARKER"
+    chown root:root "$SYSTEMD_BOOTSTRAP_MARKER"
+    chmod 0600 "$SYSTEMD_BOOTSTRAP_MARKER"
+    bootstrap_install=1
+  fi
   # QSettings places the first-run Actions recovery lock beneath this directory.
   # Creating only the data directory left a brand-new service in a crash loop:
   # QLockFile could not create its lock parent and reported configuration_busy.
@@ -1734,7 +1777,9 @@ launch_root_headless_service() {
     ensure_mirror_candidates
     for candidate in "${REPO_CANDIDATES[@]}"; do
       say "Seeding the headless agent checkout from $candidate…"
-      if git clone --quiet --branch main --single-branch \
+      if git -c pack.threads=1 -c core.deltaBaseCacheLimit=16m \
+           -c pack.deltaCacheSize=16m -c pack.windowMemory=16m \
+           clone --quiet --branch main --single-branch \
            "$candidate" "$flagship_checkout"; then
         checkout_source="$candidate"
         break
@@ -1844,6 +1889,7 @@ launch_root_headless_service() {
     [ "${restarts:-0}" = "0" ] ||
       die "forkmesh-node.service restarted during its startup health check; inspect journalctl -u forkmesh-node.service."
   done
+  rm -f -- "$SYSTEMD_BOOTSTRAP_MARKER"
   LAUNCH_MODE="service"
   LOG_PATH="journalctl -u forkmesh-node.service"
   return 0
@@ -1929,6 +1975,7 @@ FORKMESH_TUNNEL_HOSTNAME="${FORKMESH_TUNNEL_HOSTNAME:-}"
 FORKMESH_TUNNEL_ZONE="${FORKMESH_TUNNEL_ZONE:-}"
 FORKMESH_CLOUDFLARE_ACCOUNT_ID="${FORKMESH_CLOUDFLARE_ACCOUNT_ID:-}"
 FORKMESH_RELAY_HOSTNAME="${FORKMESH_RELAY_HOSTNAME:-}"
+FORKMESH_REQUIRE_TUNNEL="${FORKMESH_REQUIRE_TUNNEL:-0}"
 
 # Copy the pinned mirror tools into <prefix>/share/forkmesh/tools — one of the
 # exact locations the app's findPinnedTool() probes relative to its binary — so
@@ -1938,7 +1985,7 @@ FORKMESH_RELAY_HOSTNAME="${FORKMESH_RELAY_HOSTNAME:-}"
 # way the binary's release manifest is fetched).
 _tunnel_stage_tools() {
   local tools_dir="$1" tmp="" src="" f
-  local wanted="cloudflared_install.py cloudflare_tunnel_bootstrap.py mirror_gateway.py"
+  local wanted="cloudflare_bootstrap.py cloudflared_install.py cloudflare_tunnel_bootstrap.py mirror_gateway.py"
   for src in "$SRC/tools" "$SYSTEMD_STATE_DIR/repositories/forkmesh/tools" ""; do
     [ -n "$src" ] && [ -f "$src/cloudflare_tunnel_bootstrap.py" ] && break
   done
@@ -1951,6 +1998,7 @@ _tunnel_stage_tools() {
     for repo in "${REPO_CANDIDATES[@]}"; do
       # shellcheck disable=SC2086
       if _sparse_fetch_file "$repo" "$tmp" \
+           tools/cloudflare_bootstrap.py \
            tools/cloudflare_tunnel_bootstrap.py \
            tools/cloudflared_install.py \
            tools/mirror_gateway.py; then
@@ -1965,12 +2013,21 @@ _tunnel_stage_tools() {
     src="$tmp/tools"
   fi
   mkdir -p "$tools_dir" || { [ -n "$tmp" ] && rm -rf "$tmp"; return 1; }
+  # Root installs run under umask 077. Without explicit traversal permissions,
+  # the unprivileged forkmesh-node service cannot execute these public pinned
+  # helpers even though the files themselves are installed as 0644.
+  chmod 0755 "$(dirname "$tools_dir")" "$tools_dir" || {
+    [ -n "$tmp" ] && rm -rf "$tmp"
+    return 1
+  }
   for f in $wanted; do
     [ -f "$src/$f" ] || continue
     install -m 0644 "$src/$f" "$tools_dir/$f" || { [ -n "$tmp" ] && rm -rf "$tmp"; return 1; }
   done
   [ -n "$tmp" ] && rm -rf "$tmp"
-  [ -f "$tools_dir/cloudflare_tunnel_bootstrap.py" ]
+  [ -f "$tools_dir/cloudflare_tunnel_bootstrap.py" ] &&
+    [ -f "$tools_dir/cloudflare_bootstrap.py" ] &&
+    [ -f "$tools_dir/mirror_gateway.py" ]
 }
 
 # Merge the [control] keys the daemon's mirror services read into the service
@@ -2071,6 +2128,16 @@ provision_cloudflare_tunnel() {
       warn "Could not install the pinned cloudflared now; the node will retry with its own verified installer."
     fi
   fi
+  # A root umask of 077 can leave the pinned connector executable only by
+  # root, while the service deliberately runs as forkmesh-node. Restrict this
+  # correction to the installer-owned system destination.
+  if [ "$as_service" -eq 1 ] && [ -f "$cfd_dest" ] &&
+     [ ! -L "$cfd_dest" ]; then
+    chmod 0755 "$cfd_dest" || {
+      warn "Could not make the managed cloudflared connector executable by $service_user."
+      return 1
+    }
+  fi
 
   # The Worker's mirror-router public key — the same discovery endpoint the
   # desktop uses before registering a direct endpoint.
@@ -2143,6 +2210,8 @@ provision_cloudflare_tunnel() {
   else
     say "  Running the pinned Cloudflare Tunnel bootstrap…"
   fi
+  # A valid base64url Ed25519 key may begin with "-". Bind it with '=' so
+  # argparse cannot mistake that leading character for another option.
   set -- \
     "$tools_dir/cloudflare_tunnel_bootstrap.py" \
     --hostname "$hostname" \
@@ -2151,7 +2220,7 @@ provision_cloudflare_tunnel() {
     --origin-host 127.0.0.1 \
     --origin-port 8790 \
     --gateway-config "$gw_root/config.json" \
-    --mirror-public-key "$node_pubkey" \
+    --mirror-public-key="$node_pubkey" \
     --manifest-signer-command "'$node_binary' --sign-mirror-manifest" \
     --manifest-output "$gw_root/forkmesh-mirror.json" \
     --tunnel-token-file "$gw_root/connector.token"
@@ -2202,6 +2271,7 @@ LOG_PATH="${XDG_DATA_HOME:-$HOME/.local/share}/forkmesh/node.log"
 # going to be launched anyway.
 if [ "$FORKMESH_RESTART" = "1" ] && [ "${FORKMESH_NO_LAUNCH:-0}" != "1" ]; then
   stop_forkmesh_daemons "restart before relaunch"
+  cleanup_stale_service_mirror_tmp
 fi
 if [ "${FORKMESH_NO_LAUNCH:-0}" = "1" ]; then
   say "Done. Launch it with:  forkmesh"
@@ -2263,12 +2333,20 @@ else
 fi
 
 # Opt-in automatic Cloudflare Tunnel provisioning for the fresh headless node
-# (see provision_cloudflare_tunnel above). Every failure is soft: the plain
-# install above already succeeded and stays that way.
+# (see provision_cloudflare_tunnel above). Ordinary installs keep this
+# best-effort; automated provisioners may set FORKMESH_REQUIRE_TUNNEL=1 so a
+# node is not reported as installed until its direct endpoint exists.
 if [ -n "$FORKMESH_TUNNEL_HOSTNAME" ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
-  provision_cloudflare_tunnel ||
+  if ! provision_cloudflare_tunnel; then
+    if [ "$FORKMESH_REQUIRE_TUNNEL" = "1" ]; then
+      die "Automatic tunnel provisioning did not complete; this install requires a live direct HTTPS endpoint."
+    fi
     warn "Automatic tunnel provisioning did not complete; the node is installed and running without a direct HTTPS endpoint."
+  fi
 elif [ -n "$FORKMESH_TUNNEL_HOSTNAME" ]; then
+  if [ "$FORKMESH_REQUIRE_TUNNEL" = "1" ]; then
+    die "FORKMESH_TUNNEL_HOSTNAME is set but CLOUDFLARE_API_TOKEN is not; this install requires a live direct HTTPS endpoint."
+  fi
   warn "FORKMESH_TUNNEL_HOSTNAME is set but CLOUDFLARE_API_TOKEN is not; skipping automatic tunnel provisioning."
 fi
 

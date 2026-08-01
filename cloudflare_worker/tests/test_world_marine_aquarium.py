@@ -154,7 +154,12 @@ def test_aquarium_feeding_action_is_persistently_available_and_accessible():
 
 def test_aquarium_bottom_right_control_panel_combines_all_four_actions():
     assert 'aquariumControlPanel.dataset.worldAquariumControls = ""' in SCENE
-    assert 'aquariumControlTitle.textContent = "REEF CONTROL"' in SCENE
+    assert 'aquariumControlToggle.textContent = "REEF CONTROL"' in SCENE
+    assert 'aquariumControlToggle.type = "button"' in SCENE
+    assert 'aquariumControlToggle.setAttribute("aria-expanded", "false")' in SCENE
+    assert 'aquariumControlActions.hidden = true' in SCENE
+    assert "setAquariumControlsExpanded" in SCENE
+    assert "handleAquariumControlToggle" in SCENE
     assert 'aquariumTapAction.dataset.worldAquariumTap = ""' in SCENE
     assert 'aquariumTapAction.textContent = "TAP GLASS"' in SCENE
     assert 'aquariumBackdropAction.dataset.worldAquariumBackdrop = ""' in SCENE
@@ -171,6 +176,9 @@ def test_aquarium_bottom_right_control_panel_combines_all_four_actions():
     assert "officeAquarium.controlAnchor" in SCENE
     assert "aquariumDistance / 9" in SCENE
     assert ".world-aquarium-control-panel" in CSS
+    assert ".world-aquarium-control-toggle" in CSS
+    assert ".world-aquarium-control-actions" in CSS
+    assert "bottom: calc(100% + 7px)" in CSS
     assert "grid-template-columns: repeat(2" in CSS
     assert ".world-aquarium-feed-action" not in CSS
 

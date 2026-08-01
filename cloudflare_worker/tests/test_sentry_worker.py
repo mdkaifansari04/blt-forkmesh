@@ -543,11 +543,11 @@ def test_worker_observability_stays_within_the_free_event_budget():
 
 
 def test_expected_degraded_responses_skip_the_generic_5xx_logger():
-    # Deliberate degraded answers — DO-abort 503s whose real reason
-    # log_durable_object_abort already recorded, the fail-closed git push
+    # Deliberate degraded answers — DO-abort 503s already counted by
+    # log_durable_object_abort, the fail-closed git push
     # 501, and central-fund/office "upstream unavailable" 503s — used to be
     # re-logged by the outer fetch as anonymous "response status N" Sentry
-    # events (one DO abort produced TWO error-log rows). They now carry the
+    # events (one DO abort could produce multiple error rows). They now carry the
     # expected-degraded marker and the generic logger skips them.
     assert 'EXPECTED_DEGRADED_HEADER = "x-forkmesh-expected-degraded"' in (
         ENTRY_TEXT)
@@ -559,8 +559,8 @@ def test_expected_degraded_responses_skip_the_generic_5xx_logger():
     assert logger_block.index("_response_is_expected_degraded") < (
         logger_block.index("await log_error("))
 
-    # Every DO-abort 503 fallback is marked, so the detailed abort row stays
-    # the only record of the event.
+    # Every DO-abort 503 fallback is marked, so the aggregate stays the only
+    # record of the event.
     for site_start in [
         match for match in range(len(ENTRY_TEXT))
         if ENTRY_TEXT.startswith("await log_durable_object_abort(", match)
@@ -576,6 +576,17 @@ def test_expected_degraded_responses_skip_the_generic_5xx_logger():
     fund_block = ENTRY_TEXT.split(
         "async def _account_central_fund", 1)[1][:1600]
     assert fund_block.count("EXPECTED_DEGRADED_HEADERS") == 2
+
+
+def test_durable_object_aborts_are_aggregated_without_error_rows():
+    body = ENTRY_TEXT.split(
+        "async def log_durable_object_abort(", 1)[1].split(
+            "\n\ndef _is_d1_platform_error", 1)[0]
+    assert "INSERT INTO durable_object_abort_minute" in body
+    assert "ON CONFLICT(minute_ts) DO UPDATE SET" in body
+    assert "duration_aborts" in body
+    assert "_write_error_log(" not in body
+    assert "capture_sentry_error(" not in body
 
 
 def test_mirror_gateway_retries_all_5xx_and_marks_unavailability_expected():

@@ -29,6 +29,7 @@ PRIVATE_ACCESS_MIGRATION = (
     ROOT / "cloudflare_worker" / "migrations"
     / "0053_private_replica_access.sql"
 )
+WRANGLER = ROOT / "cloudflare_worker" / "wrangler.toml"
 
 
 def _function_source(name):
@@ -62,18 +63,18 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
         "re": re,
         "MAX_BLOB_BATCH": 60,
         "REPOSITORY_METADATA_CACHE_PREFIX": (
-            "https://forkmesh.internal/repository-metadata/v2/"
+            "https://forkmesh.internal/repository-metadata/v3/"
         ),
     }
     exec(_function_source("repository_metadata_cache_key"), namespace)
     key = namespace["repository_metadata_cache_key"]
     first = {
         "repoBi": "public-repo-blind-index",
-        "pins": {"b" * 64, "a" * 64},
+        "currentPins": {"b" * 64, "a" * 64},
     }
     same = {
         "repoBi": "public-repo-blind-index",
-        "pins": {"a" * 64, "b" * 64},
+        "currentPins": {"a" * 64, "b" * 64},
     }
     pull_ref = "c" * 40
 
@@ -83,7 +84,7 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
         same, "tree", {"path": "pulls", "ref": pull_ref}
     )
     assert tree_key != key(
-        {**first, "pins": {"d" * 64}},
+        {**first, "currentPins": {"d" * 64}},
         "tree",
         {"path": "pulls", "ref": pull_ref},
     )
@@ -91,9 +92,32 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
         first, "tree", {"path": "pulls", "ref": "d" * 40}
     )
     assert key(first, "branches", {})
-    assert key(first, "tree", {"path": "", "ref": ""})
-    assert key(first, "sizes", {"ref": "d" * 40})
-    assert key(first, "stats", {"ref": "d" * 40})
+    assert key(first, "tree", {"path": "", "ref": "main"})
+    assert key(first, "tree", {"path": "", "ref": "Feature/X"}) != key(
+        first, "tree", {"path": "", "ref": "feature/x"}
+    )
+    assert key(first, "sizes", {"ref": "main"})
+    assert key(first, "stats", {"ref": "main"})
+    assert key(first, "history", {"ref": "main"})
+    assert key(first, "blob", {"path": "README.md", "ref": "main"})
+    assert key(
+        first,
+        "blob",
+        {
+            "path": ".forkmesh/issues/open/44/issue-44.json",
+            "ref": "main",
+        },
+    )
+    assert key(
+        first,
+        "tree",
+        {"path": ".forkmesh/discussions/9", "ref": "main"},
+    )
+    assert key(
+        first,
+        "blob",
+        {"path": "pulls/44/changes.patch", "ref": pull_ref},
+    )
     assert key(
         first,
         "blobs",
@@ -102,18 +126,35 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
             "ref": pull_ref,
         },
     )
+    assert key(
+        first,
+        "blobs",
+        {
+            "path": [
+                ".forkmesh/issues/open/2/issue-2.json",
+                ".forkmesh/issues/open/1/issue-1.json",
+            ],
+            "ref": "main",
+        },
+    )
+    assert key(
+        first,
+        "blobs",
+        {
+            "path": [
+                ".forkmesh/discussions/3/discussion.md",
+                ".forkmesh/discussions/2/discussion.md",
+            ],
+            "ref": "main",
+        },
+    )
 
-    # No source contents, arbitrary paths, moving refs, duplicate amplification,
-    # or unattested repository state may enter this narrow cache.
+    # No arbitrary source contents, raw paths, malformed refs, duplicate
+    # amplification, or unattested repository state may enter this cache.
     assert not key(
         first,
         "blobs",
         {"path": ["src/main.py"], "ref": pull_ref},
-    )
-    assert not key(
-        first,
-        "blobs",
-        {"path": ["pulls/44/changes.patch"], "ref": pull_ref},
     )
     assert not key(
         first,
@@ -123,36 +164,40 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
             "ref": pull_ref,
         },
     )
+    assert not key(first, "blob", {"path": "src/main.py", "ref": "main"})
     assert not key(first, "tree", {"path": "private", "ref": pull_ref})
-    assert not key(first, "tree", {"path": "pulls", "ref": "main"})
+    assert not key(first, "tree", {"path": "pulls", "ref": "bad..ref"})
     assert not key(
-        {"repoBi": "public-repo-blind-index", "pins": set()},
+        {"repoBi": "public-repo-blind-index", "currentPins": set()},
         "branches",
         {},
     )
 
     proxy = _function_source("_https_mirror_proxy")
     assert (
-        proxy.index("repository_metadata_cache_get(metadata_cache_key)")
+        proxy.index("repository_metadata_cache_get(env, metadata_cache_key)")
         < proxy.index("_https_mirror_candidates(")
     )
-    assert "if not bypass_cache:" in proxy
+    assert "not bypass_cache" in proxy
     assert (
         "repository_metadata_cache_put(\n"
-        "                metadata_cache_key, upstream, status)"
+        "                env, metadata_cache_key, upstream, status)"
     ) in proxy
+    assert 'in context.get("currentPins", set())' in proxy
     assert (
         'response_headers["X-ForkMesh-Served-By"] = endpoint["node"]'
         in proxy
     )
     assert (
-        proxy.index("repository_metadata_cache_get(metadata_cache_key)")
+        proxy.index("repository_metadata_cache_get(env, metadata_cache_key)")
         < proxy.index('response_headers["X-ForkMesh-Served-By"]')
     )
     get_source = _function_source("repository_metadata_cache_get")
     put_source = _function_source("repository_metadata_cache_put")
     assert '"no-store, max-age=0, must-revalidate"' in get_source
-    assert '"public, max-age=%d"' in put_source
+    assert "namespace.get(cache_key)" in get_source
+    assert "namespace.put(cache_key, raw)" in put_source
+    assert '"public, max-age=%d, immutable"' in put_source
     assert "int(status or 0) != 200" in put_source
     assert "content_length <= 0" in put_source
     assert "content_length > REPOSITORY_METADATA_CACHE_MAX_BYTES" in put_source
@@ -163,15 +208,104 @@ def test_public_repository_metadata_cache_is_attestation_keyed_and_bounded():
             raise AssertionError("a non-200 upstream must never be cached")
 
     put_namespace = {
+        "asyncio": asyncio,
+        "json": json,
         "REPOSITORY_METADATA_CACHE_MAX_BYTES": 8 * 1024 * 1024,
-        "REPOSITORY_METADATA_CACHE_TTL": 300,
+        "REPOSITORY_METADATA_CACHE_TTL": 365 * 24 * 60 * 60,
     }
     exec(put_source, put_namespace)
     assert asyncio.run(
         put_namespace["repository_metadata_cache_put"](
-            "https://cache.invalid/key", MustNotClone(), 503
+            SimpleNamespace(),
+            "https://cache.invalid/key",
+            MustNotClone(),
+            503,
         )
     ) is None
+
+
+def test_repository_metadata_cache_round_trips_through_global_kv():
+    config = WRANGLER.read_text(encoding="utf-8")
+    assert 'binding = "REPOSITORY_METADATA"' in config
+    assert 'id = "ee8854d698c14e93a9950ec0f3e6538f"' in config
+
+    class FakeHeaders(dict):
+        pass
+
+    class FakeUpstream:
+        headers = FakeHeaders({
+            "content-type": "application/json; charset=utf-8",
+        })
+
+        def clone(self):
+            return self
+
+        async def text(self):
+            return '{"ok":true,"entries":[]}'
+
+    class FakeCache:
+        def __init__(self):
+            self.values = {}
+
+        async def match(self, key):
+            return self.values.get(key)
+
+        async def put(self, key, value):
+            self.values[key] = value
+
+    class FakeKV:
+        def __init__(self):
+            self.values = {}
+
+        async def get(self, key):
+            return self.values.get(key)
+
+        async def put(self, key, value):
+            self.values[key] = value
+
+    class FakeJsResponse:
+        @staticmethod
+        def new(body, options):
+            return SimpleNamespace(
+                body=body,
+                headers=FakeHeaders(options["headers"]),
+            )
+
+    class FakeWorkerResponse:
+        def __init__(self, body, status=200, headers=None):
+            self.body = body
+            self.status = status
+            self.headers = headers or {}
+
+    edge = FakeCache()
+    kv = FakeKV()
+    namespace = {
+        "asyncio": asyncio,
+        "json": json,
+        "js_caches": SimpleNamespace(default=edge),
+        "JsResponse": FakeJsResponse,
+        "Response": FakeWorkerResponse,
+        "to_js": lambda value: value,
+        "REPOSITORY_METADATA_CACHE_MAX_BYTES": 8 * 1024 * 1024,
+        "REPOSITORY_METADATA_CACHE_TTL": 365 * 24 * 60 * 60,
+    }
+    exec(_function_source("repository_metadata_cache_put"), namespace)
+    exec(_function_source("repository_metadata_cache_get"), namespace)
+    cache_key = "https://forkmesh.internal/repository-metadata/v3/" + "a" * 64
+    env = SimpleNamespace(REPOSITORY_METADATA=kv)
+
+    asyncio.run(namespace["repository_metadata_cache_put"](
+        env, cache_key, FakeUpstream(), 200))
+    assert kv.values[cache_key] == '{"ok":true,"entries":[]}'
+    assert cache_key in edge.values
+
+    # Prove a different colo can refill its local edge from persistent KV.
+    edge.values.clear()
+    response = asyncio.run(namespace["repository_metadata_cache_get"](
+        env, cache_key))
+    assert response.body == '{"ok":true,"entries":[]}'
+    assert response.headers["cache-control"].startswith("no-store")
+    assert cache_key in edge.values
 
 
 def test_registration_is_signed_account_bound_and_manifest_verified():
@@ -863,6 +997,7 @@ def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     assert "repo_mirror_same_group" in context
     assert "clone_state_pins" in context
     assert '"currentNodes": current_nodes' in context
+    assert '"currentPins": set(current_pins)' in context
     assert "FROM org_repos" in context
     assert 'target.get("stateHash", "")' in context
     assert '"remote-clone"' in context
@@ -876,8 +1011,20 @@ def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     assert "MAX_FAILOVER_ATTEMPTS" in edge
     assert "repository_health_challenge" in proof
     assert "refs_digest in context[\"pins\"]" in proof
+    assert 'endpoint["refsSha256"] = refs_digest' in proof
+    assert 'memo.get("refsSha256", "")' in proof
     assert "operations_digest == claimed_operations_digest" in proof
     assert "ed25519_verify" in proof
+
+
+def test_request_transients_do_not_quarantine_shared_endpoint_health():
+    # One page load may try every eligible mirror. A request-local timeout or
+    # 502/503 must fail over without zeroing the signed health lease for every
+    # other visitor; only the recurring health verifier owns that shared state.
+    proxy = _function_source("_https_mirror_proxy")
+    assert "request-local timeout" in proxy
+    assert "checked_at=0" not in proxy
+    assert "_https_mirror_mark_transient_failure" not in proxy
 
 
 def test_public_proxy_preserves_verified_org_alias_for_gateway_bytes():

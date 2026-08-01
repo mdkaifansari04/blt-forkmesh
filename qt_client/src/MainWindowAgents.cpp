@@ -7,10 +7,12 @@
 
 #include "MainWindow.h"
 #include "MainWindowInternal.h"
+#include "RepoStatsStore.h"
 #include "AgentJail.h"
 #include "AgentPromptImages.h"
 #include "KebabHeaderView.h"
 #include "CodexAppServerSession.h"
+#include "UsageLimitCalendar.h"
 
 #include <QTextLayout>
 #include <QTextOption>
@@ -1342,12 +1344,48 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
+    // Keep the live queue size and the concurrency cap where fleet controls
+    // already live. The limit used to be adjustable only in Settings; explicit
+    // minus/plus buttons make the common "one more/fewer agent" adjustment a
+    // single click without relying on the themed QSpinBox arrows (which are
+    // intentionally hidden elsewhere in the app).
+    auto *agentQueueControl = new QWidget;
+    agentQueueControl->setObjectName("agentQueueControl");
+    auto *agentQueueLayout = new QHBoxLayout(agentQueueControl);
+    agentQueueLayout->setContentsMargins(0, 0, 0, 0);
+    agentQueueLayout->setSpacing(2);
+    m_agentQueueLimitDecreaseButton = new QPushButton(QStringLiteral("−"));
+    m_agentQueueLimitDecreaseButton->setObjectName("agentQueueLimitDecreaseButton");
+    m_agentQueueLimitDecreaseButton->setFixedSize(24, 30);
+    m_agentQueueLimitDecreaseButton->setCursor(Qt::PointingHandCursor);
+    m_agentQueueLimitDecreaseButton->setToolTip("Run one fewer agent at once");
+    connect(m_agentQueueLimitDecreaseButton, &QPushButton::clicked, this, [this] {
+        setAgentConcurrencyLimit(maxRunningAgents() - 1);
+    });
+    m_agentQueueStatusLabel = new QLabel;
+    m_agentQueueStatusLabel->setObjectName("agentQueueStatusLabel");
+    m_agentQueueStatusLabel->setAlignment(Qt::AlignCenter);
+    m_agentQueueStatusLabel->setMinimumWidth(82);
+    m_agentQueueLimitIncreaseButton = new QPushButton("+");
+    m_agentQueueLimitIncreaseButton->setObjectName("agentQueueLimitIncreaseButton");
+    m_agentQueueLimitIncreaseButton->setFixedSize(24, 30);
+    m_agentQueueLimitIncreaseButton->setCursor(Qt::PointingHandCursor);
+    m_agentQueueLimitIncreaseButton->setToolTip("Run one more agent at once");
+    connect(m_agentQueueLimitIncreaseButton, &QPushButton::clicked, this, [this] {
+        setAgentConcurrencyLimit(maxRunningAgents() + 1);
+    });
+    agentQueueLayout->addWidget(m_agentQueueLimitDecreaseButton);
+    agentQueueLayout->addWidget(m_agentQueueStatusLabel);
+    agentQueueLayout->addWidget(m_agentQueueLimitIncreaseButton);
+    refreshAgentQueueControls();
+
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(0, 0, 0, 0);
     agentListToolbar->setSpacing(8);
     agentListToolbar->addWidget(heading, 0);
     agentListToolbar->addWidget(m_agentSearch, 1);
     agentListToolbar->addWidget(m_agentStartAllButton, 0);
+    agentListToolbar->addWidget(agentQueueControl, 0);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
     agentListToolbar->addWidget(m_agentHideDetailButton, 0);
@@ -3506,7 +3544,7 @@ void MainWindow::testOpenAiAgentKey()
     const qint64 usageStart = end - 24 * 60 * 60;
     const qint64 costsStart =
         QDate(now.date().year(), now.date().month(), 1)
-            .startOfDay(QTimeZone(QTimeZone::UTC))
+            .startOfDay(QTimeZone::utc())
             .toSecsSinceEpoch();
     // Costs are returned in whole UTC-day buckets. Since end_time is
     // exclusive, use the next midnight so the still-open bucket for today is
@@ -3514,7 +3552,7 @@ void MainWindow::testOpenAiAgentKey()
     const qint64 costsEnd =
         now.date()
             .addDays(1)
-            .startOfDay(QTimeZone(QTimeZone::UTC))
+            .startOfDay(QTimeZone::utc())
             .toSecsSinceEpoch();
 
     auto finish = [this, state] {
@@ -3749,6 +3787,201 @@ void MainWindow::applyCachedSpendLabels()
     restore(m_agentClaudeCredit, kClaudeCreditTextSetting, kClaudeCreditTsSetting);
 }
 
+namespace {
+
+QString usageReminderId(const QString &providerKey, const QString &windowKey)
+{
+    return providerKey + QLatin1Char('/') + windowKey;
+}
+
+QString usageExhaustedSetting(const QString &providerKey,
+                              const QString &windowKey)
+{
+    if (providerKey == QLatin1String("claude")) {
+        if (windowKey == QLatin1String("5h"))
+            return kClaudeUsage5hExhaustedSetting;
+        if (windowKey == QLatin1String("weekly"))
+            return kClaudeUsageWeekExhaustedSetting;
+        if (windowKey == QLatin1String("fable"))
+            return kClaudeUsageFableExhaustedSetting;
+    } else if (providerKey == QLatin1String("codex")) {
+        if (windowKey == QLatin1String("5h"))
+            return kCodexUsage5hExhaustedSetting;
+        if (windowKey == QLatin1String("weekly"))
+            return kCodexUsageWeekExhaustedSetting;
+    }
+    return QString();
+}
+
+QString usageResetSetting(const QString &providerKey, const QString &windowKey)
+{
+    if (providerKey == QLatin1String("claude")) {
+        if (windowKey == QLatin1String("5h"))
+            return kClaudeUsage5hResetSetting;
+        if (windowKey == QLatin1String("weekly"))
+            return kClaudeUsageWeekResetSetting;
+        if (windowKey == QLatin1String("fable"))
+            return kClaudeUsageFableResetSetting;
+    } else if (providerKey == QLatin1String("codex")) {
+        if (windowKey == QLatin1String("5h"))
+            return kCodexUsage5hResetSetting;
+        if (windowKey == QLatin1String("weekly"))
+            return kCodexUsageWeekResetSetting;
+    }
+    return QString();
+}
+
+} // namespace
+
+void MainWindow::clearUsageLimitReminders()
+{
+    for (QTimer *timer : std::as_const(m_usageLimitReminderTimers)) {
+        timer->stop();
+        timer->deleteLater();
+    }
+    m_usageLimitReminderTimers.clear();
+}
+
+void MainWindow::restoreUsageLimitReminders()
+{
+    clearUsageLimitReminders();
+    QSettings settings;
+    if (!settings.value(kUsageLimitCalendarReminderSetting, false).toBool())
+        return;
+
+    struct Reminder {
+        const char *providerKey;
+        const char *windowKey;
+        const char *providerName;
+        const char *windowName;
+    };
+    static const Reminder reminders[] = {
+        {"claude", "5h", "Claude Code", "5-hour"},
+        {"claude", "weekly", "Claude Code", "weekly"},
+        {"claude", "fable", "Claude Code", "Fable weekly"},
+        {"codex", "5h", "Codex", "5-hour"},
+        {"codex", "weekly", "Codex", "weekly"},
+    };
+    for (const Reminder &reminder : reminders) {
+        const QString providerKey = QString::fromLatin1(reminder.providerKey);
+        const QString windowKey = QString::fromLatin1(reminder.windowKey);
+        const QString exhaustedKey = usageExhaustedSetting(providerKey, windowKey);
+        const QString resetKey = usageResetSetting(providerKey, windowKey);
+        if (exhaustedKey.isEmpty() || resetKey.isEmpty() ||
+            !settings.value(exhaustedKey, false).toBool()) {
+            continue;
+        }
+        scheduleUsageLimitReminder(providerKey, windowKey,
+                                   QString::fromLatin1(reminder.providerName),
+                                   QString::fromLatin1(reminder.windowName),
+                                   settings.value(resetKey).toLongLong());
+    }
+}
+
+void MainWindow::scheduleUsageLimitReminder(const QString &providerKey,
+                                            const QString &windowKey,
+                                            const QString &providerName,
+                                            const QString &windowName,
+                                            qint64 resetMs)
+{
+    if (resetMs <= QDateTime::currentMSecsSinceEpoch())
+        return;
+    const QString exhaustedKey = usageExhaustedSetting(providerKey, windowKey);
+    if (exhaustedKey.isEmpty())
+        return;
+    const QString id = usageReminderId(providerKey, windowKey);
+    QSettings settings;
+    if (!settings.value(kUsageLimitCalendarReminderSetting, false).toBool() ||
+        !settings.value(exhaustedKey, false).toBool()) {
+        return;
+    }
+
+    // A provider can repeat the same rate-limit frame many times. Re-arm the
+    // local timer, but only ask the OS calendar to import a genuinely new reset
+    // instant so one exhausted window does not create duplicate events.
+    const QString scheduledKey = kUsageLimitReminderScheduledPrefix + id;
+    if (settings.value(scheduledKey).toLongLong() != resetMs) {
+        settings.setValue(scheduledKey, resetMs);
+        const QString path = UsageLimitCalendar::writeEvent(
+            providerKey, windowKey, providerName, windowName, resetMs);
+        if (!path.isEmpty())
+            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+    }
+
+    if (QTimer *old = m_usageLimitReminderTimers.take(id)) {
+        old->stop();
+        old->deleteLater();
+    }
+    auto *timer = new QTimer(this);
+    timer->setSingleShot(true);
+    m_usageLimitReminderTimers.insert(id, timer);
+    connect(timer, &QTimer::timeout, this,
+            [this, timer, id, providerKey, windowKey, providerName, windowName,
+             resetMs] {
+                if (m_usageLimitReminderTimers.value(id) != timer)
+                    return;
+                m_usageLimitReminderTimers.remove(id);
+                timer->deleteLater();
+
+                const qint64 now = QDateTime::currentMSecsSinceEpoch();
+                if (now < resetMs) {
+                    // Defensive re-arm for an unusually long provider window;
+                    // QTimer uses an int millisecond interval.
+                    scheduleUsageLimitReminder(providerKey, windowKey,
+                                               providerName, windowName, resetMs);
+                    return;
+                }
+                QSettings settings;
+                const QString exhaustedKey =
+                    usageExhaustedSetting(providerKey, windowKey);
+                const QString scheduledKey =
+                    kUsageLimitReminderScheduledPrefix + id;
+                if (!settings.value(kUsageLimitCalendarReminderSetting, false)
+                         .toBool() ||
+                    settings.value(scheduledKey).toLongLong() != resetMs ||
+                    exhaustedKey.isEmpty() ||
+                    !settings.value(exhaustedKey, false).toBool()) {
+                    return;
+                }
+                settings.setValue(exhaustedKey, false);
+                notifyUsageLimitReady(providerKey, windowKey, providerName,
+                                      windowName, resetMs);
+            });
+    const qint64 delayMs = qMin(
+        resetMs - QDateTime::currentMSecsSinceEpoch(),
+        qint64(std::numeric_limits<int>::max()));
+    timer->start(static_cast<int>(qMax<qint64>(1, delayMs)));
+}
+
+void MainWindow::notifyUsageLimitReady(const QString &providerKey,
+                                       const QString &windowKey,
+                                       const QString &providerName,
+                                       const QString &windowName,
+                                       qint64 resetMs)
+{
+    QSettings settings;
+    if (!settings.value(kUsageLimitCalendarReminderSetting, false).toBool())
+        return;
+    const QString id = usageReminderId(providerKey, windowKey);
+    const QString resetKey = usageResetSetting(providerKey, windowKey);
+    if (resetMs <= 0 && !resetKey.isEmpty())
+        resetMs = settings.value(resetKey).toLongLong();
+    const QString notifiedKey = kUsageLimitReminderNotifiedPrefix + id;
+    if (resetMs > 0 && settings.value(notifiedKey).toLongLong() == resetMs)
+        return;
+    if (resetMs > 0)
+        settings.setValue(notifiedKey, resetMs);
+
+    const QString title =
+        QStringLiteral("ForkMesh — %1 usage is ready").arg(providerName);
+    const QString body = QStringLiteral(
+                             "Your %1 %2 usage window has reset. You can resume "
+                             "agent work.")
+                             .arg(providerName, windowName);
+    addNotification(title, body);
+    postNotification(title, body, false, QStringLiteral("appointment-soon"));
+}
+
 void MainWindow::markAgentLimitWindow(const QString &provider)
 {
     const bool claude = agentIsClaudeProvider(provider);
@@ -3891,6 +4124,28 @@ void MainWindow::applyCodexRateLimits(const QJsonObject &rateLimits)
                                   60 * 1000;
         if (resetMs > 0 && durationMs > 0)
             settings.setValue(anchorKey, resetMs - durationMs);
+        const QString windowKey = weekly ? QStringLiteral("weekly")
+                                         : QStringLiteral("5h");
+        const QString exhaustedKey =
+            usageExhaustedSetting(QStringLiteral("codex"), windowKey);
+        const qint64 knownReset = resetMs > 0
+                                      ? resetMs
+                                      : settings.value(resetKey).toLongLong();
+        if (used >= 99) {
+            settings.setValue(exhaustedKey, true);
+            scheduleUsageLimitReminder(QStringLiteral("codex"), windowKey,
+                                       QStringLiteral("Codex"),
+                                       weekly ? QStringLiteral("weekly")
+                                              : QStringLiteral("5-hour"),
+                                       knownReset);
+        } else if (used < 90 && settings.value(exhaustedKey, false).toBool()) {
+            settings.setValue(exhaustedKey, false);
+            notifyUsageLimitReady(QStringLiteral("codex"), windowKey,
+                                  QStringLiteral("Codex"),
+                                  weekly ? QStringLiteral("weekly")
+                                         : QStringLiteral("5-hour"),
+                                  knownReset);
+        }
         if (m_navCodexUsage) {
             const qint64 remaining = resetMs - now;
             static_cast<TokenUsageMiniChart *>(m_navCodexUsage)
@@ -3960,10 +4215,22 @@ void MainWindow::applyClaudeUsage(bool weekly, int percent)
     // email once when that happens.
     const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
                                         : kClaudeUsage5hExhaustedSetting;
+    const QString windowKey = weekly ? QStringLiteral("weekly")
+                                     : QStringLiteral("5h");
+    const QString windowName = weekly ? QStringLiteral("weekly")
+                                      : QStringLiteral("5-hour");
+    const QString resetKey = weekly ? kClaudeUsageWeekResetSetting
+                                    : kClaudeUsage5hResetSetting;
     if (pct >= 99) {
         settings.setValue(exhaustedKey, true);
+        scheduleUsageLimitReminder(QStringLiteral("claude"), windowKey,
+                                   QStringLiteral("Claude Code"), windowName,
+                                   settings.value(resetKey).toLongLong());
     } else if (pct < 90 && settings.value(exhaustedKey, false).toBool()) {
         settings.setValue(exhaustedKey, false);
+        notifyUsageLimitReady(QStringLiteral("claude"), windowKey,
+                              QStringLiteral("Claude Code"), windowName,
+                              settings.value(resetKey).toLongLong());
         maybeEmailCreditsRefilled(weekly);
     }
 }
@@ -3988,12 +4255,38 @@ void MainWindow::applyClaudeFableUsage(int percent)
     if (m_navTokenUsage)
         static_cast<TokenUsageMiniChart *>(m_navTokenUsage)
             ->setUsage(TokenUsageMiniChart::Fable, pct);
-    QSettings().setValue(kClaudeUsageFablePctSetting, pct);
+    QSettings settings;
+    settings.setValue(kClaudeUsageFablePctSetting, pct);
+    if (pct >= 99) {
+        settings.setValue(kClaudeUsageFableExhaustedSetting, true);
+        scheduleUsageLimitReminder(QStringLiteral("claude"),
+                                   QStringLiteral("fable"),
+                                   QStringLiteral("Claude Code"),
+                                   QStringLiteral("Fable weekly"),
+                                   settings.value(kClaudeUsageFableResetSetting)
+                                       .toLongLong());
+    } else if (pct < 90 &&
+               settings.value(kClaudeUsageFableExhaustedSetting, false).toBool()) {
+        settings.setValue(kClaudeUsageFableExhaustedSetting, false);
+        notifyUsageLimitReady(QStringLiteral("claude"),
+                              QStringLiteral("fable"),
+                              QStringLiteral("Claude Code"),
+                              QStringLiteral("Fable weekly"),
+                              settings.value(kClaudeUsageFableResetSetting)
+                                  .toLongLong());
+    }
 }
 
 void MainWindow::applyClaudeFableReset(qint64 resetMs)
 {
-    QSettings().setValue(kClaudeUsageFableResetSetting, resetMs);
+    QSettings settings;
+    settings.setValue(kClaudeUsageFableResetSetting, resetMs);
+    if (settings.value(kClaudeUsageFableExhaustedSetting, false).toBool()) {
+        scheduleUsageLimitReminder(QStringLiteral("claude"),
+                                   QStringLiteral("fable"),
+                                   QStringLiteral("Claude Code"),
+                                   QStringLiteral("Fable weekly"), resetMs);
+    }
     if (!m_navTokenUsage)
         return;
     const qint64 remaining = resetMs - QDateTime::currentMSecsSinceEpoch();
@@ -4010,9 +4303,20 @@ void MainWindow::flashUsageChart(QWidget *chart, bool ok)
 
 void MainWindow::applyClaudeReset(bool weekly, qint64 resetMs)
 {
-    QSettings().setValue(weekly ? kClaudeUsageWeekResetSetting
-                                : kClaudeUsage5hResetSetting,
-                         resetMs);
+    QSettings settings;
+    const QString resetKey = weekly ? kClaudeUsageWeekResetSetting
+                                    : kClaudeUsage5hResetSetting;
+    const QString exhaustedKey = weekly ? kClaudeUsageWeekExhaustedSetting
+                                        : kClaudeUsage5hExhaustedSetting;
+    settings.setValue(resetKey, resetMs);
+    if (settings.value(exhaustedKey, false).toBool()) {
+        scheduleUsageLimitReminder(
+            QStringLiteral("claude"),
+            weekly ? QStringLiteral("weekly") : QStringLiteral("5h"),
+            QStringLiteral("Claude Code"),
+            weekly ? QStringLiteral("weekly") : QStringLiteral("5-hour"),
+            resetMs);
+    }
     if (!m_navTokenUsage)
         return;
     const qint64 remaining = resetMs - QDateTime::currentMSecsSinceEpoch();
@@ -4257,9 +4561,9 @@ void MainWindow::refreshClaudeSpend()
     // first of the month (UTC) through the next midnight so today is included.
     const QDateTime now = QDateTime::currentDateTimeUtc();
     const QDateTime monthStart(QDate(now.date().year(), now.date().month(), 1),
-                               QTime(0, 0), QTimeZone(QTimeZone::UTC));
+                               QTime(0, 0), QTimeZone::utc());
     const QDateTime end(now.date().addDays(1), QTime(0, 0),
-                        QTimeZone(QTimeZone::UTC));
+                        QTimeZone::utc());
     const QString iso = QStringLiteral("yyyy-MM-ddTHH:mm:ssZ");
     const QString startStr = monthStart.toString(iso);
     const QString endStr = end.toString(iso);
@@ -5917,6 +6221,9 @@ AgentRunner::Config MainWindow::agentConfigForProvider(const QString &provider) 
     config.maxOutputTokens =
         qMax(256, QSettings().value(kAgentMaxOutputSetting, 2000).toInt());
     config.promptPreamble = agentPromptPreamble();
+    const QString ratchetGuidance = RepoStatsStore::agentGuidance(repoGitDir());
+    if (!ratchetGuidance.isEmpty())
+        config.promptPreamble += QStringLiteral("\n\n") + ratchetGuidance;
     config.mode = QSettings()
                       .value(kAgentModeSetting,
                              QSettings().value(kClaudeAutoModeSetting, true).toBool()
@@ -7058,6 +7365,44 @@ void MainWindow::scheduleAgentQueuePump()
         processAgentQueue();
         m_agentQuietResume = wasQuiet;
     });
+}
+
+void MainWindow::setAgentConcurrencyLimit(int limit)
+{
+    limit = qMax(kMinMaxRunningAgents, limit);
+    QSettings().setValue(kMaxRunningAgentsSetting, limit);
+    if (m_maxRunningAgentsEdit)
+        m_maxRunningAgentsEdit->setText(QString::number(limit));
+    refreshAgentQueueControls();
+    // Raising the cap should start waiting sessions right away rather than at
+    // the next completion.
+    scheduleAgentQueuePump();
+}
+
+void MainWindow::refreshAgentQueueControls()
+{
+    const int limit = maxRunningAgents();
+    int queued = 0;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (!session.merged && !isExternalSession(session.id) &&
+            session.status == AgentStatus::Queued) {
+            ++queued;
+        }
+    }
+    if (m_agentQueueStatusLabel) {
+        m_agentQueueStatusLabel->setText(
+            QStringLiteral("Queue: %1 / %2").arg(queued).arg(limit));
+        m_agentQueueStatusLabel->setToolTip(
+            QStringLiteral("%1 agent%2 queued; up to %3 run at once. Use − / + "
+                           "to adjust the concurrent-agent limit.")
+                .arg(queued)
+                .arg(queued == 1 ? QString() : QStringLiteral("s"))
+                .arg(limit));
+    }
+    if (m_agentQueueLimitDecreaseButton)
+        m_agentQueueLimitDecreaseButton->setEnabled(limit > kMinMaxRunningAgents);
+    if (m_maxRunningAgentsEdit && !m_maxRunningAgentsEdit->hasFocus())
+        m_maxRunningAgentsEdit->setText(QString::number(limit));
 }
 
 void MainWindow::processAgentQueue()
@@ -9893,7 +10238,7 @@ QString MainWindow::sessionBaseBranch(int sessionId)
 // Resolve what a session's diff is measured *from*. The Files-changed tab must
 // show exactly what the branch link's destination shows — the Worktrees/Branches
 // detail view diffs the worktree against the *live* base branch tip (`git diff
-// <base>`, see showWorktreeDiff). So return the base branch name and let `git
+// <base>`, see updateWorktreeSelection). So return the base branch name and let `git
 // diff <base>` resolve its current tip too. Diffing against merge-base(base, HEAD)
 // instead made this page disagree with that view every time the base branch moved
 // on after the fork — "it always shows something different" (adhoc #28). Diffing
@@ -10063,7 +10408,7 @@ void MainWindow::renderAgentDiff(int sessionId, const AgentDiffProbe &probe)
 
 // Enable the per-session worktree actions (merge / update / delete) only for a
 // real feature-branch worktree that exists on disk — never the default branch or
-// the primary checkout. Mirrors showWorktreeDiff's button gating.
+// the primary checkout. Mirrors updateWorktreeSelection's button gating.
 void MainWindow::updateAgentFilesTabState(int sessionId)
 {
     AgentSession *s = findAgentSession(sessionId);
@@ -10759,6 +11104,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
 
 void MainWindow::updateAgentActionState()
 {
+    refreshAgentQueueControls();
     const bool selected = m_selectedAgentSessionId > 0;
     // External (watch-only) rows carry negative synthetic ids, so `selected` is
     // false for them — but Delete still applies: it kills the real CLI process

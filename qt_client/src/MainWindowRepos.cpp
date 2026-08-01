@@ -4127,7 +4127,12 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
             QStringLiteral("dependency-scan"));
     QString contributionSnapshotKey;
     QJsonObject contributionLogoPayload;
-    if (repo.isPrivate) {
+    // Headless fleet mirrors publish availability/integrity state, not a
+    // contributor attribution snapshot. Rebuilding the full contribution
+    // graph on a small unattended node can consume all RAM and delay the
+    // catalog write that makes the mirror eligible for routing. Desktop source
+    // owners still prepare and sign the complete contribution projection.
+    if (repo.isPrivate || m_headless) {
         const QString previousScanKey =
             m_catalogContributionScanKey.take(publishKey);
         const QString previousSnapshotKey =
@@ -4589,6 +4594,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         owner, QDateTime::currentMSecsSinceEpoch());
     QNetworkReply *reply =
         m_networkAccess->post(request, QJsonDocument(metadata).toJson(QJsonDocument::Compact));
+    qInfo().noquote()
+        << "Catalog publish request:" << owner << name
+        << stateHash.left(12) << repo.lastSyncMs;
     logSystem("Catalog: publishing " + repo.owner + "/" + repo.name + " to " +
               request.url().toString() + ".");
 
@@ -4599,6 +4607,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 const int status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 const QNetworkReply::NetworkError error = reply->error();
+                qInfo().noquote()
+                    << "Catalog publish response:" << publishKey << status
+                    << int(error);
                 const int priorFailures =
                     m_catalogPublishConsecutiveFailures.value(publishKey, 0);
                 const qint64 retryDelayMs =
@@ -6157,6 +6168,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     // live temporary mirrorPath and refreshes from the upstream as usual.
     const bool reopeningSealedArchive =
         PublicMirrorRuntime::isArchiveId(existingArchiveId) &&
+        !m_publicMirrorMaterializations.contains(existingArchiveId) &&
         (legacyMirrorPath.trimmed().isEmpty() ||
          !QDir(legacyMirrorPath).exists());
     if (reopeningSealedArchive)
@@ -6196,9 +6208,14 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     // Resolve the upstream URL here; the fetch/fast-forward runs on the worker
     // thread just before sealing. Owned repos and desktop working copies never
     // qualify: their local state IS the source of truth.
+    const bool managedCheckoutSource =
+        m_headless && serviceManagedCheckout(repo.localPath);
+    qInfo().noquote()
+        << "Public mirror sync mode:"
+        << (managedCheckoutSource ? "managed-origin" : "ordinary")
+        << (source.isEmpty() ? "archive-reopen" : "source-clone");
     QString upstreamUrl;
-    if (m_headless && source == repo.localPath.trimmed() &&
-        serviceManagedCheckout(repo.localPath)) {
+    if (managedCheckoutSource && !source.isEmpty()) {
         const QUrl upstream(repo.cloneUrl.trimmed());
         if (upstream.isValid() && !upstream.host().isEmpty() &&
             upstream.host().compare(catalogApiUrl().host(),
@@ -6212,7 +6229,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     const QString owner = repo.owner;
     const QString name = repo.name;
     QThread *worker = QThread::create(
-        [result, source, upstreamUrl, archiveRoot, vaultPath,
+        [result, source, upstreamUrl, managedCheckoutSource, archiveRoot, vaultPath,
          mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
          legacyMirrorPath, managedMirrorRoot]() mutable {
             if (!upstreamUrl.isEmpty()) {
@@ -6240,10 +6257,21 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                 }
             } else {
                 PublicMirrorRuntime::SyncResult sync =
-                    PublicMirrorRuntime::syncSource(
-                        source, {}, archiveRoot, vaultPath,
-                        mutableVaultSecret, existingArchiveId,
-                        PublicMirrorRuntime::Tools(), &result->error);
+                    managedCheckoutSource
+                        ? PublicMirrorRuntime::syncManagedCheckout(
+                              source, archiveRoot, vaultPath,
+                              mutableVaultSecret, existingArchiveId,
+                              PublicMirrorRuntime::Tools(), &result->error)
+                        : PublicMirrorRuntime::syncSource(
+                              source, {}, archiveRoot, vaultPath,
+                              mutableVaultSecret, existingArchiveId,
+                              PublicMirrorRuntime::Tools(), &result->error);
+                qInfo().noquote()
+                    << "Public mirror sync result:"
+                    << (managedCheckoutSource ? "managed-origin" : "ordinary")
+                    << (sync.metadata.isValid()
+                            ? sync.metadata.expectedRefsSha256.left(12)
+                            : QStringLiteral("failed"));
                 result->metadata = sync.metadata;
                 result->created = sync.created;
                 if (sync.materialization) {
@@ -6312,6 +6340,11 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                 !result->materialization ||
                 !result->materialization->isValid()) {
                 refreshRepositoryList();
+                qWarning().noquote()
+                    << "Public mirror encrypted sync failed:"
+                    << (result->error.isEmpty()
+                            ? QStringLiteral("unknown safe failure")
+                            : result->error);
                 logSystem(QStringLiteral(
                               "Public mirror: encrypted sync failed for %1/%2. "
                               "No new durable plaintext mirror was created.")
