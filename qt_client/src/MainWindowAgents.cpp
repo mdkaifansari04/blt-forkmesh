@@ -6009,6 +6009,30 @@ void MainWindow::showAgentSession(int sessionId)
                     setAgentLogText(sessionId, scan.log);
             });
     }
+    // Feed the transcript's "session started" divider the run context the CLI
+    // itself never reports — branch, permission mode, reasoning strength (adhoc
+    // #9). Set before any rebuild below so the divider renders with it; external
+    // sessions keep whatever their own init event says.
+    if (m_agentTranscript) {
+        QString ctxMode, ctxStrength;
+        // Only the CLI providers run under a permission mode; the API ones have
+        // no such notion (the same rule the detail meta table uses).
+        if (!external && (session->provider == QLatin1String("claude-code") ||
+                          agentIsCodexProvider(session->provider))) {
+            ctxMode = session->mode;
+            if (ctxMode.isEmpty()) // pre-adhoc-#38 sessions: the resume default
+                ctxMode = QSettings()
+                              .value(kAgentModeSetting,
+                                     QSettings().value(kClaudeAutoModeSetting, true).toBool()
+                                         ? kClaudeAutoModeLabel
+                                         : kAgentAskModeLabel)
+                              .toString();
+        }
+        if (!external)
+            ctxStrength = session->strength.isEmpty() ? composerAgentStrength()
+                                                      : session->strength;
+        m_agentTranscript->setSessionContext(session->branchName, ctxMode, ctxStrength);
+    }
     if (external) {
         // Skip the full tail re-read/rebuild when this session is already on
         // screen and its file hasn't grown — reloadAgents() re-shows the open
