@@ -5249,13 +5249,36 @@ inline QStringList splitIssueFieldList(const QString &text)
     return values;
 }
 
+// Every raster icon below is drawn at the app's device-pixel-ratio and tagged
+// with it, so HiDPI screens composite the pixmap 1:1 instead of upscaling a
+// logical-size raster into a pixelated blur (adhoc #139).
+inline qreal iconDevicePixelRatio()
+{
+    const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
+    return dpr > 0.0 ? dpr : 1.0;
+}
+
+// A w×h-logical-pixel transparent pixmap backed by a DPR-scaled raster;
+// QPainter coordinates on it stay logical.
+inline QPixmap crispIconPixmap(int w, int h, qreal dpr)
+{
+    QPixmap pm(qMax(1, qRound(w * dpr)), qMax(1, qRound(h * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    return pm;
+}
+
+inline QPixmap crispIconPixmap(int size, qreal dpr)
+{
+    return crispIconPixmap(size, size, dpr);
+}
+
 // A small platform emoji for a node's operating system.
 // Crisp vector icons for the server-rail footer (glyph fonts render these
 // inconsistently across platforms, so we draw them).
 inline QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
 {
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     p.translate(size / 2.0, size / 2.0);
@@ -5283,8 +5306,7 @@ inline QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
 // action is queued behind other work rather than actively running.
 inline QPixmap hourglassPixmap(const QColor &color, double angleDeg, int size)
 {
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     p.translate(size / 2.0, size / 2.0);
@@ -5809,16 +5831,20 @@ inline QPixmap roundedAvatar(const QByteArray &png, int side,
     QPixmap src;
     if (png.isEmpty() || !src.loadFromData(png))
         return QPixmap();
-    QPixmap out(side, side);
-    out.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap out = crispIconPixmap(side, dpr);
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
     QPainterPath clip;
     const qreal radius = side * radiusRatio;
     clip.addRoundedRect(0, 0, side, side, radius, radius);
     p.setClipPath(clip);
-    p.drawPixmap(0, 0, src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                  Qt::SmoothTransformation));
+    QPixmap scaled = src.scaled(out.width(), out.height(),
+                                Qt::KeepAspectRatioByExpanding,
+                                Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    p.drawPixmap(0, 0, scaled);
     return out;
 }
 
@@ -5840,8 +5866,7 @@ inline QIcon osBadgeIcon(const QString &platform, bool online, int size)
     const QColor online_green("#2ea043");
     auto col = [&](const QColor &) { return online ? online_green : grey; };
 
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter g(&pm);
     g.setRenderHint(QPainter::Antialiasing);
     g.setPen(Qt::NoPen);
@@ -5914,8 +5939,7 @@ inline void saveProfileName(const QString &name)
 
 inline QIcon statusDotIcon(bool online)
 {
-    QPixmap pixmap(12, 12);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(12, iconDevicePixelRatio());
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setBrush(online ? QColor("#2ea043") : QColor("#6e7681"));
@@ -6949,15 +6973,16 @@ inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int
     // finished pixmaps keyed on the inputs so each (name,color,size) renders once.
     // UI-thread only, so a plain static map needs no locking.
     static QHash<QString, QPixmap> cache;
+    const qreal dpr = iconDevicePixelRatio();
     const QString key = name + QLatin1Char('|') +
                         QString::number(color.rgba(), 16) + QLatin1Char('|') +
-                        QString::number(size);
+                        QString::number(size) + QLatin1Char('|') +
+                        QString::number(dpr);
     const auto cached = cache.constFind(key);
     if (cached != cache.constEnd())
         return cached.value();
 
-    QPixmap pixmap(size, size);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(size, dpr);
 
     QSvgRenderer renderer(QStringLiteral(":/icons/octicons/%1.svg").arg(name));
     if (!renderer.isValid())
@@ -6967,7 +6992,7 @@ inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int
     painter.setRenderHint(QPainter::Antialiasing);
     renderer.render(&painter, QRectF(0, 0, size, size));
     painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    painter.fillRect(pixmap.rect(), color);
+    painter.fillRect(QRect(0, 0, size, size), color);
     painter.end();
     cache.insert(key, pixmap);
     return pixmap;
@@ -6997,8 +7022,7 @@ inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &col
                                    int size, qreal angleDeg)
 {
     const QPixmap base = tintedOcticonPixmap(name, color, size);
-    QPixmap out(size, size);
-    out.fill(Qt::transparent);
+    QPixmap out = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter painter(&out);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     painter.translate(size / 2.0, size / 2.0);
@@ -7017,8 +7041,7 @@ inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &col
 inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleDeg,
                                      bool spinning)
 {
-    QPixmap out(size, size);
-    out.fill(Qt::transparent);
+    QPixmap out = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing, true);
     const QPointF c(size / 2.0, size / 2.0);
@@ -9354,8 +9377,8 @@ inline QString faviconCachePath(const QString &host)
 // rects rather than circles.
 inline QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
 {
-    QPixmap out(side, side);
-    out.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap out = crispIconPixmap(side, dpr);
     if (src.isNull())
         return out;
     QPainter p(&out);
@@ -9364,9 +9387,13 @@ inline QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
     QPainterPath path;
     path.addRoundedRect(QRectF(0, 0, side, side), radius, radius);
     p.setClipPath(path);
-    const QPixmap scaled = src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                      Qt::SmoothTransformation);
-    p.drawPixmap((side - scaled.width()) / 2, (side - scaled.height()) / 2, scaled);
+    QPixmap scaled = src.scaled(out.width(), out.height(),
+                                Qt::KeepAspectRatioByExpanding,
+                                Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    const QSizeF ls = scaled.deviceIndependentSize();
+    p.drawPixmap(QPointF((side - ls.width()) / 2.0, (side - ls.height()) / 2.0),
+                 scaled);
     return out;
 }
 
@@ -9375,8 +9402,8 @@ inline QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
 // full-width avatar header at the top of the node profile panel.
 inline QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radius)
 {
-    QPixmap out(w, h);
-    out.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap out = crispIconPixmap(w, h, dpr);
     if (src.isNull() || w <= 0 || h <= 0)
         return out;
     QPainter p(&out);
@@ -9385,9 +9412,12 @@ inline QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radiu
     QPainterPath path;
     path.addRoundedRect(QRectF(0, 0, w, h), radius, radius);
     p.setClipPath(path);
-    const QPixmap scaled = src.scaled(w, h, Qt::KeepAspectRatioByExpanding,
-                                      Qt::SmoothTransformation);
-    p.drawPixmap((w - scaled.width()) / 2, (h - scaled.height()) / 2, scaled);
+    QPixmap scaled = src.scaled(out.width(), out.height(),
+                                Qt::KeepAspectRatioByExpanding,
+                                Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    const QSizeF ls = scaled.deviceIndependentSize();
+    p.drawPixmap(QPointF((w - ls.width()) / 2.0, (h - ls.height()) / 2.0), scaled);
     return out;
 }
 
@@ -9400,8 +9430,7 @@ inline QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radiu
 inline QPixmap languageBarPixmap(const QList<QPair<QString, qint64>> &langs,
                           qint64 total, int shown, int w, int h)
 {
-    QPixmap out(w, h);
-    out.fill(Qt::transparent);
+    QPixmap out = crispIconPixmap(w, h, iconDevicePixelRatio());
     if (total <= 0 || shown <= 0 || w <= 0 || h <= 0)
         return out;
     QPainter p(&out);
@@ -9421,24 +9450,22 @@ inline QPixmap languageBarPixmap(const QList<QPair<QString, qint64>> &langs,
     return out;
 }
 
-inline QPixmap letterFavicon(const QString &host)
+inline QPixmap letterFavicon(const QString &host, int side = 36)
 {
-    constexpr int side = 36;
-    QPixmap pixmap(side, side);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(side, iconDevicePixelRatio());
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     const uint hash = qHash(host);
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(Theme::kSenderPalette[hash % Theme::kSenderPaletteSize]));
-    painter.drawRoundedRect(0, 0, side, side, 9, 9);
+    painter.drawRoundedRect(QRectF(0, 0, side, side), side * 0.25, side * 0.25);
     const QChar letter = host.isEmpty() ? QChar('?') : host.at(0).toUpper();
     QFont font = painter.font();
-    font.setPixelSize(18);
+    font.setPixelSize(qMax(8, qRound(side * 0.5)));
     font.setBold(true);
     painter.setFont(font);
     painter.setPen(QColor("#0f172a"));
-    painter.drawText(pixmap.rect(), Qt::AlignCenter, QString(letter));
+    painter.drawText(QRect(0, 0, side, side), Qt::AlignCenter, QString(letter));
     return pixmap;
 }
 
@@ -9467,8 +9494,7 @@ inline QPixmap builtinFavicon(const QString &host, int side = 36)
     const QString key = builtinFaviconKey(host);
     if (key.isEmpty() || side <= 0)
         return {};
-    QPixmap pixmap(side, side);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(side, iconDevicePixelRatio());
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(Qt::NoPen);
