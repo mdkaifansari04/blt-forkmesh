@@ -41198,27 +41198,47 @@ async def _https_mirror_candidates(env, context, preferred_region, sticky=""):
     cursor_row = await d1_first(
         env, "SELECT cursor FROM edge_route_cursor WHERE repo_bi=?",
         context["repoBi"])
-    selected = https_routing.select_endpoints(
-        records,
-        int(Date.now()),
-        preferred_region=preferred_region,
-        cursor=int((cursor_row or {}).get("cursor") or 0),
-    )
+    cursor = int((cursor_row or {}).get("cursor") or 0)
     current_nodes = {
         str(node or "").lower()
         for node in context.get("currentNodes", set())
     }
-    if current_nodes:
-        selected.sort(
-            key=lambda item: (
-                0 if str(item.get("node") or "").lower()
-                in current_nodes else 1
-            )
-        )
+    # Select current-generation mirrors before applying the bounded failover
+    # limit. Selecting from the whole historical set first could truncate every
+    # current mirror and then merely sort four stale candidates.
+    current_records = [
+        record for record in records
+        if str(record.get("node") or "").lower() in current_nodes
+    ]
+    historical_records = [
+        record for record in records
+        if str(record.get("node") or "").lower() not in current_nodes
+    ]
+    selected = https_routing.select_endpoints(
+        current_records, int(Date.now()),
+        preferred_region=preferred_region, cursor=cursor)
+    selected.extend(https_routing.select_endpoints(
+        historical_records, int(Date.now()),
+        preferred_region=preferred_region, cursor=cursor))
+    selected = selected[:https_routing.MAX_FAILOVER_ATTEMPTS]
     sticky = str(sticky or "").lower()
     if sticky:
         selected.sort(key=lambda item: 0 if item["node"] == sticky else 1)
     return selected
+
+
+async def _https_mirror_mark_transient_failure(env, node):
+    """Remove a transport-failing endpoint until the health cron rechecks it."""
+    try:
+        await d1_run(
+            env,
+            """UPDATE mirror_https_endpoints
+                  SET healthy=0,checked_at=0,updated_at=?
+                WHERE node_name=?""",
+            int(Date.now()), node,
+        )
+    except Exception:
+        pass
 
 
 async def _https_mirror_clone_pin(env, context):
@@ -41396,6 +41416,8 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
         valid = False
         operations = []
     if not valid:
+        if status == 0 or status in HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES:
+            await _https_mirror_mark_transient_failure(env, endpoint["node"])
         return False
     if len(_HTTPS_MIRROR_REPO_PROOF_MEMO) >= HTTPS_MIRROR_REPO_PROOF_MEMO_MAX:
         _HTTPS_MIRROR_REPO_PROOF_MEMO.clear()
@@ -42294,6 +42316,9 @@ async def _https_mirror_proxy(
                         int(Date.now()), endpoint["node"])
                 except Exception:
                     pass
+            elif upstream is None or status in HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES:
+                await _https_mirror_mark_transient_failure(
+                    env, endpoint["node"])
             continue
         raw_headers = {}
         for name in (

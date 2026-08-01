@@ -37,10 +37,8 @@ def test_every_page_document_is_built_and_deterministic():
 
 
 def test_client_bundles_carry_content_hash_cache_busters():
-    # Every built document must reference dashboard.js / dashboard-chat.js with a
-    # per-build content-hash ?v= so a new deploy is never served against a stale,
-    # week-old cached bundle. The hash must match the bundle's actual content, and
-    # the old never-changing ?v=public-profiles query must be gone.
+    # Every page gets the core bundle. The substantial chat bundle is loaded
+    # only by the page that renders chat; both use content-hash cache busters.
     versions = dashboard_shell.asset_versions(
         lambda rel: (PUBLIC / rel).read_text(encoding="utf-8"),
         {"dashboard.js": assembled_dashboard_js()})
@@ -48,7 +46,12 @@ def test_client_bundles_carry_content_hash_cache_busters():
     for meta in dashboard_shell.PAGES.values():
         html = (PUBLIC / meta["asset"]).read_text(encoding="utf-8")
         assert "?v=public-profiles" not in html, meta["asset"]
-        for name in ("dashboard.js", "dashboard-chat.js"):
+        expected = ["dashboard.js"]
+        if meta["asset"] == dashboard_shell.PAGES["chat"]["asset"]:
+            expected.append("dashboard-chat.js")
+        else:
+            assert 'src="/dashboard-chat.js' not in html, meta["asset"]
+        for name in expected:
             m = re.search(r'src="/%s\?v=([0-9a-f]{6,})"' % re.escape(name), html)
             assert m is not None, (meta["asset"], name)
             assert m.group(1) == versions[name], (meta["asset"], name)

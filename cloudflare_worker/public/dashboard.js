@@ -6568,6 +6568,14 @@
     navigateHistory(tab === "code"
       ? (state.repoCodeUrl || repoPathUrl(state.selectedRepo))
       : `${repoPathUrl(state.selectedRepo)}/${tab}`);
+    if (tab === "code") {
+      if (!state.loadedRepoTabs) state.loadedRepoTabs = {};
+      if (!state.loadedRepoTabs.code) {
+        state.loadedRepoTabs.code = true;
+        loadRepositoryTree(state.selectedRepo, "");
+      }
+      scheduleRepoAboutRail(state.selectedRepo);
+    }
     // Mirror health loads once with the repository summary, then refreshes
     // only when its own tab is actually opened (plus the bounded visible-tab
     // fallback and coalesced socket signal below).
@@ -11075,10 +11083,21 @@
       }
       const logo = $("[data-repo-social-logo]");
       if (logo) {
-        const logoUrl = await loadNativeRepositoryLogo(
+        const loadedLogo = await loadNativeRepositoryLogo(
           nativeRepositoryLogoEndpoint(repo),
         );
+        const logoUrl = String(loadedLogo?.dataUrl || "");
+        const fallbackUrl = String(loadedLogo?.fallbackDataUrl || "");
         if (logoUrl) {
+          logo.decoding = "async";
+          logo.fetchPriority = "low";
+          logo.onerror = () => {
+            if (fallbackUrl && logo.src !== new URL(fallbackUrl, location.href).href) {
+              logo.src = fallbackUrl;
+            } else {
+              logo.classList.add("hidden");
+            }
+          };
           logo.src = logoUrl;
           logo.classList.remove("hidden");
         } else {
@@ -11098,7 +11117,6 @@
       // .forkmesh/info.json (loadRepoAboutInfo) overrides it when the live
       // mirror is reachable.
       if (body.website) applyRepoAboutWebsite(body.website);
-      loadRepoLogoSuggestions(repo);
     } catch (_) { /* fediverse card is an adornment, never an error */ }
   }
 
@@ -11664,6 +11682,27 @@
     loadRepoAboutInfo(repo);
     loadRepoAboutRelease(repo);
     loadRepoAboutInsights(repo);
+  }
+
+  function scheduleRepoAboutRail(repo) {
+    if (!repo || state.repoAboutLoaded) return;
+    state.repoAboutLoaded = true;
+    const load = () => {
+      if (
+        state.activeRepoTab !== "code"
+        || !state.selectedRepo
+        || !repoMatchesKey(state.selectedRepo, repoKey(repo))
+      ) {
+        state.repoAboutLoaded = false;
+        return;
+      }
+      loadRepoAboutRail(repo);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(load, { timeout: 1200 });
+    } else {
+      window.setTimeout(load, 0);
+    }
   }
 
   // --- Owner-only "Agents" tab (adhoc #182) -----------------------------
@@ -13541,7 +13580,7 @@
     // repo/branch switch if that tab is already active): fetching hidden live
     // data for every repo open fires Worker/host reads for tabs nobody opened.
     // The tab badges stay filled meanwhile from the root tree's bundled counts.
-    state.loadedRepoTabs = {};
+    state.loadedRepoTabs = state.loadedRepoTabs || {};
     const active = state.activeRepoTab || "code";
     if (active === "commits") {
       state.loadedRepoTabs.commits = true;
@@ -13873,6 +13912,7 @@
     // blob up front is what flooded the host with requests and tripped the rate
     // limit after a few refreshes; this map remembers which tabs have loaded.
     state.loadedRepoTabs = {};
+    state.repoAboutLoaded = false;
     // Show the clean, shareable /owner/name URL in the address bar instead of
     // the /dashboard/owner/name... path that 404.html bounces refreshed repo
     // links (including /owner/name/issues etc.) to. Carry over whatever tab or
@@ -14137,7 +14177,7 @@
           <aside data-repo-about data-repo-about-rail class="min-w-0 rounded-lg border border-border bg-background p-4">
             ${repo.isPrivate ? "" : `
             <div data-repo-social-badge class="-mx-4 -mt-4 mb-4 overflow-hidden rounded-t-lg border-b border-border">
-              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center" style="background-image:url('/assets/fediverse-banner.png')"></div>
+              <div data-repo-social-banner class="h-20 w-full bg-secondary bg-cover bg-center"></div>
               <div class="flex items-end gap-3 px-4 pb-3">
                 <img data-repo-social-logo alt="Repository logo" class="-mt-7 hidden h-14 w-14 shrink-0 rounded-xl border-2 border-background bg-background object-cover shadow" />
                 <div class="min-w-0 pb-0.5">
@@ -14250,20 +14290,23 @@
     const initialTab = repoTabRoutesFor(repo).includes(routeKind) ? routeKind : "code";
     setRepoTab(initialTab);
     window.lucide?.createIcons();
-    // When the URL restored a feature tab (or a record detail), the tree/README
-    // load is only a warm-up for a later click on Code — run it in background
-    // mode so it can't flip the visible tab or rewrite the restored URL.
-    loadRepositoryTree(repo, routeKind === "tree" ? routePath : "", { background: initialTab !== "code" });
+    // Only fetch code when Code is visible. Warming the tree/README behind an
+    // Issues or Pulls deep link multiplied cold-cache mirror traffic and made
+    // the requested panel compete with data the visitor could not see.
+    if (initialTab === "code") {
+      state.loadedRepoTabs.code = true;
+      if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
+      else loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");
+      scheduleRepoAboutRail(repo);
+    }
     // A deep link into a subfolder (or a blob) loads a subpath/blob tree that
     // carries no served counts, so the tab badges would stay on the stale
     // catalog seed (e.g. Issues showing 7 while the open/ folder holds 11).
     // Refresh them from the mirror's root counts in that case; the root code
     // view and the feature-tab routes already fetch the root tree themselves.
     if ((routeKind === "tree" || routeKind === "blob") && routePath) refreshServedCounts(repo);
-    if (routeKind === "blob" && routePath) loadRepositoryBlob(repo, routePath);
     loadRepoFeaturePanels(repo, recordRoute);
     loadRepoPendingCounts(repo);
-    loadRepoAboutRail(repo);
     loadRepoStarState(repo, $("[data-repo-action-star]"));
     consumeWorkshopAgentDeepLink(repo, workshopDeepLink);
   }

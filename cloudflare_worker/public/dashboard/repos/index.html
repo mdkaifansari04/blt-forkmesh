@@ -2,7 +2,7 @@
 <html lang="en" data-dashboard-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <script src="/posthog.js"></script>
+    <script src="/posthog.js" defer></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Repositories - ForkMesh</title>
     <meta name="description" content="Browse repositories mirrored by ForkMesh desktop nodes and open them live from their hosts." />
@@ -63,7 +63,7 @@
         },
       };
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
     <style>
       @font-face {
         font-family: "ForkMesh Dashboard Mono";
@@ -782,8 +782,8 @@
         background-clip: padding-box;
       }
     </style>
-    <script src="/dashboard.js?v=12ffd289347d" defer></script>
-    <script src="/dashboard-chat.js?v=0e8a0f7e3b4b" defer></script>
+    <script src="/dashboard.js?v=a6d81fb7524f" defer></script>
+
   </head>
   <body class="bg-background text-foreground" data-page="repos">
     <div data-dashboard-root data-dashboard-section="repos" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">
@@ -800,7 +800,7 @@
         </button>
 
         <a data-dashboard-logo class="brand flex items-center gap-2 shrink-0" href="/dashboard" aria-label="Refresh ForkMesh Dashboard">
-          <img class="brand-mark h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+          <img class="brand-mark h-8 w-8 object-contain" src="/assets/forkmesh-mark.svg" alt="" aria-hidden="true" />
           <span
             data-app-version
             class="hidden rounded-full border border-border px-1.5 py-0.5 font-mono text-[10px] leading-none text-muted-foreground"
@@ -1011,7 +1011,7 @@
       <aside id="dashboardSidebar" data-dashboard-sidebar aria-label="Dashboard navigation" class="flex h-full flex-col overflow-y-auto border-r border-border bg-[rgb(var(--dashboard-sidebar-rgb))]">
         <div class="flex items-center justify-between border-b border-border px-4 py-4">
           <a data-dashboard-logo class="flex items-center gap-2 text-sm font-semibold text-foreground" href="/dashboard" aria-label="Refresh ForkMesh Dashboard">
-            <img class="h-8 w-8 object-contain" src="/assets/logo.png" alt="" aria-hidden="true" />
+            <img class="h-8 w-8 object-contain" src="/assets/forkmesh-mark.svg" alt="" aria-hidden="true" />
             <span data-sidebar-user-name>ForkMesh</span>
           </a>
           <button data-mobile-drawer-close type="button" aria-label="Close dashboard menu" class="inline-flex items-center justify-center rounded-md p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors">

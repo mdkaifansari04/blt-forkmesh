@@ -82,7 +82,7 @@ def test_dashboard_exposes_live_hydration_targets():
     dashboard = assembled_dashboard()
 
     assert 'src="/dashboard.js?v=' in dashboard
-    assert 'src="/dashboard-chat.js?v=' in dashboard
+    assert dashboard.count('src="/dashboard-chat.js?v=') == 1
     for marker in (
         "data-dashboard-profile-name",
         "data-sidebar-user-name",
@@ -2073,7 +2073,7 @@ def test_direct_gateway_streams_raw_repository_blobs_without_json_base64_cap():
 
 
 def test_dashboard_network_chat_uses_real_room_integration_without_mock_messages():
-    dashboard = _read(PUBLIC / "dashboard" / "index.html")
+    dashboard = _read(PUBLIC / "dashboard" / "chat" / "index.html")
     chat_js = _read(PUBLIC / "dashboard-chat.js")
     visible = _strip_html_comments(dashboard)
 

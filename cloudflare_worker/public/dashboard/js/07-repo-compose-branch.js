@@ -1218,7 +1218,7 @@
     // repo/branch switch if that tab is already active): fetching hidden live
     // data for every repo open fires Worker/host reads for tabs nobody opened.
     // The tab badges stay filled meanwhile from the root tree's bundled counts.
-    state.loadedRepoTabs = {};
+    state.loadedRepoTabs = state.loadedRepoTabs || {};
     const active = state.activeRepoTab || "code";
     if (active === "commits") {
       state.loadedRepoTabs.commits = true;

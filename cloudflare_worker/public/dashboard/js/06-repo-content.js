@@ -3651,10 +3651,21 @@
       }
       const logo = $("[data-repo-social-logo]");
       if (logo) {
-        const logoUrl = await loadNativeRepositoryLogo(
+        const loadedLogo = await loadNativeRepositoryLogo(
           nativeRepositoryLogoEndpoint(repo),
         );
+        const logoUrl = String(loadedLogo?.dataUrl || "");
+        const fallbackUrl = String(loadedLogo?.fallbackDataUrl || "");
         if (logoUrl) {
+          logo.decoding = "async";
+          logo.fetchPriority = "low";
+          logo.onerror = () => {
+            if (fallbackUrl && logo.src !== new URL(fallbackUrl, location.href).href) {
+              logo.src = fallbackUrl;
+            } else {
+              logo.classList.add("hidden");
+            }
+          };
           logo.src = logoUrl;
           logo.classList.remove("hidden");
         } else {
@@ -3674,7 +3685,6 @@
       // .forkmesh/info.json (loadRepoAboutInfo) overrides it when the live
       // mirror is reachable.
       if (body.website) applyRepoAboutWebsite(body.website);
-      loadRepoLogoSuggestions(repo);
     } catch (_) { /* fediverse card is an adornment, never an error */ }
   }
 
@@ -4240,6 +4250,27 @@
     loadRepoAboutInfo(repo);
     loadRepoAboutRelease(repo);
     loadRepoAboutInsights(repo);
+  }
+
+  function scheduleRepoAboutRail(repo) {
+    if (!repo || state.repoAboutLoaded) return;
+    state.repoAboutLoaded = true;
+    const load = () => {
+      if (
+        state.activeRepoTab !== "code"
+        || !state.selectedRepo
+        || !repoMatchesKey(state.selectedRepo, repoKey(repo))
+      ) {
+        state.repoAboutLoaded = false;
+        return;
+      }
+      loadRepoAboutRail(repo);
+    };
+    if (typeof window.requestIdleCallback === "function") {
+      window.requestIdleCallback(load, { timeout: 1200 });
+    } else {
+      window.setTimeout(load, 0);
+    }
   }
 
   // --- Owner-only "Agents" tab (adhoc #182) -----------------------------

@@ -2,7 +2,7 @@
 <html lang="en" data-dashboard-theme="dark">
   <head>
     <meta charset="UTF-8" />
-    <script src="/posthog.js"></script>
+    <script src="/posthog.js" defer></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title><!--#page title--></title>
     <meta name="description" content="<!--#page description-->" />
@@ -63,7 +63,7 @@
         },
       };
     </script>
-    <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lucide@0.468.0/dist/umd/lucide.min.js" defer></script>
     <style>
       @font-face {
         font-family: "ForkMesh Dashboard Mono";
@@ -783,7 +783,7 @@
       }
     </style>
     <script src="/dashboard.js" defer></script>
-    <script src="/dashboard-chat.js" defer></script>
+<!--#page chatscript-->
   </head>
   <body class="bg-background text-foreground" data-page="<!--#page id-->">
     <div data-dashboard-root data-dashboard-section="<!--#page section-->" class="flex h-screen flex-col overflow-hidden bg-background text-foreground font-sans">

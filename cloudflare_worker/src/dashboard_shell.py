@@ -291,6 +291,10 @@ def compose_page_from_reader(read, page_id):
         "title": meta["title"],
         "description": meta["description"],
         "section": meta["section"],
+        "chatscript": (
+            '<script src="/dashboard-chat.js" defer></script>'
+            if page_id == "chat" else ""
+        ),
     }
     shell = PAGE_TOKEN_RE.sub(lambda m: tokens[m.group(1)], read("dashboard/shell.html"))
     partials = {name: read(partial_path(name)) for name in included_partials(shell)}

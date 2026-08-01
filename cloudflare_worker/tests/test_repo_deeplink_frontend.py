@@ -95,15 +95,17 @@ def test_popstate_restores_issue_detail_and_list():
     )
 
 
-def test_boot_tree_preload_cannot_steal_the_restored_tab():
-    # renderRepoDetail warms the Code tab's tree on every repo open. When the
-    # URL restored a feature tab (adhoc #61: a refresh on /owner/repo/issues
-    # snapped back to the main repo page), that warm-up must run in background
-    # mode so it neither flips the visible tab nor rewrites the address bar.
-    assert (
-        'loadRepositoryTree(repo, routeKind === "tree" ? routePath : "", '
-        '{ background: initialTab !== "code" });'
-    ) in DASHBOARD_JS
+def test_boot_only_loads_code_tree_when_code_is_visible():
+    # A feature-tab deep link must not warm the hidden Code tree/README and
+    # compete with the mirror request the visitor is actually waiting for.
+    render = DASHBOARD_JS[
+        DASHBOARD_JS.index("function renderRepoDetail")
+        : DASHBOARD_JS.index("function findRepository")
+    ]
+    assert 'if (initialTab === "code") {' in render
+    assert 'state.loadedRepoTabs.code = true;' in render
+    assert 'else loadRepositoryTree(repo, routeKind === "tree" ? routePath : "");' in render
+    assert '{ background: initialTab !== "code" }' not in render
     tree = DASHBOARD_JS[
         DASHBOARD_JS.index("async function loadRepositoryTree")
         : DASHBOARD_JS.index("async function loadRepositoryBlob")

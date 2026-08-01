@@ -10,6 +10,7 @@ from _dashboard_shell import assembled_dashboard
 
 PUBLIC_DIR = Path(__file__).resolve().parents[1] / "public"
 LOGO_SRC = "/assets/logo.png"
+DASHBOARD_LOGO_SRC = "/assets/forkmesh-mark.svg"
 
 
 class BrandLogoParser(HTMLParser):
@@ -57,7 +58,7 @@ class LogoImageParser(HTMLParser):
 
     def handle_starttag(self, tag, attrs):
         attr_map = dict(attrs)
-        if tag == "img" and attr_map.get("src") == LOGO_SRC:
+        if tag == "img" and attr_map.get("src") in {LOGO_SRC, DASHBOARD_LOGO_SRC}:
             self.logos.append(attr_map)
 
 
@@ -95,7 +96,7 @@ def test_all_public_html_pages_use_logo_in_brand_link():
         parser.feed(html)
 
         has_logo = any(
-            logo.get("src") == LOGO_SRC
+            logo.get("src") in {LOGO_SRC, DASHBOARD_LOGO_SRC}
             and logo.get("alt") == ""
             and logo.get("aria-hidden") == "true"
             for logo in parser.brand_logos

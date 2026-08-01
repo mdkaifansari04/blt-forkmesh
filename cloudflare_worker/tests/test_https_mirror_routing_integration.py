@@ -1005,6 +1005,9 @@ def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     assert "preferred_region" in candidates
     assert "select_endpoints" in candidates
     assert 'context.get("currentNodes", set())' in candidates
+    assert "current_records" in candidates
+    assert "historical_records" in candidates
+    assert candidates.index("current_records") < candidates.index("historical_records")
     assert "ENDPOINT_STALE_MS" in edge
     assert "abuseBlocked" in edge
     assert "integrity" in edge
@@ -1015,6 +1018,18 @@ def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     assert 'memo.get("refsSha256", "")' in proof
     assert "operations_digest == claimed_operations_digest" in proof
     assert "ed25519_verify" in proof
+
+
+def test_transient_proxy_failures_quarantine_routing_without_failing_integrity():
+    helper = _function_source("_https_mirror_mark_transient_failure")
+    proxy = _function_source("_https_mirror_proxy")
+    proof = _function_source("_https_mirror_repository_proof")
+    assert "SET healthy=0,checked_at=0,updated_at=?" in helper
+    assert "integrity='failed'" not in helper
+    assert "forkmesh_active=0" not in helper
+    assert "_https_mirror_mark_transient_failure" in proxy
+    assert "HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES" in proxy
+    assert "_https_mirror_mark_transient_failure" in proof
 
 
 def test_public_proxy_preserves_verified_org_alias_for_gateway_bytes():
