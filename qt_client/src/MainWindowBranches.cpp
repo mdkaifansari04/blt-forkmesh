@@ -682,9 +682,11 @@ void MainWindow::switchToWorktree(const QString &branch)
 // agent session header, the PR header or the Branches panel lands here. The
 // graph list browses the branch's history with the branch indicator tracking
 // it, the same read-only ref switch the graph's branch button does; the
-// separate range-review pane stays reserved for pull requests
-// (openPullDiffInGitView). The Branches panel's refresh below keeps its rows
-// in step and reports a branch that doesn't exist (adhoc #185/#420).
+// separate range-review pane stays one explicit click away (the commits
+// page's "Review" button — openBranchRangeReview) and keeps opening directly
+// for pull requests (openPullDiffInGitView). The Branches panel's refresh
+// below keeps its rows in step and reports a branch that doesn't exist
+// (adhoc #185/#420).
 void MainWindow::switchToBranch(const QString &branch)
 {
     m_branchDiffPullNumber = -1; // plain branch mode
@@ -720,6 +722,30 @@ void MainWindow::switchToBranch(const QString &branch)
     else
         m_branchesPanelPendingSelect = branch;
     loadBranchesPanel();
+}
+
+// Open a branch's commits, changed files and diff in the Git view's range pane
+// (adhoc #107), with the branch action toolbar (Merge to main / Create PR /
+// Pull / Merge editor — issue #116). Branch links land on the graph view now
+// (switchToBranch); this deeper review is the commits page's "Review" button.
+void MainWindow::openBranchRangeReview(const QString &branch)
+{
+    m_branchDiffPullNumber = -1; // plain branch mode
+    showOverviewCommits();
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
+    showBranchDiff(branch);
+    // Ctrl+F and the scroll-driven tools act on the diff from the first key.
+    if (m_branchDiffView)
+        m_branchDiffView->setFocus();
+    // Keep the branches table's selection in step so its detail/action state
+    // (and a later panel refresh) describe this branch.
+    if (m_branchesTable && !branch.isEmpty()) {
+        const bool fresh = !m_branchesPanelDir.isEmpty() &&
+                           m_branchesPanelDir == repoGitDir();
+        if (!fresh || !selectBranchRow(branch))
+            m_branchesPanelPendingSelect = branch;
+        loadBranchesPanel();
+    }
 }
 
 bool MainWindow::selectBranchRow(const QString &branch)
@@ -799,6 +825,17 @@ void MainWindow::testClickRailGitButton()
 {
     if (m_railGitButton)
         m_railGitButton->click();
+}
+
+bool MainWindow::testCommitsReviewButtonVisible() const
+{
+    return m_commitsReviewButton && !m_commitsReviewButton->isHidden();
+}
+
+void MainWindow::testClickCommitsReviewButton()
+{
+    if (m_commitsReviewButton)
+        m_commitsReviewButton->click();
 }
 
 bool MainWindow::testClickBranchReviewMerge(bool deleteAll)

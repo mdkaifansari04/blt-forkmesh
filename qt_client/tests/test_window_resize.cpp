@@ -1945,6 +1945,9 @@ int main(int argc, char *argv[])
                       "from a browsed branch (adhoc #1, branch = %1, page = %2)")
                   .arg(window.testBrowsedBranch())
                   .arg(window.testCommitWorkspacePage()));
+        check(!window.testCommitsReviewButtonVisible(),
+              QStringLiteral("the Review button hides while the default branch "
+                             "is browsed (adhoc #1)"));
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();
@@ -1978,6 +1981,23 @@ int main(int argc, char *argv[])
                       "page (adhoc #1, page = %1, branch = %2)")
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testBrowsedBranch()));
+        // The deeper range review (with the merge/PR toolbar) is one explicit
+        // click away while a non-default branch is browsed: the commits page's
+        // "Review" button opens the pane the branch links used to land on.
+        check(window.testCommitsReviewButtonVisible(),
+              QStringLiteral("the commits page shows a Review button while a "
+                             "non-default branch is browsed (adhoc #1)"));
+        window.testClickCommitsReviewButton();
+        QApplication::processEvents();
+        check(window.testCommitWorkspacePage() == 2 &&
+                  window.testGitFilesSlotPage() == 1 &&
+                  window.testGitHistorySlotPage() == 1,
+              QString("the Review button opens the branch's range review pane "
+                      "(adhoc #1/#107, page = %1, files slot = %2, history slot "
+                      "= %3)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
         const bool mergeClicked = window.testClickBranchReviewMerge(false);
         QApplication::processEvents();
         const QString mainTip =
