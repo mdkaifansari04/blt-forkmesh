@@ -1807,6 +1807,14 @@ private:
     // mirror nodes serve through the relay without joining this client's chat
     // room, so room presence alone painted them offline (adhoc #27).
     void fetchRelayOnlineNodes(bool force = false);
+    // Fetch the catalog's per-node mirror records (/api/repo/<o>/<n>/mirrors) for
+    // every repo this client lists, into m_nodesCatalogInfo. Headless mirrors
+    // renew those records on every registration lease, so the Nodes page can show
+    // version/platform/telemetry/mirror counts for nodes that never join this
+    // client's chat room (whose roster entry is otherwise blank).
+    void fetchNodesCatalogInfo(bool force = false);
+    // Backfill blank MemberInfo fields for `node` from m_nodesCatalogInfo.
+    void applyCatalogNodeInfo(MemberInfo &info, const QString &node) const;
     // Firewall: whitelist-only outbound request gate for traffic created by
     // ForkMesh's shared network manager.
     QWidget *buildFirewallSection();
@@ -5039,6 +5047,13 @@ private:
     // reply we fall back to the encrypted roster's presence flag; after it, the
     // relay is trusted over a possibly-stale roster entry (adhoc #43).
     bool m_relayOnlineNodesFetched = false;
+    // Latest catalog mirror record per node (lowercased node name -> the
+    // /api/repo/<o>/<n>/mirrors entry with the newest lastSync, plus a
+    // "mirrorSources" array of the repo groups that node mirrors). Fills the
+    // Nodes page's version/platform/telemetry/mirror columns for headless
+    // mirrors that serve via the relay without ever joining the chat room.
+    QHash<QString, QJsonObject> m_nodesCatalogInfo;
+    qint64 m_nodesCatalogFetchedMs = 0; // throttle between catalog sweeps
     // Request firewall section: whitelist controls plus recent allow/deny
     // decisions. This is separate from m_firewallBanner, which is the older
     // inbound-peer troubleshooting banner inside Chat.
