@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Contracts for the admin Elements tab and the settings Debug tab.
+"""Contracts for the Elements tab and the settings Debug tab.
 
-The issue asks for three things: an administrator-only settings tab that can
+The issue asks for three things: a settings tab that can
 turn every single world element off (completely removing it from the game)
 and back on to isolate what is slowing rendering down; the debug tool moved
 into its own settings tab; and that panel staying open while playing, with
@@ -99,7 +99,7 @@ def test_disabling_an_element_removes_it_from_scene_raycast_and_frame_work():
     assert "() => nodeInfrastructure.get(id) === registeredCabinet," in SCENE
 
 
-def test_elements_tab_is_admin_only_device_local_and_wired_to_the_scene():
+def test_elements_tab_is_available_to_everyone_device_local_and_wired_to_the_scene():
     for contract in (
         'data-world-settings-tab="elements"',
         'data-world-settings-pane="elements"',
@@ -113,25 +113,36 @@ def test_elements_tab_is_admin_only_device_local_and_wired_to_the_scene():
         "initialDisabledElements: this.disabledWorldElements,",
     ):
         assert contract in APP
-    # Only a verified administrator flips switches, and choices persist on
-    # this device only — never into synced account preferences.
+    # Every visitor can flip switches, and choices persist on this device only
+    # — never into synced account preferences.
     toggle = APP.split("  setWorldElementEnabled(id, enabled) {", 1)[1].split(
         "\n  setAllWorldElementsEnabled(", 1
     )[0]
-    assert "this.identity?.isAdmin !== true" in toggle
+    assert "this.identity?.isAdmin !== true" not in toggle
     assert "writeJSON(localStorage, DISABLED_ELEMENTS_KEY" in toggle
     assert "disabledElements" not in APP.split("function defaultSettings()", 1)[
         1
     ].split("function mergeSettings", 1)[0]
-    # Selecting the tab without admin rights falls back to View, and a device
-    # whose session resolves to non-admin gets the full world back.
-    assert 'selected === "elements" && this.identity?.isAdmin !== true' in APP
-    assert "this.worldTicketResolved = true;" in APP
+    # The tab stays visible regardless of the current account.
     restore = APP.split("  applyAdminElementsAccess() {", 1)[1].split(
         "\n  adminErrorStorageKey", 1
     )[0]
-    assert "elementsTab.hidden = !enabled;" in restore
-    assert "this.disabledWorldElements = [];" in restore
+    assert "elementsTab.hidden = false;" in restore
+
+
+def test_elements_can_sort_by_drawn_triangles_or_clicks():
+    for contract in (
+        'data-world-element-sort',
+        '<option value="drawables">Drawn</option>',
+        '<option value="triangles">Triangles</option>',
+        '<option value="interactives">Clicks</option>',
+        'this.worldElementSort = "drawables";',
+    ):
+        assert contract in APP
+    render = APP.split("  renderWorldElementsPane(statusMessage = \"\") {", 1)[1].split(
+        "\n  renderWorldSessions", 1
+    )[0]
+    assert 'Number(right[sort]) - Number(left[sort])' in render
 
 
 def test_debug_tab_shows_live_readings_with_suggestions_and_stays_open():
