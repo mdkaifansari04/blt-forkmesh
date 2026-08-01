@@ -28,7 +28,8 @@ def response(payload, status=200, **kwargs):
     return {"data": payload, "status": status, **kwargs}
 
 
-def runtime(admin=True, alias=False, missing=False, endpoint_alias=False):
+def runtime(admin=True, alias=False, missing=False, endpoint_alias=False,
+            session=True, signed_actor=""):
     node_record = {"name": "mirror6", "owner": "jett", "pubkey": "p" * 64}
     owner_record = {"name": "jett", "nodes": ["mirror6", "mirror7"]}
     writes = []
@@ -84,7 +85,9 @@ def runtime(admin=True, alias=False, missing=False, endpoint_alias=False):
         "bounded_json_request": json_from_request_double,
         "json_response": response,
         "_authed_account_name": lambda *_args: asyncio.sleep(
-            0, result="jett"),
+            0, result="jett" if session else ""),
+        "_world_node_delete_signed_actor": lambda *_args: asyncio.sleep(
+            0, result=signed_actor),
         "_is_admin": lambda _env, name: asyncio.sleep(
             0, result=admin and name == "jett"),
         "clean_string": lambda value, maximum: str(value or "")[:maximum],
@@ -98,6 +101,7 @@ def runtime(admin=True, alias=False, missing=False, endpoint_alias=False):
         "_save_account": save,
         "d1_run": d1_run,
         "_delete_account_namespace": delete,
+        "STATUS_MIRROR_PREFIX": "mirror:",
     }
     exec(compile(ast.fix_missing_locations(
         ast.Module(body=[function], type_ignores=[])), str(ENTRY), "exec"),
@@ -201,6 +205,78 @@ def test_admin_node_delete_is_idempotent_after_every_primary_row_is_gone():
         ("bi:old-mirror", {"name": "old-mirror", "kind": "node"})
     ]
     assert audits[-1][4] == "success"
+
+
+def test_admin_delete_erases_the_nodes_status_page_history():
+    handler, writes, _audits, _saved, _deleted = runtime()
+    result = asyncio.run(handler(None, Request({
+        "nodeName": "mirror6",
+        "confirmation": "DELETE mirror6",
+    })))
+    assert result["status"] == 200
+    for table in (
+        "system_status_daily",
+        "system_status_hourly",
+        "system_status_minute",
+    ):
+        assert ("DELETE FROM " + table + " WHERE system=?",
+                ("mirror:mirror6",)) in writes
+
+
+def test_key_signed_desktop_admin_can_delete_without_a_session_token():
+    handler, _writes, audits, saved, deleted = runtime(
+        session=False, signed_actor="jett")
+    result = asyncio.run(handler(None, Request({
+        "nodeName": "mirror6",
+        "confirmation": "DELETE mirror6",
+    })))
+    assert result["status"] == 200
+    assert saved == [("bi:jett", {"name": "jett", "nodes": ["mirror7"]})]
+    assert deleted and audits[-1][0] == "jett"
+
+
+def test_unsigned_sessionless_request_is_still_refused():
+    handler, writes, audits, saved, deleted = runtime(session=False)
+    result = asyncio.run(handler(None, Request({
+        "nodeName": "mirror6",
+        "confirmation": "DELETE mirror6",
+    })))
+    assert result["status"] == 403
+    assert not writes and not audits and not saved and not deleted
+
+
+def test_signed_actor_proof_names_the_node_it_deletes():
+    source = ENTRY_TEXT.split(
+        "async def _world_node_delete_signed_actor", 1)[1].split(
+            "\nasync def ", 1)[0]
+    # The signature covers actor + target, so it cannot be replayed against a
+    # different node, and _verify_owner_signature accepts the account's stored
+    # device keys (a silently authenticated desktop never holds the primary).
+    assert 'WORLD_NODE_DELETE_PROOF + "\\n" + actor + "\\n" + target' in source
+    assert "_verify_owner_signature(env, actor, sig, canonical)" in source
+    assert "_ts_ok(ts)" in source
+    assert 'record.get("status") != "active"' in source
+
+
+def test_qt_nodes_page_deletes_the_node_everywhere():
+    chat = (
+        Path(__file__).resolve().parents[2]
+        / "qt_client" / "src" / "MainWindowChat.cpp"
+    ).read_text(encoding="utf-8")
+    assert "kNodeColActions" in chat
+    assert "void MainWindow::deleteMeshNodeCompletely" in chat
+    # Vultr teardown, DNS cleanup and the relay removal, in that order.
+    assert "destroyVultrServerForNode(target" in chat
+    assert "removeVultrMirrorDns(target" in chat
+    assert "sendMeshNodeDeleteRequest(target, nodeId)" in chat
+    assert '"/v2/instances/") + instanceId' in chat
+    assert '"/zones/%1/dns_records/%2"' in chat
+    assert '"/api/world/admin/nodes/delete"' in chat
+    assert 'QStringLiteral("DELETE ") + node' in chat
+    # Admin-only, and never offered for this machine or a reserved name.
+    assert 'setColumnHidden(kNodeColActions, !m_isAdmin)' in chat
+    assert "isProtectedMeshNode" in chat
+    assert "forkmesh-world-node-delete-v1" in chat
 
 
 def test_world_ui_only_renders_delete_action_for_admins():
