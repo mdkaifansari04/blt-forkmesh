@@ -1067,6 +1067,21 @@ void MainWindow::refreshRepositoryList()
     m_repoMenuEntries.clear();
     m_nodeMenuEntries.clear();
 
+    // Account names and machine-node names are different namespaces.  The
+    // public directory is authoritative for the former: a user called "jett"
+    // must never become a node entry merely because an old presence frame, a
+    // relay heartbeat, or a repository owner uses that same string.
+    const bool selfIsUserAccount =
+        m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
+    const QString localUser = selfIsUserAccount
+                                  ? accountOwner().trimmed().toLower()
+                                  : QString();
+    auto isDirectoryUser = [this, localUser](const QString &name) {
+        const QString key = name.trimmed().toLower();
+        return m_chatDirectoryUsers.contains(key) ||
+               (!localUser.isEmpty() && key == localUser);
+    };
+
     // Repos grouped by node (owner).
     QHash<QString, QList<int>> reposByNode;
     for (int i = 0; i < m_repositories.size(); ++i)
@@ -1096,6 +1111,12 @@ void MainWindow::refreshRepositoryList()
                   return a.name.localeAwareCompare(b.name) < 0;
               });
     for (const MemberInfo &m : std::as_const(ranked)) {
+        // User-presence frames are chat identities, not machines.  Keep this
+        // check here as well as in the Nodes page so every node surface (the
+        // switcher, issue assignee picker, and chrome count) agrees.
+        if (m.accountKind.compare(QLatin1String("user"),
+                                  Qt::CaseInsensitive) == 0)
+            continue;
         // Temporary world/website chat visitors are humans passing through the
         // public room, not serving nodes — never turn them into node entries
         // (adhoc #308: "World Guest fb9d" rows in the Nodes list / dropdown).
@@ -1106,7 +1127,7 @@ void MainWindow::refreshRepositoryList()
         // own row instead of collapsing into the owner (adhoc: mirror2/mirror3
         // missing from the Nodes list).
         const QString nodeKey = nodeListIdentityKey(m);
-        if (nodeKey.isEmpty())
+        if (nodeKey.isEmpty() || isDirectoryUser(nodeKey))
             continue;
         if (!nodes.contains(nodeKey)) {
             NodeInfo ni;
@@ -1134,11 +1155,32 @@ void MainWindow::refreshRepositoryList()
     for (int i = 0; i < m_repositories.size(); ++i) {
         const RepositoryRecord &repo = m_repositories.at(i);
         const QString owner = repo.owner;
+        // A repository can be attributed to its human account while the
+        // machine that serves it is recorded separately.  Do not turn that
+        // account owner into a phantom node.
+        if (isDirectoryUser(owner))
+            continue;
         if (!nodes.contains(owner)) {
             if (repo.previewOnly)
                 continue;
             nodes.insert(owner, NodeInfo());
             nodeOrder.append(owner);
+        }
+    }
+
+    // Directory-linked machines are real nodes even while they are offline and
+    // absent from both the chat roster and local repository cache.  Adding
+    // them here gives the node switcher the same complete fleet as the Nodes
+    // directory, without ever adding the user account itself.
+    for (const MemberInfo &user : std::as_const(m_chatDirectoryUsers)) {
+        for (const QString &node :
+             user.nodeName.split(QStringLiteral(", "), Qt::SkipEmptyParts)) {
+            const QString nodeName = node.trimmed();
+            if (nodeName.isEmpty() || isDirectoryUser(nodeName) ||
+                nodes.contains(nodeName))
+                continue;
+            nodes.insert(nodeName, NodeInfo());
+            nodeOrder.append(nodeName);
         }
     }
 

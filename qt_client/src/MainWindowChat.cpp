@@ -11500,7 +11500,9 @@ QWidget *MainWindow::buildNodesSection()
          QStringLiteral("Node id")});
     m_nodesTable->verticalHeader()->setVisible(false);
     m_nodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_nodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    // A node opens in the detail pane on click; keeping a selected table row
+    // adds a distracting green band with no extra state or action.
+    m_nodesTable->setSelectionMode(QAbstractItemView::NoSelection);
     m_nodesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_nodesTable->setShowGrid(false);
     m_nodesTable->setSortingEnabled(true);
@@ -11663,22 +11665,26 @@ void MainWindow::refreshNodesTable()
     // the self row on the local predicate directly so it never leaks through.
     const bool selfIsUserAccount =
         m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
-    // A name the public account directory lists as a *user* and that no account
-    // lists as a linked node is a person, not a node. Those reach the switcher
-    // list purely as repository owners (refreshRepositoryList adds an entry for
-    // every repo owner) and never carry a roster identity to be filtered by
-    // accountKind, so every account with a listed repo was being counted and
-    // drawn as a node (adhoc #26). An owner whose machine node shares the account
-    // name stays: the relay's live set still reports it serving.
-    auto isDirectoryUserOnly = [&](const QString &key) {
-        return m_chatDirectoryUsers.contains(key) &&
-               !directoryOwner.contains(key) && !relayOnline(key);
+    const QString localUser = selfIsUserAccount
+                                  ? accountOwner().trimmed().toLower()
+                                  : QString();
+    // The public account directory owns the user/node boundary. A directory
+    // user is never a node, even if a stale relay heartbeat reports that same
+    // name online. Real machines are represented by the linked node names in
+    // directoryOwner, so this cannot hide a user's actual fleet.
+    auto isDirectoryUser = [this, localUser](const QString &key) {
+        const QString normalized = key.trimmed().toLower();
+        return m_chatDirectoryUsers.contains(normalized) ||
+               (!localUser.isEmpty() && normalized == localUser);
     };
     QList<NodeMenuEntry> visible;
     QList<MemberInfo> visibleRoster;
     QSet<QString> visibleNames;
     for (const NodeMenuEntry &e : std::as_const(m_nodeMenuEntries)) {
         MemberInfo mi = rosterInfo(e.name);
+        const QString key = e.name.trimmed().toLower();
+        if (key.isEmpty() || isDirectoryUser(key))
+            continue;
         if (mi.accountKind == QLatin1String("user"))
             continue;
         // Temporary world-chat visitors are filtered before they become menu
@@ -11688,10 +11694,7 @@ void MainWindow::refreshNodesTable()
             continue;
         if (e.self && selfIsUserAccount)
             continue;
-        const QString key = e.name.trimmed().toLower();
-        if (key.isEmpty() || visibleNames.contains(key))
-            continue;
-        if (!e.self && isDirectoryUserOnly(key))
+        if (visibleNames.contains(key))
             continue;
         if (mi.ownerUser.trimmed().isEmpty())
             mi.ownerUser = directoryOwner.value(key);
@@ -11732,7 +11735,8 @@ void MainWindow::refreshNodesTable()
                   return a.compare(b, Qt::CaseInsensitive) < 0;
               });
     for (const QString &key : std::as_const(servingNodes)) {
-        if (key.isEmpty() || visibleNames.contains(key))
+        if (key.isEmpty() || isDirectoryUser(key) ||
+            visibleNames.contains(key))
             continue;
         NodeMenuEntry entry;
         entry.name = key;
@@ -11986,14 +11990,15 @@ void MainWindow::showNodeDetailForRow(int row)
     head->addWidget(nameLbl, 1);
     col->addLayout(head);
 
-    auto addRow = [&](const QString &k, const QString &v) {
+    auto addRow = [&](const QString &k, const QString &v) -> QLabel * {
         if (v.trimmed().isEmpty())
-            return;
+            return nullptr;
         auto *l = new QLabel(
             QStringLiteral("<b>%1:</b> %2").arg(k, v.toHtmlEscaped()));
         l->setTextFormat(Qt::RichText);
         l->setWordWrap(true);
         col->addWidget(l);
+        return l;
     };
 
     addRow(QStringLiteral("Status"),
@@ -12005,6 +12010,11 @@ void MainWindow::showNodeDetailForRow(int row)
                             "tunnel / signed heartbeat), not in this client's "
                             "chat room")
                       : QStringLiteral("Online")));
+    addRow(QStringLiteral("Connection"),
+           !isOnline
+               ? QStringLiteral("Not currently connected")
+               : (serving ? QStringLiteral("Relay only")
+                          : QStringLiteral("Connected to this chat room")));
     if (entry.self)
         addRow(QStringLiteral("This machine"), QStringLiteral("Yes"));
     QString platform = entry.platform.trimmed();
@@ -12015,16 +12025,18 @@ void MainWindow::showNodeDetailForRow(int row)
     addRow(QStringLiteral("Version"), mi.version.trimmed());
     addRow(QStringLiteral("Owner"), mi.ownerUser.trimmed());
     addRow(QStringLiteral("Solana"), mi.solanaAddress.trimmed());
-    // The stable node id (public key) direct messages are addressed to.
-    // Shortened: the full key is long and unbroken, which stretches the panel.
+    addRow(QStringLiteral("SOL balance"), mi.solanaBalance.trimmed());
+    // The stable node id (public key) direct messages are addressed to. Keep
+    // the complete value here so it can be selected and copied from the panel.
     if (!mi.id.trimmed().isEmpty()) {
         const QString id = mi.id.trimmed();
-        addRow(QStringLiteral("Node ID"),
-               id.size() > 20 ? id.left(20) + QString::fromUtf8("\xE2\x80\xA6")
-                              : id);
+        QLabel *idLabel = addRow(QStringLiteral("Node ID"), id);
+        idLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        idLabel->setToolTip(QStringLiteral("Node public key — select to copy"));
     }
     addRow(QStringLiteral("Repositories"), QString::number(entry.repoCount));
-    addRow(QStringLiteral("Mirrors"), QString::number(mi.mirrors.size()));
+    addRow(QStringLiteral("Mirrors"),
+           QString::number(qMax(mi.mirrors.size(), mi.mirrorDetails.size())));
 
     // Host telemetry, when the node advertised it.
     if (mi.cpuPercent >= 0.0)
@@ -12032,14 +12044,28 @@ void MainWindow::showNodeDetailForRow(int row)
                QStringLiteral("%1%").arg(mi.cpuPercent, 0, 'f', 0));
     if (mi.memTotalBytes > 0)
         addRow(QStringLiteral("Memory"),
-               QStringLiteral("%1 / %2").arg(
+               QStringLiteral("%1 / %2 (%3% used, %4 free)").arg(
                    SystemStats::formatBytes(mi.memUsedBytes),
-                   SystemStats::formatBytes(mi.memTotalBytes)));
+                   SystemStats::formatBytes(mi.memTotalBytes))
+                   .arg(qRound(100.0 * double(qBound<qint64>(
+                            0, mi.memUsedBytes, mi.memTotalBytes)) /
+                               double(mi.memTotalBytes)))
+                   .arg(SystemStats::formatBytes(
+                       mi.memTotalBytes - qBound<qint64>(
+                                              0, mi.memUsedBytes,
+                                              mi.memTotalBytes))));
     if (mi.diskTotalBytes > 0)
         addRow(QStringLiteral("Disk"),
-               QStringLiteral("%1 / %2").arg(
+               QStringLiteral("%1 / %2 (%3% used, %4 free)").arg(
                    SystemStats::formatBytes(mi.diskUsedBytes),
-                   SystemStats::formatBytes(mi.diskTotalBytes)));
+                   SystemStats::formatBytes(mi.diskTotalBytes))
+                   .arg(qRound(100.0 * double(qBound<qint64>(
+                            0, mi.diskUsedBytes, mi.diskTotalBytes)) /
+                               double(mi.diskTotalBytes)))
+                   .arg(SystemStats::formatBytes(
+                       mi.diskTotalBytes - qBound<qint64>(
+                                               0, mi.diskUsedBytes,
+                                               mi.diskTotalBytes))));
 
     // Repositories hosted by this node.
     auto *reposLbl = new QLabel(QStringLiteral("Repositories"));
@@ -12108,6 +12134,19 @@ void MainWindow::showNodeDetailForRow(int row)
         if (advert.updatedMs > 0)
             line += QStringLiteral(" \xC2\xB7 synced %1 ago")
                         .arg(formatShortRelativeTime(advert.updatedMs / 1000));
+        if (!advert.commitIdentity.subject.trimmed().isEmpty()) {
+            line += QStringLiteral("<br><span style='color:#8b949e'>Latest: %1")
+                        .arg(advert.commitIdentity.subject.trimmed().toHtmlEscaped());
+            if (!advert.commitIdentity.author.trimmed().isEmpty())
+                line += QStringLiteral(" \xC2\xB7 %1")
+                            .arg(advert.commitIdentity.author.trimmed()
+                                     .toHtmlEscaped());
+            if (advert.commitIdentity.committedAtMs > 0)
+                line += QStringLiteral(" \xC2\xB7 committed %1 ago")
+                            .arg(formatShortRelativeTime(
+                                advert.commitIdentity.committedAtMs / 1000));
+            line += QStringLiteral("</span>");
+        }
         // The same per-mirror tallies the repo detail's Mirror nodes table
         // shows, when the node advertised them (-1 = older peer / unknown).
         auto appendCount = [&line](int value, const char *noun) {
@@ -12121,6 +12160,7 @@ void MainWindow::showNodeDetailForRow(int row)
         appendCount(advert.issueCount, "issues");
         appendCount(advert.pullCount, "pulls");
         appendCount(advert.discussionCount, "discussions");
+        appendCount(advert.worktreeCount, "worktrees");
         appendCount(advert.artifactCount, "artifacts");
         auto *m = new QLabel(line);
         m->setTextFormat(Qt::RichText);

@@ -1058,6 +1058,21 @@ int main(int argc, char *argv[])
               QStringLiteral("nodesUpdateAllBinaryButton")) != nullptr,
           QStringLiteral("Nodes offers a fleet-wide binary update action"));
 
+    // A registered account name is never a machine-node name.  In particular,
+    // a stale online presence for "jett" must not re-add the user to any node
+    // surface; the linked machine remains available instead.
+    window.testSetDirectoryUserNodes(QStringLiteral("jett"),
+                                     {QStringLiteral("jett-mirror")});
+    window.testSetRoster(
+        {testMember(QStringLiteral("jett-session"), QStringLiteral("jett"))});
+    window.testShowNodesSection();
+    const QStringList nodesAfterUserPresence = window.testNodeDirectoryNames();
+    check(!nodesAfterUserPresence.contains(QStringLiteral("jett"),
+                                           Qt::CaseInsensitive) &&
+              nodesAfterUserPresence.contains(QStringLiteral("jett-mirror"),
+                                              Qt::CaseInsensitive),
+          QStringLiteral("a directory user is never classified as a node"));
+
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the
     // handful of accounts that happen to be online right now.
