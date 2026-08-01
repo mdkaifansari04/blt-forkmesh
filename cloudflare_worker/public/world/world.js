@@ -23654,7 +23654,7 @@ class ForkMeshWorld extends HTMLElement {
     }
     host.dataset.worldChatLoading = "true";
     const script = document.createElement("script");
-    script.src = "/dashboard-chat.js?v=0e8a0f7e3b4b";
+    script.src = "/dashboard-chat.js?v=f73f6d2a300f";
     script.defer = true;
     script.addEventListener("load", mount, { once: true });
     script.addEventListener("error", () => {

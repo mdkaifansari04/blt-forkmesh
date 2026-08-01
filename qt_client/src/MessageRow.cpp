@@ -249,7 +249,8 @@ private:
 
 MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
                        const QHash<QString, MemberInfo> &mentionProfiles,
-                       bool canModerate, QWidget *parent)
+                       bool canModerate, QWidget *parent,
+                       int threadReplyCount, bool threadContext)
     : QFrame(parent), m_message(message), m_nameColor(nameColor),
       m_mentionProfiles(mentionProfiles)
 {
@@ -298,6 +299,9 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
     // sitting side-by-side, so the header row stays tidy even on a message that
     // qualifies for all three.
     if (!message.deleted) {
+        const bool showThreadReply =
+            !threadContext && message.threadRootId.isEmpty() &&
+            message.conversation.startsWith(QLatin1Char('#'));
         const bool showCopy = !message.text.isEmpty();
         // Filing someone else's bug report is the common case, so "Create
         // issue" is offered on every message with text, not just your own.
@@ -311,8 +315,8 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
         // is the ordinary author delete.
         const bool showModerateDelete = canModerate;
         const bool showSelfDelete = !canModerate && message.self;
-        if (showCopy || showCreateIssue || showEdit || showModerateDelete ||
-            showSelfDelete) {
+        if (showThreadReply || showCopy || showCreateIssue || showEdit ||
+            showModerateDelete || showSelfDelete) {
             auto *menuButton = new QToolButton;
             menuButton->setObjectName("messageAction");
             menuButton->setText(QString::fromUtf8("\xE2\x8B\xAF")); // "⋯"
@@ -320,6 +324,11 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
             menuButton->setToolTip("More actions");
             menuButton->setPopupMode(QToolButton::InstantPopup);
             auto *menu = new QMenu(menuButton);
+            if (showThreadReply) {
+                QAction *replyAction = menu->addAction("Reply in thread");
+                connect(replyAction, &QAction::triggered, this,
+                        [this] { emit threadRequested(m_message.id); });
+            }
             if (showCopy) {
                 QAction *copyAction = menu->addAction("Copy");
                 connect(copyAction, &QAction::triggered, this,
@@ -391,6 +400,18 @@ MessageRow::MessageRow(const ChatMessage &message, const QString &nameColor,
 
     if (!message.deleted && message.hasFile())
         buildAttachment(this, column);
+
+    if (!threadContext && threadReplyCount > 0) {
+        auto *thread = new QPushButton(
+            QString::number(threadReplyCount) +
+            (threadReplyCount == 1 ? " reply" : " replies"));
+        thread->setObjectName("threadSummary");
+        thread->setCursor(Qt::PointingHandCursor);
+        thread->setToolTip("Open thread");
+        connect(thread, &QPushButton::clicked, this,
+                [this] { emit threadRequested(m_message.id); });
+        column->addWidget(thread, 0, Qt::AlignLeft);
+    }
 
     m_reactionsBar = nullptr;
     if (!message.deleted) {

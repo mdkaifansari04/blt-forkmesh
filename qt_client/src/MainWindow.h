@@ -144,6 +144,7 @@ class QComboBox;
 class QCompleter;
 class QAbstractItemView;
 class QDateEdit;
+class QDialog;
 class QStringListModel;
 class QGraphicsOpacityEffect;
 class QFrame;
@@ -3945,6 +3946,11 @@ private:
     void onMessageDeleted(const QString &conversation, const QString &messageId);
     void promptEditMessage(const QString &messageId, const QString &currentText);
     void confirmDeleteMessage(const QString &messageId);
+    void openChatThread(const QString &rootMessageId);
+    void rebuildChatThreadDialog();
+    void sendChatThreadReply();
+    int chatThreadReplyCount(const QString &conversation,
+                             const QString &rootMessageId) const;
     // Admin moderation: delete any message (not just your own). The delete is
     // signed by this node's identity and broadcast; peers verify the signature
     // and the signer's admin status before applying.
@@ -4017,6 +4023,8 @@ private:
     // instead of vanishing.
     bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
+    MessageRow *createMessageRow(const ChatMessage &message,
+                                 bool threadContext = false);
     void renderConversationRows(); // rebuilds rows in place; caller handles scrolling
     void rebuildConversationView();
     void scrollToBottom();
@@ -7169,6 +7177,11 @@ private:
     QTimer *m_chatSaveTimer = nullptr;
     QTimer *m_chatExpiryTimer = nullptr; // periodic pruneExpiredChatHistory()
     QHash<QString, MessageRow *> m_visibleRows; // messageId -> row (current conv)
+    QString m_activeChatThreadRootId;
+    QDialog *m_chatThreadDialog = nullptr;
+    QVBoxLayout *m_chatThreadRowsLayout = nullptr;
+    QPlainTextEdit *m_chatThreadInput = nullptr;
+    QLabel *m_chatThreadCountLabel = nullptr;
     // messageId -> emoji -> reactor display names.
     QHash<QString, QMap<QString, QStringList>> m_reactions;
     QHash<QString, QPixmap> m_avatars;          // senderId -> avatar
