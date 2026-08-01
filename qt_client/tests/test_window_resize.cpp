@@ -29,6 +29,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QPushButton>
+#include <QToolButton>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTableWidget>
