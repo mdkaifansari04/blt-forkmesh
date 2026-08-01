@@ -9741,7 +9741,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-29-full-catalog-28"
+WORLD_QA_DECK_REVISION = "2026-08-01-open-account-access-30"
 # The physical desk paints only five cards per page, but its catalog must
 # include every bounded source: built-ins, dynamically routed QA items, and
 # the organization's encrypted QA-ready tasks. Organization tasks are capped
@@ -10132,30 +10132,6 @@ WORLD_QA_CARDS = (
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
 
-async def _organization_qa_access(env, org_bi, account_bi, actor):
-    """QA access without broadening organization or Office permissions."""
-    role = await _org_role(env, org_bi, actor)
-    if role in ("owner", "admin"):
-        return True, role, False
-    internal = await d1_first(
-        env,
-        "SELECT 1 AS one FROM org_team_members "
-        "WHERE org_bi=? AND member_bi=? "
-        "AND team IN ('quality-assurance','qa') LIMIT 1",
-        org_bi, str(account_bi or ""),
-    )
-    if internal:
-        return True, role, False
-    external = await d1_first(
-        env,
-        "SELECT 1 AS one FROM org_team_collaborators "
-        "WHERE org_bi=? AND account_bi=? "
-        "AND team IN ('quality-assurance','qa') LIMIT 1",
-        org_bi, str(account_bi or ""),
-    )
-    return bool(external), role, bool(external)
-
-
 async def world_qa_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -10243,7 +10219,8 @@ async def world_qa_handler(env, request):
             "ok": True,
             "authenticated": False,
             "authorized": False,
-            "requiredTeam": "quality-assurance",
+            "requiredTeam": "",
+            "requiresAuthentication": True,
             "revision": WORLD_QA_DECK_REVISION,
             "cards": [],
             "reviews": {},
@@ -10259,8 +10236,6 @@ async def world_qa_handler(env, request):
     actor = clean_string(
         (record or {}).get("name"), MAX_NODE_NAME).strip().lower()
     can_route = False
-    can_private_qa = False
-    external_qa = False
     private_tasks = {}
     qa_org_bi = ""
     if actor:
@@ -10272,33 +10247,8 @@ async def world_qa_handler(env, request):
                 role in ("owner", "admin")
                 or permission in ("maintain", "admin")
             )
-            can_private_qa, _role, external_qa = (
-                await _organization_qa_access(
-                    env, org_bi, account_bi, actor)
-            )
             qa_org_bi = org_bi
-    if not can_private_qa:
-        return json_response({
-            "ok": True,
-            "authenticated": True,
-            "authorized": False,
-            "requiredTeam": "quality-assurance",
-            "revision": WORLD_QA_DECK_REVISION,
-            "cards": [],
-            "reviews": {},
-            "stats": {
-                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                "total": 0,
-            },
-            "globalReviews": {},
-            "globalStats": {
-                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                "testers": 0, "total": 0,
-            },
-            "canRoute": False,
-            "canViewPrivateTasks": False,
-        }, cache_control="no-store")
-    if can_private_qa and qa_org_bi:
+    if qa_org_bi:
         task_rows = await d1_all(
             env,
             "SELECT task_id,department,team,qa_status,qa_reviewed_at,data "
@@ -10339,6 +10289,29 @@ async def world_qa_handler(env, request):
                 deck_keys.add(key)
     deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
+
+    def include_private_task_reviews(global_reviews, global_stats):
+        """Fold each task's authoritative first QA result into the snapshot."""
+        for key, task in private_tasks.items():
+            reviewed_at = max(
+                0, int(task["row"].get("qa_reviewed_at") or 0))
+            if not reviewed_at:
+                continue
+            verdict = {
+                "passed": "pass",
+                "failed": "fail",
+                "unknown": "unsure",
+            }.get(str(task["row"].get("qa_status") or ""))
+            if not verdict:
+                continue
+            counts = {"pass": 0, "fail": 0, "unsure": 0, "total": 1}
+            counts[verdict] = 1
+            global_reviews[key] = counts
+            global_stats[verdict] += 1
+            global_stats["reviewed"] += 1
+        global_stats["total"] = len(deck_cards)
+
+    include_private_task_reviews(global_reviews, global_stats)
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
         if item_key not in deck_keys:
@@ -10425,9 +10398,9 @@ async def world_qa_handler(env, request):
                 return json_response(
                     {"ok": False, "error": "invalid_verdict"}, status=400)
             if item_key in private_tasks:
-                if not can_private_qa or not qa_org_bi:
+                if not qa_org_bi:
                     return json_response(
-                        {"ok": False, "error": "qa_team_required"},
+                        {"ok": False, "error": "qa_task_unavailable"},
                         status=403,
                     )
                 task_id = item_key[5:]
@@ -10504,7 +10477,6 @@ async def world_qa_handler(env, request):
                     "organization_task", task_id, "success",
                     {
                         "verdict": task_verdict,
-                        "external": external_qa,
                         "hasFailureReason": bool(failure_reason),
                         "hasScreenshot": bool(failure_screenshot),
                     },
@@ -10519,6 +10491,7 @@ async def world_qa_handler(env, request):
                     account_bi, item_key, verdict, int(Date.now()),
                 )
         global_reviews, global_stats = await global_qa_snapshot()
+        include_private_task_reviews(global_reviews, global_stats)
     rows = await d1_all(
         env,
         "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
@@ -10581,7 +10554,8 @@ async def world_qa_handler(env, request):
         "ok": True,
         "authenticated": True,
         "authorized": True,
-        "requiredTeam": "quality-assurance",
+        "requiredTeam": "",
+        "requiresAuthentication": True,
         "revision": WORLD_QA_DECK_REVISION,
         "cards": [
             {
@@ -10590,6 +10564,9 @@ async def world_qa_handler(env, request):
                 "howToTest": how_to_test,
                 "global": global_reviews.get(
                     key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0}),
+                "reviewedByAnyone": (
+                    int(global_reviews.get(key, {}).get("total") or 0) > 0
+                ),
                 **reviews.get(key, {}),
                 **({
                     "organizationTask": True,
@@ -10625,8 +10602,7 @@ async def world_qa_handler(env, request):
         "globalReviews": global_reviews,
         "globalStats": global_stats,
         "canRoute": can_route,
-        "canViewPrivateTasks": can_private_qa,
-        "externalQaCollaborator": external_qa,
+        "canViewPrivateTasks": bool(qa_org_bi),
         **({"routeResult": route_result}
            if method == "POST" and "route_result" in locals() else {}),
     }, cache_control="no-store")
