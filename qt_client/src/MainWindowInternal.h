@@ -3031,9 +3031,20 @@ constexpr qint64 kAgentLimitWeekMs = 7LL * 24 * 60 * 60 * 1000;
 // while still low". Cleared the moment the refill notification fires.
 const QString kClaudeUsage5hExhaustedSetting = QStringLiteral("agents/claudeUsage5hExhausted");
 const QString kClaudeUsageWeekExhaustedSetting = QStringLiteral("agents/claudeUsageWeekExhausted");
+const QString kClaudeUsageFableExhaustedSetting = QStringLiteral("agents/claudeUsageFableExhausted");
+const QString kCodexUsage5hExhaustedSetting = QStringLiteral("agents/codexUsage5hExhausted");
+const QString kCodexUsageWeekExhaustedSetting = QStringLiteral("agents/codexUsageWeekExhausted");
 // Opt-in: email the node's account when a previously-maxed-out usage window
 // refills. Off by default — most nodes are watched interactively.
 const QString kEmailOnCreditsRefillSetting = QStringLiteral("agents/emailOnCreditsRefill");
+// Opt-in: open a standard calendar reminder when an agent provider's usage
+// window is exhausted, and ping locally when it reaches its known reset time.
+const QString kUsageLimitCalendarReminderSetting =
+    QStringLiteral("agents/usageLimitCalendarReminder");
+const QString kUsageLimitReminderScheduledPrefix =
+    QStringLiteral("agents/usageLimitReminderScheduled/");
+const QString kUsageLimitReminderNotifiedPrefix =
+    QStringLiteral("agents/usageLimitReminderNotified/");
 
 // Compact "3h 12m" / "4d 6h" / "5m" rendering of a remaining duration, rounded
 // up to the minute. Shared by the agent-limits label and the top-bar usage

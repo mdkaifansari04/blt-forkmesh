@@ -233,6 +233,8 @@ set(FORKMESH_APP_SOURCES
     src/AgentJail.h
     src/AgentPromptImages.h
     src/AgentPromptImages.cpp
+    src/UsageLimitCalendar.h
+    src/UsageLimitCalendar.cpp
     src/AgentRunner.h
     src/AgentRunner.cpp
     src/QrCode.h
@@ -553,6 +555,8 @@ if(FORKMESH_BUILD_TESTS)
         src/PullAiReview.cpp
         src/AgentStore.h
         src/AgentStore.cpp
+        src/UsageLimitCalendar.h
+        src/UsageLimitCalendar.cpp
         src/ActionStore.h
         src/ActionStore.cpp
         src/RepoSecurity.h
