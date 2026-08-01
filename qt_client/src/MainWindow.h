@@ -668,6 +668,7 @@ public:
     QString testBranchVisualBadges(const QString &branch) const;
     bool testBranchesUseCompactColumns() const;
     bool testBranchesKeepFlexibleNameColumn() const;
+    bool testBranchDelegatePaintsSingleTextLayer(const QString &branch) const;
     // Inject an agent session so a test can prove the branches list surfaces the
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)

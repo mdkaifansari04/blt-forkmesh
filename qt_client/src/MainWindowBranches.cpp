@@ -59,13 +59,19 @@ public:
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
-        // Let the shared delegate paint hover/selection and the row outline, but
-        // suppress its normal text/icon: the compact row below controls their
-        // exact order (status, age, worktree, stats, then full branch name).
-        QStyleOptionViewItem background(option);
-        background.text.clear();
-        background.icon = QIcon();
-        SelectionBorderRowDelegate::paint(painter, background, index);
+        // Paint only the style's cell background before composing the compact
+        // contents ourselves. Calling QStyledItemDelegate::paint (including via
+        // SelectionBorderRowDelegate) re-runs initStyleOption(index), which puts
+        // DisplayRole and DecorationRole back after we clear them and therefore
+        // paints the branch name once at the cell edge and again below after the
+        // metadata. That double paint is the dense overlap seen on long lists.
+        const QStyleOptionViewItem background =
+            backgroundStyleOption(option, index);
+        QStyle *style = option.widget ? option.widget->style()
+                                      : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &background, painter,
+                           option.widget);
+        paintRowSelectionBorder(painter, option, index);
 
         painter->save();
         painter->setClipRect(option.rect);
@@ -151,6 +157,36 @@ public:
         painter->drawText(titleRect, Qt::AlignVCenter | Qt::AlignLeft,
                           index.data(Qt::DisplayRole).toString());
         painter->restore();
+    }
+
+#ifdef FORKMESH_WINDOW_TESTS
+    bool testStyleLayerHasNoContent(const QStyleOptionViewItem &option,
+                                    const QModelIndex &index) const
+    {
+        const QStyleOptionViewItem background =
+            backgroundStyleOption(option, index);
+        return background.text.isEmpty() && background.icon.isNull() &&
+               !(background.features & QStyleOptionViewItem::HasDisplay) &&
+               !(background.features & QStyleOptionViewItem::HasDecoration);
+    }
+#endif
+
+private:
+    QStyleOptionViewItem backgroundStyleOption(
+        const QStyleOptionViewItem &option, const QModelIndex &index) const
+    {
+        QStyleOptionViewItem background(option);
+        initStyleOption(&background, index);
+        background.text.clear();
+        background.icon = QIcon();
+        background.features &= ~QStyleOptionViewItem::HasDisplay;
+        background.features &= ~QStyleOptionViewItem::HasDecoration;
+        // The branches list intentionally has no hover fill, and selection is
+        // represented by the shared green outline painted above—not a style
+        // supplied per-cell band.
+        background.state &= ~QStyle::State_MouseOver;
+        background.state &= ~QStyle::State_Selected;
+        return background;
     }
 };
 
@@ -964,6 +1000,27 @@ bool MainWindow::testBranchesKeepFlexibleNameColumn() const
     return m_branchesTable &&
            m_branchesTable->horizontalHeader()->sectionResizeMode(0) ==
                QHeaderView::Stretch;
+}
+
+bool MainWindow::testBranchDelegatePaintsSingleTextLayer(
+    const QString &branch) const
+{
+    if (!m_branchesTable)
+        return false;
+    auto *delegate = dynamic_cast<BranchOverviewDelegate *>(
+        m_branchesTable->itemDelegateForColumn(0));
+    if (!delegate)
+        return false;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        const QModelIndex index = m_branchesTable->model()->index(row, 0);
+        if (index.data(Qt::DisplayRole).toString() != branch)
+            continue;
+        QStyleOptionViewItem option;
+        option.initFrom(m_branchesTable->viewport());
+        option.rect = m_branchesTable->visualRect(index);
+        return delegate->testStyleLayerHasNoContent(option, index);
+    }
+    return false;
 }
 
 QString MainWindow::testSwitchToBranchImmediateSelection(const QString &branch)
