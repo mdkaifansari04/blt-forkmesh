@@ -37484,6 +37484,89 @@ def _install_diag_fields(payload):
     )
 
 
+# A successful installer run ("done" step, ok) is celebrated: the World runs
+# its firework show for this long (same window as a federated instance joining)
+# and every platform admin gets one Ping per run.
+WORLD_INSTALL_CELEBRATION_MS = 10 * 60 * 1000
+MAX_WORLD_INSTALL_CELEBRATIONS = 8
+
+
+async def _enqueue_install_celebration_pings(env, fields, now):
+    """Best-effort admin Pings for one completed installer run."""
+    run, _step, _ok, os_name, arch = fields[:5]
+    platform = " · ".join(p for p in (os_name, arch) if p) or "unknown platform"
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    for row in rows or []:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+        except Exception:
+            continue
+        admin = clean_string(
+            record.get("name", ""), MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(admin):
+            continue
+        await enqueue_notification(
+            env, admin, "operational_alert",
+            "New ForkMesh desktop installed \U0001F386",
+            body=("Someone just installed the ForkMesh desktop with the "
+                  "one-line installer (" + platform + "). The World is "
+                  "running its firework show."),
+            href="/world/", source="installer",
+            dedupe="install-celebration:" + run,
+            ts=now,
+            meta={"platform": platform},
+        )
+
+
+async def world_recent_installs_handler(env, request):
+    """Fresh successful installer runs, for the World's firework display.
+
+    Anonymous coarse platform tokens only — the install_diag table stores no
+    account, IP, or hostname (see SCHEMA note) — and the installer's random
+    run id is hashed so the raw telemetry key never leaves the Worker.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store", extra_headers={"allow": "GET"})
+    await ensure_schema(env)
+    now = int(Date.now())
+    cutoff = now - WORLD_INSTALL_CELEBRATION_MS
+    rows = await d1_all(
+        env,
+        "SELECT run, MAX(ts) AS ts, MAX(os) AS os, MAX(arch) AS arch "
+        "FROM install_diag WHERE step='done' AND ok=1 AND ts>=? "
+        "GROUP BY run ORDER BY ts DESC LIMIT ?",
+        cutoff, MAX_WORLD_INSTALL_CELEBRATIONS,
+    )
+    installs = []
+    for row in rows or []:
+        run = str(row.get("run") or "")
+        if not run:
+            continue
+        installs.append({
+            "id": hashlib.sha256(
+                ("forkmesh-world-install-v1\0" + run).encode()
+            ).hexdigest()[:24],
+            "installedAt": max(0, int(row.get("ts") or 0)),
+            "os": clean_string(row.get("os"), 32),
+            "arch": clean_string(row.get("arch"), 32),
+        })
+    return json_response({
+        "ok": True,
+        "installs": installs,
+        "count": len(installs),
+        "observedAt": now,
+        "privacy": (
+            "Anonymous installer telemetry only: coarse platform tokens and "
+            "a hashed per-run id. No accounts, IP addresses, or hostnames "
+            "are stored or exposed."
+        ),
+    }, cache_control="public, max-age=30",
+       extra_headers={"x-content-type-options": "nosniff"})
+
+
 async def install_diag_handler(env, request):
     # Anonymous, unauthenticated install telemetry from install.sh. Best-effort:
     # never errors out the caller (the installer fires these fire-and-forget). We
@@ -37515,6 +37598,11 @@ async def install_diag_handler(env, request):
                (SELECT id FROM install_diag ORDER BY id DESC LIMIT ?)""",
             MAX_INSTALL_DIAG,
         )
+        if fields[1] == "done" and fields[2] == 1:
+            # Whole install finished: Ping the admins; the World picks the run
+            # up from /api/world/installs and starts its firework show.
+            await _enqueue_install_celebration_pings(
+                env, fields, int(Date.now()))
     except Exception:
         pass
     return json_response({"ok": True}, cache_control="no-store")
@@ -43983,6 +44071,10 @@ class Default(WorkerEntrypoint):
                 "/api/world/instances",
                 "/api/world/instances/"):
             return await world_relay_instances_handler(self.env, request)
+        if url.path in (
+                "/api/world/installs",
+                "/api/world/installs/"):
+            return await world_recent_installs_handler(self.env, request)
 
         if (url.path == "/api/world/fediverse"
                 or url.path == "/api/world/fediverse/"
