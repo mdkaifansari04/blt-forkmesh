@@ -3202,6 +3202,21 @@ void MainWindow::showOverviewCommits()
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(1);
+    // This is an activity-rail destination, not a Code Overview sub-page. Some
+    // routes arrive while every stack is already on index 0/1, so no
+    // currentChanged signal fires and the Code chrome would otherwise remain
+    // visible above the Git workspace. Apply the ownership state explicitly
+    // after all stacks have moved, then reassert it on the next event-loop turn
+    // in case a queued repository refresh completed during navigation.
+    updateRepoActivityRail();
+    QTimer::singleShot(0, this, [this] {
+        const bool stillOnGit =
+            m_repoDetailStack && m_repoDetailStack->currentIndex() == 0 &&
+            m_filesStack && m_filesStack->currentIndex() == 0 &&
+            m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+        if (stillOnGit)
+            updateRepoActivityRail();
+    });
 }
 
 // Swap the overview body back to the file list + README.
@@ -3830,6 +3845,8 @@ void MainWindow::loadCommits()
     const int rowLimit = m_commitsShowingAll ? kCommitSearchDepth : m_commitsLimit;
     QStringList logArgs{
         "log",
+        "--topo-order",
+        "--decorate=full",
         "--format=%x1e%H%x1f%h%x1f%an%x1f%ar%x1f%ct%x1f%s%x1f%P%x1f%D%x1f%b"};
     logArgs << "-n" << QString::number(rowLimit + 1);
     logArgs << currentRef();
@@ -3953,22 +3970,39 @@ void MainWindow::loadCommits()
         // crowd out the message.
         {
             QStringList refs;
+            QStringList refKinds;
             const QStringList rawRefs = f.value(7).split(
                 QStringLiteral(", "), Qt::SkipEmptyParts);
             for (QString ref : rawRefs) {
                 ref = ref.trimmed();
-                if (ref.startsWith(QLatin1String("HEAD -> ")))
+                QString kind = QStringLiteral("local");
+                if (ref.startsWith(QLatin1String("HEAD -> "))) {
                     ref = ref.mid(8);
-                else if (ref == QLatin1String("HEAD"))
+                } else if (ref == QLatin1String("HEAD")) {
                     continue; // detached HEAD marker, not a ref
-                if (ref.startsWith(QLatin1String("tag: ")))
+                } else if (ref.startsWith(QLatin1String("tag: "))) {
                     ref = ref.mid(5);
+                    kind = QStringLiteral("tag");
+                }
+                if (ref.startsWith(QLatin1String("refs/heads/"))) {
+                    ref = ref.mid(11);
+                    kind = QStringLiteral("local");
+                } else if (ref.startsWith(QLatin1String("refs/remotes/"))) {
+                    ref = ref.mid(13);
+                    kind = QStringLiteral("remote");
+                } else if (ref.startsWith(QLatin1String("refs/tags/"))) {
+                    ref = ref.mid(10);
+                    kind = QStringLiteral("tag");
+                }
                 refs << ref;
+                refKinds << kind;
                 if (refs.size() >= 3)
                     break;
             }
-            if (!refs.isEmpty())
+            if (!refs.isEmpty()) {
                 summary->setData(kCommitRefsRole, refs);
+                summary->setData(kCommitRefKindsRole, refKinds);
+            }
         }
         // Action/check status badge for this commit (green check / red x /
         // spinning-blue dot), shown as a leading icon when a workflow ran for it.
@@ -5637,12 +5671,20 @@ void MainWindow::setCommitWorkspacePage(int page)
 {
     if (!m_commitsStack)
         return;
+    // Commit and range diffs are valid only inside the standalone Git
+    // destination. Centralising the transition here makes it impossible for a
+    // caller to expose one beneath Code Overview chrome by forgetting the
+    // navigation step first.
+    if (page == kCommitWorkspaceCommitPage ||
+        page == kCommitWorkspaceRangePage)
+        showOverviewCommits();
     m_commitsStack->setCurrentIndex(page);
     if (m_gitFilesSlot)
         m_gitFilesSlot->setCurrentIndex(0);
     if (m_gitHistorySlot)
         m_gitHistorySlot->setCurrentIndex(0);
     updateCommitsCompareIndicator();
+    updateRepoActivityRail();
 }
 
 // The "<branch> -> <base>" compare indicator on the graph's branch row: while a
