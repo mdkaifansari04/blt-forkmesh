@@ -517,7 +517,7 @@
 
   // Mirrors of one logical repository are grouped by root commit, so an
   // organization alias registered on any member names the whole group.
-  function groupDisplayOwner(group) {
+  function groupOrganizationAlias(group) {
     const origin = sourceOfTruth(group);
     const name = String(origin?.name || "").trim().toLowerCase();
     for (const member of [origin, ...(group?.members || [])]) {
@@ -526,7 +526,11 @@
         .find((value) => value.kind === "organization");
       if (organization) return organization.owner;
     }
-    return repoDisplayOwner(origin);
+    return "";
+  }
+
+  function groupDisplayOwner(group) {
+    return groupOrganizationAlias(group) || repoDisplayOwner(sourceOfTruth(group));
   }
 
   function normalizeRepoSegment(value) {
@@ -696,6 +700,27 @@
     const name = encodeURIComponent(repo.name || "");
     const suffix = path ? `/${kind}/${path.split("/").map(encodeURIComponent).join("/")}` : "";
     return `/${owner}/${name}${suffix}`;
+  }
+
+  // A list that reads "forkmesh/forkmesh" must also link there, not to the
+  // machine that happens to publish the bytes (adhoc #132). Organization
+  // aliases are real addresses: the Worker rewrites /<org>/<repo> and every
+  // /api/repo/<org>/<repo>/... path onto the serving node before routing, and
+  // a direct visit resolves the alias again on the repo page. User identities
+  // have no such rewrite, so a repo whose logical owner is only a user keeps
+  // the physical /<node>/<repo> route.
+  function repoLinkUrl(repo, kind = "tree", path = "") {
+    const organization = repoLogicalOwners(repo)
+      .find((value) => value.kind === "organization");
+    return repoPathUrl(
+      organization ? { ...repo, owner: organization.owner } : repo, kind, path);
+  }
+
+  function groupLinkUrl(group, kind = "tree", path = "") {
+    const origin = sourceOfTruth(group);
+    const organization = groupOrganizationAlias(group);
+    return repoPathUrl(
+      organization ? { ...origin, owner: organization } : origin, kind, path);
   }
 
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
@@ -5711,7 +5736,7 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
-      <a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-start gap-3 text-left">
+      <a href="${escapeHtml(groupLinkUrl(group))}" class="flex min-w-0 items-start gap-3 text-left">
         ${nativeRepositoryLogoMarkup(repo, "h-12 w-12")}
         <span class="block min-w-0 flex-1">
         <span class="flex min-w-0 flex-wrap items-center gap-2">
@@ -5837,7 +5862,7 @@
           // organization does not come back a second time under the node that
           // publishes it.
           key: `${groupDisplayOwner(group)}/${repo.name || ""}`,
-          href: repoPathUrl(repo),
+          href: groupLinkUrl(group),
           organization: false,
         };
       }),
@@ -5877,7 +5902,7 @@
         })),
       ...groupRepositories(state.repositories || []).map((group) => {
         const repo = sourceOfTruth(group);
-        return { repo, href: repoPathUrl(repo), organization: false };
+        return { repo, href: groupLinkUrl(group), organization: false };
       }),
     ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
       .filter((entry, index, values) =>
@@ -5934,7 +5959,7 @@
           ${nativeRepositoryLogoMarkup(repo)}
           <div class="min-w-0 flex-1">
             <p class="text-sm text-muted-foreground">
-              <a href="${escapeHtml(repoPathUrl(repo))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
+              <a href="${escapeHtml(groupLinkUrl(group))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
               ${live ? "is available on the mesh" : "is waiting for a live host"}
             </p>
             <p class="mt-2 line-clamp-2 text-sm leading-5 text-muted-foreground">${escapeHtml(description)}</p>
@@ -14432,14 +14457,15 @@
   }
 
   // Opening a repo from any list/search control is a real page navigation now
-  // (repo pages are their own documents). Prefer the canonical origin's clean
-  // URL when the catalog already resolved the key (alias groups), falling back
-  // to the raw owner/name path — the repo page resolves it again on boot.
+  // (repo pages are their own documents). Prefer the organization address the
+  // list already displays when the catalog resolved the key (alias groups),
+  // falling back to the raw owner/name path — the repo page resolves it again
+  // on boot.
   function openRepoPage(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return;
     const repo = findRepository(wanted);
-    const url = repo ? repoPathUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
+    const url = repo ? repoLinkUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
     closeMobileDrawers();
     location.assign(url);
   }
