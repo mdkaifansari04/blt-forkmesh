@@ -7250,6 +7250,18 @@ public:
     }
     QSize minimumSizeHint() const override { return sizeHint(); }
 
+    // The count riding the icon's upper-right corner as a rail-style circle
+    // badge (0 hides it), so "Fork 12" / "147 branches" style counts read the
+    // same as the activity rail's badges instead of living in the caption.
+    void setBadgeCount(qint64 count)
+    {
+        if (m_badge == count)
+            return;
+        m_badge = count;
+        update();
+    }
+    qint64 badgeCount() const { return m_badge; }
+
 protected:
     void paintEvent(QPaintEvent *) override
     {
@@ -7290,12 +7302,34 @@ protected:
                    Qt::AlignHCenter | Qt::AlignTop,
                    QFontMetrics(f).elidedText(text(), Qt::ElideRight,
                                               width() - 4));
+
+        // Count badge on the icon's upper-right corner, the same geometry and
+        // blue as ActivityRailButton's, but never capped at 99+ — a repo can
+        // legitimately advertise hundreds of branches.
+        if (m_badge > 0) {
+            const QString badgeText = formatCount(m_badge);
+            QFont bf = font();
+            bf.setPixelSize(9);
+            bf.setBold(true);
+            p.setFont(bf);
+            const int h = 14;
+            const int w =
+                qMax(h, QFontMetrics(bf).horizontalAdvance(badgeText) + 8);
+            const QRectF badge(iconRect.right() - w + h / 2.0 + 2,
+                               qMax(0.0, double(iconRect.top() - 5)), w, h);
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor("#1f6feb"));
+            p.drawRoundedRect(badge, h / 2.0, h / 2.0);
+            p.setPen(QColor("#ffffff"));
+            p.drawText(badge, Qt::AlignCenter, badgeText);
+        }
     }
 
 private:
     static constexpr int kIconPx = 16;
     static constexpr int kHeight = 44;
     Form m_form;
+    qint64 m_badge = 0;
 };
 
 // Width and height of one activity-rail entry, and the width of the rail
