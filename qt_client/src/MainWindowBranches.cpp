@@ -673,6 +673,10 @@ void MainWindow::switchToBranch(const QString &branch)
     // setRepoBranch below reassigns m_repoBranch, which some callers pass in by
     // reference — copy before the string underneath us can change.
     const QString target = branch.trimmed();
+    // Every explicit branch navigation is a fresh opportunity to catch up with
+    // a base that may have advanced since this branch was last viewed. Internal
+    // rerenders keep the attempted marker, so a failed update still cannot loop.
+    m_branchAutoPullAttempted.clear();
     m_branchDiffPullNumber = -1; // plain branch mode
     showOverviewCommits();
     const QString base = branchCompareBase();
@@ -700,6 +704,9 @@ void MainWindow::switchToBranch(const QString &branch)
         if (m_branchDiffView)
             m_branchDiffView->setFocus();
     }
+    // Branch selection is a browser-style destination: Back/Forward must be
+    // able to return to the previous branch (or the main Git view).
+    scheduleNavRecord();
     if (!m_branchesTable || target.isEmpty()) {
         loadBranchesPanel();
         return;
@@ -804,6 +811,28 @@ QString MainWindow::testSwitchToBranchImmediateSelection(const QString &branch)
         return QString();
     const QTableWidgetItem *it = m_branchesTable->item(m_branchesTable->currentRow(), 0);
     return it ? it->text() : QString();
+}
+
+bool MainWindow::testClickBranchRowInOverview(const QString &branch)
+{
+    if (!m_branchesTable)
+        return false;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        QTableWidgetItem *item = m_branchesTable->item(row, 0);
+        if (!item || item->text() != branch)
+            continue;
+        // Emit the same signal a real non-action cell click produces.
+        emit m_branchesTable->cellClicked(row, 0);
+        return true;
+    }
+    return false;
+}
+
+bool MainWindow::testBranchesPanelOwnsDiffView() const
+{
+    return m_branchesTable && m_branchDiffView &&
+           m_branchesTable->parentWidget() &&
+           m_branchesTable->parentWidget()->isAncestorOf(m_branchDiffView);
 }
 
 int MainWindow::testCommitWorkspacePage() const
@@ -3723,8 +3752,7 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
         m_branchDetailLabel->setToolTip(
             branch.isEmpty() || base.isEmpty() || branch == base
                 ? QString()
-                : QStringLiteral("Showing what %1 changes compared with %2 "
-                                 "(git diff %2...%1)")
+                : QStringLiteral("Showing %1's complete checkout compared with %2")
                       .arg(branch, base));
         // Reviewing a pull request (adhoc #107): lead with its number and state
         // so the pane reads as that PR's changes, not just a branch.
@@ -3998,11 +4026,13 @@ void MainWindow::showBranchDiff(const QString &branch)
     if (m_branchDiffSticky)
         m_branchDiffSticky->hide(); // no spans yet; reappears on scroll
     m_branchDiffViewedContext.clear();
+    m_branchDiffWorkDir = branchWorkDir(branch);
     // A new branch's diff hasn't been fetched yet; drop the cached patch so the
     // "Viewed" toggle can't re-render a stale one before the async read lands.
     m_branchDiffLastValid = false;
     const QString dir = repoGitDir();
     if (branch.isEmpty() || dir.isEmpty()) {
+        m_branchDiffWorkDir.clear();
         m_branchDiffView->clear();
         return;
     }
@@ -4031,6 +4061,7 @@ void MainWindow::renderBranchScopeDiff()
     if (branch.isEmpty() || dir.isEmpty())
         return;
     const QString base = branchCompareBase();
+    const QString work = m_branchDiffWorkDir;
 
     // The diff read below can take seconds on a large branch — it was a
     // recurring StallWatchdog offender freezing the GUI thread (issue #353). Run
@@ -4049,7 +4080,7 @@ void MainWindow::renderBranchScopeDiff()
         QString viewedContext;
     };
     runOffThread<ScopeDiff>(
-        [dir, base, branch, pullNumber]() {
+        [dir, base, branch, work, pullNumber]() {
             ScopeDiff r;
             r.viewedContext = pullNumber >= 0
                                   ? QStringLiteral("pull/") +
@@ -4057,8 +4088,18 @@ void MainWindow::renderBranchScopeDiff()
                                   : QStringLiteral("branch/") + branch;
             r.emptyMessage =
                 QStringLiteral("No changes between %1 and %2.").arg(branch, base);
-            if (!runGitCapture(dir, {"diff", base + ".." + branch}, &r.out, &r.err))
+            // A checked-out branch is represented by its complete worktree
+            // snapshot, not just its committed tip. The temporary-index helper
+            // folds committed, staged, unstaged, deleted, and untracked files
+            // into one patch against the selected base without modifying the
+            // real index. A branch with no checkout falls back to its ref range.
+            if (!work.isEmpty()) {
+                if (!buildWorkingTreeDiff(work, base, &r.out, &r.err))
+                    r.ok = false;
+            } else if (!runGitCapture(dir, {"diff", base + ".." + branch},
+                                      &r.out, &r.err)) {
                 r.ok = false;
+            }
             return r;
         },
         [this, gen, branch](ScopeDiff r) {
@@ -4089,8 +4130,9 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
         return;
     m_branchDiffViewedContext = viewedContext;
     m_branchDiffFileSpans.clear();
-    const QString dir = repoGitDir();
-    const QString base = repoDefaultBranch(repoBranches());
+    const QString dir = m_branchDiffWorkDir.isEmpty() ? repoGitDir()
+                                                       : m_branchDiffWorkDir;
+    const QString base = branchCompareBase();
     QList<DiffFileEntry> files;
     const QSet<QString> viewed = loadDiffViewed(viewedContext);
     // PR mode (adhoc #107): drop the PR's review threads beneath the lines they
@@ -4112,10 +4154,13 @@ void MainWindow::renderBranchDiffPatch(const QString &patch,
                                         anchorFile, notes, viewed);
     m_branchDiffFilePaths.clear();
     m_branchDiffFileAnchors.clear();
+    QStringList rangeStatuses;
     for (const DiffFileEntry &f : files) {
         m_branchDiffFilePaths.append(f.path);
         m_branchDiffFileAnchors.append(f.anchor);
+        rangeStatuses.append(f.status);
     }
+    showRangeFilesInSourceControl(m_branchDiffFilePaths, rangeStatuses);
 
     // Handing an enormous diff to QTextEdit::setHtml() in one go parses, styles
     // and lays it all out on the GUI thread at once, freezing the window for
@@ -4260,6 +4305,61 @@ void MainWindow::updateBranchFromBase(const QString &branch)
         return;
     }
 
+    // Agent branches are normally checked out in their own linked worktree.
+    // Updating their ref from the main checkout is rejected by Git (and the old
+    // path either displayed that refusal or tried to check out an already-live
+    // branch). Merge the base in the checkout that actually owns the branch.
+    // Local edits remain in place when Git can merge safely; if they overlap the
+    // base update, Git refuses and we leave them untouched.
+    const QString linkedWorktree = worktreePathForBranch(dir, branch);
+    if (!linkedWorktree.isEmpty() &&
+        QDir(linkedWorktree).absolutePath() != QDir(dir).absolutePath()) {
+        QByteArray existingMerge;
+        if (runGitCapture(linkedWorktree,
+                          {"rev-parse", "-q", "--verify", "MERGE_HEAD"},
+                          &existingMerge, nullptr) && !existingMerge.trimmed().isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral("%1 already has a merge in progress in its worktree; "
+                               "finish or abort it before updating from %2.")
+                    .arg(branch, base),
+                true);
+            return;
+        }
+
+        QString worktreeError;
+        if (!runGitCapture(linkedWorktree, {"merge", "--no-edit", base}, nullptr,
+                           &worktreeError)) {
+            // Abort only a merge this call actually started. A refusal caused by
+            // overlapping uncommitted files has no MERGE_HEAD and needs no cleanup.
+            QByteArray startedMerge;
+            if (runGitCapture(linkedWorktree,
+                              {"rev-parse", "-q", "--verify", "MERGE_HEAD"},
+                              &startedMerge, nullptr) &&
+                !startedMerge.trimmed().isEmpty())
+                runGitCapture(linkedWorktree, {"merge", "--abort"}, nullptr,
+                              nullptr);
+            setRepoDetailNotice(
+                QStringLiteral("Couldn't update %1 from %2 in its worktree: %3. "
+                               "Its local changes were left untouched.")
+                    .arg(branch, base,
+                         worktreeError.trimmed().isEmpty()
+                             ? QStringLiteral("the merge was refused")
+                             : worktreeError.trimmed().left(240)),
+                true);
+            return;
+        }
+
+        logSystem(QStringLiteral("Git: merged %1 into %2 in its linked worktree.")
+                      .arg(base, branch));
+        setRepoDetailNotice(
+            QStringLiteral("Updated %1 with %2 in its worktree.").arg(branch, base));
+        m_branchesCache.clear();
+        if (m_branchDiffBranch == branch)
+            showBranchDiff(branch); // refreshed range + universal CHANGES list
+        loadWorktreesPanel();
+        return;
+    }
+
     // The user invoked this deliberately (the Pull button is only enabled when
     // the branch is behind), so skip the confirmation and update straight away.
     QByteArray headOut;
@@ -4369,7 +4469,7 @@ void MainWindow::updateBranchFromBase(const QString &branch)
                 QStringLiteral("Left %1 unchanged — review its %2 uncommitted file%3 "
                                "below, then update from %4.")
                     .arg(branch, n, plural, base));
-            showOverviewCommits(); // the commits panel inside the Code overview
+            showOverviewCommits(); // the universal Git workspace
             loadCommits();         // refresh history + the working-changes panel
             return;
         }
