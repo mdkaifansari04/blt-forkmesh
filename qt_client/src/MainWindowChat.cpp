@@ -4938,6 +4938,10 @@ QWidget *MainWindow::buildBreadcrumb()
         flashUsageChart(m_navCodexUsage, true);
     };
     refreshCodexUsageRemaining();
+    // Re-arm any persisted exhausted-window reminders after the shell exists.
+    // The calendar owns the alert while the app is closed; this covers a desktop
+    // kept open across the known reset time.
+    QTimer::singleShot(0, this, &MainWindow::restoreUsageLimitReminders);
 
     // Repo switcher, to the right of the node switcher: "repo ▾ count".
     m_repoMenuButton = new QPushButton;

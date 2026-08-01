@@ -144,6 +144,7 @@ class QComboBox;
 class QCompleter;
 class QAbstractItemView;
 class QDateEdit;
+class QDialog;
 class QStringListModel;
 class QGraphicsOpacityEffect;
 class QFrame;
@@ -2348,6 +2349,22 @@ private:
     // only useful signal for a headless node that has no one watching its
     // screen. Opt-in via kEmailOnCreditsRefillSetting; a no-op when off.
     void maybeEmailCreditsRefilled(bool weekly);
+    // When a provider reports a reset time for an exhausted usage window, make
+    // one local iCalendar reminder and arm the matching desktop ping. The
+    // calendar app owns alerts while ForkMesh is closed; the timer covers a
+    // running desktop.
+    void scheduleUsageLimitReminder(const QString &providerKey,
+                                    const QString &windowKey,
+                                    const QString &providerName,
+                                    const QString &windowName,
+                                    qint64 resetMs);
+    void restoreUsageLimitReminders();
+    void clearUsageLimitReminders();
+    void notifyUsageLimitReady(const QString &providerKey,
+                               const QString &windowKey,
+                               const QString &providerName,
+                               const QString &windowName,
+                               qint64 resetMs);
     // Issue #115: persist and restore month-to-date spend so the figures are
     // shown on restart instead of waiting for a fresh API refresh.
     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
@@ -2378,6 +2395,11 @@ private:
     // Re-drain the queue after a slot frees, coalesced onto the event loop and
     // skipped unless something is queued AND there is room to start it.
     void scheduleAgentQueuePump();
+    // Persist the machine-wide concurrent-agent limit, keep both controls in
+    // sync, and immediately drain any newly available queue slots.
+    void setAgentConcurrencyLimit(int limit);
+    // Update the Agents-toolbar queue readout and its one-click limit controls.
+    void refreshAgentQueueControls();
     // How many sessions currently hold one of the maxRunningAgents() slots
     // (adhoc #433): our own, unmerged, actively-executing ones.
     int runningAgentCount() const;
@@ -3946,6 +3968,11 @@ private:
     void onMessageDeleted(const QString &conversation, const QString &messageId);
     void promptEditMessage(const QString &messageId, const QString &currentText);
     void confirmDeleteMessage(const QString &messageId);
+    void openChatThread(const QString &rootMessageId);
+    void rebuildChatThreadDialog();
+    void sendChatThreadReply();
+    int chatThreadReplyCount(const QString &conversation,
+                             const QString &rootMessageId) const;
     // Admin moderation: delete any message (not just your own). The delete is
     // signed by this node's identity and broadcast; peers verify the signature
     // and the signer's admin status before applying.
@@ -4018,6 +4045,8 @@ private:
     // instead of vanishing.
     bool topMessageDockVisible() const;
     MessageRow *addMessageRow(const ChatMessage &message);
+    MessageRow *createMessageRow(const ChatMessage &message,
+                                 bool threadContext = false);
     void renderConversationRows(); // rebuilds rows in place; caller handles scrolling
     void rebuildConversationView();
     void scrollToBottom();
@@ -4987,6 +5016,7 @@ private:
     // Default coding-agent provider for new assignments; seeds the quick-add and
     // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.
     QComboBox *m_defaultAgentProviderCombo = nullptr;
+    QLineEdit *m_maxRunningAgentsEdit = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;
     QLineEdit *m_openAiAdminKeyEdit = nullptr;
     QLineEdit *m_codexModelEdit = nullptr;
@@ -5815,6 +5845,10 @@ private:
     // periodic heartbeat timer if the immediate send fails).
     bool m_pendingCreditsRefilled5h = false;
     bool m_pendingCreditsRefilledWeekly = false;
+    // One armed timer per provider/window; calendar reminders persist outside
+    // the process, while these timers make the desktop ping prompt when the
+    // app remains open.
+    QHash<QString, QTimer *> m_usageLimitReminderTimers;
 
     // --- Cove (encrypted vault) UI + session state ----------------------------
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
@@ -6694,6 +6728,11 @@ private:
     // (adhoc #136).
     QPushButton *m_agentStopAllButton = nullptr;
     QPushButton *m_agentStartAllButton = nullptr;
+    // Beside Start all: queued sessions / concurrent run limit, with direct
+    // one-click controls for that limit.
+    QLabel *m_agentQueueStatusLabel = nullptr;
+    QPushButton *m_agentQueueLimitDecreaseButton = nullptr;
+    QPushButton *m_agentQueueLimitIncreaseButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Detail-toolbar buttons (adhoc #51) opening this session's branch in the
     // Branches tab and its worktree in the Worktrees tab. Full-size buttons like
@@ -7169,6 +7208,11 @@ private:
     QTimer *m_chatSaveTimer = nullptr;
     QTimer *m_chatExpiryTimer = nullptr; // periodic pruneExpiredChatHistory()
     QHash<QString, MessageRow *> m_visibleRows; // messageId -> row (current conv)
+    QString m_activeChatThreadRootId;
+    QDialog *m_chatThreadDialog = nullptr;
+    QVBoxLayout *m_chatThreadRowsLayout = nullptr;
+    QPlainTextEdit *m_chatThreadInput = nullptr;
+    QLabel *m_chatThreadCountLabel = nullptr;
     // messageId -> emoji -> reactor display names.
     QHash<QString, QMap<QString, QStringList>> m_reactions;
     QHash<QString, QPixmap> m_avatars;          // senderId -> avatar
