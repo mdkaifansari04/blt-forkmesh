@@ -5439,6 +5439,7 @@ class ForkMeshWorld extends HTMLElement {
     this.soundEnabled = false;
     this.soundContext = null;
     this.mobileMovementActive = false;
+    this.thumbstickInputCleanup = null;
     this.joinSoundTimes = [];
     this.mediaSpaces = [];
     this.mediaRoom = normalizeMediaRoom(null);
@@ -11318,6 +11319,28 @@ class ForkMeshWorld extends HTMLElement {
       thumbstick.addEventListener("lostpointercapture", (event) => {
         if (event.pointerId === activePointerId) resetThumbstick();
       });
+      const resetInterruptedThumbstick = () => {
+        if (activePointerId !== null) resetThumbstick();
+      };
+      const resetHiddenThumbstick = () => {
+        if (document.hidden) resetInterruptedThumbstick();
+      };
+      this.thumbstickInputCleanup?.();
+      this.thumbstickInputCleanup = () => {
+        window.removeEventListener("pointerup", stopThumbstick);
+        window.removeEventListener("pointercancel", stopThumbstick);
+        window.removeEventListener("blur", resetInterruptedThumbstick);
+        document.removeEventListener("visibilitychange", resetHiddenThumbstick);
+        this.thumbstickInputCleanup = null;
+      };
+      // Some mobile browsers can lose element-level capture when an OS
+      // gesture, browser chrome, or another touch takes over. Keep the
+      // thumbstick's state in sync even when its terminal event lands outside
+      // the control or the page is interrupted.
+      window.addEventListener("pointerup", stopThumbstick);
+      window.addEventListener("pointercancel", stopThumbstick);
+      window.addEventListener("blur", resetInterruptedThumbstick);
+      document.addEventListener("visibilitychange", resetHiddenThumbstick);
     }
 
     this.bindDetailResize();
@@ -28388,6 +28411,7 @@ class ForkMeshWorld extends HTMLElement {
     window.removeEventListener("storage", this.handleStorage);
     window.removeEventListener("pointerdown", this.handlePublicInputActivity);
     window.removeEventListener("pointermove", this.handlePublicInputActivity);
+    this.thumbstickInputCleanup?.();
     this.removeEventListener(
       "touchmove",
       this.blockWorldPullToRefresh,

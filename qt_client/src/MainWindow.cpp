@@ -409,7 +409,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // owner's repo as it updates. Push events are the primary signal now —
     // since bf6323d0 mirror peers are notified the instant a push lands on the
     // source's bare mirror — so this timer is only a safety net for dropped
-    // events. Three minutes (kMirrorSyncIntervalMs) with ±15% jitter keeps the
+    // events. One minute (kMirrorSyncIntervalMs) with ±15% jitter keeps the
     // dropped-event recovery window short without making a fleet fetch in
     // lockstep. The existing per-repository in-flight guard prevents a timer
     // tick from duplicating an immediate push/roster-driven sync, and the job

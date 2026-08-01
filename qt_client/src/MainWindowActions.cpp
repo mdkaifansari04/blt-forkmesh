@@ -489,13 +489,19 @@ void MainWindow::scanActionSpool()
                 // MainWindow::syncRepository/onPeerMirrorUpdated). A push that
                 // lands directly on this served bare mirror never goes through
                 // syncRepository, so without this, peers would only notice at
-                // their next three-minute auto-sync tick instead of
+                // their next one-minute auto-sync tick instead of
                 // converging in seconds.
                 if (!r.previewOnly && m_backend)
                     m_backend->notifyMirrorUpdated(
                         catalogOwner(r) + "/" +
                             repoSegment(r.name, QStringLiteral("repository")),
                         commit);
+                // Relay frames reach the desktop peers immediately, but the
+                // SSH-fed headless fleet is outside that room. Fan the exact
+                // refs that just landed on this source mirror out to its
+                // configured SSH remotes now, rather than leaving those nodes
+                // to discover the push on the periodic safety-net sync.
+                pushToSshMirrorRemotes(idx);
             }
         }
         // Skip events with no branch update or a branch deletion (all-zero SHA).

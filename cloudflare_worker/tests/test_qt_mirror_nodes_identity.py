@@ -92,7 +92,7 @@ def test_mirror_nodes_use_node_account_not_chat_name():
     assert "name = accountOwner().trimmed();" in load
     assert "const QString nodeDisplay = displayNodeName(node, advert);" in load
     assert "shownNames.insert(nodeDisplay.trimmed().toLower());" in load
-    assert "nodeDisplay.toLower()" in load
+    assert "nodeDisplay.trimmed().toLower()" in load
 
 
 def test_published_mirror_metadata_carries_owner_user():
@@ -131,6 +131,14 @@ def test_mirror_nodes_can_request_live_peer_refresh():
     assert "m_backend->requestMirrorRefresh(source, ownerName);" in request
     assert "m_backend->advertiseMirrorsNow();" in request
     assert "m_mirrorAdvertSig.clear();" in request
+
+    # Keep the expensive catalog re-fetch scoped to the visible operator page,
+    # while still updating the displayed mirror state once per minute.
+    assert "auto *panelRefresh = new QTimer(m_mirrorNodesTable);" in build
+    assert "panelRefresh->setInterval(60 * 1000);" in build
+    assert "if (!m_mirrorNodesTable->isVisible())" in build
+    assert "m_catalogMirrorsFetchedMs = 0;" in build
+    assert "A manual refresh is an operator request for fresh catalog state" in build
 
     assert "virtual void requestMirrorRefresh" in backend
     assert "virtual void advertiseMirrorsNow()" in backend

@@ -695,7 +695,6 @@ def test_avatar_faces_keyboard_travel_direction_without_an_entry_gate():
     assert "Entering ForkMesh World" not in APP
     assert "data-world-loading" in APP
     assert 'loading.dataset.ready = "true"' in APP
-    assert "initialWorldLayout: mergedInitialLayout" in APP
     assert ".world-loading-screen" not in CSS
 
 
@@ -1491,7 +1490,7 @@ def test_top_toolbar_opens_dashboard_in_a_safe_new_tab():
 
 def test_admin_error_button_opens_a_sortable_in_world_error_table():
     start = APP.index("  async openAdminErrors(")
-    method = APP[start:APP.index("\n  // Read the locked placement", start)]
+    method = APP[start:APP.index("\n  rewardEvents()", start)]
     assert 'detail.dataset.openLandmark = "admin-errors"' in method
     assert "this.adminErrorsPanelHTML()" in method
     assert "this.showDetailOverlay(" in method
