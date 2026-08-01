@@ -14516,8 +14516,6 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
 void MainWindow::finishVultrProvision(bool ok, const QString &message)
 {
     m_vultrProvisionActive = false;
-    m_vultrTunnelApiToken.fill(QChar(u'\0'));
-    m_vultrTunnelApiToken.clear();
     if (m_vultrCreateButton)
         m_vultrCreateButton->setEnabled(true);
     if (m_vultrStatus)
@@ -15074,7 +15072,6 @@ void MainWindow::createVultrMirrorFromForm()
         cloudflareToken.contains(QLatin1Char('\n')) ||
         cloudflareToken.contains(QLatin1Char('\r')) ||
         tunnelHostname.isEmpty()) {
-        cloudflareToken.fill(QChar(u'\0'));
         if (m_vultrStatus)
             m_vultrStatus->setText(QStringLiteral(
                 "A Cloudflare API token and valid zone are required so the "
@@ -15082,6 +15079,16 @@ void MainWindow::createVultrMirrorFromForm()
                 "CLOUDFLARE_API_TOKEN plus CLOUDFLARE_ZONE in Settings first."));
         return;
     }
+    QString cloudflareStoreError;
+    const QStringList cloudflareStores =
+        rememberCloudflareApiToken(cloudflareToken, &cloudflareStoreError);
+    if (!cloudflareStores.isEmpty()) {
+        appendHostInstallLog(
+            QStringLiteral("Cloudflare credential kept in %1.\n")
+                .arg(cloudflareStores.join(QStringLiteral(" and "))));
+    }
+    if (!cloudflareStoreError.isEmpty())
+        appendHostInstallLog(cloudflareStoreError + QLatin1Char('\n'));
 
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
@@ -15104,7 +15111,6 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrInstallAttemptLog.clear();
     m_vultrDnsHostname = tunnelHostname;
     m_vultrTunnelApiToken = cloudflareToken;
-    cloudflareToken.fill(QChar(u'\0'));
     m_vultrHostMetadata = QJsonObject{
         {QStringLiteral("provider"), QStringLiteral("Vultr")},
         {QStringLiteral("displayName"), node},

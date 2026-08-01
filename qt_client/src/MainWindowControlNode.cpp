@@ -3868,6 +3868,47 @@ void MainWindow::adoptRotatedCloudflareToken(const QString &token)
     QTimer::singleShot(0, this, &MainWindow::testCloudflareApiToken);
 }
 
+QStringList MainWindow::rememberCloudflareApiToken(const QString &token,
+                                                    QString *error)
+{
+    if (error)
+        error->clear();
+    const QString key = token.trimmed();
+    if (key.isEmpty() || key.contains(QLatin1Char('\n')) ||
+        key.contains(QLatin1Char('\r')))
+        return {};
+
+    QMap<QString, QString> variables = ActionStore::variables();
+    QStringList applied;
+    if (variables.value(QStringLiteral("CLOUDFLARE_API_TOKEN")) != key) {
+        variables.insert(QStringLiteral("CLOUDFLARE_API_TOKEN"), key);
+        ActionStore::setVariables(variables);
+        reloadVariablesTable();
+        applied << QStringLiteral(
+            "this device's CLOUDFLARE_API_TOKEN variable");
+    }
+
+    const QString envPath = forkmesh::control::siteDeployEnvFilePath(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    QString envError;
+    bool envChanged = false;
+    if (envPath.isEmpty()) {
+        envError = QStringLiteral(
+            "cloudflare_worker/.env.production was not found next to this "
+            "build's Worker bundle, so no file was rewritten.");
+    } else if (writeEnvAssignments(
+                   envPath,
+                   {{QStringLiteral("CLOUDFLARE_API_TOKEN"), key}},
+                   &envError, &envChanged) &&
+               envChanged) {
+        applied << envPath;
+    }
+    if (error)
+        *error = envError;
+    return applied;
+}
+
 void MainWindow::connectToDeployedRelay(const QString &hostname)
 {
     const QString host = hostname.trimmed().toLower();

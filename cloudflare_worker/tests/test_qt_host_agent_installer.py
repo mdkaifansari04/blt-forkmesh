@@ -224,7 +224,11 @@ def test_vultr_requires_and_bootstraps_a_live_tunnel_without_leaking_token():
     assert "m_vultrTunnelApiToken" in command
     driver = CHAT.split("void MainWindow::runHostInstall(", 1)[1][:15000]
     assert 'proc->write((m_vultrTunnelApiToken + QStringLiteral("\\n"))' in driver
-    assert "m_vultrTunnelApiToken.fill(QChar(u'\\0'))" in CHAT
+    assert "rememberCloudflareApiToken(cloudflareToken" in create
+    assert "QStringList MainWindow::rememberCloudflareApiToken(" in (
+        ROOT / "qt_client/src/MainWindowControlNode.cpp"
+    ).read_text(encoding="utf-8")
+    assert "m_vultrTunnelApiToken.fill" not in CHAT
     assert "FORKMESH_REQUIRE_TUNNEL" in INSTALLER
     assert 'if [ "$FORKMESH_REQUIRE_TUNNEL" = "1" ]; then' in INSTALLER
     assert "this install requires a live direct HTTPS endpoint" in INSTALLER

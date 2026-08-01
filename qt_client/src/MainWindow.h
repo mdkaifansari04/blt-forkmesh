@@ -1432,6 +1432,10 @@ private:
     void appendCloudflareTokenOutput(const QString &text);
     void generateCloudflareApiToken();
     void adoptRotatedCloudflareToken(const QString &token);
+    // Persist a validated Cloudflare token in both credential stores used by
+    // the Qt app and deployment scripts.
+    QStringList rememberCloudflareApiToken(const QString &token,
+                                           QString *error = nullptr);
     // First-instance-owner community reward-pool signer. The Solana private key
     // is imported into an encrypted local vault and never leaves this desktop;
     // the Worker only authors public intents and records public reconciliation.
