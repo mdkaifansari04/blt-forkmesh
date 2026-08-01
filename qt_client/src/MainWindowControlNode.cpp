@@ -191,11 +191,15 @@ bool writeOwnerJson(const QString &path, const QJsonObject &object,
 // Rewrite the CLOUDFLARE_* assignments in cloudflare_worker/.env.production in
 // place, keeping every other production secret and comment. The file is the
 // deploy machine's own credential store, so it is written owner-only and is
-// never created through a symlink.
+// never created through a symlink. *changed reports whether the file needed a
+// write at all, so a caller re-saving a value it already holds (the Vultr key
+// on every provisioning call) neither rewrites the file nor claims it did.
 bool writeEnvAssignments(const QString &path,
                          const QMap<QString, QString> &values,
-                         QString *error)
+                         QString *error, bool *changed = nullptr)
 {
+    if (changed)
+        *changed = false;
     const auto fail = [error](const QString &message) {
         if (error)
             *error = message;
@@ -215,10 +219,15 @@ bool writeEnvAssignments(const QString &path,
             return fail(QStringLiteral("Could not read %1.").arg(path));
         contents = QString::fromUtf8(existing.readAll());
     }
+    const QString before = contents;
     for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
         contents = forkmesh::control::updatedEnvAssignment(contents, it.key(),
                                                            it.value());
     }
+    if (info.exists() && contents == before)
+        return true;
+    if (changed)
+        *changed = true;
     QSaveFile file(path);
     file.setDirectWriteFallback(false);
     if (!file.open(QIODevice::WriteOnly) ||
@@ -3726,6 +3735,76 @@ void MainWindow::generateCloudflareApiToken()
                     adoptRotatedCloudflareToken(value);
                 });
         });
+}
+
+QStringList MainWindow::rememberVultrApiKey(const QString &apiKey,
+                                            QString *error)
+{
+    if (error)
+        error->clear();
+    const QString key = apiKey.trimmed();
+    // A multi-line value is never a real key, and writing one would corrupt
+    // both the child environment it is injected into and the .env file below.
+    if (key.isEmpty() || key == m_vultrRememberedKey ||
+        key.contains(QLatin1Char('\n')) || key.contains(QLatin1Char('\r'))) {
+        return {};
+    }
+
+    const QStringList names = forkmesh::control::vultrApiKeyVariableNames();
+    const QString canonical = names.constFirst();
+    QMap<QString, QString> variables = ActionStore::variables();
+    bool changed = false;
+    bool haveCanonical = false;
+    for (auto it = variables.begin(); it != variables.end(); ++it) {
+        const QString name = it.key().trimmed();
+        if (!names.contains(name, Qt::CaseInsensitive))
+            continue;
+        // An alias the operator saved earlier (Quick setup wrote
+        // VULTR_API_TOKEN) is updated in place rather than left behind: a
+        // stale one resolves ahead of the canonical name for anything reading
+        // it directly, so the key just proven good would stay shadowed.
+        if (name.compare(canonical, Qt::CaseInsensitive) == 0)
+            haveCanonical = true;
+        if (it.value().trimmed() != key) {
+            it.value() = key;
+            changed = true;
+        }
+    }
+    if (!haveCanonical) {
+        variables.insert(canonical, key);
+        changed = true;
+    }
+    QStringList applied;
+    if (changed) {
+        ActionStore::setVariables(variables);
+        reloadVariablesTable();
+        applied << QStringLiteral("this device's %1 variable").arg(canonical);
+    }
+
+    const QString envPath = forkmesh::control::siteDeployEnvFilePath(
+        QStringLiteral(FORKMESH_SOURCE_DIR),
+        QCoreApplication::applicationDirPath());
+    QString envError;
+    bool retryable = false;
+    bool envChanged = false;
+    if (envPath.isEmpty()) {
+        // No checkout beside this build: there is no file to write and no
+        // later call can change that, so this is reported, not retried.
+        envError = QStringLiteral(
+            "cloudflare_worker/.env.production was not found next to this "
+            "build's Worker bundle, so no file was rewritten.");
+    } else if (writeEnvAssignments(envPath, {{canonical, key}}, &envError,
+                                   &envChanged)) {
+        if (envChanged)
+            applied << envPath;
+    } else {
+        retryable = true;
+    }
+    if (error)
+        *error = envError;
+    if (!retryable)
+        m_vultrRememberedKey = key;
+    return applied;
 }
 
 void MainWindow::adoptRotatedCloudflareToken(const QString &token)

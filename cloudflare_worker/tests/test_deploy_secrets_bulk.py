@@ -34,6 +34,7 @@ def _sandbox(tmp_path: Path) -> tuple[Path, Path, Path]:
     env_lines = [
         "CLOUDFLARE_ACCOUNT_ID=test-account",
         "CLOUDFLARE_API_TOKEN=cloudflare-token-must-not-be-published",
+        "VULTR_API_KEY=vultr-key-must-not-be-published",
         *(f"{key}={value}" for key, value in REQUIRED.items()),
         "OPTIONAL_SECRET=optional=value with spaces",
         "EMPTY_SECRET=",
@@ -133,9 +134,16 @@ def test_secrets_command_uses_one_secure_bulk_update_and_verifies_names(tmp_path
     assert "CLOUDFLARE_ACCOUNT_ID" not in payload
     assert "CLOUDFLARE_API_TOKEN" not in payload
     assert "EMPTY_SECRET" not in payload
+    # The desktop app keeps its Vultr provisioning key in this file; the Worker
+    # has no Vultr code path, so it must never reach the runtime (adhoc #127).
+    assert "VULTR_API_KEY" not in payload
     assert "Pushed 11 secret(s) from .env.production in one bulk update." in result.stdout
     combined_output = result.stdout + result.stderr
-    for value in (*payload.values(), "cloudflare-token-must-not-be-published"):
+    for value in (
+        *payload.values(),
+        "cloudflare-token-must-not-be-published",
+        "vultr-key-must-not-be-published",
+    ):
         assert value not in combined_output
 
     temporary_payload = Path(
