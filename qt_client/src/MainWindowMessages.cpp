@@ -648,9 +648,18 @@ void MainWindow::setRoster(const QList<MemberInfo> &members)
             // counts as a node for backward compatibility.
             if (m.accountKind == QLatin1String("user"))
                 continue;
+            // Anonymous chat guests are people passing through, not nodes
+            // (adhoc #308). A first-run desktop guest still advertises its
+            // machine's nodeName (adhoc #113), so that machine still counts.
+            if (isTemporaryChatGuest(m))
+                continue;
             if (!previouslyOnline.contains(m.id)) {
-                const QString displayName =
-                    m.name.trimmed().isEmpty() ? m.id : m.name.trimmed();
+                // This is a node alert: name the machine (nodeName first).
+                // A first-run desktop's chat alias is "Guest ####" while its
+                // machine keeps the generated node name (adhoc #113).
+                QString displayName = nodeListIdentityKey(m).trimmed();
+                if (displayName.isEmpty())
+                    displayName = m.id;
                 logSystem(QStringLiteral("Node connected: %1 is online").arg(displayName));
                 if (!showNodeConnectAlert)
                     continue;
@@ -1105,8 +1114,16 @@ void MainWindow::refreshChatMembers()
             break;
         }
     } else {
-        // Public mesh/office rooms expose live presence, but only database
-        // accounts are users. Guests and unregistered node aliases stay out.
+        // Public mesh/office rooms (#general and friends) are open to every
+        // registered account, so the users column lists the whole database
+        // directory instead of only whoever happens to be online right now
+        // (adhoc #129). Presence still drives the online dot, the sort order
+        // and the node badges below; it just no longer decides membership.
+        // Guests and unregistered node aliases have no directory row, so they
+        // still stay out.
+        for (auto it = m_chatDirectoryUsers.constBegin();
+             it != m_chatDirectoryUsers.constEnd(); ++it)
+            roomUserKeys.insert(it.key());
         for (auto it = liveByUser.constBegin(); it != liveByUser.constEnd(); ++it)
             roomUserKeys.insert(it.key());
     }

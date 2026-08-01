@@ -2184,13 +2184,21 @@ QString nextMirrorNodeName(const QStringList &existingNames)
     return {};
 }
 
+QStringList vultrApiKeyVariableNames()
+{
+    // VULTR_API_TOKEN is what Settings > Quick setup has always written, so a
+    // key saved there resolves here too instead of being asked for again.
+    return {
+        QStringLiteral("VULTR_API_KEY"),
+        QStringLiteral("VULTR_API_TOKEN"),
+        QStringLiteral("VULTR_TOKEN"),
+        QStringLiteral("VULTR_KEY"),
+    };
+}
+
 QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables)
 {
-    return storedCredential(variables, {
-                                           QStringLiteral("VULTR_API_KEY"),
-                                           QStringLiteral("VULTR_TOKEN"),
-                                           QStringLiteral("VULTR_KEY"),
-                                       });
+    return storedCredential(variables, vultrApiKeyVariableNames());
 }
 
 bool vultrInstallNeedsLocalBinary(const QString &installOutput)

@@ -1329,11 +1329,25 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStopAllButton, &QPushButton::clicked, this,
             &MainWindow::stopAllRunningAgents);
 
+    // "Start all" is the way back from "Stop all" (adhoc #136): resume every
+    // idle session in one click instead of reopening each row and continuing it.
+    // Green outline beside the red one, and disabled while nothing is resumable.
+    m_agentStartAllButton = new QPushButton("Start all");
+    m_agentStartAllButton->setObjectName("successButton");
+    m_agentStartAllButton->setCursor(Qt::PointingHandCursor);
+    m_agentStartAllButton->setToolTip(
+        "Resume every stopped or failed agent. Merged sessions and external "
+        "Claude Code sessions started outside ForkMesh are left alone.");
+    setOcticon(m_agentStartAllButton, "rocket", 16);
+    connect(m_agentStartAllButton, &QPushButton::clicked, this,
+            &MainWindow::startAllStoppedAgents);
+
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(0, 0, 0, 0);
     agentListToolbar->setSpacing(8);
     agentListToolbar->addWidget(heading, 0);
     agentListToolbar->addWidget(m_agentSearch, 1);
+    agentListToolbar->addWidget(m_agentStartAllButton, 0);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
     agentListToolbar->addWidget(m_agentHideDetailButton, 0);
@@ -4498,6 +4512,8 @@ void MainWindow::refreshAgentDotMatrix()
     }
     m_agentDotMatrix->setDots(dots);
     m_agentDotMatrix->setVisible(!dots.isEmpty());
+    // The hairline to the node dots only shows with squares on both sides.
+    updateChromeDotDivider();
 
     if (dots.isEmpty()) {
         m_agentDotTooltipKey.clear();
@@ -6517,7 +6533,7 @@ void MainWindow::continueSelectedAgentSession()
 // must not yank the view away from whatever the user is looking at, so it's
 // only called here when the resumed session was already the selected one
 // (i.e. this is really the continueSelectedAgentSession path).
-void MainWindow::continueAgentSession(int sessionId)
+void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
 {
     if (!m_agentStore || sessionId <= 0)
         return;
@@ -6550,6 +6566,12 @@ void MainWindow::continueAgentSession(int sessionId)
     const int sid = session->id;
     if (!m_agentQueue.contains(sid))
         m_agentQueue.append(sid);
+    // A batch caller (adhoc #136's "Start all") has already queued the rest and
+    // reloads/pumps once below: the session is saved and queued either way, so
+    // skipping the per-session reload here just spares the table one rebuild —
+    // and the run limit is applied by the single processAgentQueue() at the end.
+    if (deferRefresh)
+        return;
     reloadAgents();
     if (sid == m_selectedAgentSessionId)
         showAgentSession(sid);
@@ -8331,6 +8353,58 @@ void MainWindow::stopAllRunningAgents()
         showAgentSession(m_selectedAgentSessionId);
     updateAgentActionState();
     flashMessage(QStringLiteral("Stopped %1 agent session%2.")
+                     .arg(ids.size())
+                     .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
+}
+
+// The sessions "Start all" would act on: our own idle work, in any repository —
+// stopped (by the panic button or by hand) or failed, and so resumable. Running,
+// waiting and queued rows are already in flight, merged ones are finished, and
+// external (watch-only) rows belong to another process. Successful runs are left
+// out too: they finished the job they were given, and a bare "Continue where you
+// left off." would put an agent back on work that is already done.
+QList<int> MainWindow::startableAgentSessionIds() const
+{
+    QList<int> ids;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.merged || isExternalSession(session.id))
+            continue;
+        if (runnerForSession(session.id)) // still winding down from a stop
+            continue;
+        if (session.status == AgentStatus::Stopped ||
+            session.status == AgentStatus::Failed)
+            ids << session.id;
+    }
+    return ids;
+}
+
+// "Start all" (adhoc #136): the way back from "Stop all" — resume every idle
+// session across all repositories in one click, instead of opening each row and
+// continuing it. Everything is queued rather than launched: the single
+// processAgentQueue() below starts as many as the machine-wide run limit allows
+// and leaves the rest waiting, so the fleet comes back at the same rate it would
+// have anyway.
+//
+// Unconfirmed, like its red twin: each of these is work the user already started,
+// every session is resumed with a plain "Continue where you left off.", and the
+// button beside this one calls the whole batch back off.
+void MainWindow::startAllStoppedAgents()
+{
+    // Snapshot the ids up front: the resumes below rewrite session state as they go.
+    const QList<int> ids = startableAgentSessionIds();
+    if (ids.isEmpty()) {
+        flashMessage(QStringLiteral("No stopped agents to start."));
+        return;
+    }
+    for (const int sessionId : std::as_const(ids))
+        continueAgentSession(sessionId, /*deferRefresh=*/true);
+    scheduleAgentSessionsPush(); // adhoc #182: mirror the new statuses to the web
+    reloadAgents();
+    if (m_selectedAgentSessionId > 0)
+        showAgentSession(m_selectedAgentSessionId);
+    processAgentQueue();
+    updateAgentActionState();
+    flashMessage(QStringLiteral("Started %1 agent session%2.")
                      .arg(ids.size())
                      .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
 }
@@ -10668,6 +10742,10 @@ void MainWindow::updateAgentActionState()
     // ForkMesh session is running, waiting or queued anywhere (adhoc #433).
     if (m_agentStopAllButton)
         m_agentStopAllButton->setEnabled(!stoppableAgentSessionIds().isEmpty());
+    // Same for "Start all" (adhoc #136): live whenever a stopped or failed
+    // session is sitting there resumable, selection or not.
+    if (m_agentStartAllButton)
+        m_agentStartAllButton->setEnabled(!startableAgentSessionIds().isEmpty());
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
     // Block deleting the session whose working-tree git-am the in-flight AI fix is

@@ -310,7 +310,13 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     // Settings afterwards.
     if (savedProfileName().isEmpty()) {
         m_freshInstall = true;
-        QSettings().setValue(kAccountNameSetting, randomFunNodeName());
+        const QString generated = randomFunNodeName();
+        QSettings().setValue(kAccountNameSetting, generated);
+        // Record that this name was handed out, not chosen. While it is still
+        // the account name (and no user account is linked), chat speaks as a
+        // guest — the generated name stays the machine's node identity, but it
+        // is not the person's username (see chatIdentityIsGuest()).
+        QSettings().setValue(kGeneratedNodeNameSetting, generated);
     }
     if (const QString saved = savedProfileName().toLower(); !saved.isEmpty())
         m_userName = saved;
@@ -733,6 +739,14 @@ void MainWindow::refreshThemedIcons()
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     QSettings().setValue(kWindowGeometrySetting, saveGeometry());
+    // Bank the still-running uptime clock exactly: the periodic persist in
+    // updateHomeStats() is throttled, so quitting mid-session would otherwise
+    // drop the minutes since its last write.
+    if (m_connectedAtMs > 0)
+        QSettings().setValue(kConnectionTotalSetting,
+                             m_totalConnectionMs +
+                                 QDateTime::currentMSecsSinceEpoch() -
+                                 m_connectedAtMs);
     saveChatHistory();
     // Record this session's stop time, then flush+trim the persisted log.
     logSystem(QStringLiteral("════════════════════════════════════════════════════════════"));

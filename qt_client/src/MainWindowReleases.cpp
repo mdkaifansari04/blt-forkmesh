@@ -1342,9 +1342,9 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
-        // No repo to scope the blips to: fall back to the mesh's node roster so
-        // the dish still shows the network rather than going empty (adhoc #79).
-        updateRelayRadarNodes(true);
+        // No repo to scope the tint to: the chrome line's node dots go back to
+        // plain network status (adhoc #79 / #124).
+        setNodeDotRepoStates({});
         m_mirrorNodesTable->setSortingEnabled(true);
         updateMirrorNodeLightTimer(); // empty table: stops the beacon spinner
         return;
@@ -2393,15 +2393,18 @@ void MainWindow::loadMirrorNodesPanel()
 
     m_mirrorNodesTable->setSortingEnabled(true);
 
-    // Show the mirror-node dots as blips inside the relay radar (adhoc #122).
-    if (m_relayRadar) {
-        QVector<RelayRadarWidget::Blip> blips;
-        blips.reserve(activityDots.size());
-        for (const MirrorNodeDot &d : activityDots)
-            blips.append(RelayRadarWidget::Blip{d.id, d.online, d.behind,
-                                                d.integrityFailing});
-        static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips(blips);
+    // Tint the chrome line's node dots with this repo's per-node sync and
+    // integrity state (adhoc #122/#124): the dots themselves stay the whole
+    // network, but a node that is behind or failing this repo's integrity gate
+    // reads amber while the panel has it open.
+    QHash<QString, NodeDotRepoState> repoStates;
+    repoStates.reserve(activityDots.size());
+    for (const MirrorNodeDot &d : activityDots) {
+        const QString key = d.name.trimmed().toLower();
+        if (!key.isEmpty())
+            repoStates.insert(key, NodeDotRepoState{d.behind, d.integrityFailing});
     }
+    setNodeDotRepoStates(repoStates);
 
     if (m_mirrorNodesSummary) {
         // "· 3 nodes mirroring owner/repo · 12.4 MB each · 37.1 MB total"
