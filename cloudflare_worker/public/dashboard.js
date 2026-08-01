@@ -17230,7 +17230,10 @@
     const meta = [
       task.department ? `#${task.department}` : "",
       task.repository || "",
-      task.qa?.status && task.qa.status !== "none" ? `QA: ${task.qa.status}` : "",
+      // "unknown" is the relay's default QA state, i.e. nothing to report.
+      task.qa?.status && task.qa.status !== "unknown"
+        ? `QA: ${task.qa.status}`
+        : "",
       updated ? `updated ${updated}` : "",
     ].filter(Boolean);
     return `
