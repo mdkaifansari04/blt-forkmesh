@@ -13180,6 +13180,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
 }
 
 .world-chat-terminal[open][data-show-feed="true"] {
+  --world-chat-dock-clearance: max(12px, env(safe-area-inset-bottom));
   height: min(
     55dvh,
     620px,
@@ -13674,6 +13675,7 @@ html[data-dashboard-theme] .world-dashboard-embed .world-topbar {
   }
 
   .world-chat-terminal[open][data-show-feed="true"] {
+    --world-chat-dock-clearance: max(8px, env(safe-area-inset-bottom));
     height: min(
       70dvh,
       700px,
