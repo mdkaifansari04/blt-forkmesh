@@ -1929,6 +1929,7 @@ FORKMESH_TUNNEL_HOSTNAME="${FORKMESH_TUNNEL_HOSTNAME:-}"
 FORKMESH_TUNNEL_ZONE="${FORKMESH_TUNNEL_ZONE:-}"
 FORKMESH_CLOUDFLARE_ACCOUNT_ID="${FORKMESH_CLOUDFLARE_ACCOUNT_ID:-}"
 FORKMESH_RELAY_HOSTNAME="${FORKMESH_RELAY_HOSTNAME:-}"
+FORKMESH_REQUIRE_TUNNEL="${FORKMESH_REQUIRE_TUNNEL:-0}"
 
 # Copy the pinned mirror tools into <prefix>/share/forkmesh/tools — one of the
 # exact locations the app's findPinnedTool() probes relative to its binary — so
@@ -2263,12 +2264,20 @@ else
 fi
 
 # Opt-in automatic Cloudflare Tunnel provisioning for the fresh headless node
-# (see provision_cloudflare_tunnel above). Every failure is soft: the plain
-# install above already succeeded and stays that way.
+# (see provision_cloudflare_tunnel above). Ordinary installs keep this
+# best-effort; automated provisioners may set FORKMESH_REQUIRE_TUNNEL=1 so a
+# node is not reported as installed until its direct endpoint exists.
 if [ -n "$FORKMESH_TUNNEL_HOSTNAME" ] && [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
-  provision_cloudflare_tunnel ||
+  if ! provision_cloudflare_tunnel; then
+    if [ "$FORKMESH_REQUIRE_TUNNEL" = "1" ]; then
+      die "Automatic tunnel provisioning did not complete; this install requires a live direct HTTPS endpoint."
+    fi
     warn "Automatic tunnel provisioning did not complete; the node is installed and running without a direct HTTPS endpoint."
+  fi
 elif [ -n "$FORKMESH_TUNNEL_HOSTNAME" ]; then
+  if [ "$FORKMESH_REQUIRE_TUNNEL" = "1" ]; then
+    die "FORKMESH_TUNNEL_HOSTNAME is set but CLOUDFLARE_API_TOKEN is not; this install requires a live direct HTTPS endpoint."
+  fi
   warn "FORKMESH_TUNNEL_HOSTNAME is set but CLOUDFLARE_API_TOKEN is not; skipping automatic tunnel provisioning."
 fi
 

@@ -4807,6 +4807,10 @@ private:
     // toggling it mid-provision cannot change what the run does.
     bool m_vultrInstallAgentClis = false;
     QString m_vultrDnsHostname;      // Cloudflare name provisioned this run
+    // Session-only Cloudflare credential for the fresh node's Tunnel
+    // bootstrap. It is sent as the first SSH stdin line, never argv/logged,
+    // and scrubbed as soon as provisioning reaches a terminal state.
+    QString m_vultrTunnelApiToken;
     // Non-secret billing/provenance facts captured from Vultr's selected plan
     // and created instance. These are persisted with the saved Host row so an
     // operator can identify the plan and expected monthly cost later.

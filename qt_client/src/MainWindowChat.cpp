@@ -14516,6 +14516,8 @@ QString MainWindow::savedHostIdentityFile(const QString &name, const QString &ip
 void MainWindow::finishVultrProvision(bool ok, const QString &message)
 {
     m_vultrProvisionActive = false;
+    m_vultrTunnelApiToken.fill(QChar(u'\0'));
+    m_vultrTunnelApiToken.clear();
     if (m_vultrCreateButton)
         m_vultrCreateButton->setEnabled(true);
     if (m_vultrStatus)
@@ -14532,7 +14534,7 @@ void MainWindow::finishVultrProvision(bool ok, const QString &message)
 void MainWindow::waitForVultrMirrorPublication(
     const QString &node, const QString &successMessage, int attempt)
 {
-    constexpr int kMaxPublicationPolls = 30; // five minutes at 10 seconds
+    constexpr int kMaxPublicationPolls = 90; // fifteen minutes at 10 seconds
     if (!m_vultrProvisionActive)
         return;
     if (m_vultrStatus) {
@@ -14571,12 +14573,24 @@ void MainWindow::waitForVultrMirrorPublication(
                     candidate =
                         mirror.value(QStringLiteral("owner")).toString().trimmed();
                 if (candidate.compare(node, Qt::CaseInsensitive) == 0 &&
+                    mirror.value(QStringLiteral("status"))
+                            .toString()
+                            .compare(QStringLiteral("online"),
+                                     Qt::CaseInsensitive) == 0 &&
                     mirror.value(QStringLiteral("integrity"))
                             .toString()
                             .compare(QStringLiteral("ok"),
                                      Qt::CaseInsensitive) == 0 &&
                     mirror.value(QStringLiteral("lastSync")).toVariant()
-                            .toLongLong() > 0) {
+                            .toLongLong() > 0 &&
+                    mirror.value(QStringLiteral("cloneAvailable")).toBool() &&
+                    mirror.value(QStringLiteral("endpointHealthy")).toBool() &&
+                    mirror.value(QStringLiteral("endpointFresh")).toBool() &&
+                    mirror.value(QStringLiteral("endpoint"))
+                            .toString()
+                            .compare(QStringLiteral("https://") +
+                                         m_vultrDnsHostname,
+                                     Qt::CaseInsensitive) == 0) {
                     published = true;
                     break;
                 }
@@ -14591,10 +14605,10 @@ void MainWindow::waitForVultrMirrorPublication(
         }
         if (attempt + 1 >= kMaxPublicationPolls) {
             finishVultrProvision(false, QString::fromUtf8(
-                "ForkMesh is installed on %1, but its signed repository "
-                "catalog did not appear within five minutes. The host remains "
-                "saved and will keep retrying; check its Logs and account link "
-                "before treating the mirror as ready.").arg(node));
+                "ForkMesh is installed on %1, but it did not become a healthy, "
+                "integrity-approved, clone-eligible Tunnel endpoint within fifteen "
+                "minutes. The host remains saved and will keep retrying; check "
+                "its Logs before treating the mirror as ready.").arg(node));
             return;
         }
         QTimer::singleShot(
@@ -15039,6 +15053,36 @@ void MainWindow::createVultrMirrorFromForm()
         return;
     }
 
+    // A one-click mirror is only complete when it can serve repository bytes.
+    // Validate the Tunnel prerequisites before creating a billable instance;
+    // the old flow continued without them and left an online-looking node that
+    // could never receive clone or website traffic.
+    const QMap<QString, QString> deviceVariables = ActionStore::variables();
+    QString cloudflareToken =
+        forkmesh::control::cloudflareApiTokenFromVariables(deviceVariables);
+    QSettings tunnelSettings;
+    QString tunnelZone =
+        tunnelSettings.value(QStringLiteral("control/cloudflareZone"))
+            .toString()
+            .trimmed();
+    if (tunnelZone.isEmpty())
+        tunnelZone =
+            forkmesh::control::cloudflareZoneNameFromVariables(deviceVariables);
+    const QString tunnelHostname =
+        forkmesh::control::vultrMirrorDnsHostname(node, tunnelZone);
+    if (cloudflareToken.isEmpty() ||
+        cloudflareToken.contains(QLatin1Char('\n')) ||
+        cloudflareToken.contains(QLatin1Char('\r')) ||
+        tunnelHostname.isEmpty()) {
+        cloudflareToken.fill(QChar(u'\0'));
+        if (m_vultrStatus)
+            m_vultrStatus->setText(QStringLiteral(
+                "A Cloudflare API token and valid zone are required so the "
+                "new mirror can create its Tunnel and serve live. Save "
+                "CLOUDFLARE_API_TOKEN plus CLOUDFLARE_ZONE in Settings first."));
+        return;
+    }
+
     m_vultrProvisionActive = true;
     m_vultrPollCount = 0;
     m_vultrInstallAttempts = 0;
@@ -15058,7 +15102,9 @@ void MainWindow::createVultrMirrorFromForm()
     m_vultrInstallAgentClis =
         m_vultrAgentClisCheck && m_vultrAgentClisCheck->isChecked();
     m_vultrInstallAttemptLog.clear();
-    m_vultrDnsHostname.clear();
+    m_vultrDnsHostname = tunnelHostname;
+    m_vultrTunnelApiToken = cloudflareToken;
+    cloudflareToken.fill(QChar(u'\0'));
     m_vultrHostMetadata = QJsonObject{
         {QStringLiteral("provider"), QStringLiteral("Vultr")},
         {QStringLiteral("displayName"), node},
@@ -15312,24 +15358,16 @@ void MainWindow::pollVultrInstance(const QString &apiKey,
             rememberHost(node, ip, QStringLiteral("root"), QString(),
                          QStringLiteral("vultr booting"), identityFile,
                          m_vultrHostMetadata);
-            // Name the node in the operator's Cloudflare zone while SSH is
-            // still coming up, so it joins the mesh the way the other mirrors
-            // do rather than as a bare address (adhoc #331).
+            // The installer owns DNS creation: its Tunnel bootstrap replaces
+            // the hostname with the required proxied CNAME. Creating a direct
+            // A record here races/conflicts with that record and can leave the
+            // node installed but permanently outside live routing.
             if (m_vultrStatus)
                 m_vultrStatus->setText(QString::fromUtf8(
-                    "Adding the Cloudflare DNS record\xE2\x80\xA6"));
-            ensureVultrMirrorDns(
-                node, ip, [this, node, ip, identityFile](QString hostname) {
-                    if (!m_vultrProvisionActive)
-                        return;
-                    m_vultrDnsHostname = hostname;
-                    if (m_vultrStatus)
-                        m_vultrStatus->setText(QString::fromUtf8(
-                            "Giving SSH a moment to come up\xE2\x80\xA6"));
-                    QTimer::singleShot(
-                        15000, this, [this, node, ip, identityFile] {
-                            startVultrHostInstall(node, ip, identityFile);
-                        });
+                    "Giving SSH a moment to come up\xE2\x80\xA6"));
+            QTimer::singleShot(
+                15000, this, [this, node, ip, identityFile] {
+                    startVultrHostInstall(node, ip, identityFile);
                 });
         });
 }
@@ -15900,6 +15938,18 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
         if (!reinstall)
             envPrefix += QStringLiteral(" FORKMESH_RESTART=1");
     }
+    const bool provisionTunnel =
+        m_vultrProvisionActive && !m_vultrDnsHostname.isEmpty() &&
+        !m_vultrTunnelApiToken.isEmpty();
+    if (provisionTunnel) {
+        const QString zone = m_vultrDnsHostname.section(QLatin1Char('.'), 1);
+        envPrefix +=
+            QStringLiteral(
+                " FORKMESH_TUNNEL_HOSTNAME=%1 FORKMESH_TUNNEL_ZONE=%2 "
+                "FORKMESH_RELAY_HOSTNAME=%3 FORKMESH_REQUIRE_TUNNEL=1")
+                .arg(shq(m_vultrDnsHostname), shq(zone),
+                     shq(catalogApiUrl().host()));
+    }
 
     QString pipeline;
     if (requirePublishedBinary) {
@@ -15999,6 +16049,17 @@ bool MainWindow::buildHostInstallCommand(const QString &ip, const QString &user,
                 .arg(shq(kHostUploadMarker), shq(installUrl), envPrefix,
                      shq(os), shq(QSysInfo::currentCpuArchitecture()),
                      shq(localBinarySha256));
+    }
+    if (provisionTunnel) {
+        // The Cloudflare credential is the first SSH stdin line. The command
+        // contains only this fixed reader and non-secret hostname/zone values,
+        // so process listings and the install transcript cannot expose it.
+        pipeline =
+            QStringLiteral(
+                "IFS= read -r fm_cf_token || exit 68; "
+                "CLOUDFLARE_API_TOKEN=\"$fm_cf_token\"; "
+                "export CLOUDFLARE_API_TOKEN; unset fm_cf_token; ") +
+            pipeline;
     }
     const QString cmd =
         needSudo
@@ -16245,6 +16306,9 @@ void MainWindow::runHostInstall(bool forceUploadBinary,
     // the remote shell. Closing the channel hands the installer a clean EOF.
     if (needSudo)
         proc->write((pass + QStringLiteral("\n")).toUtf8());
+    if (m_vultrProvisionActive && !m_vultrDnsHostname.isEmpty() &&
+        !m_vultrTunnelApiToken.isEmpty())
+        proc->write((m_vultrTunnelApiToken + QStringLiteral("\n")).toUtf8());
     // Direct-upload mode: the marker line then the release binary follow on the
     // same channel; the remote side skips to the marker and `cat`s the rest
     // into the temp file until the EOF the channel close below produces.
