@@ -2882,6 +2882,14 @@ int main(int argc, char *argv[])
               QStringLiteral("an Anthropic host resolves its favicon locally, "
                              "with no network fetch (adhoc #436)"));
 
+        window.testLogSystem(
+            QStringLiteral("net GET https://api.mainnet-beta.solana.com 200"));
+        QApplication::processEvents();
+        check(window.testFaviconCached(
+                  QStringLiteral("api.mainnet-beta.solana.com")),
+              QStringLiteral("the Solana RPC host resolves its favicon locally, "
+                             "without requesting its unsupported favicon path"));
+
         auto leadsWithIcon = [](QTextEdit *view) {
             if (!view)
                 return false;
