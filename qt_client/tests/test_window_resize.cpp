@@ -1918,6 +1918,80 @@ int main(int argc, char *argv[])
         }
     }
 
+    // adhoc #116: a fresh install's first clone lands well after the repo-detail
+    // view opened, so every ref-backed label starts out empty. Reading them back
+    // used to be gated on the Code/Branches tab being on screen, so with any
+    // other tab up the status strip's bottom-left branch button and the branch
+    // count stayed on their empty-repo values for good — and the lazily-loaded
+    // tab badges kept the zero they were built with whatever tab was showing.
+    // Open a repo with no refs at all, move off Code, then let the clone land:
+    // the next push-driven refresh must catch all of it up.
+    {
+        QTemporaryDir lateRepo;
+        QWidget *statusBar =
+            window.findChild<QWidget *>(QStringLiteral("appStatusBar"));
+        QPushButton *branchButton =
+            statusBar ? statusBar->findChild<QPushButton *>(
+                            QStringLiteral("ghostButton"))
+                      : nullptr;
+        if (lateRepo.isValid() && branchButton) {
+            // An empty directory: the record exists and its path exists, but git
+            // has nothing to report — exactly the window between "the repo is in
+            // the list" and "its first clone finished".
+            const int idx = window.testAddLocalRepository("me", "laterepo",
+                                                          lateRepo.path());
+            window.testOpenRepository(idx);
+            QApplication::processEvents();
+            // Off the Code tab: it re-reads refs on every refresh anyway, so
+            // leaving it up would hide the regression this pins.
+            window.testShowRepoIssuesTab();
+            QApplication::processEvents();
+            const QString beforeBranch = branchButton->text();
+
+            // The clone lands: main plus two more branches, and one workflow.
+            const bool cloned =
+                initGitRepo(lateRepo) &&
+                runGitChecked(lateRepo.path(), {"branch", "release/1"}) &&
+                runGitChecked(lateRepo.path(), {"branch", "feature/two"});
+            QDir(lateRepo.path()).mkpath(QStringLiteral(".forkmesh"));
+            QFile workflow(
+                QDir(lateRepo.path()).filePath(QStringLiteral(".forkmesh/ci.yml")));
+            const bool wroteWorkflow =
+                workflow.open(QIODevice::WriteOnly | QIODevice::Truncate) &&
+                workflow.write("name: ci\non: [push]\nsteps:\n  - run: true\n") > 0;
+            workflow.close();
+
+            if (cloned && wroteWorkflow) {
+                window.testRefreshOpenRepoDetail();
+                // The Actions badge loads on a worker thread; give it a bounded
+                // window to land rather than a fixed sleep.
+                QElapsedTimer settle;
+                settle.start();
+                while (settle.elapsed() < 10000 &&
+                       window.testRepoActionsTabText() !=
+                           QStringLiteral("Actions (1)")) {
+                    QApplication::processEvents(QEventLoop::AllEvents, 50);
+                }
+                check(beforeBranch != QStringLiteral("main") &&
+                          branchButton->text() == QStringLiteral("main"),
+                      QString("status strip's branch button picks up main once "
+                              "the first clone lands (was %1, now %2)")
+                          .arg(beforeBranch, branchButton->text()));
+                check(window.testRepoBranchesButtonText() ==
+                          QStringLiteral("3 branches"),
+                      QString("branch count catches up with the landed clone "
+                              "(got %1)")
+                          .arg(window.testRepoBranchesButtonText()));
+                // The Actions tab was never opened: its badge must still be right.
+                check(window.testRepoActionsTabText() ==
+                          QStringLiteral("Actions (1)"),
+                      QString("workflow count loads without opening the Actions "
+                              "tab (got %1)")
+                          .arg(window.testRepoActionsTabText()));
+            }
+        }
+    }
+
     // Issue #232: repository About metadata belongs under the ForkMesh metadata
     // directory, not as a root-level info.json that collides with project files.
     {
