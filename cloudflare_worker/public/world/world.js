@@ -25604,6 +25604,12 @@ class ForkMeshWorld extends HTMLElement {
             pointsObjects: clampCount(sceneStats.pointsObjects),
             lineObjects: clampCount(sceneStats.lineObjects),
             lights: clampCount(sceneStats.lights, 10_000),
+            activeLights: clampCount(sceneStats.activeLights, 10_000),
+            pointLights: clampCount(sceneStats.pointLights, 10_000),
+            activePointLights: clampCount(
+              sceneStats.activePointLights,
+              10_000,
+            ),
             shadowLights: clampCount(sceneStats.shadowLights, 10_000),
             shadowCasters: clampCount(sceneStats.shadowCasters),
             transparentDrawables: clampCount(
@@ -26033,9 +26039,9 @@ class ForkMeshWorld extends HTMLElement {
         : "Waiting for the first scene walk (refreshed every 5 s while this panel is open)…",
       shadows: renderer
         ? renderer.shadowsEnabled && output
-          ? `${escapeHTML(`On · ${output.shadowMapType} ${output.shadowMapSize}×${output.shadowMapSize} map · ${output.shadowAutoUpdate ? "rebuilt every frame" : "throttled refresh"}`)}${complexity ? ` · ${escapeHTML(`${complexity.lights.toLocaleString()} lights (${complexity.shadowLights.toLocaleString()} shadowed)`)} · ${diagnosticMetric("shadowCasters", complexity.shadowCasters, `${complexity.shadowCasters.toLocaleString()} casters`)}` : ""}`
+          ? `${escapeHTML(`On · ${output.shadowMapType} ${output.shadowMapSize}×${output.shadowMapSize} map · ${output.shadowAutoUpdate ? "rebuilt every frame" : "throttled refresh"}`)}${complexity ? ` · ${escapeHTML(`${complexity.activeLights.toLocaleString()}/${complexity.lights.toLocaleString()} active lights · ${complexity.activePointLights.toLocaleString()}/${complexity.pointLights.toLocaleString()} point lights · ${complexity.shadowLights.toLocaleString()} shadowed`)} · ${diagnosticMetric("shadowCasters", complexity.shadowCasters, `${complexity.shadowCasters.toLocaleString()} casters`)}` : ""}`
           : escapeHTML(
-              `Off${complexity ? ` · ${complexity.lights.toLocaleString()} lights` : ""}`,
+              `Off${complexity ? ` · ${complexity.activeLights.toLocaleString()}/${complexity.lights.toLocaleString()} active lights · ${complexity.activePointLights.toLocaleString()}/${complexity.pointLights.toLocaleString()} point lights` : ""}`,
             )
         : unavailable("WebGL renderer unavailable"),
       topCosts: complexity
@@ -27109,13 +27115,19 @@ class ForkMeshWorld extends HTMLElement {
         // avatar from a late frame that followed its authoritative leave.
         const current = this.remotePlayers.get(id);
         if (!current) return;
-        this.remotePlayers.set(id, {
+        const next = {
           ...current,
           x: boundedPresenceNumber(message.x),
           z: boundedPresenceNumber(message.z),
           heading: boundedYaw(message.yaw),
-        });
-        peersChanged = true;
+        };
+        this.remotePlayers.set(id, next);
+        // A move carries no badge, roster, lounge, or capacity data. Update
+        // the existing interpolation target in O(1), falling back to the full
+        // pass only when a just-joined avatar has not been constructed yet.
+        if (this.world?.setRemotePlayerMovement?.(id, next) !== true) {
+          peersChanged = true;
+        }
       }
     } else if (message.type === "leave") {
       const departed = String(message.id || "");
@@ -27226,9 +27238,9 @@ class ForkMeshWorld extends HTMLElement {
     } else if (message.type === "mirror-push") {
       this.handleMirrorPush(message);
     }
-    // Pongs and targeted interactions do not change the public roster. Avoid
-    // re-walking every avatar and rebuilding unrelated scene metrics for those
-    // high-frequency frames.
+    // Pongs, successful movement fast paths, and targeted interactions do not
+    // change the public roster. Avoid re-walking every avatar and rebuilding
+    // unrelated scene metrics for those high-frequency frames.
     if (peersChanged) this.schedulePeerRender();
   }
 

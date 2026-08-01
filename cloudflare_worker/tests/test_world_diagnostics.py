@@ -116,7 +116,7 @@ def test_music_playbar_reuses_the_local_one_hertz_diagnostics_sample():
 def test_mobile_renderer_has_low_memory_and_page_lifecycle_recovery():
     assert 'window.matchMedia?.("(pointer: coarse)")?.matches' in SCENE
     assert "antialias: !compactRenderer" in SCENE
-    assert "stencil: !compactRenderer" in SCENE
+    assert "stencil: false" in SCENE
     assert 'powerPreference: compactRenderer ? "default" : "high-performance"' in SCENE
     assert "compactRenderer ? 1" in SCENE
     assert '"webglcontextlost"' in SCENE
@@ -131,6 +131,19 @@ def test_mobile_renderer_has_low_memory_and_page_lifecycle_recovery():
     assert "event?.persisted === true" in APP
     assert "RENDERER_RECOVERY_DELAY_MS" in APP
     assert "data-world-renderer-recovery" in APP
+
+
+def test_local_point_lights_are_budgeted_and_reported_separately():
+    assert "LOCAL_POINT_LIGHT_BUDGET_DESKTOP = 4" in SCENE
+    assert "LOCAL_POINT_LIGHT_BUDGET_COMPACT = 2" in SCENE
+    assert "function updateLocalPointLightBudget" in SCENE
+    assert "localPointLightCandidates.slice(0, budget)" in SCENE
+    assert "if (parent === scene) return true" in SCENE
+    assert "distanceToSquared(camera.position)" in SCENE
+    assert "const localPointLights = new Set()" in SCENE
+    assert "activePointLights" in SCENE
+    assert "activeLights" in APP
+    assert "activePointLights" in APP
 
 
 def test_build_marker_is_strictly_reduced_to_version_and_git_revision():

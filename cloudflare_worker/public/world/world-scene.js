@@ -139,7 +139,8 @@ const RENDER_STALL_THRESHOLD_MS = 500;
 const RENDER_STALL_LOG_COOLDOWN_MS = 5 * 60_000;
 const MOVEMENT_INPUT_LOG_COOLDOWN_MS = 5 * 60_000;
 const MOVEMENT_INPUT_DELAY_THRESHOLD_MS = 150;
-const SHADOW_MAP_UPDATE_MS = 2_000;
+const SHADOW_MAP_UPDATE_MS = 10_000;
+const SHADOW_MAP_BUSY_RETRY_MS = 1_000;
 const SHADOW_MAP_STALL_COOLDOWN_MS = 10_000;
 const SCENE_LOD_SAMPLE_MS = 500;
 const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
@@ -149,6 +150,9 @@ const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
 // justify running every shader-adjacent CPU update on every frame.
 const VISUAL_ANIMATION_COMPACT_MS = 1000 / 30;
 const VISUAL_ANIMATION_FAR_MS = 1000 / 20;
+const VISUAL_ANIMATION_DESKTOP_MS = 1000 / 30;
+const LOCAL_POINT_LIGHT_BUDGET_DESKTOP = 4;
+const LOCAL_POINT_LIGHT_BUDGET_COMPACT = 2;
 // Dragging upward lowers the orbit eye beneath the target, which is how this
 // camera looks into the sky. Allow the full arc in both directions.
 const CAMERA_PITCH_MIN = -Math.PI / 2 + 0.01;
@@ -4557,9 +4561,15 @@ function removeGeneratedLayer(parent, layer, interactive) {
 }
 
 function objectIsEffectivelyVisible(object) {
+  const invisibleRaycastProxy = object?.userData?.raycastProxy === true;
   let current = object;
   while (current) {
-    if (current.visible === false) return false;
+    if (
+      current.visible === false &&
+      !(current === object && invisibleRaycastProxy)
+    ) {
+      return false;
+    }
     // A subtree an administrator pulled out of the game via the Elements
     // panel has no path up to the Scene; treat it exactly like a hidden one
     // so its meshes cannot be clicked while they are not being drawn.
@@ -4603,43 +4613,72 @@ function makeOfficeWallPlacard(
 
 // Branded onto the plank itself (the seat's top face texture) instead of a
 // floating sign, so an empty bench still says whose seat it is: the account
-// it belongs to, and whether they are on it or out walking the world. An
-// unclaimed seat reads as the open guest bench. Canvas aspect (480x180)
-// matches the seat top's width:depth ratio (1.6:0.6) so the wood grain and
-// lettering aren't stretched.
-function campfireSeatPlateTexture(THREE, name, away) {
+// it belongs to, and whether they are represented here or out walking the
+// world. An unclaimed seat reads as the open guest bench. Canvas aspect
+// (480x180) matches the seat top's width:depth ratio (1.6:0.6) so the wood
+// grain and lettering aren't stretched.
+function drawCampfireSeatPlate(
+  context,
+  name,
+  state = "seated",
+  x = 0,
+  y = 0,
+  width = 480,
+  height = 180,
+) {
   const label = String(name || "").trim().slice(0, 18);
-  const glow = label ? (away ? "#ffd479" : "#9ef7c6") : "#77d9ff";
-  return canvasTexture(THREE, 480, 180, (context) => {
-    context.fillStyle = "#8a5a33";
-    context.fillRect(0, 0, 480, 180);
-    context.strokeStyle = "rgba(63,38,17,0.35)";
-    context.lineWidth = 2;
-    for (let grain = 20; grain < 180; grain += 24) {
-      context.beginPath();
-      context.moveTo(0, grain);
-      context.bezierCurveTo(120, grain - 5, 360, grain + 5, 480, grain);
-      context.stroke();
-    }
-    context.textAlign = "center";
-    context.textBaseline = "middle";
-    embossPlankText(
-      context,
-      label || "OPEN SEAT",
-      240,
-      74,
-      '700 52px "ForkMesh Favorit", system-ui, sans-serif',
-      glow,
-    );
-    embossPlankText(
-      context,
-      label ? (away ? "OUT AND ABOUT" : "AT THE FIRE") : "GUESTS WELCOME",
-      240,
-      124,
-      '400 24px "ForkMesh Mono", ui-monospace, monospace',
-      glow,
-    );
-  });
+  const away = state === "away";
+  const represented = state === "seated";
+  const manageable = state === "manage";
+  const glow = label
+    ? away
+      ? "#ffd479"
+      : represented
+        ? "#9ef7c6"
+        : manageable
+          ? "#80e8ff"
+          : "#d6d9d8"
+    : "#77d9ff";
+  context.save();
+  context.translate(x, y);
+  context.scale(width / 480, height / 180);
+  context.fillStyle = "#8a5a33";
+  context.fillRect(0, 0, 480, 180);
+  context.strokeStyle = "rgba(63,38,17,0.35)";
+  context.lineWidth = 2;
+  for (let grain = 20; grain < 180; grain += 24) {
+    context.beginPath();
+    context.moveTo(0, grain);
+    context.bezierCurveTo(120, grain - 5, 360, grain + 5, 480, grain);
+    context.stroke();
+  }
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  embossPlankText(
+    context,
+    label || "OPEN SEAT",
+    240,
+    74,
+    '700 52px "ForkMesh Favorit", system-ui, sans-serif',
+    glow,
+  );
+  embossPlankText(
+    context,
+    label
+      ? away
+        ? "OUT AND ABOUT"
+        : represented
+          ? "AT THE FIRE"
+          : manageable
+            ? "CLICK · ASSIGN TEAMS"
+            : "ROSTER BENCH"
+      : "GUESTS WELCOME",
+    240,
+    124,
+    '400 24px "ForkMesh Mono", ui-monospace, monospace',
+    glow,
+  );
+  context.restore();
 }
 
 function campfireDirtTexture(THREE) {
@@ -13041,7 +13080,7 @@ function officeDoorStatusTexture(THREE, state = "open") {
   });
 }
 
-function createOfficeMarineAquarium(THREE, animated) {
+function createOfficeMarineAquarium(THREE, animated, maxFish = 24) {
   const group = new THREE.Group();
   group.name = "forkmesh-office-marine-aquarium";
   group.position.set(-82.9, 0, -10.5);
@@ -13052,6 +13091,8 @@ function createOfficeMarineAquarium(THREE, animated) {
   const AQUARIUM_FEEDING_APPROACH_MS = 4_200;
   const AQUARIUM_FEEDING_RETURN_MS = 6_500;
   const AQUARIUM_GLASS_TAP_REACTION_MS = 2_600;
+  const AQUARIUM_ANIMATION_MS = 1000 / 20;
+  const fishLimit = clamp(Math.round(Number(maxFish) || 24), 6, 48);
   const feedingCenter = new THREE.Vector3(0.68, 6.9, -1.8);
   let feedingStartedAt = -Infinity;
   let feedingActive = false;
@@ -13059,6 +13100,8 @@ function createOfficeMarineAquarium(THREE, animated) {
   let backdropOpaque = true;
   let aquariumLightEnabled = true;
   let glassTappedAt = -Infinity;
+  let animationActive = false;
+  let nextAnimationAt = 0;
   const AQUARIUM_FISH_SPECIES = Object.freeze([
     {
       id: "clownfish",
@@ -14231,17 +14274,43 @@ function createOfficeMarineAquarium(THREE, animated) {
         activityBucket: String(user?.activityBucket || ""),
       }))
       .filter((user) => user.name);
-    const nextKey = JSON.stringify(normalized);
+    // The directory can contain a thousand lifetime accounts. A cinematic
+    // fish is sixteen meshes, so constructing one per account turns a lobby
+    // decoration into tens of thousands of drawables. Keep a deterministic,
+    // activity-first representative school and expose the full population as
+    // metadata for diagnostics/UI without allocating it into the scene.
+    const visibleUsers = [...normalized]
+      .sort((left, right) => {
+        const leftRecent =
+          left.active ||
+          ["hour", "5h", "24h", "3d", "5d", "10d"].includes(
+            left.activityBucket,
+          );
+        const rightRecent =
+          right.active ||
+          ["hour", "5h", "24h", "3d", "5d", "10d"].includes(
+            right.activityBucket,
+          );
+        return (
+          Number(rightRecent) - Number(leftRecent) ||
+          hashNumber(left.name) - hashNumber(right.name)
+        );
+      })
+      .slice(0, fishLimit);
+    group.userData.accountPopulation = normalized.length;
+    group.userData.visibleFish = visibleUsers.length;
+    group.userData.fishLimit = fishLimit;
+    const nextKey = JSON.stringify(visibleUsers);
     if (nextKey === fishPopulationKey) return;
     fishPopulationKey = nextKey;
     disposeAquariumFish();
-    const population = Math.max(1, normalized.length);
+    const population = Math.max(1, visibleUsers.length);
     const schoolScale = clamp(
       0.78 - Math.log2(population + 1) * 0.055,
       0.32,
       0.7,
     );
-    normalized.forEach((user, index) => {
+    visibleUsers.forEach((user, index) => {
       const { rng, body, accent } = aquariumUserPalette(user.name);
       const template =
         AQUARIUM_FISH_SPECIES[rng.int(AQUARIUM_FISH_SPECIES.length)];
@@ -14900,6 +14969,12 @@ function createOfficeMarineAquarium(THREE, animated) {
   }
   initializeAquariumState(0);
   animated.push((time) => {
+    if (!animationActive || time < nextAnimationAt) return;
+    nextAnimationAt =
+      nextAnimationAt <= 0 ||
+      time - nextAnimationAt > AQUARIUM_ANIMATION_MS * 2
+        ? time + AQUARIUM_ANIMATION_MS
+        : nextAnimationAt + AQUARIUM_ANIMATION_MS;
     initializeAquariumState(time);
   });
   group.traverse((child) => {
@@ -14918,6 +14993,12 @@ function createOfficeMarineAquarium(THREE, animated) {
     setBackdropOpaque,
     setLightEnabled,
     getControlState,
+    setAnimationActive(value) {
+      const next = value === true;
+      if (next && !animationActive) nextAnimationAt = 0;
+      animationActive = next;
+      return animationActive;
+    },
     setVisitorProximity(value, target = {}) {
       const next = clamp(Number(value) || 0, 0, 1);
       visitorTargetY = clamp(
@@ -15603,7 +15684,9 @@ export function createWorldScene({
   const renderer = new THREE.WebGLRenderer({
     antialias: !compactRenderer,
     alpha: false,
-    stencil: !compactRenderer,
+    // No World material or pass uses the stencil buffer. Avoid allocating and
+    // clearing an attachment that otherwise adds bandwidth to every frame.
+    stencil: false,
     powerPreference: compactRenderer ? "default" : "high-performance",
   });
   renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -15669,9 +15752,9 @@ export function createWorldScene({
   const sun = new THREE.DirectionalLight("#fff1c4", 3.4);
   sun.position.set(-24, 35, 18);
   sun.castShadow = !compactRenderer;
-  // The World contains hundreds of casters. A 1024px atlas rebuilt twice per
-  // second created the periodic 150–600ms renderer stalls seen on integrated
-  // GPUs; a soft 512px map is enough for this wide outdoor light.
+  // The World contains hundreds of casters. A 1024px atlas rebuilt on a timer
+  // created periodic 150–600ms renderer stalls on integrated GPUs; a soft
+  // 512px map with settled-input refreshes is enough for this wide light.
   sun.shadow.mapSize.set(512, 512);
   sun.shadow.camera.left = -90;
   sun.shadow.camera.right = 90;
@@ -15695,6 +15778,9 @@ export function createWorldScene({
   scene.add(world);
   const interactive = [];
   const animated = [];
+  // Camera-coupled or player-driven motion retains display cadence. The
+  // larger ambient list below is intentionally sampled less often.
+  const frameAnimated = [];
   const landmarkObjects = new Map();
 
   // -------------------------------------------------------------------------
@@ -15705,6 +15791,7 @@ export function createWorldScene({
   // back live, isolating what each piece costs. The registry is local-render
   // only: it never touches presence, layout, or any shared world state.
   const worldElements = new Map();
+  const localPointLights = new Set();
   const disabledWorldElements = new Set(
     (Array.isArray(initialDisabledElements) ? initialDisabledElements : [])
       .map((id) => String(id || "").slice(0, 64))
@@ -15778,6 +15865,9 @@ export function createWorldScene({
       .forEach((root) => {
         if (element.roots.has(root)) return;
         element.roots.add(root);
+        root.traverse?.((child) => {
+          if (child.isPointLight) localPointLights.add(child);
+        });
         if (typeof live === "function") element.liveness.set(root, live);
         if (disabledWorldElements.has(id)) detachElementRoot(element, root);
       });
@@ -15843,6 +15933,7 @@ export function createWorldScene({
           ) {
             return;
           }
+          if (child.userData?.raycastProxy === true) return;
           drawables += 1;
           const geometry = child.geometry;
           const vertices =
@@ -17507,6 +17598,7 @@ export function createWorldScene({
   const CAMPFIRE_BENCH_LEG_HEIGHT = CAMPFIRE_SEAT_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
   const CAMPFIRE_CIRCLE_MAX_SEATS = 500;
+  const CAMPFIRE_DETAILED_MEMBER_LIMIT = compactRenderer ? 12 : 32;
   const CAMPFIRE_MEMBERS_PER_ROW = 25;
   const CAMPFIRE_ROW_SPACING = 2.8;
   const CAMPFIRE_SEAT_SPACING = 2.1;
@@ -17525,6 +17617,7 @@ export function createWorldScene({
     -campfire.position.z,
     -campfire.position.x,
   );
+  let campfireSeatLabelsDirty = false;
   function rebuildCampfireCircle(neededSeats) {
     const count = Math.max(
       CAMPFIRE_CIRCLE_MIN_SEATS,
@@ -17548,6 +17641,54 @@ export function createWorldScene({
     }
     const ring = new THREE.Group();
     ring.name = "campfire-member-circle";
+    // Hundreds of individual six-material seat boxes and separate legs made
+    // the lifetime account count scale into thousands of draw submissions.
+    // The shared wood is two instanced draws and every name plate is merged
+    // into one atlas-backed mesh. Invisible meshes preserve precise seat
+    // raycasting without becoming renderer submissions themselves.
+    const seatGeometry = new THREE.BoxGeometry(1.6, 0.14, 0.6);
+    const seatMaterial = makeMaterial(THREE, "#8a5a33", {
+      roughness: 0.86,
+    });
+    const seatInstances = new THREE.InstancedMesh(
+      seatGeometry,
+      seatMaterial,
+      count,
+    );
+    seatInstances.name = "campfire-member-bench-seats";
+    const legGeometry = new THREE.BoxGeometry(
+      0.16,
+      CAMPFIRE_BENCH_LEG_HEIGHT,
+      0.5,
+    );
+    const legMaterial = makeMaterial(THREE, "#4f3018", {
+      roughness: 0.9,
+    });
+    const legInstances = new THREE.InstancedMesh(
+      legGeometry,
+      legMaterial,
+      count * 2,
+    );
+    legInstances.name = "campfire-member-bench-legs";
+    const labelGeometry = new THREE.BufferGeometry();
+    const labelMaterial = new THREE.MeshBasicMaterial({
+      toneMapped: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -1,
+      polygonOffsetUnits: -1,
+    });
+    const labelMesh = new THREE.Mesh(labelGeometry, labelMaterial);
+    labelMesh.name = "campfire-member-bench-label-atlas";
+    labelMesh.visible = false;
+    labelMesh.castShadow = false;
+    labelMesh.receiveShadow = false;
+    const labelPositions = [];
+    const labelUvs = [];
+    const labelIndices = [];
+    const labelMatrix = new THREE.Matrix4();
+    const labelCorner = new THREE.Vector3();
+    const instanceTransform = new THREE.Object3D();
+    ring.add(seatInstances, legInstances, labelMesh);
     const rowCount = Math.ceil(count / CAMPFIRE_MEMBERS_PER_ROW);
     const outerRadius =
       CAMPFIRE_BENCH_RADIUS + Math.max(0, rowCount - 1) * CAMPFIRE_ROW_SPACING;
@@ -17579,38 +17720,64 @@ export function createWorldScene({
       bench.position.set(Math.cos(angle) * radius, 0, Math.sin(angle) * radius);
       // Long axis tangent to the ring so every bench fronts the flames.
       bench.rotation.y = -angle + Math.PI / 2;
-      const plankSideMaterial = makeMaterial(THREE, "#8a5a33", {
-        roughness: 0.86,
-      });
-      // The top face gets its own material so a seat's name can be branded
-      // into just that face without a texture atlas stretching across the
-      // sides and legs too.
-      const plankTopMaterial = makeMaterial(THREE, "#8a5a33", {
-        roughness: 0.86,
-      });
-      const seat = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.14, 0.6), [
-        plankSideMaterial,
-        plankSideMaterial,
-        plankTopMaterial,
-        plankSideMaterial,
-        plankSideMaterial,
-        plankSideMaterial,
-      ]);
+      instanceTransform.position.set(
+        bench.position.x,
+        CAMPFIRE_SEAT_Y,
+        bench.position.z,
+      );
+      instanceTransform.rotation.set(0, bench.rotation.y, 0);
+      instanceTransform.updateMatrix();
+      seatInstances.setMatrixAt(index, instanceTransform.matrix);
+
+      const seat = new THREE.Mesh(seatGeometry, seatMaterial);
       seat.position.y = CAMPFIRE_SEAT_Y;
+      seat.visible = false;
       // Seat coordinates are read from the live world matrix at click time, so a
       // relocated campfire needs no bookkeeping and the seats can never drift.
       seat.userData.campfireBench = true;
+      seat.userData.raycastProxy = true;
       interactive.push(seat);
       bench.add(seat);
-      [-0.62, 0.62].forEach((end) => {
-        const leg = new THREE.Mesh(
-          new THREE.BoxGeometry(0.16, CAMPFIRE_BENCH_LEG_HEIGHT, 0.5),
-          makeMaterial(THREE, "#4f3018", { roughness: 0.9 }),
+      [-0.62, 0.62].forEach((end, legIndex) => {
+        instanceTransform.position.set(
+          bench.position.x + Math.cos(bench.rotation.y) * end,
+          CAMPFIRE_BENCH_LEG_HEIGHT / 2,
+          bench.position.z - Math.sin(bench.rotation.y) * end,
         );
-        leg.position.set(end, CAMPFIRE_BENCH_LEG_HEIGHT / 2, 0);
-        bench.add(leg);
+        instanceTransform.rotation.set(0, bench.rotation.y, 0);
+        instanceTransform.updateMatrix();
+        legInstances.setMatrixAt(index * 2 + legIndex, instanceTransform.matrix);
       });
-      benches.push({ bench, seat, labelKey: null });
+      // A resource-free child remains as the per-member chat-bubble anchor.
+      // The visible quad is written into the single merged atlas mesh below.
+      const label = new THREE.Object3D();
+      label.name = `campfire-member-bench-label-${index + 1}`;
+      label.position.y = CAMPFIRE_SEAT_TOP_Y + 0.002;
+      label.rotation.x = -Math.PI / 2;
+      bench.add(label);
+      bench.updateMatrix();
+      label.updateMatrix();
+      labelMatrix.multiplyMatrices(bench.matrix, label.matrix);
+      const vertex = index * 4;
+      for (const [x, y] of [
+        [-0.8, 0.3],
+        [0.8, 0.3],
+        [-0.8, -0.3],
+        [0.8, -0.3],
+      ]) {
+        labelCorner.set(x, y, 0).applyMatrix4(labelMatrix);
+        labelPositions.push(labelCorner.x, labelCorner.y, labelCorner.z);
+      }
+      labelUvs.push(0, 1, 1, 1, 0, 0, 1, 0);
+      labelIndices.push(
+        vertex,
+        vertex + 2,
+        vertex + 1,
+        vertex + 2,
+        vertex + 3,
+        vertex + 1,
+      );
+      benches.push({ bench, seat, label, labelKey: null });
       ring.add(bench);
       // Offsets carry the top of the plank; sitters are placed by their hips
       // off it (seatedAvatarY), the same way the local player is.
@@ -17622,7 +17789,22 @@ export function createWorldScene({
         ),
       );
     }
-    setShadows(ring);
+    seatInstances.instanceMatrix.needsUpdate = true;
+    legInstances.instanceMatrix.needsUpdate = true;
+    labelGeometry.setAttribute(
+      "position",
+      new THREE.Float32BufferAttribute(labelPositions, 3),
+    );
+    labelGeometry.setAttribute(
+      "uv",
+      new THREE.Float32BufferAttribute(labelUvs, 2),
+    );
+    labelGeometry.setIndex(labelIndices);
+    labelGeometry.computeBoundingSphere();
+    seatInstances.castShadow = true;
+    seatInstances.receiveShadow = true;
+    legInstances.castShadow = true;
+    legInstances.receiveShadow = true;
     campfire.add(ring);
     campfire.userData.seatRing = ring;
     campfire.userData.seatCount = count;
@@ -17633,22 +17815,90 @@ export function createWorldScene({
     );
     campfire.userData.seatOffsets = seatOffsets;
     campfire.userData.seatBenches = benches;
+    campfire.userData.seatLabelMesh = labelMesh;
+    campfireSeatLabelsDirty = true;
     return seatOffsets;
   }
 
   // Rebrands one bench's plank top, skipping the canvas work when the seat
   // already shows this name and away state. The ring is not built until the
   // first updateMemberLounge, so an earlier call simply finds no bench.
-  function setCampfireSeatLabel(index, name, away) {
+  function setCampfireSeatLabel(index, name, state = "seated") {
     const bench = (campfire.userData.seatBenches || [])[index];
     if (!bench) return;
-    const key = `${name} ${away ? "away" : "here"}`;
+    const key = `${name} ${state}`;
     if (bench.labelKey === key) return;
     bench.labelKey = key;
-    const topMaterial = bench.seat.material[2];
-    topMaterial.map?.dispose?.();
-    topMaterial.map = campfireSeatPlateTexture(THREE, name, away);
-    topMaterial.needsUpdate = true;
+    bench.label.userData.name = String(name || "Campfire").slice(0, 32);
+    bench.labelName = String(name || "");
+    bench.labelState = state;
+    campfireSeatLabelsDirty = true;
+  }
+
+  function repaintCampfireSeatLabels() {
+    if (!campfireSeatLabelsDirty) return;
+    campfireSeatLabelsDirty = false;
+    const benches = campfire.userData.seatBenches || [];
+    const labelMesh = campfire.userData.seatLabelMesh;
+    const uvAttribute = labelMesh?.geometry?.attributes?.uv;
+    if (!labelMesh?.material || !uvAttribute || !benches.length) return;
+    const cellWidth = compactRenderer ? 128 : 160;
+    const cellHeight = compactRenderer ? 48 : 60;
+    const columns = Math.min(
+      20,
+      Math.max(1, Math.ceil(Math.sqrt(benches.length * 0.375))),
+    );
+    const rows = Math.ceil(benches.length / columns);
+    const atlasWidth = columns * cellWidth;
+    const atlasHeight = rows * cellHeight;
+    const texture = canvasTexture(
+      THREE,
+      atlasWidth,
+      atlasHeight,
+      (context) => {
+        benches.forEach((bench, index) => {
+          drawCampfireSeatPlate(
+            context,
+            bench.labelName,
+            bench.labelState,
+            (index % columns) * cellWidth,
+            Math.floor(index / columns) * cellHeight,
+            cellWidth,
+            cellHeight,
+          );
+        });
+      },
+    );
+    const uvs = uvAttribute.array;
+    benches.forEach((_bench, index) => {
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const u0 = (column * cellWidth) / atlasWidth;
+      const u1 = ((column + 1) * cellWidth) / atlasWidth;
+      const v1 = 1 - (row * cellHeight) / atlasHeight;
+      const v0 = 1 - ((row + 1) * cellHeight) / atlasHeight;
+      uvs.set([u0, v1, u1, v1, u0, v0, u1, v0], index * 8);
+    });
+    uvAttribute.needsUpdate = true;
+    labelMesh.material.map?.dispose?.();
+    labelMesh.material.map = texture;
+    labelMesh.material.needsUpdate = true;
+    labelMesh.visible = true;
+    labelMesh.userData.atlasWidth = atlasWidth;
+    labelMesh.userData.atlasHeight = atlasHeight;
+  }
+
+  function setCampfireSeatOrgTeamAction(index, assignment, peerId, name) {
+    const seat = (campfire.userData.seatBenches || [])[index]?.seat;
+    if (!seat) return;
+    orgTeamActions.delete(seat);
+    if (assignment?.canManage !== true) return;
+    orgTeamActions.set(seat, {
+      org: assignment.org,
+      member: assignment.member,
+      peerId,
+      name,
+    });
   }
   // No placeholder ring here: the spark above keeps the fire lively until
   // updateMemberLounge below runs with the real roster and calls
@@ -17756,7 +18006,7 @@ export function createWorldScene({
     });
   }
   const swingPendulumOmega = Math.sqrt(9.8 / SWING_ROPE_LENGTH);
-  animated.push((time, delta) => {
+  frameAnimated.push((time, delta) => {
     swingStates.forEach((swing, seatIndex) => {
       const target =
         swingRide?.index === seatIndex
@@ -18043,7 +18293,7 @@ export function createWorldScene({
     heavy: gymState.weightLb >= GYM_HEAVY_WEIGHT_LB,
     open,
   });
-  animated.push((time) => {
+  frameAnimated.push((time) => {
     const repElapsed = gymState.repStartedAt
       ? time - gymState.repStartedAt
       : Infinity;
@@ -18749,7 +18999,11 @@ export function createWorldScene({
     floorGroup.add(coffeeTable);
   }
   addOfficeFloorAtmosphere(officeInterior, "lobby", 0);
-  const officeAquarium = createOfficeMarineAquarium(THREE, animated);
+  const officeAquarium = createOfficeMarineAquarium(
+    THREE,
+    animated,
+    compactRenderer ? 12 : 24,
+  );
   officeInterior.add(officeAquarium.group);
   const aquariumControlLocalPosition = new THREE.Vector3();
   let aquariumControlsNearby = false;
@@ -19091,7 +19345,7 @@ export function createWorldScene({
   let engineeringDebugSampleAt = performance.now();
   let engineeringDebugFrames = 0;
   let engineeringDebugLongestFrameMs = 0;
-  animated.push((time, delta) => {
+  function updateEngineeringDebugPanel(time, delta) {
     engineeringDebugFrames += 1;
     engineeringDebugLongestFrameMs = Math.max(
       engineeringDebugLongestFrameMs,
@@ -19169,8 +19423,12 @@ export function createWorldScene({
       },
       {
         label: "ANIMATION CALLBACKS",
-        value: animated.length.toLocaleString(),
-        status: statusHigh(animated.length, 240, 420),
+        value: (animated.length + frameAnimated.length).toLocaleString(),
+        status: statusHigh(
+          animated.length + frameAnimated.length,
+          240,
+          420,
+        ),
         note: "bounded loops executed by the World frame",
       },
       {
@@ -19225,7 +19483,7 @@ export function createWorldScene({
     engineeringDebugSampleAt = time;
     engineeringDebugFrames = 0;
     engineeringDebugLongestFrameMs = 0;
-  });
+  }
 
   function setInfrastructureConsoleLogs({ enabled = false, entries = [] } = {}) {
     const active = enabled === true;
@@ -22024,10 +22282,16 @@ export function createWorldScene({
   const cameraLocalDesired = new THREE.Vector3();
   const cameraLocalPosition = new THREE.Vector3();
   const cameraLimitLocalTarget = new THREE.Vector3();
+  const officeCameraLocalPosition = new THREE.Vector3();
   const diagnosticsDrawingBuffer = new THREE.Vector2();
   const officeDoorLocalPosition = new THREE.Vector3();
   const officeReceptionLocalPosition = new THREE.Vector3();
   const buildBoardWorldPosition = new THREE.Vector3();
+  const localPointLightPosition = new THREE.Vector3();
+  const localPointLightCandidates = [];
+  scene.traverse((object) => {
+    if (object.isPointLight) localPointLights.add(object);
+  });
   const viewportRect = { width: 1, height: 1 };
   let currentLocation = "Town Square";
   let currentRegion = "central";
@@ -22178,6 +22442,44 @@ export function createWorldScene({
   let aerialLandmarkMarkers = null;
   let aerialLandmarkMarkersUnavailable = false;
 
+  function pointLightParentVisible(light) {
+    let parent = light?.parent;
+    while (parent) {
+      if (parent.visible === false) return false;
+      if (parent === scene) return true;
+      parent = parent.parent;
+    }
+    return false;
+  }
+
+  function updateLocalPointLightBudget(far = farSceneDetail === true) {
+    const budget = far
+      ? 0
+      : compactRenderer
+        ? LOCAL_POINT_LIGHT_BUDGET_COMPACT
+        : LOCAL_POINT_LIGHT_BUDGET_DESKTOP;
+    localPointLightCandidates.length = 0;
+    for (const light of localPointLights) {
+      if (!(light.intensity > 0) || !pointLightParentVisible(light)) {
+        light.visible = false;
+        continue;
+      }
+      light.getWorldPosition(localPointLightPosition);
+      light.userData.budgetDistanceSq =
+        localPointLightPosition.distanceToSquared(camera.position);
+      localPointLightCandidates.push(light);
+    }
+    localPointLightCandidates.sort(
+      (left, right) =>
+        left.userData.budgetDistanceSq - right.userData.budgetDistanceSq,
+    );
+    const enabled = new Set(localPointLightCandidates.slice(0, budget));
+    for (const light of localPointLights) {
+      light.visible = enabled.has(light);
+    }
+    return enabled.size;
+  }
+
   function ensureAerialLandmarkMarkers() {
     if (aerialLandmarkMarkers) return aerialLandmarkMarkers;
     aerialLandmarkMarkers = new THREE.Group();
@@ -22238,7 +22540,10 @@ export function createWorldScene({
       officeSceneMode === "town" &&
       cameraMode === "third-person" &&
       cameraZoom >= (compactRenderer ? 1.12 : 1.32);
-    if (!force && farSceneDetail === far) return;
+    if (!force && farSceneDetail === far) {
+      updateLocalPointLightBudget(far);
+      return;
+    }
     farSceneDetail = far;
     renderer.shadowMap.enabled = !compactRenderer && !far;
     renderer.shadowMap.needsUpdate = !compactRenderer && !far;
@@ -22263,6 +22568,7 @@ export function createWorldScene({
         });
       }
     }
+    updateLocalPointLightBudget(far);
     // Distance may reduce expensive lighting work, but it must never remove
     // World content. Repositories, organizations, fediverse displays, every
     // public board, landscaping, and live repository layers remain visible at
@@ -25655,58 +25961,20 @@ export function createWorldScene({
   function walkPlayer(delta, time) {
     const previousHorizontalPosition =
       movementPreviousPosition.copy(player.position);
+    const input = movementInput();
     const {
       bikeDirection,
       keyboardActive,
-      ridingBike,
-      ridingCar,
-      sprinting,
-      touchStrength,
-      inputStrength,
       movement,
-    } = movementInput();
-    if (
-      updateJetpackFlight(
-        {
-          keyboardActive,
-          sprinting,
-          touchStrength,
-          inputStrength,
-          movement,
-        },
-        delta,
-        time,
-      )
-    ) {
+    } = input;
+    if (updateJetpackFlight(input, delta, time)) {
       return;
     }
     if (quadcopterRide) {
-      updateQuadcopterRide(
-        {
-          keyboardActive,
-          sprinting,
-          touchStrength,
-          inputStrength,
-          movement,
-        },
-        delta,
-        time,
-      );
+      updateQuadcopterRide(input, delta, time);
       return;
     }
-    if (
-      updateGymExercise(
-        {
-          keyboardActive,
-          sprinting,
-          touchStrength,
-          inputStrength,
-          movement,
-        },
-        delta,
-        time,
-      )
-    ) {
+    if (updateGymExercise(input, delta, time)) {
       return;
     }
     if (swingRide) {
@@ -25777,17 +26045,12 @@ export function createWorldScene({
       const state = bikeStates[bikeRide.index];
       const rideDirection = Math.sign(bikeDirection);
       if (state && rideDirection) {
-        movementSpeedForInput(
-          {
-            keyboardActive: keyboardActive || Boolean(rideDirection),
-            ridingBike: true,
-            ridingCar: false,
-            sprinting,
-            touchStrength,
-            inputStrength: Math.abs(bikeDirection),
-          },
-          delta,
-        );
+        // movementInputState is reused on the next frame. Adjust its two
+        // bike-specific readings in place instead of allocating an object in
+        // the hottest movement path.
+        input.keyboardActive = keyboardActive || Boolean(rideDirection);
+        input.inputStrength = Math.abs(bikeDirection);
+        movementSpeedForInput(input, delta);
         state.travelDirection = rideDirection;
         const previousBikeHeading = state.bike.rotation.y;
         placeBikeOnLane(
@@ -25816,17 +26079,7 @@ export function createWorldScene({
       // Any manual input takes the wheel back from a double-click dash.
       cancelDash();
       focusedRepositoryKey = "";
-      movementSpeedForInput(
-        {
-          keyboardActive,
-          ridingBike,
-          ridingCar,
-          sprinting,
-          touchStrength,
-          inputStrength,
-        },
-        delta,
-      );
+      movementSpeedForInput(input, delta);
       player.position.addScaledVector(
         movement,
         keyboardMovementSpeed *
@@ -26455,7 +26708,10 @@ export function createWorldScene({
           ? player
           : null;
     if (officeSceneMode === "lobby") {
-      const localPosition = officeAvatarLocalPosition(player);
+      const localPosition = officeAvatarLocalPosition(
+        player,
+        officeCameraLocalPosition,
+      );
       const insideElevator = officeElevatorCabinContains(
         localPosition.x,
         localPosition.z,
@@ -27483,6 +27739,37 @@ export function createWorldScene({
     updateNeighborhoodHomes(players);
   }
 
+  function setRemotePlayerMovement(id, movement = {}) {
+    const avatar = remotePlayers.get(String(id || ""));
+    if (!avatar?.userData?.targetPosition) {
+      // A connected account can remain in the app roster briefly after an
+      // administrator removes its scene avatar. Treat its later move frames
+      // as handled so they cannot trigger a full rejected rebuild each time.
+      return administrativelyRemovedAccounts.has(
+        String(movement?.name || "").trim().toLowerCase(),
+      );
+    }
+    // The authoritative roster pass owns deterministic lounge, campfire and
+    // neighborhood placement. Movement frames for those presence states are
+    // transport noise, not permission to pull a parked avatar off its seat.
+    if (
+      avatar.userData.loungeActivity ||
+      avatar.userData.campfireSeated
+    ) {
+      return true;
+    }
+    const x = clamp(Number(movement.x) || 0, -WORLD_RADIUS, WORLD_RADIUS);
+    const y = clamp(Number(movement.y) || 0.38, 0.38, 40);
+    const z = clamp(Number(movement.z) || 0, -WORLD_RADIUS, WORLD_RADIUS);
+    avatar.userData.targetPosition.set(x, y, z);
+    avatar.userData.targetHeading = arrivalFacingHeading(
+      x,
+      z,
+      Number(movement.heading) || 0,
+    );
+    return true;
+  }
+
   function updateNeighborhoodHomes(players = []) {
     const neighborhood = landmarkObjects.get("neighborhood");
     if (!neighborhood) return;
@@ -27660,6 +27947,30 @@ export function createWorldScene({
     const roster = (Array.isArray(members) ? members : []).filter((member) =>
       String(member?.name || "").trim(),
     );
+    // Benches and their labels preserve the complete public roster. Detailed
+    // avatars are far more expensive (at least sixteen draws apiece), so keep
+    // a deterministic recent-first subset instead of turning every lifetime
+    // account into a permanently live character rig.
+    const detailedMemberIds = new Set(
+      roster
+        .slice(0, CAMPFIRE_CIRCLE_MAX_SEATS)
+        .filter((member) => member?.away !== true)
+        .sort((left, right) => {
+          const recent = (member) =>
+            ["hour", "5h", "24h", "3d", "5d", "10d"].includes(
+              String(member?.activityBucket || ""),
+            );
+          return (
+            Number(recent(right)) - Number(recent(left)) ||
+            hashNumber(left?.name) - hashNumber(right?.name)
+          );
+        })
+        .slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)
+        .map(
+          (member) =>
+            `member:${String(member?.name || "").trim().toLowerCase()}`,
+        ),
+    );
     const guestSeats = Math.max(0, Math.min(64, Math.round(Number(guests) || 0)));
     const previousSeatRadius = Number(campfire.userData.seatRadius) || 0;
     const seats = rebuildCampfireCircle(
@@ -27674,15 +27985,36 @@ export function createWorldScene({
         const id = `member:${name.toLowerCase()}`;
         if (seatByName.has(name.toLowerCase())) {
           // Two rows for one account: leave the extra bench open.
-          setCampfireSeatLabel(index, "", false);
+          setCampfireSeatLabel(index, "", "open");
+          setCampfireSeatOrgTeamAction(index, null, id, name);
           return;
         }
         seatByName.set(name.toLowerCase(), index);
         // The bench keeps the member's name whether or not they are on it,
         // so the empty seats read as "who is out and about" rather than as
         // unclaimed furniture.
-        setCampfireSeatLabel(index, name, member.away === true);
-        if (member.away === true) {
+        const represented = detailedMemberIds.has(id);
+        const assignment = sanitizedOrgTeamAssignment({
+          id,
+          name,
+          accountStatus: "Registered",
+          orgTeam: member?.orgTeam,
+        });
+        const labelState = member.away === true
+          ? "away"
+          : represented
+            ? "seated"
+            : assignment?.canManage === true
+              ? "manage"
+              : "roster";
+        setCampfireSeatLabel(index, name, labelState);
+        setCampfireSeatOrgTeamAction(
+          index,
+          !represented && member.away !== true ? assignment : null,
+          id,
+          name,
+        );
+        if (member.away === true || !represented) {
           const parked = loungeMembers.get(id);
           if (parked) {
             removeRemoteOrgTeamControl(parked, id);
@@ -27794,10 +28126,14 @@ export function createWorldScene({
       });
     // Benches past the roster are the open guest seats.
     for (let index = roster.length; index < seats.length; index += 1) {
-      setCampfireSeatLabel(index, "", false);
+      setCampfireSeatLabel(index, "", "open");
+      setCampfireSeatOrgTeamAction(index, null, "", "");
     }
+    repaintCampfireSeatLabels();
     campfire.userData.seatByName = seatByName;
     campfire.userData.memberFigureCount = Math.min(roster.length, seats.length);
+    campfire.userData.detailedMemberFigures = seen.size;
+    campfire.userData.memberFigureLimit = CAMPFIRE_DETAILED_MEMBER_LIMIT;
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
       removeRemoteOrgTeamControl(figure, id);
@@ -31125,14 +31461,24 @@ export function createWorldScene({
     return showAvatarChatBubble(avatar, text);
   }
 
-  // A registered member who is not in the world as a live peer still sits on
-  // their own campfire bench (updateMemberLounge), so a chat line from them
-  // floats over the seated figure's head instead of going nowhere.
+  // A registered member who is not in the world as a live peer still owns a
+  // named campfire bench. Detailed figures anchor their own lines; roster-only
+  // benches anchor a bubble at the name plate so high account counts do not
+  // make public chat disappear or require a full avatar per account.
   function showMemberChatBubble(name, text) {
     const wanted = String(name || "").trim().toLowerCase();
     if (!wanted) return false;
     if (loungeMembers.has(`member:${wanted}`)) {
       return showChatBubble(`member:${wanted}`, text);
+    }
+    const seatByName = campfire.userData.seatByName;
+    const benches = campfire.userData.seatBenches || [];
+    const showAtBench = (index) => {
+      const anchor = benches[index]?.label;
+      return anchor ? showAvatarChatBubble(anchor, text) : false;
+    };
+    if (seatByName instanceof Map && seatByName.has(wanted)) {
+      return showAtBench(seatByName.get(wanted));
     }
     // The public room truncates asserted names to 16 characters, so a
     // truncated sender may only be a prefix of the seated member's name.
@@ -31140,6 +31486,11 @@ export function createWorldScene({
     for (const id of loungeMembers.keys()) {
       if (id.slice("member:".length).startsWith(wanted)) {
         return showChatBubble(id, text);
+      }
+    }
+    if (seatByName instanceof Map) {
+      for (const [memberName, index] of seatByName) {
+        if (memberName.startsWith(wanted)) return showAtBench(index);
       }
     }
     return false;
@@ -33008,6 +33359,7 @@ export function createWorldScene({
     const rawFrameMs = Math.max(0, time - lastFrame);
     const delta = clamp(rawFrameMs / 1000, 0, 0.05);
     lastFrame = time;
+    updateEngineeringDebugPanel(time, delta);
     if (movementInputStartedAt > 0) {
       const inputToFrameMs = Math.max(0, time - movementInputStartedAt);
       diagnosticsLastMovementInputMs = inputToFrameMs;
@@ -33041,6 +33393,9 @@ export function createWorldScene({
     // rawFrameMs includes time spent waiting for requestAnimationFrame and is
     // useful for FPS diagnostics, but it cannot identify renderer work. Stall
     // attribution is performed after render from actual main-thread work time.
+    if (!reducedMotion && worldElementEnabled("animations")) {
+      frameAnimated.forEach((callback) => callback(time, delta));
+    }
     updateOfficeElevator(time);
     if (officeSceneMode === "town") {
       walkPlayer(delta, time);
@@ -33062,7 +33417,12 @@ export function createWorldScene({
     }
     updateOfficeReceptionGuide(time);
     updateOfficeAttendanceClock(time);
-    officeAquarium.updateFeeding(time, !reducedMotion);
+    const aquariumAnimationActive =
+      !reducedMotion &&
+      officeSceneMode === "lobby" &&
+      officeCurrentFloorId === "lobby";
+    officeAquarium.setAnimationActive(aquariumAnimationActive);
+    officeAquarium.updateFeeding(time, aquariumAnimationActive);
     // The Office is part of the same live World. Neighbours and ForkBot keep
     // animating while the local visitor is in the tower instead of freezing
     // the landscape visible through its glass walls. Each population's
@@ -33366,14 +33726,20 @@ export function createWorldScene({
         ? VISUAL_ANIMATION_FAR_MS
         : compactRenderer
           ? VISUAL_ANIMATION_COMPACT_MS
-          : 0;
+          : VISUAL_ANIMATION_DESKTOP_MS;
       const visualDelta = clamp(
         (time - lastVisualAnimationAt) / 1000,
         0,
         0.05,
       );
       lastVisualAnimationAt = time;
-      nextVisualAnimationAt = time + visualFrameMs;
+      // Preserve cadence instead of drifting by a display frame whenever a
+      // requestAnimationFrame timestamp lands just past the deadline.
+      nextVisualAnimationAt =
+        nextVisualAnimationAt <= 0 ||
+        time - nextVisualAnimationAt > visualFrameMs * 2
+          ? time + visualFrameMs
+          : nextVisualAnimationAt + visualFrameMs;
       if (worldElementEnabled("animations")) {
         animated.forEach((callback) => callback(time, visualDelta));
       }
@@ -33509,9 +33875,22 @@ export function createWorldScene({
     }
     let refreshedShadowMap = false;
     if (renderer.shadowMap.enabled && time >= nextShadowMapUpdateAt) {
-      nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;
-      renderer.shadowMap.needsUpdate = true;
-      refreshedShadowMap = true;
+      const shadowRefreshBusy =
+        wasWalking ||
+        officeWasMoving ||
+        officeLobbyPlayerMoving ||
+        primaryPointerId !== null ||
+        pinchActive;
+      if (shadowRefreshBusy) {
+        // A full shadow pass is the largest recurring GPU spike in this
+        // scene. Let input settle before paying it so walking and camera
+        // gestures never absorb the hitch.
+        nextShadowMapUpdateAt = time + SHADOW_MAP_BUSY_RETRY_MS;
+      } else {
+        nextShadowMapUpdateAt = time + SHADOW_MAP_UPDATE_MS;
+        renderer.shadowMap.needsUpdate = true;
+        refreshedShadowMap = true;
+      }
     }
     renderer.render(scene, camera);
     const frameWorkMs = Math.max(0, performance.now() - frameWorkStartedAt);
@@ -33662,6 +34041,9 @@ export function createWorldScene({
       pointsObjects: 0,
       lineObjects: 0,
       lights: 0,
+      activeLights: 0,
+      pointLights: 0,
+      activePointLights: 0,
       shadowLights: 0,
       shadowCasters: 0,
       transparentDrawables: 0,
@@ -33683,6 +34065,13 @@ export function createWorldScene({
       if (child.visible === false) stats.hiddenObjects += 1;
       if (child.isLight) {
         stats.lights += 1;
+        if (objectIsEffectivelyVisible(child)) stats.activeLights += 1;
+        if (child.isPointLight) {
+          stats.pointLights += 1;
+          if (objectIsEffectivelyVisible(child)) {
+            stats.activePointLights += 1;
+          }
+        }
         if (child.castShadow) {
           stats.shadowLights += 1;
           const size = child.shadow?.mapSize;
@@ -33696,6 +34085,9 @@ export function createWorldScene({
       const drawable =
         child.isMesh || child.isPoints || child.isLine || child.isSprite;
       if (!drawable) return;
+      // Invisible meshes used only for precise interaction are not submitted
+      // to WebGL and should not inflate scene/draw complexity diagnostics.
+      if (child.userData?.raycastProxy === true) return;
       if (child.isMesh) {
         stats.meshes += 1;
         if (child.castShadow) stats.shadowCasters += 1;
@@ -34041,6 +34433,7 @@ export function createWorldScene({
       })),
     }),
     setRemotePlayers,
+    setRemotePlayerMovement,
     animateUnverifiedAvatarDeletion,
     setLocalOrgTeam,
     setAvatarFediverseProfile,

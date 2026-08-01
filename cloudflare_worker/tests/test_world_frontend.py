@@ -539,17 +539,23 @@ def test_presence_client_uses_only_coarse_ephemeral_world_protocol():
     assert "session?.accountTier" not in APP
 
 
-def test_presence_pongs_do_not_trigger_full_avatar_or_capacity_rebuilds():
+def test_presence_moves_use_the_constant_time_scene_fast_path():
     receiver = APP[
         APP.index("  receivePresence(message) {"):
         APP.index("\n  setupBroadcastChannel()", APP.index("  receivePresence(message) {"))
     ]
     assert "let peersChanged = false" in receiver
-    # Roster changes coalesce into one deferred renderPeers() pass instead of
-    # a full member-directory rebuild per inbound movement frame.
+    # Roster changes still coalesce into one deferred renderPeers() pass, while
+    # ordinary movement only changes an existing avatar interpolation target.
     assert "if (peersChanged) this.schedulePeerRender()" in receiver
     assert 'message.type === "move"' in receiver
+    assert "this.world?.setRemotePlayerMovement?.(id, next)" in receiver
+    assert "!== true" in receiver
     assert 'message.type === "ping"' not in receiver
+    assert "function setRemotePlayerMovement" in SCENE
+    assert "avatar.userData.loungeActivity" in SCENE
+    assert "administrativelyRemovedAccounts.has(" in SCENE
+    assert "setRemotePlayerMovement," in SCENE
 
 
 def test_handshakes_are_offered_from_one_profile_and_answered_by_the_peer():
@@ -2375,9 +2381,9 @@ def test_world_settings_moves_focus_before_hiding_the_panel():
 
 
 def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
-    # adhoc #287: one bench per registered account rings the campfire. Away
-    # members appear as seated figures facing the fire, members walking the
-    # world as live avatars leave their bench empty, and the ring rebuilds
+    # adhoc #287: one bench per registered account rings the campfire. A
+    # bounded recent subset appears as seated figures facing the fire, members
+    # walking the world leave their named bench empty, and the ring rebuilds
     # wider whenever a new account joins so everyone still fits. adhoc #291
     # adds one extra bench that always stays open for the next guest, and
     # adhoc #303 one more per guest already in the world, names every bench
@@ -2390,7 +2396,9 @@ def test_world_members_sit_in_an_expanding_circle_around_the_campfire():
         "+ guestSeats + 1,\n    )" in SCENE
     )
     assert "function setCampfireSeatLabel" in SCENE
-    assert "function campfireSeatPlateTexture" in SCENE
+    assert "function drawCampfireSeatPlate" in SCENE
+    assert "function repaintCampfireSeatLabels" in SCENE
+    assert 'labelMesh.name = "campfire-member-bench-label-atlas"' in SCENE
     assert '"OPEN SEAT"' in SCENE
     assert '"OUT AND ABOUT"' in SCENE
     assert "campfire.userData.seatByName" in SCENE
