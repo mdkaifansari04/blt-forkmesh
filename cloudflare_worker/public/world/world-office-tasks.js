@@ -5,6 +5,11 @@ const MARKETING_TASKS_PATH = "/api/world/office/marketing-tasks";
 // making three D1-backed requests a minute per visitor. If an assignee leaves
 // the Office with a timer running, only a five-minute reconciliation poll is
 // needed; elapsed time continues locally from the server clock.
+// The whole organization catalog the relay is willing to return (MAX_TASKS in
+// world_office_tasks.py). Rows are rendered a page at a time, TASK_PAGE_SIZE
+// per page, so the board is not capped at its first page.
+const MAX_TASKS = 2000;
+const TASK_PAGE_SIZE = 100;
 const OFFICE_TASKS_POLL_MS = 60_000;
 const OFFICE_TASKS_BACKGROUND_POLL_MS = 5 * 60_000;
 const OFFICE_TASKS_TICK_MS = 1_000;
@@ -308,6 +313,9 @@ export function createWorldOfficeTasksController({
   );
   const organizationHeading = root.querySelector(
     "[data-world-organization-task-heading]",
+  );
+  const organizationPager = root.querySelector(
+    "[data-world-organization-task-pager]",
   );
   const taskCounts = Array.from(
     root.querySelectorAll("[data-world-task-count]"),
