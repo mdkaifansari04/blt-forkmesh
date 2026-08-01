@@ -9695,7 +9695,7 @@ async def world_deploy_status_handler(env, request):
     )
 
 
-WORLD_QA_DECK_REVISION = "2026-07-29-full-catalog-28"
+WORLD_QA_DECK_REVISION = "2026-08-01-open-account-access-30"
 # The physical desk paints only five cards per page, but its catalog must
 # include every bounded source: built-ins, dynamically routed QA items, and
 # the organization's encrypted QA-ready tasks. Organization tasks are capped
@@ -10086,30 +10086,6 @@ WORLD_QA_CARDS = (
 WORLD_QA_CARD_KEYS = frozenset(item[0] for item in WORLD_QA_CARDS)
 
 
-async def _organization_qa_access(env, org_bi, account_bi, actor):
-    """QA access without broadening organization or Office permissions."""
-    role = await _org_role(env, org_bi, actor)
-    if role in ("owner", "admin"):
-        return True, role, False
-    internal = await d1_first(
-        env,
-        "SELECT 1 AS one FROM org_team_members "
-        "WHERE org_bi=? AND member_bi=? "
-        "AND team IN ('quality-assurance','qa') LIMIT 1",
-        org_bi, str(account_bi or ""),
-    )
-    if internal:
-        return True, role, False
-    external = await d1_first(
-        env,
-        "SELECT 1 AS one FROM org_team_collaborators "
-        "WHERE org_bi=? AND account_bi=? "
-        "AND team IN ('quality-assurance','qa') LIMIT 1",
-        org_bi, str(account_bi or ""),
-    )
-    return bool(external), role, bool(external)
-
-
 async def world_qa_handler(env, request):
     await ensure_schema(env)
     method = method_name(request)
@@ -10197,7 +10173,8 @@ async def world_qa_handler(env, request):
             "ok": True,
             "authenticated": False,
             "authorized": False,
-            "requiredTeam": "quality-assurance",
+            "requiredTeam": "",
+            "requiresAuthentication": True,
             "revision": WORLD_QA_DECK_REVISION,
             "cards": [],
             "reviews": {},
@@ -10213,8 +10190,6 @@ async def world_qa_handler(env, request):
     actor = clean_string(
         (record or {}).get("name"), MAX_NODE_NAME).strip().lower()
     can_route = False
-    can_private_qa = False
-    external_qa = False
     private_tasks = {}
     qa_org_bi = ""
     if actor:
@@ -10226,33 +10201,8 @@ async def world_qa_handler(env, request):
                 role in ("owner", "admin")
                 or permission in ("maintain", "admin")
             )
-            can_private_qa, _role, external_qa = (
-                await _organization_qa_access(
-                    env, org_bi, account_bi, actor)
-            )
             qa_org_bi = org_bi
-    if not can_private_qa:
-        return json_response({
-            "ok": True,
-            "authenticated": True,
-            "authorized": False,
-            "requiredTeam": "quality-assurance",
-            "revision": WORLD_QA_DECK_REVISION,
-            "cards": [],
-            "reviews": {},
-            "stats": {
-                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                "total": 0,
-            },
-            "globalReviews": {},
-            "globalStats": {
-                "pass": 0, "fail": 0, "unsure": 0, "reviewed": 0,
-                "testers": 0, "total": 0,
-            },
-            "canRoute": False,
-            "canViewPrivateTasks": False,
-        }, cache_control="no-store")
-    if can_private_qa and qa_org_bi:
+    if qa_org_bi:
         task_rows = await d1_all(
             env,
             "SELECT task_id,department,team,qa_status,qa_reviewed_at,data "
@@ -10293,6 +10243,29 @@ async def world_qa_handler(env, request):
                 deck_keys.add(key)
     deck_cards = deck_cards[:WORLD_QA_MAX_CARDS]
     deck_keys = {item[0] for item in deck_cards}
+
+    def include_private_task_reviews(global_reviews, global_stats):
+        """Fold each task's authoritative first QA result into the snapshot."""
+        for key, task in private_tasks.items():
+            reviewed_at = max(
+                0, int(task["row"].get("qa_reviewed_at") or 0))
+            if not reviewed_at:
+                continue
+            verdict = {
+                "passed": "pass",
+                "failed": "fail",
+                "unknown": "unsure",
+            }.get(str(task["row"].get("qa_status") or ""))
+            if not verdict:
+                continue
+            counts = {"pass": 0, "fail": 0, "unsure": 0, "total": 1}
+            counts[verdict] = 1
+            global_reviews[key] = counts
+            global_stats[verdict] += 1
+            global_stats["reviewed"] += 1
+        global_stats["total"] = len(deck_cards)
+
+    include_private_task_reviews(global_reviews, global_stats)
     if method == "POST":
         item_key = clean_string(data.get("key"), 80)
         if item_key not in deck_keys:
@@ -10379,9 +10352,9 @@ async def world_qa_handler(env, request):
                 return json_response(
                     {"ok": False, "error": "invalid_verdict"}, status=400)
             if item_key in private_tasks:
-                if not can_private_qa or not qa_org_bi:
+                if not qa_org_bi:
                     return json_response(
-                        {"ok": False, "error": "qa_team_required"},
+                        {"ok": False, "error": "qa_task_unavailable"},
                         status=403,
                     )
                 task_id = item_key[5:]
@@ -10458,7 +10431,6 @@ async def world_qa_handler(env, request):
                     "organization_task", task_id, "success",
                     {
                         "verdict": task_verdict,
-                        "external": external_qa,
                         "hasFailureReason": bool(failure_reason),
                         "hasScreenshot": bool(failure_screenshot),
                     },
@@ -10473,6 +10445,7 @@ async def world_qa_handler(env, request):
                     account_bi, item_key, verdict, int(Date.now()),
                 )
         global_reviews, global_stats = await global_qa_snapshot()
+        include_private_task_reviews(global_reviews, global_stats)
     rows = await d1_all(
         env,
         "SELECT item_key,verdict,reviewed_at FROM world_qa_reviews "
@@ -10535,7 +10508,8 @@ async def world_qa_handler(env, request):
         "ok": True,
         "authenticated": True,
         "authorized": True,
-        "requiredTeam": "quality-assurance",
+        "requiredTeam": "",
+        "requiresAuthentication": True,
         "revision": WORLD_QA_DECK_REVISION,
         "cards": [
             {
@@ -10544,6 +10518,9 @@ async def world_qa_handler(env, request):
                 "howToTest": how_to_test,
                 "global": global_reviews.get(
                     key, {"pass": 0, "fail": 0, "unsure": 0, "total": 0}),
+                "reviewedByAnyone": (
+                    int(global_reviews.get(key, {}).get("total") or 0) > 0
+                ),
                 **reviews.get(key, {}),
                 **({
                     "organizationTask": True,
@@ -10579,8 +10556,7 @@ async def world_qa_handler(env, request):
         "globalReviews": global_reviews,
         "globalStats": global_stats,
         "canRoute": can_route,
-        "canViewPrivateTasks": can_private_qa,
-        "externalQaCollaborator": external_qa,
+        "canViewPrivateTasks": bool(qa_org_bi),
         **({"routeResult": route_result}
            if method == "POST" and "route_result" in locals() else {}),
     }, cache_control="no-store")
@@ -16972,6 +16948,40 @@ async def world_moderation_handler(env, request):
     )
 
 
+# The desktop's Nodes page deletes a node from the app, and the ordinary launch
+# path is authenticateSilently() — keys, no session token at all (adhoc #63
+# family). Without this the button would answer not_admin to the very operator
+# who owns the mesh. The proof names the exact node it removes, so a captured
+# signature can only ever re-delete that same node inside the skew window, and
+# _is_admin still gates the caller exactly as it does a session-token one.
+WORLD_NODE_DELETE_PROOF = "forkmesh-world-node-delete-v1"
+
+
+async def _world_node_delete_signed_actor(env, request, data):
+    """Resolve the admin account behind a key-signed node deletion, or ""."""
+    if method_name(request) != "POST":
+        return ""
+    params = parse_qs(urlparse(request.url).query)
+    actor = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    target = clean_string(
+        (data or {}).get("nodeName", ""), MAX_NODE_NAME).lower()
+    if not actor or not sig or not target or not _ts_ok(ts):
+        return ""
+    canonical = (
+        WORLD_NODE_DELETE_PROOF + "\n" + actor + "\n" + target + "\n" + str(ts)
+    ).encode()
+    # Every key the account may sign as, not just its primary pubkey — same
+    # durable desktop identity as _org_task_signed_session.
+    if not await _verify_owner_signature(env, actor, sig, canonical):
+        return ""
+    _, record = await _account_row(env, actor)
+    if not record or record.get("status") != "active":
+        return ""
+    return actor
+
+
 async def world_admin_delete_node_handler(env, request):
     """Permanently remove one named node after an exact admin confirmation."""
     if method_name(request) != "POST":
@@ -16986,6 +16996,8 @@ async def world_admin_delete_node_handler(env, request):
             {"error": "invalid_json"}, status=400,
             cache_control="no-store, max-age=0, must-revalidate")
     actor = await _authed_account_name(env, request, data)
+    if not actor:
+        actor = await _world_node_delete_signed_actor(env, request, data)
     if not actor or not await _is_admin(env, actor):
         return json_response(
             {"error": "not_admin"}, status=403,
@@ -17112,6 +17124,21 @@ async def world_admin_delete_node_handler(env, request):
             env, "DELETE FROM mirror_https_endpoints "
             "WHERE lower(node_name)=?",
             identifier)
+        # The public /status page builds its mirror roster from recorded
+        # samples (status_history), not from the live endpoint table, so a
+        # deleted node kept a "Mirror node — <name>" row with 30 days of
+        # history — and a permanent "down" verdict — long after every other
+        # trace of it was gone. Drop its samples too so deletion leaves none.
+        status_system = STATUS_MIRROR_PREFIX + identifier
+        await d1_run(
+            env, "DELETE FROM system_status_daily WHERE system=?",
+            status_system)
+        await d1_run(
+            env, "DELETE FROM system_status_hourly WHERE system=?",
+            status_system)
+        await d1_run(
+            env, "DELETE FROM system_status_minute WHERE system=?",
+            status_system)
     for identity_bi in identity_bis:
         cleanup_name = (
             target if identity_bi == target_bi else requested_target
@@ -37484,6 +37511,89 @@ def _install_diag_fields(payload):
     )
 
 
+# A successful installer run ("done" step, ok) is celebrated: the World runs
+# its firework show for this long (same window as a federated instance joining)
+# and every platform admin gets one Ping per run.
+WORLD_INSTALL_CELEBRATION_MS = 10 * 60 * 1000
+MAX_WORLD_INSTALL_CELEBRATIONS = 8
+
+
+async def _enqueue_install_celebration_pings(env, fields, now):
+    """Best-effort admin Pings for one completed installer run."""
+    run, _step, _ok, os_name, arch = fields[:5]
+    platform = " · ".join(p for p in (os_name, arch) if p) or "unknown platform"
+    rows = await d1_all(
+        env, "SELECT data FROM users WHERE is_admin=1 LIMIT 20")
+    for row in rows or []:
+        try:
+            record = await decrypt_row(env, row.get("data", "")) or {}
+        except Exception:
+            continue
+        admin = clean_string(
+            record.get("name", ""), MAX_NODE_NAME).strip().lower()
+        if not valid_node_name(admin):
+            continue
+        await enqueue_notification(
+            env, admin, "operational_alert",
+            "New ForkMesh desktop installed \U0001F386",
+            body=("Someone just installed the ForkMesh desktop with the "
+                  "one-line installer (" + platform + "). The World is "
+                  "running its firework show."),
+            href="/world/", source="installer",
+            dedupe="install-celebration:" + run,
+            ts=now,
+            meta={"platform": platform},
+        )
+
+
+async def world_recent_installs_handler(env, request):
+    """Fresh successful installer runs, for the World's firework display.
+
+    Anonymous coarse platform tokens only — the install_diag table stores no
+    account, IP, or hostname (see SCHEMA note) — and the installer's random
+    run id is hashed so the raw telemetry key never leaves the Worker.
+    """
+    if method_name(request) != "GET":
+        return json_response(
+            {"error": "method_not_allowed"}, status=405,
+            cache_control="no-store", extra_headers={"allow": "GET"})
+    await ensure_schema(env)
+    now = int(Date.now())
+    cutoff = now - WORLD_INSTALL_CELEBRATION_MS
+    rows = await d1_all(
+        env,
+        "SELECT run, MAX(ts) AS ts, MAX(os) AS os, MAX(arch) AS arch "
+        "FROM install_diag WHERE step='done' AND ok=1 AND ts>=? "
+        "GROUP BY run ORDER BY ts DESC LIMIT ?",
+        cutoff, MAX_WORLD_INSTALL_CELEBRATIONS,
+    )
+    installs = []
+    for row in rows or []:
+        run = str(row.get("run") or "")
+        if not run:
+            continue
+        installs.append({
+            "id": hashlib.sha256(
+                ("forkmesh-world-install-v1\0" + run).encode()
+            ).hexdigest()[:24],
+            "installedAt": max(0, int(row.get("ts") or 0)),
+            "os": clean_string(row.get("os"), 32),
+            "arch": clean_string(row.get("arch"), 32),
+        })
+    return json_response({
+        "ok": True,
+        "installs": installs,
+        "count": len(installs),
+        "observedAt": now,
+        "privacy": (
+            "Anonymous installer telemetry only: coarse platform tokens and "
+            "a hashed per-run id. No accounts, IP addresses, or hostnames "
+            "are stored or exposed."
+        ),
+    }, cache_control="public, max-age=30",
+       extra_headers={"x-content-type-options": "nosniff"})
+
+
 async def install_diag_handler(env, request):
     # Anonymous, unauthenticated install telemetry from install.sh. Best-effort:
     # never errors out the caller (the installer fires these fire-and-forget). We
@@ -37515,6 +37625,11 @@ async def install_diag_handler(env, request):
                (SELECT id FROM install_diag ORDER BY id DESC LIMIT ?)""",
             MAX_INSTALL_DIAG,
         )
+        if fields[1] == "done" and fields[2] == 1:
+            # Whole install finished: Ping the admins; the World picks the run
+            # up from /api/world/installs and starts its firework show.
+            await _enqueue_install_celebration_pings(
+                env, fields, int(Date.now()))
     except Exception:
         pass
     return json_response({"ok": True}, cache_control="no-store")
@@ -43983,6 +44098,10 @@ class Default(WorkerEntrypoint):
                 "/api/world/instances",
                 "/api/world/instances/"):
             return await world_relay_instances_handler(self.env, request)
+        if url.path in (
+                "/api/world/installs",
+                "/api/world/installs/"):
+            return await world_recent_installs_handler(self.env, request)
 
         if (url.path == "/api/world/fediverse"
                 or url.path == "/api/world/fediverse/"

@@ -39,6 +39,21 @@ static constexpr int kBranchFilesRole = Qt::UserRole + 72;
 static constexpr int kBranchAddedRole = Qt::UserRole + 73;
 static constexpr int kBranchRemovedRole = Qt::UserRole + 74;
 static constexpr int kBranchConflictRole = Qt::UserRole + 75;
+static constexpr int kBranchAheadRole = Qt::UserRole + 76;
+static constexpr int kBranchBehindRole = Qt::UserRole + 77;
+
+// Match the compact agent-branch chip: conflicts win because they need manual
+// resolution, otherwise a branch behind its base gets the download/merge-needed
+// marker.  Keeping this decision in one helper also makes the icon semantics
+// directly testable without comparing rendered pixels.
+static QString branchHealthIconName(bool conflicted, int behind)
+{
+    if (conflicted)
+        return QStringLiteral("alert");
+    if (behind > 0)
+        return QStringLiteral("download");
+    return QString();
+}
 
 class BranchOverviewDelegate : public SelectionBorderRowDelegate
 {
@@ -59,48 +74,49 @@ public:
     void paint(QPainter *painter, const QStyleOptionViewItem &option,
                const QModelIndex &index) const override
     {
-        // Let the shared delegate paint hover/selection and the row outline, but
-        // suppress its normal text/icon: the compact row below controls their
-        // exact order (status, age, worktree, stats, then full branch name).
-        QStyleOptionViewItem background(option);
-        background.text.clear();
-        background.icon = QIcon();
-        SelectionBorderRowDelegate::paint(painter, background, index);
+        // Paint only the style's cell background before composing the compact
+        // contents ourselves. Calling QStyledItemDelegate::paint (including via
+        // SelectionBorderRowDelegate) re-runs initStyleOption(index), which puts
+        // DisplayRole and DecorationRole back after we clear them and therefore
+        // paints the branch name once at the cell edge and again below after the
+        // metadata. That double paint is the dense overlap seen on long lists.
+        const QStyleOptionViewItem background =
+            backgroundStyleOption(option, index);
+        QStyle *style = option.widget ? option.widget->style()
+                                      : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &background, painter,
+                           option.widget);
+        paintRowSelectionBorder(painter, option, index);
 
         painter->save();
         painter->setClipRect(option.rect);
-        const bool selected = option.state & QStyle::State_Selected;
-        const QVariant foreground = index.data(Qt::ForegroundRole);
-        const QColor primary = selected
-                                   ? option.palette.color(QPalette::HighlightedText)
-                                   : foreground.canConvert<QBrush>()
-                                         ? foreground.value<QBrush>().color()
-                                         : option.palette.color(QPalette::Text);
-        const QColor muted = selected ? primary : QColor(QStringLiteral("#8b949e"));
+        // Selection is a transparent green outline on this table, so keep the
+        // ordinary text colours. HighlightedText is white and made the selected
+        // branch name disappear against the unchanged white/light background.
+        const QColor primary = primaryTextColor(option, index);
+        const QColor muted(QStringLiteral("#8b949e"));
         const int cy = option.rect.center().y();
         int x = option.rect.left() + 8;
 
+        constexpr int iconSlot = 20;
         const QIcon statusIcon = index.data(Qt::DecorationRole).value<QIcon>();
-        if (!statusIcon.isNull()) {
+        if (!statusIcon.isNull())
             statusIcon.paint(painter, QRect(x, cy - 7, 14, 14));
-            x += 19;
-        } else {
-            // Status icons line up even for branches without an agent.
-            x += 19;
-        }
+        // Every optional icon owns the same fixed slot, even when absent, so
+        // age, worktree, file, conflict and charts form straight columns.
+        x += iconSlot;
 
         painter->setPen(muted);
         const QString updated = index.data(kBranchUpdatedRole).toString();
-        const int ageWidth = qMax(28, option.fontMetrics.horizontalAdvance(updated) + 7);
+        constexpr int ageWidth = 32;
         painter->drawText(QRect(x, option.rect.top(), ageWidth, option.rect.height()),
                           Qt::AlignVCenter | Qt::AlignLeft, updated);
         x += ageWidth;
 
-        if (index.data(kBranchWorktreeRole).toBool()) {
+        if (index.data(kBranchWorktreeRole).toBool())
             themedOcticon("file-directory", QColor("#58a6ff"), 13)
                 .paint(painter, QRect(x, cy - 7, 14, 14));
-            x += 18;
-        }
+        x += iconSlot;
 
         const QVariant filesValue = index.data(kBranchFilesRole);
         const int files = filesValue.isValid() ? filesValue.toInt() : -1;
@@ -108,26 +124,32 @@ public:
             painter->setPen(muted);
             const QString fileText = files > 99 ? QStringLiteral("99+")
                                                 : QString::number(files);
-            const int width = option.fontMetrics.horizontalAdvance(fileText) + 5;
-            painter->drawText(QRect(x, option.rect.top(), width, option.rect.height()),
+            painter->drawText(QRect(x, option.rect.top(), 28, option.rect.height()),
                               Qt::AlignVCenter | Qt::AlignLeft, fileText);
-            x += width;
         }
+        x += 28;
 
-        if (index.data(kBranchConflictRole).toBool()) {
-            themedOcticon("alert", QColor("#d29922"), 13)
+        const QString healthIcon = branchHealthIconName(
+            index.data(kBranchConflictRole).toBool(),
+            index.data(kBranchBehindRole).isValid()
+                ? index.data(kBranchBehindRole).toInt()
+                : -1);
+        if (!healthIcon.isEmpty()) {
+            const QColor healthColor(currentThemeIsDark() ? "#e3742f"
+                                                           : "#bc4c00");
+            themedOcticon(healthIcon, healthColor, 13)
                 .paint(painter, QRect(x, cy - 7, 14, 14));
-            x += 18;
         }
+        x += iconSlot;
 
         const QVariant addedValue = index.data(kBranchAddedRole);
         const QVariant removedValue = index.data(kBranchRemovedRole);
         const int added = addedValue.isValid() ? addedValue.toInt() : -1;
         const int removed = removedValue.isValid() ? removedValue.toInt() : -1;
+        constexpr int barWidth = 4;
+        constexpr int barGap = 2;
+        constexpr int maxHeight = 15;
         if (added >= 0 && removed >= 0) {
-            constexpr int barWidth = 4;
-            constexpr int barGap = 2;
-            constexpr int maxHeight = 15;
             const int total = qMax(1, added + removed);
             const int addHeight = added == 0 ? 1 : qMax(2, added * maxHeight / total);
             const int removeHeight = removed == 0 ? 1
@@ -139,8 +161,33 @@ public:
                                     cy + maxHeight / 2 - removeHeight,
                                     barWidth, removeHeight),
                               QColor("#f85149"));
-            x += 2 * barWidth + barGap + 8;
         }
+        x += 2 * barWidth + barGap + 8;
+
+        const QVariant aheadValue = index.data(kBranchAheadRole);
+        const QVariant behindValue = index.data(kBranchBehindRole);
+        const int ahead = aheadValue.isValid() ? aheadValue.toInt() : -1;
+        const int behind = behindValue.isValid() ? behindValue.toInt() : -1;
+        if (ahead >= 0 && behind >= 0) {
+            constexpr int chartHeight = 15;
+            constexpr int chartBarWidth = 4;
+            constexpr int chartGap = 2;
+            const int total = qMax(1, ahead + behind);
+            const int behindHeight = behind == 0
+                                         ? 1
+                                         : qMax(2, behind * chartHeight / total);
+            const int aheadHeight = ahead == 0
+                                        ? 1
+                                        : qMax(2, ahead * chartHeight / total);
+            painter->fillRect(QRect(x, cy + chartHeight / 2 - behindHeight,
+                                    chartBarWidth, behindHeight),
+                              QColor("#d29922"));
+            painter->fillRect(QRect(x + chartBarWidth + chartGap,
+                                    cy + chartHeight / 2 - aheadHeight,
+                                    chartBarWidth, aheadHeight),
+                              QColor("#58a6ff"));
+        }
+        x += 18;
 
         painter->setPen(primary);
         const QRect titleRect(x, option.rect.top(),
@@ -151,6 +198,55 @@ public:
         painter->drawText(titleRect, Qt::AlignVCenter | Qt::AlignLeft,
                           index.data(Qt::DisplayRole).toString());
         painter->restore();
+    }
+
+#ifdef FORKMESH_WINDOW_TESTS
+    bool testStyleLayerHasNoContent(const QStyleOptionViewItem &option,
+                                    const QModelIndex &index) const
+    {
+        const QStyleOptionViewItem background =
+            backgroundStyleOption(option, index);
+        return background.text.isEmpty() && background.icon.isNull() &&
+               !(background.features & QStyleOptionViewItem::HasDisplay) &&
+               !(background.features & QStyleOptionViewItem::HasDecoration);
+    }
+
+    bool testSelectionKeepsNormalTextColor(const QStyleOptionViewItem &option,
+                                           const QModelIndex &index) const
+    {
+        QStyleOptionViewItem selected(option);
+        selected.state |= QStyle::State_Selected;
+        QStyleOptionViewItem normal(option);
+        normal.state &= ~QStyle::State_Selected;
+        return primaryTextColor(selected, index) == primaryTextColor(normal, index);
+    }
+#endif
+
+private:
+    static QColor primaryTextColor(const QStyleOptionViewItem &option,
+                                   const QModelIndex &index)
+    {
+        const QVariant foreground = index.data(Qt::ForegroundRole);
+        return foreground.canConvert<QBrush>()
+                   ? foreground.value<QBrush>().color()
+                   : option.palette.color(QPalette::Text);
+    }
+
+    QStyleOptionViewItem backgroundStyleOption(
+        const QStyleOptionViewItem &option, const QModelIndex &index) const
+    {
+        QStyleOptionViewItem background(option);
+        initStyleOption(&background, index);
+        background.text.clear();
+        background.icon = QIcon();
+        background.features &= ~QStyleOptionViewItem::HasDisplay;
+        background.features &= ~QStyleOptionViewItem::HasDecoration;
+        // The branches list intentionally has no hover fill, and selection is
+        // represented by the shared green outline painted above—not a style
+        // supplied per-cell band.
+        background.state &= ~QStyle::State_MouseOver;
+        background.state &= ~QStyle::State_Selected;
+        return background;
     }
 };
 
@@ -469,8 +565,8 @@ void MainWindow::loadWorktreesPanel()
     if (repoPath.isEmpty() || !QDir(repoPath).exists(QStringLiteral(".git"))) {
         if (m_worktreesSummary)
             m_worktreesSummary->setText(QStringLiteral("· no local checkout"));
-        if (m_worktreesButton)
-            m_worktreesButton->setText(QStringLiteral("Worktrees"));
+        if (auto *b = dynamic_cast<VerticalIconButton *>(m_worktreesButton))
+            b->setBadgeCount(0);
         return;
     }
 
@@ -746,12 +842,8 @@ void MainWindow::loadWorktreesPanel()
     if (m_worktreesSummary)
         m_worktreesSummary->setText(
             QString::fromUtf8("\xC2\xB7 %1 worktree(s)").arg(wts.size()));
-    if (m_worktreesButton)
-        m_worktreesButton->setText(
-            QStringLiteral("%1 %2")
-                .arg(formatCount(wts.size()))
-                .arg(wts.size() == 1 ? QStringLiteral("worktree")
-                                     : QStringLiteral("worktrees")));
+    if (auto *b = dynamic_cast<VerticalIconButton *>(m_worktreesButton))
+        b->setBadgeCount(wts.size());
 
     // Re-select the worktree that was selected before the rebuild so its diff and
     // the detail buttons stay visible (e.g. right after "Update from main"). If it
@@ -890,7 +982,8 @@ bool MainWindow::selectBranchRow(const QString &branch)
     if (!m_branchesTable || branch.isEmpty())
         return false;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *it = m_branchesTable->item(row, 0);
+        QTableWidgetItem *it =
+            m_branchesTable->item(row, kBranchesNameColumn);
         if (it && it->text() == branch) {
             m_branchesTable->selectRow(row); // fires currentCellChanged -> diff
             return true;
@@ -934,36 +1027,100 @@ QString MainWindow::testBranchVisualBadges(const QString &branch) const
     if (!m_branchesTable)
         return QString();
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        const QTableWidgetItem *item = m_branchesTable->item(row, 0);
+        const QTableWidgetItem *item =
+            m_branchesTable->item(row, kBranchesNameColumn);
         if (!item || item->text() != branch)
             continue;
         auto value = [item](int role) {
             const QVariant data = item->data(role);
             return data.isValid() ? data.toString() : QStringLiteral("-");
         };
-        return QStringLiteral("%1|%2|%3|%4|%5|%6")
+        return QStringLiteral("%1|%2|%3|%4|%5|%6|%7|%8")
             .arg(value(kBranchFilesRole), value(kBranchAddedRole),
                  value(kBranchRemovedRole),
                  item->data(kBranchWorktreeRole).toBool() ? QStringLiteral("1")
                                                           : QStringLiteral("0"),
                  item->data(kBranchConflictRole).toBool() ? QStringLiteral("1")
                                                           : QStringLiteral("0"),
-                 value(kBranchUpdatedRole));
+                 value(kBranchUpdatedRole), value(kBranchBehindRole),
+                 value(kBranchAheadRole));
+    }
+    return QString();
+}
+
+QString MainWindow::testBranchHealthIcon(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return QString();
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        const QTableWidgetItem *item =
+            m_branchesTable->item(row, kBranchesNameColumn);
+        if (!item || item->text() != branch)
+            continue;
+        const QVariant behind = item->data(kBranchBehindRole);
+        return branchHealthIconName(
+            item->data(kBranchConflictRole).toBool(),
+            behind.isValid() ? behind.toInt() : -1);
     }
     return QString();
 }
 
 bool MainWindow::testBranchesUseCompactColumns() const
 {
-    return m_branchesTable && m_branchesTable->isColumnHidden(2) &&
-           m_branchesTable->isColumnHidden(3);
+    return m_branchesTable && m_branchesTable->columnCount() == 5 &&
+           m_branchesTable->isColumnHidden(kBranchesUpdatedColumn) &&
+           m_branchesTable->isColumnHidden(kBranchesWorktreeColumn);
 }
 
 bool MainWindow::testBranchesKeepFlexibleNameColumn() const
 {
     return m_branchesTable &&
-           m_branchesTable->horizontalHeader()->sectionResizeMode(0) ==
+           m_branchesTable->horizontalHeader()->sectionResizeMode(
+               kBranchesNameColumn) ==
                QHeaderView::Stretch;
+}
+
+bool MainWindow::testBranchDelegatePaintsSingleTextLayer(
+    const QString &branch) const
+{
+    if (!m_branchesTable)
+        return false;
+    auto *delegate = dynamic_cast<BranchOverviewDelegate *>(
+        m_branchesTable->itemDelegateForColumn(kBranchesNameColumn));
+    if (!delegate)
+        return false;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        const QModelIndex index =
+            m_branchesTable->model()->index(row, kBranchesNameColumn);
+        if (index.data(Qt::DisplayRole).toString() != branch)
+            continue;
+        QStyleOptionViewItem option;
+        option.initFrom(m_branchesTable->viewport());
+        option.rect = m_branchesTable->visualRect(index);
+        return delegate->testStyleLayerHasNoContent(option, index);
+    }
+    return false;
+}
+
+bool MainWindow::testBranchSelectedTextColorIsReadable(const QString &branch) const
+{
+    if (!m_branchesTable)
+        return false;
+    auto *delegate = dynamic_cast<BranchOverviewDelegate *>(
+        m_branchesTable->itemDelegateForColumn(kBranchesNameColumn));
+    if (!delegate)
+        return false;
+    for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
+        const QModelIndex index =
+            m_branchesTable->model()->index(row, kBranchesNameColumn);
+        if (index.data(Qt::DisplayRole).toString() != branch)
+            continue;
+        QStyleOptionViewItem option;
+        option.initFrom(m_branchesTable->viewport());
+        option.rect = m_branchesTable->visualRect(index);
+        return delegate->testSelectionKeepsNormalTextColor(option, index);
+    }
+    return false;
 }
 
 QString MainWindow::testSwitchToBranchImmediateSelection(const QString &branch)
@@ -971,7 +1128,8 @@ QString MainWindow::testSwitchToBranchImmediateSelection(const QString &branch)
     switchToBranch(branch);
     if (!m_branchesTable)
         return QString();
-    const QTableWidgetItem *it = m_branchesTable->item(m_branchesTable->currentRow(), 0);
+    const QTableWidgetItem *it = m_branchesTable->item(
+        m_branchesTable->currentRow(), kBranchesNameColumn);
     return it ? it->text() : QString();
 }
 
@@ -980,11 +1138,12 @@ bool MainWindow::testClickBranchRowInOverview(const QString &branch)
     if (!m_branchesTable)
         return false;
     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-        QTableWidgetItem *item = m_branchesTable->item(row, 0);
+        QTableWidgetItem *item =
+            m_branchesTable->item(row, kBranchesNameColumn);
         if (!item || item->text() != branch)
             continue;
         // Emit the same signal a real non-action cell click produces.
-        emit m_branchesTable->cellClicked(row, 0);
+        emit m_branchesTable->cellClicked(row, kBranchesNameColumn);
         return true;
     }
     return false;
@@ -2295,12 +2454,12 @@ QWidget *MainWindow::buildBranchesTab()
     headerRow->addWidget(newBranchButton);
     layout->addLayout(headerRow);
 
-    m_branchesTable = new QTableWidget(0, 6);
+    m_branchesTable = new QTableWidget(0, 5);
     installColumnHeaderMenu(m_branchesTable); // 3-dots per-column menu (issue #318)
     m_branchesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_branchesTable);
     m_branchesTable->setHorizontalHeaderLabels(
-        {"Branch", "Status", "Updated", "Worktree", "Issue / Agent", ""});
+        {"", "Branch", "Status", "Updated", "Worktree"});
     m_branchesTable->verticalHeader()->setVisible(false);
     // Give each row enough height for the sm action buttons (max 28px tall) plus
     // breathing room, so the buttons don't crowd the row above/below.
@@ -2313,62 +2472,48 @@ QWidget *MainWindow::buildBranchesTab()
     m_branchesTable->setWordWrap(false);
     m_branchesTable->setTextElideMode(Qt::ElideNone);
     m_branchesTable->setItemDelegateForColumn(
-        0, new BranchOverviewDelegate(m_branchesTable));
+        kBranchesNameColumn, new BranchOverviewDelegate(m_branchesTable));
     QHeaderView *bh = m_branchesTable->horizontalHeader();
     bh->setHighlightSections(false);
-    bh->setSectionResizeMode(0, QHeaderView::Stretch);
-    bh->setSectionResizeMode(1, QHeaderView::ResizeToContents);
-    bh->setSectionResizeMode(2, QHeaderView::ResizeToContents);
+    // The compact trash action sits immediately before the flexible branch name.
+    bh->setSectionResizeMode(kBranchesDeleteColumn, QHeaderView::Fixed);
+    bh->resizeSection(kBranchesDeleteColumn, 36);
+    bh->setSectionResizeMode(kBranchesNameColumn, QHeaderView::Stretch);
+    bh->setSectionResizeMode(kBranchesStatusColumn, QHeaderView::ResizeToContents);
+    bh->setSectionResizeMode(kBranchesUpdatedColumn, QHeaderView::ResizeToContents);
     // Worktree column: shows the on-disk path of the worktree (if any) a branch
     // is checked out in, so the list surfaces an agent's isolated working tree
     // without a trip to the Worktrees tab. Sized to its content.
-    bh->setSectionResizeMode(3, QHeaderView::ResizeToContents);
-    // Issue / Agent column: when an agent session is working this branch, name
-    // the issue it's attached to (or "Agent" for an ad-hoc run), so the list
-    // shows what each branch is for without opening the Agents tab (adhoc #191).
-    bh->setSectionResizeMode(4, QHeaderView::ResizeToContents);
-    // The action column holds cell widgets (Pull / Create PR / delete
-    // buttons). ResizeToContents only measures item delegates and ignores
-    // cell widgets, so it would collapse this column and clip the buttons.
-    // Keep it Fixed and size it to the actual buttons in loadBranchesPanel().
-    bh->setSectionResizeMode(5, QHeaderView::Fixed);
+    bh->setSectionResizeMode(kBranchesWorktreeColumn,
+                             QHeaderView::ResizeToContents);
     // Keep the Branch cell flexible. Converting it to Interactive freezes its
     // narrow initial size and leaves a large unused area to the right, forcing
     // the inline agent/worktree/churn metadata to overlap the branch name.
-    makeColumnsResizable(m_branchesTable, 0);
+    makeColumnsResizable(m_branchesTable, kBranchesNameColumn);
     // Updated and Worktree now live as compact glyphs/metadata inside Branch,
     // matching the Agents list. Keep their model cells populated (automation and
     // accessibility still read them) but remove the duplicate visual columns.
-    m_branchesTable->setColumnHidden(2, true);
-    m_branchesTable->setColumnHidden(3, true);
+    m_branchesTable->setColumnHidden(kBranchesUpdatedColumn, true);
+    m_branchesTable->setColumnHidden(kBranchesWorktreeColumn, true);
     // Selecting a real branch (click or arrow keys) retires the "merged &
     // deleted" check left where a branch used to be (adhoc #15). The diff
     // preview that used to ride this selection moved into the Git view's range
     // pane (adhoc #107) — see the cellClicked navigation below.
     connect(m_branchesTable, &QTableWidget::currentCellChanged, this,
             [this](int row, int, int, int) {
-                QTableWidgetItem *it = m_branchesTable->item(row, 0);
+                QTableWidgetItem *it =
+                    m_branchesTable->item(row, kBranchesNameColumn);
                 if (it && !it->text().isEmpty())
                     clearMergedBranchFlash();
             });
-    // Clicking the Issue / Agent cell jumps to the agent run working that branch
-    // (adhoc #258). Clicking any other (non-action) cell opens the branch's
-    // commits, changed files and diff in the Git view — the branch diff viewer
-    // lives there now (adhoc #107).
+    // The leading trash cell owns its button click. Every other visible cell
+    // opens the branch's commits, changed files and diff in the Git view.
     connect(m_branchesTable, &QTableWidget::cellClicked, this,
             [this](int row, int column) {
-                if (column == 4) {
-                    QTableWidgetItem *it = m_branchesTable->item(row, 4);
-                    if (!it)
-                        return;
-                    const QVariant sid = it->data(Qt::UserRole);
-                    if (sid.isValid())
-                        switchToAgentsTab(sid.toInt());
+                if (column == kBranchesDeleteColumn)
                     return;
-                }
-                if (column >= 4)
-                    return; // action column: its cell widgets own their clicks
-                QTableWidgetItem *it = m_branchesTable->item(row, 0);
+                QTableWidgetItem *it =
+                    m_branchesTable->item(row, kBranchesNameColumn);
                 if (it && !it->text().isEmpty())
                     switchToBranch(it->text());
             });
@@ -3089,7 +3234,8 @@ void MainWindow::startBranchChangeStats(const BranchesPanelData &data)
             if (!m_branchesTable || repoGitDir() != data.dir)
                 return;
             for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-                QTableWidgetItem *name = m_branchesTable->item(row, 0);
+                QTableWidgetItem *name =
+                    m_branchesTable->item(row, kBranchesNameColumn);
                 if (!name)
                     continue;
                 const auto stat = stats.constFind(name->text());
@@ -3121,14 +3267,14 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     m_branchesTable->setRowCount(data.branches.size() +
                                  data.remoteBranches.size());
     // setRowCount() only destroys the cell widgets of rows it trims, so the
-    // "Merged & deleted" widget the previous render put in column 0 survives into
+    // "Merged & deleted" widget the previous render put in the Branch column survives into
     // a surviving row and paints on top of that row's branch name — and every
-    // rebuild inside the flash window stacked another one (adhoc #56). Column 0 is
-    // the only column whose widget is conditional; the action column gets a fresh
-    // widget on every row below.
+    // rebuild inside the flash window stacked another one (adhoc #56). The Branch
+    // column is the only one whose widget is conditional; the delete column gets
+    // a fresh widget on every row below.
     for (int r = 0, rows = m_branchesTable->rowCount(); r < rows; ++r) {
-        if (m_branchesTable->cellWidget(r, 0))
-            m_branchesTable->removeCellWidget(r, 0);
+        if (m_branchesTable->cellWidget(r, kBranchesNameColumn))
+            m_branchesTable->removeCellWidget(r, kBranchesNameColumn);
     }
     int nextRow = 0;
     const QString &dir = data.dir;
@@ -3161,10 +3307,10 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
     }
 
     // Map each branch to the agent session working it (if any), scoped to the
-    // current repo, so the per-row "Issue / Agent" column can name the issue the
-    // branch is attached to (or flag an ad-hoc agent run) (adhoc #191). A branch
-    // may carry more than one session over its life; prefer one bound to an issue
-    // and otherwise the most recent.
+    // current repo, so its status icon stays in the compact Branch cell after the
+    // redundant Issue / Agent column was removed. A branch may carry more than
+    // one session over its life; prefer one bound to an issue and otherwise the
+    // most recent.
     //
     // Stored by value, not by pointer into m_agentSessions: a queued callback
     // (e.g. an agent finishing/being deleted) can append/remove entries and
@@ -3242,14 +3388,19 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
             if (!tip.isEmpty())
                 name->setToolTip(tip);
         }
-        m_branchesTable->setItem(row, 0, name);
+        m_branchesTable->setItem(row, kBranchesNameColumn, name);
 
         // Ahead/behind vs the default branch.
         QString status = branch == base ? QStringLiteral("Default branch") : QString();
         int behind = 0;
         int ahead = 0;
+        bool divergenceKnown = branch == base;
         bool hasConflict = false;
         qint64 ts = 0;
+        if (branch == base) {
+            name->setData(kBranchAheadRole, 0);
+            name->setData(kBranchBehindRole, 0);
+        }
         if (!dir.isEmpty()) {
             if (branch != base) {
                 // Counts come from the worker's batched read (with its per-branch
@@ -3258,8 +3409,11 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
                 const auto abIt = localAheadBehind.constFind(branch);
                 const bool counted = abIt != localAheadBehind.constEnd();
                 if (counted) {
+                    divergenceKnown = true;
                     ahead = abIt->first;
                     behind = abIt->second;
+                    name->setData(kBranchAheadRole, ahead);
+                    name->setData(kBranchBehindRole, behind);
                 }
                 if (counted)
                     status = QString::fromUtf8("%1 behind \xC2\xB7 %2 ahead")
@@ -3291,7 +3445,25 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
             statusItem->setForeground(QColor("#f85149"));
         }
         name->setData(kBranchConflictRole, hasConflict);
-        m_branchesTable->setItem(row, 1, statusItem);
+        QString healthTip;
+        if (branch != base && divergenceKnown) {
+            healthTip = QStringLiteral("%1 commit(s) behind · %2 ahead of %3")
+                            .arg(behind)
+                            .arg(ahead)
+                            .arg(base);
+            if (behind > 0)
+                healthTip += QStringLiteral("\nMerge %1 into this branch to update it")
+                                 .arg(base);
+        }
+        if (hasConflict)
+            healthTip += (healthTip.isEmpty() ? QString() : QStringLiteral("\n")) +
+                         QStringLiteral("Conflicts with %1").arg(base);
+        const QString existingTip = name->toolTip();
+        if (!healthTip.isEmpty())
+            name->setToolTip(existingTip.isEmpty()
+                                 ? healthTip
+                                 : existingTip + QLatin1Char('\n') + healthTip);
+        m_branchesTable->setItem(row, kBranchesStatusColumn, statusItem);
         auto *updated = new QTableWidgetItem(formatShortRelativeTime(ts));
         {
             const QString subj = branchSubjects.value(branch);
@@ -3304,7 +3476,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
             if (!utip.isEmpty())
                 updated->setToolTip(utip);
         }
-        m_branchesTable->setItem(row, 2, updated);
+        m_branchesTable->setItem(row, kBranchesUpdatedColumn, updated);
 
         // Worktree this branch is checked out in (an agent's isolated tree), if
         // any. Shown so the list reveals where the branch lives on disk; the full
@@ -3317,65 +3489,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
             worktree->setToolTip(worktreePath);
             worktree->setForeground(QColor("#8b949e"));
         }
-        m_branchesTable->setItem(row, 3, worktree);
-
-        // Issue / Agent this branch is attached to. When an agent session is
-        // working the branch, name its issue ("#N") or flag an ad-hoc run
-        // ("Agent") and stamp the session's status icon — a green spinner while
-        // running, a check on success, an x on failure, etc. — so the list shows
-        // both what each branch is for and how its agent is doing at a glance
-        // (adhoc #191, #251). The text says which it is; the tooltip leads with
-        // the status word and spells out the issue title / prompt.
-        auto *attach = new QTableWidgetItem;
-        if (sessionIt != branchSessions.constEnd()) {
-            const AgentSession *session = &sessionIt.value();
-            const QString statusWord =
-                session->merged ? QStringLiteral("merged")
-                                : agentStatusText(session->status);
-            QString detail;
-            if (session->issueNumber > 0) {
-                // Show issue number + status word so you can tell at a glance
-                // whether the agent is still running or has finished.
-                attach->setText(QStringLiteral("#%1").arg(session->issueNumber));
-                detail = session->issueTitle.isEmpty()
-                             ? QStringLiteral("Issue #%1").arg(session->issueNumber)
-                             : QStringLiteral("Issue #%1: %2")
-                                   .arg(session->issueNumber)
-                                   .arg(session->issueTitle);
-            } else {
-                attach->setText(QStringLiteral("Agent"));
-                detail = session->prompt;
-            }
-            // Stash the session id so a click on this cell can jump straight to
-            // the agent run working the branch (adhoc #258).
-            attach->setData(Qt::UserRole, session->id);
-            // Underline the text so the cell reads as the clickable link it now
-            // is (the tooltip below spells out the action).
-            QFont linkFont = attach->font();
-            linkFont.setUnderline(true);
-            attach->setFont(linkFont);
-            // Tooltip: status · issue/prompt · model · provider · cost · PR · turns.
-            QString tip =
-                detail.isEmpty()
-                    ? statusWord
-                    : QStringLiteral("%1 \xC2\xB7 %2").arg(statusWord, detail);
-            if (!session->model.isEmpty())
-                tip += QStringLiteral(" \xC2\xB7 model: %1").arg(session->model);
-            if (!session->provider.isEmpty())
-                tip += QStringLiteral(" \xC2\xB7 %1").arg(session->provider);
-            if (session->costUsd > 0.0)
-                tip += QStringLiteral(" \xC2\xB7 $%1")
-                           .arg(session->costUsd, 0, 'f', 4);
-            if (session->prNumber > 0)
-                tip += QStringLiteral(" \xC2\xB7 PR #%1").arg(session->prNumber);
-            if (session->numTurns > 0)
-                tip += QStringLiteral(" \xC2\xB7 %1 turns").arg(session->numTurns);
-            attach->setToolTip(
-                QString::fromUtf8("%1 \xE2\x80\x94 click to open agent").arg(tip));
-            attach->setForeground(session->merged ? QColor("#a371f7")
-                                                  : agentStatusColor(session->status));
-        }
-        m_branchesTable->setItem(row, 4, attach);
+        m_branchesTable->setItem(row, kBranchesWorktreeColumn, worktree);
 
         // Row actions: just delete here — the Pull / Fix with agent / Create PR /
         // Merge to main actions live in the detail-pane toolbar and act on the
@@ -3390,8 +3504,8 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         actions->setObjectName("branchActions");
         actions->setStyleSheet("#branchActions { background: transparent; }");
         auto *actionRow = new QHBoxLayout(actions);
-        actionRow->setContentsMargins(0, 0, 8, 0);
-        actionRow->setSpacing(4);
+        actionRow->setContentsMargins(2, 0, 2, 0);
+        actionRow->setSpacing(0);
 
         // Delete button (disabled for the default/checked-out branch).
         auto *del = new QPushButton;
@@ -3415,7 +3529,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
                 [this, branch] { deleteBranch(branch); });
         actionRow->addWidget(del);
 
-        m_branchesTable->setCellWidget(row, 5, actions);
+        m_branchesTable->setCellWidget(row, kBranchesDeleteColumn, actions);
         // Measure the true width the delete button needs:
         //  - ensurePolished() applies the sm-button stylesheet (font-size/padding),
         //    which sizeHint() ignores until the style is in effect;
@@ -3432,9 +3546,8 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         actionWidth = qMax(actionWidth, actions->sizeHint().width());
     }
     if (actionWidth > 0)
-        // A little slack so the rightmost button never sits flush against the
-        // column edge (the action row already carries an 8px right margin).
-        m_branchesTable->horizontalHeader()->resizeSection(5, actionWidth + 8);
+        m_branchesTable->horizontalHeader()->resizeSection(
+            kBranchesDeleteColumn, actionWidth + 4);
 
     // Remote-tracking branches, listed read-only under their full ref-qualified
     // name (e.g. "origin/feature", "nnn/issue-9") so the panel shows every branch
@@ -3464,7 +3577,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
                 rtname += QStringLiteral(" \xC2\xB7 by %1").arg(rauth);
             name->setToolTip(rtname);
         }
-        m_branchesTable->setItem(row, 0, name);
+        m_branchesTable->setItem(row, kBranchesNameColumn, name);
 
         // Ahead/behind vs the default branch when known, else a plain "Remote".
         QString rstatus = QStringLiteral("Remote");
@@ -3473,6 +3586,8 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         if (abIt != remoteAheadBehind.constEnd()) {
             const int rahead = abIt->first;
             const int rbehind = abIt->second;
+            name->setData(kBranchAheadRole, rahead);
+            name->setData(kBranchBehindRole, rbehind);
             if (rahead == 0 && rbehind == 0) {
                 rstatus = QStringLiteral("Up to date");
                 rtip = QStringLiteral("Up to date with %1").arg(base);
@@ -3489,7 +3604,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         auto *statusItem = new QTableWidgetItem(rstatus);
         statusItem->setForeground(QColor("#8b949e"));
         statusItem->setToolTip(rtip);
-        m_branchesTable->setItem(row, 1, statusItem);
+        m_branchesTable->setItem(row, kBranchesStatusColumn, statusItem);
 
         {
             auto *rupdated = new QTableWidgetItem(
@@ -3503,10 +3618,10 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
                 rutip += (rutip.isEmpty() ? QString() : QStringLiteral(": ")) + rsubj;
             if (!rutip.isEmpty())
                 rupdated->setToolTip(rutip);
-            m_branchesTable->setItem(row, 2, rupdated);
+            m_branchesTable->setItem(row, kBranchesUpdatedColumn, rupdated);
         }
-        m_branchesTable->setItem(row, 3, new QTableWidgetItem);
-        m_branchesTable->setItem(row, 4, new QTableWidgetItem);
+        m_branchesTable->setItem(row, kBranchesWorktreeColumn,
+                                 new QTableWidgetItem);
 
         // Row action: delete the branch on its remote (git push <remote> --delete).
         // A remote-tracking ref is always "<remote>/<branch>"; the remote's own
@@ -3520,8 +3635,8 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         ractions->setObjectName("branchActions");
         ractions->setStyleSheet("#branchActions { background: transparent; }");
         auto *ractionRow = new QHBoxLayout(ractions);
-        ractionRow->setContentsMargins(0, 0, 8, 0);
-        ractionRow->setSpacing(4);
+        ractionRow->setContentsMargins(2, 0, 2, 0);
+        ractionRow->setSpacing(0);
         auto *rdel = new QPushButton;
         rdel->setObjectName("issueIconButton");
         rdel->setFlat(true);
@@ -3537,7 +3652,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         connect(rdel, &QPushButton::clicked, this,
                 [this, branch] { deleteRemoteBranch(branch); });
         ractionRow->addWidget(rdel);
-        m_branchesTable->setCellWidget(row, 5, ractions);
+        m_branchesTable->setCellWidget(row, kBranchesDeleteColumn, ractions);
         ractions->ensurePolished();
         for (QPushButton *b : ractions->findChildren<QPushButton *>()) {
             b->ensurePolished();
@@ -3547,7 +3662,8 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         actionWidth = qMax(actionWidth, ractions->sizeHint().width());
     }
     if (actionWidth > 0)
-        m_branchesTable->horizontalHeader()->resizeSection(5, actionWidth + 8);
+        m_branchesTable->horizontalHeader()->resizeSection(
+            kBranchesDeleteColumn, actionWidth + 4);
 
     // Header "Pull <base> into all" reflects the current base and is enabled only
     // when there's at least one behind branch to update.
@@ -3598,7 +3714,7 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         m_branchesTable->insertRow(0);
         auto *empty = new QTableWidgetItem("No branches in this repository.");
         empty->setForeground(QColor("#8b949e"));
-        m_branchesTable->setItem(0, 0, empty);
+        m_branchesTable->setItem(0, kBranchesNameColumn, empty);
         // Table signals are blocked, so blank the diff pane ourselves.
         showBranchDiff(QString());
         if (!pendingSelect.isEmpty())
@@ -3630,11 +3746,14 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         cellRow->addStretch();
         // An empty name item keeps the row out of neighbourBranchInList and out of
         // the "select this branch" scan below — it names no branch.
-        m_branchesTable->setItem(row, 0, new QTableWidgetItem);
-        m_branchesTable->setCellWidget(row, 0, cell);
-        for (int c = 1; c < m_branchesTable->columnCount(); ++c)
+        m_branchesTable->setItem(row, kBranchesNameColumn, new QTableWidgetItem);
+        m_branchesTable->setCellWidget(row, kBranchesNameColumn, cell);
+        for (int c = 0; c < m_branchesTable->columnCount(); ++c) {
+            if (c == kBranchesNameColumn)
+                continue;
             m_branchesTable->setItem(row, c, new QTableWidgetItem);
-        m_branchesTable->setCurrentCell(row, 0);
+        }
+        m_branchesTable->setCurrentCell(row, kBranchesNameColumn);
         // Table signals are blocked across the rebuild, so blank the diff pane
         // ourselves rather than leaving the deleted branch's diff on screen.
         showBranchDiff(QString());
@@ -3661,9 +3780,10 @@ void MainWindow::renderBranchesPanel(const BranchesPanelData &data)
         (!branches.contains(target) && !remoteBranches.contains(target)))
         target = selected;
     for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
-        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        QTableWidgetItem *it =
+            m_branchesTable->item(r, kBranchesNameColumn);
         if (it && it->text() == target) {
-            m_branchesTable->setCurrentCell(r, 0);
+            m_branchesTable->setCurrentCell(r, kBranchesNameColumn);
             break;
         }
     }
@@ -3803,12 +3923,14 @@ QString MainWindow::neighbourBranchInList(const QString &branch) const
     if (row < 0)
         return QString();
     for (int r = row + 1; r < m_branchesTable->rowCount(); ++r) {
-        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        QTableWidgetItem *it =
+            m_branchesTable->item(r, kBranchesNameColumn);
         if (it && !it->text().isEmpty())
             return it->text();
     }
     for (int r = row - 1; r >= 0; --r) {
-        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        QTableWidgetItem *it =
+            m_branchesTable->item(r, kBranchesNameColumn);
         if (it && !it->text().isEmpty())
             return it->text();
     }
@@ -3820,7 +3942,8 @@ int MainWindow::branchRowInList(const QString &branch) const
     if (!m_branchesTable || branch.isEmpty())
         return -1;
     for (int r = 0; r < m_branchesTable->rowCount(); ++r) {
-        QTableWidgetItem *it = m_branchesTable->item(r, 0);
+        QTableWidgetItem *it =
+            m_branchesTable->item(r, kBranchesNameColumn);
         if (it && it->text() == branch)
             return r;
     }
@@ -3971,13 +4094,15 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
     // Paint what's already known (the branch name, the actions that don't depend
     // on the divergence) while the counts are read.
     applyBranchDetailActions(branch, base, -1, -1, false);
+    const QString branchWorktree = worktreePathForBranch(dir, branch);
     struct BranchDetailStats {
         int behind = 0;
         int ahead = 0;
         QString conflictKey;
+        bool worktreeConflict = false;
     };
     runOffThread<BranchDetailStats>(
-        [dir, base, branch] {
+        [dir, base, branch, branchWorktree] {
             BranchDetailStats s;
             QByteArray counts;
             if (runGitCapture(dir,
@@ -4004,6 +4129,18 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
                                                           tips.at(1).trimmed());
                 }
             }
+            // `merge --autostash` can update the branch successfully but need
+            // help while restoring the agent's uncommitted edits. That state
+            // lives in the linked worktree, not in the branch refs, and must stay
+            // visible even after the branch reaches 0 behind.
+            if (!branchWorktree.isEmpty()) {
+                QByteArray unmerged;
+                s.worktreeConflict =
+                    runGitCapture(branchWorktree,
+                                  {"diff", "--name-only", "--diff-filter=U"},
+                                  &unmerged, nullptr) &&
+                    !unmerged.trimmed().isEmpty();
+            }
             return s;
         },
         [this, gen, branch, base, dir](BranchDetailStats s) {
@@ -4019,13 +4156,15 @@ void MainWindow::updateBranchDetailActions(const QString &branch)
                     // Leaves the flag off until the verdict lands (adhoc #416).
                     startBranchConflictProbes(dir, base, {{branch, s.conflictKey}});
             }
-            applyBranchDetailActions(branch, base, s.behind, s.ahead, hasConflict);
+            applyBranchDetailActions(branch, base, s.behind, s.ahead, hasConflict,
+                                     s.worktreeConflict);
         });
 }
 
 // Paint the branch detail bar from counts the caller has already gathered.
 void MainWindow::applyBranchDetailActions(const QString &branch, const QString &base,
-                                          int behind, int ahead, bool hasConflict)
+                                          int behind, int ahead, bool hasConflict,
+                                          bool worktreeConflict)
 {
     if (!m_branchMergeButton)
         return;
@@ -4063,6 +4202,10 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
             if (hasConflict)
                 text += QString::fromUtf8(
                     " \xC2\xB7 <span style='color:#f85149'>conflicts</span>");
+            if (worktreeConflict)
+                text += QString::fromUtf8(
+                    " \xC2\xB7 <span style='color:#d29922'>local edits need "
+                    "resolution</span>");
         }
         m_branchDetailLabel->setToolTip(
             branch.isEmpty() || base.isEmpty() || branch == base
@@ -4123,9 +4266,12 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
     // Pull <base> into this branch (only when it's actually behind).
     m_branchPullButton->setText(base.isEmpty() ? QStringLiteral("Pull main")
                                                : QStringLiteral("Pull %1").arg(base));
-    const bool canPull = writable && !isBase && behind > 0;
+    const bool canPull = writable && !isBase && behind > 0 && !worktreeConflict;
     m_branchPullButton->setEnabled(canPull);
-    if (isBase)
+    if (worktreeConflict)
+        m_branchPullButton->setToolTip(
+            "The branch is updated; resolve its restored local edits next");
+    else if (isBase)
         m_branchPullButton->setToolTip(
             QStringLiteral("Select a branch other than %1").arg(base));
     else if (!writable)
@@ -4148,9 +4294,18 @@ void MainWindow::applyBranchDetailActions(const QString &branch, const QString &
     // by hand. Available whenever the branch is behind (same as Pull main); the
     // editor only opens when git reports conflicts.
     if (m_branchMergeEditorButton) {
-        const bool canMergeEditor = writable && !isBase && behind > 0;
+        const bool canMergeEditor =
+            writable && !isBase && (behind > 0 || worktreeConflict);
+        m_branchMergeEditorButton->setText(worktreeConflict
+                                               ? QStringLiteral("Resolve local edits")
+                                               : QStringLiteral("Merge editor"));
         m_branchMergeEditorButton->setEnabled(canMergeEditor);
-        if (isBase)
+        if (worktreeConflict)
+            m_branchMergeEditorButton->setToolTip(
+                QStringLiteral("Resolve the agent's local edits after updating %1 "
+                               "from %2; Git kept an autostash backup")
+                    .arg(branch, base));
+        else if (isBase)
             m_branchMergeEditorButton->setToolTip(
                 QStringLiteral("Select a branch other than %1").arg(base));
         else if (!writable)
@@ -4403,15 +4558,24 @@ void MainWindow::renderBranchScopeDiff()
                                   : QStringLiteral("branch/") + branch;
             r.emptyMessage =
                 QStringLiteral("No changes between %1 and %2.").arg(branch, base);
-            // A checked-out branch is represented by its complete worktree
-            // snapshot, not just its committed tip. The temporary-index helper
-            // folds committed, staged, unstaged, deleted, and untracked files
-            // into one patch against the selected base without modifying the
-            // real index. A branch with no checkout falls back to its ref range.
+            // Review only what the branch adds from its merge base. Comparing
+            // complete snapshots with `base..branch` makes every newer file on
+            // a behind base appear as a reverse, unrelated branch change — the
+            // Agents page might correctly report 3 files while Git reports 22.
+            // A checked-out branch still includes committed, staged, unstaged,
+            // deleted and untracked files through the temporary-index helper.
             if (!work.isEmpty()) {
-                if (!buildWorkingTreeDiff(work, base, &r.out, &r.err))
+                QByteArray mergeBaseOut;
+                const bool foundMergeBase =
+                    runGitCapture(dir, {QStringLiteral("merge-base"), base, branch},
+                                  &mergeBaseOut, nullptr);
+                const QString contentBase =
+                    foundMergeBase && !mergeBaseOut.trimmed().isEmpty()
+                        ? QString::fromUtf8(mergeBaseOut).trimmed()
+                        : base;
+                if (!buildWorkingTreeDiff(work, contentBase, &r.out, &r.err))
                     r.ok = false;
-            } else if (!runGitCapture(dir, {"diff", base + ".." + branch},
+            } else if (!runGitCapture(dir, {"diff", base + "..." + branch},
                                       &r.out, &r.err)) {
                 r.ok = false;
             }
@@ -4624,8 +4788,12 @@ void MainWindow::updateBranchFromBase(const QString &branch)
     // Updating their ref from the main checkout is rejected by Git (and the old
     // path either displayed that refusal or tried to check out an already-live
     // branch). Merge the base in the checkout that actually owns the branch.
-    // Local edits remain in place when Git can merge safely; if they overlap the
-    // base update, Git refuses and we leave them untouched.
+    // Agent worktrees are commonly dirty while the agent is still running. Use
+    // Git's autostash merge so those edits are protected, base is merged, and the
+    // edits are restored on top. The old plain merge refused as soon as main and
+    // the agent had both touched any of the same files, which is why many
+    // long-running agents suddenly accumulated the same "would be overwritten"
+    // error while main kept moving.
     const QString linkedWorktree = worktreePathForBranch(dir, branch);
     if (!linkedWorktree.isEmpty() &&
         QDir(linkedWorktree).absolutePath() != QDir(dir).absolutePath()) {
@@ -4641,11 +4809,17 @@ void MainWindow::updateBranchFromBase(const QString &branch)
             return;
         }
 
+        QByteArray beforeStatus;
+        runGitCapture(linkedWorktree, {"status", "--porcelain"}, &beforeStatus,
+                      nullptr);
+        const bool protectedLocalEdits = !beforeStatus.trimmed().isEmpty();
         QString worktreeError;
-        if (!runGitCapture(linkedWorktree, {"merge", "--no-edit", base}, nullptr,
+        if (!runGitCapture(linkedWorktree,
+                           {"merge", "--autostash", "--no-edit", base}, nullptr,
                            &worktreeError)) {
             // Abort only a merge this call actually started. A refusal caused by
-            // overlapping uncommitted files has no MERGE_HEAD and needs no cleanup.
+            // a genuine branch conflict has MERGE_HEAD; with --autostash, aborting
+            // also puts the protected local edits back where they started.
             QByteArray startedMerge;
             if (runGitCapture(linkedWorktree,
                               {"rev-parse", "-q", "--verify", "MERGE_HEAD"},
@@ -4655,7 +4829,8 @@ void MainWindow::updateBranchFromBase(const QString &branch)
                               nullptr);
             setRepoDetailNotice(
                 QStringLiteral("Couldn't update %1 from %2 in its worktree: %3. "
-                               "Its local changes were left untouched.")
+                               "Its local changes are safe. Use Merge editor or "
+                               "Fix with agent to resolve the branch conflict.")
                     .arg(branch, base,
                          worktreeError.trimmed().isEmpty()
                              ? QStringLiteral("the merge was refused")
@@ -4664,10 +4839,43 @@ void MainWindow::updateBranchFromBase(const QString &branch)
             return;
         }
 
+        // A merge can return success after advancing the branch but still leave
+        // conflicts while reapplying the autostash. Nothing was lost: Git keeps
+        // the autostash, and the toolbar exposes a one-click conflict editor that
+        // resolves the worktree while leaving the agent's edits uncommitted.
+        QByteArray unmerged;
+        const bool restoreConflict =
+            runGitCapture(linkedWorktree,
+                          {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
+                          nullptr) &&
+            !unmerged.trimmed().isEmpty();
         logSystem(QStringLiteral("Git: merged %1 into %2 in its linked worktree.")
                       .arg(base, branch));
-        setRepoDetailNotice(
-            QStringLiteral("Updated %1 with %2 in its worktree.").arg(branch, base));
+        if (restoreConflict) {
+            const int count = QString::fromUtf8(unmerged)
+                                  .split('\n', Qt::SkipEmptyParts)
+                                  .size();
+            logSystem(
+                QStringLiteral("Git: %1 local file(s) need resolution after "
+                               "restoring %2's protected edits; autostash retained.")
+                    .arg(count)
+                    .arg(branch));
+            setRepoDetailNotice(
+                QStringLiteral("Updated %1 from %2, but %3 restored local file(s) "
+                               "need resolution. Nothing was lost — click Resolve "
+                               "local edits; Git kept an autostash backup.")
+                    .arg(branch, base)
+                    .arg(count),
+                true);
+        } else {
+            setRepoDetailNotice(
+                protectedLocalEdits
+                    ? QStringLiteral("Updated %1 with %2 and safely restored its "
+                                     "local changes.")
+                          .arg(branch, base)
+                    : QStringLiteral("Updated %1 with %2 in its worktree.")
+                          .arg(branch, base));
+        }
         m_branchesCache.clear();
         if (m_branchDiffBranch == branch)
             showBranchDiff(branch); // refreshed range + universal CHANGES list
@@ -4930,6 +5138,79 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
         return;
     }
 
+    // If pulling base already succeeded but reapplying the agent's protected
+    // local edits conflicted, finish that restoration first. This is not a merge
+    // commit: keep the resolved files as the agent's uncommitted work, and only
+    // clear their unmerged index entries. The automatically-created stash remains
+    // a safety copy until the resolution succeeds.
+    const QString linkedWorktree = worktreePathForBranch(dir, branch);
+    if (!linkedWorktree.isEmpty()) {
+        QByteArray unmerged;
+        runGitCapture(linkedWorktree,
+                      {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
+                      nullptr);
+        const QStringList conflicted =
+            QString::fromUtf8(unmerged).split('\n', Qt::SkipEmptyParts);
+        if (!conflicted.isEmpty()) {
+            const QString intro =
+                QString::fromUtf8(
+                    "Git updated <b>%1</b> from <b>%2</b>, then found overlaps "
+                    "while restoring the agent's uncommitted edits. Choose the "
+                    "right result for each conflict. The resolved files stay "
+                    "uncommitted so the agent can continue normally.")
+                    .arg(branch.toHtmlEscaped(), base.toHtmlEscaped());
+            const bool resolved = runMergeConflictEditor(
+                QString::fromUtf8("Resolve local edits \xE2\x80\x94 %1").arg(branch),
+                intro, linkedWorktree, conflicted,
+                QStringLiteral("Keep resolved edits"),
+                [this, linkedWorktree, conflicted](QString *e) {
+                    QStringList addArgs{"add", "--"};
+                    addArgs.append(conflicted);
+                    QStringList resetArgs{"reset", "--"};
+                    resetArgs.append(conflicted);
+                    return runGitCapture(linkedWorktree, addArgs, nullptr, e) &&
+                           runGitCapture(linkedWorktree, resetArgs, nullptr, e);
+                });
+            if (!resolved) {
+                setRepoDetailNotice(
+                    QStringLiteral("Left %1's local-edit conflicts open; its "
+                                   "autostash backup is still safe.")
+                        .arg(branch),
+                    true);
+                return;
+            }
+
+            // `merge --autostash` retains its stash when application conflicts.
+            // Once every marker has been resolved and the worktree contains the
+            // result, remove only that known top autostash (never a user's stash).
+            QByteArray latestStash;
+            if (runGitCapture(linkedWorktree,
+                              {"stash", "list", "-1", "--format=%gd%x09%gs"},
+                              &latestStash, nullptr)) {
+                const QString stash = QString::fromUtf8(latestStash).trimmed();
+                const int tab = stash.indexOf(QLatin1Char('\t'));
+                if (tab > 0 && stash.mid(tab + 1) == QLatin1String("autostash"))
+                    runGitCapture(linkedWorktree,
+                                  {"stash", "drop", stash.left(tab)}, nullptr,
+                                  nullptr);
+            }
+            logSystem(QStringLiteral("Git: resolved and restored %1 local file(s) "
+                                     "in %2 without committing them.")
+                          .arg(conflicted.size())
+                          .arg(branch));
+            setRepoDetailNotice(
+                QStringLiteral("Resolved %1 local file(s) in %2. The edits remain "
+                               "uncommitted for the agent.")
+                    .arg(conflicted.size())
+                    .arg(branch));
+            m_branchesCache.clear();
+            if (m_branchDiffBranch == branch)
+                showBranchDiff(branch);
+            loadWorktreesPanel();
+            return;
+        }
+    }
+
     // Nothing to merge if the branch is already current with base.
     int behind = 0, ahead = 0;
     QByteArray counts;
@@ -4950,11 +5231,19 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
         return;
     }
 
-    // The merge runs on a checkout, so the working tree must be clean first.
+    const bool inLinkedWorktree =
+        !linkedWorktree.isEmpty() &&
+        QDir(linkedWorktree).absolutePath() != QDir(dir).absolutePath();
+    const QString mergeDir = inLinkedWorktree ? linkedWorktree : dir;
+
+    // A dedicated agent worktree may be dirty by design, so protect it with
+    // --autostash below. The shared checkout still uses the conservative clean
+    // requirement because switching its branch would otherwise mix unrelated
+    // repository work into this operation.
     QByteArray status;
     QString err;
-    if (!runGitCapture(dir, {"status", "--porcelain"}, &status, &err) ||
-        !status.trimmed().isEmpty()) {
+    if (!runGitCapture(mergeDir, {"status", "--porcelain"}, &status, &err) ||
+        (!inLinkedWorktree && !status.trimmed().isEmpty())) {
         setRepoDetailNotice(
             err.isEmpty()
                 ? "Commit or stash local changes before merging into this branch."
@@ -4967,7 +5256,8 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
     QString currentBranch;
     if (runGitCapture(dir, {"rev-parse", "--abbrev-ref", "HEAD"}, &headOut, nullptr))
         currentBranch = QString::fromUtf8(headOut).trimmed();
-    const bool isCurrent = !currentBranch.isEmpty() && branch == currentBranch;
+    const bool isCurrent = inLinkedWorktree ||
+                           (!currentBranch.isEmpty() && branch == currentBranch);
     const auto restoreBranch = [&] {
         if (!isCurrent && !currentBranch.isEmpty())
             runGitCapture(dir, {"checkout", currentBranch}, nullptr, nullptr);
@@ -4983,17 +5273,22 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
     // Stage the merge but leave the commit to us/the editor. --no-ff guarantees
     // the merge stops even when base could fast-forward, so the clean path below
     // can record a single merge commit consistently.
-    runGitCapture(dir, {"merge", "--no-commit", "--no-ff", base}, nullptr, &err);
+    QStringList mergeArgs{"merge"};
+    if (inLinkedWorktree)
+        mergeArgs << "--autostash";
+    mergeArgs << "--no-commit" << "--no-ff" << base;
+    runGitCapture(mergeDir, mergeArgs, nullptr, &err);
 
     QByteArray unmerged;
-    runGitCapture(dir, {"diff", "--name-only", "--diff-filter=U"}, &unmerged, nullptr);
+    runGitCapture(mergeDir, {"diff", "--name-only", "--diff-filter=U"}, &unmerged,
+                  nullptr);
     const QStringList conflicted =
         QString::fromUtf8(unmerged).split('\n', Qt::SkipEmptyParts);
 
     if (conflicted.isEmpty()) {
         // Clean merge — nothing to resolve; record it and report.
-        if (!runGitCapture(dir, {"commit", "--no-edit"}, nullptr, &err)) {
-            runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+        if (!runGitCapture(mergeDir, {"commit", "--no-edit"}, nullptr, &err)) {
+            runGitCapture(mergeDir, {"merge", "--abort"}, nullptr, nullptr);
             restoreBranch();
             setRepoDetailNotice(
                 QStringLiteral("Could not merge %1 into %2: %3")
@@ -5002,6 +5297,19 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
             return;
         }
         restoreBranch();
+        QByteArray restoredConflicts;
+        runGitCapture(mergeDir, {"diff", "--name-only", "--diff-filter=U"},
+                      &restoredConflicts, nullptr);
+        if (!restoredConflicts.trimmed().isEmpty()) {
+            setRepoDetailNotice(
+                QStringLiteral("Updated %1 from %2. Its protected local edits now "
+                               "need resolution — click Resolve local edits.")
+                    .arg(branch, base),
+                true);
+            if (m_branchDiffBranch == branch)
+                showBranchDiff(branch);
+            return;
+        }
         logSystem(QStringLiteral("Git: merged %1 into %2.").arg(base, branch));
         setRepoDetailNotice(
             QString::fromUtf8("Updated %1 with %2 \xE2\x80\x94 no conflicts.")
@@ -5019,13 +5327,14 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
             "text directly.")
             .arg(branch.toHtmlEscaped(), base.toHtmlEscaped());
     const bool committed = runMergeConflictEditor(
-        QString::fromUtf8("Merge editor \xE2\x80\x94 %1").arg(branch), intro, dir,
-        conflicted, QStringLiteral("Commit merge"), [this, dir](QString *e) {
-            return runGitCapture(dir, {"add", "-A"}, nullptr, e) &&
-                   runGitCapture(dir, {"commit", "--no-edit"}, nullptr, e);
+        QString::fromUtf8("Merge editor \xE2\x80\x94 %1").arg(branch), intro,
+        mergeDir, conflicted, QStringLiteral("Commit merge"),
+        [this, mergeDir](QString *e) {
+            return runGitCapture(mergeDir, {"add", "-A"}, nullptr, e) &&
+                   runGitCapture(mergeDir, {"commit", "--no-edit"}, nullptr, e);
         });
     if (!committed) {
-        runGitCapture(dir, {"merge", "--abort"}, nullptr, nullptr);
+        runGitCapture(mergeDir, {"merge", "--abort"}, nullptr, nullptr);
         restoreBranch();
         setRepoDetailNotice(
             QStringLiteral("Cancelled the merge of %1 into %2; %2 was left unchanged.")
@@ -5033,6 +5342,19 @@ void MainWindow::openBranchMergeEditor(const QString &branch)
         return;
     }
     restoreBranch();
+    QByteArray restoredConflicts;
+    runGitCapture(mergeDir, {"diff", "--name-only", "--diff-filter=U"},
+                  &restoredConflicts, nullptr);
+    if (!restoredConflicts.trimmed().isEmpty()) {
+        setRepoDetailNotice(
+            QStringLiteral("Updated %1 from %2. Its protected local edits now "
+                           "need resolution — click Resolve local edits.")
+                .arg(branch, base),
+            true);
+        if (m_branchDiffBranch == branch)
+            showBranchDiff(branch);
+        return;
+    }
     logSystem(QStringLiteral("Git: merged %1 into %2 (conflicts resolved).")
                   .arg(base, branch));
     setRepoDetailNotice(QStringLiteral("Updated %1 with %2.").arg(branch, base));
@@ -5112,8 +5434,10 @@ void MainWindow::startBranchConflictProbes(
                     if (!verdicts->at(i))
                         continue;
                     for (int row = 0; row < m_branchesTable->rowCount(); ++row) {
-                        QTableWidgetItem *name = m_branchesTable->item(row, 0);
-                        QTableWidgetItem *status = m_branchesTable->item(row, 1);
+                        QTableWidgetItem *name = m_branchesTable->item(
+                            row, kBranchesNameColumn);
+                        QTableWidgetItem *status = m_branchesTable->item(
+                            row, kBranchesStatusColumn);
                         if (!name || !status || name->text() != branch)
                             continue;
                         if (!status->text().endsWith(kBranchConflictsSuffix)) {

@@ -664,27 +664,34 @@ public:
     // Rebuilds off-thread now (adhoc #420), so this pumps until the rows land.
     void testReloadBranchesPanel();
     QString testBranchWorktreePath(const QString &branch) const;
-    // Compact Branch-cell data as files|added|removed|worktree|conflict|updated.
+    // Compact Branch-cell data as
+    // files|added|removed|worktree|conflict|updated|behind|ahead.
     QString testBranchVisualBadges(const QString &branch) const;
+    QString testBranchHealthIcon(const QString &branch) const;
     bool testBranchesUseCompactColumns() const;
     bool testBranchesKeepFlexibleNameColumn() const;
+    bool testBranchDelegatePaintsSingleTextLayer(const QString &branch) const;
+    bool testBranchSelectedTextColorIsReadable(const QString &branch) const;
     // Inject an agent session so a test can prove the branches list surfaces the
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)
     {
+        for (AgentSession &existing : m_agentSessions) {
+            if (existing.id == session.id) {
+                existing = session;
+                return;
+            }
+        }
         m_agentSessions.append(session);
     }
     // Take the nav strip's route to the Agents tab, so a test can read that
     // lazily-built list back the way a user reaches it (adhoc #119).
     void testOpenAgentsOverview() { openAgentsOverview(); }
     void testRefreshAgentDotMatrix() { refreshAgentDotMatrix(); }
-    // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
-    // the branches list names the issue/agent a branch is attached to (adhoc #191).
-    QString testBranchAttachmentText(const QString &branch) const;
     // Whether the leading Branch cell for `branch` carries an icon, so a test can
     // prove the list stamps agent status at the row's left edge (adhoc #251).
     bool testBranchAttachmentHasIcon(const QString &branch) const;
-    // Branch names (column 0) in row order, so a test can prove the default branch
+    // Branch names in row order, so a test can prove the default branch
     // is pinned to the top of the list regardless of commit recency (adhoc #185).
     QStringList testBranchRowOrder() const;
     int testBranchesTabIndex() const { return m_branchesTabIndex; }
@@ -752,10 +759,6 @@ public:
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
     bool testClickBranchReviewMerge(bool deleteAll);
-    // Click the "Issue / Agent" cell (column 4) for `branch` and return the agent
-    // session the app navigated to (m_selectedAgentSessionId), so a test can prove
-    // clicking the cell jumps to that branch's agent (adhoc #258).
-    int testClickBranchAgentCell(const QString &branch);
     // issue #291: when an agent task's worktree/PR lands in the base branch the
     // session is flagged "merged" on its Status column and detail page. Drive the
     // eager in-app merge path (the one mergeWorktreeIntoMain / mergeCurrentPull
@@ -770,8 +773,8 @@ public:
     bool testAgentDetailTitleWraps() const;
     QString testRenderAgentDetailTitle(const QString &text);
     // adhoc #403: the badge data the Status cell hands its branch chip, read back
-    // as "files|dirty|worktree", so a test can prove the chip's files-changed /
-    // uncommitted / worktree-present markers are fed from the session's diff stat.
+    // as "files|dirty|worktree|behind|ahead", so a test can prove the chip's
+    // file and visible branch-health markers are fed from the session's diff stat.
     QString testAgentStatusCellBadges(int sessionId, const AgentDiffStat &stat) const;
     bool testAgentSessionMerged(int sessionId) const;
 #endif
@@ -1740,6 +1743,12 @@ private:
     // either way, the node just keeps its raw address.
     void ensureVultrMirrorDns(const QString &node, const QString &ip,
                               std::function<void(QString hostname)> onDone);
+    // Drop "<node>.<zone>" again when a node is deleted for good, so no A
+    // record is left pointing at an address that no longer answers. Soft like
+    // ensureVultrMirrorDns: it reports what it did through `onDone` and never
+    // blocks the rest of the deletion.
+    void removeVultrMirrorDns(const QString &node,
+                              std::function<void(QString outcome)> onDone);
     // Reload a saved host's server info from the table. A password is restored
     // only when it remains in this process's session cache.
     void loadHostIntoForm(int row, int column);
@@ -1762,6 +1771,37 @@ private:
     QWidget *buildNodesSection();
     void refreshNodesTable();           // re-list the known nodes into the table
     void showNodeDetailForRow(int row); // fill the detail panel for a table row
+    // Per-row Delete button in the Nodes table's action column. Kept in its own
+    // pass so it can be re-attached after the user re-sorts the table, and so
+    // the admin/protected-node gating lives in one place.
+    void refreshNodeActionButtons();
+    // --- Delete a node for good (adhoc #19) ----------------------------------
+    // The Nodes page's Delete button: the same permanent removal the World
+    // panel performs, plus the provider teardown the web has no credentials
+    // for. In order — destroy the Vultr instance behind the node, drop its
+    // Cloudflare DNS record, remove every trace of it from the relay (accounts,
+    // mirrors, agent jobs and the /status history), then forget the saved SSH
+    // host locally. The provider steps are best-effort and never stop the mesh
+    // removal; the mesh removal itself is the one step that must succeed.
+    void deleteMeshNodeCompletely(const QString &node, const QString &nodeId);
+    // Resolve the node's Vultr instance (the id recorded at provision time, or
+    // a unique label/hostname/address match) and destroy it. Reports what
+    // happened through `onDone` — including "nothing to destroy" — so the
+    // deletion continues for nodes this app never provisioned.
+    void destroyVultrServerForNode(const QString &node,
+                                   std::function<void(QString outcome)> onDone);
+    void sendNodeVultrDestroy(const QString &apiKey, const QString &instanceId,
+                              const QString &node,
+                              std::function<void(QString outcome)> onDone);
+    // POST /api/world/admin/nodes/delete. A desktop that signed in with a
+    // password holds a session token; the ordinary launch authenticates
+    // silently and holds keys only, so this falls back to the signed
+    // node/ts/sig proof the worker accepts for this one deletion.
+    void sendMeshNodeDeleteRequest(const QString &node, const QString &nodeId);
+    // Drop the saved SSH host whose name matches a node that no longer exists.
+    void forgetSavedHostNamed(const QString &node);
+    // Progress/result line for a deletion, shown on the Nodes page.
+    void setNodeDeleteStatus(const QString &text);
     // Fetch the relay's list of currently-online node names (/api/network/stats
     // "onlineNodes": repository update channel or fresh signed heartbeat). Headless
     // mirror nodes serve through the relay without joining this client's chat
@@ -2911,6 +2951,14 @@ private:
         int added = -1;
         int removed = -1;
     };
+    // Branches table layout: destructive action first, immediately followed by
+    // the branch name. Updated/worktree remain hidden backing columns whose data
+    // is folded into the compact Branch delegate.
+    static constexpr int kBranchesDeleteColumn = 0;
+    static constexpr int kBranchesNameColumn = 1;
+    static constexpr int kBranchesStatusColumn = 2;
+    static constexpr int kBranchesUpdatedColumn = 3;
+    static constexpr int kBranchesWorktreeColumn = 4;
     // Runs on a worker thread: fills the git-derived half of `data`.
     static BranchesPanelData readBranchesPanelGit(BranchesPanelData data);
     // Builds the table rows from a gathered snapshot (GUI thread, no git).
@@ -3056,7 +3104,8 @@ private:
     // Paint the branch detail bar from already-gathered counts, and let auto-pull
     // decide once the bar reflects them (the counts arrive off-thread now).
     void applyBranchDetailActions(const QString &branch, const QString &base,
-                                  int behind, int ahead, bool hasConflict);
+                                  int behind, int ahead, bool hasConflict,
+                                  bool worktreeConflict = false);
     void maybeAutoPullBranch(const QString &branch);
     // Bumped per branch selection so a detail-bar read that lands late is dropped.
     int m_branchDetailActionsGen = 0;
@@ -5020,7 +5069,6 @@ private:
     int m_networkRelayCount = 0;
     int m_networkNodeCount = 0;
     int m_networkHostCount = 0;
-    QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {
