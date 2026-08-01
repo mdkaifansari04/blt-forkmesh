@@ -30553,6 +30553,26 @@ async def _authorize_owner_account(env, owner, data, request=None,
     return True, None
 
 
+async def _authorize_issue_manager(env, owner, data, request=None):
+    """Authorize personal-repo owners plus organization owners/admins."""
+    ok, err = await _authorize_owner_account(env, owner, data, request)
+    if ok:
+        return True, None
+    _, rec = await _account_session_record(env, request, data)
+    actor = clean_string(
+        rec.get("name", "") if rec else "", MAX_NODE_NAME
+    ).strip().lower()
+    if not actor:
+        return False, err
+    org_bi, org = await _org_row(
+        env, clean_string(owner, MAX_NODE_NAME).lower()
+    )
+    role = await _org_role(env, org_bi, actor) if org else ""
+    if role in ("owner", "admin"):
+        return True, None
+    return False, err
+
+
 async def _inbox_author_over_quota(env, table, repo_bi, submitter_bi):
     # True when this submitter already holds MAX_PENDING_PER_AUTHOR un-merged rows
     # in this repo's inbox (table is a fixed literal, safe to interpolate).
@@ -31126,6 +31146,7 @@ async def subscribe_handler(env, request, owner, repo):
         data = await bounded_json_request(request)
     except Exception:
         return json_response({"error": "invalid_json"}, status=400)
+    action = clean_string(data.get("action", "set"), 20)
     node = clean_string(data.get("node", ""), MAX_NODE_NAME).lower()
     source = clean_string(data.get("source", ""), 20)
     if source not in ("issue", "pull"):
@@ -31139,17 +31160,25 @@ async def subscribe_handler(env, request, owner, repo):
     subscribed = bool(data.get("subscribed", True))
     ts = clean_string(data.get("ts", ""), 20)
     signature = clean_string(data.get("sig", ""), 200)
-    if not valid_node_name(node) or not _ts_ok(ts):
+    if not valid_node_name(node):
         return json_response({"error": "unauthorized"}, status=401)
     _, rec = await _account_row(env, node)
     pubkey = rec.get("pubkey", "") if rec else ""
-    if not pubkey:
-        return json_response({"error": "unauthorized"}, status=401)
-    canonical = ("forkmesh-subscribe-v1\n" + owner + "/" + repo + "\n" + source +
-                 "\n" + str(number) + "\n" + ("1" if subscribed else "0") +
-                 "\n" + ts).encode()
-    if not await ed25519_verify(pubkey, signature, canonical):
-        return json_response({"error": "bad_signature"}, status=401)
+    _, session_rec = await _account_session_record(env, request, data)
+    session_actor = clean_string(
+        session_rec.get("name", "") if session_rec else "", MAX_NODE_NAME
+    ).lower()
+    session_authorized = bool(session_actor and session_actor == node)
+    if not session_authorized:
+        if action == "status":
+            return json_response({"error": "unauthorized"}, status=401)
+        if not pubkey or not _ts_ok(ts):
+            return json_response({"error": "unauthorized"}, status=401)
+        canonical = ("forkmesh-subscribe-v1\n" + owner + "/" + repo + "\n" + source +
+                     "\n" + str(number) + "\n" + ("1" if subscribed else "0") +
+                     "\n" + ts).encode()
+        if not await ed25519_verify(pubkey, signature, canonical):
+            return json_response({"error": "bad_signature"}, status=401)
     privacy_reader = globals().get("_repo_is_private")
     if callable(privacy_reader) and await privacy_reader(env, owner, repo):
         viewers = {
@@ -31178,6 +31207,24 @@ async def subscribe_handler(env, request, owner, repo):
                     break
         if not allowed:
             return json_response({"error": "not_found"}, status=404)
+    if action == "status":
+        thread_bi = await blind_index(
+            env, _thread_key(owner, repo, source, number)
+        )
+        subscriber_bi = await blind_index(env, node)
+        row = await d1_first(
+            env,
+            "SELECT data FROM thread_subscriptions "
+            "WHERE thread_bi=? AND subscriber_bi=?",
+            thread_bi, subscriber_bi,
+        )
+        subscription = await decrypt_row(env, row.get("data", "")) if row else None
+        return json_response({
+            "ok": True,
+            "subscribed": bool(subscription and not subscription.get("muted")),
+        })
+    if action != "set":
+        return json_response({"error": "bad_action"}, status=400)
     await subscribe_thread(env, owner, repo, source, number, node,
                            muted=not subscribed)
     return json_response({"ok": True, "subscribed": subscribed})
@@ -33202,6 +33249,7 @@ async def issues_handler(env, request, owner, repo):
         event = data.get("event")
         if not isinstance(event, dict):
             return json_response({"error": "event_required"}, status=400)
+        event_type = clean_string(event.get("type", ""), 32)
         try:
             number = int(data.get("number", 0))
         except (TypeError, ValueError):
@@ -33210,6 +33258,19 @@ async def issues_handler(env, request, owner, repo):
             return json_response({"error": "issue_too_large"}, status=413)
         if not await verify_issue_event(number, event):
             return json_response({"error": "bad_signature"}, status=401)
+        # Match the Qt client's write boundary: visitors can open, comment and
+        # vote, while edits to repository-owned issue state require the source
+        # node owner (or a network admin). A browser signature proves event
+        # integrity, not repository authority, so structural actions also carry
+        # and validate the logged-in account session.
+        owner_event_types = {
+            "edit", "title", "status", "labels", "milestone", "dates",
+            "priority", "progress", "bounty", "assignees", "agent", "delete",
+        }
+        if event_type in owner_event_types:
+            ok, err = await _authorize_issue_manager(env, owner, data, request)
+            if not ok:
+                return err
         # Screenshots the submitter had no working tree to copy in ride along as
         # base64 bytes, named to match the signed event's attachments list.
         attachment_data, attach_err = _clean_issue_attachment_data(
