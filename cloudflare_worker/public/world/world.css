@@ -6880,13 +6880,15 @@ forkmesh-world.world-office-active .world-quick-dock {
 .world-object-table {
   margin-top: 10px;
   max-height: 320px;
-  overflow-y: auto;
+  /* Object names are the point of this table, so a narrow panel scrolls
+     sideways rather than crushing every label down to an ellipsis. */
+  overflow: auto;
 }
 
 .world-object-head,
 .world-object-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 96px 62px 54px 44px;
+  grid-template-columns: minmax(140px, 1fr) 96px 62px 54px 44px;
   align-items: center;
   gap: 8px;
 }
