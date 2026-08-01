@@ -624,11 +624,27 @@
     return state.networkOnlineOnly !== false;
   }
 
-  function renderNetworkRows(rows) {
+  // Header-search page filter for the Connected nodes list (adhoc #37): match
+  // the name plus the identifying fields the row's chips already show, so a
+  // hit is always something visible on the row.
+  function networkRowsMatchingPageFilter(rows) {
+    const queries = pageFilterQueries("");
+    if (!queries.length) return rows;
+    return rows.filter((row) => {
+      const haystack = [
+        row.name, row.platform, row.version, row.nodeId, row.commit,
+        row.online ? "online live" : "offline",
+      ].join(" ").toLowerCase();
+      return queries.every((query) => haystack.includes(query));
+    });
+  }
+
+  function renderNetworkRows(allRows) {
     const list = $("[data-network-node-list]");
     const count = $("[data-network-node-count]");
     const toggle = $("[data-network-online-only]");
     const onlineOnly = networkOnlineOnly();
+    const rows = networkRowsMatchingPageFilter(allRows);
     const onlineCount = rows.filter((row) => row.online).length;
     const offlineCount = rows.length - onlineCount;
     const visible = onlineOnly ? rows.filter((row) => row.online) : rows;
@@ -661,7 +677,7 @@
             <div class="mt-2 flex flex-wrap gap-1.5 pl-4">${nodeDetailChips(row)}</div>
           </div>
         `).join("")
-        : `<div class="px-4 py-3 text-sm text-muted-foreground">${onlineOnly ? "No nodes online right now." : "No nodes yet."}</div>`;
+        : `<div class="px-4 py-3 text-sm text-muted-foreground">${globalSearchPageQuery() && allRows.length ? "No nodes match this search." : (onlineOnly ? "No nodes online right now." : "No nodes yet.")}</div>`;
     }
   }
 
@@ -2513,6 +2529,10 @@
   $("[data-global-search]")?.addEventListener("input", () => {
     state.globalSearch.open = true;
     state.globalSearch.selectedIndex = 0;
+    // The dropdown searches the whole catalog; the page filter narrows what is
+    // already on screen. Both run per keystroke (adhoc #37) — the page filter
+    // only re-renders in-memory lists, so there is no fetch behind it.
+    applyGlobalSearchPageFilter();
     renderGlobalSearchResults();
   });
   $("[data-global-search]")?.addEventListener("keydown", (event) => {
