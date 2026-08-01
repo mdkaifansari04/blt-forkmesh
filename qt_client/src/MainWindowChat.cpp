@@ -5654,8 +5654,24 @@ QWidget *MainWindow::buildBreadcrumb()
     chromeScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     chromeScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
     chromeScroll->setMinimumWidth(0);
-    chromeScroll->setFixedHeight(54);
     chromeScroll->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // The scroll area is exactly as tall as the chrome bar it wraps, and only
+    // grows by the scrollbar's own height on the frames where a narrow window
+    // really does have something to scroll to (adhoc #38). It used to be pinned
+    // at a flat 54 — 42 for the bar plus a permanent 12px reservation for a
+    // scrollbar that is usually absent — which left a dead strip spanning the
+    // whole window under the chrome line, holding the navigation rail (and its
+    // left-hand edge) that far down the window for no reason.
+    const int chromeHeight = chrome->height();
+    QScrollBar *chromeHBar = chromeScroll->horizontalScrollBar();
+    auto syncChromeScrollHeight = [chromeScroll, chromeHBar, chromeHeight] {
+        const bool scrollable = chromeHBar->maximum() > chromeHBar->minimum();
+        chromeScroll->setFixedHeight(
+            chromeHeight + (scrollable ? chromeHBar->sizeHint().height() : 0));
+    };
+    connect(chromeHBar, &QScrollBar::rangeChanged, chromeScroll,
+            [syncChromeScrollHeight](int, int) { syncChromeScrollHeight(); });
+    syncChromeScrollHeight();
     layout->addWidget(chromeScroll);
 
     // The node switcher was retired from the global header. Keep its object
