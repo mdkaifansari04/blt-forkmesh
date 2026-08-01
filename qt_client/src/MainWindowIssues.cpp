@@ -5275,9 +5275,10 @@ bool MainWindow::handleFramelessResizeEvent(QObject *obj, QEvent *event)
 }
 
 // Right-click on selected text anywhere in the app (a transcript reply, a
-// diff line, a README, a log) offers "Send to Prompt" so the user can grab it
-// straight into the agent prompt box instead of a manual copy/paste
-// round-trip (adhoc #126). Handles the two families of selectable text used
+// diff line, a README, a log) offers "Send to Prompt" and "Search Codebase"
+// so the user can either send it to an agent or look for it in the open repo
+// without a manual copy/paste round-trip (adhoc #126). Handles the two
+// families of selectable text used
 // across the UI:
 //   - QLabel with Qt::TextSelectableByMouse (transcript bubbles, message rows)
 //   - QTextEdit / QTextBrowser / QPlainTextEdit (diffs, README, logs, editors)
@@ -5334,9 +5335,12 @@ bool MainWindow::maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce)
     const QString promptText = QString(selected).replace(QChar(0x2029), QLatin1Char('\n'));
     menu->addSeparator();
     QAction *sendToPrompt = menu->addAction(tr("Send to Prompt"));
+    QAction *searchCodebase = menu->addAction(tr("Search Codebase"));
     QAction *chosen = menu->exec(ce->globalPos());
     if (chosen == sendToPrompt)
         appendTextToActivePrompt(promptText);
+    else if (chosen == searchCodebase)
+        openSearchResultsPage(promptText);
     delete menu;
     return true;
 }
