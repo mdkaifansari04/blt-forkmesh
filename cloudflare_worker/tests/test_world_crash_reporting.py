@@ -134,6 +134,7 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
     for reading in (
         "device ${device.touch",
         "renderer ${record.compact === true",
+        "webgl${record.webgl2 === true",
         "cores ${describe(device.cores)}",
         "device memory ",
         "textures ${coarse(record.textures)}",
@@ -149,9 +150,17 @@ def test_crash_reports_name_the_device_renderer_and_resident_scene():
     assert "deviceProfile()" in WORLD
     assert "navigator.hardwareConcurrency" in WORLD
     assert "navigator.deviceMemory" in WORLD
-    # The heartbeat has to carry the renderer counters the report prints.
-    assert "drawingBufferWidth" in WORLD and "drawingBufferWidth" in SCENE
-    assert "compactRenderer: scene.compactRenderer === true," in WORLD
+    # The heartbeat rides the diagnostics snapshot the renderer already
+    # publishes rather than duplicating those readings.
+    guard = WORLD[WORLD.index("  beatCrashGuard()"):]
+    guard = guard[:guard.index("  reportPreviousWorldCrash()")]
+    assert "const output = snapshot?.output;" in guard
+    assert (
+        "bufferWidth: output ? Math.round(output.drawingBufferWidth) : -1,"
+    ) in guard
+    assert (
+        "compact: output ? output.compactRenderer === true : false,"
+    ) in guard
 
 
 def test_volatile_crash_readings_are_bucketed_so_equivalent_crashes_group():

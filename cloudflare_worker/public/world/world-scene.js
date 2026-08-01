@@ -33846,14 +33846,6 @@ export function createWorldScene({
       shadowsEnabled: renderer.shadowMap.enabled && sun.castShadow,
       disabledElements: disabledWorldElements.size,
       pixelRatio: renderer.getPixelRatio(),
-      compactRenderer,
-      // The drawing buffer is the one allocation the renderer sizes itself,
-      // so a crash report can separate "too many pixels" from "too much
-      // scene" without guessing at the device's viewport.
-      drawingBufferWidth: renderer.getDrawingBufferSize(
-        diagnosticsDrawingBuffer,
-      ).x,
-      drawingBufferHeight: diagnosticsDrawingBuffer.y,
       cameraMode,
       space: currentSpace,
       moving: wasWalking,

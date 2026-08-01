@@ -8023,8 +8023,8 @@ class ForkMeshWorld extends HTMLElement {
     // attached: a 4 GB phone with a dense screen fails where a tablet does
     // not. All static for the page's lifetime, so resolve them once.
     if (this.cachedDeviceProfile) return this.cachedDeviceProfile;
-    const width = Math.max(0, Math.round(Number(screen?.width) || 0));
-    const height = Math.max(0, Math.round(Number(screen?.height) || 0));
+    const width = Math.max(0, Math.round(Number(window.screen?.width) || 0));
+    const height = Math.max(0, Math.round(Number(window.screen?.height) || 0));
     this.cachedDeviceProfile = {
       screen: width && height ? `${width}x${height}` : "",
       cores: Math.max(0, Math.round(Number(navigator.hardwareConcurrency) || 0)),
@@ -8045,6 +8045,7 @@ class ForkMeshWorld extends HTMLElement {
       snapshot = this.collectDiagnostics();
     }
     const renderer = snapshot?.renderer;
+    const output = snapshot?.output;
     const memory =
       typeof performance.memory === "object" ? performance.memory : null;
     const record = {
@@ -8067,9 +8068,10 @@ class ForkMeshWorld extends HTMLElement {
       programs: renderer ? Math.round(renderer.programs) : -1,
       avatars: renderer ? Math.round(renderer.remoteAvatars) : -1,
       space: String(renderer?.space || "unknown").slice(0, 32),
-      compact: renderer ? renderer.compactRenderer === true : false,
-      bufferWidth: renderer ? Math.round(renderer.drawingBufferWidth) : -1,
-      bufferHeight: renderer ? Math.round(renderer.drawingBufferHeight) : -1,
+      compact: output ? output.compactRenderer === true : false,
+      bufferWidth: output ? Math.round(output.drawingBufferWidth) : -1,
+      bufferHeight: output ? Math.round(output.drawingBufferHeight) : -1,
+      webgl2: output ? output.webgl2 === true : false,
       pixelRatio: renderer ? Number(renderer.pixelRatio) || 0 : 0,
       heapUsedMb: memory
         ? Math.round(Number(memory.usedJSHeapSize) / 1048576)
@@ -8128,7 +8130,7 @@ class ForkMeshWorld extends HTMLElement {
       ...(gpu ? [`gpu ${gpu}`] : []),
       `cores ${describe(device.cores)}`,
       `device memory ${device.memoryGb > 0 ? `${device.memoryGb}GB` : "unknown"}`,
-      `renderer ${record.compact === true ? "compact" : "full"}`,
+      `renderer ${record.compact === true ? "compact" : "full"} webgl${record.webgl2 === true ? "2" : "1"}`,
       `safe mode ${record.safeMode === true ? "on" : "off"}`,
       `uptime ${coarse((beatAt - Number(record.startedAt)) / 1000, "s")}`,
       `heartbeat gap ${coarse((Date.now() - beatAt) / 1000, "s")}`,
@@ -8211,6 +8213,7 @@ class ForkMeshWorld extends HTMLElement {
       // add noise, and the rolling crash-guard heartbeat already counts them.
       this.reportedRendererContextLoss = true;
       const renderer = this.lastDiagnosticsSnapshot?.renderer;
+      const output = this.lastDiagnosticsSnapshot?.output;
       const uptimeS = Math.max(
         0,
         Math.round((Date.now() - (this.crashGuardStartedAt || Date.now())) / 1000),
@@ -8223,7 +8226,7 @@ class ForkMeshWorld extends HTMLElement {
       const parts = [
         `World renderer crashed; WebGL context lost after ${coarse(uptimeS)}s`,
         `device ${device.touch ? "touch" : "pointer"} ${device.screen || "unknown"} screen`,
-        `renderer ${renderer?.compactRenderer === true ? "compact" : "full"}`,
+        `renderer ${output?.compactRenderer === true ? "compact" : "full"}`,
         `fps ${coarse(renderer?.fps)}`,
         `triangles ${coarse(renderer?.triangles)}`,
         `textures ${coarse(renderer?.textures)}`,
@@ -25289,15 +25292,6 @@ class ForkMeshWorld extends HTMLElement {
             ),
             shadowsEnabled: scene.shadowsEnabled === true,
             pixelRatio: Math.max(0, Math.min(8, Number(scene.pixelRatio) || 0)),
-            compactRenderer: scene.compactRenderer === true,
-            drawingBufferWidth: Math.max(
-              0,
-              Math.min(32_768, Number(scene.drawingBufferWidth) || 0),
-            ),
-            drawingBufferHeight: Math.max(
-              0,
-              Math.min(32_768, Number(scene.drawingBufferHeight) || 0),
-            ),
             cameraMode: String(scene.cameraMode || "unknown").slice(0, 32),
             space: String(scene.space || "unknown").slice(0, 64),
             moving: scene.moving === true,
