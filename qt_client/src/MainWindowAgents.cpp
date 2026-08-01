@@ -7185,11 +7185,9 @@ void MainWindow::openAgentSessionFromIssue()
 // fill the shared range diff while the universal source-control composer,
 // working changes, and branch graph remain visible on the left.
 //
-// switchToBranch() does that render, but it drives the repo-detail widgets of
-// whichever repository the detail view currently holds, and the sessions list is
-// global: a run belonging to another repo would otherwise open that other repo's
-// Git page and then report its branch as missing. Bind the detail view to the
-// session's own repository first.
+// The sessions list is global, so a run belonging to another repo must bind the
+// detail view to its own repository first. Unlike ordinary branch navigation,
+// this review route deliberately leaves the graph's browsed branch untouched.
 void MainWindow::switchToAgentBranch(int sessionId)
 {
     const AgentSession *session = findAgentSession(sessionId);
@@ -7205,7 +7203,27 @@ void MainWindow::switchToAgentBranch(int sessionId)
     showSection(0);
     if (repoIndex >= 0 && !bindRepoDetailToRepo(repoIndex))
         return;
-    switchToBranch(branch);
+
+    // The agent button opens a review; it must not repoint the commit graph's
+    // branch picker underneath the user. Keep that history exactly where it is,
+    // reset the review base to the repository default (normally main), and open
+    // only the agent range on the right. showBranchDiff still owns the Pull main
+    // state and its automatic update attempt when this branch is behind.
+    m_branchCompareBase.clear();
+    m_branchAutoPullAttempted.clear();
+    m_branchDiffPullNumber = -1;
+    showOverviewCommits();
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
+    showBranchDiff(branch);
+    if (m_branchDiffView)
+        m_branchDiffView->setFocus();
+    QTimer::singleShot(0, this, [this] {
+        if (commitsListIsCurrent())
+            refreshSourceControl();
+        else
+            loadCommits();
+    });
+    scheduleNavRecord();
 }
 
 void MainWindow::switchToAgentsTab(int sessionId)
