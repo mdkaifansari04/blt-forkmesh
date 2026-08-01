@@ -323,11 +323,17 @@ def test_bench_height_is_derived_from_the_seated_pose():
     assert "legInstances.setMatrixAt(" in ring
 
 
-def test_campfire_bounds_detailed_avatars_while_retaining_roster_benches():
-    assert "const CAMPFIRE_DETAILED_MEMBER_LIMIT = compactRenderer ? 12 : 32" in SCENE
-    assert ".slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)" in SCENE
-    assert "campfire.userData.memberFigureLimit" in SCENE
+def test_campfire_fills_every_non_walking_member_bench_with_a_figure():
+    assert "CAMPFIRE_DETAILED_MEMBER_LIMIT" not in SCENE
+    assert "const seatedMemberIds = new Set(" in SCENE
+    assert ".filter((member) => member?.away !== true)" in SCENE
+    assert "const represented = seatedMemberIds.has(id);" in SCENE
     assert "campfire.userData.detailedMemberFigures" in SCENE
+    assert "campfire-instanced-member-sitters" not in SCENE
+    assert "updateCompactCampfireSitters" not in SCENE
+    assert "figure = createAvatar(" in SCENE
+    assert "{ remote: true, scale: 0.88 }" in SCENE
+    assert "campfire.userData.seatedMemberFigures = seen.size;" in SCENE
     assert 'labelState = member.away === true' in SCENE
     assert '"ROSTER BENCH"' in SCENE
     assert "showAtBench(seatByName.get(wanted))" in SCENE

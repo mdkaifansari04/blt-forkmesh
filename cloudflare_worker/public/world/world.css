@@ -7591,11 +7591,8 @@ forkmesh-world.world-office-active .world-quick-dock {
 .world-aquarium-control-panel {
   position: absolute;
   z-index: 18;
-  display: grid;
-  min-width: min(340px, calc(100vw - 28px));
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 5px;
-  transform: translate(calc(-100% - 8px), calc(-100% - 8px));
+  width: min(190px, calc(100vw - 28px));
+  transform: translate(calc(-100% - 8px), 7px);
   border: 1px solid rgb(113 239 255 / 0.74);
   border-radius: 8px;
   background:
@@ -7603,7 +7600,6 @@ forkmesh-world.world-office-active .world-quick-dock {
   box-shadow:
     0 12px 30px rgb(0 8 12 / 0.4),
     inset 0 1px rgb(214 253 255 / 0.16);
-  padding: 7px;
   color: #e3fcff;
   font: 750 0.58rem/1 "ForkMesh Mono", ui-monospace, monospace;
   letter-spacing: 0.025em;
@@ -7615,13 +7611,67 @@ forkmesh-world.world-office-active .world-quick-dock {
   display: none;
 }
 
-.world-aquarium-control-title {
-  grid-column: 1 / -1;
-  border-bottom: 1px solid rgb(113 239 255 / 0.24);
-  padding: 1px 3px 5px;
+.world-aquarium-control-toggle {
+  display: flex;
+  width: 100%;
+  min-height: 38px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  padding: 9px 11px;
   color: #87eaf5;
-  font-size: 0.52rem;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.56rem;
   letter-spacing: 0.12em;
+  text-align: left;
+}
+
+.world-aquarium-control-toggle::after {
+  content: "+";
+  color: var(--world-mint);
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.world-aquarium-control-toggle[aria-expanded="true"]::after {
+  content: "−";
+}
+
+.world-aquarium-control-toggle:hover,
+.world-aquarium-control-toggle:focus-visible {
+  background: rgb(15 51 55 / 0.98);
+}
+
+.world-aquarium-control-toggle:focus-visible {
+  outline: 2px solid var(--world-mint);
+  outline-offset: 2px;
+}
+
+.world-aquarium-control-actions {
+  position: absolute;
+  right: -1px;
+  bottom: calc(100% + 7px);
+  display: grid;
+  width: min(340px, calc(100vw - 28px));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  border: 1px solid rgb(113 239 255 / 0.74);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgb(9 35 40 / 0.97), rgb(4 17 21 / 0.99));
+  box-shadow:
+    0 12px 30px rgb(0 8 12 / 0.4),
+    inset 0 1px rgb(214 253 255 / 0.16);
+  padding: 7px;
+  backdrop-filter: blur(10px);
+}
+
+.world-aquarium-control-actions[hidden] {
+  display: none;
 }
 
 .world-aquarium-control-button {
