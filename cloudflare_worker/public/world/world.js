@@ -232,7 +232,12 @@ const WORLD_HANDSHAKE_TTL_MS = 2 * 60 * 1000;
 // The status Worker records one sample per minute. Poll on that same cadence;
 // the board's lightweight stand texture counts down every second in between.
 const WORLD_STATUS_POLL_MS = 60 * 1000;
+const WORLD_STATUS_ISSUE_WINDOW_MS = 60 * 1000;
 const WORLD_BUILD_BOARD_POLL_MS = 60 * 1000;
+// QA is a shared work queue. Keep already-open Worlds close enough to the
+// server's authoritative first-review state that two testers are not dealt the
+// same card for the rest of a long session.
+const WORLD_QA_POLL_MS = 15 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_CACHE_MS = 15 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_BASE_MS = 5 * 60 * 1000;
 const WORLD_BUILD_BOARD_REPOSITORY_BACKOFF_MAX_MS = 30 * 60 * 1000;
@@ -1112,6 +1117,28 @@ function validWorldSession() {
     sessionToken.length <= 2048
     ? { ...session, nodeName, sessionToken }
     : null;
+}
+
+function statusPayloadHasRecentIssue(payload, now = Date.now()) {
+  const systems = Array.isArray(payload?.systems) ? payload.systems : [];
+  const payloadNow = Number(payload?.now);
+  const referenceNow = Number.isFinite(payloadNow) && payloadNow > 0
+    ? payloadNow
+    : now;
+  const cutoff = referenceNow - WORLD_STATUS_ISSUE_WINDOW_MS;
+  return systems.some((system) =>
+    (Array.isArray(system?.minutes) ? system.minutes : []).some((minute) => {
+      const minuteTs = Number(minute?.minuteTs);
+      const status = String(minute?.status || "").toLowerCase();
+      return (
+        Number.isFinite(minuteTs) &&
+        minuteTs >= cutoff &&
+        minuteTs <= referenceNow &&
+        status !== "operational" &&
+        status !== "future"
+      );
+    }),
+  );
 }
 
 async function copyWorldText(value) {
@@ -4154,6 +4181,16 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           </a>
 
           <nav class="world-top-actions" data-world-top-actions aria-label="World tools">
+            <a
+              class="world-admin-status-light"
+              data-world-admin-status-light
+              href="/status"
+              aria-label="A system status issue was recorded in the past minute"
+              title="A system status issue was recorded in the past minute — open status"
+              hidden
+            >
+              <span class="world-admin-status-light-orb" aria-hidden="true"></span>
+            </a>
             ${
               identity.accountStatus === "Supporting member"
                 ? ""
@@ -5440,6 +5477,7 @@ class ForkMeshWorld extends HTMLElement {
     this.systemCapacitySort = { key: "rowCount", direction: "desc" };
     this.buildBoardTimer = 0;
     this.buildBoardLoad = null;
+    this.qaTimer = 0;
     this.orgAgentTimer = 0;
     this.sessionWatchTimer = 0;
     this.sessionWatchActive = false;
@@ -5587,6 +5625,7 @@ class ForkMeshWorld extends HTMLElement {
     this.qaDeck = {
       authenticated: false,
       cards: [],
+      stack: [],
       reviews: {},
       stats: { pass: 0, fail: 0, unsure: 0, reviewed: 0, total: 0 },
     };
@@ -5657,6 +5696,7 @@ class ForkMeshWorld extends HTMLElement {
     this.adminErrorLatestId = 0;
     this.adminErrorCount = 0;
     this.adminErrorEffectTimer = 0;
+    this.adminStatusIssueActive = false;
     this.adminErrors = [];
     this.adminErrorGroups = [];
     this.adminErrorsState = "idle";
@@ -6866,6 +6906,11 @@ class ForkMeshWorld extends HTMLElement {
         () => void this.refreshBuildBoard({ quiet: true }),
         WORLD_BUILD_BOARD_POLL_MS,
       );
+      this.qaTimer = window.setInterval(() => {
+        if (!this.destroyed && !document.hidden) {
+          void this.refreshQaDeck({ quiet: true });
+        }
+      }, WORLD_QA_POLL_MS);
       void this.refreshOrgAgentBots();
       this.orgAgentTimer = window.setInterval(
         () => void this.refreshOrgAgentBots(),
@@ -7414,6 +7459,10 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   applyQaDeck(payload = {}, { afterKey = "" } = {}) {
+    const previousStackIndex = afterKey
+      ? (Array.isArray(this.qaDeck?.stack) ? this.qaDeck.stack : [])
+          .findIndex((card) => card?.key === afterKey)
+      : -1;
     const reviews =
       payload?.reviews && typeof payload.reviews === "object"
         ? payload.reviews
@@ -7447,6 +7496,8 @@ class ForkMeshWorld extends HTMLElement {
               howToTest,
               verdict,
               global,
+              reviewedByAnyone:
+                card?.reviewedByAnyone === true || global.total > 0,
               organizationTask: card?.organizationTask === true,
               department: sanitizePresenceText(
                 card?.department, "", 64),
@@ -7471,7 +7522,8 @@ class ForkMeshWorld extends HTMLElement {
           : null;
       })
       .filter(Boolean)
-      .slice(0, 64);
+      .slice(0, 4096);
+    const stack = cards.filter((card) => !card.reviewedByAnyone);
     const counts = { pass: 0, fail: 0, unsure: 0 };
     cards.forEach((card) => {
       if (card.verdict) counts[card.verdict] += 1;
@@ -7480,9 +7532,10 @@ class ForkMeshWorld extends HTMLElement {
       authenticated: payload?.authenticated === true,
       authorized: payload?.authorized === true,
       requiredTeam: sanitizePresenceText(
-        payload?.requiredTeam, "quality-assurance", 64),
+        payload?.requiredTeam, "", 64),
       revision: sanitizePresenceText(payload?.revision, "", 80),
       cards,
+      stack,
       reviews,
       globalReviews:
         payload?.globalReviews && typeof payload.globalReviews === "object"
@@ -7500,20 +7553,14 @@ class ForkMeshWorld extends HTMLElement {
       stats: {
         ...counts,
         reviewed: cards.filter((card) => card.verdict).length,
-        total: cards.length,
+        total: stack.length,
       },
     };
-    const previousIndex = cards.findIndex((card) => card.key === afterKey);
-    const unreviewed = cards
-      .map((card, index) => ({ card, index }))
-      .filter(({ card }) => !card.verdict);
-    if (unreviewed.length) {
+    if (stack.length) {
       this.qaCardIndex =
-        unreviewed.find(({ index }) => index > previousIndex)?.index ??
-        unreviewed[0].index;
-    } else if (cards.length) {
-      this.qaCardIndex =
-        previousIndex >= 0 ? (previousIndex + 1) % cards.length : 0;
+        previousStackIndex >= 0
+          ? Math.min(previousStackIndex, stack.length - 1)
+          : 0;
     } else {
       this.qaCardIndex = 0;
     }
@@ -7527,7 +7574,12 @@ class ForkMeshWorld extends HTMLElement {
     return this.qaDeck.cards.filter(
       (card) =>
         (Number(card?.global?.[verdict]) || 0) > 0 ||
-        String(card?.verdict || "") === verdict,
+        String(card?.verdict || "") === verdict ||
+        (card?.organizationTask === true &&
+          Number(card?.lastReviewedAt) > 0 &&
+          ({ passed: "pass", failed: "fail", unknown: "unsure" }[
+            String(card?.taskQaStatus || "")
+          ] === verdict)),
     );
   }
 
@@ -7559,7 +7611,7 @@ class ForkMeshWorld extends HTMLElement {
               (card) => card.key === this.qaDeckSelectedKey,
             )
           : null) ||
-        this.qaDeck.cards[this.qaCardIndex] ||
+        this.qaDeck.stack[this.qaCardIndex] ||
         null,
       currentIndex: this.qaCardIndex,
       stats: this.qaDeck.stats,
@@ -7589,7 +7641,6 @@ class ForkMeshWorld extends HTMLElement {
       const index = this.qaDeck.cards.findIndex((card) => card.key === key);
       if (index < 0) return;
       this.qaDeckSelectedKey = key;
-      this.qaCardIndex = index;
       this.qaDeckView = "detail";
       this.renderQaDeck();
       return;
@@ -7835,7 +7886,12 @@ class ForkMeshWorld extends HTMLElement {
     ) {
       return false;
     }
-    const card = this.qaDeck.cards[this.qaCardIndex];
+    const card =
+      this.qaDeckView === "detail" && this.qaDeckSelectedKey
+        ? this.qaDeck.cards.find(
+            (entry) => entry.key === this.qaDeckSelectedKey,
+          )
+        : this.qaDeck.stack[this.qaCardIndex];
     if (!card) return false;
     if (!this.qaDeck.authenticated || !validWorldSession()) {
       this.toast("Sign in to save QA results to your account.");
@@ -7900,7 +7956,7 @@ class ForkMeshWorld extends HTMLElement {
         );
       }
       await this.refreshQaDeck({ quiet: true });
-      const index = this.qaDeck.cards.findIndex((card) => card.key === key);
+      const index = this.qaDeck.stack.findIndex((card) => card.key === key);
       if (index < 0 || !this.qaDeck.authorized) {
         this.toast(
           "Join the Quality Assurance team to review completed tasks.",
@@ -8098,6 +8154,9 @@ class ForkMeshWorld extends HTMLElement {
     // socket is closed, so no arrival can force it — and accounts signed up
     // meanwhile are missing from the fire's total. Coming back is the cue.
     void this.refreshMemberDirectory();
+    // Reviews made in another browser while this tab was hidden must be
+    // removed before the tester handles the next card.
+    void this.refreshQaDeck({ quiet: true });
     // Coming back to this tab is itself the request to bring the account's
     // one avatar here, so a takeover by another device stops holding it off.
     this.reclaimPresenceHere();
@@ -12521,6 +12580,21 @@ class ForkMeshWorld extends HTMLElement {
   applyAdminElementsAccess() {
     const elementsTab = this.$("[data-world-elements-tab]");
     if (elementsTab) elementsTab.hidden = false;
+    this.renderAdminStatusLight(this.adminStatusIssueActive);
+  }
+
+  renderAdminStatusLight(active = false) {
+    const light = this.$("[data-world-admin-status-light]");
+    if (!light) return;
+    this.adminStatusIssueActive = active === true;
+    const visible = this.identity?.isAdmin === true && this.adminStatusIssueActive;
+    light.hidden = !visible;
+    light.setAttribute(
+      "aria-label",
+      visible
+        ? "A system status issue was recorded in the past minute"
+        : "No recent system status issues",
+    );
   }
 
   adminErrorStorageKey() {
@@ -13170,6 +13244,7 @@ class ForkMeshWorld extends HTMLElement {
     this.statusBoardRequestedAt = Date.now();
     this.statusBoardLastCheckAt =
       Math.max(0, Number(payload?.current?.lastCronSampleTs) || 0);
+    this.renderAdminStatusLight(statusPayloadHasRecentIssue(payload));
     this.world?.updateSystemStatusBoard?.(payload);
     this.syncSystemStatusBoardTimer();
   }
@@ -26593,6 +26668,7 @@ class ForkMeshWorld extends HTMLElement {
       this.identity.nodes = [];
     }
     this.stopAdminErrorPolling();
+    this.renderAdminStatusLight(false);
     this.worldTicket = "";
     this.worldTicketExpires = 0;
     this.resetWorldActivity();
@@ -28614,6 +28690,9 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.mastodonRefreshTimer);
     window.clearInterval(this.socialFeedsTimer);
     window.clearInterval(this.sessionWatchTimer);
+    window.clearInterval(this.buildBoardTimer);
+    window.clearInterval(this.orgAgentTimer);
+    window.clearInterval(this.qaTimer);
     window.clearInterval(this.instanceDirectoryTimer);
     window.clearTimeout(this.rendererRecoveryTimer);
     window.clearTimeout(this.viewportSyncTimer);
