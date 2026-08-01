@@ -7664,6 +7664,12 @@ void MainWindow::refreshCommitsBranchButton()
         QString::fromUtf8("%1 \xE2\x80\x94 click to browse another branch's "
                           "history or create one")
             .arg(label));
+    // The Review button only makes sense for a branch that has a range against
+    // the default branch — hide it while the default branch itself (or a
+    // detached head) is on screen.
+    if (m_commitsReviewButton)
+        m_commitsReviewButton->setVisible(
+            !browsed.isEmpty() && browsed != repoDefaultBranchFast());
 
     auto *menu = new QMenu(m_commitsBranchButton);
     QAction *create =
@@ -8737,6 +8743,15 @@ QWidget *MainWindow::buildRepoDetailSection()
         // land on that branch's history instead of the main-branch view this
         // destination otherwise always shows. Reset the browsed ref first, then
         // open the panel below so its list is built for the default branch.
+        //
+        // A branch/PR range review (or a commit detail) left on the workspace
+        // doesn't survive this destination either: showCommitList deliberately
+        // keeps its hands off the range page, so without this reset the rail
+        // landed back on whatever review was parked there instead of the
+        // main-branch view. Hand the right pane and the left column's slots
+        // back to the working tree before the branch reset so the reloads
+        // below fill the view that's actually on screen.
+        setCommitWorkspacePage(kCommitWorkspaceChangesPage);
         const QString base = repoDefaultBranchFast();
         if (!base.isEmpty() && base != m_repoBranch)
             setRepoBranch(base);
@@ -9024,9 +9039,27 @@ QWidget *MainWindow::buildRepoCommitsTab()
         "Branch shown below — click to browse another branch's history or create one");
     setOcticon(m_commitsBranchButton, "git-branch", 16);
 
+    // "Review" — only while a non-default branch is browsed (visibility is set
+    // in refreshCommitsBranchButton): branch links land on this graph view now,
+    // so the deeper range review (diff against the default branch + the Merge /
+    // Create PR toolbar) is this one explicit click away.
+    m_commitsReviewButton = new QPushButton("Review");
+    m_commitsReviewButton->setObjectName("ghostButton");
+    m_commitsReviewButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsReviewButton, "git-compare", 16);
+    m_commitsReviewButton->setToolTip(
+        "Review this branch against the default branch \xE2\x80\x94 its commits, "
+        "changed files and diff, with the merge and PR actions");
+    m_commitsReviewButton->hide();
+    connect(m_commitsReviewButton, &QPushButton::clicked, this, [this] {
+        if (!m_repoBranch.isEmpty())
+            openBranchRangeReview(m_repoBranch);
+    });
+
     auto *searchRow = new QHBoxLayout;
     searchRow->setSpacing(8);
     searchRow->addWidget(m_commitsBranchButton, 1);
+    searchRow->addWidget(m_commitsReviewButton);
     searchRow->addWidget(m_commitsFetchButton);
     searchRow->addWidget(m_commitsPullButton);
 
