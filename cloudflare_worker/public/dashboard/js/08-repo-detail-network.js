@@ -2113,6 +2113,92 @@
         return;
       }
 
+      const issueTitleEditButton = event.target.closest(
+        "[data-repo-issue-title-edit]",
+      );
+      if (issueTitleEditButton) {
+        const article = issueTitleEditButton.closest("[data-repo-record-detail]");
+        article?.querySelector("[data-repo-issue-title-heading]")?.classList.add("hidden");
+        const form = article?.querySelector("[data-repo-issue-title-form]");
+        form?.classList.remove("hidden");
+        form?.classList.add("flex");
+        form?.querySelector("[data-repo-issue-title-input]")?.focus();
+        return;
+      }
+
+      const issueTitleCancelButton = event.target.closest(
+        "[data-repo-issue-title-cancel]",
+      );
+      if (issueTitleCancelButton) {
+        renderCurrentWebIssueDetail();
+        return;
+      }
+
+      const issueDescriptionEditButton = event.target.closest(
+        "[data-repo-issue-description-edit]",
+      );
+      if (issueDescriptionEditButton) {
+        const section = issueDescriptionEditButton.closest("[data-repo-record-conversation]");
+        section?.querySelector("[data-repo-record-body]")?.classList.add("hidden");
+        issueDescriptionEditButton.parentElement?.classList.add("hidden");
+        section?.querySelector("[data-repo-issue-description-form]")?.classList.remove("hidden");
+        section?.querySelector("[data-repo-issue-description-input]")?.focus();
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-description-cancel]")) {
+        renderCurrentWebIssueDetail();
+        return;
+      }
+
+      const issueStatusButton = event.target.closest("[data-repo-issue-status]");
+      if (issueStatusButton) {
+        void handleWebIssueAction(issueStatusButton.dataset.repoIssueStatus || "");
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-vote]")) {
+        void handleWebIssueAction("vote");
+        return;
+      }
+
+      const issueSubscriptionButton = event.target.closest(
+        "[data-repo-issue-subscription]",
+      );
+      if (issueSubscriptionButton) {
+        void handleWebIssueAction(
+          issueSubscriptionButton.dataset.repoIssueSubscription || "subscribe",
+        );
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-delete]")) {
+        void handleWebIssueAction("delete-issue");
+        return;
+      }
+
+      const issueCommentEditButton = event.target.closest(
+        "[data-repo-issue-comment-edit]",
+      );
+      if (issueCommentEditButton) {
+        void handleWebIssueAction(
+          "edit-comment",
+          issueCommentEditButton.dataset.repoIssueCommentEdit || "",
+        );
+        return;
+      }
+
+      const issueCommentDeleteButton = event.target.closest(
+        "[data-repo-issue-comment-delete]",
+      );
+      if (issueCommentDeleteButton) {
+        void handleWebIssueAction(
+          "delete-comment",
+          issueCommentDeleteButton.dataset.repoIssueCommentDelete || "",
+        );
+        return;
+      }
+
       const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
       if (pullViewedButton && state.selectedRepo) {
         toggleRepoPullViewed(
@@ -2356,7 +2442,31 @@
     const issueCommentForm = event.target.closest("[data-repo-issue-comment-form]");
     if (issueCommentForm && state.selectedRepo) {
       event.preventDefault();
+      issueCommentForm._issueSubmitAction =
+        event.submitter?.dataset.repoIssueCommentAction || "comment";
       handleIssueCommentSubmit(state.selectedRepo, issueCommentForm);
+      return;
+    }
+    const issueTitleForm = event.target.closest("[data-repo-issue-title-form]");
+    if (issueTitleForm) {
+      event.preventDefault();
+      void handleWebIssueTitleSubmit(issueTitleForm);
+      return;
+    }
+    const issueDescriptionForm = event.target.closest(
+      "[data-repo-issue-description-form]",
+    );
+    if (issueDescriptionForm) {
+      event.preventDefault();
+      void handleWebIssueDescriptionSubmit(issueDescriptionForm);
+      return;
+    }
+    const issueMetadataForm = event.target.closest(
+      "[data-repo-issue-metadata-form]",
+    );
+    if (issueMetadataForm) {
+      event.preventDefault();
+      void handleWebIssueMetadataSubmit(issueMetadataForm);
       return;
     }
     const discussionReplyForm = event.target.closest("[data-repo-discussion-reply-form]");

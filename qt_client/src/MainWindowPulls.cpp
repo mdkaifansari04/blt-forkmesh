@@ -160,7 +160,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullUpdateButton = new QPushButton("Update branch");
     m_pullMergeButton = new QPushButton("Merge");
     m_pullResolveButton = new QPushButton("Resolve conflicts\xE2\x80\xA6");
-    m_pullFixButton = new QPushButton("Fix with agent");
+    m_pullFixButton = new QPushButton("Fix");
     m_pullFixConflictsButton = new QPushButton("Fix conflicts with agent");
     m_pullEditFileButton = new QPushButton("Edit file\xE2\x80\xA6");
     m_pullDeleteFileButton = new QPushButton("Delete file\xE2\x80\xA6");
@@ -181,6 +181,9 @@ QWidget *MainWindow::buildPullsTab()
                            m_pullDeleteBranchButton, m_pullMergeDeleteButton,
                            m_pullPreviewButton,
                            m_pullLinkIssueButton, m_pullSplitButton}) {
+        // Every header action wears the flat rail style (adhoc #7) — the filled
+        // green/grey pills that used to single out Merge and the AI actions made
+        // an otherwise uniform toolbar read as three unrelated bars.
         b->setObjectName("ghostButton");
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
@@ -202,7 +205,6 @@ QWidget *MainWindow::buildPullsTab()
         if (m_pullFiles && m_pullFiles->count() > 0)
             renderPullDiff();
     });
-    m_pullMergeButton->setObjectName("primaryButton");
     setOcticon(m_pullUpdateButton, "sync", 16);
     setOcticon(m_pullMergeButton, "check-circle", 16);
     setOcticon(m_pullResolveButton, "git-pull-request", 16);
@@ -272,34 +274,23 @@ QWidget *MainWindow::buildPullsTab()
     m_pullResolveButton->hide(); // only shown when the PR has conflicts
     connect(m_pullResolveButton, &QPushButton::clicked, this,
             &MainWindow::resolveCurrentPullConflicts);
-    // One-click AI conflict resolution: an agent rewrites the conflicting files
-    // and the fix is committed straight to the PR's branch (no new PR). The three
-    // providers (Claude API, OpenAI API, Claude Code) live in a single dropdown
-    // so the PR header stays compact (issue #150).
+    // "Fix" (adhoc #7): the provider dropdown is gone — picking Claude API /
+    // OpenAI API / CC from a menu meant choosing a resolver before seeing the
+    // task. A plain click now writes a ready-made conflict-resolution prompt
+    // into the footer prompt box, where it can be edited and sent to whichever
+    // agent the prompt bar is pointed at.
     setOcticon(m_pullFixButton, "rocket", 16);
     m_pullFixButton->setToolTip(
-        "Let an agent resolve these conflicts and commit the fix to this pull "
-        "request's branch \xE2\x80\x94 watch it run on the Agents tab");
+        "Fill the prompt box with a task to resolve this pull request's "
+        "conflicts on its own branch \xE2\x80\x94 edit it, then send it to an agent");
     m_pullFixButton->hide(); // only shown when the PR has conflicts
-    m_pullFixMenu = new QMenu(m_pullFixButton);
-    m_pullFixMenu->setToolTipsVisible(true);
-    m_pullFixClaudeAction = m_pullFixMenu->addAction(QStringLiteral("Claude API"));
-    m_pullFixOpenAiAction = m_pullFixMenu->addAction(QStringLiteral("OpenAI API"));
-    m_pullFixClaudeCodeAction =
-        m_pullFixMenu->addAction(QStringLiteral("CC")); // Claude Code (adhoc #38)
-    connect(m_pullFixClaudeAction, &QAction::triggered, this,
-            [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude")); });
-    connect(m_pullFixOpenAiAction, &QAction::triggered, this,
-            [this] { fixCurrentPullConflictsWithAi(QStringLiteral("openai")); });
-    connect(m_pullFixClaudeCodeAction, &QAction::triggered, this,
-            [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude-code")); });
-    m_pullFixButton->setMenu(m_pullFixMenu);
+    connect(m_pullFixButton, &QPushButton::clicked, this,
+            &MainWindow::fillPromptWithPullConflictFix);
     // Continue the agent session that authored this branch, same as the agent
     // detail view's "Fix conflicts with agent" button: it keeps the run's own
     // context/history and full tool access instead of a fresh, conflict-only
     // rewrite. Only shown when such a session is attached (see
     // updatePullActionState / agentSessionForPull).
-    m_pullFixConflictsButton->setObjectName("primaryButton");
     setOcticon(m_pullFixConflictsButton, "git-merge", 16);
     m_pullFixConflictsButton->hide();
     connect(m_pullFixConflictsButton, &QPushButton::clicked, this,
@@ -325,7 +316,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullReviewAiButton = new QPushButton("Review with AI");
     m_pullFixAllAiButton = new QPushButton("Fix all with AI");
     for (QPushButton *b : {m_pullReviewAiButton, m_pullFixAllAiButton}) {
-        b->setObjectName("primaryButton");
+        b->setObjectName("ghostButton"); // same flat rail style as the rest (adhoc #7)
         b->setProperty("buttonSize", "sm");
         b->setCursor(Qt::PointingHandCursor);
     }
@@ -414,8 +405,8 @@ QWidget *MainWindow::buildPullsTab()
                     index = 2;
                     button = m_pullTabChecks;
                 } else if (href == QLatin1String("tab:files")) {
-                    index = 3;
-                    button = m_pullTabFiles;
+                    openPullDiffInGitView(m_currentPullNumber);
+                    return;
                 }
                 if (index < 0 || !m_pullSubStack)
                     return;
@@ -865,10 +856,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullConflictDetails->hide();
     connect(m_pullConflictDetails, &QLabel::linkActivated, this,
             [this](const QString &) {
-                if (m_pullTabFiles)
-                    m_pullTabFiles->setChecked(true);
-                if (m_pullSubStack)
-                    m_pullSubStack->setCurrentIndex(3);
+                openPullDiffInGitView(m_currentPullNumber);
             });
 
     auto *conversationInner = new QWidget;
@@ -944,7 +932,7 @@ QWidget *MainWindow::buildPullsTab()
         {QStringLiteral("Conversation"), "comment"},
         {QStringLiteral("Commits"), "git-branch"},
         {QStringLiteral("Checks"), "workflow"},
-        {QStringLiteral("Files changed"), "file-diff"},
+        {QStringLiteral("Changes in Git"), "file-diff"},
         {QStringLiteral("Badge"), "graph"}};
     for (int i = 0; i < subTabs.size(); ++i) {
         auto *b = new QPushButton(subTabs.at(i).first);
@@ -964,6 +952,14 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTabFiles = qobject_cast<QPushButton *>(m_pullSubTabs->button(3));
     m_pullTabBadge = qobject_cast<QPushButton *>(m_pullSubTabs->button(4));
     connect(m_pullSubTabs, &QButtonGroup::idClicked, this, [this](int id) {
+        if (id == 3) {
+            // The PR page owns conversation/checks/approval state; repository
+            // changes have one visual home. Route its Files entry into the Git
+            // range pane, which carries the same line threads, Viewed state,
+            // find/navigation tools, and PR actions.
+            openPullDiffInGitView(m_currentPullNumber);
+            return;
+        }
         m_pullSubStack->setCurrentIndex(id);
         if (id == 2) { // refresh the Checks table when it's brought forward
             // Copy the PR out before rendering: renderPullChecks pumps the
@@ -975,15 +971,6 @@ QWidget *MainWindow::buildPullsTab()
                     current = pr;
             if (current.number > 0)
                 renderPullChecks(current);
-        }
-        if (id == 3) { // Files changed brought forward: show the sticky header now,
-            // not only after the first scroll (adhoc #56). Defer so the diff
-            // viewport has laid out at its shown size before we measure it.
-            QTimer::singleShot(0, this, &MainWindow::updatePullDiffScrollState);
-            // The pane's Ctrl+F is widget-scoped now (adhoc #107); focusing the
-            // diff makes it live from the first key.
-            if (m_pullDiff)
-                m_pullDiff->setFocus();
         }
     });
 
@@ -1836,13 +1823,15 @@ void MainWindow::switchToPullTab(int pullNumber)
     showPull(pullNumber);
 }
 
-// Open a pull request's commits, changed files and diff in the Git view's range
-// pane (adhoc #107): the PR counterpart of switchToBranch. The pane renders the
-// PR's review threads and comment gutters (see renderBranchDiffPatch) and its
-// "PR #N" button jumps on to the full pull request page. A PR whose head branch
-// still exists locally gets the live scope list (all changes / uncommitted /
-// per-commit); one whose branch is gone (merged & pruned, or cross-node) shows
-// its stored patch.
+// Open a pull request's diff in the Git view's range pane (adhoc #107): the PR
+// counterpart of a branch comparison. The pane renders the PR's review threads
+// and comment gutters (see renderBranchDiffPatch) and its "PR #N" button jumps
+// on to the full pull request page. A PR whose head branch still exists locally
+// diffs against the live refs and browses that branch in the graph, reading as
+// the same "<head> -> <base>" comparison a branch does (adhoc #16); one whose
+// branch is gone (merged & pruned, or cross-node) shows its stored patch with
+// the graph left on the default branch. Either way only the right pane changes:
+// the universal source-control composer, working changes, and graph stay put.
 void MainWindow::openPullDiffInGitView(int pullNumber)
 {
     // The PR widgets and state (m_currentPulls, m_currentPullNumber) live in the
@@ -1864,6 +1853,13 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
     }
     if (!rowSelected)
         showPull(pullNumber);
+    // The Files button is a route, not a second PR sub-page. Leave the PR detail
+    // parked on Conversation so its button state and stack are coherent when
+    // the reviewer returns from the Git range pane.
+    if (m_pullTabConversation)
+        m_pullTabConversation->setChecked(true);
+    if (m_pullSubStack)
+        m_pullSubStack->setCurrentIndex(0);
 
     // Copy the PR out of m_currentPulls before any git call below:
     // localBranchExists pumps the event loop, which can reload the pulls list
@@ -1881,27 +1877,26 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
 
     m_branchDiffPullNumber = pullNumber;
     showOverviewCommits();
-    setCommitWorkspacePage(kCommitWorkspaceRangePage);
     const QString dir = repoGitDir();
-    if (!pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head)) {
-        // Live branch: the full range pane (scope list, uncommitted changes,
-        // per-commit diffs) against the repo's refs.
+    const bool liveBranch =
+        !pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head);
+    // The graph browses the PR's head branch when it still exists, so the view
+    // reads as one "<head> -> <base>" comparison (adhoc #16). With the branch
+    // gone there is nothing to browse, so the graph stays on the default branch.
+    const QString graphRef = liveBranch ? pr.head : repoDefaultBranchFast();
+    if (!graphRef.isEmpty() && m_repoBranch != graphRef)
+        setRepoBranch(graphRef);
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
+    if (liveBranch) {
+        // Live branch: diff the PR's whole range against the repo's refs.
         showBranchDiff(pr.head);
     } else {
         // Branch gone: render the PR's stored patch directly. Mirror the reset
         // showBranchDiff does, minus the git reads that need the branch.
         m_branchDiffBranch = pr.head;
+        m_branchDiffWorkDir.clear();
+        updateCommitsCompareIndicator(); // "<head> -> <base>" on the branch row
         updateBranchDetailActions(pr.head);
-        if (m_branchScopeList) {
-            QSignalBlocker block(m_branchScopeList);
-            m_branchScopeList->clear();
-            auto *all = new QListWidgetItem(QStringLiteral("All changes"));
-            all->setIcon(themedOcticon("git-compare", QColor("#58a6ff"), 14));
-            all->setData(Qt::UserRole, QStringLiteral("all"));
-            all->setToolTip(QStringLiteral("The pull request's recorded changes"));
-            m_branchScopeList->addItem(all);
-            m_branchScopeList->setCurrentRow(0);
-        }
         m_branchDiffLastPatch = pr.patch.toUtf8();
         m_branchDiffLastEmpty = QStringLiteral("This pull request has no changes.");
         m_branchDiffLastValid = true;
@@ -3652,7 +3647,7 @@ void MainWindow::updatePullSubTabCounts(PullRequest pr)
         label(m_pullTabConversation, QStringLiteral("Conversation"), 0);
         label(m_pullTabCommits, QStringLiteral("Commits"), 0);
         label(m_pullTabChecks, QStringLiteral("Checks"), 0);
-        label(m_pullTabFiles, QStringLiteral("Files changed"), 0);
+        label(m_pullTabFiles, QStringLiteral("Changes in Git"), 0);
         return;
     }
     const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
@@ -3660,7 +3655,7 @@ void MainWindow::updatePullSubTabCounts(PullRequest pr)
           snapshot.topLevelItems + snapshot.totalThreads);
     label(m_pullTabCommits, QStringLiteral("Commits"), pullCommitShas(pr).size());
     label(m_pullTabChecks, QStringLiteral("Checks"), runIdsForPull(pr).size());
-    label(m_pullTabFiles, QStringLiteral("Files changed"), pr.filesChanged);
+    label(m_pullTabFiles, QStringLiteral("Changes in Git"), pr.filesChanged);
 }
 
 void MainWindow::submitPullComment()
@@ -3988,34 +3983,12 @@ void MainWindow::updatePullActionState()
         m_pullResolveButton->setEnabled(conflicted && !aiFixBusy);
     }
     if (m_pullFixButton) {
-        // The button shows whenever the PR conflicts; each dropdown entry then
-        // enables only when its provider is usable. The API providers need a key
-        // in Settings; Claude Code authenticates through the local `claude` CLI
-        // login, so it stays available without one.
-        const bool haveClaudeKey =
-            !QSettings().value(kClaudeApiKeySetting).toString().trimmed().isEmpty();
-        const bool haveOpenAiKey =
-            !QSettings().value(kCodexApiKeySetting).toString().trimmed().isEmpty();
+        // Shown whenever the PR conflicts. It only writes a prompt, so it needs
+        // no API key of its own — but while an AI fix already holds the working
+        // tree there is nothing useful to queue up, hence the same busy gate as
+        // the other conflict actions.
         m_pullFixButton->setVisible(conflicted);
         m_pullFixButton->setEnabled(conflicted && !aiFixBusy);
-        if (m_pullFixClaudeAction) {
-            m_pullFixClaudeAction->setEnabled(haveClaudeKey);
-            m_pullFixClaudeAction->setToolTip(
-                haveClaudeKey ? QStringLiteral("Resolve with the Claude API")
-                              : QStringLiteral("Add a Claude API key in Settings "
-                                               "to auto-resolve conflicts."));
-        }
-        if (m_pullFixOpenAiAction) {
-            m_pullFixOpenAiAction->setEnabled(haveOpenAiKey);
-            m_pullFixOpenAiAction->setToolTip(
-                haveOpenAiKey ? QStringLiteral("Resolve with the OpenAI API")
-                              : QStringLiteral("Add an OpenAI API key in Settings "
-                                               "to auto-resolve conflicts."));
-        }
-        if (m_pullFixClaudeCodeAction)
-            m_pullFixClaudeCodeAction->setToolTip(
-                QStringLiteral("Resolve with the Claude Code CLI (uses your local "
-                               "`claude` login)"));
     }
     if (m_pullFixConflictsButton) {
         // Only offer to continue the agent that actually authored this branch
@@ -5508,6 +5481,41 @@ void MainWindow::fixCurrentPullFindingsWithAgent()
     updatePullActionState();
     switchToAgentsTab(session.id);
     aiFixRunClaudeCode();
+}
+
+// The PR header's "Fix" button (adhoc #7). Rather than starting a resolver
+// behind the user's back, it composes the task and drops it into the footer
+// prompt box — the same target "Send to Prompt" and the log views' plus glyph
+// use — so it can be read, edited and aimed at any agent before it runs.
+void MainWindow::fillPromptWithPullConflictFix()
+{
+    if (m_currentPullNumber <= 0)
+        return;
+    PullRequest current;
+    for (const PullRequest &pr : std::as_const(m_currentPulls))
+        if (pr.number == m_currentPullNumber)
+            current = pr;
+
+    QStringList lines;
+    lines << QStringLiteral("Resolve the merge conflicts on pull request #%1%2.")
+                 .arg(m_currentPullNumber)
+                 .arg(current.title.isEmpty()
+                          ? QString()
+                          : QStringLiteral(" (\"%1\")").arg(current.title));
+    if (!current.head.isEmpty() && !current.base.isEmpty())
+        lines << QStringLiteral("Its branch %1 no longer applies cleanly to %2.")
+                     .arg(current.head, current.base);
+    // reloadPulls()'s dry-run already cached which files conflict, so name them
+    // instead of making the agent rediscover them.
+    const auto cached = m_pullConflictCache.constFind(m_currentPullNumber);
+    if (cached != m_pullConflictCache.constEnd() && !cached->conflictFiles.isEmpty())
+        lines << QStringLiteral("Conflicting files: %1.")
+                     .arg(cached->conflictFiles.join(QStringLiteral(", ")));
+    lines << QStringLiteral(
+        "Merge the base branch in, resolve every conflict keeping both sides' "
+        "intent, and commit the fix to the pull request's own branch so it "
+        "merges cleanly. Leave the pull request open.");
+    appendTextToActivePrompt(lines.join(QLatin1Char(' ')));
 }
 
 void MainWindow::fixCurrentPullConflictsWithAi(const QString &provider)

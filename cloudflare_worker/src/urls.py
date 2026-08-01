@@ -84,6 +84,11 @@ REPO_SECURITY_SCANS_RE = re.compile(
     r"(lease|ingest|latest|history|triage)$")
 # Public mirror health for a logical repo group.
 REPO_MIRRORS_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/mirrors$")
+# Exact-node content reachability. Unlike the ordinary repository read route,
+# this never fails over to another mirror: operators use it to verify that the
+# named node itself can return the repository README.
+REPO_MIRROR_REACHABILITY_RE = re.compile(
+    r"^/api/repo/([^/]+)/([^/]+)/mirrors/([^/]+)/reachability$")
 # Catalog-facing About details editable from the dashboard by the source owner.
 REPO_ABOUT_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/about$")
 REPO_LOGO_RE = re.compile(r"^/api/repo/([^/]+)/([^/]+)/logo$")

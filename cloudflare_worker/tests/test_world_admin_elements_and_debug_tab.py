@@ -130,19 +130,28 @@ def test_elements_tab_is_available_to_everyone_device_local_and_wired_to_the_sce
     assert "elementsTab.hidden = false;" in restore
 
 
-def test_elements_can_sort_by_drawn_triangles_or_clicks():
+def test_elements_are_one_flat_table_sortable_by_any_column():
+    # One-line rows in a single table: the group is a column, and clicking any
+    # column header sorts by it (clicking again reverses the direction).
     for contract in (
-        'data-world-element-sort',
-        '<option value="drawables">Drawn</option>',
-        '<option value="triangles">Triangles</option>',
-        '<option value="interactives">Clicks</option>',
+        'data-world-element-sort="${column.key}"',
+        '{ key: "label", heading: "Element" },',
+        '{ key: "category", heading: "Group" },',
+        '{ key: "drawables", heading: "Drawn" },',
+        '{ key: "triangles", heading: "Tri" },',
+        '{ key: "interactives", heading: "Click" },',
         'this.worldElementSort = "drawables";',
+        "this.worldElementSortAscending = this.worldElementSortAscending !== true;",
     ):
         assert contract in APP
     render = APP.split("  renderWorldElementsPane(statusMessage = \"\") {", 1)[1].split(
         "\n  renderWorldSessions", 1
     )[0]
     assert 'Number(right[sort]) - Number(left[sort])' in render
+    # The whole registry renders as one flat list — no per-category sections.
+    assert "world-element-category" not in render
+    # The Members Circle campfire sits in the table with everything else.
+    assert '"Members Circle campfire"' in SCENE
 
 
 def test_debug_tab_shows_live_readings_with_suggestions_and_stays_open():
@@ -198,7 +207,7 @@ def test_element_and_debug_panels_have_styles():
         ".world-debug-suggestions",
         '.world-debug-suggestions li[data-level="high"]',
         ".world-element-master",
-        ".world-element-category",
+        ".world-element-head",
         ".world-element-row",
         '.world-element-row[data-enabled="false"]',
     ):

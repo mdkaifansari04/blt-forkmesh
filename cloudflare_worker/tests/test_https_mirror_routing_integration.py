@@ -1020,16 +1020,14 @@ def test_selection_is_public_group_scoped_fresh_integrity_and_abuse_gated():
     assert "ed25519_verify" in proof
 
 
-def test_transient_proxy_failures_quarantine_routing_without_failing_integrity():
-    helper = _function_source("_https_mirror_mark_transient_failure")
+def test_request_transients_do_not_quarantine_shared_endpoint_health():
+    # One page load may try every eligible mirror. A request-local timeout or
+    # 502/503 must fail over without zeroing the signed health lease for every
+    # other visitor; only the recurring health verifier owns that shared state.
     proxy = _function_source("_https_mirror_proxy")
-    proof = _function_source("_https_mirror_repository_proof")
-    assert "SET healthy=0,checked_at=0,updated_at=?" in helper
-    assert "integrity='failed'" not in helper
-    assert "forkmesh_active=0" not in helper
-    assert "_https_mirror_mark_transient_failure" in proxy
-    assert "HTTPS_MIRROR_HEALTH_TRANSIENT_STATUSES" in proxy
-    assert "_https_mirror_mark_transient_failure" in proof
+    assert "request-local timeout" in proxy
+    assert "checked_at=0" not in proxy
+    assert "_https_mirror_mark_transient_failure" not in proxy
 
 
 def test_public_proxy_preserves_verified_org_alias_for_gateway_bytes():
