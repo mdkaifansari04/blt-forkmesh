@@ -4942,7 +4942,6 @@ private:
     int m_networkRelayCount = 0;
     int m_networkNodeCount = 0;
     int m_networkHostCount = 0;
-    QHBoxLayout *m_repoHeaderLeft = nullptr; // left cluster of the repo header row
     int m_repoPinCheckIndex = -1;            // repo index an in-flight pin check belongs to
     // One row per repo of the selected node, shown in the repo dropdown.
     struct RepoMenuEntry {

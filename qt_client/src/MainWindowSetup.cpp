@@ -985,12 +985,27 @@ QString MainWindow::testRepoDefaultBranch() const
 
 QString MainWindow::testRepoActionsTabText() const
 {
-    return m_repoActionsTab ? m_repoActionsTab->text() : QString();
+    // The count rides the icon as a corner badge now (adhoc #6); recompose the
+    // old "Actions (N)" text so callers keep asserting caption and count as one.
+    if (!m_repoActionsTab)
+        return QString();
+    const auto *badged = dynamic_cast<VerticalIconButton *>(m_repoActionsTab);
+    return QStringLiteral("%1 (%2)")
+        .arg(m_repoActionsTab->text(),
+             formatCount(badged ? badged->badgeCount() : 0));
 }
 
 QString MainWindow::testRepoBranchesButtonText() const
 {
-    return m_branchesButton ? m_branchesButton->text() : QString();
+    // Same recomposition as testRepoActionsTabText: the visible "N" is a
+    // corner badge on a fixed "Branches" caption since adhoc #6.
+    if (!m_branchesButton)
+        return QString();
+    const auto *badged = dynamic_cast<VerticalIconButton *>(m_branchesButton);
+    const qint64 count = badged ? badged->badgeCount() : 0;
+    return QStringLiteral("%1 %2")
+        .arg(formatCount(count),
+             count == 1 ? QStringLiteral("branch") : QStringLiteral("branches"));
 }
 
 bool MainWindow::testShowRepoIssuesTab()

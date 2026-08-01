@@ -464,10 +464,11 @@ QWidget *MainWindow::buildChatPage()
     // railItemWidth() x kRailItemHeight — so icons, words, hover and the
     // checked accent line all read identically down the rail.
     //
-    // Agents heads the rail (adhoc #70) — a regular destination like the rest,
-    // badged with the running-session count. Only its fleet matrix stayed on the
-    // window-chrome line (see buildBreadcrumb). The contextual Code and Git
-    // entries are inserted directly below it by buildRepoDetail().
+    // Agents is a regular destination like the rest, badged with the
+    // running-session count; only its fleet matrix stayed on the window-chrome
+    // line (see buildBreadcrumb). The contextual Code entry is inserted above
+    // it and Git directly below it by buildRepoDetail() (adhoc #6 put Code at
+    // the head of the rail).
     // Log and Tasks live in the bottom utility group instead of here; Tasks sits
     // directly above Pings there (adhoc #97).
     for (QPushButton *button :
@@ -3378,6 +3379,10 @@ void MainWindow::updateFooterDiagnostics()
 
 void MainWindow::refreshRepositoryStats()
 {
+    // The trend charts and Ratchet toggle live on the Code overview's mode row
+    // (adhoc #6), which is built lazily with the repo detail's Code tab.
+    if (!m_repoSizeChart || !m_repoLinesChart || !m_repoFilesChart)
+        return;
     const QString dir = repoGitDir();
     const bool available = !dir.isEmpty() && repoHasWorkingTree();
     const QList<QWidget *> statsWidgets{m_repoSizeChart, m_repoLinesChart,
@@ -5530,26 +5535,10 @@ QWidget *MainWindow::buildBreadcrumb()
     m_memChart = memChart;
     m_diskChart = diskChart;
 
-    // Thirty-day repository trends are deliberately a little larger than the
-    // live host-resource squares: each point represents a day, not a second.
-    auto *repoSizeChart = new ResourceSparkline(QStringLiteral("SIZE"), nullptr, 44, 30);
-    auto *repoLinesChart = new ResourceSparkline(QStringLiteral("LOC"), nullptr, 44, 30);
-    auto *repoFilesChart = new ResourceSparkline(QStringLiteral("FILES"), nullptr, 44, 30);
-    repoSizeChart->setObjectName(QStringLiteral("repoSizeChart"));
-    repoLinesChart->setObjectName(QStringLiteral("repoLinesChart"));
-    repoFilesChart->setObjectName(QStringLiteral("repoFilesChart"));
-    m_repoSizeChart = repoSizeChart;
-    m_repoLinesChart = repoLinesChart;
-    m_repoFilesChart = repoFilesChart;
-    m_repoRatchetButton = new QToolButton;
-    m_repoRatchetButton->setObjectName(QStringLiteral("repoRatchetButton"));
-    m_repoRatchetButton->setText(QStringLiteral("Ratchet mode"));
-    m_repoRatchetButton->setCheckable(true);
-    m_repoRatchetButton->setToolTip(
-        QStringLiteral("Keep each commit at or below today's tracked size and require "
-                       "at least as many removed lines as added lines."));
-    connect(m_repoRatchetButton, &QToolButton::toggled, this,
-            &MainWindow::toggleRepositoryRatchet);
+    // The thirty-day SIZE/LOC/FILES repository trends and the Ratchet mode
+    // toggle no longer live on the chrome line (adhoc #6): they're built into
+    // the Code overview's mode row (buildRepoFilesPanel), beside the toolbar
+    // counts they describe.
 
     auto *layout = new QVBoxLayout(bar);
     layout->setContentsMargins(0, 0, 0, 0);
@@ -5578,6 +5567,11 @@ QWidget *MainWindow::buildBreadcrumb()
     // left-hand group because that group never scrolls out of a narrow window.
     chromeRow->addWidget(m_navSignInButton);
     chromeRow->addWidget(m_relayJoinApproveButton);
+    // The owner/repo switcher sits between the instance logo and the SOL
+    // balance (adhoc #6) — repository identity now reads on the chrome line
+    // instead of heading the repo-detail page. updateRepoSwitcher still owns
+    // its text, icon and visibility.
+    chromeRow->addWidget(m_repoMenuButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
     identityBalanceRow->setSpacing(8);
@@ -5602,10 +5596,6 @@ QWidget *MainWindow::buildBreadcrumb()
     // The relay radar used to sit here too (adhoc #87); it is gone (adhoc
     // #124) — its colour moved to the dot above the instance logo and its
     // node blips to the node dots beside the agent fleet.
-    chromeRow->addWidget(repoSizeChart);
-    chromeRow->addWidget(repoLinesChart);
-    chromeRow->addWidget(repoFilesChart);
-    chromeRow->addWidget(m_repoRatchetButton);
     // Live CPU/MEM/DISK sparklines, moved up onto the window-chrome line next
     // to the minimize/maximize/close buttons (adhoc #33).
     chromeRow->addWidget(cpuChart);
