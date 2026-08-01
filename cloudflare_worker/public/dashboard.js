@@ -483,6 +483,56 @@
     return `${repo.owner || ""}/${repo.name || ""}`;
   }
 
+  // Repository bytes are published by nodes, but the catalog resolves every
+  // physical route to the user/organization that actually owns the work
+  // (ownerKind / logicalOwner / logicalOwners). Lists must show that identity —
+  // "forkmesh/forkmesh", never the serving machine's "mirror8/forkmesh".
+  // Routing keys stay physical: repoKey/repoPathUrl/data-dashboard-open-repo
+  // must keep matching the catalog rows.
+  function repoLogicalOwners(repo) {
+    const values = Array.isArray(repo?.logicalOwners) ? repo.logicalOwners : [];
+    const owners = values.map((value) => ({
+      kind: String(value?.kind || "").trim().toLowerCase(),
+      owner: String(value?.owner || "").trim(),
+    }));
+    if (!owners.length) {
+      owners.push({
+        kind: String(repo?.ownerKind || "").trim().toLowerCase(),
+        owner: String(repo?.logicalOwner || "").trim(),
+      });
+    }
+    return owners.filter((value) =>
+      value.owner && (value.kind === "user" || value.kind === "organization"));
+  }
+
+  function repoDisplayOwner(repo) {
+    const owners = repoLogicalOwners(repo);
+    const organization = owners.find((value) => value.kind === "organization");
+    return (organization || owners[0])?.owner || String(repo?.owner || "").trim();
+  }
+
+  function repoDisplayKey(repo) {
+    return `${repoDisplayOwner(repo) || ""}/${repo?.name || ""}`;
+  }
+
+  // Mirrors of one logical repository are grouped by root commit, so an
+  // organization alias registered on any member names the whole group.
+  function groupOrganizationAlias(group) {
+    const origin = sourceOfTruth(group);
+    const name = String(origin?.name || "").trim().toLowerCase();
+    for (const member of [origin, ...(group?.members || [])]) {
+      if (String(member?.name || "").trim().toLowerCase() !== name) continue;
+      const organization = repoLogicalOwners(member)
+        .find((value) => value.kind === "organization");
+      if (organization) return organization.owner;
+    }
+    return "";
+  }
+
+  function groupDisplayOwner(group) {
+    return groupOrganizationAlias(group) || repoDisplayOwner(sourceOfTruth(group));
+  }
+
   function normalizeRepoSegment(value) {
     const text = String(value || "").trim();
     return /^[A-Za-z0-9._:-]+$/.test(text) ? text : "";
@@ -650,6 +700,27 @@
     const name = encodeURIComponent(repo.name || "");
     const suffix = path ? `/${kind}/${path.split("/").map(encodeURIComponent).join("/")}` : "";
     return `/${owner}/${name}${suffix}`;
+  }
+
+  // A list that reads "forkmesh/forkmesh" must also link there, not to the
+  // machine that happens to publish the bytes (adhoc #132). Organization
+  // aliases are real addresses: the Worker rewrites /<org>/<repo> and every
+  // /api/repo/<org>/<repo>/... path onto the serving node before routing, and
+  // a direct visit resolves the alias again on the repo page. User identities
+  // have no such rewrite, so a repo whose logical owner is only a user keeps
+  // the physical /<node>/<repo> route.
+  function repoLinkUrl(repo, kind = "tree", path = "") {
+    const organization = repoLogicalOwners(repo)
+      .find((value) => value.kind === "organization");
+    return repoPathUrl(
+      organization ? { ...repo, owner: organization.owner } : repo, kind, path);
+  }
+
+  function groupLinkUrl(group, kind = "tree", path = "") {
+    const origin = sourceOfTruth(group);
+    const organization = groupOrganizationAlias(group);
+    return repoPathUrl(
+      organization ? { ...origin, owner: organization } : origin, kind, path);
   }
 
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells
@@ -1016,59 +1087,25 @@
     return { privateKey, pub };
   }
 
-  // Issue #379: offline issues an owner filed while their source-of-truth node
-  // was down (but a mirror was still serving the repo). They live only in the
-  // relay's inbox until the node returns and drains them, so we also keep a
-  // local copy per repo - keyed here - so they "show up fully" across reloads
-  // instead of vanishing the moment the mirror-loaded list replaces the
-  // optimistic, session-only placeholder.
-  const PENDING_ISSUES_STORAGE = "forkmesh.pendingIssues";
+  function webIssuePublicKey() {
+    try {
+      const stored = JSON.parse(
+        localStorage.getItem(WEB_ISSUE_KEY_STORAGE) || "null",
+      );
+      return String(stored?.pub || "");
+    } catch (_) {
+      return "";
+    }
+  }
 
   function pendingIssuesRepoKey(repo) {
     return `${String(repo?.owner || "").toLowerCase()}/${String(repo?.name || "").toLowerCase()}`;
   }
 
-  function readPendingIssueStore() {
-    try { return JSON.parse(localStorage.getItem(PENDING_ISSUES_STORAGE) || "{}") || {}; }
-    catch (_) { return {}; }
-  }
-
-  function writePendingIssueStore(store) {
-    try { localStorage.setItem(PENDING_ISSUES_STORAGE, JSON.stringify(store)); } catch (_) {}
-  }
-
-  function loadPendingIssues(repo) {
-    const list = readPendingIssueStore()[pendingIssuesRepoKey(repo)];
-    return Array.isArray(list) ? list : [];
-  }
-
-  function savePendingIssue(repo, item) {
-    const store = readPendingIssueStore();
-    const key = pendingIssuesRepoKey(repo);
-    const list = Array.isArray(store[key]) ? store[key] : [];
-    store[key] = [item, ...list].slice(0, 50);
-    writePendingIssueStore(store);
-  }
-
-  // Drop any locally-held pending issues whose title now appears in the mirror
-  // tree: the owner's node has come back and drained them, so the real numbered
-  // issue served from the mirror wins and the local placeholder retires.
-  function reconcilePendingIssues(repo, mirrorIssues) {
-    const list = loadPendingIssues(repo);
-    if (!list.length) return list;
-    const drained = new Set(
-      (mirrorIssues || []).map((issue) => String(issue.title || "").trim()));
-    const kept = list.filter((item) => !drained.has(String(item.title || "").trim()));
-    if (kept.length === list.length) return list;
-    const store = readPendingIssueStore();
-    store[pendingIssuesRepoKey(repo)] = kept;
-    writePendingIssueStore(store);
-    return kept;
-  }
-
   // Mirrors IssueStore::contentForSigning + canonicalString and the desktop's
-  // inbox POST (verify_issue_event in the worker). New issues are signed with
-  // number 0; the maintainer assigns the durable number on drain.
+  // submission POST (verify_issue_event in the worker). New issues are signed
+  // with number 0; the first eligible mirror assigns the durable number when
+  // it commits the issue to the repository it serves.
   async function submitWebIssue(repo, title, body, assignAgent = false, agentModel = "", agentProvider = "", extraMeta = {}) {
     const { privateKey, pub } = await getWebIssueKey();
     const ts = Math.floor(Date.now() / 1000);
@@ -1123,12 +1160,12 @@
     if (!response.ok || data.ok === false) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
-    return data;
+    return { ...data, event };
   }
 
   // The compact World chat composer is a second presentation of the canonical
   // dashboard actions. Expose the signed issue operation narrowly so the chat
-  // bundle can file into the same maintainer inbox without duplicating key,
+  // bundle can file through the same eligible-mirror delivery path without duplicating key,
   // signature, authorization, or payload logic.
   window.ForkMeshDashboardActions = Object.assign(
     window.ForkMeshDashboardActions || {},
@@ -1169,7 +1206,160 @@
     if (!response.ok || data.ok === false) {
       throw new Error(data.error || `HTTP ${response.status}`);
     }
+    return { ...data, event };
+  }
+
+  function webIssueEventContent(type, fields = {}) {
+    const NUL = String.fromCharCode(0);
+    if (type === "edit") {
+      return String(fields.body || "") + NUL
+        + (Array.isArray(fields.attachments) ? fields.attachments.join(",") : "");
+    }
+    if (type === "title") return String(fields.title || "");
+    if (type === "status") return String(fields.status || "");
+    if (type === "labels") {
+      return (Array.isArray(fields.labels) ? fields.labels : []).join(",");
+    }
+    if (type === "milestone") return String(fields.milestone || "");
+    if (type === "dates") {
+      return `${Number(fields.startDate) || 0}${NUL}${Number(fields.endDate) || 0}`;
+    }
+    if (type === "priority") return String(Number(fields.priority) || 0);
+    if (type === "progress") return String(Number(fields.progress) || 0);
+    if (type === "assignees") {
+      return (Array.isArray(fields.assignees) ? fields.assignees : []).join(",");
+    }
+    if (type === "delete") return String(fields.target || "");
+    if (type === "vote") return "";
+    throw new Error("unsupported_issue_action");
+  }
+
+  function webIssueEventId(type, ts) {
+    const suffix = new Uint32Array(1);
+    crypto.getRandomValues(suffix);
+    return `${type}-web-${ts}-${suffix[0].toString(36)}`;
+  }
+
+  // Owner-side issue actions use the same append-only event model as Qt. The
+  // event is signed by this browser key, while the account session separately
+  // proves repository authority to the Worker before it enters the mirror
+  // inbox. Votes remain available to any signed-in contributor.
+  async function submitWebIssueEvent(repo, number, type, fields = {}) {
+    const issueNumber = Number(number);
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      throw new Error("invalid_issue_number");
+    }
+    const { privateKey, pub } = await getWebIssueKey();
+    const ts = Math.floor(Date.now() / 1000);
+    const event = {
+      type,
+      id: webIssueEventId(type, ts),
+      author: pub,
+      authorName: state.session?.nodeName || "",
+      ts,
+    };
+    const fieldNames = {
+      edit: ["target", "body", "attachments"],
+      title: ["title"],
+      status: ["status"],
+      labels: ["labels"],
+      milestone: ["milestone"],
+      dates: ["startDate", "endDate"],
+      priority: ["priority"],
+      progress: ["progress"],
+      assignees: ["assignees"],
+      delete: ["target"],
+      vote: [],
+    }[type];
+    if (!fieldNames) throw new Error("unsupported_issue_action");
+    fieldNames.forEach((name) => {
+      event[name] = fields[name];
+    });
+    if (type === "edit") {
+      event.body = String(event.body || "").replace(/[\r\n]+$/, "");
+      event.attachments = Array.isArray(event.attachments)
+        ? event.attachments.map((value) => String(value))
+        : [];
+    }
+    if (type === "labels" || type === "assignees") {
+      event[type] = (Array.isArray(event[type]) ? event[type] : [])
+        .map((value) => String(value).trim())
+        .filter(Boolean)
+        .slice(0, 20);
+    }
+    const contentHash = await sha256HexLower(
+      webIssueEventContent(type, event),
+    );
+    const canonical = `forkmesh-issue-event-v1\n${type}\n${issueNumber}\n${pub}\n${ts}\n${contentHash}`;
+    event.sig = bytesToB64url(await crypto.subtle.sign(
+      { name: "Ed25519" },
+      privateKey,
+      ISSUE_TEXT_ENCODER.encode(canonical),
+    ));
+    const payload = {
+      owner: repo.owner,
+      repo: repo.name,
+      number: issueNumber,
+      event,
+      ownerAccount: state.session?.nodeName || "",
+      sessionToken: state.session?.sessionToken || "",
+    };
+    const response = await fetch(`${repoApiBase(repo)}/issues`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify(payload),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    return { ...data, event };
+  }
+
+  async function setWebIssueSubscription(repo, number, subscribed) {
+    const response = await fetch(`${repoApiBase(repo)}/subscribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        node: state.session?.nodeName || "",
+        sessionToken: state.session?.sessionToken || "",
+        source: "issue",
+        number: Number(number),
+        subscribed: subscribed === true,
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
     return data;
+  }
+
+  async function loadWebIssueSubscription(repo, number) {
+    if (!state.session?.nodeName || !state.session?.sessionToken) return false;
+    const response = await fetch(`${repoApiBase(repo)}/subscribe`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json",
+      },
+      body: JSON.stringify({
+        action: "status",
+        node: state.session.nodeName,
+        sessionToken: state.session.sessionToken,
+        source: "issue",
+        number: Number(number),
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.ok === false) return false;
+    return data.subscribed === true;
   }
 
   // Mirrors DiscussionStore::contentForSigning's "comment" case (just the
@@ -1337,6 +1527,9 @@
     const number = Number(form.dataset.repoIssueCommentNumber || 0);
     const bodyInput = form.querySelector("[data-repo-issue-comment-body]");
     const submit = form.querySelector("[data-repo-issue-comment-submit]");
+    const actionButtons = form.querySelectorAll(
+      "[data-repo-issue-comment-action]",
+    );
     const hint = form.querySelector("[data-repo-issue-comment-hint]");
     const setHint = (text, tone) => {
       if (hint) hint.className = `text-[11px] ${tone === "bad" ? "text-destructive" : tone === "good" ? "text-primary" : "text-muted-foreground"}`;
@@ -1352,10 +1545,10 @@
       bodyInput?.focus();
       return;
     }
-    if (submit) submit.disabled = true;
+    actionButtons.forEach((button) => { button.disabled = true; });
     setHint("Signing and sending…");
     try {
-      await submitWebIssueComment(repo, number, body);
+      const result = await submitWebIssueComment(repo, number, body);
       // Show the comment straight away: it only reaches the mirror once the
       // maintainer's node drains the inbox, so the timeline can't reload it yet.
       const timeline = form.parentElement?.querySelector("[data-repo-issue-timeline]");
@@ -1371,18 +1564,262 @@
         }));
       }
       if (bodyInput) bodyInput.value = "";
-      if (submit) submit.disabled = false;
-      setHint("Comment sent to the maintainer's inbox for review.", "good");
+      optimisticWebIssueEvent(result.event);
+      const action = String(form._issueSubmitAction || "comment");
+      form._issueSubmitAction = "comment";
+      if (action === "close") {
+        const statusResult = await submitWebIssueEvent(
+          repo,
+          number,
+          "status",
+          { status: "closed" },
+        );
+        optimisticWebIssueEvent(statusResult.event);
+      }
+      actionButtons.forEach((button) => { button.disabled = false; });
+      setHint(
+        action === "close"
+          ? "Comment sent and issue closure accepted."
+          : "Comment accepted for direct delivery to an eligible mirror.",
+        "good",
+      );
+      renderCurrentWebIssueDetail();
     } catch (error) {
-      if (submit) submit.disabled = false;
+      actionButtons.forEach((button) => { button.disabled = false; });
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Comment delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The comment is too large - please shorten it."
           : code === "bad_signature" ? "Could not verify the comment's signature."
           : "Could not send the comment. Please try again.",
         "bad");
+    }
+  }
+
+  function optimisticWebIssueEvent(event) {
+    const detail = state.repoRecordDetail;
+    if (!event || detail?.kind !== "issues") return;
+    const parsed = detail.parsed || {};
+    const values = parsed.values || (parsed.values = {});
+    const events = Array.isArray(parsed.issueEvents)
+      ? parsed.issueEvents
+      : (parsed.issueEvents = []);
+    if (!events.some((existing) => existing?.id === event.id)) events.push(event);
+    if (event.type === "title") values.title = event.title;
+    if (event.type === "status") values.status = event.status;
+    if (event.type === "labels") values.labels = `[${event.labels.join(", ")}]`;
+    if (event.type === "milestone") values.milestone = event.milestone;
+    if (event.type === "priority") values.priority = Number(event.priority) || 0;
+    if (event.type === "progress") values.progress = Number(event.progress) || 0;
+    if (event.type === "assignees") {
+      values.assignees = `[${event.assignees.join(", ")}]`;
+    }
+    if (event.type === "dates") {
+      values.startDate = Number(event.startDate) || 0;
+      values.endDate = Number(event.endDate) || 0;
+    }
+    if (event.type === "vote") values.votes = (Number(values.votes) || 0) + 1;
+    if (event.type === "edit" && event.target === parsed.issueOpenEventId) {
+      parsed.body = event.body;
+    }
+    if (event.type === "delete" && event.target === "self") {
+      parsed.issueDeleted = true;
+    }
+  }
+
+  function renderCurrentWebIssueDetail() {
+    const detail = state.repoRecordDetail;
+    if (detail?.kind !== "issues" || !detail.repo) return;
+    const container = $("[data-repo-issues]");
+    if (!container) return;
+    container.innerHTML = renderRepoRecordDetail(
+      detail.repo,
+      "issues",
+      detail.number,
+      detail.parsed,
+    );
+    window.lucide?.createIcons();
+  }
+
+  function webIssueActionError(error) {
+    const code = String(error?.message || "");
+    return ({
+      not_authorized: "Only the repository owner or an organization admin can do that.",
+      bad_signature: "The signed issue action could not be verified.",
+      inbox_full: "Issue delivery is temporarily full. Try again later.",
+      author_quota: "Too many issue changes are waiting to sync. Try again after the owner node drains them.",
+      issue_too_large: "That issue update is too large.",
+    })[code] || "The issue could not be updated. Please try again.";
+  }
+
+  function splitWebIssueList(value) {
+    return [...new Set(String(value || "").split(",")
+      .map((item) => item.trim())
+      .filter(Boolean))].slice(0, 20);
+  }
+
+  async function handleWebIssueAction(action, target = "") {
+    const detail = state.repoRecordDetail;
+    const repo = detail?.repo;
+    const number = Number(detail?.number || 0);
+    if (!repo || detail?.kind !== "issues" || !number) return;
+    if (!state.session?.nodeName) {
+      location.href = "/login?next="
+        + encodeURIComponent(`${location.pathname}${location.search}`);
+      return;
+    }
+    let type = "";
+    let fields = {};
+    if (action === "subscribe" || action === "unsubscribe") {
+      try {
+        await setWebIssueSubscription(repo, number, action === "subscribe");
+        detail.parsed.issueSubscribed = action === "subscribe";
+        renderCurrentWebIssueDetail();
+      } catch (error) {
+        window.alert(webIssueActionError(error));
+      }
+      return;
+    }
+    if (action === "vote") type = "vote";
+    if (action === "close" || action === "open") {
+      type = "status";
+      fields = { status: action };
+    }
+    if (action === "delete-issue") {
+      const title = String(detail.parsed?.values?.title || `issue #${number}`);
+      if (!window.confirm(
+        `Delete issue #${number} “${title}”?\n\nThis hides the issue everywhere after the signed deletion syncs. Its Git history remains recoverable.`,
+      )) return;
+      type = "delete";
+      fields = { target: "self" };
+    }
+    if (action === "delete-comment") {
+      if (!window.confirm("Delete this comment? Its Git history remains recoverable.")) return;
+      type = "delete";
+      fields = { target };
+    }
+    if (action === "edit-comment") {
+      const events = detail.parsed?.issueEvents || [];
+      const original = events.find((event) => event?.id === target);
+      if (!original) return;
+      const latest = events.filter(
+        (event) => event?.type === "edit" && event.target === target,
+      ).at(-1);
+      const nextBody = window.prompt("Edit comment", latest?.body ?? original.body ?? "");
+      if (nextBody === null) return;
+      type = "edit";
+      fields = { target, body: nextBody, attachments: latest?.attachments || original.attachments || [] };
+    }
+    if (!type) return;
+    try {
+      const result = await submitWebIssueEvent(repo, number, type, fields);
+      optimisticWebIssueEvent(result.event);
+      if (action === "delete-issue") {
+        state.issuesView.items = (state.issuesView.items || []).filter(
+          (issue) => Number(issue.number) !== number,
+        );
+        state.repoRecordDetail = null;
+        navigateHistory(`${repoPathUrl(repo)}/issues`);
+        renderRepoIssues();
+        return;
+      }
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      window.alert(webIssueActionError(error));
+    }
+  }
+
+  async function handleWebIssueTitleSubmit(form) {
+    const detail = state.repoRecordDetail;
+    const title = String(
+      form.querySelector("[data-repo-issue-title-input]")?.value || "",
+    ).trim();
+    if (!title) return;
+    try {
+      const result = await submitWebIssueEvent(
+        detail.repo,
+        detail.number,
+        "title",
+        { title },
+      );
+      optimisticWebIssueEvent(result.event);
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      window.alert(webIssueActionError(error));
+    }
+  }
+
+  async function handleWebIssueDescriptionSubmit(form) {
+    const detail = state.repoRecordDetail;
+    const body = String(
+      form.querySelector("[data-repo-issue-description-input]")?.value || "",
+    );
+    try {
+      const result = await submitWebIssueEvent(
+        detail.repo,
+        detail.number,
+        "edit",
+        {
+          target: detail.parsed.issueOpenEventId,
+          body,
+          attachments: detail.parsed.issueOpenAttachments || [],
+        },
+      );
+      optimisticWebIssueEvent(result.event);
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      window.alert(webIssueActionError(error));
+    }
+  }
+
+  async function handleWebIssueMetadataSubmit(form) {
+    const detail = state.repoRecordDetail;
+    const values = detail?.parsed?.values || {};
+    const hint = form.querySelector("[data-repo-issue-metadata-hint]");
+    const submit = form.querySelector("[data-repo-issue-metadata-save]");
+    const labels = splitWebIssueList(form.querySelector("[data-repo-issue-labels]")?.value);
+    const assignees = splitWebIssueList(form.querySelector("[data-repo-issue-assignees]")?.value);
+    const milestone = String(form.querySelector("[data-repo-issue-milestone-edit]")?.value || "").trim();
+    const priority = Math.min(99, Math.max(0, Number(form.querySelector("[data-repo-issue-priority]")?.value) || 0));
+    const progress = Math.min(100, Math.max(0, Number(form.querySelector("[data-repo-issue-progress]")?.value) || 0));
+    const dateValue = (selector) => {
+      const value = String(form.querySelector(selector)?.value || "");
+      return value ? Date.parse(`${value}T00:00:00Z`) || 0 : 0;
+    };
+    const startDate = dateValue("[data-repo-issue-start-date]");
+    const endDate = dateValue("[data-repo-issue-end-date]");
+    const actions = [];
+    if (labels.join(",") !== parseFrontMatterList(values.labels).join(",")) actions.push(["labels", { labels }]);
+    if (assignees.join(",") !== parseFrontMatterList(values.assignees).join(",")) actions.push(["assignees", { assignees }]);
+    if (milestone !== String(values.milestone || "")) actions.push(["milestone", { milestone }]);
+    if (priority !== (Number(values.priority) || 0)) actions.push(["priority", { priority }]);
+    if (progress !== (Number(values.progress) || 0)) actions.push(["progress", { progress }]);
+    if (startDate !== (Number(values.startDate) || 0) || endDate !== (Number(values.endDate) || 0)) actions.push(["dates", { startDate, endDate }]);
+    if (!actions.length) {
+      if (hint) hint.textContent = "No changes";
+      return;
+    }
+    if (submit) submit.disabled = true;
+    if (hint) hint.textContent = "Signing…";
+    try {
+      for (const [type, fields] of actions) {
+        const result = await submitWebIssueEvent(
+          detail.repo,
+          detail.number,
+          type,
+          fields,
+        );
+        optimisticWebIssueEvent(result.event);
+      }
+      if (hint) hint.textContent = "Saved";
+      renderCurrentWebIssueDetail();
+    } catch (error) {
+      if (submit) submit.disabled = false;
+      if (hint) {
+        hint.className = "text-[10px] text-destructive";
+        hint.textContent = webIssueActionError(error);
+      }
     }
   }
 
@@ -1421,12 +1858,12 @@
       }
       if (bodyInput) bodyInput.value = "";
       if (submit) submit.disabled = false;
-      setHint("Reply sent to the maintainer's inbox for review.", "good");
+      setHint("Reply accepted for direct delivery to an eligible mirror.", "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Reply delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "discussion_too_large" ? "The reply is too large - please shorten it."
           : code === "bad_signature" ? "Could not verify the reply's signature."
@@ -1683,10 +2120,12 @@
     if (detail) {
       const status = String(account.lastEmailStatus || "");
       const kind = ACCOUNT_EMAIL_KIND_LABELS[String(account.lastEmailKind || "")] || "Email";
+      const sent = Number(account.emailSendCount || 0);
       detail.textContent = !emailedAt ? "" : kind + " · " + (
         status === "delivered" ? "Delivered to the mail provider"
           : status === "failed" ? "The mail provider rejected it"
-            : "Delivery status unknown");
+            : "Delivery status unknown") + (
+        sent > 0 ? ` · ${sent} email${sent === 1 ? "" : "s"} sent to this account` : "");
       detail.className = "mt-1 text-xs " + (
         status === "delivered" && emailedAt ? "text-emerald-400"
           : status === "failed" && emailedAt ? "text-red-400"
@@ -3118,6 +3557,39 @@
     return Array.isArray(session.nodes) && session.nodes.length === 0;
   }
 
+  function setEmailVerificationHint(message, kind = "") {
+    const hint = $("[data-email-verification-hint]");
+    if (!hint) return;
+    hint.textContent = message ? " " + message : "";
+    // Only utilities already present in the built dashboard/tailwind.css.
+    hint.className = kind === "bad" ? "text-red-300"
+      : kind === "good" ? "text-emerald-300"
+        : "text-amber-300";
+  }
+
+  // An unverified address blocks node renames and every account email, and the
+  // resend control used to be buried in the profile modal behind a password
+  // prompt. Surface it on every dashboard page until the address is confirmed.
+  function renderEmailVerificationBanner(session) {
+    const banner = $("[data-email-verification-banner]");
+    if (!banner) return;
+    const email = session?.email || "";
+    const signedIn = Boolean(session && (session.nodeName || email));
+    const show = signedIn && Boolean(email) && !session?.emailVerified;
+    banner.classList.toggle("hidden", !show);
+    banner.classList.toggle("flex", show);
+    if (!show) {
+      setEmailVerificationHint("");
+      return;
+    }
+    const message = $("[data-email-verification-message]");
+    if (message) {
+      message.textContent =
+        `${email} is not verified yet. Confirm it to rename your node and receive account email.`;
+    }
+    window.lucide?.createIcons();
+  }
+
   function renderProfile(session) {
     const name = session?.nodeName || session?.email || "My Profile";
     const nameEl = $("[data-dashboard-profile-name]");
@@ -3168,6 +3640,7 @@
     if (reconnect) {
       reconnect.classList.toggle("hidden", !nodeNeedsReconnect(session));
     }
+    renderEmailVerificationBanner(session);
     renderProfileModal(session);
     renderProfilePage(session);
     renderProfileAbout(session);
@@ -4746,40 +5219,63 @@
     }
   }
 
-  async function resendVerification(options = {}) {
-    const passwordSelector = options.passwordSelector || "[data-profile-password]";
-    const hintSelector = options.hintSelector || "[data-profile-hint]";
-    const buttonSelector = options.buttonSelector || "[data-profile-verify-email]";
-    const password = profilePassword(passwordSelector);
-    if (!password) {
-      const message = "Enter your current password first, then send a verification link.";
-      if (hintSelector === "[data-profile-hint]") {
-        setProfileHint(message, "bad");
-      } else {
-        setProfilePageHint(hintSelector, message, "bad");
-      }
-      return;
+  function verificationResendMessage(error, retryAfterMs) {
+    const minutes = Math.ceil((Number(retryAfterMs) || 0) / 60000);
+    if (error === "resend_too_soon") {
+      return "A verification email just went out. Check your inbox and spam folder, then try again in a minute.";
     }
+    if (error === "resend_limit_reached") {
+      return `Too many verification emails today. Try again in ${minutes > 60 ? `${Math.ceil(minutes / 60)} hours` : `${Math.max(1, minutes)} minutes`}, or ask an administrator to verify you by hand.`;
+    }
+    if (error === "already_verified") return "This email is already verified.";
+    if (error === "no_email") return "Add an email address to your account first.";
+    if (error === "unauthorized") return "Sign in again, then resend the verification email.";
+    return "Could not send the verification email. Try again in a moment.";
+  }
+
+  // Re-sending a confirmation link only needs the signed-in session, so it goes
+  // to /api/accounts/resend-verification rather than the password-gated profile
+  // POST. The Worker records every send on the account and pings administrators.
+  async function resendVerification(options = {}) {
+    const hintSelector = options.hintSelector || "";
+    const buttonSelector = options.buttonSelector || "[data-email-verification-resend]";
+    const buttonText = options.buttonText || "Resend verification email";
+    const showHint = (message, kind) => {
+      setEmailVerificationHint(message, kind);
+      if (!hintSelector) return;
+      if (hintSelector === "[data-profile-hint]") {
+        setProfileHint(message, kind);
+      } else {
+        setProfilePageHint(hintSelector, message, kind);
+      }
+    };
     const button = $(buttonSelector);
     if (button) { button.disabled = true; button.textContent = "Sending…"; }
     try {
-      const body = await postProfile({ resendVerification: true }, password);
-      const message = body.verificationSent
-        ? "Verification email sent."
-        : "Verification request queued for manual follow-up.";
-      if (hintSelector === "[data-profile-hint]") {
-        setProfileHint(message, "good");
-      } else {
-        setProfilePageHint(hintSelector, message, "good");
+      const response = await fetch("/api/accounts/resend-verification", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          accept: "application/json",
+          ...(state.session?.sessionToken
+            ? { authorization: "Bearer " + state.session.sessionToken }
+            : {}),
+        },
+        body: JSON.stringify({ sessionToken: state.session?.sessionToken || "" }),
+      });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok || body.ok === false) {
+        showHint(verificationResendMessage(body.error, body.retryAfterMs), "bad");
+        return;
       }
+      showHint(body.verificationSent
+        ? "Verification email sent. Check your inbox and spam folder."
+        : "Mail provider unavailable — an administrator was pinged to verify you by hand.",
+        body.verificationSent ? "good" : "");
     } catch (_) {
-      const message = "Could not send verification. Check your password and try again.";
-      if (hintSelector === "[data-profile-hint]") {
-        setProfileHint(message, "bad");
-      } else {
-        setProfilePageHint(hintSelector, message, "bad");
-      }
+      showHint(verificationResendMessage(""), "bad");
     } finally {
+      if (button) { button.disabled = false; button.textContent = buttonText; }
       renderProfileModal(state.session);
       renderProfilePage(state.session);
     }
@@ -5167,6 +5663,9 @@
       repo.name,
       canonical.owner,
       canonical.name,
+      // Cards are labelled with the logical owner, so filtering by the
+      // organization (or account) name has to match too.
+      ...repoLogicalOwners(repo).map((value) => value.owner),
       repo.description,
       repo.channel,
       repo.source,
@@ -5256,7 +5755,7 @@
         >
           <i data-lucide="book-marked" class="h-3.5 w-3.5 text-muted-foreground"></i>
           <span class="min-w-0">
-            <span class="block truncate font-medium text-foreground">${escapeHtml(key)}</span>
+            <span class="block truncate font-medium text-foreground">${escapeHtml(`${groupDisplayOwner(group)}/${repo.name || ""}`)}</span>
             <span class="block truncate text-xs text-muted-foreground">${escapeHtml(globalSearchRepoSummary(group, repo))}</span>
           </span>
         </button>`;
@@ -5434,19 +5933,39 @@
       }).then(async (response) => {
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const body = await response.json();
-        if (String(state.session?.sessionToken || "") !== token) return "";
-        return nativeRepositoryLogoDataUrl(body?.logo?.dataUrl);
+        if (String(state.session?.sessionToken || "") !== token) return null;
+        return {
+          dataUrl: nativeRepositoryLogoDataUrl(body?.logo?.dataUrl),
+          // The repository's own root logo streams through a mirror, so it can
+          // fail long after the card rendered. The generated/approved artwork
+          // ships with it so the card swaps instead of showing a broken image.
+          fallbackDataUrl: nativeRepositoryLogoDataUrl(
+            body?.logo?.fallbackDataUrl),
+        };
       }).catch(() => {
         // Do not negatively cache authorization failures or transient errors.
         // The same card can be retried after login or on a later render.
         if (nativeRepositoryLogoCache.get(cacheKey) === pending) {
           nativeRepositoryLogoCache.delete(cacheKey);
         }
-        return "";
+        return null;
       });
       nativeRepositoryLogoCache.set(cacheKey, pending);
     }
     return nativeRepositoryLogoCache.get(cacheKey);
+  }
+
+  function showNativeRepositoryLogo(image) {
+    image.classList.remove("hidden");
+    image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
+      ?.classList.add("hidden");
+  }
+
+  function hideNativeRepositoryLogo(image) {
+    image.classList.add("hidden");
+    image.removeAttribute("src");
+    image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
+      ?.classList.remove("hidden");
   }
 
   function hydrateNativeRepositoryLogos(root) {
@@ -5455,12 +5974,24 @@
       const endpoint = image.getAttribute("data-logo-endpoint") || "";
       if (!endpoint || image.dataset.logoHydrated === "true") return;
       image.dataset.logoHydrated = "true";
-      const dataUrl = await loadNativeRepositoryLogo(endpoint);
+      const logo = await loadNativeRepositoryLogo(endpoint);
+      const dataUrl = String(logo?.dataUrl || "");
+      const fallbackDataUrl = String(logo?.fallbackDataUrl || "");
       if (!dataUrl || !image.isConnected) return;
+      // The committed root logo is served by a mirror, so it can fail after the
+      // card rendered (offline or lagging host). Swap to the generated artwork,
+      // then to the repository icon — never leave a broken image behind.
+      image.onerror = () => {
+        if (fallbackDataUrl && image.dataset.logoFallbackUsed !== "true") {
+          image.dataset.logoFallbackUsed = "true";
+          image.src = fallbackDataUrl;
+          return;
+        }
+        image.onerror = null;
+        hideNativeRepositoryLogo(image);
+      };
       image.src = dataUrl;
-      image.classList.remove("hidden");
-      image.parentElement?.querySelector("[data-native-repo-logo-fallback]")
-        ?.classList.add("hidden");
+      showNativeRepositoryLogo(image);
     });
   }
 
@@ -5496,6 +6027,10 @@
     const origin = sourceOfTruth(group);
     const repo = group.primary;
     const key = repoKey(origin);
+    const displayOwner = groupDisplayOwner(group);
+    const servedNote = displayOwner.toLowerCase() !== String(origin.owner || "").toLowerCase()
+      ? ` (published from ${origin.owner || "a node"})`
+      : "";
     const live = repoIsLive(origin);
     const viaMirror = repoServedByMirror(origin);
     const visibility = origin.isPrivate ? "private" : "public";
@@ -5515,14 +6050,14 @@
     const activityWeeks = groupActivityWeeks(group);
     const language = repoLanguage(origin);
     return `
-      <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(key)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+      <div data-repo="${escapeHtml(key.toLowerCase())}" data-dashboard-open-repo="${escapeHtml(key)}" data-clone-url="${escapeHtml(cloneUrl(origin))}" role="link" tabindex="0" aria-label="Open ${escapeHtml(`${displayOwner || "owner"}/${origin.name || "repository"}`)}" class="repo-card group cursor-pointer px-4 py-3 hover:bg-secondary/40 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
         <div class="repo-layout grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(10rem,12rem)] md:items-center">
           <div class="flex min-w-0 items-start gap-3">
             ${nativeRepositoryLogoMarkup(origin)}
             <div class="min-w-0 flex-1">
             <div class="flex min-w-0 items-center gap-2">
-              <p class="min-w-0 truncate text-sm font-medium text-foreground">
-                <span class="text-muted-foreground">${escapeHtml(origin.owner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
+              <p class="min-w-0 truncate text-sm font-medium text-foreground" title="${escapeHtml(`${displayOwner || "owner"}/${origin.name || "repository"}${servedNote}`)}">
+                <span class="text-muted-foreground">${escapeHtml(displayOwner || "owner")}/</span>${escapeHtml(origin.name || "repository")}
               </p>
               <span class="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] font-mono ${statusClass}">
                 ${statusText}
@@ -5567,7 +6102,7 @@
     const commitTotal = groupRepoMetric(group, ["commitCount", "commits", "commitHistory"]);
     const activityWeeks = groupActivityWeeks(group);
     return `<article data-profile-repository-row class="grid gap-3 px-4 py-5 md:grid-cols-[minmax(0,1fr)_12rem]">
-      <a href="${escapeHtml(repoPathUrl(repo))}" class="flex min-w-0 items-start gap-3 text-left">
+      <a href="${escapeHtml(groupLinkUrl(group))}" class="flex min-w-0 items-start gap-3 text-left">
         ${nativeRepositoryLogoMarkup(repo, "h-12 w-12")}
         <span class="block min-w-0 flex-1">
         <span class="flex min-w-0 flex-wrap items-center gap-2">
@@ -5689,8 +6224,11 @@
         const repo = sourceOfTruth(group);
         return {
           repo,
-          key: repoKey(repo),
-          href: repoPathUrl(repo),
+          // Dedupe on the label, so a repo already listed under its
+          // organization does not come back a second time under the node that
+          // publishes it.
+          key: `${groupDisplayOwner(group)}/${repo.name || ""}`,
+          href: groupLinkUrl(group),
           organization: false,
         };
       }),
@@ -5709,7 +6247,7 @@
       return `
         <a href="${escapeHtml(entry.href)}" class="group flex min-w-0 items-center gap-2 rounded-md px-2.5 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground">
           <span class="h-2 w-2 shrink-0 rounded-full ${live ? "bg-primary" : "bg-muted-foreground/40"}"></span>
-          <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repo.owner || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
+          <span class="min-w-0 flex-1 truncate"><span class="text-muted-foreground">${escapeHtml(repoDisplayOwner(repo) || "owner")}/</span><span class="text-foreground">${escapeHtml(repo.name || "repository")}</span></span>
           ${repositoryTermsBadge(repo, true)}
           ${entry.organization ? '<span class="shrink-0 rounded border border-border px-1 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">org</span>' : ""}
         </a>`;
@@ -5730,22 +6268,21 @@
         })),
       ...groupRepositories(state.repositories || []).map((group) => {
         const repo = sourceOfTruth(group);
-        return { repo, href: repoPathUrl(repo), organization: false };
+        return { repo, href: groupLinkUrl(group), organization: false };
       }),
     ].filter((entry) => repositoryMatchesQuery(entry.repo, query))
       .filter((entry, index, values) =>
         values.findIndex((candidate) =>
-          repoKey(candidate.repo).toLowerCase() ===
-          repoKey(entry.repo).toLowerCase()) === index)
+          repoDisplayKey(candidate.repo).toLowerCase() ===
+          repoDisplayKey(entry.repo).toLowerCase()) === index)
       .slice(0, 8);
     container.innerHTML = `
       ${entries.length
         ? `<div class="grid gap-1">${entries.map((entry) => {
             const repo = entry.repo;
-            const key = repoKey(repo);
             return `<a href="${escapeHtml(entry.href)}" class="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-secondary hover:text-foreground">
               <i data-lucide="${entry.organization ? "building-2" : "book-marked"}" class="h-3.5 w-3.5 shrink-0"></i>
-              <span class="min-w-0 truncate">${escapeHtml(key)}</span>
+              <span class="min-w-0 truncate">${escapeHtml(repoDisplayKey(repo))}</span>
               ${repositoryTermsBadge(repo, true)}
               ${entry.organization ? '<span class="ml-auto shrink-0 text-[9px] uppercase text-muted-foreground">organization</span>' : ""}
             </a>`;
@@ -5777,7 +6314,7 @@
 
   function homeFeedRepositoryCard(group) {
     const repo = sourceOfTruth(group);
-    const key = repoKey(repo);
+    const key = `${groupDisplayOwner(group)}/${repo.name || ""}`;
     const live = repoIsLive(repo);
     const viaMirror = repoServedByMirror(repo);
     const description = repo.description || "No description published.";
@@ -5788,7 +6325,7 @@
           ${nativeRepositoryLogoMarkup(repo)}
           <div class="min-w-0 flex-1">
             <p class="text-sm text-muted-foreground">
-              <a href="${escapeHtml(repoPathUrl(repo))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
+              <a href="${escapeHtml(groupLinkUrl(group))}" class="font-semibold text-accent hover:underline">${escapeHtml(key)}</a>
               ${live ? "is available on the mesh" : "is waiting for a live host"}
             </p>
             <p class="mt-2 line-clamp-2 text-sm leading-5 text-muted-foreground">${escapeHtml(description)}</p>
@@ -7684,6 +8221,13 @@
     const number = Number(issue.number || fallbackNumber);
     const events = Array.isArray(issue.events) ? issue.events : [];
     const open = events.find((event) => event && event.type === "open") || {};
+    const latestEdits = new Map();
+    events.forEach((event) => {
+      if (event?.type === "edit" && event.target) {
+        latestEdits.set(String(event.target), event);
+      }
+    });
+    const effectiveOpen = latestEdits.get(String(open.id || "")) || open;
     // Deletion is shown, not hidden (adhoc #16), and classified by who signed it,
     // mirroring the desktop (Issue::isDeleted / hasUnauthorizedDeleteAttempt).
     // A delete/self signed by the issue's own creator deletes it; one signed by
@@ -7702,7 +8246,7 @@
     const status = issue.status || issue.state || "open";
     const labelsList = (Array.isArray(issue.labels)
       ? issue.labels
-      : parseFrontMatterList(issue.labels)).slice(0, 3);
+      : parseFrontMatterList(issue.labels)).map((value) => String(value));
     const labels = labelsList.join(", ");
     return {
       number,
@@ -7716,12 +8260,22 @@
       date: formatRecordDate(updatedAt || issue.createdAt || open.ts),
       labels: labelsList,
       meta: [status, labels, issue.milestone].filter(Boolean).join(" · "),
-      body: open.body || issue.body || "",
+      body: effectiveOpen.body || issue.body || "",
       wantsAgent: Boolean(issue.wantsAgent),
       milestone: String(issue.milestone || ""),
+      priority: Number(issue.priority || 0) || 0,
       progress: Number(issue.progress || 0) || 0,
+      assignees: Array.isArray(issue.assignees)
+        ? issue.assignees.map((value) => String(value))
+        : [],
       startDate: Number(issue.startDate || 0) || 0,
       endDate: Number(issue.endDate || 0) || 0,
+      votes: Number(issue.votes || events.filter((event) => event?.type === "vote").length) || 0,
+      openEventId: String(open.id || ""),
+      openAttachments: Array.isArray(effectiveOpen.attachments)
+        ? effectiveOpen.attachments.map((value) => String(value))
+        : [],
+      creatorKey: String(creator || ""),
       createdAtMs: Number(issue.createdAt || open.ts || 0) || 0,
     };
   }
@@ -7760,17 +8314,38 @@
         title: issue.title,
         status: issue.status,
         authorName: issue.author,
+        author: issue.creatorKey,
         milestone: issue.milestone,
         labels: `[${(issue.labels || []).join(", ")}]`,
+        priority: issue.priority,
+        progress: issue.progress,
+        assignees: `[${issue.assignees.join(", ")}]`,
+        startDate: issue.startDate,
+        endDate: issue.endDate,
+        votes: issue.votes,
         createdAt: issue.createdAtMs,
       },
       body: issue.body,
+      issueCreator: issue.creatorKey,
+      issueOpenEventId: issue.openEventId,
+      issueOpenAttachments: issue.openAttachments,
+      issueDeleted: issue.deleted,
       // Every signed event on the issue (comment, status, labels, milestone,
       // assignees, agent, title, dates, progress, bounty, edit, delete, vote)
       // so the detail view can render the full activity timeline, not just the
       // opening comment.
       issueEvents: issue.events,
     };
+  }
+
+  function issueDateInputValue(value) {
+    let milliseconds = Number(value) || 0;
+    if (!milliseconds) return "";
+    if (milliseconds < 10_000_000_000) milliseconds *= 1000;
+    const date = new Date(milliseconds);
+    return Number.isNaN(date.getTime())
+      ? ""
+      : date.toISOString().slice(0, 10);
   }
 
   // Icon + human-readable description for a non-comment issue event, mirroring
@@ -7846,7 +8421,11 @@
       <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
         <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span class="font-medium text-foreground">${escapeHtml(who)}</span>
-          <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
+          <span>commented</span>${ev._edited ? " <span>(edited)</span>" : ""}<span>&middot;</span><span>${escapeHtml(when)}</span>
+          ${ev._canManage && ev.id ? `<span class="ml-auto inline-flex items-center gap-1">
+            <button type="button" data-repo-issue-comment-edit="${escapeHtml(ev.id)}" class="rounded px-1.5 py-1 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="Edit comment"><i data-lucide="pencil" class="h-3 w-3"></i></button>
+            <button type="button" data-repo-issue-comment-delete="${escapeHtml(ev.id)}" class="rounded px-1.5 py-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" aria-label="Delete comment"><i data-lucide="trash-2" class="h-3 w-3"></i></button>
+          </span>` : ""}
         </div>
         ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
       </div>`;
@@ -7857,6 +8436,7 @@
   // detail view shows every action stored in the issue JSON (adhoc #45). The
   // opening event is omitted here since it's already shown as the issue body.
   function renderIssueTimeline(events) {
+    const options = arguments[1] || {};
     const rows = (Array.isArray(events) ? events : [])
       .filter(Boolean)
       .slice()
@@ -7864,13 +8444,24 @@
     const deletedComments = new Set(
       rows.filter((ev) => ev.type === "delete" && ev.target && ev.target !== "self")
         .map((ev) => ev.target));
+    const edits = new Map();
+    rows.filter((ev) => ev.type === "edit" && ev.target)
+      .forEach((ev) => edits.set(String(ev.target), ev));
     const items = [];
-    for (const ev of rows) {
+    for (const rawEvent of rows) {
+      let ev = rawEvent;
       if (ev.type === "open") continue;
       const who = ev.authorName || ev.author || "unknown";
       const when = formatRecordDate(ev.ts);
       if (ev.type === "comment") {
         if (deletedComments.has(ev.id)) continue;
+        const edit = edits.get(String(ev.id || ""));
+        ev = {
+          ...ev,
+          ...(edit ? { body: edit.body } : {}),
+          _canManage: Boolean(options.canManage),
+          _edited: Boolean(edit),
+        };
         items.push(renderIssueTimelineComment(ev));
         continue;
       }
@@ -8760,6 +9351,9 @@
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment on this issue.</div>`;
     }
+    const detail = state.repoRecordDetail;
+    const canManage = Boolean(detail?.parsed?.issueMutationAuthorized);
+    const issueOpen = String(detail?.parsed?.values?.status || "open") !== "closed";
     return `
       <form data-repo-issue-comment-form data-repo-issue-comment-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
         ${composeIdentityHtml(state.session, "Commenting")}
@@ -8768,7 +9362,10 @@
         </label>
         <div class="flex flex-wrap items-center justify-between gap-3">
           <span data-repo-issue-comment-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
-          <button type="submit" data-repo-issue-comment-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+          <span class="inline-flex flex-wrap items-center justify-end gap-2">
+            ${canManage && issueOpen ? `<button type="submit" data-repo-issue-comment-action="close" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-check" class="h-4 w-4"></i>Close with comment</button>` : ""}
+            <button type="submit" data-repo-issue-comment-submit data-repo-issue-comment-action="comment" class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+          </span>
         </div>
       </form>`;
   }
@@ -8897,6 +9494,20 @@
         `/api/orgs/${encodeURIComponent(repo.owner || "")}`,
       );
       return profile?.viewerRole === "owner";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function loadRepoIssueMutationAuthorization(repo) {
+    if (!repo || !state.session?.sessionToken) return false;
+    if (isRepoOwner(repo) || state.session?.isAdmin) return true;
+    try {
+      const profile = await orgApiRequest(
+        "GET",
+        `/api/orgs/${encodeURIComponent(repo.owner || "")}`,
+      );
+      return ["owner", "admin"].includes(String(profile?.viewerRole || ""));
     } catch (_) {
       return false;
     }
@@ -9258,12 +9869,183 @@
     }
   }
 
+  // The connector token is a locally minted bearer string, so nothing has to
+  // be fetched to have one: the first copy mints it right here in the desktop's
+  // own format, remembers it, and the copied prompt carries the lines that
+  // install it on the node. Copying is one click and never opens a dialog.
+  // Shift-clicking the button still opens the paste box, which is what a node
+  // that already published a connector needs (its own token wins).
+  const MCP_CONNECTOR_TOKEN_KEY = "forkmesh.mcpConnectorToken";
+  const MCP_CONNECTOR_TOKEN_PLACEHOLDER =
+    "PASTE_CONNECTOR_TOKEN_FROM_FORKMESH_DESKTOP_SETTINGS_MCP";
+  // Matches qt_client/src/McpConnector.cpp: "fmcp_" + 32 CSPRNG bytes,
+  // base64url, unpadded — the shape isWellFormedToken() accepts.
+  const MCP_CONNECTOR_TOKEN_BYTES = 32;
+
+  function generateMcpConnectorToken() {
+    try {
+      const bytes = new Uint8Array(MCP_CONNECTOR_TOKEN_BYTES);
+      window.crypto.getRandomValues(bytes);
+      let binary = "";
+      bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+      });
+      return (
+        "fmcp_" +
+        btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+      );
+    } catch (_) {
+      // No CSPRNG (ancient or locked-down browser): fall back to the
+      // placeholder rather than to a guessable token.
+      return "";
+    }
+  }
+
+  function loadMcpConnectorToken() {
+    try {
+      return String(localStorage.getItem(MCP_CONNECTOR_TOKEN_KEY) || "").trim().slice(0, 200);
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function saveMcpConnectorToken(token) {
+    try {
+      if (token) localStorage.setItem(MCP_CONNECTOR_TOKEN_KEY, token);
+      else localStorage.removeItem(MCP_CONNECTOR_TOKEN_KEY);
+    } catch (_) {}
+  }
+
+  // The token for this copy. A plain click never asks anything: a remembered
+  // token is reused, otherwise one is generated on the spot and kept. Only a
+  // shift-click opens the paste box, for the node that already published its
+  // own connector; an empty answer there rotates to a freshly generated token
+  // rather than leaving the prompt carrying a placeholder.
+  function ensureMcpConnectorToken(options) {
+    let token = loadMcpConnectorToken();
+    if (options?.replaceToken) {
+      const entered = window.prompt(
+        "Paste the connector token this node already published (ForkMesh desktop app -> Settings -> MCP). Leave it empty to generate a fresh one instead - the copied prompt tells the agent how to install it.",
+        token,
+      );
+      if (entered === null) return token;
+      token = String(entered).trim().slice(0, 200) || generateMcpConnectorToken();
+      saveMcpConnectorToken(token);
+      return token;
+    }
+    if (!token) {
+      token = generateMcpConnectorToken();
+      saveMcpConnectorToken(token);
+    }
+    return token;
+  }
+
+  // "Copy MCP prompt" on the issue detail page: one paste block that points an
+  // MCP-capable coding agent at the forkmesh MCP server so it pulls this issue,
+  // works it on a dedicated branch, submits the pull request, and reports back
+  // which model it ran as and its thinking setting. The block carries the whole
+  // connection — the mcpServers entry the desktop's Settings -> MCP tab shows
+  // (python3, tools/forkmesh_mcp_server.py, the repo checkout) plus the
+  // connector token the signed write tools require — so nothing has to be
+  // assembled by hand before the agent can run.
+  function issueMcpPrompt(repo, number, values, token) {
+    const repoSlug = `${repo.owner || "owner"}/${repo.name || "repo"}`;
+    const title = String(values?.title || "").trim();
+    const titleSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40);
+    const branch = titleSlug ? `issue-${number}-${titleSlug}` : `issue-${number}`;
+    const issueUrl = `${location.origin}${repoPathUrl(repo)}/issues/${number}`;
+    const repoCloneUrl = cloneUrl(repo);
+    const forkmeshCloneUrl = `${location.origin}/forkmesh/forkmesh`;
+    const serverScript = "<FORKMESH_CHECKOUT>/tools/forkmesh_mcp_server.py";
+    const repoCheckout = `<CHECKOUT_OF_${repoSlug}>`;
+    const connectorToken = token || MCP_CONNECTOR_TOKEN_PLACEHOLDER;
+    // The same file tools/forkmesh_mcp_server.py reads (FORKMESH_MCP_CONNECTOR
+    // overrides it) and the desktop's Settings -> MCP tab writes.
+    const connectorFile =
+      "$XDG_DATA_HOME/ForkMesh/ForkMesh/mcp/connector.json (default ~/.local/share/ForkMesh/ForkMesh/mcp/connector.json)";
+    const configuration = {
+      mcpServers: {
+        forkmesh: {
+          command: "python3",
+          args: [serverScript],
+          env: {
+            FORKMESH_REPO: repoCheckout,
+            FORKMESH_MCP_TOKEN: connectorToken,
+          },
+        },
+      },
+    };
+    // The token was minted in the browser, so it only unlocks the write tools
+    // once this machine's connector file holds it. An existing connector is
+    // never overwritten: that would demote every other agent config still
+    // holding the old string, and the node owner already has a token to use.
+    const tokenNote = token
+      ? [
+          `FORKMESH_MCP_TOKEN above is a connector token minted for this prompt. Activate it before step 1: if ${connectorFile} does not exist, create it (mode 0600) containing {"version": 1, "token": "${connectorToken}", "node": "", "label": "copied MCP prompt", "created_ms": <epoch milliseconds>} - the same record the desktop app writes. If that file already exists, leave it exactly as it is and use its own "token" value in the configuration above instead - the node already published a connector and overwriting it would revoke every other agent.`,
+          "Treat the token as a secret - never print it in logs, commits, pull requests, or chat.",
+        ].join("\n")
+      : `FORKMESH_MCP_TOKEN above is a placeholder: replace ${MCP_CONNECTOR_TOKEN_PLACEHOLDER} with the connector token the ForkMesh desktop app mints under Settings -> MCP -> Generate token, otherwise the write tools stay read-only. Treat it as a secret - never print it in logs, commits, pull requests, or chat.`;
+    return [
+      `Work ForkMesh issue #${number} in ${repoSlug} end to end through the "forkmesh" MCP server.`,
+      "",
+      `Issue: ${title || `#${number}`}`,
+      `Issue page: ${issueUrl}`,
+      `Repository: git clone ${repoCloneUrl}`,
+      "",
+      'Connect the "forkmesh" MCP server first - it is the stdio server that carries every ForkMesh tool (whoami, search_issues, read_file, comment_on_issue, open_pr_from_branch). Add this to your agent\'s MCP configuration, replacing each <...> with an absolute path on this machine and cloning whatever is missing:',
+      "",
+      JSON.stringify(configuration, null, 2),
+      "",
+      `<FORKMESH_CHECKOUT> is a checkout of ForkMesh itself, which ships the server script: git clone ${forkmeshCloneUrl}. ${repoCheckout} is your local checkout of ${repoSlug}: git clone ${repoCloneUrl}.`,
+      `In Claude Code that is one command: claude mcp add forkmesh --scope user --env FORKMESH_REPO=${repoCheckout} --env FORKMESH_MCP_TOKEN=${connectorToken} -- python3 ${serverScript}`,
+      tokenNote,
+      "",
+      `1. Call whoami on the forkmesh MCP server to confirm it answers and reaches ${repoSlug} with write access. If it is missing or read-only, fix the configuration above and retry; use the forkmesh MCP server for every ForkMesh read and write rather than any other issue tracker.`,
+      "2. Pull this issue with search_issues and read every file it references with read_file before planning.",
+      `3. Work in the local checkout of ${repoSlug} that the connector exposes. Create a dedicated branch named ${branch} from the latest main; never commit to main directly.`,
+      `4. Implement the smallest complete fix, run the repository's tests and required checks, and commit with a clear message referencing issue #${number}.`,
+      `5. Submit the work with open_pr_from_branch: branch ${branch}, base main, a title referencing issue #${number}, and a description that summarizes the change and the test results.`,
+      `6. Report back with comment_on_issue on issue #${number}: link the new pull request, then state exactly which model you ran as (model name/id) and your thinking setting (extended thinking on or off, or the reasoning-effort level). Repeat the same model and thinking report in the pull request description. Do not skip this report.`,
+      "",
+      "If the connector is read-only, tests fail, or anything else blocks a safe submission, stop and report the blocker instead of forcing the pull request.",
+    ].join("\n");
+  }
+
+  async function copyIssueMcpPrompt(button, options) {
+    const detail = state.repoRecordDetail;
+    const repo = state.selectedRepo;
+    if (!button || !repo || detail?.kind !== "issues") return false;
+    // The button renders for signed-out visitors too; the prompt itself is
+    // only handed out to an authenticated account. Bounce through login and
+    // land back on this exact issue.
+    if (!state.session?.sessionToken) {
+      location.href = "/login?next=" + encodeURIComponent(`${location.pathname}${location.search}`);
+      return false;
+    }
+    const token = ensureMcpConnectorToken(options);
+    const prompt = issueMcpPrompt(repo, detail.number, detail.parsed?.values, token);
+    const copied = await copyTextToClipboard(prompt);
+    if (!copied) {
+      button.title = "Could not access the clipboard";
+      return false;
+    }
+    const original = button.innerHTML;
+    button.innerHTML = '<i data-lucide="check" class="h-3.5 w-3.5"></i>Prompt copied';
+    window.lucide?.createIcons();
+    window.setTimeout(() => {
+      if (!document.body.contains(button)) return;
+      button.innerHTML = original;
+      window.lucide?.createIcons();
+    }, 1600);
+    return true;
+  }
+
   function renderRepoRecordDetail(repo, kind, number, parsed) {
     const options = parsed.options || {};
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
     const values = parsed.values || {};
     const title = values.title || `${config.itemLabel} #${number}`;
-    const state = values.status || values.state || values.category || "open";
+    const recordState = values.status || values.state || values.category || "open";
     const author = values.authorName || values.author || "unknown";
     const date = formatRecordDate(values.updatedAt || values.createdAt || values.ts);
     const body = parsed.body || "No description was committed for this record.";
@@ -9277,19 +10059,31 @@
       : parseFrontMatterList(values.labels || values.reviewLabels);
     const metadata = recordDetailMeta(kind, values);
     const pendingNotice = options.pending ? `
-        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is still syncing to the maintainer's inbox and hasn't been drained to the public mirror yet, so it doesn't have a number assigned.</div>` : "";
+        <div class="rounded-lg border border-dashed border-border bg-secondary/30 px-4 py-3 text-xs text-muted-foreground">This ${escapeHtml(config.itemLabel)} is waiting for an eligible online mirror to commit it to the repository, so it does not have a number yet.</div>` : "";
     const isIssues = !isPulls && !isDiscussions;
     const marketingInitiativeAction =
       isIssues && !options.pending
         ? `<button type="button" data-repo-marketing-initiative class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="megaphone" class="h-3.5 w-3.5 text-primary"></i>Move to Marketing initiatives</button>`
         : "";
-    const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
+    // Always rendered, signed in or not: a signed-out click bounces through
+    // /login and returns here, so the visitor discovers the workflow either way.
+    const mcpPromptAction =
+      isIssues && !options.pending
+        ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and a generated connector token included (shift-click to paste a token this node already published)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
+        : "";
+    const issueCanManage = isIssues && Boolean(parsed.issueMutationAuthorized);
+    const issueCanDelete = issueCanManage
+      && Boolean(parsed.issueCreator)
+      && parsed.issueCreator === webIssuePublicKey();
+    const issueTimeline = isIssues
+      ? renderIssueTimeline(parsed.issueEvents, { canManage: issueCanManage })
+      : "";
     // Always mount the timeline container for issues so a comment posted from
     // the form below has somewhere to land, but keep it borderless while empty.
     const issueTimelineSection = isIssues
       ? `<div data-repo-issue-timeline data-empty="${issueTimeline ? "false" : "true"}" class="${issueTimeline ? "border-t border-border" : ""}">${issueTimeline}</div>`
       : "";
-    // A pending issue is still in the maintainer's inbox and has no number yet,
+    // A pending issue is still awaiting its mirror commit and has no number yet,
     // so there's nothing for a comment's signature to bind to.
     const issueCommentSection = isIssues && !options.pending
       ? renderIssueCommentForm(number)
@@ -9338,20 +10132,74 @@
     const labelValue = labels.length
       ? labels.map((label) => `<span class="mr-1 mt-1 inline-flex rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">${escapeHtml(label)}</span>`).join("")
       : "No labels";
+    const issueAssignees = parseFrontMatterList(values.assignees);
+    const assigneeValue = issueAssignees.length
+      ? issueAssignees.map((assignee) => `<span class="mr-1 mt-1 inline-flex rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] text-foreground">${escapeHtml(assignee)}</span>`).join("")
+      : "No one assigned";
+    const issueFieldsValue = isIssues
+      ? `Priority ${Number(values.priority) || "none"} · Progress ${Number(values.progress) || 0}%${values.endDate ? ` · Due ${escapeHtml(issueDateInputValue(values.endDate))}` : ""}`
+      : "No fields configured";
+    const issueActions = isIssues && !options.pending ? `
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" data-repo-issue-vote class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="thumbs-up" class="h-3.5 w-3.5"></i>Vote <span data-repo-issue-vote-count class="font-mono">${formatCount(Number(values.votes) || 0)}</span></button>
+        ${issueCanManage ? `<button type="button" data-repo-issue-title-edit class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="pencil" class="h-3.5 w-3.5"></i>Edit title</button>
+        <button type="button" data-repo-issue-status="${recordState === "closed" ? "open" : "closed"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="${recordState === "closed" ? "rotate-ccw" : "circle-check"}" class="h-3.5 w-3.5"></i>${recordState === "closed" ? "Reopen issue" : "Close issue"}</button>` : ""}
+        ${issueCanDelete ? `<button type="button" data-repo-issue-delete class="inline-flex h-8 items-center gap-2 rounded-md border border-destructive/50 px-3 text-xs font-semibold text-destructive hover:bg-destructive/10"><i data-lucide="trash-2" class="h-3.5 w-3.5"></i>Delete issue</button>` : ""}
+      </div>` : "";
+    const issueMetadataEditor = issueCanManage ? `
+      <form data-repo-issue-metadata-form class="grid gap-3 rounded-lg border border-border bg-secondary/20 p-3">
+        <div class="flex items-center justify-between gap-2">
+          <strong class="text-xs text-foreground">Manage issue</strong>
+          <span data-repo-issue-metadata-hint class="text-[10px] text-muted-foreground"></span>
+        </div>
+        <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Assignees
+          <input data-repo-issue-assignees value="${escapeHtml(parseFrontMatterList(values.assignees).join(", "))}" placeholder="alice, bob" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+        </label>
+        <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Labels
+          <input data-repo-issue-labels value="${escapeHtml(labels.join(", "))}" placeholder="bug, help wanted" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+        </label>
+        <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Milestone
+          <input data-repo-issue-milestone-edit value="${escapeHtml(values.milestone || "")}" placeholder="No milestone" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+        </label>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Priority
+            <input data-repo-issue-priority type="number" min="0" max="99" value="${Number(values.priority) || 0}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal text-foreground outline-none focus:border-primary" />
+          </label>
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Progress %
+            <input data-repo-issue-progress type="number" min="0" max="100" value="${Number(values.progress) || 0}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal text-foreground outline-none focus:border-primary" />
+          </label>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Start
+            <input data-repo-issue-start-date type="date" value="${issueDateInputValue(values.startDate)}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+          </label>
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Due
+            <input data-repo-issue-end-date type="date" value="${issueDateInputValue(values.endDate)}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+          </label>
+        </div>
+        <button type="submit" data-repo-issue-metadata-save class="inline-flex h-8 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"><i data-lucide="save" class="h-3.5 w-3.5"></i>Save fields</button>
+      </form>` : "";
     return `
       <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-5 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <button type="button" data-repo-record-back="${escapeHtml(kind)}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to ${escapeHtml(config.label)}</button>
           <div class="flex flex-wrap items-center justify-end gap-2">
+            ${issueActions}
+            ${mcpPromptAction}
             ${marketingInitiativeAction}
             <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
           </div>
         </div>
         ${pendingNotice}
         <header data-repo-record-hero class="grid gap-3">
-          <h2 class="text-2xl font-semibold leading-tight text-foreground">${escapeHtml(title)} <span class="font-normal text-muted-foreground">${recordLabel}</span></h2>
+          <h2 data-repo-issue-title-heading class="text-2xl font-semibold leading-tight text-foreground">${escapeHtml(title)} <span class="font-normal text-muted-foreground">${recordLabel}</span></h2>
+          ${issueCanManage ? `<form data-repo-issue-title-form class="hidden max-w-3xl items-center gap-2">
+            <input data-repo-issue-title-input value="${escapeHtml(title)}" maxlength="240" class="h-10 min-w-0 flex-1 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+            <button type="submit" class="h-10 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground">Save</button>
+            <button type="button" data-repo-issue-title-cancel class="h-10 rounded-md border border-border px-3 text-xs font-semibold text-foreground">Cancel</button>
+          </form>` : ""}
           <p class="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <span data-repo-record-state class="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"><i data-lucide="${config.icon}" class="h-3.5 w-3.5"></i>${escapeHtml(state)}</span>
+            <span data-repo-record-state class="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"><i data-lucide="${config.icon}" class="h-3.5 w-3.5"></i>${escapeHtml(recordState)}</span>
             <span><span class="font-semibold text-foreground">${escapeHtml(author)}</span> ${isPulls ? `wants to merge 1 commit into <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(baseBranch)}</span> from <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(headBranch)}</span>` : `opened this ${escapeHtml(config.itemLabel)} ${escapeHtml(date)}`}</span>
           </p>
           ${recordTabs}
@@ -9366,6 +10214,11 @@
                     <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Contributor</span>
                   </div>
                   <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
+                  ${issueCanManage ? `<div class="border-t border-border px-4 py-2 text-right"><button type="button" data-repo-issue-description-edit class="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"><i data-lucide="pencil" class="h-3 w-3"></i>Edit description</button></div>
+                  <form data-repo-issue-description-form class="hidden grid gap-2 border-t border-border p-4">
+                    <textarea data-repo-issue-description-input rows="8" class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(body)}</textarea>
+                    <div class="flex justify-end gap-2"><button type="button" data-repo-issue-description-cancel class="h-8 rounded-md border border-border px-3 text-xs font-semibold text-foreground">Cancel</button><button type="submit" class="h-8 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground">Save description</button></div>
+                  </form>` : ""}
                   ${issueTimelineSection}
                   ${issueCommentSection}
                   ${pullConversationSection}
@@ -9398,16 +10251,17 @@
               </div>` : ""}
           </div>
           <aside data-repo-record-sidebar class="min-w-0 text-xs">
+            ${issueMetadataEditor}
             ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation, values.author || "")}</span>`) : ""}
-            ${sidebarSection("Assignees", "No one assigned")}
+            ${sidebarSection("Assignees", isIssues ? assigneeValue : "No one assigned")}
             ${sidebarSection("Labels", labelValue)}
             ${sidebarSection("Type", isPulls ? "Pull request" : isDiscussions ? "Discussion" : "Issue")}
-            ${sidebarSection("Fields", "No fields configured")}
+            ${sidebarSection("Fields", issueFieldsValue)}
             ${sidebarSection("Projects", "No projects")}
             ${sidebarSection("Milestone", metadata.find(([label]) => label === "Milestone")?.[1] || "No milestone")}
             ${sidebarSection("Relationships", "None yet")}
             ${sidebarSection("Development", isPulls ? "Successfully merging this pull request may close these issues." : "No branches or pull requests")}
-            ${sidebarSection("Notifications", '<button type="button" class="inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 font-semibold text-foreground"><i data-lucide="bell" class="h-3.5 w-3.5"></i>Subscribe</button>')}
+            ${sidebarSection("Notifications", `<button type="button" data-repo-issue-subscription="${parsed.issueSubscribed ? "unsubscribe" : "subscribe"}" class="inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="${parsed.issueSubscribed ? "bell-off" : "bell"}" class="h-3.5 w-3.5"></i>${parsed.issueSubscribed ? "Unsubscribe" : "Subscribe"}</button>`)}
             ${sidebarSection("Participants", `1 participant - ${escapeHtml(author)}`)}
           </aside>
         </div>
@@ -9418,8 +10272,8 @@
     const config = repoCollectionConfig[kind];
     const container = $(`[data-repo-${kind}]`);
     if (!repo || !config || !container || !number) return;
-    // Issues just submitted from this session sit in the maintainer's inbox
-    // until drained, so there's nothing to fetch from the mirror yet - render
+    // Issues just submitted from this session await their mirror commit, so
+    // there's nothing to fetch from the mirror yet - render
     // the detail straight from the local placeholder instead.
     const pendingItem = kind === "issues"
       ? state.issuesView.items.find((item) => item.pending && item.localId === number)
@@ -9479,6 +10333,11 @@
           pullMetadataCommit,
         );
         parsed.pullMergeAuthorized = await loadRepoPullMergeAuthorization(repo);
+      }
+      if (kind === "issues") {
+        parsed.issueMutationAuthorized =
+          await loadRepoIssueMutationAuthorization(repo);
+        parsed.issueSubscribed = await loadWebIssueSubscription(repo, number);
       }
       if (kind === "discussions") parsed.discussionConversation = await loadRepoDiscussionConversation(repo, number);
       state.repoRecordDetail = { repo, kind, number, parsed };
@@ -9593,9 +10452,10 @@
   }
 
   // Content-free pending-inbox tallies (GET /api/repo/o/r/pending). Plain
-  // fetch, not the caching fetchJson — the counts change as the owner node
-  // drains its inbox and must refresh on every repo open. Best-effort: a miss
-  // just leaves the badges hidden.
+  // fetch, not the caching fetchJson — the counts drop as soon as any online
+  // node (the source of truth or an approved mirror) merges the submissions,
+  // so they must refresh on every repo open. Best-effort: a miss just leaves
+  // the badges hidden.
   async function loadRepoPendingCounts(repo) {
     try {
       const response = await fetch(`${repoApiBase(repo)}/pending`, {
@@ -9604,7 +10464,7 @@
       const data = await response.json().catch(() => ({}));
       if (!response.ok || !data || data.ok === false) return;
       const pending = data.pending || {};
-      ["issues", "pulls", "discussions", "commits"].forEach((tab) => {
+      ["issues", "pulls", "discussions"].forEach((tab) => {
         setRepoTabPending(tab, pending[tab]);
       });
       // Remember the server-side issue tally so the Issues list can show the
@@ -9620,11 +10480,9 @@
     }
   }
 
-  // The relay only reports a COUNT of issue submissions still waiting in the
-  // owner's inbox (their contents are encrypted). Surface that count in the
-  // Issues list as "syncing..." placeholder rows so a submission stays visible
-  // on any browser - not only the one that filed it, whose optimistic copy
-  // lives in localStorage - until the owner node drains and mirrors it.
+  // The relay only reports a COUNT of issue submissions awaiting an eligible
+  // mirror (their contents are encrypted). Surface that count in the Issues
+  // list as "syncing..." placeholder rows until a mirror commits them.
   function remotePendingIssuePlaceholders(count) {
     const list = [];
     for (let i = 0; i < count; i += 1) {
@@ -9636,7 +10494,7 @@
         author: "a contributor",
         date: "waiting to sync",
         meta: "",
-        body: "Submitted to the maintainer's inbox. It will appear in full once the owner's source-of-truth node comes online and syncs it.",
+        body: "Submitted for direct delivery. It will appear in full when an eligible online mirror commits it to the repository.",
         pending: true,
         remotePlaceholder: true,
       });
@@ -9651,7 +10509,7 @@
     const count = Number(state.pendingIssueCounts?.[pendingIssuesRepoKey(repo)]) || 0;
     const items = view.items.filter((item) => !item.remotePlaceholder);
     // Items already shown as pending (this session's optimistic add and the
-    // issue #379 localStorage copies) cover part of the server tally; only pad
+    // session's optimistic add) covers part of the server tally; only pad
     // the remainder so we never double-count a submission we can already show.
     const pendingReals = items.filter((item) => item.pending);
     const rest = items.filter((item) => !item.pending);
@@ -9813,9 +10671,8 @@
         tree = await fetchRepoJson(repoLiveUrl(repo, "tree", { path: ".forkmesh/issues" }));
       } catch (error) {
         if (isMissingMirrorFolder(error)) {
-          // No issues on the mirror yet - still surface the owner's offline
-          // submissions kept locally while their node was down (issue #379).
-          state.issuesView.items = reconcilePendingIssues(repo, []);
+          // No issues have been committed to the mirror yet.
+          state.issuesView.items = [];
           state.issuesView.filter = "open";
           state.issuesView.query = "";
           state.issuesView.missing = [];
@@ -9872,12 +10729,7 @@
       const dirs = numbered.slice(0, 50);
       const { items, missing } = await fetchIssuePage(repo, pathByNumber, dirs);
       items.sort((a, b) => Number(b.number) - Number(a.number));
-      // Issue #379: fold in the owner's offline submissions (kept locally while
-      // their source-of-truth node was down) so they still show up on reload,
-      // dropping any the node has since drained - the numbered mirror copy wins.
-      const pending = reconcilePendingIssues(repo, items);
-      const merged = pending.length ? [...pending, ...items] : items;
-      state.issuesView.items = merged;
+      state.issuesView.items = items;
       state.issuesView.filter = "open";
       state.issuesView.query = "";
       state.issuesView.missing = missing;
@@ -12080,7 +12932,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-col gap-1">
             ${composeIdentityHtml(state.session, "Filing")}
-            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+            <span data-repo-issue-hint class="text-[11px] text-muted-foreground">An eligible online mirror will add signed issues directly to this repository.</span>
           </div>
           <button type="submit" data-repo-issue-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Submit issue</button>
         </div>
@@ -12248,9 +13100,9 @@
     setHint("Preparing and signing the change set…");
     try {
       await submitWebIssue(repo, title, body, assignAgent, agentModel, agentProvider, { milestone, project });
-      // Submissions land in the maintainer's inbox, not the public mirror, so it
-      // won't be visible there until they drain it - but show it locally, on
-      // top of this session's issue list, so the submitter sees it right away.
+      // The relay wakes eligible online mirrors immediately. Keep a local
+      // optimistic row until the first mirror commits the signed issue and its
+      // durable issue number becomes visible from the repository.
       const pendingItem = {
         number: null,
         localId: `pending-${Date.now().toString(36)}`,
@@ -12265,12 +13117,6 @@
         pending: true,
       };
       state.issuesView.items = [pendingItem, ...state.issuesView.items];
-      // Issue #379: when the owner files an issue while their source-of-truth
-      // node is offline but a mirror is serving the repo, persist it locally so
-      // it keeps showing up across reloads - fully, not just this session -
-      // until the node comes back online and drains it to the mirror.
-      const ownerOffline = isRepoOwner(repo) && repoServedByMirror(repo);
-      if (ownerOffline) savePendingIssue(repo, pendingItem);
       setRepoTabCount("issues", state.issuesView.items.filter((issue) => issue.status !== "closed").length);
       if (titleInput) titleInput.value = "";
       if (bodyInput) bodyInput.value = "";
@@ -12280,15 +13126,13 @@
       form.querySelector("[data-repo-issue-attachments]")?.replaceChildren();
       if (submit) submit.disabled = false;
       setHint(
-        ownerOffline
-          ? "Your source-of-truth node is offline, so this issue is held on a mirror and will sync to your node when it comes back online."
-          : "Issue sent to the maintainer's inbox for review. Submit another or go back.",
+        "Issue accepted. The first eligible online mirror will add it directly to the repository.",
         "good");
     } catch (error) {
       if (submit) submit.disabled = false;
       const code = String(error?.message || "");
       setHint(
-        code === "inbox_full" ? "The maintainer's inbox is full. Try again later."
+        code === "inbox_full" ? "Issue delivery is temporarily full. Try again later."
           : code === "author_quota" ? "You've reached the submission limit for this repository."
           : code === "issue_too_large" ? "The description is too large - please shorten it or attach smaller images."
           : code === "not_authorized" ? "Only the repository owner or an admin can assign issues to an agent."
@@ -12389,7 +13233,7 @@
           <span class="inline-flex items-center gap-2 text-sm font-semibold text-foreground"><i data-lucide="upload" class="h-4 w-4 text-primary"></i>Import issues from CSV</span>
           <button type="button" data-repo-issue-cancel class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to issues</button>
         </div>
-        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is filed as its own signed issue in the maintainer's inbox.</p>
+        <p class="text-xs leading-5 text-muted-foreground">Upload a CSV with columns <code class="rounded bg-secondary px-1 py-0.5 font-mono">title, body, milestone, project, labels, priority, assignees</code>. Only <code class="rounded bg-secondary px-1 py-0.5 font-mono">title</code> is required. Separate multiple labels or assignees with <code class="rounded bg-secondary px-1 py-0.5 font-mono">;</code>. Each row is a signed issue delivered to the first eligible online mirror.</p>
         <div class="flex flex-wrap items-center gap-2">
           <button type="button" data-repo-issue-template class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="download" class="h-3.5 w-3.5"></i>Download template</button>
           <input type="file" data-repo-issue-csv-input accept=".csv,text/csv" class="text-xs text-foreground file:mr-2 file:h-8 file:cursor-pointer file:rounded-md file:border file:border-border file:bg-secondary file:px-3 file:text-xs file:font-medium file:text-foreground" />
@@ -12398,7 +13242,7 @@
         <div class="flex flex-wrap items-center justify-between gap-3">
           <div class="flex min-w-0 flex-col gap-1">
             ${composeIdentityHtml(state.session, "Filing")}
-            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
+            <span data-repo-issue-import-hint class="text-[11px] text-muted-foreground">Eligible online mirrors add accepted issues directly to the repository.</span>
           </div>
           <button type="submit" data-repo-issue-import-submit disabled class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Import issues</button>
         </div>
@@ -12480,7 +13324,7 @@
     setHint(
       failed
         ? `Imported ${ok} issue${ok === 1 ? "" : "s"}; ${failed} could not be sent. Go back to review.`
-        : `Imported ${ok} issue${ok === 1 ? "" : "s"} to the maintainer's inbox. Go back to review.`,
+        : `Submitted ${ok} issue${ok === 1 ? "" : "s"} for direct mirror delivery.`,
       failed ? "bad" : "good");
   }
 
@@ -12741,6 +13585,23 @@
         </span>`;
   }
 
+  // Potentially long lists stay out of the row layout. The chip carries only
+  // the item count; hovering it reveals the complete, one-item-per-line list.
+  // Keeping it focusable gives keyboard users the same native tooltip and an
+  // explicit accessible label without adding a second visual row.
+  function mirrorListChip(label, values) {
+    const list = (Array.isArray(values) ? values : [])
+      .map((value) => String(value || "").trim())
+      .filter(Boolean);
+    if (!list.length) return mirrorChip(label, "", false, "");
+    const tooltip = `${label}:\n${list.map((value) => `\u2022 ${value}`).join("\n")}`;
+    return `
+        <span class="inline-flex items-center gap-1 rounded-md border border-border px-1.5 py-0.5 text-[10px] font-mono" tabindex="0" aria-label="${escapeHtml(`${label}: ${list.join(", ")}`)}" title="${escapeHtml(tooltip)}">
+          <span class="text-muted-foreground">${escapeHtml(label)}</span>
+          <span class="text-foreground">${formatCount(list.length)}</span>
+        </span>`;
+  }
+
   // The metadata columns the desktop Mirror nodes panel shows, rendered as chips
   // under each mirror row: commit + sync freshness, on-disk size, and the mirrored
   // issue/commit/branch/pull/discussion/worktree/clone/website/artifact tallies.
@@ -12774,7 +13635,7 @@
       mirrorChip("Latency", Number.isFinite(Number(mirror.latencyMs)) ? `${Math.max(0, Number(mirror.latencyMs))} ms` : "", false, ""),
       mirrorChip("Region", mirror.region || "", false, ""),
       mirrorChip("Endpoint integrity", mirror.endpointIntegrity || "", mirror.endpointIntegrity && mirror.endpointIntegrity !== "ok", ""),
-      mirrorChip("Capabilities", operations.join(", "), false, ""),
+      mirrorListChip("Capabilities", operations),
       mirrorChip("Size", mirror.sizeBytes ? formatSize(mirror.sizeBytes) : "", false, ""),
       mirrorChip("Issues", mirrorCountText(mirror.issueCount), mirrorCountMismatch(mirror.issueCount, refMirror?.issueCount), `Source: ${mirrorCountText(refMirror?.issueCount)}`),
       mirrorChip("Commits", mirrorCountText(mirror.commitCount), mirrorCountMismatch(mirror.commitCount, refMirror?.commitCount), `Source: ${mirrorCountText(refMirror?.commitCount)}`),
@@ -12796,9 +13657,10 @@
     return Number.isFinite(number) && number >= 0 ? formatCount(number) : "";
   }
 
-  // The full Mirrors-tab row: a header line (dot, name, source-of-truth / out-of-
-  // sync / integrity badges, version, serve speed, status) over a wrapped strip of
-  // the same metadata columns the desktop Mirror nodes panel shows.
+  // The full Mirrors-tab row stays on one line: identity, state, metadata, and
+  // reachability all share one non-wrapping strip. The surrounding list scrolls
+  // horizontally on narrow screens; unbounded list data is condensed by
+  // mirrorListChip and remains available on hover/focus.
   function renderMirrorTabRow(mirror, servedBy, refMirror) {
     const online = mirror.status === "online";
     const isServing = online && mirrorRowIsServing(mirror, servedBy);
@@ -12834,26 +13696,22 @@
         ? "text-amber-500"
         : "text-primary";
     const rowClass = isServing
-      ? "border-t border-border px-4 py-3 text-sm ring-1 ring-inset ring-primary bg-primary/5"
-      : "border-t border-border px-4 py-3 text-sm hover:bg-secondary/40 transition-colors";
+      ? "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm ring-1 ring-inset ring-primary bg-primary/5"
+      : "flex min-w-max flex-nowrap items-center gap-1.5 whitespace-nowrap border-t border-border px-4 py-2 text-sm hover:bg-secondary/40 transition-colors";
     return `
         <div class="${rowClass}">
-          <div class="flex items-center gap-3">
-            <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
-            <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
-              <span class="min-w-0 truncate font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
-              ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
-              ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
-              ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
-              ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
-              ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
-            </div>
-            <span class="flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
-              ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
-              ${escapeHtml(mirror.status || "unknown")}
-            </span>
-          </div>
-          <div class="mt-2 flex flex-wrap gap-1.5 pl-7">${mirrorDetailChips(mirror, refMirror)}</div>
+          <i data-lucide="${online ? "radio" : "circle"}" class="h-4 w-4 shrink-0 ${dotColor}"></i>
+          <span class="shrink-0 font-mono text-foreground">${escapeHtml(mirror.node || mirror.owner || mirror.name || "mirror")}</span>
+          ${isSource ? '<span class="shrink-0 rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] font-medium text-primary">source of truth</span>' : ""}
+          ${behind ? '<span class="shrink-0 rounded-full border border-amber-500/40 bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600">out of sync</span>' : ""}
+          ${integrityRejected ? '<span class="shrink-0 rounded-full border border-destructive/40 bg-destructive/10 px-1.5 py-0.5 text-[10px] font-medium text-destructive">failing integrity pin</span>' : ""}
+          ${activityLabel ? `<span class="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-medium ${activityClass}">${escapeHtml(activityLabel)}</span>` : ""}
+          ${version ? `<span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(version)}</span>` : ""}
+          ${mirrorDetailChips(mirror, refMirror)}
+          <span class="ml-auto flex shrink-0 items-center gap-2 text-xs font-mono ${online ? "text-primary" : "text-muted-foreground"}">
+            ${speed ? `<span class="rounded-full border border-primary/40 bg-primary/10 px-1.5 py-0.5 text-[10px] text-primary">${escapeHtml(speed)}</span>` : ""}
+            ${escapeHtml(mirror.status || "unknown")}
+          </span>
         </div>`;
   }
 
@@ -12916,9 +13774,9 @@
           (Number(b.lastSync) || 0) - (Number(a.lastSync) || 0) ||
           String(a.node || a.owner || a.name || "").localeCompare(String(b.node || b.owner || b.name || "")),
       );
-      tabContainer.innerHTML = ordered
+      tabContainer.innerHTML = `<div class="overflow-x-auto">${ordered
         .map((mirror) => renderMirrorTabRow(mirror, servedBy, refMirror))
-        .join("");
+        .join("")}</div>`;
     }
     renderRepoLiveMirrorList(mirrors, servedBy);
     window.lucide?.createIcons();
@@ -13754,9 +14612,11 @@
                   ? 'data-lucide="git-pull-request"'
                   : `data-lucide="${meta.icon}"`;
               // Inbox-backed tabs get a second (hidden until filled) badge for
-              // items still sitting in the relay's inbox awaiting the owner
-              // node's next sync — see loadRepoPendingCounts.
-              const pendingBadge = ["issues", "pulls", "discussions", "commits"].includes(tab)
+              // items still sitting in the relay's inbox that no online node
+              // (source of truth or an approved mirror) has merged yet — see
+              // loadRepoPendingCounts. Any online mirror drains the queue by
+              // committing submissions straight into the repo it serves.
+              const pendingBadge = ["issues", "pulls", "discussions"].includes(tab)
                 ? `<span data-dashboard-repo-tab-pending="${tab}" class="hidden rounded-full border border-yellow-500/40 bg-yellow-500/10 px-1.5 py-0.5 text-[10px] font-mono text-yellow-500"></span>`
                 : "";
               return `<button type="button" role="tab" data-dashboard-repo-tab="${tab}" aria-selected="${tab === "code" ? "true" : "false"}" class="relative inline-flex h-12 items-center gap-2 border-b-2 px-3 text-xs font-medium transition-colors ${tab === "code" ? "border-primary text-foreground" : "border-transparent text-muted-foreground hover:bg-secondary hover:text-foreground"}"><i ${iconAttr} class="h-3.5 w-3.5"></i><span>${meta.label}</span>${meta.count !== "" ? `<span data-dashboard-repo-tab-count="${tab}" class="rounded-full bg-secondary px-1.5 py-0.5 text-[10px] font-mono text-muted-foreground">${tabCountLabel(meta.count)}</span>` : ""}${pendingBadge}</button>`;
@@ -13839,7 +14699,7 @@
             <section data-dashboard-repo-tab-panel="discussions" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="message-square" class="h-3.5 w-3.5 text-muted-foreground"></i>Discussions and comments</span><span class="rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground">Create from desktop client for signed submissions</span></div><div data-repo-discussions></div></div></section>
             <section data-dashboard-repo-tab-panel="insights" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-no-axes-combined" class="h-3.5 w-3.5 text-muted-foreground"></i>Insights</span><span class="font-mono text-[10px] text-muted-foreground">contributors and activity</span></div><div data-repo-insights></div></div></section>
             <section data-dashboard-repo-tab-panel="sizemap" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="chart-pie" class="h-3.5 w-3.5 text-primary"></i>Size map</span><span class="font-mono text-[10px] text-muted-foreground">directory sizes · default branch</span></div><div data-repo-sizemap class="p-4"></div></div></section>
-            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">reachable mirror health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a notification; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
+            <section data-dashboard-repo-tab-panel="mirrors" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="radio" class="h-3.5 w-3.5 text-primary"></i>Mirrors</span><span class="font-mono text-[10px] text-muted-foreground">reachable mirror health</span></div><div data-mirror-request hidden class="border-b border-border px-4 py-3"><label class="mb-1.5 block text-[11px] font-medium text-foreground">Ask a node to mirror this repo</label><div class="flex items-center gap-2"><input data-mirror-request-target type="text" autocomplete="off" spellcheck="false" placeholder="node name" class="h-8 min-w-0 flex-1 rounded-md border border-border bg-background px-2 font-mono text-xs text-foreground outline-none placeholder:text-muted-foreground" /><button type="button" data-mirror-request-send class="h-8 shrink-0 rounded-md border border-border bg-secondary px-3 text-xs font-medium text-foreground transition-colors hover:bg-secondary/70">Ask to mirror</button></div><p data-mirror-request-hint class="mt-1.5 text-[11px] text-muted-foreground">They get a ping; if they accept, their node starts mirroring your repo.</p></div><div data-repo-mirrors></div></div></section>
             ${canSeeAgentsTab ? `<section data-dashboard-repo-tab-panel="agents" class="hidden"><div class="mt-4 overflow-hidden rounded-lg border border-border bg-background"><div class="flex items-center justify-between gap-3 border-b border-border bg-secondary/50 px-4 py-3"><span class="inline-flex items-center gap-2 text-xs font-medium text-foreground"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Agents</span><button type="button" data-repo-agents-refresh class="inline-flex h-7 items-center gap-1.5 rounded-md border border-border px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground"><i data-lucide="refresh-cw" class="h-3.5 w-3.5"></i>Refresh</button></div><div data-workshop-agent-context hidden></div><div data-repo-agents></div></div></section>` : ""}
             ${settingsPanel}
           </div>
@@ -14105,14 +14965,15 @@
   }
 
   // Opening a repo from any list/search control is a real page navigation now
-  // (repo pages are their own documents). Prefer the canonical origin's clean
-  // URL when the catalog already resolved the key (alias groups), falling back
-  // to the raw owner/name path — the repo page resolves it again on boot.
+  // (repo pages are their own documents). Prefer the organization address the
+  // list already displays when the catalog resolved the key (alias groups),
+  // falling back to the raw owner/name path — the repo page resolves it again
+  // on boot.
   function openRepoPage(key) {
     const wanted = String(key || "").trim();
     if (!wanted) return;
     const repo = findRepository(wanted);
-    const url = repo ? repoPathUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
+    const url = repo ? repoLinkUrl(repo) : "/" + wanted.split("/").map(encodeURIComponent).join("/");
     closeMobileDrawers();
     location.assign(url);
   }
@@ -14313,6 +15174,9 @@
       host_offline: "wifi-off",
       pending_inbox: "inbox",
       mirror_request: "radio",
+      account_email_sent: "mail-check",
+      organization_task_started: "clipboard-list",
+      organization_task_activity: "clipboard-list",
     })[kind] || "bell";
   }
 
@@ -14338,7 +15202,7 @@
     if (!list) return;
     const items = state.notifications.slice(0, 5);
     if (!items.length) {
-      list.innerHTML = '<div class="px-3 py-4 text-xs text-muted-foreground">No notifications yet. Mentions, PRs, assignments, shares, bounties, releases, and host status changes will appear here.</div>';
+      list.innerHTML = '<div class="px-3 py-4 text-xs text-muted-foreground">No pings yet. Mentions, PRs, assignments, shares, bounties, releases, and host status changes will appear here.</div>';
       return;
     }
     list.innerHTML = items.map((item) => `
@@ -14346,7 +15210,7 @@
         <div class="flex items-start gap-2">
           <i data-lucide="${notificationIcon(item.kind)}" class="mt-0.5 h-3.5 w-3.5 ${item.readAt ? "text-muted-foreground" : "text-primary"}"></i>
           <div class="min-w-0 flex-1">
-            <p class="truncate text-xs font-medium text-foreground">${escapeHtml(item.title || "Notification")}</p>
+            <p class="truncate text-xs font-medium text-foreground">${escapeHtml(item.title || "Ping")}</p>
             <p class="mt-0.5 truncate text-[11px] text-muted-foreground">${escapeHtml(item.body || item.repo || "ForkMesh update")}</p>
           </div>
           <span class="shrink-0 text-[10px] text-muted-foreground font-mono">${escapeHtml(notificationTimeLabel(item.ts))}</span>
@@ -14360,7 +15224,7 @@
     const detail = $("[data-notification-modal-detail]");
     if (!detail) return;
     if (!item) {
-      detail.innerHTML = '<div class="text-sm text-muted-foreground">Select a notification to read it.</div>';
+      detail.innerHTML = '<div class="text-sm text-muted-foreground">Select a ping to read it.</div>';
       return;
     }
     detail.innerHTML = `
@@ -14369,15 +15233,55 @@
           <i data-lucide="${notificationIcon(item.kind)}" class="h-4 w-4"></i>
         </span>
         <div class="min-w-0 flex-1">
-          <p class="text-sm font-semibold text-foreground">${escapeHtml(item.title || "Notification")}</p>
+          <p class="text-sm font-semibold text-foreground">${escapeHtml(item.title || "Ping")}</p>
           <p class="mt-1 text-xs text-muted-foreground">${escapeHtml(notificationTimeLabel(item.ts))}${item.repo ? ` · ${escapeHtml(item.repo)}` : ""}</p>
         </div>
       </div>
       <p class="mt-5 whitespace-pre-wrap text-sm leading-6 text-muted-foreground">${escapeHtml(item.body || "ForkMesh notification")}</p>
+      ${organizationTaskDetailsHtml(item)}
       ${mirrorRequestActionsHtml(item)}
       ${item.href ? `<a href="${escapeHtml(item.href)}" class="mt-5 inline-flex h-9 items-center justify-center rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary transition-colors">Open context</a>` : ""}
     `;
     window.lucide?.createIcons();
+  }
+
+  // Organization task pings (adhoc #147) carry the whole event on meta, so the
+  // reader gets who/what/which org spelled out as fields instead of having to
+  // parse the one-line summary the ping list shows.
+  function organizationTaskDetailsHtml(item) {
+    if (!item || !String(item.kind || "").startsWith("organization_task")) return "";
+    const meta = item.meta && typeof item.meta === "object" ? item.meta : {};
+    const assignee = String(meta.assignee || "");
+    const assigneeLabel = meta.assigneeKind === "agent"
+      ? "An agent"
+      : (assignee ? `@${assignee}` : "Unassigned");
+    const priority = Number(meta.priority) || 0;
+    const status = ({
+      idle: "Not started",
+      active: "In progress",
+      done: "Done",
+    })[String(meta.status || "")] || String(meta.status || "");
+    const rows = [
+      ["Who", meta.actor ? `@${meta.actor}` : ""],
+      ["What", `${String(meta.action || "updated")} a task`],
+      ["Task", meta.taskTitle || ""],
+      ["Organization", meta.organization || ""],
+      ["Department", meta.department || ""],
+      ["Team", meta.team || ""],
+      ["Assigned to", assigneeLabel],
+      ["Priority", priority > 0 ? String(priority) : ""],
+      ["Status", status],
+      ["Repository", meta.repository || ""],
+    ].filter(([, value]) => String(value || "").trim());
+    if (!rows.length) return "";
+    return `
+      <dl class="mt-5 grid grid-cols-[auto,1fr] gap-x-4 gap-y-1 rounded-md border border-border bg-secondary/40 px-3 py-2 text-xs">
+        ${rows.map(([label, value]) => `
+          <dt class="text-muted-foreground">${escapeHtml(label)}</dt>
+          <dd class="min-w-0 break-words text-foreground">${escapeHtml(String(value))}</dd>
+        `).join("")}
+      </dl>
+    `;
   }
 
   // Accept/Reject controls on an incoming "someone asked your node to mirror
@@ -14499,7 +15403,7 @@
     const list = $("[data-notification-modal-list]");
     if (!list) return;
     if (!state.notifications.length) {
-      list.innerHTML = '<div class="p-3 text-xs text-muted-foreground">No notifications yet.</div>';
+      list.innerHTML = '<div class="p-3 text-xs text-muted-foreground">No pings yet.</div>';
       renderNotificationDetail(null);
       return;
     }
@@ -14510,7 +15414,7 @@
       const active = item.id === state.selectedNotificationId;
       return `
         <button type="button" data-notification-open="${escapeHtml(item.id || "")}" class="mb-1 w-full rounded-md px-3 py-2 text-left transition-colors ${active ? "bg-secondary text-foreground" : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"}">
-          <span class="block truncate text-xs font-medium">${escapeHtml(item.title || "Notification")}</span>
+          <span class="block truncate text-xs font-medium">${escapeHtml(item.title || "Ping")}</span>
           <span class="mt-1 block truncate text-[11px] font-mono">${escapeHtml(item.repo || item.kind || "forkmesh")}</span>
         </button>
       `;
@@ -14584,7 +15488,10 @@
     state.selectedNotificationId = id;
     renderNotificationModal();
     if (!item.readAt) await markNotificationsRead([id]);
-    if (modal) setNotificationModalOpen(true);
+    if (modal) {
+      setNotificationDropdownOpen(false);
+      setNotificationModalOpen(true);
+    }
   }
 
   // The release version changes at most per deploy: cache it in sessionStorage
@@ -15031,7 +15938,10 @@
 
     const notificationOpen = event.target.closest("[data-notification-open]");
     if (notificationOpen) {
-      await openNotification(notificationOpen.dataset.notificationOpen || "", Boolean(event.target.closest("#notificationModal")));
+      await openNotification(
+        notificationOpen.dataset.notificationOpen || "",
+        !event.target.closest("#notificationModal"),
+      );
       return;
     }
 
@@ -15111,8 +16021,17 @@
       return;
     }
 
-    if (event.target.closest("[data-profile-verify-email]")) {
+    if (event.target.closest("[data-email-verification-resend]")) {
       resendVerification();
+      return;
+    }
+
+    if (event.target.closest("[data-profile-verify-email]")) {
+      resendVerification({
+        hintSelector: "[data-profile-hint]",
+        buttonSelector: "[data-profile-verify-email]",
+        buttonText: "Send link",
+      });
       return;
     }
 
@@ -15139,9 +16058,9 @@
 
     if (event.target.closest("[data-profile-page-verify-email]")) {
       resendVerification({
-        passwordSelector: "[data-profile-page-password]",
         hintSelector: "[data-profile-page-hint]",
         buttonSelector: "[data-profile-page-verify-email]",
+        buttonText: "Send link",
       });
       return;
     }
@@ -15597,6 +16516,105 @@
         return;
       }
 
+      const issueMcpPromptButton = event.target.closest(
+        "[data-repo-issue-mcp-prompt]",
+      );
+      if (issueMcpPromptButton) {
+        // A plain click copies straight away with a generated connector token.
+        // Shift-click opens the paste box instead, so a node that already
+        // published its own connector can hand over that token by hand.
+        void copyIssueMcpPrompt(issueMcpPromptButton, {
+          replaceToken: event.shiftKey === true,
+        });
+        return;
+      }
+
+      const issueTitleEditButton = event.target.closest(
+        "[data-repo-issue-title-edit]",
+      );
+      if (issueTitleEditButton) {
+        const article = issueTitleEditButton.closest("[data-repo-record-detail]");
+        article?.querySelector("[data-repo-issue-title-heading]")?.classList.add("hidden");
+        const form = article?.querySelector("[data-repo-issue-title-form]");
+        form?.classList.remove("hidden");
+        form?.classList.add("flex");
+        form?.querySelector("[data-repo-issue-title-input]")?.focus();
+        return;
+      }
+
+      const issueTitleCancelButton = event.target.closest(
+        "[data-repo-issue-title-cancel]",
+      );
+      if (issueTitleCancelButton) {
+        renderCurrentWebIssueDetail();
+        return;
+      }
+
+      const issueDescriptionEditButton = event.target.closest(
+        "[data-repo-issue-description-edit]",
+      );
+      if (issueDescriptionEditButton) {
+        const section = issueDescriptionEditButton.closest("[data-repo-record-conversation]");
+        section?.querySelector("[data-repo-record-body]")?.classList.add("hidden");
+        issueDescriptionEditButton.parentElement?.classList.add("hidden");
+        section?.querySelector("[data-repo-issue-description-form]")?.classList.remove("hidden");
+        section?.querySelector("[data-repo-issue-description-input]")?.focus();
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-description-cancel]")) {
+        renderCurrentWebIssueDetail();
+        return;
+      }
+
+      const issueStatusButton = event.target.closest("[data-repo-issue-status]");
+      if (issueStatusButton) {
+        void handleWebIssueAction(issueStatusButton.dataset.repoIssueStatus || "");
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-vote]")) {
+        void handleWebIssueAction("vote");
+        return;
+      }
+
+      const issueSubscriptionButton = event.target.closest(
+        "[data-repo-issue-subscription]",
+      );
+      if (issueSubscriptionButton) {
+        void handleWebIssueAction(
+          issueSubscriptionButton.dataset.repoIssueSubscription || "subscribe",
+        );
+        return;
+      }
+
+      if (event.target.closest("[data-repo-issue-delete]")) {
+        void handleWebIssueAction("delete-issue");
+        return;
+      }
+
+      const issueCommentEditButton = event.target.closest(
+        "[data-repo-issue-comment-edit]",
+      );
+      if (issueCommentEditButton) {
+        void handleWebIssueAction(
+          "edit-comment",
+          issueCommentEditButton.dataset.repoIssueCommentEdit || "",
+        );
+        return;
+      }
+
+      const issueCommentDeleteButton = event.target.closest(
+        "[data-repo-issue-comment-delete]",
+      );
+      if (issueCommentDeleteButton) {
+        void handleWebIssueAction(
+          "delete-comment",
+          issueCommentDeleteButton.dataset.repoIssueCommentDelete || "",
+        );
+        return;
+      }
+
       const pullViewedButton = event.target.closest("[data-repo-pull-viewed]");
       if (pullViewedButton && state.selectedRepo) {
         toggleRepoPullViewed(
@@ -15840,7 +16858,31 @@
     const issueCommentForm = event.target.closest("[data-repo-issue-comment-form]");
     if (issueCommentForm && state.selectedRepo) {
       event.preventDefault();
+      issueCommentForm._issueSubmitAction =
+        event.submitter?.dataset.repoIssueCommentAction || "comment";
       handleIssueCommentSubmit(state.selectedRepo, issueCommentForm);
+      return;
+    }
+    const issueTitleForm = event.target.closest("[data-repo-issue-title-form]");
+    if (issueTitleForm) {
+      event.preventDefault();
+      void handleWebIssueTitleSubmit(issueTitleForm);
+      return;
+    }
+    const issueDescriptionForm = event.target.closest(
+      "[data-repo-issue-description-form]",
+    );
+    if (issueDescriptionForm) {
+      event.preventDefault();
+      void handleWebIssueDescriptionSubmit(issueDescriptionForm);
+      return;
+    }
+    const issueMetadataForm = event.target.closest(
+      "[data-repo-issue-metadata-form]",
+    );
+    if (issueMetadataForm) {
+      event.preventDefault();
+      void handleWebIssueMetadataSubmit(issueMetadataForm);
       return;
     }
     const discussionReplyForm = event.target.closest("[data-repo-discussion-reply-form]");
@@ -15966,7 +17008,9 @@
   $("[data-profile-modal-close]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-modal-backdrop]")?.addEventListener("click", () => setProfileModalOpen(false));
   $("[data-profile-save]")?.addEventListener("click", saveProfile);
-  $("[data-profile-verify-email]")?.addEventListener("click", resendVerification);
+  // No direct [data-profile-verify-email] listener: the delegated document
+  // click handler above already routes it, and a second listener would fire a
+  // duplicate send that the resend cooldown then rejects.
   $("[data-profile-rename-input]")?.addEventListener("input", () => {
     window.clearTimeout(state.nodeNameAvailability.timer);
     state.nodeNameAvailability.timer = window.setTimeout(checkNodeNameAvailability, 250);

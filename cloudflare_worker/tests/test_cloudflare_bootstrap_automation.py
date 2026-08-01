@@ -175,11 +175,19 @@ def test_bootstrap_keeps_tokens_out_of_files_and_summary(monkeypatch):
         runner=runner,
         manifest_signer=fake_manifest_signer(expect_data_hidden=True),
         health_check=lambda hostname: output.append(f"health:{hostname}"),
+        announce=lambda hostname: (
+            output.append(f"announce:{hostname}") or "pending"
+        ),
         output=output.append,
     )
 
     assert api.verified
     assert result["ok"] is True
+    # The launch-time join ping (adhoc #97) runs only after the instance
+    # passed its health check, and its result rides the redacted summary.
+    assert output.index("health:mesh.example.com") < output.index(
+        "announce:mesh.example.com")
+    assert result["joinRequest"] == {"announced": True, "status": "pending"}
     assert result["workerSecretsSet"] == ["DATA_KEY"]
     assert result["mirrorManifest"]["path"] == "/forkmesh-mirror.json"
     assert result["mirrorManifest"]["repositoryBytesInD1"] is False

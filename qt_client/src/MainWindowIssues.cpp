@@ -183,7 +183,7 @@ QWidget *MainWindow::buildIssuesSection()
                                          QStringLiteral("openai"));
     m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Claude API"),
                                          QStringLiteral("claude-api"));
-    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("Claude Code"),
+    m_issuePrioritizeAgentCombo->addItem(QStringLiteral("CC"),
                                          QStringLiteral("claude-code"));
     selectDefaultAgentProvider(m_issuePrioritizeAgentCombo);
     m_issuePrioritizeAgentCombo->setToolTip(
@@ -1000,7 +1000,7 @@ QWidget *MainWindow::buildIssuesSection()
     connect(m_issueLinkPullButton, &QPushButton::clicked, this,
             &MainWindow::linkPullToIssueFromIssuePage);
     addMetaSection("Development", m_issueDevelopmentValue, m_issueLinkPullButton);
-    addMetaSection("Notifications", makeValue("You are receiving notifications because you're subscribed to this thread."));
+    addMetaSection("Pings", makeValue("You are receiving pings because you're subscribed to this thread."));
     addMetaSection("Participants", makeValue("No participants"));
     auto *transferIssue = makeAction("Transfer issue", "arrow-left");
     auto *cloneIssue = makeAction("Clone issue", "copy");
@@ -1103,8 +1103,31 @@ QWidget *MainWindow::buildIssuesSection()
     m_issueDetailTabs->setObjectName("agentDetailTabs"); // reuse the agent tab style
     m_issueDetailTabs->addTab(detailSplit, QStringLiteral("Issue"));
     m_issueFilesTabIndex =
-        m_issueDetailTabs->addTab(issueFilesPage, QStringLiteral("Files changed"));
+        m_issueDetailTabs->addTab(issueFilesPage, QStringLiteral("Changes in Git"));
     m_issueDetailTabs->setTabVisible(m_issueFilesTabIndex, false);
+    connect(m_issueDetailTabs, &QTabWidget::currentChanged, this,
+            [this](int index) {
+                if (index != m_issueFilesTabIndex || m_currentIssueNumber <= 0)
+                    return;
+                // Issues keep their discussion and metadata here; their linked
+                // repository changes open in the one Git range pane. Put the tab
+                // selection back before navigating so returning to the issue
+                // never exposes the legacy duplicate diff widget.
+                {
+                    QSignalBlocker block(m_issueDetailTabs);
+                    m_issueDetailTabs->setCurrentIndex(0);
+                }
+                if (const AgentSession *session =
+                        latestAgentSessionForIssue(m_currentIssueNumber)) {
+                    if (!session->branchName.isEmpty()) {
+                        switchToAgentBranch(session->id);
+                        return;
+                    }
+                }
+                const QList<int> pulls = pullsLinkedToIssue(m_currentIssueNumber);
+                if (!pulls.isEmpty())
+                    openPullDiffInGitView(pulls.constLast());
+            });
 
     auto *detailLayout = new QVBoxLayout(issueDetailView);
     detailLayout->setContentsMargins(0, 0, 0, 0);
@@ -3572,6 +3595,77 @@ void MainWindow::updateIssueActionState()
 
 void MainWindow::promptNewIssue()
 {
+    composeNewIssue(QString(), QString());
+}
+
+// Chat -> issue (MessageRow's "Create issue..."). A bug reported in chat should
+// not have to be retyped on the Issues tab: the first line seeds the title, the
+// whole message becomes the description, and an attribution line records who
+// said it and where. The wording matches the web/World chats (chat-issue-filing.js)
+// so an issue reads the same whichever client filed it.
+void MainWindow::promptIssueFromChatMessage(const QString &text,
+                                            const QString &senderName,
+                                            qint64 timestampMs)
+{
+    const QString message = text.trimmed();
+    if (message.isEmpty())
+        return;
+    if (m_repositories.isEmpty()) {
+        flashMessage("Open a repository before filing an issue from chat.");
+        return;
+    }
+
+    // Default to whatever repository is already open; ask when there is a
+    // choice, because chat is not scoped to one repository.
+    int repoIndex = m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size()
+                        ? m_repoDetailIndex
+                        : 0;
+    if (m_repositories.size() > 1) {
+        QStringList labels;
+        labels.reserve(m_repositories.size());
+        for (const RepositoryRecord &repo : std::as_const(m_repositories))
+            labels << repo.owner + "/" + repo.name;
+        bool ok = false;
+        const QString pick = QInputDialog::getItem(
+            this, QStringLiteral("Create issue from message"),
+            QStringLiteral("File this message as an issue in:"), labels,
+            repoIndex, false, &ok);
+        if (!ok || pick.isEmpty())
+            return;
+        repoIndex = labels.indexOf(pick);
+        if (repoIndex < 0)
+            return;
+    }
+
+    QString title = message.section('\n', 0, 0).simplified();
+    if (title.size() > 200)
+        title = title.left(199) + QString::fromUtf8("\xE2\x80\xA6");
+    const QString when =
+        QDateTime::fromMSecsSinceEpoch(timestampMs > 0
+                                           ? timestampMs
+                                           : QDateTime::currentMSecsSinceEpoch())
+            .toUTC()
+            .toString(Qt::ISODate);
+    const QString channel = m_currentConversation.trimmed();
+    const QString body =
+        message + "\n\n---\nFiled from a " +
+        (channel.isEmpty() ? QString() : channel + " ") + "chat message by " +
+        (senderName.trimmed().isEmpty() ? QStringLiteral("someone")
+                                        : senderName.trimmed()) +
+        " at " + when + ".";
+
+    if (repoIndex != m_repoDetailIndex)
+        openRepoDetail(repoIndex);
+    showSection(0);
+    // Tab 2 is Issues (same index the global search uses to jump to an issue).
+    if (m_repoDetailTabs && m_repoDetailTabs->button(2))
+        m_repoDetailTabs->button(2)->click();
+    composeNewIssue(title, body);
+}
+
+void MainWindow::composeNewIssue(const QString &prefillTitle,
+                                 const QString &prefillBody)
+{
     // Owners write straight to .forkmesh/issues/; mirror nodes compose the same page but
     // submit to the source of truth's inbox (handled in the create button). Only
     // block when there is no repo selected at all.
@@ -3586,6 +3680,7 @@ void MainWindow::promptNewIssue()
     titleLabel->setObjectName("sectionLabel");
     auto *titleEdit = new QLineEdit(page);
     titleEdit->setPlaceholderText("Title");
+    titleEdit->setText(prefillTitle);
     auto *bodyEdit = new MarkdownEditor(page);
     bodyEdit->setMentionCandidates(mentionCandidateNames());
     // A modest minimum keeps the window shrinkable on small screens; the editor
@@ -3593,6 +3688,8 @@ void MainWindow::promptNewIssue()
     // and the compose page scrolls when the window is shorter than this.
     bodyEdit->setMinimumHeight(200);
     bodyEdit->setPlaceholderText("Type your description here...");
+    if (!prefillBody.isEmpty())
+        bodyEdit->setMarkdown(prefillBody);
 
     auto *left = new QWidget(page);
     auto *leftLayout = new QVBoxLayout(left);
@@ -4812,8 +4909,12 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
     // Keep the floating "Log" button pinned to the live-log strip's bottom-right
     // corner as the strip resizes (adhoc #137). Don't consume — the strip still
     // needs the resize.
-    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog)
+    if (event->type() == QEvent::Resize && obj == m_footerUpdateLog) {
         positionFloatingLogButton();
+        // Same corner, same reason: the pause-scroll toggle rides on top of the
+        // strip rather than in its layout (adhoc #92).
+        positionFooterLogPauseButton();
+    }
     // Right-click on selected text anywhere in the app: offer "Send to
     // Prompt" alongside the widget's normal Copy/Select-All menu (adhoc #126).
     if (event->type() == QEvent::ContextMenu) {
@@ -4985,6 +5086,15 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         };
         if (event->type() == QEvent::ToolTip) {
             auto *he = static_cast<QHelpEvent *>(event);
+            // The leading plus is its own affordance (adhoc #114), so say what it
+            // does rather than repeating the line the rest of the row shows.
+            if (!logPromptAnchorLine(m_footerUpdateLog->anchorAt(he->pos()))
+                     .isEmpty()) {
+                QToolTip::showText(he->globalPos(),
+                                   QStringLiteral("Add this log entry to the prompt"),
+                                   m_footerUpdateLog->viewport());
+                return true;
+            }
             const QString line = lineAt(he->pos());
             if (!line.isEmpty()) {
                 QToolTip::showText(he->globalPos(), line,
@@ -4994,9 +5104,47 @@ bool MainWindow::eventFilter(QObject *obj, QEvent *event)
         } else { // MouseButtonRelease
             auto *me = static_cast<QMouseEvent *>(event);
             if (me->button() == Qt::LeftButton) {
-                const QString line = lineAt(me->position().toPoint());
+                const QPoint pos = me->position().toPoint();
+                // The plus at the far left hands the entry to the prompt box; the
+                // rest of the row keeps opening the full Log at that entry.
+                const QString promptLine =
+                    logPromptAnchorLine(m_footerUpdateLog->anchorAt(pos));
+                if (!promptLine.isEmpty()) {
+                    appendTextToActivePrompt(promptLine);
+                    return true;
+                }
+                const QString line = lineAt(pos);
                 if (!line.isEmpty()) {
                     openFullLogAtFooterLine(line);
+                    return true;
+                }
+            }
+        }
+    }
+    // Same plus in the full Log view (adhoc #114). Its QTextBrowser opens real
+    // links itself, so both the press and the release are swallowed here — left
+    // to QTextBrowser, the release would activate the anchor and hand
+    // "fmlogprompt:…" to the system browser.
+    if (m_settingsLog && obj == m_settingsLog->viewport() &&
+        (event->type() == QEvent::MouseButtonPress ||
+         event->type() == QEvent::MouseButtonRelease ||
+         event->type() == QEvent::ToolTip)) {
+        if (event->type() == QEvent::ToolTip) {
+            auto *he = static_cast<QHelpEvent *>(event);
+            if (!logPromptAnchorLine(m_settingsLog->anchorAt(he->pos())).isEmpty()) {
+                QToolTip::showText(he->globalPos(),
+                                   QStringLiteral("Add this log entry to the prompt"),
+                                   m_settingsLog->viewport());
+                return true;
+            }
+        } else {
+            auto *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                const QString promptLine = logPromptAnchorLine(
+                    m_settingsLog->anchorAt(me->position().toPoint()));
+                if (!promptLine.isEmpty()) {
+                    if (event->type() == QEvent::MouseButtonRelease)
+                        appendTextToActivePrompt(promptLine);
                     return true;
                 }
             }
@@ -5150,9 +5298,10 @@ bool MainWindow::handleFramelessResizeEvent(QObject *obj, QEvent *event)
 }
 
 // Right-click on selected text anywhere in the app (a transcript reply, a
-// diff line, a README, a log) offers "Send to Prompt" so the user can grab it
-// straight into the agent prompt box instead of a manual copy/paste
-// round-trip (adhoc #126). Handles the two families of selectable text used
+// diff line, a README, a log) offers "Send to Prompt" and "Search Codebase"
+// so the user can either send it to an agent or look for it in the open repo
+// without a manual copy/paste round-trip (adhoc #126). Handles the two
+// families of selectable text used
 // across the UI:
 //   - QLabel with Qt::TextSelectableByMouse (transcript bubbles, message rows)
 //   - QTextEdit / QTextBrowser / QPlainTextEdit (diffs, README, logs, editors)
@@ -5209,9 +5358,12 @@ bool MainWindow::maybeShowSendToPromptMenu(QObject *obj, QContextMenuEvent *ce)
     const QString promptText = QString(selected).replace(QChar(0x2029), QLatin1Char('\n'));
     menu->addSeparator();
     QAction *sendToPrompt = menu->addAction(tr("Send to Prompt"));
+    QAction *searchCodebase = menu->addAction(tr("Search Codebase"));
     QAction *chosen = menu->exec(ce->globalPos());
     if (chosen == sendToPrompt)
         appendTextToActivePrompt(promptText);
+    else if (chosen == searchCodebase)
+        openSearchResultsPage(promptText);
     delete menu;
     return true;
 }
@@ -7528,8 +7680,10 @@ void MainWindow::drainIssuesInboxFor(RepositoryRecord repo, bool interactive)
 {
     // The source of truth writes into its normal working copy. A public mirror
     // with no checkout uses a short-lived linked worktree below, commits onto
-    // the served branch, and acknowledges with ?mirror=1 so the relay keeps the
-    // same row queued for the owner.
+    // the served branch, and acknowledges with ?mirror=1 — a real drain: the
+    // merged submission now lives in the repo itself and propagates across the
+    // mirror mesh, so the relay deletes the row instead of holding it pending
+    // for the source of truth.
     const RepositoryRecord writable = writableRecordFor(repo);
     bool ownerIntake = false;
     {
@@ -7823,8 +7977,15 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
             // Acknowledge only after IssueStore committed (or confirmed the
             // event was already committed). A failed write must retain its
             // lease for another attempt instead of disappearing from the
-            // source queue or being falsely marked visible on a mirror.
-            if (!validMentionId && !inboxId.isEmpty() &&
+            // queue. A mirror ack permanently drains the row, so two
+            // owner-only side effects stay queued for the source node instead:
+            // fediverse-mention confirmation (validMentionId, owner path
+            // below) and the auto-agent start the owner requested on their own
+            // web submission (meta.wantsAgent — only the owner's node can
+            // launch that agent).
+            const bool ownerOnlyRow =
+                validMentionId || (mirrorIntake && meta.wantsAgent);
+            if (!ownerOnlyRow && !inboxId.isEmpty() &&
                 !drainedIds.contains(inboxId))
                 drainedIds << inboxId;
             ++merged;
@@ -7884,9 +8045,11 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
             ? accountOwner().trimmed().toLower()
             : repoSegment(repo.owner, QStringLiteral("owner"));
         QUrlQuery ackQuery = signedInboxQuery(ackSigner);
-        if (mirrorIntake)
+        if (mirrorIntake) {
             ackQuery.addQueryItem(
                 QStringLiteral("mirror"), QStringLiteral("1"));
+            appendMirrorStateAttestation(&ackQuery, repo, ackSigner);
+        }
         ackQuery.addQueryItem("ids", drainedIds.join(QStringLiteral(",")));
         if (!mirrorIntake && !materialized.isEmpty())
             ackQuery.addQueryItem(
@@ -7984,7 +8147,7 @@ void MainWindow::applyIssuesInboxPayload(const RepositoryRecord &repo,
         setIssueInlineNotice(
             mirrorIntake
                 ? QStringLiteral(
-                      "Materialized %1 submission(s) on this mirror.")
+                      "Merged %1 submission(s) into this mirror.")
                       .arg(merged)
                 : QStringLiteral(
                       "Merged %1 submission(s) into .forkmesh/issues/.")
@@ -8434,10 +8597,18 @@ void MainWindow::updateHomeStats()
 {
     // The quest board is gone; this now just persists accumulated uptime. The
     // per-node stats live inline in the repositories panel (see selfNodeStats).
+    // Persist at most every 5 minutes: QSettings().setValue rewrites the whole
+    // settings file synchronously, and doing that on the once-a-minute refresh
+    // timer showed up as >500 ms GUI stalls when the disk was busy. Disconnects
+    // and quits persist the exact total on their own paths, so the throttle
+    // only risks a few minutes of uptime credit on a hard kill.
     if (m_connectedAtMs > 0) {
         const qint64 now = QDateTime::currentMSecsSinceEpoch();
-        const qint64 totalMs = m_totalConnectionMs + (now - m_connectedAtMs);
-        QSettings().setValue(kConnectionTotalSetting, totalMs);
+        if (now - m_uptimePersistedAtMs >= 5 * 60 * 1000) {
+            m_uptimePersistedAtMs = now;
+            const qint64 totalMs = m_totalConnectionMs + (now - m_connectedAtMs);
+            QSettings().setValue(kConnectionTotalSetting, totalMs);
+        }
     }
 }
 

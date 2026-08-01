@@ -49,7 +49,7 @@ def test_gym_has_multiple_clickable_exercise_stations():
         "markGymInteractive(",
         "beginGymExercise(String(hit.object.userData.gymEquipment))",
         "function updateGymExercise(",
-        'registerMovableObject("world-gym", gym)',
+        "world.add(gym);",
     ):
         assert contract in SCENE
 

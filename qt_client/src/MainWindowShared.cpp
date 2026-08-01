@@ -469,8 +469,14 @@ void scheduleDiffStreamBatch(QTextEdit *view, int gen)
         if (it == diffStreams().end() || it->gen != gen || it->pending.isEmpty())
             return;
         QString batch;
+        // Stop *before* a block would push the batch over budget (a lone
+        // oversized block still goes alone). Filling until the size crossed the
+        // cap meant a batch could end at ~70k + one whole file block: the stall
+        // log's >500 ms diff appends were all exactly such 80–130k batches.
         while (!it->pending.isEmpty() &&
-               (batch.isEmpty() || batch.size() < kDiffStreamBatchChars))
+               (batch.isEmpty() ||
+                batch.size() + it->pending.first().size() <=
+                    kDiffStreamBatchChars))
             batch += it->pending.takeFirst();
         const bool done = it->pending.isEmpty();
         appendDiffStreamBatch(guard, batch);
@@ -503,8 +509,11 @@ void renderDiffStreamed(QTextEdit *view, const QString &html,
     QStringList blocks = splitDiffFileBlocks(html);
     if (!(blocks.size() == 1 && blocks.first() == html)) {
         first.clear();
+        // Same no-overshoot rule as the streamed batches: the first paint used
+        // to take one block too many and lay out up to ~130k chars in one turn.
         while (!blocks.isEmpty() &&
-               (first.isEmpty() || first.size() < kDiffFirstPaintChars))
+               (first.isEmpty() ||
+                first.size() + blocks.first().size() <= kDiffFirstPaintChars))
             first += blocks.takeFirst();
         state.pending = blocks;
     }
@@ -812,6 +821,9 @@ QColor agentStatusColor(const QString &status)
 QColor agentStatusIconColor(const AgentSession &s)
 {
     if (s.merged) return QColor("#a371f7");
+    // Genie runs (adhoc #38) keep their own violet while they are working, so a
+    // run off the website's shared task list never reads as an ordinary turn.
+    if (s.genieInFlight()) return QColor(Theme::kGenie);
     if (s.status == AgentStatus::Running) return QColor(Theme::kRunning);
     if (s.status == AgentStatus::Success) return QColor("#3fb950");
     if (s.status == AgentStatus::Failed) return QColor("#f85149");
@@ -826,6 +838,11 @@ QIcon agentStatusOcticon(const AgentSession &s, int px)
     const QColor tint = agentStatusIconColor(s);
     if (s.merged)
         return themedOcticon("git-merge", tint, px);
+    // A genie in flight gets the sparkle instead of the shared spinner/clock
+    // (adhoc #38). Terminal states keep their usual glyph, so "did it work?"
+    // still reads the same for genie and ordinary runs alike.
+    if (s.genieInFlight())
+        return themedOcticon("sparkle", tint, px);
     if (s.status == AgentStatus::Running)
         return themedOcticon("sync", tint, px);
     if (s.status == AgentStatus::Success)
@@ -1603,6 +1620,39 @@ bool autoMarkViewedOnScrollPref()
 void setAutoMarkViewedOnScrollPref(bool on)
 {
     QSettings().setValue(QStringLiteral("view/autoMarkViewedOnScroll"), on);
+}
+
+// Rebuild a diff view's extra selections from its find-bar matches, painting
+// the active match in a brighter color than the rest, and update the "n/m"
+// count label. Shared by the PR and branch/PR-range find bars (adhoc #107).
+void applyDiffSearchHighlights(QTextBrowser *diff,
+                               const QList<QTextCursor> &matches, int activeIndex,
+                               QLabel *countLabel, bool termEmpty)
+{
+    QList<QTextEdit::ExtraSelection> sels;
+    QTextCharFormat matchFmt;
+    matchFmt.setBackground(QColor("#e3b341"));
+    matchFmt.setForeground(QColor("#0d1117"));
+    QTextCharFormat currentFmt;
+    currentFmt.setBackground(QColor("#f78166"));
+    currentFmt.setForeground(QColor("#0d1117"));
+    for (int i = 0; i < matches.size(); ++i) {
+        QTextEdit::ExtraSelection sel;
+        sel.cursor = matches.at(i);
+        sel.format = (i == activeIndex) ? currentFmt : matchFmt;
+        sels.append(sel);
+    }
+    diff->setExtraSelections(sels);
+
+    if (!countLabel)
+        return;
+    countLabel->setText(termEmpty
+                            ? QString()
+                            : matches.isEmpty()
+                                  ? QStringLiteral("No results")
+                                  : QStringLiteral("%1/%2")
+                                        .arg(activeIndex + 1)
+                                        .arg(matches.size()));
 }
 
 // Dispatch to the split or unified renderer based on the current preference.

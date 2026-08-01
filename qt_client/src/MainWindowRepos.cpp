@@ -12,6 +12,7 @@
 #include "NodeEventSocket.h"
 #include "PrivateMirrorRuntime.h"
 #include "PublicMirrorRuntime.h"
+#include "UpstreamCheckoutSync.h"
 
 #include <QCryptographicHash>
 #include <QFutureWatcher>
@@ -124,6 +125,7 @@ struct PublicSyncWorkerResult {
     std::shared_ptr<PublicMirrorMaterialization> materialization;
     QString error;
     QString notice;
+    QString upstreamSummary;
     bool created = false;
     bool legacyRemoved = true;
 };
@@ -413,6 +415,26 @@ QJsonObject normalizedCatalogV2Record(const QJsonObject &data)
         cleanCatalogString(data, QStringLiteral("commitAt"), 16);
     if (!commitAt.isEmpty())
         record.insert(QStringLiteral("commitAt"), commitAt);
+    // When this node last served a clone / a website read for the repo, and the
+    // bounded class of client it served (never a raw User-Agent). Optional
+    // extension fields, kept in lockstep with the Worker's catalog normalizer.
+    for (const QString &key : {QStringLiteral("cloneServedAt"),
+                               QStringLiteral("websiteServedAt")}) {
+        const QString servedAt = cleanCatalogString(data, key, 16);
+        bool numeric = false;
+        if (servedAt.toLongLong(&numeric) > 0 && numeric)
+            record.insert(key, servedAt);
+    }
+    static const QStringList serveAgentClasses{
+        QStringLiteral("forkmesh-node"), QStringLiteral("git-client"),
+        QStringLiteral("bot-tool"), QStringLiteral("browser"),
+        QStringLiteral("client")};
+    for (const QString &key : {QStringLiteral("cloneServedAgent"),
+                               QStringLiteral("websiteServedAgent")}) {
+        const QString agent = cleanCatalogString(data, key, 16);
+        if (serveAgentClasses.contains(agent))
+            record.insert(key, agent);
+    }
     return record;
 }
 
@@ -848,8 +870,17 @@ void MainWindow::loadRepositories()
         if (!repo.name.isEmpty() &&
             (!repositorySource(repo).isEmpty() ||
              PublicMirrorRuntime::isArchiveId(repo.publicArchiveId) ||
-             PrivateMirrorStore::isOpaqueId(repo.privateReplicaId)))
+             PrivateMirrorStore::isOpaqueId(repo.privateReplicaId))) {
             m_repositories.append(repo);
+            // Seed the serving state publishRepositoryNow compares against, so
+            // a repo that was already shared before this run keeps publishing
+            // as a heartbeat rather than looking like a fresh user decision
+            // (see the publishIntent comment there).
+            const QString publishKey = catalogPublishKey(repo);
+            if (!publishKey.isEmpty())
+                m_catalogPublishServeState.insert(publishKey,
+                                                  repo.publishToNetwork);
+        }
     }
     settings.endArray();
     // Re-attach records whose mirror directory moved out from under them (an
@@ -1503,7 +1534,7 @@ void MainWindow::mirrorPreviewRepository(int index)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, false);
     refreshRepositoryList();
     setRepoDetailNotice("Creating permanent mirror...");
     logSystem(QStringLiteral("Mirror: promoting preview %1/%2 from %3 to %4.")
@@ -2343,28 +2374,51 @@ void MainWindow::deleteRepositoryAt(int index, bool reopenRepoDetail)
 }
 
 // Per-repo Settings tab: flip visibility (public/private) and delete the repo.
+// Split into sub-tabs (adhoc #5) so a narrow window shows one compact section
+// at a time instead of one long two-margin scroll.
 QWidget *MainWindow::buildRepoSettingsTab()
 {
     auto *page = new QWidget;
     auto *outer = new QVBoxLayout(page);
     outer->setContentsMargins(24, 22, 24, 22);
-    outer->setSpacing(14);
+    outer->setSpacing(10);
 
     auto *heading = new QLabel("Repository settings");
     heading->setObjectName("channelTitle");
     outer->addWidget(heading);
 
+    auto *tabs = new QTabWidget;
+    tabs->setObjectName("repoSettingsTabs");
+    tabs->setDocumentMode(true);
+    // Wrap a tab's content widget in a frameless, vertically-scrolling page so
+    // each section scrolls on its own rather than the whole page at once.
+    auto addTab = [tabs](QWidget *body, const QString &name) {
+        auto *scroll = new QScrollArea;
+        scroll->setObjectName("repoSettingsTabScroll");
+        scroll->setFrameShape(QFrame::NoFrame);
+        scroll->setWidgetResizable(true);
+        scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        scroll->setWidget(body);
+        tabs->addTab(scroll, name);
+    };
+    outer->addWidget(tabs, 1);
+
+    auto *generalTab = new QWidget;
+    auto *generalCol = new QVBoxLayout(generalTab);
+    generalCol->setContentsMargins(2, 12, 2, 12);
+    generalCol->setSpacing(8);
+
     // --- About --------------------------------------------------------------
     auto *aboutHeading = new QLabel("About");
     aboutHeading->setObjectName("sectionLabel");
-    outer->addWidget(aboutHeading);
+    generalCol->addWidget(aboutHeading);
 
     auto *aboutHint = new QLabel(
         "The description, website link and topics shown on this repository's "
         "overview (and on its public ForkMesh page).");
     aboutHint->setObjectName("statusLine");
     aboutHint->setWordWrap(true);
-    outer->addWidget(aboutHint);
+    generalCol->addWidget(aboutHint);
 
     auto *aboutEditBtn = new QPushButton("Edit description & website\xE2\x80\xA6");
     aboutEditBtn->setProperty("buttonSize", "sm");
@@ -2374,14 +2428,14 @@ QWidget *MainWindow::buildRepoSettingsTab()
     aboutRow->setContentsMargins(0, 0, 0, 0);
     aboutRow->addWidget(aboutEditBtn);
     aboutRow->addStretch();
-    outer->addLayout(aboutRow);
+    generalCol->addLayout(aboutRow);
 
-    outer->addSpacing(10);
+    generalCol->addSpacing(6);
 
     // --- Visibility -------------------------------------------------------
     auto *visHeading = new QLabel("Visibility");
     visHeading->setObjectName("sectionLabel");
-    outer->addWidget(visHeading);
+    generalCol->addWidget(visHeading);
 
     m_repoPrivateCheck = new QCheckBox("Private repository");
     m_repoPrivateCheck->setCursor(Qt::PointingHandCursor);
@@ -2416,14 +2470,14 @@ QWidget *MainWindow::buildRepoSettingsTab()
         refreshRepositoryList();
         refreshRepoSettings();
     });
-    outer->addWidget(m_repoPrivateCheck);
+    generalCol->addWidget(m_repoPrivateCheck);
 
     m_repoVisibilityHint = new QLabel;
     m_repoVisibilityHint->setObjectName("statusLine");
     m_repoVisibilityHint->setWordWrap(true);
-    outer->addWidget(m_repoVisibilityHint);
+    generalCol->addWidget(m_repoVisibilityHint);
 
-    outer->addSpacing(10);
+    generalCol->addSpacing(6);
 
     // --- Collaborators (private repos, issue #9) --------------------------
     // Share a private repo with other accounts: they see it in their catalog
@@ -2481,13 +2535,19 @@ QWidget *MainWindow::buildRepoSettingsTab()
             removeRepoCollaborator(m_collabList->currentItem()->text());
     });
 
-    outer->addWidget(m_collabSection);
-    outer->addSpacing(10);
+    generalCol->addWidget(m_collabSection);
+    generalCol->addStretch();
+    addTab(generalTab, "General");
+
+    auto *gitTab = new QWidget;
+    auto *gitCol = new QVBoxLayout(gitTab);
+    gitCol->setContentsMargins(2, 12, 2, 12);
+    gitCol->setSpacing(8);
 
     // --- Source -----------------------------------------------------------
     auto *sourceHeading = new QLabel("Source");
     sourceHeading->setObjectName("sectionLabel");
-    outer->addWidget(sourceHeading);
+    gitCol->addWidget(sourceHeading);
 
     m_repoSourceEdit = new QLineEdit;
     m_repoSourceEdit->setPlaceholderText(
@@ -2505,12 +2565,12 @@ QWidget *MainWindow::buildRepoSettingsTab()
     auto *sourceRow = new QHBoxLayout;
     sourceRow->addWidget(m_repoSourceEdit, 1);
     sourceRow->addWidget(sourceUpdateBtn);
-    outer->addLayout(sourceRow);
+    gitCol->addLayout(sourceRow);
 
     m_repoSourceHint = new QLabel;
     m_repoSourceHint->setObjectName("statusLine");
     m_repoSourceHint->setWordWrap(true);
-    outer->addWidget(m_repoSourceHint);
+    gitCol->addWidget(m_repoSourceHint);
 
     m_repoForkLocation = new QLabel;
     m_repoForkLocation->setObjectName("statusLine");
@@ -2528,17 +2588,17 @@ QWidget *MainWindow::buildRepoSettingsTab()
     forkLocationRow->setContentsMargins(0, 0, 0, 0);
     forkLocationRow->addWidget(m_repoForkLocation, 1);
     forkLocationRow->addWidget(forkLocationButton);
-    outer->addLayout(forkLocationRow);
+    gitCol->addLayout(forkLocationRow);
 
     m_repoMirrorLocation = new QLabel;
     m_repoMirrorLocation->setObjectName("statusLine");
     m_repoMirrorLocation->setWordWrap(true);
     m_repoMirrorLocation->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    outer->addWidget(m_repoMirrorLocation);
+    gitCol->addWidget(m_repoMirrorLocation);
 
     auto *remotesHeading = new QLabel("Git remotes");
     remotesHeading->setObjectName("sectionLabel");
-    outer->addWidget(remotesHeading);
+    gitCol->addWidget(remotesHeading);
 
     m_repoRemotesTable = new QTableWidget(0, 3);
     installColumnHeaderMenu(m_repoRemotesTable);
@@ -2550,7 +2610,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
     m_repoRemotesTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
     m_repoRemotesTable->setMaximumHeight(150);
     makeColumnsResizable(m_repoRemotesTable);
-    outer->addWidget(m_repoRemotesTable);
+    gitCol->addWidget(m_repoRemotesTable);
 
     auto *remoteAddButton = new QPushButton("Add");
     auto *remoteEditButton = new QPushButton("Edit");
@@ -2573,7 +2633,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
     remoteButtonRow->addWidget(remoteEditButton);
     remoteButtonRow->addWidget(remoteDeleteButton);
     remoteButtonRow->addStretch();
-    outer->addLayout(remoteButtonRow);
+    gitCol->addLayout(remoteButtonRow);
 
     auto *gitIdentityBtn = new QPushButton("Use ForkMesh git identity");
     gitIdentityBtn->setProperty("buttonSize", "sm");
@@ -2587,14 +2647,20 @@ QWidget *MainWindow::buildRepoSettingsTab()
     gitIdentityRow->setContentsMargins(0, 0, 0, 0);
     gitIdentityRow->addWidget(gitIdentityBtn);
     gitIdentityRow->addStretch();
-    outer->addLayout(gitIdentityRow);
+    gitCol->addLayout(gitIdentityRow);
 
-    outer->addSpacing(10);
+    gitCol->addStretch();
+    addTab(gitTab, "Git");
+
+    auto *automationTab = new QWidget;
+    auto *automationCol = new QVBoxLayout(automationTab);
+    automationCol->setContentsMargins(2, 12, 2, 12);
+    automationCol->setSpacing(8);
 
     // --- Actions ----------------------------------------------------------
     auto *actionsHeading = new QLabel("Actions");
     actionsHeading->setObjectName("sectionLabel");
-    outer->addWidget(actionsHeading);
+    automationCol->addWidget(actionsHeading);
 
     m_settingsActionsCheck = new QCheckBox("Run actions on push");
     m_settingsActionsCheck->setCursor(Qt::PointingHandCursor);
@@ -2604,21 +2670,21 @@ QWidget *MainWindow::buildRepoSettingsTab()
         "require your approval before they run.");
     connect(m_settingsActionsCheck, &QCheckBox::toggled, this,
             [this](bool on) { setRepoActionsEnabled(on); });
-    outer->addWidget(m_settingsActionsCheck);
+    automationCol->addWidget(m_settingsActionsCheck);
 
     auto *actionsHint = new QLabel(
         "Mirrored repositories start with actions disabled. Enable this only for "
         "repos whose workflows you trust to run on this machine.");
     actionsHint->setObjectName("statusLine");
     actionsHint->setWordWrap(true);
-    outer->addWidget(actionsHint);
+    automationCol->addWidget(actionsHint);
 
-    outer->addSpacing(10);
+    automationCol->addSpacing(10);
 
     // --- Secret scanning --------------------------------------------------
     auto *secretHeading = new QLabel("Secret scanning");
     secretHeading->setObjectName("sectionLabel");
-    outer->addWidget(secretHeading);
+    automationCol->addWidget(secretHeading);
 
     m_secretScanCheck = new QCheckBox("Block push if secrets are detected");
     m_secretScanCheck->setCursor(Qt::PointingHandCursor);
@@ -2628,26 +2694,35 @@ QWidget *MainWindow::buildRepoSettingsTab()
         "will be warned and can cancel or push anyway.");
     connect(m_secretScanCheck, &QCheckBox::toggled, this,
             [this](bool on) { setRepoSecretScanningEnabled(on); });
-    outer->addWidget(m_secretScanCheck);
+    automationCol->addWidget(m_secretScanCheck);
 
     auto *secretHint = new QLabel(
         "Detects GitHub tokens, AWS access keys, Slack tokens, and PEM private "
         "keys. Rotate any exposed credentials immediately.");
     secretHint->setObjectName("statusLine");
     secretHint->setWordWrap(true);
-    outer->addWidget(secretHint);
+    automationCol->addWidget(secretHint);
 
-    outer->addSpacing(10);
+    automationCol->addStretch();
+    addTab(automationTab, "Automation");
 
-    // --- Coves (encrypted vaults) -----------------------------------------
-    outer->addWidget(buildCoveSection());
+    auto *covesTab = new QWidget;
+    auto *covesCol = new QVBoxLayout(covesTab);
+    covesCol->setContentsMargins(2, 12, 2, 12);
+    covesCol->setSpacing(8);
+    covesCol->addWidget(buildCoveSection());
+    covesCol->addStretch();
+    addTab(covesTab, "Coves");
 
-    outer->addSpacing(10);
+    auto *dangerTab = new QWidget;
+    auto *dangerCol = new QVBoxLayout(dangerTab);
+    dangerCol->setContentsMargins(2, 12, 2, 12);
+    dangerCol->setSpacing(8);
 
     // --- Danger zone ------------------------------------------------------
     auto *dangerHeading = new QLabel("Danger zone");
     dangerHeading->setObjectName("sectionLabel");
-    outer->addWidget(dangerHeading);
+    dangerCol->addWidget(dangerHeading);
 
     auto *deleteHint = new QLabel(
         "Delete this repository from this machine completely. Your working "
@@ -2658,7 +2733,7 @@ QWidget *MainWindow::buildRepoSettingsTab()
         "repository from ForkMesh.");
     deleteHint->setObjectName("statusLine");
     deleteHint->setWordWrap(true);
-    outer->addWidget(deleteHint);
+    dangerCol->addWidget(deleteHint);
 
     auto *deleteBtn = new QPushButton("Delete repository");
     deleteBtn->setObjectName("dangerButton");
@@ -2669,9 +2744,11 @@ QWidget *MainWindow::buildRepoSettingsTab()
     auto *deleteRow = new QHBoxLayout;
     deleteRow->addWidget(deleteBtn);
     deleteRow->addStretch();
-    outer->addLayout(deleteRow);
+    dangerCol->addLayout(deleteRow);
 
-    outer->addStretch();
+    dangerCol->addStretch();
+    addTab(dangerTab, "Danger zone");
+
     return page;
 }
 
@@ -4096,7 +4173,12 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
             QStringLiteral("dependency-scan"));
     QString contributionSnapshotKey;
     QJsonObject contributionLogoPayload;
-    if (repo.isPrivate) {
+    // Headless fleet mirrors publish availability/integrity state, not a
+    // contributor attribution snapshot. Rebuilding the full contribution
+    // graph on a small unattended node can consume all RAM and delay the
+    // catalog write that makes the mirror eligible for routing. Desktop source
+    // owners still prepare and sign the complete contribution projection.
+    if (repo.isPrivate || m_headless) {
         const QString previousScanKey =
             m_catalogContributionScanKey.take(publishKey);
         const QString previousSnapshotKey =
@@ -4507,6 +4589,21 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     }
     metadata.insert(QStringLiteral("catalogSigVersion"), 2);
     metadata.insert(QStringLiteral("catalogSig"), catalogSignature);
+    // Tell the relay whether a person asked for this publish or a heartbeat
+    // did. A repository the owner deleted from the website is tombstoned
+    // there, and only a user-initiated publish lifts that tombstone — an
+    // automatic republish must not quietly resurrect the deleted repo
+    // (adhoc #91). Two things count as a person asking: a manual "Publish"
+    // (showDialogOnError), and serving flipping off->on for this repo, which
+    // only ever happens when the user adds/forks it or turns sharing back on.
+    const bool wasServing =
+        m_catalogPublishServeState.value(publishKey, false);
+    const bool userIntent =
+        showDialogOnError || (repo.publishToNetwork && !wasServing);
+    m_catalogPublishServeState.insert(publishKey, repo.publishToNetwork);
+    metadata.insert(QStringLiteral("publishIntent"),
+                    userIntent ? QStringLiteral("user")
+                               : QStringLiteral("auto"));
 
     // Skip the network write when nothing the catalog shows has changed since
     // the last successful publish. Roster presence flickers re-request a
@@ -4522,6 +4619,7 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
     fingerprintSource.remove(QStringLiteral("signature"));
     fingerprintSource.remove(QStringLiteral("catalogSig"));
     fingerprintSource.remove(QStringLiteral("stateSig"));
+    fingerprintSource.remove(QStringLiteral("publishIntent"));
     const QByteArray fingerprint = QCryptographicHash::hash(
         QJsonDocument(fingerprintSource).toJson(QJsonDocument::Compact),
         QCryptographicHash::Sha256);
@@ -4542,6 +4640,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
         owner, QDateTime::currentMSecsSinceEpoch());
     QNetworkReply *reply =
         m_networkAccess->post(request, QJsonDocument(metadata).toJson(QJsonDocument::Compact));
+    qInfo().noquote()
+        << "Catalog publish request:" << owner << name
+        << stateHash.left(12) << repo.lastSyncMs;
     logSystem("Catalog: publishing " + repo.owner + "/" + repo.name + " to " +
               request.url().toString() + ".");
 
@@ -4552,6 +4653,9 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                 const int status =
                     reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 const QNetworkReply::NetworkError error = reply->error();
+                qInfo().noquote()
+                    << "Catalog publish response:" << publishKey << status
+                    << int(error);
                 const int priorFailures =
                     m_catalogPublishConsecutiveFailures.value(publishKey, 0);
                 const qint64 retryDelayMs =
@@ -4581,6 +4685,34 @@ void MainWindow::publishRepositoryNow(int index, bool showDialogOnError)
                     QJsonDocument::fromJson(body).object();
                 const QString responseCode =
                     responseObject.value(QStringLiteral("error")).toString();
+                // The owner deleted this repository from the website. This
+                // node still holds the mirror, so without acting on the
+                // refusal it would keep republishing and the delete would
+                // never stick (adhoc #91). Stop sharing it, keep the local
+                // mirror, and say so once — turning sharing back on in repo
+                // settings republishes it as a deliberate user action.
+                if (status == 410 &&
+                    responseCode == QLatin1String("repository_deleted")) {
+                    m_catalogPublishedFingerprint.remove(publishKey);
+                    m_catalogPublishedFingerprintAtMs.remove(publishKey);
+                    m_catalogPublishConsecutiveFailures.remove(publishKey);
+                    m_catalogPublishServeState.insert(publishKey, false);
+                    const QString label = repo.owner + "/" + repo.name;
+                    if (repo.publishToNetwork) {
+                        repo.publishToNetwork = false;
+                        saveRepositories();
+                        refreshRepositoryList();
+                    }
+                    const QString message =
+                        label +
+                        " was deleted on forkmesh.com, so this node stopped "
+                        "sharing it. The local mirror is untouched — turn "
+                        "sharing back on in repo settings to publish it again.";
+                    logSystem(QStringLiteral("Catalog: ") + message);
+                    if (showDialogOnError || queuedDialog)
+                        flashMessage(message, /*error=*/true);
+                    return;
+                }
                 if (status == 409 &&
                     responseCode == QLatin1String("stale_update") &&
                     !contributionSnapshotKey.isEmpty()) {
@@ -4861,11 +4993,32 @@ void MainWindow::autoSyncMirrors()
     reattestStalePins();
 }
 
+// True when the bare mirror already contains `commit`. Presence is effectively
+// monotonic for advertised branch tips (a fetched commit stays reachable for
+// the life of the session), so positive answers are memoized: the roster
+// reconcile below re-asked git about the same converged tip on every peer
+// hello — 100+ foreground `git cat-file -e` spawns per session on the GUI
+// thread (adhoc #82). Negative answers are never cached; the next probe after
+// a fetch flips to (memoized) present.
+bool MainWindow::mirrorHasCommit(const QString &mirrorPath, const QString &commit)
+{
+    const QString key = mirrorPath + QLatin1Char('\x1f') + commit;
+    if (m_mirrorCommitsPresent.contains(key))
+        return true;
+    if (!runGitCapture(mirrorPath,
+                       {QStringLiteral("cat-file"), QStringLiteral("-e"),
+                        commit + QStringLiteral("^{commit}")},
+                       nullptr, nullptr))
+        return false;
+    m_mirrorCommitsPresent.insert(key);
+    return true;
+}
+
 void MainWindow::syncMirrorsBehindRoster()
 {
     // A peer just (re-)advertised its mirror set via hello. For every repo we
     // mirror, if any online peer advertises a commit our bare mirror does not
-    // contain, pull it now rather than waiting for the three-minute auto-sync.
+    // contain, pull it now rather than waiting for the one-minute auto-sync.
     // This backstops notifyMirrorUpdated (which is ephemeral and missed if we
     // were offline/just connected): the moment the roster shows the source
     // moved, we converge. syncRepository fetches refs/heads/* + refs/tags/*,
@@ -4874,12 +5027,22 @@ void MainWindow::syncMirrorsBehindRoster()
     // Release artifact blobs are advertised separately from git refs; if a peer
     // has more CAS blobs than we do, pull those bytes even when the git mirror is
     // already current.
+    const QString selfAccount = accountOwner().trimmed().toLower();
     for (int i = 0; i < m_repositories.size(); ++i) {
         const RepositoryRecord &repo = m_repositories.at(i);
         if (repo.previewOnly || m_syncingRepos.contains(i))
             continue;
-        if (repositorySource(repo).isEmpty())
-            continue; // we are the source — nothing upstream to pull
+        // Holding the source of truth used to end the story here ("nothing
+        // upstream to pull"). Online mirrors now merge web-submitted
+        // issues/PRs/discussions directly into the branches they serve and
+        // drain the relay queue, so those commits exist only in the mesh
+        // until this node converges on them — skipping would let our next
+        // publish clobber them.
+        const bool sourceOfTruth =
+            !repo.isPrivate && repo.publishToNetwork &&
+            repo.owner.trimmed().toLower() == selfAccount;
+        if (repositorySource(repo).isEmpty() && !sourceOfTruth)
+            continue; // not ours and no upstream route — nothing to pull
         if (repo.mirrorPath.trimmed().isEmpty() || !QDir(repo.mirrorPath).exists())
             continue; // no local mirror yet; the periodic clone handles the first
         // Group every node's mirror of this repo by its shared upstream identity
@@ -4903,10 +5066,7 @@ void MainWindow::syncMirrorsBehindRoster()
                     continue;
                 // A peer advertises a commit our mirror lacks → we are behind.
                 if (!m.commit.isEmpty() &&
-                    !runGitCapture(repo.mirrorPath,
-                                   {QStringLiteral("cat-file"), QStringLiteral("-e"),
-                                    m.commit + QStringLiteral("^{commit}")},
-                                   nullptr, nullptr))
+                    !mirrorHasCommit(repo.mirrorPath, m.commit))
                     behind = true;
                 if (m.artifactCount > localArtifactCount)
                     artifactsBehind = true;
@@ -4915,11 +5075,96 @@ void MainWindow::syncMirrorsBehindRoster()
             if (behind || artifactsBehind)
                 break;
         }
-        if (behind)
-            syncRepository(i, /*quiet=*/true);
-        else if (artifactsBehind)
+        if (behind) {
+            if (sourceOfTruth)
+                convergeSourceRepoFromMesh(i);
+            else
+                syncRepository(i, /*quiet=*/true);
+        } else if (artifactsBehind)
             replicateReleaseArtifacts(i);
     }
+}
+
+// A peer advertises commits this source-of-truth node's mirror lacks —
+// typically submissions an online mirror merged (and drained from the relay
+// queue) while this node was offline. Converge instead of clobbering:
+// fast-forward the bare mirror from the public clone route (non-forced fetch,
+// so a stale gateway answer can never rewind what we serve), then fast-forward
+// the working copy's clean checkouts from the same route. A diverged local
+// branch is left untouched; this node's next publish then supersedes the mesh
+// and peers converge back onto its lineage.
+void MainWindow::convergeSourceRepoFromMesh(int index)
+{
+    if (index < 0 || index >= m_repositories.size() ||
+        m_syncingRepos.contains(index))
+        return;
+    const RepositoryRecord repo = m_repositories.at(index);
+    const QString mirrorPath = repo.mirrorPath.trimmed();
+    if (mirrorPath.isEmpty() || !QDir(mirrorPath).exists())
+        return;
+    // Roster hellos arrive continuously and the converge shells several git
+    // subprocesses; keep a per-repo cooldown between attempts.
+    const QString key = repo.owner.trimmed().toLower() + QLatin1Char('/') +
+                        repo.name.trimmed().toLower();
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    if (nowMs - m_sourceConvergeAttemptMs.value(key, 0) < 60 * 1000)
+        return;
+    m_sourceConvergeAttemptMs.insert(key, nowMs);
+    const QString meshUrl = repositoryNetworkCloneUrl(repo.owner, repo.name);
+    const QString workTree = repo.localPath.trimmed();
+    m_syncingRepos.insert(index, /*quiet=*/true);
+    refreshRepositoryList();
+    auto mirrorMoved = std::make_shared<bool>(false);
+    auto checkoutSummary = std::make_shared<QString>();
+    QThread *worker = QThread::create(
+        [mirrorPath, meshUrl, workTree, mirrorMoved, checkoutSummary] {
+            // Non-forced heads+tags refspecs: git fast-forwards each served
+            // ref or leaves it alone, never rewinds; no --prune, so a branch
+            // missing from whichever mirror answered the gateway can't vanish
+            // from what this node serves. The exit code is deliberately
+            // ignored — per-ref non-fast-forward rejections still let every
+            // other ref advance, and the digest comparison decides whether
+            // anything actually moved.
+            const QString before = mirrorRefsDigest(mirrorPath);
+            runGitCapture(mirrorPath,
+                          {QStringLiteral("fetch"), QStringLiteral("--quiet"),
+                           meshUrl,
+                           QStringLiteral("refs/heads/*:refs/heads/*"),
+                           QStringLiteral("refs/tags/*:refs/tags/*")},
+                          nullptr, nullptr);
+            *mirrorMoved = mirrorRefsDigest(mirrorPath) != before;
+            if (!workTree.isEmpty())
+                *checkoutSummary =
+                    forkmesh::upstream::convergeSourceCheckoutFromMesh(
+                        workTree, meshUrl)
+                        .summary();
+        });
+    connect(worker, &QThread::finished, this,
+            [this, worker, index, key, mirrorMoved, checkoutSummary] {
+                worker->deleteLater();
+                m_syncingRepos.remove(index);
+                refreshRepositoryList();
+                if (!checkoutSummary->isEmpty())
+                    logSystem(QStringLiteral("Mesh converge %1: %2")
+                                  .arg(key, *checkoutSummary));
+                if (!*mirrorMoved && checkoutSummary->isEmpty())
+                    return;
+                // The served refs and/or working copy advanced onto the
+                // mirror-merged submissions. Republish so this node attests
+                // the converged state as its own pin and peers/web readers see
+                // one consistent tip; reload the on-screen lists if this repo
+                // is open.
+                m_mirrorAdvertSig.clear();
+                refreshMirrorAdverts();
+                if (index >= 0 && index < m_repositories.size())
+                    publishRepository(index, /*showDialogOnError=*/false);
+                if (index == m_repoDetailIndex) {
+                    reloadIssues();
+                    reloadPulls();
+                    reloadDiscussions();
+                }
+            });
+    worker->start();
 }
 
 void MainWindow::propagateRepoUpdate(int index)
@@ -4945,7 +5190,7 @@ void MainWindow::propagateRepoUpdate(int index)
     // just-committed issue/PR lands in the mirror. On a detected change it
     // refreshes the open detail (updating the Issues/PR counts) and broadcasts
     // notifyMirrorUpdated, which mirroring peers act on via onPeerMirrorUpdated —
-    // converging everyone in seconds rather than at the next three-minute tick.
+    // converging everyone in seconds rather than at the next one-minute tick.
     syncRepository(index, /*quiet=*/true);
     // The mirror fetch above is asynchronous; until it finishes our working copy
     // is ahead of the bare mirror we serve. Refresh the Mirror nodes panel now so
@@ -5007,17 +5252,14 @@ void MainWindow::onPeerMirrorUpdated(const QString &ownerName,
     const QString target = commit.trimmed();
     const RepositoryRecord &matched = m_repositories.at(matchIndex);
     if (!target.isEmpty() && !matched.mirrorPath.trimmed().isEmpty() &&
-        runGitCapture(matched.mirrorPath,
-                      {QStringLiteral("cat-file"), QStringLiteral("-e"),
-                       target + QStringLiteral("^{commit}")},
-                      nullptr, nullptr)) {
+        mirrorHasCommit(matched.mirrorPath, target)) {
         if (m_backend)
             m_backend->notifyMirrorSynced(ownerName, target);
         return;
     }
 
     // Converge promptly: pull the peer's advance into our own mirror now instead
-    // of waiting for the next three-minute auto-sync. This fetches
+    // of waiting for the next one-minute auto-sync. This fetches
     // refs/heads/* and refs/tags/*, so issues and pull requests (which live on
     // refs/heads) come along with the code. Quiet so it doesn't spam unless
     // something changed. The sync's completion broadcasts notifyMirrorSynced,
@@ -5124,7 +5366,7 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
 
     const QString repoKey = repo.owner + "/" + repo.name;
 
-    // Loading every issue, pull request and commit-comment thread off disk (each a
+    // Loading every issue and pull request thread off disk (each a
     // parse of many small files) is the heavy part: on a large repo — the flagship
     // forkmesh project runs to hundreds of issues/PRs — it froze the UI every time
     // a sync or inbox drain finished, which is what fired this scan. Do that I/O on
@@ -5137,36 +5379,27 @@ void MainWindow::scanRepoMentionsFor(const RepositoryRecord &repo)
 
     auto loadedIssues = std::make_shared<QList<Issue>>();
     auto loadedPulls = std::make_shared<QList<PullRequest>>();
-    auto loadedComments =
-        std::make_shared<QList<QPair<QString, QList<CommitComment>>>>();
     IssueStore issueStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
                           m_userName);
     PullStore pullStore(repo.localPath, repo.mirrorPath, &m_profileIdentity,
                         m_userName);
-    CommitCommentStore commentStore(repo.localPath, repo.mirrorPath,
-                                    &m_profileIdentity, m_userName);
     QThread *worker = QThread::create(
-        [issueStore, pullStore, commentStore, loadedIssues, loadedPulls,
-         loadedComments]() mutable {
+        [issueStore, pullStore, loadedIssues, loadedPulls]() mutable {
             *loadedIssues = issueStore.loadAll();
             *loadedPulls = pullStore.loadAll();
-            *loadedComments = commentStore.loadAll();
         });
     connect(worker, &QThread::finished, this,
-            [this, worker, repo, repoKey, loadedIssues, loadedPulls,
-             loadedComments]() {
+            [this, worker, repo, repoKey, loadedIssues, loadedPulls]() {
                 worker->deleteLater();
                 m_mentionScanInFlight.remove(repoKey);
-                applyRepoMentions(repo, *loadedIssues, *loadedPulls,
-                                  *loadedComments);
+                applyRepoMentions(repo, *loadedIssues, *loadedPulls);
             });
     worker->start();
 }
 
-void MainWindow::applyRepoMentions(
-    const RepositoryRecord &repo, const QList<Issue> &allIssues,
-    const QList<PullRequest> &allPulls,
-    const QList<QPair<QString, QList<CommitComment>>> &allCommitComments)
+void MainWindow::applyRepoMentions(const RepositoryRecord &repo,
+                                   const QList<Issue> &allIssues,
+                                   const QList<PullRequest> &allPulls)
 {
     const QString repoKey = repo.owner + "/" + repo.name;
     QSettings settings;
@@ -5255,22 +5488,6 @@ void MainWindow::applyRepoMentions(
                      ev.authorName, ev.body, QStringLiteral("PR "));
     }
 
-    // Commit comments: per-commit conversations keyed by SHA (no number). Scan
-    // every commented commit so an @mention in a commit thread notifies too.
-    for (const auto &thread : allCommitComments) {
-        const QString &sha = thread.first;
-        for (const CommitComment &c : thread.second) {
-            NotificationLink link;
-            link.kind = QStringLiteral("commit");
-            link.owner = repo.owner;
-            link.name = repo.name;
-            link.ref = sha;
-            notifyMention(QStringLiteral("%1#commit%2:%3").arg(repoKey, sha, c.id),
-                          c.author, c.authorName, c.body,
-                          QStringLiteral("commit %1").arg(sha.left(8)), link);
-        }
-    }
-
     if (dirty) {
         const QStringList keys(seen.cbegin(), seen.cend());
         settings.setValue(QStringLiteral("mentions/seen"), keys);
@@ -5313,7 +5530,7 @@ void MainWindow::syncPrivateRepository(int index, bool quiet)
     // retaining a collaborator.
     if (PrivateMirrorStore::isOpaqueId(repo.privateReplicaId) &&
         repo.publishToNetwork) {
-        m_syncingRepos.insert(index);
+        m_syncingRepos.insert(index, quiet);
         refreshRepositoryList();
         requestPrivateRecipientBundles(
             repo, /*updateCollaboratorList=*/false,
@@ -5408,7 +5625,7 @@ void MainWindow::syncPrivateRepositoryWithRecipients(
     const QString managedMirrorRoot = repositoryMirrorRoot();
 
     auto result = std::make_shared<PrivateSyncWorkerResult>();
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     // Recompute publication state before encryption/migration; private
     // repository names remain absent from public presence and catalogs.
     startRepoHosts();
@@ -5617,7 +5834,7 @@ void MainWindow::resealPrivateRepositoryRecipients(
     const QString vaultPath = privateIdentityVaultPath();
     const QString opaqueId = repo.privateReplicaId;
     auto result = std::make_shared<PrivateDownloadWorkerResult>();
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, false);
     refreshRepositoryList();
     QThread *worker = QThread::create(
         [result, replicaRoot, vaultPath, opaqueId, recipientBundles,
@@ -5716,7 +5933,7 @@ void MainWindow::downloadPrivateReplica(int index, bool quiet)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     ensurePrivateMirrorRecipientIdentityRegistered(
         [this, index, repo, quiet, unavailable](
@@ -5997,6 +6214,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     // live temporary mirrorPath and refreshes from the upstream as usual.
     const bool reopeningSealedArchive =
         PublicMirrorRuntime::isArchiveId(existingArchiveId) &&
+        !m_publicMirrorMaterializations.contains(existingArchiveId) &&
         (legacyMirrorPath.trimmed().isEmpty() ||
          !QDir(legacyMirrorPath).exists());
     if (reopeningSealedArchive)
@@ -6023,12 +6241,33 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
         return;
     }
 
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     logSystem(QStringLiteral(
         "Public mirror: sealing %1/%2 with official age encryption; "
         "plaintext is limited to owner-only temporary storage.")
                   .arg(repo.owner, repo.name));
+
+    // A headless fleet node seals from its service-managed agent checkout
+    // (repositorySource prefers localPath), so that checkout must itself keep
+    // tracking the relay or the node serves its install-time snapshot forever.
+    // Resolve the upstream URL here; the fetch/fast-forward runs on the worker
+    // thread just before sealing. Owned repos and desktop working copies never
+    // qualify: their local state IS the source of truth.
+    const bool managedCheckoutSource =
+        m_headless && serviceManagedCheckout(repo.localPath);
+    qInfo().noquote()
+        << "Public mirror sync mode:"
+        << (managedCheckoutSource ? "managed-origin" : "ordinary")
+        << (source.isEmpty() ? "archive-reopen" : "source-clone");
+    QString upstreamUrl;
+    if (managedCheckoutSource && !source.isEmpty()) {
+        const QUrl upstream(repo.cloneUrl.trimmed());
+        if (upstream.isValid() && !upstream.host().isEmpty() &&
+            upstream.host().compare(catalogApiUrl().host(),
+                                    Qt::CaseInsensitive) == 0)
+            upstreamUrl = repo.cloneUrl.trimmed();
+    }
 
     auto result = std::make_shared<PublicSyncWorkerResult>();
     const QString archiveRoot = publicArchiveRoot();
@@ -6036,9 +6275,15 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
     const QString owner = repo.owner;
     const QString name = repo.name;
     QThread *worker = QThread::create(
-        [result, source, archiveRoot, vaultPath,
+        [result, source, upstreamUrl, managedCheckoutSource, archiveRoot, vaultPath,
          mutableVaultSecret = std::move(vaultSecret), existingArchiveId,
          legacyMirrorPath, managedMirrorRoot]() mutable {
+            if (!upstreamUrl.isEmpty()) {
+                result->upstreamSummary =
+                    forkmesh::upstream::refreshManagedCheckoutFromUpstream(
+                        source, upstreamUrl)
+                        .summary();
+            }
             if (source.isEmpty()) {
                 result->metadata = PublicMirrorRuntime::readMetadata(
                     archiveRoot, existingArchiveId, &result->error);
@@ -6058,10 +6303,21 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                 }
             } else {
                 PublicMirrorRuntime::SyncResult sync =
-                    PublicMirrorRuntime::syncSource(
-                        source, {}, archiveRoot, vaultPath,
-                        mutableVaultSecret, existingArchiveId,
-                        PublicMirrorRuntime::Tools(), &result->error);
+                    managedCheckoutSource
+                        ? PublicMirrorRuntime::syncManagedCheckout(
+                              source, archiveRoot, vaultPath,
+                              mutableVaultSecret, existingArchiveId,
+                              PublicMirrorRuntime::Tools(), &result->error)
+                        : PublicMirrorRuntime::syncSource(
+                              source, {}, archiveRoot, vaultPath,
+                              mutableVaultSecret, existingArchiveId,
+                              PublicMirrorRuntime::Tools(), &result->error);
+                qInfo().noquote()
+                    << "Public mirror sync result:"
+                    << (managedCheckoutSource ? "managed-origin" : "ordinary")
+                    << (sync.metadata.isValid()
+                            ? sync.metadata.expectedRefsSha256.left(12)
+                            : QStringLiteral("failed"));
                 result->metadata = sync.metadata;
                 result->created = sync.created;
                 if (sync.materialization) {
@@ -6113,6 +6369,9 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
          quiet] {
             worker->deleteLater();
             m_syncingRepos.remove(index);
+            if (!result->upstreamSummary.isEmpty())
+                logSystem(QStringLiteral("Mirror: %1/%2 %3")
+                              .arg(owner, name, result->upstreamSummary));
             if (index < 0 || index >= m_repositories.size() ||
                 m_repositories.at(index).owner != owner ||
                 m_repositories.at(index).name != name ||
@@ -6127,6 +6386,11 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
                 !result->materialization ||
                 !result->materialization->isValid()) {
                 refreshRepositoryList();
+                qWarning().noquote()
+                    << "Public mirror encrypted sync failed:"
+                    << (result->error.isEmpty()
+                            ? QStringLiteral("unknown safe failure")
+                            : result->error);
                 logSystem(QStringLiteral(
                               "Public mirror: encrypted sync failed for %1/%2. "
                               "No new durable plaintext mirror was created.")
@@ -6228,6 +6492,11 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
             // Propagate the freshly sealed state to the SSH-fed headless
             // mirrors too — they don't hear the relay's mirror-update frames.
             pushToSshMirrorRemotes(index);
+            // A fresh install mirrors the flagship as a normal public repo, so
+            // this is the path its very first clone finishes on. Last, because
+            // it reads the mirror and pumps the event loop while `current` is
+            // still a reference into m_repositories.
+            completePendingRepoAutoOpen(index);
         });
     worker->start();
 }
@@ -6239,7 +6508,7 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
 // only reaches desktop peers in the live room; without this push the SSH-fed
 // mirrors sat frozen at whatever the owner last pushed by hand (adhoc #272).
 // Best-effort and fully async; runs after every successful mirror sync, so the
-// Three-minute auto-sync doubles as the self-heal for a push a gateway missed.
+// one-minute auto-sync doubles as the self-heal for a push a gateway missed.
 void MainWindow::pushToSshMirrorRemotes(int index)
 {
     if (index < 0 || index >= m_repositories.size())
@@ -6251,8 +6520,19 @@ void MainWindow::pushToSshMirrorRemotes(int index)
     // mirrors and previews just pull, and private repos travel as sealed
     // replicas, never over a public mirror gateway.
     if (repo.previewOnly || repo.isPrivate ||
-        repo.localPath.trimmed().isEmpty() ||
-        repo.mirrorPath.trimmed().isEmpty() || !QDir(repo.mirrorPath).exists())
+        repo.localPath.trimmed().isEmpty())
+        return;
+    // A source-of-truth repository has no on-disk served mirror: it publishes
+    // through the sealed encrypted archive, and its record keeps mirrorPath
+    // empty. Requiring one silently disabled every SSH-fed gateway for exactly
+    // the repository that feeds them, so mirror2/mirror3 froze at whatever
+    // commit the last manual push left while their catalog lease stayed fresh.
+    // Fall back to the working copy, which holds the same heads and tags.
+    const QString pushSource =
+        (!repo.mirrorPath.trimmed().isEmpty() && QDir(repo.mirrorPath).exists())
+            ? repo.mirrorPath
+            : repo.localPath;
+    if (!QDir(pushSource).exists())
         return;
     const QString repoKey = repo.owner + "/" + repo.name;
     if (m_sshMirrorPushing.contains(repoKey)) {
@@ -6360,19 +6640,20 @@ void MainWindow::pushToSshMirrorRemotes(int index)
                                              "push %1 to SSH mirror %2.")
                                   .arg(repoKey, gatewayHost));
                 });
-        // Push from the served bare mirror, but never let an unattended desktop
-        // rewind or delete a branch that advanced on the gateway while this
-        // checkout was offline. Automatic propagation therefore uses ordinary
-        // fast-forward refspecs and explicitly disables force and prune, even
-        // when a machine carries old push configuration. An intentional rewrite
-        // or branch deletion must go through an explicit, reviewed Git
-        // operation; otherwise one stale three-minute sync can undo a clean main
-        // merge on every headless mirror.
+        // Push from the served bare mirror (or the working copy when this is the
+        // source of truth), but never let an unattended desktop rewind or delete
+        // a branch that advanced on the gateway while this checkout was offline.
+        // Automatic propagation therefore uses ordinary fast-forward refspecs
+        // and explicitly disables force and prune, even when a machine carries
+        // old push configuration. An intentional rewrite or branch deletion must
+        // go through an explicit, reviewed Git operation; otherwise one stale
+        // one-minute sync can undo a clean main merge on every headless
+        // mirror.
         trackProcessActivity(process, QStringLiteral("push"),
                              QStringLiteral("Pushing %1/%2 to %3")
                                  .arg(repo.owner, repo.name, url));
         process->start(QStringLiteral("git"),
-                       {QStringLiteral("-C"), repo.mirrorPath,
+                       {QStringLiteral("-C"), pushSource,
                         QStringLiteral("push"), QStringLiteral("--porcelain"),
                         QStringLiteral("--atomic"),
                         QStringLiteral("--no-force"),
@@ -6447,7 +6728,7 @@ void MainWindow::syncRepository(int index, bool quiet)
     // subprocess runs — so clicking "Sync" flips the button to "Syncing…"
     // instantly and never blocks the GUI thread. The insert also guards
     // re-entrancy so a concurrent auto-sync can't start a second fetch on this repo.
-    m_syncingRepos.insert(index);
+    m_syncingRepos.insert(index, quiet);
     refreshRepositoryList();
     if (!quiet) {
         const QString prefix =
@@ -6501,6 +6782,55 @@ void MainWindow::syncRepository(int index, bool quiet)
                                *beforeHeadCommit);
             });
     prep->start();
+}
+
+// A fresh install's first sync of the flagship repo (flagged by
+// ensureFlagshipRepo, adhoc #113): select it now that the clone landed, instead
+// of leaving the user on an empty repo list. Returns true when this repo was the
+// one being waited on.
+//
+// Every sync path has to call this, not just the preview one: a brand-new
+// install mirrors the flagship as a normal public repo, so it lands in
+// syncPublicEncryptedRepository and the auto-select never fired at all
+// (adhoc #116).
+bool MainWindow::completePendingRepoAutoOpen(int index)
+{
+    if (index < 0 || index >= m_repositories.size() ||
+        m_pendingAutoOpenRepoKey.isEmpty())
+        return false;
+    // By value: the loaders below pump the event loop, and a reference into
+    // m_repositories cannot be held across that (git-pump UAF family).
+    const bool previewOnly = m_repositories.at(index).previewOnly;
+    const QString key =
+        m_repositories.at(index).owner + "/" + m_repositories.at(index).name;
+    if (previewOnly ||
+        m_pendingAutoOpenRepoKey.compare(key, Qt::CaseInsensitive) != 0)
+        return false;
+    m_pendingAutoOpenRepoKey.clear();
+    // On a fresh install, land on the welcome chat, not the Code view. Just
+    // select the repo internally (so the repo switcher shows "forkmesh") and
+    // refresh the UI; don't open the detail view, which would navigate away from
+    // the chat and onto the Agents tab.
+    m_repoDetailIndex = index;
+    refreshRepositoryList();
+    // Because the detail view is deliberately not opened, nothing has read this
+    // repo's refs yet — the status strip's bottom-left button would sit on its
+    // "main" placeholder whatever the clone actually holds, and every repo tab
+    // would keep the empty count it was built with. Prime them from the mirror
+    // that just landed (adhoc #116), in openRepoDetail's order: the info file
+    // names the default branch the branch button then resolves against.
+    m_repoInfo = RepoInfo();
+    m_repoBranch.clear();
+    loadRepoInfo();
+    loadBranchesAndTags();
+    updateFooterGitIdentity();
+    updateFooterCommitInfo();
+    refreshRepoTabCounts();
+    QTimer::singleShot(0, this, [this] {
+        showChatView();
+        switchConversation(welcomeChannelForIdentity());
+    });
+    return true;
 }
 
 void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
@@ -6578,24 +6908,6 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // hook so local pushes are detected (actions + refresh).
                         if (!stillPreview)
                             ensurePushHook(repo);
-                        // A fresh install's first sync of the flagship repo (flagged
-                        // by ensureFlagshipRepo, adhoc #113): open it now that the
-                        // clone landed, instead of leaving the user on an empty list.
-                        if (!stillPreview && !m_pendingAutoOpenRepoKey.isEmpty() &&
-                            m_pendingAutoOpenRepoKey.compare(
-                                repo.owner + "/" + repo.name, Qt::CaseInsensitive) == 0) {
-                            m_pendingAutoOpenRepoKey.clear();
-                            // On a fresh install, land on the welcome chat, not the
-                            // Code view. Just select the repo internally (so the repo
-                            // switcher shows "forkmesh") and refresh the UI; don't open
-                            // the detail view which would load and show the Agents tab.
-                            m_repoDetailIndex = index;
-                            refreshRepositoryList();
-                            QTimer::singleShot(0, this, [this] {
-                                showChatView();
-                                switchConversation(welcomeChannelForIdentity());
-                            });
-                        }
                         if (changed && hasMirror && !stillPreview &&
                             m_actionStore && !headBranch->isEmpty() &&
                             !headCommit->isEmpty() &&
@@ -6658,6 +6970,11 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // auto-syncs don't re-scan an up-to-date store every tick.
                         if (!stillPreview && hasMirror && (changed || !quiet))
                             replicateReleaseArtifacts(index);
+                        // Last, because it reads the freshly landed mirror and so
+                        // pumps the event loop: `repo` above is a reference into
+                        // m_repositories and must not be held across it
+                        // (git-pump UAF family).
+                        completePendingRepoAutoOpen(index);
                     });
                     worker->start();
                 } else {
@@ -6760,7 +7077,10 @@ void MainWindow::onAvatarChosen(const QByteArray &pngData)
 void MainWindow::logout()
 {
     // Drop the signed-in account (admin/heartbeat state) so the user can log
-    // back in, then tear the session down to the setup screen.
+    // back in, then tear the mesh session down. There is no setup screen to
+    // return to any more (adhoc #115) — cancelling the re-login prompt below
+    // just leaves the app logged out, with the top-bar pill offering the way
+    // back in.
     const QString previousAccount = m_accountName;
     if (m_heartbeatTimer)
         m_heartbeatTimer->stop();
@@ -6777,11 +7097,19 @@ void MainWindow::logout()
     m_isAdmin = false;
     m_seenPendingUsers.clear();
     m_accountName.clear();
+    // Drop the cached user-account linkage too. These are display caches that
+    // refreshProfileAccountStatus() already clears whenever accountOwner() is
+    // empty — which it now is — and leaving them set would keep the top-bar
+    // "Log in / Sign up" pill hidden on a machine that just logged out.
+    m_nodeOwnerUser.clear();
+    m_profileIsUserAccount = false;
+    m_profileLinkedNodes.clear();
     QSettings().remove(kAuthedAccountSetting);
     QSettings().remove(kAccountNameSetting);
     refreshSettingsEmailVerifiedBadge();
     leaveSession();
-    // Come straight back with a password login. The setup screen's silent auth
+    updateUserSwitcher();
+    // Come straight back with a password login. Silent auth on the next start
     // only checks this node's key locally, so the website never learned about
     // the device; runLoginFlow() posts pubkey/deviceTs/deviceSig, which makes
     // the relay register this desktop key against the account and hand back a
@@ -6827,8 +7155,8 @@ bool MainWindow::promptRelogin(const QString &previousAccount)
     if (m_settingsMachineNodeEdit)
         m_settingsMachineNodeEdit->setText(machineNodeName());
     refreshSettingsEmailVerifiedBadge();
-    // logout() left us on the setup screen; rejoin with the freshly signed-in
-    // account so the user lands back in the app instead of clicking "Join".
+    // logout() tore the mesh session down; rejoin with the freshly signed-in
+    // account so the app is live again rather than sitting disconnected.
     if (m_nameEdit)
         m_nameEdit->setText(m_accountName);
     startSession();

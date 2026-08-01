@@ -35,7 +35,10 @@ static QToolButton *makeColorSwatch(const QColor &color, QWidget *parent)
     constexpr int sz = 22;
     btn->setFixedSize(sz, sz);
 
-    QPixmap pm(sz, sz);
+    // DPR-scaled raster so the circle stays smooth on HiDPI screens.
+    const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
+    QPixmap pm(qMax(1, qRound(sz * dpr)), qMax(1, qRound(sz * dpr)));
+    pm.setDevicePixelRatio(dpr);
     pm.fill(Qt::transparent);
     {
         QPainter p(&pm);

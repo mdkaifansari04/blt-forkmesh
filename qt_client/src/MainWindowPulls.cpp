@@ -193,9 +193,12 @@ QWidget *MainWindow::buildPullsTab()
     connect(m_pullSplitButton, &QPushButton::clicked, this, [this](bool on) {
         setDiffSplitPref(on);
         updateDiffSplitButton(m_pullSplitButton);
-        updateDiffSplitButton(m_commitSplitButton);
-        if (m_commitSplitButton)
-            m_commitSplitButton->setChecked(on);
+        for (QPushButton *b : {m_commitSplitButton, m_branchSplitButton}) {
+            if (b) {
+                b->setChecked(on);
+                updateDiffSplitButton(b);
+            }
+        }
         if (m_pullFiles && m_pullFiles->count() > 0)
             renderPullDiff();
     });
@@ -283,7 +286,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullFixClaudeAction = m_pullFixMenu->addAction(QStringLiteral("Claude API"));
     m_pullFixOpenAiAction = m_pullFixMenu->addAction(QStringLiteral("OpenAI API"));
     m_pullFixClaudeCodeAction =
-        m_pullFixMenu->addAction(QStringLiteral("Claude Code"));
+        m_pullFixMenu->addAction(QStringLiteral("CC")); // Claude Code (adhoc #38)
     connect(m_pullFixClaudeAction, &QAction::triggered, this,
             [this] { fixCurrentPullConflictsWithAi(QStringLiteral("claude")); });
     connect(m_pullFixOpenAiAction, &QAction::triggered, this,
@@ -411,8 +414,8 @@ QWidget *MainWindow::buildPullsTab()
                     index = 2;
                     button = m_pullTabChecks;
                 } else if (href == QLatin1String("tab:files")) {
-                    index = 3;
-                    button = m_pullTabFiles;
+                    openPullDiffInGitView(m_currentPullNumber);
+                    return;
                 }
                 if (index < 0 || !m_pullSubStack)
                     return;
@@ -653,7 +656,13 @@ QWidget *MainWindow::buildPullsTab()
     filesPageLayout->addWidget(m_pullDiffSearchBar);
     filesPageLayout->addWidget(diffSplit);
 
+    // Scoped to this pane (WidgetWithChildren): the Git view's range pane has
+    // its own find bar on the same key, and two window-wide Ctrl+F shortcuts
+    // would be ambiguous — Qt would then fire neither (adhoc #107). Selecting
+    // the Files sub-tab focuses the diff (see the sub-tab wiring) so the key
+    // works straight away.
     auto *findShortcut = new QShortcut(QKeySequence::Find, filesPage);
+    findShortcut->setContext(Qt::WidgetWithChildrenShortcut);
     connect(findShortcut, &QShortcut::activated, this,
             [this] { togglePullDiffSearch(true); });
     auto *closeSearchShortcut = new QShortcut(QKeySequence(Qt::Key_Escape),
@@ -856,10 +865,7 @@ QWidget *MainWindow::buildPullsTab()
     m_pullConflictDetails->hide();
     connect(m_pullConflictDetails, &QLabel::linkActivated, this,
             [this](const QString &) {
-                if (m_pullTabFiles)
-                    m_pullTabFiles->setChecked(true);
-                if (m_pullSubStack)
-                    m_pullSubStack->setCurrentIndex(3);
+                openPullDiffInGitView(m_currentPullNumber);
             });
 
     auto *conversationInner = new QWidget;
@@ -935,7 +941,7 @@ QWidget *MainWindow::buildPullsTab()
         {QStringLiteral("Conversation"), "comment"},
         {QStringLiteral("Commits"), "git-branch"},
         {QStringLiteral("Checks"), "workflow"},
-        {QStringLiteral("Files changed"), "file-diff"},
+        {QStringLiteral("Changes in Git"), "file-diff"},
         {QStringLiteral("Badge"), "graph"}};
     for (int i = 0; i < subTabs.size(); ++i) {
         auto *b = new QPushButton(subTabs.at(i).first);
@@ -955,6 +961,14 @@ QWidget *MainWindow::buildPullsTab()
     m_pullTabFiles = qobject_cast<QPushButton *>(m_pullSubTabs->button(3));
     m_pullTabBadge = qobject_cast<QPushButton *>(m_pullSubTabs->button(4));
     connect(m_pullSubTabs, &QButtonGroup::idClicked, this, [this](int id) {
+        if (id == 3) {
+            // The PR page owns conversation/checks/approval state; repository
+            // changes have one visual home. Route its Files entry into the Git
+            // range pane, which carries the same line threads, Viewed state,
+            // find/navigation tools, and PR actions.
+            openPullDiffInGitView(m_currentPullNumber);
+            return;
+        }
         m_pullSubStack->setCurrentIndex(id);
         if (id == 2) { // refresh the Checks table when it's brought forward
             // Copy the PR out before rendering: renderPullChecks pumps the
@@ -967,10 +981,6 @@ QWidget *MainWindow::buildPullsTab()
             if (current.number > 0)
                 renderPullChecks(current);
         }
-        if (id == 3) // Files changed brought forward: show the sticky header now,
-            // not only after the first scroll (adhoc #56). Defer so the diff
-            // viewport has laid out at its shown size before we measure it.
-            QTimer::singleShot(0, this, &MainWindow::updatePullDiffScrollState);
     });
 
     auto *detailLayout = new QVBoxLayout(m_pullDetail);
@@ -1822,6 +1832,98 @@ void MainWindow::switchToPullTab(int pullNumber)
     showPull(pullNumber);
 }
 
+// Open a pull request's diff in the Git view's range pane (adhoc #107): the PR
+// counterpart of a branch comparison. The pane renders the PR's review threads
+// and comment gutters (see renderBranchDiffPatch) and its "PR #N" button jumps
+// on to the full pull request page. A PR whose head branch still exists locally
+// diffs against the live refs and browses that branch in the graph, reading as
+// the same "<head> -> <base>" comparison a branch does (adhoc #16); one whose
+// branch is gone (merged & pruned, or cross-node) shows its stored patch with
+// the graph left on the default branch. Either way only the right pane changes:
+// the universal source-control composer, working changes, and graph stay put.
+void MainWindow::openPullDiffInGitView(int pullNumber)
+{
+    // The PR widgets and state (m_currentPulls, m_currentPullNumber) live in the
+    // Pulls tab; make sure it exists and is anchored on this PR so the comment /
+    // thread / viewed plumbing all acts on the right one.
+    ensureRepoDetailTabBuilt(4);
+    m_currentPullNumber = pullNumber;
+    reloadPulls();
+    bool rowSelected = false;
+    if (m_pullTable) {
+        for (int row = 0; row < m_pullTable->rowCount(); ++row) {
+            QTableWidgetItem *number = m_pullTable->item(row, 0);
+            if (number && number->data(Qt::UserRole).toInt() == pullNumber) {
+                m_pullTable->selectRow(row); // fires showPull(pullNumber)
+                rowSelected = true;
+                break;
+            }
+        }
+    }
+    if (!rowSelected)
+        showPull(pullNumber);
+    // The Files button is a route, not a second PR sub-page. Leave the PR detail
+    // parked on Conversation so its button state and stack are coherent when
+    // the reviewer returns from the Git range pane.
+    if (m_pullTabConversation)
+        m_pullTabConversation->setChecked(true);
+    if (m_pullSubStack)
+        m_pullSubStack->setCurrentIndex(0);
+
+    // Copy the PR out of m_currentPulls before any git call below:
+    // localBranchExists pumps the event loop, which can reload the pulls list
+    // and dangle a held reference (the adhoc #106/#119 UAF family).
+    PullRequest pr;
+    for (const PullRequest &p : std::as_const(m_currentPulls))
+        if (p.number == pullNumber)
+            pr = p;
+    if (pr.number != pullNumber) {
+        // Nothing to review here (e.g. the PR vanished); fall back to the PR
+        // page, which explains itself.
+        switchToPullTab(pullNumber);
+        return;
+    }
+
+    m_branchDiffPullNumber = pullNumber;
+    showOverviewCommits();
+    const QString dir = repoGitDir();
+    const bool liveBranch =
+        !pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head);
+    // The graph browses the PR's head branch when it still exists, so the view
+    // reads as one "<head> -> <base>" comparison (adhoc #16). With the branch
+    // gone there is nothing to browse, so the graph stays on the default branch.
+    const QString graphRef = liveBranch ? pr.head : repoDefaultBranchFast();
+    if (!graphRef.isEmpty() && m_repoBranch != graphRef)
+        setRepoBranch(graphRef);
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
+    if (liveBranch) {
+        // Live branch: diff the PR's whole range against the repo's refs.
+        showBranchDiff(pr.head);
+    } else {
+        // Branch gone: render the PR's stored patch directly. Mirror the reset
+        // showBranchDiff does, minus the git reads that need the branch.
+        m_branchDiffBranch = pr.head;
+        m_branchDiffWorkDir.clear();
+        updateCommitsCompareIndicator(); // "<head> -> <base>" on the branch row
+        updateBranchDetailActions(pr.head);
+        m_branchDiffLastPatch = pr.patch.toUtf8();
+        m_branchDiffLastEmpty = QStringLiteral("This pull request has no changes.");
+        m_branchDiffLastValid = true;
+        ++m_branchScopeDiffGen; // orphan any in-flight scope render
+        renderBranchDiffPatch(pr.patch, m_branchDiffLastEmpty,
+                              QStringLiteral("pull/") + QString::number(pullNumber));
+    }
+    if (m_branchDiffView)
+        m_branchDiffView->setFocus();
+    // Fill the Git view's left rail the same deferred way switchToBranch does.
+    QTimer::singleShot(0, this, [this] {
+        if (commitsListIsCurrent())
+            refreshSourceControl();
+        else
+            loadCommits();
+    });
+}
+
 // Property holding a diff view's last-set source HTML, so a font-size change can
 // re-render it in place at the new size without re-running its renderer (#254).
 static const char *kDiffSourceProp = "fm_diffSource";
@@ -1887,7 +1989,11 @@ void MainWindow::onDiffStreamFinished(QTextEdit *view)
             pullDiffSearchRecompute();
         updatePullDiffScrollState();
     } else if (view == m_branchDiffView) {
+        m_branchFileTops.clear(); // file positions moved as the rest landed
+        m_branchStickyFile.clear();
         rebuildBranchDiffSpans();
+        if (m_branchDiffSearchBar && m_branchDiffSearchBar->isVisible())
+            branchDiffSearchRecompute();
     }
 }
 
@@ -1920,25 +2026,21 @@ void MainWindow::adjustDiffFont(int delta)
     m_pullDiffRenderKey.clear(); // the pull view's skip-relayout cache is now stale
     m_scmDiffRenderKey.clear();  // ditto for the working-tree changes diff
     // The re-scaled m_pullDiff got a fresh document too; rescan an open find
-    // bar's matches against it (issue #333).
+    // bar's matches against it (issue #333). Same for the range pane's bar.
     if (m_pullDiffSearchBar && m_pullDiffSearchBar->isVisible())
         pullDiffSearchRecompute();
+    if (m_branchDiffSearchBar && m_branchDiffSearchBar->isVisible())
+        branchDiffSearchRecompute();
 }
 
-void MainWindow::renderPullDiff()
+// Collect a PR's already-posted review threads for every file, keyed by
+// path\x1fside:line, so a diff renderer can drop each beneath the line it
+// annotates even though every file shares one rendered view (#250). Shared by
+// the PR Files-changed page and the Git view's range pane (adhoc #107).
+QHash<QString, QString> MainWindow::buildPullLineNotes(const PullRequest &pr)
 {
-    if (!m_pullDiff)
-        return;
-
-    // Collect already-posted review threads for every file, keyed by
-    // path\x1fside:line, so the renderer can drop each beneath the line it
-    // annotates even though every file now shares one rendered view (#250).
     QHash<QString, QString> notes;
-    const PullRequest *pr = nullptr;
-    for (const PullRequest &p : m_currentPulls)
-        if (p.number == m_currentPullNumber)
-            pr = &p;
-    if (pr) {
+    {
         const auto htmlBody = [](QString text) {
             text = text.toHtmlEscaped();
             text.replace(QLatin1Char('\n'), QStringLiteral("<br>"));
@@ -1947,9 +2049,9 @@ void MainWindow::renderPullDiff()
         // Whether this node can take a thread's one-click fix right now: the
         // apply commits to the PR's branch, so it needs an open PR and a
         // working tree (adhoc #82).
-        const bool canApplyFixes = pr->status == QLatin1String("open") &&
+        const bool canApplyFixes = pr.status == QLatin1String("open") &&
                                    pullStoreForCurrentRepo().canWrite();
-        const PullReviewSnapshot snapshot = buildPullReviewSnapshot(*pr);
+        const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
         for (const PullReviewThread &thread : snapshot.threads) {
             if (thread.lineStart <= 0)
                 continue;
@@ -2036,6 +2138,21 @@ void MainWindow::renderPullDiff()
             notes[key] += note;
         }
     }
+    return notes;
+}
+
+void MainWindow::renderPullDiff()
+{
+    if (!m_pullDiff)
+        return;
+
+    QHash<QString, QString> notes;
+    const PullRequest *pr = nullptr;
+    for (const PullRequest &p : m_currentPulls)
+        if (p.number == m_currentPullNumber)
+            pr = &p;
+    if (pr)
+        notes = buildPullLineNotes(*pr);
 
     // Render the whole PR — every changed file — into one scrollable view. The
     // PR patch carries no git object context for image previews, so pass empty
@@ -2402,40 +2519,6 @@ void MainWindow::togglePullDiffSearch(bool show)
     }
 }
 
-// Rebuild m_pullDiff's extra selections from m_pullDiffSearchMatches, painting
-// the active match in a brighter color than the rest, and update the "n/m"
-// count label.
-static void applyPullDiffSearchHighlights(QTextBrowser *diff,
-                                          const QList<QTextCursor> &matches,
-                                          int activeIndex, QLabel *countLabel,
-                                          bool termEmpty)
-{
-    QList<QTextEdit::ExtraSelection> sels;
-    QTextCharFormat matchFmt;
-    matchFmt.setBackground(QColor("#e3b341"));
-    matchFmt.setForeground(QColor("#0d1117"));
-    QTextCharFormat currentFmt;
-    currentFmt.setBackground(QColor("#f78166"));
-    currentFmt.setForeground(QColor("#0d1117"));
-    for (int i = 0; i < matches.size(); ++i) {
-        QTextEdit::ExtraSelection sel;
-        sel.cursor = matches.at(i);
-        sel.format = (i == activeIndex) ? currentFmt : matchFmt;
-        sels.append(sel);
-    }
-    diff->setExtraSelections(sels);
-
-    if (!countLabel)
-        return;
-    countLabel->setText(termEmpty
-                            ? QString()
-                            : matches.isEmpty()
-                                  ? QStringLiteral("No results")
-                                  : QStringLiteral("%1/%2")
-                                        .arg(activeIndex + 1)
-                                        .arg(matches.size()));
-}
-
 // Re-scan the combined diff for the current search text and highlight every
 // match. Called on every keystroke and after each re-render, since a
 // re-render replaces the document and invalidates previously-found cursors.
@@ -2462,7 +2545,7 @@ void MainWindow::pullDiffSearchRecompute()
             m_pullDiffSearchIndex = 0;
     }
 
-    applyPullDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
+    applyDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
                                   m_pullDiffSearchIndex, m_pullDiffSearchCount,
                                   term.isEmpty());
     if (m_pullDiffSearchIndex >= 0)
@@ -2483,7 +2566,7 @@ void MainWindow::pullDiffSearchGoTo(int delta)
     const int count = m_pullDiffSearchMatches.size();
     m_pullDiffSearchIndex =
         ((m_pullDiffSearchIndex + delta) % count + count) % count;
-    applyPullDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
+    applyDiffSearchHighlights(m_pullDiff, m_pullDiffSearchMatches,
                                   m_pullDiffSearchIndex, m_pullDiffSearchCount,
                                   false);
 
@@ -3515,7 +3598,7 @@ void MainWindow::buildAndPreviewCurrentPull()
     // recursive lambda so each step starts the next only on success.
     auto steps = std::make_shared<QList<PullPreviewStep>>(
         pullPreviewSteps(gitDir, previewDir, clientDir, buildDir, commit,
-                         haveWorktree, QThread::idealThreadCount()));
+                         haveWorktree, ramCappedBuildJobs()));
 
     auto runNext = std::make_shared<std::function<void(int)>>();
     *runNext = [this, steps, runNext, dlg, statusPtr, appendLog,
@@ -3573,7 +3656,7 @@ void MainWindow::updatePullSubTabCounts(PullRequest pr)
         label(m_pullTabConversation, QStringLiteral("Conversation"), 0);
         label(m_pullTabCommits, QStringLiteral("Commits"), 0);
         label(m_pullTabChecks, QStringLiteral("Checks"), 0);
-        label(m_pullTabFiles, QStringLiteral("Files changed"), 0);
+        label(m_pullTabFiles, QStringLiteral("Changes in Git"), 0);
         return;
     }
     const PullReviewSnapshot snapshot = buildPullReviewSnapshot(pr);
@@ -3581,7 +3664,7 @@ void MainWindow::updatePullSubTabCounts(PullRequest pr)
           snapshot.topLevelItems + snapshot.totalThreads);
     label(m_pullTabCommits, QStringLiteral("Commits"), pullCommitShas(pr).size());
     label(m_pullTabChecks, QStringLiteral("Checks"), runIdsForPull(pr).size());
-    label(m_pullTabFiles, QStringLiteral("Files changed"), pr.filesChanged);
+    label(m_pullTabFiles, QStringLiteral("Changes in Git"), pr.filesChanged);
 }
 
 void MainWindow::submitPullComment()
@@ -7464,136 +7547,6 @@ void MainWindow::submitPullEventToInbox(int number, const PullEvent &ev)
     });
 }
 
-QUrl MainWindow::commitsApiUrl(const RepositoryRecord &repo) const
-{
-    QUrl url = catalogApiUrl();
-    url.setPath("/api/repo/" + repoSegment(repo.owner, QStringLiteral("owner")) + "/" +
-                repoSegment(repo.name, QStringLiteral("repository")) + "/commits");
-    return url;
-}
-
-void MainWindow::submitCommitCommentToInbox(const QString &sha, const CommitComment &c)
-{
-    if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
-        return;
-    const RepositoryRecord &repo = m_repositories.at(m_repoDetailIndex);
-    const QJsonObject payload{{"owner", repo.owner},
-                              {"repo", repo.name},
-                              {"sha", sha},
-                              {"comment", c.toJson()}};
-    QNetworkRequest request(commitsApiUrl(repo));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    QNetworkReply *reply = m_networkAccess->post(
-        request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, repo] {
-        reply->deleteLater();
-        if (reply->error() == QNetworkReply::NoError)
-            flashMessage("Your commit comment was delivered to " + repo.owner + "/" +
-                         repo.name + ".");
-        else
-            QMessageBox::warning(this, "Commit comment",
-                                 "Could not send your comment: " + reply->errorString());
-    });
-}
-
-void MainWindow::drainCommitInboxFor(RepositoryRecord repo, bool interactive)
-{
-    const RepositoryRecord writable = writableRecordFor(repo);
-    {
-        CommitCommentStore probe(writable.localPath, writable.mirrorPath,
-                                 &m_profileIdentity, m_userName);
-        if (!probe.canWrite())
-            return;
-    }
-    if (!hasOwnerSigningCapability(repo.owner))
-        return;
-    QUrl url = commitsApiUrl(repo);
-    // Auto-polls back off exponentially while the relay is failing (offline /
-    // HTTP 429); a manual "Sync inbox" (interactive) always tries immediately.
-    const QString backoffKey = url.toString();
-    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
-    if (!interactive && !m_pollBackoff.ready(backoffKey, nowMs))
-        return;
-
-    const QString owner = repoSegment(repo.owner, QStringLiteral("owner"));
-    const QString ts = QString::number(nowMs);
-    const QByteArray canonical =
-        ("forkmesh-issues-pull-v1\n" + owner + "\n" + ts).toUtf8();
-    const QString sig = m_profileIdentity.signData(canonical);
-    QUrlQuery query;
-    query.addQueryItem("owner", owner);
-    query.addQueryItem("ts", ts);
-    query.addQueryItem("sig", sig);
-    url.setQuery(query);
-
-    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
-    connect(reply, &QNetworkReply::finished, this,
-            [this, reply, repo, interactive, backoffKey] {
-        reply->deleteLater();
-        if (reply->error() != QNetworkReply::NoError) {
-            m_pollBackoff.noteFailure(backoffKey,
-                                      QDateTime::currentMSecsSinceEpoch());
-            if (interactive)
-                QMessageBox::warning(this, "Sync inbox",
-                                     "Could not reach the inbox: " +
-                                         reply->errorString());
-            return;
-        }
-        m_pollBackoff.noteSuccess(backoffKey);
-        applyCommitInboxPayload(repo,
-                                QJsonDocument::fromJson(reply->readAll())
-                                    .object()
-                                    .value("pending")
-                                    .toArray(),
-                                interactive);
-    });
-}
-
-// Merge pending commit comments into the local store and ack the inbox.
-// `pending` comes from either a per-repo GET /commits drain reply or the
-// repo's slice of the consolidated GET /api/sync response.
-void MainWindow::applyCommitInboxPayload(const RepositoryRecord &repo,
-                                         const QJsonArray &pending,
-                                         bool interactive)
-{
-    if (!hasOwnerSigningCapability(repo.owner))
-        return;
-    if (pending.isEmpty()) {
-        if (interactive)
-            QMessageBox::information(this, "Sync inbox",
-                                     "No pending commit comments.");
-        return;
-    }
-    const RepositoryRecord writable = writableRecordFor(repo);
-    CommitCommentStore store(writable.localPath, writable.mirrorPath,
-                             &m_profileIdentity, m_userName);
-    if (!store.canWrite())
-        return;
-    int merged = 0;
-    for (const QJsonValue &value : pending) {
-        const QJsonObject obj = value.toObject();
-        const QString sha = obj.value("sha").toString();
-        const CommitComment c =
-            CommitComment::fromJson(obj.value("comment").toObject());
-        if (store.applyRemoteComment(sha, c))
-            ++merged;
-    }
-    QUrl ackUrl = commitsApiUrl(repo);
-    ackUrl.setQuery(
-        signedInboxQuery(repoSegment(repo.owner, QStringLiteral("owner"))));
-    m_networkAccess->deleteResource(QNetworkRequest(ackUrl)); // ack/clear
-    const bool onThisRepo =
-        m_repoDetailIndex >= 0 && m_repoDetailIndex < m_repositories.size() &&
-        m_repositories.at(m_repoDetailIndex).owner == repo.owner &&
-        m_repositories.at(m_repoDetailIndex).name == repo.name;
-    if (onThisRepo && !m_currentCommitHash.isEmpty())
-        renderCommitThread(m_currentCommitHash);
-    if (interactive)
-        QMessageBox::information(
-            this, "Sync inbox",
-            QStringLiteral("Merged %1 commit comment(s).").arg(merged));
-}
-
 void MainWindow::syncPullsInbox()
 {
     if (m_repoDetailIndex < 0 || m_repoDetailIndex >= m_repositories.size())
@@ -7810,9 +7763,11 @@ void MainWindow::applyPullsInboxPayload(const RepositoryRecord &repo,
             mirrorIntake ? accountOwner().trimmed().toLower()
                          : repoSegment(repo.owner, QStringLiteral("owner"));
         QUrlQuery query = signedInboxQuery(ackSigner);
-        if (mirrorIntake)
+        if (mirrorIntake) {
             query.addQueryItem(
                 QStringLiteral("mirror"), QStringLiteral("1"));
+            appendMirrorStateAttestation(&query, repo, ackSigner);
+        }
         query.addQueryItem(QStringLiteral("ids"),
                            drainedIds.join(QStringLiteral(",")));
         ackUrl.setQuery(query);
@@ -7886,7 +7841,6 @@ void MainWindow::pollOwnedInboxes()
             drainIssuesInboxFor(repo, /*interactive=*/false);
         drainPullsInboxFor(repo, /*interactive=*/false);
         drainDiscussionsInboxFor(repo, /*interactive=*/false);
-        drainCommitInboxFor(repo, /*interactive=*/false);
     }
 }
 
@@ -7908,6 +7862,34 @@ QUrlQuery MainWindow::signedInboxQuery(const QString &owner) const
     query.addQueryItem("ts", ts);
     query.addQueryItem("sig", m_profileIdentity.signData(canonical));
     return query;
+}
+
+// A mirror-intake ack permanently drains the acknowledged inbox rows, so the
+// state the mirror now serves must stay clone-admissible while the source of
+// truth is offline. Sign the mirror's post-merge refs fingerprint with the
+// same forkmesh-repostate-v1 canonical a catalog publish uses; the relay
+// verifies it against this account's keys and adds the digest to the repo's
+// accepted pin history.
+void MainWindow::appendMirrorStateAttestation(QUrlQuery *query,
+                                              const RepositoryRecord &repo,
+                                              const QString &signer) const
+{
+    if (!query || signer.isEmpty() || !hasOwnerSigningCapability(signer) ||
+        !m_profileIdentity.isValid())
+        return;
+    const QString stateHash = mirrorStateHash(repo.mirrorPath);
+    if (stateHash.isEmpty())
+        return;
+    const QString ts = QString::number(QDateTime::currentMSecsSinceEpoch());
+    const QByteArray canonical =
+        ("forkmesh-repostate-v1\n" + signer + "\n" +
+         repoSegment(repo.name, QStringLiteral("repository")) + "\n" +
+         stateHash + "\n" + ts)
+            .toUtf8();
+    query->addQueryItem(QStringLiteral("state"), stateHash);
+    query->addQueryItem(QStringLiteral("stateTs"), ts);
+    query->addQueryItem(QStringLiteral("stateSig"),
+                        m_profileIdentity.signData(canonical));
 }
 
 // Coalesce pushed relay event frames (NodeEventSocket) and explicit local
@@ -8038,8 +8020,6 @@ void MainWindow::performRelaySync()
             applyDiscussionsInboxPayload(repo,
                                          entry.value("discussions").toArray(),
                                          /*interactive=*/false);
-            applyCommitInboxPayload(repo, entry.value("commits").toArray(),
-                                    /*interactive=*/false);
             applyAgentPromptsPayload(repo, entry.value("agentPrompts").toArray());
             // About edit made on the website (gear icon): write it into the
             // repo's committed .forkmesh/info.json via the same code path as

@@ -25,7 +25,12 @@ ENTRY_TEXT = ENTRY.read_text(encoding="utf-8")
 # clean_string lives in catalog.py; parse both so it can be extracted too.
 SOURCE_TEXT = ENTRY_TEXT + "\n" + CATALOG.read_text(encoding="utf-8")
 
-FUNCS = {"_org_task_signed_session", "clean_string"}
+FUNCS = {
+    "_org_task_signed_session",
+    "_owner_signing_pubkeys",
+    "_verify_owner_signature",
+    "clean_string",
+}
 CONSTANTS = {
     "ORG_TASK_OPEN_PROOF",
     "ORG_TASK_COMPLETE_PROOF",
@@ -85,7 +90,9 @@ def _fake_sig(pubkey, canonical):
     return "sig-" + pubkey + "-" + digest
 
 
-def _harness(accounts, ts_ok=True):
+def _harness(accounts, ts_ok=True, devices=None):
+    devices = devices or {}
+
     async def _account_row(_env, name):
         key = str(name or "").strip().lower()
         record = accounts.get(key)
@@ -105,6 +112,12 @@ def _harness(accounts, ts_ok=True):
         # the proof's newlines never have to survive a URL round trip.
         return bool(pubkey) and sig == _fake_sig(pubkey, canonical)
 
+    async def blind_index(_env, value):
+        return "bi:" + str(value or "").strip().lower()
+
+    async def _account_devices_list(_env, account_bi):
+        return [dict(device) for device in devices.get(account_bi, [])]
+
     namespace = _load({
         "re": re,
         "parse_qs": parse_qs,
@@ -113,11 +126,21 @@ def _harness(accounts, ts_ok=True):
         "_ts_ok": lambda _ts: ts_ok,
         "_owner_pubkey": _owner_pubkey,
         "_account_row": _account_row,
+        "_account_devices_list": _account_devices_list,
+        "blind_index": blind_index,
         "_account_kind": lambda record: record.get("kind", "user"),
         "ed25519_verify": ed25519_verify,
         "MAX_NODE_NAME": 63,
     })
     return namespace, object()
+
+
+def _device(pubkey, capabilities=("owner_sign",), enabled=True):
+    return {
+        "pubkey": pubkey,
+        "capabilities": list(capabilities),
+        "enabled": enabled,
+    }
 
 
 def _signed_url(namespace, path, proof_name, resource="", node="alice",
@@ -207,6 +230,46 @@ def test_list_proof_reads_the_board_and_nothing_else():
         method="GET",
         url=_signed_url(
             namespace, "/api/tasks", "ORG_TASK_OPEN_PROOF")))) == ("", None)
+
+
+def test_registered_device_key_reads_the_board_after_a_restart():
+    """adhoc #63: the board went "invalid session" on every restarted app.
+
+    A desktop that logged in with a password gets its key stored in
+    account_devices; the account's primary pubkey keeps naming the install that
+    created the account. The session token is memory-only, so the next launch
+    signs the list proof with the device key — which must authorize the read,
+    exactly as it authorizes GET /api/sync.
+    """
+    namespace, env = _harness(
+        {"alice": _user()},
+        devices={"bi:alice": [
+            _device("PK-alice-laptop"),
+            _device("PK-alice-retired", enabled=False),
+            _device("PK-alice-readonly", capabilities=()),
+        ]},
+    )
+    resolve = namespace["_org_task_signed_session"]
+
+    account_bi, record = asyncio.run(resolve(env, _Request(
+        method="GET",
+        url=_signed_url(namespace, "/api/tasks", "ORG_TASK_LIST_PROOF",
+                        pubkey="PK-alice-laptop"))))
+    assert account_bi == "bi:alice"
+    assert record["name"] == "alice"
+
+    # Opening a task from that same machine is signed the same way.
+    assert asyncio.run(resolve(env, _Request(
+        url=_signed_url(namespace, "/api/tasks", "ORG_TASK_OPEN_PROOF",
+                        pubkey="PK-alice-laptop"))))[0] == "bi:alice"
+
+    # A revoked/disabled device, and one without owner_sign, stay locked out.
+    for pubkey in ("PK-alice-retired", "PK-alice-readonly"):
+        assert asyncio.run(resolve(env, _Request(
+            method="GET",
+            url=_signed_url(
+                namespace, "/api/tasks", "ORG_TASK_LIST_PROOF",
+                pubkey=pubkey)))) == ("", None), pubkey
 
 
 def test_signature_authorizes_only_the_three_named_operations():

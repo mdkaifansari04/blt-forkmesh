@@ -156,16 +156,80 @@ QWidget *MainWindow::buildDataSection()
     connect(refreshButton, &QPushButton::clicked, this,
             &MainWindow::refreshDataDirTable);
 
+    // --- log files -----------------------------------------------------------
+    // The two logs the app writes are files, not folders, so they never show up
+    // in the table above — but they are the first thing anyone needs when
+    // reporting a freeze or a failed sync, so name their exact paths here
+    // (adhoc #90).
+    auto *logsLabel = new QLabel("LOG FILES");
+    logsLabel->setObjectName("sectionLabel");
+    auto *logsHint = new QLabel(
+        "Where ForkMesh writes its diagnostics on this computer. Both are plain "
+        "text \xE2\x80\x94 open them, or hand the paths to a coding agent when "
+        "reporting a problem.");
+    logsHint->setObjectName("statusLine");
+    logsHint->setWordWrap(true);
+
+    auto *logsGrid = new QGridLayout;
+    logsGrid->setContentsMargins(0, 0, 0, 0);
+    logsGrid->setHorizontalSpacing(10);
+    logsGrid->setColumnStretch(1, 1);
+    int logRow = 0;
+    const auto addLogRow = [&](const QString &name, const QString &path,
+                               const QString &hint) {
+        if (path.isEmpty())
+            return;
+        auto *nameLabel = new QLabel(name);
+        nameLabel->setToolTip(hint);
+        auto *pathLabel = new QLabel(QDir::toNativeSeparators(path));
+        pathLabel->setObjectName("statusLine");
+        pathLabel->setToolTip(hint);
+        pathLabel->setTextFormat(Qt::PlainText);
+        pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        auto *openButton = new QPushButton("Open");
+        openButton->setObjectName("ghostButton");
+        openButton->setCursor(Qt::PointingHandCursor);
+        openButton->setEnabled(QFileInfo::exists(path));
+        openButton->setToolTip(openButton->isEnabled()
+                                   ? QStringLiteral("Open this log in your text editor")
+                                   : QStringLiteral("Nothing written to this log yet"));
+        connect(openButton, &QPushButton::clicked, this, [path] {
+            QDesktopServices::openUrl(QUrl::fromLocalFile(path));
+        });
+        auto *copyButton = new QPushButton("Copy path");
+        copyButton->setObjectName("ghostButton");
+        copyButton->setCursor(Qt::PointingHandCursor);
+        connect(copyButton, &QPushButton::clicked, this, [this, path] {
+            QGuiApplication::clipboard()->setText(QDir::toNativeSeparators(path));
+            setDataStatus(
+                QStringLiteral("Copied %1").arg(QDir::toNativeSeparators(path)));
+        });
+        logsGrid->addWidget(nameLabel, logRow, 0);
+        logsGrid->addWidget(pathLabel, logRow, 1);
+        logsGrid->addWidget(openButton, logRow, 2);
+        logsGrid->addWidget(copyButton, logRow, 3);
+        ++logRow;
+    };
+    addLogRow(QStringLiteral("App log"), networkLogPath(),
+              QStringLiteral("Everything the Log view shows: network calls, sync, "
+                             "agents and system messages."));
+    addLogRow(QStringLiteral("UI-stall log"), stallLogPath(),
+              QStringLiteral("Backtraces for every GUI-thread freeze the watchdog "
+                             "records; the footer's stall badge drafts a fix-it "
+                             "prompt from these."));
+
     // --- hourly snapshots ----------------------------------------------------
     auto *autoLabel = new QLabel("AUTOMATIC BACKUPS");
     autoLabel->setObjectName("sectionLabel");
     auto *autoHint = new QLabel(
-        "Every hour ForkMesh writes a snapshot of the live database \xE2\x80\x94 "
-        "your identity key, account, chat history, agents, issues and pull "
-        "requests \xE2\x80\x94 to this computer's drive. Restore any snapshot "
-        "below to roll the whole database back to that moment. Each one is an "
-        "ordinary .tar.gz, so it can also be recovered by hand with "
-        "\"tar xzf\".");
+        "With this on, every hour ForkMesh writes a snapshot of the live "
+        "database \xE2\x80\x94 your identity key, account, chat history, agents, "
+        "issues and pull requests \xE2\x80\x94 to this computer's drive. It "
+        "starts on only for control nodes (the ones holding a Cloudflare API "
+        "token), since a day of snapshots can run to gigabytes; tick the box to "
+        "turn it on here. Restore any snapshot below to roll the whole database "
+        "back to that moment. Each one is an ordinary .tar.gz, so it can also "
+        "be recovered by hand with \"tar xzf\".");
     autoHint->setObjectName("statusLine");
     autoHint->setWordWrap(true);
 
@@ -296,6 +360,10 @@ QWidget *MainWindow::buildDataSection()
     col->addWidget(storageHint);
     col->addWidget(m_dataDirTable, 1);
     col->addWidget(refreshButton, 0, Qt::AlignLeft);
+    col->addSpacing(6);
+    col->addWidget(logsLabel);
+    col->addWidget(logsHint);
+    col->addLayout(logsGrid);
     col->addSpacing(6);
     col->addWidget(autoLabel);
     col->addWidget(autoHint);
@@ -596,7 +664,12 @@ QString MainWindow::backupRoot() const
 
 bool MainWindow::autoBackupEnabled() const
 {
-    return QSettings().value(kAutoBackupEnabledSetting, true).toBool();
+    // Unset means "whatever this kind of node should do": on for control nodes
+    // (a Cloudflare API token is what makes one), off for everything else.
+    return QSettings()
+        .value(kAutoBackupEnabledSetting,
+               forkmesh::autoBackupDefault(resolvedCloudflareApiToken()))
+        .toBool();
 }
 
 int MainWindow::backupKeepCount() const

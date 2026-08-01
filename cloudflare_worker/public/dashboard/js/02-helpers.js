@@ -387,6 +387,56 @@
     return `${repo.owner || ""}/${repo.name || ""}`;
   }
 
+  // Repository bytes are published by nodes, but the catalog resolves every
+  // physical route to the user/organization that actually owns the work
+  // (ownerKind / logicalOwner / logicalOwners). Lists must show that identity —
+  // "forkmesh/forkmesh", never the serving machine's "mirror8/forkmesh".
+  // Routing keys stay physical: repoKey/repoPathUrl/data-dashboard-open-repo
+  // must keep matching the catalog rows.
+  function repoLogicalOwners(repo) {
+    const values = Array.isArray(repo?.logicalOwners) ? repo.logicalOwners : [];
+    const owners = values.map((value) => ({
+      kind: String(value?.kind || "").trim().toLowerCase(),
+      owner: String(value?.owner || "").trim(),
+    }));
+    if (!owners.length) {
+      owners.push({
+        kind: String(repo?.ownerKind || "").trim().toLowerCase(),
+        owner: String(repo?.logicalOwner || "").trim(),
+      });
+    }
+    return owners.filter((value) =>
+      value.owner && (value.kind === "user" || value.kind === "organization"));
+  }
+
+  function repoDisplayOwner(repo) {
+    const owners = repoLogicalOwners(repo);
+    const organization = owners.find((value) => value.kind === "organization");
+    return (organization || owners[0])?.owner || String(repo?.owner || "").trim();
+  }
+
+  function repoDisplayKey(repo) {
+    return `${repoDisplayOwner(repo) || ""}/${repo?.name || ""}`;
+  }
+
+  // Mirrors of one logical repository are grouped by root commit, so an
+  // organization alias registered on any member names the whole group.
+  function groupOrganizationAlias(group) {
+    const origin = sourceOfTruth(group);
+    const name = String(origin?.name || "").trim().toLowerCase();
+    for (const member of [origin, ...(group?.members || [])]) {
+      if (String(member?.name || "").trim().toLowerCase() !== name) continue;
+      const organization = repoLogicalOwners(member)
+        .find((value) => value.kind === "organization");
+      if (organization) return organization.owner;
+    }
+    return "";
+  }
+
+  function groupDisplayOwner(group) {
+    return groupOrganizationAlias(group) || repoDisplayOwner(sourceOfTruth(group));
+  }
+
   function normalizeRepoSegment(value) {
     const text = String(value || "").trim();
     return /^[A-Za-z0-9._:-]+$/.test(text) ? text : "";
@@ -554,6 +604,27 @@
     const name = encodeURIComponent(repo.name || "");
     const suffix = path ? `/${kind}/${path.split("/").map(encodeURIComponent).join("/")}` : "";
     return `/${owner}/${name}${suffix}`;
+  }
+
+  // A list that reads "forkmesh/forkmesh" must also link there, not to the
+  // machine that happens to publish the bytes (adhoc #132). Organization
+  // aliases are real addresses: the Worker rewrites /<org>/<repo> and every
+  // /api/repo/<org>/<repo>/... path onto the serving node before routing, and
+  // a direct visit resolves the alias again on the repo page. User identities
+  // have no such rewrite, so a repo whose logical owner is only a user keeps
+  // the physical /<node>/<repo> route.
+  function repoLinkUrl(repo, kind = "tree", path = "") {
+    const organization = repoLogicalOwners(repo)
+      .find((value) => value.kind === "organization");
+    return repoPathUrl(
+      organization ? { ...repo, owner: organization.owner } : repo, kind, path);
+  }
+
+  function groupLinkUrl(group, kind = "tree", path = "") {
+    const origin = sourceOfTruth(group);
+    const organization = groupOrganizationAlias(group);
+    return repoPathUrl(
+      organization ? { ...origin, owner: organization } : origin, kind, path);
   }
 
   // Feature-tab route segments (mirrors 404.html's `featureTabs` list) - tells

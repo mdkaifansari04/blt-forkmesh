@@ -22,6 +22,7 @@ enum MirrorNodeColumn {
     MirrorNodeColMessage,
     MirrorNodeColAuthor,
     MirrorNodeColSynced,
+    MirrorNodeColSyncDelay,
     MirrorNodeColSize,
     MirrorNodeColIssues,
     MirrorNodeColCommits,
@@ -34,9 +35,11 @@ enum MirrorNodeColumn {
     MirrorNodeColPlatform,
     MirrorNodeColVersion,
     MirrorNodeColId,
+    MirrorNodeColTunnel,
     MirrorNodeColClones,
     MirrorNodeColWebsite,
     MirrorNodeColArtifacts,
+    MirrorNodeColReachability,
     MirrorNodeColumnCount,
 };
 
@@ -557,7 +560,7 @@ void MainWindow::pruneReleaseTagsForCurrentRepo(const QString &keepTag)
 
     // Deleting only changes the tag refs in the working copy; propagate that
     // into the served bare mirror now (syncRepository fetches heads+tags with
-    // --prune) instead of waiting on the three-minute auto-sync — the same
+    // --prune) instead of waiting on the one-minute auto-sync — the same
     // immediacy propagateRepoUpdate already gives freshly committed issues/PRs.
     propagateRepoUpdate(m_repoDetailIndex);
 }
@@ -1024,8 +1027,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     refreshButton->setCursor(Qt::PointingHandCursor);
     refreshButton->setToolTip(QStringLiteral("Reload the local mirror nodes table"));
     setOcticon(refreshButton, "sync", 16);
-    connect(refreshButton, &QPushButton::clicked, this,
-            &MainWindow::loadMirrorNodesPanel);
+    connect(refreshButton, &QPushButton::clicked, this, [this] {
+        // A manual refresh is an operator request for fresh catalog state, not
+        // merely a repaint of the five-minute cached result.
+        m_catalogMirrorsFetchedMs = 0;
+        loadMirrorNodesPanel();
+    });
     addRefreshSpin(refreshButton);
     auto *refreshNodesButton = new QPushButton;
     refreshNodesButton->setObjectName("ghostButton");
@@ -1066,10 +1073,10 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Size",
+        {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
          "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU", "RAM",
-         "Disk", "Platform", "Version", "Node id", "Clones", "Website",
-         "Artifacts"});
+         "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
+         "Artifacts", "Reachability"});
     m_mirrorNodesTable->verticalHeader()->setVisible(false);
     m_mirrorNodesTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_mirrorNodesTable->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -1087,6 +1094,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColMessage, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColAuthor, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColSynced, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColSyncDelay, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColSize, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColIssues, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColCommits, QHeaderView::ResizeToContents);
@@ -1099,9 +1107,12 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColPlatform, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColVersion, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColId, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColTunnel, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColClones, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColWebsite, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColArtifacts, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColReachability,
+                             QHeaderView::ResizeToContents);
     makeColumnsResizable(m_mirrorNodesTable);
     // Synced column draws a pac-man countdown for behind nodes; a 1s timer
     // repaints the column so the chart animates while the panel is visible.
@@ -1128,6 +1139,20 @@ QWidget *MainWindow::buildMirrorNodesTab()
         }
     });
     pacmanTick->start();
+    // A visible Mirror nodes page is an operator view: refresh its catalog
+    // snapshot once a minute so it never sits on stale commit/sync status. The
+    // timer remains idle while another repository tab is selected.
+    auto *panelRefresh = new QTimer(m_mirrorNodesTable);
+    panelRefresh->setInterval(60 * 1000);
+    connect(panelRefresh, &QTimer::timeout, m_mirrorNodesTable, [this] {
+        if (!m_mirrorNodesTable->isVisible())
+            return;
+        // Bypass the normal five-minute catalog cache only while the operator
+        // is looking at this table; live roster changes still redraw it sooner.
+        m_catalogMirrorsFetchedMs = 0;
+        loadMirrorNodesPanel();
+    });
+    panelRefresh->start();
     // Double-click a node row to open its profile.
     // itemActivated (rather than cellDoubleClicked) so Enter opens the selected
     // node's profile, matching the tab's arrow-key navigation (adhoc #183).
@@ -1211,6 +1236,107 @@ void MainWindow::onMirrorRefreshRequested(const QString &source,
                            : QStringLiteral(" to %1").arg(requesterName.trimmed())));
 }
 
+// Read this node's own Mirror-nodes row in one pass. Pure (touches no MainWindow
+// state) so the identical call can run on a worker thread — every helper it uses
+// is the same one refreshMirrorAdverts() runs off-thread for the catalog advert.
+static MirrorSelfSnapshot gatherMirrorSelfSnapshot(const RepositoryRecord &repo,
+                                                   const QString &key,
+                                                   bool hasWorkingTree)
+{
+    MirrorSelfSnapshot snapshot;
+    snapshot.key = key;
+    snapshot.gatheredMs = QDateTime::currentMSecsSinceEpoch();
+    const QString mirror = repo.mirrorPath;
+    MirrorAdvert &advert = snapshot.advert;
+    const MirrorBranchTip tip = mirrorPrimaryBranchTip(mirror, repo.localPath);
+    advert.branch = tip.branch;
+    advert.commit = tip.commit;
+    advert.commitIdentity = mirrorCommitIdentity(mirror, repo.localPath, tip.commit);
+    advert.updatedMs = repo.lastSyncMs;
+    // The source of truth may carry no bare mirror at all — its working copy IS
+    // the served data and the record's mirrorPath is legitimately empty. The
+    // tip/identity reads above already fall back to the working copy; hand the
+    // count helpers the same fallback, or the self row renders em-dashes for
+    // Size/Issues/Commits/Branches/Pulls/Discussions while the node is visibly
+    // serving the repository.
+    const QString countsDir =
+        (!mirror.trimmed().isEmpty() && QDir(mirror).exists())
+            ? mirror
+            : repo.localPath.trimmed();
+    advert.sizeBytes = mirrorRepoSizeBytes(countsDir);
+    advert.issueCount = mirrorIssueCount(countsDir, advert.branch);
+    advert.commitCount = mirrorCommitCount(countsDir, advert.branch);
+    advert.branchCount = mirrorBranchCount(countsDir);
+    advert.pullCount = mirrorPullCount(countsDir, advert.branch);
+    advert.discussionCount = mirrorDiscussionCount(countsDir, advert.branch);
+    advert.worktreeCount = mirrorWorktreeCount(repo.localPath);
+    // Artifacts: a bare mirror stores its release CAS at
+    // <mirror>/forkmesh-releases, a working copy at .forkmesh/release-blobs.
+    advert.artifactCount = mirrorArtifactCount(mirror);
+    if (advert.artifactCount < 0)
+        advert.artifactCount = checkoutArtifactCount(repo.localPath);
+    snapshot.servedCommit = mirrorBranchCommit(countsDir, advert.branch);
+    if (hasWorkingTree && !repo.localPath.trimmed().isEmpty() &&
+        !snapshot.servedCommit.isEmpty()) {
+        QByteArray out;
+        const QString pushTarget =
+            advert.branch.isEmpty() ? QStringLiteral("HEAD") : advert.branch;
+        if (runGitCapture(repo.localPath,
+                          {QStringLiteral("rev-list"), QStringLiteral("--count"),
+                           snapshot.servedCommit + QStringLiteral("..") + pushTarget},
+                          &out, nullptr))
+            snapshot.pendingPush = QString::fromUtf8(out).trimmed().toInt();
+    }
+    return snapshot;
+}
+
+QString MainWindow::mirrorSelfSnapshotKey(const RepositoryRecord &repo) const
+{
+    // Filesystem-only, like refreshMirrorAdverts()'s input signature: asking git
+    // whether git has anything new would cost exactly what we are trying to skip.
+    auto stamp = [](const QString &base, const QString &leaf) {
+        return QString::number(QFileInfo(QDir(base).filePath(leaf))
+                                   .lastModified()
+                                   .toMSecsSinceEpoch());
+    };
+    return repo.mirrorPath + QLatin1Char('|') + repo.localPath + QLatin1Char('|') +
+           QString::number(repo.lastSyncMs) + QLatin1Char('|') +
+           stamp(repo.mirrorPath, QStringLiteral("HEAD")) + QLatin1Char('|') +
+           stamp(repo.mirrorPath, QStringLiteral("refs")) + QLatin1Char('|') +
+           stamp(repo.mirrorPath, QStringLiteral("packed-refs")) + QLatin1Char('|') +
+           stamp(repo.localPath, QStringLiteral(".git/HEAD")) + QLatin1Char('|') +
+           stamp(repo.localPath, QStringLiteral(".git/refs")) + QLatin1Char('|') +
+           stamp(repo.localPath, QStringLiteral(".git/packed-refs")) +
+           QLatin1Char('|') +
+           stamp(repo.localPath, QStringLiteral(".git/worktrees"));
+}
+
+void MainWindow::refreshMirrorSelfSnapshot(const RepositoryRecord &repo,
+                                           const QString &key)
+{
+    if (m_mirrorSelfSnapshotsInFlight.contains(repo.mirrorPath))
+        return; // a gather is already running; its result carries the newer key
+    m_mirrorSelfSnapshotsInFlight.insert(repo.mirrorPath);
+    const RepositoryRecord snapshotRepo = repo; // by value: the worker outlives it
+    const bool hasWorkingTree = repoHasWorkingTree();
+    auto result = std::make_shared<MirrorSelfSnapshot>();
+    QThread *worker = QThread::create([snapshotRepo, key, hasWorkingTree, result] {
+        const forkmesh::BackgroundScope activity(
+            QStringLiteral("mirrors"),
+            QStringLiteral("read mirror row for %1").arg(snapshotRepo.name),
+            forkmesh::ActionTelemetry::Execution::Worker);
+        *result = gatherMirrorSelfSnapshot(snapshotRepo, key, hasWorkingTree);
+    });
+    connect(worker, &QThread::finished, worker, &QObject::deleteLater);
+    connect(worker, &QThread::finished, this,
+            [this, mirror = repo.mirrorPath, result] {
+                m_mirrorSelfSnapshotsInFlight.remove(mirror);
+                m_mirrorSelfSnapshots.insert(mirror, *result);
+                loadMirrorNodesPanel(); // one rebuild with the fresh figures
+            });
+    worker->start();
+}
+
 void MainWindow::loadMirrorNodesPanel()
 {
     if (!m_mirrorNodesTable)
@@ -1239,10 +1365,9 @@ void MainWindow::loadMirrorNodesPanel()
             m_mirrorNodesSummary->clear();
         if (m_mirrorResetPinButton)
             m_mirrorResetPinButton->hide();
-        // No repo to report on, but the radar still tracks the node roster
-        // (adhoc #44) — hand the blips back to the roster feed instead of
-        // blanking the dish.
-        refreshRelayRadarBlips();
+        // No repo to scope the tint to: the chrome line's node dots go back to
+        // plain network status (adhoc #79 / #124).
+        setNodeDotRepoStates({});
         m_mirrorNodesTable->setSortingEnabled(true);
         updateMirrorNodeLightTimer(); // empty table: stops the beacon spinner
         return;
@@ -1269,44 +1394,42 @@ void MainWindow::loadMirrorNodesPanel()
 
     // For our own row, read the primary branch tip locally so it always reflects
     // main/default-branch freshness without waiting for a roster round-trip.
-    MirrorAdvert selfAdvert;
+    // Gathering it costs ~12 synchronous git subprocesses (tip, commit identity,
+    // repo size, five counts, worktrees, pending-push), and this panel is rebuilt
+    // on every roster update — the stall log is full of 800ms+ GUI freezes inside
+    // mirrorCommitIdentity()/mirrorIssueCount() from exactly here (adhoc #93).
+    // Serve the last snapshot and re-gather it on a worker when the mirror or the
+    // working tree has actually moved, the same way refreshMirrorAdverts() feeds
+    // the catalog advert; the first look at a repo still gathers inline so the row
+    // is never blank on open.
+    const QString selfKey = mirrorSelfSnapshotKey(repo);
+    const auto cached = m_mirrorSelfSnapshots.constFind(repo.mirrorPath);
+    MirrorSelfSnapshot snapshot;
+    if (cached == m_mirrorSelfSnapshots.constEnd()) {
+        snapshot = gatherMirrorSelfSnapshot(repo, selfKey, repoHasWorkingTree());
+        m_mirrorSelfSnapshots.insert(repo.mirrorPath, snapshot);
+    } else {
+        snapshot = *cached;
+        // Floor the re-read rate: while a mirror sync is running the fingerprint
+        // moves again before each gather lands, and an unthrottled loop would
+        // keep a worker busy for the whole sync.
+        constexpr qint64 kSelfSnapshotFloorMs = 2000;
+        if (snapshot.key != selfKey &&
+            QDateTime::currentMSecsSinceEpoch() - snapshot.gatheredMs >
+                kSelfSnapshotFloorMs)
+            refreshMirrorSelfSnapshot(repo, selfKey);
+    }
+    MirrorAdvert selfAdvert = snapshot.advert;
     selfAdvert.ownerName = canonical;
     selfAdvert.source = source;
-    const MirrorBranchTip selfTip =
-        mirrorPrimaryBranchTip(localMirror, repo.localPath);
-    selfAdvert.branch = selfTip.branch;
-    selfAdvert.commit = selfTip.commit;
-    selfAdvert.commitIdentity =
-        mirrorCommitIdentity(localMirror, repo.localPath, selfTip.commit);
-    const QString servedBranch = selfAdvert.branch;
-    const QString servedCommit = mirrorBranchCommit(localMirror, servedBranch);
     selfAdvert.updatedMs = repo.lastSyncMs;
-    selfAdvert.sizeBytes = mirrorRepoSizeBytes(localMirror);
-    selfAdvert.issueCount = mirrorIssueCount(localMirror, selfAdvert.branch);
-    selfAdvert.commitCount = mirrorCommitCount(localMirror, selfAdvert.branch);
-    selfAdvert.branchCount = mirrorBranchCount(localMirror);
-    selfAdvert.pullCount = mirrorPullCount(localMirror, selfAdvert.branch);
-    selfAdvert.discussionCount = mirrorDiscussionCount(localMirror, selfAdvert.branch);
-    selfAdvert.worktreeCount = mirrorWorktreeCount(repo.localPath);
-    selfAdvert.artifactCount = mirrorArtifactCount(localMirror);
-
+    const QString servedBranch = selfAdvert.branch;
+    const QString servedCommit = snapshot.servedCommit;
     // If we are the source of truth, our working copy can be ahead of the bare
     // mirror we serve (e.g. a comment was just committed and the mirror fetch
-    // hasn't run/finished). Count those un-mirrored commits so the self row can
-    // show a live "↑N to push" badge the moment a change is made.
-    int pendingPush = 0;
-    if (repoHasWorkingTree() && !repo.localPath.trimmed().isEmpty() &&
-        !servedCommit.isEmpty()) {
-        QByteArray out;
-        const QString pushTarget = servedBranch.isEmpty()
-                                       ? QStringLiteral("HEAD")
-                                       : servedBranch;
-        if (runGitCapture(repo.localPath,
-                          {QStringLiteral("rev-list"), QStringLiteral("--count"),
-                           servedCommit + QStringLiteral("..") + pushTarget},
-                          &out, nullptr))
-            pendingPush = QString::fromUtf8(out).trimmed().toInt();
-    }
+    // hasn't run/finished). Those un-mirrored commits give the self row its live
+    // "↑N to push" badge; counted with the rest of the snapshot.
+    const int pendingPush = snapshot.pendingPush;
 
     // Resolve a node's advert for this repo: the shared source identity groups
     // every mirror, with a clone-name fallback for older peers, and our own row
@@ -1511,6 +1634,36 @@ void MainWindow::loadMirrorNodesPanel()
     auto countMismatch = [](int value, int ref) {
         return ref >= 0 && value >= 0 && value != ref;
     };
+    // The elapsed time from a commit landing to a mirror reporting that same
+    // commit is the useful sync latency. Nodes still serving an older commit
+    // have not completed that sync, so say so instead of measuring their old
+    // commit's age.
+    auto makeSyncDelayCell = [&referenceCommit](qint64 syncedMs,
+                                                 qint64 committedAtMs,
+                                                 const QString &commit,
+                                                 bool isSource) {
+        QString text = QString::fromUtf8("\xE2\x80\x94");
+        QString tip;
+        qint64 sortValue = -1;
+        if (isSource) {
+            text = QStringLiteral("Source");
+            tip = QStringLiteral("This node is the source of truth");
+        } else if (!referenceCommit.isEmpty() && !commit.isEmpty() &&
+                   commit != referenceCommit) {
+            text = QStringLiteral("Pending");
+            tip = QStringLiteral("Waiting to sync the latest source commit");
+        } else if (syncedMs > 0 && committedAtMs > 0 && syncedMs >= committedAtMs) {
+            const qint64 delayMs = syncedMs - committedAtMs;
+            text = formatDuration(delayMs);
+            sortValue = delayMs;
+            tip = QStringLiteral("%1 from commit to this node's sync")
+                      .arg(formatDuration(delayMs));
+        }
+        auto *item = new SortTableWidgetItem(text);
+        item->setData(kTableSortRole, double(sortValue));
+        item->setToolTip(tip);
+        return item;
+    };
 
     // Clone / website-serve tallies are per-node local counters, carried across the
     // network only in each node's published catalog record. Index the catalog cache
@@ -1523,6 +1676,21 @@ void MainWindow::loadMirrorNodesPanel()
     // serves, because the refs fingerprint it published matches no state the
     // source of truth attested (current pin or recent history).
     QHash<QString, QString> integrityByNode;
+    // Per-node direct-HTTPS tunnel state, also from /mirrors: whether the node
+    // has a registered gateway endpoint, whether the relay's signed health
+    // probe finds it healthy/fresh, and its measured latency. Feeds the Tunnel
+    // column so an operator can see at a glance which nodes are reachable
+    // through their tunnel and which serve only via relay sync.
+    struct TunnelInfo {
+        bool registered = false;
+        bool healthy = false;
+        bool fresh = false;
+        bool abuseBlocked = false;
+        int latencyMs = 0;
+        QString endpoint;
+        QString integrity;
+    };
+    QHash<QString, TunnelInfo> tunnelByNode;
     if (m_catalogMirrorsSource == source) {
         for (const QJsonValue &value : std::as_const(m_catalogMirrorsCache)) {
             const QJsonObject m = value.toObject();
@@ -1531,9 +1699,104 @@ void MainWindow::loadMirrorNodesPanel()
                 serveCounts.insert(n, {m.value("clonesServed").toInt(-1),
                                        m.value("websiteServed").toInt(-1)});
                 integrityByNode.insert(n, m.value("integrity").toString());
+                TunnelInfo tunnel;
+                tunnel.endpoint = m.value("endpoint").toString().trimmed();
+                tunnel.registered = !tunnel.endpoint.isEmpty();
+                tunnel.healthy = m.value("endpointHealthy").toBool();
+                tunnel.fresh = m.value("endpointFresh").toBool();
+                tunnel.abuseBlocked = m.value("abuseBlocked").toBool();
+                tunnel.latencyMs = m.value("latencyMs").toInt(0);
+                tunnel.integrity = m.value("endpointIntegrity").toString();
+                tunnelByNode.insert(n, tunnel);
             }
         }
     }
+    // Tunnel column cell: "—" when the node never registered a gateway
+    // endpoint, otherwise a compact verdict with the endpoint hostname and
+    // probe details on hover. Sorts healthy → degraded → blocked → none.
+    auto makeTunnelCell = [](const TunnelInfo &tunnel) -> SortTableWidgetItem * {
+        QString text = QString::fromUtf8("\xE2\x80\x94"); // — (no tunnel)
+        double sortValue = 0;
+        QString tip = QStringLiteral("No direct-HTTPS tunnel endpoint registered; "
+                                     "this node serves through relay sync only.");
+        if (tunnel.abuseBlocked) {
+            text = QStringLiteral("blocked");
+            sortValue = 1;
+            tip = QStringLiteral("Endpoint blocked for abuse.");
+        } else if (tunnel.registered) {
+            if (tunnel.healthy && tunnel.fresh) {
+                text = tunnel.latencyMs > 0
+                           ? QStringLiteral("up · %1 ms").arg(tunnel.latencyMs)
+                           : QStringLiteral("up");
+                sortValue = 4;
+                tip = QStringLiteral("Tunnel healthy (%1)").arg(tunnel.endpoint);
+            } else if (tunnel.healthy) {
+                text = QStringLiteral("up · stale");
+                sortValue = 3;
+                tip = QStringLiteral(
+                          "Tunnel answered its last signed health probe, but the "
+                          "node has not been seen recently (%1)")
+                          .arg(tunnel.endpoint);
+            } else {
+                text = QStringLiteral("down");
+                sortValue = 2;
+                tip = QStringLiteral("Tunnel registered but failing its signed "
+                                     "health probe (%1)")
+                          .arg(tunnel.endpoint);
+            }
+            if (!tunnel.integrity.isEmpty() &&
+                tunnel.integrity != QLatin1String("ok"))
+                tip += QStringLiteral("\nIntegrity: %1").arg(tunnel.integrity);
+        }
+        auto *item = new SortTableWidgetItem(text);
+        item->setData(kTableSortRole, sortValue);
+        item->setToolTip(tip);
+        return item;
+    };
+    auto makeReachabilityCell = [this, &source](
+                                    const QString &nodeName)
+        -> SortTableWidgetItem * {
+        const QString key = source + QLatin1Char('|') +
+                            nodeName.trimmed().toLower();
+        const QJsonObject probe = m_mirrorReachabilityCache.value(key);
+        const bool pending = m_mirrorReachabilityInFlight.contains(key) ||
+                             probe.isEmpty();
+        const bool loaded = probe.value(QStringLiteral("readmeLoaded")).toBool();
+        QString text;
+        QString tip;
+        double sortValue = 0;
+        if (pending) {
+            text = QStringLiteral("Checking\u2026");
+            tip = QStringLiteral(
+                "Requesting README.md from this exact mirror; failover is disabled.");
+            sortValue = 1;
+        } else if (loaded) {
+            const int latency = probe.value(QStringLiteral("latencyMs")).toInt();
+            text = latency > 0
+                       ? QStringLiteral("README \u00b7 %1 ms").arg(latency)
+                       : QStringLiteral("README loaded");
+            tip = QStringLiteral(
+                "This exact mirror returned README.md successfully (HTTP %1).")
+                      .arg(probe.value(QStringLiteral("status")).toInt(200));
+            sortValue = 3;
+        } else {
+            text = QStringLiteral("Unavailable");
+            const QString reason =
+                probe.value(QStringLiteral("reason")).toString();
+            const int status = probe.value(QStringLiteral("status")).toInt();
+            tip = QStringLiteral(
+                "This exact mirror did not return README.md; no other mirror was used.");
+            if (status > 0)
+                tip += QStringLiteral("\nHTTP %1").arg(status);
+            if (!reason.isEmpty())
+                tip += QStringLiteral("\n%1").arg(reason);
+            sortValue = 2;
+        }
+        auto *item = new SortTableWidgetItem(text);
+        item->setData(kTableSortRole, sortValue);
+        item->setToolTip(tip);
+        return item;
+    };
     // A right-aligned tally cell: em-dash when the count is unknown (-1), else the
     // (abbreviated) number, sorting on the raw value.
     auto makeServeCountCell = [](int value, const QString &tip) -> SortTableWidgetItem * {
@@ -1565,6 +1828,9 @@ void MainWindow::loadMirrorNodesPanel()
     // Node ids (keys) already shown, so a catalog record published under a node's
     // former name doesn't add a second row for the same identity (adhoc #46).
     QSet<QString> shownIds;
+    // Exact node names to probe once the table is complete. Deferring network
+    // starts keeps reply callbacks from re-entering this row-building pass.
+    QSet<QString> reachabilityNodes;
     // One activity dot per active node, fed to the live strip atop the panel.
     QVector<MirrorNodeDot> activityDots;
     // Build a right-aligned numeric count cell (Commits/Branches/Pulls/
@@ -1818,6 +2084,11 @@ void MainWindow::loadMirrorNodesPanel()
                     .arg(pendingPush == 1 ? "" : "s"));
         }
         m_mirrorNodesTable->setItem(row, MirrorNodeColSynced, syncedItem);
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColSyncDelay,
+            makeSyncDelayCell(advert ? advert->updatedMs : 0,
+                              commitIdentity.committedAtMs,
+                              advert ? advert->commit : QString(), isSource));
 
         // Tally for the owner-only alert below: are we the source of truth, and
         // how many other nodes are serving a state that doesn't match it.
@@ -1914,20 +2185,28 @@ void MainWindow::loadMirrorNodesPanel()
         idItem->setToolTip(node.id);
         m_mirrorNodesTable->setItem(row, MirrorNodeColId, idItem);
 
-        // Clones / website serves: per-node local counters. Our own row reads the
-        // freshest count straight from the local tally (keyed as onRequestServed
-        // writes it); peers come from their published catalog record (serveCounts).
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColTunnel,
+            makeTunnelCell(tunnelByNode.value(nodeDisplay.trimmed().toLower())));
+
+        // Clones / website serves. The authoritative tally is router-counted by
+        // the Worker and arrives via /mirrors (serveCounts) for every node,
+        // ourselves included — the retired per-repository transport was the last
+        // thing that let a node count its own traffic. Our own row still folds
+        // in the legacy local tally (kept as onRequestServed wrote it) when it
+        // is the larger figure, so pre-router history isn't lost.
         int nodeClones = -1, nodeWebsite = -1;
-        if (node.self) {
-            const QPair<int, int> s =
-                m_repoStats.value(catalogOwner(repo) + "/" + repo.name);
-            nodeClones = s.second;
-            nodeWebsite = qMax(0, s.first - s.second);
-        } else {
+        {
             const QPair<int, int> s =
                 serveCounts.value(nodeDisplay.trimmed().toLower(), {-1, -1});
             nodeClones = s.first;
             nodeWebsite = s.second;
+        }
+        if (node.self) {
+            const QPair<int, int> s =
+                m_repoStats.value(catalogOwner(repo) + "/" + repo.name);
+            nodeClones = qMax(nodeClones, s.second);
+            nodeWebsite = qMax(nodeWebsite, qMax(0, s.first - s.second));
         }
         m_mirrorNodesTable->setItem(row, MirrorNodeColClones,
                                     makeServeCountCell(nodeClones, clonesTip(nodeClones)));
@@ -1943,6 +2222,12 @@ void MainWindow::loadMirrorNodesPanel()
         markMismatch(artifactsItem, countMismatch(nodeArtifacts, refArtifacts),
                      QString::number(refArtifacts));
         m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts, artifactsItem);
+        const QString reachabilityNode = nodeDisplay.trimmed().toLower();
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColReachability,
+            makeReachabilityCell(reachabilityNode));
+        if (!reachabilityNode.isEmpty())
+            reachabilityNodes.insert(reachabilityNode);
         ++count;
     }
 
@@ -2073,6 +2358,10 @@ void MainWindow::loadMirrorNodesPanel()
                 syncedItem->setToolTip(
                     QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
             m_mirrorNodesTable->setItem(row, MirrorNodeColSynced, syncedItem);
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColSyncDelay,
+                makeSyncDelayCell(qint64(m.value("lastSync").toDouble()),
+                                  catIdentity.committedAtMs, catCommit, isSource));
             const qint64 nodeBytes = qint64(m.value("sizeBytes").toDouble());
             auto *sizeItem = new SortTableWidgetItem(
                 nodeBytes > 0 ? formatByteSize(nodeBytes)
@@ -2169,6 +2458,10 @@ void MainWindow::loadMirrorNodesPanel()
             if (!catId.isEmpty())
                 catIdItem->setToolTip(catId);
             m_mirrorNodesTable->setItem(row, MirrorNodeColId, catIdItem);
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColTunnel,
+                makeTunnelCell(tunnelByNode.value(
+                    nodeName.trimmed().toLower())));
             // Clones / website serves the publishing node reported (adhoc #56 kin);
             // an em-dash for records predating the counters.
             const int catClones = m.value("clonesServed").toInt(-1);
@@ -2189,6 +2482,11 @@ void MainWindow::loadMirrorNodesPanel()
                          QString::number(refArtifacts));
             m_mirrorNodesTable->setItem(row, MirrorNodeColArtifacts,
                                         catArtifactsItem);
+            const QString reachabilityNode = nodeName.trimmed().toLower();
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColReachability,
+                makeReachabilityCell(reachabilityNode));
+            reachabilityNodes.insert(reachabilityNode);
             ++count;
         }
     }
@@ -2213,17 +2511,26 @@ void MainWindow::loadMirrorNodesPanel()
                             source);
     }
 
+    for (const QString &nodeName : std::as_const(reachabilityNodes))
+        fetchMirrorReachability(
+            sourceOwner,
+            repoSegment(repo.name, QStringLiteral("repository")),
+            source, nodeName);
+
     m_mirrorNodesTable->setSortingEnabled(true);
 
-    // Show the mirror-node dots as blips inside the relay radar (adhoc #122).
-    if (m_relayRadar) {
-        QVector<RelayRadarWidget::Blip> blips;
-        blips.reserve(activityDots.size());
-        for (const MirrorNodeDot &d : activityDots)
-            blips.append(RelayRadarWidget::Blip{d.id, d.online, d.behind,
-                                                d.integrityFailing});
-        static_cast<RelayRadarWidget *>(m_relayRadar)->setBlips(blips);
+    // Tint the chrome line's node dots with this repo's per-node sync and
+    // integrity state (adhoc #122/#124): the dots themselves stay the whole
+    // network, but a node that is behind or failing this repo's integrity gate
+    // reads amber while the panel has it open.
+    QHash<QString, NodeDotRepoState> repoStates;
+    repoStates.reserve(activityDots.size());
+    for (const MirrorNodeDot &d : activityDots) {
+        const QString key = d.name.trimmed().toLower();
+        if (!key.isEmpty())
+            repoStates.insert(key, NodeDotRepoState{d.behind, d.integrityFailing});
     }
+    setNodeDotRepoStates(repoStates);
 
     if (m_mirrorNodesSummary) {
         // "· 3 nodes mirroring owner/repo · 12.4 MB each · 37.1 MB total"
@@ -2379,6 +2686,72 @@ void MainWindow::fetchCatalogMirrors(const QString &owner, const QString &repo,
                 loadMirrorNodesPanel();
         }
     });
+}
+
+void MainWindow::fetchMirrorReachability(const QString &owner,
+                                         const QString &repo,
+                                         const QString &source,
+                                         const QString &node)
+{
+    if (!m_networkAccess || owner.isEmpty() || repo.isEmpty() || node.isEmpty())
+        return;
+    const QString normalizedNode = node.trimmed().toLower();
+    const QString key = source + QLatin1Char('|') + normalizedNode;
+    if (m_mirrorReachabilityInFlight.contains(key))
+        return;
+    const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+    const QJsonObject cached = m_mirrorReachabilityCache.value(key);
+    const qint64 clientCheckedAt =
+        qint64(cached.value(QStringLiteral("clientCheckedAt")).toDouble());
+    constexpr qint64 kReachabilityCacheMs = 60 * 1000;
+    if (clientCheckedAt > 0 && nowMs - clientCheckedAt < kReachabilityCacheMs)
+        return;
+
+    QUrl url = catalogApiUrl();
+    url.setPath(QStringLiteral("/api/repo/%1/%2/mirrors/%3/reachability")
+                    .arg(QString::fromUtf8(QUrl::toPercentEncoding(owner)),
+                         QString::fromUtf8(QUrl::toPercentEncoding(repo)),
+                         QString::fromUtf8(
+                             QUrl::toPercentEncoding(normalizedNode))));
+    m_mirrorReachabilityInFlight.insert(key);
+    QNetworkReply *reply = m_networkAccess->get(QNetworkRequest(url));
+    connect(reply, &QNetworkReply::finished, this,
+            [this, reply, key, source, normalizedNode] {
+                const int httpStatus = reply->attribute(
+                    QNetworkRequest::HttpStatusCodeAttribute).toInt();
+                const QByteArray body = reply->readAll();
+                reply->deleteLater();
+                m_mirrorReachabilityInFlight.remove(key);
+                QJsonObject result = QJsonDocument::fromJson(body).object();
+                if (!result.value(QStringLiteral("ok")).toBool() ||
+                    result.value(QStringLiteral("node")).toString().trimmed()
+                            .compare(normalizedNode, Qt::CaseInsensitive) != 0) {
+                    result = {
+                        {QStringLiteral("ok"), true},
+                        {QStringLiteral("node"), normalizedNode},
+                        {QStringLiteral("reachable"), false},
+                        {QStringLiteral("readmeLoaded"), false},
+                        {QStringLiteral("status"), httpStatus},
+                        {QStringLiteral("reason"),
+                         QStringLiteral("probe_endpoint_unavailable")},
+                    };
+                }
+                result.insert(QStringLiteral("clientCheckedAt"),
+                              double(QDateTime::currentMSecsSinceEpoch()));
+                m_mirrorReachabilityCache.insert(key, result);
+
+                if (m_repoDetailIndex < 0 ||
+                    m_repoDetailIndex >= m_repositories.size())
+                    return;
+                const RepositoryRecord &current =
+                    m_repositories.at(m_repoDetailIndex);
+                const QString currentSource =
+                    repoSegment(current.owner, QStringLiteral("owner")) +
+                    QLatin1Char('/') +
+                    repoSegment(current.name, QStringLiteral("repository"));
+                if (currentSource == source)
+                    loadMirrorNodesPanel();
+            });
 }
 
 void MainWindow::fetchReleaseDownloadCounts(const QString &owner, const QString &repo,
