@@ -456,7 +456,13 @@ public:
             m_pendingSilentAuth = false;
             m_pendingRestoreRepoIndex = -1;
             m_deferredStartupRun = true;
+            m_startupAuthResolved = true;
         }
+    }
+    void testMarkDeferredStartupRunning()
+    {
+        m_deferredStartupRun = true;
+        m_startupAuthResolved = false;
     }
     void testRunDeferredStartupNow() { runDeferredStartup(); }
     void testStartSession() { startSession(); }
@@ -809,6 +815,10 @@ private:
     void runDeferredStartup();
     bool m_deferredStartupStarted = false; // showEvent armed the triggers
     bool m_deferredStartupRun = false;     // runDeferredStartup already ran
+    // The top-bar sign-in pill stays hidden until the launch-time silent-auth
+    // lookup has completed. m_deferredStartupRun flips before that lookup while
+    // restoring the last view, so it cannot safely gate the pill by itself.
+    bool m_startupAuthResolved = false;
     bool m_framelessResizeCursorActive = false;
     int m_pendingRestoreRepoIndex = -1;    // last repo to reopen, or -1
     bool m_pendingSilentAuth = false;      // attempt auto-connect on first frame

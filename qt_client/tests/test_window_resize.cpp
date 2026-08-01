@@ -1003,6 +1003,14 @@ int main(int argc, char *argv[])
     check(window.testSpreadsheetResizeAfterMove(),
           QStringLiteral("column drag leaves others untouched after a move"));
 
+    // Deferred startup can begin while restoring the previous view, before the
+    // silent account lookup runs. That intermediate state must not flash a
+    // login prompt for an already-signed-in user.
+    window.testMarkDeferredStartupRunning();
+    window.testRefreshSignInButton();
+    check(!window.testSignInButtonVisible(),
+          QStringLiteral("the sign-in pill waits for silent auth after startup begins"));
+
     window.testEnableSessionStartBypass(true);
 
     // adhoc #115: startup has resolved now (the bypass marks it done) and this

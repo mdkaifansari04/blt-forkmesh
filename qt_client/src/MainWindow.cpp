@@ -605,6 +605,9 @@ void MainWindow::runDeferredStartup()
 
         // Silent auth has now had its say, so the top-bar pill can offer "Log in
         // / Sign up" (or stay hidden) knowing whether a user account is attached.
+        // This is intentionally separate from m_deferredStartupRun: restoring a
+        // view can update the chrome before this lookup happens.
+        m_startupAuthResolved = true;
         updateSignInButton();
     };
 
