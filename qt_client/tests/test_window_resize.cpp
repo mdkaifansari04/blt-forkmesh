@@ -1699,8 +1699,16 @@ int main(int argc, char *argv[])
         runGitChecked(wtRepo.path(),
                       {"worktree", "add", wtPath, "feature/keep-selected"});
         // Put the worktree's branch one commit ahead of main so the ahead/behind
-        // column has something non-trivial to report.
-        runGitChecked(wtPath, {"commit", "--allow-empty", "-m", "ahead by one"});
+        // column and compact file/churn badges have something non-trivial to
+        // report.
+        {
+            QFile changed(wtPath + QStringLiteral("/branch-change.txt"));
+            changed.open(QIODevice::WriteOnly);
+            changed.write("one added line\n");
+            changed.close();
+        }
+        runGitChecked(wtPath, {"add", "branch-change.txt"});
+        runGitChecked(wtPath, {"commit", "-m", "ahead by one"});
         const int wtIdx =
             window.testAddLocalRepository("me", "wtrepo", wtRepo.path());
         window.testOpenRepository(wtIdx);
@@ -1916,6 +1924,14 @@ int main(int argc, char *argv[])
         check(window.testBranchWorktreePath(QStringLiteral("main")).isEmpty(),
               QStringLiteral("a branch checked out in the main tree has an empty "
                              "Worktree cell (#172)"));
+        check(window.testBranchesUseCompactColumns(),
+              QStringLiteral("Branches folds Updated and Worktree into its compact "
+                             "Agent-style leading cell"));
+        const QString branchBadges = window.testBranchVisualBadges(
+            QStringLiteral("feature/keep-selected"));
+        check(branchBadges.startsWith(QStringLiteral("1|1|0|1|0|")),
+              QString("Branches leading cell carries file count, +/- churn, "
+                      "worktree and conflict data (got %1)").arg(branchBadges));
 
         // adhoc #191: the Branches list must also surface the issue/agent a branch
         // is attached to. An agent session bound to this repo's branch should
@@ -1927,7 +1943,9 @@ int main(int argc, char *argv[])
         issueSession.name = QStringLiteral("wtrepo");
         issueSession.branchName = QStringLiteral("feature/keep-selected");
         issueSession.issueNumber = 191;
-        issueSession.issueTitle = QStringLiteral("show attachment in branches list");
+        issueSession.issueTitle = QStringLiteral(
+            "show attachment in branches list with a deliberately complete agent "
+            "session title that remains available all the way to the pane edge");
         window.testAddAgentSession(issueSession);
         window.testReloadBranchesPanel();
         // The cell reads "#191 · <status>" — the status word rides along since
@@ -1967,6 +1985,13 @@ int main(int argc, char *argv[])
                   QStringLiteral("feature/keep-selected")) == issueSession.id,
               QStringLiteral("clicking the Issue / Agent cell jumps to that "
                              "branch's agent session (adhoc #258)"));
+        check(window.testRenderAgentDetailTitle(issueSession.issueTitle) ==
+                      issueSession.issueTitle &&
+                  !window.testAgentDetailTitleWraps(),
+              QString("agent detail keeps the complete session title on one line "
+                      "and lets only the pane edge clip it (got: %1, wraps=%2)")
+                  .arg(window.testAgentDetailTitleText())
+                  .arg(window.testAgentDetailTitleWraps()));
 
         // adhoc #185: the default branch must stay pinned to the top of the list.
         // feature/keep-selected was committed to more recently (it's a worktree one

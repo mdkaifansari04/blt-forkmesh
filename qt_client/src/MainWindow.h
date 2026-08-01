@@ -664,6 +664,9 @@ public:
     // Rebuilds off-thread now (adhoc #420), so this pumps until the rows land.
     void testReloadBranchesPanel();
     QString testBranchWorktreePath(const QString &branch) const;
+    // Compact Branch-cell data as files|added|removed|worktree|conflict|updated.
+    QString testBranchVisualBadges(const QString &branch) const;
+    bool testBranchesUseCompactColumns() const;
     // Inject an agent session so a test can prove the branches list surfaces the
     // issue/agent a branch is attached to (adhoc #191).
     void testAddAgentSession(const AgentSession &session)
@@ -677,9 +680,8 @@ public:
     // "Issue / Agent" column (column 4) text for `branch`, so a test can prove
     // the branches list names the issue/agent a branch is attached to (adhoc #191).
     QString testBranchAttachmentText(const QString &branch) const;
-    // Whether the "Issue / Agent" cell (column 4) for `branch` carries an icon, so
-    // a test can prove the branches list stamps the agent's status icon on a branch
-    // an agent is working (adhoc #251).
+    // Whether the leading Branch cell for `branch` carries an icon, so a test can
+    // prove the list stamps agent status at the row's left edge (adhoc #251).
     bool testBranchAttachmentHasIcon(const QString &branch) const;
     // Branch names (column 0) in row order, so a test can prove the default branch
     // is pinned to the top of the list regardless of commit recency (adhoc #185).
@@ -758,6 +760,9 @@ public:
         return markAgentSessionsMerged(0, branch);
     }
     QString testAgentStatusCellText(int sessionId) const;
+    QString testAgentDetailTitleText() const;
+    bool testAgentDetailTitleWraps() const;
+    QString testRenderAgentDetailTitle(const QString &text);
     // adhoc #403: the badge data the Status cell hands its branch chip, read back
     // as "files|dirty|worktree", so a test can prove the chip's files-changed /
     // uncommitted / worktree-present markers are fed from the session's diff stat.
@@ -2895,10 +2900,20 @@ private:
         QHash<QString, QPair<int, int>> remoteAheadBehind;
         QHash<QString, QString> worktrees; // branch -> linked worktree path
     };
+    struct BranchChangeStat {
+        int files = -1;
+        int added = -1;
+        int removed = -1;
+    };
     // Runs on a worker thread: fills the git-derived half of `data`.
     static BranchesPanelData readBranchesPanelGit(BranchesPanelData data);
     // Builds the table rows from a gathered snapshot (GUI thread, no git).
     void renderBranchesPanel(const BranchesPanelData &data);
+    // Fill the compact files/+/- badges after the table is visible. Computing a
+    // range numstat for every branch can be expensive in a large repository, so
+    // this deliberately runs as a second, cached worker pass rather than holding
+    // up the initial Branches render.
+    void startBranchChangeStats(const BranchesPanelData &data);
     void loadBranchesPanel();
     QWidget *buildWorktreesTab();
     void loadWorktreesPanel();
@@ -5463,6 +5478,9 @@ private:
     // rebuilds and the detail pane reuse it rather than re-shelling git.
     QHash<QString, bool> m_branchConflictCache;
     QSet<QString> m_branchConflictProbes; // branches a worker is probing right now
+    QHash<QString, BranchChangeStat> m_branchChangeStatsCache;
+    int m_branchChangeStatsGen = 0;
+    bool m_branchChangeStatsLoading = false;
     // Probe the given branches (pairs of branch name + cache key) for conflicts
     // with `base` off the GUI thread, painting each verdict into the table when
     // it lands.
