@@ -21,7 +21,17 @@ bool runGit(const QString &dir, const QStringList &args, QString *output,
     QProcess process;
     process.setWorkingDirectory(dir);
     process.setProcessChannelMode(QProcess::SeparateChannels);
-    process.start(QStringLiteral("git"), args);
+    // Headless mirrors are commonly provisioned on small VPS plans. Keep Git's
+    // packing processes from sizing their worker count and caches from the host
+    // CPU count: an initial flagship fetch must not consume the RAM sshd and
+    // the node itself need in order to finish registering.
+    QStringList boundedArgs{
+        QStringLiteral("-c"), QStringLiteral("pack.threads=1"),
+        QStringLiteral("-c"), QStringLiteral("core.deltaBaseCacheLimit=16m"),
+        QStringLiteral("-c"), QStringLiteral("pack.deltaCacheSize=16m"),
+        QStringLiteral("-c"), QStringLiteral("pack.windowMemory=16m")};
+    boundedArgs.append(args);
+    process.start(QStringLiteral("git"), boundedArgs);
     if (!process.waitForFinished(timeoutMs)) {
         process.kill();
         process.waitForFinished(5000);

@@ -375,6 +375,7 @@ from urls import (  # noqa: E402
     REPO_SHARES_RE,
     REPO_SECURITY_SCANS_RE,
     REPO_MIRRORS_RE,
+    REPO_MIRROR_REACHABILITY_RE,
     REPO_ABOUT_RE,
     REPO_LOGO_RE,
     REPO_LOGO_SUGGESTIONS_RE,
@@ -41214,9 +41215,8 @@ async def https_mirror_health_cron(env):
     rows = await d1_all(
         env,
         """SELECT node_bi,node_name,base_url,public_key
-             FROM mirror_https_endpoints
+            FROM mirror_https_endpoints
             ORDER BY
-              CASE WHEN checked_at = 0 THEN 0 ELSE 1 END ASC,
               CASE WHEN updated_at > checked_at
                    THEN updated_at ELSE checked_at END ASC,
               node_name ASC
@@ -41912,6 +41912,140 @@ async def _https_mirror_repository_proof(env, endpoint, context, operation):
     }
     endpoint["refsSha256"] = refs_digest
     return operation in set(operations)
+
+
+async def repo_mirror_reachability_handler(
+        env, request, owner, repo, requested_node):
+    """Fetch README.md from one exact eligible mirror without failover.
+
+    Ordinary public repository reads intentionally rotate and fail over, which
+    makes them unsuitable for an operator table: a successful response might
+    have come from a different node. This bounded probe selects only the named
+    endpoint, verifies its fresh repository proof, performs the same
+    router-signed blob request as a real read, and returns metadata only. README
+    contents and the endpoint origin never leave the probe.
+    """
+    if method_name(request) != "GET":
+        return json_response({"error": "method_not_allowed"}, status=405)
+    node = clean_string(
+        requested_node, MAX_NODE_NAME).strip().lower()
+    if not valid_node_name(node):
+        return json_response({"error": "not_found"}, status=404)
+    context = await _https_mirror_public_context(env, owner, repo)
+    if context is None or node not in context.get("nodes", set()):
+        return json_response(
+            {"error": "not_found"}, status=404, cache_control="no-store")
+
+    # Organization aliases are rewritten before route matching, but the
+    # gateway stores the public organization name as a serving alias. Recover
+    # that original name from the untouched Request URL and bind it only when
+    # D1 confirms it maps to the rewritten backing node. Without this, the
+    # proof can accidentally address whichever peer record was selected as the
+    # canonical catalog source (for example mirror9), causing every other
+    # otherwise-valid mirror to fail its exact reachability check.
+    try:
+        original_url = urlparse(str(getattr(request, "url", "") or ""))
+        original_match = REPO_MIRROR_REACHABILITY_RE.match(original_url.path)
+        route_owner = (
+            safe_segment(original_match.group(1)) if original_match else "")
+        route_repo = (
+            safe_segment(original_match.group(2)) if original_match else "")
+        if (
+            route_owner
+            and route_repo.lower() == repo.lower()
+            and route_owner != owner
+            and await _org_repo_node(env, route_owner, route_repo) == owner
+        ):
+            context = dict(context)
+            context["routeOwner"] = route_owner
+    except Exception:
+        pass
+
+    row = await d1_first(
+        env,
+        """SELECT node_name,base_url,public_key,registration_sig,issued_at,
+                  checked_at,latency_ms,region,healthy,integrity,abuse_blocked
+             FROM mirror_https_endpoints WHERE node_name=?""",
+        node,
+    )
+    endpoint = _https_mirror_endpoint_projection(row or {})
+    now = int(Date.now())
+
+    def result(reachable, reason, status=0, latency=0):
+        return json_response({
+            "ok": True,
+            "node": node,
+            "reachable": bool(reachable),
+            "readmeLoaded": bool(reachable),
+            "path": "README.md",
+            "status": int(status or 0),
+            "latencyMs": max(0, min(int(latency or 0), 60_000)),
+            "checkedAt": now,
+            "reason": clean_string(reason, 80),
+        }, cache_control="no-store, max-age=0, must-revalidate")
+
+    if not row or not https_routing.endpoint_eligible(endpoint, now):
+        return result(False, "endpoint_unavailable")
+    if not await _https_mirror_repository_proof(
+            env, endpoint, context, "blob"):
+        return result(False, "repository_proof_failed")
+    router_public_key = _https_mirror_router_public_key(env)
+    router_seed = _https_mirror_router_seed(env)
+    target = https_routing.masked_target_url(
+        endpoint["baseUrl"], context.get("routeOwner") or context["owner"],
+        context["repo"], "blob", {"path": "README.md"})
+    parsed_target = urlparse(target) if target else None
+    signed_path = (
+        parsed_target.path
+        + (("?" + parsed_target.query) if parsed_target.query else "")
+        if parsed_target else ""
+    )
+    request_id = _b64url_encode(_random_bytes(18))
+    issued_at = int(Date.now())
+    body_digest = https_routing.empty_body_sha256()
+    message = https_routing.request_message(
+        node, "GET", signed_path, body_digest, request_id, issued_at)
+    signature = (
+        await ed25519_sign(
+            router_public_key, router_seed, message.encode("utf-8"))
+        if router_public_key and router_seed and message else "")
+    if not target or not signature:
+        return result(False, "router_unavailable")
+    headers = {
+        "X-ForkMesh-Node": node,
+        "X-ForkMesh-Request-Id": request_id,
+        "X-ForkMesh-Issued-At": str(issued_at),
+        "X-ForkMesh-Body-Sha256": body_digest,
+        "X-ForkMesh-Signature": signature,
+    }
+    started = int(Date.now())
+    try:
+        upstream = await js_fetch_with_timeout(
+            target,
+            {"method": "GET", "headers": headers, "redirect": "manual"},
+            HTTPS_MIRROR_FETCH_TIMEOUT_SECONDS,
+        )
+        status = int(getattr(upstream, "status", 0) or 0)
+        latency = int(Date.now()) - started
+        announced = int(upstream.headers.get("content-length") or 0)
+        if announced > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+            return result(False, "readme_response_too_large", status, latency)
+        raw = str(await upstream.text())
+        if len(raw.encode("utf-8")) > HTTPS_MIRROR_MANIFEST_MAX_BYTES:
+            return result(False, "readme_response_too_large", status, latency)
+        value = json.loads(raw) if raw else {}
+        loaded = bool(
+            status == 200
+            and isinstance(value, dict)
+            and value.get("ok") is True
+            and isinstance(value.get("content"), str)
+        )
+        return result(
+            loaded, "readme_loaded" if loaded else "readme_unavailable",
+            status, latency)
+    except Exception:
+        return result(
+            False, "request_failed", 0, int(Date.now()) - started)
 
 
 def _https_mirror_merge_body(raw, pull_number):
@@ -44638,6 +44772,17 @@ class Default(WorkerEntrypoint):
                 repo,
                 security_scans_match.group(3),
             )
+
+        mirror_reachability_match = REPO_MIRROR_REACHABILITY_RE.match(
+            url.path)
+        if mirror_reachability_match:
+            owner = safe_segment(mirror_reachability_match.group(1))
+            repo = safe_segment(mirror_reachability_match.group(2))
+            node = safe_segment(mirror_reachability_match.group(3))
+            if not owner or not repo or not node:
+                return json_response({"error": "not_found"}, status=404)
+            return await repo_mirror_reachability_handler(
+                self.env, request, owner, repo, node)
 
         mirrors_match = REPO_MIRRORS_RE.match(url.path)
         if mirrors_match:

@@ -3424,6 +3424,13 @@ void MainWindow::maybeAutoFileStallAgent(qint64 peakMs, const QString &backtrace
     // never turn those synthetic stalls into real CLI agent processes.
     return;
 #endif
+    // A headless mirror has no interactive GUI to repair, and its expected
+    // low-memory Git/encryption work can delay the offscreen event loop. Never
+    // turn those service-side diagnostics into coding-agent processes: doing
+    // so competes with the mirror seal for RAM/disk and can create a feedback
+    // loop where each stall launches more work and makes the next stall worse.
+    if (m_headless)
+        return;
     if (!QSettings().value(kAutoAgentOnStallSetting, true).toBool())
         return;
     // The watchdog now *records* everything past 500 ms (sub-second jank matters
