@@ -68,6 +68,18 @@ SCHEMA_STATEMENTS = [
     """CREATE TABLE IF NOT EXISTS repositories (
         key_bi TEXT PRIMARY KEY, owner_bi TEXT NOT NULL, data TEXT NOT NULL)""",
     "CREATE INDEX IF NOT EXISTS idx_repos_owner ON repositories(owner_bi)",
+    # The first concrete publishing device becomes the repository authority.
+    # Additional devices owned by the same account remain useful mirrors but
+    # cannot replace its signed state merely because they cloned the checkout.
+    """CREATE TABLE IF NOT EXISTS repo_source_authorities (
+        repo_bi TEXT PRIMARY KEY, node_id TEXT NOT NULL,
+        machine_name TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL)""",
+    """CREATE TABLE IF NOT EXISTS repo_device_mirrors (
+        repo_bi TEXT NOT NULL, node_id TEXT NOT NULL, data TEXT NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (repo_bi, node_id))""",
+    "CREATE INDEX IF NOT EXISTS idx_repo_device_mirrors_repo "
+    "ON repo_device_mirrors(repo_bi, updated_at DESC)",
     # Per-repo collaborator ACL (issue #9): which grantee accounts an owner has
     # shared a private repo with. repo_bi = blind_index("<owner>/<repo>") (the
     # same key as repositories.key_bi); grantee_bi = blind_index(grantee account
