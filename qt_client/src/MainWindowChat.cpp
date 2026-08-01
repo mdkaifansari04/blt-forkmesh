@@ -5605,7 +5605,7 @@ void MainWindow::updateNavRebuildButton()
 
 // The top-bar "Log in / Sign up" pill replaces the retired first-run screen
 // (adhoc #115), so it must be honest about state rather than eager: it stays
-// hidden until the deferred startup has actually resolved who this machine is.
+// hidden until silent auth has actually resolved who this machine is.
 // Silent auth runs a few seconds after launch and is what fills
 // nodeOwnerDisplayName() on a signed-in machine — offering "Log in" before then
 // would flash the pill on every start for a user who is already logged in. A
@@ -5616,7 +5616,7 @@ void MainWindow::updateSignInButton()
     if (!m_navSignInButton)
         return;
     const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
-    m_navSignInButton->setVisible(!m_headless && m_deferredStartupRun && !signedIn);
+    m_navSignInButton->setVisible(!m_headless && m_startupAuthResolved && !signedIn);
 }
 
 void MainWindow::showSignInMenu()
