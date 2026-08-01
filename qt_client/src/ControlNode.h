@@ -466,6 +466,11 @@ bool vultrInstanceIsIpv6Only(const QJsonObject &instance);
 // carrying its hosting provider in its name (adhoc #344).
 QString nextMirrorNodeName(const QStringList &existingNames);
 
+// The device-variable names a stored Vultr API key may carry, in resolution
+// order. The first entry is the canonical name every save writes, so a key
+// entered on any page is the one every later run resolves (adhoc #127).
+QStringList vultrApiKeyVariableNames();
+
 // Resolve a Vultr API key this node already stores as a device-local Actions
 // variable (same contract as cloudflareApiTokenFromVariables).
 QString vultrApiKeyFromVariables(const QMap<QString, QString> &variables);
