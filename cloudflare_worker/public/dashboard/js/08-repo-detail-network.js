@@ -2052,7 +2052,12 @@
         "[data-repo-issue-mcp-prompt]",
       );
       if (issueMcpPromptButton) {
-        void copyIssueMcpPrompt(issueMcpPromptButton);
+        // A plain click copies straight away with a generated connector token.
+        // Shift-click opens the paste box instead, so a node that already
+        // published its own connector can hand over that token by hand.
+        void copyIssueMcpPrompt(issueMcpPromptButton, {
+          replaceToken: event.shiftKey === true,
+        });
         return;
       }
 

@@ -1334,7 +1334,7 @@ private:
         return QColor("#3fb950");     // green: light load
     }
 
-    static constexpr int kSide = 40;      // button-sized square (w == h)
+    static constexpr int kSide = 34;      // button-sized square (w == h)
     static constexpr int kMaxPoints = 60; // ~1 minute of history at 1 Hz
     QString m_label;
     QString m_value;
@@ -1428,39 +1428,37 @@ private:
     double m_max = 1.0;
 };
 
-// Spinning-radar dish with a latency readout centered inside it, shown on the
-// window-chrome line just left of the CPU/MEM/DISK sparklines (adhoc #87). The
-// dish always sweeps (a continuously rotating wedge) so the relay looks
-// "alive"; a one-minute probe feeds in the round-trip time, which renders as
-// "33ms" over the middle of the dish — mirroring how ResourceSparkline centers
-// its label/value over the chart. When the relay stops answering the whole
-// control flips to a red alert (red dish + "offline"). Colour-grades the
-// latency green/amber so a degrading link is visible at a glance.
-class RelayRadarWidget : public QWidget
+// The relay link's speed as a single coloured dot pinned above the instance
+// logo on the window-chrome line (adhoc #124). It is what is left of the
+// spinning radar dish that used to sit beside the CPU/MEM/DISK sparklines
+// (adhoc #87): the dish's node blips became the node dots next to the agent
+// fleet, and its latency grading survives here as the dot's colour — green when
+// the link is snappy, amber when it is sluggish, red when it is very slow or
+// the relay stopped answering. The measured round-trip itself rides the
+// instance button's tooltip and the relay dropdown, so the chrome line stays
+// free of another number.
+class RelaySpeedDot : public QWidget
 {
 public:
-    explicit RelayRadarWidget(QWidget *parent = nullptr) : QWidget(parent)
+    explicit RelaySpeedDot(QWidget *parent = nullptr) : QWidget(parent)
     {
-        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
-        setFixedSize(kSide, kSide); // same button-sized square as the resource sparklines
-        setCursor(Qt::PointingHandCursor);
-        refreshTooltip();
-        // Drive the sweep: a slow, steady rotation independent of probe timing.
-        m_sweep = new QTimer(this);
-        m_sweep->setInterval(60);
-        connect(m_sweep, &QTimer::timeout, this, [this] {
-            m_angle = (m_angle + 9) % 360;
-            update();
-        });
-        m_sweep->start();
+        setFixedSize(kSide, kSide);
+        // Clicks belong to the logo underneath: the dot is pure indicator, so
+        // pressing it still opens the relay switcher.
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        if (parent)
+            parent->installEventFilter(this);
+        reposition();
     }
 
     // Record a successful probe (round-trip milliseconds).
     void setLatency(int ms)
     {
-        m_latencyMs = qMax(0, ms);
+        ms = qMax(0, ms);
+        if (!m_unreachable && m_latencyMs == ms)
+            return;
+        m_latencyMs = ms;
         m_unreachable = false;
-        refreshTooltip();
         update();
     }
 
@@ -1470,211 +1468,70 @@ public:
         if (m_unreachable)
             return;
         m_unreachable = true;
-        refreshTooltip();
         update();
     }
 
-    // A mirror node echoed inside the dish as a radar blip, reusing the exact
-    // colours and shapes of the Mirror-nodes activity strip so the two read as
-    // the same thing (adhoc #122): online nodes are green (amber when out of
-    // sync), offline nodes grey, and a node failing the relay's integrity pin
-    // draws as an amber triangle rather than a dot.
-    struct Blip
-    {
-        QString id;
-        bool online = false;
-        bool behind = false;
-        bool integrityFailing = false;
-    };
+    int latencyMs() const { return m_latencyMs; }
+    bool unreachable() const { return m_unreachable; }
 
-    void setBlips(const QVector<Blip> &blips)
+    // Green when snappy, amber when sluggish, red when very slow — the same
+    // grading the dish used, so the colours mean exactly what they used to.
+    // A latency of -1 (nothing measured yet) grades as unknown.
+    static QColor speedColor(int ms, bool unreachable)
     {
-        m_blips = blips;
-        update();
+        if (unreachable)
+            return QColor("#f85149"); // red: not answering
+        if (ms < 0)
+            return QColor("#8b949e"); // grey: still measuring
+        if (ms >= 1000)
+            return QColor("#f85149"); // red
+        if (ms >= 300)
+            return QColor("#d29922"); // amber
+        return QColor("#3fb950");     // green
     }
-
-    std::function<void()> onClicked;
 
 protected:
-    void mouseReleaseEvent(QMouseEvent *event) override
+    bool eventFilter(QObject *watched, QEvent *event) override
     {
-        if (event->button() == Qt::LeftButton && onClicked)
-            onClicked();
-        QWidget::mouseReleaseEvent(event);
+        if (watched == parentWidget() && (event->type() == QEvent::Resize ||
+                                          event->type() == QEvent::Show))
+            reposition();
+        return QWidget::eventFilter(watched, event);
     }
 
     void paintEvent(QPaintEvent *) override
     {
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing, true);
+        const QColor colour = speedColor(m_latencyMs, m_unreachable);
 
-        // The dish fills almost the whole square, same footprint as the
-        // resource sparklines' card.
-        const qreal dish = width() - 4.0;
-        const QRectF dishRect((width() - dish) / 2.0, (height() - dish) / 2.0,
-                              dish, dish);
-        const QPointF c = dishRect.center();
-        const qreal r = dish / 2.0;
-        const QColor accent = m_unreachable ? QColor("#f85149")  // red alert
-                                            : statusColor();
-
-        // Faint radar rings.
-        QColor ring = accent;
-        ring.setAlpha(70);
-        p.setPen(QPen(ring, 1.0));
-        p.setBrush(Qt::NoBrush);
-        p.drawEllipse(dishRect);
-        p.drawEllipse(c, r * 0.5, r * 0.5);
-
-        // Rotating sweep wedge, fading behind the leading edge.
-        QConicalGradient sweep(c, -m_angle);
-        QColor lead = accent;
-        QColor tail = accent;
-        tail.setAlpha(0);
-        sweep.setColorAt(0.0, lead);
-        sweep.setColorAt(0.18, tail);
-        sweep.setColorAt(1.0, tail);
+        // Soft halo so the dot reads against the favicon it sits over, then the
+        // dot itself ringed in the chrome background (same treatment as the
+        // avatar's connection dot).
+        QColor halo = colour;
+        halo.setAlpha(60);
         p.setPen(Qt::NoPen);
-        p.setBrush(sweep);
-        p.drawPie(dishRect, -m_angle * 16, 70 * 16);
+        p.setBrush(halo);
+        p.drawEllipse(QRectF(rect()));
 
-        // Centre blip.
-        p.setBrush(accent);
-        p.drawEllipse(c, 1.4, 1.4);
-
-        // Latency text / alert, centered in the middle of the dish — mirrors
-        // how ResourceSparkline overlays its value on top of its chart.
-        QFont f = font();
-        double pt = f.pointSizeF() > 0 ? qMin(8.0, f.pointSizeF()) : 7.0;
-        QString label;
-        QColor textCol;
-        if (m_unreachable) {
-            label = QStringLiteral("offline");
-            textCol = QColor("#f85149");
-        } else if (m_latencyMs < 0) {
-            label = QString::fromUtf8("\xE2\x80\xA6"); // ellipsis: probing
-            textCol = palette().color(QPalette::WindowText);
-            textCol.setAlpha(150);
-        } else {
-            label = QStringLiteral("%1ms").arg(m_latencyMs);
-            textCol = statusColor();
-        }
-        const double avail = dish - 4.0;
-        for (; pt > 5.5; pt -= 0.5) {
-            f.setPointSizeF(pt);
-            if (QFontMetrics(f).horizontalAdvance(label) <= avail)
-                break;
-        }
-        f.setPointSizeF(pt);
-        p.setFont(f);
-        // A soft backing disc behind the text keeps it legible as the sweep
-        // wedge rotates underneath.
-        QColor backing = palette().color(QPalette::Window);
-        backing.setAlpha(190);
-        p.setPen(Qt::NoPen);
-        p.setBrush(backing);
-        const QFontMetrics fm(f);
-        const qreal textR = qMax(fm.horizontalAdvance(label), fm.height()) / 2.0 + 2.0;
-        p.drawEllipse(c, textR, textR);
-        p.setPen(textCol);
-        p.drawText(dishRect, Qt::AlignCenter, label);
-
-        // Mirror nodes echoed as blips on the dish, in the same colours/shapes
-        // as the Mirror-nodes activity strip (adhoc #122). Every blip is always
-        // visible — a solid filled shape with no border and no delay waiting on
-        // the sweep (adhoc #141). The passing beam still adds a soft phosphor
-        // halo flare so the scope keeps its live feel, but the shape underneath
-        // never dims or hides. Each node owns an evenly-spaced slot around one
-        // ring so the blips fan out cleanly and never overlap. Drawn last, on
-        // top of the centre latency read-out and pushed out near the rim, so
-        // every shape reads as a complete circle (or an integrity-warning
-        // triangle) rather than a slice clipped by the dish edge or the text
-        // backing disc.
-        //
-        // The pie/gradient start at Qt angle -m_angle, and Qt angles run
-        // counter-clockwise on screen while the blip positions below use
-        // (cos, sin) in y-down coordinates — i.e. clockwise. So in the blips'
-        // clockwise convention the leading edge sits at +m_angle, and the beam
-        // flares a blip as the sweep passes its own slot angle.
-        const int leadDeg = m_angle % 360;
-        constexpr int kFadeDeg = 130; // beam flare: degrees the halo brightens behind the sweep
-        const int n = m_blips.size();
-        for (int i = 0; i < n; ++i) {
-            const Blip &b = m_blips.at(i);
-            // Evenly space the blips around the ring by index, so a growing
-            // roster fans out cleanly instead of clustering on a hash.
-            const int blipDeg = n > 0 ? (i * 360) / n : 0;
-            // Degrees the sweep has advanced past this blip; drives the halo
-            // flare only — the blip itself is always drawn at full brightness.
-            const int delta = (leadDeg - blipDeg + 360) % 360;
-            const qreal flare = delta <= kFadeDeg ? 1.0 - qreal(delta) / kFadeDeg : 0.0;
-
-            const qreal ang = qDegreesToRadians(qreal(blipDeg));
-            const QPointF pos = c + QPointF(qCos(ang), qSin(ang)) * (r * 0.80);
-            QColor col = b.online ? QColor(b.behind ? "#d29922" : "#3fb950")
-                                  : QColor("#484f58");
-            if (b.integrityFailing)
-                col = QColor("#d29922"); // amber caution, matching the strip
-
-            // Soft phosphor halo, brightest as the beam catches the blip.
-            QColor halo = col;
-            halo.setAlphaF(0.35 * flare);
-            p.setPen(Qt::NoPen);
-            p.setBrush(halo);
-            p.drawEllipse(pos, 2.6 + 2.0 * flare, 2.6 + 2.0 * flare);
-
-            // The solid filled shape itself — always visible, no border.
-            p.setPen(Qt::NoPen);
-            p.setBrush(col);
-            if (b.integrityFailing) {
-                // Amber caution triangle, matching the Mirror nodes table's
-                // error light.
-                const qreal s = 3.2;
-                p.drawPolygon(QPolygonF({QPointF(pos.x(), pos.y() - s),
-                                         QPointF(pos.x() + s, pos.y() + s),
-                                         QPointF(pos.x() - s, pos.y() + s)}));
-            } else {
-                p.drawEllipse(pos, 2.8, 2.8);
-            }
-        }
+        p.setPen(QPen(palette().color(QPalette::Window), 1.0));
+        p.setBrush(colour);
+        p.drawEllipse(QRectF(rect()).adjusted(1.5, 1.5, -1.5, -1.5));
     }
 
 private:
-    // Green when snappy, amber when sluggish, red when very slow.
-    QColor statusColor() const
+    // Centred on the logo's top edge, so it reads as a status light above the
+    // instance rather than a badge on one of its corners (the pending-join dot
+    // already owns the top-right corner).
+    void reposition()
     {
-        if (m_latencyMs < 0)
-            return palette().color(QPalette::WindowText);
-        if (m_latencyMs >= 1000)
-            return QColor("#f85149"); // red
-        if (m_latencyMs >= 300)
-            return QColor("#d29922"); // amber
-        return QColor("#3fb950");     // green
-    }
-    void refreshTooltip()
-    {
-        if (m_unreachable) {
-            setToolTip(QStringLiteral(
-                "Relay not responding \xE2\x80\x94 last probe timed out\n"
-                "Click to open Mirror nodes"));
-        } else if (m_latencyMs < 0) {
-            setToolTip(QStringLiteral(
-                "Measuring relay latency\xE2\x80\xA6\n"
-                "Click to open Mirror nodes"));
-        } else {
-            setToolTip(QStringLiteral(
-                           "Relay round-trip latency: %1 ms\n"
-                           "Probed every minute\nClick to open Mirror nodes")
-                           .arg(m_latencyMs));
-        }
+        if (QWidget *owner = parentWidget())
+            move(qMax(0, (owner->width() - width()) / 2), 0);
     }
 
-    static constexpr int kSide = 40; // matches ResourceSparkline's button-sized square
+    static constexpr int kSide = 10;
     int m_latencyMs = -1;       // last measured round-trip; -1 = unknown/probing
     bool m_unreachable = false; // relay failed to answer the last probe
-    int m_angle = 0;            // sweep rotation (degrees)
-    QTimer *m_sweep = nullptr;  // drives the spin
-    QVector<Blip> m_blips;      // mirror nodes echoed as blips inside the dish
 };
 
 // A matrix of tiny squares on the window-chrome line, one per agent session,
@@ -1833,6 +1690,118 @@ private:
     QTimer *m_sweep = nullptr; // only ticks while something is running
 };
 
+// The mesh companion to the fleet matrix (adhoc #124): one dot per node on the
+// network, stacked three deep in the same 3x7 grid the agent squares use and
+// sitting immediately right of them behind a faint divider, so one glance at
+// the chrome line covers both the agents and the machines. This is where the
+// relay radar's blips went when the dish was retired — same roster, same
+// colours (green serving, amber out of sync or failing an integrity gate, grey
+// offline) — except the dots are always the whole mesh rather than only the
+// repo whose Mirror-nodes tab happens to be open. Nodes are drawn as circles
+// where agents are rounded squares, so the two groups stay tellable apart.
+class NodeDotMatrix : public QWidget
+{
+public:
+    struct Dot {
+        QString name;
+        QColor color;
+        bool self = false; // this machine, ringed so it's findable
+    };
+
+    explicit NodeDotMatrix(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
+        setFixedHeight(kRows * kPitch);
+        setFixedWidth(0); // nothing to show until the first setDots()
+        setCursor(Qt::PointingHandCursor);
+        hide();
+    }
+
+    // Replace the mesh. Anything past the visible grid is dropped from the
+    // paint (the caller folds the remainder into the tooltip and puts the
+    // online nodes first), so the matrix can never grow the chrome line
+    // without bound.
+    void setDots(const QVector<Dot> &dots)
+    {
+        m_dots = dots.mid(0, kRows * kMaxColumns);
+        const int columns = (m_dots.size() + kRows - 1) / kRows;
+        setFixedWidth(columns * kPitch);
+        update();
+    }
+
+    // How many of the dots handed to setDots() actually fit in the grid.
+    int shownCount() const { return m_dots.size(); }
+
+    // Clicking a dot opens that node in the Network > Nodes list; clicking the
+    // empty space around them falls back to the list itself (empty name).
+    std::function<void(const QString &)> onDotClicked;
+
+protected:
+    void mousePressEvent(QMouseEvent *e) override
+    {
+        if (e->button() == Qt::LeftButton && onDotClicked) {
+            const int index = dotAt(e->position().toPoint());
+            onDotClicked(index >= 0 ? m_dots.at(index).name : QString());
+            // Same reason as AgentDotMatrix: an unhandled press on the
+            // window-chrome bar below turns into a system window-move.
+            e->accept();
+            return;
+        }
+        QWidget::mousePressEvent(e);
+    }
+
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        for (int i = 0; i < m_dots.size(); ++i) {
+            const Dot &dot = m_dots.at(i);
+            QColor color = dot.color;
+            color.setAlpha(205); // same weight as an idle agent square
+            const QPointF center = cellCenter(i);
+            p.setBrush(color);
+            p.setPen(Qt::NoPen);
+            p.drawEllipse(center, kRadius, kRadius);
+            if (dot.self) {
+                // A thin ring marks this machine among its peers.
+                QColor ring = palette().color(QPalette::WindowText);
+                ring.setAlpha(190);
+                p.setBrush(Qt::NoBrush);
+                p.setPen(QPen(ring, 0.9));
+                p.drawEllipse(center, kRadius + 1.0, kRadius + 1.0);
+            }
+        }
+    }
+
+private:
+    // Column-major fill, matching the agent matrix so the two grids line up
+    // row for row across the divider.
+    QPointF cellCenter(int index) const
+    {
+        const int column = index / kRows;
+        const int row = index % kRows;
+        return QPointF(column * kPitch + kPitch / 2.0,
+                       row * kPitch + kPitch / 2.0);
+    }
+
+    int dotAt(const QPoint &pos) const
+    {
+        const int column = pos.x() / kPitch;
+        const int row = pos.y() / kPitch;
+        if (column < 0 || row < 0 || row >= kRows)
+            return -1;
+        const int index = column * kRows + row;
+        return index < m_dots.size() ? index : -1;
+    }
+
+    static constexpr int kRows = 3;        // dots stacked per column
+    static constexpr int kPitch = 7;       // cell size, including its gap
+    static constexpr double kRadius = 2.3; // painted dot
+    static constexpr int kMaxColumns = 12; // ~36 nodes before the tooltip takes over
+
+    QVector<Dot> m_dots;
+};
+
 // The CI companion to the fleet matrix (adhoc #70): the most recent action runs
 // as a row of tiny status squares sitting immediately right of the agent dots,
 // so one glance at the chrome line covers both what the agents and what the
@@ -1983,10 +1952,12 @@ protected:
     }
 };
 
-// One mirror node's live state, as fed to the relay radar's blips (adhoc #122).
-// This was the dot model for the activity strip that floated above the Mirror
-// nodes tab (adhoc #197); the strip is gone (adhoc #420) but the radar still
-// draws the same per-node dots, so loadMirrorNodesPanel keeps building them.
+// One mirror node's live state for the repo the Mirror-nodes panel is showing
+// (adhoc #122). This was the dot model for the activity strip that floated
+// above the Mirror nodes tab (adhoc #197); the strip is gone (adhoc #420) and
+// so is the radar dish that inherited its blips (adhoc #124), but
+// loadMirrorNodesPanel still builds these so the chrome line's node dots can be
+// tinted with this repo's sync/integrity state.
 // A node the relay's integrity gate is rejecting is kept in the list even while
 // offline, so the warning stays visible instead of the node just disappearing
 // (adhoc #196).
@@ -5249,13 +5220,36 @@ inline QStringList splitIssueFieldList(const QString &text)
     return values;
 }
 
+// Every raster icon below is drawn at the app's device-pixel-ratio and tagged
+// with it, so HiDPI screens composite the pixmap 1:1 instead of upscaling a
+// logical-size raster into a pixelated blur (adhoc #139).
+inline qreal iconDevicePixelRatio()
+{
+    const qreal dpr = qGuiApp ? qGuiApp->devicePixelRatio() : 1.0;
+    return dpr > 0.0 ? dpr : 1.0;
+}
+
+// A w×h-logical-pixel transparent pixmap backed by a DPR-scaled raster;
+// QPainter coordinates on it stay logical.
+inline QPixmap crispIconPixmap(int w, int h, qreal dpr)
+{
+    QPixmap pm(qMax(1, qRound(w * dpr)), qMax(1, qRound(h * dpr)));
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    return pm;
+}
+
+inline QPixmap crispIconPixmap(int size, qreal dpr)
+{
+    return crispIconPixmap(size, size, dpr);
+}
+
 // A small platform emoji for a node's operating system.
 // Crisp vector icons for the server-rail footer (glyph fonts render these
 // inconsistently across platforms, so we draw them).
 inline QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
 {
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     p.translate(size / 2.0, size / 2.0);
@@ -5283,8 +5277,7 @@ inline QPixmap refreshPixmap(const QColor &color, double angleDeg, int size)
 // action is queued behind other work rather than actively running.
 inline QPixmap hourglassPixmap(const QColor &color, double angleDeg, int size)
 {
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
     p.translate(size / 2.0, size / 2.0);
@@ -5809,16 +5802,20 @@ inline QPixmap roundedAvatar(const QByteArray &png, int side,
     QPixmap src;
     if (png.isEmpty() || !src.loadFromData(png))
         return QPixmap();
-    QPixmap out(side, side);
-    out.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap out = crispIconPixmap(side, dpr);
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
     QPainterPath clip;
     const qreal radius = side * radiusRatio;
     clip.addRoundedRect(0, 0, side, side, radius, radius);
     p.setClipPath(clip);
-    p.drawPixmap(0, 0, src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                  Qt::SmoothTransformation));
+    QPixmap scaled = src.scaled(out.width(), out.height(),
+                                Qt::KeepAspectRatioByExpanding,
+                                Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    p.drawPixmap(0, 0, scaled);
     return out;
 }
 
@@ -5840,8 +5837,7 @@ inline QIcon osBadgeIcon(const QString &platform, bool online, int size)
     const QColor online_green("#2ea043");
     auto col = [&](const QColor &) { return online ? online_green : grey; };
 
-    QPixmap pm(size, size);
-    pm.fill(Qt::transparent);
+    QPixmap pm = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter g(&pm);
     g.setRenderHint(QPainter::Antialiasing);
     g.setPen(Qt::NoPen);
@@ -5914,8 +5910,7 @@ inline void saveProfileName(const QString &name)
 
 inline QIcon statusDotIcon(bool online)
 {
-    QPixmap pixmap(12, 12);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(12, iconDevicePixelRatio());
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setBrush(online ? QColor("#2ea043") : QColor("#6e7681"));
@@ -6949,15 +6944,16 @@ inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int
     // finished pixmaps keyed on the inputs so each (name,color,size) renders once.
     // UI-thread only, so a plain static map needs no locking.
     static QHash<QString, QPixmap> cache;
+    const qreal dpr = iconDevicePixelRatio();
     const QString key = name + QLatin1Char('|') +
                         QString::number(color.rgba(), 16) + QLatin1Char('|') +
-                        QString::number(size);
+                        QString::number(size) + QLatin1Char('|') +
+                        QString::number(dpr);
     const auto cached = cache.constFind(key);
     if (cached != cache.constEnd())
         return cached.value();
 
-    QPixmap pixmap(size, size);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(size, dpr);
 
     QSvgRenderer renderer(QStringLiteral(":/icons/octicons/%1.svg").arg(name));
     if (!renderer.isValid())
@@ -6967,7 +6963,7 @@ inline QPixmap tintedOcticonPixmap(const QString &name, const QColor &color, int
     painter.setRenderHint(QPainter::Antialiasing);
     renderer.render(&painter, QRectF(0, 0, size, size));
     painter.setCompositionMode(QPainter::CompositionMode_SourceIn);
-    painter.fillRect(pixmap.rect(), color);
+    painter.fillRect(QRect(0, 0, size, size), color);
     painter.end();
     cache.insert(key, pixmap);
     return pixmap;
@@ -6997,8 +6993,7 @@ inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &col
                                    int size, qreal angleDeg)
 {
     const QPixmap base = tintedOcticonPixmap(name, color, size);
-    QPixmap out(size, size);
-    out.fill(Qt::transparent);
+    QPixmap out = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter painter(&out);
     painter.setRenderHint(QPainter::SmoothPixmapTransform);
     painter.translate(size / 2.0, size / 2.0);
@@ -7017,8 +7012,7 @@ inline QPixmap rotatedTintedOcticonPixmap(const QString &name, const QColor &col
 inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleDeg,
                                      bool spinning)
 {
-    QPixmap out(size, size);
-    out.fill(Qt::transparent);
+    QPixmap out = crispIconPixmap(size, iconDevicePixelRatio());
     QPainter p(&out);
     p.setRenderHint(QPainter::Antialiasing, true);
     const QPointF c(size / 2.0, size / 2.0);
@@ -7029,7 +7023,7 @@ inline QPixmap nodeStatusLightPixmap(const QColor &color, int size, qreal angleD
     p.drawEllipse(c, r, r);
     if (spinning) {
         // Rotating beacon beam: a bright wedge fading behind its leading edge,
-        // the same construction as RelayRadarWidget's sweep.
+        // the same construction the retired relay radar's sweep used.
         QConicalGradient sweep(c, -angleDeg);
         QColor lead = color.lighter(130);
         QColor tail = color;
@@ -7237,15 +7231,43 @@ private:
     Form m_form;
 };
 
-// Width of one activity-rail entry, and of the rail (scroll area) itself. Every
-// badge in the rail rides its own icon's corner rather than the item's outer
-// edge, so an item only has to be as wide as its icon plus its caption — the
-// rail no longer reserves a column of empty space for a count (adhoc #19).
-constexpr int kRailItemWidth = 46;
-constexpr int kRailWidth = kRailItemWidth + 8; // + room for the scrollbar
-// Size of the bell glyph on the rail's Alerts item — updateNotificationButton
-// needs it to park the pending-approval count on the glyph's corner.
-constexpr int kNotificationBellIconPx = 16;
+// Width and height of one activity-rail entry, and the width of the rail
+// (scroll area) itself. Every badge in the rail rides its own icon's corner
+// rather than the item's outer edge, so an item only has to be as wide as its
+// icon plus its caption — the rail no longer reserves a column of empty space
+// for a count (adhoc #19). Adhoc #117 slimmed the rail: every destination is
+// the same icon-over-caption item, so the item is exactly wide enough for the
+// longest caption and the rail only adds its own slim 6px scrollbar (see the
+// #appNavigationRail QScrollBar rule in Theme.h).
+constexpr int kRailItemWidth = 42;
+constexpr int kRailItemHeight = 44; // 20px icon + 10px caption + breathing room
+
+// The 42px floor fits every rail caption in each of main()'s preferred UI
+// families (Inter/SF/Segoe/Roboto/Noto/Ubuntu/Cantarell measure "Network",
+// the widest word, at <=40px in the 10px demi-bold caption font). A box that
+// has none of them can fall back to a wider face (DejaVu draws it at 48px),
+// so measure the app rail's actual caption set once in the real UI font and
+// widen just enough that no word is ever cut. Font is fixed at startup, so a
+// once-computed static is safe.
+inline int railItemWidth()
+{
+    static const int width = [] {
+        QFont f = QGuiApplication::font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const QFontMetrics metrics(f);
+        int widest = kRailItemWidth;
+        for (const char *caption :
+             {"Agents", "Code", "Git", "Repos", "Chat", "Control", "Network",
+              "Settings", "Log", "Capture", "Resize", "Tasks", "Pings",
+              "Account"})
+            widest = qMax(widest, metrics.horizontalAdvance(
+                                      QString::fromLatin1(caption)) + 4);
+        return widest;
+    }();
+    return width;
+}
+inline int railWidth() { return railItemWidth() + 6; } // + slim scrollbar
 
 // One entry in the app-wide activity rail: an octicon over an optional small
 // label, VS-Code style, with the selected state drawn as a 2px accent line along
@@ -7264,7 +7286,7 @@ public:
         setCursor(Qt::PointingHandCursor);
         setFlat(true);
         setAccessibleName(m_label);
-        setFixedSize(44, m_label.isEmpty() ? 40 : 48);
+        setFixedSize(railItemWidth(), m_label.isEmpty() ? 40 : kRailItemHeight);
         // The sync spinner's timer only runs while syncing *and* visible (see
         // show/hideEvent), so an idle or hidden item costs nothing.
         m_spinTimer = new QTimer(this);
@@ -7283,7 +7305,8 @@ public:
         if (m_compact == compact)
             return;
         m_compact = compact;
-        setFixedSize(44, m_compact ? 30 : (m_label.isEmpty() ? 40 : 48));
+        setFixedSize(railItemWidth(),
+                     m_compact ? 30 : (m_label.isEmpty() ? 40 : kRailItemHeight));
         update();
     }
 
@@ -7296,6 +7319,27 @@ public:
         update();
     }
     int badgeCount() const { return m_badge; }
+
+    // Red "needs you" badge (Chat unread, pending Pings) instead of the default
+    // blue count — the same corner geometry either way, so the two badge
+    // languages stay aligned across the rail.
+    void setBadgeUrgent(bool urgent)
+    {
+        if (m_badgeUrgent == urgent)
+            return;
+        m_badgeUrgent = urgent;
+        update();
+    }
+
+    // Amber icon+caption tint while something is waiting (the Pings bell) —
+    // the painted replacement for the old QSS [alert="true"] accent.
+    void setAlertTint(bool alert)
+    {
+        if (m_alert == alert)
+            return;
+        m_alert = alert;
+        update();
+    }
 
     void setSyncing(bool on)
     {
@@ -7327,8 +7371,13 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
         const bool dark = currentThemeIsDark();
         const bool lit = isChecked() || underMouse();
-        const QColor fg = dark ? QColor(lit ? "#e6edf3" : "#8b949e")
-                               : QColor(lit ? "#1f2328" : "#656d76");
+        // The alert tint outranks the resting grey but still brightens on
+        // hover/checked, mirroring the old QSS [alert="true"] rules.
+        const QColor fg =
+            m_alert ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
+                                  : (lit ? "#7d4e00" : "#9a6700"))
+                    : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
+                            : QColor(lit ? "#1f2328" : "#656d76"));
         const bool showLabel = !m_compact && !m_label.isEmpty();
 
         // Selection line along the left edge — same accent green as the repo
@@ -7349,8 +7398,12 @@ protected:
             f.setWeight(QFont::DemiBold);
             p.setFont(f);
             p.setPen(fg);
-            p.drawText(QRect(0, iconRect.bottom() + 2, width(), 14),
-                       Qt::AlignHCenter | Qt::AlignTop, m_label);
+            // Elide as a guard for wide fallback fonts; the item width is sized
+            // so the longest caption fits in every preferred UI family.
+            p.drawText(QRect(1, iconRect.bottom() + 2, width() - 2, 14),
+                       Qt::AlignHCenter | Qt::AlignTop,
+                       QFontMetrics(f).elidedText(m_label, Qt::ElideRight,
+                                                  width() - 2));
         }
 
         // Badge / sync spinner on the icon's upper-right corner.
@@ -7377,7 +7430,8 @@ protected:
                 qMax(0.0, double(iconRect.top() - 5)),
                 w, h);
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#1f6feb"));
+            p.setBrush(QColor(m_badgeUrgent ? (dark ? "#da3633" : "#cf222e")
+                                            : "#1f6feb"));
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
             p.setPen(QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, text);
@@ -7398,6 +7452,8 @@ private:
     QString m_iconName;
     QString m_label;
     int m_badge = 0;
+    bool m_badgeUrgent = false;
+    bool m_alert = false;
     bool m_syncing = false;
     bool m_compact = false;
     QTimer *m_spinTimer = nullptr;
@@ -9292,8 +9348,8 @@ inline QString faviconCachePath(const QString &host)
 // rects rather than circles.
 inline QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
 {
-    QPixmap out(side, side);
-    out.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap out = crispIconPixmap(side, dpr);
     if (src.isNull())
         return out;
     QPainter p(&out);
@@ -9302,9 +9358,13 @@ inline QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
     QPainterPath path;
     path.addRoundedRect(QRectF(0, 0, side, side), radius, radius);
     p.setClipPath(path);
-    const QPixmap scaled = src.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                      Qt::SmoothTransformation);
-    p.drawPixmap((side - scaled.width()) / 2, (side - scaled.height()) / 2, scaled);
+    QPixmap scaled = src.scaled(out.width(), out.height(),
+                                Qt::KeepAspectRatioByExpanding,
+                                Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    const QSizeF ls = scaled.deviceIndependentSize();
+    p.drawPixmap(QPointF((side - ls.width()) / 2.0, (side - ls.height()) / 2.0),
+                 scaled);
     return out;
 }
 
@@ -9313,8 +9373,8 @@ inline QPixmap roundedRectPixmap(const QPixmap &src, int side, qreal radius)
 // full-width avatar header at the top of the node profile panel.
 inline QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radius)
 {
-    QPixmap out(w, h);
-    out.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap out = crispIconPixmap(w, h, dpr);
     if (src.isNull() || w <= 0 || h <= 0)
         return out;
     QPainter p(&out);
@@ -9323,9 +9383,12 @@ inline QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radiu
     QPainterPath path;
     path.addRoundedRect(QRectF(0, 0, w, h), radius, radius);
     p.setClipPath(path);
-    const QPixmap scaled = src.scaled(w, h, Qt::KeepAspectRatioByExpanding,
-                                      Qt::SmoothTransformation);
-    p.drawPixmap((w - scaled.width()) / 2, (h - scaled.height()) / 2, scaled);
+    QPixmap scaled = src.scaled(out.width(), out.height(),
+                                Qt::KeepAspectRatioByExpanding,
+                                Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    const QSizeF ls = scaled.deviceIndependentSize();
+    p.drawPixmap(QPointF((w - ls.width()) / 2.0, (h - ls.height()) / 2.0), scaled);
     return out;
 }
 
@@ -9338,8 +9401,7 @@ inline QPixmap roundedBannerPixmap(const QPixmap &src, int w, int h, qreal radiu
 inline QPixmap languageBarPixmap(const QList<QPair<QString, qint64>> &langs,
                           qint64 total, int shown, int w, int h)
 {
-    QPixmap out(w, h);
-    out.fill(Qt::transparent);
+    QPixmap out = crispIconPixmap(w, h, iconDevicePixelRatio());
     if (total <= 0 || shown <= 0 || w <= 0 || h <= 0)
         return out;
     QPainter p(&out);
@@ -9359,24 +9421,22 @@ inline QPixmap languageBarPixmap(const QList<QPair<QString, qint64>> &langs,
     return out;
 }
 
-inline QPixmap letterFavicon(const QString &host)
+inline QPixmap letterFavicon(const QString &host, int side = 36)
 {
-    constexpr int side = 36;
-    QPixmap pixmap(side, side);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(side, iconDevicePixelRatio());
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     const uint hash = qHash(host);
     painter.setPen(Qt::NoPen);
     painter.setBrush(QColor(Theme::kSenderPalette[hash % Theme::kSenderPaletteSize]));
-    painter.drawRoundedRect(0, 0, side, side, 9, 9);
+    painter.drawRoundedRect(QRectF(0, 0, side, side), side * 0.25, side * 0.25);
     const QChar letter = host.isEmpty() ? QChar('?') : host.at(0).toUpper();
     QFont font = painter.font();
-    font.setPixelSize(18);
+    font.setPixelSize(qMax(8, qRound(side * 0.5)));
     font.setBold(true);
     painter.setFont(font);
     painter.setPen(QColor("#0f172a"));
-    painter.drawText(pixmap.rect(), Qt::AlignCenter, QString(letter));
+    painter.drawText(QRect(0, 0, side, side), Qt::AlignCenter, QString(letter));
     return pixmap;
 }
 
@@ -9405,8 +9465,7 @@ inline QPixmap builtinFavicon(const QString &host, int side = 36)
     const QString key = builtinFaviconKey(host);
     if (key.isEmpty() || side <= 0)
         return {};
-    QPixmap pixmap(side, side);
-    pixmap.fill(Qt::transparent);
+    QPixmap pixmap = crispIconPixmap(side, iconDevicePixelRatio());
     QPainter painter(&pixmap);
     painter.setRenderHint(QPainter::Antialiasing);
     painter.setPen(Qt::NoPen);

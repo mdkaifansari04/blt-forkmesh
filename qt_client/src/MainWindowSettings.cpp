@@ -1940,7 +1940,9 @@ QWidget *MainWindow::buildQuickSetupTab()
         "Stored locally in Variables / Secrets, injected into every action "
         "run's environment and redacted from logs. The Cloudflare token "
         "authenticates the deploy workflow and tunnel bootstrap; the Vultr "
-        "token lets provisioning workflows create mirror nodes.");
+        "token lets provisioning workflows create mirror nodes and is also "
+        "written to cloudflare_worker/.env.production, so neither this page "
+        "nor the Hosts page asks for it twice.");
     credsHint->setObjectName("statusLine");
     credsHint->setWordWrap(true);
 
@@ -1965,10 +1967,11 @@ QWidget *MainWindow::buildQuickSetupTab()
     vultrTokenEdit->setEchoMode(QLineEdit::Password);
     vultrTokenEdit->setPlaceholderText("Vultr API token");
     vultrTokenEdit->setToolTip(
-        "Saved as the VULTR_API_TOKEN variable so provisioning workflows can "
-        "create mirror-node servers on Vultr.");
+        "Saved as the VULTR_API_KEY variable and in "
+        "cloudflare_worker/.env.production, so provisioning workflows and the "
+        "Hosts page's one-click mirror both find it without asking again.");
     vultrTokenEdit->setText(
-        quickSetupStoredVariable(storedVars, QStringLiteral("VULTR_API_TOKEN")));
+        forkmesh::control::vultrApiKeyFromVariables(storedVars));
 
     auto *credsForm = new QFormLayout;
     credsForm->setLabelAlignment(Qt::AlignLeft);
@@ -2136,11 +2139,6 @@ QWidget *MainWindow::buildQuickSetupTab()
                     cfAccountEdit->text().trimmed(),
                     forkmesh::control::cloudflareAccountIdFromVariables(vars),
                     QStringLiteral("Cloudflare account ID"));
-        putVariable(QStringLiteral("VULTR_API_TOKEN"),
-                    vultrTokenEdit->text().trimmed(),
-                    quickSetupStoredVariable(
-                        vars, QStringLiteral("VULTR_API_TOKEN")),
-                    QStringLiteral("Vultr API token"));
         putVariable(QStringLiteral("WORLD_THEME"),
                     worldThemeCombo->currentData().toString(),
                     quickSetupStoredVariable(
@@ -2161,13 +2159,29 @@ QWidget *MainWindow::buildQuickSetupTab()
             reloadVariablesTable();
         }
 
+        // The Vultr key goes through the shared helper so this page and the
+        // Hosts page's one-click mirror agree on where it lives: the canonical
+        // VULTR_API_KEY variable plus cloudflare_worker/.env.production. It
+        // runs after the store update above so it reads that fresh map back
+        // instead of overwriting it (adhoc #127).
+        QString vultrError;
+        if (!rememberVultrApiKey(vultrTokenEdit->text().trimmed(), &vultrError)
+                 .isEmpty()) {
+            applied << QStringLiteral("Vultr API token");
+        }
+
         if (applied.isEmpty()) {
             setStatus("Nothing to apply \xE2\x80\x94 every field already "
                       "matches the stored setup.",
                       false);
             return;
         }
-        setStatus(QStringLiteral("Saved: %1.").arg(applied.join(", ")), false);
+        setStatus(QStringLiteral("Saved: %1.%2")
+                      .arg(applied.join(", "),
+                           vultrError.isEmpty()
+                               ? QString()
+                               : QStringLiteral(" ") + vultrError),
+                  false);
         logSystem(QStringLiteral("Quick setup applied: %1.")
                       .arg(applied.join(", ")));
     });
@@ -2518,10 +2532,12 @@ void MainWindow::updateUserAvatarButton()
     if (!m_userAvatarNavButton)
         return;
     // Circular, like the website renders an account's picture (adhoc #19).
-    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 34, 0.5);
+    // 24px, so the rail's Account item reads at the same visual weight as its
+    // 20px octicon siblings (adhoc #117).
+    const QPixmap pm = roundedAvatar(effectiveUserAvatar(), 24, 0.5);
     if (!pm.isNull())
         m_userAvatarNavButton->setIcon(QIcon(pm));
-    m_userAvatarNavButton->setIconSize(QSize(34, 34));
+    m_userAvatarNavButton->setIconSize(QSize(24, 24));
     m_userAvatarNavButton->setText(QString());
 }
 
@@ -2602,16 +2618,19 @@ void MainWindow::setSettingsAvatar(const QByteArray &pngData)
     if (!pixmap.loadFromData(data))
         return;
     constexpr int side = 64;
-    QPixmap rounded(side, side);
-    rounded.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap rounded = crispIconPixmap(side, dpr);
     QPainter painter(&rounded);
     painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
     QPainterPath clip;
     clip.addRoundedRect(0, 0, side, side, 14, 14);
     painter.setClipPath(clip);
-    painter.drawPixmap(0, 0,
-                       pixmap.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                     Qt::SmoothTransformation));
+    QPixmap scaled = pixmap.scaled(rounded.width(), rounded.height(),
+                                   Qt::KeepAspectRatioByExpanding,
+                                   Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    painter.drawPixmap(0, 0, scaled);
     m_settingsAvatarPreview->setPixmap(rounded);
 }
 
@@ -3883,16 +3902,18 @@ void MainWindow::registerLogFaviconResource(const QString &host, QTextEdit *view
         return;
     QPixmap pix;
     if (m_faviconCache.contains(host)) {
+        const qreal dpr = iconDevicePixelRatio();
+        const int px = qMax(1, qRound(16 * dpr));
         pix = m_faviconCache.value(host)
-                  .scaled(16, 16, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                  .scaled(px, px, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        pix.setDevicePixelRatio(dpr);
     } else if (hasBuiltinFavicon(host)) {
         pix = builtinFavicon(host, 16);
     } else {
         // Never leave the 14px box empty: the host's letter badge stands in
         // until (or in place of) a fetched icon, so every network line in the
         // log reads with an icon (adhoc #436).
-        pix = letterFavicon(host).scaled(16, 16, Qt::KeepAspectRatio,
-                                         Qt::SmoothTransformation);
+        pix = letterFavicon(host, 16);
     }
     view->document()->addResource(
         QTextDocument::ImageResource,

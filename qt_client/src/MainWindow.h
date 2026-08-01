@@ -112,11 +112,15 @@ class PullBadgeWidget;
 namespace forkmesh::ui {
 class ActivityRailButton;
 class AgentDotMatrix;
+class NodeDotMatrix;
+class RelaySpeedDot;
 class ActionRunStrip;
 }
 using forkmesh::ui::ActionRunStrip;
 using forkmesh::ui::ActivityRailButton;
 using forkmesh::ui::AgentDotMatrix;
+using forkmesh::ui::NodeDotMatrix;
+using forkmesh::ui::RelaySpeedDot;
 class PacmanProgress;
 class TerminalWidget;
 class ClaudeIdeBridge;
@@ -393,6 +397,9 @@ public:
                                    const QStringList &nodes);
     void testShowNodesSection();
     QStringList testNodeDirectoryNames() const;
+    // The chat header's users popup: rebuild it for `conversation` and read back
+    // the names it lists (adhoc #129).
+    QStringList testChatMemberNames(const QString &conversation);
     void testRenderNetworkRepos(const QJsonArray &repos);
     QStringList testNetworkRepoNames() const;
     QString testNetworkRepoActionText(int row) const;
@@ -668,6 +675,10 @@ public:
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
     QString testSwitchToBranchImmediateSelection(const QString &branch);
+    // Take the agent detail page's "Branch" route, so a test can prove it binds
+    // the Git view to that session's own repository before opening its branch
+    // there — the sessions list is global (adhoc #131).
+    void testSwitchToAgentBranch(int sessionId) { switchToAgentBranch(sessionId); }
     // Which page the Git view's right pane shows (kCommitWorkspace*Page), and
     // the branch the range pane is reviewing — so a test can prove a branch link
     // lands on the range review pane in the Git view (adhoc #107).
@@ -1606,9 +1617,19 @@ private:
     // cheapest plan and newest Debian via the Vultr v2 API, create/reuse the
     // ForkMesh-managed SSH key, boot the instance, then hand off to the normal
     // runHostInstall flow which installs ForkMesh and auto-links the node to
-    // this account. The API key lives in memory only for the duration of the
-    // run; it is never written to QSettings or argv.
+    // this account. The API key never travels in argv; once Vultr accepts it,
+    // rememberVultrApiKey stores it so no later run has to ask for it again.
     void createVultrMirrorFromForm();
+    // Persist a Vultr API key Vultr itself has just accepted, in the two places
+    // this app reads provisioning credentials from: the canonical
+    // VULTR_API_KEY device variable (Settings > Variables / Secrets, injected
+    // into every action run) and cloudflare_worker/.env.production beside the
+    // Cloudflare deploy credentials. Returns where it was written — empty when
+    // the key is unusable or already stored everywhere — and reports a failed
+    // file write through *error without undoing the variable that succeeded
+    // (adhoc #127).
+    QStringList rememberVultrApiKey(const QString &apiKey,
+                                    QString *error = nullptr);
     void vultrApiCall(const QString &apiKey, const QString &path,
                       const QByteArray &method, const QJsonObject &body,
                       std::function<void(QJsonObject, QString)> onDone);
@@ -2201,7 +2222,10 @@ private:
     // Same as continueSelectedAgentSession, but for an arbitrary session id —
     // used to resume a session steered from the website (adhoc #182) without
     // disturbing whatever session is currently selected in the UI.
-    void continueAgentSession(int sessionId);
+    // deferRefresh=true skips the trailing reload/queue pump so a batch caller
+    // (startAllStoppedAgents) can rebuild the table and drain the queue once at
+    // the end rather than once per session.
+    void continueAgentSession(int sessionId, bool deferRefresh = false);
     // Ask the given session's agent to merge base and resolve conflicts, then
     // resume it. Driven by the agents list's orange conflict button (adhoc
     // #446); a no-op while that session is already running or queued.
@@ -2322,6 +2346,9 @@ private:
     void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
+    // Open an agent session's branch in the Git view's range pane, binding the
+    // repo detail to that session's repository first (adhoc #131).
+    void switchToAgentBranch(int sessionId);
     // Jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
@@ -2345,6 +2372,11 @@ private:
     QList<int> stoppableAgentSessionIds() const;
     // Stop every session above and clear the pending queue (adhoc #433).
     void stopAllRunningAgents();
+    // "Stop all" read backwards (adhoc #136): the idle sessions — stopped or
+    // failed, ours, not merged — that can be resumed, across all repos.
+    QList<int> startableAgentSessionIds() const;
+    // Queue every session above for a resume; the run limit drains the queue.
+    void startAllStoppedAgents();
     // Returns the pooled runner currently executing sessionId, or nullptr.
     AgentRunner *runnerForSession(int sessionId) const;
     // Returns an idle pooled runner, creating (and wiring) a new one if needed.
@@ -2710,6 +2742,38 @@ private:
     bool proposePullFromMirrorEdit(const QString &cleanPath, const QString &content);
     void loadRepoInfo();
     void loadBranchesAndTags();
+    // Everything loadBranchesAndTags() shows, gathered on a worker thread: its
+    // five git reads (sorted branch list, HEAD, worktree list, remotes, tags)
+    // each blocked the GUI thread for seconds in the stall log whenever agent
+    // sessions kept the disk busy, and the function runs on every repo open,
+    // merge and pull refresh.
+    struct BranchesTagsSnapshot {
+        // Inputs, snapshotted on the GUI thread before the worker starts.
+        QString dir;               // repoGitDir()
+        QString localPath;         // working copy for the worktree count
+        QString configuredDefault; // m_repoInfo.defaultBranch
+        QString checkedOut;        // m_repoBranch at issue time
+        // Worker-filled results.
+        QString base;          // default branch (chooseDefaultBranch)
+        QString head;          // checked-out branch (empty = detached/none)
+        QStringList branches;  // local heads, committerdate-sorted
+        int worktreeCount = 0; // linked worktrees, minus forkmesh/pulls
+        struct Remote {
+            QString name;
+            QString fetchUrl;
+            QString pushUrl;
+        };
+        QList<Remote> remotes;
+        int tagCount = 0;
+    };
+    // Runs on a worker thread: fills the git-derived half of `snap`.
+    static BranchesTagsSnapshot readBranchesTagsGit(BranchesTagsSnapshot snap);
+    // Applies a gathered snapshot to the toolbar buttons/menus (GUI thread).
+    void applyBranchesTags(const BranchesTagsSnapshot &snap);
+    // Serializes loadBranchesAndTags() gathers; a call landing while one is in
+    // flight coalesces into a single trailing reload.
+    bool m_branchesTagsLoading = false;
+    bool m_branchesTagsReloadQueued = false;
     QStringList repoBranches() const;
     // The two reads behind repoBranches()/repoDefaultBranch() with no GUI state
     // of their own, so worker threads can run them too (adhoc #420).
@@ -3108,6 +3172,10 @@ private:
     void moveGlobalSearchSelection(int delta); // keyboard up/down through results
     void activateGlobalSearchItem(QListWidgetItem *item); // navigate to a result
     void hideGlobalSearchPopup();
+    // On the Git page the same box is that page's commit search (it has none of
+    // its own): mirror what's typed into the commit-list filter, and clear the
+    // filter again when the page isn't on screen.
+    void syncGitCommitFilter();
     // --- Browser-style back / forward navigation, sat just left of the search box.
     // A history of "places" (section + open repo + repo tab) is recorded as you
     // move around; Back and Forward walk it without recording new entries.
@@ -4251,17 +4319,31 @@ private:
     QLabel *m_relayJoinDot = nullptr;
     QPushButton *m_relayJoinApproveButton = nullptr;
     int m_pendingRelayJoins = 0;
-    // Spinning-radar + latency readout sitting on the window-chrome line just
-    // left of the CPU/MEM/DISK sparklines: probes the active relay once a
-    // minute and shows the round-trip time (e.g. "33ms") centered in the dish,
-    // turning into a red alert when the relay doesn't answer. Held as a
-    // QWidget* and poked via static_cast (concrete RelayRadarWidget is private to
-    // MainWindow.cpp).
-    QWidget *m_relayRadar = nullptr;
-    // Echoes the mesh's serving nodes into the dish as blips (m_radarNodes).
-    // `force` overrides the repo-scoped Mirror-nodes panel's claim on the dish,
-    // for the case where that panel has no repo to show.
-    void updateRelayRadarNodes(bool force = false);
+    // Connection-speed dot pinned above the instance logo (adhoc #124): probes
+    // the active relay once a minute and colours itself green/amber/red by the
+    // round-trip time, red when the relay doesn't answer at all. It replaced
+    // the spinning radar dish that used to sit beside the CPU/MEM/DISK
+    // sparklines; the dish's node blips are now the chrome line's node dots.
+    RelaySpeedDot *m_relaySpeedDot = nullptr;
+    // Applies a measured (or failed, ms < 0) probe to that dot, the per-relay
+    // speed cache and the instance button's tooltip.
+    void setRelayLinkSpeed(const QString &host, int ms);
+    void refreshRelayMenuTooltip();
+    // Round-trip milliseconds per relay host, so the relay dropdown can show
+    // each instance's connection speed the moment it opens (adhoc #124). ms < 0
+    // means the last probe went unanswered; stampMs dates the sample.
+    struct RelayLatencySample {
+        int ms = -1;
+        qint64 stampMs = 0;
+    };
+    QHash<QString, RelayLatencySample> m_relayHostLatency;
+    QSet<QString> m_relaySpeedProbes; // hosts with a dropdown probe in flight
+    void probeRelayHostSpeed(const QString &serverUrl,
+                             std::function<void(int)> done);
+    // "30 ms" / "no answer" / "measuring…" for one relay host, and that same
+    // figure as a relay-dropdown entry ("forkmesh.com  ·  30 ms").
+    QString relaySpeedText(const QString &host) const;
+    QString relayMenuEntryText(const QString &host) const;
     QTimer *m_relayLatencyTimer = nullptr; // one-minute relay-latency probe
     bool m_relayProbeInFlight = false;     // guard against overlapping probes
     qint64 m_lastWsLatencySampleMs = 0;    // when the room socket last ponged
@@ -4345,12 +4427,17 @@ private:
     QString m_organizationTaskActor;
     bool m_organizationTasksCanManage = false;
     bool m_organizationTasksLoading = false;
-    QLabel *m_chatUnreadBadge = nullptr; // red unread-count badge over the chat button
     // "Agents" heads the app navigation rail (adhoc #70), badged with the number
     // of running sessions. Its live fleet matrix stays on the window-chrome
     // line, followed there by the recent action-run strip.
     QPushButton *m_agentsNavButton = nullptr;
     AgentDotMatrix *m_agentDotMatrix = nullptr;
+    // One dot per node on the network, immediately right of the agent squares
+    // with a faint divider between the two groups (adhoc #124).
+    NodeDotMatrix *m_nodeDotMatrix = nullptr;
+    QWidget *m_chromeDotDivider = nullptr;
+    void refreshNodeDotMatrix();
+    void updateChromeDotDivider();
     ActionRunStrip *m_actionRunStrip = nullptr;
     // Last status tally rendered into the matrix's tooltip, so the scanner tick
     // can skip rebuilding an unchanged string ~20x a second.
@@ -4482,11 +4569,21 @@ private:
         int repoCount = 0;
     };
     QList<NodeMenuEntry> m_nodeMenuEntries;
-    // The mesh's real serving nodes (refreshNodesTable's filtered list), echoed
-    // as blips inside the relay radar. Without this the radar only ever showed
-    // nodes while the repo-detail Mirror-nodes tab happened to be open, so it
-    // swept an empty dish from launch (adhoc #79).
-    QList<NodeMenuEntry> m_radarNodes;
+    // The mesh's real serving nodes (refreshNodesTable's filtered list), drawn
+    // as the chrome line's node dots. Without this the dots would only ever
+    // show nodes while the repo-detail Mirror-nodes tab happened to be open,
+    // rather than the whole network from launch (adhoc #79 / #124).
+    QList<NodeMenuEntry> m_nodeDotEntries;
+    // Sync/integrity state for the repo the Mirror-nodes panel is showing,
+    // keyed by lower-cased node name: a node that is behind or failing that
+    // repo's integrity gate is tinted amber in the dots while the panel has a
+    // repo (adhoc #124). Empty whenever no repo is open.
+    struct NodeDotRepoState {
+        bool behind = false;
+        bool integrityFailing = false;
+    };
+    QHash<QString, NodeDotRepoState> m_nodeDotRepoStates;
+    void setNodeDotRepoStates(const QHash<QString, NodeDotRepoState> &states);
     QString m_selectedNode;             // node whose repos fill the repos column
     QPushButton *m_repoMenuButton = nullptr; // top-bar repo switcher
     QPushButton *m_repoViewButton = nullptr; // "Code" button on the repo header row
@@ -4676,9 +4773,12 @@ private:
     QProcess *m_hostAgentInstallProcess = nullptr; // Claude/Codex CLI install
     QProcess *m_hostDiskProcess = nullptr;    // running ssh size-map read, if any
     // One-click Vultr mirror provisioning (adhoc #315). The API key is read
-    // from the field (or a stored VULTR_API_KEY device variable) per run and
-    // deliberately has no persistent member.
+    // from the field (or a stored VULTR_API_KEY device variable) per run.
     QLineEdit *m_vultrApiKeyEdit = nullptr;
+    // Last key rememberVultrApiKey stored successfully, so a provision run's
+    // dozen API calls save it once instead of rewriting the variable store and
+    // .env.production behind every one of them (adhoc #127).
+    QString m_vultrRememberedKey;
     QLineEdit *m_vultrNameEdit = nullptr;
     // Opt-in (default on): after ForkMesh installs, also install the Claude
     // Code and Codex CLIs on the new mirror and copy this device's provider
@@ -5555,9 +5655,8 @@ private:
     QPushButton *m_scmCommitButton = nullptr;
     QPushButton *m_scmCommitPushButton = nullptr; // commit, then publish/push
     QPushButton *m_scmStageCommitPushButton = nullptr; // stage all, commit, push
-    QPushButton *m_scmStageAllButton = nullptr;
-    QPushButton *m_scmUnstageAllButton = nullptr;
-    QPushButton *m_scmDiscardAllButton = nullptr;
+    // Stage all / Unstage all / Discard all have no buttons of their own in the
+    // panel any more — the CHANGES group headers carry those three actions.
     QPushButton *m_scmRefreshButton = nullptr;
     QPushButton *m_scmPrevButton = nullptr;   // jump to previous changed file
     QPushButton *m_scmNextButton = nullptr;   // jump to next changed file
@@ -5955,7 +6054,6 @@ private:
     // that returns the same inbox again never re-flashes them (adhoc #77).
     QSet<QString> m_flashedWebAlertIds;
     QPushButton *m_notificationButton = nullptr;
-    QLabel *m_notificationRailBadge = nullptr;
     QTableWidget *m_notificationsTable = nullptr; // sortable Notifications page
     // The website's alert inbox, mirrored onto that page (adhoc #59).
     QJsonArray m_webAlerts;
@@ -6576,8 +6674,10 @@ private:
     QString saveNewAgentPromptImage(const QImage &image);
     QPushButton *m_agentStopButton = nullptr;
     // Above the session list: stop every running agent and cancel the queue
-    // (adhoc #433).
+    // (adhoc #433), and its counterpart that resumes every stopped/failed one
+    // (adhoc #136).
     QPushButton *m_agentStopAllButton = nullptr;
+    QPushButton *m_agentStartAllButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Detail-toolbar buttons (adhoc #51) opening this session's branch in the
     // Branches tab and its worktree in the Worktrees tab. Full-size buttons like
@@ -7083,6 +7183,9 @@ private:
     QTimer *m_repoChangeBadgeTimer = nullptr;
     qint64 m_connectedAtMs = 0;
     qint64 m_totalConnectionMs = 0;
+    // When updateHomeStats() last persisted the uptime total, so the once-a-
+    // minute refresh doesn't rewrite the whole settings file each tick.
+    qint64 m_uptimePersistedAtMs = 0;
     // Until this moment, "node connected" alerts are suppressed: the roster
     // arrives incrementally right after we connect, so without a grace window
     // every node that was already online would pop a notification on startup.

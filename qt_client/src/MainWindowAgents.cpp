@@ -669,7 +669,7 @@ class AgentBranchButtonDelegate : public SelectionBorderRowDelegate
 {
 public:
     AgentBranchButtonDelegate(QAbstractItemView *view,
-                              std::function<void(const QString &)> onClick,
+                              std::function<void(int)> onClick,
                               std::function<void(int)> onConflictClick)
         : SelectionBorderRowDelegate(view), m_onClick(std::move(onClick)),
           m_onConflictClick(std::move(onConflictClick))
@@ -796,8 +796,14 @@ public:
                     m_onConflictClick(sessionId);
                     return true;
                 }
+                // The chip routes the session, not just its name (adhoc #131):
+                // the list is global, so the Git view has to be pointed at the
+                // session's own repository before its branch can open there.
+                // Qt::UserRole is the row's identity — every row lookup matches
+                // on it — so it is set even when applyAgentStatusCell was called
+                // without an explicit session id.
                 if (m_onClick && buttonRect(option, index).contains(me->pos())) {
-                    m_onClick(branch);
+                    m_onClick(index.data(Qt::UserRole).toInt());
                     return true;
                 }
             }
@@ -924,7 +930,7 @@ private:
         painter->restore();
     }
 
-    std::function<void(const QString &)> m_onClick;
+    std::function<void(int)> m_onClick;
     std::function<void(int)> m_onConflictClick;
 };
 
@@ -1233,7 +1239,7 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentTable->setItemDelegateForColumn(
         kAgentIdColumn,
         new AgentBranchButtonDelegate(
-            m_agentTable, [this](const QString &branch) { switchToBranch(branch); },
+            m_agentTable, [this](int sessionId) { switchToAgentBranch(sessionId); },
             [this](int sessionId) { fixAgentConflictsWithAgent(sessionId); }));
     // ~22fps timer that advances the per-session output meters and repaints the
     // top-bar fleet lights off them. It is started on demand by noteAgentActivity
@@ -1323,11 +1329,25 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStopAllButton, &QPushButton::clicked, this,
             &MainWindow::stopAllRunningAgents);
 
+    // "Start all" is the way back from "Stop all" (adhoc #136): resume every
+    // idle session in one click instead of reopening each row and continuing it.
+    // Green outline beside the red one, and disabled while nothing is resumable.
+    m_agentStartAllButton = new QPushButton("Start all");
+    m_agentStartAllButton->setObjectName("successButton");
+    m_agentStartAllButton->setCursor(Qt::PointingHandCursor);
+    m_agentStartAllButton->setToolTip(
+        "Resume every stopped or failed agent. Merged sessions and external "
+        "Claude Code sessions started outside ForkMesh are left alone.");
+    setOcticon(m_agentStartAllButton, "rocket", 16);
+    connect(m_agentStartAllButton, &QPushButton::clicked, this,
+            &MainWindow::startAllStoppedAgents);
+
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(0, 0, 0, 0);
     agentListToolbar->setSpacing(8);
     agentListToolbar->addWidget(heading, 0);
     agentListToolbar->addWidget(m_agentSearch, 1);
+    agentListToolbar->addWidget(m_agentStartAllButton, 0);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
     agentListToolbar->addWidget(m_agentHideDetailButton, 0);
@@ -1513,7 +1533,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentStatusPill->setAlignment(Qt::AlignCenter);
 
     // Branch / Worktree in the output toolbar (adhoc #51): a click opens that
-    // branch's row in the Branches tab / that worktree's row in the Worktrees
+    // branch in the Git view (adhoc #131 — switchToAgentBranch points the view at
+    // the session's own repository first) / that worktree's row in the Worktrees
     // tab — the same targets the meta table's chips carried before those two
     // columns moved here. adhoc #61 dropped the tiny caption-over-value styling
     // that made them half-height oddities beside the other actions: they are
@@ -1527,11 +1548,8 @@ QWidget *MainWindow::buildAgentsTab()
     m_agentBranchButton->setCursor(Qt::PointingHandCursor);
     setOcticon(m_agentBranchButton, "git-branch", 16);
     m_agentBranchButton->hide(); // shown per-session in refreshAgentDetailMeta
-    connect(m_agentBranchButton, &QPushButton::clicked, this, [this] {
-        if (const AgentSession *s = findAgentSession(m_selectedAgentSessionId);
-            s && !s->branchName.isEmpty())
-            switchToBranch(s->branchName);
-    });
+    connect(m_agentBranchButton, &QPushButton::clicked, this,
+            [this] { switchToAgentBranch(m_selectedAgentSessionId); });
     m_agentWorktreeButton = new QPushButton(QStringLiteral("Worktree"));
     m_agentWorktreeButton->setObjectName("successButton");
     m_agentWorktreeButton->setCursor(Qt::PointingHandCursor);
@@ -4494,6 +4512,8 @@ void MainWindow::refreshAgentDotMatrix()
     }
     m_agentDotMatrix->setDots(dots);
     m_agentDotMatrix->setVisible(!dots.isEmpty());
+    // The hairline to the node dots only shows with squares on both sides.
+    updateChromeDotDivider();
 
     if (dots.isEmpty()) {
         m_agentDotTooltipKey.clear();
@@ -6513,7 +6533,7 @@ void MainWindow::continueSelectedAgentSession()
 // must not yank the view away from whatever the user is looking at, so it's
 // only called here when the resumed session was already the selected one
 // (i.e. this is really the continueSelectedAgentSession path).
-void MainWindow::continueAgentSession(int sessionId)
+void MainWindow::continueAgentSession(int sessionId, bool deferRefresh)
 {
     if (!m_agentStore || sessionId <= 0)
         return;
@@ -6546,6 +6566,12 @@ void MainWindow::continueAgentSession(int sessionId)
     const int sid = session->id;
     if (!m_agentQueue.contains(sid))
         m_agentQueue.append(sid);
+    // A batch caller (adhoc #136's "Start all") has already queued the rest and
+    // reloads/pumps once below: the session is saved and queued either way, so
+    // skipping the per-session reload here just spares the table one rebuild —
+    // and the run limit is applied by the single processAgentQueue() at the end.
+    if (deferRefresh)
+        return;
     reloadAgents();
     if (sid == m_selectedAgentSessionId)
         showAgentSession(sid);
@@ -6747,6 +6773,35 @@ void MainWindow::openAgentSessionFromIssue()
 {
     if (const AgentSession *session = latestAgentSessionForIssue(m_currentIssueNumber))
         switchToAgentsTab(session->id);
+}
+
+// Open an agent session's branch in the Git view (adhoc #131): its commits, its
+// changed files and its diff, laid out exactly as the Git view lays out a branch
+// — the changed-files list in the left column's CHANGES slot with the scope list
+// (all changes / uncommitted / per-commit) below it, and the source graph handing
+// its slot over for the duration.
+//
+// switchToBranch() does that render, but it drives the repo-detail widgets of
+// whichever repository the detail view currently holds, and the sessions list is
+// global: a run belonging to another repo would otherwise open that other repo's
+// Git page and then report its branch as missing. Bind the detail view to the
+// session's own repository first.
+void MainWindow::switchToAgentBranch(int sessionId)
+{
+    const AgentSession *session = findAgentSession(sessionId);
+    if (!session || session->branchName.isEmpty())
+        return;
+    // Copy the branch and repo out before the bind: openRepoDetail pumps the event
+    // loop over a dozen blocking git reads, and a roster callback landing in that
+    // pump can reallocate m_agentSessions (the git-pump UAF family).
+    const QString branch = session->branchName;
+    const int repoIndex = repoIndexFor(session->owner, session->name);
+    // Repo detail hosts both the Agents tab and the Git view, and is only visible
+    // on the Home section — land there first so this works from anywhere.
+    showSection(0);
+    if (repoIndex >= 0 && !bindRepoDetailToRepo(repoIndex))
+        return;
+    switchToBranch(branch);
 }
 
 void MainWindow::switchToAgentsTab(int sessionId)
@@ -8298,6 +8353,58 @@ void MainWindow::stopAllRunningAgents()
         showAgentSession(m_selectedAgentSessionId);
     updateAgentActionState();
     flashMessage(QStringLiteral("Stopped %1 agent session%2.")
+                     .arg(ids.size())
+                     .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
+}
+
+// The sessions "Start all" would act on: our own idle work, in any repository —
+// stopped (by the panic button or by hand) or failed, and so resumable. Running,
+// waiting and queued rows are already in flight, merged ones are finished, and
+// external (watch-only) rows belong to another process. Successful runs are left
+// out too: they finished the job they were given, and a bare "Continue where you
+// left off." would put an agent back on work that is already done.
+QList<int> MainWindow::startableAgentSessionIds() const
+{
+    QList<int> ids;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (session.merged || isExternalSession(session.id))
+            continue;
+        if (runnerForSession(session.id)) // still winding down from a stop
+            continue;
+        if (session.status == AgentStatus::Stopped ||
+            session.status == AgentStatus::Failed)
+            ids << session.id;
+    }
+    return ids;
+}
+
+// "Start all" (adhoc #136): the way back from "Stop all" — resume every idle
+// session across all repositories in one click, instead of opening each row and
+// continuing it. Everything is queued rather than launched: the single
+// processAgentQueue() below starts as many as the machine-wide run limit allows
+// and leaves the rest waiting, so the fleet comes back at the same rate it would
+// have anyway.
+//
+// Unconfirmed, like its red twin: each of these is work the user already started,
+// every session is resumed with a plain "Continue where you left off.", and the
+// button beside this one calls the whole batch back off.
+void MainWindow::startAllStoppedAgents()
+{
+    // Snapshot the ids up front: the resumes below rewrite session state as they go.
+    const QList<int> ids = startableAgentSessionIds();
+    if (ids.isEmpty()) {
+        flashMessage(QStringLiteral("No stopped agents to start."));
+        return;
+    }
+    for (const int sessionId : std::as_const(ids))
+        continueAgentSession(sessionId, /*deferRefresh=*/true);
+    scheduleAgentSessionsPush(); // adhoc #182: mirror the new statuses to the web
+    reloadAgents();
+    if (m_selectedAgentSessionId > 0)
+        showAgentSession(m_selectedAgentSessionId);
+    processAgentQueue();
+    updateAgentActionState();
+    flashMessage(QStringLiteral("Started %1 agent session%2.")
                      .arg(ids.size())
                      .arg(ids.size() == 1 ? QString() : QStringLiteral("s")));
 }
@@ -10635,6 +10742,10 @@ void MainWindow::updateAgentActionState()
     // ForkMesh session is running, waiting or queued anywhere (adhoc #433).
     if (m_agentStopAllButton)
         m_agentStopAllButton->setEnabled(!stoppableAgentSessionIds().isEmpty());
+    // Same for "Start all" (adhoc #136): live whenever a stopped or failed
+    // session is sitting there resumable, selection or not.
+    if (m_agentStartAllButton)
+        m_agentStartAllButton->setEnabled(!startableAgentSessionIds().isEmpty());
     AgentSession *session = selected ? findAgentSession(m_selectedAgentSessionId)
                                      : nullptr;
     // Block deleting the session whose working-tree git-am the in-flight AI fix is
