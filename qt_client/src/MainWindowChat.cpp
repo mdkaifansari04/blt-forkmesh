@@ -6967,13 +6967,25 @@ void MainWindow::showNodesWindow()
     dialog->show();
 }
 
+// The Repos rail opens the network-wide repository list, so its badge counts
+// the rows that page shows — every repository on the relay — rather than this
+// machine's own copies, which read as a wrong number next to that table
+// (adhoc #118). Until the catalog has been rendered once the local repo menu is
+// the only count we have, so it stands in.
+void MainWindow::updateReposNavBadge()
+{
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_reposNavButton))
+        railButton->setBadgeCount(m_networkRepoRowCount >= 0
+                                      ? m_networkRepoRowCount
+                                      : m_repoMenuEntries.size());
+}
+
 void MainWindow::updateRepoSwitcher()
 {
     if (!m_repoMenuButton)
         return;
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_reposNavButton))
-        railButton->setBadgeCount(m_repoMenuEntries.size());
+    updateReposNavBadge();
     // Mid node-switch: the repo list belongs to the node being loaded, so keep
     // the button visible with a "Loading…" label (the spinner icon is driven by
     // startRepoSwitchSpin) instead of revealing a count or repo name until the
@@ -8236,6 +8248,97 @@ void MainWindow::refreshNetworkTab(int tabIndex)
 
 // --- Network repositories ---------------------------------------------------
 
+namespace {
+// Repos table columns (adhoc #118). The four interactive columns stay first so
+// a row's buttons remain reachable without scrolling sideways; every other fact
+// the catalog publishes about a repository follows, so this page shows all the
+// data we hold for all repos in one compact grid. Two things are deliberately
+// left out: the description (prose for the repository's own page, not a grid
+// cell) and raw signatures / private-archive locators (proof material rather
+// than repository facts — their digests are shown instead).
+enum NetworkRepoCol {
+    kRepoColName = 0,
+    kRepoColLocalFork,
+    kRepoColMirrors,
+    kRepoColActions,
+    kRepoColVisibility,
+    kRepoColTerms,
+    kRepoColLive,
+    kRepoColBranch,
+    kRepoColCommit,
+    kRepoColCommitSubject,
+    kRepoColCommitAuthor,
+    kRepoColCommitAt,
+    kRepoColIssues,
+    kRepoColIssueMax,
+    kRepoColCommits,
+    kRepoColBranches,
+    kRepoColPulls,
+    kRepoColDiscussions,
+    kRepoColWorktrees,
+    kRepoColArtifacts,
+    kRepoColActivity,
+    kRepoColChangedFiles,
+    kRepoColSize,
+    kRepoColSource,
+    kRepoColHosts,
+    kRepoColMachine,
+    kRepoColRuntime,
+    kRepoColPlatform,
+    kRepoColVersion,
+    kRepoColAgents,
+    kRepoColCi,
+    kRepoColCpu,
+    kRepoColMemory,
+    kRepoColDisk,
+    kRepoColClonesServed,
+    kRepoColWebsiteServed,
+    kRepoColEncryption,
+    kRepoColChannel,
+    kRepoColSolana,
+    kRepoColHostedSince,
+    kRepoColLastSync,
+    kRepoColUpdated,
+    kRepoColRootCommit,
+    kRepoColStateHash,
+    kRepoColMaintainer,
+    kRepoColNodeId,
+    kRepoColCloneUrl,
+    kRepoColSshUrl,
+    kRepoColCount,
+};
+
+// Header labels, index-aligned with NetworkRepoCol.
+QStringList networkRepoHeaders()
+{
+    return {QStringLiteral("Repository"),   QStringLiteral("Local fork"),
+            QStringLiteral("Mirrors"),      QStringLiteral("Actions"),
+            QStringLiteral("Visibility"),   QStringLiteral("Terms"),
+            QStringLiteral("Live host"),    QStringLiteral("Branch"),
+            QStringLiteral("Commit"),       QStringLiteral("Subject"),
+            QStringLiteral("Author"),       QStringLiteral("Last commit"),
+            QStringLiteral("Issues"),       QStringLiteral("Max issue"),
+            QStringLiteral("Commits"),      QStringLiteral("Branches"),
+            QStringLiteral("Pulls"),        QStringLiteral("Discussions"),
+            QStringLiteral("Worktrees"),    QStringLiteral("Artifacts"),
+            QStringLiteral("Activity 52w"), QStringLiteral("Changed files"),
+            QStringLiteral("Size"),         QStringLiteral("Source"),
+            QStringLiteral("Hosts"),        QStringLiteral("Machine"),
+            QStringLiteral("Runtime"),      QStringLiteral("Platform"),
+            QStringLiteral("Version"),      QStringLiteral("Agents"),
+            QStringLiteral("Actions (CI)"), QStringLiteral("CPU"),
+            QStringLiteral("RAM"),          QStringLiteral("Disk"),
+            QStringLiteral("Clones served"),
+            QStringLiteral("Website served"),
+            QStringLiteral("Encryption"),   QStringLiteral("Channel"),
+            QStringLiteral("Solana"),       QStringLiteral("Hosted since"),
+            QStringLiteral("Last sync"),    QStringLiteral("Updated"),
+            QStringLiteral("Root commit"),  QStringLiteral("State hash"),
+            QStringLiteral("Maintainer"),   QStringLiteral("Node id"),
+            QStringLiteral("Clone URL"),    QStringLiteral("SSH URL")};
+}
+} // namespace
+
 QWidget *MainWindow::buildNetworkReposSection()
 {
     auto *page = new QWidget;
@@ -8286,17 +8389,17 @@ QWidget *MainWindow::buildNetworkReposSection()
 
     auto *subtitle = new QLabel(QStringLiteral(
         "Repositories grouped by user or organization across the active relay. "
-        "Mirror hosts are combined into one repository row."));
+        "Mirror hosts are combined into one repository row, and every field the "
+        "catalog publishes about a repository has its own column \xE2\x80\x94 "
+        "use a column's \xE2\x8B\xAF menu to hide, move or sort by it."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
 
-    m_networkReposTable = new QTableWidget(0, 4);
+    m_networkReposTable = new QTableWidget(0, kRepoColCount);
     installColumnHeaderMenu(m_networkReposTable);
     m_networkReposTable->setObjectName("issueTable");
-    m_networkReposTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Repository"), QStringLiteral("Local fork"),
-         QStringLiteral("Mirrors"), QStringLiteral("Actions")});
+    m_networkReposTable->setHorizontalHeaderLabels(networkRepoHeaders());
     m_networkReposTable->verticalHeader()->setVisible(false);
     m_networkReposTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_networkReposTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -8304,23 +8407,27 @@ QWidget *MainWindow::buildNetworkReposSection()
     m_networkReposTable->setWordWrap(false);
     m_networkReposTable->setAlternatingRowColors(true);
     m_networkReposTable->setSortingEnabled(false);
+    m_networkReposTable->setHorizontalScrollMode(
+        QAbstractItemView::ScrollPerPixel);
     m_networkReposTable->horizontalHeader()->setStretchLastSection(false);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::Stretch);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        1, QHeaderView::ResizeToContents);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        2, QHeaderView::ResizeToContents);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        3, QHeaderView::ResizeToContents);
-    m_networkReposTable->verticalHeader()->setDefaultSectionSize(52);
-    m_networkReposTable->verticalHeader()->setMinimumSectionSize(44);
+    // Every column sizes to its own content: with the full field set in play a
+    // stretched first column would just push the data columns off-screen, and
+    // makeColumnsResizable() turns these into draggable Interactive ones as
+    // soon as the first rows land.
+    for (int c = 0; c < kRepoColCount; ++c)
+        m_networkReposTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    // One line per repository now that the commit/branch/state details each
+    // have a column, so a wide grid still reads as a compact list.
+    m_networkReposTable->verticalHeader()->setDefaultSectionSize(34);
+    m_networkReposTable->verticalHeader()->setMinimumSectionSize(28);
     makeColumnsResizable(m_networkReposTable);
     connect(m_networkReposTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int column) {
-                if (column == 3 || !m_networkReposTable)
+                if (column == kRepoColActions || !m_networkReposTable)
                     return;
-                QTableWidgetItem *item = m_networkReposTable->item(row, 0);
+                QTableWidgetItem *item =
+                    m_networkReposTable->item(row, kRepoColName);
                 if (!item)
                     return;
                 const QString key = item->data(Qt::UserRole).toString();
@@ -8739,7 +8846,6 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         const QString cloneUrl = repo.value("cloneUrl").toString().trimmed();
         const bool isPrivate = repo.value("private").toBool(false) ||
                                repo.value("isPrivate").toBool(false);
-        const bool liveHost = repo.value("liveHost").toBool(false);
         const QString commit = repo.value("commit").toString().trimmed();
         const QString branch = repo.value("branch").toString().trimmed();
         // The catalog publishes the HEAD commit date as epoch milliseconds, as
@@ -8750,27 +8856,10 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
                 ? qint64(commitAtValue.toDouble())
                 : commitAtValue.toString().trimmed().toLongLong();
 
-        // No "about" blurb on the row: what matters here is where the
-        // repository stands (commit, branch, when it last moved), and the
-        // description only ever pushed that off the end of the line. It still
-        // shows on the repository's own page.
-        QStringList details;
-        if (!commit.isEmpty()) {
-            QString commitLine = QStringLiteral("commit %1").arg(commit.left(12));
-            if (!branch.isEmpty())
-                commitLine += QStringLiteral(" on %1").arg(branch);
-            if (commitAtMs > 0)
-                commitLine += QStringLiteral(" \xC2\xB7 %1")
-                                  .arg(formatIssueRelativeTime(commitAtMs));
-            details << commitLine;
-        }
-        if (isPrivate)
-            details << QStringLiteral("private");
-        if (liveHost)
-            details << QStringLiteral("live");
-
-        auto *repoItem = new QTableWidgetItem(
-            details.isEmpty() ? key : key + "\n" + details.join(QStringLiteral(" | ")));
+        // Commit / branch / privacy each have their own column now, so the row
+        // itself is one line: the repository name. No "about" blurb either —
+        // the description is prose that belongs on the repository's own page.
+        auto *repoItem = new QTableWidgetItem(key);
         repoItem->setData(Qt::UserRole, key);
         repoItem->setData(Qt::UserRole + 1, cloneUrl);
         repoItem->setData(Qt::UserRole + 2, isPrivate);
@@ -8788,7 +8877,7 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         if (!cloneUrl.isEmpty())
             repoToolTip << cloneUrl;
         repoItem->setToolTip(repoToolTip.join('\n'));
-        m_networkReposTable->setItem(row, 0, repoItem);
+        m_networkReposTable->setItem(row, kRepoColName, repoItem);
 
         int localFork = -1;
         int mirroredIndex = -1;
@@ -8813,18 +8902,20 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
             auto *forkItem = new QTableWidgetItem(QStringLiteral("Available"));
             forkItem->setToolTip(
                 QStringLiteral("%1/%2\n%3").arg(fork.owner, fork.name, path));
-            m_networkReposTable->setItem(row, 1, forkItem);
+            m_networkReposTable->setItem(row, kRepoColLocalFork, forkItem);
         } else {
             auto *forkItem = new QTableWidgetItem(QStringLiteral("Not local"));
             forkItem->setForeground(QColor("#8b949e"));
-            m_networkReposTable->setItem(row, 1, forkItem);
+            m_networkReposTable->setItem(row, kRepoColLocalFork, forkItem);
         }
 
         auto *mirrorsItem = new QTableWidgetItem(
             QString::fromUtf8("\xE2\x80\xA6"));
         mirrorsItem->setForeground(QColor("#8b949e"));
         mirrorsItem->setTextAlignment(Qt::AlignCenter);
-        m_networkReposTable->setItem(row, 2, mirrorsItem);
+        m_networkReposTable->setItem(row, kRepoColMirrors, mirrorsItem);
+
+        fillNetworkRepoDataCells(row, repo);
 
         auto *actions = new QWidget;
         auto *actionRow = new QHBoxLayout(actions);
@@ -8947,7 +9038,7 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         actionRow->addSpacing(10);
         actionRow->addWidget(deleteButton);
         actionRow->addStretch();
-        m_networkReposTable->setCellWidget(row, 3, actions);
+        m_networkReposTable->setCellWidget(row, kRepoColActions, actions);
 
         fetchNetworkRepoMirrors(routeOwner, routeName, row, generation);
     }
@@ -8955,6 +9046,242 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
     m_networkReposStatus->setText(
         rows.isEmpty() ? QStringLiteral("No repositories advertised.")
                        : QStringLiteral("%1 repositories").arg(formatCount(rows.size())));
+    // The Repos rail badge counts what this page lists, not this machine's own
+    // copies (adhoc #118).
+    m_networkRepoRowCount = rows.size();
+    updateReposNavBadge();
+}
+
+// Fills every catalog-data column of one Repos row: the repository's own facts
+// (visibility, HEAD, counts, size) plus the publishing node's advertised state
+// (machine, platform, telemetry, serve counters). Values the node never
+// reported render as an em dash rather than a misleading zero.
+void MainWindow::fillNetworkRepoDataCells(int row, const QJsonObject &repo)
+{
+    if (!m_networkReposTable)
+        return;
+    const QString dash = QString::fromUtf8("\xE2\x80\x94");
+
+    // Numbers reach us as JSON numbers on some fields and as strings on others
+    // (the catalog stores the node-reported counters as text); an invalid
+    // QVariant means "never reported", which is not the same as zero.
+    auto number = [&repo](const QString &key) {
+        const QJsonValue value = repo.value(key);
+        if (value.isDouble())
+            return QVariant(qint64(value.toDouble()));
+        bool ok = false;
+        const qint64 parsed = value.toString().trimmed().toLongLong(&ok);
+        return ok ? QVariant(parsed) : QVariant();
+    };
+    auto text = [&repo](const QString &key) {
+        return repo.value(key).toString().trimmed();
+    };
+    auto textCell = [&](int column, const QString &value,
+                        const QString &tip = QString()) {
+        auto *item = new QTableWidgetItem(value.isEmpty() ? dash : value);
+        if (value.isEmpty())
+            item->setForeground(QColor("#8b949e"));
+        else if (!tip.isEmpty())
+            item->setToolTip(tip);
+        m_networkReposTable->setItem(row, column, item);
+    };
+    // Hashes, keys and addresses are shown by their leading characters with the
+    // full value on hover, so one long field can't blow out the grid.
+    auto digestCell = [&](int column, const QString &value,
+                          const QString &extraTip = QString()) {
+        QString tip = value;
+        if (!extraTip.isEmpty())
+            tip += QLatin1Char('\n') + extraTip;
+        textCell(column, value.left(12), tip);
+    };
+    auto countCell = [&](int column, const QString &key,
+                         const QString &tip = QString()) {
+        const QVariant value = number(key);
+        auto *item = new QTableWidgetItem;
+        if (value.isValid()) {
+            item->setData(Qt::DisplayRole, value.toLongLong());
+            if (!tip.isEmpty())
+                item->setToolTip(tip);
+        } else {
+            item->setText(dash);
+            item->setForeground(QColor("#8b949e"));
+        }
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_networkReposTable->setItem(row, column, item);
+    };
+    // Timestamps are epoch milliseconds (as text on the fields the node signs);
+    // the column reads relatively, the exact stamp is on hover.
+    auto timeCell = [&](int column, const QString &key) {
+        const QVariant value = number(key);
+        const qint64 ms = value.toLongLong();
+        if (!value.isValid() || ms <= 0) {
+            textCell(column, QString());
+            return;
+        }
+        textCell(column, formatIssueRelativeTime(ms), formatRepoDate(ms));
+    };
+    auto usageText = [&](const QString &usedKey, const QString &totalKey) {
+        const QVariant used = number(usedKey);
+        const QVariant total = number(totalKey);
+        if (!used.isValid() || !total.isValid() || total.toLongLong() <= 0)
+            return QString();
+        return QStringLiteral("%1 / %2")
+            .arg(SystemStats::formatBytes(used.toLongLong()),
+                 SystemStats::formatBytes(total.toLongLong()));
+    };
+    auto servedTip = [&](const QString &atKey, const QString &agentKey) {
+        QStringList tip;
+        const QVariant at = number(atKey);
+        if (at.isValid() && at.toLongLong() > 0)
+            tip << QStringLiteral("Last: %1").arg(formatRepoDate(at.toLongLong()));
+        const QString agent = text(agentKey);
+        if (!agent.isEmpty())
+            tip << QStringLiteral("Client: %1").arg(agent);
+        return tip.join(QLatin1Char('\n'));
+    };
+    auto joinArray = [&repo](const QString &key) {
+        QStringList values;
+        for (const QJsonValue &value : repo.value(key).toArray()) {
+            const QString entry = value.toString().trimmed();
+            if (!entry.isEmpty())
+                values << entry;
+        }
+        return values;
+    };
+
+    const bool isPrivate = repo.value("private").toBool(false) ||
+                           repo.value("isPrivate").toBool(false);
+    const bool sharedWithMe = repo.value("sharedWithMe").toBool(false);
+    textCell(kRepoColVisibility,
+             isPrivate ? (sharedWithMe ? QStringLiteral("Private (shared)")
+                                       : QStringLiteral("Private"))
+                       : QStringLiteral("Public"));
+    textCell(kRepoColTerms,
+             repo.value("termsFlagged").toBool(false)
+                 ? (text(QStringLiteral("termsCategory")).isEmpty()
+                        ? QStringLiteral("flagged")
+                        : text(QStringLiteral("termsCategory")))
+                 : QString());
+    textCell(kRepoColLive, repo.value("liveHost").toBool(false)
+                               ? QStringLiteral("Live")
+                               : QString());
+
+    textCell(kRepoColBranch, text(QStringLiteral("branch")));
+    digestCell(kRepoColCommit, text(QStringLiteral("commit")));
+    const QString subject = text(QStringLiteral("commitSubject"));
+    textCell(kRepoColCommitSubject, subject, subject);
+    textCell(kRepoColCommitAuthor, text(QStringLiteral("commitAuthorName")));
+    timeCell(kRepoColCommitAt, QStringLiteral("commitAt"));
+
+    countCell(kRepoColIssues, QStringLiteral("issueCount"),
+              QStringLiteral("Open issues"));
+    countCell(kRepoColIssueMax, QStringLiteral("issueMaxNumber"),
+              QStringLiteral("Highest issue number ever assigned"));
+    countCell(kRepoColCommits, QStringLiteral("commitCount"));
+    countCell(kRepoColBranches, QStringLiteral("branchCount"));
+    countCell(kRepoColPulls, QStringLiteral("pullCount"));
+    countCell(kRepoColDiscussions, QStringLiteral("discussionCount"));
+    countCell(kRepoColWorktrees, QStringLiteral("worktreeCount"));
+    countCell(kRepoColArtifacts, QStringLiteral("artifactCount"));
+
+    const QJsonArray activity = repo.value("activityWeeks").toArray();
+    if (activity.isEmpty()) {
+        textCell(kRepoColActivity, QString());
+    } else {
+        qint64 activityTotal = 0;
+        QStringList weeks;
+        for (const QJsonValue &week : activity) {
+            activityTotal += qint64(week.toDouble());
+            weeks << QString::number(qint64(week.toDouble()));
+        }
+        auto *item = new QTableWidgetItem;
+        item->setData(Qt::DisplayRole, activityTotal);
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        item->setToolTip(QStringLiteral("Commits per week (oldest first):\n%1")
+                             .arg(weeks.join(QLatin1Char(' '))));
+        m_networkReposTable->setItem(row, kRepoColActivity, item);
+    }
+
+    const QStringList changedFiles = joinArray(QStringLiteral("changedFiles"));
+    if (changedFiles.isEmpty()) {
+        textCell(kRepoColChangedFiles, QString());
+    } else {
+        auto *item = new QTableWidgetItem;
+        item->setData(Qt::DisplayRole, qint64(changedFiles.size()));
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        item->setToolTip(QStringLiteral("Uncommitted on the host:\n%1")
+                             .arg(changedFiles.join(QLatin1Char('\n'))));
+        m_networkReposTable->setItem(row, kRepoColChangedFiles, item);
+    }
+
+    const QVariant sizeBytes = number(QStringLiteral("sizeBytes"));
+    textCell(kRepoColSize,
+             sizeBytes.isValid() && sizeBytes.toLongLong() > 0
+                 ? SystemStats::formatBytes(sizeBytes.toLongLong())
+                 : QString());
+    textCell(kRepoColSource, text(QStringLiteral("source")));
+    const QStringList hosts = joinArray(QStringLiteral("_memberOwners"));
+    textCell(kRepoColHosts, hosts.join(QStringLiteral(", ")),
+             hosts.join(QLatin1Char('\n')));
+
+    textCell(kRepoColMachine, text(QStringLiteral("machineName")));
+    textCell(kRepoColRuntime, text(QStringLiteral("runtimeMode")));
+    textCell(kRepoColPlatform, text(QStringLiteral("platform")));
+    textCell(kRepoColVersion, text(QStringLiteral("version")));
+    textCell(kRepoColAgents,
+             joinArray(QStringLiteral("agentProviders"))
+                 .join(QStringLiteral(", ")));
+    QString ci = text(QStringLiteral("actionsState"));
+    if (ci.isEmpty() && repo.contains(QStringLiteral("actionsEnabled")))
+        ci = repo.value("actionsEnabled").toBool() ? QStringLiteral("enabled")
+                                                   : QStringLiteral("disabled");
+    textCell(kRepoColCi, ci);
+
+    const QVariant cpuPercent = number(QStringLiteral("cpuPercent"));
+    textCell(kRepoColCpu, cpuPercent.isValid()
+                              ? QStringLiteral("%1%").arg(cpuPercent.toLongLong())
+                              : QString());
+    textCell(kRepoColMemory, usageText(QStringLiteral("memUsedBytes"),
+                                       QStringLiteral("memTotalBytes")));
+    textCell(kRepoColDisk, usageText(QStringLiteral("diskUsedBytes"),
+                                     QStringLiteral("diskTotalBytes")));
+    countCell(kRepoColClonesServed, QStringLiteral("clonesServed"),
+              servedTip(QStringLiteral("cloneServedAt"),
+                        QStringLiteral("cloneServedAgent")));
+    countCell(kRepoColWebsiteServed, QStringLiteral("websiteServed"),
+              servedTip(QStringLiteral("websiteServedAt"),
+                        QStringLiteral("websiteServedAgent")));
+
+    QString encryption = text(QStringLiteral("mirrorEncryption"));
+    const QVariant keyEpoch = number(QStringLiteral("keyEpoch"));
+    if (!encryption.isEmpty() && keyEpoch.isValid())
+        encryption += QStringLiteral(" \xC2\xB7 epoch %1").arg(keyEpoch.toLongLong());
+    QStringList encryptionTip;
+    if (!text(QStringLiteral("opaqueRepoId")).isEmpty())
+        encryptionTip << QStringLiteral("Repo id: %1")
+                             .arg(text(QStringLiteral("opaqueRepoId")));
+    if (!text(QStringLiteral("encryptedManifestHash")).isEmpty())
+        encryptionTip << QStringLiteral("Manifest: %1")
+                             .arg(text(QStringLiteral("encryptedManifestHash")));
+    textCell(kRepoColEncryption, encryption,
+             encryptionTip.join(QLatin1Char('\n')));
+
+    textCell(kRepoColChannel, text(QStringLiteral("channel")));
+    digestCell(kRepoColSolana, text(QStringLiteral("solana")));
+    timeCell(kRepoColHostedSince, QStringLiteral("hostedSince"));
+    timeCell(kRepoColLastSync, QStringLiteral("lastSync"));
+    timeCell(kRepoColUpdated, QStringLiteral("updatedAt"));
+    digestCell(kRepoColRootCommit, text(QStringLiteral("rootCommit")));
+    digestCell(kRepoColStateHash, text(QStringLiteral("stateHash")),
+               text(QStringLiteral("stateSig")).isEmpty()
+                   ? QStringLiteral("Unsigned")
+                   : QStringLiteral("Owner-signed"));
+    digestCell(kRepoColMaintainer, text(QStringLiteral("maintainer")));
+    digestCell(kRepoColNodeId, text(QStringLiteral("nodeId")));
+    const QString cloneUrl = text(QStringLiteral("cloneUrl"));
+    textCell(kRepoColCloneUrl, cloneUrl, cloneUrl);
+    const QString sshUrl = text(QStringLiteral("sshUrl"));
+    textCell(kRepoColSshUrl, sshUrl, sshUrl);
 }
 
 void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &name,
@@ -8982,7 +9309,8 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                 if (generation != m_networkReposLoadGen || !m_networkReposTable ||
                     row < 0 || row >= m_networkReposTable->rowCount())
                     return;
-                QTableWidgetItem *repoItem = m_networkReposTable->item(row, 0);
+                QTableWidgetItem *repoItem =
+                    m_networkReposTable->item(row, kRepoColName);
                 if (!repoItem ||
                     repoItem->data(Qt::UserRole + 3).toString()
                             .compare(owner, Qt::CaseInsensitive) != 0 ||
@@ -8990,7 +9318,8 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                             .compare(name, Qt::CaseInsensitive) != 0)
                     return;
 
-                QTableWidgetItem *mirrorsItem = m_networkReposTable->item(row, 2);
+                QTableWidgetItem *mirrorsItem =
+                    m_networkReposTable->item(row, kRepoColMirrors);
                 if (!mirrorsItem)
                     return;
 
