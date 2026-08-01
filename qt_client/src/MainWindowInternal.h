@@ -2696,6 +2696,14 @@ const QString kRepoUrl = QStringLiteral("https://github.com/forkmesh/forkmesh.gi
 const QString kDisplayNameSetting = QStringLiteral("profile/displayName");
 const QString kHandleSetting = QStringLiteral("profile/handle");
 const QString kAccountNameSetting = QStringLiteral("account/nodeName");
+// The fun node name a true first run handed out (see randomFunNodeName). While
+// the account name is still exactly this — nobody typed a username, signed up,
+// or logged in — the person at the desktop is a guest, not a user, and chat
+// speaks as "Guest ####" like the website does for anonymous visitors (adhoc
+// #113). Renaming (setup screen or Settings) or claiming a user account makes
+// account/nodeName diverge from this and thereby exits guest mode.
+const QString kGeneratedNodeNameSetting =
+    QStringLiteral("account/generatedNodeName");
 // This machine's own node name on the mesh, distinct from the username: a user
 // account owns many nodes, and the machine you're sitting at is just one of
 // them. Unset means "derive a default" (hostname for user-account installs,
@@ -2738,9 +2746,8 @@ const QString kRepositoriesArray = QStringLiteral("repositories/items");
 const QString kMirrorRootSetting = QStringLiteral("repositories/mirrorRoot");
 const QString kLastRepositorySetting = QStringLiteral("repositories/lastOpen");
 // Last repo-detail tab actually viewed (updated by recordNavLocation()); a
-// restart restores this instead of Settings -> General's "open repositories
-// on tab" preference, which is meant for switching repos mid-session, not for
-// where the app happens to relaunch (adhoc #101).
+// restart restores this rather than landing wherever a fresh open would
+// (adhoc #101) — the app comes back on the page it was left on.
 const QString kLastRepoDetailTabSetting =
     QStringLiteral("repositories/lastOpenDetailTab");
 // Issue looper (adhoc #125): persist the running state so a restart resumes the
@@ -2921,11 +2928,10 @@ const QString kAutoSyncOnMergeSetting = QStringLiteral("repos/autoSyncOnMerge");
 // no one around to click "update").
 const QString kAutoUpdateSetting = QStringLiteral("update/autoUpdate");
 // Hourly local snapshots of the live database (Settings -> Data -> Automatic
-// backups). On by default on the desktop — the snapshot is the only thing
-// standing between a corrupted store and a lost account key — but OFF by
-// default headless: a rolling day of ~1GB tarballs filled several small VPS
-// disks (see forkmesh::autoBackupDefault). An explicit true still enables
-// backups on a headless node.
+// backups). OFF by default everywhere except control nodes — the installs that
+// hold a Cloudflare API token (see forkmesh::autoBackupDefault) — because a
+// rolling day of ~1GB tarballs filled several small VPS disks. An explicit
+// true turns backups on for any node.
 const QString kAutoBackupEnabledSetting = QStringLiteral("backup/hourlyEnabled");
 // How many hourly snapshots are kept before the oldest is pruned.
 const QString kAutoBackupKeepSetting = QStringLiteral("backup/keepCount");
@@ -3240,16 +3246,10 @@ inline int maxRunningAgents()
 // Footer quick-add "Auto-send" toggle (adhoc #45): true => submit the prompt as
 // soon as a voice dictation finishes transcribing, without pressing Enter/Send.
 const QString kVoiceAutoSubmitSetting = QStringLiteral("agents/voiceAutoSubmit");
-// Footer quick-add "YOLO" toggle (adhoc #12): true => every agent started from
-// here merges its own branch into the default branch the moment its run
-// finishes successfully, skipping the pull-request review step.
-const QString kQuickAddYoloSetting = QStringLiteral("agents/quickAddYolo");
-// Footer quick-add "Task" toggle (adhoc #18): true => every agent started from
-// here also opens an organization task recording which bot launched the run,
-// which bot finished it, and the model/mode/strength it used. On by default —
-// the point is that prompted work is visible to the organization, not just to
-// the desktop that typed it — and turned off per-run for throwaway prompts.
-const QString kQuickAddTaskSetting = QStringLiteral("agents/quickAddTask");
+// The footer quick-add "YOLO" (adhoc #12) and "Task" (adhoc #18) toggles were
+// dropped from the composer in adhoc #120, so agents/quickAddYolo and
+// agents/quickAddTask are no longer read or written: a prompted run never
+// auto-merges and always opens an organization task.
 // Last known number of open organization tasks, mirrored into settings so the
 // Tasks rail badge is on screen from the first frame after a restart instead of
 // staying blank until someone opens the Tasks page (adhoc #79).
@@ -3280,6 +3280,11 @@ const QString kAccountAlertListProof =
     QStringLiteral("forkmesh-account-alert-list-v1");
 const QString kAccountAlertReadProof =
     QStringLiteral("forkmesh-account-alert-read-v1");
+// Deleting one ping from that inbox signs the row's id as well, so a captured
+// delete cannot be replayed against a different notification (adhoc #77). Must
+// stay byte-identical to ACCOUNT_ALERT_DELETE_PROOF in entry.py.
+const QString kAccountAlertDeleteProof =
+    QStringLiteral("forkmesh-account-alert-delete-v1");
 // Transcript diff style: true => side-by-side (split), false => unified.
 const QString kClaudeDiffSplitSetting = QStringLiteral("agents/claudeDiffSplit");
 // Diff viewer text size (points), adjustable with the +/- zoom control.
@@ -3876,20 +3881,13 @@ inline void mergeLiveClaudeModels(QComboBox *combo, const QJsonArray &models)
     combo->setCurrentIndex(idx >= 0 ? idx : fallback);
 }
 
-// User's preferred tab a repository opens on (Settings → General). Stored as
-// the m_repoDetailStack / m_repoDetailTabs index. Restricted to the tabs whose
-// data is eagerly loaded when a repo opens — Code(0), Commits(1), Issues(2),
-// Agents(3), Pull requests(4), Discussions(5) — so landing there shows content
-// without a manual click. Defaults to the Agents tab.
-const QString kDefaultRepoTabSetting = QStringLiteral("ui/defaultRepoTab");
-constexpr int kFallbackRepoTab = 3; // Agents
-
-inline int defaultRepoTabIndex()
-{
-    const int value =
-        QSettings().value(kDefaultRepoTabSetting, kFallbackRepoTab).toInt();
-    return (value >= 0 && value <= 5) ? value : kFallbackRepoTab;
-}
+// The tab a repository opens on: Code(0), the repo's own front page. Was a
+// Settings → General preference defaulting to Agents, which meant every launch
+// and every repo switch detoured through the Agents tab; adhoc #119 dropped both
+// the setting and the detour, so a repo just opens where the app opens — its
+// overview — and a relaunch restores the tab last viewed
+// (kLastRepoDetailTabSetting).
+constexpr int kRepoLandingTab = 0; // Code
 
 // Live claude.ai OAuth access token the Claude Code CLI stores in
 // ~/.claude/.credentials.json. Empty when the user logged in with an API key
@@ -7239,15 +7237,43 @@ private:
     Form m_form;
 };
 
-// Width of one activity-rail entry, and of the rail (scroll area) itself. Every
-// badge in the rail rides its own icon's corner rather than the item's outer
-// edge, so an item only has to be as wide as its icon plus its caption — the
-// rail no longer reserves a column of empty space for a count (adhoc #19).
-constexpr int kRailItemWidth = 46;
-constexpr int kRailWidth = kRailItemWidth + 8; // + room for the scrollbar
-// Size of the bell glyph on the rail's Alerts item — updateNotificationButton
-// needs it to park the pending-approval count on the glyph's corner.
-constexpr int kNotificationBellIconPx = 16;
+// Width and height of one activity-rail entry, and the width of the rail
+// (scroll area) itself. Every badge in the rail rides its own icon's corner
+// rather than the item's outer edge, so an item only has to be as wide as its
+// icon plus its caption — the rail no longer reserves a column of empty space
+// for a count (adhoc #19). Adhoc #117 slimmed the rail: every destination is
+// the same icon-over-caption item, so the item is exactly wide enough for the
+// longest caption and the rail only adds its own slim 6px scrollbar (see the
+// #appNavigationRail QScrollBar rule in Theme.h).
+constexpr int kRailItemWidth = 42;
+constexpr int kRailItemHeight = 44; // 20px icon + 10px caption + breathing room
+
+// The 42px floor fits every rail caption in each of main()'s preferred UI
+// families (Inter/SF/Segoe/Roboto/Noto/Ubuntu/Cantarell measure "Network",
+// the widest word, at <=40px in the 10px demi-bold caption font). A box that
+// has none of them can fall back to a wider face (DejaVu draws it at 48px),
+// so measure the app rail's actual caption set once in the real UI font and
+// widen just enough that no word is ever cut. Font is fixed at startup, so a
+// once-computed static is safe.
+inline int railItemWidth()
+{
+    static const int width = [] {
+        QFont f = QGuiApplication::font();
+        f.setPixelSize(10);
+        f.setWeight(QFont::DemiBold);
+        const QFontMetrics metrics(f);
+        int widest = kRailItemWidth;
+        for (const char *caption :
+             {"Agents", "Code", "Git", "Repos", "Chat", "Control", "Network",
+              "Settings", "Log", "Capture", "Resize", "Tasks", "Pings",
+              "Account"})
+            widest = qMax(widest, metrics.horizontalAdvance(
+                                      QString::fromLatin1(caption)) + 4);
+        return widest;
+    }();
+    return width;
+}
+inline int railWidth() { return railItemWidth() + 6; } // + slim scrollbar
 
 // One entry in the app-wide activity rail: an octicon over an optional small
 // label, VS-Code style, with the selected state drawn as a 2px accent line along
@@ -7266,7 +7292,7 @@ public:
         setCursor(Qt::PointingHandCursor);
         setFlat(true);
         setAccessibleName(m_label);
-        setFixedSize(44, m_label.isEmpty() ? 40 : 48);
+        setFixedSize(railItemWidth(), m_label.isEmpty() ? 40 : kRailItemHeight);
         // The sync spinner's timer only runs while syncing *and* visible (see
         // show/hideEvent), so an idle or hidden item costs nothing.
         m_spinTimer = new QTimer(this);
@@ -7285,7 +7311,8 @@ public:
         if (m_compact == compact)
             return;
         m_compact = compact;
-        setFixedSize(44, m_compact ? 30 : (m_label.isEmpty() ? 40 : 48));
+        setFixedSize(railItemWidth(),
+                     m_compact ? 30 : (m_label.isEmpty() ? 40 : kRailItemHeight));
         update();
     }
 
@@ -7295,6 +7322,28 @@ public:
         if (m_badge == count)
             return;
         m_badge = count;
+        update();
+    }
+    int badgeCount() const { return m_badge; }
+
+    // Red "needs you" badge (Chat unread, pending Pings) instead of the default
+    // blue count — the same corner geometry either way, so the two badge
+    // languages stay aligned across the rail.
+    void setBadgeUrgent(bool urgent)
+    {
+        if (m_badgeUrgent == urgent)
+            return;
+        m_badgeUrgent = urgent;
+        update();
+    }
+
+    // Amber icon+caption tint while something is waiting (the Pings bell) —
+    // the painted replacement for the old QSS [alert="true"] accent.
+    void setAlertTint(bool alert)
+    {
+        if (m_alert == alert)
+            return;
+        m_alert = alert;
         update();
     }
 
@@ -7328,8 +7377,13 @@ protected:
         p.setRenderHint(QPainter::Antialiasing);
         const bool dark = currentThemeIsDark();
         const bool lit = isChecked() || underMouse();
-        const QColor fg = dark ? QColor(lit ? "#e6edf3" : "#8b949e")
-                               : QColor(lit ? "#1f2328" : "#656d76");
+        // The alert tint outranks the resting grey but still brightens on
+        // hover/checked, mirroring the old QSS [alert="true"] rules.
+        const QColor fg =
+            m_alert ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
+                                  : (lit ? "#7d4e00" : "#9a6700"))
+                    : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
+                            : QColor(lit ? "#1f2328" : "#656d76"));
         const bool showLabel = !m_compact && !m_label.isEmpty();
 
         // Selection line along the left edge — same accent green as the repo
@@ -7350,8 +7404,12 @@ protected:
             f.setWeight(QFont::DemiBold);
             p.setFont(f);
             p.setPen(fg);
-            p.drawText(QRect(0, iconRect.bottom() + 2, width(), 14),
-                       Qt::AlignHCenter | Qt::AlignTop, m_label);
+            // Elide as a guard for wide fallback fonts; the item width is sized
+            // so the longest caption fits in every preferred UI family.
+            p.drawText(QRect(1, iconRect.bottom() + 2, width() - 2, 14),
+                       Qt::AlignHCenter | Qt::AlignTop,
+                       QFontMetrics(f).elidedText(m_label, Qt::ElideRight,
+                                                  width() - 2));
         }
 
         // Badge / sync spinner on the icon's upper-right corner.
@@ -7378,7 +7436,8 @@ protected:
                 qMax(0.0, double(iconRect.top() - 5)),
                 w, h);
             p.setPen(Qt::NoPen);
-            p.setBrush(QColor("#1f6feb"));
+            p.setBrush(QColor(m_badgeUrgent ? (dark ? "#da3633" : "#cf222e")
+                                            : "#1f6feb"));
             p.drawRoundedRect(badge, h / 2.0, h / 2.0);
             p.setPen(QColor("#ffffff"));
             p.drawText(badge, Qt::AlignCenter, text);
@@ -7399,6 +7458,8 @@ private:
     QString m_iconName;
     QString m_label;
     int m_badge = 0;
+    bool m_badgeUrgent = false;
+    bool m_alert = false;
     bool m_syncing = false;
     bool m_compact = false;
     QTimer *m_spinTimer = nullptr;
@@ -8839,13 +8900,17 @@ inline QString nodeListIdentityKey(const MemberInfo &m)
 // fb9d" rows in the Nodes list). The web chat stamps these accountKind "guest";
 // frames sent before that stamp existed are recognised by the placeholder names
 // the world assigns ("World visitor · <name>", "World Guest ab12", "Guest 1234")
-// — but only when the peer never advertised a registered node identity, so a
-// real node someone happens to have named "Guest ..." keeps its row.
+// — but only when the peer never advertised a node identity, so a real node
+// keeps its row. That nodeName escape now matters for "guest" too: a fresh
+// desktop install chats as "Guest ####" until someone picks a username (adhoc
+// #113), yet the machine itself still advertises its generated node name and
+// belongs in node surfaces. Browser-tab guests advertise no nodeName and stay
+// filtered.
 inline bool isTemporaryChatGuest(const MemberInfo &m)
 {
     const QString kind = m.accountKind.trimmed().toLower();
     if (kind == QLatin1String("guest"))
-        return true;
+        return m.nodeName.trimmed().isEmpty();
     if (!kind.isEmpty() || !m.nodeName.trimmed().isEmpty())
         return false;
     static const QRegularExpression legacyGuestName(

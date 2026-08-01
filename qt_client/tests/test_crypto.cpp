@@ -6621,12 +6621,15 @@ int main(int argc, char *argv[])
               "nothing is pruned under the limit, and keep=0 still spares the "
               "newest snapshot");
 
-        // The hourly toggle's unset-default is platform-shaped: a desktop
-        // wants the safety net, an unattended VPS must not fill its disk with
-        // a day of ~1GB tarballs (operators opt in explicitly instead).
-        check(forkmesh::autoBackupDefault(false) &&
-                  !forkmesh::autoBackupDefault(true),
-              "hourly backups default on for desktops and off headless");
+        // The hourly toggle's unset-default follows the Cloudflare API token:
+        // only a control node backs itself up without being asked, because
+        // every other install (desktop or VPS) would rather not spend a day of
+        // ~1GB tarballs it never opted into.
+        check(forkmesh::autoBackupDefault(QStringLiteral("cf-token")) &&
+                  !forkmesh::autoBackupDefault(QString()) &&
+                  !forkmesh::autoBackupDefault(QStringLiteral("   ")),
+              "hourly backups default on only for control nodes, and a blank "
+              "token is not one");
 
         const QDateTime now =
             QDateTime::fromString(QStringLiteral("2026-07-28T10:00:00"),
@@ -6952,6 +6955,16 @@ int main(int argc, char *argv[])
                                       &progressPath, &progressBytes,
                                       &progressFiles),
               "sudo's own chatter and a truncated line are not progress");
+
+        // Stop button: a canceled poll must unwind before the walk descends
+        // into anything, rather than finishing the tree and throwing it away.
+        int cancelChecks = 0;
+        const DirectorySizeScanResult stopped = scanDirectorySizes(
+            tree.path(), options, {},
+            [&] { ++cancelChecks; return true; });
+        check(stopped.root.size == 0 && stopped.root.fileCount == 0 &&
+                  stopped.root.children.isEmpty() && cancelChecks > 0,
+              "a scan canceled up front produces an empty tree, not a partial one");
     }
 
 #if defined(Q_OS_LINUX)

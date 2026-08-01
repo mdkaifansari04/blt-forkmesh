@@ -454,10 +454,15 @@ QWidget *MainWindow::buildChatPage()
     // the edge-to-edge header and remains visible beside every app view.
     auto *rail = new QWidget;
     rail->setObjectName(QStringLiteral("appNavigationRailContent"));
-    rail->setMinimumWidth(kRailItemWidth);
+    rail->setMinimumWidth(railItemWidth());
     m_appNavigationRailLayout = new QVBoxLayout(rail);
     m_appNavigationRailLayout->setContentsMargins(0, 4, 0, 4);
     m_appNavigationRailLayout->setSpacing(1);
+    // Every rail destination is the same item now (adhoc #117): one
+    // ActivityRailButton — a 20px octicon SVG over a 10px caption at
+    // railItemWidth() x kRailItemHeight — so icons, words, hover and the
+    // checked accent line all read identically down the rail.
+    //
     // Agents heads the rail (adhoc #70) — a regular destination like the rest,
     // badged with the running-session count. Only its fleet matrix stayed on the
     // window-chrome line (see buildBreadcrumb). The contextual Code and Git
@@ -466,79 +471,37 @@ QWidget *MainWindow::buildChatPage()
     // directly above Pings there (adhoc #97).
     for (QPushButton *button :
          {m_agentsNavButton, m_reposNavButton, m_chatButton,
-          m_controlNodeNavButton, m_networkNavButton}) {
-        if (auto *railButton = dynamic_cast<ActivityRailButton *>(button)) {
-            railButton->setCompact(false);
-            railButton->setFixedSize(kRailItemWidth, 40);
-        }
+          m_controlNodeNavButton, m_networkNavButton})
         m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
-    }
     // Repo is redundant with the contextual Code entry. Keep the hidden button
     // as section 0's QButtonGroup state carrier for programmatic navigation.
     m_repoViewButton->setParent(header);
     m_repoViewButton->hide();
     m_appNavigationRailLayout->addStretch();
 
-    // Settings and screen/dev tools form the bottom utility group. Their normal
-    // QPushButton icon handling (notably the rebuild spinner) is retained inside
-    // a tiny icon-over-caption wrapper so every rail destination is named.
-    auto addUtility = [this](QPushButton *button, const QString &caption) {
-        button->setProperty("railUtility", true);
-        button->setFixedSize(kRailItemWidth, 18);
-        auto *label = new QLabel(caption);
-        label->setObjectName(QStringLiteral("railItemLabel"));
-        label->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
-        auto *host = new QWidget;
-        host->setFixedSize(kRailItemWidth, 28);
-        auto *hostLayout = new QVBoxLayout(host);
-        hostLayout->setContentsMargins(0, 0, 0, 0);
-        hostLayout->setSpacing(0);
-        hostLayout->addWidget(button);
-        hostLayout->addWidget(label, 0, Qt::AlignHCenter);
-        m_appNavigationRailLayout->addWidget(host, 0, Qt::AlignHCenter);
-    };
-    addUtility(m_settingsNavButton, QStringLiteral("Settings"));
-    // Log sits directly under Settings in the bottom utility group rather than
-    // among the primary destinations above the stretch.
-    if (auto *logRailButton = dynamic_cast<ActivityRailButton *>(m_logNavButton)) {
-        logRailButton->setCompact(false);
-        logRailButton->setFixedSize(kRailItemWidth, 40);
-    }
-    m_appNavigationRailLayout->addWidget(m_logNavButton, 0, Qt::AlignLeft);
-    addUtility(m_navScreenshotButton, QStringLiteral("Capture"));
-    addUtility(m_navResizeButton, QStringLiteral("Resize"));
-    // Tasks sits immediately above Pings (adhoc #97). It keeps the full rail
-    // treatment rather than the tiny utility wrapper so its open-task badge
-    // (setOrganizationTaskBadge) still has room to paint.
-    if (auto *tasksRailButton =
-            dynamic_cast<ActivityRailButton *>(m_tasksNavButton)) {
-        tasksRailButton->setCompact(false);
-        tasksRailButton->setFixedSize(kRailItemWidth, 40);
-    }
-    m_appNavigationRailLayout->addWidget(m_tasksNavButton, 0, Qt::AlignLeft);
-    addUtility(m_notificationButton, QStringLiteral("Pings"));
+    // Settings and the screen/dev tools form the bottom utility group — the
+    // same full rail items as the primary destinations above the stretch, in
+    // the established order: Settings, Log, Capture, Resize, then Tasks
+    // directly above Pings (adhoc #97).
+    for (QPushButton *button :
+         {m_settingsNavButton, m_logNavButton, m_navScreenshotButton,
+          m_navResizeButton, m_tasksNavButton, m_notificationButton})
+        m_appNavigationRailLayout->addWidget(button, 0, Qt::AlignLeft);
 
-    // Pending approvals use the same corner-count language as Chat and Agents:
-    // the count rides the bell's own top-right corner (updateNotificationButton
-    // places it), not the item's right edge, so it stays inside the rail.
-    m_notificationRailBadge = new QLabel(m_notificationButton);
-    m_notificationRailBadge->setObjectName(QStringLiteral("chatUnreadBadge"));
-    m_notificationRailBadge->setAlignment(Qt::AlignCenter);
-    m_notificationRailBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_notificationRailBadge->hide();
-
-    // The account avatar is intentionally the bottom-most rail destination.
+    // The account avatar is intentionally the bottom-most rail destination. It
+    // keeps the round user picture (not an octicon), sized and captioned like
+    // every other item.
     auto *accountLabel = new QLabel(QStringLiteral("Account"));
     accountLabel->setObjectName(QStringLiteral("railItemLabel"));
     accountLabel->setAlignment(Qt::AlignHCenter | Qt::AlignTop);
     auto *accountHost = new QWidget;
-    accountHost->setFixedSize(kRailItemWidth, 52);
+    accountHost->setFixedSize(railItemWidth(), kRailItemHeight);
     auto *accountLayout = new QVBoxLayout(accountHost);
-    accountLayout->setContentsMargins(0, 0, 0, 0);
-    accountLayout->setSpacing(0);
+    accountLayout->setContentsMargins(0, 2, 0, 0);
+    accountLayout->setSpacing(2);
     accountLayout->addWidget(m_userAvatarNavButton, 0, Qt::AlignHCenter);
     accountLayout->addWidget(accountLabel, 0, Qt::AlignHCenter);
-    m_appNavigationRailLayout->addWidget(accountHost);
+    m_appNavigationRailLayout->addWidget(accountHost, 0, Qt::AlignLeft);
     updateNotificationButton();
 
     // A short window can scroll the rail without forcing the whole app taller.
@@ -551,7 +514,7 @@ QWidget *MainWindow::buildChatPage()
     railScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     railScroll->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     railScroll->setSizeAdjustPolicy(QAbstractScrollArea::AdjustIgnored);
-    railScroll->setFixedWidth(kRailWidth);
+    railScroll->setFixedWidth(railWidth());
     railScroll->setMinimumHeight(0);
     railScroll->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Ignored);
 
@@ -930,35 +893,12 @@ QWidget *MainWindow::buildNetworkLogDock()
     connect(m_quickAddVoiceAutoSubmit, &QCheckBox::toggled, this, [](bool on) {
         QSettings().setValue(kVoiceAutoSubmitSetting, on);
     });
-    // YOLO toggle beside it (adhoc #12): when checked, an agent started from the
-    // prompt bar merges its own branch into the default branch as soon as its run
-    // finishes successfully — no PR review, no manual "Merge into main" click.
-    // Persisted across launches like the Auto toggle, and off by default: it
-    // rewrites the default branch without asking.
-    m_quickAddYolo = new QCheckBox("YOLO");
-    m_quickAddYolo->setObjectName("quickAddAutoCheck");
-    m_quickAddYolo->setToolTip(
-        "Auto-merge: when an agent finishes its task, merge its branch straight "
-        "into the default branch (no review), then delete its worktree and "
-        "branch.");
-    m_quickAddYolo->setChecked(QSettings().value(kQuickAddYoloSetting, false).toBool());
-    connect(m_quickAddYolo, &QCheckBox::toggled, this, [](bool on) {
-        QSettings().setValue(kQuickAddYoloSetting, on);
-    });
-    // "Task" toggle beside YOLO (adhoc #18): when checked, starting an agent from
-    // the prompt bar also opens an organization task for the run, stamped with the
-    // bot that launched it and the model/mode/strength it was given, and closed out
-    // with the bot that finished it. On by default — prompted work should be
-    // visible to the organization — and unticked for throwaway prompts.
-    m_quickAddTask = new QCheckBox("Task");
-    m_quickAddTask->setObjectName("quickAddAutoCheck");
-    m_quickAddTask->setToolTip(
-        "Open an organization task for this run, recording which bot started "
-        "and finished it and the model, mode, and strength it used.");
-    m_quickAddTask->setChecked(QSettings().value(kQuickAddTaskSetting, true).toBool());
-    connect(m_quickAddTask, &QCheckBox::toggled, this, [](bool on) {
-        QSettings().setValue(kQuickAddTaskSetting, on);
-    });
+    // The "YOLO" (adhoc #12) and "Task" (adhoc #18) toggles that used to sit
+    // beside the Auto checkbox are gone from the composer (adhoc #120): the
+    // prompt bar keeps only the controls that describe the prompt itself. Every
+    // prompted run now takes the defaults those toggles carried — no unattended
+    // auto-merge, and an organization task opened for the run — see
+    // startAgentForIssue()/startAdHocAgentForRepo() in MainWindowAgents.cpp.
     m_quickAddCreatePr->setChecked(true);
     m_quickAddCreatePr->setEnabled(true);
     m_quickAddAgentProvider->setEnabled(true);
@@ -1019,18 +959,10 @@ QWidget *MainWindow::buildNetworkLogDock()
     m_quickAddSendButton->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
     connect(m_quickAddSendButton, &QPushButton::clicked, this,
             &MainWindow::quickAddIssue);
-    // Green "Enter" badge (adhoc #89): shown on whichever of the two send
-    // buttons Enter currently activates, kept in sync by
-    // updateQuickAddEnterTarget(). Parented to the button so it rides along
-    // without needing its own layout slot; both buttons are fixed-size so a
-    // one-time corner position is enough.
-    m_quickAddSendEnterBadge = new QLabel(QStringLiteral("⏎"), m_quickAddSendButton);
-    m_quickAddSendEnterBadge->setObjectName("quickAddEnterBadge");
-    m_quickAddSendEnterBadge->setAlignment(Qt::AlignCenter);
-    m_quickAddSendEnterBadge->setFixedSize(14, 14);
-    m_quickAddSendEnterBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_quickAddSendEnterBadge->move(m_quickAddSendButton->width() - 12, -5);
-    m_quickAddSendEnterBadge->hide();
+    // No corner glyph on the button any more (adhoc #120): the little green "⏎"
+    // badge (adhoc #89) that rode the top-right corner of "new" while Enter
+    // targeted it is gone. The button's own green outline, applied by
+    // updateQuickAddEnterTarget(), still marks which send Enter activates.
 
     // Second paper airplane, rotated to point straight up, stacked above the
     // regular send icon (adhoc #99): sends the typed prompt as a follow-up
@@ -1081,21 +1013,24 @@ QWidget *MainWindow::buildNetworkLogDock()
         sendPromptToSelectedAgent(prompt);
     });
 
-    // Third button, stacked above "add" and "new" (adhoc #42): "genie" doesn't
+    // Third button, stacked above "add" and "new" (adhoc #42): "task" doesn't
     // send the typed prompt at all — it starts an agent wired to the remote MCP
     // server configured on the website, so the agent picks its own work off the
     // organization's shared task list and reports back through the same tools.
     // Anything typed in the box rides along as extra guidance for that run.
-    m_quickAddGenieButton = new QPushButton(QStringLiteral("genie"));
+    // Labelled "task" rather than "genie" (adhoc #120), after what it actually
+    // does; the widget/QSS name stays the genie one the rest of the run plumbing
+    // (AgentSession::genie, startGenieAgent) is keyed to.
+    m_quickAddGenieButton = new QPushButton(QStringLiteral("task"));
     m_quickAddGenieButton->setObjectName("quickAddGenieButton");
     m_quickAddGenieButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_quickAddGenieButton, "sparkle", 15);
+    setOcticon(m_quickAddGenieButton, "list-unordered", 15);
     m_quickAddGenieButton->setFixedWidth(58);
     m_quickAddGenieButton->setMinimumHeight(24);
     m_quickAddGenieButton->setSizePolicy(QSizePolicy::Fixed,
                                          QSizePolicy::Expanding);
     m_quickAddGenieButton->setToolTip(
-        QString::fromUtf8("Genie \xE2\x80\x94 start a running agent session that "
+        QString::fromUtf8("Task \xE2\x80\x94 start a running agent session that "
                           "picks its own work off the organization's shared task "
                           "list. No setup: the first press mints this node's own "
                           "task credential from the account you are signed in "
@@ -1114,7 +1049,7 @@ QWidget *MainWindow::buildNetworkLogDock()
     // Three buttons stacked in a full-height column down the prompt's right edge
     // (adhoc #115): each stretches to take its share of the frame height, so the
     // text area to their left ends flush against them and the whole prompt box is
-    // just as tall as the genie/add/new stack. "genie" sits on top (adhoc #42).
+    // just as tall as the task/add/new stack. "task" sits on top (adhoc #42).
     auto *sendColumn = new QVBoxLayout;
     sendColumn->setContentsMargins(0, 0, 0, 0);
     sendColumn->setSpacing(2);
@@ -1162,8 +1097,6 @@ QWidget *MainWindow::buildNetworkLogDock()
     bottomBar->addWidget(m_voiceLevelMeter, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddAttachStrip, 0, Qt::AlignBottom);
     bottomBar->addWidget(m_quickAddVoiceAutoSubmit, 0, Qt::AlignBottom);
-    bottomBar->addWidget(m_quickAddYolo, 0, Qt::AlignBottom);
-    bottomBar->addWidget(m_quickAddTask, 0, Qt::AlignBottom);
     bottomBar->addStretch(1);
     // The "/" actions box sits immediately left of the agent box (adhoc #116),
     // matching where the Claude Code extension keeps its actions menu.
@@ -4499,6 +4432,11 @@ void MainWindow::showTreasuryDonateDialog()
     dialog.exec();
 }
 
+// The ping feed above the network log: how many lines it shows, and how tall
+// it is (adhoc #77). Deliberately small — it is a glance, not a second page.
+static constexpr int kLogEventStripLimit = 8;
+static constexpr int kLogEventStripRows = 5;
+
 QWidget *MainWindow::buildLogSection()
 {
     auto *page = new QWidget;
@@ -4607,13 +4545,68 @@ QWidget *MainWindow::buildLogSection()
     headerRow->addWidget(cloudflareButton);
     headerRow->addWidget(clearButton);
 
+    // Every ping this window raises also lands in a compact feed directly
+    // above the log, so "what just happened?" is answered without leaving the
+    // page or waiting for the toast to reappear (adhoc #77). Double-clicking a
+    // line opens the full Pings page.
+    auto *eventsLabel = new QLabel(QStringLiteral("RECENT PINGS"));
+    eventsLabel->setObjectName("sectionLabel");
+    m_logEventList = new QListWidget;
+    m_logEventList->setObjectName("logEventList");
+    m_logEventList->setSelectionMode(QAbstractItemView::SingleSelection);
+    m_logEventList->setUniformItemSizes(true);
+    m_logEventList->setFixedHeight(kLogEventStripRows *
+                                       m_logEventList->fontMetrics().height() +
+                                   12);
+    m_logEventList->setToolTip(
+        QStringLiteral("The newest pings. Double-click to open the Pings "
+                       "page."));
+    connect(m_logEventList, &QListWidget::itemDoubleClicked, this,
+            [this](QListWidgetItem *) { showNotifications(); });
+
     auto *layout = new QVBoxLayout(page);
     layout->setContentsMargins(18, 14, 18, 14);
     layout->setSpacing(8);
     layout->addLayout(headerRow);
+    layout->addWidget(eventsLabel);
+    layout->addWidget(m_logEventList);
     layout->addWidget(filterScroll);
     layout->addWidget(m_settingsLog, 1);
+    refreshLogEventList();
     return page;
+}
+
+// Repaint the compact ping feed above the network log from the same list the
+// Pings page shows, newest first (adhoc #77).
+void MainWindow::refreshLogEventList()
+{
+    if (!m_logEventList)
+        return;
+    m_logEventList->clear();
+    if (m_notifications.isEmpty()) {
+        auto *empty = new QListWidgetItem(
+            QStringLiteral("No pings yet in this session."));
+        empty->setForeground(QColor("#6e7681"));
+        empty->setFlags(Qt::NoItemFlags);
+        m_logEventList->addItem(empty);
+        return;
+    }
+    const int shown = qMin(int(m_notifications.size()), kLogEventStripLimit);
+    for (int index = 0; index < shown; ++index) {
+        const AppNotification &notice = m_notifications.at(index);
+        QString text =
+            QDateTime::fromMSecsSinceEpoch(notice.timestampMs)
+                .toString(QStringLiteral("HH:mm:ss")) +
+            QStringLiteral("  ") + notice.title.simplified();
+        const QString detail = notice.body.simplified();
+        if (!detail.isEmpty())
+            text += QString::fromUtf8(" \xE2\x80\x94 ") + detail;
+        auto *item = new QListWidgetItem(text);
+        item->setToolTip(text);
+        if (notice.warning)
+            item->setForeground(QColor("#f85149"));
+        m_logEventList->addItem(item);
+    }
 }
 
 void MainWindow::showCloudflareWorkerLogs()
@@ -5030,13 +5023,16 @@ QWidget *MainWindow::buildBreadcrumb()
     // The live connection indicator is now a small status dot painted over the
     // top-right avatar (created with the avatar below), not a separate text pill.
 
-    // Icon-only bell (adhoc #137): sits beside the user avatar in the top-right
-    // account cluster rather than as a labelled tab in the section nav.
-    m_notificationButton = new QPushButton;
+    // Pings bell: a regular rail destination (adhoc #117 made it the same
+    // icon-over-caption item as the rest). The pending count rides the bell's
+    // corner as a red "needs you" badge and the glyph tints amber while
+    // anything waits — both painted by ActivityRailButton, driven from
+    // updateNotificationButton().
+    auto *notificationRailButton =
+        new ActivityRailButton(QStringLiteral("bell"), QStringLiteral("Pings"));
+    notificationRailButton->setBadgeUrgent(true);
+    m_notificationButton = notificationRailButton;
     m_notificationButton->setObjectName("topNavButton");
-    m_notificationButton->setCheckable(true);
-    m_notificationButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_notificationButton, "bell", kNotificationBellIconPx);
     m_notificationButton->setToolTip("Pings");
     m_navGroup->addButton(m_notificationButton, 3); // section 3: Notifications
     connect(m_notificationButton, &QPushButton::clicked, this,
@@ -5100,9 +5096,11 @@ QWidget *MainWindow::buildBreadcrumb()
             QGuiApplication::clipboard()->setText(m_topMessageRaw);
         advanceTopMessageQueue(); // move on to the next queued error, if any
     });
-    // A plain "x" to dismiss an error toast without copying it.
-    m_topMessageClose = new QPushButton(QString::fromUtf8("\xE2\x9C\x95")); // ✕
+    // A plain "x" to dismiss an error toast without copying it — the octicon
+    // SVG, like the Copy/Expand glyphs beside it, not a text glyph.
+    m_topMessageClose = new QPushButton;
     m_topMessageClose->setObjectName("ghostButton");
+    setOcticon(m_topMessageClose, "x", 14);
     m_topMessageClose->setCursor(Qt::PointingHandCursor);
     m_topMessageClose->setToolTip(QStringLiteral("Dismiss"));
     m_topMessageClose->setFocusPolicy(Qt::NoFocus);
@@ -5170,13 +5168,14 @@ QWidget *MainWindow::buildBreadcrumb()
     overlayLayout->addWidget(m_topMessageOverlayText);
     m_topMessageOverlay->hide();
 
-    // User avatar, pinned to the top-right-most of the bar. Clicking it opens
-    // Settings for the current user.
+    // User avatar, the rail's bottom-most Account item. Clicking it opens
+    // Settings for the current user. Sized to sit flush with the rail's 20px
+    // octicons (adhoc #117) rather than dwarfing them.
     m_userAvatarNavButton = new QPushButton;
     m_userAvatarNavButton->setObjectName("serverFooterButton");
     m_userAvatarNavButton->setCursor(Qt::PointingHandCursor);
-    m_userAvatarNavButton->setFixedSize(40, 40);
-    m_userAvatarNavButton->setIconSize(QSize(34, 34));
+    m_userAvatarNavButton->setFixedSize(26, 26);
+    m_userAvatarNavButton->setIconSize(QSize(24, 24));
     m_userAvatarNavButton->setToolTip("Settings");
     connect(m_userAvatarNavButton, &QPushButton::clicked, this, [this] {
         showSection(1);
@@ -5194,24 +5193,24 @@ QWidget *MainWindow::buildBreadcrumb()
     // live status text lives in the dot's tooltip, set by updateConnectionStatus.
     m_connectionDot = new QLabel(m_userAvatarNavButton);
     m_connectionDot->setObjectName("connectionDot");
-    m_connectionDot->setFixedSize(12, 12);
+    m_connectionDot->setFixedSize(10, 10);
     m_connectionDot->setAttribute(Qt::WA_TransparentForMouseEvents);
-    // Tucked one step further in than a square avatar needed: on the circular
-    // picture the corner is empty, so the dot has to sit on the rim to read as
-    // part of it.
-    m_connectionDot->move(40 - 12 - 3, 40 - 12 - 3);
+    // On the circular picture the corner is empty, so the dot sits on the rim
+    // to read as part of it.
+    m_connectionDot->move(26 - 10, 26 - 10);
     m_connectionDot->raise();
 
     // Admin crown badge, overlaid on the top-left of the same avatar (mirroring
-    // the connection dot's bottom-right corner). Hidden unless this node is an
-    // admin; updateAdminCrownBadge() keeps it in sync with m_isAdmin.
-    m_adminCrownBadge = new QLabel(QString::fromUtf8("\xF0\x9F\x91\x91"),
-                                   m_userAvatarNavButton);
+    // the connection dot's bottom-right corner). A gold-tinted SVG like every
+    // other glyph in the app (adhoc #117 retired the emoji). Hidden unless this
+    // node is an admin; updateAdminCrownBadge() keeps it in sync with m_isAdmin.
+    m_adminCrownBadge = new QLabel(m_userAvatarNavButton);
     m_adminCrownBadge->setObjectName("adminCrownBadge");
-    m_adminCrownBadge->setFixedSize(14, 14);
+    m_adminCrownBadge->setFixedSize(12, 12);
     m_adminCrownBadge->setAlignment(Qt::AlignCenter);
     m_adminCrownBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_adminCrownBadge->setStyleSheet(QStringLiteral("font-size:11px;"));
+    m_adminCrownBadge->setPixmap(tintedOcticonPixmap(
+        QStringLiteral("crown"), QColor(QStringLiteral("#e3b341")), 12));
     m_adminCrownBadge->move(-2, -2);
     m_adminCrownBadge->raise();
     m_adminCrownBadge->hide();
@@ -5270,34 +5269,24 @@ QWidget *MainWindow::buildBreadcrumb()
     // rather than waiting for the next run-state change to reach it.
     refreshActionRunStrip();
 
-    // Chat: its own top-level section (m_sectionStack index 2).
-    m_chatButton = new ActivityRailButton(QStringLiteral("comment"),
-                                          QStringLiteral("Chat"));
+    // Chat: its own top-level section (m_sectionStack index 2). The unread
+    // count rides the icon's corner as a red "needs you" badge, painted by
+    // ActivityRailButton itself (updateChatButton feeds it the tally).
+    auto *chatRailButton = new ActivityRailButton(QStringLiteral("comment"),
+                                                  QStringLiteral("Chat"));
+    chatRailButton->setBadgeUrgent(true);
+    m_chatButton = chatRailButton;
     m_chatButton->setObjectName("topNavButton");
-    m_chatButton->setCheckable(true);
-    m_chatButton->setCursor(Qt::PointingHandCursor);
     m_chatButton->setToolTip(QStringLiteral("Chat"));
-    setOcticon(m_chatButton, "comment", 16);
     m_navGroup->addButton(m_chatButton, 2); // section 2: Chat
     connect(m_chatButton, &QPushButton::clicked, this, &MainWindow::showChatView);
-    // Red unread-count badge pinned to the chat button's top-right corner. It's
-    // decorative (clicks fall through to the button); updateChatButton sizes,
-    // positions and shows/hides it from the unread tally.
-    m_chatUnreadBadge = new QLabel(m_chatButton);
-    m_chatUnreadBadge->setObjectName("chatUnreadBadge");
-    m_chatUnreadBadge->setAlignment(Qt::AlignCenter);
-    m_chatUnreadBadge->setAttribute(Qt::WA_TransparentForMouseEvents);
-    m_chatUnreadBadge->hide();
 
-    // Settings: its own top-level section (m_sectionStack index 1). Icon-only
-    // (adhoc #137): it lives in the right-hand utility cluster next to the
-    // rebuild/restart button rather than as a labelled tab in the section nav.
-    m_settingsNavButton = new QPushButton;
+    // Settings: its own top-level section (m_sectionStack index 1), a regular
+    // rail destination styled like every other item (adhoc #117).
+    m_settingsNavButton = new ActivityRailButton(QStringLiteral("gear"),
+                                                 QStringLiteral("Settings"));
     m_settingsNavButton->setObjectName("topNavButton");
-    m_settingsNavButton->setCheckable(true);
-    m_settingsNavButton->setCursor(Qt::PointingHandCursor);
     m_settingsNavButton->setToolTip(QStringLiteral("Settings"));
-    setOcticon(m_settingsNavButton, "gear", 16);
     m_navGroup->addButton(m_settingsNavButton, 1); // section 1: Settings
     connect(m_settingsNavButton, &QPushButton::clicked, this,
             [this] { showSection(1); });
@@ -5361,29 +5350,45 @@ QWidget *MainWindow::buildBreadcrumb()
     connect(m_navRebuildButton, &QPushButton::clicked, this,
             [this] { startRestartSpin(m_navRebuildButton); quickRebuildRestart(); });
 
-    // Square screenshot button beside the rebuild/restart button: drag a region
-    // anywhere on screen and it lands in the prompt as an attachment.
-    m_navScreenshotButton = new QPushButton;
+    // "Log in / Sign up" pill (adhoc #115). The old first-run screen that asked
+    // for a username and a relay host is gone — the app opens straight into the
+    // shell — so this is what a user who hasn't attached a forkmesh.com account
+    // clicks. updateSignInButton() hides it the moment one is attached.
+    m_navSignInButton = new QPushButton(QStringLiteral("Log in / Sign up"));
+    m_navSignInButton->setObjectName("primaryButton");
+    m_navSignInButton->setCursor(Qt::PointingHandCursor);
+    m_navSignInButton->setToolTip(
+        QStringLiteral("Attach this machine to your ForkMesh account, or create "
+                       "one on forkmesh.com"));
+    setOcticon(m_navSignInButton, "sign-in", 14);
+    m_navSignInButton->hide();
+    connect(m_navSignInButton, &QPushButton::clicked, this,
+            &MainWindow::showSignInMenu);
+
+    // Screenshot rail item: drag a region anywhere on screen and it lands in
+    // the prompt as an attachment. A one-shot action, so it never stays checked.
+    m_navScreenshotButton = new ActivityRailButton(QStringLiteral("screen-full"),
+                                                   QStringLiteral("Capture"));
+    m_navScreenshotButton->setCheckable(false);
     m_navScreenshotButton->setObjectName("topNavButton");
-    m_navScreenshotButton->setCursor(Qt::PointingHandCursor);
     m_navScreenshotButton->setToolTip(
         QString::fromUtf8("Screenshot a region \xE2\x80\x94 drag a square anywhere on "
                           "screen and it's attached to your prompt"));
-    setOcticon(m_navScreenshotButton, "screen-full", 14);
     connect(m_navScreenshotButton, &QPushButton::clicked, this,
             &MainWindow::captureScreenRegion);
 
-    // Resize button beside the screenshot button: snap the window down to
+    // Resize rail item below the screenshot one: snap the window down to
     // a common minimal screen size (1280x720), so it's quick to preview how
-    // ForkMesh looks on a smaller display before filing a UI bug.
-    m_navResizeButton = new QPushButton;
+    // ForkMesh looks on a smaller display before filing a UI bug. Also a
+    // one-shot action, so it never stays checked.
+    m_navResizeButton = new ActivityRailButton(QStringLiteral("device-desktop"),
+                                               QStringLiteral("Resize"));
+    m_navResizeButton->setCheckable(false);
     m_navResizeButton->setObjectName("topNavButton");
-    m_navResizeButton->setCursor(Qt::PointingHandCursor);
     m_navResizeButton->setToolTip(
         QString::fromUtf8("Resize to 1280\xC3\x97" "720 \xE2\x80\x94 a common "
                           "minimal screen size, handy for previewing smaller "
                           "displays"));
-    setOcticon(m_navResizeButton, "device-desktop", 14);
     connect(m_navResizeButton, &QPushButton::clicked, this, [this] {
         if (isMaximized())
             showNormal();
@@ -5451,6 +5456,10 @@ QWidget *MainWindow::buildBreadcrumb()
     // runs follow it (adhoc #70). The Agents button that used to head this group
     // is now a regular rail entry.
     chromeRow->addWidget(m_relayMenuButton);
+    // Logged-out only: the sign-in pill sits immediately after the relay switcher
+    // so it is the first thing on the bar that isn't chrome, and it lives in the
+    // left-hand group because that group never scrolls out of a narrow window.
+    chromeRow->addWidget(m_navSignInButton);
     chromeRow->addWidget(m_relayJoinApproveButton);
     auto *identityBalanceRow = new QHBoxLayout;
     identityBalanceRow->setContentsMargins(0, 0, 0, 0);
@@ -5559,6 +5568,7 @@ QWidget *MainWindow::buildBreadcrumb()
     refreshRepoSyncIndicators();
     updateNavRebuildButton();
     updateNodeOnlineControls();
+    updateSignInButton();
     return bar;
 }
 
@@ -5568,6 +5578,58 @@ void MainWindow::updateNavRebuildButton()
         QSettings().value(kShowRebuildButtonSetting, false).toBool();
     if (m_navRebuildButton)
         m_navRebuildButton->setVisible(visible);
+}
+
+// The top-bar "Log in / Sign up" pill replaces the retired first-run screen
+// (adhoc #115), so it must be honest about state rather than eager: it stays
+// hidden until the deferred startup has actually resolved who this machine is.
+// Silent auth runs a few seconds after launch and is what fills
+// nodeOwnerDisplayName() on a signed-in machine — offering "Log in" before then
+// would flash the pill on every start for a user who is already logged in. A
+// headless mirror authenticates with its node key and has nobody at the
+// keyboard, so it never gets the pill at all.
+void MainWindow::updateSignInButton()
+{
+    if (!m_navSignInButton)
+        return;
+    const bool signedIn = !nodeOwnerDisplayName().trimmed().isEmpty();
+    m_navSignInButton->setVisible(!m_headless && m_deferredStartupRun && !signedIn);
+}
+
+void MainWindow::showSignInMenu()
+{
+    QMenu menu(this);
+    // In-app email/password login: this is the path that attaches this machine
+    // to an existing forkmesh.com account (runLoginFlow registers the desktop
+    // key with the relay and hands back a real website session).
+    QAction *login = menu.addAction(QStringLiteral("Log in to your account\xE2\x80\xA6"));
+    // Linking through the browser needs a registered, key-bound node — the relay
+    // links by node name + this node's key — so only offer it once that holds.
+    QAction *browser = nullptr;
+    if (!accountOwner().isEmpty() && hasOwnerSigningCapability(accountOwner()))
+        browser = menu.addAction(
+            QStringLiteral("Link this node in your browser\xE2\x80\xA6"));
+    QAction *signup = menu.addAction(QStringLiteral("Create an account\xE2\x80\xA6"));
+
+    QAction *chosen = menu.exec(m_navSignInButton->mapToGlobal(
+        QPoint(0, m_navSignInButton->height())));
+    if (!chosen)
+        return;
+    if (chosen == login) {
+        loginToUserAccount();
+        updateUserSwitcher();
+        return;
+    }
+    if (browser && chosen == browser) {
+        openLinkNodeInBrowser();
+        return;
+    }
+    if (chosen == signup) {
+        QUrl url = catalogApiUrl(); // http(s) on the mainnode host
+        url.setPath(QStringLiteral("/signup"));
+        QDesktopServices::openUrl(url);
+        logSystem("Account: opened the browser to create a ForkMesh account.");
+    }
 }
 
 // Pin the floating "Log" button to the bottom-right corner of the live-log
@@ -5696,9 +5758,10 @@ void MainWindow::updateConnectionStatus()
         return;
     m_connectionStatusColor = color;
     // Only the fill + radius are set inline; the background-matching ring is
-    // themed via the #connectionDot rule in Theme.h so it works in light mode too.
+    // themed via the #connectionDot rule in Theme.h so it works in light mode
+    // too. Radius = half the dot's 10px fixed size.
     m_connectionDot->setStyleSheet(
-        QStringLiteral("background:%1; border-radius:6px;").arg(color));
+        QStringLiteral("background:%1; border-radius:5px;").arg(color));
 }
 
 void MainWindow::updateAdminCrownBadge()
@@ -6203,23 +6266,35 @@ void MainWindow::updateUserSwitcher()
 {
     // Every profile-hydration path lands here after updating the user/node
     // flags, so this is also where the chat backend learns which account kind
-    // to stamp on outgoing frames (web surfaces only display "user" frames —
-    // same user-vs-node rule as welcomeChannelForIdentity()).
+    // to stamp on outgoing frames (web surfaces only display user/guest frames
+    // — same user-vs-node rule as welcomeChannelForIdentity()).
     if (m_backend) {
         const bool userLike =
             m_profileIsUserAccount || !m_profileLinkedNodes.isEmpty();
+        // No username yet (fresh install on its generated name): speak as
+        // "guest" like the web's anonymous visitors, so the person's messages
+        // render on web surfaces instead of being dropped as node frames.
         m_backend->setAccountKind(userLike ? QStringLiteral("user")
-                                           : QStringLiteral("node"));
+                                  : chatIdentityIsGuest()
+                                      ? QStringLiteral("guest")
+                                      : QStringLiteral("node"));
     }
     const QString user = topBarUserName();
     if (m_userAvatarNavButton) {
         m_userAvatarNavButton->setToolTip(
-            user.isEmpty()
-                ? QStringLiteral("Your user account")
-                : QStringLiteral("%1 user account").arg(user));
+            chatIdentityIsGuest()
+                ? QStringLiteral("Chatting as %1 — pick a username in "
+                                 "Settings or log in to claim one")
+                      .arg(guestChatName())
+                : user.isEmpty()
+                      ? QStringLiteral("Your user account")
+                      : QStringLiteral("%1 user account").arg(user));
     }
     updateUserAvatarButton();
     updateChatIdentity();
+    // Every profile-hydration path lands here, so this is also where the top-bar
+    // "Log in / Sign up" pill learns that an account just arrived (or went away).
+    updateSignInButton();
     // The top-right node-name label folds in the user account name
     // ("user/node"), so keep it in step with the user identity too.
     refreshWebUserSolanaAddress();
@@ -6853,13 +6928,25 @@ void MainWindow::showNodesWindow()
     dialog->show();
 }
 
+// The Repos rail opens the network-wide repository list, so its badge counts
+// the rows that page shows — every repository on the relay — rather than this
+// machine's own copies, which read as a wrong number next to that table
+// (adhoc #118). Until the catalog has been rendered once the local repo menu is
+// the only count we have, so it stands in.
+void MainWindow::updateReposNavBadge()
+{
+    if (auto *railButton =
+            dynamic_cast<ActivityRailButton *>(m_reposNavButton))
+        railButton->setBadgeCount(m_networkRepoRowCount >= 0
+                                      ? m_networkRepoRowCount
+                                      : m_repoMenuEntries.size());
+}
+
 void MainWindow::updateRepoSwitcher()
 {
     if (!m_repoMenuButton)
         return;
-    if (auto *railButton =
-            dynamic_cast<ActivityRailButton *>(m_reposNavButton))
-        railButton->setBadgeCount(m_repoMenuEntries.size());
+    updateReposNavBadge();
     // Mid node-switch: the repo list belongs to the node being loaded, so keep
     // the button visible with a "Loading…" label (the spinner icon is driven by
     // startRepoSwitchSpin) instead of revealing a count or repo name until the
@@ -7678,33 +7765,15 @@ void MainWindow::updateChatButton()
 {
     if (!m_chatButton)
         return;
-    // The glyph stays the themed default now; unread is shown by a red count
-    // badge instead of tinting the icon green.
-    setOcticon(m_chatButton, "comment", 16);
 
     int total = 0;
     for (const int n : std::as_const(m_unreadCounts))
         total += n;
 
-    if (m_chatUnreadBadge) {
-        if (total > 0) {
-            const QString text =
-                total > 99 ? QStringLiteral("99+") : QString::number(total);
-            m_chatUnreadBadge->setText(text);
-            // Size to the text (a circle for one digit, a pill for more) and pin
-            // to the button's top-right corner. The padding has to clear the 1px
-            // border on each side and leave a little slack so the centred digits
-            // aren't clipped on the sides.
-            const int w = qMax(15, m_chatUnreadBadge->fontMetrics()
-                                       .horizontalAdvance(text) + 12);
-            m_chatUnreadBadge->resize(w, 15);
-            m_chatUnreadBadge->move(qMax(0, m_chatButton->width() - w), 0);
-            m_chatUnreadBadge->show();
-            m_chatUnreadBadge->raise();
-        } else {
-            m_chatUnreadBadge->hide();
-        }
-    }
+    // The red unread count rides the icon's corner, painted by the rail item
+    // itself (setBadgeUrgent(true) at construction picks the red style).
+    if (auto *railButton = dynamic_cast<ActivityRailButton *>(m_chatButton))
+        railButton->setBadgeCount(total);
 
     m_chatButton->setToolTip(
         total > 0 ? QString::fromUtf8("Chat \xE2\x80\x94 %1 unread message%2")
@@ -8122,6 +8191,97 @@ void MainWindow::refreshNetworkTab(int tabIndex)
 
 // --- Network repositories ---------------------------------------------------
 
+namespace {
+// Repos table columns (adhoc #118). The four interactive columns stay first so
+// a row's buttons remain reachable without scrolling sideways; every other fact
+// the catalog publishes about a repository follows, so this page shows all the
+// data we hold for all repos in one compact grid. Two things are deliberately
+// left out: the description (prose for the repository's own page, not a grid
+// cell) and raw signatures / private-archive locators (proof material rather
+// than repository facts — their digests are shown instead).
+enum NetworkRepoCol {
+    kRepoColName = 0,
+    kRepoColLocalFork,
+    kRepoColMirrors,
+    kRepoColActions,
+    kRepoColVisibility,
+    kRepoColTerms,
+    kRepoColLive,
+    kRepoColBranch,
+    kRepoColCommit,
+    kRepoColCommitSubject,
+    kRepoColCommitAuthor,
+    kRepoColCommitAt,
+    kRepoColIssues,
+    kRepoColIssueMax,
+    kRepoColCommits,
+    kRepoColBranches,
+    kRepoColPulls,
+    kRepoColDiscussions,
+    kRepoColWorktrees,
+    kRepoColArtifacts,
+    kRepoColActivity,
+    kRepoColChangedFiles,
+    kRepoColSize,
+    kRepoColSource,
+    kRepoColHosts,
+    kRepoColMachine,
+    kRepoColRuntime,
+    kRepoColPlatform,
+    kRepoColVersion,
+    kRepoColAgents,
+    kRepoColCi,
+    kRepoColCpu,
+    kRepoColMemory,
+    kRepoColDisk,
+    kRepoColClonesServed,
+    kRepoColWebsiteServed,
+    kRepoColEncryption,
+    kRepoColChannel,
+    kRepoColSolana,
+    kRepoColHostedSince,
+    kRepoColLastSync,
+    kRepoColUpdated,
+    kRepoColRootCommit,
+    kRepoColStateHash,
+    kRepoColMaintainer,
+    kRepoColNodeId,
+    kRepoColCloneUrl,
+    kRepoColSshUrl,
+    kRepoColCount,
+};
+
+// Header labels, index-aligned with NetworkRepoCol.
+QStringList networkRepoHeaders()
+{
+    return {QStringLiteral("Repository"),   QStringLiteral("Local fork"),
+            QStringLiteral("Mirrors"),      QStringLiteral("Actions"),
+            QStringLiteral("Visibility"),   QStringLiteral("Terms"),
+            QStringLiteral("Live host"),    QStringLiteral("Branch"),
+            QStringLiteral("Commit"),       QStringLiteral("Subject"),
+            QStringLiteral("Author"),       QStringLiteral("Last commit"),
+            QStringLiteral("Issues"),       QStringLiteral("Max issue"),
+            QStringLiteral("Commits"),      QStringLiteral("Branches"),
+            QStringLiteral("Pulls"),        QStringLiteral("Discussions"),
+            QStringLiteral("Worktrees"),    QStringLiteral("Artifacts"),
+            QStringLiteral("Activity 52w"), QStringLiteral("Changed files"),
+            QStringLiteral("Size"),         QStringLiteral("Source"),
+            QStringLiteral("Hosts"),        QStringLiteral("Machine"),
+            QStringLiteral("Runtime"),      QStringLiteral("Platform"),
+            QStringLiteral("Version"),      QStringLiteral("Agents"),
+            QStringLiteral("Actions (CI)"), QStringLiteral("CPU"),
+            QStringLiteral("RAM"),          QStringLiteral("Disk"),
+            QStringLiteral("Clones served"),
+            QStringLiteral("Website served"),
+            QStringLiteral("Encryption"),   QStringLiteral("Channel"),
+            QStringLiteral("Solana"),       QStringLiteral("Hosted since"),
+            QStringLiteral("Last sync"),    QStringLiteral("Updated"),
+            QStringLiteral("Root commit"),  QStringLiteral("State hash"),
+            QStringLiteral("Maintainer"),   QStringLiteral("Node id"),
+            QStringLiteral("Clone URL"),    QStringLiteral("SSH URL")};
+}
+} // namespace
+
 QWidget *MainWindow::buildNetworkReposSection()
 {
     auto *page = new QWidget;
@@ -8172,17 +8332,17 @@ QWidget *MainWindow::buildNetworkReposSection()
 
     auto *subtitle = new QLabel(QStringLiteral(
         "Repositories grouped by user or organization across the active relay. "
-        "Mirror hosts are combined into one repository row."));
+        "Mirror hosts are combined into one repository row, and every field the "
+        "catalog publishes about a repository has its own column \xE2\x80\x94 "
+        "use a column's \xE2\x8B\xAF menu to hide, move or sort by it."));
     subtitle->setObjectName("mutedLabel");
     subtitle->setWordWrap(true);
     outer->addWidget(subtitle);
 
-    m_networkReposTable = new QTableWidget(0, 4);
+    m_networkReposTable = new QTableWidget(0, kRepoColCount);
     installColumnHeaderMenu(m_networkReposTable);
     m_networkReposTable->setObjectName("issueTable");
-    m_networkReposTable->setHorizontalHeaderLabels(
-        {QStringLiteral("Repository"), QStringLiteral("Local fork"),
-         QStringLiteral("Mirrors"), QStringLiteral("Actions")});
+    m_networkReposTable->setHorizontalHeaderLabels(networkRepoHeaders());
     m_networkReposTable->verticalHeader()->setVisible(false);
     m_networkReposTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     m_networkReposTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -8190,23 +8350,27 @@ QWidget *MainWindow::buildNetworkReposSection()
     m_networkReposTable->setWordWrap(false);
     m_networkReposTable->setAlternatingRowColors(true);
     m_networkReposTable->setSortingEnabled(false);
+    m_networkReposTable->setHorizontalScrollMode(
+        QAbstractItemView::ScrollPerPixel);
     m_networkReposTable->horizontalHeader()->setStretchLastSection(false);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        0, QHeaderView::Stretch);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        1, QHeaderView::ResizeToContents);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        2, QHeaderView::ResizeToContents);
-    m_networkReposTable->horizontalHeader()->setSectionResizeMode(
-        3, QHeaderView::ResizeToContents);
-    m_networkReposTable->verticalHeader()->setDefaultSectionSize(52);
-    m_networkReposTable->verticalHeader()->setMinimumSectionSize(44);
+    // Every column sizes to its own content: with the full field set in play a
+    // stretched first column would just push the data columns off-screen, and
+    // makeColumnsResizable() turns these into draggable Interactive ones as
+    // soon as the first rows land.
+    for (int c = 0; c < kRepoColCount; ++c)
+        m_networkReposTable->horizontalHeader()->setSectionResizeMode(
+            c, QHeaderView::ResizeToContents);
+    // One line per repository now that the commit/branch/state details each
+    // have a column, so a wide grid still reads as a compact list.
+    m_networkReposTable->verticalHeader()->setDefaultSectionSize(34);
+    m_networkReposTable->verticalHeader()->setMinimumSectionSize(28);
     makeColumnsResizable(m_networkReposTable);
     connect(m_networkReposTable, &QTableWidget::cellDoubleClicked, this,
             [this](int row, int column) {
-                if (column == 3 || !m_networkReposTable)
+                if (column == kRepoColActions || !m_networkReposTable)
                     return;
-                QTableWidgetItem *item = m_networkReposTable->item(row, 0);
+                QTableWidgetItem *item =
+                    m_networkReposTable->item(row, kRepoColName);
                 if (!item)
                     return;
                 const QString key = item->data(Qt::UserRole).toString();
@@ -8625,7 +8789,6 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         const QString cloneUrl = repo.value("cloneUrl").toString().trimmed();
         const bool isPrivate = repo.value("private").toBool(false) ||
                                repo.value("isPrivate").toBool(false);
-        const bool liveHost = repo.value("liveHost").toBool(false);
         const QString commit = repo.value("commit").toString().trimmed();
         const QString branch = repo.value("branch").toString().trimmed();
         // The catalog publishes the HEAD commit date as epoch milliseconds, as
@@ -8636,27 +8799,10 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
                 ? qint64(commitAtValue.toDouble())
                 : commitAtValue.toString().trimmed().toLongLong();
 
-        // No "about" blurb on the row: what matters here is where the
-        // repository stands (commit, branch, when it last moved), and the
-        // description only ever pushed that off the end of the line. It still
-        // shows on the repository's own page.
-        QStringList details;
-        if (!commit.isEmpty()) {
-            QString commitLine = QStringLiteral("commit %1").arg(commit.left(12));
-            if (!branch.isEmpty())
-                commitLine += QStringLiteral(" on %1").arg(branch);
-            if (commitAtMs > 0)
-                commitLine += QStringLiteral(" \xC2\xB7 %1")
-                                  .arg(formatIssueRelativeTime(commitAtMs));
-            details << commitLine;
-        }
-        if (isPrivate)
-            details << QStringLiteral("private");
-        if (liveHost)
-            details << QStringLiteral("live");
-
-        auto *repoItem = new QTableWidgetItem(
-            details.isEmpty() ? key : key + "\n" + details.join(QStringLiteral(" | ")));
+        // Commit / branch / privacy each have their own column now, so the row
+        // itself is one line: the repository name. No "about" blurb either —
+        // the description is prose that belongs on the repository's own page.
+        auto *repoItem = new QTableWidgetItem(key);
         repoItem->setData(Qt::UserRole, key);
         repoItem->setData(Qt::UserRole + 1, cloneUrl);
         repoItem->setData(Qt::UserRole + 2, isPrivate);
@@ -8674,7 +8820,7 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         if (!cloneUrl.isEmpty())
             repoToolTip << cloneUrl;
         repoItem->setToolTip(repoToolTip.join('\n'));
-        m_networkReposTable->setItem(row, 0, repoItem);
+        m_networkReposTable->setItem(row, kRepoColName, repoItem);
 
         int localFork = -1;
         int mirroredIndex = -1;
@@ -8699,18 +8845,20 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
             auto *forkItem = new QTableWidgetItem(QStringLiteral("Available"));
             forkItem->setToolTip(
                 QStringLiteral("%1/%2\n%3").arg(fork.owner, fork.name, path));
-            m_networkReposTable->setItem(row, 1, forkItem);
+            m_networkReposTable->setItem(row, kRepoColLocalFork, forkItem);
         } else {
             auto *forkItem = new QTableWidgetItem(QStringLiteral("Not local"));
             forkItem->setForeground(QColor("#8b949e"));
-            m_networkReposTable->setItem(row, 1, forkItem);
+            m_networkReposTable->setItem(row, kRepoColLocalFork, forkItem);
         }
 
         auto *mirrorsItem = new QTableWidgetItem(
             QString::fromUtf8("\xE2\x80\xA6"));
         mirrorsItem->setForeground(QColor("#8b949e"));
         mirrorsItem->setTextAlignment(Qt::AlignCenter);
-        m_networkReposTable->setItem(row, 2, mirrorsItem);
+        m_networkReposTable->setItem(row, kRepoColMirrors, mirrorsItem);
+
+        fillNetworkRepoDataCells(row, repo);
 
         auto *actions = new QWidget;
         auto *actionRow = new QHBoxLayout(actions);
@@ -8833,7 +8981,7 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
         actionRow->addSpacing(10);
         actionRow->addWidget(deleteButton);
         actionRow->addStretch();
-        m_networkReposTable->setCellWidget(row, 3, actions);
+        m_networkReposTable->setCellWidget(row, kRepoColActions, actions);
 
         fetchNetworkRepoMirrors(routeOwner, routeName, row, generation);
     }
@@ -8841,6 +8989,242 @@ void MainWindow::renderNetworkRepos(const QJsonArray &repos)
     m_networkReposStatus->setText(
         rows.isEmpty() ? QStringLiteral("No repositories advertised.")
                        : QStringLiteral("%1 repositories").arg(formatCount(rows.size())));
+    // The Repos rail badge counts what this page lists, not this machine's own
+    // copies (adhoc #118).
+    m_networkRepoRowCount = rows.size();
+    updateReposNavBadge();
+}
+
+// Fills every catalog-data column of one Repos row: the repository's own facts
+// (visibility, HEAD, counts, size) plus the publishing node's advertised state
+// (machine, platform, telemetry, serve counters). Values the node never
+// reported render as an em dash rather than a misleading zero.
+void MainWindow::fillNetworkRepoDataCells(int row, const QJsonObject &repo)
+{
+    if (!m_networkReposTable)
+        return;
+    const QString dash = QString::fromUtf8("\xE2\x80\x94");
+
+    // Numbers reach us as JSON numbers on some fields and as strings on others
+    // (the catalog stores the node-reported counters as text); an invalid
+    // QVariant means "never reported", which is not the same as zero.
+    auto number = [&repo](const QString &key) {
+        const QJsonValue value = repo.value(key);
+        if (value.isDouble())
+            return QVariant(qint64(value.toDouble()));
+        bool ok = false;
+        const qint64 parsed = value.toString().trimmed().toLongLong(&ok);
+        return ok ? QVariant(parsed) : QVariant();
+    };
+    auto text = [&repo](const QString &key) {
+        return repo.value(key).toString().trimmed();
+    };
+    auto textCell = [&](int column, const QString &value,
+                        const QString &tip = QString()) {
+        auto *item = new QTableWidgetItem(value.isEmpty() ? dash : value);
+        if (value.isEmpty())
+            item->setForeground(QColor("#8b949e"));
+        else if (!tip.isEmpty())
+            item->setToolTip(tip);
+        m_networkReposTable->setItem(row, column, item);
+    };
+    // Hashes, keys and addresses are shown by their leading characters with the
+    // full value on hover, so one long field can't blow out the grid.
+    auto digestCell = [&](int column, const QString &value,
+                          const QString &extraTip = QString()) {
+        QString tip = value;
+        if (!extraTip.isEmpty())
+            tip += QLatin1Char('\n') + extraTip;
+        textCell(column, value.left(12), tip);
+    };
+    auto countCell = [&](int column, const QString &key,
+                         const QString &tip = QString()) {
+        const QVariant value = number(key);
+        auto *item = new QTableWidgetItem;
+        if (value.isValid()) {
+            item->setData(Qt::DisplayRole, value.toLongLong());
+            if (!tip.isEmpty())
+                item->setToolTip(tip);
+        } else {
+            item->setText(dash);
+            item->setForeground(QColor("#8b949e"));
+        }
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        m_networkReposTable->setItem(row, column, item);
+    };
+    // Timestamps are epoch milliseconds (as text on the fields the node signs);
+    // the column reads relatively, the exact stamp is on hover.
+    auto timeCell = [&](int column, const QString &key) {
+        const QVariant value = number(key);
+        const qint64 ms = value.toLongLong();
+        if (!value.isValid() || ms <= 0) {
+            textCell(column, QString());
+            return;
+        }
+        textCell(column, formatIssueRelativeTime(ms), formatRepoDate(ms));
+    };
+    auto usageText = [&](const QString &usedKey, const QString &totalKey) {
+        const QVariant used = number(usedKey);
+        const QVariant total = number(totalKey);
+        if (!used.isValid() || !total.isValid() || total.toLongLong() <= 0)
+            return QString();
+        return QStringLiteral("%1 / %2")
+            .arg(SystemStats::formatBytes(used.toLongLong()),
+                 SystemStats::formatBytes(total.toLongLong()));
+    };
+    auto servedTip = [&](const QString &atKey, const QString &agentKey) {
+        QStringList tip;
+        const QVariant at = number(atKey);
+        if (at.isValid() && at.toLongLong() > 0)
+            tip << QStringLiteral("Last: %1").arg(formatRepoDate(at.toLongLong()));
+        const QString agent = text(agentKey);
+        if (!agent.isEmpty())
+            tip << QStringLiteral("Client: %1").arg(agent);
+        return tip.join(QLatin1Char('\n'));
+    };
+    auto joinArray = [&repo](const QString &key) {
+        QStringList values;
+        for (const QJsonValue &value : repo.value(key).toArray()) {
+            const QString entry = value.toString().trimmed();
+            if (!entry.isEmpty())
+                values << entry;
+        }
+        return values;
+    };
+
+    const bool isPrivate = repo.value("private").toBool(false) ||
+                           repo.value("isPrivate").toBool(false);
+    const bool sharedWithMe = repo.value("sharedWithMe").toBool(false);
+    textCell(kRepoColVisibility,
+             isPrivate ? (sharedWithMe ? QStringLiteral("Private (shared)")
+                                       : QStringLiteral("Private"))
+                       : QStringLiteral("Public"));
+    textCell(kRepoColTerms,
+             repo.value("termsFlagged").toBool(false)
+                 ? (text(QStringLiteral("termsCategory")).isEmpty()
+                        ? QStringLiteral("flagged")
+                        : text(QStringLiteral("termsCategory")))
+                 : QString());
+    textCell(kRepoColLive, repo.value("liveHost").toBool(false)
+                               ? QStringLiteral("Live")
+                               : QString());
+
+    textCell(kRepoColBranch, text(QStringLiteral("branch")));
+    digestCell(kRepoColCommit, text(QStringLiteral("commit")));
+    const QString subject = text(QStringLiteral("commitSubject"));
+    textCell(kRepoColCommitSubject, subject, subject);
+    textCell(kRepoColCommitAuthor, text(QStringLiteral("commitAuthorName")));
+    timeCell(kRepoColCommitAt, QStringLiteral("commitAt"));
+
+    countCell(kRepoColIssues, QStringLiteral("issueCount"),
+              QStringLiteral("Open issues"));
+    countCell(kRepoColIssueMax, QStringLiteral("issueMaxNumber"),
+              QStringLiteral("Highest issue number ever assigned"));
+    countCell(kRepoColCommits, QStringLiteral("commitCount"));
+    countCell(kRepoColBranches, QStringLiteral("branchCount"));
+    countCell(kRepoColPulls, QStringLiteral("pullCount"));
+    countCell(kRepoColDiscussions, QStringLiteral("discussionCount"));
+    countCell(kRepoColWorktrees, QStringLiteral("worktreeCount"));
+    countCell(kRepoColArtifacts, QStringLiteral("artifactCount"));
+
+    const QJsonArray activity = repo.value("activityWeeks").toArray();
+    if (activity.isEmpty()) {
+        textCell(kRepoColActivity, QString());
+    } else {
+        qint64 activityTotal = 0;
+        QStringList weeks;
+        for (const QJsonValue &week : activity) {
+            activityTotal += qint64(week.toDouble());
+            weeks << QString::number(qint64(week.toDouble()));
+        }
+        auto *item = new QTableWidgetItem;
+        item->setData(Qt::DisplayRole, activityTotal);
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        item->setToolTip(QStringLiteral("Commits per week (oldest first):\n%1")
+                             .arg(weeks.join(QLatin1Char(' '))));
+        m_networkReposTable->setItem(row, kRepoColActivity, item);
+    }
+
+    const QStringList changedFiles = joinArray(QStringLiteral("changedFiles"));
+    if (changedFiles.isEmpty()) {
+        textCell(kRepoColChangedFiles, QString());
+    } else {
+        auto *item = new QTableWidgetItem;
+        item->setData(Qt::DisplayRole, qint64(changedFiles.size()));
+        item->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        item->setToolTip(QStringLiteral("Uncommitted on the host:\n%1")
+                             .arg(changedFiles.join(QLatin1Char('\n'))));
+        m_networkReposTable->setItem(row, kRepoColChangedFiles, item);
+    }
+
+    const QVariant sizeBytes = number(QStringLiteral("sizeBytes"));
+    textCell(kRepoColSize,
+             sizeBytes.isValid() && sizeBytes.toLongLong() > 0
+                 ? SystemStats::formatBytes(sizeBytes.toLongLong())
+                 : QString());
+    textCell(kRepoColSource, text(QStringLiteral("source")));
+    const QStringList hosts = joinArray(QStringLiteral("_memberOwners"));
+    textCell(kRepoColHosts, hosts.join(QStringLiteral(", ")),
+             hosts.join(QLatin1Char('\n')));
+
+    textCell(kRepoColMachine, text(QStringLiteral("machineName")));
+    textCell(kRepoColRuntime, text(QStringLiteral("runtimeMode")));
+    textCell(kRepoColPlatform, text(QStringLiteral("platform")));
+    textCell(kRepoColVersion, text(QStringLiteral("version")));
+    textCell(kRepoColAgents,
+             joinArray(QStringLiteral("agentProviders"))
+                 .join(QStringLiteral(", ")));
+    QString ci = text(QStringLiteral("actionsState"));
+    if (ci.isEmpty() && repo.contains(QStringLiteral("actionsEnabled")))
+        ci = repo.value("actionsEnabled").toBool() ? QStringLiteral("enabled")
+                                                   : QStringLiteral("disabled");
+    textCell(kRepoColCi, ci);
+
+    const QVariant cpuPercent = number(QStringLiteral("cpuPercent"));
+    textCell(kRepoColCpu, cpuPercent.isValid()
+                              ? QStringLiteral("%1%").arg(cpuPercent.toLongLong())
+                              : QString());
+    textCell(kRepoColMemory, usageText(QStringLiteral("memUsedBytes"),
+                                       QStringLiteral("memTotalBytes")));
+    textCell(kRepoColDisk, usageText(QStringLiteral("diskUsedBytes"),
+                                     QStringLiteral("diskTotalBytes")));
+    countCell(kRepoColClonesServed, QStringLiteral("clonesServed"),
+              servedTip(QStringLiteral("cloneServedAt"),
+                        QStringLiteral("cloneServedAgent")));
+    countCell(kRepoColWebsiteServed, QStringLiteral("websiteServed"),
+              servedTip(QStringLiteral("websiteServedAt"),
+                        QStringLiteral("websiteServedAgent")));
+
+    QString encryption = text(QStringLiteral("mirrorEncryption"));
+    const QVariant keyEpoch = number(QStringLiteral("keyEpoch"));
+    if (!encryption.isEmpty() && keyEpoch.isValid())
+        encryption += QStringLiteral(" \xC2\xB7 epoch %1").arg(keyEpoch.toLongLong());
+    QStringList encryptionTip;
+    if (!text(QStringLiteral("opaqueRepoId")).isEmpty())
+        encryptionTip << QStringLiteral("Repo id: %1")
+                             .arg(text(QStringLiteral("opaqueRepoId")));
+    if (!text(QStringLiteral("encryptedManifestHash")).isEmpty())
+        encryptionTip << QStringLiteral("Manifest: %1")
+                             .arg(text(QStringLiteral("encryptedManifestHash")));
+    textCell(kRepoColEncryption, encryption,
+             encryptionTip.join(QLatin1Char('\n')));
+
+    textCell(kRepoColChannel, text(QStringLiteral("channel")));
+    digestCell(kRepoColSolana, text(QStringLiteral("solana")));
+    timeCell(kRepoColHostedSince, QStringLiteral("hostedSince"));
+    timeCell(kRepoColLastSync, QStringLiteral("lastSync"));
+    timeCell(kRepoColUpdated, QStringLiteral("updatedAt"));
+    digestCell(kRepoColRootCommit, text(QStringLiteral("rootCommit")));
+    digestCell(kRepoColStateHash, text(QStringLiteral("stateHash")),
+               text(QStringLiteral("stateSig")).isEmpty()
+                   ? QStringLiteral("Unsigned")
+                   : QStringLiteral("Owner-signed"));
+    digestCell(kRepoColMaintainer, text(QStringLiteral("maintainer")));
+    digestCell(kRepoColNodeId, text(QStringLiteral("nodeId")));
+    const QString cloneUrl = text(QStringLiteral("cloneUrl"));
+    textCell(kRepoColCloneUrl, cloneUrl, cloneUrl);
+    const QString sshUrl = text(QStringLiteral("sshUrl"));
+    textCell(kRepoColSshUrl, sshUrl, sshUrl);
 }
 
 void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &name,
@@ -8868,7 +9252,8 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                 if (generation != m_networkReposLoadGen || !m_networkReposTable ||
                     row < 0 || row >= m_networkReposTable->rowCount())
                     return;
-                QTableWidgetItem *repoItem = m_networkReposTable->item(row, 0);
+                QTableWidgetItem *repoItem =
+                    m_networkReposTable->item(row, kRepoColName);
                 if (!repoItem ||
                     repoItem->data(Qt::UserRole + 3).toString()
                             .compare(owner, Qt::CaseInsensitive) != 0 ||
@@ -8876,7 +9261,8 @@ void MainWindow::fetchNetworkRepoMirrors(const QString &owner, const QString &na
                             .compare(name, Qt::CaseInsensitive) != 0)
                     return;
 
-                QTableWidgetItem *mirrorsItem = m_networkReposTable->item(row, 2);
+                QTableWidgetItem *mirrorsItem =
+                    m_networkReposTable->item(row, kRepoColMirrors);
                 if (!mirrorsItem)
                     return;
 

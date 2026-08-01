@@ -6413,6 +6413,11 @@ void MainWindow::syncPublicEncryptedRepository(int index, bool quiet)
             // Propagate the freshly sealed state to the SSH-fed headless
             // mirrors too — they don't hear the relay's mirror-update frames.
             pushToSshMirrorRemotes(index);
+            // A fresh install mirrors the flagship as a normal public repo, so
+            // this is the path its very first clone finishes on. Last, because
+            // it reads the mirror and pumps the event loop while `current` is
+            // still a reference into m_repositories.
+            completePendingRepoAutoOpen(index);
         });
     worker->start();
 }
@@ -6700,6 +6705,55 @@ void MainWindow::syncRepository(int index, bool quiet)
     prep->start();
 }
 
+// A fresh install's first sync of the flagship repo (flagged by
+// ensureFlagshipRepo, adhoc #113): select it now that the clone landed, instead
+// of leaving the user on an empty repo list. Returns true when this repo was the
+// one being waited on.
+//
+// Every sync path has to call this, not just the preview one: a brand-new
+// install mirrors the flagship as a normal public repo, so it lands in
+// syncPublicEncryptedRepository and the auto-select never fired at all
+// (adhoc #116).
+bool MainWindow::completePendingRepoAutoOpen(int index)
+{
+    if (index < 0 || index >= m_repositories.size() ||
+        m_pendingAutoOpenRepoKey.isEmpty())
+        return false;
+    // By value: the loaders below pump the event loop, and a reference into
+    // m_repositories cannot be held across that (git-pump UAF family).
+    const bool previewOnly = m_repositories.at(index).previewOnly;
+    const QString key =
+        m_repositories.at(index).owner + "/" + m_repositories.at(index).name;
+    if (previewOnly ||
+        m_pendingAutoOpenRepoKey.compare(key, Qt::CaseInsensitive) != 0)
+        return false;
+    m_pendingAutoOpenRepoKey.clear();
+    // On a fresh install, land on the welcome chat, not the Code view. Just
+    // select the repo internally (so the repo switcher shows "forkmesh") and
+    // refresh the UI; don't open the detail view, which would navigate away from
+    // the chat and onto the Agents tab.
+    m_repoDetailIndex = index;
+    refreshRepositoryList();
+    // Because the detail view is deliberately not opened, nothing has read this
+    // repo's refs yet — the status strip's bottom-left button would sit on its
+    // "main" placeholder whatever the clone actually holds, and every repo tab
+    // would keep the empty count it was built with. Prime them from the mirror
+    // that just landed (adhoc #116), in openRepoDetail's order: the info file
+    // names the default branch the branch button then resolves against.
+    m_repoInfo = RepoInfo();
+    m_repoBranch.clear();
+    loadRepoInfo();
+    loadBranchesAndTags();
+    updateFooterGitIdentity();
+    updateFooterCommitInfo();
+    refreshRepoTabCounts();
+    QTimer::singleShot(0, this, [this] {
+        showChatView();
+        switchConversation(welcomeChannelForIdentity());
+    });
+    return true;
+}
+
 void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                                 const QStringList &args,
                                 const QString &beforeDigest,
@@ -6775,24 +6829,6 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // hook so local pushes are detected (actions + refresh).
                         if (!stillPreview)
                             ensurePushHook(repo);
-                        // A fresh install's first sync of the flagship repo (flagged
-                        // by ensureFlagshipRepo, adhoc #113): open it now that the
-                        // clone landed, instead of leaving the user on an empty list.
-                        if (!stillPreview && !m_pendingAutoOpenRepoKey.isEmpty() &&
-                            m_pendingAutoOpenRepoKey.compare(
-                                repo.owner + "/" + repo.name, Qt::CaseInsensitive) == 0) {
-                            m_pendingAutoOpenRepoKey.clear();
-                            // On a fresh install, land on the welcome chat, not the
-                            // Code view. Just select the repo internally (so the repo
-                            // switcher shows "forkmesh") and refresh the UI; don't open
-                            // the detail view which would load and show the Agents tab.
-                            m_repoDetailIndex = index;
-                            refreshRepositoryList();
-                            QTimer::singleShot(0, this, [this] {
-                                showChatView();
-                                switchConversation(welcomeChannelForIdentity());
-                            });
-                        }
                         if (changed && hasMirror && !stillPreview &&
                             m_actionStore && !headBranch->isEmpty() &&
                             !headCommit->isEmpty() &&
@@ -6855,6 +6891,11 @@ void MainWindow::startSyncFetch(int index, bool quiet, bool hasMirror,
                         // auto-syncs don't re-scan an up-to-date store every tick.
                         if (!stillPreview && hasMirror && (changed || !quiet))
                             replicateReleaseArtifacts(index);
+                        // Last, because it reads the freshly landed mirror and so
+                        // pumps the event loop: `repo` above is a reference into
+                        // m_repositories and must not be held across it
+                        // (git-pump UAF family).
+                        completePendingRepoAutoOpen(index);
                     });
                     worker->start();
                 } else {
@@ -6957,7 +6998,10 @@ void MainWindow::onAvatarChosen(const QByteArray &pngData)
 void MainWindow::logout()
 {
     // Drop the signed-in account (admin/heartbeat state) so the user can log
-    // back in, then tear the session down to the setup screen.
+    // back in, then tear the mesh session down. There is no setup screen to
+    // return to any more (adhoc #115) — cancelling the re-login prompt below
+    // just leaves the app logged out, with the top-bar pill offering the way
+    // back in.
     const QString previousAccount = m_accountName;
     if (m_heartbeatTimer)
         m_heartbeatTimer->stop();
@@ -6974,11 +7018,19 @@ void MainWindow::logout()
     m_isAdmin = false;
     m_seenPendingUsers.clear();
     m_accountName.clear();
+    // Drop the cached user-account linkage too. These are display caches that
+    // refreshProfileAccountStatus() already clears whenever accountOwner() is
+    // empty — which it now is — and leaving them set would keep the top-bar
+    // "Log in / Sign up" pill hidden on a machine that just logged out.
+    m_nodeOwnerUser.clear();
+    m_profileIsUserAccount = false;
+    m_profileLinkedNodes.clear();
     QSettings().remove(kAuthedAccountSetting);
     QSettings().remove(kAccountNameSetting);
     refreshSettingsEmailVerifiedBadge();
     leaveSession();
-    // Come straight back with a password login. The setup screen's silent auth
+    updateUserSwitcher();
+    // Come straight back with a password login. Silent auth on the next start
     // only checks this node's key locally, so the website never learned about
     // the device; runLoginFlow() posts pubkey/deviceTs/deviceSig, which makes
     // the relay register this desktop key against the account and hand back a
@@ -7024,8 +7076,8 @@ bool MainWindow::promptRelogin(const QString &previousAccount)
     if (m_settingsMachineNodeEdit)
         m_settingsMachineNodeEdit->setText(machineNodeName());
     refreshSettingsEmailVerifiedBadge();
-    // logout() left us on the setup screen; rejoin with the freshly signed-in
-    // account so the user lands back in the app instead of clicking "Join".
+    // logout() tore the mesh session down; rejoin with the freshly signed-in
+    // account so the app is live again rather than sitting disconnected.
     if (m_nameEdit)
         m_nameEdit->setText(m_accountName);
     startSession();
