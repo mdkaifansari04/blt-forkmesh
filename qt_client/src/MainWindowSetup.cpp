@@ -131,6 +131,7 @@ void MainWindow::saveChatHistory()
         for (int i = first; i < msgs.size(); ++i) {
             const ChatMessage &m = msgs.at(i);
             QJsonObject obj{{"id", m.id},
+                            {"threadRootId", m.threadRootId},
                             {"senderId", m.senderId},
                             {"senderName", m.senderName},
                             {"text", m.text},
@@ -199,6 +200,7 @@ void MainWindow::loadChatHistory()
             ChatMessage m;
             m.id = obj.value("id").toString();
             m.conversation = conversation;
+            m.threadRootId = obj.value("threadRootId").toString().left(96);
             m.senderId = obj.value("senderId").toString();
             m.senderName = obj.value("senderName").toString();
             m.text = obj.value("text").toString();

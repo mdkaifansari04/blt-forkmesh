@@ -1277,6 +1277,23 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kEmailOnCreditsRefillSetting, enabled);
     });
     usageText->addWidget(emailOnRefillCheck);
+    auto *usageCalendarReminderCheck = new QCheckBox(
+        "Add a calendar reminder and ping me when agent usage resets");
+    usageCalendarReminderCheck->setChecked(
+        QSettings().value(kUsageLimitCalendarReminderSetting, false).toBool());
+    usageCalendarReminderCheck->setToolTip(
+        "When Claude Code or Codex usage is exhausted, open a standard calendar "
+        "reminder for its reset time and show a ForkMesh system ping when it is "
+        "ready again. The calendar app handles alerts while ForkMesh is closed.");
+    connect(usageCalendarReminderCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+                QSettings().setValue(kUsageLimitCalendarReminderSetting, enabled);
+                if (enabled)
+                    restoreUsageLimitReminders();
+                else
+                    clearUsageLimitReminders();
+            });
+    usageText->addWidget(usageCalendarReminderCheck);
     // Issue #115: restore the last-known spend figures immediately so they are
     // visible on restart before any network refresh completes.
     applyCachedSpendLabels();
