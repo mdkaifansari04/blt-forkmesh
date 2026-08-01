@@ -7379,12 +7379,22 @@ bool MainWindow::relayPublishRepo(const RepositoryRecord &repo,
 
 // Keep the open repo's sync-derived indicators in step after anything that may
 // have changed the push state (a new local commit, a completed publish/sync).
-// The floating "Sync (N)" pill this used to paint above the Code tab is gone
-// (adhoc #374), and with it the off-thread ahead/behind walks that fed only its
-// label and tooltip — what's left is the activity rail's spinning Git glyph and
-// the commit list's "waiting to sync" markers.
+// The old floating "Sync (N)" pill above Code remains gone (adhoc #374). Its
+// replacement is scoped to Source Control's Outgoing Changes group, alongside
+// the activity rail's spinning Git glyph and commit pending-sync markers.
 void MainWindow::refreshRepoSyncIndicators()
 {
+    // The Source Control pane owns the user-facing outgoing count and Sync
+    // Changes action. Refresh it on every push/publish transition so the button
+    // enters its busy state immediately and disappears once the mirror catches
+    // up.
+    // Also refresh while Git is closed: the activity-rail upload marker is the
+    // affordance that tells the user there is something waiting inside it.
+    if (m_scmPanel)
+        refreshSourceControlOutgoing();
+    else if (m_railGitButton)
+        m_railGitButton->setPendingSyncCount(0);
+
     // Only while the commit list is on screen; a cheap no-op otherwise.
     refreshCommitMarkersIfStale();
 
