@@ -675,6 +675,10 @@ public:
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
     QString testSwitchToBranchImmediateSelection(const QString &branch);
+    // Take the agent detail page's "Branch" route, so a test can prove it binds
+    // the Git view to that session's own repository before opening its branch
+    // there — the sessions list is global (adhoc #131).
+    void testSwitchToAgentBranch(int sessionId) { switchToAgentBranch(sessionId); }
     // Which page the Git view's right pane shows (kCommitWorkspace*Page), and
     // the branch the range pane is reviewing — so a test can prove a branch link
     // lands on the range review pane in the Git view (adhoc #107).
@@ -2342,6 +2346,9 @@ private:
     void refreshAgentLimitLabel();
     void openAgentSessionFromIssue();
     void switchToAgentsTab(int sessionId);
+    // Open an agent session's branch in the Git view's range pane, binding the
+    // repo detail to that session's repository first (adhoc #131).
+    void switchToAgentBranch(int sessionId);
     // Jumps to the most relevant session's Agents tab, falling back to the
     // open repo's Agents tab if no session exists yet.
     void openAgentsOverview();
