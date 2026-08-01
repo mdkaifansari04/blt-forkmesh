@@ -2329,6 +2329,8 @@ int main(int argc, char *argv[])
         const QString agentRouteBranch = QStringLiteral("agent/files-visible");
         const QString agentRouteWt =
             wtRepo.path() + QStringLiteral("/wt-agent-files");
+        const QString agentRouteBaseRef =
+            gitOutput(wtRepo.path(), {"rev-parse", "main"}).trimmed();
         runGitChecked(wtRepo.path(), {"branch", agentRouteBranch, "main"});
         runGitChecked(wtRepo.path(),
                       {"worktree", "add", agentRouteWt, agentRouteBranch});
@@ -2337,16 +2339,32 @@ int main(int argc, char *argv[])
             agentRouteFile.write("visible from the agent branch route\n");
             agentRouteFile.close();
         }
+        // Reproduce the report's 23 unrelated files in the primary checkout.
+        // The agent route must read its linked worktree, never these main-tree
+        // changes, even while it keeps the graph parked on main.
+        for (int i = 0; i < 23; ++i) {
+            QFile unrelatedFile(
+                wtRepo.path() +
+                QStringLiteral("/primary-unrelated-%1.txt").arg(i));
+            if (unrelatedFile.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+                unrelatedFile.write("belongs to the primary checkout\n");
+                unrelatedFile.close();
+            }
+        }
+        runGitChecked(wtRepo.path(),
+                      {"commit", "--allow-empty", "-m",
+                       "main advanced before agent branch review"});
         issueSession.branchName = agentRouteBranch;
+        issueSession.baseBranch = QStringLiteral("main");
+        issueSession.baseRef = agentRouteBaseRef;
         window.testAddAgentSession(issueSession);
 
         // adhoc #131: the agent detail page's "Branch" button opens that session's
-        // branch in the Git view's combined view — its graph plus its diff
-        // against the compare base. The sessions list is global, so the click has
-        // to point the Git view at the session's own repository first; from
-        // another repo's detail page it would otherwise render that repo's
-        // (missing) branch. Park the detail view on "me/r", then take the
-        // button's route for the session on "me/wtrepo".
+        // diff against main without repointing the graph below it. The sessions
+        // list is global, so the click still has to bind the Git view to the
+        // session's own repository first; from another repo's detail page it
+        // would otherwise render that repo's (missing) branch. Park the detail
+        // view on "me/r", then take the route for the session on "me/wtrepo".
         window.testOpenRepository(repoIdx);
         QApplication::processEvents();
         window.testSwitchToAgentBranch(issueSession.id);
@@ -2357,12 +2375,12 @@ int main(int argc, char *argv[])
                       "session's repository (adhoc #131, git dir = %1)")
                   .arg(agentBranchDir));
         check(window.testCommitWorkspacePage() == 2 &&
-                  window.testBrowsedBranch() ==
-                      agentRouteBranch,
-              QString("the agent's Branch button opens its branch's combined "
-                      "graph + diff view (adhoc #131/#16, page = %1, branch = %2)")
+                  window.testBrowsedBranch() == QStringLiteral("main") &&
+                  window.testBranchDiffBranch() == agentRouteBranch,
+              QString("the agent's Branch button reviews its range without "
+                      "moving the graph off main (page = %1, graph = %2, diff = %3)")
                   .arg(window.testCommitWorkspacePage())
-                  .arg(window.testBrowsedBranch()));
+                  .arg(window.testBrowsedBranch(), window.testBranchDiffBranch()));
         check(window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
               QString("the agent's branch keeps the source-control panel above "
@@ -2381,6 +2399,38 @@ int main(int argc, char *argv[])
               QString("an agent's Branch button always fills CHANGES with its "
                       "complete worktree diff (files = %1)")
                   .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        check(window.testCompareIndicatorText() == QStringLiteral("main"),
+              QString("an agent's Branch button always compares against main "
+                      "(base = %1)")
+                  .arg(window.testCompareIndicatorText()));
+        bool containsPrimaryChange = false;
+        for (const QString &path : window.testSourceControlPaths()) {
+            if (path.startsWith(QStringLiteral("primary-unrelated-"))) {
+                containsPrimaryChange = true;
+                break;
+            }
+        }
+        check(!containsPrimaryChange &&
+                  window.testSourceControlPaths().size() == 1,
+              QString("an agent branch excludes the primary checkout's 23 unrelated "
+                      "changes (files = %1)")
+                  .arg(window.testSourceControlPaths().join(QStringLiteral(", "))));
+        QElapsedTimer agentPullTimer;
+        agentPullTimer.start();
+        QString agentPullCounts;
+        while (agentPullTimer.elapsed() < 5000) {
+            QApplication::processEvents(QEventLoop::AllEvents, 20);
+            agentPullCounts = gitOutput(
+                wtRepo.path(),
+                {"rev-list", "--left-right", "--count",
+                 "main..." + agentRouteBranch});
+            if (agentPullCounts.startsWith(QLatin1Char('0')))
+                break;
+        }
+        check(agentPullCounts.startsWith(QLatin1Char('0')),
+              QString("opening an agent branch automatically runs its highlighted "
+                      "Pull main action (main...branch = %1)")
+                  .arg(agentPullCounts));
         check(window.testClickSourceControlPath(QStringLiteral("agent-live.txt")),
               QStringLiteral("an agent branch's CHANGES row scrolls the right-hand "
                              "diff to that file"));
