@@ -5629,59 +5629,84 @@ void MainWindow::updateSearchStatus()
 }
 
 
-// Switch the Git view's right pane. Reviewing a branch/PR range used to lend
+// Switch the Git view's right pane. Comparing a branch/PR range used to lend
 // the left column's two slots to that range's changed files and commits (adhoc
-// #110); the review borrows only the right pane now (adhoc #12), so the
-// working-tree CHANGES and the commit graph stay put — only the merging-in
-// indicator above the graph's branch button follows the page.
+// #110); the comparison borrows only the right pane now (adhoc #12), so the
+// working-tree CHANGES and the commit graph stay put — only the "-> <base>"
+// compare indicator on the branch row follows the page.
 void MainWindow::setCommitWorkspacePage(int page)
 {
     if (!m_commitsStack)
         return;
     m_commitsStack->setCurrentIndex(page);
-    updateCommitsMergingBanner();
+    updateCommitsCompareIndicator();
 }
 
-// The "Merging in <branch>" indicator just above the graph's branch button:
-// while a branch/PR range review is open on the right pane it names the branch
-// being merged in — the graph itself stays on the default branch (adhoc #12).
-// Hidden (collapsing its row) on every other page.
-void MainWindow::updateCommitsMergingBanner()
+// The "<branch> -> <base>" compare indicator on the graph's branch row: while a
+// branch/PR comparison is open on the right pane, the arrow and the base button
+// appear after the branch button, so the branch button reads as the left end of
+// the comparison and the base button as the right (adhoc #16). Both are
+// dropdowns, so either end can be moved. Hidden on every other page, leaving
+// the branch button alone as a plain history-browsing switcher.
+void MainWindow::updateCommitsCompareIndicator()
 {
-    if (!m_commitsMergingButton)
+    if (!m_commitsCompareBaseButton || !m_commitsCompareArrow)
         return;
-    const bool reviewing =
+    const bool comparing =
         m_commitsStack &&
         m_commitsStack->currentIndex() == kCommitWorkspaceRangePage &&
         !m_branchDiffBranch.isEmpty();
-    if (!reviewing) {
-        m_commitsMergingButton->hide();
+    if (!comparing) {
+        m_commitsCompareArrow->hide();
+        m_commitsCompareBaseButton->hide();
         return;
     }
-    const QString label =
-        QStringLiteral("Merging in %1").arg(m_branchDiffBranch);
+    const QString base = branchCompareBase();
+    const QString label = base.isEmpty() ? QStringLiteral("(no base)") : base;
     // The button elides long agent branch names; the full story goes on the
-    // tooltip (mirrors the branch button below it).
-    if (auto *elider = dynamic_cast<ElidingPushButton *>(m_commitsMergingButton))
+    // tooltip (mirrors the branch button beside it).
+    if (auto *elider =
+            dynamic_cast<ElidingPushButton *>(m_commitsCompareBaseButton))
         elider->setFullText(label);
     else
-        m_commitsMergingButton->setText(label);
-    const QString base = repoDefaultBranchFast();
-    m_commitsMergingButton->setToolTip(
-        QString::fromUtf8("Reviewing %1 for merge into %2 \xE2\x80\x94 its diff "
-                          "is open on the right")
-            .arg(m_branchDiffBranch,
-                 base.isEmpty() ? QStringLiteral("the default branch") : base));
-    m_commitsMergingButton->show();
+        m_commitsCompareBaseButton->setText(label);
+    m_commitsCompareBaseButton->setToolTip(
+        QString::fromUtf8("Comparing %1 against %2 \xE2\x80\x94 the diff on the "
+                          "right is everything %1 adds over %2. Click to compare "
+                          "against a different branch.")
+            .arg(m_branchDiffBranch, label));
+
+    // Rebuild the base dropdown so it lists this repo's branches, ticking the
+    // one currently on the right-hand end of the comparison.
+    auto *menu = new QMenu(m_commitsCompareBaseButton);
+    const QStringList branches = repoBranches();
+    for (const QString &b : branches) {
+        if (b == m_branchDiffBranch)
+            continue; // a branch can't be compared against itself
+        QAction *a = menu->addAction(b);
+        a->setCheckable(true);
+        a->setChecked(b == base);
+        connect(a, &QAction::triggered, this,
+                [this, b] { setBranchCompareBase(b); });
+    }
+    if (menu->isEmpty())
+        menu->addAction(QStringLiteral("No other branches"))->setEnabled(false);
+    QMenu *old = m_commitsCompareBaseButton->menu();
+    m_commitsCompareBaseButton->setMenu(menu);
+    if (old)
+        old->deleteLater();
+
+    m_commitsCompareArrow->show();
+    m_commitsCompareBaseButton->show();
 }
 
 void MainWindow::showCommitList()
 {
     if (!m_commitsStack)
         return;
-    // A branch/PR review parked on the range page survives commit-list reloads
-    // (adhoc #107): it re-renders itself, so only the single-commit page needs
-    // resetting to the working-tree changes.
+    // A branch/PR comparison parked on the range page survives commit-list
+    // reloads (adhoc #107): it re-renders itself, so only the single-commit page
+    // needs resetting to the working-tree changes.
     if (m_commitsStack->currentIndex() == kCommitWorkspaceRangePage)
         return;
     setCommitWorkspacePage(kCommitWorkspaceChangesPage);
@@ -7692,15 +7717,13 @@ void MainWindow::refreshCommitsBranchButton()
     else
         m_commitsBranchButton->setText(label);
     m_commitsBranchButton->setToolTip(
-        QString::fromUtf8("%1 \xE2\x80\x94 click to browse another branch's "
-                          "history or create one")
+        QString::fromUtf8("%1 \xE2\x80\x94 click to open another branch (its "
+                          "history here, its diff against the base on the "
+                          "right) or create one")
             .arg(label));
-    // The Review button only makes sense for a branch that has a range against
-    // the default branch — hide it while the default branch itself (or a
-    // detached head) is on screen.
-    if (m_commitsReviewButton)
-        m_commitsReviewButton->setVisible(
-            !browsed.isEmpty() && browsed != repoDefaultBranchFast());
+    // The compare indicator beside it names the base end of the comparison and
+    // only shows while one is open (adhoc #16).
+    updateCommitsCompareIndicator();
 
     auto *menu = new QMenu(m_commitsBranchButton);
     QAction *create =
@@ -7712,7 +7735,10 @@ void MainWindow::refreshCommitsBranchButton()
         QAction *a = menu->addAction(b);
         a->setCheckable(true);
         a->setChecked(b == browsed);
-        connect(a, &QAction::triggered, this, [this, b] { setRepoBranch(b); });
+        // switchToBranch, not setRepoBranch: picking a branch here opens the
+        // combined view — its history in this graph plus its diff against the
+        // compare base on the right pane (adhoc #16).
+        connect(a, &QAction::triggered, this, [this, b] { switchToBranch(b); });
     }
     if (branches.isEmpty())
         menu->addAction(QStringLiteral("No branches"))->setEnabled(false);
@@ -8775,17 +8801,14 @@ QWidget *MainWindow::buildRepoDetailSection()
         // destination otherwise always shows. Reset the browsed ref first, then
         // open the panel below so its list is built for the default branch.
         //
-        // A branch/PR range review (or a commit detail) left on the workspace
-        // doesn't survive this destination either: showCommitList deliberately
-        // keeps its hands off the range page, so without this reset the rail
-        // landed back on whatever review was parked there instead of the
-        // main-branch view. Hand the right pane and the left column's slots
-        // back to the working tree before the branch reset so the reloads
-        // below fill the view that's actually on screen.
-        setCommitWorkspacePage(kCommitWorkspaceChangesPage);
-        const QString base = repoDefaultBranchFast();
-        if (!base.isEmpty() && base != m_repoBranch)
-            setRepoBranch(base);
+        // A branch comparison (or a commit detail) left on the workspace doesn't
+        // survive this destination either: showCommitList deliberately keeps its
+        // hands off the range page, so without this reset the rail landed back
+        // on whatever comparison was parked there instead of the main-branch
+        // view. closeBranchCompareView hands the right pane back to the working
+        // tree, resets the compare base and returns the graph to the default
+        // branch — clicking Git again always means "just main" (adhoc #16).
+        closeBranchCompareView();
         // Open the commits/changes workspace inside the Code overview. Going
         // through the commit strip's toggle runs its deferred list build and
         // change rescan; when it's already showing, just re-assert the view.
@@ -9070,43 +9093,30 @@ QWidget *MainWindow::buildRepoCommitsTab()
         "Branch shown below — click to browse another branch's history or create one");
     setOcticon(m_commitsBranchButton, "git-branch", 16);
 
-    // "Review" — only while a non-default branch is browsed (visibility is set
-    // in refreshCommitsBranchButton): branch links land on this graph view now,
-    // so the deeper range review (diff against the default branch + the Merge /
-    // Create PR toolbar) is this one explicit click away.
-    m_commitsReviewButton = new QPushButton("Review");
-    m_commitsReviewButton->setObjectName("ghostButton");
-    m_commitsReviewButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitsReviewButton, "git-compare", 16);
-    m_commitsReviewButton->setToolTip(
-        "Review this branch against the default branch \xE2\x80\x94 its commits, "
-        "changed files and diff, with the merge and PR actions");
-    m_commitsReviewButton->hide();
-    connect(m_commitsReviewButton, &QPushButton::clicked, this, [this] {
-        if (!m_repoBranch.isEmpty())
-            openBranchRangeReview(m_repoBranch);
-    });
+    // "<branch> -> <base>": while a branch/PR comparison is open on the right
+    // pane, an arrow and the base branch follow the branch button, so the row
+    // reads as the comparison itself rather than a plain branch indicator
+    // (adhoc #16). Text, dropdown and visibility live in
+    // updateCommitsCompareIndicator().
+    m_commitsCompareArrow = new QLabel(QString::fromUtf8("\xE2\x86\x92"));
+    m_commitsCompareArrow->setObjectName("hintLabel");
+    m_commitsCompareArrow->setToolTip(
+        QStringLiteral("The branch on the left is being compared against the "
+                       "branch on the right"));
+    m_commitsCompareArrow->hide();
 
-    // "Merging in <branch>" — shown just above the branch button while a
-    // branch/PR range review is open on the right pane, since the graph below
-    // stays on the default branch during a review (adhoc #12). Text and
-    // visibility live in updateCommitsMergingBanner(); clicking it just hands
-    // the focus (and the keyboard diff tools) back to the open review.
-    auto *mergingButton = new ElidingPushButton;
-    m_commitsMergingButton = mergingButton;
-    m_commitsMergingButton->setObjectName("ghostButton");
-    m_commitsMergingButton->setCursor(Qt::PointingHandCursor);
-    setOcticon(m_commitsMergingButton, "git-merge", 16);
-    m_commitsMergingButton->hide();
-    connect(m_commitsMergingButton, &QPushButton::clicked, this, [this] {
-        if (m_branchDiffView)
-            m_branchDiffView->setFocus();
-    });
+    auto *compareBaseButton = new ElidingPushButton;
+    m_commitsCompareBaseButton = compareBaseButton;
+    m_commitsCompareBaseButton->setObjectName("ghostButton");
+    m_commitsCompareBaseButton->setCursor(Qt::PointingHandCursor);
+    setOcticon(m_commitsCompareBaseButton, "git-merge", 16);
+    m_commitsCompareBaseButton->hide();
 
     auto *searchRow = new QHBoxLayout;
     searchRow->setSpacing(8);
     searchRow->addWidget(m_commitsBranchButton, 1);
-    searchRow->addWidget(m_commitsReviewButton);
+    searchRow->addWidget(m_commitsCompareArrow);
+    searchRow->addWidget(m_commitsCompareBaseButton, 1);
     searchRow->addWidget(m_commitsFetchButton);
     searchRow->addWidget(m_commitsPullButton);
 
@@ -9124,7 +9134,6 @@ QWidget *MainWindow::buildRepoCommitsTab()
 
     auto *listLayout = new QVBoxLayout(listPage);
     listLayout->setContentsMargins(16, 12, 16, 16);
-    listLayout->addWidget(m_commitsMergingButton); // above the branch button
     // The unsynced banner sits in normal flow between the search row and the
     // table: as a real laid-out widget it pushes the rows down instead of
     // floating over them, so it can never hide the very (newest, top) commits it

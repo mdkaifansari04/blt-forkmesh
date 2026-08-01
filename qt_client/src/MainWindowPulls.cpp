@@ -1837,13 +1837,14 @@ void MainWindow::switchToPullTab(int pullNumber)
 }
 
 // Open a pull request's diff in the Git view's range pane (adhoc #107): the PR
-// counterpart of openBranchRangeReview. The pane renders the PR's review
-// threads and comment gutters (see renderBranchDiffPatch) and its "PR #N"
-// button jumps on to the full pull request page. A PR whose head branch still
-// exists locally diffs against the live refs; one whose branch is gone (merged
-// & pruned, or cross-node) shows its stored patch. Like the branch review, it
-// borrows only the right pane (adhoc #12): the graph stays on the default
-// branch with the PR's head branch named above its branch button.
+// counterpart of a branch comparison. The pane renders the PR's review threads
+// and comment gutters (see renderBranchDiffPatch) and its "PR #N" button jumps
+// on to the full pull request page. A PR whose head branch still exists locally
+// diffs against the live refs and browses that branch in the graph, reading as
+// the same "<head> -> <base>" comparison a branch does (adhoc #16); one whose
+// branch is gone (merged & pruned, or cross-node) shows its stored patch with
+// the graph left on the default branch. Either way it borrows only the right
+// pane (adhoc #12): the working-tree CHANGES and the graph stay put.
 void MainWindow::openPullDiffInGitView(int pullNumber)
 {
     // The PR widgets and state (m_currentPulls, m_currentPullNumber) live in the
@@ -1882,19 +1883,24 @@ void MainWindow::openPullDiffInGitView(int pullNumber)
 
     m_branchDiffPullNumber = pullNumber;
     showOverviewCommits();
-    const QString base = repoDefaultBranchFast();
-    if (!base.isEmpty() && m_repoBranch != base)
-        setRepoBranch(base); // keep the graph + branch button on main
-    setCommitWorkspacePage(kCommitWorkspaceRangePage);
     const QString dir = repoGitDir();
-    if (!pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head)) {
+    const bool liveBranch =
+        !pr.head.isEmpty() && !dir.isEmpty() && localBranchExists(dir, pr.head);
+    // The graph browses the PR's head branch when it still exists, so the view
+    // reads as one "<head> -> <base>" comparison (adhoc #16). With the branch
+    // gone there is nothing to browse, so the graph stays on the default branch.
+    const QString graphRef = liveBranch ? pr.head : repoDefaultBranchFast();
+    if (!graphRef.isEmpty() && m_repoBranch != graphRef)
+        setRepoBranch(graphRef);
+    setCommitWorkspacePage(kCommitWorkspaceRangePage);
+    if (liveBranch) {
         // Live branch: diff the PR's whole range against the repo's refs.
         showBranchDiff(pr.head);
     } else {
         // Branch gone: render the PR's stored patch directly. Mirror the reset
         // showBranchDiff does, minus the git reads that need the branch.
         m_branchDiffBranch = pr.head;
-        updateCommitsMergingBanner(); // names the head branch above the graph
+        updateCommitsCompareIndicator(); // "<head> -> <base>" on the branch row
         updateBranchDetailActions(pr.head);
         m_branchDiffLastPatch = pr.patch.toUtf8();
         m_branchDiffLastEmpty = QStringLiteral("This pull request has no changes.");
