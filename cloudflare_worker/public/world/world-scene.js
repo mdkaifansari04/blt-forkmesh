@@ -15994,11 +15994,14 @@ export function createWorldScene({
       const geometry = child.geometry;
       const vertices =
         geometry?.index?.count ?? geometry?.attributes?.position?.count ?? 0;
-      const triangles = Math.floor(vertices / 3);
-      if (triangles <= 0) return;
+      const perInstance = Math.floor(vertices / 3);
+      if (perInstance <= 0) return;
       const instances = child.isInstancedMesh
         ? Math.max(0, Number(child.count) || 0)
         : 1;
+      // An instanced mesh parked at count 0 submits nothing this frame.
+      const triangles = perInstance * instances;
+      if (triangles <= 0) return;
       const owner = owners.get(child);
       objects.push({
         label: sceneObjectLabel(child),
@@ -16010,7 +16013,7 @@ export function createWorldScene({
             ? "Skinned"
             : "Mesh",
         geometry: geometry?.type || "Geometry",
-        triangles: triangles * instances,
+        triangles,
         instances,
         visible: objectIsEffectivelyVisible(child),
         interactive: interactiveSet.has(child),

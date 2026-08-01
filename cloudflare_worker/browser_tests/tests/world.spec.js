@@ -6209,14 +6209,13 @@ test("the Debug tab lists every individual object drawing triangles and sorts by
     1,
   );
 
-  const readColumn = async (index) =>
+  const readLabels = async () =>
     page
-      .locator("[data-world-object-list] .world-object-row")
-      .locator(`> :nth-child(${index})`)
+      .locator("[data-world-object-list] .world-object-row strong")
       .allInnerTexts();
 
   // Default order is heaviest triangle count first.
-  const labelsByTriangles = await readColumn(1);
+  const labelsByTriangles = await readLabels();
   expect(labelsByTriangles.length).toBeGreaterThan(1);
 
   // Clicking the active column reverses it; clicking another sorts by it.
@@ -6224,14 +6223,14 @@ test("the Debug tab lists every individual object drawing triangles and sorts by
   await expect(
     page.locator('[data-world-object-sort="triangles"]'),
   ).toHaveAttribute("aria-sort", "ascending");
-  expect(await readColumn(1)).not.toEqual(labelsByTriangles);
+  expect(await readLabels()).not.toEqual(labelsByTriangles);
 
   await page.locator('[data-world-object-sort="label"]').click();
   await expect(page.locator('[data-world-object-sort="label"]')).toHaveAttribute(
     "aria-sort",
     "ascending",
   );
-  const byLabel = await readColumn(1);
+  const byLabel = await readLabels();
   expect(byLabel).toEqual([...byLabel].sort((a, b) => a.localeCompare(b)));
 
   // Re-walking keeps the panel populated.

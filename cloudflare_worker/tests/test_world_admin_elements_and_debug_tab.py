@@ -219,9 +219,11 @@ def test_debug_tab_lists_every_individual_triangle_drawing_object_sortably():
         in walk
     )
     assert "if (child.userData?.raycastProxy === true) return;" in walk
+    assert "if (perInstance <= 0) return;" in walk
+    # Instanced meshes report the whole batch — and one parked at count 0
+    # draws nothing, so it is not listed.
+    assert "const triangles = perInstance * instances;" in walk
     assert "if (triangles <= 0) return;" in walk
-    # Instanced meshes report the whole batch, and each row names its element.
-    assert "triangles: triangles * instances," in walk
     assert 'element: owner ? owner.label : "Unregistered",' in walk
     # The table lives in the Debug tab, is walked on demand, and every column
     # sorts (clicking the active column reverses it).
