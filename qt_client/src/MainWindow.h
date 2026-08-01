@@ -535,10 +535,11 @@ public:
                                                const QString &description,
                                                const QString &firstPrompt,
                                                bool addReadme,
-                                               bool isPrivate = false)
+                                               bool isPrivate = false,
+                                               bool localOnly = false)
     {
         return provisionNewRepository(dest, name, description, firstPrompt,
-                                      addReadme, isPrivate, nullptr);
+                                      addReadme, isPrivate, localOnly, nullptr);
     }
     int testAddPublishedRepository(const QString &owner, const QString &name,
                                    const QString &mirrorPath);
@@ -4218,10 +4219,12 @@ private:
     // and (when firstPrompt is non-empty) has its first issue filed. Returns the
     // new repository index, or -1 with a message in *error on failure.
     // isPrivate keeps the repo out of the public catalog from the start.
+    // localOnly stops there: the repo is initialized and registered on this
+    // machine but never mirrored, published or announced on a relay channel.
     int provisionNewRepository(const QString &dest, const QString &name,
                                const QString &description,
                                const QString &firstPrompt, bool addReadme,
-                               bool isPrivate, QString *error);
+                               bool isPrivate, bool localOnly, QString *error);
     // Clone a remote repo (GitHub/GitLab/any https git URL) into a local working
     // copy, then add it like a local repo. An optional per-host access token
     // (Settings) authenticates the clone to dodge unauthenticated rate limits.

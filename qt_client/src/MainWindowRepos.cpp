@@ -1686,10 +1686,10 @@ void MainWindow::promptAddRepository()
 void MainWindow::createNewRepository()
 {
     // A single "new repository" screen: name + description + an optional first
-    // prompt + public/private visibility + a README choice + where on disk to
-    // create it. Everything past the dialog (git init, seeding, mirror +
-    // publish) lives in provisionNewRepository so it can be exercised without
-    // the UI.
+    // prompt + public/private visibility + a README choice + a local-only
+    // choice + where on disk to create it. Everything past the dialog (git
+    // init, seeding, mirror + publish) lives in provisionNewRepository so it
+    // can be exercised without the UI.
     QDialog dialog(this);
     dialog.setWindowTitle(QStringLiteral("New repository"));
 
@@ -1743,6 +1743,32 @@ void MainWindow::createNewRepository()
         new QCheckBox(QStringLiteral("Add a README on the main branch"), &dialog);
     readmeBox->setChecked(true);
 
+    // "Local only": git init here and nothing else — no mirror push, no catalog
+    // record, no repo channel on the relay. The visibility choice above is kept
+    // on the record and takes effect if the repo is published later (the same
+    // wording the repository settings page uses for this state).
+    auto *localOnlyBox = new QCheckBox(
+        QStringLiteral("Local only \xE2\x80\x94 don't publish it to the network"),
+        &dialog);
+    localOnlyBox->setToolTip(
+        QStringLiteral("Create the repository on this machine only. Nothing is "
+                       "pushed to ForkMesh until you turn its \"Serve\" toggle "
+                       "on from the Control Node page."));
+    auto *localOnlyHint = new QLabel(
+        QStringLiteral("Stays on this machine: no mirror is served and it never "
+                       "appears in the catalog. Publish it later with the "
+                       "\"Serve\" toggle on the Control Node page; the "
+                       "visibility above applies from then on."),
+        &dialog);
+    localOnlyHint->setObjectName(QStringLiteral("statusLine"));
+    localOnlyHint->setWordWrap(true);
+    localOnlyHint->setVisible(false);
+    connect(localOnlyBox, &QCheckBox::toggled, &dialog,
+            [localOnlyHint, visibilityHint](bool on) {
+                localOnlyHint->setVisible(on);
+                visibilityHint->setEnabled(!on);
+            });
+
     // Where the working copy is created. Defaults to the home folder; the folder
     // the repo lands in is <location>/<name>.
     auto *locationEdit = new QLineEdit(QDir::homePath(), &dialog);
@@ -1769,6 +1795,8 @@ void MainWindow::createNewRepository()
     form->addRow(QStringLiteral("First prompt"), promptEdit);
     form->addRow(QStringLiteral("Visibility"), visibilityWidget);
     form->addRow(QString(), readmeBox);
+    form->addRow(QString(), localOnlyBox);
+    form->addRow(QString(), localOnlyHint);
     form->addRow(QStringLiteral("Location"), locationWidget);
 
     auto *buttons =
@@ -1816,7 +1844,8 @@ void MainWindow::createNewRepository()
         QString error;
         const int index = provisionNewRepository(
             dest, name, descriptionEdit->toPlainText(), promptEdit->toPlainText(),
-            readmeBox->isChecked(), privateRadio->isChecked(), &error);
+            readmeBox->isChecked(), privateRadio->isChecked(),
+            localOnlyBox->isChecked(), &error);
         if (index < 0) {
             QMessageBox::warning(&dialog, "New repository",
                                  error.isEmpty()
@@ -1835,7 +1864,8 @@ void MainWindow::createNewRepository()
 int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
                                        const QString &description,
                                        const QString &firstPrompt, bool addReadme,
-                                       bool isPrivate, QString *error)
+                                       bool isPrivate, bool localOnly,
+                                       QString *error)
 {
     const auto fail = [&](const QString &message) -> int {
         if (error)
@@ -1936,7 +1966,10 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
     repo.owner = accountOwner();
     repo.description = about;
     repo.solanaAddress = savedSolanaAddress();
-    repo.publishToNetwork = true;
+    // Local only: keep the record off the network entirely — nothing is served
+    // or published until the owner turns publishing on later. The visibility
+    // choice still rides along so it applies from the moment they do.
+    repo.publishToNetwork = !localOnly;
     // A repo created private never has a public catalog record: publish below
     // routes through syncRepository, which seals the private replica instead.
     repo.isPrivate = isPrivate;
@@ -1949,7 +1982,10 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
     const int index = m_repositories.size() - 1;
     saveRepositories();
     refreshRepositoryList();
-    if (m_backend)
+    // A local-only repo does not join its relay channel either: subscribing
+    // would advertise owner/name on the mesh, which is exactly what the choice
+    // opts out of.
+    if (m_backend && !localOnly)
         m_backend->addChannel(repositoryChannel(repo));
 
     // The first prompt becomes issue #1 so the repo lands with a task an agent
@@ -1966,11 +2002,16 @@ int MainWindow::provisionNewRepository(const QString &dest, const QString &name,
                       repo.owner + "/" + repo.name + ": " + issueErr);
     }
 
-    publishRepositoryAfterMirrorRefresh(index, false);
+    if (!localOnly)
+        publishRepositoryAfterMirrorRefresh(index, false);
     logSystem("New repository: created " +
-              QString(repo.isPrivate ? "private " : "public ") + repo.owner + "/" +
-              repo.name + " in " + dest + ".");
-    flashMessage(QStringLiteral("Created %1/%2.").arg(repo.owner, repo.name));
+              QString(localOnly ? "local-only "
+                                : (repo.isPrivate ? "private " : "public ")) +
+              repo.owner + "/" + repo.name + " in " + dest + ".");
+    flashMessage(localOnly ? QStringLiteral("Created %1/%2 locally.")
+                                 .arg(repo.owner, repo.name)
+                           : QStringLiteral("Created %1/%2.")
+                                 .arg(repo.owner, repo.name));
     return index;
 }
 
