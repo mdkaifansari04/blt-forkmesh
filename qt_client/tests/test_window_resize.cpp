@@ -1391,26 +1391,25 @@ int main(int argc, char *argv[])
     // Repository detail is intentionally built on first navigation. Verify the
     // real PR and Agents controls only after taking that user-visible path,
     // keeping the startup performance contract intact.
-    bool prFixMenuFound = false;
-    for (QPushButton *fixButton : window.findChildren<QPushButton *>()) {
-        if (!fixButton->text().startsWith(QStringLiteral("Fix with agent")) ||
-            !fixButton->menu())
-            continue;
-        QStringList labels;
-        for (QAction *action : fixButton->menu()->actions())
-            labels << action->text();
-        // "CC" is Claude Code, shortened with the rest of the provider labels
-        // (adhoc #38).
-        if (labels == QStringList({QStringLiteral("Claude API"),
-                                   QStringLiteral("OpenAI API"),
-                                   QStringLiteral("CC")})) {
-            prFixMenuFound = true;
-            break;
-        }
+    // adhoc #7: the PR header's conflict action is a plain "Fix" that fills the
+    // prompt box — no provider dropdown to pick a resolver from — and the whole
+    // header row wears the same flat rail style (no filled primary pills).
+    bool prFixButtonFound = false;
+    bool prHeaderStyleUniform = true;
+    for (QPushButton *b : window.findChildren<QPushButton *>()) {
+        if (b->text() == QStringLiteral("Fix") && !b->menu())
+            prFixButtonFound = true;
+        if (b->text() == QStringLiteral("Review with AI") ||
+            b->text() == QStringLiteral("Fix all with AI") ||
+            b->text() == QStringLiteral("Merge") ||
+            b->text() == QStringLiteral("Fix conflicts with agent"))
+            prHeaderStyleUniform &= b->objectName() == QStringLiteral("ghostButton");
     }
-    check(prFixMenuFound,
-          QStringLiteral("PR 'Fix with agent' dropdown offers Claude API, OpenAI API "
-                         "and Claude Code after repository navigation"));
+    check(prFixButtonFound,
+          QStringLiteral("PR header offers a plain 'Fix' button with no provider "
+                         "dropdown after repository navigation"));
+    check(prHeaderStyleUniform,
+          QStringLiteral("PR header actions all use the flat ghostButton style"));
     // The Agents tab is built when it's first opened, and a repo no longer opens
     // on it (adhoc #119) — so reach it the way a user does, from the nav strip,
     // before reading its list back. This also proves that route works for a repo
