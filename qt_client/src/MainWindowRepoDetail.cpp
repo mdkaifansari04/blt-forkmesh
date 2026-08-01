@@ -3202,6 +3202,21 @@ void MainWindow::showOverviewCommits()
         m_filesModeCoveExplorerButton->setChecked(false);
     if (m_overviewBodyStack)
         m_overviewBodyStack->setCurrentIndex(1);
+    // This is an activity-rail destination, not a Code Overview sub-page. Some
+    // routes arrive while every stack is already on index 0/1, so no
+    // currentChanged signal fires and the Code chrome would otherwise remain
+    // visible above the Git workspace. Apply the ownership state explicitly
+    // after all stacks have moved, then reassert it on the next event-loop turn
+    // in case a queued repository refresh completed during navigation.
+    updateRepoActivityRail();
+    QTimer::singleShot(0, this, [this] {
+        const bool stillOnGit =
+            m_repoDetailStack && m_repoDetailStack->currentIndex() == 0 &&
+            m_filesStack && m_filesStack->currentIndex() == 0 &&
+            m_overviewBodyStack && m_overviewBodyStack->currentIndex() == 1;
+        if (stillOnGit)
+            updateRepoActivityRail();
+    });
 }
 
 // Swap the overview body back to the file list + README.
@@ -5656,12 +5671,20 @@ void MainWindow::setCommitWorkspacePage(int page)
 {
     if (!m_commitsStack)
         return;
+    // Commit and range diffs are valid only inside the standalone Git
+    // destination. Centralising the transition here makes it impossible for a
+    // caller to expose one beneath Code Overview chrome by forgetting the
+    // navigation step first.
+    if (page == kCommitWorkspaceCommitPage ||
+        page == kCommitWorkspaceRangePage)
+        showOverviewCommits();
     m_commitsStack->setCurrentIndex(page);
     if (m_gitFilesSlot)
         m_gitFilesSlot->setCurrentIndex(0);
     if (m_gitHistorySlot)
         m_gitHistorySlot->setCurrentIndex(0);
     updateCommitsCompareIndicator();
+    updateRepoActivityRail();
 }
 
 // The "<branch> -> <base>" compare indicator on the graph's branch row: while a

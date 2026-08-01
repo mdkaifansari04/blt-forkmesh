@@ -7388,8 +7388,12 @@ void MainWindow::refreshRepoSyncIndicators()
     // Changes action. Refresh it on every push/publish transition so the button
     // enters its busy state immediately and disappears once the mirror catches
     // up.
-    if (m_scmPanel && m_scmPanel->isVisible())
+    // Also refresh while Git is closed: the activity-rail upload marker is the
+    // affordance that tells the user there is something waiting inside it.
+    if (m_scmPanel)
         refreshSourceControlOutgoing();
+    else if (m_railGitButton)
+        m_railGitButton->setPendingSyncCount(0);
 
     // Only while the commit list is on screen; a cheap no-op otherwise.
     refreshCommitMarkersIfStale();
