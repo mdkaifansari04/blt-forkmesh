@@ -1013,23 +1013,18 @@ QWidget *MainWindow::buildSettingsSection()
     // Cap on how many agents run at once (adhoc #433). Anything started past the
     // cap waits in the queue with a clock icon and launches as slots free up, so
     // assigning a batch of issues can't spawn a CLI per issue all at once.
-    auto *maxRunningAgentsEdit = new QLineEdit;
-    maxRunningAgentsEdit->setPlaceholderText(
+    m_maxRunningAgentsEdit = new QLineEdit;
+    m_maxRunningAgentsEdit->setObjectName("maxRunningAgentsEdit");
+    m_maxRunningAgentsEdit->setPlaceholderText(
         QString::number(kDefaultMaxRunningAgents));
-    maxRunningAgentsEdit->setText(QString::number(maxRunningAgents()));
-    maxRunningAgentsEdit->setToolTip(
+    m_maxRunningAgentsEdit->setText(QString::number(maxRunningAgents()));
+    m_maxRunningAgentsEdit->setToolTip(
         "How many agent sessions may run at the same time. Sessions started "
         "beyond this stay queued and start automatically as running ones "
         "finish. Defaults to 5.");
-    connect(maxRunningAgentsEdit, &QLineEdit::editingFinished, this,
-            [this, maxRunningAgentsEdit] {
-                const int limit = qMax(kMinMaxRunningAgents,
-                                       maxRunningAgentsEdit->text().toInt());
-                maxRunningAgentsEdit->setText(QString::number(limit));
-                QSettings().setValue(kMaxRunningAgentsSetting, limit);
-                // Raising the cap should start waiting sessions right away
-                // rather than at the next completion.
-                scheduleAgentQueuePump();
+    connect(m_maxRunningAgentsEdit, &QLineEdit::editingFinished, this,
+            [this] {
+                setAgentConcurrencyLimit(m_maxRunningAgentsEdit->text().toInt());
             });
 
     m_codexApiKeyEdit = new QLineEdit;
@@ -1156,7 +1151,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->setLabelAlignment(Qt::AlignLeft);
     agentForm->setSpacing(8);
     agentForm->addRow("Default agent", m_defaultAgentProviderCombo);
-    agentForm->addRow("Max running agents", maxRunningAgentsEdit);
+    agentForm->addRow("Max running agents", m_maxRunningAgentsEdit);
     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
     agentForm->addRow("OpenAI model", m_codexModelEdit);
@@ -1282,6 +1277,23 @@ QWidget *MainWindow::buildSettingsSection()
         QSettings().setValue(kEmailOnCreditsRefillSetting, enabled);
     });
     usageText->addWidget(emailOnRefillCheck);
+    auto *usageCalendarReminderCheck = new QCheckBox(
+        "Add a calendar reminder and ping me when agent usage resets");
+    usageCalendarReminderCheck->setChecked(
+        QSettings().value(kUsageLimitCalendarReminderSetting, false).toBool());
+    usageCalendarReminderCheck->setToolTip(
+        "When Claude Code or Codex usage is exhausted, open a standard calendar "
+        "reminder for its reset time and show a ForkMesh system ping when it is "
+        "ready again. The calendar app handles alerts while ForkMesh is closed.");
+    connect(usageCalendarReminderCheck, &QCheckBox::toggled, this,
+            [this](bool enabled) {
+                QSettings().setValue(kUsageLimitCalendarReminderSetting, enabled);
+                if (enabled)
+                    restoreUsageLimitReminders();
+                else
+                    clearUsageLimitReminders();
+            });
+    usageText->addWidget(usageCalendarReminderCheck);
     // Issue #115: restore the last-known spend figures immediately so they are
     // visible on restart before any network refresh completes.
     applyCachedSpendLabels();
