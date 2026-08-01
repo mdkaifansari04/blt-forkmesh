@@ -386,6 +386,13 @@
     const number = Number(issue.number || fallbackNumber);
     const events = Array.isArray(issue.events) ? issue.events : [];
     const open = events.find((event) => event && event.type === "open") || {};
+    const latestEdits = new Map();
+    events.forEach((event) => {
+      if (event?.type === "edit" && event.target) {
+        latestEdits.set(String(event.target), event);
+      }
+    });
+    const effectiveOpen = latestEdits.get(String(open.id || "")) || open;
     // Deletion is shown, not hidden (adhoc #16), and classified by who signed it,
     // mirroring the desktop (Issue::isDeleted / hasUnauthorizedDeleteAttempt).
     // A delete/self signed by the issue's own creator deletes it; one signed by
@@ -404,7 +411,7 @@
     const status = issue.status || issue.state || "open";
     const labelsList = (Array.isArray(issue.labels)
       ? issue.labels
-      : parseFrontMatterList(issue.labels)).slice(0, 3);
+      : parseFrontMatterList(issue.labels)).map((value) => String(value));
     const labels = labelsList.join(", ");
     return {
       number,
@@ -418,12 +425,22 @@
       date: formatRecordDate(updatedAt || issue.createdAt || open.ts),
       labels: labelsList,
       meta: [status, labels, issue.milestone].filter(Boolean).join(" · "),
-      body: open.body || issue.body || "",
+      body: effectiveOpen.body || issue.body || "",
       wantsAgent: Boolean(issue.wantsAgent),
       milestone: String(issue.milestone || ""),
+      priority: Number(issue.priority || 0) || 0,
       progress: Number(issue.progress || 0) || 0,
+      assignees: Array.isArray(issue.assignees)
+        ? issue.assignees.map((value) => String(value))
+        : [],
       startDate: Number(issue.startDate || 0) || 0,
       endDate: Number(issue.endDate || 0) || 0,
+      votes: Number(issue.votes || events.filter((event) => event?.type === "vote").length) || 0,
+      openEventId: String(open.id || ""),
+      openAttachments: Array.isArray(effectiveOpen.attachments)
+        ? effectiveOpen.attachments.map((value) => String(value))
+        : [],
+      creatorKey: String(creator || ""),
       createdAtMs: Number(issue.createdAt || open.ts || 0) || 0,
     };
   }
@@ -462,17 +479,38 @@
         title: issue.title,
         status: issue.status,
         authorName: issue.author,
+        author: issue.creatorKey,
         milestone: issue.milestone,
         labels: `[${(issue.labels || []).join(", ")}]`,
+        priority: issue.priority,
+        progress: issue.progress,
+        assignees: `[${issue.assignees.join(", ")}]`,
+        startDate: issue.startDate,
+        endDate: issue.endDate,
+        votes: issue.votes,
         createdAt: issue.createdAtMs,
       },
       body: issue.body,
+      issueCreator: issue.creatorKey,
+      issueOpenEventId: issue.openEventId,
+      issueOpenAttachments: issue.openAttachments,
+      issueDeleted: issue.deleted,
       // Every signed event on the issue (comment, status, labels, milestone,
       // assignees, agent, title, dates, progress, bounty, edit, delete, vote)
       // so the detail view can render the full activity timeline, not just the
       // opening comment.
       issueEvents: issue.events,
     };
+  }
+
+  function issueDateInputValue(value) {
+    let milliseconds = Number(value) || 0;
+    if (!milliseconds) return "";
+    if (milliseconds < 10_000_000_000) milliseconds *= 1000;
+    const date = new Date(milliseconds);
+    return Number.isNaN(date.getTime())
+      ? ""
+      : date.toISOString().slice(0, 10);
   }
 
   // Icon + human-readable description for a non-comment issue event, mirroring
@@ -548,7 +586,11 @@
       <div class="border-t border-border px-4 py-3 text-sm first:border-t-0">
         <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
           <span class="font-medium text-foreground">${escapeHtml(who)}</span>
-          <span>commented</span><span>&middot;</span><span>${escapeHtml(when)}</span>
+          <span>commented</span>${ev._edited ? " <span>(edited)</span>" : ""}<span>&middot;</span><span>${escapeHtml(when)}</span>
+          ${ev._canManage && ev.id ? `<span class="ml-auto inline-flex items-center gap-1">
+            <button type="button" data-repo-issue-comment-edit="${escapeHtml(ev.id)}" class="rounded px-1.5 py-1 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="Edit comment"><i data-lucide="pencil" class="h-3 w-3"></i></button>
+            <button type="button" data-repo-issue-comment-delete="${escapeHtml(ev.id)}" class="rounded px-1.5 py-1 text-muted-foreground hover:bg-destructive/10 hover:text-destructive" aria-label="Delete comment"><i data-lucide="trash-2" class="h-3 w-3"></i></button>
+          </span>` : ""}
         </div>
         ${body ? `<div class="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">${escapeHtml(body)}</div>` : ""}
       </div>`;
@@ -559,6 +601,7 @@
   // detail view shows every action stored in the issue JSON (adhoc #45). The
   // opening event is omitted here since it's already shown as the issue body.
   function renderIssueTimeline(events) {
+    const options = arguments[1] || {};
     const rows = (Array.isArray(events) ? events : [])
       .filter(Boolean)
       .slice()
@@ -566,13 +609,24 @@
     const deletedComments = new Set(
       rows.filter((ev) => ev.type === "delete" && ev.target && ev.target !== "self")
         .map((ev) => ev.target));
+    const edits = new Map();
+    rows.filter((ev) => ev.type === "edit" && ev.target)
+      .forEach((ev) => edits.set(String(ev.target), ev));
     const items = [];
-    for (const ev of rows) {
+    for (const rawEvent of rows) {
+      let ev = rawEvent;
       if (ev.type === "open") continue;
       const who = ev.authorName || ev.author || "unknown";
       const when = formatRecordDate(ev.ts);
       if (ev.type === "comment") {
         if (deletedComments.has(ev.id)) continue;
+        const edit = edits.get(String(ev.id || ""));
+        ev = {
+          ...ev,
+          ...(edit ? { body: edit.body } : {}),
+          _canManage: Boolean(options.canManage),
+          _edited: Boolean(edit),
+        };
         items.push(renderIssueTimelineComment(ev));
         continue;
       }
@@ -1462,6 +1516,9 @@
     if (!state.session?.nodeName) {
       return `<div class="border-t border-border bg-secondary/20 px-4 py-3 text-xs text-muted-foreground"><a href="/login" class="font-medium text-primary hover:underline">Log in</a> to comment on this issue.</div>`;
     }
+    const detail = state.repoRecordDetail;
+    const canManage = Boolean(detail?.parsed?.issueMutationAuthorized);
+    const issueOpen = String(detail?.parsed?.values?.status || "open") !== "closed";
     return `
       <form data-repo-issue-comment-form data-repo-issue-comment-number="${escapeHtml(number)}" class="grid gap-2 border-t border-border bg-secondary/20 p-4">
         ${composeIdentityHtml(state.session, "Commenting")}
@@ -1470,7 +1527,10 @@
         </label>
         <div class="flex flex-wrap items-center justify-between gap-3">
           <span data-repo-issue-comment-hint class="text-[11px] text-muted-foreground">Sent to the maintainer's inbox for review.</span>
-          <button type="submit" data-repo-issue-comment-submit class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+          <span class="inline-flex flex-wrap items-center justify-end gap-2">
+            ${canManage && issueOpen ? `<button type="submit" data-repo-issue-comment-action="close" class="inline-flex h-9 items-center gap-2 rounded-md border border-border px-4 text-sm font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"><i data-lucide="circle-check" class="h-4 w-4"></i>Close with comment</button>` : ""}
+            <button type="submit" data-repo-issue-comment-submit data-repo-issue-comment-action="comment" class="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"><i data-lucide="send" class="h-4 w-4"></i>Comment</button>
+          </span>
         </div>
       </form>`;
   }
@@ -1599,6 +1659,20 @@
         `/api/orgs/${encodeURIComponent(repo.owner || "")}`,
       );
       return profile?.viewerRole === "owner";
+    } catch (_) {
+      return false;
+    }
+  }
+
+  async function loadRepoIssueMutationAuthorization(repo) {
+    if (!repo || !state.session?.sessionToken) return false;
+    if (isRepoOwner(repo) || state.session?.isAdmin) return true;
+    try {
+      const profile = await orgApiRequest(
+        "GET",
+        `/api/orgs/${encodeURIComponent(repo.owner || "")}`,
+      );
+      return ["owner", "admin"].includes(String(profile?.viewerRole || ""));
     } catch (_) {
       return false;
     }
@@ -2136,7 +2210,7 @@
     const config = repoCollectionConfig[kind] || repoCollectionConfig.issues;
     const values = parsed.values || {};
     const title = values.title || `${config.itemLabel} #${number}`;
-    const state = values.status || values.state || values.category || "open";
+    const recordState = values.status || values.state || values.category || "open";
     const author = values.authorName || values.author || "unknown";
     const date = formatRecordDate(values.updatedAt || values.createdAt || values.ts);
     const body = parsed.body || "No description was committed for this record.";
@@ -2162,7 +2236,13 @@
       isIssues && !options.pending
         ? `<button type="button" data-repo-issue-mcp-prompt title="${state.session?.sessionToken ? "Copy a ready-to-paste agent prompt that works this issue end to end, MCP server configuration and a generated connector token included (shift-click to paste a token this node already published)" : "Sign in to copy the agent prompt for this issue"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border bg-secondary px-3 text-xs font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="bot" class="h-3.5 w-3.5 text-primary"></i>Copy MCP prompt</button>`
         : "";
-    const issueTimeline = isIssues ? renderIssueTimeline(parsed.issueEvents) : "";
+    const issueCanManage = isIssues && Boolean(parsed.issueMutationAuthorized);
+    const issueCanDelete = issueCanManage
+      && Boolean(parsed.issueCreator)
+      && parsed.issueCreator === webIssuePublicKey();
+    const issueTimeline = isIssues
+      ? renderIssueTimeline(parsed.issueEvents, { canManage: issueCanManage })
+      : "";
     // Always mount the timeline container for issues so a comment posted from
     // the form below has somewhere to land, but keep it borderless while empty.
     const issueTimelineSection = isIssues
@@ -2217,11 +2297,59 @@
     const labelValue = labels.length
       ? labels.map((label) => `<span class="mr-1 mt-1 inline-flex rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground">${escapeHtml(label)}</span>`).join("")
       : "No labels";
+    const issueAssignees = parseFrontMatterList(values.assignees);
+    const assigneeValue = issueAssignees.length
+      ? issueAssignees.map((assignee) => `<span class="mr-1 mt-1 inline-flex rounded-full border border-border bg-secondary px-2 py-0.5 text-[10px] text-foreground">${escapeHtml(assignee)}</span>`).join("")
+      : "No one assigned";
+    const issueFieldsValue = isIssues
+      ? `Priority ${Number(values.priority) || "none"} · Progress ${Number(values.progress) || 0}%${values.endDate ? ` · Due ${escapeHtml(issueDateInputValue(values.endDate))}` : ""}`
+      : "No fields configured";
+    const issueActions = isIssues && !options.pending ? `
+      <div class="flex flex-wrap items-center gap-2">
+        <button type="button" data-repo-issue-vote class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="thumbs-up" class="h-3.5 w-3.5"></i>Vote <span data-repo-issue-vote-count class="font-mono">${formatCount(Number(values.votes) || 0)}</span></button>
+        ${issueCanManage ? `<button type="button" data-repo-issue-title-edit class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="pencil" class="h-3.5 w-3.5"></i>Edit title</button>
+        <button type="button" data-repo-issue-status="${recordState === "closed" ? "open" : "closed"}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-semibold text-foreground hover:bg-secondary"><i data-lucide="${recordState === "closed" ? "rotate-ccw" : "circle-check"}" class="h-3.5 w-3.5"></i>${recordState === "closed" ? "Reopen issue" : "Close issue"}</button>` : ""}
+        ${issueCanDelete ? `<button type="button" data-repo-issue-delete class="inline-flex h-8 items-center gap-2 rounded-md border border-destructive/50 px-3 text-xs font-semibold text-destructive hover:bg-destructive/10"><i data-lucide="trash-2" class="h-3.5 w-3.5"></i>Delete issue</button>` : ""}
+      </div>` : "";
+    const issueMetadataEditor = issueCanManage ? `
+      <form data-repo-issue-metadata-form class="grid gap-3 rounded-lg border border-border bg-secondary/20 p-3">
+        <div class="flex items-center justify-between gap-2">
+          <strong class="text-xs text-foreground">Manage issue</strong>
+          <span data-repo-issue-metadata-hint class="text-[10px] text-muted-foreground"></span>
+        </div>
+        <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Assignees
+          <input data-repo-issue-assignees value="${escapeHtml(parseFrontMatterList(values.assignees).join(", "))}" placeholder="alice, bob" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+        </label>
+        <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Labels
+          <input data-repo-issue-labels value="${escapeHtml(labels.join(", "))}" placeholder="bug, help wanted" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+        </label>
+        <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Milestone
+          <input data-repo-issue-milestone-edit value="${escapeHtml(values.milestone || "")}" placeholder="No milestone" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+        </label>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Priority
+            <input data-repo-issue-priority type="number" min="0" max="99" value="${Number(values.priority) || 0}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal text-foreground outline-none focus:border-primary" />
+          </label>
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Progress %
+            <input data-repo-issue-progress type="number" min="0" max="100" value="${Number(values.progress) || 0}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal text-foreground outline-none focus:border-primary" />
+          </label>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Start
+            <input data-repo-issue-start-date type="date" value="${issueDateInputValue(values.startDate)}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+          </label>
+          <label class="grid gap-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Due
+            <input data-repo-issue-end-date type="date" value="${issueDateInputValue(values.endDate)}" class="h-8 rounded-md border border-border bg-background px-2 text-xs font-normal normal-case text-foreground outline-none focus:border-primary" />
+          </label>
+        </div>
+        <button type="submit" data-repo-issue-metadata-save class="inline-flex h-8 items-center justify-center gap-2 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"><i data-lucide="save" class="h-3.5 w-3.5"></i>Save fields</button>
+      </form>` : "";
     return `
       <article data-repo-record-detail="${escapeHtml(kind)}" class="grid gap-5 border-t border-border bg-background p-4">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <button type="button" data-repo-record-back="${escapeHtml(kind)}" class="inline-flex h-8 items-center gap-2 rounded-md border border-border px-3 text-xs font-medium text-foreground hover:bg-secondary"><i data-lucide="arrow-left" class="h-3.5 w-3.5"></i>Back to ${escapeHtml(config.label)}</button>
           <div class="flex flex-wrap items-center justify-end gap-2">
+            ${issueActions}
             ${mcpPromptAction}
             ${marketingInitiativeAction}
             <span class="font-mono text-xs text-muted-foreground">${escapeHtml(repo.owner || "owner")}/${escapeHtml(repo.name || "repo")} · ${recordLabel}</span>
@@ -2229,9 +2357,14 @@
         </div>
         ${pendingNotice}
         <header data-repo-record-hero class="grid gap-3">
-          <h2 class="text-2xl font-semibold leading-tight text-foreground">${escapeHtml(title)} <span class="font-normal text-muted-foreground">${recordLabel}</span></h2>
+          <h2 data-repo-issue-title-heading class="text-2xl font-semibold leading-tight text-foreground">${escapeHtml(title)} <span class="font-normal text-muted-foreground">${recordLabel}</span></h2>
+          ${issueCanManage ? `<form data-repo-issue-title-form class="hidden max-w-3xl items-center gap-2">
+            <input data-repo-issue-title-input value="${escapeHtml(title)}" maxlength="240" class="h-10 min-w-0 flex-1 rounded-md border border-border bg-background px-3 text-sm text-foreground outline-none focus:border-primary" />
+            <button type="submit" class="h-10 rounded-md bg-primary px-4 text-xs font-semibold text-primary-foreground">Save</button>
+            <button type="button" data-repo-issue-title-cancel class="h-10 rounded-md border border-border px-3 text-xs font-semibold text-foreground">Cancel</button>
+          </form>` : ""}
           <p class="flex min-w-0 flex-wrap items-center gap-2 text-sm text-muted-foreground">
-            <span data-repo-record-state class="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"><i data-lucide="${config.icon}" class="h-3.5 w-3.5"></i>${escapeHtml(state)}</span>
+            <span data-repo-record-state class="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-xs font-semibold text-primary-foreground"><i data-lucide="${config.icon}" class="h-3.5 w-3.5"></i>${escapeHtml(recordState)}</span>
             <span><span class="font-semibold text-foreground">${escapeHtml(author)}</span> ${isPulls ? `wants to merge 1 commit into <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(baseBranch)}</span> from <span class="rounded-md bg-primary/10 px-1.5 py-0.5 font-mono text-primary">${escapeHtml(headBranch)}</span>` : `opened this ${escapeHtml(config.itemLabel)} ${escapeHtml(date)}`}</span>
           </p>
           ${recordTabs}
@@ -2246,6 +2379,11 @@
                     <span class="rounded-full border border-border px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">Contributor</span>
                   </div>
                   <div data-repo-record-body class="whitespace-pre-wrap px-4 py-4 text-sm leading-6 text-foreground">${escapeHtml(body)}</div>
+                  ${issueCanManage ? `<div class="border-t border-border px-4 py-2 text-right"><button type="button" data-repo-issue-description-edit class="inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground hover:text-foreground"><i data-lucide="pencil" class="h-3 w-3"></i>Edit description</button></div>
+                  <form data-repo-issue-description-form class="hidden grid gap-2 border-t border-border p-4">
+                    <textarea data-repo-issue-description-input rows="8" class="rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground outline-none focus:border-primary">${escapeHtml(body)}</textarea>
+                    <div class="flex justify-end gap-2"><button type="button" data-repo-issue-description-cancel class="h-8 rounded-md border border-border px-3 text-xs font-semibold text-foreground">Cancel</button><button type="submit" class="h-8 rounded-md bg-primary px-3 text-xs font-semibold text-primary-foreground">Save description</button></div>
+                  </form>` : ""}
                   ${issueTimelineSection}
                   ${issueCommentSection}
                   ${pullConversationSection}
@@ -2278,16 +2416,17 @@
               </div>` : ""}
           </div>
           <aside data-repo-record-sidebar class="min-w-0 text-xs">
+            ${issueMetadataEditor}
             ${isPulls ? sidebarSection("Reviewers", `<span data-repo-pull-reviewers class="grid gap-0.5">${renderPullReviewers(pullConversation, values.author || "")}</span>`) : ""}
-            ${sidebarSection("Assignees", "No one assigned")}
+            ${sidebarSection("Assignees", isIssues ? assigneeValue : "No one assigned")}
             ${sidebarSection("Labels", labelValue)}
             ${sidebarSection("Type", isPulls ? "Pull request" : isDiscussions ? "Discussion" : "Issue")}
-            ${sidebarSection("Fields", "No fields configured")}
+            ${sidebarSection("Fields", issueFieldsValue)}
             ${sidebarSection("Projects", "No projects")}
             ${sidebarSection("Milestone", metadata.find(([label]) => label === "Milestone")?.[1] || "No milestone")}
             ${sidebarSection("Relationships", "None yet")}
             ${sidebarSection("Development", isPulls ? "Successfully merging this pull request may close these issues." : "No branches or pull requests")}
-            ${sidebarSection("Notifications", '<button type="button" class="inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 font-semibold text-foreground"><i data-lucide="bell" class="h-3.5 w-3.5"></i>Subscribe</button>')}
+            ${sidebarSection("Notifications", `<button type="button" data-repo-issue-subscription="${parsed.issueSubscribed ? "unsubscribe" : "subscribe"}" class="inline-flex h-8 w-full items-center justify-center gap-2 rounded-md border border-border bg-secondary px-3 font-semibold text-foreground hover:bg-secondary/70"><i data-lucide="${parsed.issueSubscribed ? "bell-off" : "bell"}" class="h-3.5 w-3.5"></i>${parsed.issueSubscribed ? "Unsubscribe" : "Subscribe"}</button>`)}
             ${sidebarSection("Participants", `1 participant - ${escapeHtml(author)}`)}
           </aside>
         </div>
@@ -2359,6 +2498,11 @@
           pullMetadataCommit,
         );
         parsed.pullMergeAuthorized = await loadRepoPullMergeAuthorization(repo);
+      }
+      if (kind === "issues") {
+        parsed.issueMutationAuthorized =
+          await loadRepoIssueMutationAuthorization(repo);
+        parsed.issueSubscribed = await loadWebIssueSubscription(repo, number);
       }
       if (kind === "discussions") parsed.discussionConversation = await loadRepoDiscussionConversation(repo, number);
       state.repoRecordDetail = { repo, kind, number, parsed };

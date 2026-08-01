@@ -165,6 +165,7 @@ class QImage;
 class QProgressBar;
 class QPropertyAnimation;
 class QPushButton;
+class QToolButton;
 class QScrollArea;
 class QSpinBox;
 class QStackedWidget;
@@ -457,7 +458,13 @@ public:
             m_pendingSilentAuth = false;
             m_pendingRestoreRepoIndex = -1;
             m_deferredStartupRun = true;
+            m_startupAuthResolved = true;
         }
+    }
+    void testMarkDeferredStartupRunning()
+    {
+        m_deferredStartupRun = true;
+        m_startupAuthResolved = false;
     }
     void testRunDeferredStartupNow() { runDeferredStartup(); }
     void testStartSession() { startSession(); }
@@ -676,13 +683,16 @@ public:
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
     QString testSwitchToBranchImmediateSelection(const QString &branch);
-    // Take the worktree route and expose the branch bound to the universal Git
-    // range viewer, proving worktrees no longer open a second diff surface.
+    // Take the worktree route and expose the branch the Git view is browsing,
+    // proving worktrees no longer open a second diff surface.
     QString testSwitchToWorktreeGitBranch(const QString &branch)
     {
         switchToWorktree(branch);
-        return m_branchDiffBranch;
+        return m_repoBranch;
     }
+    // The branch whose history the Git view's graph is browsing (empty = HEAD),
+    // so a test can prove a branch link lands the graph on that branch.
+    QString testBrowsedBranch() const { return m_repoBranch; }
     // Take the agent detail page's "Branch" route, so a test can prove it binds
     // the Git view to that session's own repository before opening its branch
     // there — the sessions list is global (adhoc #131).
@@ -692,14 +702,27 @@ public:
     // lands on the range review pane in the Git view (adhoc #107).
     int testCommitWorkspacePage() const;
     QString testBranchDiffBranch() const { return m_branchDiffBranch; }
-    // Which page each half of the Git view's left column shows: 0 = the working
-    // tree's changes / commit history, 1 = the reviewed range's changed files /
-    // commits (adhoc #110). Returns -1 when that half doesn't exist yet.
+    // Which page each half of the Git view's left column shows: always 0 (the
+    // working tree's changes / commit history) since the range review stopped
+    // borrowing the slots (adhoc #12). Returns -1 when that half doesn't exist
+    // yet.
     int testGitFilesSlotPage() const;
     int testGitHistorySlotPage() const;
+    // The base end of the "<branch> \xE2\x86\x92 <base>" compare indicator beside
+    // the graph's branch button, or empty while it's hidden — so a test can
+    // prove browsing a branch shows what it is being compared against, and that
+    // the base is switchable (adhoc #16).
+    QString testCompareIndicatorText() const;
+    // Point the compare indicator's base dropdown at another branch, so a test
+    // can prove the range re-diffs against it (adhoc #16).
+    void testSetCompareBase(const QString &base);
     // Click the range pane's close button, so a test can prove the left column
     // goes back to the working tree when the review is dismissed (adhoc #110).
     void testCloseBranchRange();
+    // Click the activity rail's Git entry, so a test can prove it always lands
+    // on the default branch's working-tree view no matter which Git sub-view
+    // (a browsed branch, a compare) was left open (adhoc #1/#16).
+    void testClickRailGitButton();
     // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
@@ -810,6 +833,10 @@ private:
     void runDeferredStartup();
     bool m_deferredStartupStarted = false; // showEvent armed the triggers
     bool m_deferredStartupRun = false;     // runDeferredStartup already ran
+    // The top-bar sign-in pill stays hidden until the launch-time silent-auth
+    // lookup has completed. m_deferredStartupRun flips before that lookup while
+    // restoring the last view, so it cannot safely gate the pill by itself.
+    bool m_startupAuthResolved = false;
     bool m_framelessResizeCursorActive = false;
     int m_pendingRestoreRepoIndex = -1;    // last repo to reopen, or -1
     bool m_pendingSilentAuth = false;      // attempt auto-connect on first frame
@@ -1175,6 +1202,8 @@ private:
     // the path to the user check for that.
     static QString stallLogPath();
     void updateFooterDiagnostics();
+    void refreshRepositoryStats();
+    void toggleRepositoryRatchet(bool enabled);
     void onUiStall(qint64 peakMs, const QString &blockingCall, const QString &backtrace);
     // If "auto-create an agent task for new stalls" is on, hand a freshly-detected
     // stall's backtrace to a coding agent so the freeze gets fixed (adhoc #205).
@@ -1277,6 +1306,7 @@ private:
     void renderOrganizationTaskDetail();
     void updateOrganizationTaskActions();
     void createOrganizationTask();
+    void createQuickAddOrganizationTask();
     void createOrganizationTaskFollowUp();
     void refreshOrganizationTaskQueue();
     void moveQueuedAgentItemToTasks();
@@ -2350,6 +2380,22 @@ private:
     // only useful signal for a headless node that has no one watching its
     // screen. Opt-in via kEmailOnCreditsRefillSetting; a no-op when off.
     void maybeEmailCreditsRefilled(bool weekly);
+    // When a provider reports a reset time for an exhausted usage window, make
+    // one local iCalendar reminder and arm the matching desktop ping. The
+    // calendar app owns alerts while ForkMesh is closed; the timer covers a
+    // running desktop.
+    void scheduleUsageLimitReminder(const QString &providerKey,
+                                    const QString &windowKey,
+                                    const QString &providerName,
+                                    const QString &windowName,
+                                    qint64 resetMs);
+    void restoreUsageLimitReminders();
+    void clearUsageLimitReminders();
+    void notifyUsageLimitReady(const QString &providerKey,
+                               const QString &windowKey,
+                               const QString &providerName,
+                               const QString &windowName,
+                               qint64 resetMs);
     // Issue #115: persist and restore month-to-date spend so the figures are
     // shown on restart instead of waiting for a fresh API refresh.
     void cacheSpendLabel(const QString &textKey, const QString &tsKey,
@@ -2380,6 +2426,11 @@ private:
     // Re-drain the queue after a slot frees, coalesced onto the event loop and
     // skipped unless something is queued AND there is room to start it.
     void scheduleAgentQueuePump();
+    // Persist the machine-wide concurrent-agent limit, keep both controls in
+    // sync, and immediately drain any newly available queue slots.
+    void setAgentConcurrencyLimit(int limit);
+    // Update the Agents-toolbar queue readout and its one-click limit controls.
+    void refreshAgentQueueControls();
     // How many sessions currently hold one of the maxRunningAgents() slots
     // (adhoc #433): our own, unmerged, actively-executing ones.
     int runningAgentCount() const;
@@ -2874,10 +2925,25 @@ private:
     // Open the Worktrees tab and select the row for a branch (used by the
     // clickable worktree-location link in the agent session header — issue #265).
     void switchToWorktree(const QString &branch);
-    // Open a branch's commits/files/diff in the Git view's range pane (adhoc
-    // #107; used by the clickable branch links in the agent session header, the
-    // PR header and the Branches panel — adhoc #123).
+    // Open a branch in the Git view (adhoc #1; used by the clickable branch
+    // links in the agent session header, the PR header, the Branches panel and
+    // the graph's branch dropdown — adhoc #123). The graph browses the branch's
+    // history and, for any branch other than the compare base, the right pane
+    // opens its range diff against that base at the same time — one combined
+    // view, "<branch> -> <base>", rather than a separate review page (adhoc
+    // #16).
     void switchToBranch(const QString &branch);
+    // Base branch of the Git view's comparison. Empty means "the repo's default
+    // branch", which is where every comparison starts; the compare indicator's
+    // base dropdown sets it, and leaving the compare view clears it (adhoc #16).
+    QString m_branchCompareBase;
+    QString branchCompareBase() const;
+    // Re-diff the branch under review against `base` (the indicator's base
+    // dropdown). Empty restores the repo's default branch (adhoc #16).
+    void setBranchCompareBase(const QString &base);
+    // Leave the branch compare view: right pane back to the working-tree diff,
+    // graph back on the default branch, compare base reset (adhoc #16).
+    void closeBranchCompareView();
     // Select the worktrees-table row whose branch matches, repopulating the diff
     // pane and detail buttons. Returns false if no such row exists. Used to keep
     // the selection on the worktree being acted on after loadWorktreesPanel()
@@ -2889,7 +2955,8 @@ private:
     bool selectBranchRow(const QString &branch);
     // Explain that a branch link pointed at a branch this repository doesn't have.
     void reportBranchNotFound(const QString &branch);
-    void showWorktreeDiff(const QString &branch, const QString &worktreePath);
+    void updateWorktreeSelection(const QString &branch,
+                                 const QString &worktreePath);
     // Merge a worktree's branch into the default branch. On success the now-merged
     // worktree and its branch are removed (the work is preserved in the merge
     // commit); pass its folder so it can be. deleteAgent=true additionally tears
@@ -2956,16 +3023,15 @@ private:
     void maybeAutoPullBranch(const QString &branch);
     // Bumped per branch selection so a detail-bar read that lands late is dropped.
     int m_branchDetailActionsGen = 0;
-    // Render the branch diff for whichever scope is selected in m_branchScopeList
-    // (whole branch vs base, the worktree's uncommitted changes, or one commit).
+    // Render the branch's whole range diff (everything it adds over base).
     void renderBranchScopeDiff();
     // Filesystem path whose uncommitted changes belong to `branch`: its dedicated
     // worktree, or the main checkout when `branch` is the one checked out there.
     // Empty when the branch is checked out nowhere (so it can't be dirty).
     QString branchWorkDir(const QString &branch) const;
-    // Render an already-captured patch into the branch diff view + changed-files
-    // list (shared by every scope above). `viewedContext` scopes the per-file
-    // "viewed" toggles; `emptyMessage` shows when the patch has no changes.
+    // Render an already-captured patch into the branch diff view. `viewedContext`
+    // scopes the per-file "viewed" toggles; `emptyMessage` shows when the patch
+    // has no changes.
     void renderBranchDiffPatch(const QString &patch, const QString &emptyMessage,
                                const QString &viewedContext);
     // Rebuild the sticky-bar file-span map from whatever is currently in the
@@ -3159,6 +3225,10 @@ private:
     // every published mirror, not just nodes live in the chat room (issue #223).
     void fetchCatalogMirrors(const QString &owner, const QString &repo,
                              const QString &source);
+    // Verify that one exact mirror (with failover disabled server-side) can
+    // return README.md. Results feed the Reachability column after Artifacts.
+    void fetchMirrorReachability(const QString &owner, const QString &repo,
+                                 const QString &source, const QString &node);
     // Fetch the worker's per-artifact release download counts (logged each time
     // /releases/blob/sha256/<hash> streams a binary out), so the Releases tab can
     // show how many times each artifact has been downloaded.
@@ -4996,6 +5066,7 @@ private:
     // Default coding-agent provider for new assignments; seeds the quick-add and
     // issue-detail provider pickers. Codex | OpenAI API | Claude API | Claude Code.
     QComboBox *m_defaultAgentProviderCombo = nullptr;
+    QLineEdit *m_maxRunningAgentsEdit = nullptr;
     QLineEdit *m_codexApiKeyEdit = nullptr;
     QLineEdit *m_openAiAdminKeyEdit = nullptr;
     QLineEdit *m_codexModelEdit = nullptr;
@@ -5061,10 +5132,9 @@ private:
     // sends the typed prompt as a follow-up message to the currently-selected
     // agent session instead of the quick-add issue/new-agent flow.
     QPushButton *m_quickAddSendToAgentButton = nullptr;
-    // The "task" button (adhoc #42, relabelled from "genie" in adhoc #120),
-    // stacked above "add" and "new": starts an agent wired to the website's
-    // remote MCP server so it picks its own work off the organization's shared
-    // task list instead of running a typed prompt.
+    // The "task" button, stacked above "add" and "new", files the typed prompt
+    // as an unassigned item in the organization's General task list (adhoc
+    // #151). The member name is retained to avoid churning the existing QSS.
     QPushButton *m_quickAddGenieButton = nullptr;
     // Plain "start a new agent" send button next to it (adhoc #89): tracked as a
     // member (rather than a local in setupQuickAdd) so updateQuickAddEnterTarget
@@ -5225,6 +5295,11 @@ private:
     // QWidget* and poked via static_cast since ResourceSparkline is private to
     // MainWindowChat.cpp.
     QWidget *m_cpuChart = nullptr;
+    QWidget *m_repoSizeChart = nullptr;
+    QWidget *m_repoLinesChart = nullptr;
+    QWidget *m_repoFilesChart = nullptr;
+    QToolButton *m_repoRatchetButton = nullptr;
+    qint64 m_repoStatsLastRefreshMs = 0;
     QWidget *m_memChart = nullptr;
     QWidget *m_diskChart = nullptr;
     StallWatchdog *m_stallWatchdog = nullptr;
@@ -5279,9 +5354,6 @@ private:
     QPushButton *m_repoWorktreesTab = nullptr; // handle for the Worktrees (N) badge
     QTableWidget *m_worktreesTable = nullptr;
     QLabel *m_worktreesSummary = nullptr;
-    QTextBrowser *m_worktreeDiffView = nullptr;
-    QListWidget *m_worktreeFileList = nullptr;
-    QLabel *m_worktreeFilesSummary = nullptr;
     QLabel *m_worktreeBranchLabel = nullptr; // shows which branch the open detail is on
     QPushButton *m_worktreeMergeButton = nullptr;  // merge the selected worktree into main
     QPushButton *m_worktreeMergeDeleteAgentButton = nullptr; // merge, then delete its agent too
@@ -5340,20 +5412,6 @@ private:
     // so the remaining branches catch up with the merge (adhoc #250).
     QCheckBox *m_branchAutoPullAllCheck = nullptr;
     QPushButton *m_branchDeleteMergedButton = nullptr; // "Delete merged" header action
-    QListWidget *m_branchFileList = nullptr;    // the range's changed files
-    QLabel *m_branchFilesSummary = nullptr;     // "CHANGED FILES · N" header
-    // The two lists as standalone panes: while a branch/PR range is under review
-    // the Git view lends them its left column's slots (adhoc #110) — files where
-    // the working-tree CHANGES tree sits, commits where the history sits — so the
-    // review reads in the places those things already live.
-    QWidget *m_branchFilesPane = nullptr;
-    QWidget *m_branchScopePane = nullptr;
-    // Scope selector above the changed-files list: "All changes", the branch's
-    // uncommitted working-tree changes (when its checkout is dirty), and one row
-    // per commit the branch adds over base. Selecting a row re-renders the diff
-    // for just that scope (issue: show commits + uncommitted changes, diffable).
-    QListWidget *m_branchScopeList = nullptr;
-    QLabel *m_branchScopeLabel = nullptr;
     QTextBrowser *m_branchDiffView = nullptr;
     QString m_branchDiffBranch;
     // Pull request the range pane is reviewing, or -1 when it shows a plain
@@ -5367,11 +5425,10 @@ private:
     // panel happens to rebuild while the same branch is still selected. Cleared
     // implicitly by simply differing once a different branch is selected.
     QString m_branchAutoPullAttempted;
-    // Bumped each time a branch is selected / a scope diff is requested so the
-    // off-thread git reads that build the scope list and render the diff can drop
-    // their result if the user has since switched branch or scope (issue #353 —
-    // showBranchDiff/renderBranchScopeDiff shelled git on the GUI thread).
-    int m_branchScopeLoadGen = 0;
+    // Bumped each time a branch is selected / a range diff is requested so the
+    // off-thread git read that renders the diff can drop its result if the user
+    // has since switched branch (issue #353 — showBranchDiff/
+    // renderBranchScopeDiff shelled git on the GUI thread).
     int m_branchScopeDiffGen = 0;
     // Branch merge-conflict probes. `git merge-tree` costs ~0.5-1s per branch on a
     // busy repo, so running one per row inline froze the branches panel for
@@ -5410,15 +5467,15 @@ private:
     QList<QPair<int, QString>> m_branchDiffFileSpans;
     // Ordered file paths of the diff currently in the branch view, so the
     // sticky-bar span map can be rebuilt once the whole diff has landed (the
-    // render is progressive — see renderDiffStreamed, adhoc #51/#421).
+    // render is progressive — see renderDiffStreamed, adhoc #51/#421), and each
+    // file's document anchor so the auto-mark-viewed re-render can land back on
+    // the file still being read.
     QStringList m_branchDiffFilePaths;
+    QStringList m_branchDiffFileAnchors;
     // Absolute document y of each file header (aligned to m_branchDiffFileSpans),
     // cached so the per-scroll-tick sticky/progress update doesn't re-measure the
     // document; cleared on every re-render / stream-finish (mirrors the PR pane).
     QList<int> m_branchFileTops;
-    // Keeps the changed-files list from re-scrolling the diff while the list
-    // selection is itself following the scroll (mirrors m_pullSuppressFileScroll).
-    bool m_branchSuppressFileScroll = false;
     // Debounces the auto-mark-viewed sweep off the branch diff's scrollbar, same
     // rhythm as the PR viewer's m_pullAutoViewedDebounce (adhoc #107).
     QTimer *m_branchAutoViewedDebounce = nullptr;
@@ -5652,16 +5709,26 @@ private:
     // Source Control panel (left side of the Commits tab).
     static constexpr int kCommitWorkspaceChangesPage = 0;
     static constexpr int kCommitWorkspaceCommitPage = 1;
-    // Branch/PR range review pane (adhoc #107): the branch diff viewer, moved
-    // into the Git view so a branch or PR opens its commits/files/diff here.
+    // Branch/PR range review page (adhoc #107): the branch diff, shown in the
+    // Git view's right pane. It used to borrow the left column's two slots for
+    // its own files/scope lists (adhoc #110); it no longer does (adhoc #12) —
+    // the working-tree CHANGES and the commit graph stay put, with the branch
+    // under review named above the graph's branch button.
     static constexpr int kCommitWorkspaceRangePage = 2;
-    // The Git view's left column: two stacks that normally show the working-tree
-    // changes (top) and the commit history (bottom), and swap to a reviewed
-    // range's changed files / commits while the range page is up (adhoc #110).
+    // The Git view's left column: two stacks showing the working-tree changes
+    // (top) and the commit history (bottom). Each hosts a single page since the
+    // range review stopped borrowing them (adhoc #12).
     QStackedWidget *m_gitFilesSlot = nullptr;
     QStackedWidget *m_gitHistorySlot = nullptr;
-    // Show a right-pane page and put the left column in the matching state.
+    // Show a right-pane page (and keep the compare indicator in step).
     void setCommitWorkspacePage(int page);
+    // The "<branch> -> <base>" compare indicator on the graph's branch row:
+    // while a branch/PR comparison is open on the right pane, an arrow and a
+    // base button appear after the branch button, and the base button's
+    // dropdown picks which branch the range is diffed against (adhoc #16).
+    QLabel *m_commitsCompareArrow = nullptr;
+    QPushButton *m_commitsCompareBaseButton = nullptr;
+    void updateCommitsCompareIndicator();
     QWidget *m_scmPanel = nullptr;
     QWidget *m_scmControlsPanel = nullptr;
     QTreeWidget *m_scmTree = nullptr;
@@ -5828,6 +5895,10 @@ private:
     // periodic heartbeat timer if the immediate send fails).
     bool m_pendingCreditsRefilled5h = false;
     bool m_pendingCreditsRefilledWeekly = false;
+    // One armed timer per provider/window; calendar reminders persist outside
+    // the process, while these timers make the desktop ping prompt when the
+    // app remains open.
+    QHash<QString, QTimer *> m_usageLimitReminderTimers;
 
     // --- Cove (encrypted vault) UI + session state ----------------------------
     QWidget *m_coveSection = nullptr;        // repo Settings "Coves" group
@@ -6707,6 +6778,11 @@ private:
     // (adhoc #136).
     QPushButton *m_agentStopAllButton = nullptr;
     QPushButton *m_agentStartAllButton = nullptr;
+    // Beside Start all: queued sessions / concurrent run limit, with direct
+    // one-click controls for that limit.
+    QLabel *m_agentQueueStatusLabel = nullptr;
+    QPushButton *m_agentQueueLimitDecreaseButton = nullptr;
+    QPushButton *m_agentQueueLimitIncreaseButton = nullptr;
     QPushButton *m_agentDeleteAllButton = nullptr; // delete agent + worktree + branch
     // Detail-toolbar buttons (adhoc #51) opening this session's branch in the
     // Branches tab and its worktree in the Worktrees tab. Full-size buttons like
@@ -7149,6 +7225,9 @@ private:
     QJsonArray m_catalogMirrorsCache;      // last /mirrors payload's "mirrors"
     QString m_catalogMirrorsFetchSource;   // source the last fetch was kicked for
     qint64 m_catalogMirrorsFetchedMs = 0;  // throttle: last fetch kick time
+    // "owner/repo|node" -> bounded result from the exact-node README probe.
+    QHash<QString, QJsonObject> m_mirrorReachabilityCache;
+    QSet<QString> m_mirrorReachabilityInFlight;
     // Per-artifact release download counts for the repo currently shown in the
     // Releases panel (sha256 -> times downloaded), from the worker's
     // /releases/downloads endpoint.

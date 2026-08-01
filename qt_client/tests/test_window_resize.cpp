@@ -29,6 +29,7 @@
 #include <QThread>
 #include <QTimer>
 #include <QPushButton>
+#include <QToolButton>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTableWidget>
@@ -1003,6 +1004,14 @@ int main(int argc, char *argv[])
     check(window.testSpreadsheetResizeAfterMove(),
           QStringLiteral("column drag leaves others untouched after a move"));
 
+    // Deferred startup can begin while restoring the previous view, before the
+    // silent account lookup runs. That intermediate state must not flash a
+    // login prompt for an already-signed-in user.
+    window.testMarkDeferredStartupRunning();
+    window.testRefreshSignInButton();
+    check(!window.testSignInButtonVisible(),
+          QStringLiteral("the sign-in pill waits for silent auth after startup begins"));
+
     window.testEnableSessionStartBypass(true);
 
     // adhoc #115: startup has resolved now (the bypass marks it done) and this
@@ -1045,6 +1054,9 @@ int main(int argc, char *argv[])
     check(directoryNodes.contains(QStringLiteral("node-a")) &&
               directoryNodes.contains(QStringLiteral("node-b")),
           QStringLiteral("Nodes lists offline linked nodes from the relay directory"));
+    check(window.findChild<QPushButton *>(
+              QStringLiteral("nodesUpdateAllBinaryButton")) != nullptr,
+          QStringLiteral("Nodes offers a fleet-wide binary update action"));
 
     // adhoc #129: a public room (#general) is open to every registered account,
     // so its users popup lists the whole database directory — not just the
@@ -1424,6 +1436,36 @@ int main(int argc, char *argv[])
     check(window.testAgentListChromeHidden(),
           QStringLiteral("agents list ships with no column header and no frame "
                          "border (adhoc #92)"));
+    // The fleet toolbar shows the live queue plus concurrent-agent limit beside
+    // Start all, and lets the common capacity adjustment happen in one click.
+    {
+        QLabel *queueStatus = window.findChild<QLabel *>(
+            QStringLiteral("agentQueueStatusLabel"));
+        QPushButton *decrease = window.findChild<QPushButton *>(
+            QStringLiteral("agentQueueLimitDecreaseButton"));
+        QPushButton *increase = window.findChild<QPushButton *>(
+            QStringLiteral("agentQueueLimitIncreaseButton"));
+        QLineEdit *settingsLimit = window.findChild<QLineEdit *>(
+            QStringLiteral("maxRunningAgentsEdit"));
+        check(queueStatus && decrease && increase && settingsLimit &&
+                  queueStatus->text() == QStringLiteral("Queue: 0 / 5"),
+              QStringLiteral("Agents toolbar shows the queued count and run limit "
+                             "beside Start all"));
+        if (queueStatus && decrease && increase && settingsLimit) {
+            increase->click();
+            check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 6 &&
+                      queueStatus->text() == QStringLiteral("Queue: 0 / 6") &&
+                      settingsLimit->text() == QStringLiteral("6"),
+                  QStringLiteral("one click raises the queue's concurrent-agent "
+                                 "limit and syncs Settings"));
+            decrease->click();
+            check(QSettings().value(QStringLiteral("agents/maxRunning")).toInt() == 5 &&
+                      queueStatus->text() == QStringLiteral("Queue: 0 / 5") &&
+                      settingsLimit->text() == QStringLiteral("5"),
+                  QStringLiteral("one click lowers the queue's concurrent-agent "
+                                 "limit and syncs Settings"));
+        }
+    }
     // adhoc #35 / #84 / #92: the list is down to "#" (the run glyph, branch chip
     // with its conflict alert, the churn bar and the age that used to have its
     // own "Updated" column) and the title, which is the column that flexes — so
@@ -1571,6 +1613,9 @@ int main(int argc, char *argv[])
     QTemporaryDir wtRepo;
     if (initGitRepo(wtRepo)) {
         runGitChecked(wtRepo.path(), {"branch", "feature/keep-selected"});
+        // A second branch so the compare base has somewhere else to point
+        // (adhoc #16 — the base end of "<branch> -> <base>" is switchable).
+        runGitChecked(wtRepo.path(), {"branch", "feature/other-base"});
         const QString wtPath = wtRepo.path() + QStringLiteral("/wt-keep");
         runGitChecked(wtRepo.path(),
                       {"worktree", "add", wtPath, "feature/keep-selected"});
@@ -1865,43 +1910,73 @@ int main(int argc, char *argv[])
               QString("clicking a branch link selects the branch without waiting "
                       "for the panel's git reads (adhoc #420, landed on %1)")
                   .arg(landed.isEmpty() ? QStringLiteral("<none>") : landed));
-        // adhoc #107: the branch diff viewer lives in the Git view now — the
-        // same click must land the commits workspace on the range review pane
-        // with that branch under review.
+        // adhoc #16: there is no separate branch view any more. A branch link
+        // opens one combined view in the Git tab — the graph browses the branch
+        // (its button follows the ref) and the right pane opens that branch's
+        // diff against the compare base at the same time.
         check(window.testCommitWorkspacePage() == 2 &&
+                  window.testBrowsedBranch() ==
+                      QStringLiteral("feature/keep-selected") &&
                   window.testBranchDiffBranch() ==
                       QStringLiteral("feature/keep-selected"),
-              QString("a branch link opens the branch's diff in the Git view's "
-                      "range pane (adhoc #107, page = %1, branch = %2)")
+              QString("a branch link opens the branch's graph and its diff "
+                      "against main in the one Git view (adhoc #16, page = %1, "
+                      "branch = %2, diff = %3)")
                   .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBrowsedBranch())
                   .arg(window.testBranchDiffBranch()));
-        // adhoc #110: the review borrows the left column's existing slots — the
-        // range's changed files where the working-tree changes sit, its commits
-        // where the history sits — instead of opening a column of its own.
-        check(window.testGitFilesSlotPage() == 1 &&
-                  window.testGitHistorySlotPage() == 1,
-              QString("the range's files and commits take over the Git view's "
-                      "left column (adhoc #110, files slot = %1, history slot "
-                      "= %2)")
+        // The branch symbol -> main indicator names what it's compared against.
+        check(window.testCompareIndicatorText() == QStringLiteral("main"),
+              QString("the compare indicator points the branch at main (adhoc "
+                      "#16, base = %1)")
+                  .arg(window.testCompareIndicatorText().isEmpty()
+                           ? QStringLiteral("<hidden>")
+                           : window.testCompareIndicatorText()));
+        // The left column keeps its working-tree slots: the comparison took
+        // over neither the changed-files nor the history half.
+        check(window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("comparing a branch keeps the Git view's left column on "
+                      "the working tree (adhoc #1/#16, files slot = %1, history "
+                      "slot = %2)")
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
+        // adhoc #16: the base end is switchable — re-diff against another
+        // branch and the indicator follows.
+        window.testSetCompareBase(QStringLiteral("feature/other-base"));
+        QApplication::processEvents();
+        check(window.testCompareIndicatorText() ==
+                  QStringLiteral("feature/other-base"),
+              QString("the compare base can be changed off main (adhoc #16, "
+                      "base = %1)")
+                  .arg(window.testCompareIndicatorText().isEmpty()
+                           ? QStringLiteral("<hidden>")
+                           : window.testCompareIndicatorText()));
+        window.testSetCompareBase(QStringLiteral("main"));
+        QApplication::processEvents();
         check(window.testSwitchToWorktreeGitBranch(
                   QStringLiteral("feature/keep-selected")) ==
-                  QStringLiteral("feature/keep-selected") &&
-                  window.testCommitWorkspacePage() == 2,
-              QStringLiteral("a named worktree opens in the universal Git range "
-                             "viewer instead of a separate diff pane"));
-        // And closing the review hands both halves back to the working tree.
-        window.testCloseBranchRange();
-        check(window.testCommitWorkspacePage() == 0 &&
+                  QStringLiteral("feature/keep-selected"),
+              QStringLiteral("a named worktree opens in the Git view's combined "
+                             "branch view instead of a separate diff pane"));
+        // adhoc #1/#16: the rail's Git entry always lands back on the default
+        // branch's working-tree view — clicking Git again clears the branch
+        // comparison and goes back to just main.
+        window.testClickRailGitButton();
+        QApplication::processEvents();
+        check(window.testBrowsedBranch() == QStringLiteral("main") &&
+                  window.testCommitWorkspacePage() == 0 &&
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("closing the range review restores the working-tree "
-                      "changes and commit history (adhoc #110, page = %1, files "
-                      "slot = %2, history slot = %3)")
-                  .arg(window.testCommitWorkspacePage())
-                  .arg(window.testGitFilesSlotPage())
-                  .arg(window.testGitHistorySlotPage()));
+              QString("the rail's Git entry clears the branch comparison and "
+                      "goes back to the main-branch view (adhoc #1/#16, branch "
+                      "= %1, page = %2)")
+                  .arg(window.testBrowsedBranch())
+                  .arg(window.testCommitWorkspacePage()));
+        check(window.testCompareIndicatorText().isEmpty(),
+              QString("the compare indicator hides once the Git entry cleared "
+                      "the comparison (adhoc #16, base = %1)")
+                  .arg(window.testCompareIndicatorText()));
         // And the refresh it kicked off still lands, leaving that branch selected.
         window.testReloadBranchesPanel();
         QApplication::processEvents();
@@ -1910,9 +1985,9 @@ int main(int argc, char *argv[])
               QStringLiteral("the background refresh rebuilds the rows after the "
                              "click (adhoc #420)"));
 
-        // adhoc #119: merging from the review ends the review — the branch's work
+        // adhoc #119: merging from the comparison ends it — the branch's work
         // is in main, so leaving its diff open only shows the user something
-        // they're finished with. Re-open the range pane, then let its "Merge to
+        // they're finished with. Re-open the branch, then let its "Merge to
         // main" button run: the Git view must go back to the working tree exactly
         // as if the pane's ✕ had been clicked.
         //
@@ -1928,10 +2003,29 @@ int main(int argc, char *argv[])
         window.testSwitchToBranchImmediateSelection(
             QStringLiteral("feature/keep-selected"));
         QApplication::processEvents();
-        check(window.testCommitWorkspacePage() == 2,
-              QString("re-opening the branch review lands on the range pane again "
-                      "(adhoc #119 setup, page = %1)")
-                  .arg(window.testCommitWorkspacePage()));
+        // adhoc #16: re-opening the branch opens the one combined view — the
+        // graph on the branch, its diff against main on the right pane, both
+        // ends named by the branch button and the compare indicator. No second
+        // click into a separate review page.
+        check(window.testCommitWorkspacePage() == 2 &&
+                  window.testBrowsedBranch() ==
+                      QStringLiteral("feature/keep-selected") &&
+                  window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("re-opening the branch shows its graph and its diff "
+                      "against main together, leaving the left column on the "
+                      "working tree (adhoc #16, page = %1, branch = %2, files "
+                      "slot = %3, history slot = %4)")
+                  .arg(window.testCommitWorkspacePage())
+                  .arg(window.testBrowsedBranch())
+                  .arg(window.testGitFilesSlotPage())
+                  .arg(window.testGitHistorySlotPage()));
+        check(window.testCompareIndicatorText() == QStringLiteral("main"),
+              QString("the branch is compared against main by default (adhoc "
+                      "#16, base = %1)")
+                  .arg(window.testCompareIndicatorText().isEmpty()
+                           ? QStringLiteral("<hidden>")
+                           : window.testCompareIndicatorText()));
         const bool mergeClicked = window.testClickBranchReviewMerge(false);
         QApplication::processEvents();
         const QString mainTip =
@@ -1939,26 +2033,30 @@ int main(int argc, char *argv[])
         check(mergeClicked && window.testCommitWorkspacePage() == 0 &&
                   window.testGitFilesSlotPage() == 0 &&
                   window.testGitHistorySlotPage() == 0,
-              QString("merging from the branch review closes it and hands the Git "
-                      "view back to the working tree (adhoc #119, clicked = %1, "
-                      "page = %2, files slot = %3, history slot = %4, main tip = "
-                      "%5)")
+              QString("merging from the branch comparison closes it and hands the "
+                      "Git view back to the working tree (adhoc #119, clicked = "
+                      "%1, page = %2, files slot = %3, history slot = %4, main "
+                      "tip = %5)")
                   .arg(mergeClicked ? QStringLiteral("yes") : QStringLiteral("no"))
                   .arg(window.testCommitWorkspacePage())
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage())
                   .arg(mainTip.trimmed()));
+        check(window.testCompareIndicatorText().isEmpty(),
+              QString("closing the comparison hides the compare indicator "
+                      "(adhoc #16, base = %1)")
+                  .arg(window.testCompareIndicatorText()));
         check(mainTip.contains(QStringLiteral("Merge feature/keep-selected into main")),
-              QString("the review's merge button really merged the branch (adhoc "
-                      "#119, main tip = %1)").arg(mainTip.trimmed()));
+              QString("the comparison's merge button really merged the branch "
+                      "(adhoc #119, main tip = %1)").arg(mainTip.trimmed()));
 
         // adhoc #131: the agent detail page's "Branch" button opens that session's
-        // branch in the Git view — the range pane, with the branch's changed files
-        // in the left column's CHANGES slot and its scope list below them. The
-        // sessions list is global, so the click has to point the Git view at the
-        // session's own repository first; from another repo's detail page it would
-        // otherwise render that repo's (missing) branch. Park the detail view on
-        // "me/r", then take the button's route for the session on "me/wtrepo".
+        // branch in the Git view's combined view — its graph plus its diff
+        // against the compare base. The sessions list is global, so the click has
+        // to point the Git view at the session's own repository first; from
+        // another repo's detail page it would otherwise render that repo's
+        // (missing) branch. Park the detail view on "me/r", then take the
+        // button's route for the session on "me/wtrepo".
         window.testOpenRepository(repoIdx);
         QApplication::processEvents();
         window.testSwitchToAgentBranch(issueSession.id);
@@ -1969,17 +2067,17 @@ int main(int argc, char *argv[])
                       "session's repository (adhoc #131, git dir = %1)")
                   .arg(agentBranchDir));
         check(window.testCommitWorkspacePage() == 2 &&
-                  window.testBranchDiffBranch() ==
+                  window.testBrowsedBranch() ==
                       QStringLiteral("feature/keep-selected"),
-              QString("the agent's Branch button opens its branch in the Git "
-                      "view's range pane (adhoc #131, page = %1, branch = %2)")
+              QString("the agent's Branch button opens its branch's combined "
+                      "graph + diff view (adhoc #131/#16, page = %1, branch = %2)")
                   .arg(window.testCommitWorkspacePage())
-                  .arg(window.testBranchDiffBranch()));
-        check(window.testGitFilesSlotPage() == 1 &&
-                  window.testGitHistorySlotPage() == 1,
-              QString("the agent's branch brings its changed files and the scope "
-                      "list into the Git view's left column (adhoc #131, files "
-                      "slot = %1, history slot = %2)")
+                  .arg(window.testBrowsedBranch()));
+        check(window.testGitFilesSlotPage() == 0 &&
+                  window.testGitHistorySlotPage() == 0,
+              QString("the agent's branch keeps the Git view's left column on "
+                      "the working tree (adhoc #1, files slot = %1, history "
+                      "slot = %2)")
                   .arg(window.testGitFilesSlotPage())
                   .arg(window.testGitHistorySlotPage()));
     }
@@ -2200,15 +2298,26 @@ int main(int argc, char *argv[])
                   QStringLiteral("picking a speed persists the effort the next run "
                                  "is launched with"));
         }
-        // The pick-your-own-work button is the top of the send column, above
-        // "add" and "new" (adhoc #42/#38), and reads "task" rather than "genie"
-        // (adhoc #120). The strip of session dots that used to sit above the
-        // prompt is gone (adhoc #38) — its state lives in the top bar now.
+        // The task-list button is the top of the send column, above "add" and
+        // "new". It files the prompt in General instead of starting a genie
+        // agent (adhoc #151). The strip of session dots that used to sit above
+        // the prompt is gone (adhoc #38) — its state lives in the top bar now.
         auto *genieButton =
             seeded.findChild<QPushButton *>(QStringLiteral("quickAddGenieButton"));
         check(genieButton && genieButton->isVisible() &&
-                  genieButton->text() == QStringLiteral("task"),
-              QStringLiteral("the composer offers the task button"));
+                  genieButton->text() == QStringLiteral("task") &&
+                  genieButton->toolTip().contains(QStringLiteral("general task list")) &&
+                  !genieButton->toolTip().contains(QStringLiteral("agent"),
+                                                   Qt::CaseInsensitive),
+              QStringLiteral("the composer task button files a General task"));
+        auto *repoSizeChart = seeded.findChild<QWidget *>(QStringLiteral("repoSizeChart"));
+        auto *repoLinesChart = seeded.findChild<QWidget *>(QStringLiteral("repoLinesChart"));
+        auto *repoFilesChart = seeded.findChild<QWidget *>(QStringLiteral("repoFilesChart"));
+        auto *ratchet = seeded.findChild<QToolButton *>(QStringLiteral("repoRatchetButton"));
+        check(repoSizeChart && repoLinesChart && repoFilesChart && ratchet &&
+                  repoSizeChart->width() > 34 && repoLinesChart->width() > 34 &&
+                  repoFilesChart->width() > 34 && ratchet->isCheckable(),
+              QStringLiteral("repository trends and Ratchet Mode live in the top bar"));
         // The YOLO / Task checkboxes and the corner "Enter" badge are gone from
         // the composer (adhoc #120): the only Enter indicator is the green
         // outline on whichever send button Enter activates.

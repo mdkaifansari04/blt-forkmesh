@@ -17598,7 +17598,6 @@ export function createWorldScene({
   const CAMPFIRE_BENCH_LEG_HEIGHT = CAMPFIRE_SEAT_Y - CAMPFIRE_SEAT_HALF_THICKNESS;
   const CAMPFIRE_CIRCLE_MIN_SEATS = 6;
   const CAMPFIRE_CIRCLE_MAX_SEATS = 500;
-  const CAMPFIRE_DETAILED_MEMBER_LIMIT = compactRenderer ? 12 : 32;
   const CAMPFIRE_MEMBERS_PER_ROW = 25;
   const CAMPFIRE_ROW_SPACING = 2.8;
   const CAMPFIRE_SEAT_SPACING = 2.1;
@@ -17905,7 +17904,7 @@ export function createWorldScene({
   // rebuildCampfireCircle with an accurate seat count.
   setShadows(campfire);
   world.add(campfire);
-  registerWorldElement("campfire", "Campfire circle", "Districts", campfire);
+  registerWorldElement("campfire", "Members Circle campfire", "Districts", campfire);
   landmarkObjects.set("campfire", campfire);
 
   // A wooden swing set beside the Office garden gym: three swings hang from
@@ -19016,9 +19015,20 @@ export function createWorldScene({
     "Aquarium controls",
   );
   aquariumControlPanel.hidden = true;
-  const aquariumControlTitle = document.createElement("span");
-  aquariumControlTitle.className = "world-aquarium-control-title";
-  aquariumControlTitle.textContent = "REEF CONTROL";
+  const aquariumControlToggle = document.createElement("button");
+  aquariumControlToggle.type = "button";
+  aquariumControlToggle.className = "world-aquarium-control-toggle";
+  aquariumControlToggle.dataset.worldAquariumControlToggle = "";
+  aquariumControlToggle.textContent = "REEF CONTROL";
+  aquariumControlToggle.setAttribute("aria-expanded", "false");
+  aquariumControlToggle.setAttribute(
+    "aria-controls",
+    "world-aquarium-control-actions",
+  );
+  const aquariumControlActions = document.createElement("div");
+  aquariumControlActions.id = "world-aquarium-control-actions";
+  aquariumControlActions.className = "world-aquarium-control-actions";
+  aquariumControlActions.hidden = true;
   const aquariumFeedAction = document.createElement("button");
   aquariumFeedAction.type = "button";
   aquariumFeedAction.className = "world-aquarium-control-button";
@@ -19043,14 +19053,39 @@ export function createWorldScene({
   aquariumLightAction.type = "button";
   aquariumLightAction.className = "world-aquarium-control-button";
   aquariumLightAction.dataset.worldAquariumLight = "";
-  aquariumControlPanel.append(
-    aquariumControlTitle,
+  aquariumControlActions.append(
     aquariumFeedAction,
     aquariumTapAction,
     aquariumBackdropAction,
     aquariumLightAction,
   );
+  aquariumControlPanel.append(
+    aquariumControlToggle,
+    aquariumControlActions,
+  );
   labelLayer.appendChild(aquariumControlPanel);
+
+  function setAquariumControlsExpanded(expanded) {
+    const nextExpanded = expanded === true;
+    aquariumControlPanel.dataset.expanded = String(nextExpanded);
+    aquariumControlToggle.setAttribute(
+      "aria-expanded",
+      String(nextExpanded),
+    );
+    aquariumControlActions.hidden = !nextExpanded;
+  }
+
+  function handleAquariumControlToggle(event) {
+    event.preventDefault();
+    event.stopPropagation();
+    setAquariumControlsExpanded(
+      aquariumControlToggle.getAttribute("aria-expanded") !== "true",
+    );
+  }
+  aquariumControlToggle.addEventListener(
+    "click",
+    handleAquariumControlToggle,
+  );
 
   function aquariumSavedToggle(key, fallback) {
     try {
@@ -19207,12 +19242,13 @@ export function createWorldScene({
     if (!aquariumControlsNearby) {
       aquariumControlPanel.hidden = true;
       aquariumControlPanel.style.visibility = "hidden";
+      setAquariumControlsExpanded(false);
       return;
     }
     syncAquariumControlButtons(time);
     aquariumControlPanel.hidden = false;
-    // Anchor the always-available lobby controls to the lower-right corner of
-    // the tank instead of floating at the bottom of the viewport.
+    // Mount the compact disclosure at the tank's lower-right corner. Its
+    // actions open upward only while requested, leaving the reef visible.
     updateScreenLabel(
       THREE,
       officeAquarium.controlAnchor,
@@ -27947,25 +27983,10 @@ export function createWorldScene({
     const roster = (Array.isArray(members) ? members : []).filter((member) =>
       String(member?.name || "").trim(),
     );
-    // Benches and their labels preserve the complete public roster. Detailed
-    // avatars are far more expensive (at least sixteen draws apiece), so keep
-    // a deterministic recent-first subset instead of turning every lifetime
-    // account into a permanently live character rig.
-    const detailedMemberIds = new Set(
+    const seatedMemberIds = new Set(
       roster
         .slice(0, CAMPFIRE_CIRCLE_MAX_SEATS)
         .filter((member) => member?.away !== true)
-        .sort((left, right) => {
-          const recent = (member) =>
-            ["hour", "5h", "24h", "3d", "5d", "10d"].includes(
-              String(member?.activityBucket || ""),
-            );
-          return (
-            Number(recent(right)) - Number(recent(left)) ||
-            hashNumber(left?.name) - hashNumber(right?.name)
-          );
-        })
-        .slice(0, CAMPFIRE_DETAILED_MEMBER_LIMIT)
         .map(
           (member) =>
             `member:${String(member?.name || "").trim().toLowerCase()}`,
@@ -27993,7 +28014,7 @@ export function createWorldScene({
         // The bench keeps the member's name whether or not they are on it,
         // so the empty seats read as "who is out and about" rather than as
         // unclaimed furniture.
-        const represented = detailedMemberIds.has(id);
+        const represented = seatedMemberIds.has(id);
         const assignment = sanitizedOrgTeamAssignment({
           id,
           name,
@@ -28133,7 +28154,7 @@ export function createWorldScene({
     campfire.userData.seatByName = seatByName;
     campfire.userData.memberFigureCount = Math.min(roster.length, seats.length);
     campfire.userData.detailedMemberFigures = seen.size;
-    campfire.userData.memberFigureLimit = CAMPFIRE_DETAILED_MEMBER_LIMIT;
+    campfire.userData.seatedMemberFigures = seen.size;
     loungeMembers.forEach((figure, id) => {
       if (seen.has(id)) return;
       removeRemoteOrgTeamControl(figure, id);
@@ -34305,6 +34326,10 @@ export function createWorldScene({
     window.removeEventListener("keyup", handleKeyUp);
     window.removeEventListener("blur", handleWindowBlur);
     aquariumFeedAction.removeEventListener("click", handleAquariumFeed);
+    aquariumControlToggle.removeEventListener(
+      "click",
+      handleAquariumControlToggle,
+    );
     aquariumTapAction.removeEventListener("click", handleAquariumTap);
     aquariumBackdropAction.removeEventListener(
       "click",
