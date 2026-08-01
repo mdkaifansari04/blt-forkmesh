@@ -685,6 +685,10 @@ public:
     // Branch names (column 0) in row order, so a test can prove the default branch
     // is pinned to the top of the list regardless of commit recency (adhoc #185).
     QStringList testBranchRowOrder() const;
+    int testBranchesTabIndex() const { return m_branchesTabIndex; }
+    int testOverviewBodyPage() const;
+    bool testClickBranchRowInOverview(const QString &branch);
+    bool testBranchesPanelOwnsDiffView() const;
     // Follow a branch link and read back the branch the table landed on right
     // away — no event pumping — so a test can prove the click doesn't wait on the
     // panel's off-thread git reads (adhoc #420).
@@ -709,6 +713,12 @@ public:
     int testCommitWorkspacePage() const;
     QString testBranchDiffBranch() const { return m_branchDiffBranch; }
     QStringList testBranchDiffFiles() const { return m_branchDiffFilePaths; }
+    // Paths rendered in the universal CHANGES tree, so branch tests can prove
+    // the range's files appear without swapping to a second navigator.
+    QStringList testSourceControlPaths() const;
+    // Select a CHANGES row and report whether the right-hand diff navigation
+    // targeted that exact file.
+    bool testClickSourceControlPath(const QString &path);
     // Which page each half of the Git view's left column shows. Both stay on the
     // universal source-control panel and commit graph for every diff kind.
     int testGitFilesSlotPage() const;
@@ -727,6 +737,10 @@ public:
     // Click the activity rail's Git entry, so a test can prove it always lands
     // on the default branch's working-tree view.
     void testClickRailGitButton();
+    void testNavigateBack() { navigateBack(); }
+    void testNavigateForward() { navigateForward(); }
+    QString testNavBackToolTip() const;
+    QString testNavForwardToolTip() const;
     // Click the range pane's "Merge to main" (deleteAll=false) or "Merge & delete
     // all" button once it's live, so a test can prove merging from the review
     // closes it (adhoc #119). False when the button never became clickable.
@@ -3270,6 +3284,7 @@ private:
     void restoreNavEntry(int index);           // navigate to a recorded place
     struct NavPlace;
     void applyNavDetailTab(const NavPlace &place); // re-select a recorded repo tab
+    QString navPlaceLabel(const NavPlace &place) const; // human-readable trail destination
     void navigateBack();
     void navigateForward();
     void updateNavHistoryButtons();            // enable/disable per trail position
@@ -3330,6 +3345,13 @@ private:
     QWidget *buildSourceControlPanel();
     void refreshSourceControl();             // re-scan `git status` into the tree
     void refreshSourceControl(bool force);   // force refresh path bypassing cache short-circuit
+    // While a branch/PR comparison is open, populate the same CHANGES tree with
+    // that range's files while leaving its composer and actions in place.
+    void showRangeFilesInSourceControl(const QStringList &paths,
+                                       const QStringList &statuses);
+    bool sourceControlShowsRange() const;
+    QString sourceControlGitDir() const;
+    void scrollBranchDiffToFile(const QString &path);
     // Detached `git status` that only updates the activity rail's Git badge, so
     // the uncommitted-file count is right on every repo tab (and right after a
     // repo opens), not just while the changes panel is the visible view.
@@ -5423,9 +5445,9 @@ private:
     // and shows the "PR #N" button that opens the full pull request page.
     int m_branchDiffPullNumber = -1;
     // Branch that auto-pull has already been attempted for (see showBranchDiff),
-    // so a declined stash prompt or an aborted merge doesn't re-nag every time the
-    // panel happens to rebuild while the same branch is still selected. Cleared
-    // implicitly by simply differing once a different branch is selected.
+    // so a failed update doesn't retry on every incidental rebuild while the same
+    // branch stays selected. Cleared implicitly by simply differing once another
+    // branch is selected.
     QString m_branchAutoPullAttempted;
     // Bumped each time a branch is selected / a range diff is requested so the
     // off-thread git read that renders the diff can drop its result if the user
@@ -5478,6 +5500,10 @@ private:
     // the file still being read.
     QStringList m_branchDiffFilePaths;
     QStringList m_branchDiffFileAnchors;
+    // Last file a CHANGES-row action navigated to in either the branch-range or
+    // working-tree diff. Also gives the window tests a stable assertion that
+    // does not depend on viewport height or font metrics.
+    QString m_lastSourceControlDiffPath;
     // Absolute document y of each file header (aligned to m_branchDiffFileSpans),
     // cached so the per-scroll-tick sticky/progress update doesn't re-measure the
     // document; cleared on every re-render / stream-finish (mirrors the PR pane).
@@ -5656,18 +5682,20 @@ private:
     QListWidget *m_globalSearchPopup = nullptr;
     QTimer *m_globalSearchTimer = nullptr;     // debounce keystrokes before rebuilding
     // Back / forward navigation trail (left of the search box). Each entry is a
-    // place we landed on: the top-level section index, the repo open in the
-    // detail panel (-1 = none), and which repo tab (Code / Commits / Issues /
-    // Pulls / …) was showing, so a click onto any of them is its own step that
-    // Back / Forward can return to. detailTab is -1 outside the Code section.
+    // place we landed on: section, repository, repo tab, and—inside Git—the
+    // browsed branch. This lets Back / Forward cross Code ↔ Git and branch ↔
+    // branch rather than treating them as the same Code-tab location.
     struct NavPlace {
         int section = 0;
         int repoIndex = -1;
         int detailTab = -1;
+        int overviewPage = -1; // files=0, Git=1, branches=2, worktrees=3
+        QString branch;
         bool operator==(const NavPlace &o) const
         {
             return section == o.section && repoIndex == o.repoIndex &&
-                   detailTab == o.detailTab;
+                   detailTab == o.detailTab && overviewPage == o.overviewPage &&
+                   branch == o.branch;
         }
     };
     QPushButton *m_navBackButton = nullptr;
