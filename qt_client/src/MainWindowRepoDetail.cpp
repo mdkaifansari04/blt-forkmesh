@@ -5086,6 +5086,11 @@ void MainWindow::recordNavLocation()
     here.detailTab = (here.repoIndex >= 0 && m_repoDetailStack)
                          ? m_repoDetailStack->currentIndex()
                          : -1;
+    if (here.detailTab == 0 && m_filesStack && m_filesStack->currentIndex() == 0 &&
+        m_overviewBodyStack)
+        here.overviewPage = m_overviewBodyStack->currentIndex();
+    if (here.overviewPage == 1)
+        here.branch = m_repoBranch.isEmpty() ? repoHeadBranch() : m_repoBranch;
 
     // Remember the tab actually being viewed so a relaunch can restore it
     // (see kLastRepoDetailTabSetting / runDeferredStartup) instead of always
@@ -5147,12 +5152,41 @@ void MainWindow::applyNavDetailTab(const NavPlace &place)
         return;
     if (!m_repoDetailTabs || !m_repoDetailStack)
         return;
-    if (m_repoDetailStack->currentIndex() == place.detailTab)
-        return; // already on this tab
-    if (QAbstractButton *b = m_repoDetailTabs->button(place.detailTab)) {
-        b->click(); // switches the tab and loads its data, like a real click
+    if (m_repoDetailStack->currentIndex() != place.detailTab) {
+        if (QAbstractButton *b = m_repoDetailTabs->button(place.detailTab))
+            b->click(); // switches the tab and loads its data, like a real click
+    }
+    if (place.detailTab == 0) {
+        if (place.overviewPage == 2) {
+            showOverviewBranches();
+            loadBranchesPanel();
+            return;
+        }
+        if (place.overviewPage == 3) {
+            showOverviewWorktrees();
+            loadWorktreesPanel();
+            return;
+        }
+        if (place.overviewPage != 1) {
+            showOverviewFiles();
+            return;
+        }
+        showOverviewCommits();
+        const QString base = repoDefaultBranchFast();
+        if (!place.branch.isEmpty() && place.branch != base) {
+            switchToBranch(place.branch);
+        } else {
+            closeBranchCompareView();
+            showOverviewCommits();
+            if (commitsListIsCurrent())
+                refreshSourceControl();
+            else
+                loadCommits();
+        }
         return;
     }
+    if (m_repoDetailStack->currentIndex() == place.detailTab)
+        return;
     // Agents (id 3) lost its top-bar button when it moved to the footer status
     // strip (adhoc #178), so there's no button here to click and this used to
     // silently no-op — Back/Forward would get stuck whenever the recorded spot
@@ -5176,14 +5210,86 @@ void MainWindow::navigateForward()
         restoreNavEntry(m_navHistoryIndex + 1);
 }
 
+QString MainWindow::navPlaceLabel(const NavPlace &place) const
+{
+    QString repo;
+    if (place.repoIndex >= 0 && place.repoIndex < m_repositories.size()) {
+        const RepositoryRecord &record = m_repositories.at(place.repoIndex);
+        repo = record.owner + QLatin1Char('/') + record.name;
+    }
+
+    QString destination;
+    if (place.section == 0 && place.repoIndex >= 0) {
+        if (place.detailTab == 0) {
+            switch (place.overviewPage) {
+            case 1:
+                destination = QStringLiteral("Git · %1")
+                                  .arg(place.branch.isEmpty()
+                                           ? QStringLiteral("main")
+                                           : place.branch);
+                break;
+            case 2:
+                destination = QStringLiteral("Branches");
+                break;
+            case 3:
+                destination = QStringLiteral("Worktrees");
+                break;
+            default:
+                destination = QStringLiteral("Code");
+                break;
+            }
+        } else if (m_repoDetailTabs && m_repoDetailTabs->button(place.detailTab)) {
+            destination = m_repoDetailTabs->button(place.detailTab)->text();
+        } else {
+            destination = QStringLiteral("Repository");
+        }
+    } else {
+        switch (place.section) {
+        case 2:
+            destination = QStringLiteral("Chat");
+            break;
+        default:
+            destination = QStringLiteral("Home");
+            break;
+        }
+    }
+
+    return repo.isEmpty() ? destination
+                          : QStringLiteral("%1 · %2").arg(repo, destination);
+}
+
 void MainWindow::updateNavHistoryButtons()
 {
-    if (m_navBackButton)
-        m_navBackButton->setEnabled(m_navHistoryIndex > 0);
-    if (m_navForwardButton)
-        m_navForwardButton->setEnabled(m_navHistoryIndex >= 0 &&
-                                       m_navHistoryIndex < m_navHistory.size() - 1);
+    const bool canBack = m_navHistoryIndex > 0;
+    const bool canForward = m_navHistoryIndex >= 0 &&
+                            m_navHistoryIndex < m_navHistory.size() - 1;
+    if (m_navBackButton) {
+        m_navBackButton->setEnabled(canBack);
+        m_navBackButton->setToolTip(
+            canBack ? QStringLiteral("Back to %1")
+                          .arg(navPlaceLabel(m_navHistory.at(m_navHistoryIndex - 1)))
+                    : QStringLiteral("Back"));
+    }
+    if (m_navForwardButton) {
+        m_navForwardButton->setEnabled(canForward);
+        m_navForwardButton->setToolTip(
+            canForward ? QStringLiteral("Forward to %1")
+                             .arg(navPlaceLabel(m_navHistory.at(m_navHistoryIndex + 1)))
+                       : QStringLiteral("Forward"));
+    }
 }
+
+#ifdef FORKMESH_WINDOW_TESTS
+QString MainWindow::testNavBackToolTip() const
+{
+    return m_navBackButton ? m_navBackButton->toolTip() : QString();
+}
+
+QString MainWindow::testNavForwardToolTip() const
+{
+    return m_navForwardButton ? m_navForwardButton->toolTip() : QString();
+}
+#endif
 
 namespace {
 // Result-tree payload roles for the deep-search page.
@@ -8674,6 +8780,7 @@ QWidget *MainWindow::buildRepoDetailSection()
         if (m_repoDetailTabs && m_repoDetailTabs->button(0))
             m_repoDetailTabs->button(0)->click();
         updateRepoActivityRail();
+        scheduleNavRecord();
     });
     m_railGitButton = new ActivityRailButton(QStringLiteral("git-branch"),
                                              QStringLiteral("Git"));
@@ -8693,6 +8800,7 @@ QWidget *MainWindow::buildRepoDetailSection()
                 loadCommits();
         });
         updateRepoActivityRail();
+        scheduleNavRecord();
     });
     if (m_appNavigationRailLayout) {
         // Directly below the global Agents entry, which heads the rail (adhoc
@@ -8713,7 +8821,10 @@ QWidget *MainWindow::buildRepoDetailSection()
             [this](int) { updateRepoActivityRail(); });
     if (m_overviewBodyStack)
         connect(m_overviewBodyStack, &QStackedWidget::currentChanged, this,
-                [this](int) { updateRepoActivityRail(); });
+                [this](int) {
+                    updateRepoActivityRail();
+                    scheduleNavRecord();
+                });
     if (m_filesStack)
         connect(m_filesStack, &QStackedWidget::currentChanged, this,
                 [this](int) { updateRepoActivityRail(); });
