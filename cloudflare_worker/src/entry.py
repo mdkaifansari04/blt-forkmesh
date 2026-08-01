@@ -16948,6 +16948,40 @@ async def world_moderation_handler(env, request):
     )
 
 
+# The desktop's Nodes page deletes a node from the app, and the ordinary launch
+# path is authenticateSilently() — keys, no session token at all (adhoc #63
+# family). Without this the button would answer not_admin to the very operator
+# who owns the mesh. The proof names the exact node it removes, so a captured
+# signature can only ever re-delete that same node inside the skew window, and
+# _is_admin still gates the caller exactly as it does a session-token one.
+WORLD_NODE_DELETE_PROOF = "forkmesh-world-node-delete-v1"
+
+
+async def _world_node_delete_signed_actor(env, request, data):
+    """Resolve the admin account behind a key-signed node deletion, or ""."""
+    if method_name(request) != "POST":
+        return ""
+    params = parse_qs(urlparse(request.url).query)
+    actor = clean_string(params.get("node", [""])[0], MAX_NODE_NAME).lower()
+    ts = clean_string(params.get("ts", [""])[0], 20)
+    sig = clean_string(params.get("sig", [""])[0], 200)
+    target = clean_string(
+        (data or {}).get("nodeName", ""), MAX_NODE_NAME).lower()
+    if not actor or not sig or not target or not _ts_ok(ts):
+        return ""
+    canonical = (
+        WORLD_NODE_DELETE_PROOF + "\n" + actor + "\n" + target + "\n" + str(ts)
+    ).encode()
+    # Every key the account may sign as, not just its primary pubkey — same
+    # durable desktop identity as _org_task_signed_session.
+    if not await _verify_owner_signature(env, actor, sig, canonical):
+        return ""
+    _, record = await _account_row(env, actor)
+    if not record or record.get("status") != "active":
+        return ""
+    return actor
+
+
 async def world_admin_delete_node_handler(env, request):
     """Permanently remove one named node after an exact admin confirmation."""
     if method_name(request) != "POST":
@@ -16962,6 +16996,8 @@ async def world_admin_delete_node_handler(env, request):
             {"error": "invalid_json"}, status=400,
             cache_control="no-store, max-age=0, must-revalidate")
     actor = await _authed_account_name(env, request, data)
+    if not actor:
+        actor = await _world_node_delete_signed_actor(env, request, data)
     if not actor or not await _is_admin(env, actor):
         return json_response(
             {"error": "not_admin"}, status=403,
@@ -17088,6 +17124,21 @@ async def world_admin_delete_node_handler(env, request):
             env, "DELETE FROM mirror_https_endpoints "
             "WHERE lower(node_name)=?",
             identifier)
+        # The public /status page builds its mirror roster from recorded
+        # samples (status_history), not from the live endpoint table, so a
+        # deleted node kept a "Mirror node — <name>" row with 30 days of
+        # history — and a permanent "down" verdict — long after every other
+        # trace of it was gone. Drop its samples too so deletion leaves none.
+        status_system = STATUS_MIRROR_PREFIX + identifier
+        await d1_run(
+            env, "DELETE FROM system_status_daily WHERE system=?",
+            status_system)
+        await d1_run(
+            env, "DELETE FROM system_status_hourly WHERE system=?",
+            status_system)
+        await d1_run(
+            env, "DELETE FROM system_status_minute WHERE system=?",
+            status_system)
     for identity_bi in identity_bis:
         cleanup_name = (
             target if identity_bi == target_bi else requested_target
