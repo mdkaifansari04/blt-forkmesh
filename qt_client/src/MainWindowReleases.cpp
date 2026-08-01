@@ -22,6 +22,7 @@ enum MirrorNodeColumn {
     MirrorNodeColMessage,
     MirrorNodeColAuthor,
     MirrorNodeColSynced,
+    MirrorNodeColSyncDelay,
     MirrorNodeColSize,
     MirrorNodeColIssues,
     MirrorNodeColCommits,
@@ -1067,7 +1068,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     m_mirrorNodesTable->setObjectName("issueTable");
     enableHoverRowHighlight(m_mirrorNodesTable);
     m_mirrorNodesTable->setHorizontalHeaderLabels(
-        {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Size",
+        {"Node", "Owner", "Latest commit", "Message", "Author", "Synced", "Sync delay", "Size",
          "Issues", "Commits", "Branches", "Pulls", "Discussions", "CPU", "RAM",
          "Disk", "Platform", "Version", "Node id", "Tunnel", "Clones", "Website",
          "Artifacts"});
@@ -1088,6 +1089,7 @@ QWidget *MainWindow::buildMirrorNodesTab()
     mh->setSectionResizeMode(MirrorNodeColMessage, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColAuthor, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColSynced, QHeaderView::ResizeToContents);
+    mh->setSectionResizeMode(MirrorNodeColSyncDelay, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColSize, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColIssues, QHeaderView::ResizeToContents);
     mh->setSectionResizeMode(MirrorNodeColCommits, QHeaderView::ResizeToContents);
@@ -1611,6 +1613,36 @@ void MainWindow::loadMirrorNodesPanel()
     auto countMismatch = [](int value, int ref) {
         return ref >= 0 && value >= 0 && value != ref;
     };
+    // The elapsed time from a commit landing to a mirror reporting that same
+    // commit is the useful sync latency. Nodes still serving an older commit
+    // have not completed that sync, so say so instead of measuring their old
+    // commit's age.
+    auto makeSyncDelayCell = [&referenceCommit](qint64 syncedMs,
+                                                 qint64 committedAtMs,
+                                                 const QString &commit,
+                                                 bool isSource) {
+        QString text = QString::fromUtf8("\xE2\x80\x94");
+        QString tip;
+        qint64 sortValue = -1;
+        if (isSource) {
+            text = QStringLiteral("Source");
+            tip = QStringLiteral("This node is the source of truth");
+        } else if (!referenceCommit.isEmpty() && !commit.isEmpty() &&
+                   commit != referenceCommit) {
+            text = QStringLiteral("Pending");
+            tip = QStringLiteral("Waiting to sync the latest source commit");
+        } else if (syncedMs > 0 && committedAtMs > 0 && syncedMs >= committedAtMs) {
+            const qint64 delayMs = syncedMs - committedAtMs;
+            text = formatDuration(delayMs);
+            sortValue = delayMs;
+            tip = QStringLiteral("%1 from commit to this node's sync")
+                      .arg(formatDuration(delayMs));
+        }
+        auto *item = new SortTableWidgetItem(text);
+        item->setData(kTableSortRole, double(sortValue));
+        item->setToolTip(tip);
+        return item;
+    };
 
     // Clone / website-serve tallies are per-node local counters, carried across the
     // network only in each node's published catalog record. Index the catalog cache
@@ -1984,6 +2016,11 @@ void MainWindow::loadMirrorNodesPanel()
                     .arg(pendingPush == 1 ? "" : "s"));
         }
         m_mirrorNodesTable->setItem(row, MirrorNodeColSynced, syncedItem);
+        m_mirrorNodesTable->setItem(
+            row, MirrorNodeColSyncDelay,
+            makeSyncDelayCell(advert ? advert->updatedMs : 0,
+                              commitIdentity.committedAtMs,
+                              advert ? advert->commit : QString(), isSource));
 
         // Tally for the owner-only alert below: are we the source of truth, and
         // how many other nodes are serving a state that doesn't match it.
@@ -2247,6 +2284,10 @@ void MainWindow::loadMirrorNodesPanel()
                 syncedItem->setToolTip(
                     QDateTime::fromSecsSinceEpoch(syncedSecs).toString(Qt::ISODate));
             m_mirrorNodesTable->setItem(row, MirrorNodeColSynced, syncedItem);
+            m_mirrorNodesTable->setItem(
+                row, MirrorNodeColSyncDelay,
+                makeSyncDelayCell(qint64(m.value("lastSync").toDouble()),
+                                  catIdentity.committedAtMs, catCommit, isSource));
             const qint64 nodeBytes = qint64(m.value("sizeBytes").toDouble());
             auto *sizeItem = new SortTableWidgetItem(
                 nodeBytes > 0 ? formatByteSize(nodeBytes)
