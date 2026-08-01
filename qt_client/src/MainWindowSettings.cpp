@@ -1013,23 +1013,18 @@ QWidget *MainWindow::buildSettingsSection()
     // Cap on how many agents run at once (adhoc #433). Anything started past the
     // cap waits in the queue with a clock icon and launches as slots free up, so
     // assigning a batch of issues can't spawn a CLI per issue all at once.
-    auto *maxRunningAgentsEdit = new QLineEdit;
-    maxRunningAgentsEdit->setPlaceholderText(
+    m_maxRunningAgentsEdit = new QLineEdit;
+    m_maxRunningAgentsEdit->setObjectName("maxRunningAgentsEdit");
+    m_maxRunningAgentsEdit->setPlaceholderText(
         QString::number(kDefaultMaxRunningAgents));
-    maxRunningAgentsEdit->setText(QString::number(maxRunningAgents()));
-    maxRunningAgentsEdit->setToolTip(
+    m_maxRunningAgentsEdit->setText(QString::number(maxRunningAgents()));
+    m_maxRunningAgentsEdit->setToolTip(
         "How many agent sessions may run at the same time. Sessions started "
         "beyond this stay queued and start automatically as running ones "
         "finish. Defaults to 5.");
-    connect(maxRunningAgentsEdit, &QLineEdit::editingFinished, this,
-            [this, maxRunningAgentsEdit] {
-                const int limit = qMax(kMinMaxRunningAgents,
-                                       maxRunningAgentsEdit->text().toInt());
-                maxRunningAgentsEdit->setText(QString::number(limit));
-                QSettings().setValue(kMaxRunningAgentsSetting, limit);
-                // Raising the cap should start waiting sessions right away
-                // rather than at the next completion.
-                scheduleAgentQueuePump();
+    connect(m_maxRunningAgentsEdit, &QLineEdit::editingFinished, this,
+            [this] {
+                setAgentConcurrencyLimit(m_maxRunningAgentsEdit->text().toInt());
             });
 
     m_codexApiKeyEdit = new QLineEdit;
@@ -1156,7 +1151,7 @@ QWidget *MainWindow::buildSettingsSection()
     agentForm->setLabelAlignment(Qt::AlignLeft);
     agentForm->setSpacing(8);
     agentForm->addRow("Default agent", m_defaultAgentProviderCombo);
-    agentForm->addRow("Max running agents", maxRunningAgentsEdit);
+    agentForm->addRow("Max running agents", m_maxRunningAgentsEdit);
     agentForm->addRow("OpenAI API key", m_codexApiKeyEdit);
     agentForm->addRow("OpenAI Admin key", m_openAiAdminKeyEdit);
     agentForm->addRow("OpenAI model", m_codexModelEdit);

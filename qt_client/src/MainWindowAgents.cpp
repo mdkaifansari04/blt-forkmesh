@@ -1343,12 +1343,48 @@ QWidget *MainWindow::buildAgentsTab()
     connect(m_agentStartAllButton, &QPushButton::clicked, this,
             &MainWindow::startAllStoppedAgents);
 
+    // Keep the live queue size and the concurrency cap where fleet controls
+    // already live. The limit used to be adjustable only in Settings; explicit
+    // minus/plus buttons make the common "one more/fewer agent" adjustment a
+    // single click without relying on the themed QSpinBox arrows (which are
+    // intentionally hidden elsewhere in the app).
+    auto *agentQueueControl = new QWidget;
+    agentQueueControl->setObjectName("agentQueueControl");
+    auto *agentQueueLayout = new QHBoxLayout(agentQueueControl);
+    agentQueueLayout->setContentsMargins(0, 0, 0, 0);
+    agentQueueLayout->setSpacing(2);
+    m_agentQueueLimitDecreaseButton = new QPushButton(QStringLiteral("−"));
+    m_agentQueueLimitDecreaseButton->setObjectName("agentQueueLimitDecreaseButton");
+    m_agentQueueLimitDecreaseButton->setFixedSize(24, 30);
+    m_agentQueueLimitDecreaseButton->setCursor(Qt::PointingHandCursor);
+    m_agentQueueLimitDecreaseButton->setToolTip("Run one fewer agent at once");
+    connect(m_agentQueueLimitDecreaseButton, &QPushButton::clicked, this, [this] {
+        setAgentConcurrencyLimit(maxRunningAgents() - 1);
+    });
+    m_agentQueueStatusLabel = new QLabel;
+    m_agentQueueStatusLabel->setObjectName("agentQueueStatusLabel");
+    m_agentQueueStatusLabel->setAlignment(Qt::AlignCenter);
+    m_agentQueueStatusLabel->setMinimumWidth(82);
+    m_agentQueueLimitIncreaseButton = new QPushButton("+");
+    m_agentQueueLimitIncreaseButton->setObjectName("agentQueueLimitIncreaseButton");
+    m_agentQueueLimitIncreaseButton->setFixedSize(24, 30);
+    m_agentQueueLimitIncreaseButton->setCursor(Qt::PointingHandCursor);
+    m_agentQueueLimitIncreaseButton->setToolTip("Run one more agent at once");
+    connect(m_agentQueueLimitIncreaseButton, &QPushButton::clicked, this, [this] {
+        setAgentConcurrencyLimit(maxRunningAgents() + 1);
+    });
+    agentQueueLayout->addWidget(m_agentQueueLimitDecreaseButton);
+    agentQueueLayout->addWidget(m_agentQueueStatusLabel);
+    agentQueueLayout->addWidget(m_agentQueueLimitIncreaseButton);
+    refreshAgentQueueControls();
+
     auto *agentListToolbar = new QHBoxLayout;
     agentListToolbar->setContentsMargins(0, 0, 0, 0);
     agentListToolbar->setSpacing(8);
     agentListToolbar->addWidget(heading, 0);
     agentListToolbar->addWidget(m_agentSearch, 1);
     agentListToolbar->addWidget(m_agentStartAllButton, 0);
+    agentListToolbar->addWidget(agentQueueControl, 0);
     agentListToolbar->addWidget(m_agentStopAllButton, 0);
     agentListToolbar->addWidget(m_agentDeleteMergedButton, 0);
     agentListToolbar->addWidget(m_agentHideDetailButton, 0);
@@ -7327,6 +7363,44 @@ void MainWindow::scheduleAgentQueuePump()
     });
 }
 
+void MainWindow::setAgentConcurrencyLimit(int limit)
+{
+    limit = qMax(kMinMaxRunningAgents, limit);
+    QSettings().setValue(kMaxRunningAgentsSetting, limit);
+    if (m_maxRunningAgentsEdit)
+        m_maxRunningAgentsEdit->setText(QString::number(limit));
+    refreshAgentQueueControls();
+    // Raising the cap should start waiting sessions right away rather than at
+    // the next completion.
+    scheduleAgentQueuePump();
+}
+
+void MainWindow::refreshAgentQueueControls()
+{
+    const int limit = maxRunningAgents();
+    int queued = 0;
+    for (const AgentSession &session : std::as_const(m_agentSessions)) {
+        if (!session.merged && !isExternalSession(session.id) &&
+            session.status == AgentStatus::Queued) {
+            ++queued;
+        }
+    }
+    if (m_agentQueueStatusLabel) {
+        m_agentQueueStatusLabel->setText(
+            QStringLiteral("Queue: %1 / %2").arg(queued).arg(limit));
+        m_agentQueueStatusLabel->setToolTip(
+            QStringLiteral("%1 agent%2 queued; up to %3 run at once. Use − / + "
+                           "to adjust the concurrent-agent limit.")
+                .arg(queued)
+                .arg(queued == 1 ? QString() : QStringLiteral("s"))
+                .arg(limit));
+    }
+    if (m_agentQueueLimitDecreaseButton)
+        m_agentQueueLimitDecreaseButton->setEnabled(limit > kMinMaxRunningAgents);
+    if (m_maxRunningAgentsEdit && !m_maxRunningAgentsEdit->hasFocus())
+        m_maxRunningAgentsEdit->setText(QString::number(limit));
+}
+
 void MainWindow::processAgentQueue()
 {
     if (!m_agentStore)
@@ -11026,6 +11100,7 @@ void MainWindow::onAgentFinished(int sessionId, bool ok)
 
 void MainWindow::updateAgentActionState()
 {
+    refreshAgentQueueControls();
     const bool selected = m_selectedAgentSessionId > 0;
     // External (watch-only) rows carry negative synthetic ids, so `selected` is
     // false for them — but Delete still applies: it kills the real CLI process
