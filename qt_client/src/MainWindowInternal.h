@@ -7390,14 +7390,17 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::Antialiasing);
         const bool dark = currentThemeIsDark();
-        const bool lit = isChecked() || underMouse();
+        const bool lit = isEnabled() && (isChecked() || underMouse());
         // The alert tint outranks the resting grey but still brightens on
-        // hover/checked, mirroring the old QSS [alert="true"] rules.
+        // hover/checked, mirroring the old QSS [alert="true"] rules. A disabled
+        // item (the agent detail reuses this class for its action buttons, which
+        // grey out per session) drops to a low-contrast grey.
         const QColor fg =
-            m_alert ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
-                                  : (lit ? "#7d4e00" : "#9a6700"))
-                    : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
-                            : QColor(lit ? "#1f2328" : "#656d76"));
+            !isEnabled() ? QColor(dark ? "#484f58" : "#b6bdc4")
+            : m_alert    ? QColor(dark ? (lit ? "#f0b72f" : "#d29922")
+                                       : (lit ? "#7d4e00" : "#9a6700"))
+                         : (dark ? QColor(lit ? "#e6edf3" : "#8b949e")
+                                 : QColor(lit ? "#1f2328" : "#656d76"));
         const bool showLabel = !m_compact && !m_label.isEmpty();
 
         // Selection line along the left edge — same accent green as the repo
