@@ -24,6 +24,7 @@ CANONICAL_PAGE_ROUTES = {
     "/dashboard/repos": "/dashboard/repos/index.html",
     "/dashboard/network": "/dashboard/network/index.html",
     "/dashboard/chat": "/dashboard/chat/index.html",
+    "/dashboard/tasks": "/dashboard/tasks/index.html",
     "/dashboard/settings": "/dashboard/settings/index.html",
     "/dashboard/profile": "/dashboard/profile/index.html",
     "/dashboard/profile/repositories": "/dashboard/profile/repositories/index.html",
