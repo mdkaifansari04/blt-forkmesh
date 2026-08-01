@@ -780,7 +780,7 @@ bool encryptRepository(const QString &repositoryPath,
     }
     tarProcess.start(
         tar,
-        {QStringLiteral("-C"), repository.absolutePath(),
+        {QStringLiteral("-C"), repository.dir().absolutePath(),
          QStringLiteral("-cf"), QStringLiteral("-"),
          QStringLiteral("repository.git")});
     if (!tarProcess.waitForStarted(10000)) {
