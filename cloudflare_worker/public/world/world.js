@@ -239,6 +239,23 @@ const WORLD_MEMBER_DIRECTORY_POLL_MS = 5 * 60 * 1000;
 const USERS_DIRECTORY_TTL_MS = 30 * 1000;
 const WORLD_MANUAL_BLOCK_DURATION_MS = 60 * 60 * 1000;
 const WORLD_SCORE_LOOP_MS = 4 * 60 * 60 * 1000;
+// Every step the opening sequence walks through, listed on the curtain in this
+// order with its own live seconds counter. Boot work overlaps (the engine
+// streams while the context and world reads are in flight), so more than one
+// row can be running at once; a slow open then names itself instead of sitting
+// behind one frozen headline.
+const WORLD_BOOT_STEPS = [
+  { id: "restore", label: "Read saved view" },
+  { id: "session", label: "Verify session · edge context" },
+  { id: "engine", label: "Download 3D engine" },
+  { id: "scene", label: "Build the town square" },
+  { id: "data", label: "Load world data" },
+  { id: "populate", label: "Place mirrors, members, boards" },
+  { id: "spawn", label: "Take your position" },
+];
+// Counters redraw ten times a second: fast enough to read as a stopwatch,
+// cheap enough to stay out of the way of the scene build.
+const WORLD_BOOT_TICK_MS = 100;
 const DEFAULT_FOCUS_MUSIC_TRACK_ID = FOCUS_MUSIC_TRACKS[0].id;
 const DEFAULT_FOCUS_MUSIC_VOLUME = 35;
 const WORLD_LIGHT_LEVEL_MIN = 40;
@@ -4079,6 +4096,18 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
           <span data-world-loading-progress></span>
         </span>
         <small data-world-loading-percent>8%</small>
+        <!--
+          The per-step ledger ticks ten times a second, so it opts out of the
+          curtain's live region: assistive tech keeps announcing the single
+          stage line above instead of every counter frame.
+        -->
+        <ol
+          class="world-loading-steps"
+          data-world-loading-steps
+          aria-live="off"
+          aria-label="World startup steps"
+        ></ol>
+        <small class="world-loading-total" data-world-loading-elapsed>0.0s elapsed</small>
       </div>
       <div class="world-renderer-recovery" data-world-renderer-recovery role="status" aria-live="polite" hidden>
         <strong data-world-renderer-recovery-title>Reconnecting the 3D renderer…</strong>
@@ -5604,6 +5633,11 @@ class ForkMeshWorld extends HTMLElement {
     this.buildBoardRepositoryRetryAt = 0;
     this.buildBoardRepositoryFailures = 0;
     this.mediaTimer = 0;
+    // Opening-curtain ledger: step id → {state, startedAt, endedAt, note}.
+    this.bootSteps = new Map();
+    this.bootStartedAt = 0;
+    this.bootTickTimer = 0;
+    this.bootTimelineClosed = false;
     this.seenRewardEvents = new Set();
     this.seenWorldEvents = new Set();
     this.seenNotifications = new Set();
@@ -6466,17 +6500,40 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async bootstrap() {
+    this.beginBootTimeline();
     try {
       this.setLoadingProgress(12, "Reading your saved view…");
-      const contextPromise = this.loadContext();
+      this.startBootStep("restore");
+      this.finishBootStep("restore", {
+        note: this.restoredPosition
+          ? `${this.restoredPosition.space || "town-square"} · saved position`
+          : `${this.currentSpace || "town-square"} · fresh arrival`,
+      });
+      const contextPromise = this.trackBootStep(
+        "session",
+        this.loadContext(),
+        "/api/world/context · /api/world/ticket",
+      );
       // Validate the optional persisted account session before issuing any
       // private World reads. This prevents an expired local token from
       // fanning out into a page full of avoidable 401/403 requests.
-      const dataPromise = contextPromise.then(() => this.loadWorldData());
+      const dataPromise = contextPromise.then(() =>
+        this.trackBootStep("data", this.loadWorldData()),
+      );
       this.setLoadingProgress(28, "Starting the live renderer…");
-      const THREE = await THREE_MODULE;
+      const THREE = await this.trackBootStep(
+        "engine",
+        THREE_MODULE,
+        "three.js r184 · streaming since page load",
+      );
       if (this.destroyed) return;
       this.setLoadingProgress(46, "Placing the town square…");
+      this.startBootStep("scene", "geometry, lighting, labels");
+      // The scene build owns the main thread for its whole run, so hand the
+      // curtain one frame first: the row it is about to freeze on is then
+      // already on screen with a running counter.
+      await this.nextBootPaint();
+      if (this.destroyed) return;
       this.world = createWorldScene({
         THREE,
         container: this.$("[data-world-canvas-wrap]"),
@@ -6744,6 +6801,7 @@ class ForkMeshWorld extends HTMLElement {
           this.toast("This member has not added a Solana wallet yet.");
         },
       });
+      this.finishBootStep("scene");
       this.setLoadingProgress(68, "World is live · syncing nearby activity…");
       this.syncWorldCameraModeButton();
       void this.refreshBuildBoard();
@@ -6768,6 +6826,12 @@ class ForkMeshWorld extends HTMLElement {
       this.world.setMovementTuning?.(this.movementTuning());
       await Promise.allSettled([contextPromise, dataPromise]);
       this.setLoadingProgress(86, "Adding mirrors, members, and boards…");
+      this.startBootStep(
+        "populate",
+        `${this.repositories.length} repositories · ${this.federatedInstances.length} instances`,
+      );
+      await this.nextBootPaint();
+      if (this.destroyed) return;
       this.world.updateIdentity(publicIdentity(this.identity, this.settings));
       void this.loadWorldEmailActivity();
       this.world.setLocalOrgTeam?.(
@@ -6821,6 +6885,11 @@ class ForkMeshWorld extends HTMLElement {
         // failed live catalog must not leave file icons that look selectable.
         this.syncRepositoryScene();
       }
+      this.finishBootStep("populate");
+      this.startBootStep(
+        "spawn",
+        this.restoredPosition ? "restoring saved spot" : "campfire arrival",
+      );
       if (this.restoredPosition) {
         // A reload only persists coordinates, not pose. If those coordinates
         // are on the campfire bench ring, reconstruct the seated pose instead
@@ -6852,13 +6921,17 @@ class ForkMeshWorld extends HTMLElement {
         const traveled = this.world.travelToRegion?.(this.currentSpace);
         this.spawnSelected = traveled === true;
       }
+      this.finishBootStep("spawn");
       const loading = this.$("[data-world-loading]");
       if (loading) {
         this.setLoadingProgress(100, "Ready · stepping into the World");
+        this.completeBootTimeline();
         requestAnimationFrame(() => {
           loading.dataset.ready = "true";
           window.setTimeout(() => loading.remove(), 320);
         });
+      } else {
+        this.completeBootTimeline();
       }
       this.connectPresence();
       this.updateMetrics();
@@ -6892,6 +6965,9 @@ class ForkMeshWorld extends HTMLElement {
       }
     } catch (error) {
       console.warn("ForkMesh World could not start WebGL", error);
+      // Stamp whatever was still running as failed and stop the counters: the
+      // fallback replaces the curtain, so nothing is left to redraw.
+      this.completeBootTimeline({ state: "failed" });
       this.renderWebGLFallback();
       await this.loadContext().catch(() => {});
       await this.loadWorldData().catch(() => {});
@@ -6918,6 +6994,200 @@ class ForkMeshWorld extends HTMLElement {
     if (progress) progress.style.width = `${value}%`;
     if (copy && label) copy.textContent = String(label);
     if (count) count.textContent = `${Math.round(value)}%`;
+  }
+
+  // ---------------------------------------------------------------------
+  // Opening-sequence ledger. Each boot step is one row on the curtain with a
+  // state, an optional live note, and a seconds counter that runs while the
+  // step is in flight and freezes at its final duration.
+  // ---------------------------------------------------------------------
+
+  formatBootSeconds(ms) {
+    const seconds = Math.max(0, Number(ms) || 0) / 1000;
+    return `${seconds.toFixed(1)}s`;
+  }
+
+  beginBootTimeline() {
+    if (this.bootStartedAt) return;
+    this.bootStartedAt = performance.now();
+    this.bootTimelineClosed = false;
+    this.renderBootSteps();
+    this.startBootTicker();
+  }
+
+  renderBootSteps() {
+    const list = this.$("[data-world-loading-steps]");
+    if (!list || list.childElementCount) return;
+    list.innerHTML = WORLD_BOOT_STEPS.map(
+      (step) => `
+        <li data-world-boot-step="${escapeHTML(step.id)}" data-state="waiting">
+          <span class="world-loading-step-mark" aria-hidden="true"></span>
+          <span class="world-loading-step-body">
+            <span class="world-loading-step-label">${escapeHTML(step.label)}</span>
+            <span class="world-loading-step-note" data-world-boot-note></span>
+          </span>
+          <span class="world-loading-step-time" data-world-boot-time>—</span>
+        </li>`,
+    ).join("");
+  }
+
+  startBootStep(id, note = "") {
+    if (this.bootTimelineClosed) return null;
+    this.beginBootTimeline();
+    const existing = this.bootSteps.get(id);
+    if (existing && existing.state === "running") {
+      if (note) this.noteBootStep(id, note);
+      return existing;
+    }
+    const entry = {
+      id,
+      state: "running",
+      startedAt: performance.now(),
+      endedAt: 0,
+      note: String(note || ""),
+    };
+    this.bootSteps.set(id, entry);
+    this.paintBootStep(entry);
+    return entry;
+  }
+
+  noteBootStep(id, note) {
+    const entry = this.bootSteps.get(id);
+    if (!entry || entry.state !== "running") return;
+    entry.note = String(note || "");
+    this.paintBootStep(entry);
+  }
+
+  finishBootStep(id, { state = "done", note } = {}) {
+    const entry = this.bootSteps.get(id);
+    if (!entry || entry.state !== "running") return;
+    entry.state = state;
+    entry.endedAt = performance.now();
+    if (note !== undefined) entry.note = String(note || "");
+    this.paintBootStep(entry);
+    this.tickBootSteps();
+  }
+
+  // Wrap an awaited boot stage so its row starts, stops, and reports a failure
+  // without the call site growing a try/finally around every await.
+  trackBootStep(id, work, note = "") {
+    this.startBootStep(id, note);
+    return Promise.resolve(work).then(
+      (value) => {
+        this.finishBootStep(id);
+        return value;
+      },
+      (error) => {
+        this.finishBootStep(id, {
+          state: "failed",
+          note: String(error?.message || error || "failed").slice(0, 60),
+        });
+        throw error;
+      },
+    );
+  }
+
+  // Report "n/total requests" while a fan-out settles, so one slow endpoint is
+  // visible instead of a silent multi-second wait on the whole batch.
+  countBootRequests(id, requests) {
+    const entry = this.bootSteps.get(id);
+    if (!entry || entry.state !== "running") return requests;
+    const total = requests.length;
+    let settled = 0;
+    this.noteBootStep(id, `0/${total} requests`);
+    return requests.map((request) =>
+      Promise.resolve(request).finally(() => {
+        settled += 1;
+        this.noteBootStep(id, `${settled}/${total} requests`);
+      }),
+    );
+  }
+
+  paintBootStep(entry) {
+    const row = this.$(`[data-world-boot-step="${entry.id}"]`);
+    if (!row) return;
+    row.dataset.state = entry.state;
+    const note = row.querySelector("[data-world-boot-note]");
+    if (note) note.textContent = entry.note || "";
+    const time = row.querySelector("[data-world-boot-time]");
+    if (!time) return;
+    if (entry.state === "waiting" || entry.state === "skipped") {
+      time.textContent = "—";
+      return;
+    }
+    const end = entry.endedAt || performance.now();
+    time.textContent = this.formatBootSeconds(end - entry.startedAt);
+  }
+
+  startBootTicker() {
+    if (this.bootTickTimer || this.bootTimelineClosed) return;
+    this.bootTickTimer = window.setInterval(
+      () => this.tickBootSteps(),
+      WORLD_BOOT_TICK_MS,
+    );
+  }
+
+  stopBootTicker() {
+    window.clearInterval(this.bootTickTimer);
+    this.bootTickTimer = 0;
+  }
+
+  tickBootSteps() {
+    const curtain = this.$("[data-world-loading]");
+    if (!curtain) {
+      this.stopBootTicker();
+      return;
+    }
+    let done = 0;
+    this.bootSteps.forEach((entry) => {
+      if (entry.state === "running") this.paintBootStep(entry);
+      else if (entry.state !== "waiting") done += 1;
+    });
+    const total = curtain.querySelector("[data-world-loading-elapsed]");
+    if (total && this.bootStartedAt) {
+      total.textContent = `${this.formatBootSeconds(
+        performance.now() - this.bootStartedAt,
+      )} elapsed · ${done}/${WORLD_BOOT_STEPS.length} steps`;
+    }
+  }
+
+  // Close the ledger: anything still running is stamped, anything never
+  // reached is marked skipped, and the counters stop.
+  completeBootTimeline({ state = "done" } = {}) {
+    this.bootSteps.forEach((entry) => {
+      if (entry.state === "running") this.finishBootStep(entry.id, { state });
+    });
+    WORLD_BOOT_STEPS.forEach((step) => {
+      if (this.bootSteps.has(step.id)) return;
+      const entry = {
+        id: step.id,
+        state: "skipped",
+        startedAt: 0,
+        endedAt: 0,
+        note: "",
+      };
+      this.bootSteps.set(step.id, entry);
+      this.paintBootStep(entry);
+    });
+    this.tickBootSteps();
+    this.bootTimelineClosed = true;
+    this.stopBootTicker();
+  }
+
+  // Yield one paint before a step that blocks the main thread, so the curtain
+  // shows the row as running first. Hidden tabs never fire rAF, so a short
+  // timer races it and the boot can never wedge here.
+  nextBootPaint() {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      window.requestAnimationFrame(done);
+      window.setTimeout(done, 48);
+    });
   }
 
   setInfrastructureConsoleEnabled(enabled) {
@@ -8359,17 +8629,19 @@ class ForkMeshWorld extends HTMLElement {
   }
 
   async loadContext() {
-    const [contextResult, ticketResult] = await Promise.allSettled([
-      this.fetchJSON("/api/world/context", {
-        auth: false,
-        timeout: 5000,
-        cache: "no-store",
-      }),
-      this.fetchJSON("/api/world/ticket", {
-        timeout: 5000,
-        cache: "no-store",
-      }),
-    ]);
+    const [contextResult, ticketResult] = await Promise.allSettled(
+      this.countBootRequests("session", [
+        this.fetchJSON("/api/world/context", {
+          auth: false,
+          timeout: 5000,
+          cache: "no-store",
+        }),
+        this.fetchJSON("/api/world/ticket", {
+          timeout: 5000,
+          cache: "no-store",
+        }),
+      ]),
+    );
     const context =
       contextResult.status === "fulfilled" ? contextResult.value : null;
     const ticket =
@@ -8551,109 +8823,113 @@ class ForkMeshWorld extends HTMLElement {
       visitorsResult,
       statusResult,
     ] =
-      await Promise.allSettled([
-        this.fetchJSON("/api/network/overview", { auth: false }),
-        this.fetchMirrorCatalog({ force: forceMirrors }),
-        this.fetchJSON("/api/world/instances", {
-          auth: false,
-          timeout: 5000,
-          cache: "no-store",
-        }),
-        this.fetchJSON("/api/repositories", { auth: hasSession }),
-        this.fetchJSON("/api/repository-imports", {
-          auth: hasSession,
-          timeout: 12000,
-          cache: "no-store",
-        }),
-        this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
-        this.fetchJSON("/api/accounts/central-fund", {
-          auth: false,
-          timeout: 5000,
-          cache: "no-store",
-        }),
-        this.fetchJSON("/api/world/organizations", {
-          auth: hasSession,
-          timeout: 5000,
-          cache: "no-store",
-        }),
-        this.fetchJSON("/security/latest.json", {
-          auth: false,
-          timeout: 4000,
-          cache: "no-store",
-        }),
-        this.fetchJSON("/api/world/fediverse", {
-          auth: false,
-          timeout: 4000,
-          cache: "no-store",
-        }),
-        hasSession
-          ? this.fetchJSON("/api/world/media/spaces", {
-              timeout: 5000,
-              cache: "no-store",
-            })
-          : Promise.resolve({ spaces: [] }),
-        this.fetchJSON("/world/bot-directory.json", {
-          auth: false,
-          timeout: 4000,
-        }),
-        hasSession
-          ? this.fetchJSON("/api/rewards/pending", {
-              timeout: 5000,
-              cache: "no-store",
-            })
-          : Promise.resolve({ rewards: [] }),
-        hasSession && session?.nodeName
-          ? this.fetchJSON(
-              `/api/notifications?node=${encodeURIComponent(
-                String(session.nodeName).toLowerCase(),
-              )}&limit=100`,
-              {
-                timeout: 5000,
-                cache: "no-store",
-              },
-            )
-          : Promise.resolve({ notifications: [], unread: 0 }),
-        this.fetchJSON("/api/world/inactive", {
-          auth: false,
-          timeout: 5000,
-          cache: "no-store",
-        }),
-        this.fetchJSON("/api/world/events", {
-          auth: false,
-          timeout: 5000,
-          cache: "no-store",
-        }),
-        this.fetchJSON(
-          "/api/world/community-ads/placements?context=town-square",
-          {
+      await Promise.allSettled(
+        // Counted so the opening curtain can show this fan-out settling
+        // request by request instead of one silent multi-second wait.
+        this.countBootRequests("data", [
+          this.fetchJSON("/api/network/overview", { auth: false }),
+          this.fetchMirrorCatalog({ force: forceMirrors }),
+          this.fetchJSON("/api/world/instances", {
+            auth: false,
+            timeout: 5000,
+            cache: "no-store",
+          }),
+          this.fetchJSON("/api/repositories", { auth: hasSession }),
+          this.fetchJSON("/api/repository-imports", {
+            auth: hasSession,
+            timeout: 12000,
+            cache: "no-store",
+          }),
+          this.fetchJSON("/api/version", { auth: false, timeout: 5000 }),
+          this.fetchJSON("/api/accounts/central-fund", {
+            auth: false,
+            timeout: 5000,
+            cache: "no-store",
+          }),
+          this.fetchJSON("/api/world/organizations", {
+            auth: hasSession,
+            timeout: 5000,
+            cache: "no-store",
+          }),
+          this.fetchJSON("/security/latest.json", {
             auth: false,
             timeout: 4000,
             cache: "no-store",
-          },
-        ),
-        this.fetchJSON("/api/world/fediverse-mentions", {
-          auth: false,
-          timeout: 5000,
-          cache: "no-store",
-        }),
-        this.fetchJSON("/api/accounts/users", {
-          auth: false,
-          timeout: 5000,
-        }),
-        // Edge-cached for a minute server-side; no per-visitor variance, so
-        // the browser cache may reuse it too.
-        this.fetchJSON("/api/world/visitors", {
-          auth: false,
-          timeout: 5000,
-        }),
-        this.fetchJSON("/api/status?view=world", {
-          auth: false,
-          timeout: 8000,
-          maxAge: 60 * 1000,
-          backoff: true,
-          staleIfError: true,
-        }),
-      ]);
+          }),
+          this.fetchJSON("/api/world/fediverse", {
+            auth: false,
+            timeout: 4000,
+            cache: "no-store",
+          }),
+          hasSession
+            ? this.fetchJSON("/api/world/media/spaces", {
+                timeout: 5000,
+                cache: "no-store",
+              })
+            : Promise.resolve({ spaces: [] }),
+          this.fetchJSON("/world/bot-directory.json", {
+            auth: false,
+            timeout: 4000,
+          }),
+          hasSession
+            ? this.fetchJSON("/api/rewards/pending", {
+                timeout: 5000,
+                cache: "no-store",
+              })
+            : Promise.resolve({ rewards: [] }),
+          hasSession && session?.nodeName
+            ? this.fetchJSON(
+                `/api/notifications?node=${encodeURIComponent(
+                  String(session.nodeName).toLowerCase(),
+                )}&limit=100`,
+                {
+                  timeout: 5000,
+                  cache: "no-store",
+                },
+              )
+            : Promise.resolve({ notifications: [], unread: 0 }),
+          this.fetchJSON("/api/world/inactive", {
+            auth: false,
+            timeout: 5000,
+            cache: "no-store",
+          }),
+          this.fetchJSON("/api/world/events", {
+            auth: false,
+            timeout: 5000,
+            cache: "no-store",
+          }),
+          this.fetchJSON(
+            "/api/world/community-ads/placements?context=town-square",
+            {
+              auth: false,
+              timeout: 4000,
+              cache: "no-store",
+            },
+          ),
+          this.fetchJSON("/api/world/fediverse-mentions", {
+            auth: false,
+            timeout: 5000,
+            cache: "no-store",
+          }),
+          this.fetchJSON("/api/accounts/users", {
+            auth: false,
+            timeout: 5000,
+          }),
+          // Edge-cached for a minute server-side; no per-visitor variance, so
+          // the browser cache may reuse it too.
+          this.fetchJSON("/api/world/visitors", {
+            auth: false,
+            timeout: 5000,
+          }),
+          this.fetchJSON("/api/status?view=world", {
+            auth: false,
+            timeout: 8000,
+            maxAge: 60 * 1000,
+            backoff: true,
+            staleIfError: true,
+          }),
+        ]),
+      );
     this.network = networkResult.status === "fulfilled" ? networkResult.value : {};
     this.mirrorCatalogs =
       mirrorResult.status === "fulfilled"
@@ -28068,6 +28344,7 @@ class ForkMeshWorld extends HTMLElement {
     window.clearInterval(this.activityTimer);
     window.clearInterval(this.clockTimer);
     window.clearInterval(this.distanceTimer);
+    window.clearInterval(this.bootTickTimer);
     window.clearInterval(this.pingTimer);
     window.clearInterval(this.statusBoardTimer);
     window.clearInterval(this.mirrorTimer);

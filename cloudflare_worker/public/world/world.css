@@ -374,6 +374,129 @@ forkmesh-world {
   animation: world-loader-shimmer 700ms linear infinite;
 }
 
+/*
+  Opening ledger: one row per startup step with a live seconds counter, so a
+  slow open names the step it is waiting on. Rows are painted from
+  WORLD_BOOT_STEPS and keep their order whether or not they overlap.
+*/
+.world-loading-steps {
+  width: 100%;
+  max-height: min(46vh, 260px);
+  margin: 4px 0 0;
+  padding: 8px 0 0;
+  overflow-y: auto;
+  border-top: 1px solid rgb(158 247 198 / 0.18);
+  list-style: none;
+  text-align: left;
+}
+
+.world-loading-steps li {
+  display: grid;
+  grid-template-columns: 12px minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 0 8px;
+  padding: 2px 0;
+}
+
+.world-loading-curtain .world-loading-step-mark {
+  color: var(--world-muted);
+  font: 700 10px/1.4 "ForkMesh Mono", ui-monospace, monospace;
+  text-align: center;
+}
+
+.world-loading-steps li[data-state="waiting"] .world-loading-step-mark::before {
+  content: "○";
+}
+
+.world-loading-steps li[data-state="running"] .world-loading-step-mark::before {
+  content: "▸";
+}
+
+.world-loading-steps li[data-state="done"] .world-loading-step-mark::before {
+  content: "✓";
+}
+
+.world-loading-steps li[data-state="failed"] .world-loading-step-mark::before {
+  content: "✕";
+}
+
+.world-loading-steps li[data-state="skipped"] .world-loading-step-mark::before {
+  content: "–";
+}
+
+.world-loading-step-body {
+  display: grid;
+  min-width: 0;
+}
+
+.world-loading-curtain .world-loading-step-label,
+.world-loading-curtain .world-loading-step-time {
+  color: var(--world-muted);
+  font: 600 10px/1.5 "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.06em;
+  text-transform: none;
+}
+
+.world-loading-curtain .world-loading-step-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A note only appears once a step has something to report. */
+.world-loading-curtain .world-loading-step-note {
+  overflow: hidden;
+  color: rgb(158 247 198 / 0.55);
+  font: 500 9px/1.4 "ForkMesh Mono", ui-monospace, monospace;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.world-loading-curtain .world-loading-step-note:empty {
+  display: none;
+}
+
+/* Counters redraw ten times a second: fixed digit cells keep them steady. */
+.world-loading-curtain .world-loading-step-time {
+  min-width: 42px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.world-loading-steps li[data-state="waiting"],
+.world-loading-steps li[data-state="skipped"] {
+  opacity: 0.5;
+}
+
+.world-loading-steps li[data-state="running"] .world-loading-step-mark,
+.world-loading-steps li[data-state="running"] .world-loading-step-label,
+.world-loading-steps li[data-state="running"] .world-loading-step-time {
+  color: #9ef7c6;
+}
+
+.world-loading-steps li[data-state="running"] .world-loading-step-mark {
+  animation: world-loader-shimmer 700ms linear infinite;
+}
+
+.world-loading-steps li[data-state="done"] .world-loading-step-mark,
+.world-loading-steps li[data-state="done"] .world-loading-step-time {
+  color: #42d983;
+}
+
+.world-loading-steps li[data-state="failed"] .world-loading-step-mark,
+.world-loading-steps li[data-state="failed"] .world-loading-step-label,
+.world-loading-steps li[data-state="failed"] .world-loading-step-time {
+  color: #ff9b9b;
+}
+
+.world-loading-curtain .world-loading-total {
+  color: var(--world-muted);
+  font: 600 9px/1 "ForkMesh Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
 @keyframes world-loader-dash {
   0%, 100% { transform: translateY(0) rotate(-2deg); }
   45% { transform: translateY(-7px) rotate(3deg); }
@@ -387,7 +510,8 @@ forkmesh-world {
 
 @media (prefers-reduced-motion: reduce) {
   .world-loading-curtain img,
-  .world-loading-track > span {
+  .world-loading-track > span,
+  .world-loading-steps li[data-state="running"] .world-loading-step-mark {
     animation: none;
   }
 }
