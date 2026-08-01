@@ -2618,16 +2618,19 @@ void MainWindow::setSettingsAvatar(const QByteArray &pngData)
     if (!pixmap.loadFromData(data))
         return;
     constexpr int side = 64;
-    QPixmap rounded(side, side);
-    rounded.fill(Qt::transparent);
+    const qreal dpr = iconDevicePixelRatio();
+    QPixmap rounded = crispIconPixmap(side, dpr);
     QPainter painter(&rounded);
     painter.setRenderHint(QPainter::Antialiasing);
+    painter.setRenderHint(QPainter::SmoothPixmapTransform);
     QPainterPath clip;
     clip.addRoundedRect(0, 0, side, side, 14, 14);
     painter.setClipPath(clip);
-    painter.drawPixmap(0, 0,
-                       pixmap.scaled(side, side, Qt::KeepAspectRatioByExpanding,
-                                     Qt::SmoothTransformation));
+    QPixmap scaled = pixmap.scaled(rounded.width(), rounded.height(),
+                                   Qt::KeepAspectRatioByExpanding,
+                                   Qt::SmoothTransformation);
+    scaled.setDevicePixelRatio(dpr);
+    painter.drawPixmap(0, 0, scaled);
     m_settingsAvatarPreview->setPixmap(rounded);
 }
 
@@ -3899,16 +3902,18 @@ void MainWindow::registerLogFaviconResource(const QString &host, QTextEdit *view
         return;
     QPixmap pix;
     if (m_faviconCache.contains(host)) {
+        const qreal dpr = iconDevicePixelRatio();
+        const int px = qMax(1, qRound(16 * dpr));
         pix = m_faviconCache.value(host)
-                  .scaled(16, 16, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+                  .scaled(px, px, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+        pix.setDevicePixelRatio(dpr);
     } else if (hasBuiltinFavicon(host)) {
         pix = builtinFavicon(host, 16);
     } else {
         // Never leave the 14px box empty: the host's letter badge stands in
         // until (or in place of) a fetched icon, so every network line in the
         // log reads with an icon (adhoc #436).
-        pix = letterFavicon(host).scaled(16, 16, Qt::KeepAspectRatio,
-                                         Qt::SmoothTransformation);
+        pix = letterFavicon(host, 16);
     }
     view->document()->addResource(
         QTextDocument::ImageResource,
