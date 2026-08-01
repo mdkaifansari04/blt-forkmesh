@@ -56,8 +56,7 @@ def _handler_runtime(task_rows=None):
             if names & wanted_assignments:
                 selected.append(node)
         elif isinstance(node, ast.AsyncFunctionDef) \
-                and node.name in (
-                    "_organization_qa_access", "world_qa_handler"):
+                and node.name == "world_qa_handler":
             selected.append(node)
     assert any(
         isinstance(node, ast.AsyncFunctionDef) for node in selected)
@@ -80,8 +79,8 @@ def _handler_runtime(task_rows=None):
     async def org_role(_env, _org_bi, actor):
         return "owner" if actor == "alice" else "member"
 
-    async def org_permission(_env, _org_bi, _actor):
-        return "admin"
+    async def org_permission(_env, _org_bi, actor):
+        return "admin" if actor == "alice" else "read"
 
     async def d1_run(_env, _sql, account_bi, key, verdict, reviewed_at):
         rows[(account_bi, key)] = {
@@ -186,7 +185,8 @@ def test_qa_votes_are_per_account_with_global_aggregate_totals():
     assert anonymous["payload"]["authenticated"] is False
     assert anonymous["payload"]["reviews"] == {}
     assert anonymous["payload"]["authorized"] is False
-    assert anonymous["payload"]["requiredTeam"] == "quality-assurance"
+    assert anonymous["payload"]["requiredTeam"] == ""
+    assert anonymous["payload"]["requiresAuthentication"] is True
     assert anonymous["payload"]["cards"] == []
 
     saved = _run(handler(None, _Request(
@@ -218,9 +218,11 @@ def test_qa_votes_are_per_account_with_global_aggregate_totals():
 
     non_qa = _run(handler(None, _Request(account="bi:charlie")))
     assert non_qa["payload"]["authenticated"] is True
-    assert non_qa["payload"]["authorized"] is False
-    assert non_qa["payload"]["cards"] == []
-    assert non_qa["payload"]["canViewPrivateTasks"] is False
+    assert non_qa["payload"]["authorized"] is True
+    assert non_qa["payload"]["cards"]
+    assert non_qa["payload"]["canViewPrivateTasks"] is True
+    assert non_qa["payload"]["requiredTeam"] == ""
+    assert non_qa["payload"]["requiresAuthentication"] is True
 
 
 def test_qa_write_rejects_cross_origin_unknown_items_and_bad_verdicts():
@@ -238,6 +240,28 @@ def test_qa_write_rejects_cross_origin_unknown_items_and_bad_verdicts():
         response = _run(handler(None, _Request(method="POST", data=data)))
         assert response["status"] == 400
     assert rows == {}
+
+
+def test_logged_in_non_qa_user_can_review_a_card():
+    handler, rows = _handler_runtime()
+    response = _run(handler(None, _Request(
+        method="POST",
+        account="bi:charlie",
+        data={"key": "office-doorway", "verdict": "unsure"},
+    )))
+    assert response["status"] == 200
+    assert response["payload"]["authorized"] is True
+    assert response["payload"]["reviews"]["office-doorway"][
+        "verdict"] == "unsure"
+    assert rows[("bi:charlie", "office-doorway")]["verdict"] == "unsure"
+
+    route = _run(handler(None, _Request(
+        method="POST",
+        account="bi:charlie",
+        data={"key": "office-doorway", "action": "route_issue"},
+    )))
+    assert route["status"] == 403
+    assert route["payload"]["error"] == "forbidden"
 
 
 def test_completed_organization_task_is_marked_globally_reviewed():
@@ -329,6 +353,7 @@ def test_cards_stack_only_deals_tasks_that_nobody_has_reviewed():
     ):
         assert contract in WORLD
     assert "NO QA TASKS ARE WAITING" in SCENE
+    assert "SIGN IN TO WORK ON QA" in SCENE
     assert "CARDS WAITING" in SCENE
 
 
