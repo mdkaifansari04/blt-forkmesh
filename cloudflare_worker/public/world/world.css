@@ -6877,6 +6877,90 @@ forkmesh-world.world-office-active .world-quick-dock {
   text-decoration: line-through;
 }
 
+.world-object-table {
+  margin-top: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.world-object-head,
+.world-object-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px 62px 54px 44px;
+  align-items: center;
+  gap: 8px;
+}
+
+.world-object-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--world-line);
+  background: var(--world-panel-solid);
+}
+
+.world-object-head button {
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--world-muted);
+  cursor: pointer;
+  text-align: left;
+  font: 700 0.6rem "ForkMesh Mono", monospace;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.world-object-head button:hover,
+.world-object-head button:focus-visible {
+  color: var(--world-mint);
+  outline: none;
+}
+
+.world-object-head button[aria-sort="ascending"],
+.world-object-head button[aria-sort="descending"] {
+  color: var(--world-copy);
+}
+
+.world-object-head button:nth-of-type(n + 4) {
+  text-align: right;
+}
+
+.world-object-row {
+  min-height: 24px;
+  border-top: 1px solid var(--world-line);
+  padding: 2px 0;
+}
+
+.world-object-row:first-of-type {
+  border-top: 0;
+}
+
+.world-object-row strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--world-copy);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.world-object-group {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--world-muted);
+  font-size: 0.62rem;
+}
+
+.world-object-row[data-visible="false"] strong {
+  color: var(--world-muted);
+  font-style: italic;
+}
+
 .world-work-stats {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

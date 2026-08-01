@@ -144,6 +144,9 @@ const SHADOW_MAP_BUSY_RETRY_MS = 1_000;
 const SHADOW_MAP_STALL_COOLDOWN_MS = 10_000;
 const SCENE_LOD_SAMPLE_MS = 500;
 const AVATAR_HIGHLIGHT_SAMPLE_MS = 100;
+// Backstop for the Debug tab's per-object walk so a pathological scene can
+// never build a million-entry array on the main thread.
+const SCENE_OBJECT_WALK_LIMIT = 5_000;
 // Movement, camera controls, and rendering retain display cadence. Decorative
 // callbacks have their own budget: compact GPUs update them at 30 Hz and a
 // zoomed-out overview at 20 Hz, where sub-pixel fire/foliage changes cannot
@@ -15956,6 +15959,64 @@ export function createWorldScene({
         interactives,
       };
     });
+  }
+
+  // Unnamed meshes are the norm, so fall back to the nearest named ancestor
+  // plus the geometry type: "forkmesh-operator-belt › BoxGeometry" locates a
+  // row in the scene graph far better than a bare "Mesh".
+  function sceneObjectLabel(object) {
+    if (object.name) return object.name;
+    let ancestor = object.parent;
+    while (ancestor && !ancestor.name) ancestor = ancestor.parent;
+    const geometryType = object.geometry?.type || "Mesh";
+    return ancestor?.name ? `${ancestor.name} › ${geometryType}` : geometryType;
+  }
+
+  // Every individual mesh currently drawing triangles, tagged with the world
+  // element that owns it. listWorldElements answers "which feature costs the
+  // most"; this answers "which single object inside it does". Walked on
+  // demand from the Debug tab, never per frame.
+  function listSceneObjects() {
+    const owners = new Map();
+    worldElements.forEach((element) => {
+      pruneDeadElementRoots(element);
+      element.roots.forEach((root) => {
+        root.traverse?.((child) => {
+          if (!owners.has(child)) owners.set(child, element);
+        });
+      });
+    });
+    const interactiveSet = new Set(interactive);
+    const objects = [];
+    scene.traverse((child) => {
+      if (!child.isMesh || objects.length >= SCENE_OBJECT_WALK_LIMIT) return;
+      if (child.userData?.raycastProxy === true) return;
+      const geometry = child.geometry;
+      const vertices =
+        geometry?.index?.count ?? geometry?.attributes?.position?.count ?? 0;
+      const triangles = Math.floor(vertices / 3);
+      if (triangles <= 0) return;
+      const instances = child.isInstancedMesh
+        ? Math.max(0, Number(child.count) || 0)
+        : 1;
+      const owner = owners.get(child);
+      objects.push({
+        label: sceneObjectLabel(child),
+        element: owner ? owner.label : "Unregistered",
+        elementId: owner ? owner.id : "",
+        type: child.isInstancedMesh
+          ? "Instanced"
+          : child.isSkinnedMesh
+            ? "Skinned"
+            : "Mesh",
+        geometry: geometry?.type || "Geometry",
+        triangles: triangles * instances,
+        instances,
+        visible: objectIsEffectivelyVisible(child),
+        interactive: interactiveSet.has(child),
+      });
+    });
+    return objects;
   }
 
   // Whole-scene systems and the fixtures that exist before the static town
@@ -34545,6 +34606,7 @@ export function createWorldScene({
     getDiagnostics,
     listWorldElements,
     setWorldElementEnabled,
+    listSceneObjects,
     getEnvironmentState: () => ({
       theme: currentTheme,
       lightLevel,

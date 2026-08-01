@@ -154,6 +154,11 @@ const ADMIN_ERROR_POLL_MS = 15_000;
 // device (never in account preferences) so a perf experiment on one machine
 // cannot dim the world on every other signed-in device.
 const DISABLED_ELEMENTS_KEY = "forkmesh.world.disabledElements.v1";
+// Per-object triangle table in the Debug tab. Sorting is numeric for the
+// count columns and alphabetical for the rest, and only the leading rows of
+// the current sort are painted so a busy scene cannot stall the panel.
+const WORLD_OBJECT_NUMERIC_KEYS = new Set(["triangles", "instances"]);
+const WORLD_OBJECT_ROW_LIMIT = 300;
 const POSITION_WRITE_INTERVAL_MS = 1000;
 const CHAT_BUBBLE_JOIN_GRACE_MS = 20 * 1000;
 // Everything a fresh page load pulls in — the relayed chat backlog, the first
@@ -5106,6 +5111,28 @@ function worldTemplate(identity, settings, mode, landmarkCapabilities) {
               </div>
             </fieldset>
             <fieldset class="world-setting-group">
+              <legend>Objects drawing triangles</legend>
+              <p class="world-setting-note">
+                Every individual object in the live scene that draws triangles,
+                heaviest first, with the element that owns it. Click any column
+                to sort by it; click again to reverse. Instanced meshes report
+                their whole batch. The scene is walked when you open this tab —
+                press Re-walk scene after moving or toggling elements.
+              </p>
+              <div class="world-element-master">
+                <button type="button" data-world-object-refresh>Re-walk scene</button>
+              </div>
+              <div
+                class="world-object-table"
+                data-world-object-list
+                role="table"
+                aria-label="Scene objects drawing triangles"
+              >
+                <p class="world-setting-note">Object list appears once the scene is ready.</p>
+              </div>
+              <p class="world-office-panel-status" data-world-object-status role="status" aria-live="polite"></p>
+            </fieldset>
+            <fieldset class="world-setting-group">
               <legend>Suggestions</legend>
               <ol class="world-debug-suggestions" data-world-debug-suggestions>
                 <li data-level="caution">Collecting the first sample…</li>
@@ -5579,6 +5606,11 @@ class ForkMeshWorld extends HTMLElement {
     this.disabledWorldElements = storedDisabledWorldElements();
     this.worldElementSort = "drawables";
     this.worldElementSortAscending = false;
+    // Per-object triangle table in the Debug tab: sort key and the last
+    // scene walk, kept until the tab is reopened or Re-walk is pressed.
+    this.worldObjectSort = "triangles";
+    this.worldObjectSortAscending = false;
+    this.worldObjects = [];
     this.worldTicketResolved = false;
     this.settingsUpdatedAt = 0;
     this.worldPreferencesLoaded = false;
@@ -10586,6 +10618,22 @@ class ForkMeshWorld extends HTMLElement {
           this.worldElementSortAscending = key === "label" || key === "category";
         }
         this.renderWorldElementsPane();
+        return;
+      }
+      if (event.target.closest("[data-world-object-refresh]")) {
+        this.renderWorldObjectPane({ walk: true });
+        return;
+      }
+      const objectSort = event.target.closest("[data-world-object-sort]");
+      if (objectSort) {
+        const key = objectSort.dataset.worldObjectSort;
+        if (this.worldObjectSort === key) {
+          this.worldObjectSortAscending = this.worldObjectSortAscending !== true;
+        } else {
+          this.worldObjectSort = key;
+          this.worldObjectSortAscending = !WORLD_OBJECT_NUMERIC_KEYS.has(key);
+        }
+        this.renderWorldObjectPane();
         return;
       }
       if (event.target.closest("[data-world-debug-copy]")) {
@@ -23244,6 +23292,8 @@ class ForkMeshWorld extends HTMLElement {
     if (selected === "debug") {
       // Paint the readings immediately instead of waiting out the 1s tick.
       this.renderDiagnostics();
+      // A fresh scene walk on entry; re-sorting afterwards reuses it.
+      this.renderWorldObjectPane({ walk: true });
     }
     if (selected === "elements") {
       this.renderWorldElementsPane();
@@ -23369,6 +23419,98 @@ class ForkMeshWorld extends HTMLElement {
       })
       .join("");
     list.innerHTML = header + rows;
+  }
+
+  // The Debug tab's per-object triangle table. The scene walk is explicit —
+  // taken when the tab opens and when Re-walk is pressed — so re-sorting a
+  // few thousand rows never costs another traversal, and the one-second
+  // diagnostics tick never rebuilds this list.
+  renderWorldObjectPane({ walk = false } = {}) {
+    const list = this.$("[data-world-object-list]");
+    if (!list) return;
+    const status = this.$("[data-world-object-status]");
+    if (walk || !this.worldObjects.length) {
+      this.worldObjects = this.world?.listSceneObjects?.() || [];
+    }
+    const objects = this.worldObjects;
+    if (!objects.length) {
+      list.innerHTML =
+        '<p class="world-setting-note">Nothing is drawing triangles yet — the scene is still building.</p>';
+      if (status) status.textContent = "";
+      return;
+    }
+    const columns = [
+      { key: "label", heading: "Object" },
+      { key: "element", heading: "Element" },
+      { key: "type", heading: "Type" },
+      { key: "triangles", heading: "Tri" },
+      { key: "instances", heading: "Inst" },
+    ];
+    const sort = columns.some((column) => column.key === this.worldObjectSort)
+      ? this.worldObjectSort
+      : "triangles";
+    const numeric = WORLD_OBJECT_NUMERIC_KEYS.has(sort);
+    const ascending = this.worldObjectSortAscending === true;
+    const compareObjects = (left, right) => {
+      const delta = numeric
+        ? Number(right[sort]) - Number(left[sort])
+        : String(left[sort]).localeCompare(String(right[sort]));
+      return (
+        (numeric === ascending ? -delta : delta) ||
+        left.label.localeCompare(right.label)
+      );
+    };
+    const header = `
+      <div class="world-object-head" role="row">
+        ${columns
+          .map((column) => {
+            const active = column.key === sort;
+            return `
+            <button
+              type="button"
+              role="columnheader"
+              data-world-object-sort="${column.key}"
+              aria-sort="${active ? (ascending ? "ascending" : "descending") : "none"}"
+            >${column.heading}${active ? (ascending ? " ▲" : " ▼") : ""}</button>`;
+          })
+          .join("")}
+      </div>`;
+    const shown = [...objects]
+      .sort(compareObjects)
+      .slice(0, WORLD_OBJECT_ROW_LIMIT);
+    const rows = shown
+      .map(
+        (object) => `
+        <div
+          class="world-object-row"
+          role="row"
+          data-visible="${object.visible !== false}"
+          title="${escapeHTML(
+            `${object.label} · ${object.geometry} · ${object.element}${
+              object.visible === false ? " · hidden" : ""
+            }${object.interactive ? " · clickable" : ""}`,
+          )}"
+        >
+          <strong>${escapeHTML(object.label)}</strong>
+          <span class="world-object-group">${escapeHTML(object.element)}</span>
+          <span class="world-object-group">${escapeHTML(object.type)}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(object.triangles))}</span>
+          <span class="world-element-count">${escapeHTML(compactCountLabel(object.instances))}</span>
+        </div>`,
+      )
+      .join("");
+    list.innerHTML = header + rows;
+    if (status) {
+      const total = objects.reduce(
+        (sum, object) => sum + (Number(object.triangles) || 0),
+        0,
+      );
+      status.textContent = `${objects.length.toLocaleString()} objects · ${total.toLocaleString()} triangles${
+        shown.length < objects.length
+          ? ` · showing ${shown.length.toLocaleString()}`
+          : ""
+      }`;
+    }
   }
 
   renderWorldSessions(message = "", tone = "") {

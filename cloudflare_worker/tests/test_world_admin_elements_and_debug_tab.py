@@ -201,6 +201,60 @@ def test_debug_tab_shows_live_readings_with_suggestions_and_stays_open():
     assert "data-world-debug-panel" in debug_pane
 
 
+def test_debug_tab_lists_every_individual_triangle_drawing_object_sortably():
+    # The scene exposes one row per mesh that actually draws triangles, tagged
+    # with the world element that owns it.
+    for contract in (
+        "function listSceneObjects()",
+        "function sceneObjectLabel(object)",
+        "const SCENE_OBJECT_WALK_LIMIT =",
+        "setWorldElementEnabled,\n    listSceneObjects,",
+    ):
+        assert contract in SCENE
+    walk = SCENE.split("function listSceneObjects() {", 1)[1].split(
+        "\n  // Whole-scene systems", 1
+    )[0]
+    assert (
+        "if (!child.isMesh || objects.length >= SCENE_OBJECT_WALK_LIMIT) return;"
+        in walk
+    )
+    assert "if (child.userData?.raycastProxy === true) return;" in walk
+    assert "if (triangles <= 0) return;" in walk
+    # Instanced meshes report the whole batch, and each row names its element.
+    assert "triangles: triangles * instances," in walk
+    assert 'element: owner ? owner.label : "Unregistered",' in walk
+    # The table lives in the Debug tab, is walked on demand, and every column
+    # sorts (clicking the active column reverses it).
+    debug_pane = APP.split('data-world-settings-pane="debug"', 1)[1].split(
+        'data-world-settings-pane="elements"', 1
+    )[0]
+    for contract in (
+        "data-world-object-list",
+        "data-world-object-refresh",
+        "data-world-object-status",
+    ):
+        assert contract in debug_pane
+    for contract in (
+        'data-world-object-sort="${column.key}"',
+        '{ key: "label", heading: "Object" },',
+        '{ key: "element", heading: "Element" },',
+        '{ key: "type", heading: "Type" },',
+        '{ key: "triangles", heading: "Tri" },',
+        '{ key: "instances", heading: "Inst" },',
+        'this.worldObjectSort = "triangles";',
+        "this.worldObjectSortAscending = this.worldObjectSortAscending !== true;",
+        "this.renderWorldObjectPane({ walk: true });",
+        'const WORLD_OBJECT_NUMERIC_KEYS = new Set(["triangles", "instances"]);',
+    ):
+        assert contract in APP
+    # Re-sorting reuses the last walk; only the refresh button re-traverses.
+    render = APP.split("  renderWorldObjectPane({ walk = false } = {}) {", 1)[1].split(
+        "\n  renderWorldSessions", 1
+    )[0]
+    assert "this.worldObjects = this.world?.listSceneObjects?.() || [];" in render
+    assert "WORLD_OBJECT_ROW_LIMIT" in render
+
+
 def test_element_and_debug_panels_have_styles():
     for selector in (
         ".world-debug-live",
@@ -210,5 +264,9 @@ def test_element_and_debug_panels_have_styles():
         ".world-element-head",
         ".world-element-row",
         '.world-element-row[data-enabled="false"]',
+        ".world-object-table",
+        ".world-object-head",
+        ".world-object-row",
+        '.world-object-row[data-visible="false"]',
     ):
         assert selector in CSS
